@@ -422,7 +422,7 @@ async function fetchNewsSentiment(env: Env, symbolOrBase: string) {
 
     const query = {
         categories: base,
-        limit: 10,
+        limit: 20,
         lang: 'EN',
     };
 
@@ -495,9 +495,11 @@ Constraints:
 - Assume educational simulation, not live trading.
 - Return JSON strictly as: {"action":"BUY|SELL|HOLD|CLOSE","summary":"...","reason":"..."}
 - If conditions are unclear or mixed, respond HOLD.
-- If volume is unusually low or weekend hours, prefer HOLD and do not open new positions unless strong breakout.
-- If major macro events or negative sentiment are present, HOLD unless reducing risk.
-- Prioritize flat/existing position management over new entries.`;
+- Aim for profitable traddes and minimal losses
+`;
+// - Prioritize flat/existing position management over new entries.
+// - If volume is unusually low or weekend hours, prefer HOLD and do not open new positions unless strong breakout.
+// - If major macro events or negative sentiment are present, HOLD unless reducing risk.
 
     return { system: sys, user };
 }
