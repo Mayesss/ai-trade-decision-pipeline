@@ -22,9 +22,8 @@
 // [[rules]]
 // type = "ESModule"
 // globs = ["**/*.ts"]
-
 // =============================
-// src/worker.ts
+// src/worker.ts (patched)
 // =============================
 export interface Env {
     BITGET_API_KEY: string;
@@ -114,9 +113,6 @@ function resolveProductType(env: Env): ProductType {
 async function fetchMarketBundle(env: Env, symbol: string, bundleTimeFrame: string) {
     const productType = resolveProductType(env);
     const isFutures = productType.endsWith('futures');
-    // Ticker (price & 24h change)
-    // Futures: /api/v2/mix/market/ticker
-    // Spot: /api/v2/spot/market/tickers
 
     let ticker;
     if (isFutures) {
@@ -144,7 +140,7 @@ async function fetchMarketBundle(env: Env, symbol: string, bundleTimeFrame: stri
     const minutes = Number(env.TRADE_WINDOW_MINUTES || 30);
     const trades = await fetchTradesForMinutes(env, symbol, productType, minutes);
 
-    // Orderbook (top 100) spot endpoint is fine for liquidity map; futures has WebSocket, but we'll approximate with spot orderbook if needed
+    // Orderbook (top 100)
     const orderbook = await bitgetFetch(env, 'GET', '/api/v2/spot/market/orderbook', {
         symbol,
         type: 'step0',
@@ -221,6 +217,115 @@ function computeAnalytics(bundle: any) {
     };
 
     return { cvd, buys, sells, volume_profile, topWalls };
+}
+// ---- fetch symbol meta ----
+
+interface SymbolMeta {
+    symbol: string;
+    pricePlace: number;
+    volumePlace: number;
+    minTradeNum: string;
+    sizeMultiplier?: string;
+}
+
+async function fetchSymbolMeta(env: Env, symbol: string, productType: ProductType): Promise<SymbolMeta> {
+    const pt = (productType as string).toUpperCase();
+    const all = await bitgetFetch(env, 'GET', '/api/v2/mix/market/contracts', { productType: pt });
+    const meta = (all || []).find((x: any) => x.symbol === symbol);
+    if (!meta) throw new Error(`No contract metadata for ${symbol}`);
+    return meta;
+}
+
+// ---- convert notional ----
+function roundToDecimals(value: number, decimals: number): number {
+    const factor = Math.pow(10, decimals);
+    return Math.floor(value * factor) / factor;
+}
+
+async function computeOrderSize(
+    env: Env,
+    symbol: string,
+    notionalUSDT: number,
+    productType: ProductType,
+): Promise<number> {
+    const pt = (productType as string).toUpperCase();
+
+    // 1. Get contract metadata
+    const all = await bitgetFetch(env, 'GET', '/api/v2/mix/market/contracts', { productType: pt });
+    const meta = (all || []).find((x: any) => x.symbol === symbol);
+    if (!meta) throw new Error(`No contract metadata for ${symbol}`);
+
+    // 2. Get last price safely
+    const ticker = await bitgetFetch(env, 'GET', '/api/v2/mix/market/ticker', {
+        symbol,
+        productType: pt,
+    });
+
+    // Some APIs return { data: {...} } or [ {...} ]; your bitgetFetch() already extracts data,
+    // so we normalize to a single object.
+    const t = Array.isArray(ticker) ? ticker[0] : ticker;
+    const priceStr = t?.lastPr ?? t?.last ?? t?.close ?? t?.price;
+    const price = parseFloat(priceStr);
+    if (!isFinite(price) || price <= 0) throw new Error(`Invalid price for ${symbol}: ${priceStr}`);
+
+    // 3. Compute raw size and round
+    const rawSize = notionalUSDT / price;
+    const decimals = Number(meta.volumePlace ?? 3);
+    const minTradeNum = parseFloat(meta.minTradeNum ?? '0');
+
+    const factor = Math.pow(10, decimals);
+    const rounded = Math.floor(rawSize * factor) / factor;
+
+    // 4. Enforce min size
+    const finalSize = Math.max(rounded, minTradeNum);
+    if (!isFinite(finalSize) || finalSize <= 0)
+        throw new Error(`Failed to compute valid size (raw=${rawSize}, rounded=${rounded})`);
+
+    return finalSize;
+}
+// ---- fetch open positions helper (patched) -----
+
+type PositionInfo =
+    | { status: 'none' }
+    | {
+          status: 'open';
+          symbol: string;
+          holdSide: 'long' | 'short';
+          entryPrice: string;
+          posMode?: 'one_way_mode' | 'hedge_mode';
+          marginCoin?: string;
+          available?: string; // size available to close (base units/contracts)
+          total?: string; // total position size
+      };
+
+async function fetchPositionInfo(env: Env, symbol: string): Promise<PositionInfo> {
+    const productType = resolveProductType(env);
+    const positions = await bitgetFetch(env, 'GET', '/api/v2/mix/position/all-position', {
+        productType,
+    });
+
+    const matches = (positions || []).filter((p: any) => p.symbol === symbol);
+    if (!matches.length) return { status: 'none' };
+
+    // choose the largest absolute size if multiple entries (hedge mode long/short)
+    const chosen = matches
+        .slice()
+        .sort(
+            (a: any, b: any) =>
+                Math.abs(parseFloat(b.total || b.available || '0')) -
+                Math.abs(parseFloat(a.total || a.available || '0')),
+        )[0];
+
+    return {
+        status: 'open',
+        symbol,
+        holdSide: (chosen.holdSide || '').toLowerCase() as 'long' | 'short',
+        entryPrice: chosen.openPriceAvg,
+        posMode: chosen.posMode,
+        marginCoin: chosen.marginCoin,
+        available: chosen.available,
+        total: chosen.total,
+    };
 }
 
 // ---- fetch trades helper -----
@@ -376,43 +481,39 @@ function baseFromSymbol(symbol: string): string {
     return s.replace(/[^A-Z].*$/, '');
 }
 
-type Sentiment = "NEGATIVE" | "NEUTRAL" | "POSITIVE";
+type Sentiment = 'NEGATIVE' | 'NEUTRAL' | 'POSITIVE';
 
 interface Article {
-  SENTIMENT: Sentiment;
-  PUBLISHED_ON: number;
+    SENTIMENT: Sentiment;
+    PUBLISHED_ON: number;
 }
 
 interface Payload {
-  Data: Article[];
+    Data: Article[];
 }
 
 function getDominantSentiment(payload: Payload): Sentiment {
-// 1. Sort by newest first
-  const sorted = [...payload.Data].sort(
-    (a, b) => b.PUBLISHED_ON - a.PUBLISHED_ON
-  );
+    // 1. Sort by newest first
+    const sorted = [...payload.Data].sort((a, b) => b.PUBLISHED_ON - a.PUBLISHED_ON);
 
-  // 2. Define scores
-  const scores: Record<Sentiment, number> = {
-    NEGATIVE: 0,
-    NEUTRAL: 0,
-    POSITIVE: 0,
-  };
+    // 2. Define scores
+    const scores: Record<Sentiment, number> = {
+        NEGATIVE: 0,
+        NEUTRAL: 0,
+        POSITIVE: 0,
+    };
 
-  // 3. Assign weights: newest = highest weight
-  // Example: 1, 0.9, 0.8, 0.7, ... never below 0.1
-  const weightStep = 0.1;
+    // 3. Assign weights: newest = highest weight
+    // Example: 1, 0.9, 0.8, 0.7, ... never below 0.1
+    const weightStep = 0.1;
 
-  sorted.forEach((item, index) => {
-    const weight = Math.max(1 - index * weightStep, 0.1);
-    scores[item.SENTIMENT] += weight;
-  });
+    sorted.forEach((item, index) => {
+        const weight = Math.max(1 - index * weightStep, 0.1);
+        scores[item.SENTIMENT] += weight;
+    });
 
-  // 4. Return sentiment with highest weighted score
-  return Object.entries(scores).reduce(
-    (a, b) => (b[1] > a[1] ? b : a)
-  )[0] as Sentiment;
+    // 4. Return sentiment with highest weighted score
+    return Object.entries(scores).reduce((a, b) => (b[1] > a[1] ? b : a))[0] as Sentiment;
 }
 
 /** Fetch latest news for a base ticker (e.g., BTC) and summarize sentiment. */
@@ -422,7 +523,7 @@ async function fetchNewsSentiment(env: Env, symbolOrBase: string) {
 
     const query = {
         categories: base,
-        limit: 20,
+        limit: 25,
         lang: 'EN',
     };
 
@@ -434,14 +535,15 @@ async function fetchNewsSentiment(env: Env, symbolOrBase: string) {
     }
     return getDominantSentiment(payload) || 'NEUTRAL';
 }
+
 // ---- AI prompt builder ----
 function buildPrompt(
-    env,
+    env: Env,
     symbol: string,
     timeframe: string,
     bundle: any,
     analytics: ReturnType<typeof computeAnalytics>,
-    position_status: 'none' | 'long' | 'short' = 'none',
+    position_status: string = 'none',
     news_sentiment: string = 'neutral',
     indicators: { micro: string; macro: string },
     lastDecision: TradeDecision | null,
@@ -456,7 +558,9 @@ function buildPrompt(
         analytics.topWalls.ask,
     )}`;
     const derivatives = bundle.productType
-        ? `funding=${bundle.funding[0]?.fundingRate ?? 'n/a'}, openInterest=${bundle.oi?.openInterestList[0]?.size ?? 'n/a'}`
+        ? `funding=${bundle.funding?.[0]?.fundingRate ?? 'n/a'}, openInterest=${
+              bundle.oi?.openInterestList?.[0]?.size ?? 'n/a'
+          }`
         : 'n/a';
 
     const vol_profile_str = analytics.volume_profile
@@ -494,13 +598,8 @@ Constraints:
 - Do not make predictions beyond 1 hour.
 - Assume educational simulation, not live trading.
 - Return JSON strictly as: {"action":"BUY|SELL|HOLD|CLOSE","summary":"...","reason":"..."}
-- If conditions are unclear or mixed, respond HOLD.
-- Aim for profitable traddes and minimal losses
+- If a position is open, only options are HOLD|CLOSE.
 `;
-// - Prioritize flat/existing position management over new entries.
-// - If volume is unusually low or weekend hours, prefer HOLD and do not open new positions unless strong breakout.
-// - If major macro events or negative sentiment are present, HOLD unless reducing risk.
-
     return { system: sys, user };
 }
 
@@ -532,11 +631,21 @@ async function callAI(env: Env, system: string, user: string) {
     return JSON.parse(text);
 }
 
-// ---- Trade executor (dry-run by default) ----
+// ---- Trade executor (patched) ----
 interface TradeDecision {
     action: 'BUY' | 'SELL' | 'HOLD' | 'CLOSE';
     summary: string;
     reason: string;
+}
+
+async function flashClosePosition(env: Env, symbol: string, productType: ProductType, holdSide?: 'long' | 'short') {
+    const body: any = {
+        productType,
+        symbol,
+    };
+    if (holdSide) body.holdSide = holdSide; // required in hedge mode, ignored in one-way
+    const res = await bitgetFetch(env, 'POST', '/api/v2/mix/order/close-positions', {}, body);
+    return res; // typically includes successList / failureList
 }
 
 async function executeDecision(
@@ -552,47 +661,39 @@ async function executeDecision(
     // Map decision to Bitget order API (market order, small notional)
     if (decision.action === 'BUY' || decision.action === 'SELL') {
         if (dryRun) return { placed: false, orderId: null, clientOid };
+        const size = await computeOrderSize(env, symbol, sideSizeUSDT, productType);
 
-        if (productType.endsWith('futures')) {
-            // Place market order on USDT-M futures
-            // Docs: POST /api/v2/mix/order/place-order
-            const side = decision.action === 'BUY' ? 'open_long' : 'open_short';
-            const body = {
-                symbol,
-                productType,
-                marginCoin: 'USDT',
-                side,
-                orderType: 'market',
-                size: String(sideSizeUSDT), // Bitget expects size in contracts or base units; adapt as needed per symbol settings.
-                clientOid,
-                force: 'gtc',
-            };
-            const res = await bitgetFetch(env, 'POST', '/api/v2/mix/order/place-order', {}, body);
-            return { placed: true, orderId: res?.orderId || res?.order_id || null, clientOid };
-        } else {
-            // Spot
-            // Docs: POST /api/v2/spot/trade/place-order
-            const side = decision.action === 'BUY' ? 'buy' : 'sell';
-            const body = {
-                symbol,
-                side,
-                orderType: 'market',
-                size: String(sideSizeUSDT),
-                clientOid,
-                force: 'gtc',
-            };
-            const res = await bitgetFetch(env, 'POST', '/api/v2/spot/trade/place-order', {}, body);
-            return { placed: true, orderId: res?.orderId || null, clientOid };
-        }
+        // NOTE: Bitget expects size in contracts/base units, not USDT notional.
+        // You may need to convert notional -> size based on instrument spec. Placeholder uses "sideSizeUSDT" directly.
+        const body = {
+            symbol,
+            productType,
+            marginCoin: 'USDT',
+            marginMode: 'isolated',
+            side: decision.action.toLowerCase(), // 'buy' | 'sell'
+            orderType: 'market',
+            size: size.toString(), // rounded base amount,
+            clientOid,
+            force: 'gtc',
+        };
+        const res = await bitgetFetch(env, 'POST', '/api/v2/mix/order/place-order', {}, body);
+        return { placed: true, orderId: res?.orderId || res?.order_id || null, clientOid };
     }
 
     if (decision.action === 'CLOSE') {
         if (dryRun) return { placed: false, orderId: null, clientOid, closed: true };
 
-        // For futures, place reduce-only market in opposite direction
-        const side = 'close'; // conceptual; actual API uses close_long/close_short depending on current position, which you'd query first.
-        // TODO: query position & send correct close side
-        return { placed: false, orderId: null, clientOid, closed: true };
+        // fetch fresh position info to know posMode / side
+        const pos = await fetchPositionInfo(env, symbol);
+        if (pos.status === 'none') {
+            return { placed: false, orderId: null, clientOid, closed: false, note: 'no open position' };
+        }
+
+        const isHedge = pos.posMode === 'hedge_mode';
+        const res = await flashClosePosition(env, symbol, productType, isHedge ? pos.holdSide : undefined);
+        const ok = Array.isArray(res?.successList) && res.successList.length > 0;
+        const orderId = ok ? res.successList[0]?.orderId ?? null : null;
+        return { placed: ok, orderId, clientOid, closed: ok, raw: res };
     }
 
     // HOLD
@@ -658,17 +759,23 @@ export default {
                 const body = await req.json<any>().catch(() => ({}));
                 const symbol = (body.symbol as string) || 'ETHUSDT';
                 const timeFrame = body.timeFrame || '15m';
-                const position = (body.position as 'none' | 'long' | 'short') || 'none';
                 const dryRun = body.dryRun !== false; // default true
                 const sideSizeUSDT = Number(body.notional || 10);
 
                 // 1) Fetch & compute
+                const productType = resolveProductType(env);
+                const positionInfo = await fetchPositionInfo(env, symbol);
+                const positionForPrompt =
+                    positionInfo.status === 'open'
+                        ? `${positionInfo.holdSide}, entryPrice: ${positionInfo.entryPrice}`
+                        : 'none';
 
                 const news = await fetchNewsSentiment(env, symbol);
                 const bundle = await fetchMarketBundle(env, symbol, timeFrame);
                 const analytics = computeAnalytics(bundle);
                 const indicators = await calculateMultiTFIndicators(env, symbol);
                 const lastDecision = await loadLastDecision(env.DECISIONS, symbol);
+
                 // 2) AI decision
                 const { system, user } = buildPrompt(
                     env,
@@ -676,24 +783,18 @@ export default {
                     timeFrame,
                     bundle,
                     analytics,
-                    position,
+                    positionForPrompt,
                     news,
                     indicators,
                     lastDecision,
                 );
                 const decision: TradeDecision = await callAI(env, system, user);
                 console.log(user);
-                // 3) Execute (optional)
-                const execRes = await executeDecision(
-                    env,
-                    symbol,
-                    sideSizeUSDT,
-                    decision,
-                    resolveProductType(env),
-                    dryRun,
-                );
 
-                // 5) Persist
+                // 3) Execute (optional)
+                const execRes = await executeDecision(env, symbol, sideSizeUSDT, decision, productType, dryRun);
+
+                // 4) Persist
                 const saveKey = await saveDecision(env.DECISIONS, symbol, {
                     decision,
                     bundleMeta: { productType: bundle.productType },
@@ -708,6 +809,16 @@ export default {
                     decision,
                     execRes,
                     kvKey: saveKey,
+                });
+            }
+
+            if (url.pathname === '/debug-env') {
+                return Response.json({
+                    BITGET_API_KEY: env.BITGET_API_KEY ? '✅ set' : '❌ missing',
+                    BITGET_API_SECRET: env.BITGET_API_SECRET ? '✅ set' : '❌ missing',
+                    BITGET_API_PASSPHRASE: env.BITGET_API_PASSPHRASE ? '✅ set' : '❌ missing',
+                    OPENAI_API_KEY: env.OPENAI_API_KEY ? '✅ set' : '❌ missing',
+                    COINDESK_API_KEY: env.COINDESK_API_KEY ? '✅ set' : '❌ missing',
                 });
             }
 
@@ -744,5 +855,7 @@ export default {
 //   * Spot candles: /api/v2/spot/market/candles
 //   * Spot orderbook (used for liquidity map): /api/v2/spot/market/orderbook
 //   * Spot trades: /api/v2/spot/market/fills
-// - Action mapping intentionally conservative; CLOSE/HOLD avoid live calls unless you wire exact close side.
+//   * Close positions (flash): /api/v2/mix/order/close-positions
+// - Action mapping intentionally conservative; CLOSE/HOLD avoid live calls unless explicitly enabled with dryRun=false.
 // - Everything defaults to dryRun to prevent unintended live trades. Flip `dryRun=false` per request to enable.
+// - Reminder: for live BUY/SELL, convert notional -> contract/base size per instrument spec.
