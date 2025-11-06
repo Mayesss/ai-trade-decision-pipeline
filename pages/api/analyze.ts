@@ -64,14 +64,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const execRes = await executeDecision(symbol, sideSizeUSDT, decision, productType, dryRun);
 
         // 9️⃣ Persist
-        const saveKey = await saveDecision({}, symbol, {
-            decision,
-            bundleMeta: { productType: bundle.productType },
-            prompt: { system, user },
-            execRes,
-            lastDecision,
-            timestamp: Date.now(),
-        });
+        // const saveKey = await saveDecision({}, symbol, {
+        //     decision,
+        //     bundleMeta: { productType: bundle.productType },
+        //     prompt: { system, user },
+        //     execRes,
+        //     lastDecision,
+        //     timestamp: Date.now(),
+        // });
 
         // ✅ Respond
         return res.status(200).json({
@@ -80,7 +80,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             dryRun,
             decision,
             execRes,
-            kvKey: saveKey,
+            kvKey: 'saveKey',
         });
     } catch (err: any) {
         console.error('Error in /api/analyze:', err);
