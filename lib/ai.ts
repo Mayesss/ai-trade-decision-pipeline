@@ -46,7 +46,7 @@ DATA INPUTS:
 - Order flow summary (buy/sell imbalance, CVD): ${order_flow}
 - Order book & liquidity map (visible walls): ${liquidity_data}
 - Funding rate, open interest, and liquidation data: ${derivatives}
-- Market sentiment: ${news_sentiment.toLowerCase()}
+- News sentiment: ${news_sentiment.toLowerCase()}
 - Current position: ${position_status}
 - Technical indicators (short-term): ${indicators.micro}
 - Macro indicators (1h context): ${indicators.macro}
