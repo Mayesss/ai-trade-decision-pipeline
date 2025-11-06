@@ -132,3 +132,6 @@ https://bitget-ai-decision-worker.<yourname>.workers.dev
 | `POST` | `/reset`                       | Clear KV storage (optionally by symbol) |
 | `GET`  | `/lastDecision?symbol=BTCUSDT` | Get last stored decision                |
 | `GET`  | `/history`                     | (stub) future paging support            |
+| `GET`  | `/history`                     | (stub) future paging support            |
+| `GET`  | `/bitget-auth-test`            | Check bitget auth                       |
+| `GET`  | `/debug-env`                   | Check env variables                     |

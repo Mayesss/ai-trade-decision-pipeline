@@ -754,6 +754,15 @@ export default {
 
                 return Response.json({ deleted, filter: symbolFilter || 'all' });
             }
+            
+            if (url.pathname === '/bitget-auth-test') {
+                const data = await bitgetFetch(env, 'GET', '/api/v2/mix/account/account', {
+                    symbol: 'BTCUSDT',
+                    productType: 'USDT-FUTURES',
+                    marginCoin: 'USDT',
+                });
+                return Response.json(data);
+            }
 
             if (url.pathname === '/analyze' && req.method === 'POST') {
                 const body = await req.json<any>().catch(() => ({}));
