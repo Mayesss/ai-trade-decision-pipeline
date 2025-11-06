@@ -1,49 +1,17 @@
 // =============================
-// wrangler.toml
+// api/index.ts
 // =============================
-// name = "bitget-ai-decision-worker"
-// main = "src/worker.ts"
-// compatibility_date = "2025-11-02"
-// compatibility_flags = ["nodejs_compat"]
-//
-// # Bindings
-// [vars]
-// BITGET_API_KEY = ""           # set in dashboard or with `wrangler secret put`
-// BITGET_API_SECRET = ""        # secret
-// BITGET_API_PASSPHRASE = ""    # secret
-// BITGET_ACCOUNT_TYPE = "usdt-futures" # or "spot" (we default to futures)
-// AI_MODEL = "gpt-4o-mini"      # any chat model your provider supports
-// AI_BASE_URL = "https://api.openai.com/v1"  # or your proxy/base
-//
-// [kv_namespaces]
-// binding = "DECISIONS"
-// id = "<your_kv_namespace_id>"
-//
-// [[rules]]
-// type = "ESModule"
-// globs = ["**/*.ts"]
-// =============================
-// src/worker.ts (patched)
-// =============================
-export interface Env {
-    BITGET_API_KEY: string;
-    BITGET_API_SECRET: string;
-    BITGET_API_PASSPHRASE: string;
-    BITGET_ACCOUNT_TYPE?: 'spot' | 'usdt-futures' | 'usdc-futures' | 'coin-futures';
-    AI_MODEL: string;
-    AI_BASE_URL: string;
-    OPENAI_API_KEY?: string; // put via wrangler secret put OPENAI_API_KEY
-    DECISIONS: KVNamespace;
-    TRADE_WINDOW_MINUTES: Number;
-    // --- CoinDesk News ---
-    COINDESK_API_KEY?: string;
-    COINDESK_API_BASE?: string;
-    COINDESK_NEWS_LIST_PATH?: string;
-    COINDESK_NEWS_SINGLE_PATH?: string;
-    // News defaults
-    NEWS_LOOKBACK_HOURS?: string; // e.g. "12"
-    NEWS_MAX_ARTICLES?: string; // e.g. "25"
-}
+export const config = { runtime: 'nodejs' };
+import type { NextApiRequest, NextApiResponse } from 'next';
+import { kv } from '@vercel/kv';
+
+// constants
+const BITGET_ACCOUNT_TYPE = 'usdt-futures';
+const AI_MODEL = 'gpt-4o-mini';
+const AI_BASE_URL = 'https=//api.openai.com/v1';
+const COINDESK_API_BASE = 'https=//data-api.coindesk.com';
+const COINDESK_NEWS_LIST_PATH = '/news/v1/article/list';
+const TRADE_WINDOW_MINUTES = 30;
 
 // ---- Utility: Bitget signing (HMAC-SHA256 + base64) ----
 // Docs: https://www.bitget.com/api-doc/common/signature
@@ -58,12 +26,12 @@ function buildQuery(params: Record<string, string | number | undefined>) {
         .join('&');
 }
 
-async function signBitget(env: Env, method: string, path: string, query: string, body: string) {
+async function signBitget(method: string, path: string, query: string, body: string) {
     const ts = Date.now().toString();
     const prehash = ts + method.toUpperCase() + path + (query ? `?${query}` : '') + body;
     const key = await crypto.subtle.importKey(
         'raw',
-        new TextEncoder().encode(env.BITGET_API_SECRET),
+        new TextEncoder().encode(process.env.BITGET_API_SECRET),
         { name: 'HMAC', hash: 'SHA-256' },
         false,
         ['sign'],
@@ -74,7 +42,6 @@ async function signBitget(env: Env, method: string, path: string, query: string,
 }
 
 async function bitgetFetch(
-    env: Env,
     method: 'GET' | 'POST',
     path: string,
     params: Record<string, string | number | undefined> = {},
@@ -82,18 +49,18 @@ async function bitgetFetch(
 ) {
     const query = buildQuery(params);
     const body = bodyObj ? JSON.stringify(bodyObj) : '';
-    const { ts, signB64 } = await signBitget(env, method, path, query, body);
+    const { ts, signB64 } = await signBitget(method, path, query, body);
     const url = `https://api.bitget.com${path}${query ? `?${query}` : ''}`;
     const headers: Record<string, string> = {
-        'ACCESS-KEY': env.BITGET_API_KEY,
+        'ACCESS-KEY': process.env.BITGET_API_KEY ?? '',
         'ACCESS-SIGN': signB64,
-        'ACCESS-PASSPHRASE': env.BITGET_API_PASSPHRASE,
+        'ACCESS-PASSPHRASE': process.env.BITGET_API_PASSPHRASE ?? '',
         'ACCESS-TIMESTAMP': ts,
         'Content-Type': 'application/json',
         locale: 'en-US',
     };
     const res = await fetch(url, { method, headers, body: body || undefined });
-    const json = await res.json<any>();
+    const json = (await res.json()) as any;
     if (!res.ok || json.code !== '00000') {
         throw new Error(`Bitget error ${json.code || res.status}: ${json.msg || res.statusText}`);
     }
@@ -104,44 +71,44 @@ async function bitgetFetch(
 
 type ProductType = 'usdt-futures' | 'usdc-futures' | 'coin-futures';
 
-function resolveProductType(env: Env): ProductType {
-    const t = (env.BITGET_ACCOUNT_TYPE || 'usdt-futures') as ProductType;
+function resolveProductType(): ProductType {
+    const t = (BITGET_ACCOUNT_TYPE || 'usdt-futures') as ProductType;
     return t;
 }
 
 // Fetch minimal set needed for the prompt
-async function fetchMarketBundle(env: Env, symbol: string, bundleTimeFrame: string) {
-    const productType = resolveProductType(env);
+async function fetchMarketBundle(symbol: string, bundleTimeFrame: string) {
+    const productType = resolveProductType();
     const isFutures = productType.endsWith('futures');
 
     let ticker;
     if (isFutures) {
-        ticker = await bitgetFetch(env, 'GET', '/api/v2/mix/market/ticker', { symbol, productType });
+        ticker = await bitgetFetch('GET', '/api/v2/mix/market/ticker', { symbol, productType });
     } else {
-        const t = await bitgetFetch(env, 'GET', '/api/v2/spot/market/tickers', { symbol });
+        const t = await bitgetFetch('GET', '/api/v2/spot/market/tickers', { symbol });
         ticker = Array.isArray(t) ? t[0] : t;
     }
 
     // Candles for 15m, last 30
     const candles = isFutures
-        ? await bitgetFetch(env, 'GET', '/api/v2/mix/market/candles', {
+        ? await bitgetFetch('GET', '/api/v2/mix/market/candles', {
               symbol,
               productType,
               granularity: bundleTimeFrame,
               limit: 30,
           })
-        : await bitgetFetch(env, 'GET', '/api/v2/spot/market/candles', {
+        : await bitgetFetch('GET', '/api/v2/spot/market/candles', {
               symbol,
               granularity: bundleTimeFrame,
               limit: 30,
           });
 
     // Recent trades for CVD & order flow (last 200)
-    const minutes = Number(env.TRADE_WINDOW_MINUTES || 30);
-    const trades = await fetchTradesForMinutes(env, symbol, productType, minutes);
+    const minutes = Number(TRADE_WINDOW_MINUTES || 30);
+    const trades = await fetchTradesForMinutes(symbol, productType, minutes);
 
     // Orderbook (top 100)
-    const orderbook = await bitgetFetch(env, 'GET', '/api/v2/spot/market/orderbook', {
+    const orderbook = await bitgetFetch('GET', '/api/v2/spot/market/orderbook', {
         symbol,
         type: 'step0',
         limit: 100,
@@ -152,10 +119,10 @@ async function fetchMarketBundle(env: Env, symbol: string, bundleTimeFrame: stri
         oi: any = null;
     if (isFutures) {
         try {
-            funding = await bitgetFetch(env, 'GET', '/api/v2/mix/market/current-fund-rate', { symbol, productType });
+            funding = await bitgetFetch('GET', '/api/v2/mix/market/current-fund-rate', { symbol, productType });
         } catch {}
         try {
-            oi = await bitgetFetch(env, 'GET', '/api/v2/mix/market/open-interest', { symbol, productType });
+            oi = await bitgetFetch('GET', '/api/v2/mix/market/open-interest', { symbol, productType });
         } catch {}
     }
 
@@ -212,8 +179,8 @@ function computeAnalytics(bundle: any) {
         size: parseFloat(l[1] || l.size),
     }));
     const topWalls = {
-        bid: bids.sort((a, b) => b.size - a.size).slice(0, 5),
-        ask: asks.sort((a, b) => b.size - a.size).slice(0, 5),
+        bid: bids.sort((a: any, b: any) => b.size - a.size).slice(0, 5),
+        ask: asks.sort((a: any, b: any) => b.size - a.size).slice(0, 5),
     };
 
     return { cvd, buys, sells, volume_profile, topWalls };
@@ -228,9 +195,9 @@ interface SymbolMeta {
     sizeMultiplier?: string;
 }
 
-async function fetchSymbolMeta(env: Env, symbol: string, productType: ProductType): Promise<SymbolMeta> {
+async function fetchSymbolMeta(symbol: string, productType: ProductType): Promise<SymbolMeta> {
     const pt = (productType as string).toUpperCase();
-    const all = await bitgetFetch(env, 'GET', '/api/v2/mix/market/contracts', { productType: pt });
+    const all = await bitgetFetch('GET', '/api/v2/mix/market/contracts', { productType: pt });
     const meta = (all || []).find((x: any) => x.symbol === symbol);
     if (!meta) throw new Error(`No contract metadata for ${symbol}`);
     return meta;
@@ -242,21 +209,16 @@ function roundToDecimals(value: number, decimals: number): number {
     return Math.floor(value * factor) / factor;
 }
 
-async function computeOrderSize(
-    env: Env,
-    symbol: string,
-    notionalUSDT: number,
-    productType: ProductType,
-): Promise<number> {
+async function computeOrderSize(symbol: string, notionalUSDT: number, productType: ProductType): Promise<number> {
     const pt = (productType as string).toUpperCase();
 
     // 1. Get contract metadata
-    const all = await bitgetFetch(env, 'GET', '/api/v2/mix/market/contracts', { productType: pt });
+    const all = await bitgetFetch('GET', '/api/v2/mix/market/contracts', { productType: pt });
     const meta = (all || []).find((x: any) => x.symbol === symbol);
     if (!meta) throw new Error(`No contract metadata for ${symbol}`);
 
     // 2. Get last price safely
-    const ticker = await bitgetFetch(env, 'GET', '/api/v2/mix/market/ticker', {
+    const ticker = await bitgetFetch('GET', '/api/v2/mix/market/ticker', {
         symbol,
         productType: pt,
     });
@@ -298,9 +260,9 @@ type PositionInfo =
           total?: string; // total position size
       };
 
-async function fetchPositionInfo(env: Env, symbol: string): Promise<PositionInfo> {
-    const productType = resolveProductType(env);
-    const positions = await bitgetFetch(env, 'GET', '/api/v2/mix/position/all-position', {
+async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
+    const productType = resolveProductType();
+    const positions = await bitgetFetch('GET', '/api/v2/mix/position/all-position', {
         productType,
     });
 
@@ -330,7 +292,7 @@ async function fetchPositionInfo(env: Env, symbol: string): Promise<PositionInfo
 
 // ---- fetch trades helper -----
 
-async function fetchTradesForMinutes(env: Env, symbol: string, productType: ProductType, minutes: number) {
+async function fetchTradesForMinutes(symbol: string, productType: ProductType, minutes: number) {
     const trades: any[] = [];
     const cutoff = Date.now() - minutes * 60_000;
     let lastId: string | undefined = undefined;
@@ -343,8 +305,8 @@ async function fetchTradesForMinutes(env: Env, symbol: string, productType: Prod
 
         // Request up to 200 trades
         const batch = isFutures
-            ? await bitgetFetch(env, 'GET', '/api/v2/mix/market/fills', params)
-            : await bitgetFetch(env, 'GET', '/api/v2/spot/market/fills', params);
+            ? await bitgetFetch('GET', '/api/v2/mix/market/fills', params)
+            : await bitgetFetch('GET', '/api/v2/spot/market/fills', params);
 
         if (!batch.length) break;
 
@@ -408,19 +370,19 @@ function computeEMA(closes: number[], period: number): number[] {
     return ema;
 }
 
-async function calculateMultiTFIndicators(env: Env, symbol: string): Promise<{ micro: string; macro: string }> {
-    const productType = resolveProductType(env);
+async function calculateMultiTFIndicators(symbol: string): Promise<{ micro: string; macro: string }> {
+    const productType = resolveProductType();
     const isFutures = productType.endsWith('futures');
 
     async function fetchCandles(tf: string) {
         return isFutures
-            ? await bitgetFetch(env, 'GET', '/api/v2/mix/market/candles', {
+            ? await bitgetFetch('GET', '/api/v2/mix/market/candles', {
                   symbol,
                   productType,
                   granularity: tf,
                   limit: 30,
               })
-            : await bitgetFetch(env, 'GET', '/api/v2/spot/market/candles', {
+            : await bitgetFetch('GET', '/api/v2/spot/market/candles', {
                   symbol,
                   granularity: tf,
                   limit: 30,
@@ -450,23 +412,22 @@ async function calculateMultiTFIndicators(env: Env, symbol: string): Promise<{ m
 
 // ------------- CoinDesk News API + Sentiment Aggregation -----------------
 
-async function coindeskFetch(env: Env, path: string, query: Record<string, string | number | undefined> = {}) {
-    if (!env.COINDESK_API_KEY) throw new Error('Missing COINDESK_API_KEY');
+async function coindeskFetch(path: string, query: Record<string, string | number | undefined> = {}) {
+    if (!process.env.COINDESK_API_KEY) throw new Error('Missing COINDESK_API_KEY');
     const qs = Object.entries(query)
         .filter(([, v]) => v !== undefined && v !== '')
         .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
         .join('&');
-    const coindeskBase = (env.COINDESK_API_BASE || 'https://data-api.coindesk.com').replace(/\/+$/, '');
-    const url = `${coindeskBase}${path}${qs ? `?${qs}` : ''}`;
-    const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${env.COINDESK_API_KEY}` },
-    });
 
+    const coindeskBase = (COINDESK_API_BASE || 'https://data-api.coindesk.com').replace(/\/+$/, '');
+    const url = `${coindeskBase}${path}${qs ? `?${qs}` : ''}`;
+
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${process.env.COINDESK_API_KEY}` } });
     if (!res.ok) {
         const text = await res.text().catch(() => '');
         throw new Error(`CoinDesk API error ${res.status}: ${res.statusText} ${text}`);
     }
-    return res.json<any>();
+    return res.json();
 }
 
 /** Try to normalize “base asset ticker” from e.g. BTCUSDT → BTC, ETH-PERP → ETH */
@@ -517,9 +478,9 @@ function getDominantSentiment(payload: Payload): Sentiment {
 }
 
 /** Fetch latest news for a base ticker (e.g., BTC) and summarize sentiment. */
-async function fetchNewsSentiment(env: Env, symbolOrBase: string) {
+async function fetchNewsSentiment(symbolOrBase: string) {
     const base = baseFromSymbol(symbolOrBase);
-    const listPath = env.COINDESK_NEWS_LIST_PATH || '/news/v1/article/list';
+    const listPath = COINDESK_NEWS_LIST_PATH || '/news/v1/article/list';
 
     const query = {
         categories: base,
@@ -529,7 +490,7 @@ async function fetchNewsSentiment(env: Env, symbolOrBase: string) {
 
     let payload: any;
     try {
-        payload = await coindeskFetch(env, listPath, query);
+        payload = await coindeskFetch(listPath, query);
     } catch (e) {
         console.log('error fetching Coin Desk news ', e);
     }
@@ -538,7 +499,6 @@ async function fetchNewsSentiment(env: Env, symbolOrBase: string) {
 
 // ---- AI prompt builder ----
 function buildPrompt(
-    env: Env,
     symbol: string,
     timeframe: string,
     bundle: any,
@@ -573,7 +533,7 @@ function buildPrompt(
     const user = `Assess short-term direction for ${symbol} based on inputs and constraints.
 DATA INPUTS:
 - Current price and % change: ${market_data}
-- Volume profile (fixed lookback window: ${env.TRADE_WINDOW_MINUTES || 30}m): ${vol_profile_str}
+- Volume profile (fixed lookback window: ${TRADE_WINDOW_MINUTES || 30}m): ${vol_profile_str}
 - Order flow summary (buy/sell imbalance, CVD): ${order_flow}
 - Order book & liquidity map (visible walls): ${liquidity_data}
 - Funding rate, open interest, and liquidation data: ${derivatives}
@@ -604,10 +564,10 @@ Constraints:
 }
 
 // ---- AI call ----
-async function callAI(env: Env, system: string, user: string) {
-    const apiKey = env.OPENAI_API_KEY;
-    const base = env.AI_BASE_URL;
-    const model = env.AI_MODEL;
+async function callAI(system: string, user: string) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    const base = AI_BASE_URL;
+    const model = AI_MODEL;
 
     const res = await fetch(`${base}/chat/completions`, {
         method: 'POST',
@@ -626,7 +586,7 @@ async function callAI(env: Env, system: string, user: string) {
         }),
     });
     if (!res.ok) throw new Error(`AI error: ${res.status} ${res.statusText}`);
-    const data = await res.json<any>();
+    const data = await res.json();
     const text = data.choices?.[0]?.message?.content || '{}';
     return JSON.parse(text);
 }
@@ -636,20 +596,20 @@ interface TradeDecision {
     action: 'BUY' | 'SELL' | 'HOLD' | 'CLOSE';
     summary: string;
     reason: string;
+    timestamp?: number;
 }
 
-async function flashClosePosition(env: Env, symbol: string, productType: ProductType, holdSide?: 'long' | 'short') {
+async function flashClosePosition(symbol: string, productType: ProductType, holdSide?: 'long' | 'short') {
     const body: any = {
         productType,
         symbol,
     };
     if (holdSide) body.holdSide = holdSide; // required in hedge mode, ignored in one-way
-    const res = await bitgetFetch(env, 'POST', '/api/v2/mix/order/close-positions', {}, body);
+    const res = await bitgetFetch('POST', '/api/v2/mix/order/close-positions', {}, body);
     return res; // typically includes successList / failureList
 }
 
 async function executeDecision(
-    env: Env,
     symbol: string,
     sideSizeUSDT: number,
     decision: TradeDecision,
@@ -661,7 +621,7 @@ async function executeDecision(
     // Map decision to Bitget order API (market order, small notional)
     if (decision.action === 'BUY' || decision.action === 'SELL') {
         if (dryRun) return { placed: false, orderId: null, clientOid };
-        const size = await computeOrderSize(env, symbol, sideSizeUSDT, productType);
+        const size = await computeOrderSize(symbol, sideSizeUSDT, productType);
 
         // NOTE: Bitget expects size in contracts/base units, not USDT notional.
         // You may need to convert notional -> size based on instrument spec. Placeholder uses "sideSizeUSDT" directly.
@@ -676,7 +636,7 @@ async function executeDecision(
             clientOid,
             force: 'gtc',
         };
-        const res = await bitgetFetch(env, 'POST', '/api/v2/mix/order/place-order', {}, body);
+        const res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
         return { placed: true, orderId: res?.orderId || res?.order_id || null, clientOid };
     }
 
@@ -684,13 +644,13 @@ async function executeDecision(
         if (dryRun) return { placed: false, orderId: null, clientOid, closed: true };
 
         // fetch fresh position info to know posMode / side
-        const pos = await fetchPositionInfo(env, symbol);
+        const pos = await fetchPositionInfo(symbol);
         if (pos.status === 'none') {
             return { placed: false, orderId: null, clientOid, closed: false, note: 'no open position' };
         }
 
         const isHedge = pos.posMode === 'hedge_mode';
-        const res = await flashClosePosition(env, symbol, productType, isHedge ? pos.holdSide : undefined);
+        const res = await flashClosePosition(symbol, productType, isHedge ? pos.holdSide : undefined);
         const ok = Array.isArray(res?.successList) && res.successList.length > 0;
         const orderId = ok ? res.successList[0]?.orderId ?? null : null;
         return { placed: ok, orderId, clientOid, closed: ok, raw: res };
@@ -701,171 +661,201 @@ async function executeDecision(
 }
 
 // ---- KV persistence ----
-async function saveDecision(kv: KVNamespace, keyBase: string, payload: any) {
+
+// ---- Vercel KV helpers (drop these near your other utils) ----
+
+/** Iterate keys by glob pattern (e.g. "ETHUSDT:*") */
+async function* iterKeys(match: string, count = 500) {
+    // @vercel/kv: scanIterator is efficient; avoids O(N) KEYS in prod
+    for await (const key of kv.scanIterator({ match, count })) {
+        yield key as string;
+    }
+}
+
+/** Collect keys (use only for small ranges / admin ops) */
+async function listKeysByPrefix(prefix: string) {
+    const out: string[] = [];
+    for await (const k of iterKeys(`${prefix}*`)) out.push(k);
+    return out;
+}
+
+/** Find the latest decision key for a symbol by timestamp suffix */
+async function latestDecisionKey(symbol: string) {
+    let latest: { key: string; ts: number } | null = null;
+    for await (const k of iterKeys(`${symbol}:*`)) {
+        // keys are `${symbol}:<ISO>` → parse trailing ISO timestamp
+        const iso = k.split(':').slice(1).join(':'); // supports symbols with ':'
+        const ts = Date.parse(iso);
+        if (Number.isFinite(ts)) {
+            if (!latest || ts > latest.ts) latest = { key: k, ts };
+        }
+    }
+    return latest?.key ?? null;
+}
+
+// ---- KV persistence ----
+const DECISIONS = {} as unknown; // placeholder
+
+async function saveDecision(_: any, keyBase: string, payload: any) {
     const key = `${keyBase}:${new Date().toISOString()}`;
-    await kv.put(key, JSON.stringify(payload, null, 2));
+    await kv.set(key, payload);
     return key;
 }
 
-async function loadLastDecision(kv: KVNamespace, symbol: string) {
-    const prefix = `${symbol}:`;
-
-    // Grab up to last 50 (safe + cheap)
-    const list = await kv.list({ prefix });
-    if (!list.keys.length) return null;
-
-    // Sort by timestamp descending
-    const sorted = list.keys.sort((a, b) => b.name.localeCompare(a.name));
-
-    const key = sorted[0].name;
-    const timestampStr = key.slice(key.indexOf(':') + 1);
-    const timestamp = Date.parse(timestampStr);
-
-    const stored = await kv.get(key, 'json');
-    return stored?.decision
-        ? {
-              ...stored.decision,
-              entryPrice: stored.execRes?.entryPrice,
-              timestamp: isNaN(timestamp) ? undefined : timestamp,
-          }
-        : null;
+async function loadLastDecision(_: any, symbol: string): Promise<TradeDecision | null> {
+    const key = await latestDecisionKey(symbol);
+    return key ? (await kv.get<TradeDecision>(key)) ?? null : null;
 }
 
 // ---- Router ----
-export default {
-    async fetch(req: Request, env: Env): Promise<Response> {
-        try {
-            const url = new URL(req.url);
-            if (url.pathname === '/health') return new Response('ok');
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+    try {
+        const url = new URL(req.url || '', `https://${req.headers.host}`);
 
-            if (url.pathname === '/reset' && req.method === 'POST') {
-                const body = await req.json<any>().catch(() => ({}));
-                const symbolFilter = body.symbol || null; // optional filter by symbol
+        if (url.pathname === '/api' || url.pathname === '/') {
+            return res.status(200).send('API root alive ✅');
+        }
+        if (url.pathname === '/health') return res.status(200).send('ok');
 
-                const list = await env.DECISIONS.list();
-                let deleted = 0;
+        if (url.pathname === '/reset' && req.method === 'POST') {
+            const body = req.body ?? {};
+            const symbolFilter = body.symbol || null; // optional
 
-                for (const key of list.keys) {
-                    if (!symbolFilter || key.name.startsWith(`${symbolFilter}:`)) {
-                        await env.DECISIONS.delete(key.name);
-                        deleted++;
-                    }
+            const prefix = symbolFilter ? `${symbolFilter}:` : '';
+            let deleted = 0;
+
+            if (prefix) {
+                for await (const key of iterKeys(`${prefix}*`)) {
+                    await kv.del(key);
+                    deleted++;
                 }
-
-                return Response.json({ deleted, filter: symbolFilter || 'all' });
-            }
-            if (url.pathname === '/bitget-auth-test') {
-                const data = await bitgetFetch(env, 'GET', '/api/v2/mix/account/account', {
-                    symbol: 'BTCUSDT',
-                    productType: 'USDT-FUTURES',
-                    marginCoin: 'USDT',
-                });
-                return Response.json(data);
+            } else {
+                // Dangerous if you have lots of keys; still okay for small projects.
+                for await (const key of iterKeys(`*`)) {
+                    await kv.del(key);
+                    deleted++;
+                }
             }
 
-            if (url.pathname === '/analyze' && req.method === 'POST') {
-                const body = await req.json<any>().catch(() => ({}));
-                const symbol = (body.symbol as string) || 'ETHUSDT';
-                const timeFrame = body.timeFrame || '15m';
-                const dryRun = body.dryRun !== false; // default true
-                const sideSizeUSDT = Number(body.notional || 10);
+            return res.status(200).json({ deleted, filter: symbolFilter || 'all' });
+        }
+        if (url.pathname === '/bitget-auth-test') {
+            const data = await bitgetFetch('GET', '/api/v2/mix/account/account', {
+                symbol: 'BTCUSDT',
+                productType: 'USDT-FUTURES',
+                marginCoin: 'USDT',
+            });
+            res.status(200).json(data);
+        }
 
-                // 1) Fetch & compute
-                const productType = resolveProductType(env);
-                const positionInfo = await fetchPositionInfo(env, symbol);
-                const positionForPrompt =
-                    positionInfo.status === 'open'
-                        ? `${positionInfo.holdSide}, entryPrice: ${positionInfo.entryPrice}`
-                        : 'none';
+        if (url.pathname === '/analyze' && req.method === 'POST') {
+            const body = req.body;
+            const symbol = (body.symbol as string) || 'ETHUSDT';
+            const timeFrame = body.timeFrame || '15m';
+            const dryRun = body.dryRun !== false; // default true
+            const sideSizeUSDT = Number(body.notional || 10);
 
-                const news = await fetchNewsSentiment(env, symbol);
-                const bundle = await fetchMarketBundle(env, symbol, timeFrame);
-                const analytics = computeAnalytics(bundle);
-                const indicators = await calculateMultiTFIndicators(env, symbol);
-                const lastDecision = await loadLastDecision(env.DECISIONS, symbol);
+            // 1) Fetch & compute
+            const productType = resolveProductType();
+            const positionInfo = await fetchPositionInfo(symbol);
+            const positionForPrompt =
+                positionInfo.status === 'open'
+                    ? `${positionInfo.holdSide}, entryPrice: ${positionInfo.entryPrice}`
+                    : 'none';
 
-                // 2) AI decision
-                const { system, user } = buildPrompt(
-                    env,
-                    symbol,
-                    timeFrame,
-                    bundle,
-                    analytics,
-                    positionForPrompt,
-                    news,
-                    indicators,
-                    lastDecision,
-                );
-                const decision: TradeDecision = await callAI(env, system, user);
-                console.log(user);
+            const news = await fetchNewsSentiment(symbol);
+            const bundle = await fetchMarketBundle(symbol, timeFrame);
+            const analytics = computeAnalytics(bundle);
+            const indicators = await calculateMultiTFIndicators(symbol);
+            const lastDecision = await loadLastDecision(DECISIONS, symbol);
 
-                // 3) Execute (optional)
-                const execRes = await executeDecision(env, symbol, sideSizeUSDT, decision, productType, dryRun);
+            // 2) AI decision
+            const { system, user } = buildPrompt(
+                symbol,
+                timeFrame,
+                bundle,
+                analytics,
+                positionForPrompt,
+                news,
+                indicators,
+                lastDecision,
+            );
+            const decision: TradeDecision = await callAI(system, user);
+            console.log(user);
 
-                // 4) Persist
-                const saveKey = await saveDecision(env.DECISIONS, symbol, {
-                    decision,
-                    bundleMeta: { productType: bundle.productType },
-                    analytics,
-                    execRes,
-                    lastDecision,
-                });
+            // 3) Execute (optional)
+            const execRes = await executeDecision(symbol, sideSizeUSDT, decision, productType, dryRun);
 
-                return Response.json({
-                    symbol,
-                    timeFrame,
-                    decision,
-                    execRes,
-                    kvKey: saveKey,
-                });
-            }
+            // 4) Persist
+            const saveKey = await saveDecision(DECISIONS, symbol, {
+                decision,
+                bundleMeta: { productType: bundle.productType },
+                analytics,
+                execRes,
+                lastDecision,
+            });
 
-            if (url.pathname === '/bitget-ping') {
-                const res = await fetch('https://api.bitget.com/api/v2/public/time');
-                return new Response(`Bitget status: ${res.status}`);
-            }
-
-            if (url.pathname === '/debug-env-values') {
-                console.log('Environment check:');
-                console.log({
-                    BITGET_API_KEY: env.BITGET_API_KEY ? env.BITGET_API_KEY.slice(0, 6) + '...' : '❌ missing',
-                    BITGET_API_SECRET: env.BITGET_API_SECRET ? env.BITGET_API_SECRET.slice(0, 6) + '...' : '❌ missing',
-                    BITGET_API_PASSPHRASE: env.BITGET_API_PASSPHRASE
-                        ? env.BITGET_API_PASSPHRASE.slice(0, 2) + '...'
-                        : '❌ missing',
-                    OPENAI_API_KEY: env.OPENAI_API_KEY ? env.OPENAI_API_KEY.slice(0, 6) + '...' : '❌ missing',
-                    COINDESK_API_KEY: env.COINDESK_API_KEY ? env.COINDESK_API_KEY.slice(0, 6) + '...' : '❌ missing',
-                    BITGET_ACCOUNT_TYPE: env.BITGET_ACCOUNT_TYPE || '(default: usdt-futures)',
-                });
-                return Response.json({
-                    BITGET_API_KEY: env.BITGET_API_KEY ? '✅ set' : '❌ missing',
-                    BITGET_API_SECRET: env.BITGET_API_SECRET ? '✅ set' : '❌ missing',
-                    BITGET_API_PASSPHRASE: env.BITGET_API_PASSPHRASE ? '✅ set' : '❌ missing',
-                    BITGET_ACCOUNT_TYPE: env.BITGET_ACCOUNT_TYPE || '(default: usdt-futures)',
-                });
-            }
-
-            if (url.pathname === '/history' && req.method === 'GET') {
-                return new Response('KV listing requires account-side listing APIs; add Durable Object for paging.');
-            }
-
-            if (url.pathname === '/lastDecision' && req.method === 'GET') {
-                const symbol = (url.searchParams.get('symbol') as string) || 'ETHUSDT';
-                return Response.json(await loadLastDecision(env.DECISIONS, symbol));
-            }
-
-            if (url.pathname === '/' && req.method === 'GET') {
-                return new Response('AI Trade Decision Worker running ✅');
-            }
-            return new Response('Not found', { status: 404 });
-        } catch (err: any) {
-            return new Response(JSON.stringify({ error: err.message || String(err) }, null, 2), {
-                status: 500,
-                headers: { 'Content-Type': 'application/json' },
+            res.status(200).json({
+                symbol,
+                timeFrame,
+                decision,
+                execRes,
+                kvKey: saveKey,
             });
         }
-    },
-};
+
+        if (url.pathname === '/bitget-ping') {
+            const ping = await fetch('https://api.bitget.com/api/v2/public/time');
+            return res.status(200).send(`Bitget status: ${ping.status}`);
+        }
+
+        if (url.pathname === '/debug-env-values') {
+            console.log('Environment check:');
+            console.log({
+                BITGET_API_KEY: process.env.BITGET_API_KEY
+                    ? process.env.BITGET_API_KEY.slice(0, 6) + '...'
+                    : '❌ missing',
+                BITGET_API_SECRET: process.env.BITGET_API_SECRET
+                    ? process.env.BITGET_API_SECRET.slice(0, 6) + '...'
+                    : '❌ missing',
+                BITGET_API_PASSPHRASE: process.env.BITGET_API_PASSPHRASE
+                    ? process.env.BITGET_API_PASSPHRASE.slice(0, 2) + '...'
+                    : '❌ missing',
+                OPENAI_API_KEY: process.env.OPENAI_API_KEY
+                    ? process.env.OPENAI_API_KEY.slice(0, 6) + '...'
+                    : '❌ missing',
+                COINDESK_API_KEY: process.env.COINDESK_API_KEY
+                    ? process.env.COINDESK_API_KEY.slice(0, 6) + '...'
+                    : '❌ missing',
+                BITGET_ACCOUNT_TYPE: BITGET_ACCOUNT_TYPE || '(default: usdt-futures)',
+            });
+            res.status(200).json({
+                BITGET_API_KEY: process.env.BITGET_API_KEY ? '✅ set' : '❌ missing',
+                BITGET_API_SECRET: process.env.BITGET_API_SECRET ? '✅ set' : '❌ missing',
+                BITGET_API_PASSPHRASE: process.env.BITGET_API_PASSPHRASE ? '✅ set' : '❌ missing',
+                BITGET_ACCOUNT_TYPE: BITGET_ACCOUNT_TYPE || '(default: usdt-futures)',
+            });
+        }
+
+        if (url.pathname === '/history' && req.method === 'GET') {
+            return res
+                .status(200)
+                .send('KV listing requires account-side listing APIs; add Durable Object for paging.');
+        }
+
+        if (url.pathname === '/lastDecision' && req.method === 'GET') {
+            const symbol = (url.searchParams.get('symbol') as string) || 'ETHUSDT';
+            res.status(200).json(await loadLastDecision(DECISIONS, symbol));
+        }
+
+        if (url.pathname === '/' && req.method === 'GET') {
+            return res.status(200).send('AI Trade Decision Worker running ✅');
+        }
+        return res.status(404).send('Not found diggi');
+    } catch (err: any) {
+        return res.status(500).send(JSON.stringify({ error: err.message || String(err) }, null, 2));
+    }
+}
 
 // =============================
 // Notes

@@ -1,0 +1,77 @@
+{
+  "ETHUSDT:2025-11-06T20:20:33.110Z": {
+    "decision": {
+      "action": "SELL",
+      "summary": "Current market conditions indicate a bearish sentiment with significant sell pressure.",
+      "reason": "The price has decreased by 4.65% in the last 24 hours, with a negative CVD of -4322.610 indicating strong selling activity. The RSI is at 16.5, suggesting oversold conditions, but the overall trend remains down with resistance at VWAP levels above the current price."
+    },
+    "bundleMeta": {
+      "productType": "usdt-futures"
+    },
+    "analytics": {
+      "cvd": -4322.610000000037,
+      "buys": 1505.7699999999863,
+      "sells": 5828.380000000047,
+      "volume_profile": [
+        {
+          "bin": 0,
+          "price": 3309.61,
+          "volume": 7334.15
+        }
+      ],
+      "topWalls": {
+        "bid": [
+          {
+            "price": 3310.32,
+            "size": 287.8603
+          },
+          {
+            "price": 3310.34,
+            "size": 96.0097
+          },
+          {
+            "price": 3310.33,
+            "size": 51.065
+          },
+          {
+            "price": 3310.76,
+            "size": 45.8767
+          },
+          {
+            "price": 3313.72,
+            "size": 24.8641
+          }
+        ],
+        "ask": [
+          {
+            "price": 3320.08,
+            "size": 78.932
+          },
+          {
+            "price": 3319.4,
+            "size": 78.1657
+          },
+          {
+            "price": 3319.74,
+            "size": 64.3718
+          },
+          {
+            "price": 3319.06,
+            "size": 62.0728
+          },
+          {
+            "price": 3320.42,
+            "size": 59.0075
+          }
+        ]
+      }
+    },
+    "execRes": {
+      "placed": true,
+      "orderId": "1370423872137613312",
+      "clientOid": "cfw-f4fd4bcc-3cb8-48c3-b5ac-592c79af62ef"
+    },
+    "lastDecision": null,
+    "timestamp": 1762460433110
+  }
+}
