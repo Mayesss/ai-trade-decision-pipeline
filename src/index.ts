@@ -754,7 +754,6 @@ export default {
 
                 return Response.json({ deleted, filter: symbolFilter || 'all' });
             }
-            
             if (url.pathname === '/bitget-auth-test') {
                 const data = await bitgetFetch(env, 'GET', '/api/v2/mix/account/account', {
                     symbol: 'BTCUSDT',
@@ -821,13 +820,21 @@ export default {
                 });
             }
 
-            if (url.pathname === '/debug-env') {
+            if (url.pathname === '/debug-env-values') {
+                console.log('Environment check:');
+                console.log({
+                    BITGET_API_KEY: env.BITGET_API_KEY ? env.BITGET_API_KEY.slice(0, 6) + '...' : '❌ missing',
+                    BITGET_API_SECRET: env.BITGET_API_SECRET ? env.BITGET_API_SECRET.slice(0, 6) + '...' : '❌ missing',
+                    BITGET_API_PASSPHRASE: env.BITGET_API_PASSPHRASE ? env.BITGET_API_PASSPHRASE.slice(0, 2) + '...' : '❌ missing',
+                    OPENAI_API_KEY: env.OPENAI_API_KEY ? env.OPENAI_API_KEY.slice(0, 6) + '...' : '❌ missing',
+                    COINDESK_API_KEY: env.COINDESK_API_KEY ? env.COINDESK_API_KEY.slice(0, 6) + '...' : '❌ missing',
+                    BITGET_ACCOUNT_TYPE: env.BITGET_ACCOUNT_TYPE || '(default: usdt-futures)',
+                });
                 return Response.json({
                     BITGET_API_KEY: env.BITGET_API_KEY ? '✅ set' : '❌ missing',
                     BITGET_API_SECRET: env.BITGET_API_SECRET ? '✅ set' : '❌ missing',
                     BITGET_API_PASSPHRASE: env.BITGET_API_PASSPHRASE ? '✅ set' : '❌ missing',
-                    OPENAI_API_KEY: env.OPENAI_API_KEY ? '✅ set' : '❌ missing',
-                    COINDESK_API_KEY: env.COINDESK_API_KEY ? '✅ set' : '❌ missing',
+                    BITGET_ACCOUNT_TYPE: env.BITGET_ACCOUNT_TYPE || '(default: usdt-futures)',
                 });
             }
 
