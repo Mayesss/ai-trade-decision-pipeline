@@ -37,37 +37,47 @@ export function buildPrompt(
         .map((v: any) => `(${v.price.toFixed(2)} → ${v.volume})`)
         .join(', ');
 
-    const sys = `You are an expert quantitative crypto market analyst. Output JSON only.`;
+    const sys = `You are an expert crypto market microstructure analyst and quantitative trading assistant. You operate in a high-frequency environment and respond in strict JSON only.`;
 
-    const user = `Assess short-term direction for ${symbol} based on inputs and constraints.
-DATA INPUTS:
-- Current price and % change: ${market_data}
-- Volume profile (fixed lookback window: ${TRADE_WINDOW_MINUTES || 30}m): ${vol_profile_str}
-- Order flow summary (buy/sell imbalance, CVD): ${order_flow}
-- Order book & liquidity map (visible walls): ${liquidity_data}
-- Funding rate, open interest, and liquidation data: ${derivatives}
-- News sentiment: ${news_sentiment.toLowerCase()}
+    const user = `
+You are analyzing ETHUSDT on a ${parseInt(timeframe, 10)}-minute time horizon. Assume simulation only.
+
+DATA INPUTS (with explicit windows):
+- Current price and % change (now): ${market_data}
+- Volume profile (fixed lookback window = 30m): ${vol_profile_str}
+- Order flow summary (1m tape/CVD, buy-sell imbalance, last 5–15m): ${order_flow}
+- Order book & liquidity map (visible walls/spoofs, current snapshot): ${liquidity_data}
+- Funding rate, open interest, and liquidations (changes over last 30–60m): ${derivatives}
+- News sentiment ONLY (exclude social/market sentiment): ${news_sentiment.toLowerCase()}
 - Current position: ${position_status}
-- Technical indicators (short-term): ${indicators.micro}
-- Macro indicators (1h context): ${indicators.macro}
+- Technical indicators (short-term, 1m timeframe, last 30 candles): ${indicators.micro}
+- Macro indicators (context on 1h timeframe, last 30 candles): ${indicators.macro}
 - Last AI action: ${
-        lastDecision ? `${lastDecision.action} (${new Date(lastDecision?.timestamp!).toLocaleString()})` : 'None'
+        lastDecision?.action
+            ? `${lastDecision.action} (${new Date(lastDecision?.timestamp!).toLocaleString()})`
+            : 'None'
     }
 
-TASK:
-1. Analyze whether current conditions favor short-term long, short, or no trade.
-2. If in a position, decide whether to stay in, scale out, or close.
-3. Explain reasoning briefly (price action, volume delta, liquidity shifts, or sentiment change).
-4. Output one action from: BUY | SELL | HOLD | CLOSE.
-5. Include 1–2 line market context.
+TASKS:
+1. Evaluate short-term bias (up / down / neutral) based on volume delta, liquidity, and derivative data.
+2. Output one action only: "BUY", "SELL", "HOLD", or "CLOSE".
+   - If no position is open, return BUY/SELL/HOLD.
+   - If position is open, return HOLD or CLOSE only.
+3. Assess signal strength: LOW, MEDIUM, HIGH (based on volume and order flow clarity).
+4. Summarize market in ≤2 lines (mention if choppy, trending, trapping, etc.)
 
-Constraints:
-- Time horizon = ${timeframe}
-- Do not make predictions beyond 1 hour.
-- Assume educational simulation, not live trading.
-- Return JSON strictly as: {"action":"BUY|SELL|HOLD|CLOSE","summary":"...","reason":"..."}
-- If a position is open, only options are HOLD|CLOSE.
+RULES:
+- Avoid trades if signal is LOW.
+- Favor setups with volume confirmation and clear book imbalance.
+- Do not predict beyond 1 hour.
+- If volatility is flat, return HOLD.
+- Be strict: NO position flip without real pressure.
+
+OUTPUT (strict JSON):
+{"action":"BUY|SELL|HOLD|CLOSE","bias":"UP|DOWN|NEUTRAL","signal_strength":"LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale (flow/liquidity/derivatives/technicals/sentiment)"}
 `;
+
+    console.log(user);
 
     return { system: sys, user };
 }
