@@ -6,7 +6,6 @@ import { calculateMultiTFIndicators } from '../../lib/indicators';
 import { fetchNewsSentiment } from '../../lib/news';
 import { buildPrompt, callAI } from '../../lib/ai';
 import { executeDecision, getTradeProductType } from '../../lib/trading';
-import { saveDecision, loadLastDecision } from '../../lib/kvstore';
 
 // ------------------------------
 // /api/analyze  →  AI trade decision endpoint
@@ -42,10 +41,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 4️⃣ Technical indicators
         const indicators = await calculateMultiTFIndicators(symbol);
 
-        // 5️⃣ Load last decision from KV
-        const lastDecision = await loadLastDecision({}, symbol);
-
-        // 6️⃣ Build AI prompt
+        // 
+        // 5️⃣ Build AI prompt
         const { system, user } = buildPrompt(
             symbol,
             timeFrame,
@@ -54,7 +51,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             positionForPrompt,
             news,
             indicators,
-            lastDecision,
         );
 
         // 7️⃣ Query AI
@@ -63,16 +59,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 8️⃣ Execute (dry run unless explicitly disabled)
         const execRes = await executeDecision(symbol, sideSizeUSDT, decision, productType, dryRun);
 
-        // 9️⃣ Persist
-        // const saveKey = await saveDecision({}, symbol, {
-        //     decision,
-        //     bundleMeta: { productType: bundle.productType },
-        //     prompt: { system, user },
-        //     execRes,
-        //     lastDecision,
-        //     timestamp: Date.now(),
-        // });
-
         // ✅ Respond
         return res.status(200).json({
             symbol,
@@ -80,7 +66,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             dryRun,
             decision,
             execRes,
-            kvKey: 'saveKey',
         });
     } catch (err: any) {
         console.error('Error in /api/analyze:', err);

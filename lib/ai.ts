@@ -1,7 +1,6 @@
 // lib/ai.ts
 
 import { AI_BASE_URL, AI_MODEL, TRADE_WINDOW_MINUTES } from './constants';
-import type { TradeDecision } from './trading';
 
 // ------------------------------
 // Prompt Builder
@@ -15,7 +14,6 @@ export function buildPrompt(
     position_status: string = 'none',
     news_sentiment: string = 'neutral',
     indicators: { micro: string; macro: string },
-    lastDecision: TradeDecision | null,
 ) {
     const price = bundle.ticker?.[0]?.lastPr || bundle.ticker?.[0]?.last || bundle.ticker?.[0]?.close;
     const change = bundle.ticker?.[0]?.change24h || bundle.ticker?.[0]?.changeUtc24h || bundle.ticker?.[0]?.chgPct;
@@ -52,11 +50,6 @@ DATA INPUTS (with explicit windows):
 - Current position: ${position_status}
 - Technical indicators (short-term, 1m timeframe, last 30 candles): ${indicators.micro}
 - Macro indicators (context on 1h timeframe, last 30 candles): ${indicators.macro}
-- Last AI action: ${
-        lastDecision?.action
-            ? `${lastDecision.action} (${new Date(lastDecision?.timestamp!).toLocaleString()})`
-            : 'None'
-    }
 
 TASKS:
 1. Evaluate short-term bias (up / down / neutral) based on volume delta, liquidity, and derivative data.
