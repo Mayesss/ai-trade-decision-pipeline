@@ -135,3 +135,8 @@ https://bitget-ai-decision-worker.<yourname>.workers.dev
 | `GET`  | `/history`                     | (stub) future paging support            |
 | `GET`  | `/bitget-auth-test`            | Check bitget auth                       |
 | `GET`  | `/debug-env`                   | Check env variables                     |
+
+## TODOS
+
+- herausfinden was das beste KI-modell zum entschiedigen ist
+- Data feed, text oder json?

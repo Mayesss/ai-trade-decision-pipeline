@@ -56,8 +56,8 @@ TASKS:
 2. Output one action only: "BUY", "SELL", "HOLD", or "CLOSE".
    - If no position is open, return BUY/SELL/HOLD.
    - If position is open, return HOLD or CLOSE only.
-        i. If currentPnL is > 0.5% but signal weakens or CVD flips, consider "CLOSE".
-        ii. If currentPnL is < -0.5% and pressure builds against, consider "CLOSE".
+        i. If currentPnL is > 1% but signal weakens or CVD flips, consider "CLOSE".
+        ii. If currentPnL is < -1% and pressure builds against, consider "CLOSE".
 3. Assess signal strength: LOW, MEDIUM, HIGH (based on volume and order flow clarity).
 4. Summarize market in ≤2 lines (mention if choppy, trending, trapping, etc.)
 
@@ -67,6 +67,7 @@ RULES:
 - Do not predict beyond 1 hour.
 - If volatility is flat, return HOLD.
 - Be strict: NO position flip without real pressure.
+- Take profits, dont be too greedy, and stop losses, dont be too needy.
 
 OUTPUT (strict JSON):
 {"action":"BUY|SELL|HOLD|CLOSE","bias":"UP|DOWN|NEUTRAL","signal_strength":"LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale (flow/liquidity/derivatives/technicals/sentiment)"}
