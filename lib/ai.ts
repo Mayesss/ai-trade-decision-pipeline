@@ -38,7 +38,7 @@ export function buildPrompt(
     const sys = `You are an expert crypto market microstructure analyst and quantitative trading assistant. You operate in a high-frequency environment and respond in strict JSON only.`;
 
     const user = `
-You are analyzing ETHUSDT on a ${parseInt(timeframe, 10)}-minute time horizon. Assume simulation only.
+You are analyzing ${symbol} on a ${parseInt(timeframe, 10)}-minute time horizon. Assume simulation only.
 
 DATA INPUTS (with explicit windows):
 - Current price and % change (now): ${market_data}
