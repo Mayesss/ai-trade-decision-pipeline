@@ -62,7 +62,7 @@ TASKS:
 4. Summarize market in ≤2 lines (mention if choppy, trending, trapping, etc.)
 
 RULES:
-- Avoid trades if signal is LOW.
+- Avoid trades if signal is LOW or MEDIUM.
 - Favor setups with volume confirmation and clear book imbalance.
 - Do not predict beyond 1 hour.
 - If volatility is flat, return HOLD.
