@@ -28,7 +28,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const positionInfo = await fetchPositionInfo(symbol);
         const positionForPrompt =
             positionInfo.status === 'open'
-                ? `${positionInfo.holdSide}, entryPrice: ${positionInfo.entryPrice}`
+                ? `${positionInfo.holdSide}, entryPrice: ${positionInfo.entryPrice}, currentPnl=${positionInfo.currentPnl}`
                 : 'none';
 
         // 2️⃣ News sentiment
@@ -41,17 +41,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 4️⃣ Technical indicators
         const indicators = await calculateMultiTFIndicators(symbol);
 
-        // 
+        //
         // 5️⃣ Build AI prompt
-        const { system, user } = buildPrompt(
-            symbol,
-            timeFrame,
-            bundle,
-            analytics,
-            positionForPrompt,
-            news,
-            indicators,
-        );
+        const { system, user } = buildPrompt(symbol, timeFrame, bundle, analytics, positionForPrompt, news, indicators);
 
         // 7️⃣ Query AI
         const decision = await callAI(system, user);

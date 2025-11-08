@@ -79,6 +79,7 @@ export type PositionInfo =
           marginCoin?: string;
           available?: string;
           total?: string;
+          currentPnl?: string;
       };
 
 export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
@@ -107,9 +108,23 @@ export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
         marginCoin: chosen.marginCoin,
         available: chosen.available,
         total: chosen.total,
+        currentPnl: calculatePnLPercent(chosen),
     };
 }
 
+function calculatePnLPercent(data: any): string {
+    const toNum = (v: any) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : 0;
+    };
+    const sizeBase = toNum(data.total); // base coin amount in the position
+    const mark = toNum(data.markPrice); // quote per base
+    const lev = toNum(data.leverage);
+    const uPnl = toNum(data.unrealizedPL); // in margin coin terms
+    const initialMargin = (sizeBase * mark) / lev;
+    const pnlPercent = uPnl / initialMargin * 100;
+    return pnlPercent.toFixed(2) + '%';
+}
 // ---- Fetch recent trades ----
 
 export async function fetchTradesForMinutes(symbol: string, productType: ProductType, minutes: number) {

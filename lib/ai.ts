@@ -56,6 +56,8 @@ TASKS:
 2. Output one action only: "BUY", "SELL", "HOLD", or "CLOSE".
    - If no position is open, return BUY/SELL/HOLD.
    - If position is open, return HOLD or CLOSE only.
+        i. If currentPnL is > 0.5% but signal weakens or CVD flips, consider "CLOSE".
+        ii. If currentPnL is < -0.5% and pressure builds against, consider "CLOSE".
 3. Assess signal strength: LOW, MEDIUM, HIGH (based on volume and order flow clarity).
 4. Summarize market in ≤2 lines (mention if choppy, trending, trapping, etc.)
 
