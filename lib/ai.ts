@@ -67,7 +67,6 @@ RULES:
 - Do not predict beyond 1 hour.
 - If volatility is flat, return HOLD.
 - Be strict: NO position flip without real pressure.
-- Take profits, dont be too greedy, and stop losses, dont be too needy.
 
 OUTPUT (strict JSON):
 {"action":"BUY|SELL|HOLD|CLOSE","bias":"UP|DOWN|NEUTRAL","signal_strength":"LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale (flow/liquidity/derivatives/technicals/sentiment)"}
