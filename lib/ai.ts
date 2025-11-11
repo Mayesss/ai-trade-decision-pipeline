@@ -59,7 +59,7 @@ export function buildPrompt(
     const atrMatch = indicators.macro.match(/ATR=([\d.]+)/);
     const atrAbs = atrMatch ? Number(atrMatch[1]) : NaN;
     const atrPct = isFinite(atrAbs) && last > 0 ? atrAbs / last : NaN;
-    // atr_ok between 0.08%–2.0%  (8–200 bps) — tune per symbol
+    // atr_ok ETH between 0.0008–0.02, BTC between 0.0007–0.015 (8–200 bps) — tune per symbol
     const atr_ok = isFinite(atrPct) ? atrPct > 0.0008 && atrPct < 0.02 : true;
     // Costs (educate the model)
     const taker_round_trip_bps = 5; // 5 bps
