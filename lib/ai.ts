@@ -7,68 +7,70 @@ import { AI_BASE_URL, AI_MODEL, TRADE_WINDOW_MINUTES } from './constants';
 // ------------------------------
 
 export function buildPrompt(
-  symbol: string,
-  timeframe: string,
-  bundle: any,
-  analytics: any,
-  position_status: string = 'none',
-  news_sentiment: string = 'neutral',
-  indicators: { micro: string; macro: string },
+    symbol: string,
+    timeframe: string,
+    bundle: any,
+    analytics: any,
+    position_status: string = 'none',
+    news_sentiment: string = 'neutral',
+    indicators: { micro: string; macro: string },
 ) {
-  const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
-  const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
-  const change = Number(t?.change24h ?? t?.changeUtc24h ?? t?.chgPct);
+    const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
+    const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
+    const change = Number(t?.change24h ?? t?.changeUtc24h ?? t?.chgPct);
 
-  const market_data = `price=${price}, change24h=${isFinite(change) ? change : 'n/a'}`;
+    const market_data = `price=${price}, change24h=${isFinite(change) ? change : 'n/a'}`;
 
-  const order_flow = `buys=${analytics.buys.toFixed(3)}, sells=${analytics.sells.toFixed(
-    3,
-  )}, CVD=${analytics.cvd.toFixed(3)} (obImb=${analytics.obImb.toFixed(2)})`;
+    const order_flow = `buys=${analytics.buys.toFixed(3)}, sells=${analytics.sells.toFixed(
+        3,
+    )}, CVD=${analytics.cvd.toFixed(3)} (obImb=${analytics.obImb.toFixed(2)})`;
 
-  const liquidity_data = `top bid walls: ${JSON.stringify(analytics.topWalls.bid)}, top ask walls: ${JSON.stringify(
-    analytics.topWalls.ask,
-  )}`;
+    const liquidity_data = `top bid walls: ${JSON.stringify(analytics.topWalls.bid)}, top ask walls: ${JSON.stringify(
+        analytics.topWalls.ask,
+    )}`;
 
-  const derivatives = `funding=${bundle.funding?.[0]?.fundingRate ?? 'n/a'}, openInterest=${
-    bundle.oi?.openInterestList?.[0]?.size ?? bundle.oi?.openInterestList?.[0]?.openInterest ?? 'n/a'
-  }`;
+    const derivatives = `funding=${bundle.funding?.[0]?.fundingRate ?? 'n/a'}, openInterest=${
+        bundle.oi?.openInterestList?.[0]?.size ?? bundle.oi?.openInterestList?.[0]?.openInterest ?? 'n/a'
+    }`;
 
-  const vol_profile_str = (analytics.volume_profile || [])
-    .slice(0, 10)
-    .map((v: any) => `(${v.price.toFixed(2)} → ${v.volume})`)
-    .join(', ');
+    const vol_profile_str = (analytics.volume_profile || [])
+        .slice(0, 10)
+        .map((v: any) => `(${v.price.toFixed(2)} → ${v.volume})`)
+        .join(', ');
 
-  // --- Gating flags (simple & robust) ---
-  const last = analytics.last || price || 0;
-  const spread = analytics.spread || 0;
-  const spread_ok = last > 0 ? spread / last < 0.0004 : false; // < 4 bps
-  const sumTop = (lvls: any[], n: number) => (lvls || []).slice(0, n).reduce((a, l) => a + Number(l[1] ?? l.size ?? 0), 0);
-  const topBid = sumTop(bundle.orderbook?.bids || [], 5);
-  const topAsk = sumTop(bundle.orderbook?.asks || [], 5);
-  const liquidity_ok = topBid + topAsk > 0 ? topBid > topAsk * 0.6 : false;
+    // --- Gating flags (simple & robust) ---
+    const last = analytics.last || price || 0;
+    const spread = analytics.spread || 0;
+    const spread_ok = last > 0 ? spread / last < 0.0004 : false; // < 4 bps
+    const sumTop = (lvls: any[], n: number) =>
+        (lvls || []).slice(0, n).reduce((a, l) => a + Number(l[1] ?? l.size ?? 0), 0);
+    const topBid = sumTop(bundle.orderbook?.bids || [], 5);
+    const topAsk = sumTop(bundle.orderbook?.asks || [], 5);
+    const liquidity_ok = topBid + topAsk > 0 ? topBid > topAsk * 0.6 : false;
 
-  const trendMacroUp = indicators.macro.includes('trend=up');
-  const trendMacroDown = indicators.macro.includes('trend=down');
-  // Regime gate: only buy in up regime, only sell in down regime (the model will decide side, we enforce gate here)
-  // We pass both booleans and instruct the model accordingly.
-  const regime_trend_up = trendMacroUp;
-  const regime_trend_down = trendMacroDown;
+    const trendMacroUp = indicators.macro.includes('trend=up');
+    const trendMacroDown = indicators.macro.includes('trend=down');
+    // Regime gate: only buy in up regime, only sell in down regime (the model will decide side, we enforce gate here)
+    // We pass both booleans and instruct the model accordingly.
+    const regime_trend_up = trendMacroUp;
+    const regime_trend_down = trendMacroDown;
 
-  // Extract ATR(1H) if present in string (best-effort)
-  const atrMatch = indicators.macro.match(/ATR=([\d.]+)/);
-  const atrAbs = atrMatch ? Number(atrMatch[1]) : NaN;
-  const atr_ok = isFinite(atrAbs) && last > 0 ? atrAbs / last > 0.001 && atrAbs / last < 0.01 : true; // 10–100 bps
+    // Extract ATR(1H) if present in string (best-effort)
+    const atrMatch = indicators.macro.match(/ATR=([\d.]+)/);
+    const atrAbs = atrMatch ? Number(atrMatch[1]) : NaN;
+    const atrPct = isFinite(atrAbs) && last > 0 ? atrAbs / last : NaN;
+    // atr_ok between 0.08%–2.0%  (8–200 bps) — tune per symbol
+    const atr_ok = isFinite(atrPct) ? atrPct > 0.0008 && atrPct < 0.02 : true;
+    // Costs (educate the model)
+    const taker_round_trip_bps = 5; // 5 bps
+    const slippage_bps = 2;
 
-  // Costs (educate the model)
-  const taker_round_trip_bps = 5; // 5 bps
-  const slippage_bps = 2;
-
-  const risk_policy = `fees=${taker_round_trip_bps}bps round-trip, slippage=${slippage_bps}bps, 
+    const risk_policy = `fees=${taker_round_trip_bps}bps round-trip, slippage=${slippage_bps}bps, 
 stop=1.5xATR(1H), take_profit=2.5xATR(1H), time_stop=${parseInt(timeframe, 10) * 3} minutes`;
 
-  const gating_flags = `regime_trend_up=${regime_trend_up}, regime_trend_down=${regime_trend_down}, spread_ok=${spread_ok}, liquidity_ok=${liquidity_ok}, atr_ok=${atr_ok}`;
+    const gating_flags = `regime_trend_up=${regime_trend_up}, regime_trend_down=${regime_trend_down}, spread_ok=${spread_ok}, liquidity_ok=${liquidity_ok}, atr_ok=${atr_ok}`;
 
-  const sys = `
+    const sys = `
 You are an expert crypto market microstructure analyst and quantitative trading assistant. 
 Respond in strict JSON ONLY.
 
@@ -79,7 +81,7 @@ HARD RULES:
 - Do not predict beyond 1 hour.
 `.trim();
 
-  const user = `
+    const user = `
 You are analyzing ${symbol} on a ${parseInt(timeframe, 10)}-minute horizon (simulation).
 
 RISK/COSTS:
@@ -112,43 +114,42 @@ TASKS:
 JSON OUTPUT (strict):
 {"action":"BUY|SELL|HOLD|CLOSE","bias":"UP|DOWN|NEUTRAL","signal_strength":"LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale (flow/liquidity/derivatives/technicals/sentiment)"}
 `.trim();
-console.log(sys, user)
+    console.log(sys, user);
 
-  return { system: sys, user };
+    return { system: sys, user };
 }
-
 
 // ------------------------------
 // OpenAI API Call
 // ------------------------------
 
 export async function callAI(system: string, user: string) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('Missing OPENAI_API_KEY');
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) throw new Error('Missing OPENAI_API_KEY');
 
-  const base = AI_BASE_URL;
-  const model = AI_MODEL;
+    const base = AI_BASE_URL;
+    const model = AI_MODEL;
 
-  const res = await fetch(`${base}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      temperature: 0.2,
-      response_format: { type: 'json_object' },
-    }),
-  });
+    const res = await fetch(`${base}/chat/completions`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+            model,
+            messages: [
+                { role: 'system', content: system },
+                { role: 'user', content: user },
+            ],
+            temperature: 0.2,
+            response_format: { type: 'json_object' },
+        }),
+    });
 
-  if (!res.ok) throw new Error(`AI error: ${res.status} ${res.statusText}`);
+    if (!res.ok) throw new Error(`AI error: ${res.status} ${res.statusText}`);
 
-  const data = await res.json();
-  const text = data.choices?.[0]?.message?.content || '{}';
-  return JSON.parse(text);
+    const data = await res.json();
+    const text = data.choices?.[0]?.message?.content || '{}';
+    return JSON.parse(text);
 }
