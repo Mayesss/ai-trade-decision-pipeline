@@ -92,7 +92,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const bundleFull = await fetchMarketBundle(symbol, timeFrame, {
         includeTrades: true,
         tradeMinutes: 60,     // tune (30–60 typical)
-        tradeMaxMs: 2500,     // time budget (ms)
+        tradeMaxMs: 1500,     // time budget (ms)
         tradeMaxPages: 6,     // pagination budget
         tradeMaxTrades: 1200, // cap number of trades
       });

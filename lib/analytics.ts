@@ -186,7 +186,7 @@ export async function fetchTradesBudgeted(symbol: string, productType: ProductTy
 type BundleOpts = {
     includeTrades?: boolean; // default true
     tradeMinutes?: number; // default TRADE_WINDOW_MINUTES
-    tradeMaxMs?: number; // default 3000
+    tradeMaxMs?: number; // default 1500
     tradeMaxPages?: number; // default 8
     tradeMaxTrades?: number; // default 1500
 };
@@ -194,7 +194,7 @@ export async function fetchMarketBundle(symbol: string, bundleTimeFrame: string,
     const {
         includeTrades = true,
         tradeMinutes = Number(TRADE_WINDOW_MINUTES || 30),
-        tradeMaxMs = 3000,
+        tradeMaxMs = 1500,
         tradeMaxPages = 8,
         tradeMaxTrades = 1500,
     } = opts;
