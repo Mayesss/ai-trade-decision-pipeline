@@ -2,17 +2,18 @@
 
 import { bitgetFetch, resolveProductType } from './bitget';
 import type { ProductType } from './bitget';
-
 import { TRADE_WINDOW_MINUTES } from './constants';
 
-// ---- Types ----
+// ------------------------------
+// Types
+// ------------------------------
 
 export interface SymbolMeta {
   symbol: string;
-  pricePlace: number;
-  volumePlace: number;
-  minTradeNum: string;
-  sizeMultiplier?: string; // step size
+  pricePlace: number;   // price decimals
+  volumePlace: number;  // size decimals
+  minTradeNum: string;  // min size
+  sizeMultiplier?: string; // step size (if provided)
 }
 
 export type PositionInfo =
@@ -26,29 +27,31 @@ export type PositionInfo =
       marginCoin?: string;
       available?: string;
       total?: string;
-      currentPnl?: string;
+      currentPnl?: string; // "%", e.g., "1.23%"
     };
 
-// ---- Helpers ----
+// ------------------------------
+// Helpers
+// ------------------------------
+
+function num(x: any, def = 0): number {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : def;
+}
+
+function ensureAscendingCandles(cs: any[]) {
+  if (!Array.isArray(cs)) return [];
+  return cs.slice().sort((a: any, b: any) => Number(a[0]) - Number(b[0]));
+}
 
 export function roundToDecimals(value: number, decimals: number): number {
   const factor = Math.pow(10, decimals);
   return Math.floor(value * factor) / factor;
 }
 
-function ensureAscendingCandles(cs: any[]) {
-  if (!Array.isArray(cs)) return [];
-  // Bitget candles are typically [ts, open, high, low, close, volume] and often latest-first
-  const asc = cs.slice().sort((a: any, b: any) => Number(a[0]) - Number(b[0]));
-  return asc;
-}
-
-function toNum(v: any, def = 0): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : def;
-}
-
-// ---- Fetch symbol meta (FUTURES only) ----
+// ------------------------------
+// Symbol meta (FUTURES only)
+// ------------------------------
 
 export async function fetchSymbolMeta(symbol: string, productType: ProductType): Promise<SymbolMeta> {
   const pt = (productType as string).toUpperCase();
@@ -58,7 +61,9 @@ export async function fetchSymbolMeta(symbol: string, productType: ProductType):
   return meta;
 }
 
-// ---- Order size computation (uses minTradeNum + sizeMultiplier step) ----
+// ------------------------------
+// Order size (step + min) (FUTURES only)
+// ------------------------------
 
 export async function computeOrderSize(
   symbol: string,
@@ -73,9 +78,8 @@ export async function computeOrderSize(
 
   const ticker = await bitgetFetch('GET', '/api/v2/mix/market/ticker', { symbol, productType: pt });
   const t = Array.isArray(ticker) ? ticker[0] : ticker;
-  const priceStr = t?.lastPr ?? t?.last ?? t?.close ?? t?.price;
-  const price = parseFloat(priceStr);
-  if (!isFinite(price) || price <= 0) throw new Error(`Invalid price for ${symbol}: ${priceStr}`);
+  const price = num(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
+  if (!(price > 0)) throw new Error(`Invalid price for ${symbol}`);
 
   const rawSize = notionalUSDT / price;
 
@@ -83,39 +87,61 @@ export async function computeOrderSize(
   const minTradeNum = parseFloat(meta.minTradeNum ?? '0');
   const step = parseFloat(meta.sizeMultiplier ?? `1e-${decimals}`);
 
-  const quantize = (x: number, s: number) => Math.floor(x / s) * s;
+  const quantizeDown = (x: number, s: number) => Math.floor(x / s) * s;
 
-  const rounded = quantize(rawSize, step);
+  const rounded = quantizeDown(rawSize, step);
   const finalSize = Math.max(rounded, minTradeNum);
 
-  if (!isFinite(finalSize) || finalSize <= 0) {
+  if (!(finalSize > 0)) {
     throw new Error(`Failed to compute valid size (raw=${rawSize}, rounded=${rounded})`);
   }
-
   return Number(finalSize.toFixed(decimals));
 }
 
-// ---- Fetch open positions (FUTURES only) ----
+// ------------------------------
+// Positions (FUTURES only)
+// ------------------------------
+
+// ------------------------------
+// Positions (FUTURES only)
+// ------------------------------
+
+type RawPosition = {
+  symbol: string;
+  holdSide?: string;        // "long"/"short"
+  openPriceAvg: string;
+  posMode?: 'one_way_mode' | 'hedge_mode';
+  marginCoin?: string;
+  available?: string;
+  total?: string;           // base size
+  markPrice?: string;
+  leverage?: string | number;
+  unrealizedPL?: string | number;
+};
+
+
 
 export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
-  const productType = resolveProductType(); // should be e.g., 'USDT-FUTURES'
-  const positions = await bitgetFetch('GET', '/api/v2/mix/position/all-position', { productType });
+  const productType = resolveProductType();
+  const positions: RawPosition[] =
+    await bitgetFetch('GET', '/api/v2/mix/position/all-position', { productType });
 
-  const matches = (positions || []).filter((p: any) => p.symbol === symbol);
+  const matches = (positions || []).filter((p) => p.symbol === symbol);
   if (!matches.length) return { status: 'none' };
 
-  const chosen = matches
+  // choose the largest absolute position (by total or available) safely
+  const chosen: RawPosition = matches
     .slice()
-    .sort(
-      (a: any, b: any) =>
-        Math.abs(parseFloat(b.total || b.available || '0')) -
-        Math.abs(parseFloat(a.total || a.available || '0')),
-    )[0];
+    .sort((a: RawPosition, b: RawPosition) => {
+      const bSize = Math.abs(num(b.total ?? b.available ?? '0'));
+      const aSize = Math.abs(num(a.total ?? a.available ?? '0'));
+      return bSize - aSize;
+    })[0];
 
   return {
     status: 'open',
     symbol,
-    holdSide: (chosen.holdSide || '').toLowerCase() as 'long' | 'short',
+    holdSide: (chosen.holdSide ?? '').toLowerCase() as 'long' | 'short',
     entryPrice: chosen.openPriceAvg,
     posMode: chosen.posMode,
     marginCoin: chosen.marginCoin,
@@ -125,18 +151,19 @@ export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
   };
 }
 
-function calculatePnLPercent(data: any): string {
-  const toN = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
-  const sizeBase = toN(data.total);    // base coin amount
-  const mark = Math.max(1e-9, toN(data.markPrice)); // guard zero
-  const lev = Math.max(1, toN(data.leverage) || 1);
-  const uPnl = toN(data.unrealizedPL); // in margin coin
-  const initialMargin = (sizeBase * mark) / lev || 1; // avoid divide by 0
+function calculatePnLPercent(data: RawPosition): string {
+  const sizeBase = num(data.total);
+  const mark = Math.max(1e-9, num(data.markPrice));
+  const lev = Math.max(1, num(data.leverage));
+  const uPnl = num(data.unrealizedPL);
+  const initialMargin = (sizeBase * mark) / lev || 1;
   const pnlPercent = (uPnl / initialMargin) * 100;
   return pnlPercent.toFixed(2) + '%';
 }
 
-// ---- Fetch recent trades (FUTURES only) ----
+// ------------------------------
+// Trades (FUTURES only)
+// ------------------------------
 
 export async function fetchTradesForMinutes(symbol: string, productType: ProductType, minutes: number) {
   const trades: any[] = [];
@@ -162,10 +189,12 @@ export async function fetchTradesForMinutes(symbol: string, productType: Product
   return trades.filter((t) => Number(t.ts) >= cutoff);
 }
 
-// ---- Market data bundle fetch (FUTURES only) ----
+// ------------------------------
+// Market bundle (FUTURES only)
+// ------------------------------
 
 export async function fetchMarketBundle(symbol: string, bundleTimeFrame: string) {
-  const productType = resolveProductType(); // futures only
+  const productType = resolveProductType(); // e.g., 'USDT-FUTURES'
 
   const tickerRaw = await bitgetFetch('GET', '/api/v2/mix/market/ticker', { symbol, productType });
   const ticker = Array.isArray(tickerRaw) ? tickerRaw[0] : tickerRaw;
@@ -199,41 +228,47 @@ export async function fetchMarketBundle(symbol: string, bundleTimeFrame: string)
   return { ticker, candles, trades, orderbook, funding, oi, productType };
 }
 
-// ---- Compute analytics (CVD, volume profile, liquidity) ----
+// ------------------------------
+// Analytics: CVD, VP, liquidity
+// ------------------------------
 
 export function computeAnalytics(bundle: any) {
+  // normalize trades
   const normTrades = (bundle.trades || []).map((t: any) => ({
-    price: parseFloat(t.price || t.fillPrice || t.p || t[1]),
-    size: parseFloat(t.size || t.fillQuantity || t.q || t[2]),
-    side: (t.side || t.S || t[3] || '').toString().toLowerCase(),
-    ts: Number(t.ts || t.tradeTime || t[0] || Date.now()),
-  }));
+    price: num(t.price ?? t.fillPrice ?? t.p ?? (t[1] ?? NaN)),
+    size: num(t.size ?? t.fillQuantity ?? t.q ?? (t[2] ?? NaN)),
+    side: String(t.side ?? t.S ?? t[3] ?? '').toLowerCase(),
+    ts: Number(t.ts ?? t.tradeTime ?? t[0] ?? Date.now()),
+  })).filter((t: any) => Number.isFinite(t.price) && Number.isFinite(t.size) && t.size > 0);
 
-  // derive mid from current book (approx; better than tick rule only)
-  const bestBid = toNum(bundle.orderbook?.bids?.[0]?.[0] ?? bundle.orderbook?.bids?.[0]?.price);
-  const bestAsk = toNum(bundle.orderbook?.asks?.[0]?.[0] ?? bundle.orderbook?.asks?.[0]?.price);
+  // best bid/ask & mid
+  const bestBid = num(bundle.orderbook?.bids?.[0]?.[0] ?? bundle.orderbook?.bids?.[0]?.price);
+  const bestAsk = num(bundle.orderbook?.asks?.[0]?.[0] ?? bundle.orderbook?.asks?.[0]?.price);
   const spread = bestAsk > 0 && bestBid > 0 ? bestAsk - bestBid : 0;
-  const lastMid = bestAsk > 0 && bestBid > 0 ? (bestAsk + bestBid) / 2 : 0;
+  const mid = bestAsk > 0 && bestBid > 0 ? (bestAsk + bestBid) / 2 : 0;
 
+  // mid-based direction (fallback to tick rule)
   let lastPrice = normTrades[0]?.price || 0;
   const enriched = normTrades.map((tr: any) => {
     let dir = tr.side;
     if (!dir || dir === '') {
-      if (lastMid > 0) dir = tr.price >= lastMid ? 'buy' : 'sell';
-      else dir = tr.price >= lastPrice ? 'buy' : 'sell'; // fallback tick rule
+      if (mid > 0) dir = tr.price >= mid ? 'buy' : 'sell';
+      else dir = tr.price >= lastPrice ? 'buy' : 'sell';
     }
     lastPrice = tr.price;
     return { ...tr, dir };
   });
 
+  // CVD / flow
   const cvd = enriched.reduce((acc: number, t: any) => acc + (t.dir === 'buy' ? t.size : -t.size), 0);
   const buys = enriched.filter((t: any) => t.dir === 'buy').reduce((a: number, t: any) => a + t.size, 0);
   const sells = enriched.filter((t: any) => t.dir === 'sell').reduce((a: number, t: any) => a + t.size, 0);
 
+  // last price
   const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
-  const last = Number(t?.lastPr ?? t?.last ?? t?.close ?? lastPrice) || 0;
+  const last = num(t?.lastPr ?? t?.last ?? t?.close ?? lastPrice) || 0;
 
-  // bin width tied to spread (or 5 bps floor)
+  // volume profile with spread/ATR-aware bin size (use spread*3 or 5 bps min)
   const pct = Math.max(0.0005, (spread && last ? (spread / last) * 3 : 0.0005));
   const bins = new Map<number, number>();
   for (const tr of enriched) {
@@ -248,25 +283,37 @@ export function computeAnalytics(bundle: any) {
       volume: Number(vol.toFixed(6)),
     }));
 
-  const bids = (bundle.orderbook?.bids || []).map((l: any) => ({
-    price: parseFloat(l[0] || l.price),
-    size: parseFloat(l[1] || l.size),
-  }));
-  const asks = (bundle.orderbook?.asks || []).map((l: any) => ({
-    price: parseFloat(l[0] || l.price),
-    size: parseFloat(l[1] || l.size),
-  }));
+  // orderbook top walls + imbalance
+type OBLevel = { price: number; size: number };
 
-  const topWalls = {
-    bid: bids.slice().sort((a: any, b: any) => b.size - a.size).slice(0, 5),
-    ask: asks.slice().sort((a: any, b: any) => b.size - a.size).slice(0, 5),
-  };
+const bids: OBLevel[] = (bundle.orderbook?.bids || []).map((l: any): OBLevel => ({
+  price: num(l[0] ?? l.price),
+  size: num(l[1] ?? l.size),
+}));
 
-  // Simple book imbalance [-1,1]
-  const sumTop = (lvls: any[], n: number) => (lvls || []).slice(0, n).reduce((a, l) => a + (Number(l.size) || 0), 0);
-  const topBid = sumTop(bids, 5);
-  const topAsk = sumTop(asks, 5);
-  const obImb = topBid + topAsk > 0 ? (topBid - topAsk) / (topBid + topAsk) : 0;
+const asks: OBLevel[] = (bundle.orderbook?.asks || []).map((l: any): OBLevel => ({
+  price: num(l[0] ?? l.price),
+  size: num(l[1] ?? l.size),
+}));
 
-  return { cvd, buys, sells, volume_profile, topWalls, obImb, spread, last };
+const topWalls = {
+  bid: bids.slice().sort((a: OBLevel, b: OBLevel) => b.size - a.size).slice(0, 5),
+  ask: asks.slice().sort((a: OBLevel, b: OBLevel) => b.size - a.size).slice(0, 5),
+};
+
+const sumTop = (lvls: OBLevel[], n: number): number =>
+  (lvls || []).slice(0, n).reduce((acc: number, l: OBLevel) => acc + l.size, 0);
+
+const topBid = sumTop(bids, 5);
+const topAsk = sumTop(asks, 5);
+const obImb = topBid + topAsk > 0 ? (topBid - topAsk) / (topBid + topAsk) : 0;
+
+return {
+  // flow
+  cvd, buys, sells,
+  // structure
+  volume_profile, topWalls,
+  // liquidity & pricing
+  obImb, spread, last, bestBid, bestAsk,
+};
 }
