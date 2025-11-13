@@ -81,7 +81,8 @@ Respond in strict JSON ONLY.
 
 HARD RULES:
 - You MUST choose the "action" from ALLOWED_ACTIONS only.
-- You may choose "CLOSE" ONLY if CLOSE_CONDITIONS is present AND at least one of its booleans is true.
+- You may choose "CLOSE" ONLY if CLOSE_CONDITIONS is present AND at least one of its booleans is true. Holding is in that case also allowed and is up t your analisys.
+- Be strict, dont close without real pressure.
 - If signal_strength is LOW or MEDIUM => "HOLD" (unless a position is open AND CLOSE_CONDITIONS true).
 - Trade ONLY if ALL gating flags are true: spread_ok, liquidity_ok, atr_ok (and slippage_ok if provided), AND
   (for BUY require regime_trend_up=true; for SELL require regime_trend_down=true).
