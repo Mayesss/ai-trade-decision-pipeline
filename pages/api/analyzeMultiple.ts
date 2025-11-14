@@ -1,4 +1,4 @@
-// pages/api/analyzeMultiple.ts
+// api/analyzeMultiple.ts
 export const config = { runtime: 'nodejs' };
 
 import type { NextApiRequest, NextApiResponse } from 'next';
@@ -11,10 +11,9 @@ import { buildPrompt, callAI } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
 import { executeDecision, getTradeProductType } from '../../lib/trading';
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ------------------------------------------------------------------
-// Small utilities (same as in analyze.ts)
+// Small utilities (same as analyze.ts)
 // ------------------------------------------------------------------
 function parsePnlPct(p: string | undefined): number {
     if (!p) return 0;
@@ -27,9 +26,42 @@ function safeNum(x: any, def = 0): number {
     return Number.isFinite(n) ? n : def;
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ------------------------------------------------------------------
+// mapLimit: run a function over items with bounded concurrency
+// ------------------------------------------------------------------
+async function mapLimit<T, R>(
+    items: T[],
+    limit: number,
+    fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+    const results = new Array<R>(items.length);
+    let nextIndex = 0;
+
+    async function worker() {
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+            const currentIndex = nextIndex++;
+            if (currentIndex >= items.length) break;
+
+            results[currentIndex] = await fn(items[currentIndex], currentIndex);
+        }
+    }
+
+    const workers: Promise<void>[] = [];
+    const workerCount = Math.min(limit, items.length);
+    for (let i = 0; i < workerCount; i++) {
+        workers.push(worker());
+    }
+
+    await Promise.all(workers);
+    return results;
+}
+
 // ------------------------------------------------------------------
 // Robust CVD flip detection with persistence + confirmation
-// NOTE: This is in-memory and resets on cold start (serverless).
+// (same logic as in analyze.ts)
 // ------------------------------------------------------------------
 type PersistState = {
     lastFlipDir?: 'against' | 'for';
@@ -46,14 +78,14 @@ function touchPersist(key: string): PersistState {
 
 function robustCvdFlip(params: {
     side: 'long' | 'short';
-    cvdShort: number;
-    cvdMedium?: number;
-    midRetBps?: number;
-    obImb?: number;
-    symbolKey: string;
-    minHoldMs?: number;
-    nowTs?: number;
-    enteredAt?: number;
+    cvdShort: number; // short-window CVD
+    cvdMedium?: number; // optional
+    midRetBps?: number; // mid-price change (bps) over the short window
+    obImb?: number; // order-book imbalance [-1,1]
+    symbolKey: string; // `${symbol}:${timeFrame}`
+    minHoldMs?: number; // default 15m
+    nowTs?: number; // Date.now()
+    enteredAt?: number; // if tracked
 }): boolean {
     const {
         side,
@@ -67,8 +99,10 @@ function robustCvdFlip(params: {
         enteredAt,
     } = params;
 
+    // Min-hold: ignore flips in the first bar after entry
     if (enteredAt && nowTs - enteredAt < minHoldMs) return false;
 
+    // Raw sign flip against side?
     const against = (side === 'long' && cvdShort < 0) || (side === 'short' && cvdShort > 0);
     if (!against) {
         const s = touchPersist(symbolKey);
@@ -77,7 +111,10 @@ function robustCvdFlip(params: {
         return false;
     }
 
+    // Magnitude: at least 5 units or 20% of medium-window CVD
     const magOk = Math.abs(cvdShort) >= Math.max(5, Math.abs(cvdMedium) * 0.2);
+
+    // Confirmation by price or book imbalance
     const confOk =
         side === 'long'
             ? midRetBps <= -2 || obImb <= -0.15
@@ -86,10 +123,11 @@ function robustCvdFlip(params: {
     if (!(magOk && confOk)) {
         const s = touchPersist(symbolKey);
         s.lastFlipDir = 'against';
-        s.streak = 0;
+        s.streak = 0; // don't count if not confirmed
         return false;
     }
 
+    // Persistence: require 2 consecutive ticks of confirmed "against"
     const s = touchPersist(symbolKey);
     if (s.lastFlipDir === 'against') s.streak += 1;
     else s.streak = 1;
@@ -98,6 +136,7 @@ function robustCvdFlip(params: {
     return s.streak >= 2;
 }
 
+// Compute mid-return in bps vs previous candle close
 function computeMidRetBps(bundle: any): number {
     const bids = bundle?.orderbook?.bids;
     const asks = bundle?.orderbook?.asks;
@@ -113,10 +152,8 @@ function computeMidRetBps(bundle: any): number {
 }
 
 // ------------------------------------------------------------------
-// Core per-symbol runner
+// Core per-symbol runner with retry & 429 backoff
 // ------------------------------------------------------------------
-type ProductType = 'usdt-futures' | 'usdc-futures' | 'coin-futures';
-
 async function runAnalysisForSymbol(params: {
     symbol: string;
     timeFrame: string;
@@ -127,12 +164,11 @@ async function runAnalysisForSymbol(params: {
     const { symbol, timeFrame, dryRun, sideSizeUSDT, productType } = params;
 
     const MAX_RETRIES = 3;
-    const BASE_DELAY_MS = 300; // increase if you still get 429
+    const BASE_DELAY_MS = 300; // base delay for 429 backoff
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
-            // ---- your existing logic goes here ----
-            // 1) Parallel baseline fetches
+            // 1) Parallel baseline fetches (light bundle)
             const [positionInfo, news, bundleLight, indicators] = await Promise.all([
                 fetchPositionInfo(symbol),
                 fetchNewsSentiment(symbol),
@@ -145,6 +181,7 @@ async function runAnalysisForSymbol(params: {
                     ? `${positionInfo.holdSide}, entryPrice: ${positionInfo.entryPrice}, currentPnl=${positionInfo.currentPnl}`
                     : 'none';
 
+            // Persist state for robustCvdFlip
             const persistKey = `${symbol}:${timeFrame}`;
             const pstate = touchPersist(persistKey);
             if (positionInfo.status === 'open') {
@@ -155,11 +192,14 @@ async function runAnalysisForSymbol(params: {
                     pstate.lastFlipDir = undefined;
                 }
             } else {
+                // clear on flat
                 persist.delete(persistKey);
             }
 
+            // 2) Analytics from light bundle (no tape)
             const analyticsLight = computeAnalytics({ ...bundleLight, trades: [] });
 
+            // 3) Gates on light data
             const gatesOut = getGates({
                 symbol,
                 bundle: bundleLight,
@@ -169,6 +209,7 @@ async function runAnalysisForSymbol(params: {
                 positionOpen: positionInfo.status === 'open',
             });
 
+            // Short-circuit if no trade allowed and no open position
             if (gatesOut.preDecision && positionInfo.status !== 'open') {
                 return {
                     symbol,
@@ -186,6 +227,7 @@ async function runAnalysisForSymbol(params: {
                 };
             }
 
+            // 4) Decide whether we need tape; if yes, fetch full bundle
             const needTape =
                 positionInfo.status === 'open' ||
                 gatesOut.allowed_actions.some((a: string) => a === 'BUY' || a === 'SELL');
@@ -207,6 +249,7 @@ async function runAnalysisForSymbol(params: {
                 usedTape = true;
             }
 
+            // 5) CLOSE conditions (not yet wired into prompt but computed)
             let close_conditions:
                 | {
                       pnl_gt_pos?: boolean;
@@ -241,13 +284,14 @@ async function runAnalysisForSymbol(params: {
                 });
 
                 close_conditions = {
-                    pnl_gt_pos: pnlPct >= 1.0,
-                    pnl_lt_neg: pnlPct <= -1.0,
+                    pnl_gt_pos: pnlPct >= 1.0, // take profit ≥ +1%
+                    pnl_lt_neg: pnlPct <= -1.0, // stop loss ≤ -1%
                     opposite_regime,
                     cvd_flip,
                 };
             }
 
+            // 6) Build prompt
             const { system, user } = buildPrompt(
                 symbol,
                 timeFrame,
@@ -258,10 +302,13 @@ async function runAnalysisForSymbol(params: {
                 indicators,
             );
 
+            // 7) AI decision
             const decision = await callAI(system, user);
+
+            // 8) Execute (dry run unless explicitly disabled)
             const execRes = await executeDecision(symbol, sideSizeUSDT, decision, productType, dryRun);
 
-
+            // 9) Return result for this symbol
             return {
                 symbol,
                 timeFrame,
@@ -271,17 +318,16 @@ async function runAnalysisForSymbol(params: {
                 gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
                 usedTape,
             };
-            // ---- end of existing logic ----
         } catch (err: any) {
             const msg = err?.message || String(err);
 
-            // hard-ignore obviously invalid/removed symbols so we don't keep hammering them
+            // Invalid/removed symbol (don’t retry)
             if (msg.includes('40309') || msg.includes('40034')) {
                 console.error(`Skipping invalid/removed symbol ${symbol}:`, msg);
                 return { symbol, error: msg };
             }
 
-            // if 429 and we still have retries left -> backoff then retry
+            // Rate limited — backoff and retry
             if (msg.includes('429') && attempt < MAX_RETRIES) {
                 const delay = BASE_DELAY_MS * (attempt + 1);
                 console.warn(`Rate limited on ${symbol}, retrying in ${delay}ms (attempt ${attempt + 1})`);
@@ -289,19 +335,20 @@ async function runAnalysisForSymbol(params: {
                 continue;
             }
 
-            // any other error (or out of retries)
+            // Any other error or out of retries
             console.error(`Error analyzing ${symbol}:`, msg);
             return { symbol, error: msg };
         }
     }
 
-    // should never hit here, but just in case
+    // Fallback (shouldn't really hit)
     return { symbol: params.symbol, error: 'Unknown error after retries' };
 }
 
 // ------------------------------------------------------------------
-// Multi-symbol handler
+// Multi-symbol handler with max 5 concurrent analyses
 // ------------------------------------------------------------------
+type ProductType = 'usdt-futures' | 'usdc-futures' | 'coin-futures';
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     try {
         if (req.method !== 'POST') {
@@ -323,16 +370,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const sideSizeUSDT: number = Number(body.notional || 10);
         const productType = getTradeProductType();
 
-        const results = await Promise.all(
-            symbols.map((sym) =>
-                runAnalysisForSymbol({
+        const MAX_CONCURRENCY = 5;
+        const PER_TASK_DELAY_MS = 150; // optional extra delay per task, per worker
+
+        const results = await mapLimit(
+            symbols,
+            MAX_CONCURRENCY,
+            async (sym, idx) => {
+                const result = await runAnalysisForSymbol({
                     symbol: String(sym),
                     timeFrame,
                     dryRun,
                     sideSizeUSDT,
                     productType,
-                }),
-            ),
+                });
+
+                if (PER_TASK_DELAY_MS > 0) {
+                    await sleep(PER_TASK_DELAY_MS);
+                }
+
+                return result;
+            },
         );
 
         return res.status(200).json({
