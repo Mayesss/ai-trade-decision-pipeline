@@ -262,25 +262,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         // 6) Build prompt with allowed_actions, gates, and close_conditions
-        const { system, user, allowed_actions } = buildPrompt(
-            symbol,
-            timeFrame,
-            bundle,
-            analytics,
-            positionForPrompt,
-            news,
-            indicators,
-            {
-                allowed_actions: gatesOut.allowed_actions,
-                gates: gatesOut.gates,
-                // includeMetrics: false,     // you chose to keep prompt lean
-                // metrics: gatesOut.metrics, // omit for now
-                close_conditions,
-            },
+
+        const { system, user } = buildPrompt(
+            symbol, // e.g. "BTCUSDT"
+            timeFrame, // e.g. "45m"
+            bundle, // from fetchMarketBundle(...)
+            analytics, // from computeAnalytics(bundle)
+            positionForPrompt, // "none" | JSON string like 'open long @ ...' (your current format)
+            news, // e.g. "neutral" | "positive" | "negative"
+            indicators, // from calculateMultiTFIndicators(symbol)
         );
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions)
-        const decision = await callAI(system, user, { allowed_actions, close_conditions });
+        const decision = await callAI(system, user);
 
         // 8) Execute (dry run unless explicitly disabled)
         const execRes = await executeDecision(symbol, sideSizeUSDT, decision, productType, dryRun);
