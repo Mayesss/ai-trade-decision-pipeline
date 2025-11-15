@@ -14,6 +14,7 @@ export function buildPrompt(
     position_status: string = 'none',
     news_sentiment: string = 'neutral',
     indicators: { micro: string; macro: string },
+    gates: any,
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
@@ -57,37 +58,31 @@ export function buildPrompt(
     const slope21_1m = readNum('slopeEMA21_10', micro) ?? 0; // % per bar
     const atr_1m = readNum('ATR', micro);
     const atr_1h = readNum('ATR', macro);
+    const rsi_1m = readNum('RSI', micro);
+    const rsi_1h = readNum('RSI', macro); 
 
-    // --- Gating flags (existing) ---
+    // --- KEY METRICS (VALUES, NOT JUDGMENTS) ---
     const last = analytics.last || price || 0;
-    const spread = analytics.spread || 0;
-    const spread_ok = last > 0 ? spread / last < 0.0004 : false; // < 4 bps
+    const spread_bps = last > 0 ? ((analytics.spread || 0) / last) * 1e4 : 999;
+    const atr_pct_1h = last > 0 && atr_1h ? (atr_1h / last) * 100 : 0;
 
-    const sumTop = (lvls: any[], n: number) =>
-        (lvls || []).slice(0, n).reduce((a, l) => a + Number(l[1] ?? l.size ?? 0), 0);
-    const topBid = sumTop(bundle.orderbook?.bids || [], 5);
-    const topAsk = sumTop(bundle.orderbook?.asks || [], 5);
-    const liquidity_ok = topBid + topAsk > 0 ? topBid > topAsk * 0.6 : false;
+    // Calculate extension (distance from EMA20 in 1m-ATRs)
+    const distance_from_ema_atr =
+        Number.isFinite(atr_1m as number) && (atr_1m as number) > 0 && Number.isFinite(ema20_1m as number)
+            ? (last - (ema20_1m as number)) / (atr_1m as number)
+            : 0;
 
-    // --- Regime gate (macro trend + long-term bias) ---
-    const regime_trend_up = (ema20_1h ?? -Infinity) > (ema50_1h ?? Infinity) && price > (sma200_1h ?? -Infinity);
-    const regime_trend_down = (ema20_1h ?? Infinity) < (ema50_1h ?? -Infinity) && price < (sma200_1h ?? Infinity);
+    // This is the data for the AI
+    const key_metrics =
+        `spread_bps=${spread_bps.toFixed(2)}, book_imbalance=${analytics.obImb.toFixed(2)}, ` +
+        `atr_pct_1h=${atr_pct_1h.toFixed(2)}%, rsi_1m=${rsi_1m}, rsi_1h=${rsi_1h}, ` +
+        `micro_slope_pct_per_bar=${slope21_1m.toFixed(4)}, ` +
+        `dist_from_ema20_1m_in_atr=${distance_from_ema_atr.toFixed(2)}`;
 
-    // --- ATR gate (vol window sanity) ---
-    const atrAbs = Number.isFinite(atr_1h as number) ? (atr_1h as number) : NaN;
-    const atr_ok = Number.isFinite(atrAbs) && last > 0 ? atrAbs / last > 0.001 && atrAbs / last < 0.01 : true; // 10–100 bps
-
-    // --- Momentum & extension gates (1m) ---
-    const slopeThresh = 0.01; // 0.01% per 1m bar (tune 0.005–0.02)
-    const momentum_long = (ema9_1m ?? 0) > (ema21_1m ?? 0) && slope21_1m > slopeThresh;
-    const momentum_short = (ema9_1m ?? 0) < (ema21_1m ?? 0) && slope21_1m < -slopeThresh;
-
-    // Extension guard vs EMA20(1m)
-    const extension_ok =
-        Number.isFinite(atr_1m as number) && Number.isFinite(ema20_1m as number) && last > 0
-            ? Math.abs(last - (ema20_1m as number)) / (atr_1m as number) <= 1.5
-            : true;
-
+    // Gating flags (we still pass the booleans for the AI to reference)
+    const gating_flags =
+        `regime_trend_up=${gates.regime_trend_up}, regime_trend_down=${gates.regime_trend_down}, `
+        + `momentum_long=${gates.momentum_long}, momentum_short=${gates.momentum_short}`;
     // Costs (educate the model)
     const taker_round_trip_bps = 5; // 5 bps
     const slippage_bps = 2;
@@ -96,31 +91,36 @@ export function buildPrompt(
         `fees=${taker_round_trip_bps}bps round-trip, slippage=${slippage_bps}bps, ` +
         `stop=1.5xATR(1H), take_profit=2.5xATR(1H), time_stop=${parseInt(timeframe, 10) * 3} minutes`;
 
-    const gating_flags =
-        `regime_trend_up=${regime_trend_up}, regime_trend_down=${regime_trend_down}, ` +
-        `spread_ok=${spread_ok}, liquidity_ok=${liquidity_ok}, atr_ok=${atr_ok}, ` +
-        `momentum_long=${momentum_long}, momentum_short=${momentum_short}, extension_ok=${extension_ok}`;
 
     const sys = `
 You are an expert crypto market microstructure analyst and quantitative trading assistant.
+Your goal is to find high-probability, short-term trades. You must be risk-averse.
 Respond in strict JSON ONLY.
 
-HARD RULES:
-- If signal_strength is LOW or MEDIUM => "HOLD" (unless a position is open, then "CLOSE" is allowed).
-- Trade ONLY if ALL base gates are true: spread_ok, liquidity_ok, atr_ok, extension_ok.
-- For BUY, ALSO require: regime_trend_up=true AND momentum_long=true.
-- For SELL, ALSO require: regime_trend_down=true AND momentum_short=true.
-- Consider costs (taker + slippage) as provided; if expected edge <= costs => HOLD.
-- Do not predict beyond 1 hour.
+GUIDELINES & HEURISTICS:
+- **Costs**: Your primary goal is to overcome costs (fees + slippage). If the signal is weak, HOLD.
+- **Signal Strength**: LOW/MEDIUM signal strength should always result in "HOLD" (unless a position is open).
+- **Base Conditions**: You should heavily prefer to trade ONLY if conditions are good.
+  - Good: 'spread_bps' < 4, 'atr_pct_1h' between 0.1 and 1.5, 'book_imbalance' favors the trade direction.
+  - Bad: 'dist_from_ema20_1m_in_atr' > 1.5 (over-extended). If so, prefer "HOLD".
+- **BUY Signal**: Requires 'regime_trend_up'=true AND 'momentum_long'=true.
+  - Confirmation: Look for positive 'book_imbalance' (e.g., > 0.1), strong tape (CVD > 0), and 'rsi_1m' not overbought (e.g., < 75).
+- **SELL Signal**: Requires 'regime_trend_down'=true AND 'momentum_short'=true.
+  - Confirmation: Look for negative 'book_imbalance' (e.g., < -0.1), strong tape (CVD < 0), and 'rsi_1m' not oversold (e.g., > 25).
+- **Prediction Horizon**: Do not predict beyond 1 hour.
 `.trim();
 
+    // --- NEW USER PROMPT ---
     const user = `
 You are analyzing ${symbol} on a ${parseInt(timeframe, 10)}-minute horizon (simulation).
 
 RISK/COSTS:
 - ${risk_policy}
 
-GATING:
+KEY METRICS (Values):
+- ${key_metrics}
+
+GATING (Judgments):
 - ${gating_flags}
 
 DATA INPUTS (with explicit windows):
@@ -135,17 +135,15 @@ DATA INPUTS (with explicit windows):
 - Macro (1h, last 30 candles): ${indicators.macro}
 
 TASKS:
-1) Evaluate short-term bias (UP/DOWN/NEUTRAL) from order flow, liquidity, derivatives, and indicators.
+1) Evaluate short-term bias (UP/DOWN/NEUTRAL) from all data.
 2) Output one action only: "BUY", "SELL", "HOLD", or "CLOSE".
    - If no position is open, return BUY/SELL/HOLD.
    - If a position is open, return HOLD or CLOSE only.
-   - If currentPnL > 1% but signal weakens/CVD flips, consider "CLOSE".
-   - If currentPnL < -1% with building pressure against, consider "CLOSE".
-3) Assess signal strength: LOW, MEDIUM, or HIGH (volume clarity & book imbalance).
-4) Summarize in ≤2 lines (choppy/trending/trapping etc.)
+3) Assess signal strength: LOW, MEDIUM, or HIGH.
+4) Summarize in ≤2 lines.
 
 JSON OUTPUT (strict):
-{"action":"BUY|SELL|HOLD|CLOSE","bias":"UP|DOWN|NEUTRAL","signal_strength":"LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale (flow/liquidity/derivatives/technicals/sentiment)"}
+{"action":"BUY|SELL|HOLD|CLOSE","bias":"UP|DOWN|NEUTRAL","signal_strength":"LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale (flow/liquidity/technicals/sentiment/metrics)"}
 `.trim();
 
     return { system: sys, user };

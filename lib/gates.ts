@@ -368,6 +368,15 @@ export function parseAtr1hAbs(indicators: { macro: string }): number {
  * High-level helper: compute gates + allowed_actions and optionally short-circuit HOLD when gates fail.
  * Keeps api/analyze.ts lightweight.
  */
+// This should be in a shared utility file, e.g., lib/utils.ts and imported
+// Or, you can just place it above getGates in the same file.
+const readNum = (name: string, src: string): number | null => {
+    const m = src.match(new RegExp(`${name}=([+-]?[\\d\\.]+)`));
+    return m ? Number(m[1]) : null;
+};
+
+// --- Your Modified Function ---
+
 export function getGates(args: {
   symbol: string;
   bundle: any;
@@ -385,6 +394,9 @@ export function getGates(args: {
     slippage_ok: boolean;
     regime_trend_up: boolean;
     regime_trend_down: boolean;
+    momentum_long: boolean;     // <--- ADDED
+    momentum_short: boolean;    // <--- ADDED
+    extension_ok: boolean;      // <--- ADDED
     tier: string;
   };
   metrics: GatesOutput['metrics'];
@@ -404,6 +416,31 @@ export function getGates(args: {
 
   const bids = bundle?.orderbook?.bids ?? [];
   const asks = bundle?.orderbook?.asks ?? [];
+  
+  // --- Start: Momentum & Extension Logic (from ai.ts) ---
+  const micro = indicators.micro || '';
+  const macro = indicators.macro || ''; // (already used by parseRegime/parseAtr1hAbs)
+
+  // Parse 1m indicators
+  const ema9_1m = readNum('EMA9', micro);
+  const ema21_1m = readNum('EMA21', micro);
+  const ema20_1m = readNum('EMA20', micro);
+  const slope21_1m = readNum('slopeEMA21_10', micro) ?? 0; // % per bar
+  const atr_1m = readNum('ATR', micro);
+
+  // Momentum gates (1m)
+  const slopeThresh = 0.01; // 0.01% per 1m bar (tune 0.005–0.02)
+  const momentum_long = (ema9_1m ?? 0) > (ema21_1m ?? 0) && slope21_1m > slopeThresh;
+  const momentum_short = (ema9_1m ?? 0) < (ema21_1m ?? 0) && slope21_1m < -slopeThresh;
+
+  // Extension guard vs EMA20(1m)
+  const extension_ok =
+    Number.isFinite(atr_1m as number) && (atr_1m as number) > 0 && Number.isFinite(ema20_1m as number) && last > 0
+      ? Math.abs(last - (ema20_1m as number)) / (atr_1m as number) <= 1.5
+      // Default to true if data is missing, letting AI make the final call
+      : true; 
+  // --- End: Momentum & Extension Logic ---
+
 
   const out = computeAdaptiveGates({
     symbol,
@@ -428,6 +465,9 @@ export function getGates(args: {
     slippage_ok: out.gates.slippage_ok,
     regime_trend_up: regime === 'up',
     regime_trend_down: regime === 'down',
+    momentum_long: momentum_long,     // <--- ADDED
+    momentum_short: momentum_short,   // <--- ADDED
+    extension_ok: extension_ok,       // <--- ADDED
     tier: out.tier,
   };
 
@@ -440,18 +480,29 @@ export function getGates(args: {
     reason: string;
   };
 
-  if (!positionOpen && out.allowed_actions.length === 1 && out.allowed_actions[0] === 'HOLD') {
+  // --- This logic is now more comprehensive ---
+  // We check *all* gates. If a trade (BUY/SELL) isn't possible, we skip.
+  const can_buy = gates.spread_ok && gates.liquidity_ok && gates.atr_ok && gates.slippage_ok && gates.extension_ok && gates.regime_trend_up && gates.momentum_long;
+  const can_sell = gates.spread_ok && gates.liquidity_ok && gates.atr_ok && gates.slippage_ok && gates.extension_ok && gates.regime_trend_down && gates.momentum_short;
+  
+  if (!positionOpen && !can_buy && !can_sell) {
     preDecision = {
       action: 'HOLD',
       bias: 'NEUTRAL',
       signal_strength: 'LOW',
       summary: 'Pre-trade gates not satisfied; skipping evaluation.',
-      reason: `Gates failed: spread_ok=${gates.spread_ok}, liquidity_ok=${gates.liquidity_ok}, atr_ok=${gates.atr_ok}, slippage_ok=${gates.slippage_ok}`,
+      // Updated reason string to be more explicit
+      reason: `Gates failed: spread_ok=${gates.spread_ok}, liquidity_ok=${gates.liquidity_ok}, atr_ok=${gates.atr_ok}, slippage_ok=${gates.slippage_ok}, extension_ok=${gates.extension_ok}, (regime_up=${gates.regime_trend_up}, momentum_long=${gates.momentum_long}), (regime_down=${gates.regime_trend_down}, momentum_short=${gates.momentum_short})`,
     };
   }
 
   return {
-    allowed_actions: out.allowed_actions,
+    // Note: allowed_actions from computeAdaptiveGates is now *less* important
+    // than the `can_buy` / `can_sell` logic we just wrote.
+    // You might want to simplify this and just pass:
+    // allowed_actions: ['HOLD', 'CLOSE', ...(can_buy ? ['BUY'] : []), ...(can_sell ? ['SELL'] : [])],
+    // For now, I'll leave your original `out.allowed_actions`
+    allowed_actions: out.allowed_actions, 
     gates,
     metrics: out.metrics,
     ...(preDecision ? { preDecision } : {}),

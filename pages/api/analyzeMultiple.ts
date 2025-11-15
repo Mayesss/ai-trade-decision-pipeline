@@ -213,16 +213,13 @@ async function runAnalysisForSymbol(params: {
             if (gatesOut.preDecision && positionInfo.status !== 'open') {
                 return {
                     symbol,
-                    timeFrame,
-                    dryRun,
                     decision: gatesOut.preDecision,
                     execRes: {
                         placed: false,
-                        orderId: null,
-                        clientOid: null,
                         reason: 'gates_short_circuit',
                     },
                     gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                    promptSkipped: true,
                     usedTape: false,
                 };
             }
@@ -300,7 +297,7 @@ async function runAnalysisForSymbol(params: {
                 positionForPrompt,
                 news,
                 indicators,
-            );
+                gatesOut.gates            );
 
             // 7) AI decision
             const decision = await callAI(system, user);
@@ -311,11 +308,12 @@ async function runAnalysisForSymbol(params: {
             // 9) Return result for this symbol
             return {
                 symbol,
-                timeFrame,
-                dryRun,
                 decision,
                 execRes,
                 gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                close_conditions,
+                promptSkipped: false,
+                prompt: { system, user },
                 usedTape,
             };
         } catch (err: any) {
