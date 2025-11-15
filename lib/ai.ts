@@ -12,7 +12,7 @@ export function buildPrompt(
     bundle: any,
     analytics: any,
     position_status: string = 'none',
-    news_sentiment: string = 'neutral',
+    news_sentiment: string | null = null,
     indicators: { micro: string; macro: string },
     gates: any // <--- Retain the gates object for the base gate checks
 ) {
@@ -34,6 +34,12 @@ export function buildPrompt(
     const derivatives = `funding=${bundle.funding?.[0]?.fundingRate ?? 'n/a'}, openInterest=${
         bundle.oi?.openInterestList?.[0]?.size ?? bundle.oi?.openInterestList?.[0]?.openInterest ?? 'n/a'
     }`;
+
+    const normalizedNewsSentiment =
+        typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
+    const newsSentimentBlock = normalizedNewsSentiment
+        ? `- News sentiment ONLY: ${normalizedNewsSentiment.toLowerCase()}\n`
+        : '';
 
     const vol_profile_str = (analytics.volume_profile || [])
         .slice(0, 10)
@@ -127,8 +133,7 @@ DATA INPUTS (with explicit windows):
 - Order flow summary (1m tape/CVD, last 5–15m): ${order_flow}
 - Order book & liquidity (snapshot): ${liquidity_data}
 - Funding rate & open interest (last 30–60m): ${derivatives}
-- News sentiment ONLY: ${news_sentiment.toLowerCase()}
-- Current position: ${position_status}
+${newsSentimentBlock}- Current position: ${position_status}
 - Technical (short-term, 1m, last 30 candles): ${indicators.micro}
 - Macro (1h, last 30 candles): ${indicators.macro}
 

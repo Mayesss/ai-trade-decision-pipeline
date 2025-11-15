@@ -76,7 +76,7 @@ export function getDominantSentiment(payload: Payload): Sentiment {
 }
 
 /** Fetch latest CoinDesk news and compute overall sentiment. */
-export async function fetchNewsSentiment(symbolOrBase: string): Promise<Sentiment> {
+export async function fetchNewsSentiment(symbolOrBase: string): Promise<Sentiment | null> {
     const base = baseFromSymbol(symbolOrBase);
     const listPath = COINDESK_NEWS_LIST_PATH || '/news/v1/article/list';
 
@@ -90,8 +90,8 @@ export async function fetchNewsSentiment(symbolOrBase: string): Promise<Sentimen
     try {
         payload = await coindeskFetch(listPath, query);
     } catch (e) {
-        console.log('Error fetching CoinDesk news:', e);
-        return 'NEUTRAL';
+        // console.warn('Error fetching CoinDesk news:', e);
+        return null;
     }
 
     return getDominantSentiment(payload) || 'NEUTRAL';

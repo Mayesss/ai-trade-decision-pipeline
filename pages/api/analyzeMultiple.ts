@@ -169,12 +169,12 @@ async function runAnalysisForSymbol(params: {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
             // 1) Parallel baseline fetches (light bundle)
-            const [positionInfo, news, bundleLight, indicators] = await Promise.all([
-                fetchPositionInfo(symbol),
-                fetchNewsSentiment(symbol),
-                fetchMarketBundle(symbol, timeFrame, { includeTrades: false }),
-                calculateMultiTFIndicators(symbol),
-            ]);
+                const [positionInfo, newsSentiment, bundleLight, indicators] = await Promise.all([
+                    fetchPositionInfo(symbol),
+                    fetchNewsSentiment(symbol),
+                    fetchMarketBundle(symbol, timeFrame, { includeTrades: false }),
+                    calculateMultiTFIndicators(symbol),
+                ]);
 
             const positionForPrompt =
                 positionInfo.status === 'open'
@@ -295,7 +295,7 @@ async function runAnalysisForSymbol(params: {
                 bundle,
                 analytics,
                 positionForPrompt,
-                news,
+                newsSentiment ?? null,
                 indicators,
                 gatesOut.gates            );
 

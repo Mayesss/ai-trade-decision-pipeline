@@ -139,7 +139,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 1) Product & parallel baseline fetches (fast)
         const productType = getTradeProductType();
 
-        const [positionInfo, news, bundleLight, indicators] = await Promise.all([
+        const [positionInfo, newsSentiment, bundleLight, indicators] = await Promise.all([
             fetchPositionInfo(symbol),
             fetchNewsSentiment(symbol),
             // Light bundle: skip tape (fills)
@@ -269,7 +269,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             bundle, // from fetchMarketBundle(...)
             analytics, // from computeAnalytics(bundle)
             positionForPrompt, // "none" | JSON string like 'open long @ ...' (your current format)
-            news, // e.g. "neutral" | "positive" | "negative"
+            newsSentiment ?? null, // omit from prompt if unavailable
             indicators, // from calculateMultiTFIndicators(symbol)
             gatesOut.gates, // from getGates(...)
         );
