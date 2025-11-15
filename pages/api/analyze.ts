@@ -271,6 +271,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             positionForPrompt, // "none" | JSON string like 'open long @ ...' (your current format)
             news, // e.g. "neutral" | "positive" | "negative"
             indicators, // from calculateMultiTFIndicators(symbol)
+            gatesOut.gates, // from getGates(...)
         );
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions)
