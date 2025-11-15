@@ -14,11 +14,12 @@ export function buildPrompt(
     position_status: string = 'none',
     news_sentiment: string = 'neutral',
     indicators: { micro: string; macro: string },
-    gates: any,
+    gates: any // <--- Retain the gates object for the base gate checks
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
     const change = Number(t?.change24h ?? t?.changeUtc24h ?? t?.chgPct);
+    const last = price; // Use price as 'last'
 
     const market_data = `price=${price}, change24h=${Number.isFinite(change) ? change : 'n/a'}`;
 
@@ -45,44 +46,34 @@ export function buildPrompt(
         return m ? Number(m[1]) : null;
     };
 
-    // ---- Extract indicators (micro = 1m, macro = 1H) ----
+    // ---- Extract indicators for raw metrics (Micro = 1m, Macro = 1H) ----
     const micro = indicators.micro || '';
     const macro = indicators.macro || '';
-
-    const ema9_1m = readNum('EMA9', micro);
-    const ema21_1m = readNum('EMA21', micro);
+    
+    // Technical values we want the AI to judge (values, not booleans)
     const ema20_1m = readNum('EMA20', micro);
-    const ema20_1h = readNum('EMA20', macro);
-    const ema50_1h = readNum('EMA50', macro);
-    const sma200_1h = readNum('SMA200', macro);
     const slope21_1m = readNum('slopeEMA21_10', micro) ?? 0; // % per bar
     const atr_1m = readNum('ATR', micro);
     const atr_1h = readNum('ATR', macro);
     const rsi_1m = readNum('RSI', micro);
-    const rsi_1h = readNum('RSI', macro); 
-
+    const rsi_1h = readNum('RSI', macro);
+    
     // --- KEY METRICS (VALUES, NOT JUDGMENTS) ---
-    const last = analytics.last || price || 0;
-    const spread_bps = last > 0 ? ((analytics.spread || 0) / last) * 1e4 : 999;
+    const spread_bps = last > 0 ? (analytics.spread || 0) / last * 1e4 : 999;
     const atr_pct_1h = last > 0 && atr_1h ? (atr_1h / last) * 100 : 0;
-
+    
     // Calculate extension (distance from EMA20 in 1m-ATRs)
     const distance_from_ema_atr =
         Number.isFinite(atr_1m as number) && (atr_1m as number) > 0 && Number.isFinite(ema20_1m as number)
             ? (last - (ema20_1m as number)) / (atr_1m as number)
             : 0;
 
-    // This is the data for the AI
     const key_metrics =
         `spread_bps=${spread_bps.toFixed(2)}, book_imbalance=${analytics.obImb.toFixed(2)}, ` +
         `atr_pct_1h=${atr_pct_1h.toFixed(2)}%, rsi_1m=${rsi_1m}, rsi_1h=${rsi_1h}, ` +
         `micro_slope_pct_per_bar=${slope21_1m.toFixed(4)}, ` +
         `dist_from_ema20_1m_in_atr=${distance_from_ema_atr.toFixed(2)}`;
-
-    // Gating flags (we still pass the booleans for the AI to reference)
-    const gating_flags =
-        `regime_trend_up=${gates.regime_trend_up}, regime_trend_down=${gates.regime_trend_down}, `
-        + `momentum_long=${gates.momentum_long}, momentum_short=${gates.momentum_short}`;
+    
     // Costs (educate the model)
     const taker_round_trip_bps = 5; // 5 bps
     const slippage_bps = 2;
@@ -91,6 +82,14 @@ export function buildPrompt(
         `fees=${taker_round_trip_bps}bps round-trip, slippage=${slippage_bps}bps, ` +
         `stop=1.5xATR(1H), take_profit=2.5xATR(1H), time_stop=${parseInt(timeframe, 10) * 3} minutes`;
 
+    // We only pass the BASE gates now, as the AI will judge the strategy gates using metrics
+    const base_gating_flags =
+        `spread_ok=${gates.spread_ok}, liquidity_ok=${gates.liquidity_ok}, atr_ok=${gates.atr_ok}, slippage_ok=${gates.slippage_ok}`;
+        
+    // We still pass the Regime for a strong trend bias signal
+    const regime_flags =
+        `regime_trend_up=${gates.regime_trend_up}, regime_trend_down=${gates.regime_trend_down}`;
+
 
     const sys = `
 You are an expert crypto market microstructure analyst and quantitative trading assistant.
@@ -98,30 +97,29 @@ Your goal is to find high-probability, short-term trades. You must be risk-avers
 Respond in strict JSON ONLY.
 
 GUIDELINES & HEURISTICS:
-- **Costs**: Your primary goal is to overcome costs (fees + slippage). If the signal is weak, HOLD.
-- **Signal Strength**: LOW/MEDIUM signal strength should always result in "HOLD" (unless a position is open).
-- **Base Conditions**: You should heavily prefer to trade ONLY if conditions are good.
-  - Good: 'spread_bps' < 4, 'atr_pct_1h' between 0.1 and 1.5, 'book_imbalance' favors the trade direction.
-  - Bad: 'dist_from_ema20_1m_in_atr' > 1.5 (over-extended). If so, prefer "HOLD".
-- **BUY Signal**: Requires 'regime_trend_up'=true AND 'momentum_long'=true.
-  - Confirmation: Look for positive 'book_imbalance' (e.g., > 0.1), strong tape (CVD > 0), and 'rsi_1m' not overbought (e.g., < 75).
-- **SELL Signal**: Requires 'regime_trend_down'=true AND 'momentum_short'=true.
-  - Confirmation: Look for negative 'book_imbalance' (e.g., < -0.1), strong tape (CVD < 0), and 'rsi_1m' not oversold (e.g., > 25).
+- **Base Gates**: Trade ONLY if ALL base gates are TRUE: spread_ok, liquidity_ok, atr_ok, slippage_ok. If any is FALSE, HOLD.
+- **Costs**: Your primary goal is to overcome costs (fees + slippage). If expected edge <= costs, HOLD.
+- **Signal Strength**: If signal_strength is LOW or MEDIUM => "HOLD" (unless closing an open position).
+- **Extension/Fading**: If 'dist_from_ema20_1m_in_atr' is > 1.5 (over-extended) or < -1.5, consider fading the move or prioritizing "HOLD" unless other signals are overwhelming.
+- **BUY Signal**: Prefer if 'regime_trend_up'=true. Requires positive confirmation from 'book_imbalance' (> 0.1), positive CVD, and 'micro_slope_pct_per_bar' > 0.005.
+- **SELL Signal**: Prefer if 'regime_trend_down'=true. Requires negative confirmation from 'book_imbalance' (< -0.1), negative CVD, and 'micro_slope_pct_per_bar' < -0.005.
 - **Prediction Horizon**: Do not predict beyond 1 hour.
 `.trim();
 
-    // --- NEW USER PROMPT ---
     const user = `
 You are analyzing ${symbol} on a ${parseInt(timeframe, 10)}-minute horizon (simulation).
 
 RISK/COSTS:
 - ${risk_policy}
 
-KEY METRICS (Values):
-- ${key_metrics}
+BASE GATES (Filter for tradeability):
+- ${base_gating_flags}
 
-GATING (Judgments):
-- ${gating_flags}
+STRATEGY BIAS (Macro Trend):
+- ${regime_flags}
+
+KEY METRICS (Values for Judgment):
+- ${key_metrics}
 
 DATA INPUTS (with explicit windows):
 - Current price and % change (now): ${market_data}
