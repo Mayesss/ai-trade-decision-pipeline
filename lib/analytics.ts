@@ -21,6 +21,7 @@ export type PositionInfo =
           symbol: string;
           holdSide: 'long' | 'short';
           entryPrice: string;
+          entryTimestamp?: number;
           posMode?: 'one_way_mode' | 'hedge_mode';
           marginCoin?: string;
           available?: string;
@@ -36,6 +37,11 @@ type OBLevel = { price: number; size: number };
 function num(x: any, def = 0): number {
     const n = Number(x);
     return Number.isFinite(n) ? n : def;
+}
+function normalizeTimestamp(tsLike: any): number | undefined {
+    const ts = Number(tsLike);
+    if (!Number.isFinite(ts) || ts <= 0) return undefined;
+    return ts > 1e12 ? ts : ts * 1000;
 }
 function ensureAscendingCandles(cs: any[]) {
     if (!Array.isArray(cs)) return [];
@@ -94,6 +100,9 @@ type RawPosition = {
     symbol: string;
     holdSide?: string;
     openPriceAvg: string;
+    cTime?: string | number;
+    createTime?: string | number;
+    uTime?: string | number;
     posMode?: 'one_way_mode' | 'hedge_mode';
     marginCoin?: string;
     available?: string;
@@ -121,6 +130,7 @@ export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
         symbol,
         holdSide: (chosen.holdSide ?? '').toLowerCase() as 'long' | 'short',
         entryPrice: chosen.openPriceAvg,
+        entryTimestamp: normalizeTimestamp(chosen.cTime ?? chosen.createTime ?? chosen.uTime),
         posMode: chosen.posMode,
         marginCoin: chosen.marginCoin,
         available: chosen.available,

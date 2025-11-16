@@ -11,6 +11,7 @@ import { buildPrompt, callAI } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
 import { executeDecision, getTradeProductType } from '../../lib/trading';
+import { composePositionContext } from '../../lib/positionContext';
 
 // ------------------------------------------------------------------
 // Small utilities (same as analyze.ts)
@@ -185,11 +186,14 @@ async function runAnalysisForSymbol(params: {
             const persistKey = `${symbol}:${timeFrame}`;
             const pstate = touchPersist(persistKey);
             if (positionInfo.status === 'open') {
-                if (!pstate.enteredAt || pstate.lastSide !== positionInfo.holdSide) {
-                    pstate.enteredAt = Date.now();
+                const entryTimestamp = typeof positionInfo.entryTimestamp === 'number' ? positionInfo.entryTimestamp : undefined;
+                if (pstate.lastSide !== positionInfo.holdSide) {
+                    pstate.enteredAt = entryTimestamp ?? Date.now();
                     pstate.lastSide = positionInfo.holdSide;
                     pstate.streak = 0;
                     pstate.lastFlipDir = undefined;
+                } else if (!pstate.enteredAt) {
+                    pstate.enteredAt = entryTimestamp ?? Date.now();
                 }
             } else {
                 // clear on flat
@@ -247,6 +251,7 @@ async function runAnalysisForSymbol(params: {
             }
 
             // 5) CLOSE conditions (not yet wired into prompt but computed)
+            let pnlPct = 0;
             let close_conditions:
                 | {
                       pnl_gt_pos?: boolean;
@@ -257,7 +262,7 @@ async function runAnalysisForSymbol(params: {
                 | undefined;
 
             if (positionInfo.status === 'open') {
-                const pnlPct = parsePnlPct(positionInfo.currentPnl);
+                pnlPct = parsePnlPct(positionInfo.currentPnl);
                 const side = positionInfo.holdSide as 'long' | 'short';
 
                 const regimeUp = indicators.macro.includes('trend=up');
@@ -288,6 +293,14 @@ async function runAnalysisForSymbol(params: {
                 };
             }
 
+            const positionContext = composePositionContext({
+                position: positionInfo,
+                pnlPct,
+                cvd: safeNum(analytics.cvd, 0),
+                obImb: safeNum(analytics.obImb, 0),
+                enteredAt: pstate.enteredAt,
+            });
+
             // 6) Build prompt
             const { system, user } = buildPrompt(
                 symbol,
@@ -297,7 +310,9 @@ async function runAnalysisForSymbol(params: {
                 positionForPrompt,
                 newsSentiment ?? null,
                 indicators,
-                gatesOut.gates            );
+                gatesOut.gates,
+                positionContext,
+            );
 
             // 7) AI decision
             const decision = await callAI(system, user);

@@ -10,6 +10,7 @@ import { buildPrompt, callAI } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
 import { executeDecision, getTradeProductType } from '../../lib/trading';
+import { composePositionContext } from '../../lib/positionContext';
 
 // ------------------------------------------------------------------
 // Small utilities
@@ -156,11 +157,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const persistKey = `${symbol}:${timeFrame}`;
         const pstate = touchPersist(persistKey);
         if (positionInfo.status === 'open') {
-            if (!pstate.enteredAt || pstate.lastSide !== positionInfo.holdSide) {
-                pstate.enteredAt = Date.now();
+            const entryTimestamp = typeof positionInfo.entryTimestamp === 'number' ? positionInfo.entryTimestamp : undefined;
+            if (pstate.lastSide !== positionInfo.holdSide) {
+                pstate.enteredAt = entryTimestamp ?? Date.now();
                 pstate.lastSide = positionInfo.holdSide;
                 pstate.streak = 0;
                 pstate.lastFlipDir = undefined;
+            } else if (!pstate.enteredAt) {
+                pstate.enteredAt = entryTimestamp ?? Date.now();
             }
         } else {
             // clear on flat
@@ -215,6 +219,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         // 5) CLOSE conditions (robust CVD flip + PnL bands + regime)
+        let pnlPct = 0;
         let close_conditions:
             | {
                   pnl_gt_pos?: boolean;
@@ -226,7 +231,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             | undefined;
 
         if (positionInfo.status === 'open') {
-            const pnlPct = parsePnlPct(positionInfo.currentPnl);
+            pnlPct = parsePnlPct(positionInfo.currentPnl);
             const side = positionInfo.holdSide as 'long' | 'short';
 
             const regimeUp = indicators.macro.includes('trend=up');
@@ -261,6 +266,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             };
         }
 
+        const positionContext = composePositionContext({
+            position: positionInfo,
+            pnlPct,
+            cvd: safeNum(analytics.cvd, 0),
+            obImb: safeNum(analytics.obImb, 0),
+            enteredAt: pstate.enteredAt,
+        });
+
         // 6) Build prompt with allowed_actions, gates, and close_conditions
 
         const { system, user } = buildPrompt(
@@ -272,6 +285,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             newsSentiment ?? null, // omit from prompt if unavailable
             indicators, // from calculateMultiTFIndicators(symbol)
             gatesOut.gates, // from getGates(...)
+            positionContext,
         );
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions)

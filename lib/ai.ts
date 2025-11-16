@@ -2,6 +2,21 @@
 
 import { AI_BASE_URL, AI_MODEL, TRADE_WINDOW_MINUTES } from './constants';
 
+export type PositionContext = {
+    side: 'long' | 'short';
+    entry_price?: number;
+    entry_ts?: string;
+    hold_minutes?: number;
+    unrealized_pnl_pct?: number;
+    flow?: {
+        cvd?: number;
+        ob_imbalance?: number;
+        pressure_delta?: number;
+        alignment?: 'bullish' | 'bearish' | 'neutral';
+        against_position?: boolean;
+    };
+};
+
 // ------------------------------
 // Prompt Builder (with guardrails, regime, momentum & extension gates)
 // ------------------------------
@@ -14,7 +29,8 @@ export function buildPrompt(
     position_status: string = 'none',
     news_sentiment: string | null = null,
     indicators: { micro: string; macro: string },
-    gates: any // <--- Retain the gates object for the base gate checks
+    gates: any, // <--- Retain the gates object for the base gate checks
+    position_context: PositionContext | null = null
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
@@ -68,6 +84,7 @@ export function buildPrompt(
     const newsSentimentBlock = normalizedNewsSentiment
         ? `- News sentiment ONLY: ${normalizedNewsSentiment.toLowerCase()}\n`
         : '';
+    const positionContextBlock = position_context ? `- Position context (JSON): ${JSON.stringify(position_context)}\n` : '';
 
     const vol_profile_str = (analytics.volume_profile || [])
         .slice(0, 10)
@@ -161,7 +178,7 @@ DATA INPUTS (with explicit windows):
 - Funding rate & open interest (last 30–60m): ${derivatives}
 - Recent price trend (last ${priceTrendPoints.length} bars): ${priceTrendSeries}
 ${newsSentimentBlock}- Current position: ${position_status}
-- Technical (short-term, 1m, last 30 candles): ${indicators.micro}
+${positionContextBlock}- Technical (short-term, 1m, last 30 candles): ${indicators.micro}
 - Macro (1h, last 30 candles): ${indicators.macro}
 
 TASKS:
