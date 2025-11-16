@@ -35,6 +35,34 @@ export function buildPrompt(
         bundle.oi?.openInterestList?.[0]?.size ?? bundle.oi?.openInterestList?.[0]?.openInterest ?? 'n/a'
     }`;
 
+    const candles = Array.isArray(bundle.candles) ? bundle.candles : [];
+    const priceTrendPoints = candles
+        .slice(-5)
+        .map((c: any) => {
+            const tsRaw = Number(c?.[0]);
+            if (!Number.isFinite(tsRaw)) return null;
+            const toNum = (v: any) => {
+                const n = Number(v);
+                return Number.isFinite(n) ? Number(n.toFixed(6)) : null;
+            };
+            const open = toNum(c?.[1]);
+            const high = toNum(c?.[2]);
+            const low = toNum(c?.[3]);
+            const close = toNum(c?.[4]);
+            const volume = toNum(c?.[5] ?? c?.volume);
+            const tsMs = tsRaw > 1e12 ? tsRaw : tsRaw * 1000;
+            return {
+                ts: new Date(tsMs).toISOString(),
+                open,
+                high,
+                low,
+                close,
+                volume,
+            };
+        })
+        .filter((p: any) => p !== null);
+    const priceTrendSeries = JSON.stringify(priceTrendPoints);
+
     const normalizedNewsSentiment =
         typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
     const newsSentimentBlock = normalizedNewsSentiment
@@ -107,8 +135,6 @@ GUIDELINES & HEURISTICS:
 - **Costs**: Your primary goal is to overcome costs (fees + slippage). If expected edge <= costs, HOLD.
 - **Signal Strength**: If signal_strength is LOW or MEDIUM => "HOLD" (unless closing an open position).
 - **Extension/Fading**: If 'dist_from_ema20_1m_in_atr' is > 1.5 (over-extended) or < -1.5, consider fading the move or prioritizing "HOLD" unless other signals are overwhelming.
-- **BUY Signal**: Prefer if 'regime_trend_up'=true. Requires positive confirmation from 'book_imbalance' (> 0.1), positive CVD, and 'micro_slope_pct_per_bar' > 0.005.
-- **SELL Signal**: Prefer if 'regime_trend_down'=true. Requires negative confirmation from 'book_imbalance' (< -0.1), negative CVD, and 'micro_slope_pct_per_bar' < -0.005.
 - **Prediction Horizon**: Do not predict beyond 1 hour.
 `.trim();
 
@@ -133,6 +159,7 @@ DATA INPUTS (with explicit windows):
 - Order flow summary (1m tape/CVD, last 5–15m): ${order_flow}
 - Order book & liquidity (snapshot): ${liquidity_data}
 - Funding rate & open interest (last 30–60m): ${derivatives}
+- Recent price trend (last ${priceTrendPoints.length} bars): ${priceTrendSeries}
 ${newsSentimentBlock}- Current position: ${position_status}
 - Technical (short-term, 1m, last 30 candles): ${indicators.micro}
 - Macro (1h, last 30 candles): ${indicators.macro}
