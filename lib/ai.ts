@@ -149,10 +149,10 @@ Respond in strict JSON ONLY.
 
 GUIDELINES & HEURISTICS:
 - **Base Gates**: Trade ONLY if ALL base gates are TRUE: spread_ok, liquidity_ok, atr_ok, slippage_ok. If any is FALSE, HOLD.
-- **Costs**: Your primary goal is to overcome costs (fees + slippage). If expected edge <= costs, HOLD.
 - **Signal Strength**: If signal_strength is LOW or MEDIUM => "HOLD" (unless closing an open position).
 - **Extension/Fading**: If 'dist_from_ema20_1m_in_atr' is > 1.5 (over-extended) or < -1.5, consider fading the move or prioritizing "HOLD" unless other signals are overwhelming.
 - **Prediction Horizon**: Do not predict beyond 1 hour.
+- **Closing Positions**: If a position is open with adverse flow/pressure and signal_strength is MEDIUM or HIGH, consider "CLOSE".
 `.trim();
 
     const user = `
@@ -185,7 +185,7 @@ TASKS:
 1) Evaluate short-term bias (UP/DOWN/NEUTRAL) from all data.
 2) Output one action only: "BUY", "SELL", "HOLD", or "CLOSE".
    - If no position is open, return BUY/SELL/HOLD.
-   - If a position is open, return HOLD or CLOSE only.
+   - If a position is open, you may HOLD, CLOSE, or reverse via BUY/SELL (reversal = close then flip).
 3) Assess signal strength: LOW, MEDIUM, or HIGH.
 4) Summarize in ≤2 lines.
 
