@@ -127,6 +127,31 @@ export function buildPrompt(
         `micro_slope_pct_per_bar=${slope21_1m.toFixed(4)}, ` +
         `dist_from_ema20_1m_in_atr=${distance_from_ema_atr.toFixed(2)}`;
     
+    // --- SIGNAL STRENGTH DRIVERS & CLOSING GUIDANCE ---
+    const clampNumber = (value: number | null | undefined, digits = 3) =>
+        Number.isFinite(value as number) ? Number((value as number).toFixed(digits)) : null;
+    const trendBias = gates.regime_trend_up ? 1 : gates.regime_trend_down ? -1 : 0;
+    const cvdStrength = clampNumber(Math.tanh(analytics.cvd / 50));
+    const signalDrivers = {
+        trend_bias: trendBias,
+        cvd_strength: cvdStrength,
+        orderbook_pressure: clampNumber(analytics.obImb, 3),
+        momentum_slope_pct_per_bar: clampNumber(slope21_1m, 4),
+        extension_atr: clampNumber(distance_from_ema_atr, 3),
+        atr_pct_1h: clampNumber(atr_pct_1h, 3),
+    };
+
+    const priceVsBreakevenPct =
+        position_context?.breakeven_price && Number.isFinite(position_context.breakeven_price) && price > 0
+            ? clampNumber(((price - position_context.breakeven_price) / price) * 100, 3)
+            : null;
+    const closingGuidance = {
+        macro_bias: trendBias,
+        flow_pressure: clampNumber(analytics.obImb, 3),
+        cvd_strength: cvdStrength,
+        price_vs_breakeven_pct: priceVsBreakevenPct,
+        hold_minutes: clampNumber(position_context?.hold_minutes ?? null, 1),
+    };
     // Costs (educate the model)
     const taker_round_trip_bps = 5; // 5 bps
     const slippage_bps = 2;
@@ -151,10 +176,13 @@ Respond in strict JSON ONLY.
 
 GUIDELINES & HEURISTICS:
 - **Base Gates**: Trade ONLY if ALL base gates are TRUE: spread_ok, liquidity_ok, atr_ok, slippage_ok. If any is FALSE, HOLD.
+- **Costs**: Always weigh expected edge vs fees + slippage; if edge ≤ costs, HOLD.
 - **Signal Strength**: If signal_strength is LOW or MEDIUM => "HOLD" (unless closing an open position).
 - **Extension/Fading**: If 'dist_from_ema20_1m_in_atr' is > 1.5 (over-extended) or < -1.5, consider fading the move or prioritizing "HOLD" unless other signals are overwhelming.
+- **Signal Drivers**: Use the "Signal strength drivers" JSON to distinguish MEDIUM vs HIGH confidence (multiple aligned drivers → HIGH).
+- **Reversal Discipline**: Only reverse (flip long ↔ short) if flow/pressure clearly contradicts the current position with strong drivers.
+- **Closing Discipline**: Consult "Closing guardrails"; when macro bias + flow support the current side and price > breakeven, avoid premature closes.
 - **Prediction Horizon**: Do not predict beyond 1 hour.
-- **Closing Positions**: If a position is open with adverse flow/pressure and signal_strength is MEDIUM or HIGH, consider "CLOSE".
 `.trim();
 
     const user = `
@@ -182,6 +210,8 @@ DATA INPUTS (with explicit windows):
 ${newsSentimentBlock}- Current position: ${position_status}
 ${positionContextBlock}- Technical (short-term, 1m, last 30 candles): ${indicators.micro}
 - Macro (1h, last 30 candles): ${indicators.macro}
+- Signal strength drivers: ${JSON.stringify(signalDrivers)}
+- Closing guardrails: ${JSON.stringify(closingGuidance)}
 
 TASKS:
 1) Evaluate short-term bias (UP/DOWN/NEUTRAL) from all data.
