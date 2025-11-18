@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { loadDecisionHistory } from '../../lib/history';
 import { callAI } from '../../lib/ai';
+import { AI_MODEL } from '../../lib/constants';
 
 function actionStats(items: any[]) {
     return items.reduce(
@@ -34,6 +35,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const condensed = history.map((item) => ({
         timestamp: item.timestamp,
         timeFrame: item.timeFrame,
+        prompt: item.prompt,
         action: item.aiDecision?.action,
         signal_strength: item.aiDecision?.signal_strength,
         bias: item.aiDecision?.bias,
@@ -42,6 +44,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         dryRun: item.dryRun,
         snapshot: item.snapshot,
         execResult: item.execResult,
+        AI_MODEL: AI_MODEL,
     }));
 
     const stats = {
