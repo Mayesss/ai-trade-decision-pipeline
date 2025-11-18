@@ -11,6 +11,7 @@ import { getGates } from '../../lib/gates';
 
 import { executeDecision, getTradeProductType } from '../../lib/trading';
 import { composePositionContext } from '../../lib/positionContext';
+import { appendDecisionHistory } from '../../lib/history';
 
 // ------------------------------------------------------------------
 // Small utilities
@@ -293,6 +294,32 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         // 8) Execute (dry run unless explicitly disabled)
         const execRes = await executeDecision(symbol, sideSizeUSDT, decision, productType, dryRun);
+
+        const tickerData = Array.isArray(bundle?.ticker) ? bundle.ticker[0] : bundle?.ticker;
+        const lastPrice = Number(tickerData?.lastPr ?? tickerData?.last ?? tickerData?.close ?? tickerData?.price);
+        const change24h = Number(tickerData?.change24h ?? tickerData?.changeUtc24h ?? tickerData?.chgPct);
+        const snapshot = {
+            price: Number.isFinite(lastPrice) ? lastPrice : undefined,
+            change24h: Number.isFinite(change24h) ? change24h : undefined,
+            obImb: safeNum(analytics.obImb, 0),
+            cvd: safeNum(analytics.cvd, 0),
+            spread: safeNum(analytics.spread, 0),
+            gates: gatesOut.gates,
+            metrics: gatesOut.metrics,
+            newsSentiment,
+            positionContext,
+        };
+
+        await appendDecisionHistory({
+            timestamp: Date.now(),
+            symbol,
+            timeFrame,
+            dryRun,
+            prompt: { system, user },
+            aiDecision: decision,
+            execResult: execRes,
+            snapshot,
+        });
 
         // 9) Respond
         return res.status(200).json({
