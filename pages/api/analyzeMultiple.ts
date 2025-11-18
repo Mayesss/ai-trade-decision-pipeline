@@ -175,7 +175,7 @@ async function runAnalysisForSymbol(params: {
                     fetchPositionInfo(symbol),
                     fetchNewsSentiment(symbol),
                     fetchMarketBundle(symbol, timeFrame, { includeTrades: false }),
-                    calculateMultiTFIndicators(symbol),
+                    calculateMultiTFIndicators(symbol, timeFrame),
                 ]);
 
             const positionForPrompt =

@@ -2,6 +2,17 @@
 
 import { bitgetFetch, resolveProductType } from './bitget';
 
+export interface IndicatorSummary {
+    timeframe: string;
+    summary: string;
+}
+
+export interface MultiTFIndicators {
+    micro: string;
+    macro: string;
+    primary?: IndicatorSummary;
+}
+
 // ------------------------------
 // Indicator Calculations
 // ------------------------------
@@ -88,17 +99,19 @@ export function computeSMA(closes: number[], period: number): number[] {
     for (let i = 0; i < closes.length; i++) {
         sum += closes[i]!;
         if (i >= period) sum -= closes[i - period]!;
-        out[i] = i >= period - 1 ? sum / period : NaN;
+        const window = Math.min(period, i + 1);
+        out[i] = window > 0 ? sum / window : NaN;
     }
     return out;
 }
 
 // slope as pct per bar (uses last vs N bars ago)
 export function slopePct(series: number[], lookback: number): number {
-    const n = series.length;
+    const filtered = series.filter((v) => Number.isFinite(v));
+    const n = filtered.length;
     if (n <= lookback) return 0;
-    const last = series[n - 1]!;
-    const prev = series[n - 1 - lookback]!;
+    const last = filtered[n - 1]!;
+    const prev = filtered[n - 1 - lookback]!;
     if (!isFinite(last) || !isFinite(prev) || last === 0) return 0;
     return ((last - prev) / last) * (100 / lookback); // % per bar
 }
@@ -107,7 +120,7 @@ export function slopePct(series: number[], lookback: number): number {
 // Multi-Timeframe Indicators (FUTURES only)
 // ------------------------------
 
-export async function calculateMultiTFIndicators(symbol: string): Promise<{ micro: string; macro: string }> {
+export async function calculateMultiTFIndicators(symbol: string, primaryTimeFrame?: string): Promise<MultiTFIndicators> {
     const productType = resolveProductType(); // futures only
 
     async function fetchCandles(tf: string) {
@@ -115,15 +128,24 @@ export async function calculateMultiTFIndicators(symbol: string): Promise<{ micr
             symbol,
             productType,
             granularity: tf,
-            limit: 30,
+            limit: 200,
         });
         return ensureAscending(cs);
     }
 
-    const [microCandles, macroCandles] = await Promise.all([
-        fetchCandles('1m'), // micro
-        fetchCandles('1H'), // macro
+    const requests = new Map<string, Promise<any[]>>([
+        ['1m', fetchCandles('1m')],
+        ['1H', fetchCandles('1H')],
     ]);
+    if (primaryTimeFrame) {
+        const tf = primaryTimeFrame;
+        if (!requests.has(tf)) {
+            requests.set(tf, fetchCandles(tf));
+        }
+    }
+
+    const entries = Array.from(requests.entries());
+    const summaries = new Map<string, string>();
 
     const build = (candles: any[]) => {
         const closes = candles.map((c) => parseFloat(c[4]));
@@ -156,8 +178,21 @@ export async function calculateMultiTFIndicators(symbol: string): Promise<{ micr
         )}, SMA200=${s200.toFixed(2)}, slopeEMA21_10=${momSlope.toFixed(3)}%/bar`;
     };
 
-    return {
-        micro: build(microCandles),
-        macro: build(macroCandles),
+    await Promise.all(
+        entries.map(async ([tf, promise]) => {
+            const candles = await promise;
+            summaries.set(tf, build(candles));
+        }),
+    );
+
+    const out: MultiTFIndicators = {
+        micro: summaries.get('1m') ?? '',
+        macro: summaries.get('1H') ?? '',
     };
+
+    if (primaryTimeFrame) {
+        out.primary = { timeframe: primaryTimeFrame, summary: summaries.get(primaryTimeFrame) ?? summaries.get('1m') ?? '' };
+    }
+
+    return out;
 }

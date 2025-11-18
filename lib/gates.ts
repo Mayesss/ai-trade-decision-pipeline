@@ -2,6 +2,8 @@
 // Adaptive pre-trade gates for FUTURES-ONLY flow.
 // Dynamic banded depth, expected-slippage gate, tiered fallbacks, and convenience wrappers.
 
+import type { MultiTFIndicators } from './indicators';
+
 ///////////////////////////////
 // Types
 ///////////////////////////////
@@ -352,14 +354,14 @@ export function extractLastPrice(bundle: any, fallback?: number): number {
   return Number.isFinite(last) ? last : 0;
 }
 
-export function parseRegimeFromIndicators(indicators: { macro: string }): 'up' | 'down' | 'neutral' {
+export function parseRegimeFromIndicators(indicators: Pick<MultiTFIndicators, 'macro'>): 'up' | 'down' | 'neutral' {
   if (!indicators?.macro) return 'neutral';
   if (indicators.macro.includes('trend=up')) return 'up';
   if (indicators.macro.includes('trend=down')) return 'down';
   return 'neutral';
 }
 
-export function parseAtr1hAbs(indicators: { macro: string }): number {
+export function parseAtr1hAbs(indicators: Pick<MultiTFIndicators, 'macro'>): number {
   const m = indicators?.macro?.match(/ATR=([\d.]+)/);
   return m ? Number(m[1]) : NaN;
 }
@@ -371,7 +373,7 @@ export function getGates(args: {
   symbol: string;
   bundle: any;
   analytics: any;
-  indicators: { micro: string; macro: string };
+  indicators: MultiTFIndicators;
   notionalUSDT: number;
   positionOpen: boolean;
   histories?: GatesHistories;

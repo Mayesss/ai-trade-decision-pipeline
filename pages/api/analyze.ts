@@ -146,7 +146,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             fetchNewsSentiment(symbol),
             // Light bundle: skip tape (fills)
             fetchMarketBundle(symbol, timeFrame, { includeTrades: false }),
-            calculateMultiTFIndicators(symbol),
+            calculateMultiTFIndicators(symbol, timeFrame),
         ]);
 
         const positionForPrompt =

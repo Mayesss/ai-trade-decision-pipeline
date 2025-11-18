@@ -1,6 +1,7 @@
 // lib/ai.ts
 
 import { AI_BASE_URL, AI_MODEL, TRADE_WINDOW_MINUTES } from './constants';
+import type { MultiTFIndicators } from './indicators';
 
 export type PositionContext = {
     side: 'long' | 'short';
@@ -30,7 +31,7 @@ export function buildPrompt(
     analytics: any,
     position_status: string = 'none',
     news_sentiment: string | null = null,
-    indicators: { micro: string; macro: string },
+    indicators: MultiTFIndicators,
     gates: any, // <--- Retain the gates object for the base gate checks
     position_context: PositionContext | null = null
 ) {
@@ -87,6 +88,9 @@ export function buildPrompt(
         ? `- News sentiment ONLY: ${normalizedNewsSentiment.toLowerCase()}\n`
         : '';
     const positionContextBlock = position_context ? `- Position context (JSON): ${JSON.stringify(position_context)}\n` : '';
+    const primaryIndicatorsBlock = `- Primary timeframe (${indicators.primary?.timeframe ?? timeframe}) indicators: ${
+        indicators.primary?.summary ?? indicators.micro
+    }\n`;
 
     const vol_profile_str = (analytics.volume_profile || [])
         .slice(0, 10)
@@ -238,6 +242,7 @@ DATA INPUTS (with explicit windows):
 ${newsSentimentBlock}- Current position: ${position_status}
 ${positionContextBlock}- Technical (short-term, 1m, last 30 candles): ${indicators.micro}
 - Macro (1h, last 30 candles): ${indicators.macro}
+${primaryIndicatorsBlock}
 - Signal strength drivers: ${JSON.stringify(signalDrivers)}
 - Closing guardrails: ${JSON.stringify(closingGuidance)}
 
