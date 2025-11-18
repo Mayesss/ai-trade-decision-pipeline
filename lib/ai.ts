@@ -145,12 +145,40 @@ export function buildPrompt(
         position_context?.breakeven_price && Number.isFinite(position_context.breakeven_price) && price > 0
             ? clampNumber(((price - position_context.breakeven_price) / price) * 100, 3)
             : null;
+    const positionSide = position_context?.side;
+    const macroSupportsPosition =
+        positionSide === 'long'
+            ? gates.regime_trend_up
+            : positionSide === 'short'
+            ? gates.regime_trend_down
+            : null;
+    const macroOpposesPosition =
+        positionSide === 'long'
+            ? gates.regime_trend_down
+            : positionSide === 'short'
+            ? gates.regime_trend_up
+            : null;
+    const flowAgainstPosition =
+        positionSide === 'long'
+            ? analytics.obImb < -0.15 || (cvdStrength ?? 0) < -0.35
+            : positionSide === 'short'
+            ? analytics.obImb > 0.15 || (cvdStrength ?? 0) > 0.35
+            : null;
+    const closingAlert = Boolean(
+        flowAgainstPosition &&
+            (Math.abs(cvdStrength ?? 0) > 0.4 || Math.abs(analytics.obImb) > 0.2 || (priceVsBreakevenPct ?? 0) < -0.15),
+    );
+
     const closingGuidance = {
         macro_bias: trendBias,
         flow_pressure: clampNumber(analytics.obImb, 3),
         cvd_strength: cvdStrength,
         price_vs_breakeven_pct: priceVsBreakevenPct,
         hold_minutes: clampNumber(position_context?.hold_minutes ?? null, 1),
+        macro_supports_position: macroSupportsPosition,
+        macro_opposes_position: macroOpposesPosition,
+        flow_against_position: flowAgainstPosition,
+        closing_alert: closingAlert,
     };
     // Costs (educate the model)
     const taker_round_trip_bps = 5; // 5 bps
@@ -177,11 +205,11 @@ Respond in strict JSON ONLY.
 GUIDELINES & HEURISTICS:
 - **Base Gates**: Trade ONLY if ALL base gates are TRUE: spread_ok, liquidity_ok, atr_ok, slippage_ok. If any is FALSE, HOLD.
 - **Costs**: Always weigh expected edge vs fees + slippage; if edge ≤ costs, HOLD.
-- **Signal Strength**: If signal_strength is LOW or MEDIUM => "HOLD" (unless closing an open position).
+- **Signal Strength**: If signal_strength is LOW => HOLD. MEDIUM requires strong agreement from the Signal strength drivers to justify action; otherwise HOLD.
 - **Extension/Fading**: If 'dist_from_ema20_1m_in_atr' is > 1.5 (over-extended) or < -1.5, consider fading the move or prioritizing "HOLD" unless other signals are overwhelming.
-- **Signal Drivers**: Use the "Signal strength drivers" JSON to distinguish MEDIUM vs HIGH confidence (multiple aligned drivers → HIGH).
+- **Signal Drivers**: Use the "Signal strength drivers" JSON to distinguish MEDIUM vs HIGH confidence. Multiple aligned drivers + macro agreement → HIGH; mixed drivers → MEDIUM.
 - **Reversal Discipline**: Only reverse (flip long ↔ short) if flow/pressure clearly contradicts the current position with strong drivers.
-- **Closing Discipline**: Consult "Closing guardrails"; when macro bias + flow support the current side and price > breakeven, avoid premature closes.
+- **Closing Discipline**: Check "Closing guardrails". If macro_supports_position is true and closing_alert is false, prefer HOLD. Close only when closing_alert is true or macro_opposes_position.
 - **Prediction Horizon**: Do not predict beyond 1 hour.
 `.trim();
 
