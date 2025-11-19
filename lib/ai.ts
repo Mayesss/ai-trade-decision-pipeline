@@ -88,9 +88,9 @@ export function buildPrompt(
         ? `- News sentiment ONLY: ${normalizedNewsSentiment.toLowerCase()}\n`
         : '';
     const positionContextBlock = position_context ? `- Position context (JSON): ${JSON.stringify(position_context)}\n` : '';
-    const primaryIndicatorsBlock = `- Primary timeframe (${indicators.primary?.timeframe ?? timeframe}) indicators: ${
-        indicators.primary?.summary ?? indicators.micro
-    }\n`;
+    const primaryIndicatorsBlock = indicators.primary
+        ? `- Primary timeframe (${indicators.primary.timeframe}) indicators: ${indicators.primary.summary}\n`
+        : '';
 
     const vol_profile_str = (analytics.volume_profile || [])
         .slice(0, 10)
@@ -214,11 +214,10 @@ GUIDELINES & HEURISTICS:
 - **Signal Drivers**: Use the "Signal strength drivers" JSON to distinguish MEDIUM vs HIGH confidence. Multiple aligned drivers + macro agreement → HIGH; mixed drivers → MEDIUM.
 - **Reversal Discipline**: Only reverse (flip long ↔ short) if flow/pressure clearly contradicts the current position with strong drivers.
 - **Closing Discipline**: Check "Closing guardrails". If macro_supports_position is true and closing_alert is false, prefer HOLD. Close only when closing_alert is true or macro_opposes_position.
-- **Prediction Horizon**: Do not predict beyond 1 hour.
 `.trim();
 
     const user = `
-You are analyzing ${symbol} on a ${parseInt(timeframe, 10)}-minute horizon (simulation).
+You are analyzing ${symbol} on a ${timeframe} horizon (simulation).
 
 RISK/COSTS:
 - ${risk_policy}
@@ -240,8 +239,8 @@ DATA INPUTS (with explicit windows):
 - Funding rate & open interest (last 30–60m): ${derivatives}
 - Recent price trend (last ${priceTrendPoints.length} bars): ${priceTrendSeries}
 ${newsSentimentBlock}- Current position: ${position_status}
-${positionContextBlock}- Technical (short-term, 1m, last 30 candles): ${indicators.micro}
-- Macro (1h, last 30 candles): ${indicators.macro}
+${positionContextBlock}- Technical (short-term, ${indicators.microTimeFrame}, last 30 candles): ${indicators.micro}
+- Macro (${indicators.macroTimeFrame}, last 30 candles): ${indicators.macro}
 ${primaryIndicatorsBlock}
 - Signal strength drivers: ${JSON.stringify(signalDrivers)}
 - Closing guardrails: ${JSON.stringify(closingGuidance)}

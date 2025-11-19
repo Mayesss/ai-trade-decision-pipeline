@@ -162,8 +162,10 @@ async function runAnalysisForSymbol(params: {
     dryRun: boolean;
     sideSizeUSDT: number;
     productType: ProductType;
+    microTimeFrame: string;
+    macroTimeFrame: string;
 }) {
-    const { symbol, timeFrame, dryRun, sideSizeUSDT, productType } = params;
+    const { symbol, timeFrame, dryRun, sideSizeUSDT, productType, microTimeFrame, macroTimeFrame } = params;
 
     const MAX_RETRIES = 3;
     const BASE_DELAY_MS = 300; // base delay for 429 backoff
@@ -175,7 +177,11 @@ async function runAnalysisForSymbol(params: {
                     fetchPositionInfo(symbol),
                     fetchNewsSentiment(symbol),
                     fetchMarketBundle(symbol, timeFrame, { includeTrades: false }),
-                    calculateMultiTFIndicators(symbol, timeFrame),
+                    calculateMultiTFIndicators(symbol, {
+                        primary: timeFrame,
+                        micro: microTimeFrame,
+                        macro: macroTimeFrame,
+                    }),
                 ]);
 
             const positionForPrompt =
@@ -406,6 +412,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         const timeFrame: string = body.timeFrame || '15m';
+        const microTimeFrame: string = body.microTimeFrame || '1m';
+        const macroTimeFrame: string = body.macroTimeFrame || '1H';
         const dryRun: boolean = body.dryRun !== false; // default true
         const sideSizeUSDT: number = Number(body.notional || 10);
         const productType = getTradeProductType();
@@ -423,6 +431,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     dryRun,
                     sideSizeUSDT,
                     productType,
+                    microTimeFrame,
+                    macroTimeFrame,
                 });
 
                 if (PER_TASK_DELAY_MS > 0) {

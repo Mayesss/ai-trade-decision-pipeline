@@ -10,7 +10,15 @@ export interface IndicatorSummary {
 export interface MultiTFIndicators {
     micro: string;
     macro: string;
+    microTimeFrame: string;
+    macroTimeFrame: string;
     primary?: IndicatorSummary;
+}
+
+export interface IndicatorTimeframeOptions {
+    micro?: string;
+    macro?: string;
+    primary?: string;
 }
 
 // ------------------------------
@@ -120,8 +128,14 @@ export function slopePct(series: number[], lookback: number): number {
 // Multi-Timeframe Indicators (FUTURES only)
 // ------------------------------
 
-export async function calculateMultiTFIndicators(symbol: string, primaryTimeFrame?: string): Promise<MultiTFIndicators> {
+export async function calculateMultiTFIndicators(
+    symbol: string,
+    opts: IndicatorTimeframeOptions = {},
+): Promise<MultiTFIndicators> {
     const productType = resolveProductType(); // futures only
+    const microTF = opts.micro || '1m';
+    const macroTF = opts.macro || '1H';
+    const primaryTF = opts.primary;
 
     async function fetchCandles(tf: string) {
         const cs = await bitgetFetch('GET', '/api/v2/mix/market/candles', {
@@ -133,16 +147,13 @@ export async function calculateMultiTFIndicators(symbol: string, primaryTimeFram
         return ensureAscending(cs);
     }
 
-    const requests = new Map<string, Promise<any[]>>([
-        ['1m', fetchCandles('1m')],
-        ['1H', fetchCandles('1H')],
-    ]);
-    if (primaryTimeFrame) {
-        const tf = primaryTimeFrame;
-        if (!requests.has(tf)) {
-            requests.set(tf, fetchCandles(tf));
-        }
-    }
+    const requests = new Map<string, Promise<any[]>>();
+    const addRequest = (tf: string) => {
+        if (!requests.has(tf)) requests.set(tf, fetchCandles(tf));
+    };
+    addRequest(microTF);
+    addRequest(macroTF);
+    if (primaryTF) addRequest(primaryTF);
 
     const entries = Array.from(requests.entries());
     const summaries = new Map<string, string>();
@@ -186,12 +197,17 @@ export async function calculateMultiTFIndicators(symbol: string, primaryTimeFram
     );
 
     const out: MultiTFIndicators = {
-        micro: summaries.get('1m') ?? '',
-        macro: summaries.get('1H') ?? '',
+        micro: summaries.get(microTF) ?? '',
+        macro: summaries.get(macroTF) ?? '',
+        microTimeFrame: microTF,
+        macroTimeFrame: macroTF,
     };
 
-    if (primaryTimeFrame) {
-        out.primary = { timeframe: primaryTimeFrame, summary: summaries.get(primaryTimeFrame) ?? summaries.get('1m') ?? '' };
+    if (primaryTF) {
+        out.primary = {
+            timeframe: primaryTF,
+            summary: summaries.get(primaryTF) ?? summaries.get(microTF) ?? '',
+        };
     }
 
     return out;
