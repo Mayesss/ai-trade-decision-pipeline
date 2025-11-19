@@ -108,28 +108,28 @@ export function buildPrompt(
     const macro = indicators.macro || '';
     
     // Technical values we want the AI to judge (values, not booleans)
-    const ema20_1m = readNum('EMA20', micro);
-    const slope21_1m = readNum('slopeEMA21_10', micro) ?? 0; // % per bar
-    const atr_1m = readNum('ATR', micro);
-    const atr_1h = readNum('ATR', macro);
-    const rsi_1m = readNum('RSI', micro);
-    const rsi_1h = readNum('RSI', macro);
+    const ema20_micro = readNum('EMA20', micro);
+    const slope21_micro = readNum('slopeEMA21_10', micro) ?? 0; // % per bar
+    const atr_micro = readNum('ATR', micro);
+    const atr_macro = readNum('ATR', macro);
+    const rsi_micro = readNum('RSI', micro);
+    const rsi_macro = readNum('RSI', macro);
     
     // --- KEY METRICS (VALUES, NOT JUDGMENTS) ---
     const spread_bps = last > 0 ? (analytics.spread || 0) / last * 1e4 : 999;
-    const atr_pct_1h = last > 0 && atr_1h ? (atr_1h / last) * 100 : 0;
+    const atr_pct_macro = last > 0 && atr_macro ? (atr_macro / last) * 100 : 0;
     
     // Calculate extension (distance from EMA20 in 1m-ATRs)
     const distance_from_ema_atr =
-        Number.isFinite(atr_1m as number) && (atr_1m as number) > 0 && Number.isFinite(ema20_1m as number)
-            ? (last - (ema20_1m as number)) / (atr_1m as number)
+        Number.isFinite(atr_micro as number) && (atr_micro as number) > 0 && Number.isFinite(ema20_micro as number)
+            ? (last - (ema20_micro as number)) / (atr_micro as number)
             : 0;
 
     const key_metrics =
         `spread_bps=${spread_bps.toFixed(2)}, book_imbalance=${analytics.obImb.toFixed(2)}, ` +
-        `atr_pct_1h=${atr_pct_1h.toFixed(2)}%, rsi_1m=${rsi_1m}, rsi_1h=${rsi_1h}, ` +
-        `micro_slope_pct_per_bar=${slope21_1m.toFixed(4)}, ` +
-        `dist_from_ema20_1m_in_atr=${distance_from_ema_atr.toFixed(2)}`;
+        `atr_pct_${indicators.macroTimeFrame}=${atr_pct_macro.toFixed(2)}%, rsi_${indicators.microTimeFrame}=${rsi_micro}, ` +
+        `rsi_${indicators.macroTimeFrame}=${rsi_macro}, micro_slope_pct_per_bar=${slope21_micro.toFixed(4)}, ` +
+        `dist_from_ema20_${indicators.microTimeFrame}_in_atr=${distance_from_ema_atr.toFixed(2)}`;
     
     // --- SIGNAL STRENGTH DRIVERS & CLOSING GUIDANCE ---
     const clampNumber = (value: number | null | undefined, digits = 3) =>
@@ -140,9 +140,9 @@ export function buildPrompt(
         trend_bias: trendBias,
         cvd_strength: cvdStrength,
         orderbook_pressure: clampNumber(analytics.obImb, 3),
-        momentum_slope_pct_per_bar: clampNumber(slope21_1m, 4),
+        momentum_slope_pct_per_bar: clampNumber(slope21_micro, 4),
         extension_atr: clampNumber(distance_from_ema_atr, 3),
-        atr_pct_1h: clampNumber(atr_pct_1h, 3),
+        atr_pct_macro: clampNumber(atr_pct_macro, 3),
     };
 
     const priceVsBreakevenPct =
@@ -190,7 +190,10 @@ export function buildPrompt(
 
     const risk_policy =
         `fees=${taker_round_trip_bps}bps round-trip, slippage=${slippage_bps}bps, ` +
-        `stop=1.5xATR(1H), take_profit=2.5xATR(1H), time_stop=${parseInt(timeframe, 10) * 3} minutes`;
+        `stop=1.5xATR(${indicators.macroTimeFrame}), take_profit=2.5xATR(${indicators.macroTimeFrame}), time_stop=${parseInt(
+            timeframe,
+            10,
+        ) * 3} minutes`;
 
     // We only pass the BASE gates now, as the AI will judge the strategy gates using metrics
     const base_gating_flags =
@@ -210,7 +213,7 @@ GUIDELINES & HEURISTICS:
 - **Base Gates**: Trade ONLY if ALL base gates are TRUE: spread_ok, liquidity_ok, atr_ok, slippage_ok. If any is FALSE, HOLD.
 - **Costs**: Always weigh expected edge vs fees + slippage; if edge ≤ costs, HOLD.
 - **Signal Strength**: If signal_strength is LOW => HOLD. MEDIUM requires strong agreement from the Signal strength drivers to justify action; otherwise HOLD.
-- **Extension/Fading**: If 'dist_from_ema20_1m_in_atr' is > 1.5 (over-extended) or < -1.5, consider fading the move or prioritizing "HOLD" unless other signals are overwhelming.
+- **Extension/Fading**: If 'dist_from_ema20_${indicators.microTimeFrame}_in_atr' is > 1.5 (over-extended) or < -1.5, consider fading the move or prioritizing "HOLD" unless other signals are overwhelming.
 - **Signal Drivers**: Use the "Signal strength drivers" JSON to distinguish MEDIUM vs HIGH confidence. Multiple aligned drivers + macro agreement → HIGH; mixed drivers → MEDIUM.
 - **Reversal Discipline**: Only reverse (flip long ↔ short) if flow/pressure clearly contradicts the current position with strong drivers.
 - **Closing Discipline**: Check "Closing guardrails". If macro_supports_position is true and closing_alert is false, prefer HOLD. Close only when closing_alert is true or macro_opposes_position.
