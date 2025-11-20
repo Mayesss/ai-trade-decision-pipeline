@@ -136,6 +136,14 @@ export function buildPrompt(
         Number.isFinite(value as number) ? Number((value as number).toFixed(digits)) : null;
     const trendBias = gates.regime_trend_up ? 1 : gates.regime_trend_down ? -1 : 0;
     const cvdStrength = clampNumber(Math.tanh(analytics.cvd / 50));
+    const oversoldMicro = typeof rsi_micro === 'number' && rsi_micro < 35;
+    const overboughtMicro = typeof rsi_micro === 'number' && rsi_micro > 65;
+    const reversalOpportunity = oversoldMicro && (cvdStrength ?? 0) < -0.4
+        ? 'oversold_with_sell_pressure'
+        : overboughtMicro && (cvdStrength ?? 0) > 0.4
+        ? 'overbought_with_buy_pressure'
+        : null;
+
     const signalDrivers = {
         trend_bias: trendBias,
         cvd_strength: cvdStrength,
@@ -143,6 +151,10 @@ export function buildPrompt(
         momentum_slope_pct_per_bar: clampNumber(slope21_micro, 4),
         extension_atr: clampNumber(distance_from_ema_atr, 3),
         atr_pct_macro: clampNumber(atr_pct_macro, 3),
+        rsi_micro,
+        rsi_macro,
+        oversold_rsi_micro: oversoldMicro,
+        overbought_rsi_micro: overboughtMicro,
     };
 
     const priceVsBreakevenPct =
@@ -183,6 +195,7 @@ export function buildPrompt(
         macro_opposes_position: macroOpposesPosition,
         flow_against_position: flowAgainstPosition,
         closing_alert: closingAlert,
+        reversal_opportunity: reversalOpportunity,
     };
     // Costs (educate the model)
     const taker_round_trip_bps = 5; // 5 bps
@@ -213,10 +226,12 @@ GUIDELINES & HEURISTICS:
 - **Base Gates**: Trade ONLY if ALL base gates are TRUE: spread_ok, liquidity_ok, atr_ok, slippage_ok. If any is FALSE, HOLD.
 - **Costs**: Always weigh expected edge vs fees + slippage; if edge ≤ costs, HOLD.
 - **Signal Strength**: If signal_strength is LOW => HOLD. MEDIUM requires strong agreement from the Signal strength drivers to justify action; otherwise HOLD.
-- **Extension/Fading**: If 'dist_from_ema20_${indicators.microTimeFrame}_in_atr' is > 1.5 (over-extended) or < -1.5, consider fading the move or prioritizing "HOLD" unless other signals are overwhelming.
+- **Extension/Fading**: If 'dist_from_ema20_${indicators.microTimeFrame}_in_atr' is > 1.5 (over-extended) or < -1.5, consider fading the move or prioritizing "HOLD" unless other signals are overwhelming. Never ignore strong tape/flow cues solely because price looks extended.
 - **Signal Drivers**: Use the "Signal strength drivers" JSON to distinguish MEDIUM vs HIGH confidence. Multiple aligned drivers + macro agreement → HIGH; mixed drivers → MEDIUM.
 - **Reversal Discipline**: Only reverse (flip long ↔ short) if flow/pressure clearly contradicts the current position with strong drivers.
+- **Reverse Action**: Use the "REVERSE" action when you want to flatten the current position and immediately open the opposite side; treat it as a close + restart.
 - **Closing Discipline**: Check "Closing guardrails". If macro_supports_position is true and closing_alert is false, prefer HOLD. Close only when closing_alert is true or macro_opposes_position.
+- **Reversal Opportunities**: When "Closing guardrails".reversal_opportunity is set (e.g., oversold_with_sell_pressure), reassess MEDIUM signals aggressively—this often upgrades to HIGH for closes or counter-trend entries.
 `.trim();
 
     const user = `
@@ -250,14 +265,14 @@ ${primaryIndicatorsBlock}
 
 TASKS:
 1) Evaluate short-term bias (UP/DOWN/NEUTRAL) from all data.
-2) Output one action only: "BUY", "SELL", "HOLD", or "CLOSE".
+2) Output one action only: "BUY", "SELL", "HOLD", "CLOSE", or "REVERSE".
    - If no position is open, return BUY/SELL/HOLD.
-   - If a position is open, you may HOLD, CLOSE, or reverse via BUY/SELL (reversal = close then flip).
+   - If a position is open, you may HOLD, CLOSE, or REVERSE (REVERSE = close + open opposite side).
 3) Assess signal strength: LOW, MEDIUM, or HIGH.
 4) Summarize in ≤2 lines.
 
 JSON OUTPUT (strict):
-{"action":"BUY|SELL|HOLD|CLOSE","bias":"UP|DOWN|NEUTRAL","signal_strength":"LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale (flow/liquidity/technicals/sentiment/metrics)"}
+{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","bias":"UP|DOWN|NEUTRAL","signal_strength":"LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale (flow/liquidity/technicals/sentiment/metrics)"}
 `.trim();
 
     return { system: sys, user };

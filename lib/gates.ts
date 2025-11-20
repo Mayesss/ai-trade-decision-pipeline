@@ -69,7 +69,7 @@ export interface GatesOutput {
     atr_ok: boolean;
     slippage_ok: boolean;
   };
-  allowed_actions: ('BUY' | 'SELL' | 'HOLD' | 'CLOSE')[];
+  allowed_actions: ('BUY' | 'SELL' | 'HOLD' | 'CLOSE' | 'REVERSE')[];
 }
 
 export interface GatesHistories {
@@ -307,7 +307,7 @@ export function computeAdaptiveGates(input: GatesInput): GatesOutput {
   // Allowed actions from gates + regime + position
   let allowed_actions: GatesOutput['allowed_actions'] = ['HOLD'];
   if (positionOpen) {
-    allowed_actions = ['HOLD', 'CLOSE']; // you decide exit logic using same gates/info
+    allowed_actions = ['HOLD', 'CLOSE', 'REVERSE']; // you decide exit logic using same gates/info
   } else if (gatesPass) {
     if (regime === 'up') allowed_actions = ['BUY', 'HOLD'];
     else if (regime === 'down') allowed_actions = ['SELL', 'HOLD'];
@@ -378,7 +378,7 @@ export function getGates(args: {
   positionOpen: boolean;
   histories?: GatesHistories;
 }): {
-  allowed_actions: ('BUY' | 'SELL' | 'HOLD' | 'CLOSE')[];
+  allowed_actions: ('BUY' | 'SELL' | 'HOLD' | 'CLOSE' | 'REVERSE')[];
   gates: {
     spread_ok: boolean;
     liquidity_ok: boolean;

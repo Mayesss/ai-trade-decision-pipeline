@@ -10,7 +10,7 @@ import { computeOrderSize, fetchPositionInfo } from './analytics';
 // ------------------------------
 
 export interface TradeDecision {
-    action: 'BUY' | 'SELL' | 'HOLD' | 'CLOSE';
+    action: 'BUY' | 'SELL' | 'HOLD' | 'CLOSE' | 'REVERSE';
     summary: string;
     reason: string;
     timestamp?: number;
@@ -61,6 +61,45 @@ export async function executeDecision(
         };
         const res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
         return { placed: true, orderId: res?.orderId || res?.order_id || null, clientOid };
+    }
+
+    if (decision.action === 'REVERSE') {
+        if (dryRun) return { placed: false, orderId: null, clientOid };
+        const pos = await fetchPositionInfo(symbol);
+        if (pos.status === 'none') {
+            return { placed: false, orderId: null, clientOid, note: 'no open position to reverse' };
+        }
+        const oppositeSide: 'long' | 'short' = pos.holdSide === 'long' ? 'short' : 'long';
+        const closeRes = await flashClosePosition(
+            symbol,
+            productType,
+            pos.posMode === 'hedge_mode' ? pos.holdSide : undefined,
+        );
+        const closeOk = Array.isArray(closeRes?.successList) && closeRes.successList.length > 0;
+        if (!closeOk) {
+            return { placed: false, orderId: null, clientOid, note: 'failed to close before reverse' };
+        }
+        const size = await computeOrderSize(symbol, sideSizeUSDT, productType);
+        const body = {
+            symbol,
+            productType,
+            marginCoin: 'USDT',
+            marginMode: 'isolated',
+            side: oppositeSide === 'long' ? 'buy' : 'sell',
+            orderType: 'market',
+            size: size.toString(),
+            clientOid,
+            force: 'gtc',
+        };
+        const res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
+        return {
+            placed: true,
+            orderId: res?.orderId || res?.order_id || null,
+            clientOid,
+            reversed: true,
+            size,
+            targetSide: oppositeSide,
+        };
     }
 
     // CLOSE
