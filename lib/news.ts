@@ -88,7 +88,8 @@ export async function fetchNewsSentiment(symbolOrBase: string): Promise<Sentimen
 
     let payload: any;
     try {
-        payload = await coindeskFetch(listPath, query);
+      //  payload = await coindeskFetch(listPath, query);
+      return null; // Temporarily disabled
     } catch (e) {
         // console.warn('Error fetching CoinDesk news:', e);
         return null;
