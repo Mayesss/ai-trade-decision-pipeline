@@ -144,6 +144,16 @@ export function buildPrompt(
         ? 'overbought_with_buy_pressure'
         : null;
 
+    const driverComponents = [
+        Math.abs(trendBias),
+        Math.abs(cvdStrength ?? 0),
+        Math.abs(analytics.obImb ?? 0),
+        Math.abs(slope21_micro),
+        Math.abs(distance_from_ema_atr),
+        Math.abs(atr_pct_macro),
+    ];
+    const alignedDriverCount = driverComponents.filter((v) => v >= 0.35).length;
+
     const signalDrivers = {
         trend_bias: trendBias,
         cvd_strength: cvdStrength,
@@ -155,6 +165,7 @@ export function buildPrompt(
         rsi_macro,
         oversold_rsi_micro: oversoldMicro,
         overbought_rsi_micro: overboughtMicro,
+        aligned_driver_count: alignedDriverCount,
     };
 
     const priceVsBreakevenPct =
@@ -185,6 +196,13 @@ export function buildPrompt(
             (Math.abs(cvdStrength ?? 0) > 0.4 || Math.abs(analytics.obImb) > 0.2 || (priceVsBreakevenPct ?? 0) < -0.15),
     );
 
+    const flowContradictionScore =
+        positionSide === 'long'
+            ? Math.max(0, (-(analytics.obImb ?? 0)) + (-(cvdStrength ?? 0)))
+            : positionSide === 'short'
+            ? Math.max(0, (analytics.obImb ?? 0) + (cvdStrength ?? 0))
+            : 0;
+
     const closingGuidance = {
         macro_bias: trendBias,
         flow_pressure: clampNumber(analytics.obImb, 3),
@@ -196,6 +214,7 @@ export function buildPrompt(
         flow_against_position: flowAgainstPosition,
         closing_alert: closingAlert,
         reversal_opportunity: reversalOpportunity,
+        flow_contradiction_score: clampNumber(flowContradictionScore, 3),
     };
     // Costs (educate the model)
     const taker_round_trip_bps = 5; // 5 bps
@@ -225,13 +244,13 @@ Respond in strict JSON ONLY.
 GUIDELINES & HEURISTICS:
 - **Base Gates**: Trade ONLY if ALL base gates are TRUE: spread_ok, liquidity_ok, atr_ok, slippage_ok. If any is FALSE, HOLD.
 - **Costs**: Always weigh expected edge vs fees + slippage; if edge ≤ costs, HOLD.
-- **Signal Strength**: If signal_strength is LOW => HOLD. MEDIUM requires strong agreement from the Signal strength drivers to justify action; otherwise HOLD.
+- **Signal Strength**: If signal_strength is LOW => HOLD. MEDIUM requires aligned_driver_count ≥ 3 in the Signal strength drivers; otherwise HOLD. aligned_driver_count ≥ 4 typically implies HIGH.
 - **Extension/Fading**: If 'dist_from_ema20_${indicators.microTimeFrame}_in_atr' is > 1.5 (over-extended) or < -1.5, consider fading the move or prioritizing "HOLD" unless other signals are overwhelming. Never ignore strong tape/flow cues solely because price looks extended.
 - **Signal Drivers**: Use the "Signal strength drivers" JSON to distinguish MEDIUM vs HIGH confidence. Multiple aligned drivers + macro agreement → HIGH; mixed drivers → MEDIUM.
 - **Reversal Discipline**: Only reverse (flip long ↔ short) if flow/pressure clearly contradicts the current position with strong drivers.
-- **Reverse Action**: Use the "REVERSE" action when you want to flatten the current position and immediately open the opposite side; treat it as a close + restart.
+- **Reverse Action**: Use the "REVERSE" action when you want to flatten the current position and immediately open the opposite side; treat it as a close + restart. Strong flow_contradiction_score or reversal_opportunity should bias toward REVERSE over HOLD.
 - **Closing Discipline**: Check "Closing guardrails". If macro_supports_position is true and closing_alert is false, prefer HOLD. Close only when closing_alert is true or macro_opposes_position.
-- **Reversal Opportunities**: When "Closing guardrails".reversal_opportunity is set (e.g., oversold_with_sell_pressure), reassess MEDIUM signals aggressively—this often upgrades to HIGH for closes or counter-trend entries.
+- **Reversal Opportunities**: When "Closing guardrails".reversal_opportunity is set (e.g., oversold_with_sell_pressure) or flow_contradiction_score is high (>0.5), reassess MEDIUM signals aggressively—this often upgrades to HIGH for CLOSE/REVERSE actions.
 `.trim();
 
     const user = `
