@@ -203,6 +203,9 @@ export function buildPrompt(
             ? Math.max(0, (analytics.obImb ?? 0) + (cvdStrength ?? 0))
             : 0;
 
+    const reverseConfidence =
+        flowContradictionScore > 0.75 && reversalOpportunity ? 'high' : flowContradictionScore > 0.5 ? 'medium' : 'low';
+
     const closingGuidance = {
         macro_bias: trendBias,
         flow_pressure: clampNumber(analytics.obImb, 3),
@@ -215,6 +218,7 @@ export function buildPrompt(
         closing_alert: closingAlert,
         reversal_opportunity: reversalOpportunity,
         flow_contradiction_score: clampNumber(flowContradictionScore, 3),
+        reverse_confidence: reverseConfidence,
     };
     // Costs (educate the model)
     const taker_round_trip_bps = 5; // 5 bps
@@ -248,7 +252,7 @@ GUIDELINES & HEURISTICS:
 - **Extension/Fading**: If 'dist_from_ema20_${indicators.microTimeFrame}_in_atr' is > 1.5 (over-extended) or < -1.5, consider fading the move or prioritizing "HOLD" unless other signals are overwhelming. Never ignore strong tape/flow cues solely because price looks extended.
 - **Signal Drivers**: Use the "Signal strength drivers" JSON to distinguish MEDIUM vs HIGH confidence. Multiple aligned drivers + macro agreement → HIGH; mixed drivers → MEDIUM.
 - **Reversal Discipline**: Only reverse (flip long ↔ short) if flow/pressure clearly contradicts the current position with strong drivers.
-- **Reverse Action**: Use the "REVERSE" action when you want to flatten the current position and immediately open the opposite side; treat it as a close + restart. Strong flow_contradiction_score or reversal_opportunity should bias toward REVERSE over HOLD.
+- **Reverse Action**: Use the "REVERSE" action when you want to flatten the current position and immediately open the opposite side; treat it as a close + restart. Only take REVERSE when signal_strength is HIGH or when \"Closing guardrails\".reverse_confidence = \"high\" (flow contradiction + reversal opportunity). Medium signals without that confirmation => HOLD or CLOSE.
 - **Closing Discipline**: Check "Closing guardrails". If macro_supports_position is true and closing_alert is false, prefer HOLD. Close only when closing_alert is true or macro_opposes_position.
 - **Reversal Opportunities**: When "Closing guardrails".reversal_opportunity is set (e.g., oversold_with_sell_pressure) or flow_contradiction_score is high (>0.5), reassess MEDIUM signals aggressively—this often upgrades to HIGH for CLOSE/REVERSE actions.
 `.trim();
