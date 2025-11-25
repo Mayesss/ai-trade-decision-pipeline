@@ -21,7 +21,8 @@ export interface GatesInput {
     asks: OrderbookSideLevelArr | OrderbookSideObjArr;
   };
   notionalUSDT: number;          // intended order size (USD)
-  atrAbs1h: number;              // ATR(1H), same units as price
+  atrAbsMacro: number;           // ATR for macro timeframe, same units as price
+  macroTimeframeMinutes: number; // macro timeframe in minutes
   regime: 'up' | 'down' | 'neutral'; // from macro indicators (e.g., EMA(20)>EMA(50) on 1h)
   positionOpen: boolean;
 
@@ -118,6 +119,28 @@ function midPrice(bids: [number, number][], asks: [number, number][]) {
   const ba = Number(asks?.[0]?.[0] ?? 0);
   if (bb > 0 && ba > 0) return (bb + ba) / 2;
   return 0;
+}
+
+function timeframeToMinutes(tf?: string): number {
+  if (!tf) return 60;
+  const normalized = tf.trim().toLowerCase();
+  const match = normalized.match(/^(\d+)([smhd])$/);
+  if (!match) return 60;
+  const value = Number(match[1]);
+  const unit = match[2];
+  if (!Number.isFinite(value) || value <= 0) return 60;
+  switch (unit) {
+    case 's':
+      return Math.max(1, value / 60);
+    case 'm':
+      return value;
+    case 'h':
+      return value * 60;
+    case 'd':
+      return value * 60 * 24;
+    default:
+      return 60;
+  }
 }
 
 /** USD notional within a price band (±bandBps) around mid on the specified side */
@@ -263,7 +286,7 @@ function clamp(value: number, min: number, max: number) {
 
 export function computeAdaptiveGates(input: GatesInput): GatesOutput {
   const {
-    symbol, last, orderbook, notionalUSDT, atrAbs1h,
+    symbol, last, orderbook, notionalUSDT, atrAbsMacro, macroTimeframeMinutes,
     spreadBpsHistory, top5BidUsdHistory, atrPctHistory, slippageBpsHistory,
     vol24hUSD, medianSpreadBps24h, regime, positionOpen,
   } = input;
@@ -277,7 +300,7 @@ export function computeAdaptiveGates(input: GatesInput): GatesOutput {
   const spreadBpsNow = last > 0 ? (spread / last) * 1e4 : Infinity;
 
   const obImbNow = obImbalance(bids, asks, 5);
-  const atrPctNow = last > 0 ? atrAbs1h / last : NaN;
+  const atrPctNow = last > 0 ? atrAbsMacro / last : NaN;
 
   // Dynamic band and banded depth
   const mp = midPrice(bids, asks);
@@ -305,8 +328,11 @@ export function computeAdaptiveGates(input: GatesInput): GatesOutput {
   const spreadCap = bandBps > 20 ? spreadCapBase * 1.25 : spreadCapBase;
   const spread_ok = spreadBpsNow <= spreadCap;
 
-  // ATR gate (adaptive by percentiles if available; else tier range)
-  const [atrFloor, atrCeil] = t.atrPctRange;
+  // ATR gate (adaptive by percentiles if available; else timeframe-scaled tier range)
+  const macroMinutes = Math.max(1, macroTimeframeMinutes || 60);
+  const tfScale = Math.sqrt(macroMinutes / 60);
+  const [atrFloorBase, atrCeilBase] = t.atrPctRange;
+  const [atrFloor, atrCeil] = [atrFloorBase * tfScale, atrCeilBase * tfScale];
   const atrLo = atrP25 ?? atrFloor;
   const atrHi = atrP85 ?? atrCeil;
   const atr_ok = Number.isFinite(atrPctNow) ? atrPctNow >= atrLo && atrPctNow <= atrHi : true;
@@ -431,7 +457,8 @@ export function getGates(args: {
   const { symbol, bundle, analytics, indicators, notionalUSDT, positionOpen, histories } = args;
 
   const last = analytics?.last || extractLastPrice(bundle, NaN);
-  const atrAbs1h = parseAtr1hAbs(indicators);
+  const atrAbsMacro = parseAtr1hAbs(indicators);
+  const macroMinutes = timeframeToMinutes(indicators.macroTimeFrame);
   const regime = parseRegimeFromIndicators(indicators);
 
   const bids = bundle?.orderbook?.bids ?? [];
@@ -443,7 +470,8 @@ export function getGates(args: {
     last,
     orderbook: { bids, asks },
     notionalUSDT,
-    atrAbs1h,
+    atrAbsMacro,
+    macroTimeframeMinutes: macroMinutes,
     regime,
     positionOpen,
     spreadBpsHistory: histories?.spreadBpsHistory,
