@@ -214,7 +214,29 @@ function tierThresholds(tier: Tier) {
       tier === 'MAJOR' ? 150_000 :
       tier === 'MID' ?   100_000 : 50_000,
 
-    obImbAbsMin: tier === 'SMALL' ? 0.25 : 0.15, // optional assist
+    refNotionalUSDT:
+      tier === 'BTC' ? 500_000 :
+      tier === 'ETH' ? 150_000 :
+      tier === 'MAJOR' ? 75_000 :
+      tier === 'MID' ? 40_000 : 15_000,
+
+    depthPerNotional:
+      tier === 'BTC' ? 18 :
+      tier === 'ETH' ? 15 :
+      tier === 'MAJOR' ? 12 :
+      tier === 'MID' ? 9 : 6,
+
+    minDepthScale:
+      tier === 'BTC' ? 0.2 :
+      tier === 'ETH' ? 0.25 :
+      tier === 'MAJOR' ? 0.25 :
+      tier === 'MID' ? 0.2 : 0.15,
+
+    maxDepthScale:
+      tier === 'BTC' ? 3 :
+      tier === 'ETH' ? 2.5 :
+      tier === 'MAJOR' ? 2.5 :
+      tier === 'MID' ? 2 : 1.5,
 
     slippageBpsMax:
       tier === 'BTC' ? 2 :
@@ -234,6 +256,10 @@ function tierThresholds(tier: Tier) {
 ///////////////////////////////
 
 const EXCLUDED_SYMBOLS = new Set(['AAPLUSDT', 'TSLAUSDT', 'MSFTUSDT', 'NVDAUSDT']); // tokenized stocks: exclude by default
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
 
 export function computeAdaptiveGates(input: GatesInput): GatesOutput {
   const {
@@ -285,9 +311,13 @@ export function computeAdaptiveGates(input: GatesInput): GatesOutput {
   const atrHi = atrP85 ?? atrCeil;
   const atr_ok = Number.isFinite(atrPctNow) ? atrPctNow >= atrLo && atrPctNow <= atrHi : true;
 
-  // Liquidity gate (banded depth) with adaptive floor: prefer history, clamp by tier floor, always ≥ 10× notional
+  // Liquidity gate (banded depth) with adaptive floor scaled by notional and tier weight
   const depthP50Adj = (depthP50 ?? 0) * 0.8;
-  const depthFloor = Math.max(10 * (notionalUSDT || 0), Math.min(t.depthMinUSD, depthP50Adj || Infinity));
+  const notional = Math.max(0, notionalUSDT || 0);
+  const refRatio = t.refNotionalUSDT > 0 ? notional / t.refNotionalUSDT : 0;
+  const tierDepthWeight = t.depthMinUSD * clamp(refRatio, t.minDepthScale, t.maxDepthScale);
+  const depthByNotional = notional * t.depthPerNotional;
+  const depthFloor = Math.max(depthByNotional, tierDepthWeight, depthP50Adj, notional * 6);
   const liquidity_ok = bidBandUsd >= depthFloor;
 
   // Expected slippage (primary realism check)
@@ -295,7 +325,8 @@ export function computeAdaptiveGates(input: GatesInput): GatesOutput {
   const slipSellBps = expectedSlippageBps('sell', notionalUSDT, bids, asks, mp);
   const slipBpsNow = Math.min(slipBuyBps, slipSellBps); // best-case for "can I trade at all?"
 
-  const slippageCap = Math.min(slipP75 ?? Infinity, t.slippageBpsMax);
+  const slippageScale = clamp(1 + refRatio, 1, 3);
+  const slippageCap = Math.min(slipP75 ?? Infinity, t.slippageBpsMax * slippageScale);
   const slippage_ok = slipBpsNow <= slippageCap;
 
   // Exclusion (tokenized stocks, etc.)
