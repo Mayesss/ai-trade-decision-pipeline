@@ -158,6 +158,8 @@ export function buildPrompt(
     const flowBias = clampNumber(flowBiasRaw, 3);
     const flowSupports = flowBiasRaw > 0.25 ? 'buy' : flowBiasRaw < -0.25 ? 'sell' : 'neutral';
 
+    const mediumActionReady = alignedDriverCount >= 3 && Math.abs(flowBiasRaw) >= 0.35;
+
     const signalDrivers = {
         trend_bias: trendBias,
         cvd_strength: cvdStrength,
@@ -172,6 +174,7 @@ export function buildPrompt(
         aligned_driver_count: alignedDriverCount,
         flow_bias: flowBias,
         flow_supports: flowSupports,
+        medium_action_ready: mediumActionReady,
     };
 
     const priceVsBreakevenPct =
@@ -254,7 +257,7 @@ Respond in strict JSON ONLY.
 GUIDELINES & HEURISTICS:
 - **Base Gates**: Trade ONLY if ALL base gates are TRUE: spread_ok, liquidity_ok, atr_ok, slippage_ok. If any is FALSE, HOLD.
 - **Costs**: Always weigh expected edge vs fees + slippage; if edge ≤ costs, HOLD.
-- **Signal Strength**: If signal_strength is LOW => HOLD. MEDIUM requires aligned_driver_count ≥ 3 in the Signal strength drivers; otherwise HOLD. aligned_driver_count ≥ 4 typically implies HIGH.
+- **Signal Strength**: If signal_strength is LOW => HOLD. MEDIUM requires aligned_driver_count ≥ 3 **and** medium_action_ready=true; otherwise HOLD. aligned_driver_count ≥ 4 typically implies HIGH.
 - **Directional Trades**: BUY/SELL/REVERSE require flow_supports to be in the same direction (or neutral) and signal_strength to be HIGH (or MEDIUM with aligned_driver_count ≥ 4). Otherwise HOLD/CLOSE.
 - **Extension/Fading**: If 'dist_from_ema20_${indicators.microTimeFrame}_in_atr' is > 1.5 (over-extended) or < -1.5, consider fading the move or prioritizing "HOLD" unless other signals are overwhelming. Never ignore strong tape/flow cues solely because price looks extended.
 - **Signal Drivers**: Use the "Signal strength drivers" JSON to distinguish MEDIUM vs HIGH confidence. Multiple aligned drivers + macro agreement → HIGH; mixed drivers → MEDIUM.
