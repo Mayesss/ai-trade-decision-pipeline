@@ -288,7 +288,6 @@ async function runAnalysisForSymbol(params: {
                     },
                     execRes: { placed: false, orderId: null, clientOid: null, reason: strategyBlockedReason },
                     gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
-                    close_conditions,
                     promptSkipped: true,
                     usedTape,
                 };
