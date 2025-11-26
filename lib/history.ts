@@ -1,4 +1,4 @@
-import { PositionContext } from './ai';
+import { PositionContext, TrendPullbackSignals } from './ai';
 import { TradeDecision } from './trading';
 
 const KV_REST_API_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
@@ -75,6 +75,7 @@ export type DecisionSnapshot = {
     metrics?: any;
     newsSentiment?: string | null;
     positionContext?: PositionContext | null;
+    trendSignals?: TrendPullbackSignals;
 };
 
 export type DecisionHistoryEntry = {

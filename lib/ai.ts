@@ -20,6 +20,121 @@ export type PositionContext = {
     };
 };
 
+type FlowSupport = 'buy' | 'sell' | 'neutral';
+
+export type TrendPullbackSignals = {
+    macroTrendUp: boolean;
+    macroTrendDown: boolean;
+    onPullbackLong: boolean;
+    onPullbackShort: boolean;
+    flowSupports: FlowSupport;
+    flowBias: number;
+    nearPrimaryEMA20: boolean;
+    nearMicroEMA20: boolean;
+    longFlowOk: boolean;
+    shortFlowOk: boolean;
+    primaryRSI?: number | null;
+    primarySlope?: number | null;
+    microRSI?: number | null;
+    info?: Record<string, any>;
+};
+
+const indicatorRegexCache = new Map<string, RegExp>();
+
+function readIndicator(name: string, src: string): number | null {
+    if (!src) return null;
+    if (!indicatorRegexCache.has(name)) {
+        indicatorRegexCache.set(name, new RegExp(`${name}=([+-]?[0-9]*\.?[0-9]+)`));
+    }
+    const regex = indicatorRegexCache.get(name)!;
+    const match = src.match(regex);
+    if (!match) return null;
+    const val = Number(match[1]);
+    return Number.isFinite(val) ? val : null;
+}
+
+function distanceOk(price: number, target: number | null, atr: number | null) {
+    if (!Number.isFinite(price) || !Number.isFinite(target as number)) return false;
+    const threshold = Number.isFinite(atr as number) && (atr as number) > 0 ? (atr as number) * 0.8 : price * 0.0015;
+    return Math.abs(price - (target as number)) <= threshold;
+}
+
+function microDistanceOk(price: number, target: number | null, atr: number | null) {
+    if (!Number.isFinite(price) || !Number.isFinite(target as number)) return false;
+    const threshold = Number.isFinite(atr as number) && (atr as number) > 0 ? (atr as number) * 1.2 : price * 0.0008;
+    return Math.abs(price - (target as number)) <= threshold;
+}
+
+export function computeTrendPullbackSignals(params: {
+    price: number;
+    analytics: any;
+    indicators: MultiTFIndicators;
+    gates: { regime_trend_up: boolean; regime_trend_down: boolean };
+    primaryTimeframe: string;
+}): TrendPullbackSignals {
+    const { price, analytics, indicators, gates, primaryTimeframe } = params;
+    const macroSummary = indicators.macro || '';
+    const microSummary = indicators.micro || '';
+    const primarySummary = indicators.primary?.summary || '';
+
+    const ema50Macro = readIndicator('EMA50', macroSummary);
+    const ema50Primary = readIndicator('EMA50', primarySummary);
+    const ema20Primary = readIndicator('EMA20', primarySummary);
+    const ema20Micro = readIndicator('EMA20', microSummary);
+    const atrPrimary = readIndicator('ATR', primarySummary);
+    const atrMicro = readIndicator('ATR', microSummary);
+    const rsiPrimary = readIndicator('RSI', primarySummary);
+    const rsiMicro = readIndicator('RSI', microSummary);
+    const slopePrimary = readIndicator('slopeEMA21_10', primarySummary);
+
+    const obImb = Number(analytics?.obImb ?? 0);
+    const cvd = Number(analytics?.cvd ?? 0);
+    const cvdStrength = Math.tanh(cvd / 50);
+    const flowBiasRaw = (cvdStrength + obImb) / 2;
+    const flowSupports: FlowSupport = flowBiasRaw > 0.15 ? 'buy' : flowBiasRaw < -0.15 ? 'sell' : 'neutral';
+    const longFlowOk = flowSupports !== 'sell';
+    const shortFlowOk = flowSupports !== 'buy';
+
+    const macroTrendUp = gates.regime_trend_up && (!Number.isFinite(ema50Macro as number) || price >= (ema50Macro as number));
+    const macroTrendDown = gates.regime_trend_down && (!Number.isFinite(ema50Macro as number) || price <= (ema50Macro as number));
+
+    const priceAbovePrimary50 = Number.isFinite(ema50Primary as number) ? price >= (ema50Primary as number) : true;
+    const priceBelowPrimary50 = Number.isFinite(ema50Primary as number) ? price <= (ema50Primary as number) : true;
+
+    const rsiPullbackLong = Number.isFinite(rsiPrimary as number) ? (rsiPrimary as number) >= 35 && (rsiPrimary as number) <= 50 : false;
+    const rsiPullbackShort = Number.isFinite(rsiPrimary as number) ? (rsiPrimary as number) >= 50 && (rsiPrimary as number) <= 65 : false;
+
+    const slopeUp = Number.isFinite(slopePrimary as number) ? (slopePrimary as number) > 0 : false;
+    const slopeDown = Number.isFinite(slopePrimary as number) ? (slopePrimary as number) < 0 : false;
+
+    const nearPrimary = distanceOk(price, ema20Primary, atrPrimary);
+    const nearMicro = microDistanceOk(price, ema20Micro, atrMicro);
+    const microEntryOk = nearPrimary || nearMicro;
+
+    const onPullbackLong = macroTrendUp && priceAbovePrimary50 && rsiPullbackLong && slopeUp && microEntryOk && longFlowOk;
+    const onPullbackShort = macroTrendDown && priceBelowPrimary50 && rsiPullbackShort && slopeDown && microEntryOk && shortFlowOk;
+
+    return {
+        macroTrendUp,
+        macroTrendDown,
+        onPullbackLong,
+        onPullbackShort,
+        flowSupports,
+        flowBias: flowBiasRaw,
+        nearPrimaryEMA20: nearPrimary,
+        nearMicroEMA20: nearMicro,
+        longFlowOk,
+        shortFlowOk,
+        primaryRSI: rsiPrimary,
+        primarySlope: slopePrimary,
+        microRSI: rsiMicro,
+        info: {
+            primaryTimeframe,
+            microEntryOk,
+        },
+    };
+}
+
 // ------------------------------
 // Prompt Builder (with guardrails, regime, momentum & extension gates)
 // ------------------------------
@@ -33,12 +148,23 @@ export function buildPrompt(
     news_sentiment: string | null = null,
     indicators: MultiTFIndicators,
     gates: any, // <--- Retain the gates object for the base gate checks
-    position_context: PositionContext | null = null
+    position_context: PositionContext | null = null,
+    pullbackSignalsOverride?: TrendPullbackSignals,
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
     const change = Number(t?.change24h ?? t?.changeUtc24h ?? t?.chgPct);
     const last = price; // Use price as 'last'
+    const primaryTimeframe = indicators.primary?.timeframe ?? timeframe;
+    const pullbackSignals =
+        pullbackSignalsOverride ??
+        computeTrendPullbackSignals({
+            price: last,
+            analytics,
+            indicators,
+            gates,
+            primaryTimeframe,
+        });
 
     const market_data = `price=${price}, change24h=${Number.isFinite(change) ? change : 'n/a'}`;
 
@@ -97,23 +223,18 @@ export function buildPrompt(
         .map((v: any) => `(${v.price.toFixed(2)} → ${v.volume})`)
         .join(', ');
 
-    // --- Helpers to read numeric fields from indicator strings ---
-    const readNum = (name: string, src: string): number | null => {
-        const m = src.match(new RegExp(`${name}=([+-]?[\\d\\.]+)`));
-        return m ? Number(m[1]) : null;
-    };
-
-    // ---- Extract indicators for raw metrics (Micro = 1m, Macro = 1H) ----
+    // ---- Extract indicators for raw metrics (Micro, Macro, Primary) ----
     const micro = indicators.micro || '';
     const macro = indicators.macro || '';
+    const primary = indicators.primary?.summary || '';
     
     // Technical values we want the AI to judge (values, not booleans)
-    const ema20_micro = readNum('EMA20', micro);
-    const slope21_micro = readNum('slopeEMA21_10', micro) ?? 0; // % per bar
-    const atr_micro = readNum('ATR', micro);
-    const atr_macro = readNum('ATR', macro);
-    const rsi_micro = readNum('RSI', micro);
-    const rsi_macro = readNum('RSI', macro);
+    const ema20_micro = readIndicator('EMA20', micro);
+    const slope21_micro = readIndicator('slopeEMA21_10', micro) ?? 0; // % per bar
+    const atr_micro = readIndicator('ATR', micro);
+    const atr_macro = readIndicator('ATR', macro);
+    const rsi_micro = readIndicator('RSI', micro);
+    const rsi_macro = readIndicator('RSI', macro);
     
     // --- KEY METRICS (VALUES, NOT JUDGMENTS) ---
     const spread_bps = last > 0 ? (analytics.spread || 0) / last * 1e4 : 999;
@@ -125,10 +246,13 @@ export function buildPrompt(
             ? (last - (ema20_micro as number)) / (atr_micro as number)
             : 0;
 
+    const rsiMicroDisplay = Number.isFinite(rsi_micro as number) ? (rsi_micro as number).toFixed(1) : 'n/a';
+    const rsiMacroDisplay = Number.isFinite(rsi_macro as number) ? (rsi_macro as number).toFixed(1) : 'n/a';
+
     const key_metrics =
         `spread_bps=${spread_bps.toFixed(2)}, book_imbalance=${analytics.obImb.toFixed(2)}, ` +
-        `atr_pct_${indicators.macroTimeFrame}=${atr_pct_macro.toFixed(2)}%, rsi_${indicators.microTimeFrame}=${rsi_micro}, ` +
-        `rsi_${indicators.macroTimeFrame}=${rsi_macro}, micro_slope_pct_per_bar=${slope21_micro.toFixed(4)}, ` +
+        `atr_pct_${indicators.macroTimeFrame}=${atr_pct_macro.toFixed(2)}%, rsi_${indicators.microTimeFrame}=${rsiMicroDisplay}, ` +
+        `rsi_${indicators.macroTimeFrame}=${rsiMacroDisplay}, micro_slope_pct_per_bar=${slope21_micro.toFixed(4)}, ` +
         `dist_from_ema20_${indicators.microTimeFrame}_in_atr=${distance_from_ema_atr.toFixed(2)}`;
     
     // --- SIGNAL STRENGTH DRIVERS & CLOSING GUIDANCE ---
@@ -154,11 +278,12 @@ export function buildPrompt(
     ];
     const alignedDriverCount = driverComponents.filter((v) => v >= 0.35).length;
 
-    const flowBiasRaw = ((cvdStrength ?? 0) + (analytics.obImb ?? 0)) / 2;
+    const flowBiasRaw = pullbackSignals.flowBias ?? ((cvdStrength ?? 0) + (analytics.obImb ?? 0)) / 2;
     const flowBias = clampNumber(flowBiasRaw, 3);
-    const flowSupports = flowBiasRaw > 0.25 ? 'buy' : flowBiasRaw < -0.25 ? 'sell' : 'neutral';
+    const flowSupports = pullbackSignals.flowSupports ?? (flowBiasRaw > 0.25 ? 'buy' : flowBiasRaw < -0.25 ? 'sell' : 'neutral');
 
-    const mediumActionReady = alignedDriverCount >= 3 && Math.abs(flowBiasRaw) >= 0.35;
+    const mediumActionReady = alignedDriverCount >= 3 && Math.abs(flowBiasRaw) >= 0.35 &&
+        (pullbackSignals.onPullbackLong || pullbackSignals.onPullbackShort);
 
     const signalDrivers = {
         trend_bias: trendBias,
@@ -175,6 +300,10 @@ export function buildPrompt(
         flow_bias: flowBias,
         flow_supports: flowSupports,
         medium_action_ready: mediumActionReady,
+        macro_trend_up: pullbackSignals.macroTrendUp,
+        macro_trend_down: pullbackSignals.macroTrendDown,
+        pullback_long: pullbackSignals.onPullbackLong,
+        pullback_short: pullbackSignals.onPullbackShort,
     };
 
     const priceVsBreakevenPct =
@@ -251,14 +380,15 @@ export function buildPrompt(
 
     const sys = `
 You are an expert crypto market microstructure analyst and quantitative trading assistant.
-Your goal is to find high-probability, short-term trades. You must be risk-averse.
+Primary strategy: Trade ONLY pullbacks in the direction of the ${indicators.macroTimeFrame} trend (macro). Use the primary timeframe (${primaryTimeframe}) for structure and the micro timeframe (${indicators.microTimeFrame}) for timing. If the trend is unclear or no valid pullback exists, you MUST return HOLD (or CLOSE if managing a position).
 Respond in strict JSON ONLY.
 
 GUIDELINES & HEURISTICS:
 - **Base Gates**: Trade ONLY if ALL base gates are TRUE: spread_ok, liquidity_ok, atr_ok, slippage_ok. If any is FALSE, HOLD.
 - **Costs**: Always weigh expected edge vs fees + slippage; if edge ≤ costs, HOLD.
 - **Signal Strength**: If signal_strength is LOW => HOLD. MEDIUM requires aligned_driver_count ≥ 3 **and** medium_action_ready=true; otherwise HOLD. aligned_driver_count ≥ 4 typically implies HIGH.
-- **Directional Trades**: BUY/SELL/REVERSE require flow_supports to be in the same direction (or neutral) and signal_strength to be HIGH (or MEDIUM with aligned_driver_count ≥ 4). Otherwise HOLD/CLOSE.
+- **Trend Pullback**: Only consider BUY/SELL/REVERSE if macro_trend_up/down is true AND the corresponding pullback flag (pullback_long or pullback_short) is true. If both pullback booleans are false, you must output HOLD or CLOSE.
+- **Directional Trades**: BUY/SELL/REVERSE also require flow_supports to be in the same direction (or neutral) and signal_strength to be HIGH (or MEDIUM with aligned_driver_count ≥ 4 and pullback ready). Otherwise HOLD/CLOSE.
 - **Extension/Fading**: If 'dist_from_ema20_${indicators.microTimeFrame}_in_atr' is > 1.5 (over-extended) or < -1.5, consider fading the move or prioritizing "HOLD" unless other signals are overwhelming. Never ignore strong tape/flow cues solely because price looks extended.
 - **Signal Drivers**: Use the "Signal strength drivers" JSON to distinguish MEDIUM vs HIGH confidence. Multiple aligned drivers + macro agreement → HIGH; mixed drivers → MEDIUM.
 - **Reversal Discipline**: Only reverse (flip long ↔ short) if flow/pressure clearly contradicts the current position with strong drivers.
@@ -293,6 +423,15 @@ ${newsSentimentBlock}- Current position: ${position_status}
 ${positionContextBlock}- Technical (short-term, ${indicators.microTimeFrame}, last 30 candles): ${indicators.micro}
 - Macro (${indicators.macroTimeFrame}, last 30 candles): ${indicators.macro}
 ${primaryIndicatorsBlock}
+- Trend-pullback filters: ${JSON.stringify({
+    macro_trend_up: pullbackSignals.macroTrendUp,
+    macro_trend_down: pullbackSignals.macroTrendDown,
+    pullback_long: pullbackSignals.onPullbackLong,
+    pullback_short: pullbackSignals.onPullbackShort,
+    flow_supports: pullbackSignals.flowSupports,
+    near_primary: pullbackSignals.nearPrimaryEMA20,
+    near_micro: pullbackSignals.nearMicroEMA20,
+})}
 - Signal strength drivers: ${JSON.stringify(signalDrivers)}
 - Closing guardrails: ${JSON.stringify(closingGuidance)}
 

@@ -6,7 +6,7 @@ import { fetchMarketBundle, computeAnalytics, fetchPositionInfo } from '../../li
 import { calculateMultiTFIndicators } from '../../lib/indicators';
 import { fetchNewsSentiment } from '../../lib/news';
 
-import { buildPrompt, callAI } from '../../lib/ai';
+import { buildPrompt, callAI, computeTrendPullbackSignals } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
 import { executeDecision, getTradeProductType } from '../../lib/trading';
@@ -221,6 +221,61 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             usedTape = true;
         }
 
+        const tickerData = Array.isArray(bundle?.ticker) ? bundle.ticker[0] : bundle?.ticker;
+        const lastPrice = Number(tickerData?.lastPr ?? tickerData?.last ?? tickerData?.close ?? tickerData?.price);
+        const effectivePrice = Number.isFinite(lastPrice) ? lastPrice : safeNum(analytics.last, 0);
+
+        const trendSignals = computeTrendPullbackSignals({
+            price: effectivePrice,
+            analytics,
+            indicators,
+            gates: gatesOut.gates,
+            primaryTimeframe: timeFrame,
+        });
+
+        const positionOpen = positionInfo.status === 'open';
+
+        const strategyBlockedReason = !trendSignals.macroTrendUp && !trendSignals.macroTrendDown
+            ? 'macro_trend_unclear'
+            : !trendSignals.onPullbackLong && !trendSignals.onPullbackShort
+            ? 'no_pullback_setup'
+            : null;
+
+        if (!positionOpen && strategyBlockedReason) {
+            return res.status(200).json({
+                symbol,
+                timeFrame,
+                dryRun,
+                decision: {
+                    action: 'HOLD',
+                    bias: 'NEUTRAL',
+                    signal_strength: 'LOW',
+                    summary: 'trend_pullback_filter_block',
+                    reason: strategyBlockedReason,
+                },
+                execRes: { placed: false, orderId: null, clientOid: null, reason: strategyBlockedReason },
+                gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                usedTape,
+            });
+        }
+
+        const restrictActionsForPullback = (actions: ('BUY' | 'SELL' | 'HOLD' | 'CLOSE' | 'REVERSE')[]) =>
+            actions.filter((action) => {
+                if (action === 'BUY') return trendSignals.onPullbackLong;
+                if (action === 'SELL') return trendSignals.onPullbackShort;
+                if (action === 'REVERSE') {
+                    if (positionOpen) {
+                        if (positionInfo.holdSide === 'long') return trendSignals.onPullbackShort;
+                        if (positionInfo.holdSide === 'short') return trendSignals.onPullbackLong;
+                        return false;
+                    }
+                    return trendSignals.onPullbackLong || trendSignals.onPullbackShort;
+                }
+                return true;
+            });
+
+        gatesOut.allowed_actions = restrictActionsForPullback(gatesOut.allowed_actions);
+
         // 5) CLOSE conditions (robust CVD flip + PnL bands + regime)
         let pnlPct = 0;
         let close_conditions:
@@ -289,6 +344,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             indicators, // from calculateMultiTFIndicators(symbol)
             gatesOut.gates, // from getGates(...)
             positionContext,
+            trendSignals,
         );
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions)
@@ -297,8 +353,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 8) Execute (dry run unless explicitly disabled)
         const execRes = await executeDecision(symbol, sideSizeUSDT, decision, productType, dryRun);
 
-        const tickerData = Array.isArray(bundle?.ticker) ? bundle.ticker[0] : bundle?.ticker;
-        const lastPrice = Number(tickerData?.lastPr ?? tickerData?.last ?? tickerData?.close ?? tickerData?.price);
         const change24h = Number(tickerData?.change24h ?? tickerData?.changeUtc24h ?? tickerData?.chgPct);
         const snapshot = {
             price: Number.isFinite(lastPrice) ? lastPrice : undefined,
@@ -310,6 +364,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             metrics: gatesOut.metrics,
             newsSentiment,
             positionContext,
+            trendSignals,
         };
 
         await appendDecisionHistory({
