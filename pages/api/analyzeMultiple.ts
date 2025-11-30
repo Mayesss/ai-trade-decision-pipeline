@@ -34,11 +34,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // ------------------------------------------------------------------
 // mapLimit: run a function over items with bounded concurrency
 // ------------------------------------------------------------------
-async function mapLimit<T, R>(
-    items: T[],
-    limit: number,
-    fn: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
     const results = new Array<R>(items.length);
     let nextIndex = 0;
 
@@ -131,10 +127,7 @@ function robustCvdFlip(params: {
     const magOk = Math.abs(cvdShort) >= Math.max(5, Math.abs(cvdMedium) * 0.2);
 
     // Confirmation by price or book imbalance
-    const confOk =
-        side === 'long'
-            ? midRetBps <= -2 || obImb <= -0.15
-            : midRetBps >= +2 || obImb >= +0.15;
+    const confOk = side === 'long' ? midRetBps <= -2 || obImb <= -0.15 : midRetBps >= +2 || obImb >= +0.15;
 
     if (!(magOk && confOk)) {
         const s = touchPersist(symbolKey);
@@ -187,16 +180,16 @@ async function runAnalysisForSymbol(params: {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
             // 1) Parallel baseline fetches (light bundle)
-                const [positionInfo, newsSentiment, bundleLight, indicators] = await Promise.all([
-                    fetchPositionInfo(symbol),
-                    fetchNewsSentiment(symbol),
-                    fetchMarketBundle(symbol, timeFrame, { includeTrades: false }),
-                    calculateMultiTFIndicators(symbol, {
-                        primary: timeFrame,
-                        micro: microTimeFrame,
-                        macro: macroTimeFrame,
-                    }),
-                ]);
+            const [positionInfo, newsSentiment, bundleLight, indicators] = await Promise.all([
+                fetchPositionInfo(symbol),
+                fetchNewsSentiment(symbol),
+                fetchMarketBundle(symbol, timeFrame, { includeTrades: false }),
+                calculateMultiTFIndicators(symbol, {
+                    primary: timeFrame,
+                    micro: microTimeFrame,
+                    macro: macroTimeFrame,
+                }),
+            ]);
 
             const positionForPrompt =
                 positionInfo.status === 'open'
@@ -207,7 +200,8 @@ async function runAnalysisForSymbol(params: {
             const persistKey = `${symbol}:${timeFrame}`;
             const pstate = touchPersist(persistKey);
             if (positionInfo.status === 'open') {
-                const entryTimestamp = typeof positionInfo.entryTimestamp === 'number' ? positionInfo.entryTimestamp : undefined;
+                const entryTimestamp =
+                    typeof positionInfo.entryTimestamp === 'number' ? positionInfo.entryTimestamp : undefined;
                 if (pstate.lastSide !== positionInfo.holdSide) {
                     pstate.enteredAt = entryTimestamp ?? Date.now();
                     pstate.lastSide = positionInfo.holdSide;
@@ -284,7 +278,8 @@ async function runAnalysisForSymbol(params: {
             });
 
             const positionOpen = positionInfo.status === 'open';
-            const calmMarket = !positionOpen && shouldSkipMomentumCall({ analytics, signals: momentumSignals, price: effectivePrice });
+            const calmMarket =
+                !positionOpen && shouldSkipMomentumCall({ analytics, signals: momentumSignals, price: effectivePrice });
 
             if (!positionOpen && calmMarket) {
                 return {
@@ -344,6 +339,24 @@ async function runAnalysisForSymbol(params: {
                     pnl_lt_neg: pnlPct <= -1.0, // stop loss ≤ -1%
                     opposite_regime,
                     cvd_flip,
+                };
+            }
+
+            if (!positionOpen && calmMarket) {
+                return {
+                    symbol,
+                    decision: {
+                        action: 'HOLD',
+                        bias: 'NEUTRAL',
+                        signal_strength: 'LOW',
+                        summary: 'calm_market',
+                        reason: 'conditions_below_momentum_thresholds',
+                    },
+                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'calm_market' },
+                    gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                    close_conditions,
+                    promptSkipped: true,
+                    usedTape,
                 };
             }
 
@@ -468,27 +481,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const MAX_CONCURRENCY = 5;
         const PER_TASK_DELAY_MS = 150; // optional extra delay per task, per worker
 
-        const results = await mapLimit(
-            symbols,
-            MAX_CONCURRENCY,
-            async (sym, idx) => {
-                const result = await runAnalysisForSymbol({
-                    symbol: String(sym),
-                    timeFrame,
-                    dryRun,
-                    sideSizeUSDT,
-                    productType,
-                    microTimeFrame,
-                    macroTimeFrame,
-                });
+        const results = await mapLimit(symbols, MAX_CONCURRENCY, async (sym, idx) => {
+            const result = await runAnalysisForSymbol({
+                symbol: String(sym),
+                timeFrame,
+                dryRun,
+                sideSizeUSDT,
+                productType,
+                microTimeFrame,
+                macroTimeFrame,
+            });
 
-                if (PER_TASK_DELAY_MS > 0) {
-                    await sleep(PER_TASK_DELAY_MS);
-                }
+            if (PER_TASK_DELAY_MS > 0) {
+                await sleep(PER_TASK_DELAY_MS);
+            }
 
-                return result;
-            },
-        );
+            return result;
+        });
 
         return res.status(200).json({
             timeFrame,
