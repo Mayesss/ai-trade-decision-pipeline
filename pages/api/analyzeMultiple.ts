@@ -281,23 +281,6 @@ async function runAnalysisForSymbol(params: {
             const calmMarket =
                 !positionOpen && shouldSkipMomentumCall({ analytics, signals: momentumSignals, price: effectivePrice });
 
-            if (!positionOpen && calmMarket) {
-                return {
-                    symbol,
-                    decision: {
-                        action: 'HOLD',
-                        bias: 'NEUTRAL',
-                        signal_strength: 'LOW',
-                        summary: 'calm_market',
-                        reason: 'conditions_below_momentum_thresholds',
-                    },
-                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'calm_market' },
-                    gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
-                    close_conditions,
-                    promptSkipped: true,
-                    usedTape,
-                };
-            }
 
             // 5) CLOSE conditions (not yet wired into prompt but computed)
             let pnlPct = 0;
