@@ -6,7 +6,8 @@ import { fetchMarketBundle, computeAnalytics, fetchPositionInfo } from '../../li
 import { calculateMultiTFIndicators } from '../../lib/indicators';
 import { fetchNewsSentiment } from '../../lib/news';
 
-import { buildPrompt, callAI, computeTrendPullbackSignals } from '../../lib/ai';
+import { buildPrompt, callAI, computeMomentumSignals } from '../../lib/ai';
+import type { MomentumSignals } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
 import { executeDecision, getTradeProductType } from '../../lib/trading';
@@ -42,6 +43,19 @@ const persist = new Map<string, PersistState>();
 function touchPersist(key: string): PersistState {
     if (!persist.has(key)) persist.set(key, { streak: 0 });
     return persist.get(key)!;
+}
+
+const ATR_ACTIVE_MIN_PCT = 0.0007; // ~0.07%
+
+function shouldSkipMomentumCall(params: { analytics: any; signals: MomentumSignals; price: number }) {
+    const { analytics, signals, price } = params;
+    const obActive = Math.abs(safeNum(analytics.obImb, 0)) > 0.2;
+    const flowActive = Math.abs(signals.flowBias ?? 0) > 0.3;
+    const extensionActive = Math.abs(signals.microExtensionInAtr ?? 0) > 0.5;
+    const primaryAtr = Number(signals.primaryAtr ?? 0);
+    const atrPct = price > 0 && primaryAtr > 0 ? primaryAtr / price : 0;
+    const atrActive = atrPct > ATR_ACTIVE_MIN_PCT;
+    return !(obActive || flowActive || extensionActive || atrActive);
 }
 
 /**
@@ -225,7 +239,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const lastPrice = Number(tickerData?.lastPr ?? tickerData?.last ?? tickerData?.close ?? tickerData?.price);
         const effectivePrice = Number.isFinite(lastPrice) ? lastPrice : safeNum(analytics.last, 0);
 
-        const trendSignals = computeTrendPullbackSignals({
+        const momentumSignals = computeMomentumSignals({
             price: effectivePrice,
             analytics,
             indicators,
@@ -234,14 +248,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         });
 
         const positionOpen = positionInfo.status === 'open';
+        const calmMarket = !positionOpen && shouldSkipMomentumCall({ analytics, signals: momentumSignals, price: effectivePrice });
 
-        const strategyBlockedReason = !trendSignals.macroTrendUp && !trendSignals.macroTrendDown
-            ? 'macro_trend_unclear'
-            : !trendSignals.onPullbackLong && !trendSignals.onPullbackShort
-            ? 'no_pullback_setup'
-            : null;
-
-        if (!positionOpen && strategyBlockedReason) {
+        if (!positionOpen && calmMarket) {
             return res.status(200).json({
                 symbol,
                 timeFrame,
@@ -250,31 +259,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     action: 'HOLD',
                     bias: 'NEUTRAL',
                     signal_strength: 'LOW',
-                    summary: 'trend_pullback_filter_block',
-                    reason: strategyBlockedReason,
+                    summary: 'calm_market',
+                    reason: 'conditions_below_momentum_thresholds',
                 },
-                execRes: { placed: false, orderId: null, clientOid: null, reason: strategyBlockedReason },
+                execRes: { placed: false, orderId: null, clientOid: null, reason: 'calm_market' },
                 gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
                 usedTape,
             });
         }
-
-        const restrictActionsForPullback = (actions: ('BUY' | 'SELL' | 'HOLD' | 'CLOSE' | 'REVERSE')[]) =>
-            actions.filter((action) => {
-                if (action === 'BUY') return trendSignals.onPullbackLong;
-                if (action === 'SELL') return trendSignals.onPullbackShort;
-                if (action === 'REVERSE') {
-                    if (positionOpen) {
-                        if (positionInfo.holdSide === 'long') return trendSignals.onPullbackShort;
-                        if (positionInfo.holdSide === 'short') return trendSignals.onPullbackLong;
-                        return false;
-                    }
-                    return trendSignals.onPullbackLong || trendSignals.onPullbackShort;
-                }
-                return true;
-            });
-
-        gatesOut.allowed_actions = restrictActionsForPullback(gatesOut.allowed_actions);
 
         // 5) CLOSE conditions (robust CVD flip + PnL bands + regime)
         let pnlPct = 0;
@@ -344,7 +336,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             indicators, // from calculateMultiTFIndicators(symbol)
             gatesOut.gates, // from getGates(...)
             positionContext,
-            trendSignals,
+            momentumSignals,
         );
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions)
@@ -364,7 +356,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             metrics: gatesOut.metrics,
             newsSentiment,
             positionContext,
-            trendSignals,
+            momentumSignals,
         };
 
         await appendDecisionHistory({

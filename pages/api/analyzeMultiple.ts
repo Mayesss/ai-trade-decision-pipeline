@@ -7,7 +7,8 @@ import { fetchMarketBundle, computeAnalytics, fetchPositionInfo } from '../../li
 import { calculateMultiTFIndicators } from '../../lib/indicators';
 import { fetchNewsSentiment } from '../../lib/news';
 
-import { buildPrompt, callAI, computeTrendPullbackSignals } from '../../lib/ai';
+import { buildPrompt, callAI, computeMomentumSignals } from '../../lib/ai';
+import type { MomentumSignals } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
 import { executeDecision, getTradeProductType } from '../../lib/trading';
@@ -76,6 +77,19 @@ const persist = new Map<string, PersistState>();
 function touchPersist(key: string): PersistState {
     if (!persist.has(key)) persist.set(key, { streak: 0 });
     return persist.get(key)!;
+}
+
+const ATR_ACTIVE_MIN_PCT = 0.0007;
+
+function shouldSkipMomentumCall(params: { analytics: any; signals: MomentumSignals; price: number }) {
+    const { analytics, signals, price } = params;
+    const obActive = Math.abs(safeNum(analytics.obImb, 0)) > 0.2;
+    const flowActive = Math.abs(signals.flowBias ?? 0) > 0.3;
+    const extensionActive = Math.abs(signals.microExtensionInAtr ?? 0) > 0.5;
+    const primaryAtr = Number(signals.primaryAtr ?? 0);
+    const atrPct = price > 0 && primaryAtr > 0 ? primaryAtr / price : 0;
+    const atrActive = atrPct > ATR_ACTIVE_MIN_PCT;
+    return !(obActive || flowActive || extensionActive || atrActive);
 }
 
 function robustCvdFlip(params: {
@@ -261,7 +275,7 @@ async function runAnalysisForSymbol(params: {
             const lastPrice = Number(tickerData?.lastPr ?? tickerData?.last ?? tickerData?.close ?? tickerData?.price);
             const effectivePrice = Number.isFinite(lastPrice) ? lastPrice : safeNum(analytics.last, 0);
 
-            const trendSignals = computeTrendPullbackSignals({
+            const momentumSignals = computeMomentumSignals({
                 price: effectivePrice,
                 analytics,
                 indicators,
@@ -270,45 +284,25 @@ async function runAnalysisForSymbol(params: {
             });
 
             const positionOpen = positionInfo.status === 'open';
-            const strategyBlockedReason = !trendSignals.macroTrendUp && !trendSignals.macroTrendDown
-                ? 'macro_trend_unclear'
-                : !trendSignals.onPullbackLong && !trendSignals.onPullbackShort
-                ? 'no_pullback_setup'
-                : null;
+            const calmMarket = !positionOpen && shouldSkipMomentumCall({ analytics, signals: momentumSignals, price: effectivePrice });
 
-            if (!positionOpen && strategyBlockedReason) {
+            if (!positionOpen && calmMarket) {
                 return {
                     symbol,
                     decision: {
                         action: 'HOLD',
                         bias: 'NEUTRAL',
                         signal_strength: 'LOW',
-                        summary: 'trend_pullback_filter_block',
-                        reason: strategyBlockedReason,
+                        summary: 'calm_market',
+                        reason: 'conditions_below_momentum_thresholds',
                     },
-                    execRes: { placed: false, orderId: null, clientOid: null, reason: strategyBlockedReason },
+                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'calm_market' },
                     gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                    close_conditions,
                     promptSkipped: true,
                     usedTape,
                 };
             }
-
-            const restrictActionsForPullback = (actions: ('BUY' | 'SELL' | 'HOLD' | 'CLOSE' | 'REVERSE')[]) =>
-                actions.filter((action) => {
-                    if (action === 'BUY') return trendSignals.onPullbackLong;
-                    if (action === 'SELL') return trendSignals.onPullbackShort;
-                    if (action === 'REVERSE') {
-                        if (positionOpen) {
-                            if (positionInfo.holdSide === 'long') return trendSignals.onPullbackShort;
-                            if (positionInfo.holdSide === 'short') return trendSignals.onPullbackLong;
-                            return false;
-                        }
-                        return trendSignals.onPullbackLong || trendSignals.onPullbackShort;
-                    }
-                    return true;
-                });
-
-            gatesOut.allowed_actions = restrictActionsForPullback(gatesOut.allowed_actions);
 
             // 5) CLOSE conditions (not yet wired into prompt but computed)
             let pnlPct = 0;
@@ -372,7 +366,7 @@ async function runAnalysisForSymbol(params: {
                 indicators,
                 gatesOut.gates,
                 positionContext,
-                trendSignals,
+                momentumSignals,
             );
 
             // 7) AI decision
@@ -390,7 +384,7 @@ async function runAnalysisForSymbol(params: {
                 spread: safeNum(analytics.spread, 0),
                 gates: gatesOut.gates,
                 metrics: gatesOut.metrics,
-                trendSignals,
+                momentumSignals,
                 newsSentiment,
                 positionContext,
             };

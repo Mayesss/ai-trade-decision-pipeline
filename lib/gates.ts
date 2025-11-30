@@ -366,9 +366,7 @@ export function computeAdaptiveGates(input: GatesInput): GatesOutput {
   if (positionOpen) {
     allowed_actions = ['HOLD', 'CLOSE', 'REVERSE']; // you decide exit logic using same gates/info
   } else if (gatesPass) {
-    if (regime === 'up') allowed_actions = ['BUY', 'HOLD'];
-    else if (regime === 'down') allowed_actions = ['SELL', 'HOLD'];
-    else allowed_actions = ['HOLD'];
+    allowed_actions = ['BUY', 'SELL', 'HOLD'];
   } else {
     allowed_actions = ['HOLD']; // keep it safe
   }
