@@ -4,7 +4,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { fetchMarketBundle, computeAnalytics, fetchPositionInfo } from '../../lib/analytics';
 import { calculateMultiTFIndicators } from '../../lib/indicators';
-import { fetchNewsSentiment } from '../../lib/news';
+import { fetchNewsWithHeadlines } from '../../lib/news';
 
 import { buildPrompt, callAI, computeMomentumSignals } from '../../lib/ai';
 import type { MomentumSignals } from '../../lib/ai';
@@ -157,9 +157,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 1) Product & parallel baseline fetches (fast)
         const productType = getTradeProductType();
 
-        const [positionInfo, newsSentiment, bundleLight, indicators] = await Promise.all([
+        const [positionInfo, newsBundle, bundleLight, indicators] = await Promise.all([
             fetchPositionInfo(symbol),
-            fetchNewsSentiment(symbol),
+            fetchNewsWithHeadlines(symbol),
             // Light bundle: skip tape (fills)
             fetchMarketBundle(symbol, timeFrame, { includeTrades: false }),
             calculateMultiTFIndicators(symbol, { primary: timeFrame, micro: microTimeFrame, macro: macroTimeFrame }),
@@ -332,7 +332,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             bundle, // from fetchMarketBundle(...)
             analytics, // from computeAnalytics(bundle)
             positionForPrompt, // "none" | JSON string like 'open long @ ...' (your current format)
-            newsSentiment ?? null, // omit from prompt if unavailable
+            newsBundle?.sentiment ?? null, // omit from prompt if unavailable
+            newsBundle?.headlines ?? [],
             indicators, // from calculateMultiTFIndicators(symbol)
             gatesOut.gates, // from getGates(...)
             positionContext,
@@ -354,7 +355,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             spread: safeNum(analytics.spread, 0),
             gates: gatesOut.gates,
             metrics: gatesOut.metrics,
-            newsSentiment,
+            newsSentiment: newsBundle?.sentiment ?? null,
+            newsHeadlines: newsBundle?.headlines ?? [],
             positionContext,
             momentumSignals,
         };

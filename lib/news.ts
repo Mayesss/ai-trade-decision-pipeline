@@ -49,6 +49,7 @@ export type Sentiment = 'NEGATIVE' | 'NEUTRAL' | 'POSITIVE';
 interface Article {
     SENTIMENT: Sentiment;
     PUBLISHED_ON: number;
+    TITLE: string;
 }
 
 interface Payload {
@@ -58,7 +59,7 @@ interface Payload {
 /** Determine the dominant sentiment from a payload of news articles. */
 export function getDominantSentiment(payload: Payload): Sentiment {
     const sorted = [...payload.Data].sort((a, b) => b.PUBLISHED_ON - a.PUBLISHED_ON);
-
+    console.log('Articles fetched:', sorted);
     const scores: Record<Sentiment, number> = {
         NEGATIVE: 0,
         NEUTRAL: 0,
@@ -77,6 +78,14 @@ export function getDominantSentiment(payload: Payload): Sentiment {
 
 /** Fetch latest CoinDesk news and compute overall sentiment. */
 export async function fetchNewsSentiment(symbolOrBase: string): Promise<Sentiment | null> {
+    const { sentiment } = await fetchNewsWithHeadlines(symbolOrBase);
+    return sentiment;
+}
+
+/** Fetch latest CoinDesk news, compute sentiment, and return top 3 titles. */
+export async function fetchNewsWithHeadlines(
+    symbolOrBase: string,
+): Promise<{ sentiment: Sentiment | null; headlines: string[] }> {
     const base = baseFromSymbol(symbolOrBase);
     const listPath = COINDESK_NEWS_LIST_PATH || '/news/v1/article/list';
 
@@ -88,12 +97,17 @@ export async function fetchNewsSentiment(symbolOrBase: string): Promise<Sentimen
 
     let payload: any;
     try {
-      //  payload = await coindeskFetch(listPath, query);
-      return null; // Temporarily disabled
+        payload = await coindeskFetch(listPath, query);
     } catch (e) {
-        // console.warn('Error fetching CoinDesk news:', e);
-        return null;
+         console.warn('Error fetching CoinDesk news:', e);
+        return { sentiment: null, headlines: [] };
     }
 
-    return getDominantSentiment(payload) || 'NEUTRAL';
+    const sentiment = getDominantSentiment(payload) || 'NEUTRAL';
+    const headlines = Array.isArray(payload?.Data)
+        ? payload.Data.sort((a: Article, b: Article) => b.PUBLISHED_ON - a.PUBLISHED_ON)
+              .slice(0, 3)
+              .map((a: Article) => a.TITLE)
+        : [];
+    return { sentiment, headlines };
 }

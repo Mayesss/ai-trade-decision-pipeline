@@ -164,6 +164,7 @@ export function buildPrompt(
     analytics: any,
     position_status: string = 'none',
     news_sentiment: string | null = null,
+    news_headlines: string[] = [],
     indicators: MultiTFIndicators,
     gates: any, // <--- Retain the gates object for the base gate checks
     position_context: PositionContext | null = null,
@@ -226,10 +227,11 @@ export function buildPrompt(
         .filter((p: any) => p !== null);
     const priceTrendSeries = JSON.stringify(priceTrendPoints);
 
-    const normalizedNewsSentiment =
-        typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
-    const newsSentimentBlock = normalizedNewsSentiment
-        ? `- News sentiment ONLY: ${normalizedNewsSentiment.toLowerCase()}\n`
+    const normalizedNewsSentiment = typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
+    const newsSentimentBlock = normalizedNewsSentiment ? `- News sentiment ONLY: ${normalizedNewsSentiment.toLowerCase()}\n` : '';
+    const normalizedHeadlines = Array.isArray(news_headlines) ? news_headlines.filter((h) => !!h).slice(0, 3) : [];
+    const newsHeadlinesBlock = normalizedHeadlines.length
+        ? `- Latest ${normalizedHeadlines.length} News headlines: ${normalizedHeadlines.join(' | ')}\n`
         : '';
     const positionContextBlock = position_context ? `- Position context (JSON): ${JSON.stringify(position_context)}\n` : '';
     const primaryIndicatorsBlock = indicators.primary
@@ -470,7 +472,7 @@ DATA INPUTS (with explicit windows):
 - Order book & liquidity (snapshot): ${liquidity_data}
 - Funding rate & open interest (last 30–60m): ${derivatives}
 - Recent price trend (last ${priceTrendPoints.length} bars): ${priceTrendSeries}
-${newsSentimentBlock}- Current position: ${position_status}
+${newsSentimentBlock}${newsHeadlinesBlock}- Current position: ${position_status}
 ${positionContextBlock}- Technical (short-term, ${indicators.microTimeFrame}, last 30 candles): ${indicators.micro}
 - Macro (${indicators.macroTimeFrame}, last 30 candles): ${indicators.macro}
 ${primaryIndicatorsBlock}

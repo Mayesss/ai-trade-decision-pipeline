@@ -5,7 +5,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { fetchMarketBundle, computeAnalytics, fetchPositionInfo } from '../../lib/analytics';
 import { calculateMultiTFIndicators } from '../../lib/indicators';
-import { fetchNewsSentiment } from '../../lib/news';
+import { fetchNewsWithHeadlines } from '../../lib/news';
 
 import { buildPrompt, callAI, computeMomentumSignals } from '../../lib/ai';
 import type { MomentumSignals } from '../../lib/ai';
@@ -180,9 +180,9 @@ async function runAnalysisForSymbol(params: {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
             // 1) Parallel baseline fetches (light bundle)
-            const [positionInfo, newsSentiment, bundleLight, indicators] = await Promise.all([
+            const [positionInfo, newsBundle, bundleLight, indicators] = await Promise.all([
                 fetchPositionInfo(symbol),
-                fetchNewsSentiment(symbol),
+                fetchNewsWithHeadlines(symbol),
                 fetchMarketBundle(symbol, timeFrame, { includeTrades: false }),
                 calculateMultiTFIndicators(symbol, {
                     primary: timeFrame,
@@ -358,7 +358,8 @@ async function runAnalysisForSymbol(params: {
                 bundle,
                 analytics,
                 positionForPrompt,
-                newsSentiment ?? null,
+                newsBundle?.sentiment ?? null,
+                newsBundle?.headlines ?? [],
                 indicators,
                 gatesOut.gates,
                 positionContext,
@@ -381,7 +382,8 @@ async function runAnalysisForSymbol(params: {
                 gates: gatesOut.gates,
                 metrics: gatesOut.metrics,
                 momentumSignals,
-                newsSentiment,
+                newsSentiment: newsBundle?.sentiment ?? null,
+                newsHeadlines: newsBundle?.headlines ?? [],
                 positionContext,
             };
 

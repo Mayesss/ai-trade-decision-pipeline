@@ -74,6 +74,7 @@ export type DecisionSnapshot = {
     gates?: any;
     metrics?: any;
     newsSentiment?: string | null;
+    newsHeadlines?: string[];
     positionContext?: PositionContext | null;
     momentumSignals?: MomentumSignals;
 };
