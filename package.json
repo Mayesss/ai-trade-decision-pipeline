@@ -1,16 +1,17 @@
-{  "name": "my-vercel-api-ts",
+{
+  "name": "my-vercel-api-ts",
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
     "@types/node": "^24.10.0",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
-    "next": "^16.0.1",
+    "next": "^16.0.7",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "typescript": "^5.9.3"
   },
-    "scripts": {
+  "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start"
