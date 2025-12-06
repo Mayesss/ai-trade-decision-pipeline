@@ -59,7 +59,6 @@ interface Payload {
 /** Determine the dominant sentiment from a payload of news articles. */
 export function getDominantSentiment(payload: Payload): Sentiment {
     const sorted = [...payload.Data].sort((a, b) => b.PUBLISHED_ON - a.PUBLISHED_ON);
-    console.log('Articles fetched:', sorted);
     const scores: Record<Sentiment, number> = {
         NEGATIVE: 0,
         NEUTRAL: 0,
