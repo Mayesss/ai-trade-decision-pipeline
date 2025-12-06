@@ -21,7 +21,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     const symbol = String(req.body?.symbol || '').toUpperCase();
-    const limit = Math.min(30, Math.max(5, Number(req.body?.limit ?? 15)));
+    const limit = Math.min(30, Math.max(5, Number(req.body?.limit ?? 50)));
 
     if (!symbol) {
         return res.status(400).json({ error: 'symbol_required' });
