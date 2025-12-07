@@ -52,7 +52,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         actionDistribution: actionStats(history),
     };
 
-    const system = `You are an expert trading performance evaluator. Review historical AI trading decisions and provide constructive feedback. Respond in JSON only with the shape {"performance_rating:"1_to_10_performance_rating"overview":"string","what_went_well":["..."],"issues":["..."],"improvements":["..."],"confidence":"LOW|MEDIUM|HIGH"}. Focus on how well the prompt/market snapshot aligns with the action taken and note concrete improvements. Be concise and specific.`;
+    const system = `You are an expert trading performance evaluator. Review historical AI trading decisions and provide constructive feedback. Respond in JSON only with the shape {"performance_rating:"1_to_10_performance_rating,"overview":"string","what_went_well":["..."],"issues":["..."],"improvements":["..."],"confidence":"LOW|MEDIUM|HIGH"}. Focus on how well the prompt/market snapshot aligns with the action taken and note concrete improvements. Be concise and specific.`;
     const user = `Symbol: ${symbol}. Recent decisions (most recent first): ${JSON.stringify(condensed)}. Stats: ${JSON.stringify(stats)}.`;
 
     const evaluation = await callAI(system, user);
