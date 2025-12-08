@@ -169,6 +169,7 @@ export function buildPrompt(
     gates: any, // <--- Retain the gates object for the base gate checks
     position_context: PositionContext | null = null,
     momentumSignalsOverride?: MomentumSignals,
+    recentActions: { action: string; timestamp: number }[] = [],
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
@@ -233,6 +234,13 @@ export function buildPrompt(
     const newsHeadlinesBlock = normalizedHeadlines.length
         ? `- Latest ${normalizedHeadlines.length} News headlines: ${normalizedHeadlines.join(' | ')}\n`
         : '';
+    const recentActionsBlock =
+        Array.isArray(recentActions) && recentActions.length
+            ? `- Recent actions (last ${Math.min(recentActions.length, 2)}): ${recentActions
+                  .slice(-2)
+                  .map((a) => `${a.action}@${new Date(a.timestamp).toISOString()}`)
+                  .join(' | ')}\n`
+            : '';
     const positionContextBlock = position_context ? `- Position context (JSON): ${JSON.stringify(position_context)}\n` : '';
     const primaryIndicatorsBlock = indicators.primary
         ? `- Primary timeframe (${indicators.primary.timeframe}) indicators: ${indicators.primary.summary}\n`
@@ -411,7 +419,7 @@ GENERAL RULES
 - **Costs**: if expected edge is small vs ~7bps total costs (fees+slippage) → HOLD; avoid churn around breakeven.
 - **Macro bias**: trades WITH macro trend are preferred and can be taken on MEDIUM or HIGH signals. Trades AGAINST macro require HIGH signal_strength or very strong flow/tape.
 - **Signal usage**:
-  - Treat aligned_driver_count ≥ 4 as "strong micro structure".
+  - Treat aligned_driver_count ≥ 4 as "strong micro structure" (or ≥ 3.8 with strong flow_supports not opposite).
   - If signal_strength = HIGH and flow_supports is "buy" or "sell", you should normally choose that direction when flat (provided base gates true).
   - If signal_strength = MEDIUM and aligned_driver_count ≥ 4 and flow_supports is not opposite, you may trade, but be selective near extremes.
   - Only take new entries when entry_ready_long/short = true OR when signal_strength = HIGH with aligned_driver_count ≥ 5.
@@ -422,7 +430,7 @@ ACTIONS LOGIC
   - If base gates true AND signal_strength = HIGH:
       - action="BUY" when flow_supports="buy".
       - action="SELL" when flow_supports="sell".
-  - If signal_strength = MEDIUM AND aligned_driver_count ≥ 4:
+  - If signal_strength = MEDIUM AND aligned_driver_count ≥ 4 (or very close with strong flow):
       - Prefer BUY/SELL in direction of flow_supports OR macro trend if flow is neutral.
   - If macro_bias = DOWN and you want to open long from flat, require: flow_supports="buy", aligned_driver_count ≥ 5, cvd_strength strongly positive, dist_from_ema20_${indicators.microTimeFrame}_in_atr < 1.5, and signal_strength = HIGH.
   - Use action="HOLD" when signal_strength = LOW, when macro and micro signals clearly conflict, or when price is extremely extended (|dist_from_ema20_${indicators.microTimeFrame}_in_atr| > 2.5) and flow is weak/fading.
@@ -433,14 +441,16 @@ ACTIONS LOGIC
   - Ignore MEDIUM opposite signals if |price_vs_breakeven_pct| < 0.2% and |dist_from_ema20_${indicators.microTimeFrame}_in_atr| ≤ 2.5 unless signal_strength = HIGH.
   - If unrealized_pnl_pct is small and signal deteriorates to LOW → "CLOSE".
   - When |dist_from_ema20_${indicators.microTimeFrame}_in_atr| > 2.5 and macro_bias = DOWN: prefer "CLOSE" (take profit) on shorts when flow flips bullish; only consider "REVERSE" if losing (price_vs_breakeven_pct < 0) and flow_contradiction_score ≥ 1.0.
+  - When losing (price_vs_breakeven_pct < 0) and reverse_confidence = "medium" with flow_contradiction_score ≥ 0.6, be more aggressive to exit: prioritize "CLOSE"; consider "REVERSE" only if flow_supports clearly opposite and aligned_driver_count ≥ 5.
 
 REVERSAL DISCIPLINE
-- REVERSE only if ALL are true: "Closing guardrails".reverse_confidence = "high", flow_contradiction_score ≥ 0.8, aligned_driver_count ≥ 5, signal_strength = HIGH.
-- Do NOT REVERSE if unrealized_pnl_pct < -0.5% and we are not near stop and no major regime change, or if reverse_confidence != "high".
+- REVERSE only if ALL are true: "Closing guardrails".reverse_confidence = "high", flow_contradiction_score ≥ 0.8, aligned_driver_count ≥ 5, signal_strength = HIGH. If reverse_confidence = "medium" and price_vs_breakeven_pct < 0, only consider REVERSE when flow_contradiction_score ≥ 0.6 and flow_supports is clearly opposite; otherwise CLOSE.
+- Do NOT REVERSE if unrealized_pnl_pct < -0.5% and we are not near stop and no major regime change, or if reverse_confidence != "high" (except the losing/medium case above).
 - REVERSE is close + open opposite; if conditions are not met, prefer HOLD or CLOSE.
 - Prefer HOLD over CLOSE when |unrealized_pnl_pct| < 0.25% and no HIGH opposite signal.
 
 EXTENSION / OVERBOUGHT-OVERSOLD
+- Extension buckets: |dist_from_ema20_${indicators.microTimeFrame}_in_atr| in [2,2.5) → need strong flow/tape to enter; ≥ 2.5 → prefer CLOSE/avoid new entries unless losing with strong contradiction; > 3 → avoid new entries and favor flattening over flipping.
 - If 'dist_from_ema20_${indicators.microTimeFrame}_in_atr' > 2 or < -2, require stronger confirmation for new entries; never ignore strong tape/flow cues solely because price looks extended.
 - If |dist_from_ema20_${indicators.microTimeFrame}_in_atr| > 2.5 and macro_bias = DOWN, avoid flipping long unless losing and flow_contradiction_score ≥ 1.0.
 
@@ -472,7 +482,7 @@ DATA INPUTS (with explicit windows):
 - Order book & liquidity (snapshot): ${liquidity_data}
 - Funding rate & open interest (last 30–60m): ${derivatives}
 - Recent price trend (last ${priceTrendPoints.length} bars): ${priceTrendSeries}
-${newsSentimentBlock}${newsHeadlinesBlock}- Current position: ${position_status}
+${newsSentimentBlock}${newsHeadlinesBlock}${recentActionsBlock}- Current position: ${position_status}
 ${positionContextBlock}- Technical (short-term, ${indicators.microTimeFrame}, last 30 candles): ${indicators.micro}
 - Macro (${indicators.macroTimeFrame}, last 30 candles): ${indicators.macro}
 ${primaryIndicatorsBlock}

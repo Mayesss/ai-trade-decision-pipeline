@@ -37,12 +37,19 @@ type PersistState = {
     streak: number;
     enteredAt?: number;
     lastSide?: 'long' | 'short';
+    recentActions?: { action: string; timestamp: number }[];
 };
 const persist = new Map<string, PersistState>();
 
 function touchPersist(key: string): PersistState {
     if (!persist.has(key)) persist.set(key, { streak: 0 });
     return persist.get(key)!;
+}
+
+function recordAction(key: string, action: string) {
+    const s = touchPersist(key);
+    const next = [...(s.recentActions || []), { action, timestamp: Date.now() }].slice(-2);
+    s.recentActions = next;
 }
 
 const ATR_ACTIVE_MIN_PCT = 0.0007; // ~0.07%
@@ -251,6 +258,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const calmMarket = !positionOpen && shouldSkipMomentumCall({ analytics, signals: momentumSignals, price: effectivePrice });
 
         if (!positionOpen && calmMarket) {
+            recordAction(persistKey, 'HOLD');
             return res.status(200).json({
                 symbol,
                 timeFrame,
@@ -323,6 +331,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             obImb: safeNum(analytics.obImb, 0),
             enteredAt: pstate.enteredAt,
         });
+        const recentActions = pstate.recentActions ?? [];
 
         // 6) Build prompt with allowed_actions, gates, and close_conditions
 
@@ -338,6 +347,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             gatesOut.gates, // from getGates(...)
             positionContext,
             momentumSignals,
+            recentActions,
         );
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions)
@@ -345,6 +355,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         // 8) Execute (dry run unless explicitly disabled)
         const execRes = await executeDecision(symbol, sideSizeUSDT, decision, productType, dryRun);
+        recordAction(persistKey, decision.action);
 
         const change24h = Number(tickerData?.change24h ?? tickerData?.changeUtc24h ?? tickerData?.chgPct);
         const snapshot = {
