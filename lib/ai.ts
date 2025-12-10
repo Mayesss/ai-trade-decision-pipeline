@@ -99,14 +99,20 @@ export function computeMomentumSignals(params: {
     const longFlowOk = flowSupports !== 'sell';
     const shortFlowOk = flowSupports !== 'buy';
 
-    const macroTrendUp = gates.regime_trend_up && (!Number.isFinite(ema50Macro as number) || price >= (ema50Macro as number));
-    const macroTrendDown = gates.regime_trend_down && (!Number.isFinite(ema50Macro as number) || price <= (ema50Macro as number));
+    const macroTrendUp =
+        gates.regime_trend_up && (!Number.isFinite(ema50Macro as number) || price >= (ema50Macro as number));
+    const macroTrendDown =
+        gates.regime_trend_down && (!Number.isFinite(ema50Macro as number) || price <= (ema50Macro as number));
 
     const priceAbovePrimary50 = Number.isFinite(ema50Primary as number) ? price >= (ema50Primary as number) : true;
     const priceBelowPrimary50 = Number.isFinite(ema50Primary as number) ? price <= (ema50Primary as number) : true;
 
-    const rsiPullbackLong = Number.isFinite(rsiPrimary as number) ? (rsiPrimary as number) >= 35 && (rsiPrimary as number) <= 50 : false;
-    const rsiPullbackShort = Number.isFinite(rsiPrimary as number) ? (rsiPrimary as number) >= 50 && (rsiPrimary as number) <= 65 : false;
+    const rsiPullbackLong = Number.isFinite(rsiPrimary as number)
+        ? (rsiPrimary as number) >= 35 && (rsiPrimary as number) <= 50
+        : false;
+    const rsiPullbackShort = Number.isFinite(rsiPrimary as number)
+        ? (rsiPrimary as number) >= 50 && (rsiPrimary as number) <= 65
+        : false;
 
     const slopeUp = Number.isFinite(slopePrimary as number) ? (slopePrimary as number) > 0 : false;
     const slopeDown = Number.isFinite(slopePrimary as number) ? (slopePrimary as number) < 0 : false;
@@ -228,20 +234,27 @@ export function buildPrompt(
         .filter((p: any) => p !== null);
     const priceTrendSeries = JSON.stringify(priceTrendPoints);
 
-    const normalizedNewsSentiment = typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
-    const newsSentimentBlock = normalizedNewsSentiment ? `- News sentiment ONLY: ${normalizedNewsSentiment.toLowerCase()}\n` : '';
+    const normalizedNewsSentiment =
+        typeof news_sentiment === 'string' && news_sentiment.length > 0 ? news_sentiment : null;
+    const newsSentimentBlock = normalizedNewsSentiment
+        ? `- News sentiment ONLY: ${normalizedNewsSentiment.toLowerCase()}\n`
+        : '';
     const normalizedHeadlines = Array.isArray(news_headlines) ? news_headlines.filter((h) => !!h).slice(0, 3) : [];
     const newsHeadlinesBlock = normalizedHeadlines.length
         ? `- Latest ${normalizedHeadlines.length} News headlines: ${normalizedHeadlines.join(' | ')}\n`
         : '';
-    const recentActionsBlock =
-        Array.isArray(recentActions) && recentActions.length
-            ? `- Recent actions (last ${Math.min(recentActions.length, 2)}): ${recentActions
-                  .slice(-2)
-                  .map((a) => `${a.action}@${new Date(a.timestamp).toISOString()}`)
-                  .join(' | ')}\n`
-            : '';
-    const positionContextBlock = position_context ? `- Position context (JSON): ${JSON.stringify(position_context)}\n` : '';
+
+    const recentActionsExists = Array.isArray(recentActions) && recentActions.length > 0;
+    const MIN_VALUES = recentActionsExists ? Math.min(recentActions.length) : 5;
+    const recentActionsBlock = recentActionsExists
+        ? `- Recent actions (last ${MIN_VALUES}): ${recentActions
+              .slice(-1 * MIN_VALUES)
+              .map((a) => `${a.action}@${new Date(a.timestamp).toISOString()}`)
+              .join(' | ')}\n`
+        : '';
+    const positionContextBlock = position_context
+        ? `- Position context (JSON): ${JSON.stringify(position_context)}\n`
+        : '';
     const primaryIndicatorsBlock = indicators.primary
         ? `- Primary timeframe (${indicators.primary.timeframe}) indicators: ${indicators.primary.summary}\n`
         : '';
@@ -255,7 +268,7 @@ export function buildPrompt(
     const micro = indicators.micro || '';
     const macro = indicators.macro || '';
     const primary = indicators.primary?.summary || '';
-    
+
     // Technical values we want the AI to judge (values, not booleans)
     const ema20_micro = readIndicator('EMA20', micro);
     const slope21_micro = readIndicator('slopeEMA21_10', micro) ?? 0; // % per bar
@@ -263,11 +276,11 @@ export function buildPrompt(
     const atr_macro = readIndicator('ATR', macro);
     const rsi_micro = readIndicator('RSI', micro);
     const rsi_macro = readIndicator('RSI', macro);
-    
+
     // --- KEY METRICS (VALUES, NOT JUDGMENTS) ---
-    const spread_bps = last > 0 ? (analytics.spread || 0) / last * 1e4 : 999;
+    const spread_bps = last > 0 ? ((analytics.spread || 0) / last) * 1e4 : 999;
     const atr_pct_macro = last > 0 && atr_macro ? (atr_macro / last) * 100 : 0;
-    
+
     // Calculate extension (distance from EMA20 in 1m-ATRs)
     const distance_from_ema_atr =
         Number.isFinite(atr_micro as number) && (atr_micro as number) > 0 && Number.isFinite(ema20_micro as number)
@@ -279,10 +292,12 @@ export function buildPrompt(
 
     const key_metrics =
         `spread_bps=${spread_bps.toFixed(2)}, book_imbalance=${analytics.obImb.toFixed(2)}, ` +
-        `atr_pct_${indicators.macroTimeFrame}=${atr_pct_macro.toFixed(2)}%, rsi_${indicators.microTimeFrame}=${rsiMicroDisplay}, ` +
+        `atr_pct_${indicators.macroTimeFrame}=${atr_pct_macro.toFixed(2)}%, rsi_${
+            indicators.microTimeFrame
+        }=${rsiMicroDisplay}, ` +
         `rsi_${indicators.macroTimeFrame}=${rsiMacroDisplay}, micro_slope_pct_per_bar=${slope21_micro.toFixed(4)}, ` +
         `dist_from_ema20_${indicators.microTimeFrame}_in_atr=${distance_from_ema_atr.toFixed(2)}`;
-    
+
     // --- SIGNAL STRENGTH DRIVERS & CLOSING GUIDANCE ---
     const clampNumber = (value: number | null | undefined, digits = 3) =>
         Number.isFinite(value as number) ? Number((value as number).toFixed(digits)) : null;
@@ -290,11 +305,12 @@ export function buildPrompt(
     const cvdStrength = clampNumber(Math.tanh(analytics.cvd / 50));
     const oversoldMicro = typeof rsi_micro === 'number' && rsi_micro < 35;
     const overboughtMicro = typeof rsi_micro === 'number' && rsi_micro > 65;
-    const reversalOpportunity = oversoldMicro && (cvdStrength ?? 0) < -0.4
-        ? 'oversold_with_sell_pressure'
-        : overboughtMicro && (cvdStrength ?? 0) > 0.4
-        ? 'overbought_with_buy_pressure'
-        : null;
+    const reversalOpportunity =
+        oversoldMicro && (cvdStrength ?? 0) < -0.4
+            ? 'oversold_with_sell_pressure'
+            : overboughtMicro && (cvdStrength ?? 0) > 0.4
+            ? 'overbought_with_buy_pressure'
+            : null;
 
     const driverComponents = [
         Math.abs(trendBias),
@@ -308,9 +324,12 @@ export function buildPrompt(
 
     const flowBiasRaw = momentumSignals.flowBias ?? ((cvdStrength ?? 0) + (analytics.obImb ?? 0)) / 2;
     const flowBias = clampNumber(flowBiasRaw, 3);
-    const flowSupports = momentumSignals.flowSupports ?? (flowBiasRaw > 0.25 ? 'buy' : flowBiasRaw < -0.25 ? 'sell' : 'neutral');
+    const flowSupports =
+        momentumSignals.flowSupports ?? (flowBiasRaw > 0.25 ? 'buy' : flowBiasRaw < -0.25 ? 'sell' : 'neutral');
 
-    const mediumActionReady = alignedDriverCount >= 3 && Math.abs(flowBiasRaw) >= 0.25 &&
+    const mediumActionReady =
+        alignedDriverCount >= 3 &&
+        Math.abs(flowBiasRaw) >= 0.25 &&
         (momentumSignals.longMomentum || momentumSignals.shortMomentum);
 
     const signalDrivers = {
@@ -343,17 +362,9 @@ export function buildPrompt(
             : null;
     const positionSide = position_context?.side;
     const macroSupportsPosition =
-        positionSide === 'long'
-            ? gates.regime_trend_up
-            : positionSide === 'short'
-            ? gates.regime_trend_down
-            : null;
+        positionSide === 'long' ? gates.regime_trend_up : positionSide === 'short' ? gates.regime_trend_down : null;
     const macroOpposesPosition =
-        positionSide === 'long'
-            ? gates.regime_trend_down
-            : positionSide === 'short'
-            ? gates.regime_trend_up
-            : null;
+        positionSide === 'long' ? gates.regime_trend_down : positionSide === 'short' ? gates.regime_trend_up : null;
     const flowAgainstPosition =
         positionSide === 'long'
             ? analytics.obImb < -0.15 || (cvdStrength ?? 0) < -0.35
@@ -367,7 +378,7 @@ export function buildPrompt(
 
     const flowContradictionScore =
         positionSide === 'long'
-            ? Math.max(0, (-(analytics.obImb ?? 0)) + (-(cvdStrength ?? 0)))
+            ? Math.max(0, -(analytics.obImb ?? 0) + -(cvdStrength ?? 0))
             : positionSide === 'short'
             ? Math.max(0, (analytics.obImb ?? 0) + (cvdStrength ?? 0))
             : 0;
@@ -395,19 +406,15 @@ export function buildPrompt(
 
     const risk_policy =
         `fees=${taker_round_trip_bps}bps round-trip, slippage=${slippage_bps}bps, ` +
-        `stop=1.5xATR(${indicators.macroTimeFrame}), take_profit=2.5xATR(${indicators.macroTimeFrame}), time_stop=${parseInt(
-            timeframe,
-            10,
-        ) * 3} minutes`;
+        `stop=1.5xATR(${indicators.macroTimeFrame}), take_profit=2.5xATR(${indicators.macroTimeFrame}), time_stop=${
+            parseInt(timeframe, 10) * 3
+        } minutes`;
 
     // We only pass the BASE gates now, as the AI will judge the strategy gates using metrics
-    const base_gating_flags =
-        `spread_ok=${gates.spread_ok}, liquidity_ok=${gates.liquidity_ok}, atr_ok=${gates.atr_ok}, slippage_ok=${gates.slippage_ok}`;
-        
-    // We still pass the Regime for a strong trend bias signal
-    const regime_flags =
-        `regime_trend_up=${gates.regime_trend_up}, regime_trend_down=${gates.regime_trend_down}`;
+    const base_gating_flags = `spread_ok=${gates.spread_ok}, liquidity_ok=${gates.liquidity_ok}, atr_ok=${gates.atr_ok}, slippage_ok=${gates.slippage_ok}`;
 
+    // We still pass the Regime for a strong trend bias signal
+    const regime_flags = `regime_trend_up=${gates.regime_trend_up}, regime_trend_down=${gates.regime_trend_down}`;
 
     const sys = `
 You are an expert crypto market microstructure analyst and ${indicators.microTimeFrame} short-term trading assistant.
@@ -487,17 +494,17 @@ ${positionContextBlock}- Technical (short-term, ${indicators.microTimeFrame}, la
 - Macro (${indicators.macroTimeFrame}, last 30 candles): ${indicators.macro}
 ${primaryIndicatorsBlock}
 - Momentum context: ${JSON.stringify({
-    macro_trend_up: momentumSignals.macroTrendUp,
-    macro_trend_down: momentumSignals.macroTrendDown,
-    long_momentum: momentumSignals.longMomentum,
-    short_momentum: momentumSignals.shortMomentum,
-    flow_supports: momentumSignals.flowSupports,
-    near_primary: momentumSignals.nearPrimaryEMA20,
-    near_micro: momentumSignals.nearMicroEMA20,
-    entry_ready_long: momentumSignals.entryReadyLong,
-    entry_ready_short: momentumSignals.entryReadyShort,
-    micro_extension_atr: momentumSignals.microExtensionInAtr,
-})}
+        macro_trend_up: momentumSignals.macroTrendUp,
+        macro_trend_down: momentumSignals.macroTrendDown,
+        long_momentum: momentumSignals.longMomentum,
+        short_momentum: momentumSignals.shortMomentum,
+        flow_supports: momentumSignals.flowSupports,
+        near_primary: momentumSignals.nearPrimaryEMA20,
+        near_micro: momentumSignals.nearMicroEMA20,
+        entry_ready_long: momentumSignals.entryReadyLong,
+        entry_ready_short: momentumSignals.entryReadyShort,
+        micro_extension_atr: momentumSignals.microExtensionInAtr,
+    })}
 - Signal strength drivers: ${JSON.stringify(signalDrivers)}
 - Closing guardrails: ${JSON.stringify(closingGuidance)}
 

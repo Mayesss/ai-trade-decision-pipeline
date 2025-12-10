@@ -13,7 +13,7 @@ import { getGates } from '../../lib/gates';
 
 import { executeDecision, getTradeProductType } from '../../lib/trading';
 import { composePositionContext } from '../../lib/positionContext';
-import { appendDecisionHistory } from '../../lib/history';
+import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
 
 // ------------------------------------------------------------------
 // Small utilities (same as analyze.ts)
@@ -67,19 +67,12 @@ type PersistState = {
     streak: number;
     enteredAt?: number;
     lastSide?: 'long' | 'short';
-    recentActions?: { action: string; timestamp: number }[];
 };
 const persist = new Map<string, PersistState>();
 
 function touchPersist(key: string): PersistState {
     if (!persist.has(key)) persist.set(key, { streak: 0 });
     return persist.get(key)!;
-}
-
-function recordAction(key: string, action: string) {
-    const s = touchPersist(key);
-    const next = [...(s.recentActions || []), { action, timestamp: Date.now() }].slice(-2);
-    s.recentActions = next;
 }
 
 const ATR_ACTIVE_MIN_PCT = 0.0007;
@@ -333,7 +326,6 @@ async function runAnalysisForSymbol(params: {
             }
 
             if (!positionOpen && calmMarket) {
-                recordAction(persistKey, 'HOLD');
                 return {
                     symbol,
                     decision: {
@@ -358,7 +350,10 @@ async function runAnalysisForSymbol(params: {
                 obImb: safeNum(analytics.obImb, 0),
                 enteredAt: pstate.enteredAt,
             });
-            const recentActions = pstate.recentActions ?? [];
+            const recentHistory = await loadDecisionHistory(symbol, 5);
+            const recentActions = recentHistory
+                .map((h) => ({ action: h.aiDecision?.action, timestamp: h.timestamp }))
+                .filter((a) => a.action);
 
             // 6) Build prompt
             const { system, user } = buildPrompt(
@@ -381,7 +376,7 @@ async function runAnalysisForSymbol(params: {
 
             // 8) Execute (dry run unless explicitly disabled)
             const execRes = await executeDecision(symbol, sideSizeUSDT, decision, productType, dryRun);
-            recordAction(persistKey, decision.action);
+            // recent actions fetched from history; no in-memory persistence
 
             const change24h = Number(tickerData?.change24h ?? tickerData?.changeUtc24h ?? tickerData?.chgPct);
             const snapshot = {
