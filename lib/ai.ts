@@ -271,24 +271,43 @@ export function buildPrompt(
 
     // Technical values we want the AI to judge (values, not booleans)
     const ema20_micro = readIndicator('EMA20', micro);
+    const ema20_primary = readIndicator('EMA20', primary);
     const slope21_micro = readIndicator('slopeEMA21_10', micro) ?? 0; // % per bar
+    const slope21_primary = readIndicator('slopeEMA21_10', primary) ?? 0; // % per bar
     const atr_micro = readIndicator('ATR', micro);
     const atr_macro = readIndicator('ATR', macro);
+    const atr_primary = readIndicator('ATR', primary);
     const rsi_micro = readIndicator('RSI', micro);
     const rsi_macro = readIndicator('RSI', macro);
+    const rsi_primary = readIndicator('RSI', primary);
 
     // --- KEY METRICS (VALUES, NOT JUDGMENTS) ---
     const spread_bps = last > 0 ? ((analytics.spread || 0) / last) * 1e4 : 999;
     const atr_pct_macro = last > 0 && atr_macro ? (atr_macro / last) * 100 : 0;
+    const atr_pct_primary = last > 0 && atr_primary ? (atr_primary / last) * 100 : 0;
 
     // Calculate extension (distance from EMA20 in 1m-ATRs)
     const distance_from_ema_atr =
         Number.isFinite(atr_micro as number) && (atr_micro as number) > 0 && Number.isFinite(ema20_micro as number)
             ? (last - (ema20_micro as number)) / (atr_micro as number)
             : 0;
+    const distance_from_ema20_primary_atr =
+        Number.isFinite(atr_primary as number) &&
+        (atr_primary as number) > 0 &&
+        Number.isFinite(ema20_primary as number)
+            ? (last - (ema20_primary as number)) / (atr_primary as number)
+            : 0;
 
     const rsiMicroDisplay = Number.isFinite(rsi_micro as number) ? (rsi_micro as number).toFixed(1) : 'n/a';
     const rsiMacroDisplay = Number.isFinite(rsi_macro as number) ? (rsi_macro as number).toFixed(1) : 'n/a';
+    const rsiPrimaryDisplay = Number.isFinite(rsi_primary as number) ? (rsi_primary as number).toFixed(1) : 'n/a';
+    const primaryBias = Number.isFinite(slope21_primary as number)
+        ? (slope21_primary as number) > 0
+            ? 'up'
+            : (slope21_primary as number) < 0
+            ? 'down'
+            : 'neutral'
+        : 'neutral';
 
     const key_metrics =
         `spread_bps=${spread_bps.toFixed(2)}, book_imbalance=${analytics.obImb.toFixed(2)}, ` +
@@ -296,7 +315,9 @@ export function buildPrompt(
             indicators.microTimeFrame
         }=${rsiMicroDisplay}, ` +
         `rsi_${indicators.macroTimeFrame}=${rsiMacroDisplay}, micro_slope_pct_per_bar=${slope21_micro.toFixed(4)}, ` +
-        `dist_from_ema20_${indicators.microTimeFrame}_in_atr=${distance_from_ema_atr.toFixed(2)}`;
+        `dist_from_ema20_${indicators.microTimeFrame}_in_atr=${distance_from_ema_atr.toFixed(2)}, ` +
+        `atr_pct_${primaryTimeframe}=${atr_pct_primary.toFixed(2)}%, rsi_${primaryTimeframe}=${rsiPrimaryDisplay}, ` +
+        `primary_slope_pct_per_bar=${slope21_primary.toFixed(4)}, dist_from_ema20_${primaryTimeframe}_in_atr=${distance_from_ema20_primary_atr.toFixed(2)}`;
 
     // --- SIGNAL STRENGTH DRIVERS & CLOSING GUIDANCE ---
     const clampNumber = (value: number | null | undefined, digits = 3) =>
@@ -319,6 +340,8 @@ export function buildPrompt(
         Math.abs(slope21_micro),
         Math.abs(distance_from_ema_atr),
         Math.abs(atr_pct_macro),
+        Math.abs(slope21_primary),
+        Math.abs(distance_from_ema20_primary_atr),
     ];
     const alignedDriverCount = driverComponents.filter((v) => v >= 0.35).length;
 
@@ -341,6 +364,7 @@ export function buildPrompt(
         atr_pct_macro: clampNumber(atr_pct_macro, 3),
         rsi_micro,
         rsi_macro,
+        rsi_primary,
         oversold_rsi_micro: oversoldMicro,
         overbought_rsi_micro: overboughtMicro,
         aligned_driver_count: alignedDriverCount,
@@ -354,6 +378,9 @@ export function buildPrompt(
         entry_ready_long: momentumSignals.entryReadyLong,
         entry_ready_short: momentumSignals.entryReadyShort,
         micro_extension_atr: clampNumber(momentumSignals.microExtensionInAtr ?? null, 3),
+        atr_pct_primary: clampNumber(atr_pct_primary, 3),
+        primary_extension_atr: clampNumber(distance_from_ema20_primary_atr, 3),
+        primary_slope_pct_per_bar: clampNumber(slope21_primary, 4),
     };
 
     const priceVsBreakevenPct =
@@ -417,8 +444,11 @@ export function buildPrompt(
     const regime_flags = `regime_trend_up=${gates.regime_trend_up}, regime_trend_down=${gates.regime_trend_down}`;
 
     const sys = `
-You are an expert crypto market microstructure analyst and ${indicators.microTimeFrame} short-term trading assistant.
-Primary strategy: ${timeframe} momentum trades within a ${primaryTimeframe} structure — take trades when there is a clear short-term directional edge from tape/orderbook and recent price action. Macro (${indicators.macroTimeFrame}) trend is a bias, not a hard filter. I will call you roughly once per ${timeframe}.
+You are an expert crypto market microstructure analyst and short-term trading assistant.
+Primary strategy: ${primaryTimeframe} momentum within a ${indicators.macroTimeFrame} structure with a ${indicators.microTimeFrame} confirmation — take trades when there is a clear short-term directional edge from tape/orderbook and recent price action. Macro (${indicators.macroTimeFrame}) trend is a bias, not a hard filter. I will call you roughly once per ${primaryTimeframe}.
+Bias definitions (explicit): micro_bias = flow/tape + recent price on ${indicators.microTimeFrame}; primary_bias = slope/RSI/EMA20 alignment on ${primaryTimeframe}; macro_bias = regime_trend_up/down on ${indicators.macroTimeFrame}.
+Decision ladder: Base gates → biases (macro/primary) → signal drivers + entry_ready → action.
+Signal strength is driven by aligned_driver_count + flow_bias + extensions (micro + primary); strong flow with many aligned drivers → HIGH.
 Respond in strict JSON ONLY.
 
 GENERAL RULES
@@ -460,9 +490,12 @@ EXTENSION / OVERBOUGHT-OVERSOLD
 - Extension buckets: |dist_from_ema20_${indicators.microTimeFrame}_in_atr| in [2,2.5) → need strong flow/tape to enter; ≥ 2.5 → prefer CLOSE/avoid new entries unless losing with strong contradiction; > 3 → avoid new entries and favor flattening over flipping.
 - If 'dist_from_ema20_${indicators.microTimeFrame}_in_atr' > 2 or < -2, require stronger confirmation for new entries; never ignore strong tape/flow cues solely because price looks extended.
 - If |dist_from_ema20_${indicators.microTimeFrame}_in_atr| > 2.5 and macro_bias = DOWN, avoid flipping long unless losing and flow_contradiction_score ≥ 1.0.
+- Use higher-timeframe stretch: when |dist_from_ema20_${primaryTimeframe}_in_atr| ≥ 2, be more selective on new entries and tighten profit-taking; when ≥ 2.5, avoid fresh entries unless losing with strong contradiction and flow clearly supports the turn.
+- If |dist_from_ema20_${indicators.microTimeFrame}_in_atr| > 3 OR |dist_from_ema20_${primaryTimeframe}_in_atr| > 3, avoid new entries; only consider flattening or, if losing with strong contradiction and HIGH signal, flipping with care.
 
 BIAS DEFINITIONS
 - micro_bias = short-term directional edge from flow/tape + recent price action on ${indicators.microTimeFrame}.
+- primary_bias = slope/RSI/EMA20 alignment on ${primaryTimeframe}.
 - macro_bias = regime_trend_up / regime_trend_down on ${indicators.macroTimeFrame}.
 - Trades WITH macro_bias are preferred; trades AGAINST macro_bias require micro_bias strongly opposite + HIGH signal_strength.
 `.trim();
@@ -504,6 +537,9 @@ ${primaryIndicatorsBlock}
         entry_ready_long: momentumSignals.entryReadyLong,
         entry_ready_short: momentumSignals.entryReadyShort,
         micro_extension_atr: momentumSignals.microExtensionInAtr,
+        primary_extension_atr: clampNumber(distance_from_ema20_primary_atr, 3),
+        primary_slope_pct_per_bar: clampNumber(slope21_primary, 4),
+        primary_bias: primaryBias,
     })}
 - Signal strength drivers: ${JSON.stringify(signalDrivers)}
 - Closing guardrails: ${JSON.stringify(closingGuidance)}
