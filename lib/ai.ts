@@ -2,6 +2,7 @@
 
 import { AI_BASE_URL, AI_MODEL, TRADE_WINDOW_MINUTES } from './constants';
 import type { MultiTFIndicators } from './indicators';
+import { setEvaluation, getEvaluation } from './utils';
 
 export type PositionContext = {
     side: 'long' | 'short';
@@ -157,6 +158,16 @@ export function computeMomentumSignals(params: {
             microEntryOk,
         },
     };
+}
+
+// Persist the last evaluation for a symbol
+export function persistEvaluation(symbol: string, evaluation: any) {
+    setEvaluation(symbol, evaluation);
+}
+
+// Retrieve the last evaluation for a symbol
+export function getLastEvaluation(symbol: string) {
+    return getEvaluation(symbol);
 }
 
 // ------------------------------
