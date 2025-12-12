@@ -52,7 +52,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         actionDistribution: actionStats(history),
     };
 
-    const system = `You are an expert trading performance evaluator. Review historical AI trading decisions and provide constructive feedback. Respond in JSON only with the shape {"performance_rating:"1_to_10_performance_rating,"overview":"string","what_went_well":["..."],"issues":["..."],"improvements":["..."],"confidence":"LOW|MEDIUM|HIGH"}. Focus on how well the prompt/market snapshot aligns with the action taken and note concrete improvements. Be concise and specific.`;
+        const system = `You are an expert trading performance evaluator. Review historical AI trading decisions and provide concise feedback. Respond in JSON only with:
+{
+    "aspects": {
+        "data_quality": {"rating": 0-10, "comment": "string"},
+        "data_quantity": {"rating": 0-10, "comment": "string"},
+        "ai_performance": {"rating": 0-10, "comment": "string"},
+        "strategy_performance": {"rating": 0-10, "comment": "string"},
+        "signal_strength_clarity": {"rating": 0-10, "comment": "string"},
+        "risk_management": {"rating": 0-10, "comment": "string"},
+        "consistency": {"rating": 0-10, "comment": "string"},
+        "explainability": {"rating": 0-10, "comment": "string"},
+        "responsiveness": {"rating": 0-10, "comment": "string"},
+        "prompt_engineering": {"rating": 0-10, "comment": "string"}
+    },
+    "overall_rating": 0-10,
+    "overview": "string",
+    "what_went_well": ["..."],
+    "issues": ["..."],
+    "improvements": ["..."],
+    "confidence": "LOW|MEDIUM|HIGH"
+}
+Rate each aspect 0-10 (0=poor, 10=excellent) with a short comment. Be concise.`;
     const user = `Symbol: ${symbol}. Recent decisions (most recent first): ${JSON.stringify(condensed)}. Stats: ${JSON.stringify(stats)}.`;
 
     const evaluation = await callAI(system, user);
