@@ -3,6 +3,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { loadDecisionHistory } from '../../lib/history';
 import { callAI } from '../../lib/ai';
 import { AI_MODEL } from '../../lib/constants';
+import { setEvaluation } from '../../lib/utils';
 
 function actionStats(items: any[]) {
     return items.reduce(
@@ -77,6 +78,9 @@ Rate each aspect 0-10 (0=poor, 10=excellent) with a short comment. Be concise.`;
     const user = `Symbol: ${symbol}. Recent decisions (most recent first): ${JSON.stringify(condensed)}. Stats: ${JSON.stringify(stats)}.`;
 
     const evaluation = await callAI(system, user);
+
+    // Persist the latest evaluation for this symbol (single entry per symbol).
+    setEvaluation(symbol, evaluation);
 
     return res.status(200).json({ symbol, stats, samples: condensed, evaluation });
 }
