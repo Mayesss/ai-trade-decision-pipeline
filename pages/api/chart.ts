@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { fetchMarketBundle } from '../../lib/analytics';
+import { fetchMarketBundle, fetchPositionInfo, fetchRecentPositionWindows } from '../../lib/analytics';
 import { loadDecisionHistory } from '../../lib/history';
 
 function timeframeToSeconds(tf: string): number {
@@ -95,7 +95,72 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         )
         .sort((a, b) => a.time - b.time) || [];
 
-    res.status(200).json({ symbol, timeframe, candles, markers });
+    const findNearestDecision = (tsMs?: number | null) => {
+      if (!tsMs || !history?.length) return null;
+      let best: any = null;
+      let bestDiff = Number.POSITIVE_INFINITY;
+      for (const h of history) {
+        if (!h.timestamp) continue;
+        const diff = Math.abs(Number(h.timestamp) - tsMs);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          best = h;
+        }
+      }
+      if (!best) return null;
+      return {
+        timestamp: Number(best.timestamp) || null,
+        action: best.aiDecision?.action,
+        summary: best.aiDecision?.summary,
+        reason: best.aiDecision?.reason,
+      };
+    };
+
+    let positions: any[] = [];
+    try {
+      const closed = await fetchRecentPositionWindows(symbol, 24);
+      let openOverlay: any = null;
+      try {
+        const open = await fetchPositionInfo(symbol);
+        if (open.status === 'open') {
+          const pnl = typeof open.currentPnl === 'string' ? open.currentPnl.replace('%', '') : open.currentPnl;
+          const pnlVal = Number(pnl);
+          openOverlay = {
+            id: `${symbol}-open-position`,
+            symbol,
+            side: open.holdSide ?? null,
+            entryTimestamp: open.entryTimestamp ?? null,
+            exitTimestamp: null,
+            pnlPct: Number.isFinite(pnlVal) ? pnlVal : null,
+            entryPrice: Number(open.entryPrice) || null,
+            exitPrice: null,
+          };
+        }
+      } catch (err) {
+        console.warn(`Could not fetch open position for ${symbol}:`, err);
+      }
+
+      const combined = [...closed];
+      if (openOverlay) combined.push(openOverlay);
+
+      positions = combined.map((p) => ({
+        id: p.id,
+        status: p.exitTimestamp ? 'closed' : 'open',
+        side: p.side ?? null,
+        entryTime: p.entryTimestamp ? Math.floor(p.entryTimestamp / 1000) : null,
+        exitTime: p.exitTimestamp ? Math.floor(p.exitTimestamp / 1000) : null,
+        pnlPct: Number.isFinite(p.pnlPct) ? p.pnlPct : null,
+        entryPrice: p.entryPrice ?? null,
+        exitPrice: p.exitPrice ?? null,
+        entryDecision: findNearestDecision(p.entryTimestamp),
+        exitDecision: findNearestDecision(p.exitTimestamp),
+      }));
+    } catch (err) {
+      console.warn(`Failed to build position overlays for ${symbol}:`, err);
+      positions = [];
+    }
+
+    res.status(200).json({ symbol, timeframe, candles, markers, positions });
   } catch (err: any) {
     console.error('Error fetching chart data:', err);
     res.status(500).json({ error: err?.message || 'chart_fetch_failed' });

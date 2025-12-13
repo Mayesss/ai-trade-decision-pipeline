@@ -29,6 +29,18 @@ export type PositionInfo =
           currentPnl?: string;
       };
 
+export type PositionWindow = {
+    id: string;
+    symbol: string;
+    side: 'long' | 'short' | null;
+    entryTimestamp?: number | null;
+    exitTimestamp?: number | null;
+    entryPrice?: number | null;
+    exitPrice?: number | null;
+    pnlNet?: number | null;
+    pnlPct?: number | null;
+};
+
 type OBLevel = { price: number; size: number };
 
 // ------------------------------
@@ -146,6 +158,87 @@ function calculatePnLPercent(data: RawPosition): string {
     const initialMargin = (sizeBase * mark) / lev || 1;
     const pnlPercent = (uPnl / initialMargin) * 100;
     return pnlPercent.toFixed(2) + '%';
+}
+
+// ------------------------------
+// Recent closed positions (FUTURES only)
+// ------------------------------
+export async function fetchRecentPositionWindows(symbol: string, hours = 24): Promise<PositionWindow[]> {
+    try {
+        const productType = resolveProductType();
+        const now = Date.now();
+        const startTime = now - hours * 60 * 60 * 1000;
+        const res: any = await bitgetFetch('GET', '/api/v2/mix/position/history-position', {
+            productType,
+            symbol,
+            startTime,
+            endTime: now,
+        });
+
+        const items: any[] = Array.isArray(res?.list)
+            ? res.list
+            : Array.isArray(res?.data?.list)
+            ? res.data.list
+            : Array.isArray(res)
+            ? res
+            : Array.isArray(res?.data)
+            ? res.data
+            : Array.isArray(res?.items)
+            ? res.items
+            : [];
+
+        const windows: PositionWindow[] = items
+            .map((it: any, idx: number): PositionWindow => {
+                const entryTimestamp = normalizeTimestamp(
+                    it.ctime ?? it.createTime ?? it.openTime ?? it.uTime ?? it.entryTime,
+                );
+                const exitTimestamp = normalizeTimestamp(
+                    it.utime ?? it.closeTime ?? it.updateTime ?? it.endTime ?? it.exitTime,
+                );
+                const entryPrice = num(it.openAvgPrice ?? it.entryPrice);
+                const exitPrice = num(it.closeAvgPrice ?? it.exitPrice);
+                const size = num(it.closeTotalPos ?? it.openTotalPos ?? it.size);
+                const notional = size * (exitPrice || entryPrice || 0);
+                const net = num(it.netProfit ?? it.pnl, NaN);
+                const pnlPct = Number.isFinite(net) && notional > 0 ? (net / notional) * 100 : null;
+                const sideRaw = (it.holdSide ?? it.side ?? it.direction ?? '').toLowerCase();
+                const side = sideRaw === 'long' || sideRaw === 'short' ? sideRaw : null;
+                const id = String(
+                    it.id ??
+                        it.positionId ??
+                        it.orderId ??
+                        it.tradeId ??
+                        `${symbol}-${entryTimestamp || 'nots'}-${idx}`,
+                );
+
+                return {
+                    id,
+                    symbol,
+                    side,
+                    entryTimestamp,
+                    exitTimestamp,
+                    entryPrice: Number.isFinite(entryPrice) ? entryPrice : null,
+                    exitPrice: Number.isFinite(exitPrice) ? exitPrice : null,
+                    pnlNet: Number.isFinite(net) ? net : null,
+                    pnlPct,
+                };
+            })
+            .filter((p) => {
+                const entryMs = p.entryTimestamp ?? 0;
+                const exitMs = p.exitTimestamp ?? p.entryTimestamp ?? 0;
+                if (!(entryMs > 0 && entryMs <= now)) return false;
+                const inWindowByEntry = entryMs >= startTime;
+                const inWindowByExit = exitMs >= startTime && exitMs <= now;
+                return inWindowByEntry || inWindowByExit;
+            });
+
+        return windows.sort(
+            (a, b) => Number(a.entryTimestamp ?? a.exitTimestamp ?? 0) - Number(b.entryTimestamp ?? b.exitTimestamp ?? 0),
+        );
+    } catch (err) {
+        console.warn(`Failed to fetch recent position windows for ${symbol}:`, err);
+        return [];
+    }
 }
 
 // ------------------------------
