@@ -154,7 +154,8 @@ export default function Home() {
   }, [active, symbols]);
 
   useEffect(() => {
-    if (!chartContainerRef.current || !chartData.length) return;
+    const container = chartContainerRef.current;
+    if (!container || !chartData.length) return;
     let chart: any;
 
     (async () => {
@@ -170,8 +171,8 @@ export default function Home() {
         return;
       }
 
-      chart = createChart(chartContainerRef.current, {
-        width: chartContainerRef.current.clientWidth,
+      chart = createChart(container, {
+        width: container.clientWidth,
         height: 260,
         handleScroll: false,
         handleScale: false,
