@@ -2,7 +2,7 @@
 export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
-import { fetchMarketBundle, computeAnalytics, fetchPositionInfo } from '../../lib/analytics';
+import { fetchMarketBundle, computeAnalytics, fetchPositionInfo, fetchRealizedRoi } from '../../lib/analytics';
 import { calculateMultiTFIndicators } from '../../lib/indicators';
 import { fetchNewsWithHeadlines } from '../../lib/news';
 
@@ -329,6 +329,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             .filter((a) => a.action);
 
         // 6) Build prompt with allowed_actions, gates, and close_conditions
+        const roiRes = await fetchRealizedRoi(symbol, 24);
 
         const { system, user } = buildPrompt(
             symbol, // e.g. "BTCUSDT"
@@ -343,6 +344,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             positionContext,
             momentumSignals,
             recentActions,
+            roiRes.lastNetPct,
         );
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions)

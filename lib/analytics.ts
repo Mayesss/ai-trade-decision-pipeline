@@ -149,6 +149,101 @@ function calculatePnLPercent(data: RawPosition): string {
 }
 
 // ------------------------------
+// Realized ROI (Bitget position history) for a window
+// ------------------------------
+export async function fetchRealizedRoi(
+    symbol: string,
+    hours = 24,
+): Promise<{
+    roi: number | null;
+    count: number;
+    sumPct: number | null;
+    last: number | null;
+    lastNet: number | null;
+    lastNetPct: number | null;
+    lastSide: 'long' | 'short' | null;
+}> {
+    try {
+        const productType = resolveProductType();
+        const now = Date.now();
+        const startTime = now - hours * 60 * 60 * 1000;
+        const res: any = await bitgetFetch('GET', '/api/v2/mix/position/history-position', {
+            productType,
+            symbol,
+            startTime,
+            endTime: now,
+        });
+        const items: any[] = Array.isArray(res?.list)
+            ? res.list
+            : Array.isArray(res?.data?.list)
+            ? res.data.list
+            : Array.isArray(res)
+            ? res
+            : Array.isArray(res?.data)
+            ? res.data
+            : Array.isArray(res?.items)
+            ? res.items
+            : [];
+        let total = 0;
+        let count = 0;
+        let sumPct = 0;
+        let pctCount = 0;
+        let last: number | null = null;
+        let lastNet: number | null = null;
+        let lastNetPct: number | null = null;
+        let lastSide: 'long' | 'short' | null = null;
+        const sorted = items
+            .slice()
+            .sort((a: any, b: any) => Number(b.utime || b.ctime || 0) - Number(a.utime || a.ctime || 0));
+        for (const it of items) {
+            const net = Number(it.netProfit);
+            const pnl = Number(it.pnl);
+            const value = Number.isFinite(net) ? net : pnl;
+            if (Number.isFinite(value)) {
+                total += value as number;
+                count += 1;
+            }
+            const size = Number(it.closeTotalPos ?? it.openTotalPos);
+            const px = Number(it.closeAvgPrice ?? it.openAvgPrice);
+            const notional = Number.isFinite(size) && Number.isFinite(px) ? size * px : null;
+            if (Number.isFinite(notional) && notional! > 0 && Number.isFinite(net)) {
+                sumPct += (net / notional!) * 100;
+                pctCount += 1;
+            }
+        }
+        if (sorted.length) {
+            const latest = sorted[0];
+            const lastPnl = Number(latest?.pnl);
+            const lastNetVal = Number(latest?.netProfit);
+            last = Number.isFinite(lastPnl) ? lastPnl : null;
+            lastNet = Number.isFinite(lastNetVal) ? lastNetVal : null;
+            const sideRaw = (latest?.holdSide || latest?.side || '').toLowerCase();
+            lastSide = sideRaw === 'long' || sideRaw === 'short' ? sideRaw : null;
+            const size = Number(latest?.openTotalPos ?? latest?.closeTotalPos);
+            const px = Number(latest?.openAvgPrice ?? latest?.closeAvgPrice);
+            const notional = Number.isFinite(size) && Number.isFinite(px) ? size * px : null;
+            if (Number.isFinite(notional) && Number.isFinite(lastNetVal) && notional! > 0) {
+                lastNetPct = (lastNetVal / notional!) * 100;
+            } else {
+                lastNetPct = null;
+            }
+        }
+        return {
+            roi: count ? total : null,
+            count,
+            sumPct: pctCount ? sumPct : null,
+            last,
+            lastNet,
+            lastNetPct,
+            lastSide,
+        };
+    } catch (err) {
+        console.warn(`Failed to fetch realized ROI for ${symbol}:`, err);
+        return { roi: null, count: 0, sumPct: null, last: null, lastNet: null, lastNetPct: null, lastSide: null };
+    }
+}
+
+// ------------------------------
 // Trades (FUTURES only) with budgets
 // ------------------------------
 type FillsOpts = {
@@ -199,6 +294,7 @@ type BundleOpts = {
     tradeMaxMs?: number; // default 1500
     tradeMaxPages?: number; // default 8
     tradeMaxTrades?: number; // default 1500
+    candleLimit?: number; // default 30
 };
 export async function fetchMarketBundle(symbol: string, bundleTimeFrame: string, opts: BundleOpts = {}) {
     const {
@@ -207,6 +303,7 @@ export async function fetchMarketBundle(symbol: string, bundleTimeFrame: string,
         tradeMaxMs = 1500,
         tradeMaxPages = 8,
         tradeMaxTrades = 1500,
+        candleLimit = 30,
     } = opts;
 
     const productType = resolveProductType(); // e.g., 'USDT-FUTURES'
@@ -218,7 +315,7 @@ export async function fetchMarketBundle(symbol: string, bundleTimeFrame: string,
             symbol,
             productType,
             granularity: bundleTimeFrame,
-            limit: 30,
+            limit: candleLimit,
         }),
         bitgetFetch('GET', '/api/v2/mix/market/orderbook', {
             symbol,

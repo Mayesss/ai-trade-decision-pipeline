@@ -3,7 +3,7 @@ export const config = { runtime: 'nodejs' };
 
 import type { NextApiRequest, NextApiResponse } from 'next';
 
-import { fetchMarketBundle, computeAnalytics, fetchPositionInfo } from '../../lib/analytics';
+import { fetchMarketBundle, computeAnalytics, fetchPositionInfo, fetchRealizedRoi } from '../../lib/analytics';
 import { calculateMultiTFIndicators } from '../../lib/indicators';
 import { fetchNewsWithHeadlines } from '../../lib/news';
 
@@ -356,6 +356,7 @@ async function runAnalysisForSymbol(params: {
                 .filter((a) => a.action);
 
             // 6) Build prompt
+            const roiRes = await fetchRealizedRoi(symbol, 24);
             const { system, user } = buildPrompt(
                 symbol,
                 timeFrame,
@@ -369,6 +370,7 @@ async function runAnalysisForSymbol(params: {
                 positionContext,
                 momentumSignals,
                 recentActions,
+                roiRes.lastNetPct,
             );
 
             // 7) AI decision

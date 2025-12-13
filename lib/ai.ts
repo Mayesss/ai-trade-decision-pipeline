@@ -187,6 +187,7 @@ export function buildPrompt(
     position_context: PositionContext | null = null,
     momentumSignalsOverride?: MomentumSignals,
     recentActions: { action: string; timestamp: number }[] = [],
+    realizedRoiPct?: number | null,
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
@@ -454,6 +455,11 @@ export function buildPrompt(
     // We still pass the Regime for a strong trend bias signal
     const regime_flags = `regime_trend_up=${gates.regime_trend_up}, regime_trend_down=${gates.regime_trend_down}`;
 
+    const realizedRoiLine =
+        realizedRoiPct !== undefined && realizedRoiPct !== null && Number.isFinite(realizedRoiPct)
+            ? `- Recent realized PnL (last closed): ${Number(realizedRoiPct).toFixed(2)}%`
+            : '';
+
     const sys = `
 You are an expert crypto market microstructure analyst and short-term trading assistant.
 Primary strategy: ${primaryTimeframe} momentum within a ${indicators.macroTimeFrame} structure with a ${indicators.microTimeFrame} confirmation — take trades when there is a clear short-term directional edge from tape/orderbook and recent price action. Macro (${indicators.macroTimeFrame}) trend is a bias, not a hard filter. I will call you roughly once per ${primaryTimeframe}.
@@ -514,8 +520,9 @@ BIAS DEFINITIONS
     const user = `
 You are analyzing ${symbol} on a ${timeframe} horizon (simulation).
 
-RISK/COSTS:
-- ${risk_policy}
+ RISK/COSTS:
+ - ${risk_policy}
+${realizedRoiLine ? `${realizedRoiLine}\n` : ''}
 
 BASE GATES (Filter for tradeability):
 - ${base_gating_flags}
