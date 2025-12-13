@@ -80,7 +80,11 @@ Rate each aspect 0-10 (0=poor, 10=excellent) with a short comment. Be concise.`;
     const evaluation = await callAI(system, user);
 
     // Persist the latest evaluation for this symbol (single entry per symbol).
-    setEvaluation(symbol, evaluation);
+    try {
+        await setEvaluation(symbol, evaluation);
+    } catch (err) {
+        console.error('Failed to persist evaluation:', err);
+    }
 
     return res.status(200).json({ symbol, stats, samples: condensed, evaluation });
 }

@@ -161,12 +161,12 @@ export function computeMomentumSignals(params: {
 }
 
 // Persist the last evaluation for a symbol
-export function persistEvaluation(symbol: string, evaluation: any) {
-    setEvaluation(symbol, evaluation);
+export async function persistEvaluation(symbol: string, evaluation: any) {
+    await setEvaluation(symbol, evaluation);
 }
 
 // Retrieve the last evaluation for a symbol
-export function getLastEvaluation(symbol: string) {
+export async function getLastEvaluation(symbol: string) {
     return getEvaluation(symbol);
 }
 
@@ -556,7 +556,7 @@ ${primaryIndicatorsBlock}
 - Closing guardrails: ${JSON.stringify(closingGuidance)}
 
 TASKS:
-1) Evaluate micro_bias (UP/DOWN/NEUTRAL) from short-term flow/tape + recent price action, and macro_bias (UP/DOWN/NEUTRAL) from the macro regime flags.
+1) Evaluate micro_bias (UP/DOWN/NEUTRAL) from short-term flow/tape + recent price action, primary_bias (UP/DOWN/NEUTRAL) from slope/RSI/EMA20 alignment on ${primaryTimeframe}, and macro_bias (UP/DOWN/NEUTRAL) from the macro regime flags.
 2) Output one action only: "BUY", "SELL", "HOLD", "CLOSE", or "REVERSE".
    - If no position is open, return BUY/SELL/HOLD.
    - If a position is open, you may HOLD, CLOSE, or REVERSE (REVERSE = close + open opposite side).
@@ -564,7 +564,7 @@ TASKS:
 4) Summarize in ≤2 lines.
 
 JSON OUTPUT (strict):
-{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","micro_bias":"UP|DOWN|NEUTRAL","macro_bias":"UP|DOWN|NEUTRAL","signal_strength":"LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale"}
+{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","micro_bias":"UP|DOWN|NEUTRAL","primary_bias":"UP|DOWN|NEUTRAL","macro_bias":"UP|DOWN|NEUTRAL","signal_strength":"LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale"}
 `.trim();
 
     return { system: sys, user };
