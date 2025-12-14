@@ -56,18 +56,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const system = `You are an expert trading performance evaluator AND prompt auditor. Review historical AI trading decisions and the prompts/system instructions used to produce them. Find anomalies, contradictions, confusing naming, missing guards, and cost/logic mismatches. Respond in strict JSON parseable by JSON.parse with no trailing commas:
 {
     "aspects": {
-        "data_quality": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "checks": ["missing/NaN metrics", "stale candles vs analytics", "timeframe mismatches", "S/R state coherence", "gates reflect metrics"]},
-        "data_quantity": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "checks": ["sample size", "candle depth", "enough bars to compute indicators", "decision count sufficiency"]},
-        "ai_performance": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "checks": ["actions align with biases/signals", "edge vs costs", "macro/context use"]},
-        "strategy_performance": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "checks": ["entries/exits vs stated rules", "churn vs costs", "HTF alignment"]},
-        "signal_strength_clarity": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "checks": ["MEDIUM/HIGH vs aligned_driver_count/flow", "directional counts used", "threshold clarity"]},
-        "risk_management": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "checks": ["stop/TP vs ATR", "base gates vs exits", "PnL handling", "cost-aware churn"]},
-        "consistency": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "checks": ["system text vs actions", "bias definitions vs implementation", "metric/rule coherence"]},
-        "explainability": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "checks": ["reason matches action", "biases and drivers cited", "missing rationale fields"]},
-        "responsiveness": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "checks": ["timeliness vs timeframe", "time_stop vs call cadence", "reaction to regime shifts"]},
-        "prompt_engineering": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "checks": ["verbosity", "ambiguity", "JSON strictness", "naming clarity"]},
-        "prompt_consistency": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["list contradictions, naming confusion, missing gates/guards, cost mismatches"]},
-        "action_logic": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["gaps in entry/exit rules, base gates on open positions, reversal discipline, PnL sign conventions"]}
+        "data_quality": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["missing/NaN metrics", "stale candles vs analytics", "timeframe mismatches", "S/R state coherence", "gates reflect metrics"]},
+        "data_quantity": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["sample size", "candle depth", "enough bars to compute indicators", "decision count sufficiency"]},
+        "ai_performance": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["actions align with biases/signals", "edge vs costs", "macro/context use"]},
+        "strategy_performance": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["entries/exits vs stated rules", "churn vs costs", "HTF alignment"]},
+        "signal_strength_clarity": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["MEDIUM/HIGH vs aligned_driver_count/flow", "directional counts used", "threshold clarity"]},
+        "risk_management": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["stop/TP vs ATR", "base gates vs exits", "PnL handling", "cost-aware churn"]},
+        "consistency": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["system text vs actions", "bias definitions vs implementation", "metric/rule coherence"]},
+        "explainability": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["reason matches action", "biases and drivers cited", "missing rationale fields"]},
+        "responsiveness": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["timeliness vs timeframe", "time_stop vs call cadence", "reaction to regime shifts"]},
+        "prompt_engineering": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["verbosity", "ambiguity", "JSON strictness", "naming clarity"]},
+        "prompt_consistency": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["list contradictions, naming confusion, missing gates/guards, cost mismatches"], "checks": ["JSON strictness, naming and guardrails coherence"]},
+        "action_logic": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["gaps in entry/exit rules, base gates on open positions, reversal discipline, PnL sign conventions"], "checks": ["entry/exit edge vs costs, base gates, reversal handling"]}
     },
     "overall_rating": 0-10,
     "overview": "string",
@@ -76,7 +76,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     "improvements": ["..."],
     "confidence": "LOW|MEDIUM|HIGH"
 }
-Rate each aspect 0-10 (0=poor, 10=excellent) with a short comment. Provide per-aspect improvements only when you have concrete, actionable suggestions (keep each entry brief). In prompt_consistency/action_logic, explicitly call out: conflicting entry_ready rules vs HIGH signals, price_vs_breakeven sign for shorts, cost mismatches (fees vs taker_fee_rate vs heuristic bps), base gates blocking exits, macro neutral handling, S/R dual at_level, JSON strictness. Be concise.`;
+Rate each aspect 0-10 (0=poor, 10=excellent) with a short comment. Provide per-aspect improvements only when you have concrete, actionable suggestions (keep each entry brief) and only list them when they exist. Findings are optional—include them only when something is truly critical and only list them when they exist. In prompt_consistency/action_logic, explicitly call out: conflicting entry_ready rules vs HIGH signals, price_vs_breakeven sign for shorts, cost mismatches (fees vs taker_fee_rate vs heuristic bps), base gates blocking exits, macro neutral handling, S/R dual at_level, JSON strictness. Be concise.`;
     const user = `Symbol: ${symbol}. Recent decisions (most recent first): ${JSON.stringify(condensed)}. Stats: ${JSON.stringify(stats)}. Include prompt/system text when highlighting prompt issues: ${JSON.stringify(condensed.map((c) => c.prompt))}.`;
 
     const evaluation = await callAI(system, user);
