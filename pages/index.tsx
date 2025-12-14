@@ -28,6 +28,7 @@ type Evaluation = {
     {
       rating?: number;
       comment?: string;
+      improvements?: string[];
     }
   >;
 };
@@ -382,6 +383,12 @@ export default function Home() {
   };
 
   const current = symbols[active] ? tabData[symbols[active]] : null;
+  const hasDetails =
+    !!(
+      current?.evaluation.what_went_well?.length ||
+      current?.evaluation.issues?.length ||
+      current?.evaluation.improvements?.length
+    );
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex items-center justify-center px-4 py-10">
@@ -739,92 +746,94 @@ export default function Home() {
                 <p className="mt-3 text-sm text-slate-700">
                   {current.evaluation.overview || 'No overview provided.'}
                 </p>
-                {current.evaluation.aspects && (
-                  <div className="mt-4">
-                    <button
-                      onClick={() => setShowAspects((prev) => !prev)}
-                      className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
-                    >
-                      {showAspects ? 'Hide aspect ratings' : 'Show aspect ratings'}
-                    </button>
-                    {showAspects && (
-                      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        {Object.entries(current.evaluation.aspects).map(([key, val]) => (
-                          <div
-                            key={key}
-                            className="rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-inner shadow-slate-100"
-                          >
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                {(() => {
-                                  const meta = aspectMeta[key] || {
-                                    Icon: Circle,
-                                    color: 'text-slate-600',
-                                    bg: 'bg-slate-100',
-                                  };
-                                  const Icon = meta.Icon;
-                                  return (
-                                    <span
-                                      className={`flex h-9 w-9 items-center justify-center rounded-full ${meta.bg} ${meta.color}`}
-                                    >
-                                      <Icon className="h-4 w-4" />
-                                    </span>
-                                  );
-                                })()}
-                                <div className="text-sm font-semibold text-slate-900">
-                                  {formatLabel(key)}
+                {(current.evaluation.aspects || hasDetails) && (
+                  <div className="mt-4 space-y-4">
+                    {current.evaluation.aspects && (
+                      <>
+                        <button
+                          onClick={() => setShowAspects((prev) => !prev)}
+                          className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                        >
+                          {showAspects ? 'Hide aspect ratings' : 'Show aspect ratings'}
+                        </button>
+                        {showAspects && (
+                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            {Object.entries(current.evaluation.aspects).map(([key, val]) => (
+                              <div
+                                key={key}
+                                className="rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-inner shadow-slate-100"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    {(() => {
+                                      const meta = aspectMeta[key] || {
+                                        Icon: Circle,
+                                        color: 'text-slate-600',
+                                        bg: 'bg-slate-100',
+                                      };
+                                      const Icon = meta.Icon;
+                                      return (
+                                        <span
+                                          className={`flex h-9 w-9 items-center justify-center rounded-full ${meta.bg} ${meta.color}`}
+                                        >
+                                          <Icon className="h-4 w-4" />
+                                        </span>
+                                      );
+                                    })()}
+                                    <div className="text-sm font-semibold text-slate-900">
+                                      {formatLabel(key)}
+                                    </div>
+                                  </div>
+                                  <div className="text-lg font-semibold text-sky-700">{val?.rating ?? '—'}</div>
                                 </div>
+                                <p className="mt-2 text-xs text-slate-600">{val?.comment || 'No comment'}</p>
                               </div>
-                              <div className="text-lg font-semibold text-sky-700">{val?.rating ?? '—'}</div>
-                            </div>
-                            <p className="mt-2 text-xs text-slate-600">{val?.comment || 'No comment'}</p>
+                            ))}
                           </div>
-                        ))}
+                        )}
+                      </>
+                    )}
+
+                    {((current.evaluation.aspects && showAspects) || !current.evaluation.aspects) && hasDetails && (
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                        <div className="text-xs uppercase tracking-wide text-slate-500">Details</div>
+                        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+                          {current.evaluation.what_went_well?.length ? (
+                            <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
+                              <div className="text-sm font-semibold text-emerald-800">What went well</div>
+                              <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
+                                {current.evaluation.what_went_well.map((item, idx) => (
+                                  <li key={idx}>{item}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          ) : null}
+                          {current.evaluation.issues?.length ? (
+                            <div className="rounded-xl border border-rose-100 bg-rose-50 p-3">
+                              <div className="text-sm font-semibold text-rose-800">Issues</div>
+                              <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
+                                {current.evaluation.issues.map((item, idx) => (
+                                  <li key={idx}>{item}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          ) : null}
+                          {current.evaluation.improvements?.length ? (
+                            <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">
+                              <div className="text-sm font-semibold text-amber-800">Improvements</div>
+                              <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
+                                {current.evaluation.improvements.map((item, idx) => (
+                                  <li key={idx}>{item}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
                     )}
                   </div>
                 )}
               </div>
-
-              {(current.evaluation.what_went_well?.length ||
-                current.evaluation.issues?.length ||
-                current.evaluation.improvements?.length) && (
-                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
-                  <div className="text-xs uppercase tracking-wide text-slate-500">Details</div>
-                  <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-                    {current.evaluation.what_went_well?.length ? (
-                      <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
-                        <div className="text-sm font-semibold text-emerald-800">What went well</div>
-                        <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
-                          {current.evaluation.what_went_well.map((item, idx) => (
-                            <li key={idx}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                    {current.evaluation.issues?.length ? (
-                      <div className="rounded-xl border border-rose-100 bg-rose-50 p-3">
-                        <div className="text-sm font-semibold text-rose-800">Issues</div>
-                        <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
-                          {current.evaluation.issues.map((item, idx) => (
-                            <li key={idx}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                    {current.evaluation.improvements?.length ? (
-                      <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">
-                        <div className="text-sm font-semibold text-amber-800">Improvements</div>
-                        <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
-                          {current.evaluation.improvements.map((item, idx) => (
-                            <li key={idx}>{item}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              )}
             </div>
           ) : (
             <div className="flex items-center justify-center py-12 text-sm font-semibold text-slate-500">

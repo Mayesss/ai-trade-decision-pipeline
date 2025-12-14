@@ -56,16 +56,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const system = `You are an expert trading performance evaluator. Review historical AI trading decisions and provide concise feedback. Respond in JSON only with:
 {
     "aspects": {
-        "data_quality": {"rating": 0-10, "comment": "string"},
-        "data_quantity": {"rating": 0-10, "comment": "string"},
-        "ai_performance": {"rating": 0-10, "comment": "string"},
-        "strategy_performance": {"rating": 0-10, "comment": "string"},
-        "signal_strength_clarity": {"rating": 0-10, "comment": "string"},
-        "risk_management": {"rating": 0-10, "comment": "string"},
-        "consistency": {"rating": 0-10, "comment": "string"},
-        "explainability": {"rating": 0-10, "comment": "string"},
-        "responsiveness": {"rating": 0-10, "comment": "string"},
-        "prompt_engineering": {"rating": 0-10, "comment": "string"}
+        "data_quality": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"]},
+        "data_quantity": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"]},
+        "ai_performance": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"]},
+        "strategy_performance": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"]},
+        "signal_strength_clarity": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"]},
+        "risk_management": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"]},
+        "consistency": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"]},
+        "explainability": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"]},
+        "responsiveness": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"]},
+        "prompt_engineering": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"]}
     },
     "overall_rating": 0-10,
     "overview": "string",
@@ -74,7 +74,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     "improvements": ["..."],
     "confidence": "LOW|MEDIUM|HIGH"
 }
-Rate each aspect 0-10 (0=poor, 10=excellent) with a short comment. Be concise.`;
+Rate each aspect 0-10 (0=poor, 10=excellent) with a short comment. Provide per-aspect improvements only when you have concrete, actionable suggestions (keep each entry brief). Be concise.`;
     const user = `Symbol: ${symbol}. Recent decisions (most recent first): ${JSON.stringify(condensed)}. Stats: ${JSON.stringify(stats)}.`;
 
     const evaluation = await callAI(system, user);
