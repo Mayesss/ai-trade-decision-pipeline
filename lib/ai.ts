@@ -274,10 +274,15 @@ export function buildPrompt(
     const contextSR = sr[contextTimeframe] ?? sr[indicators.context?.timeframe || contextTimeframe];
 
     const contextSummary = indicators.context?.summary ?? '';
-    const contextBias =
-        contextSummary.includes('trend=up') ? 'UP' : contextSummary.includes('trend=down') ? 'DOWN' : 'NEUTRAL';
+    const contextBias = contextSummary.includes('trend=up')
+        ? 'UP'
+        : contextSummary.includes('trend=down')
+        ? 'DOWN'
+        : 'NEUTRAL';
     const contextIndicatorsBlock =
-        contextSummary && contextTimeframe ? `- Context timeframe (${contextTimeframe}) indicators: ${contextSummary}\n` : '';
+        contextSummary && contextTimeframe
+            ? `- Context timeframe (${contextTimeframe}) indicators: ${contextSummary}\n`
+            : '';
     const formatLevel = (lvl: any, kind: 'support' | 'resistance') =>
         lvl
             ? `${kind}_price=${lvl.price}, dist_in_atr=${lvl.dist_in_atr}, strength=${lvl.level_strength}, type=${lvl.level_type}, state=${lvl.level_state}`
@@ -357,13 +362,9 @@ export function buildPrompt(
         Number.isFinite(slope21_primary as number) &&
         Number.isFinite(rsi_primary as number) &&
         Number.isFinite(ema20_primary as number)
-            ? (slope21_primary as number) > 0 &&
-              (rsi_primary as number) >= 50 &&
-              price >= (ema20_primary as number)
+            ? (slope21_primary as number) > 0 && (rsi_primary as number) >= 50 && price >= (ema20_primary as number)
                 ? 'up'
-                : (slope21_primary as number) < 0 &&
-                  (rsi_primary as number) <= 50 &&
-                  price <= (ema20_primary as number)
+                : (slope21_primary as number) < 0 && (rsi_primary as number) <= 50 && price <= (ema20_primary as number)
                 ? 'down'
                 : 'neutral'
             : 'neutral';
@@ -376,7 +377,9 @@ export function buildPrompt(
         `rsi_${indicators.macroTimeFrame}=${rsiMacroDisplay}, micro_slope_pct_per_bar=${slope21_micro.toFixed(4)}, ` +
         `dist_from_ema20_${indicators.microTimeFrame}_in_atr=${distance_from_ema_atr.toFixed(2)}, ` +
         `atr_pct_${primaryTimeframe}=${atr_pct_primary.toFixed(2)}%, rsi_${primaryTimeframe}=${rsiPrimaryDisplay}, ` +
-        `primary_slope_pct_per_bar=${slope21_primary.toFixed(4)}, dist_from_ema20_${primaryTimeframe}_in_atr=${distance_from_ema20_primary_atr.toFixed(2)}`;
+        `primary_slope_pct_per_bar=${slope21_primary.toFixed(
+            4,
+        )}, dist_from_ema20_${primaryTimeframe}_in_atr=${distance_from_ema20_primary_atr.toFixed(2)}`;
 
     // --- SIGNAL STRENGTH DRIVERS & CLOSING GUIDANCE ---
     const clampNumber = (value: number | null | undefined, digits = 3) =>
@@ -463,12 +466,15 @@ export function buildPrompt(
         context_support_dist_atr: clampNumber(htfSupportDist ?? null, 3),
         context_resistance_dist_atr: clampNumber(htfResistanceDist ?? null, 3),
     };
-
-    const priceVsBreakevenPct =
-        position_context?.breakeven_price && Number.isFinite(position_context.breakeven_price) && price > 0
-            ? clampNumber(((price - position_context.breakeven_price) / price) * 100, 3)
-            : null;
     const positionSide = position_context?.side;
+    const priceVsBreakevenPctRaw =
+        position_context?.breakeven_price && Number.isFinite(position_context.breakeven_price) && price > 0
+            ? ((price - position_context.breakeven_price) / position_context.breakeven_price) * 100
+            : null;
+    const priceVsBreakevenPct =
+        positionSide === 'short'
+            ? clampNumber(-(priceVsBreakevenPctRaw ?? 0), 3)
+            : clampNumber(priceVsBreakevenPctRaw ?? null, 3);
     const macroSupportsPosition =
         positionSide === 'long' ? gates.regime_trend_up : positionSide === 'short' ? gates.regime_trend_down : null;
     const macroOpposesPosition =
@@ -515,14 +521,17 @@ export function buildPrompt(
         reverse_confidence: reverseConfidence,
     };
     // Costs (educate the model)
-    const taker_round_trip_bps = 5; // 5 bps
+    const taker_fee_rate_side = Number.isFinite(position_context?.taker_fee_rate as number)
+        ? Math.max(0, Number(position_context?.taker_fee_rate))
+        : 0.00025; // default 2.5 bps per side
+    const taker_round_trip_bps = Number((taker_fee_rate_side * 2 * 10000).toFixed(2));
     const slippage_bps = 2;
+    const total_cost_bps = Number((taker_round_trip_bps + slippage_bps).toFixed(1));
 
     const risk_policy =
         `fees=${taker_round_trip_bps}bps round-trip, slippage=${slippage_bps}bps, ` +
-        `stop=1.5xATR(${indicators.macroTimeFrame}), take_profit=2.5xATR(${indicators.macroTimeFrame}), time_stop=${
-            parseInt(timeframe, 10) * 3
-        } minutes`;
+        `stop=1.5xATR(${indicators.macroTimeFrame}), take_profit=2.5xATR(${indicators.macroTimeFrame}), ` +
+        `time_stop=${parseInt(timeframe, 10) * 3} minutes (execution-layer timer)`;
 
     // We only pass the BASE gates now, as the AI will judge the strategy gates using metrics
     const base_gating_flags = `spread_ok=${gates.spread_ok}, liquidity_ok=${gates.liquidity_ok}, atr_ok=${gates.atr_ok}, slippage_ok=${gates.slippage_ok}`;
@@ -542,10 +551,11 @@ Bias definitions (explicit): micro_bias = flow/tape + recent price on ${indicato
 Decision ladder: Base gates → biases (macro/primary) → signal drivers + entry_ready → action.
 Signal strength is driven by aligned_driver_count + flow_bias + extensions (micro + primary); strong flow with many aligned drivers → HIGH.
 Respond in strict JSON ONLY.
+Output must be valid JSON parseable by JSON.parse with no trailing commas or extra keys; no markdown or commentary.
 
 GENERAL RULES
-- **Base gates**: if ANY of spread_ok, liquidity_ok, atr_ok, slippage_ok is false → action="HOLD".
-- **Costs**: if expected edge is small vs ~7bps total costs (fees+slippage) → HOLD; avoid churn around breakeven.
+- **Base gates**: when flat, if ANY of spread_ok, liquidity_ok, atr_ok, slippage_ok is false → action="HOLD"; if in a position, do not block exits—prefer risk-off (CLOSE) rather than HOLD when gates fail.
+ - **Costs**: if expected edge is small vs ~${total_cost_bps}bps total costs (fees+slippage) → HOLD; avoid churn around breakeven.
 - **Macro bias**: trades WITH macro trend are preferred and can be taken on MEDIUM or HIGH signals. Trades AGAINST macro require HIGH signal_strength or very strong flow/tape.
 - **Context bias (${contextTimeframe})**: context_bias=${contextBias}. Treat it as a risk lever, not a gate. When aligned with the intended direction, you may allow MEDIUM signals more readily (especially near good entries). When against, require HIGH signal_strength plus strong flow/tape and a better entry/extension (or smaller size if sizing elsewhere). Use it to upgrade/downgrade signal_strength or selectivity near levels, not to block trades outright.
 - **Support/Resistance (machine-usable)**: Derived from swing pivots; distances are expressed in ATRs of that timeframe. location_confluence_score is capped (max +1 driver) to avoid double-counting trend+location. Treat into_context_support/resistance and context_breakdown/breakout flags as risk modifiers: avoid selling into strong support unless breakdown is confirmed or flow is very strong; be faster to take profit when at strong opposite levels.
@@ -558,7 +568,7 @@ GENERAL RULES
 
 ACTIONS LOGIC
 - **No position open**:
-  - If base gates true AND signal_strength = HIGH:
+  - If base gates true AND signal_strength = HIGH AND (entry_ready_long/short = true OR aligned_driver_count ≥ 5):
       - action="BUY" when flow_supports="buy".
       - action="SELL" when flow_supports="sell".
   - If signal_strength = MEDIUM AND aligned_driver_count ≥ 4 (or very close with strong flow):
@@ -593,7 +603,7 @@ EXTENSION / OVERBOUGHT-OVERSOLD
 BIAS DEFINITIONS
 - micro_bias = short-term directional edge from flow/tape + recent price action on ${indicators.microTimeFrame}.
 - primary_bias = slope/RSI/EMA20 alignment on ${primaryTimeframe}.
-- macro_bias = regime_trend_up / regime_trend_down on ${indicators.macroTimeFrame}.
+- macro_bias = regime_trend_up / regime_trend_down on ${indicators.macroTimeFrame}; if both are false, macro_bias=NEUTRAL.
 - context_bias = trend/regime on ${contextTimeframe} (higher timeframe); it modulates risk/selectivity but is not a hard gate.
 - Support/Resistance = swing pivot levels; nearest_support_price / nearest_resistance_price and dist_to_*_in_atr use the ATR of that timeframe. level_state ∈ {at_level, approaching, rejected, broken, retesting}. location_confluence_score is a capped (0–1) proximity/break state; do not double-count it with trend.
 - Trades WITH macro_bias are preferred; trades AGAINST macro_bias require micro_bias strongly opposite + HIGH signal_strength.
@@ -628,7 +638,10 @@ ${newsSentimentBlock}${newsHeadlinesBlock}${recentActionsBlock}- Current positio
 ${positionContextBlock}- Technical (short-term, ${indicators.microTimeFrame}, last 30 candles): ${indicators.micro}
 - Macro (${indicators.macroTimeFrame}, last 30 candles): ${indicators.macro}
 ${contextIndicatorsBlock}${contextSRBlock}${primaryIndicatorsBlock}${primarySRBlock}
-- HTF location flags: {into_support=${intoContextSupport}, into_resistance=${intoContextResistance}, breakdown_confirmed=${htfBreakdownConfirmed}, breakout_confirmed=${htfBreakoutConfirmed}, location_confluence_score=${clampNumber(locationConfluenceScore, 3)}}
+- HTF location flags: {into_support=${intoContextSupport}, into_resistance=${intoContextResistance}, breakdown_confirmed=${htfBreakdownConfirmed}, breakout_confirmed=${htfBreakoutConfirmed}, location_confluence_score=${clampNumber(
+        locationConfluenceScore,
+        3,
+    )}}
 - Momentum context: ${JSON.stringify({
         macro_trend_up: momentumSignals.macroTrendUp,
         macro_trend_down: momentumSignals.macroTrendDown,
