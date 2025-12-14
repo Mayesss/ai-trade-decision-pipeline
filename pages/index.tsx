@@ -37,7 +37,10 @@ type EvaluationEntry = {
   symbol: string;
   evaluation: Evaluation;
   pnl24h?: number | null;
+  pnl24hWithOpen?: number | null;
+  pnl24hNet?: number | null;
   pnl24hTrades?: number | null;
+  pnlSpark?: number[] | null;
   openPnl?: number | null;
   openDirection?: 'long' | 'short' | null;
   lastPositionPnl?: number | null;
@@ -100,6 +103,49 @@ const formatCompactPrice = (value: number) => {
     return `${v.toFixed(1)}K`;
   }
   return value.toFixed(2);
+};
+
+const formatUsd = (value: number) => {
+  const abs = Math.abs(value);
+  const sign = value < 0 ? '-' : '';
+  const v = Math.abs(value);
+  if (abs >= 1_000_000) return `${sign}$${(v / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}$${(v / 1_000).toFixed(1)}K`;
+  return `${sign}$${v.toFixed(0)}`;
+};
+
+const Sparkline = ({ data, width = 120, height = 32 }: { data: number[]; width?: number; height?: number }) => {
+  if (!data || data.length === 0) return null;
+  const max = Math.max(...data);
+  const min = Math.min(...data);
+  const range = max - min || 1;
+  const pts = data.map((v, i) => {
+    const x = (i / Math.max(data.length - 1, 1)) * width;
+    const y = height - ((v - min) / range) * height;
+    return { x, y };
+  });
+  const last = data[data.length - 1] || 0;
+  const color = last >= 0 ? '#059669' : '#dc2626';
+
+  // If only one point, draw a small dot plus a flat line for visibility
+  const polyPoints =
+    pts.length === 1
+      ? `0,${pts[0]!.y} ${width},${pts[0]!.y}`
+      : pts.map((p) => `${p.x},${p.y}`).join(' ');
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} className="overflow-visible">
+      <polyline
+        fill="none"
+        stroke={color}
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        points={polyPoints}
+      />
+      <circle cx={pts[pts.length - 1]!.x} cy={pts[pts.length - 1]!.y} r="3" fill={color} opacity={0.9} />
+    </svg>
+  );
 };
 
 export default function Home() {
@@ -491,7 +537,7 @@ export default function Home() {
             </div>
           ) : current ? (
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-stretch">
-              <div className="space-y-4 lg:col-span-1">
+              <div className="space-y-4 lg:col-span-2">
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 h-full">
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                     <div>
@@ -499,19 +545,38 @@ export default function Home() {
                       <div className="mt-3 text-3xl font-semibold text-slate-900">
                         <span
                           className={
-                            typeof current.pnl24h === 'number'
-                              ? current.pnl24h >= 0
+                            typeof current.pnl24hWithOpen === 'number'
+                              ? current.pnl24hWithOpen >= 0
                                 ? 'text-emerald-600'
                                 : 'text-rose-600'
                               : 'text-slate-500'
                           }
                         >
-                          {typeof current.pnl24h === 'number' ? `${current.pnl24h.toFixed(2)}%` : '—'}
+                          {typeof current.pnl24hWithOpen === 'number'
+                            ? `${current.pnl24hWithOpen.toFixed(2)}%`
+                            : typeof current.pnl24h === 'number'
+                            ? `${current.pnl24h.toFixed(2)}%`
+                            : '—'}
+                          {typeof current.pnl24hNet === 'number'
+                            ? ` (${current.pnl24hNet >= 0 ? '+' : ''}${formatUsd(current.pnl24hNet)})`
+                            : ''}
                         </span>
                       </div>
                       <p className="mt-1 text-xs text-slate-500">
                         from {current.pnl24hTrades ?? 0} {current.pnl24hTrades === 1 ? 'trade' : 'trades'}
+                        {typeof current.openPnl === 'number' ? ' + open position' : ''}
                       </p>
+                      {(() => {
+                        const sparkData =
+                          current.pnlSpark && current.pnlSpark.length
+                            ? current.pnlSpark
+                            : typeof current.openPnl === 'number'
+                            ? [current.openPnl]
+                            : null;
+                        if (!sparkData) return null;
+                        const lastVal = sparkData[sparkData.length - 1];
+                        return <Sparkline data={sparkData} />;
+                      })()}
                     </div>
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-500">Last PNL</div>

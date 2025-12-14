@@ -1,13 +1,16 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getAllEvaluations } from '../../lib/utils';
 import { loadDecisionHistory } from '../../lib/history';
-import { fetchPositionInfo, fetchRealizedRoi } from '../../lib/analytics';
+import { fetchPositionInfo, fetchRealizedRoi, fetchRecentPositionWindows } from '../../lib/analytics';
 
 type EnrichedEntry = {
   symbol: string;
   evaluation: any;
   pnl24h?: number | null;
+  pnl24hWithOpen?: number | null;
+  pnl24hNet?: number | null;
   pnl24hTrades?: number | null;
+  pnlSpark?: number[] | null;
   openPnl?: number | null;
   openDirection?: 'long' | 'short' | null;
   lastPositionPnl?: number | null;
@@ -32,7 +35,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const data: EnrichedEntry[] = await Promise.all(
     symbols.map(async (symbol) => {
       let pnl24h: number | null | undefined = null;
+      let pnl24hWithOpen: number | null | undefined = null;
+      let pnl24hNet: number | null | undefined = null;
       let pnl24hTrades: number | null | undefined = null;
+      let pnlSpark: number[] | null | undefined = null;
       let openPnl: number | null | undefined = null;
       let openDirection: 'long' | 'short' | null | undefined = null;
       let lastPositionPnl: number | null | undefined = null;
@@ -55,9 +61,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         const roiRes = await fetchRealizedRoi(symbol, 24);
         pnl24h = Number.isFinite(roiRes.sumPct as number) ? (roiRes.sumPct as number) : null;
+        pnl24hNet = Number.isFinite(roiRes.roi as number) ? (roiRes.roi as number) : null;
         pnl24hTrades = roiRes.count;
         lastPositionPnl = Number.isFinite(roiRes.lastNetPct as number) ? (roiRes.lastNetPct as number) : null;
         lastPositionDirection = roiRes.lastSide ?? null;
+
+        try {
+          const recentWindows = await fetchRecentPositionWindows(symbol, 24);
+          const lastWindows = recentWindows.slice(-10);
+          const spark = lastWindows
+            .map((w) => (Number.isFinite(w.pnlPct as number) ? (w.pnlPct as number) : null))
+            .filter((v): v is number => typeof v === 'number');
+          pnlSpark = spark.length ? spark : null;
+        } catch (err) {
+          console.warn(`Could not fetch sparkline PnL for ${symbol}:`, err);
+        }
 
         try {
           const pos = await fetchPositionInfo(symbol);
@@ -73,6 +91,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         } catch (err) {
           console.warn(`Could not fetch open PnL for ${symbol}:`, err);
         }
+
+        // Combine realized 24h PnL with current open PnL (percentage-based)
+        if (typeof pnl24h === 'number' && typeof openPnl === 'number') {
+          pnl24hWithOpen = pnl24h + openPnl;
+        } else if (typeof pnl24h === 'number') {
+          pnl24hWithOpen = pnl24h;
+        } else if (typeof openPnl === 'number') {
+          pnl24hWithOpen = openPnl;
+        } else {
+          pnl24hWithOpen = null;
+        }
       } catch (err) {
         // Fail silently per symbol; still return evaluation
         console.warn(`Could not load history for ${symbol}:`, err);
@@ -82,7 +111,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         symbol,
         evaluation: store[symbol],
         pnl24h,
+        pnl24hWithOpen,
+        pnl24hNet,
         pnl24hTrades,
+        pnlSpark,
         openPnl,
         openDirection,
         lastPositionPnl,
