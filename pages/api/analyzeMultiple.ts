@@ -408,6 +408,12 @@ async function runAnalysisForSymbol(params: {
                 aiDecision: decision,
                 execResult: execRes,
                 snapshot,
+                biasTimeframes: {
+                    context: contextTimeFrame,
+                    macro: macroTimeFrame,
+                    primary: timeFrame,
+                    micro: microTimeFrame,
+                },
             });
 
             // 9) Return result for this symbol

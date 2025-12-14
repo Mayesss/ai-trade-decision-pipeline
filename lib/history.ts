@@ -99,6 +99,12 @@ export type DecisionHistoryEntry = {
     aiDecision: TradeDecision & Record<string, any>;
     execResult: Record<string, any>;
     snapshot: DecisionSnapshot;
+    biasTimeframes?: {
+        context?: string;
+        macro?: string;
+        primary?: string;
+        micro?: string;
+    };
 };
 
 function keyFor(symbol: string, timestamp: number) {

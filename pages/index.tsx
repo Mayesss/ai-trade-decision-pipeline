@@ -41,6 +41,7 @@ type EvaluationEntry = {
   symbol: string;
   evaluation: Evaluation;
   evaluationTs?: number | null;
+  lastBiasTimeframes?: Record<string, string | undefined> | null;
   pnl24h?: number | null;
   pnl24hWithOpen?: number | null;
   pnl24hNet?: number | null;
@@ -459,6 +460,12 @@ export default function Home() {
       current?.evaluation.issues?.length ||
       current?.evaluation.improvements?.length
     );
+  const biasOrder = [
+    { key: 'context_bias', label: 'Context' },
+    { key: 'macro_bias', label: 'Macro' },
+    { key: 'primary_bias', label: 'Primary' },
+    { key: 'micro_bias', label: 'Micro' },
+  ] as const;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex items-center justify-center px-4 py-10">
@@ -809,6 +816,35 @@ export default function Home() {
                       {current.lastDecision.reason}
                     </p>
                   ) : null}
+                  <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {biasOrder.map(({ key, label }) => {
+                      const raw = (current.lastDecision as any)?.[key];
+                      const val = typeof raw === 'string' ? raw.toUpperCase() : raw;
+                      const tfLabel = current.lastBiasTimeframes?.[key.replace('_bias', '')] || null;
+                      const displayLabel = tfLabel ? `${label} (${tfLabel})` : label;
+                      const meta =
+                        val === 'UP'
+                          ? { color: 'text-emerald-600', Icon: ArrowUpRight }
+                          : val === 'DOWN'
+                          ? { color: 'text-rose-600', Icon: ArrowDownRight }
+                          : { color: 'text-slate-500', Icon: Circle };
+                      const Icon = meta.Icon;
+                      return (
+                        <div
+                          key={key}
+                          className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-3 py-2"
+                        >
+                          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                            {displayLabel}
+                          </span>
+                          <span className={`flex items-center gap-1 text-sm font-semibold ${meta.color}`}>
+                            <Icon className="h-4 w-4" />
+                            {val || '—'}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
                   <div className="mt-3">
                     <button
                       onClick={() => setShowPrompt((prev) => !prev)}

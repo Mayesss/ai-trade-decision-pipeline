@@ -384,6 +384,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             aiDecision: decision,
             execResult: execRes,
             snapshot,
+            biasTimeframes: {
+                context: contextTimeFrame,
+                macro: macroTimeFrame,
+                primary: timeFrame,
+                micro: microTimeFrame,
+            },
         });
 
         // 9) Respond

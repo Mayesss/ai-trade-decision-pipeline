@@ -7,6 +7,7 @@ type EnrichedEntry = {
   symbol: string;
   evaluation: any;
   evaluationTs?: number | null;
+  lastBiasTimeframes?: Record<string, string | undefined> | null;
   pnl24h?: number | null;
   pnl24hWithOpen?: number | null;
   pnl24hNet?: number | null;
@@ -57,6 +58,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let avgWinPct: number | null | undefined = null;
       let avgLossPct: number | null | undefined = null;
       let evaluationTs: number | null | undefined = null;
+      let lastBiasTimeframes: Record<string, string | undefined> | null = null;
 
       try {
         const history = await loadDecisionHistory(symbol, 120);
@@ -67,6 +69,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           lastMetrics = latest.snapshot?.metrics ?? null;
           lastDecisionTs = Number.isFinite(latest.timestamp) ? Number(latest.timestamp) : null;
           lastPrompt = latest.prompt ?? null;
+          lastBiasTimeframes = latest.biasTimeframes ?? null;
         }
 
         const roiRes = await fetchRealizedRoi(symbol, 24);
@@ -158,6 +161,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         lastPositionPnl,
         lastPositionDirection,
         evaluationTs,
+        lastBiasTimeframes,
         lastDecisionTs,
         lastDecision,
         lastMetrics,
