@@ -9,6 +9,7 @@ type EnrichedEntry = {
   pnl24h?: number | null;
   pnl24hWithOpen?: number | null;
   pnl24hNet?: number | null;
+  pnl24hGross?: number | null;
   pnl24hTrades?: number | null;
   pnlSpark?: number[] | null;
   openPnl?: number | null;
@@ -19,6 +20,9 @@ type EnrichedEntry = {
   lastDecision?: any;
   lastMetrics?: any;
   lastPrompt?: { system?: string; user?: string } | null;
+  winRate?: number | null;
+  avgWinPct?: number | null;
+  avgLossPct?: number | null;
 };
 
 // Returns the latest evaluation per symbol from the in-memory store,
@@ -37,6 +41,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let pnl24h: number | null | undefined = null;
       let pnl24hWithOpen: number | null | undefined = null;
       let pnl24hNet: number | null | undefined = null;
+      let pnl24hGross: number | null | undefined = null;
       let pnl24hTrades: number | null | undefined = null;
       let pnlSpark: number[] | null | undefined = null;
       let openPnl: number | null | undefined = null;
@@ -47,6 +52,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let lastDecision: any = null;
       let lastMetrics: any = null;
       let lastPrompt: { system?: string; user?: string } | null = null;
+      let winRate: number | null | undefined = null;
+      let avgWinPct: number | null | undefined = null;
+      let avgLossPct: number | null | undefined = null;
 
       try {
         const history = await loadDecisionHistory(symbol, 120);
@@ -73,6 +81,31 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             .map((w) => (Number.isFinite(w.pnlPct as number) ? (w.pnlPct as number) : null))
             .filter((v): v is number => typeof v === 'number');
           pnlSpark = spark.length ? spark : null;
+
+          const grossPcts = recentWindows
+            .map((w) => (Number.isFinite(w.pnlGrossPct as number) ? (w.pnlGrossPct as number) : null))
+            .filter((v): v is number => typeof v === 'number');
+          const netPcts = recentWindows
+            .map((w) => (Number.isFinite(w.pnlPct as number) ? (w.pnlPct as number) : null))
+            .filter((v): v is number => typeof v === 'number');
+          pnl24hGross = grossPcts.length ? grossPcts.reduce((a, b) => a + b, 0) : null;
+          // pnl24h (net) already uses sumPct from ROI; if missing, fallback to netPcts sum
+          if (pnl24h === null && netPcts.length) {
+            pnl24h = netPcts.reduce((a, b) => a + b, 0);
+          }
+
+          const lastTen = lastWindows.filter((w) => Number.isFinite(w.pnlPct as number));
+          if (lastTen.length) {
+            const wins = lastTen.filter((w) => (w.pnlPct as number) > 0);
+            const losses = lastTen.filter((w) => (w.pnlPct as number) < 0);
+            winRate = (wins.length / lastTen.length) * 100;
+            avgWinPct = wins.length
+              ? wins.reduce((acc, w) => acc + (w.pnlPct as number), 0) / wins.length
+              : null;
+            avgLossPct = losses.length
+              ? losses.reduce((acc, w) => acc + (w.pnlPct as number), 0) / losses.length
+              : null;
+          }
         } catch (err) {
           console.warn(`Could not fetch sparkline PnL for ${symbol}:`, err);
         }
@@ -113,6 +146,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         pnl24h,
         pnl24hWithOpen,
         pnl24hNet,
+        pnl24hGross,
         pnl24hTrades,
         pnlSpark,
         openPnl,
@@ -123,6 +157,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         lastDecision,
         lastMetrics,
         lastPrompt,
+        winRate,
+        avgWinPct,
+        avgLossPct,
       };
     }),
   );

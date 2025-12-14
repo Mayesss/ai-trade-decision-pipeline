@@ -37,8 +37,11 @@ export type PositionWindow = {
     exitTimestamp?: number | null;
     entryPrice?: number | null;
     exitPrice?: number | null;
-    pnlNet?: number | null;
-    pnlPct?: number | null;
+    pnlNet?: number | null; // net after fees
+    pnlPct?: number | null; // net pct
+    pnlGross?: number | null; // gross before fees if available
+    pnlGrossPct?: number | null; // gross pct
+    notional?: number | null;
 };
 
 type OBLevel = { price: number; size: number };
@@ -199,8 +202,10 @@ export async function fetchRecentPositionWindows(symbol: string, hours = 24): Pr
                 const exitPrice = num(it.closeAvgPrice ?? it.exitPrice);
                 const size = num(it.closeTotalPos ?? it.openTotalPos ?? it.size);
                 const notional = size * (exitPrice || entryPrice || 0);
-                const net = num(it.netProfit ?? it.pnl, NaN);
-                const pnlPct = Number.isFinite(net) && notional > 0 ? (net / notional) * 100 : null;
+                const pnlGross = num(it.pnl, NaN);
+                const pnlNet = num(it.netProfit ?? it.pnl, NaN);
+                const pnlPct = Number.isFinite(pnlNet) && notional > 0 ? (pnlNet / notional) * 100 : null;
+                const pnlGrossPct = Number.isFinite(pnlGross) && notional > 0 ? (pnlGross / notional) * 100 : null;
                 const sideRaw = (it.holdSide ?? it.side ?? it.direction ?? '').toLowerCase();
                 const side = sideRaw === 'long' || sideRaw === 'short' ? sideRaw : null;
                 const id = String(
@@ -219,8 +224,11 @@ export async function fetchRecentPositionWindows(symbol: string, hours = 24): Pr
                     exitTimestamp,
                     entryPrice: Number.isFinite(entryPrice) ? entryPrice : null,
                     exitPrice: Number.isFinite(exitPrice) ? exitPrice : null,
-                    pnlNet: Number.isFinite(net) ? net : null,
+                    pnlNet: Number.isFinite(pnlNet) ? pnlNet : null,
+                    pnlGross: Number.isFinite(pnlGross) ? pnlGross : null,
                     pnlPct,
+                    pnlGrossPct,
+                    notional: Number.isFinite(notional) ? notional : null,
                 };
             })
             .filter((p) => {

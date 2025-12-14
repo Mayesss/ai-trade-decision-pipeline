@@ -39,6 +39,7 @@ type EvaluationEntry = {
   pnl24h?: number | null;
   pnl24hWithOpen?: number | null;
   pnl24hNet?: number | null;
+  pnl24hGross?: number | null;
   pnl24hTrades?: number | null;
   pnlSpark?: number[] | null;
   openPnl?: number | null;
@@ -55,6 +56,9 @@ type EvaluationEntry = {
   } | null;
   lastPrompt?: { system?: string; user?: string } | null;
   lastMetrics?: Record<string, any> | null;
+  winRate?: number | null;
+  avgWinPct?: number | null;
+  avgLossPct?: number | null;
 };
 
 type EvaluationsResponse = {
@@ -566,6 +570,20 @@ export default function Home() {
                         from {current.pnl24hTrades ?? 0} {current.pnl24hTrades === 1 ? 'trade' : 'trades'}
                         {typeof current.openPnl === 'number' ? ' + open position' : ''}
                       </p>
+                      <div className="mt-1 text-[11px] text-slate-500">
+                        {typeof current.pnl24hGross === 'number' || typeof current.pnl24h === 'number' ? (
+                          <>
+                            gross vs net:{' '}
+                            <span className="font-semibold text-slate-700">
+                              {typeof current.pnl24hGross === 'number' ? current.pnl24hGross.toFixed(2) : '—'}%
+                            </span>{' '}
+                            /{' '}
+                            <span className="font-semibold text-slate-700">
+                              {typeof current.pnl24h === 'number' ? current.pnl24h.toFixed(2) : '—'}%
+                            </span>
+                          </>
+                        ) : null}
+                      </div>
                       {(() => {
                         const sparkData =
                           current.pnlSpark && current.pnlSpark.length
@@ -613,6 +631,13 @@ export default function Home() {
                           'no recent positions'
                         )}
                       </p>
+                      {typeof current.winRate === 'number' || typeof current.avgWinPct === 'number' || typeof current.avgLossPct === 'number' ? (
+                        <div className="mt-2 text-[11px] text-slate-500">
+                          {typeof current.winRate === 'number' ? `Win rate: ${current.winRate.toFixed(0)}%` : ''}
+                          {typeof current.avgWinPct === 'number' ? ` · Avg win: ${current.avgWinPct.toFixed(2)}%` : ''}
+                          {typeof current.avgLossPct === 'number' ? ` · Avg loss: ${current.avgLossPct.toFixed(2)}%` : ''}
+                        </div>
+                      ) : null}
                     </div>
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-500">Open PNL</div>
