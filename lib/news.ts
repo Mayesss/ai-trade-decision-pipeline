@@ -105,7 +105,7 @@ export async function fetchNewsWithHeadlines(
     const sentiment = getDominantSentiment(payload) || 'NEUTRAL';
     const headlines = Array.isArray(payload?.Data)
         ? payload.Data.sort((a: Article, b: Article) => b.PUBLISHED_ON - a.PUBLISHED_ON)
-              .slice(0, 3)
+              .slice(0, 5)
               .map((a: Article) => a.TITLE)
         : [];
     return { sentiment, headlines };

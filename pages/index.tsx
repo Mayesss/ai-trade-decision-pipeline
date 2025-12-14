@@ -40,6 +40,7 @@ type Evaluation = {
 type EvaluationEntry = {
   symbol: string;
   evaluation: Evaluation;
+  evaluationTs?: number | null;
   pnl24h?: number | null;
   pnl24hWithOpen?: number | null;
   pnl24hNet?: number | null;
@@ -120,40 +121,6 @@ const formatUsd = (value: number) => {
   if (abs >= 1_000_000) return `${sign}$${(v / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000) return `${sign}$${(v / 1_000).toFixed(1)}K`;
   return `${sign}$${v.toFixed(0)}`;
-};
-
-const Sparkline = ({ data, width = 120, height = 32 }: { data: number[]; width?: number; height?: number }) => {
-  if (!data || data.length === 0) return null;
-  const max = Math.max(...data);
-  const min = Math.min(...data);
-  const range = max - min || 1;
-  const pts = data.map((v, i) => {
-    const x = (i / Math.max(data.length - 1, 1)) * width;
-    const y = height - ((v - min) / range) * height;
-    return { x, y };
-  });
-  const last = data[data.length - 1] || 0;
-  const color = last >= 0 ? '#059669' : '#dc2626';
-
-  // If only one point, draw a small dot plus a flat line for visibility
-  const polyPoints =
-    pts.length === 1
-      ? `0,${pts[0]!.y} ${width},${pts[0]!.y}`
-      : pts.map((p) => `${p.x},${p.y}`).join(' ');
-
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} className="overflow-visible">
-      <polyline
-        fill="none"
-        stroke={color}
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        points={polyPoints}
-      />
-      <circle cx={pts[pts.length - 1]!.x} cy={pts[pts.length - 1]!.y} r="3" fill={color} opacity={0.9} />
-    </svg>
-  );
 };
 
 export default function Home() {
@@ -590,17 +557,6 @@ export default function Home() {
                           </>
                         ) : null}
                       </div>
-                      {(() => {
-                        const sparkData =
-                          current.pnlSpark && current.pnlSpark.length
-                            ? current.pnlSpark
-                            : typeof current.openPnl === 'number'
-                            ? [current.openPnl]
-                            : null;
-                        if (!sparkData) return null;
-                        const lastVal = sparkData[sparkData.length - 1];
-                        return <Sparkline data={sparkData} />;
-                      })()}
                     </div>
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-500">Last PNL</div>
@@ -876,9 +832,14 @@ export default function Home() {
                 </div>
               )}
 
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
                 <div className="flex items-center justify-between">
-                  <div className="text-xs uppercase tracking-wide text-slate-500">Latest Evaluation</div>
+                  <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
+                    <span>Latest Evaluation</span>
+                    {current.evaluationTs ? (
+                      <span className="lowercase text-slate-400">{formatDecisionTime(current.evaluationTs)}</span>
+                    ) : null}
+                  </div>
                   {current.evaluation.confidence && (
                     <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
                       Confidence: {current.evaluation.confidence}

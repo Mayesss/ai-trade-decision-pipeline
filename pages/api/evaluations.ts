@@ -1,11 +1,12 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { getAllEvaluations } from '../../lib/utils';
+import { getAllEvaluations, getEvaluationTimestamp } from '../../lib/utils';
 import { loadDecisionHistory } from '../../lib/history';
 import { fetchPositionInfo, fetchRealizedRoi, fetchRecentPositionWindows } from '../../lib/analytics';
 
 type EnrichedEntry = {
   symbol: string;
   evaluation: any;
+  evaluationTs?: number | null;
   pnl24h?: number | null;
   pnl24hWithOpen?: number | null;
   pnl24hNet?: number | null;
@@ -55,6 +56,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let winRate: number | null | undefined = null;
       let avgWinPct: number | null | undefined = null;
       let avgLossPct: number | null | undefined = null;
+      let evaluationTs: number | null | undefined = null;
 
       try {
         const history = await loadDecisionHistory(symbol, 120);
@@ -135,6 +137,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         } else {
           pnl24hWithOpen = null;
         }
+
+        evaluationTs = await getEvaluationTimestamp(symbol);
       } catch (err) {
         // Fail silently per symbol; still return evaluation
         console.warn(`Could not load history for ${symbol}:`, err);
@@ -153,6 +157,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         openDirection,
         lastPositionPnl,
         lastPositionDirection,
+        evaluationTs,
         lastDecisionTs,
         lastDecision,
         lastMetrics,

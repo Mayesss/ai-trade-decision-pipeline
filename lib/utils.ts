@@ -57,6 +57,12 @@ async function kvZAdd(key: string, score: number, member: string) {
   return kvCommand('ZADD', key, score, member);
 }
 
+async function kvZScore(key: string, member: string): Promise<number | null> {
+  const res = await kvCommand('ZSCORE', key, member);
+  const num = Number(res);
+  return Number.isFinite(num) ? num : null;
+}
+
 async function kvZRem(key: string, member: string) {
   return kvCommand('ZREM', key, member);
 }
@@ -95,6 +101,17 @@ export async function getEvaluation(symbol: string) {
   const raw = await kvGet(evalKey(symbol));
   if (!raw) return null;
   return JSON.parse(raw);
+}
+
+export async function getEvaluationTimestamp(symbol: string): Promise<number | null> {
+  if (!symbol) return null;
+  const key = evalKey(symbol);
+  try {
+    return await kvZScore(EVALUATION_INDEX_KEY, key);
+  } catch (err) {
+    console.warn('Could not fetch evaluation timestamp from KV:', err);
+    return null;
+  }
 }
 
 // Snapshot of all evaluations (one per symbol).
