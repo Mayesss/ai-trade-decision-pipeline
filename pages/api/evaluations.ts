@@ -15,6 +15,7 @@ type EnrichedEntry = {
   lastDecisionTs?: number | null;
   lastDecision?: any;
   lastMetrics?: any;
+  lastPrompt?: { system?: string; user?: string } | null;
 };
 
 // Returns the latest evaluation per symbol from the in-memory store,
@@ -39,6 +40,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let lastDecisionTs: number | null | undefined = null;
       let lastDecision: any = null;
       let lastMetrics: any = null;
+      let lastPrompt: { system?: string; user?: string } | null = null;
 
       try {
         const history = await loadDecisionHistory(symbol, 120);
@@ -48,6 +50,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           lastDecision = latest.aiDecision ?? null;
           lastMetrics = latest.snapshot?.metrics ?? null;
           lastDecisionTs = Number.isFinite(latest.timestamp) ? Number(latest.timestamp) : null;
+          lastPrompt = latest.prompt ?? null;
         }
 
         const roiRes = await fetchRealizedRoi(symbol, 24);
@@ -87,6 +90,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         lastDecisionTs,
         lastDecision,
         lastMetrics,
+        lastPrompt,
       };
     }),
   );

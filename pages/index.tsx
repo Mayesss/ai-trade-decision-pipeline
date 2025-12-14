@@ -50,6 +50,7 @@ type EvaluationEntry = {
     signal_strength?: string;
     [key: string]: any;
   } | null;
+  lastPrompt?: { system?: string; user?: string } | null;
   lastMetrics?: Record<string, any> | null;
 };
 
@@ -108,6 +109,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showAspects, setShowAspects] = useState(false);
+  const [showPrompt, setShowPrompt] = useState(false);
   const [chartData, setChartData] = useState<{ time: number; value: number }[]>([]);
   const [chartMarkers, setChartMarkers] = useState<any[]>([]);
   const [positionOverlays, setPositionOverlays] = useState<PositionOverlay[]>([]);
@@ -162,6 +164,7 @@ export default function Home() {
 
   useEffect(() => {
     setShowAspects(false);
+    setShowPrompt(false);
   }, [active, symbols]);
 
   useEffect(() => {
@@ -382,6 +385,50 @@ export default function Home() {
     return `${d.toLocaleDateString('de-DE')} ${d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}`;
   };
 
+  const renderPromptContent = (text?: string | null) => {
+    if (!text?.trim()) {
+      return <span className="text-[11px] text-slate-500">Not available</span>;
+    }
+    const blocks = text.split(/\n\s*\n/);
+    const rendered = blocks
+      .map((block, idx) => {
+        const trimmed = block.trim();
+        if (!trimmed) return null;
+        const looksJson =
+          (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+          (trimmed.startsWith('[') && trimmed.endsWith(']'));
+        if (looksJson) {
+          try {
+            const parsed = JSON.parse(trimmed);
+            return (
+              <pre
+                key={`json-${idx}`}
+                className="overflow-auto rounded-lg border border-slate-800 bg-slate-900/95 px-3 py-2 font-mono text-[11px] leading-snug text-slate-100 shadow-sm"
+              >
+                {JSON.stringify(parsed, null, 2)}
+              </pre>
+            );
+          } catch {
+            // fall through to raw text
+          }
+        }
+        return (
+          <pre
+            key={`txt-${idx}`}
+            className="whitespace-pre-wrap break-words rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-[11px] leading-snug text-slate-800"
+          >
+            {trimmed}
+          </pre>
+        );
+      })
+      .filter(Boolean);
+
+    if (!rendered.length) {
+      return <span className="text-[11px] text-slate-500">Not available</span>;
+    }
+    return <div className="space-y-2">{rendered}</div>;
+  };
+
   const current = symbols[active] ? tabData[symbols[active]] : null;
   const hasDetails =
     !!(
@@ -537,33 +584,6 @@ export default function Home() {
 
               </div>
 
-              {current.lastDecision && (
-                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm h-full">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
-                      <span>Latest Decision</span>
-                      {current.lastDecisionTs ? (
-                        <span className="lowercase text-slate-400">
-                          {formatDecisionTime(current.lastDecisionTs)}
-                        </span>
-                      ) : null}
-                    </div>
-                    {current.lastDecision.signal_strength && (
-                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
-                        Strength: {current.lastDecision.signal_strength}
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-3 text-sm text-slate-800">
-                    Action:{' '}
-                    <span className="font-semibold text-sky-700">
-                      {(current.lastDecision.action || '').toString() || '—'}
-                    </span>
-                    {current.lastDecision.summary ? ` · ${current.lastDecision.summary}` : ''}
-                  </div>
-                </div>
-              )}
-
               {chartData.length > 0 && (
                 <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
                   <div className="flex items-center justify-between">
@@ -702,6 +722,61 @@ export default function Home() {
                       )}
                     </div>
                   </div>
+                </div>
+              )}
+
+              {current.lastDecision && (
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
+                      <span>Latest Decision</span>
+                      {current.lastDecisionTs ? (
+                        <span className="lowercase text-slate-400">
+                          {formatDecisionTime(current.lastDecisionTs)}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {current.lastDecision.signal_strength && (
+                        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
+                          Strength: {current.lastDecision.signal_strength}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="mt-3 text-sm text-slate-800">
+                    Action:{' '}
+                    <span className="font-semibold text-sky-700">
+                      {(current.lastDecision.action || '').toString() || '—'}
+                    </span>
+                    {current.lastDecision.summary ? ` · ${current.lastDecision.summary}` : ''}
+                  </div>
+                  {current.lastDecision.reason ? (
+                    <p className="mt-2 text-sm text-slate-700 whitespace-pre-wrap">
+                      <span className="font-semibold text-slate-800">Reason: </span>
+                      {current.lastDecision.reason}
+                    </p>
+                  ) : null}
+                  <div className="mt-3">
+                    <button
+                      onClick={() => setShowPrompt((prev) => !prev)}
+                      className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                    >
+                      {showPrompt ? 'Hide prompt' : 'Show prompt'}
+                    </button>
+                  </div>
+                  {showPrompt && (
+                    <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">System</div>
+                        <div className="mt-2">{renderPromptContent(current.lastPrompt?.system)}</div>
+                      </div>
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">User</div>
+                        <div className="mt-2">{renderPromptContent(current.lastPrompt?.user)}</div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

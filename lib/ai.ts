@@ -251,7 +251,7 @@ export function buildPrompt(
     const newsSentimentBlock = normalizedNewsSentiment
         ? `- News sentiment ONLY: ${normalizedNewsSentiment.toLowerCase()}\n`
         : '';
-    const normalizedHeadlines = Array.isArray(news_headlines) ? news_headlines.filter((h) => !!h).slice(0, 3) : [];
+    const normalizedHeadlines = Array.isArray(news_headlines) ? news_headlines.filter((h) => !!h).slice(0, 5) : [];
     const newsHeadlinesBlock = normalizedHeadlines.length
         ? `- Latest ${normalizedHeadlines.length} News headlines: ${normalizedHeadlines.join(' | ')}\n`
         : '';
