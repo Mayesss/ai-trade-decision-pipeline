@@ -351,6 +351,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             momentumSignals,
             recentActions,
             roiRes.lastNetPct,
+            dryRun,
         );
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions)

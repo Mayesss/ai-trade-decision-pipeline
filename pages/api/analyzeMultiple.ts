@@ -374,6 +374,7 @@ async function runAnalysisForSymbol(params: {
                 momentumSignals,
                 recentActions,
                 roiRes.lastNetPct,
+                dryRun,
             );
 
             // 7) AI decision

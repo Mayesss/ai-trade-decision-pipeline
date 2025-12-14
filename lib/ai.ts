@@ -186,6 +186,7 @@ export function buildPrompt(
     momentumSignalsOverride?: MomentumSignals,
     recentActions: { action: string; timestamp: number }[] = [],
     realizedRoiPct?: number | null,
+    dryRun?: boolean,
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
@@ -609,8 +610,9 @@ BIAS DEFINITIONS
 - Trades WITH macro_bias are preferred; trades AGAINST macro_bias require micro_bias strongly opposite + HIGH signal_strength.
 `.trim();
 
+    const modeLabel = dryRun ? 'simulation' : 'live';
     const user = `
-You are analyzing ${symbol} on a ${timeframe} horizon (simulation).
+You are analyzing ${symbol} on a ${timeframe} horizon (mode=${modeLabel}).
 
  RISK/COSTS:
  - ${risk_policy}
@@ -642,7 +644,7 @@ ${contextIndicatorsBlock}${contextSRBlock}${primaryIndicatorsBlock}${primarySRBl
         locationConfluenceScore,
         3,
     )}}
-- Momentum context: ${JSON.stringify({
+- Momentum state: ${JSON.stringify({
         macro_trend_up: momentumSignals.macroTrendUp,
         macro_trend_down: momentumSignals.macroTrendDown,
         long_momentum: momentumSignals.longMomentum,
