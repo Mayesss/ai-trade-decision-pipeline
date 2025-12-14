@@ -100,10 +100,8 @@ export function computeMomentumSignals(params: {
     const longFlowOk = flowSupports !== 'sell';
     const shortFlowOk = flowSupports !== 'buy';
 
-    const macroTrendUp =
-        gates.regime_trend_up && (!Number.isFinite(ema50Macro as number) || price >= (ema50Macro as number));
-    const macroTrendDown =
-        gates.regime_trend_down && (!Number.isFinite(ema50Macro as number) || price <= (ema50Macro as number));
+    const macroTrendUp = Boolean(gates.regime_trend_up);
+    const macroTrendDown = Boolean(gates.regime_trend_down);
 
     const priceAbovePrimary50 = Number.isFinite(ema50Primary as number) ? price >= (ema50Primary as number) : true;
     const priceBelowPrimary50 = Number.isFinite(ema50Primary as number) ? price <= (ema50Primary as number) : true;

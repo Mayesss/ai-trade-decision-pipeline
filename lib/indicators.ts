@@ -217,11 +217,25 @@ function computeSRLevels(candles: any[], atr: number, timeframe: string): SRLeve
         };
     };
 
+    const support = levelFromSwing('support', nearestSupport);
+    const resistance = levelFromSwing('resistance', nearestResistance);
+
+    // Avoid contradictory "at_level" on both sides; keep the closer one as at_level, downgrade the other to approaching.
+    if (support?.level_state === 'at_level' && resistance?.level_state === 'at_level') {
+        const supportDist = Math.abs(((lastClose - support.price) / atr));
+        const resistanceDist = Math.abs(((lastClose - resistance.price) / atr));
+        if (supportDist <= resistanceDist) {
+            resistance.level_state = 'approaching';
+        } else {
+            support.level_state = 'approaching';
+        }
+    }
+
     return {
         timeframe,
         atr,
-        support: levelFromSwing('support', nearestSupport),
-        resistance: levelFromSwing('resistance', nearestResistance),
+        support,
+        resistance,
     };
 }
 
