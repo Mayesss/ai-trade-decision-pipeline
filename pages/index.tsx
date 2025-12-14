@@ -91,11 +91,11 @@ const formatCompactPrice = (value: number) => {
   const abs = Math.abs(value);
   if (abs >= 1_000_000) {
     const v = value / 1_000_000;
-    return `${v.toFixed(v >= 10 ? 0 : 1)}M`;
+    return `${v.toFixed(1)}M`;
   }
   if (abs >= 1_000) {
     const v = value / 1_000;
-    return `${v.toFixed(v >= 10 ? 0 : 1)}K`;
+    return `${v.toFixed(1)}K`;
   }
   return value.toFixed(2);
 };
