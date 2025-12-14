@@ -6,6 +6,8 @@ import {
   Circle,
   Cpu,
   Database,
+  ListChecks,
+  Braces,
   Layers3,
   PenTool,
   Repeat,
@@ -16,6 +18,15 @@ import {
   ArrowDownRight,
   type LucideIcon,
 } from 'lucide-react';
+
+type AspectEvaluation = {
+  rating?: number;
+  comment?: string;
+  improvements?: string[];
+  checks?: string[];
+  findings?: string[];
+};
+
 type Evaluation = {
   overall_rating?: number;
   overview?: string;
@@ -23,14 +34,7 @@ type Evaluation = {
   issues?: string[];
   improvements?: string[];
   confidence?: string;
-  aspects?: Record<
-    string,
-    {
-      rating?: number;
-      comment?: string;
-      improvements?: string[];
-    }
-  >;
+  aspects?: Record<string, AspectEvaluation>;
 };
 
 type EvaluationEntry = {
@@ -182,6 +186,8 @@ export default function Home() {
     explainability: { Icon: BookOpen, color: 'text-purple-700', bg: 'bg-purple-100' },
     responsiveness: { Icon: Zap, color: 'text-teal-700', bg: 'bg-teal-100' },
     prompt_engineering: { Icon: PenTool, color: 'text-fuchsia-700', bg: 'bg-fuchsia-100' },
+    prompt_consistency: { Icon: ListChecks, color: 'text-lime-700', bg: 'bg-lime-100' },
+    action_logic: { Icon: Braces, color: 'text-orange-700', bg: 'bg-orange-100' },
   };
 
   const formatLabel = (key: string) => key.replace(/_/g, ' ');
@@ -938,20 +944,58 @@ export default function Home() {
                                       };
                                       const Icon = meta.Icon;
                                       return (
-                                        <span
-                                          className={`flex h-9 w-9 items-center justify-center rounded-full ${meta.bg} ${meta.color}`}
-                                        >
+                                        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-600">
                                           <Icon className="h-4 w-4" />
                                         </span>
                                       );
                                     })()}
-                                    <div className="text-sm font-semibold text-slate-900">
-                                      {formatLabel(key)}
+                                      <div className="text-sm font-semibold text-slate-900">
+                                        {formatLabel(key)}
+                                      </div>
                                     </div>
+                                    <div className="text-lg font-semibold text-sky-700">{val?.rating ?? '—'}</div>
                                   </div>
-                                  <div className="text-lg font-semibold text-sky-700">{val?.rating ?? '—'}</div>
-                                </div>
                                 <p className="mt-2 text-xs text-slate-600">{val?.comment || 'No comment'}</p>
+                                {(val?.checks?.length || val?.improvements?.length || val?.findings?.length) && (
+                                  <div className="mt-3 space-y-2">
+                                    {val?.checks?.length ? (
+                                      <div>
+                                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                          Checks
+                                        </div>
+                                        <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-slate-700">
+                                          {val.checks.map((item, idx) => (
+                                            <li key={idx}>{item}</li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    ) : null}
+                                    {val?.improvements?.length ? (
+                                      <div>
+                                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                          Improvements
+                                        </div>
+                                        <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-amber-800">
+                                          {val.improvements.map((item, idx) => (
+                                            <li key={idx}>{item}</li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    ) : null}
+                                    {val?.findings?.length ? (
+                                      <div>
+                                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                          Findings
+                                        </div>
+                                        <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-rose-800">
+                                          {val.findings.map((item, idx) => (
+                                            <li key={idx}>{item}</li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                )}
                               </div>
                             ))}
                           </div>
