@@ -257,10 +257,10 @@ export function buildPrompt(
         : '';
 
     const recentActionsExists = Array.isArray(recentActions) && recentActions.length > 0;
-    const MIN_VALUES = recentActionsExists ? Math.min(recentActions.length) : 5;
+    const actionsToShow = recentActionsExists ? Math.min(recentActions.length, 5) : 5;
     const recentActionsBlock = recentActionsExists
-        ? `- Recent actions (last ${MIN_VALUES}): ${recentActions
-              .slice(-1 * MIN_VALUES)
+        ? `- Recent actions (last ${actionsToShow}): ${recentActions
+              .slice(-1 * actionsToShow)
               .map((a) => `${a.action}@${new Date(a.timestamp).toISOString()}`)
               .join(' | ')}\n`
         : '';
@@ -321,8 +321,17 @@ export function buildPrompt(
     const rsi_primary = readIndicator('RSI', primary);
     const htfSupportDist = contextSR?.support?.dist_in_atr;
     const htfResistanceDist = contextSR?.resistance?.dist_in_atr;
-    const intoContextSupport = typeof htfSupportDist === 'number' && htfSupportDist < 0.6;
-    const intoContextResistance = typeof htfResistanceDist === 'number' && htfResistanceDist < 0.6;
+    let intoContextSupport = false;
+    let intoContextResistance = false;
+    if (Number.isFinite(htfSupportDist as number) || Number.isFinite(htfResistanceDist as number)) {
+        const supportDist = Number.isFinite(htfSupportDist as number) ? (htfSupportDist as number) : Infinity;
+        const resistanceDist = Number.isFinite(htfResistanceDist as number) ? (htfResistanceDist as number) : Infinity;
+        if (supportDist <= resistanceDist) {
+            intoContextSupport = supportDist < 0.6;
+        } else {
+            intoContextResistance = resistanceDist < 0.6;
+        }
+    }
     const htfBreakdownConfirmed = contextSR?.support?.level_state === 'broken';
     const htfBreakoutConfirmed = contextSR?.resistance?.level_state === 'broken';
 
@@ -346,13 +355,20 @@ export function buildPrompt(
     const rsiMicroDisplay = Number.isFinite(rsi_micro as number) ? (rsi_micro as number).toFixed(1) : 'n/a';
     const rsiMacroDisplay = Number.isFinite(rsi_macro as number) ? (rsi_macro as number).toFixed(1) : 'n/a';
     const rsiPrimaryDisplay = Number.isFinite(rsi_primary as number) ? (rsi_primary as number).toFixed(1) : 'n/a';
-    const primaryBias = Number.isFinite(slope21_primary as number)
-        ? (slope21_primary as number) > 0
-            ? 'up'
-            : (slope21_primary as number) < 0
-            ? 'down'
-            : 'neutral'
-        : 'neutral';
+    const primaryBias =
+        Number.isFinite(slope21_primary as number) &&
+        Number.isFinite(rsi_primary as number) &&
+        Number.isFinite(ema20_primary as number)
+            ? (slope21_primary as number) > 0 &&
+              (rsi_primary as number) >= 50 &&
+              price >= (ema20_primary as number)
+                ? 'up'
+                : (slope21_primary as number) < 0 &&
+                  (rsi_primary as number) <= 50 &&
+                  price <= (ema20_primary as number)
+                ? 'down'
+                : 'neutral'
+            : 'neutral';
 
     const key_metrics =
         `spread_bps=${spread_bps.toFixed(2)}, book_imbalance=${analytics.obImb.toFixed(2)}, ` +
@@ -378,7 +394,7 @@ export function buildPrompt(
             ? 'overbought_with_buy_pressure'
             : null;
 
-    const contextBiasDriver = contextBias === 'NEUTRAL' ? 0 : 0.6;
+    const contextBiasDriver = contextBias === 'UP' ? 0.6 : contextBias === 'DOWN' ? -0.6 : 0;
     const supportProximity = typeof htfSupportDist === 'number' ? Math.max(0, 1 - Math.min(htfSupportDist, 2) / 2) : 0;
     const resistanceProximity =
         typeof htfResistanceDist === 'number' ? Math.max(0, 1 - Math.min(htfResistanceDist, 2) / 2) : 0;
@@ -388,18 +404,18 @@ export function buildPrompt(
     );
 
     const driverComponents = [
-        Math.abs(trendBias),
-        Math.abs(cvdStrength ?? 0),
-        Math.abs(analytics.obImb ?? 0),
-        Math.abs(slope21_micro),
-        Math.abs(distance_from_ema_atr),
-        Math.abs(atr_pct_macro),
-        Math.abs(slope21_primary),
-        Math.abs(distance_from_ema20_primary_atr),
-        Math.min(1, contextBiasDriver),
-        Math.min(1, locationConfluenceScore),
+        trendBias,
+        cvdStrength ?? 0,
+        analytics.obImb ?? 0,
+        slope21_micro,
+        distance_from_ema_atr,
+        slope21_primary,
+        distance_from_ema20_primary_atr,
+        contextBiasDriver,
     ];
-    const alignedDriverCount = driverComponents.filter((v) => v >= 0.35).length;
+    const longAlignedDriverCount = driverComponents.filter((v) => v >= 0.35).length;
+    const shortAlignedDriverCount = driverComponents.filter((v) => v <= -0.35).length;
+    const alignedDriverCount = Math.max(longAlignedDriverCount, shortAlignedDriverCount);
 
     const flowBiasRaw = momentumSignals.flowBias ?? ((cvdStrength ?? 0) + (analytics.obImb ?? 0)) / 2;
     const flowBias = clampNumber(flowBiasRaw, 3);
@@ -424,6 +440,8 @@ export function buildPrompt(
         oversold_rsi_micro: oversoldMicro,
         overbought_rsi_micro: overboughtMicro,
         aligned_driver_count: alignedDriverCount,
+        aligned_driver_count_long: longAlignedDriverCount,
+        aligned_driver_count_short: shortAlignedDriverCount,
         flow_bias: flowBias,
         flow_supports: flowSupports,
         medium_action_ready: mediumActionReady,
@@ -476,7 +494,13 @@ export function buildPrompt(
             : 0;
 
     const reverseConfidence =
-        flowContradictionScore > 0.75 && reversalOpportunity ? 'high' : flowContradictionScore > 0.5 ? 'medium' : 'low';
+        flowContradictionScore >= 0.8
+            ? 'high'
+            : flowContradictionScore >= 0.5
+            ? reversalOpportunity
+                ? 'high'
+                : 'medium'
+            : 'low';
 
     const closingGuidance = {
         macro_bias: trendBias,
