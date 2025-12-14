@@ -171,8 +171,10 @@ async function runAnalysisForSymbol(params: {
     productType: ProductType;
     microTimeFrame: string;
     macroTimeFrame: string;
+    contextTimeFrame: string;
 }) {
-    const { symbol, timeFrame, dryRun, sideSizeUSDT, productType, microTimeFrame, macroTimeFrame } = params;
+    const { symbol, timeFrame, dryRun, sideSizeUSDT, productType, microTimeFrame, macroTimeFrame, contextTimeFrame } =
+        params;
 
     const MAX_RETRIES = 3;
     const BASE_DELAY_MS = 300; // base delay for 429 backoff
@@ -188,6 +190,7 @@ async function runAnalysisForSymbol(params: {
                     primary: timeFrame,
                     micro: microTimeFrame,
                     macro: macroTimeFrame,
+                    context: contextTimeFrame,
                 }),
             ]);
 
@@ -467,6 +470,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const timeFrame: string = body.timeFrame || '15m';
         const microTimeFrame: string = body.microTimeFrame || '1m';
         const macroTimeFrame: string = body.macroTimeFrame || '1H';
+        const contextTimeFrame: string = body.contextTimeFrame || '1D';
         const dryRun: boolean = body.dryRun !== false; // default true
         const sideSizeUSDT: number = Number(body.notional || 10);
         const productType = getTradeProductType();
@@ -483,6 +487,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 productType,
                 microTimeFrame,
                 macroTimeFrame,
+                contextTimeFrame,
             });
 
             if (PER_TASK_DELAY_MS > 0) {

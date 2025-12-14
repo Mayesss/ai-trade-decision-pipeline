@@ -148,9 +148,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         const body = req.body ?? {};
         const symbol = (body.symbol as string) || 'ETHUSDT';
-        const timeFrame = body.timeFrame || '15m';
-        const microTimeFrame = body.microTimeFrame || '1m';
-        const macroTimeFrame = body.macroTimeFrame || '1H';
+        const timeFrame = body.timeFrame || '1H';
+        const microTimeFrame = body.microTimeFrame || '15m';
+        const macroTimeFrame = body.macroTimeFrame || '4H';
+        const contextTimeFrame = body.contextTimeFrame || '1D';
         const dryRun = body.dryRun !== false; // default true
         const sideSizeUSDT = Number(body.notional || 10);
 
@@ -162,7 +163,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             fetchNewsWithHeadlines(symbol),
             // Light bundle: skip tape (fills)
             fetchMarketBundle(symbol, timeFrame, { includeTrades: false }),
-            calculateMultiTFIndicators(symbol, { primary: timeFrame, micro: microTimeFrame, macro: macroTimeFrame }),
+            calculateMultiTFIndicators(symbol, {
+                primary: timeFrame,
+                micro: microTimeFrame,
+                macro: macroTimeFrame,
+                context: contextTimeFrame,
+            }),
         ]);
 
         const positionForPrompt =

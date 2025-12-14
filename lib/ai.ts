@@ -270,6 +270,12 @@ export function buildPrompt(
     const primaryIndicatorsBlock = indicators.primary
         ? `- Primary timeframe (${indicators.primary.timeframe}) indicators: ${indicators.primary.summary}\n`
         : '';
+    const contextTimeframe = indicators.context?.timeframe ?? indicators.contextTimeFrame ?? 'context';
+    const contextSummary = indicators.context?.summary ?? '';
+    const contextBias =
+        contextSummary.includes('trend=up') ? 'UP' : contextSummary.includes('trend=down') ? 'DOWN' : 'NEUTRAL';
+    const contextIndicatorsBlock =
+        contextSummary && contextTimeframe ? `- Context timeframe (${contextTimeframe}) indicators: ${contextSummary}\n` : '';
 
     const vol_profile_str = (analytics.volume_profile || [])
         .slice(0, 10)
@@ -393,6 +399,7 @@ export function buildPrompt(
         atr_pct_primary: clampNumber(atr_pct_primary, 3),
         primary_extension_atr: clampNumber(distance_from_ema20_primary_atr, 3),
         primary_slope_pct_per_bar: clampNumber(slope21_primary, 4),
+        context_bias: contextBias,
     };
 
     const priceVsBreakevenPct =
@@ -463,7 +470,7 @@ export function buildPrompt(
     const sys = `
 You are an expert crypto market microstructure analyst and short-term trading assistant.
 Primary strategy: ${primaryTimeframe} momentum within a ${indicators.macroTimeFrame} structure with a ${indicators.microTimeFrame} confirmation — take trades when there is a clear short-term directional edge from tape/orderbook and recent price action. Macro (${indicators.macroTimeFrame}) trend is a bias, not a hard filter. I will call you roughly once per ${primaryTimeframe}.
-Bias definitions (explicit): micro_bias = flow/tape + recent price on ${indicators.microTimeFrame}; primary_bias = slope/RSI/EMA20 alignment on ${primaryTimeframe}; macro_bias = regime_trend_up/down on ${indicators.macroTimeFrame}.
+Bias definitions (explicit): micro_bias = flow/tape + recent price on ${indicators.microTimeFrame}; primary_bias = slope/RSI/EMA20 alignment on ${primaryTimeframe}; macro_bias = regime_trend_up/down on ${indicators.macroTimeFrame}; context_bias = trend/regime on ${contextTimeframe} (risk lever).
 Decision ladder: Base gates → biases (macro/primary) → signal drivers + entry_ready → action.
 Signal strength is driven by aligned_driver_count + flow_bias + extensions (micro + primary); strong flow with many aligned drivers → HIGH.
 Respond in strict JSON ONLY.
@@ -472,6 +479,7 @@ GENERAL RULES
 - **Base gates**: if ANY of spread_ok, liquidity_ok, atr_ok, slippage_ok is false → action="HOLD".
 - **Costs**: if expected edge is small vs ~7bps total costs (fees+slippage) → HOLD; avoid churn around breakeven.
 - **Macro bias**: trades WITH macro trend are preferred and can be taken on MEDIUM or HIGH signals. Trades AGAINST macro require HIGH signal_strength or very strong flow/tape.
+- **Context bias (${contextTimeframe})**: context_bias=${contextBias}. Treat it as a risk lever, not a gate. When aligned with the intended direction, you may allow MEDIUM signals more readily (especially near good entries). When against, require HIGH signal_strength plus strong flow/tape and a better entry/extension (or smaller size if sizing elsewhere). Use it to upgrade/downgrade signal_strength or selectivity near levels, not to block trades outright.
 - **Signal usage**:
   - Treat aligned_driver_count ≥ 4 as "strong micro structure" (or ≥ 3.8 with strong flow_supports not opposite).
   - If signal_strength = HIGH and flow_supports is "buy" or "sell", you should normally choose that direction when flat (provided base gates true).
@@ -486,6 +494,7 @@ ACTIONS LOGIC
       - action="SELL" when flow_supports="sell".
   - If signal_strength = MEDIUM AND aligned_driver_count ≥ 4 (or very close with strong flow):
       - Prefer BUY/SELL in direction of flow_supports OR macro trend if flow is neutral.
+      - If context_bias opposes the intended direction, only take MEDIUM when aligned_driver_count ≥ 5 with strong flow and price not extremely extended; if context_bias aligns, MEDIUM with aligned_driver_count ≥ 4 is acceptable when entry_ready is true.
   - If macro_bias = DOWN and you want to open long from flat, require: flow_supports="buy", aligned_driver_count ≥ 5, cvd_strength strongly positive, dist_from_ema20_${indicators.microTimeFrame}_in_atr < 1.5, and signal_strength = HIGH.
   - Use action="HOLD" when signal_strength = LOW, when macro and micro signals clearly conflict, or when price is extremely extended (|dist_from_ema20_${indicators.microTimeFrame}_in_atr| > 2.5) and flow is weak/fading.
 - **Position open**:
@@ -514,6 +523,7 @@ BIAS DEFINITIONS
 - micro_bias = short-term directional edge from flow/tape + recent price action on ${indicators.microTimeFrame}.
 - primary_bias = slope/RSI/EMA20 alignment on ${primaryTimeframe}.
 - macro_bias = regime_trend_up / regime_trend_down on ${indicators.macroTimeFrame}.
+- context_bias = trend/regime on ${contextTimeframe} (higher timeframe); it modulates risk/selectivity but is not a hard gate.
 - Trades WITH macro_bias are preferred; trades AGAINST macro_bias require micro_bias strongly opposite + HIGH signal_strength.
 `.trim();
 
@@ -529,6 +539,7 @@ BASE GATES (Filter for tradeability):
 
 STRATEGY BIAS (Macro Trend):
 - ${regime_flags}
+- Context bias (${contextTimeframe}): ${contextBias}
 
 KEY METRICS (Values for Judgment):
 - ${key_metrics}
@@ -543,7 +554,7 @@ DATA INPUTS (with explicit windows):
 ${newsSentimentBlock}${newsHeadlinesBlock}${recentActionsBlock}- Current position: ${position_status}
 ${positionContextBlock}- Technical (short-term, ${indicators.microTimeFrame}, last 30 candles): ${indicators.micro}
 - Macro (${indicators.macroTimeFrame}, last 30 candles): ${indicators.macro}
-${primaryIndicatorsBlock}
+${contextIndicatorsBlock}${primaryIndicatorsBlock}
 - Momentum context: ${JSON.stringify({
         macro_trend_up: momentumSignals.macroTrendUp,
         macro_trend_down: momentumSignals.macroTrendDown,
@@ -558,20 +569,21 @@ ${primaryIndicatorsBlock}
         primary_extension_atr: clampNumber(distance_from_ema20_primary_atr, 3),
         primary_slope_pct_per_bar: clampNumber(slope21_primary, 4),
         primary_bias: primaryBias,
+        context_bias: contextBias,
     })}
 - Signal strength drivers: ${JSON.stringify(signalDrivers)}
 - Closing guardrails: ${JSON.stringify(closingGuidance)}
 
 TASKS:
-1) Evaluate micro_bias (UP/DOWN/NEUTRAL) from short-term flow/tape + recent price action, primary_bias (UP/DOWN/NEUTRAL) from slope/RSI/EMA20 alignment on ${primaryTimeframe}, and macro_bias (UP/DOWN/NEUTRAL) from the macro regime flags.
+1) Evaluate micro_bias (UP/DOWN/NEUTRAL) from short-term flow/tape + recent price action, primary_bias (UP/DOWN/NEUTRAL) from slope/RSI/EMA20 alignment on ${primaryTimeframe}, macro_bias (UP/DOWN/NEUTRAL) from the macro regime flags, and context_bias (UP/DOWN/NEUTRAL) from the ${contextTimeframe} trend/regime.
 2) Output one action only: "BUY", "SELL", "HOLD", "CLOSE", or "REVERSE".
    - If no position is open, return BUY/SELL/HOLD.
    - If a position is open, you may HOLD, CLOSE, or REVERSE (REVERSE = close + open opposite side).
-3) Assess signal strength: LOW, MEDIUM, or HIGH.
+3) Assess signal strength: LOW, MEDIUM, or HIGH (modulate selectivity using context_bias rules).
 4) Summarize in ≤2 lines.
 
 JSON OUTPUT (strict):
-{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","micro_bias":"UP|DOWN|NEUTRAL","primary_bias":"UP|DOWN|NEUTRAL","macro_bias":"UP|DOWN|NEUTRAL","signal_strength":"LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale"}
+{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","micro_bias":"UP|DOWN|NEUTRAL","primary_bias":"UP|DOWN|NEUTRAL","macro_bias":"UP|DOWN|NEUTRAL","context_bias":"UP|DOWN|NEUTRAL","signal_strength":"LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale"}
 `.trim();
 
     return { system: sys, user };

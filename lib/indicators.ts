@@ -13,12 +13,15 @@ export interface MultiTFIndicators {
     microTimeFrame: string;
     macroTimeFrame: string;
     primary?: IndicatorSummary;
+    context?: IndicatorSummary;
+    contextTimeFrame?: string;
 }
 
 export interface IndicatorTimeframeOptions {
     micro?: string;
     macro?: string;
     primary?: string;
+    context?: string;
 }
 
 // ------------------------------
@@ -133,9 +136,10 @@ export async function calculateMultiTFIndicators(
     opts: IndicatorTimeframeOptions = {},
 ): Promise<MultiTFIndicators> {
     const productType = resolveProductType(); // futures only
-    const microTF = opts.micro || '1m';
-    const macroTF = opts.macro || '1H';
-    const primaryTF = opts.primary;
+    const microTF = opts.micro || '15m';
+    const macroTF = opts.macro || '4H';
+    const primaryTF = opts.primary || '1H';
+    const contextTF = opts.context || '1D';
 
     async function fetchCandles(tf: string) {
         const cs = await bitgetFetch('GET', '/api/v2/mix/market/candles', {
@@ -153,7 +157,8 @@ export async function calculateMultiTFIndicators(
     };
     addRequest(microTF);
     addRequest(macroTF);
-    if (primaryTF) addRequest(primaryTF);
+    addRequest(contextTF);
+    addRequest(primaryTF);
 
     const entries = Array.from(requests.entries());
     const summaries = new Map<string, string>();
@@ -201,14 +206,19 @@ export async function calculateMultiTFIndicators(
         macro: summaries.get(macroTF) ?? '',
         microTimeFrame: microTF,
         macroTimeFrame: macroTF,
+        contextTimeFrame: contextTF,
     };
 
-    if (primaryTF) {
         out.primary = {
             timeframe: primaryTF,
             summary: summaries.get(primaryTF) ?? summaries.get(microTF) ?? '',
         };
-    }
+    
+
+    out.context = {
+        timeframe: contextTF,
+        summary: summaries.get(contextTF) ?? summaries.get(macroTF) ?? '',
+    };
 
     return out;
 }
