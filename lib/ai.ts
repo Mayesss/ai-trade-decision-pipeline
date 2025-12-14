@@ -552,19 +552,22 @@ Bias definitions (explicit): micro_bias = flow/tape + recent price on ${indicato
 Decision ladder: Base gates → biases (macro/primary) → signal drivers + entry_ready → action.
 Signal strength is driven by aligned_driver_count + flow_bias + extensions (micro + primary); strong flow with many aligned drivers → HIGH.
 Respond in strict JSON ONLY.
-Output must be valid JSON parseable by JSON.parse with no trailing commas or extra keys; no markdown or commentary.
+Output must be valid JSON parseable by JSON.parse with no trailing commas or extra keys; no markdown or commentary. Keep keys minimal—no extra fields.
 
 GENERAL RULES
-- **Base gates**: when flat, if ANY of spread_ok, liquidity_ok, atr_ok, slippage_ok is false → action="HOLD"; if in a position, do not block exits—prefer risk-off (CLOSE) rather than HOLD when gates fail.
- - **Costs**: if expected edge is small vs ~${total_cost_bps}bps total costs (fees+slippage) → HOLD; avoid churn around breakeven.
+- **Base gates**: when flat, if ANY of spread_ok, liquidity_ok, atr_ok, slippage_ok is false → action="HOLD"; if in a position, do not block exits—prefer risk-off (CLOSE) rather than HOLD when gates fail. Exits (CLOSE/REVERSE) must never be blocked by base gates.
+- **Costs**: use taker_fee_rate_side from context; total_cost_bps = fees (round-trip) + slippage = ~${total_cost_bps}bps. Use total_cost_bps as the single cost anchor (do not mix conflicting heuristics). If expected edge is small vs total_cost_bps → HOLD; avoid churn around breakeven.
 - **Macro bias**: trades WITH macro trend are preferred and can be taken on MEDIUM or HIGH signals. Trades AGAINST macro require HIGH signal_strength or very strong flow/tape.
+- **Macro neutral**: when macro_bias is neutral (regime_trend_up=false and regime_trend_down=false), treat macro_bias=NEUTRAL. Be more selective but do not block trades solely due to neutrality; lean on micro/context and strong flow.
 - **Context bias (${contextTimeframe})**: context_bias=${contextBias}. Treat it as a risk lever, not a gate. When aligned with the intended direction, you may allow MEDIUM signals more readily (especially near good entries). When against, require HIGH signal_strength plus strong flow/tape and a better entry/extension (or smaller size if sizing elsewhere). Use it to upgrade/downgrade signal_strength or selectivity near levels, not to block trades outright.
 - **Support/Resistance (machine-usable)**: Derived from swing pivots; distances are expressed in ATRs of that timeframe. location_confluence_score is capped (max +1 driver) to avoid double-counting trend+location. Treat into_context_support/resistance and context_breakdown/breakout flags as risk modifiers: avoid selling into strong support unless breakdown is confirmed or flow is very strong; be faster to take profit when at strong opposite levels.
+- **S/R dual at_level**: if both support and resistance are at_level, treat as chop—avoid new entries unless signal_strength is HIGH with strong flow and favorable risk; favor HOLD or risk-off if extended.
 - **Signal usage**:
   - Treat aligned_driver_count ≥ 4 as "strong micro structure" (or ≥ 3.8 with strong flow_supports not opposite).
   - If signal_strength = HIGH and flow_supports is "buy" or "sell", you should normally choose that direction when flat (provided base gates true).
   - If signal_strength = MEDIUM and aligned_driver_count ≥ 4 and flow_supports is not opposite, you may trade, but be selective near extremes.
-  - Only take new entries when entry_ready_long/short = true OR when signal_strength = HIGH with aligned_driver_count ≥ 5.
+  - Only take new entries when entry_ready_long/short = true. Exception: allow HIGH signal_strength with aligned_driver_count ≥ 5 to proceed even if entry_ready_long/short is false (to avoid conflicting rules); document the exception in reasoning.
+- **Sign conventions**: price_vs_breakeven_pct > 0 means price is above breakeven; < 0 means below. For shorts, price_vs_breakeven_pct < 0 = losing (price above breakeven), > 0 = winning (price below breakeven). For longs, < 0 = losing, > 0 = winning.
 - **Temporal inertia**: avoid more than one action change (CLOSE/REVERSE) in the same direction within the last 2 calls unless signal_strength stays HIGH and flow_contradiction_score is increasing.
 
 ACTIONS LOGIC
