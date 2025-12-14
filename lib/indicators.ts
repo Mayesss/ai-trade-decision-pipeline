@@ -15,6 +15,7 @@ export interface MultiTFIndicators {
     primary?: IndicatorSummary;
     context?: IndicatorSummary;
     contextTimeFrame?: string;
+    sr?: Record<string, SRLevels | undefined>;
 }
 
 export interface IndicatorTimeframeOptions {
@@ -22,6 +23,23 @@ export interface IndicatorTimeframeOptions {
     macro?: string;
     primary?: string;
     context?: string;
+}
+
+export type LevelState = 'at_level' | 'approaching' | 'rejected' | 'broken' | 'retesting';
+
+export interface LevelDescriptor {
+    price: number;
+    dist_in_atr: number;
+    level_strength: number;
+    level_type: string;
+    level_state: LevelState;
+}
+
+export interface SRLevels {
+    timeframe: string;
+    atr: number;
+    support?: LevelDescriptor;
+    resistance?: LevelDescriptor;
 }
 
 // ------------------------------
@@ -116,6 +134,97 @@ export function computeSMA(closes: number[], period: number): number[] {
     return out;
 }
 
+function clamp(val: number, min: number, max: number) {
+    return Math.min(Math.max(val, min), max);
+}
+
+function computeSwingLevels(candles: any[], lookback = 150) {
+    const swings: { type: 'high' | 'low'; price: number; index: number }[] = [];
+    const start = Math.max(2, candles.length - lookback);
+    const end = candles.length - 2;
+    for (let i = start; i < end; i++) {
+        const high = Number(candles[i][2]);
+        const low = Number(candles[i][3]);
+        const prev1High = Number(candles[i - 1][2]);
+        const prev2High = Number(candles[i - 2][2]);
+        const next1High = Number(candles[i + 1][2]);
+        const next2High = Number(candles[i + 2][2]);
+
+        const prev1Low = Number(candles[i - 1][3]);
+        const prev2Low = Number(candles[i - 2][3]);
+        const next1Low = Number(candles[i + 1][3]);
+        const next2Low = Number(candles[i + 2][3]);
+
+        const isHigh = high > prev1High && high > prev2High && high >= next1High && high >= next2High;
+        const isLow = low < prev1Low && low < prev2Low && low <= next1Low && low <= next2Low;
+
+        if (isHigh) swings.push({ type: 'high', price: high, index: i });
+        if (isLow) swings.push({ type: 'low', price: low, index: i });
+    }
+    return swings;
+}
+
+function deriveLevelState(price: number, levelPrice: number, atr: number, side: 'support' | 'resistance'): LevelState {
+    if (!Number.isFinite(price) || !Number.isFinite(levelPrice) || !Number.isFinite(atr) || atr <= 0) return 'rejected';
+    const diffAtr = (price - levelPrice) / atr;
+    const near = Math.abs(diffAtr) <= 0.2;
+    if (near) return 'at_level';
+
+    if (side === 'support') {
+        if (diffAtr < -0.3) return 'broken';
+        if (diffAtr < 0) return 'retesting';
+        if (diffAtr <= 0.6) return 'approaching';
+        return 'rejected';
+    }
+
+    if (diffAtr > 0.3) return 'broken';
+    if (diffAtr > 0) return 'retesting';
+    if (diffAtr >= -0.6) return 'approaching';
+    return 'rejected';
+}
+
+function computeSRLevels(candles: any[], atr: number, timeframe: string): SRLevels | undefined {
+    if (!Array.isArray(candles) || candles.length < 20) return undefined;
+    const lookback = 150;
+    const swings = computeSwingLevels(candles, lookback);
+    const lastClose = Number(candles.at(-1)?.[4]);
+    if (!Number.isFinite(lastClose)) return undefined;
+
+    let nearestSupport: { price: number; idx: number } | null = null;
+    let nearestResistance: { price: number; idx: number } | null = null;
+
+    for (const s of swings) {
+        if (s.type === 'low' && s.price <= lastClose) {
+            if (!nearestSupport || s.price > nearestSupport.price) nearestSupport = { price: s.price, idx: s.index };
+        } else if (s.type === 'high' && s.price >= lastClose) {
+            if (!nearestResistance || s.price < nearestResistance.price)
+                nearestResistance = { price: s.price, idx: s.index };
+        }
+    }
+
+    const levelFromSwing = (side: 'support' | 'resistance', level: { price: number; idx: number } | null) => {
+        if (!level || !Number.isFinite(atr) || atr <= 0) return undefined;
+        const distInAtr = Math.abs((lastClose - level.price) / atr);
+        const barsAgo = candles.length - level.idx;
+        const recencyStrength = clamp(1 - barsAgo / Math.max(lookback, 1), 0.2, 1);
+        const level_state = deriveLevelState(lastClose, level.price, atr, side);
+        return {
+            price: Number(level.price.toFixed(4)),
+            dist_in_atr: Number(distInAtr.toFixed(3)),
+            level_strength: Number(recencyStrength.toFixed(3)),
+            level_type: 'swing_pivot',
+            level_state,
+        };
+    };
+
+    return {
+        timeframe,
+        atr,
+        support: levelFromSwing('support', nearestSupport),
+        resistance: levelFromSwing('resistance', nearestResistance),
+    };
+}
+
 // slope as pct per bar (uses last vs N bars ago)
 export function slopePct(series: number[], lookback: number): number {
     const filtered = series.filter((v) => Number.isFinite(v));
@@ -138,7 +247,7 @@ export async function calculateMultiTFIndicators(
     const productType = resolveProductType(); // futures only
     const microTF = opts.micro || '15m';
     const macroTF = opts.macro || '4H';
-    const primaryTF = opts.primary || '1H';
+    const primaryTF = opts.primary || '1H';
     const contextTF = opts.context || '1D';
 
     async function fetchCandles(tf: string) {
@@ -161,9 +270,9 @@ export async function calculateMultiTFIndicators(
     addRequest(primaryTF);
 
     const entries = Array.from(requests.entries());
-    const summaries = new Map<string, string>();
+    const summaries = new Map<string, { summary: string; atr: number; sr?: SRLevels }>();
 
-    const build = (candles: any[]) => {
+    const build = (candles: any[], tf: string) => {
         const closes = candles.map((c) => parseFloat(c[4]));
         const vwap = computeVWAP(candles);
         const rsi = computeRSI_Wilder(closes, 14);
@@ -187,37 +296,46 @@ export async function calculateMultiTFIndicators(
         // momentum slope gate (10-bar slope of EMA21)
         const momSlope = slopePct(ema21, 10); // % per bar
 
-        return `VWAP=${vwap.toFixed(2)}, RSI=${rsi.toFixed(1)}, trend=${trend}, ATR=${atr.toFixed(
-            2,
-        )}, EMA9=${e9.toFixed(2)}, EMA21=${e21.toFixed(2)}, EMA20=${e20.toFixed(2)}, EMA50=${e50.toFixed(
-            2,
-        )}, SMA200=${s200.toFixed(2)}, slopeEMA21_10=${momSlope.toFixed(3)}%/bar`;
+        return {
+            summary: `VWAP=${vwap.toFixed(2)}, RSI=${rsi.toFixed(1)}, trend=${trend}, ATR=${atr.toFixed(
+                2,
+            )}, EMA9=${e9.toFixed(2)}, EMA21=${e21.toFixed(2)}, EMA20=${e20.toFixed(2)}, EMA50=${e50.toFixed(
+                2,
+            )}, SMA200=${s200.toFixed(2)}, slopeEMA21_10=${momSlope.toFixed(3)}%/bar`,
+            atr,
+            sr: computeSRLevels(candles, atr, tf),
+        };
     };
 
     await Promise.all(
         entries.map(async ([tf, promise]) => {
             const candles = await promise;
-            summaries.set(tf, build(candles));
+            summaries.set(tf, build(candles, tf));
         }),
     );
 
     const out: MultiTFIndicators = {
-        micro: summaries.get(microTF) ?? '',
-        macro: summaries.get(macroTF) ?? '',
+        micro: summaries.get(microTF)?.summary ?? '',
+        macro: summaries.get(macroTF)?.summary ?? '',
         microTimeFrame: microTF,
         macroTimeFrame: macroTF,
         contextTimeFrame: contextTF,
+        sr: {},
     };
 
-        out.primary = {
-            timeframe: primaryTF,
-            summary: summaries.get(primaryTF) ?? summaries.get(microTF) ?? '',
-        };
-    
+    out.sr![microTF] = summaries.get(microTF)?.sr;
+    out.sr![macroTF] = summaries.get(macroTF)?.sr;
+    out.sr![contextTF] = summaries.get(contextTF)?.sr;
+
+    out.primary = {
+        timeframe: primaryTF,
+        summary: summaries.get(primaryTF)?.summary ?? summaries.get(microTF)?.summary ?? '',
+    };
+    out.sr![primaryTF] = summaries.get(primaryTF)?.sr;
 
     out.context = {
         timeframe: contextTF,
-        summary: summaries.get(contextTF) ?? summaries.get(macroTF) ?? '',
+        summary: summaries.get(contextTF)?.summary ?? summaries.get(macroTF)?.summary ?? '',
     };
 
     return out;

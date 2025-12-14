@@ -271,11 +271,32 @@ export function buildPrompt(
         ? `- Primary timeframe (${indicators.primary.timeframe}) indicators: ${indicators.primary.summary}\n`
         : '';
     const contextTimeframe = indicators.context?.timeframe ?? indicators.contextTimeFrame ?? 'context';
+    const sr = indicators.sr || {};
+    const primarySR = sr[primaryTimeframe] ?? sr[indicators.primary?.timeframe || primaryTimeframe];
+    const contextSR = sr[contextTimeframe] ?? sr[indicators.context?.timeframe || contextTimeframe];
+
     const contextSummary = indicators.context?.summary ?? '';
     const contextBias =
         contextSummary.includes('trend=up') ? 'UP' : contextSummary.includes('trend=down') ? 'DOWN' : 'NEUTRAL';
     const contextIndicatorsBlock =
         contextSummary && contextTimeframe ? `- Context timeframe (${contextTimeframe}) indicators: ${contextSummary}\n` : '';
+    const formatLevel = (lvl: any, kind: 'support' | 'resistance') =>
+        lvl
+            ? `${kind}_price=${lvl.price}, dist_in_atr=${lvl.dist_in_atr}, strength=${lvl.level_strength}, type=${lvl.level_type}, state=${lvl.level_state}`
+            : `${kind}=n/a`;
+    const contextSRBlock = contextSR
+        ? `- Context S/R (${contextTimeframe}): ${formatLevel(contextSR.support, 'support')} | ${formatLevel(
+              contextSR.resistance,
+              'resistance',
+          )}\n`
+        : '';
+    const primarySRBlock =
+        primarySR && primaryTimeframe
+            ? `- Primary S/R (${primaryTimeframe}): ${formatLevel(primarySR.support, 'support')} | ${formatLevel(
+                  primarySR.resistance,
+                  'resistance',
+              )}\n`
+            : '';
 
     const vol_profile_str = (analytics.volume_profile || [])
         .slice(0, 10)
@@ -298,6 +319,12 @@ export function buildPrompt(
     const rsi_micro = readIndicator('RSI', micro);
     const rsi_macro = readIndicator('RSI', macro);
     const rsi_primary = readIndicator('RSI', primary);
+    const htfSupportDist = contextSR?.support?.dist_in_atr;
+    const htfResistanceDist = contextSR?.resistance?.dist_in_atr;
+    const intoContextSupport = typeof htfSupportDist === 'number' && htfSupportDist < 0.6;
+    const intoContextResistance = typeof htfResistanceDist === 'number' && htfResistanceDist < 0.6;
+    const htfBreakdownConfirmed = contextSR?.support?.level_state === 'broken';
+    const htfBreakoutConfirmed = contextSR?.resistance?.level_state === 'broken';
 
     // --- KEY METRICS (VALUES, NOT JUDGMENTS) ---
     const spread_bps = last > 0 ? ((analytics.spread || 0) / last) * 1e4 : 999;
@@ -351,6 +378,15 @@ export function buildPrompt(
             ? 'overbought_with_buy_pressure'
             : null;
 
+    const contextBiasDriver = contextBias === 'NEUTRAL' ? 0 : 0.6;
+    const supportProximity = typeof htfSupportDist === 'number' ? Math.max(0, 1 - Math.min(htfSupportDist, 2) / 2) : 0;
+    const resistanceProximity =
+        typeof htfResistanceDist === 'number' ? Math.max(0, 1 - Math.min(htfResistanceDist, 2) / 2) : 0;
+    const locationConfluenceScore = Math.min(
+        1,
+        Math.max(supportProximity, resistanceProximity) + (htfBreakoutConfirmed || htfBreakdownConfirmed ? 0.3 : 0),
+    );
+
     const driverComponents = [
         Math.abs(trendBias),
         Math.abs(cvdStrength ?? 0),
@@ -360,6 +396,8 @@ export function buildPrompt(
         Math.abs(atr_pct_macro),
         Math.abs(slope21_primary),
         Math.abs(distance_from_ema20_primary_atr),
+        Math.min(1, contextBiasDriver),
+        Math.min(1, locationConfluenceScore),
     ];
     const alignedDriverCount = driverComponents.filter((v) => v >= 0.35).length;
 
@@ -400,6 +438,14 @@ export function buildPrompt(
         primary_extension_atr: clampNumber(distance_from_ema20_primary_atr, 3),
         primary_slope_pct_per_bar: clampNumber(slope21_primary, 4),
         context_bias: contextBias,
+        context_bias_driver: clampNumber(contextBiasDriver, 3),
+        location_confluence_score: clampNumber(locationConfluenceScore, 3),
+        into_context_support: intoContextSupport,
+        into_context_resistance: intoContextResistance,
+        context_breakdown_confirmed: htfBreakdownConfirmed,
+        context_breakout_confirmed: htfBreakoutConfirmed,
+        context_support_dist_atr: clampNumber(htfSupportDist ?? null, 3),
+        context_resistance_dist_atr: clampNumber(htfResistanceDist ?? null, 3),
     };
 
     const priceVsBreakevenPct =
@@ -480,6 +526,7 @@ GENERAL RULES
 - **Costs**: if expected edge is small vs ~7bps total costs (fees+slippage) → HOLD; avoid churn around breakeven.
 - **Macro bias**: trades WITH macro trend are preferred and can be taken on MEDIUM or HIGH signals. Trades AGAINST macro require HIGH signal_strength or very strong flow/tape.
 - **Context bias (${contextTimeframe})**: context_bias=${contextBias}. Treat it as a risk lever, not a gate. When aligned with the intended direction, you may allow MEDIUM signals more readily (especially near good entries). When against, require HIGH signal_strength plus strong flow/tape and a better entry/extension (or smaller size if sizing elsewhere). Use it to upgrade/downgrade signal_strength or selectivity near levels, not to block trades outright.
+- **Support/Resistance (machine-usable)**: Derived from swing pivots; distances are expressed in ATRs of that timeframe. location_confluence_score is capped (max +1 driver) to avoid double-counting trend+location. Treat into_context_support/resistance and context_breakdown/breakout flags as risk modifiers: avoid selling into strong support unless breakdown is confirmed or flow is very strong; be faster to take profit when at strong opposite levels.
 - **Signal usage**:
   - Treat aligned_driver_count ≥ 4 as "strong micro structure" (or ≥ 3.8 with strong flow_supports not opposite).
   - If signal_strength = HIGH and flow_supports is "buy" or "sell", you should normally choose that direction when flat (provided base gates true).
@@ -495,6 +542,7 @@ ACTIONS LOGIC
   - If signal_strength = MEDIUM AND aligned_driver_count ≥ 4 (or very close with strong flow):
       - Prefer BUY/SELL in direction of flow_supports OR macro trend if flow is neutral.
       - If context_bias opposes the intended direction, only take MEDIUM when aligned_driver_count ≥ 5 with strong flow and price not extremely extended; if context_bias aligns, MEDIUM with aligned_driver_count ≥ 4 is acceptable when entry_ready is true.
+  - Avoid opening new shorts when dist_to_support_in_atr_${contextTimeframe} < 0.6 unless flow is strongly bearish AND context_breakdown_confirmed=true; similarly avoid new longs when dist_to_resistance_in_atr_${contextTimeframe} < 0.6 unless breakout_confirmed=true and flow clearly supports.
   - If macro_bias = DOWN and you want to open long from flat, require: flow_supports="buy", aligned_driver_count ≥ 5, cvd_strength strongly positive, dist_from_ema20_${indicators.microTimeFrame}_in_atr < 1.5, and signal_strength = HIGH.
   - Use action="HOLD" when signal_strength = LOW, when macro and micro signals clearly conflict, or when price is extremely extended (|dist_from_ema20_${indicators.microTimeFrame}_in_atr| > 2.5) and flow is weak/fading.
 - **Position open**:
@@ -502,6 +550,7 @@ ACTIONS LOGIC
   - Prefer HOLD if macro_supports_position=true and no strong opposite flow.
   - Prefer HOLD over CLOSE when |unrealized_pnl_pct| < 0.25% and there is no HIGH opposite signal.
   - Ignore MEDIUM opposite signals if |price_vs_breakeven_pct| < 0.2% and |dist_from_ema20_${indicators.microTimeFrame}_in_atr| ≤ 2.5 unless signal_strength = HIGH.
+  - If short and into strong ${contextTimeframe} support (dist_to_support_in_atr < 0.6 or at_level) and flow weakens/flips, bias toward CLOSE over HOLD; mirror for longs into strong resistance.
   - If unrealized_pnl_pct is small and signal deteriorates to LOW → "CLOSE".
   - When |dist_from_ema20_${indicators.microTimeFrame}_in_atr| > 2.5 and macro_bias = DOWN: prefer "CLOSE" (take profit) on shorts when flow flips bullish; only consider "REVERSE" if losing (price_vs_breakeven_pct < 0) and flow_contradiction_score ≥ 1.0.
   - When losing (price_vs_breakeven_pct < 0) and reverse_confidence = "medium" with flow_contradiction_score ≥ 0.6, be more aggressive to exit: prioritize "CLOSE"; consider "REVERSE" only if flow_supports clearly opposite and aligned_driver_count ≥ 5.
@@ -524,6 +573,7 @@ BIAS DEFINITIONS
 - primary_bias = slope/RSI/EMA20 alignment on ${primaryTimeframe}.
 - macro_bias = regime_trend_up / regime_trend_down on ${indicators.macroTimeFrame}.
 - context_bias = trend/regime on ${contextTimeframe} (higher timeframe); it modulates risk/selectivity but is not a hard gate.
+- Support/Resistance = swing pivot levels; nearest_support_price / nearest_resistance_price and dist_to_*_in_atr use the ATR of that timeframe. level_state ∈ {at_level, approaching, rejected, broken, retesting}. location_confluence_score is a capped (0–1) proximity/break state; do not double-count it with trend.
 - Trades WITH macro_bias are preferred; trades AGAINST macro_bias require micro_bias strongly opposite + HIGH signal_strength.
 `.trim();
 
@@ -533,6 +583,7 @@ You are analyzing ${symbol} on a ${timeframe} horizon (simulation).
  RISK/COSTS:
  - ${risk_policy}
 ${realizedRoiLine ? `${realizedRoiLine}\n` : ''}
+- S/R method: swing-pivot levels per timeframe (~150 bars), distances expressed in that timeframe's ATR, level_state ∈ {at_level, approaching, rejected, broken, retesting}.
 
 BASE GATES (Filter for tradeability):
 - ${base_gating_flags}
@@ -554,7 +605,8 @@ DATA INPUTS (with explicit windows):
 ${newsSentimentBlock}${newsHeadlinesBlock}${recentActionsBlock}- Current position: ${position_status}
 ${positionContextBlock}- Technical (short-term, ${indicators.microTimeFrame}, last 30 candles): ${indicators.micro}
 - Macro (${indicators.macroTimeFrame}, last 30 candles): ${indicators.macro}
-${contextIndicatorsBlock}${primaryIndicatorsBlock}
+${contextIndicatorsBlock}${contextSRBlock}${primaryIndicatorsBlock}${primarySRBlock}
+- HTF location flags: {into_support=${intoContextSupport}, into_resistance=${intoContextResistance}, breakdown_confirmed=${htfBreakdownConfirmed}, breakout_confirmed=${htfBreakoutConfirmed}, location_confluence_score=${clampNumber(locationConfluenceScore, 3)}}
 - Momentum context: ${JSON.stringify({
         macro_trend_up: momentumSignals.macroTrendUp,
         macro_trend_down: momentumSignals.macroTrendDown,
@@ -570,6 +622,11 @@ ${contextIndicatorsBlock}${primaryIndicatorsBlock}
         primary_slope_pct_per_bar: clampNumber(slope21_primary, 4),
         primary_bias: primaryBias,
         context_bias: contextBias,
+        into_context_support: intoContextSupport,
+        into_context_resistance: intoContextResistance,
+        context_breakdown_confirmed: htfBreakdownConfirmed,
+        context_breakout_confirmed: htfBreakoutConfirmed,
+        location_confluence_score: clampNumber(locationConfluenceScore, 3),
     })}
 - Signal strength drivers: ${JSON.stringify(signalDrivers)}
 - Closing guardrails: ${JSON.stringify(closingGuidance)}
