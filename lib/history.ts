@@ -5,6 +5,7 @@ const KV_REST_API_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
 const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN || '';
 const HISTORY_INDEX_KEY = 'decision:index';
 const HISTORY_KEY_PREFIX = 'decision';
+const HISTORY_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
 function ensureKvConfig() {
     if (!KV_REST_API_URL || !KV_REST_API_TOKEN) {
@@ -35,6 +36,11 @@ async function kvSet(key: string, value: string) {
     return kvCommand('SET', key, value);
 }
 
+// Set with TTL (seconds)
+async function kvSetEx(key: string, ttlSeconds: number, value: string) {
+    return kvCommand('SETEX', key, ttlSeconds, value);
+}
+
 async function kvGet(key: string): Promise<string | null> {
     return kvCommand('GET', key);
 }
@@ -45,6 +51,11 @@ async function kvDel(key: string) {
 
 async function kvZAdd(key: string, score: number, member: string) {
     return kvCommand('ZADD', key, score, member);
+}
+
+// Remove members by score range
+async function kvZRemRangeByScore(key: string, minScore: number, maxScore: number) {
+    return kvCommand('ZREMRANGEBYSCORE', key, minScore, maxScore);
 }
 
 async function kvZRevRange(key: string, start: number, stop: number): Promise<string[]> {
@@ -97,8 +108,14 @@ function keyFor(symbol: string, timestamp: number) {
 export async function appendDecisionHistory(entry: DecisionHistoryEntry) {
     try {
         const key = keyFor(entry.symbol, entry.timestamp);
-        await kvSet(key, JSON.stringify(entry));
+        // store entry with TTL
+        await kvSetEx(key, HISTORY_TTL_SECONDS, JSON.stringify(entry));
+        // add to index
         await kvZAdd(HISTORY_INDEX_KEY, entry.timestamp, key);
+
+        // prune index entries older than TTL (by timestamp score)
+        const cutoff = Date.now() - HISTORY_TTL_SECONDS * 1000;
+        await kvZRemRangeByScore(HISTORY_INDEX_KEY, 0, cutoff);
     } catch (err) {
         console.error('Failed to append decision history:', err);
     }
