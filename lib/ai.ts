@@ -563,7 +563,7 @@ ACTIONS LOGIC
   - HOLD on LOW signals, clear macro/micro conflict, or extreme extension with weak/fading flow.
 - **Position open**:
   - HIGH opposite → CLOSE or REVERSE (use reversal guardrails).
-  - Trim 30–70% when risk reduction beats flattening (deteriorating but not opposite, near strong level with gains, or flow flip while macro/context still align); default exit_size_pct=100 otherwise; avoid trims <20%.
+  - Trim 30–70% when risk reduction beats flattening (deteriorating but not opposite, signal_strength slipping from HIGH to MED/LOW, aligned_driver_count shrinking, flow_bias weakening to neutral/soft-opposite, or near strong level with gains). If momentum flips to neutral and flow softens but no strong opposite, prefer a partial close over full flatten. Default exit_size_pct=100 otherwise; avoid trims <20%.
   - Prefer HOLD if macro_supports_position=true and no strong opposite flow; prefer HOLD over CLOSE when |unrealized_pnl_pct| < 0.25% and no HIGH opposite signal.
   - Ignore MEDIUM opposite if |price_vs_breakeven_pct| < 0.2% and |dist_from_ema20_${indicators.microTimeFrame}_in_atr| ≤ 2.5 unless signal_strength = HIGH.
   - If short into strong ${contextTimeframe} support (dist_to_support_in_atr < 0.6 or at_level) and flow weakens/flips, bias toward CLOSE; mirror for longs into strong resistance.
