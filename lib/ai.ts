@@ -34,8 +34,6 @@ export type MomentumSignals = {
     nearMicroEMA20: boolean;
     longFlowOk: boolean;
     shortFlowOk: boolean;
-    entryReadyLong: boolean;
-    entryReadyShort: boolean;
     primaryRSI?: number | null;
     primarySlope?: number | null;
     microRSI?: number | null;
@@ -125,9 +123,6 @@ export function computeMomentumSignals(params: {
     const longMomentum = macroTrendUp && priceAbovePrimary50 && rsiPullbackLong && slopeUp && longFlowOk;
     const shortMomentum = macroTrendDown && priceBelowPrimary50 && rsiPullbackShort && slopeDown && shortFlowOk;
 
-    const entryReadyLong = longMomentum && microEntryOk && longFlowOk;
-    const entryReadyShort = shortMomentum && microEntryOk && shortFlowOk;
-
     const microExtensionInAtr =
         Number.isFinite(atrMicro as number) && (atrMicro as number) > 0 && Number.isFinite(ema20Micro as number)
             ? (price - (ema20Micro as number)) / (atrMicro as number)
@@ -144,8 +139,6 @@ export function computeMomentumSignals(params: {
         nearMicroEMA20: nearMicro,
         longFlowOk,
         shortFlowOk,
-        entryReadyLong,
-        entryReadyShort,
         primaryRSI: rsiPrimary,
         primarySlope: slopePrimary,
         microRSI: rsiMicro,
@@ -451,8 +444,6 @@ export function buildPrompt(
         macro_trend_down: momentumSignals.macroTrendDown,
         long_momentum: momentumSignals.longMomentum,
         short_momentum: momentumSignals.shortMomentum,
-        entry_ready_long: momentumSignals.entryReadyLong,
-        entry_ready_short: momentumSignals.entryReadyShort,
         micro_extension_atr: clampNumber(momentumSignals.microExtensionInAtr ?? null, 3),
         atr_pct_primary: clampNumber(atr_pct_primary, 3),
         primary_extension_atr: clampNumber(distance_from_ema20_primary_atr, 3),
@@ -548,7 +539,7 @@ export function buildPrompt(
     const sys = `
 You are an expert crypto market microstructure analyst and short-term trading assistant.
 Primary strategy: ${primaryTimeframe} momentum within a ${indicators.macroTimeFrame} structure with a ${indicators.microTimeFrame} confirmation — take trades when there is a clear short-term directional edge from tape/orderbook and recent price action. Macro (${indicators.macroTimeFrame}) trend is a bias, not a hard filter. I will call you roughly once per ${primaryTimeframe}.
-Decision ladder: Base gates → biases (macro/primary) → signal drivers + entry_ready → action.
+Decision ladder: Base gates → biases (macro/primary) → signal drivers → action.
 Signal strength is driven by aligned_driver_count + flow_bias + extensions (micro + primary); strong flow with many aligned drivers → HIGH.
 Respond in strict JSON ONLY.
 Output must be valid JSON parseable by JSON.parse with no trailing commas or extra keys; no markdown or commentary. Keep keys minimal—no extra fields.
@@ -557,17 +548,17 @@ GENERAL RULES
 - **Base gates**: when flat, if ANY spread_ok/liquidity_ok/atr_ok/slippage_ok is false → action="HOLD". In a position, never block exits; if gates fail, prefer risk-off (CLOSE) over HOLD.
 - **Costs**: use taker_fee_rate_side from context; total_cost_bps = fees (round-trip) + slippage = ~${total_cost_bps}bps. Treat total_cost_bps as the single cost anchor; if expected edge is small vs this, HOLD/avoid churn.
 - **Leverage**: For BUY/SELL/REVERSE pick leverage 1-5 (integer). Default 1 on HOLD/CLOSE. Map confidence to leverage: LOW → 1, MEDIUM → 2-3, HIGH → 4-5. Tilt toward 1 when context_bias opposes or extension is extreme; never exceed 5.
-- **Macro + context**: trades WITH macro trend are preferred. Against macro: default to HIGH; allow MEDIUM only when aligned_driver_count ≥ 5 AND |flow_bias| ≥ 0.35 (flow_supports clearly opposite macro) AND entry_ready is true AND |dist_from_ema20_${indicators.microTimeFrame}_in_atr| ≤ 1.8. Macro neutral = NEUTRAL (more selective but not blocked). Context_bias (${contextTimeframe}) is a risk lever: when aligned, MEDIUM with aligned_driver_count ≥ 4 is acceptable if entry_ready; when opposite, require HIGH with stronger flow/entry. Use it to adjust selectivity, not as a hard gate.
+    - **Macro + context**: trades WITH macro trend are preferred. Against macro: default to HIGH; allow MEDIUM only when aligned_driver_count ≥ 5 AND |flow_bias| ≥ 0.35 (flow_supports clearly opposite macro) AND |dist_from_ema20_${indicators.microTimeFrame}_in_atr| ≤ 1.8. Macro neutral = NEUTRAL (more selective but not blocked). Context_bias (${contextTimeframe}) is a risk lever: when aligned, MEDIUM with aligned_driver_count ≥ 4 is acceptable; when opposite, require HIGH with stronger flow and a non-extended entry. Use it to adjust selectivity, not as a hard gate.
 - **Support/Resistance & location**: swing-pivot derived, distances in ATR of that timeframe. location_confluence_score is capped to avoid double-counting with trend. Treat into_context_support/resistance and context_breakdown/breakout as risk modifiers (avoid selling into strong support unless breakdown confirmed; be faster to take profit into strong opposite levels). If both support and resistance are at_level, treat as chop—avoid new entries unless signal_strength is HIGH with strong flow and favorable risk.
-- **Signal usage**: aligned_driver_count ≥ 4 = strong micro structure (≥ 3.8 allowed with strong flow_supports not opposite). HIGH with flow_supports = "buy"/"sell" should normally dictate direction when flat (base gates true). MEDIUM is allowed when aligned_driver_count ≥ 4; if context_bias opposes or price is very extended, need ≥ 5 with strong flow. Only open when entry_ready_long/short is true, except allow HIGH with aligned_driver_count ≥ 5 to override (note it in reasoning).
+    - **Signal usage**: aligned_driver_count ≥ 4 = strong micro structure (≥ 3.8 allowed with strong flow_supports not opposite). HIGH with flow_supports = "buy"/"sell" should normally dictate direction when flat (base gates true). MEDIUM is allowed when aligned_driver_count ≥ 4; if context_bias opposes or price is very extended, need ≥ 5 with strong flow. Use extensions and flow_bias to judge selectivity; do not overfit to single indicators.
 - **Sign conventions**: price_vs_breakeven_pct > 0 means price is above breakeven; < 0 means below. For shorts, price_vs_breakeven_pct < 0 = losing (price above breakeven), > 0 = winning (price below breakeven). For longs, < 0 = losing, > 0 = winning.
 - **Temporal inertia**: avoid more than one action change (CLOSE/REVERSE) in the same direction within the last 2 calls unless signal_strength stays HIGH and flow_contradiction_score is increasing.
 - **Exit sizing**: Default exit_size_pct = 100 (full close). Use 30–70 when trimming risk (deteriorating but not opposite, near strong level with gains, or flow flip while macro/context still align). Avoid trims <20%; omit when not needed.
 
 ACTIONS LOGIC
 - **No position open**:
-  - With base gates true + HIGH + (entry_ready or aligned_driver_count ≥ 5) → BUY/SELL matching flow_supports.
-  - MEDIUM + aligned_driver_count ≥ 4 (or close with strong flow) → prefer flow_supports direction, or macro trend if flow neutral. If macro_bias opposes the intended direction, MEDIUM → HOLD unless the "against-macro" threshold is met (aligned_driver_count ≥ 5, |flow_bias| ≥ 0.35 with flow_supports opposite macro, entry_ready true, |dist_from_ema20_${indicators.microTimeFrame}_in_atr| ≤ 1.8). If macro_bias = DOWN and opening long, require flow_supports="buy", aligned_driver_count ≥ 5, strongly positive cvd_strength, dist_from_ema20_${indicators.microTimeFrame}_in_atr < 1.5, and HIGH. If context_bias opposes, require aligned_driver_count ≥ 5 with strong flow and a non-extended entry; if aligned, MEDIUM with aligned_driver_count ≥ 4 is fine when entry_ready is true.
+  - With base gates true + HIGH + aligned_driver_count ≥ 4 → BUY/SELL matching flow_supports (≥ 5 if overriding extension/against macro).
+  - MEDIUM + aligned_driver_count ≥ 4 (or close with strong flow) → prefer flow_supports direction, or macro trend if flow neutral. If macro_bias opposes the intended direction, MEDIUM → HOLD unless the "against-macro" threshold is met (aligned_driver_count ≥ 5, |flow_bias| ≥ 0.35 with flow_supports opposite macro, |dist_from_ema20_${indicators.microTimeFrame}_in_atr| ≤ 1.8). If macro_bias = DOWN and opening long, require flow_supports="buy", aligned_driver_count ≥ 5, strongly positive cvd_strength, dist_from_ema20_${indicators.microTimeFrame}_in_atr < 1.5, and HIGH. If context_bias opposes, require aligned_driver_count ≥ 5 with strong flow and a non-extended entry; if aligned, MEDIUM with aligned_driver_count ≥ 4 is fine when location/extension is reasonable.
   - Avoid new shorts when dist_to_support_in_atr_${contextTimeframe} < 0.6 unless flow is strongly bearish AND context_breakdown_confirmed=true; mirror for longs vs resistance/breakout.
   - HOLD on LOW signals, clear macro/micro conflict, or extreme extension with weak/fading flow.
 - **Position open**:
@@ -638,8 +629,6 @@ ${contextIndicatorsBlock}${contextSRBlock}${primaryIndicatorsBlock}${primarySRBl
         flow_supports: momentumSignals.flowSupports,
         near_primary: momentumSignals.nearPrimaryEMA20,
         near_micro: momentumSignals.nearMicroEMA20,
-        entry_ready_long: momentumSignals.entryReadyLong,
-        entry_ready_short: momentumSignals.entryReadyShort,
         micro_extension_atr: momentumSignals.microExtensionInAtr,
         primary_extension_atr: clampNumber(distance_from_ema20_primary_atr, 3),
         primary_slope_pct_per_bar: clampNumber(slope21_primary, 4),
