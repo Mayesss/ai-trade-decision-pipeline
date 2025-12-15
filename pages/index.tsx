@@ -3,6 +3,8 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  ShieldPlus,
+  Wand2,
   Circle,
   Cpu,
   Database,
@@ -175,6 +177,8 @@ export default function Home() {
     prompt_engineering: { Icon: PenTool, color: 'text-fuchsia-700', bg: 'bg-fuchsia-100' },
     prompt_consistency: { Icon: ListChecks, color: 'text-lime-700', bg: 'bg-lime-100' },
     action_logic: { Icon: Braces, color: 'text-orange-700', bg: 'bg-orange-100' },
+    ai_freedom: { Icon: Wand2, color: 'text-indigo-700', bg: 'bg-indigo-100' },
+    guardrail_coverage: { Icon: ShieldPlus, color: 'text-rose-700', bg: 'bg-rose-100' },
   };
 
   const formatLabel = (key: string) => key.replace(/_/g, ' ');

@@ -67,7 +67,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         "responsiveness": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["timeliness vs timeframe", "time_stop vs call cadence", "reaction to regime shifts"]},
         "prompt_engineering": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["verbosity", "ambiguity", "JSON strictness", "naming clarity"]},
         "prompt_consistency": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["list contradictions, naming confusion, missing gates/guards, cost mismatches"], "checks": ["JSON strictness, naming and guardrails coherence"]},
-        "action_logic": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["gaps in entry/exit rules, base gates on open positions, reversal discipline, PnL sign conventions"], "checks": ["entry/exit edge vs costs, base gates, reversal handling"]}
+        "action_logic": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["gaps in entry/exit rules, base gates on open positions, reversal discipline, PnL sign conventions"], "checks": ["entry/exit edge vs costs, base gates, reversal handling"]},
+        "ai_freedom": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["reasoning latitude vs hard filters", "over-constrained if/else patterns", "room for nuanced exits/entries without breaking guardrails"]},
+        "guardrail_coverage": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["coverage of base gates and costs in prompts", "reversal and exit guardrails present", "risk-off bias when uncertain", "hedging/ambiguity avoidance"]}
     },
     "overall_rating": 0-10,
     "overview": "string",
@@ -76,7 +78,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     "improvements": ["..."],
     "confidence": "LOW|MEDIUM|HIGH"
 }
-Rate each aspect 0-10 (0=poor, 10=excellent) with a short comment. Provide per-aspect improvements only when you have concrete, actionable suggestions (keep each entry brief) and only list them when they exist. Findings are optional—include them only when something is truly critical and only list them when they exist. In prompt_consistency/action_logic, explicitly call out: conflicting entry_ready rules vs HIGH signals, price_vs_breakeven sign for shorts, cost mismatches (fees vs taker_fee_rate vs heuristic bps), base gates blocking exits, macro neutral handling, S/R dual at_level, JSON strictness. Be concise.`;
+Rate each aspect 0-10 (0=poor, 10=excellent) with a short comment. Provide per-aspect improvements only when you have concrete, actionable suggestions (keep each entry brief) and only list them when they exist. Findings are optional—include them only when something is truly critical and only list them when they exist. In prompt_consistency/action_logic, explicitly call out: conflicting entry_ready rules vs HIGH signals, price_vs_breakeven sign for shorts, cost mismatches (fees vs taker_fee_rate vs heuristic bps), base gates blocking exits, macro neutral handling, S/R dual at_level, JSON strictness. For ai_freedom, flag over-constrained logic that kills nuanced entries/exits; for guardrail_coverage, flag missing base gate/cost coverage, weak reversal/exit rails, lack of risk-off bias, or hedging ambiguity. Be concise.`;
     const user = `Symbol: ${symbol}. Recent decisions (most recent first): ${JSON.stringify(condensed)}. Stats: ${JSON.stringify(stats)}. Include prompt/system text when highlighting prompt issues: ${JSON.stringify(condensed.map((c) => c.prompt))}.`;
 
     const evaluation = await callAI(system, user);
