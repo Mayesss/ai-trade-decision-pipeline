@@ -67,7 +67,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         "responsiveness": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["timeliness vs timeframe", "time_stop vs call cadence", "reaction to regime shifts"]},
         "prompt_engineering": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["verbosity", "ambiguity", "JSON strictness", "naming clarity"]},
         "prompt_consistency": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["list contradictions, naming confusion, missing gates/guards, cost mismatches"], "checks": ["JSON strictness, naming and guardrails coherence"]},
-        "action_logic": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["gaps in entry/exit rules, base gates on open positions, reversal discipline, PnL sign conventions"], "checks": ["entry/exit edge vs costs, base gates, reversal handling"]}
+        "action_logic": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["gaps in entry/exit rules, base gates on open positions, reversal discipline, PnL sign conventions"], "checks": ["entry/exit edge vs costs, base gates, reversal handling"]},
+        "ai_freedom": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["reasoning latitude vs hard filters", "over-constrained if/else patterns", "room for nuanced exits/entries without breaking guardrails"]},
+        "guardrail_coverage": {"rating": 0-10, "comment": "string", "improvements": ["optional improvements"], "findings": ["critical only"], "checks": ["coverage of base gates and costs in prompts", "reversal and exit guardrails present", "risk-off bias when uncertain", "hedging/ambiguity avoidance"]}
     },
     "overall_rating": 0-10,
     "overview": "string",
