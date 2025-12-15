@@ -85,6 +85,20 @@ async function applyLeverage(params: {
     }
 }
 
+type PlaceOrderBody = {
+    symbol: string;
+    productType: ProductType;
+    marginCoin: string;
+    marginMode: string;
+    side: string;
+    orderType: string;
+    size: string;
+    clientOid: string;
+    force: string;
+    holdSide?: 'long' | 'short';
+    reduceOnly?: boolean;
+};
+
 async function quantizePositionSize(symbol: string, productType: ProductType, rawSize: number) {
     if (!(rawSize > 0)) return 0;
     const meta = await fetchSymbolMeta(symbol, productType);
@@ -136,7 +150,7 @@ export async function executeDecision(
         if (dryRun) return { placed: false, orderId: null, clientOid, leverage: leverageResult.leverage };
         const size = await computeOrderSize(symbol, sideSizeUSDT, productType);
 
-        const body = {
+        const body: PlaceOrderBody = {
             symbol,
             productType,
             marginCoin: 'USDT',
@@ -253,7 +267,7 @@ export async function executeDecision(
             return { placed: false, orderId: null, clientOid, note: 'failed to close before reverse' };
         }
         const size = await computeOrderSize(symbol, sideSizeUSDT, productType);
-        const body = {
+        const body: PlaceOrderBody = {
             symbol,
             productType,
             marginCoin: 'USDT',
