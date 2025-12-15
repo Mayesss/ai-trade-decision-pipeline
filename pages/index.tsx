@@ -124,6 +124,25 @@ const formatUsd = (value: number) => {
   return `${sign}$${v.toFixed(0)}`;
 };
 
+const BERLIN_TZ = 'Europe/Berlin';
+
+const formatBerlinTime = (time: any, opts: Intl.DateTimeFormatOptions = {}) => {
+  const seconds =
+    typeof time === 'number'
+      ? time
+      : typeof time === 'object' && time !== null && 'timestamp' in time
+      ? Number((time as any).timestamp)
+      : Number(time);
+  if (!Number.isFinite(seconds)) return '';
+  const date = new Date(seconds * 1000);
+  return new Intl.DateTimeFormat('de-DE', {
+    timeZone: BERLIN_TZ,
+    hour: '2-digit',
+    minute: '2-digit',
+    ...opts,
+  }).format(date);
+};
+
 export default function Home() {
   const [symbols, setSymbols] = useState<string[]>([]);
   const [active, setActive] = useState(0);
@@ -239,7 +258,6 @@ export default function Home() {
         height: 260,
         handleScroll: false,
         handleScale: false,
-        timezone: 'Europe/Berlin',
         layout: {
           background: { type: 'solid', color: 'transparent' },
           textColor: '#0f172a',
@@ -260,10 +278,20 @@ export default function Home() {
         },
         localization: {
           priceFormatter: formatCompactPrice,
+          timeFormatter: (time: any) =>
+            formatBerlinTime(time, {
+              day: '2-digit',
+              month: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
         },
       });
 
       chartInstanceRef.current = chart;
+      chart.timeScale().applyOptions({
+        tickMarkFormatter: (time: any) => formatBerlinTime(time),
+      });
 
       const AreaSeriesCtor = (lw as any).AreaSeries || (lw as any)?.default?.AreaSeries;
       const LineSeriesCtor = (lw as any).LineSeries || (lw as any)?.default?.LineSeries;
@@ -391,22 +419,26 @@ export default function Home() {
       d.getFullYear() === now.getFullYear() &&
       d.getMonth() === now.getMonth() &&
       d.getDate() === now.getDate();
-    const time = d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+    const time = d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', timeZone: BERLIN_TZ });
     if (sameDay) return `– ${time}`;
-    const date = d.toLocaleDateString('de-DE');
+    const date = d.toLocaleDateString('de-DE', { timeZone: BERLIN_TZ });
     return `– ${date} ${time}`;
   };
 
   const formatOverlayTime = (tsSeconds?: number | null) => {
     if (!tsSeconds) return '—';
     const d = new Date(tsSeconds * 1000);
-    return d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', timeZone: BERLIN_TZ });
   };
 
   const formatOverlayDecisionTs = (tsMs?: number | null) => {
     if (!tsMs) return '—';
     const d = new Date(tsMs);
-    return `${d.toLocaleDateString('de-DE')} ${d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}`;
+    return `${d.toLocaleDateString('de-DE', { timeZone: BERLIN_TZ })} ${d.toLocaleTimeString('de-DE', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: BERLIN_TZ,
+    })}`;
   };
 
   const renderPromptContent = (text?: string | null) => {
