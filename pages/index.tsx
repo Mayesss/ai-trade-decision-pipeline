@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import Head from 'next/head';
 import {
   Activity,
   BarChart3,
@@ -516,8 +517,13 @@ export default function Home() {
   ] as const;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex items-center justify-center px-4 py-10">
-      <div className="w-full max-w-6xl rounded-3xl border border-slate-200 bg-white shadow-xl">
+    <html lang="en">
+      <Head>
+        <title>AI Trade Dashboard</title>
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+      </Head>
+      <div className="min-h-screen bg-slate-50 text-slate-900 flex items-center justify-center px-4 py-10">
+        <div className="w-full max-w-6xl rounded-3xl border border-slate-200 bg-white shadow-xl">
         <div className="flex items-center justify-between gap-4 border-b border-slate-200 px-6 py-5">
           <div>
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Performance</p>
@@ -1131,5 +1137,6 @@ export default function Home() {
         </div>
       </div>
     </div>
+    </html>
   );
 }
