@@ -15,6 +15,8 @@ export interface TradeDecision {
     summary: string;
     reason: string;
     timestamp?: number;
+    signal_strength?: 'LOW' | 'MEDIUM' | 'HIGH' | string;
+    leverage?: number | null;
     exit_size_pct?: number | null;
     close_size_pct?: number | null;
     target_position_pct?: number | null;
@@ -25,6 +27,62 @@ function normalizeClosePct(pct: unknown) {
     if (!Number.isFinite(n)) return null;
     const clamped = Math.max(0, Math.min(100, n));
     return clamped > 0 ? clamped : null;
+}
+
+function clampLeverage(value: unknown): number | null {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    const rounded = Math.round(n);
+    const clamped = Math.max(1, Math.min(5, rounded));
+    return clamped;
+}
+
+function deriveLeverage(decision: TradeDecision): number | null {
+    const explicit = clampLeverage((decision as any)?.leverage);
+    if (explicit) return explicit;
+
+    const strength = String((decision as any)?.signal_strength || '').toUpperCase();
+    if (decision.action === 'BUY' || decision.action === 'SELL' || decision.action === 'REVERSE') {
+        if (strength === 'HIGH') return 4;
+        if (strength === 'MEDIUM') return 3;
+        if (strength === 'LOW') return 1;
+    }
+    return null;
+}
+
+async function applyLeverage(params: {
+    symbol: string;
+    productType: ProductType;
+    leverage: number | null;
+    holdSide?: 'long' | 'short';
+    dryRun?: boolean;
+}) {
+    const { symbol, productType, leverage, holdSide, dryRun } = params;
+    const target = clampLeverage(leverage);
+    if (!target) return { applied: false, leverage: null, skipped: true };
+    if (dryRun) return { applied: false, leverage: target, dryRun: true };
+
+    const pt = (productType as string).toUpperCase();
+    const body: any = {
+        symbol,
+        productType: pt,
+        marginCoin: 'USDT',
+        marginMode: 'isolated',
+        leverage: target.toString(),
+    };
+    if (holdSide) body.holdSide = holdSide;
+
+    try {
+        const res = await bitgetFetch('POST', '/api/v2/mix/account/set-leverage', {}, body);
+        return { applied: true, leverage: target, raw: res };
+    } catch (err) {
+        console.warn('Failed to set leverage:', err);
+        return {
+            applied: false,
+            leverage: target,
+            error: err instanceof Error ? err.message : String(err),
+        };
+    }
 }
 
 async function quantizePositionSize(symbol: string, productType: ProductType, rawSize: number) {
@@ -69,10 +127,13 @@ export async function executeDecision(
         normalizeClosePct(decision.exit_size_pct) ??
         normalizeClosePct((decision as any).close_size_pct) ??
         normalizeClosePct((decision as any).partial_close_pct);
+    const targetLeverage = deriveLeverage(decision);
 
     // BUY / SELL
     if (decision.action === 'BUY' || decision.action === 'SELL') {
-        if (dryRun) return { placed: false, orderId: null, clientOid };
+        const holdSide: 'long' | 'short' = decision.action === 'BUY' ? 'long' : 'short';
+        const leverageResult = await applyLeverage({ symbol, productType, leverage: targetLeverage, holdSide, dryRun });
+        if (dryRun) return { placed: false, orderId: null, clientOid, leverage: leverageResult.leverage };
         const size = await computeOrderSize(symbol, sideSizeUSDT, productType);
 
         const body = {
@@ -90,7 +151,14 @@ export async function executeDecision(
         if (decision.action === 'BUY') body['holdSide'] = 'long';
         if (decision.action === 'SELL') body['holdSide'] = 'short';
         const res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
-        return { placed: true, orderId: res?.orderId || res?.order_id || null, clientOid };
+        return {
+            placed: true,
+            orderId: res?.orderId || res?.order_id || null,
+            clientOid,
+            leverage: leverageResult.leverage,
+            leverageApplied: leverageResult.applied,
+            leverageError: leverageResult.error,
+        };
     }
 
     if (decision.action === 'REVERSE') {
@@ -108,6 +176,13 @@ export async function executeDecision(
                 if (Number.isFinite(posSize) && posSize > 0) {
                     const closeSize = await quantizePositionSize(symbol, productType, posSize * (partialClosePct / 100));
                     if (closeSize > 0) {
+                        const leverageResult = await applyLeverage({
+                            symbol,
+                            productType,
+                            leverage: targetLeverage,
+                            holdSide: oppositeSide,
+                            dryRun,
+                        });
                         const closeSide = pos.holdSide === 'long' ? 'sell' : 'buy';
                         const closeBody = {
                             symbol,
@@ -147,6 +222,9 @@ export async function executeDecision(
                             closeSize,
                             openSize: closeSize,
                             targetSide: oppositeSide,
+                            leverage: leverageResult.leverage,
+                            leverageApplied: leverageResult.applied,
+                            leverageError: leverageResult.error,
                             raw: { close: closeRes, open: openRes },
                         };
                     }
@@ -155,6 +233,15 @@ export async function executeDecision(
                 console.warn('Partial reverse failed, falling back to full reverse:', err);
             }
         }
+
+        const targetSide: 'long' | 'short' = pos.holdSide === 'long' ? 'short' : 'long';
+        const leverageResult = await applyLeverage({
+            symbol,
+            productType,
+            leverage: targetLeverage,
+            holdSide: targetSide,
+            dryRun,
+        });
 
         const closeRes = await flashClosePosition(
             symbol,
@@ -186,6 +273,9 @@ export async function executeDecision(
             reversed: true,
             size,
             targetSide: oppositeSide,
+            leverage: leverageResult.leverage,
+            leverageApplied: leverageResult.applied,
+            leverageError: leverageResult.error,
         };
     }
 

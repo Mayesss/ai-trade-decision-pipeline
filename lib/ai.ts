@@ -557,6 +557,7 @@ Output must be valid JSON parseable by JSON.parse with no trailing commas or ext
 GENERAL RULES
 - **Base gates**: when flat, if ANY of spread_ok, liquidity_ok, atr_ok, slippage_ok is false → action="HOLD"; if in a position, do not block exits—prefer risk-off (CLOSE) rather than HOLD when gates fail. Exits (CLOSE/REVERSE) must never be blocked by base gates.
 - **Costs**: use taker_fee_rate_side from context; total_cost_bps = fees (round-trip) + slippage = ~${total_cost_bps}bps. Use total_cost_bps as the single cost anchor (do not mix conflicting heuristics). If expected edge is small vs total_cost_bps → HOLD; avoid churn around breakeven.
+- **Leverage**: For BUY/SELL/REVERSE pick leverage 1-5 (integer). Default 1 on HOLD/CLOSE. Map confidence to leverage: LOW → 1, MEDIUM → 2-3, HIGH → 4-5. Tilt toward 1 when context_bias opposes or extension is extreme; never exceed 5.
 - **Macro bias**: trades WITH macro trend are preferred and can be taken on MEDIUM or HIGH signals. Trades AGAINST macro require HIGH signal_strength or very strong flow/tape.
 - **Macro neutral**: when macro_bias is neutral (regime_trend_up=false and regime_trend_down=false), treat macro_bias=NEUTRAL. Be more selective but do not block trades solely due to neutrality; lean on micro/context and strong flow.
 - **Context bias (${contextTimeframe})**: context_bias=${contextBias}. Treat it as a risk lever, not a gate. When aligned with the intended direction, you may allow MEDIUM signals more readily (especially near good entries). When against, require HIGH signal_strength plus strong flow/tape and a better entry/extension (or smaller size if sizing elsewhere). Use it to upgrade/downgrade signal_strength or selectivity near levels, not to block trades outright.
@@ -678,11 +679,12 @@ TASKS:
 2) Output one action only: "BUY", "SELL", "HOLD", "CLOSE", or "REVERSE".
    - If no position is open, return BUY/SELL/HOLD.
    - If a position is open, you may HOLD, CLOSE, or REVERSE (REVERSE = close + open opposite side).
-3) Assess signal strength: LOW, MEDIUM, or HIGH (modulate selectivity using context_bias rules).
-4) Summarize in ≤2 lines.
+3) Pick leverage (1-5, integer) for BUY/SELL/REVERSE based on confidence/signal_strength and context. Use null for HOLD/CLOSE or when not changing.
+4) Assess signal strength: LOW, MEDIUM, or HIGH (modulate selectivity using context_bias rules).
+5) Summarize in ≤2 lines.
 
 JSON OUTPUT (strict):
-{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","micro_bias":"UP|DOWN|NEUTRAL","primary_bias":"UP|DOWN|NEUTRAL","macro_bias":"UP|DOWN|NEUTRAL","context_bias":"UP|DOWN|NEUTRAL","signal_strength":"LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100}
+{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","micro_bias":"UP|DOWN|NEUTRAL","primary_bias":"UP|DOWN|NEUTRAL","macro_bias":"UP|DOWN|NEUTRAL","context_bias":"UP|DOWN|NEUTRAL","signal_strength":"LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"leverage":null|1|2|3|4|5}
 `.trim();
 
     return { system: sys, user };
