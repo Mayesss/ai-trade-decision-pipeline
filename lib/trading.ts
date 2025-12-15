@@ -1,9 +1,10 @@
 // lib/trading.ts
 
+import crypto from 'crypto';
 import { bitgetFetch, resolveProductType } from './bitget';
 import type { ProductType } from './bitget';
 
-import { computeOrderSize, fetchPositionInfo } from './analytics';
+import { computeOrderSize, fetchPositionInfo, fetchSymbolMeta } from './analytics';
 
 // ------------------------------
 // Types
@@ -14,6 +15,28 @@ export interface TradeDecision {
     summary: string;
     reason: string;
     timestamp?: number;
+    exit_size_pct?: number | null;
+    close_size_pct?: number | null;
+    target_position_pct?: number | null;
+}
+
+function normalizeClosePct(pct: unknown) {
+    const n = Number(pct);
+    if (!Number.isFinite(n)) return null;
+    const clamped = Math.max(0, Math.min(100, n));
+    return clamped > 0 ? clamped : null;
+}
+
+async function quantizePositionSize(symbol: string, productType: ProductType, rawSize: number) {
+    if (!(rawSize > 0)) return 0;
+    const meta = await fetchSymbolMeta(symbol, productType);
+    const decimals = Number(meta.volumePlace ?? 3);
+    const minTradeNum = parseFloat(meta.minTradeNum ?? '0');
+    const step = parseFloat(meta.sizeMultiplier ?? `1e-${decimals}`);
+    const quantizeDown = (x: number, s: number) => Math.floor(x / s) * s;
+    const rounded = quantizeDown(rawSize, step);
+    const finalSize = Math.max(rounded, minTradeNum);
+    return Number(finalSize.toFixed(decimals));
 }
 
 // ------------------------------
@@ -42,6 +65,10 @@ export async function executeDecision(
     dryRun = true,
 ) {
     const clientOid = `cfw-${crypto.randomUUID()}`;
+    const partialClosePct =
+        normalizeClosePct(decision.exit_size_pct) ??
+        normalizeClosePct((decision as any).close_size_pct) ??
+        normalizeClosePct((decision as any).partial_close_pct);
 
     // BUY / SELL
     if (decision.action === 'BUY' || decision.action === 'SELL') {
@@ -59,6 +86,9 @@ export async function executeDecision(
             clientOid,
             force: 'gtc',
         };
+        // In hedge mode Bitget expects holdSide to distinguish open vs reduce
+        if (decision.action === 'BUY') body['holdSide'] = 'long';
+        if (decision.action === 'SELL') body['holdSide'] = 'short';
         const res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
         return { placed: true, orderId: res?.orderId || res?.order_id || null, clientOid };
     }
@@ -70,6 +100,62 @@ export async function executeDecision(
             return { placed: false, orderId: null, clientOid, note: 'no open position to reverse' };
         }
         const oppositeSide: 'long' | 'short' = pos.holdSide === 'long' ? 'short' : 'long';
+
+        // Partial reverse support (one-way mode): trim a percent, then flip that trimmed size
+        if (partialClosePct !== null && partialClosePct < 100 && pos.posMode !== 'hedge_mode') {
+            try {
+                const posSize = Number(pos.total ?? pos.available);
+                if (Number.isFinite(posSize) && posSize > 0) {
+                    const closeSize = await quantizePositionSize(symbol, productType, posSize * (partialClosePct / 100));
+                    if (closeSize > 0) {
+                        const closeSide = pos.holdSide === 'long' ? 'sell' : 'buy';
+                        const closeBody = {
+                            symbol,
+                            productType,
+                            marginCoin: pos.marginCoin ?? 'USDT',
+                            marginMode: 'isolated',
+                            side: closeSide,
+                            orderType: 'market',
+                            size: closeSize.toString(),
+                            clientOid: `${clientOid}-close`,
+                            force: 'gtc',
+                            reduceOnly: true,
+                        };
+                        const closeRes = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, closeBody);
+
+                        // Open opposite side with the same size; in one-way mode this nets out/overturns
+                        const openBody = {
+                            symbol,
+                            productType,
+                            marginCoin: pos.marginCoin ?? 'USDT',
+                            marginMode: 'isolated',
+                            side: closeSide,
+                            orderType: 'market',
+                            size: closeSize.toString(),
+                            clientOid: `${clientOid}-open`,
+                            force: 'gtc',
+                        };
+                        const openRes = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, openBody);
+
+                        return {
+                            placed: true,
+                            orderId: openRes?.orderId || openRes?.order_id || null,
+                            clientOid,
+                            reversed: true,
+                            partial: true,
+                            partialClosePct,
+                            closeSize,
+                            openSize: closeSize,
+                            targetSide: oppositeSide,
+                            raw: { close: closeRes, open: openRes },
+                        };
+                    }
+                }
+            } catch (err) {
+                console.warn('Partial reverse failed, falling back to full reverse:', err);
+            }
+        }
+
         const closeRes = await flashClosePosition(
             symbol,
             productType,
@@ -91,6 +177,7 @@ export async function executeDecision(
             clientOid,
             force: 'gtc',
         };
+        body['holdSide'] = oppositeSide;
         const res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
         return {
             placed: true,
@@ -104,11 +191,55 @@ export async function executeDecision(
 
     // CLOSE
     if (decision.action === 'CLOSE') {
-        if (dryRun) return { placed: false, orderId: null, clientOid, closed: true };
+        if (dryRun) {
+            return { placed: false, orderId: null, clientOid, closed: true, partialClosePct };
+        }
 
         const pos = await fetchPositionInfo(symbol);
         if (pos.status === 'none') {
             return { placed: false, orderId: null, clientOid, closed: false, note: 'no open position' };
+        }
+
+        // Allow partial close (reduce-only) when requested and we know the position size
+        if (partialClosePct !== null && partialClosePct < 100) {
+            try {
+                const posSize = Number(pos.total ?? pos.available);
+                if (Number.isFinite(posSize) && posSize > 0 && pos.holdSide) {
+                    const targetSize = await quantizePositionSize(symbol, productType, posSize * (partialClosePct / 100));
+                    if (targetSize > 0 && targetSize < posSize) {
+                        const side = pos.holdSide === 'long' ? 'sell' : 'buy';
+                        const body: any = {
+                            symbol,
+                            productType,
+                            marginCoin: pos.marginCoin ?? 'USDT',
+                            marginMode: 'isolated',
+                            side,
+                            orderType: 'market',
+                            size: targetSize.toString(),
+                            clientOid,
+                            force: 'gtc',
+                            reduceOnly: true,
+                        };
+                        if (pos.posMode === 'hedge_mode') {
+                            body.holdSide = pos.holdSide;
+                        }
+                        const res = await bitgetFetch('POST', '/api/v2/mix/order/place-order', {}, body);
+                        return {
+                            placed: true,
+                            orderId: res?.orderId || res?.order_id || null,
+                            clientOid,
+                            closed: true,
+                            partial: true,
+                            partialClosePct,
+                            size: targetSize,
+                            raw: res,
+                        };
+                    }
+                }
+            } catch (err) {
+                // fall through to full flash close if reduce-only order fails
+                console.warn('Partial close failed, falling back to full flash close:', err);
+            }
         }
 
         const isHedge = pos.posMode === 'hedge_mode';

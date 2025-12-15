@@ -569,6 +569,7 @@ GENERAL RULES
   - Only take new entries when entry_ready_long/short = true. Exception: allow HIGH signal_strength with aligned_driver_count ≥ 5 to proceed even if entry_ready_long/short is false (to avoid conflicting rules); document the exception in reasoning.
 - **Sign conventions**: price_vs_breakeven_pct > 0 means price is above breakeven; < 0 means below. For shorts, price_vs_breakeven_pct < 0 = losing (price above breakeven), > 0 = winning (price below breakeven). For longs, < 0 = losing, > 0 = winning.
 - **Temporal inertia**: avoid more than one action change (CLOSE/REVERSE) in the same direction within the last 2 calls unless signal_strength stays HIGH and flow_contradiction_score is increasing.
+- **Exit sizing**: Default exit_size_pct = 100 (full close). For CLOSE/REVERSE you may set exit_size_pct to 25–75 to trim risk instead of flattening when conditions weaken but are not fully opposite; keep it null/omit when not needed. Use round numbers (25/50/75) and avoid overusing partials.
 
 ACTIONS LOGIC
 - **No position open**:
@@ -583,6 +584,7 @@ ACTIONS LOGIC
   - Use action="HOLD" when signal_strength = LOW, when macro and micro signals clearly conflict, or when price is extremely extended (|dist_from_ema20_${indicators.microTimeFrame}_in_atr| > 2.5) and flow is weak/fading.
 - **Position open**:
   - If signal turns clearly opposite with HIGH strength → action="CLOSE" or "REVERSE" (subject to reversal guards below).
+  - Use partial exits when trimming risk is better than flattening: set exit_size_pct to 30-70 when signal deteriorates but not fully opposite, when nearing strong level with decent unrealized gains, or when flow flips but macro/context still align. Default to full (100) if not set. Avoid tiny trims (<20%) unless explicitly justified.
   - Prefer HOLD if macro_supports_position=true and no strong opposite flow.
   - Prefer HOLD over CLOSE when |unrealized_pnl_pct| < 0.25% and there is no HIGH opposite signal.
   - Ignore MEDIUM opposite signals if |price_vs_breakeven_pct| < 0.2% and |dist_from_ema20_${indicators.microTimeFrame}_in_atr| ≤ 2.5 unless signal_strength = HIGH.
@@ -680,7 +682,7 @@ TASKS:
 4) Summarize in ≤2 lines.
 
 JSON OUTPUT (strict):
-{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","micro_bias":"UP|DOWN|NEUTRAL","primary_bias":"UP|DOWN|NEUTRAL","macro_bias":"UP|DOWN|NEUTRAL","context_bias":"UP|DOWN|NEUTRAL","signal_strength":"LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale"}
+{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","micro_bias":"UP|DOWN|NEUTRAL","primary_bias":"UP|DOWN|NEUTRAL","macro_bias":"UP|DOWN|NEUTRAL","context_bias":"UP|DOWN|NEUTRAL","signal_strength":"LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100}
 `.trim();
 
     return { system: sys, user };
