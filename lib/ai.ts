@@ -570,8 +570,9 @@ ACTIONS LOGIC
   - When |dist_from_ema20_${indicators.microTimeFrame}_in_atr| > 2.5 and macro_bias = DOWN: take profit on shorts when flow flips bullish; REVERSE only if losing (price_vs_breakeven_pct < 0) and flow_contradiction_score ≥ 1.0.
 
 REVERSAL DISCIPLINE
+- Platform is one-way: REVERSE = close the entire current position (exit_size_pct=100) then open the opposite side. Do not partially reverse; if you just need to reduce exposure, use CLOSE with exit_size_pct 30–70 instead.
 - REVERSE only if reverse_confidence="high", flow_contradiction_score ≥ 0.8, aligned_driver_count ≥ 5, and signal_strength = HIGH. If reverse_confidence="medium" and price_vs_breakeven_pct < 0, allow REVERSE only when flow_contradiction_score ≥ 0.6 and flow_supports is clearly opposite; otherwise CLOSE.
-- Do NOT REVERSE if unrealized_pnl_pct < -0.5% without major regime change, or if reverse_confidence != "high" (except the losing/medium case above). REVERSE = close + open opposite; if conditions fail, prefer HOLD or CLOSE.
+- Do NOT REVERSE if unrealized_pnl_pct < -0.5% without major regime change, or if reverse_confidence != "high" (except the losing/medium case above). If conditions fail, prefer HOLD or CLOSE.
 - Prefer HOLD over CLOSE when |unrealized_pnl_pct| < 0.25% and no HIGH opposite signal.
 
 EXTENSION / OVERBOUGHT-OVERSOLD
