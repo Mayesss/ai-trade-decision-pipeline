@@ -52,8 +52,10 @@ type EvaluationEntry = {
   pnlSpark?: number[] | null;
   openPnl?: number | null;
   openDirection?: 'long' | 'short' | null;
+  openLeverage?: number | null;
   lastPositionPnl?: number | null;
   lastPositionDirection?: 'long' | 'short' | null;
+  lastPositionLeverage?: number | null;
   lastDecisionTs?: number | null;
   lastDecision?: {
     action?: string;
@@ -88,6 +90,7 @@ type PositionOverlay = {
   entryTime: number | null;
   exitTime?: number | null;
   pnlPct?: number | null;
+  leverage?: number | null;
   entryPrice?: number | null;
   exitPrice?: number | null;
   entryDecision?: DecisionBrief | null;
@@ -490,6 +493,15 @@ export default function Home() {
   };
 
   const current = symbols[active] ? tabData[symbols[active]] : null;
+  const hasLastDecision =
+    !!(
+      current &&
+      ('lastDecision' in current ||
+        'lastDecisionTs' in current ||
+        'lastPrompt' in current ||
+        'lastMetrics' in current ||
+        'lastBiasTimeframes' in current)
+    );
   const hasDetails =
     !!(
       current?.evaluation.what_went_well?.length ||
@@ -620,15 +632,22 @@ export default function Home() {
                       </div>
                       <p className="mt-1 text-xs text-slate-500">
                         {typeof current.lastPositionPnl === 'number' ? (
-                          <span className="flex items-center gap-1">
-                            direction –
-                            {current.lastPositionDirection ? (
-                              <span
-                                className={`${
-                                  current.lastPositionDirection === 'long' ? 'text-emerald-600' : 'text-rose-600'
-                                }`}
-                              >
-                                {current.lastPositionDirection}
+                          <span className="flex flex-wrap items-center gap-2">
+                            <span className="flex items-center gap-1">
+                              direction –
+                              {current.lastPositionDirection ? (
+                                <span
+                                  className={`${
+                                    current.lastPositionDirection === 'long' ? 'text-emerald-600' : 'text-rose-600'
+                                  }`}
+                                >
+                                  {current.lastPositionDirection}
+                                </span>
+                              ) : null}
+                            </span>
+                            {typeof current.lastPositionLeverage === 'number' ? (
+                              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
+                                {current.lastPositionLeverage.toFixed(0)}x leverage
                               </span>
                             ) : null}
                           </span>
@@ -661,11 +680,18 @@ export default function Home() {
                       </div>
                       <p className="mt-1 text-xs text-slate-500">
                         {typeof current.openPnl === 'number' ? (
-                          <span className="flex items-center gap-1">
-                            direction –
-                            {current.openDirection ? (
-                              <span className={current.openDirection === 'long' ? 'text-emerald-600' : 'text-rose-600'}>
-                                {current.openDirection}
+                          <span className="flex flex-wrap items-center gap-2">
+                            <span className="flex items-center gap-1">
+                              direction –
+                              {current.openDirection ? (
+                                <span className={current.openDirection === 'long' ? 'text-emerald-600' : 'text-rose-600'}>
+                                  {current.openDirection}
+                                </span>
+                              ) : null}
+                            </span>
+                            {typeof current.openLeverage === 'number' ? (
+                              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
+                                {current.openLeverage.toFixed(0)}x leverage
                               </span>
                             ) : null}
                           </span>
@@ -690,6 +716,8 @@ export default function Home() {
                     <div ref={overlayLayerRef} className="pointer-events-none absolute inset-0">
                       {renderedOverlays.map((pos) => {
                         const profitable = typeof pos.pnlPct === 'number' ? pos.pnlPct >= 0 : null;
+                        const pnlLabel = typeof pos.pnlPct === 'number' ? `${pos.pnlPct.toFixed(1)}%` : null;
+                        const leverageLabel = typeof pos.leverage === 'number' ? `${pos.leverage.toFixed(0)}x` : null;
                         const fill =
                           profitable === null
                             ? 'rgba(148,163,184,0.08)'
@@ -705,11 +733,11 @@ export default function Home() {
                         return (
                           <div
                             key={pos.id}
-                          className="absolute inset-y-3 rounded-md shadow-[inset_0_0_0_1px_rgba(0,0,0,0.04)]"
-                          style={{ left: pos.left, width: pos.width, background: fill, pointerEvents: 'auto' }}
-                          onMouseEnter={() => {
-                            setHoveredOverlay(pos);
-                            setHoverX(pos.left + pos.width / 2);
+                            className="absolute inset-y-3 rounded-md shadow-[inset_0_0_0_1px_rgba(0,0,0,0.04)]"
+                            style={{ left: pos.left, width: pos.width, background: fill, pointerEvents: 'auto' }}
+                            onMouseEnter={() => {
+                              setHoveredOverlay(pos);
+                              setHoverX(pos.left + pos.width / 2);
                             }}
                             onMouseLeave={() => {
                               setHoveredOverlay(null);
@@ -728,6 +756,11 @@ export default function Home() {
                               <div className="absolute top-0 bottom-0 w-[2px]" style={{ right: 0, backgroundColor: stroke }} />
                             ) : (
                               <div className="absolute top-0 bottom-0 w-[2px]" style={{ right: 0, backgroundColor: 'rgba(148,163,184,0.8)' }} />
+                            )}
+                            {(pnlLabel || leverageLabel) && (
+                              <div className="pointer-events-none absolute left-2 top-2 rounded-full bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-slate-700 shadow-sm">
+                                {[pnlLabel, leverageLabel].filter(Boolean).join(' · ')}
+                              </div>
                             )}
                             <div className="pointer-events-none absolute right-1 -top+4 rounded-full bg-white/90 p-2 shadow-sm ">
                               {pos.side === 'long' ? (
@@ -773,6 +806,19 @@ export default function Home() {
                             <div className="mt-1 text-[10px] uppercase tracking-wide text-slate-500">
                               {hoveredOverlay.side || 'position'} · entry {formatOverlayTime(hoveredOverlay.entryTime)}
                               {hoveredOverlay.exitTime ? ` · exit ${formatOverlayTime(hoveredOverlay.exitTime)}` : ''}
+                            </div>
+                            <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-600">
+                              {typeof hoveredOverlay.leverage === 'number' ? (
+                                <span className="font-semibold text-slate-800">
+                                  {hoveredOverlay.leverage.toFixed(0)}x leverage
+                                </span>
+                              ) : null}
+                              {typeof hoveredOverlay.entryPrice === 'number' ? (
+                                <span>Entry {hoveredOverlay.entryPrice.toFixed(2)}</span>
+                              ) : null}
+                              {typeof hoveredOverlay.exitPrice === 'number' ? (
+                                <span>Exit {hoveredOverlay.exitPrice.toFixed(2)}</span>
+                              ) : null}
                             </div>
 
                             {hoveredOverlay.entryDecision && (
@@ -820,7 +866,7 @@ export default function Home() {
                 </div>
               )}
 
-              {current.lastDecision && (
+              {hasLastDecision && (
                 <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
@@ -832,7 +878,7 @@ export default function Home() {
                       ) : null}
                     </div>
                     <div className="flex items-center gap-2">
-                      {current.lastDecision.signal_strength && (
+                      {current.lastDecision?.signal_strength && (
                         <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
                           Strength: {current.lastDecision.signal_strength}
                         </span>
@@ -842,14 +888,14 @@ export default function Home() {
                   <div className="mt-3 text-sm text-slate-800">
                     Action:{' '}
                     <span className="font-semibold text-sky-700">
-                      {(current.lastDecision.action || '').toString() || '—'}
+                      {((current.lastDecision as any)?.action || '').toString() || '—'}
                     </span>
-                    {current.lastDecision.summary ? ` · ${current.lastDecision.summary}` : ''}
+                    {(current.lastDecision as any)?.summary ? ` · ${(current.lastDecision as any).summary}` : ''}
                   </div>
-                  {current.lastDecision.reason ? (
+                  {(current.lastDecision as any)?.reason ? (
                     <p className="mt-2 text-sm text-slate-700 whitespace-pre-wrap">
                       <span className="font-semibold text-slate-800">Reason: </span>
-                      {current.lastDecision.reason}
+                      {(current.lastDecision as any).reason}
                     </p>
                   ) : null}
                   <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">

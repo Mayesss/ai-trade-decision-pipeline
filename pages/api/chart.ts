@@ -134,6 +134,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             pnlPct: Number.isFinite(pnlVal) ? pnlVal : null,
             entryPrice: Number(open.entryPrice) || null,
             exitPrice: null,
+            leverage: typeof open.leverage === 'number' ? open.leverage : null,
           };
         }
       } catch (err) {
@@ -152,6 +153,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         pnlPct: Number.isFinite(p.pnlPct) ? p.pnlPct : null,
         entryPrice: p.entryPrice ?? null,
         exitPrice: p.exitPrice ?? null,
+        leverage: p.leverage ?? null,
         entryDecision: findNearestDecision(p.entryTimestamp),
         exitDecision: findNearestDecision(p.exitTimestamp),
       }));

@@ -16,8 +16,10 @@ type EnrichedEntry = {
   pnlSpark?: number[] | null;
   openPnl?: number | null;
   openDirection?: 'long' | 'short' | null;
+  openLeverage?: number | null;
   lastPositionPnl?: number | null;
   lastPositionDirection?: 'long' | 'short' | null;
+  lastPositionLeverage?: number | null;
   lastDecisionTs?: number | null;
   lastDecision?: any;
   lastMetrics?: any;
@@ -48,8 +50,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let pnlSpark: number[] | null | undefined = null;
       let openPnl: number | null | undefined = null;
       let openDirection: 'long' | 'short' | null | undefined = null;
+      let openLeverage: number | null | undefined = null;
       let lastPositionPnl: number | null | undefined = null;
       let lastPositionDirection: 'long' | 'short' | null | undefined = null;
+      let lastPositionLeverage: number | null | undefined = null;
       let lastDecisionTs: number | null | undefined = null;
       let lastDecision: any = null;
       let lastMetrics: any = null;
@@ -71,6 +75,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           lastPrompt = latest.prompt ?? null;
           lastBiasTimeframes = latest.biasTimeframes ?? null;
         }
+        // Get latest leverage we set/applied from history (execResult or aiDecision hint)
+        const leverageFromHistory = history
+          .map((h) => {
+            const lev =
+              Number((h.execResult as any)?.leverage) ||
+              Number((h.aiDecision as any)?.leverage) ||
+              Number((h.execResult as any)?.targetLeverage);
+            return Number.isFinite(lev) && lev > 0 ? lev : null;
+          })
+          .find((v) => v !== null);
 
         const roiRes = await fetchRealizedRoi(symbol, 24);
         pnl24h = Number.isFinite(roiRes.sumPct as number) ? (roiRes.sumPct as number) : null;
@@ -110,6 +124,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             avgLossPct = losses.length
               ? losses.reduce((acc, w) => acc + (w.pnlPct as number), 0) / losses.length
               : null;
+            // Pick the most recent window that has leverage info
+            const lastWithLev = lastWindows
+              .slice()
+              .reverse()
+              .find((w) => Number.isFinite(w.leverage as number));
+            lastPositionLeverage =
+              lastWithLev && Number.isFinite(lastWithLev.leverage as number)
+                ? (lastWithLev.leverage as number)
+                : leverageFromHistory ?? null;
           }
         } catch (err) {
           console.warn(`Could not fetch sparkline PnL for ${symbol}:`, err);
@@ -122,9 +145,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             const val = Number(raw);
             openPnl = Number.isFinite(val) ? val : null;
             openDirection = pos.holdSide ?? null;
+            openLeverage = Number.isFinite(pos.leverage as number) ? (pos.leverage as number) : null;
           } else {
             openPnl = null;
             openDirection = null;
+            openLeverage = null;
           }
         } catch (err) {
           console.warn(`Could not fetch open PnL for ${symbol}:`, err);
@@ -158,8 +183,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         pnlSpark,
         openPnl,
         openDirection,
+        openLeverage,
         lastPositionPnl,
         lastPositionDirection,
+        lastPositionLeverage,
         evaluationTs,
         lastBiasTimeframes,
         lastDecisionTs,

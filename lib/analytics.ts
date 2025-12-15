@@ -27,6 +27,7 @@ export type PositionInfo =
           available?: string;
           total?: string;
           currentPnl?: string;
+          leverage?: number | null;
       };
 
 export type PositionWindow = {
@@ -42,6 +43,7 @@ export type PositionWindow = {
     pnlGross?: number | null; // gross before fees if available
     pnlGrossPct?: number | null; // gross pct
     notional?: number | null;
+    leverage?: number | null;
 };
 
 type OBLevel = { price: number; size: number };
@@ -124,6 +126,8 @@ type RawPosition = {
     total?: string;
     markPrice?: string;
     leverage?: string | number;
+    marginLeverage?: string | number;
+    lever?: string | number;
     unrealizedPL?: string | number;
 };
 
@@ -140,6 +144,9 @@ export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
         return bSize - aSize;
     })[0];
 
+    const levRaw = Number(chosen.leverage ?? chosen.marginLeverage ?? chosen.lever);
+    const leverage = Number.isFinite(levRaw) && levRaw > 0 ? levRaw : null;
+
     return {
         status: 'open',
         symbol,
@@ -151,6 +158,7 @@ export async function fetchPositionInfo(symbol: string): Promise<PositionInfo> {
         available: chosen.available,
         total: chosen.total,
         currentPnl: calculatePnLPercent(chosen),
+        leverage,
     };
 }
 function calculatePnLPercent(data: RawPosition): string {
@@ -208,6 +216,17 @@ export async function fetchRecentPositionWindows(symbol: string, hours = 24): Pr
                 const pnlGrossPct = Number.isFinite(pnlGross) && notional > 0 ? (pnlGross / notional) * 100 : null;
                 const sideRaw = (it.holdSide ?? it.side ?? it.direction ?? '').toLowerCase();
                 const side = sideRaw === 'long' || sideRaw === 'short' ? sideRaw : null;
+                const levRaw = Number(it.leverage ?? it.marginLeverage ?? it.lever);
+                let leverage = Number.isFinite(levRaw) && levRaw > 0 ? levRaw : null;
+                if ((leverage === null || leverage === 0) && Number.isFinite(notional) && notional! > 0) {
+                    const marginVal = num(
+                        it.margin ?? it.marginAmount ?? it.marginValue ?? it.fixedMargin ?? it.cMargin,
+                        NaN,
+                    );
+                    if (Number.isFinite(marginVal) && marginVal > 0) {
+                        leverage = notional! / marginVal;
+                    }
+                }
                 const id = String(
                     it.id ??
                         it.positionId ??
@@ -229,6 +248,7 @@ export async function fetchRecentPositionWindows(symbol: string, hours = 24): Pr
                     pnlPct,
                     pnlGrossPct,
                     notional: Number.isFinite(notional) ? notional : null,
+                    leverage,
                 };
             })
             .filter((p) => {
