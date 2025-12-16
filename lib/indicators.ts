@@ -183,7 +183,7 @@ function deriveLevelState(price: number, levelPrice: number, atr: number, side: 
     return 'rejected';
 }
 
-function computeSRLevels(candles: any[], atr: number, timeframe: string): SRLevels | undefined {
+export function computeSRLevels(candles: any[], atr: number, timeframe: string): SRLevels | undefined {
     if (!Array.isArray(candles) || candles.length < 20) return undefined;
     const lookback = 150;
     const swings = computeSwingLevels(candles, lookback);
