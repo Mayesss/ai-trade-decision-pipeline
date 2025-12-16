@@ -1,163 +1,92 @@
-# 🤖 Bitget AI Decision Worker
+# AI Trade Decision Pipeline
 
-A Cloudflare Worker that connects to the **Bitget** futures API, analyzes market data with an **AI model (OpenAI-compatible)**, and produces trade decisions (`BUY`, `SELL`, `HOLD`, `CLOSE`) — optionally executing simulated or real trades.
-
----
-
-## ⚙️ Overview
-
-This Worker:
-- Fetches Bitget market data (ticker, candles, trades, order book, funding, OI)
-- Computes analytics (CVD, VWAP, RSI, EMA trends, liquidity map)
-- Summarizes crypto sentiment from **CoinDesk**
-- Prompts an AI model (e.g., `gpt-4o-mini`) to decide an action
-- Optionally places a **dry-run or live** market order on Bitget
-- Saves every decision in Cloudflare KV storage for history
+Next.js app that runs an AI-driven trading loop for Bitget futures: pull market data, compute flow/indicator gates, ask an OpenAI-compatible model for an action, optionally place the trade, store the decision history, and render a dashboard with PnL, prompts, and aspect evaluations.
 
 ---
 
-## 🧩 Prerequisites
+## What’s Inside
+- **Next.js API routes** for analysis (`/api/analyze`, `/api/analyzeMultiple`), AI-driven evaluations (`/api/evaluate`), history/PNL enrichment (`/api/evaluations`, `/api/rest-history`, `/api/chart`), and health/debug helpers.
+- **Bitget integration** for market data, positions, and live order placement (dry-run by default).
+- **Signal stack**: order-flow analytics, multi-timeframe indicators (context/macro/primary/micro), support/resistance levels, momentum/extension gates, and CoinDesk news sentiment.
+- **LLM prompts** built in `lib/ai.ts` with guardrails and momentum overrides; responses are persisted for replay and review.
+- **Dashboard** (`pages/index.tsx`) showing latest decisions, prompts, aspect ratings, PnL, open positions, and chart overlays of recent trades.
+- **KV storage** (Upstash-compatible REST) for decision history, evaluations, and cached news (7d TTL for history, 1h for news).
 
-- [Node.js ≥ 18](https://nodejs.org/)
-- [Cloudflare Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/)
-- A [Cloudflare account](https://dash.cloudflare.com/)
-- A **Bitget API key** (with trading enabled)
-- An **OpenAI API key** (or proxy-compatible AI endpoint)
-- *(optional)* A CoinDesk API key for sentiment data
+## Requirements
+- Node.js 18+ (matches Next 16)
+- Bitget API key (futures) with trading permissions
+- OpenAI-compatible API key (used by `callAI`)
+- CoinDesk API key (required for news sentiment)
+- Upstash/Redis REST endpoint + token for KV (`KV_REST_API_URL`, `KV_REST_API_TOKEN`)
 
----
-
-## 🚀 Quick Setup
-
-### 1️⃣ Install Wrangler
-
+## Setup
+1) Install deps:
 ```bash
-npm install -g wrangler
-Check:
+npm install
+```
 
-bash
-Code kopieren
-wrangler --version
-2️⃣ Log in to Cloudflare
-bash
-Code kopieren
-wrangler login
-3️⃣ Project Structure
-cpp
-Code kopieren
-bitget-ai-decision-worker/
-│
-├── wrangler.toml
-├── src/
-│   └── worker.ts
-├── README.md
-└── package.json  (optional)
-4️⃣ Configure wrangler.toml
-Example:
+2) Create `.env.local` with your secrets:
+```bash
+# Bitget
+BITGET_API_KEY=...
+BITGET_API_SECRET=...
+BITGET_API_PASSPHRASE=...
 
-toml
-Code kopieren
-name = "bitget-ai-decision-worker"
-main = "src/worker.ts"
-compatibility_date = "2025-11-02"
-compatibility_flags = ["nodejs_compat"]
+# AI
+OPENAI_API_KEY=...
 
-[vars]
-BITGET_ACCOUNT_TYPE = "usdt-futures"
-AI_MODEL = "gpt-4o-mini"
-AI_BASE_URL = "https://api.openai.com/v1"
-MARGIN_MODE = "crossed"      # or "isolated"
-DEFAULT_LEVERAGE = "1"       # 1x leverage by default
+# News
+COINDESK_API_KEY=...
 
-[kv_namespaces]
-binding = "DECISIONS"
-id = "<your_kv_namespace_id>"
-5️⃣ Create the KV namespace
-bash
-Code kopieren
-wrangler kv:namespace create "DECISIONS"
-Copy the generated ID and paste it into the [kv_namespaces] section of your wrangler.toml.
+# KV (Upstash REST)
+KV_REST_API_URL=https://...
+KV_REST_API_TOKEN=...
 
-6️⃣ Set secrets (secure environment variables)
-Store credentials safely with Wrangler (they won’t appear in your code):
+# Optional
+TAKER_FEE_RATE=0.0006          # used in prompts/edge checks
+# BITGET_ACCOUNT_TYPE is set in lib/constants.ts (default: usdt-futures)
+# AI_MODEL and AI_BASE_URL are set in lib/constants.ts (default: gpt-4.1-mini @ api.openai.com)
+```
 
-bash
-Code kopieren
-wrangler secret put BITGET_API_KEY
-wrangler secret put BITGET_API_SECRET
-wrangler secret put BITGET_API_PASSPHRASE
-wrangler secret put OPENAI_API_KEY
-wrangler secret put COINDESK_API_KEY   # optional
-7️⃣ Test locally
-Start the dev server:
+3) Run the app:
+```bash
+npm run dev
+# open http://localhost:3000
+```
 
-bash
-Code kopieren
-wrangler dev
-Visit http://localhost:8787 — you should see:
+Build/start:
+```bash
+npm run build
+npm run start
+```
 
-arduino
-Code kopieren
-AI Trade Decision Worker running ✅
-Health check:
+## Core API Routes (quick reference)
+- `POST /api/analyze` — run the pipeline for one symbol. Body fields: `symbol` (e.g., `ETHUSDT`), `timeFrame` (default `1H`), `microTimeFrame` (`15m`), `macroTimeFrame` (`4H`), `contextTimeFrame` (`1D`), `dryRun` (defaults to `true`), `notional` (USDT sizing). Persists prompt, AI decision, metrics, and optional exec result.
+- `POST /api/analyzeMultiple` — same as above, but concurrent over a list of symbols with built-in rate limiting/backoff.
+- `POST /api/evaluate` — LLM critique of recent decisions for a symbol; saves the latest evaluation used by the dashboard.
+- `GET /api/evaluations` — aggregated dashboard payload: last evaluation, last decision/prompt/metrics, open PnL, 24h realized PnL, win-rate sparkline, bias timeframes.
+- `GET /api/chart?symbol=...&timeframe=15m` — candles + markers + position overlays for the dashboard.
+- `GET /api/rest-history?symbol=...&limit=...` — raw stored decision history (KV).
+- `GET /api/health` — liveness; `GET /api/bitget-ping` — Bitget connectivity; `GET /api/debug-env-values` — redacted env status for debugging.
 
-bash
-Code kopieren
-curl http://localhost:8787/health
-Trigger an analysis (dry-run):
+**Dry-run vs live trades:** `dryRun` defaults to `true`. Set `dryRun:false` to place real market orders on Bitget (uses isolated USDT futures and clamps leverage 1–5x).
 
-bash
-Code kopieren
-curl -X POST http://localhost:8787/analyze \
-     -H "Content-Type: application/json" \
-     -d '{"symbol":"BTCUSDT","dryRun":true}'
-8️⃣ Deploy to Cloudflare
-When it works locally:
+## Data Flow
+1) **Analyze** pulls Bitget market data (ticker, candles, order book, funding, OI, trades optional) + news sentiment, computes indicators/analytics, builds the prompt, calls the LLM, and (optionally) executes the trade.  
+2) The decision, snapshot, prompt, and execution result are appended to KV history.  
+3) **Evaluate** replays recent history through another LLM to score data quality, action logic, guardrails, etc., then stores a single latest evaluation per symbol.  
+4) The dashboard consumes `/api/evaluations` and `/api/chart` to render PnL, prompts, biases, aspect ratings, and recent position overlays.
 
-bash
-Code kopieren
-wrangler deploy
-You’ll get a live URL like:
+## Frontend Notes
+- UI lives in `pages/index.tsx`; Tailwind 4 utility classes are inlined (no config required).
+- Charts use `lightweight-charts` with custom overlays; resize-safe.
+- If no evaluations are present, run `POST /api/analyze` then `POST /api/evaluate` to seed data before opening the page.
 
-arduino
-Code kopieren
-https://bitget-ai-decision-worker.<yourname>.workers.dev
+## Deployment
+- Vercel-ready (`vercel.json` routes `/api/*` to Next API handlers). Provide the same env vars in Vercel’s dashboard or your host of choice.
+- KV REST endpoint/token must be reachable from the runtime; Bitget/AI/News calls require outbound network access.
 
-🧠 Endpoints
-| Method | Path                           | Description                             |
-| ------ | ------------------------------ | --------------------------------------- |
-| `GET`  | `/`                            | Basic status page                       |
-| `GET`  | `/health`                      | Health check                            |
-| `POST` | `/analyze`                     | Fetch data, run AI, and decide          |
-| `POST` | `/reset`                       | Clear KV storage (optionally by symbol) |
-| `GET`  | `/lastDecision?symbol=BTCUSDT` | Get last stored decision                |
-| `GET`  | `/history`                     | (stub) future paging support            |
-| `GET`  | `/history`                     | (stub) future paging support            |
-| `GET`  | `/bitget-auth-test`            | Check bitget auth                       |
-| `GET`  | `/debug-env`                   | Check env variables                     |
-
-## TODOS
-
-- herausfinden was das beste KI-modell zum entschiedigen ist
-- Data feed, text oder json?
-
-
-
- "evaluation": {
-        "overview": "The trading decisions for BTCUSDT reflect a cautious approach in a bearish market. The actions taken were generally aligned with the market conditions, but there were instances of conflicting signals that could have been better addressed.",
-        "what_went_well": [
-            "The decision to close short positions when adverse flow was detected was prudent, minimizing potential losses.",
-            "Selling actions were consistent with the overall bearish trend, indicating a good understanding of market dynamics.",
-            "The use of signal strength and market metrics to guide decisions shows a structured approach to trading."
-        ],
-        "issues": [
-            "There were instances where the signal strength was medium or low, yet actions were taken that could have been reconsidered, such as holding in a downtrend with weak buying pressure.",
-            "The decision to sell when the market was already showing signs of reversal could have been better timed, as indicated by the adverse flow against the position."
-        ],
-        "improvements": [
-            "Enhance the decision-making framework to incorporate a more robust analysis of signal strength, especially when it is low or medium, to avoid unnecessary trades.",
-            "Implement a more dynamic approach to closing positions, considering not just the immediate market snapshot but also potential reversal signals more comprehensively.",
-            "Consider using additional indicators or filters to confirm bearish trends before executing sell orders, especially in volatile conditions."
-        ],
-        "confidence": "MEDIUM"
-    }
+## Troubleshooting
+- `GET /api/debug-env-values` to confirm env vars are detected.
+- `GET /api/bitget-ping` to verify Bitget credentials/connectivity.
+- Watch server logs for KV errors (missing `KV_REST_API_URL`/`KV_REST_API_TOKEN`) or CoinDesk auth failures.
