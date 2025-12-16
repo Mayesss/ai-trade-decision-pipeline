@@ -3,6 +3,41 @@
 import { COINDESK_API_BASE, COINDESK_NEWS_LIST_PATH } from './constants';
 
 // ------------------------------
+// KV cache (1h TTL)
+// ------------------------------
+
+const KV_REST_API_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
+const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN || '';
+const NEWS_CACHE_TTL_SECONDS = 60 * 60; // 1 hour
+
+function ensureKvConfig() {
+    return KV_REST_API_URL && KV_REST_API_TOKEN;
+}
+
+async function kvGet(key: string): Promise<string | null> {
+    if (!ensureKvConfig()) return null;
+    const res = await fetch(`${KV_REST_API_URL}/GET/${encodeURIComponent(key)}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${KV_REST_API_TOKEN}` },
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) return null;
+    return data.result ?? null;
+}
+
+async function kvSetEx(key: string, ttlSeconds: number, value: string) {
+    if (!ensureKvConfig()) return;
+    await fetch(`${KV_REST_API_URL}/SETEX/${encodeURIComponent(key)}/${ttlSeconds}/${encodeURIComponent(value)}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${KV_REST_API_TOKEN}` },
+    });
+}
+
+function newsCacheKey(base: string) {
+    return `news:${base.toUpperCase()}`;
+}
+
+// ------------------------------
 // CoinDesk API helpers
 // ------------------------------
 
@@ -87,6 +122,23 @@ export async function fetchNewsWithHeadlines(
 ): Promise<{ sentiment: Sentiment | null; headlines: string[] }> {
     const base = baseFromSymbol(symbolOrBase);
     const listPath = COINDESK_NEWS_LIST_PATH || '/news/v1/article/list';
+    const cacheKey = newsCacheKey(base);
+
+    try {
+        const cached = await kvGet(cacheKey);
+        if (cached) {
+            const parsed = JSON.parse(cached);
+            const ageMs = Date.now() - Number(parsed?.timestamp || 0);
+            if (Number.isFinite(ageMs) && ageMs < 59 * 60 * 1000) {
+                return {
+                    sentiment: parsed?.sentiment ?? null,
+                    headlines: Array.isArray(parsed?.headlines) ? parsed.headlines : [],
+                };
+            }
+        }
+    } catch (err) {
+        console.warn('Failed to read news cache:', err);
+    }
 
     const query = {
         categories: base,
@@ -108,5 +160,14 @@ export async function fetchNewsWithHeadlines(
               .slice(0, 5)
               .map((a: Article) => a.TITLE)
         : [];
+    try {
+        await kvSetEx(
+            cacheKey,
+            NEWS_CACHE_TTL_SECONDS,
+            JSON.stringify({ timestamp: Date.now(), sentiment, headlines }),
+        );
+    } catch (err) {
+        console.warn('Failed to write news cache:', err);
+    }
     return { sentiment, headlines };
 }
