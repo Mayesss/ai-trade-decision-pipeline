@@ -75,6 +75,13 @@ function formatNumber(n: any, digits = 4) {
     return Number.isFinite(num) ? Number(num.toFixed(digits)) : null;
 }
 
+function pickParam(req: NextApiRequest, key: string, fallback?: any) {
+    const source = req.method === 'GET' ? req.query : req.body ?? {};
+    const raw = (source as any)?.[key];
+    if (Array.isArray(raw)) return raw[0] ?? fallback;
+    return raw ?? fallback;
+}
+
 function levelOrDefault(level?: TimeframeMetrics['sr'], side?: 'support' | 'resistance') {
     if (!level || !side) return { price: null, dist: null, strength: null, state: 'rejected' };
     const descriptor = side === 'support' ? level.support : level.resistance;
@@ -321,14 +328,14 @@ async function fetchTimeframeMetrics(symbol: string) {
 }
 
 async function handler(req: NextApiRequest, res: NextApiResponse) {
-    if (req.method !== 'POST') {
-        return res.status(405).json({ error: 'Method Not Allowed', message: 'Use POST' });
+    if (req.method !== 'POST' && req.method !== 'GET') {
+        return res.status(405).json({ error: 'Method Not Allowed', message: 'Use POST or GET' });
     }
 
-    const symbol = String(req.body?.symbol || '').toUpperCase();
-    const mode = String(req.body?.mode || 'live');
+    const symbol = String(pickParam(req, 'symbol', '') || '').toUpperCase();
+    const mode = String(pickParam(req, 'mode', 'live'));
     const horizon = 60;
-    const notional = Number(req.body?.notional || 50);
+    const notional = Number(pickParam(req, 'notional', 50));
 
     if (!symbol) {
         return res.status(400).json({ error: 'symbol_required' });

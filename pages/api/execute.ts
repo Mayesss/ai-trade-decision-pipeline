@@ -34,6 +34,13 @@ function toNum(x: any) {
     return Number.isFinite(n) ? n : NaN;
 }
 
+function pickParam(req: NextApiRequest, key: string, fallback?: any) {
+    const source = req.method === 'GET' ? req.query : req.body ?? {};
+    const raw = (source as any)?.[key];
+    if (Array.isArray(raw)) return raw[0] ?? fallback;
+    return raw ?? fallback;
+}
+
 async function fetchCandles(symbol: string, granularity: string, limit: number) {
     const productType = resolveProductType();
     const cs = await bitgetFetch('GET', '/api/v2/mix/market/candles', {
@@ -137,11 +144,12 @@ function profitActive(pos: any, last: number) {
 }
 
 async function handler(req: NextApiRequest, res: NextApiResponse) {
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed', message: 'Use POST' });
+    if (req.method !== 'POST' && req.method !== 'GET') return res.status(405).json({ error: 'Method Not Allowed', message: 'Use POST or GET' });
 
-    const symbol = String(req.body?.symbol || '').toUpperCase();
-    const notional = Number(req.body?.notional || 50);
-    const dryRun = req.body?.dryRun !== false;
+    const symbol = String(pickParam(req, 'symbol', '') || '').toUpperCase();
+    const notional = Number(pickParam(req, 'notional', 50));
+    const rawDryRun = pickParam(req, 'dryRun', pickParam(req, 'dryrun', 'true'));
+    const dryRun = String(rawDryRun).toLowerCase() !== 'false';
 
     if (!symbol) return res.status(400).json({ error: 'symbol_required' });
 
