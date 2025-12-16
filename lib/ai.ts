@@ -1,6 +1,6 @@
 // lib/ai.ts
 
-import { AI_BASE_URL, AI_MODEL, TRADE_WINDOW_MINUTES } from './constants';
+import { AI_BASE_URL, AI_MODEL, DEFAULT_TAKER_FEE_RATE, TRADE_WINDOW_MINUTES } from './constants';
 import type { MultiTFIndicators } from './indicators';
 import { setEvaluation, getEvaluation } from './utils';
 
@@ -515,7 +515,7 @@ export function buildPrompt(
     // Costs (educate the model)
     const taker_fee_rate_side = Number.isFinite(position_context?.taker_fee_rate as number)
         ? Math.max(0, Number(position_context?.taker_fee_rate))
-        : 0.00025; // default 2.5 bps per side
+        : DEFAULT_TAKER_FEE_RATE; // default set via env (e.g., 0.0006 = 6 bps per side)
     const taker_round_trip_bps = Number((taker_fee_rate_side * 2 * 10000).toFixed(2));
     const slippage_bps = 2;
     const total_cost_bps = Number((taker_round_trip_bps + slippage_bps).toFixed(1));
