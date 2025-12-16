@@ -41,7 +41,13 @@ function deriveLeverage(decision: TradeDecision): number | null {
     const explicit = clampLeverage((decision as any)?.leverage);
     if (explicit) return explicit;
 
-    const strength = String((decision as any)?.signal_strength || '').toUpperCase();
+    const strengthRaw = (decision as any)?.signal_strength;
+    const strengthNum = Number(strengthRaw);
+    if (Number.isFinite(strengthNum)) {
+        const mapped = clampLeverage(strengthNum);
+        if (mapped) return mapped;
+    }
+    const strength = String(strengthRaw || '').toUpperCase();
     if (decision.action === 'BUY' || decision.action === 'SELL' || decision.action === 'REVERSE') {
         if (strength === 'HIGH') return 4;
         if (strength === 'MEDIUM') return 3;
