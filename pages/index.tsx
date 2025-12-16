@@ -653,7 +653,7 @@ export default function Home() {
                             </span>
                             {typeof current.lastPositionLeverage === 'number' ? (
                               <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
-                                {current.lastPositionLeverage.toFixed(0)}x leverage
+                                {current.lastPositionLeverage.toFixed(0)}x
                               </span>
                             ) : null}
                           </span>
@@ -697,7 +697,7 @@ export default function Home() {
                             </span>
                             {typeof current.openLeverage === 'number' ? (
                               <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
-                                {current.openLeverage.toFixed(0)}x leverage
+                                {current.openLeverage.toFixed(0)}x
                               </span>
                             ) : null}
                           </span>
@@ -763,18 +763,23 @@ export default function Home() {
                             ) : (
                               <div className="absolute top-0 bottom-0 w-[2px]" style={{ right: 0, backgroundColor: 'rgba(148,163,184,0.8)' }} />
                             )}
-                            {(pnlLabel || leverageLabel) && (
-                              <div className="pointer-events-none absolute left-2 top-2 rounded-full bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-slate-700 shadow-sm">
-                                {[pnlLabel, leverageLabel].filter(Boolean).join(' · ')}
-                              </div>
-                            )}
-                            <div className="pointer-events-none absolute right-1 -top+4 rounded-full bg-white/90 p-2 shadow-sm ">
+                            <div className="pointer-events-none absolute right-1 top-1 rounded-full bg-white/90 p-2 shadow-sm">
                               {pos.side === 'long' ? (
                                 <ArrowUpRight className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
                               ) : pos.side === 'short' ? (
                                 <ArrowDownRight className="h-3.5 w-3.5 text-rose-600" aria-hidden="true" />
                               ) : null}
                             </div>
+                            {pnlLabel && (
+                              <div className="pointer-events-none absolute right-1 top-10 rounded-full bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-slate-700 shadow-sm">
+                                {pnlLabel}
+                              </div>
+                            )}
+                            {leverageLabel ? (
+                              <div className="pointer-events-none absolute right-9 top-3.5 rounded-full bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-slate-700 shadow-sm">
+                                {leverageLabel}
+                              </div>
+                            ) : null}
                           </div>
                         );
                       })}
@@ -815,9 +820,7 @@ export default function Home() {
                             </div>
                             <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-600">
                               {typeof hoveredOverlay.leverage === 'number' ? (
-                                <span className="font-semibold text-slate-800">
-                                  {hoveredOverlay.leverage.toFixed(0)}x leverage
-                                </span>
+                                <span className="font-semibold text-slate-800">{hoveredOverlay.leverage.toFixed(0)}x</span>
                               ) : null}
                               {typeof hoveredOverlay.entryPrice === 'number' ? (
                                 <span>Entry {hoveredOverlay.entryPrice.toFixed(2)}</span>

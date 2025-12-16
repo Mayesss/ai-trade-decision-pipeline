@@ -95,6 +95,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         )
         .sort((a, b) => a.time - b.time) || [];
 
+    const leverageFromHistory =
+      history
+        ?.map((h) => {
+          const lev =
+            Number((h.execResult as any)?.leverage) ||
+            Number((h.aiDecision as any)?.leverage) ||
+            Number((h.execResult as any)?.targetLeverage);
+          return Number.isFinite(lev) && lev > 0 ? lev : null;
+        })
+        .find((v) => v !== null) ?? null;
+
     const findNearestDecision = (tsMs?: number | null) => {
       if (!tsMs || !history?.length) return null;
       let best: any = null;
@@ -134,7 +145,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             pnlPct: Number.isFinite(pnlVal) ? pnlVal : null,
             entryPrice: Number(open.entryPrice) || null,
             exitPrice: null,
-            leverage: typeof open.leverage === 'number' ? open.leverage : null,
+            leverage: leverageFromHistory,
           };
         }
       } catch (err) {

@@ -145,7 +145,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             const val = Number(raw);
             openPnl = Number.isFinite(val) ? val : null;
             openDirection = pos.holdSide ?? null;
-            openLeverage = Number.isFinite(pos.leverage as number) ? (pos.leverage as number) : null;
+            openLeverage = leverageFromHistory ?? null;
           } else {
             openPnl = null;
             openDirection = null;
