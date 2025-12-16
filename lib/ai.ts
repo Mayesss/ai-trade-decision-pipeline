@@ -554,6 +554,7 @@ GENERAL RULES
 - **Sign conventions (price_vs_breakeven_pct)**:
   - For longs: price > breakeven → positive (winning); price < breakeven → negative (losing).
   - For shorts: price > breakeven (above) → negative (losing); price < breakeven (below) → positive (winning).
+  - NEVER describe a position as profitable/winning when unrealized_pnl_pct < 0 or when price_vs_breakeven_pct is on the losing side for that direction; call it losing/underwater.
 - **Temporal inertia**: avoid more than one action change (CLOSE/REVERSE) in the same direction within the last 2 calls unless signal_strength stays HIGH and flow_contradiction_score is increasing.
 - **Exit sizing**: Default exit_size_pct = 100 (full close). Use 30–70 when trimming risk (deteriorating but not opposite, near strong level with gains, or flow flip while macro/context still align). Avoid trims <20%; omit when not needed.
 
