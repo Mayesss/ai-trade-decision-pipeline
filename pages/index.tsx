@@ -121,13 +121,14 @@ const formatCompactPrice = (value: number) => {
   return value.toFixed(2);
 };
 
+const CURRENCY_SYMBOL = '₮'; // Tether-style symbol
 const formatUsd = (value: number) => {
   const abs = Math.abs(value);
   const sign = value < 0 ? '-' : '';
   const v = Math.abs(value);
-  if (abs >= 1_000_000) return `${sign}$${(v / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${sign}$${(v / 1_000).toFixed(1)}K`;
-  return `${sign}$${v.toFixed(0)}`;
+  if (abs >= 1_000_000) return `${sign}${CURRENCY_SYMBOL}${(v / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}${CURRENCY_SYMBOL}${(v / 1_000).toFixed(1)}K`;
+  return `${sign}${CURRENCY_SYMBOL}${v.toFixed(0)}`;
 };
 
 const BERLIN_TZ = 'Europe/Berlin';
@@ -595,9 +596,12 @@ export default function Home() {
                             : typeof current.pnl24h === 'number'
                             ? `${current.pnl24h.toFixed(2)}%`
                             : '—'}
-                          {typeof current.pnl24hNet === 'number'
-                            ? ` (${current.pnl24hNet >= 0 ? '+' : ''}${formatUsd(current.pnl24hNet)})`
-                            : ''}
+                          {typeof current.pnl24hNet === 'number' ? (
+                            <span className="ml-1 align-middle text-sm font-medium text-slate-500">
+                              ({current.pnl24hNet >= 0 ? '+' : ''}
+                              {formatUsd(current.pnl24hNet)})
+                            </span>
+                          ) : null}
                         </span>
                       </div>
                       <p className="mt-1 text-xs text-slate-500">
