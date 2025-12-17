@@ -436,7 +436,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 .json({ error: 'plan_validation_failed', attempts: attempts.map((a) => ({ errors: a.errors, raw: a.raw })) });
         }
 
-        const persistResult = await savePlan(symbol, plan);
+        const persistResult = await savePlan(symbol, plan, { system: systemPrompt, user: userPrompt });
 
         return res.status(200).json({
             plan,

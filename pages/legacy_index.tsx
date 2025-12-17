@@ -168,8 +168,6 @@ export default function Home() {
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const overlayLayerRef = useRef<HTMLDivElement | null>(null);
   const chartInstanceRef = useRef<any>(null);
-  const [plan, setPlan] = useState<any>(null);
-  const [lastExec, setLastExec] = useState<any>(null);
 
   const aspectMeta: Record<string, { Icon: LucideIcon; color: string; bg: string }> = {
     data_quality: { Icon: Database, color: 'text-sky-700', bg: 'bg-sky-100' },
@@ -244,41 +242,6 @@ export default function Home() {
       }
     };
     fetchChart();
-  }, [active, symbols]);
-
-  useEffect(() => {
-    const loadPlanAndExec = async () => {
-      const symbol = symbols[active];
-      if (!symbol) {
-        setPlan(null);
-        setLastExec(null);
-        return;
-      }
-      try {
-        const planRes = await fetch(`/api/planLatest?symbol=${symbol}`);
-        if (planRes.ok) {
-          const pj = await planRes.json();
-          setPlan({ ...(pj.plan ?? null), __prompt: pj.prompt ?? null });
-        } else {
-          setPlan(null);
-        }
-      } catch {
-        setPlan(null);
-      }
-
-      try {
-        const execRes = await fetch(`/api/execute?symbol=${symbol}&notional=50`);
-        if (execRes.ok) {
-          const ej = await execRes.json();
-          setLastExec(ej);
-        } else {
-          setLastExec(null);
-        }
-      } catch {
-        setLastExec(null);
-      }
-    };
-    loadPlanAndExec();
   }, [active, symbols]);
 
   useEffect(() => {
@@ -613,92 +576,6 @@ export default function Home() {
             </div>
           ) : current ? (
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-stretch">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 lg:col-span-2">
-                <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Star className="w-4 h-4 text-amber-600" />
-                    <div className="font-semibold text-slate-900">Last Executor Decision (dry-run)</div>
-                  </div>
-                  {lastExec ? (
-                    <div className="space-y-1 text-sm text-slate-700">
-                      <div>Decision: {lastExec.decision}</div>
-                      <div>Reason: {lastExec.reason}</div>
-                      <div>Plan ts: {lastExec.plan_ts}</div>
-                    </div>
-                  ) : (
-                    <div className="text-sm text-slate-500">No execution decision.</div>
-                  )}
-                </div>
-                <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                  <div className="flex items-center justify-between gap-2 mb-2">
-                    <div className="flex items-center gap-2">
-                      <ShieldPlus className="w-4 h-4 text-slate-800" />
-                      <div className="font-semibold text-slate-900">Current Plan</div>
-                    </div>
-                    <button
-                      className="text-[11px] font-semibold text-slate-600 underline"
-                      onClick={() => setShowPrompt((s) => !s)}
-                    >
-                      {showPrompt ? 'Hide prompt' : 'Show prompt'}
-                    </button>
-                  </div>
-                  {plan ? (
-                    <div className="space-y-2 text-sm text-slate-700">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold">Allowed</span>
-                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-800">
-                          {plan.allowed_directions}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold">Risk</span>
-                        <span className="text-xs font-semibold text-slate-700">
-                          {plan.risk_mode} · max lev {plan.max_leverage} · entry {plan.entry_mode}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold">Bias</span>
-                        <span className="flex items-center gap-1 text-xs font-semibold text-slate-700">
-                          <ArrowUpRight className="w-3 h-3 text-emerald-600" />
-                          C:{plan.context_bias}
-                          <ArrowUpRight className="w-3 h-3 text-emerald-600" />
-                          M:{plan.macro_bias}
-                          <ArrowUpRight className="w-3 h-3 text-emerald-600" />
-                          P:{plan.primary_bias}
-                          <ArrowUpRight className="w-3 h-3 text-emerald-600" />
-                          m:{plan.micro_bias}
-                        </span>
-                      </div>
-                      <div className="text-xs text-slate-700">Summary: {plan.summary}</div>
-                      <div className="text-xs text-slate-700">Invalidation: {plan.exit_urgency?.invalidation_notes}</div>
-                      {showPrompt && (
-                        <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-700">
-                          <div>Plan TS: {plan.plan_ts} · Horizon: {plan.horizon_minutes}m</div>
-                          {plan.__prompt ? (
-                            <details className="mt-1">
-                              <summary className="cursor-pointer text-[11px] font-semibold text-slate-600">Show prompt</summary>
-                              <div className="mt-1 space-y-1">
-                                <div className="font-semibold text-[11px] text-slate-700">System</div>
-                                <pre className="whitespace-pre-wrap rounded border border-slate-200 bg-slate-100 p-2 text-[10px] text-slate-800">
-                                  {plan.__prompt.system}
-                                </pre>
-                                <div className="font-semibold text-[11px] text-slate-700">User</div>
-                                <pre className="whitespace-pre-wrap rounded border border-slate-200 bg-slate-100 p-2 text-[10px] text-slate-800">
-                                  {plan.__prompt.user}
-                                </pre>
-                              </div>
-                            </details>
-                          ) : (
-                            <div className="text-[11px] text-slate-500">Prompt not available</div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="text-sm text-slate-500">No plan available.</div>
-                  )}
-                </div>
-              </div>
               <div className="space-y-4 lg:col-span-2">
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 h-full">
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">

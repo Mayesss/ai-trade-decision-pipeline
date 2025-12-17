@@ -40,6 +40,7 @@ async function kvGet(key: string): Promise<string | null> {
 export type StoredPlan = {
     plan: any;
     savedAt: number;
+    prompt?: { system: string; user: string };
 };
 
 export async function readPlan(symbol: string): Promise<StoredPlan | null> {
@@ -55,11 +56,15 @@ export async function readPlan(symbol: string): Promise<StoredPlan | null> {
     }
 }
 
-export async function savePlan(symbol: string, plan: any): Promise<{ persisted: boolean; error?: string }> {
+export async function savePlan(
+    symbol: string,
+    plan: any,
+    prompt?: { system: string; user: string },
+): Promise<{ persisted: boolean; error?: string }> {
     if (!symbol) return { persisted: false, error: 'symbol_missing' };
     if (!kvConfigured()) return { persisted: false, error: 'kv_not_configured' };
     try {
-        const payload = JSON.stringify({ plan, savedAt: Date.now() });
+        const payload = JSON.stringify({ plan, savedAt: Date.now(), prompt });
         await kvSetEx(planKey(symbol), PLAN_TTL_SECONDS, payload);
         return { persisted: true };
     } catch (err) {
