@@ -173,6 +173,33 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             if (now > planTsMs + horizon * 60 * 1000 + graceMs) planStale = true;
         }
 
+        const entriesDisabled =
+            !plan ||
+            planStale ||
+            plan.allowed_directions === 'NONE' ||
+            plan.risk_mode === 'OFF' ||
+            plan.entry_mode === 'NONE';
+
+        if (positionState === 'FLAT' && entriesDisabled) {
+            const reason = !plan ? 'no_plan' : planStale ? 'stale_plan' : 'plan_entries_disabled';
+            return res.status(200).json({
+                ts: asofIso,
+                symbol,
+                plan_ts: plan?.plan_ts || null,
+                plan_stale: planStale,
+                plan_allowed_directions: plan?.allowed_directions,
+                plan_risk_mode: plan?.risk_mode,
+                plan_entry_mode: plan?.entry_mode,
+                position_state: positionState,
+                decision: 'WAIT',
+                reason,
+                orders: [],
+                dryRun,
+                gatesNow: null,
+                skipped_market_fetch: true,
+            });
+        }
+
         // Market snapshot
         const [orderbook, candles1m, candles5m, candles15m, candles30m, candles1h, candles4h] = await Promise.all([
             bitgetFetch('GET', '/api/v2/mix/market/orderbook', {
