@@ -1,0 +1,96 @@
+const KV_REST_API_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
+const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN || '';
+
+const EXEC_LOG_INDEX = 'exec_log:index';
+const EXEC_LOG_PREFIX = 'exec_log';
+const EXEC_LOG_TTL_SECONDS = 3 * 24 * 60 * 60; // 3 days
+const EXEC_LOG_MAX = 60;
+
+export type ExecLogEntry = {
+    symbol: string;
+    timestamp: number;
+    payload: any;
+};
+
+function kvConfigured() {
+    return Boolean(KV_REST_API_URL && KV_REST_API_TOKEN);
+}
+
+async function kvCommand(command: string, ...args: (string | number)[]) {
+    if (!kvConfigured()) throw new Error('Missing KV_REST_API_URL or KV_REST_API_TOKEN');
+    const encodedArgs = args
+        .map((arg) => encodeURIComponent(typeof arg === 'string' ? arg : String(arg)))
+        .join('/');
+    const url = `${KV_REST_API_URL}/${command}${encodedArgs ? `/${encodedArgs}` : ''}`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${KV_REST_API_TOKEN}` },
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || data.message || `KV command failed: ${command}`);
+    return data.result;
+}
+
+async function kvSetEx(key: string, ttlSeconds: number, value: string) {
+    return kvCommand('SETEX', key, ttlSeconds, value);
+}
+
+async function kvGet(key: string): Promise<string | null> {
+    return kvCommand('GET', key);
+}
+
+async function kvZAdd(key: string, score: number, member: string) {
+    return kvCommand('ZADD', key, score, member);
+}
+
+async function kvZRevRange(key: string, start: number, stop: number): Promise<string[]> {
+    const res = await kvCommand('ZREVRANGE', key, start, stop);
+    return Array.isArray(res) ? res : [];
+}
+
+async function kvDel(key: string) {
+    return kvCommand('DEL', key);
+}
+
+async function kvZRemRangeByRank(key: string, start: number, stop: number) {
+    return kvCommand('ZREMRANGEBYRANK', key, start, stop);
+}
+
+function entryKey(symbol: string, ts: number) {
+    return `${EXEC_LOG_PREFIX}:${ts}:${symbol.toUpperCase()}`;
+}
+
+export async function appendExecutionLog(entry: ExecLogEntry) {
+    if (!kvConfigured()) return;
+    const key = entryKey(entry.symbol, entry.timestamp);
+    const payload = JSON.stringify(entry);
+    await Promise.all([
+        kvSetEx(key, EXEC_LOG_TTL_SECONDS, payload),
+        kvZAdd(EXEC_LOG_INDEX, entry.timestamp, key),
+    ]);
+    // prune oldest beyond EXEC_LOG_MAX
+    try {
+        const countToRemove = -EXEC_LOG_MAX - 1;
+        await kvZRemRangeByRank(EXEC_LOG_INDEX, 0, countToRemove);
+    } catch {
+        // ignore prune errors
+    }
+}
+
+export async function loadExecutionLogs(symbol: string, limit = 60): Promise<ExecLogEntry[]> {
+    if (!kvConfigured()) return [];
+    const keys = await kvZRevRange(EXEC_LOG_INDEX, 0, limit - 1);
+    const filtered = symbol ? keys.filter((k) => k.endsWith(`:${symbol.toUpperCase()}`)) : keys;
+    const values = await Promise.all(
+        filtered.map(async (k) => {
+            const raw = await kvGet(k);
+            if (!raw) return null;
+            try {
+                return JSON.parse(raw) as ExecLogEntry;
+            } catch {
+                return null;
+            }
+        }),
+    );
+    return values.filter(Boolean) as ExecLogEntry[];
+}

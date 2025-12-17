@@ -6,6 +6,7 @@ import { computeAnalytics, fetchPositionInfo, PositionInfo } from '../../lib/ana
 import { readPlan } from '../../lib/planStore';
 import { readExecState, saveExecState } from '../../lib/execState';
 import { executeDecision } from '../../lib/trading';
+import { appendExecutionLog } from '../../lib/execLog';
 
 type InvalidationRule = {
     tf: string;
@@ -312,6 +313,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 last_action: result.decision,
                 last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
             });
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
             return res.status(200).json(result);
         }
 
@@ -357,6 +363,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         if (positionState !== 'FLAT') {
             result.decision = 'WAIT';
             result.reason = 'holding';
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
             return res.status(200).json(result);
         }
 
@@ -364,6 +375,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         if (entryBlocked) {
             result.decision = baseEntryBlockers.includes('gates_fail') ? 'GATES_FAIL' : 'WAIT';
             result.reason = baseEntryBlockers.join(',');
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
             return res.status(200).json(result);
         }
 
@@ -375,11 +391,21 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         ) {
             result.decision = 'WAIT';
             result.reason = 'recent_exit_cooldown';
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
             return res.status(200).json(result);
         }
         if (execState.last_entry_ts && now - execState.last_entry_ts < ENTRY_COOLDOWN_MS) {
             result.decision = 'WAIT';
             result.reason = 'entry_cooldown';
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
             return res.status(200).json(result);
         }
 
@@ -399,6 +425,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         ) {
             result.decision = 'WAIT';
             result.reason = 'extension_block';
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
             return res.status(200).json(result);
         }
 
@@ -527,6 +558,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
         });
 
+        try {
+            await appendExecutionLog({ symbol, timestamp: now, payload: result });
+        } catch (err) {
+            console.warn('Failed to append execution log:', err);
+        }
         return res.status(200).json(result);
     } catch (err) {
         console.error('Executor error:', err);

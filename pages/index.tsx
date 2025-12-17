@@ -267,10 +267,11 @@ export default function Home() {
       }
 
       try {
-        const execRes = await fetch(`/api/execute?symbol=${symbol}&notional=50`);
+        const execRes = await fetch(`/api/executeHistory?symbol=${symbol}&limit=1`);
         if (execRes.ok) {
           const ej = await execRes.json();
-          setLastExec(ej);
+          const last = Array.isArray(ej.logs) ? ej.logs[0] : null;
+          setLastExec(last?.payload ?? null);
         } else {
           setLastExec(null);
         }
