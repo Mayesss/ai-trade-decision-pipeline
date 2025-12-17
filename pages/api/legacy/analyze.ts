@@ -2,17 +2,17 @@
 export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
-import { fetchMarketBundle, computeAnalytics, fetchPositionInfo, fetchRealizedRoi } from '../../lib/analytics';
-import { calculateMultiTFIndicators } from '../../lib/indicators';
-import { fetchNewsWithHeadlines } from '../../lib/news';
+import { fetchMarketBundle, computeAnalytics, fetchPositionInfo, fetchRealizedRoi } from '../../../lib/analytics';
+import { calculateMultiTFIndicators } from '../../../lib/indicators';
+import { fetchNewsWithHeadlines } from '../../../lib/news';
 
-import { buildPrompt, callAI, computeMomentumSignals } from '../../lib/ai';
-import type { MomentumSignals } from '../../lib/ai';
-import { getGates } from '../../lib/gates';
+import { buildPrompt, callAI, computeMomentumSignals } from '../../../lib/ai';
+import type { MomentumSignals } from '../../../lib/ai';
+import { getGates } from '../../../lib/gates';
 
-import { executeDecision, getTradeProductType } from '../../lib/trading';
-import { composePositionContext } from '../../lib/positionContext';
-import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
+import { executeDecision, getTradeProductType } from '../../../lib/trading';
+import { composePositionContext } from '../../../lib/positionContext';
+import { appendDecisionHistory, loadDecisionHistory } from '../../../lib/legacy/history';
 
 // ------------------------------------------------------------------
 // Small utilities

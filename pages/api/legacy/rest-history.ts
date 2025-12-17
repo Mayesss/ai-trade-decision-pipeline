@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 
-import { clearDecisionHistory, loadDecisionHistory } from '../../lib/history';
+import { clearDecisionHistory, loadDecisionHistory } from '../../../lib/legacy/history';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (req.method == 'POST') {

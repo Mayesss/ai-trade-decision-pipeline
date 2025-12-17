@@ -96,6 +96,19 @@ export async function loadPlanLogs(symbol: string, limit = 60): Promise<PlanLogE
     return values.filter(Boolean) as PlanLogEntry[];
 }
 
+export async function listPlanLogSymbols(limit = 200): Promise<string[]> {
+    if (!kvConfigured()) return [];
+    const stop = limit <= 0 ? -1 : limit - 1;
+    const keys = await kvZRevRange(PLAN_LOG_INDEX, 0, stop);
+    const symbols = new Set<string>();
+    keys.forEach((k) => {
+        const parts = String(k).split(':');
+        const sym = parts[parts.length - 1];
+        if (sym) symbols.add(sym.toUpperCase());
+    });
+    return Array.from(symbols).sort();
+}
+
 export async function clearPlanLogs(symbol?: string) {
     if (!kvConfigured()) return { cleared: false, error: 'kv_not_configured' as const };
     const allKeys = await kvZRevRange(PLAN_LOG_INDEX, 0, -1);
@@ -111,4 +124,3 @@ export async function clearPlanLogs(symbol?: string) {
     }
     return { cleared: true as const };
 }
-

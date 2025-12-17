@@ -1,9 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 
-import { loadDecisionHistory } from '../../lib/history';
-import { callAI } from '../../lib/ai';
-import { AI_MODEL } from '../../lib/constants';
-import { setEvaluation } from '../../lib/utils';
+import { loadDecisionHistory } from '../../../lib/legacy/history';
+import { callAI } from '../../../lib/ai';
+import { AI_MODEL } from '../../../lib/constants';
+import { setEvaluation } from '../../../lib/utils';
 
 function actionStats(items: any[]) {
     return items.reduce(

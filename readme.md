@@ -5,12 +5,13 @@ Next.js app that runs an AI-driven trading loop for Bitget futures: pull market 
 ---
 
 ## What’s Inside
-- **Next.js API routes** for analysis (`/api/analyze`, `/api/analyzeMultiple`), AI-driven evaluations (`/api/evaluate`), history/PNL enrichment (`/api/evaluations`, `/api/rest-history`, `/api/chart`), and health/debug helpers.
+- **Next.js API routes** for plan generation/execution (`/api/plan`, `/api/execute`), plan/execute evaluations (`/api/evaluate_plan`, `/api/evaluate_execute`), history/PNL enrichment (`/api/evaluations`, `/api/rest-history-plan`, `/api/rest-history-execute`, `/api/chart`), and health/debug helpers.
+- **Deprecated legacy endpoints** moved under `/api/legacy/*` (`/api/legacy/analyze`, `/api/legacy/analyzeMultiple`, `/api/legacy/evaluate`, `/api/legacy/rest-history`) and a legacy dashboard at `/legacy`.
 - **Bitget integration** for market data, positions, and live order placement (dry-run by default).
 - **Signal stack**: order-flow analytics, multi-timeframe indicators (context/macro/primary/micro), support/resistance levels, momentum/extension gates, and CoinDesk news sentiment.
 - **LLM prompts** built in `lib/ai.ts` with guardrails and momentum overrides; responses are persisted for replay and review.
-- **Dashboard** (`pages/index.tsx`) showing latest decisions, prompts, aspect ratings, PnL, open positions, and chart overlays of recent trades.
-- **KV storage** (Upstash-compatible REST) for decision history, evaluations, and cached news (7d TTL for history, 1h for news).
+- **Dashboard** (`pages/index.tsx`) showing the current plan, plan/execute evaluations, PnL, open positions, and chart overlays of recent execution events.
+- **KV storage** (Upstash-compatible REST) for plan/executor history, evaluations, and cached news (7d TTL for histories, 1h for news).
 
 ## Requirements
 - Node.js 18+ (matches Next 16)
@@ -61,26 +62,28 @@ npm run start
 ```
 
 ## Core API Routes (quick reference)
-- `POST /api/analyze` — run the pipeline for one symbol. Body fields: `symbol` (e.g., `ETHUSDT`), `timeFrame` (default `1H`), `microTimeFrame` (`15m`), `macroTimeFrame` (`4H`), `contextTimeFrame` (`1D`), `dryRun` (defaults to `true`), `notional` (USDT sizing). Persists prompt, AI decision, metrics, and optional exec result.
-- `POST /api/analyzeMultiple` — same as above, but concurrent over a list of symbols with built-in rate limiting/backoff.
-- `POST /api/evaluate` — LLM critique of recent decisions for a symbol; saves the latest evaluation used by the dashboard.
-- `GET /api/evaluations` — aggregated dashboard payload: last evaluation, last decision/prompt/metrics, open PnL, 24h realized PnL, win-rate sparkline, bias timeframes.
+- `POST /api/plan?symbol=...` — generate an hourly plan (`plan_v1`) and persist it (includes prompt).
+- `POST /api/execute?symbol=...&dryRun=true|false` — deterministic executor that follows the current plan (logs recent runs).
+- `POST /api/evaluate_plan` — LLM critique of plan quality for a symbol; saves the latest plan evaluation.
+- `POST /api/evaluate_execute` — LLM critique of executor quality for a symbol; saves the latest execute evaluation.
+- `GET /api/evaluations` — aggregated dashboard payload: plan/execute evaluations + open PnL + 24h realized PnL + win-rate sparkline.
 - `GET /api/chart?symbol=...&timeframe=15m` — candles + markers + position overlays for the dashboard.
-- `GET /api/rest-history?symbol=...&limit=...` — raw stored decision history (KV).
+- `GET /api/rest-history-plan?symbol=...&limit=...` — raw stored plan history (KV).
+- `GET /api/rest-history-execute?symbol=...&limit=...` — raw stored executor history (KV).
 - `GET /api/health` — liveness; `GET /api/bitget-ping` — Bitget connectivity; `GET /api/debug-env-values` — redacted env status for debugging.
 
 **Dry-run vs live trades:** `dryRun` defaults to `true`. Set `dryRun:false` to place real market orders on Bitget (uses isolated USDT futures and clamps leverage 1–5x).
 
 ## Data Flow
-1) **Analyze** pulls Bitget market data (ticker, candles, order book, funding, OI, trades optional) + news sentiment, computes indicators/analytics, builds the prompt, calls the LLM, and (optionally) executes the trade.  
-2) The decision, snapshot, prompt, and execution result are appended to KV history.  
-3) **Evaluate** replays recent history through another LLM to score data quality, action logic, guardrails, etc., then stores a single latest evaluation per symbol.  
-4) The dashboard consumes `/api/evaluations` and `/api/chart` to render PnL, prompts, biases, aspect ratings, and recent position overlays.
+1) **Plan** pulls market data + gates + news sentiment, calls the LLM, and persists an hourly `plan_v1` (plus prompt).  
+2) **Execute** runs deterministic entry/exit logic for the next hour using the plan and market gates; executor runs are appended to KV history.  
+3) **Evaluate plan/execute** replays recent plan/executor history (plus recent PnL stats) through another LLM to score quality and guardrails, then stores a latest evaluation per symbol.  
+4) The dashboard consumes `/api/evaluations` and `/api/chart` to render plan/executor quality, PnL, and recent position overlays.
 
 ## Frontend Notes
 - UI lives in `pages/index.tsx`; Tailwind 4 utility classes are inlined (no config required).
 - Charts use `lightweight-charts` with custom overlays; resize-safe.
-- If no evaluations are present, run `POST /api/analyze` then `POST /api/evaluate` to seed data before opening the page.
+- If no evaluations are present, run `POST /api/plan` then `POST /api/evaluate_plan` / `POST /api/evaluate_execute` to seed data before opening the page.
 
 ## Deployment
 - Vercel-ready (`vercel.json` routes `/api/*` to Next API handlers). Provide the same env vars in Vercel’s dashboard or your host of choice.

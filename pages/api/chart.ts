@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { fetchMarketBundle, fetchPositionInfo, fetchRecentPositionWindows } from '../../lib/analytics';
-import { loadDecisionHistory } from '../../lib/history';
+import { loadExecutionLogs } from '../../lib/execLog';
 
 function timeframeToSeconds(tf: string): number {
   const match = /^(\d+)([smhd])$/i.exec(tf.trim());
@@ -58,72 +58,79 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Positions/decisions in last 24h
     const nowMs = Date.now();
     const dayAgo = nowMs - 24 * 60 * 60 * 1000;
-    const history = await loadDecisionHistory(symbol, 200);
+    const execLogs = await loadExecutionLogs(symbol, 200);
     const markers =
-      history
-        ?.filter((h) => h.timestamp && Number(h.timestamp) >= dayAgo && Number(h.timestamp) <= nowMs)
-        .map((h) => {
-          const rawTsSec = Math.floor(Number(h.timestamp) / 1000);
-          const action = (h.aiDecision?.action || '').toUpperCase() || 'DECISION';
-          const isBuy = action === 'BUY';
-          const isSell = action === 'SELL';
-          const isClose = action === 'CLOSE';
+      execLogs
+        ?.filter((l) => l.timestamp && Number(l.timestamp) >= dayAgo && Number(l.timestamp) <= nowMs)
+        .map((l) => {
+          const rawTsSec = Math.floor(Number(l.timestamp) / 1000);
+          const payload = l?.payload && typeof l.payload === 'object' ? l.payload : null;
+          const decision = String(payload?.decision || '').toUpperCase();
+          const shouldMark = decision === 'ENTER_LONG' || decision === 'ENTER_SHORT' || decision === 'CLOSE' || decision === 'TRIM';
+          if (!shouldMark) return null;
 
           // snap marker to nearest candle timestamp so it renders even if the decision came mid-bar
           let markerTime = rawTsSec;
           if (candleTimes.length) {
             markerTime = candleTimes.reduce(
               (prev, curr) => (Math.abs(curr - rawTsSec) < Math.abs(prev - rawTsSec) ? curr : prev),
-              candleTimes[0]
+              candleTimes[0],
             );
           }
 
           const candleAtTime = candleMap.get(markerTime);
           const markerPrice = candleAtTime?.close;
 
+          const isLongEntry = decision === 'ENTER_LONG';
+          const isShortEntry = decision === 'ENTER_SHORT';
+          const isClose = decision === 'CLOSE';
+          const isTrim = decision === 'TRIM';
+
           return {
             time: markerTime,
-            position: isBuy ? 'belowBar' : 'aboveBar',
-            color: isBuy ? '#16a34a' : isSell ? '#dc2626' : '#334155',
-            shape: isClose ? 'arrowDown' : isBuy ? 'arrowUp' : 'arrowDown',
-            text: action,
+            position: isLongEntry ? 'belowBar' : 'aboveBar',
+            color: isLongEntry ? '#16a34a' : isShortEntry ? '#dc2626' : isTrim ? '#f59e0b' : '#334155',
+            shape: isTrim ? 'circle' : isClose ? 'arrowDown' : isLongEntry ? 'arrowUp' : 'arrowDown',
+            text: decision,
             price: markerPrice,
           };
         })
+        .filter(Boolean)
         .filter(
-          (m) => candleTimes.length === 0 || (m.time >= candleTimes[0] && m.time <= candleTimes[candleTimes.length - 1])
+          (m: any) =>
+            candleTimes.length === 0 || (m.time >= candleTimes[0] && m.time <= candleTimes[candleTimes.length - 1]),
         )
-        .sort((a, b) => a.time - b.time) || [];
+        .sort((a: any, b: any) => a.time - b.time) || [];
 
-    const leverageFromHistory =
-      history
-        ?.map((h) => {
-          const lev =
-            Number((h.execResult as any)?.leverage) ||
-            Number((h.aiDecision as any)?.leverage) ||
-            Number((h.execResult as any)?.targetLeverage);
+    const leverageFromLogs =
+      execLogs
+        ?.map((l) => {
+          const payload = l?.payload && typeof l.payload === 'object' ? l.payload : null;
+          const orders = Array.isArray(payload?.orders) ? payload.orders : [];
+          const lev = Number(orders?.[0]?.leverage);
           return Number.isFinite(lev) && lev > 0 ? lev : null;
         })
         .find((v) => v !== null) ?? null;
 
     const findNearestDecision = (tsMs?: number | null) => {
-      if (!tsMs || !history?.length) return null;
+      if (!tsMs || !execLogs?.length) return null;
       let best: any = null;
       let bestDiff = Number.POSITIVE_INFINITY;
-      for (const h of history) {
-        if (!h.timestamp) continue;
-        const diff = Math.abs(Number(h.timestamp) - tsMs);
+      for (const l of execLogs) {
+        if (!l.timestamp) continue;
+        const diff = Math.abs(Number(l.timestamp) - tsMs);
         if (diff < bestDiff) {
           bestDiff = diff;
-          best = h;
+          best = l;
         }
       }
       if (!best) return null;
+      const payload = best?.payload && typeof best.payload === 'object' ? best.payload : null;
       return {
         timestamp: Number(best.timestamp) || null,
-        action: best.aiDecision?.action,
-        summary: best.aiDecision?.summary,
-        reason: best.aiDecision?.reason,
+        action: payload?.decision,
+        summary: payload?.reason,
+        reason: payload?.reason,
       };
     };
 
@@ -145,7 +152,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             pnlPct: Number.isFinite(pnlVal) ? pnlVal : null,
             entryPrice: Number(open.entryPrice) || null,
             exitPrice: null,
-            leverage: leverageFromHistory,
+            leverage: leverageFromLogs,
           };
         }
       } catch (err) {

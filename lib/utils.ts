@@ -221,3 +221,15 @@ export async function deleteExecEvaluation(symbol: string) {
   const key = execEvalKey(symbol);
   await Promise.all([kvDel(key), kvZRem(EXEC_EVALUATION_INDEX_KEY, key)]);
 }
+
+export async function listPlanEvaluationSymbols(): Promise<string[]> {
+  const keys = await kvZRevRange(PLAN_EVALUATION_INDEX_KEY, 0, -1);
+  const symbols = keys.map((k) => symbolFromKey(k)).filter(Boolean) as string[];
+  return Array.from(new Set(symbols.map((s) => s.toUpperCase()))).sort();
+}
+
+export async function listExecEvaluationSymbols(): Promise<string[]> {
+  const keys = await kvZRevRange(EXEC_EVALUATION_INDEX_KEY, 0, -1);
+  const symbols = keys.map((k) => symbolFromKey(k)).filter(Boolean) as string[];
+  return Array.from(new Set(symbols.map((s) => s.toUpperCase()))).sort();
+}

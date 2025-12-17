@@ -1,24 +1,22 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import {
-  getAllEvaluations,
-  getEvaluationTimestamp,
   getExecEvaluation,
   getExecEvaluationTimestamp,
   getPlanEvaluation,
   getPlanEvaluationTimestamp,
+  listExecEvaluationSymbols,
+  listPlanEvaluationSymbols,
 } from '../../lib/utils';
-import { loadDecisionHistory } from '../../lib/history';
 import { fetchPositionInfo, fetchRealizedRoi, fetchRecentPositionWindows } from '../../lib/analytics';
+import { listExecutionLogSymbols } from '../../lib/execLog';
+import { listPlanLogSymbols } from '../../lib/planLog';
 
 type EnrichedEntry = {
   symbol: string;
-  evaluation: any;
-  evaluationTs?: number | null;
   planEvaluation?: any;
   planEvaluationTs?: number | null;
   execEvaluation?: any;
   execEvaluationTs?: number | null;
-  lastBiasTimeframes?: Record<string, string | undefined> | null;
   pnl24h?: number | null;
   pnl24hWithOpen?: number | null;
   pnl24hNet?: number | null;
@@ -31,25 +29,29 @@ type EnrichedEntry = {
   lastPositionPnl?: number | null;
   lastPositionDirection?: 'long' | 'short' | null;
   lastPositionLeverage?: number | null;
-  lastDecisionTs?: number | null;
-  lastDecision?: any;
-  lastMetrics?: any;
-  lastPrompt?: { system?: string; user?: string } | null;
   winRate?: number | null;
   avgWinPct?: number | null;
   avgLossPct?: number | null;
 };
 
-// Returns the latest evaluation per symbol from the in-memory store,
-// plus last decision info + 24h change pulled from recent history.
+function uniqSorted(items: string[]) {
+  return Array.from(new Set(items.map((s) => s.toUpperCase()).filter(Boolean))).sort();
+}
+
+// Returns the latest plan + execute evaluations per symbol, plus PnL/position context.
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
     res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
     return;
   }
 
-  const store = await getAllEvaluations();
-  const symbols = Object.keys(store);
+  const [planEvalSymbols, execEvalSymbols, planLogSymbols, execLogSymbols] = await Promise.all([
+    listPlanEvaluationSymbols().catch(() => [] as string[]),
+    listExecEvaluationSymbols().catch(() => [] as string[]),
+    listPlanLogSymbols().catch(() => [] as string[]),
+    listExecutionLogSymbols().catch(() => [] as string[]),
+  ]);
+  const symbols = uniqSorted([...planEvalSymbols, ...execEvalSymbols, ...planLogSymbols, ...execLogSymbols]);
 
   const data: EnrichedEntry[] = await Promise.all(
     symbols.map(async (symbol) => {
@@ -65,42 +67,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let lastPositionPnl: number | null | undefined = null;
       let lastPositionDirection: 'long' | 'short' | null | undefined = null;
       let lastPositionLeverage: number | null | undefined = null;
-      let lastDecisionTs: number | null | undefined = null;
-      let lastDecision: any = null;
-      let lastMetrics: any = null;
-      let lastPrompt: { system?: string; user?: string } | null = null;
       let winRate: number | null | undefined = null;
       let avgWinPct: number | null | undefined = null;
       let avgLossPct: number | null | undefined = null;
-      let evaluationTs: number | null | undefined = null;
       let planEvaluation: any = null;
       let planEvaluationTs: number | null | undefined = null;
       let execEvaluation: any = null;
       let execEvaluationTs: number | null | undefined = null;
-      let lastBiasTimeframes: Record<string, string | undefined> | null = null;
 
       try {
-        const history = await loadDecisionHistory(symbol, 120);
-
-        const latest = history[0];
-        if (latest) {
-          lastDecision = latest.aiDecision ?? null;
-          lastMetrics = latest.snapshot?.metrics ?? null;
-          lastDecisionTs = Number.isFinite(latest.timestamp) ? Number(latest.timestamp) : null;
-          lastPrompt = latest.prompt ?? null;
-          lastBiasTimeframes = latest.biasTimeframes ?? null;
-        }
-        // Get latest leverage we set/applied from history (execResult or aiDecision hint)
-        const leverageFromHistory = history
-          .map((h) => {
-            const lev =
-              Number((h.execResult as any)?.leverage) ||
-              Number((h.aiDecision as any)?.leverage) ||
-              Number((h.execResult as any)?.targetLeverage);
-            return Number.isFinite(lev) && lev > 0 ? lev : null;
-          })
-          .find((v) => v !== null);
-
         const roiRes = await fetchRealizedRoi(symbol, 24);
         pnl24h = Number.isFinite(roiRes.sumPct as number) ? (roiRes.sumPct as number) : null;
         pnl24hNet = Number.isFinite(roiRes.roi as number) ? (roiRes.roi as number) : null;
@@ -147,7 +122,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             lastPositionLeverage =
               lastWithLev && Number.isFinite(lastWithLev.leverage as number)
                 ? (lastWithLev.leverage as number)
-                : leverageFromHistory ?? null;
+                : null;
           }
         } catch (err) {
           console.warn(`Could not fetch sparkline PnL for ${symbol}:`, err);
@@ -160,7 +135,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             const val = Number(raw);
             openPnl = Number.isFinite(val) ? val : null;
             openDirection = pos.holdSide ?? null;
-            openLeverage = leverageFromHistory ?? null;
+            openLeverage = lastPositionLeverage ?? null;
           } else {
             openPnl = null;
             openDirection = null;
@@ -180,8 +155,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         } else {
           pnl24hWithOpen = null;
         }
-
-        evaluationTs = await getEvaluationTimestamp(symbol);
 
         try {
           planEvaluation = await getPlanEvaluation(symbol);
@@ -203,7 +176,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       return {
         symbol,
-        evaluation: store[symbol],
         planEvaluation,
         planEvaluationTs,
         execEvaluation,
@@ -220,12 +192,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         lastPositionPnl,
         lastPositionDirection,
         lastPositionLeverage,
-        evaluationTs,
-        lastBiasTimeframes,
-        lastDecisionTs,
-        lastDecision,
-        lastMetrics,
-        lastPrompt,
         winRate,
         avgWinPct,
         avgLossPct,

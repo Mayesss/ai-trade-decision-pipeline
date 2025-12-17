@@ -30,25 +30,12 @@ type AspectEvaluation = {
   findings?: string[];
 };
 
-type Evaluation = {
-  overall_rating?: number;
-  overview?: string;
-  what_went_well?: string[];
-  issues?: string[];
-  improvements?: string[];
-  confidence?: string;
-  aspects?: Record<string, AspectEvaluation>;
-};
-
 type EvaluationEntry = {
   symbol: string;
-  evaluation: Evaluation;
-  evaluationTs?: number | null;
   planEvaluation?: any;
   planEvaluationTs?: number | null;
   execEvaluation?: any;
   execEvaluationTs?: number | null;
-  lastBiasTimeframes?: Record<string, string | undefined> | null;
   pnl24h?: number | null;
   pnl24hWithOpen?: number | null;
   pnl24hNet?: number | null;
@@ -61,16 +48,6 @@ type EvaluationEntry = {
   lastPositionPnl?: number | null;
   lastPositionDirection?: 'long' | 'short' | null;
   lastPositionLeverage?: number | null;
-  lastDecisionTs?: number | null;
-  lastDecision?: {
-    action?: string;
-    summary?: string;
-    reason?: string;
-    signal_strength?: string;
-    [key: string]: any;
-  } | null;
-  lastPrompt?: { system?: string; user?: string } | null;
-  lastMetrics?: Record<string, any> | null;
   winRate?: number | null;
   avgWinPct?: number | null;
   avgLossPct?: number | null;
@@ -160,8 +137,6 @@ export default function Home() {
   const [tabData, setTabData] = useState<Record<string, EvaluationEntry>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showAspects, setShowAspects] = useState(false);
-  const [showDecisionPrompt, setShowDecisionPrompt] = useState(false);
   const [showPlanPrompt, setShowPlanPrompt] = useState(false);
   const [showPlanAiResponse, setShowPlanAiResponse] = useState(false);
   const [showPlanEvalAspects, setShowPlanEvalAspects] = useState(false);
@@ -225,8 +200,6 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    setShowAspects(false);
-    setShowDecisionPrompt(false);
     setShowPlanPrompt(false);
     setShowPlanAiResponse(false);
     setShowPlanEvalAspects(false);
@@ -564,21 +537,6 @@ export default function Home() {
   };
 
   const current = symbols[active] ? tabData[symbols[active]] : null;
-  const hasLastDecision =
-    !!(
-      current &&
-      ('lastDecision' in current ||
-        'lastDecisionTs' in current ||
-        'lastPrompt' in current ||
-        'lastMetrics' in current ||
-        'lastBiasTimeframes' in current)
-    );
-  const hasDetails =
-    !!(
-      current?.evaluation.what_went_well?.length ||
-      current?.evaluation.issues?.length ||
-      current?.evaluation.improvements?.length
-    );
   const hasPlanEvalDetails =
     !!(
       current?.planEvaluation?.what_went_well?.length ||
@@ -1132,91 +1090,7 @@ export default function Home() {
                 )}
               </div>
 
-              {hasLastDecision && (
-                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
-                      <span>Latest Decision</span>
-                      {current.lastDecisionTs ? (
-                        <span className="lowercase text-slate-400">
-                          {formatDecisionTime(current.lastDecisionTs)}
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {current.lastDecision?.signal_strength && (
-                        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
-                          Strength: {current.lastDecision.signal_strength}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="mt-3 text-sm text-slate-800">
-                    Action:{' '}
-                    <span className="font-semibold text-sky-700">
-                      {((current.lastDecision as any)?.action || '').toString() || '—'}
-                    </span>
-                    {(current.lastDecision as any)?.summary ? ` · ${(current.lastDecision as any).summary}` : ''}
-                  </div>
-                  {(current.lastDecision as any)?.reason ? (
-                    <p className="mt-2 text-sm text-slate-700 whitespace-pre-wrap">
-                      <span className="font-semibold text-slate-800">Reason: </span>
-                      {(current.lastDecision as any).reason}
-                    </p>
-                  ) : null}
-                  <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    {biasOrder.map(({ key, label }) => {
-                      const raw = (current.lastDecision as any)?.[key];
-                      const val = typeof raw === 'string' ? raw.toUpperCase() : raw;
-                      const tfLabel = current.lastBiasTimeframes?.[key.replace('_bias', '')] || null;
-                      const displayLabel = tfLabel ? `${label} (${tfLabel})` : label;
-                      const meta =
-                        val === 'UP'
-                          ? { color: 'text-emerald-600', Icon: ArrowUpRight }
-                          : val === 'DOWN'
-                          ? { color: 'text-rose-600', Icon: ArrowDownRight }
-                          : { color: 'text-slate-500', Icon: Circle };
-                      const Icon = meta.Icon;
-                      return (
-                        <div
-                          key={key}
-                          className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-3 py-2"
-                        >
-                          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                            {displayLabel}
-                          </span>
-                          <span className={`flex items-center gap-1 text-sm font-semibold ${meta.color}`}>
-                            <Icon className="h-4 w-4" />
-                            {val || '—'}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div className="mt-3">
-                    <button
-                      onClick={() => setShowDecisionPrompt((prev) => !prev)}
-                      className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
-                    >
-                      {showDecisionPrompt ? 'Hide prompt' : 'Show prompt'}
-                    </button>
-                  </div>
-                  {showDecisionPrompt && (
-                    <div className="mt-4 space-y-3">
-                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">System</div>
-                        <div className="mt-2">{renderPromptContent(current.lastPrompt?.system)}</div>
-                      </div>
-                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">User</div>
-                        <div className="mt-2">{renderPromptContent(current.lastPrompt?.user)}</div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+	              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
                     <span>Latest Plan Evaluation</span>
@@ -1615,185 +1489,7 @@ export default function Home() {
 	                )}
               </div>
 
-                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
-                    <span>Latest Evaluation</span>
-                    {current.evaluationTs ? (
-                      <span className="lowercase text-slate-400">{formatDecisionTime(current.evaluationTs)}</span>
-                    ) : null}
-                  </div>
-                  {current.evaluation.confidence && (
-                    <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
-                      Confidence: {current.evaluation.confidence}
-                    </div>
-                  )}
-                </div>
-                <div className="mt-2 text-lg font-semibold text-slate-900 flex items-center gap-3 flex-wrap">
-                  <span>
-                    Rating: <span className="text-sky-600">{current.evaluation.overall_rating ?? '—'}</span>
-                  </span>
-                  <div className="flex flex-wrap items-center gap-1">
-                    {Array.from({ length: 10 }).map((_, idx) => {
-                      const ratingVal = Number(current.evaluation.overall_rating ?? 0);
-                      const filled = ratingVal >= idx + 1;
-                      const colorClass =
-                        ratingVal >= 9
-                          ? 'text-emerald-500 fill-emerald-500'
-                          : ratingVal >= 8
-                          ? 'text-emerald-400 fill-emerald-400'
-                          : ratingVal >= 6
-                          ? 'text-lime-400 fill-lime-400'
-                          : ratingVal >= 5
-                          ? 'text-amber-400 fill-amber-400'
-                          : ratingVal >= 3
-                          ? 'text-orange-400 fill-orange-400'
-                          : 'text-rose-500 fill-rose-500';
-                      return (
-                        <Star
-                          key={idx}
-                          className={`h-4 w-4 ${filled ? colorClass : 'stroke-slate-300 text-slate-300'}`}
-                        />
-                      );
-                    })}
-                  </div>
-                </div>
-                <p className="mt-3 text-sm text-slate-700">
-                  {current.evaluation.overview || 'No overview provided.'}
-                </p>
-                {Number.isFinite(Number((current.evaluation as any)?.sample_size)) ? (
-                  <p className="mt-2 text-xs text-slate-500">
-                    Sample size: {(current.evaluation as any).sample_size}
-                    {(current.evaluation as any)?.redundance_summary ? ` · ${(current.evaluation as any).redundance_summary}` : ''}
-                  </p>
-                ) : null}
-                {(current.evaluation.aspects || hasDetails) && (
-                  <div className="mt-4 space-y-4">
-                    {current.evaluation.aspects && (
-                      <>
-                        <button
-                          onClick={() => setShowAspects((prev) => !prev)}
-                          className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
-                        >
-                          {showAspects ? 'Hide aspect ratings' : 'Show aspect ratings'}
-                        </button>
-                        {showAspects && (
-                          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                            {Object.entries(current.evaluation.aspects).map(([key, val]) => (
-                              <div
-                                key={key}
-                                className="rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-inner shadow-slate-100"
-                              >
-                                <div className="flex items-center justify-between">
-                                  <div className="flex items-center gap-2">
-                                    {(() => {
-                                      const meta = aspectMeta[key] || {
-                                        Icon: Circle,
-                                        color: 'text-slate-600',
-                                        bg: 'bg-slate-100',
-                                      };
-                                      const Icon = meta.Icon;
-                                      return (
-                                        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-600">
-                                          <Icon className="h-4 w-4" />
-                                        </span>
-                                      );
-                                    })()}
-                                      <div className="text-sm font-semibold text-slate-900">
-                                        {formatLabel(key)}
-                                      </div>
-                                    </div>
-                                    <div className="text-lg font-semibold text-sky-700">{val?.rating ?? '—'}</div>
-                                  </div>
-                                <p className="mt-2 text-xs text-slate-600">{val?.comment || 'No comment'}</p>
-                                {(val?.checks?.length || val?.improvements?.length || val?.findings?.length) && (
-                                  <div className="mt-3 space-y-2">
-                                    {val?.checks?.length ? (
-                                      <div>
-                                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                                          Checks
-                                        </div>
-                                        <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-slate-700">
-                                          {val.checks.map((item, idx) => (
-                                            <li key={idx}>{item}</li>
-                                          ))}
-                                        </ul>
-                                      </div>
-                                    ) : null}
-                                    {val?.improvements?.length ? (
-                                      <div>
-                                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                                          Improvements
-                                        </div>
-                                        <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-amber-800">
-                                          {val.improvements.map((item, idx) => (
-                                            <li key={idx}>{item}</li>
-                                          ))}
-                                        </ul>
-                                      </div>
-                                    ) : null}
-                                    {val?.findings?.length ? (
-                                      <div>
-                                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                                          Findings
-                                        </div>
-                                        <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-rose-800">
-                                          {val.findings.map((item, idx) => (
-                                            <li key={idx}>{item}</li>
-                                          ))}
-                                        </ul>
-                                      </div>
-                                    ) : null}
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </>
-                    )}
-
-                    {((current.evaluation.aspects && showAspects) || !current.evaluation.aspects) && hasDetails && (
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                        <div className="text-xs uppercase tracking-wide text-slate-500">Details</div>
-                        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
-                          {current.evaluation.what_went_well?.length ? (
-                            <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
-                              <div className="text-sm font-semibold text-emerald-800">What went well</div>
-                              <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
-                                {current.evaluation.what_went_well.map((item, idx) => (
-                                  <li key={idx}>{item}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          ) : null}
-                          {current.evaluation.issues?.length ? (
-                            <div className="rounded-xl border border-rose-100 bg-rose-50 p-3">
-                              <div className="text-sm font-semibold text-rose-800">Issues</div>
-                              <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
-                                {current.evaluation.issues.map((item, idx) => (
-                                  <li key={idx}>{item}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          ) : null}
-                          {current.evaluation.improvements?.length ? (
-                            <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">
-                              <div className="text-sm font-semibold text-amber-800">Improvements</div>
-                              <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
-                                {current.evaluation.improvements.map((item, idx) => (
-                                  <li key={idx}>{item}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
+	            </div>
           ) : (
             <div className="flex items-center justify-center py-12 text-sm font-semibold text-slate-500">
               Loading...
