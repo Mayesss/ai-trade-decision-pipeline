@@ -163,6 +163,7 @@ export default function Home() {
   const [showAspects, setShowAspects] = useState(false);
   const [showDecisionPrompt, setShowDecisionPrompt] = useState(false);
   const [showPlanPrompt, setShowPlanPrompt] = useState(false);
+  const [showPlanAiResponse, setShowPlanAiResponse] = useState(false);
   const [chartData, setChartData] = useState<{ time: number; value: number }[]>([]);
   const [chartMarkers, setChartMarkers] = useState<any[]>([]);
   const [positionOverlays, setPositionOverlays] = useState<PositionOverlay[]>([]);
@@ -225,6 +226,7 @@ export default function Home() {
     setShowAspects(false);
     setShowDecisionPrompt(false);
     setShowPlanPrompt(false);
+    setShowPlanAiResponse(false);
   }, [active, symbols]);
 
   useEffect(() => {
@@ -1056,13 +1058,43 @@ export default function Home() {
                     </div>
 
                     <div className="mt-3">
-                      <button
-                        onClick={() => setShowPlanPrompt((prev) => !prev)}
-                        className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
-                      >
-                        {showPlanPrompt ? 'Hide prompt' : 'Show prompt'}
-                      </button>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          onClick={() => {
+                            setShowPlanAiResponse(false);
+                            setShowPlanPrompt((prev) => !prev);
+                          }}
+                          className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                        >
+                          {showPlanPrompt ? 'Hide prompt' : 'Show prompt'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowPlanPrompt(false);
+                            setShowPlanAiResponse((prev) => !prev);
+                          }}
+                          className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                        >
+                          {showPlanAiResponse ? 'Hide ai-response' : 'Show ai-response'}
+                        </button>
+                      </div>
                     </div>
+
+                    {showPlanAiResponse && (
+                      <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">AI Response</div>
+                        <pre className="mt-2 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-[11px] leading-snug text-slate-800">
+                          {JSON.stringify(
+                            (() => {
+                              const { __prompt, __savedAt, ...rest } = plan as any;
+                              return rest;
+                            })(),
+                            null,
+                            2,
+                          )}
+                        </pre>
+                      </div>
+                    )}
 
                     {showPlanPrompt && (
                       <div className="mt-4 space-y-3">
