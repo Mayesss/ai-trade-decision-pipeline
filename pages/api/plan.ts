@@ -214,6 +214,8 @@ function buildUserPrompt(params: {
     return `
 You are planning for ${symbol} (mode=${mode}), horizon_minutes=${horizon}, asof=${asof}.
 Return strict JSON following this schema exactly (no extra keys). Set plan_ts to the asof timestamp.
+
+SCHEMA:
 ${PLAN_SCHEMA}
 
 VALIDATION RULES (must follow):
