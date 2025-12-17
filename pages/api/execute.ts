@@ -182,7 +182,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
 
         if (positionState === 'FLAT' && entriesDisabled) {
             const reason = !plan ? 'no_plan' : planStale ? 'stale_plan' : 'plan_entries_disabled';
-            return res.status(200).json({
+            const payload = {
                 ts: asofIso,
                 symbol,
                 plan_ts: plan?.plan_ts || null,
@@ -197,7 +197,13 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 dryRun,
                 gatesNow: null,
                 skipped_market_fetch: true,
-            });
+            };
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
+            return res.status(200).json(payload);
         }
 
         // Market snapshot
@@ -315,6 +321,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     last_action: result.decision,
                     last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
                 });
+                try {
+                    await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                } catch (err) {
+                    console.warn('Failed to append execution log:', err);
+                }
                 return res.status(200).json(result);
             }
         }
@@ -386,6 +397,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     last_action: result.decision,
                     last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
                 });
+                try {
+                    await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                } catch (err) {
+                    console.warn('Failed to append execution log:', err);
+                }
                 return res.status(200).json(result);
             }
         }
@@ -469,6 +485,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         if (!preferredDir) {
             result.decision = 'WAIT';
             result.reason = 'no_dir';
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
             return res.status(200).json(result);
         }
 
@@ -479,6 +500,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         ) {
             result.decision = 'WAIT';
             result.reason = 'too_close_support';
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
             return res.status(200).json(result);
         }
         if (
@@ -487,6 +513,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         ) {
             result.decision = 'WAIT';
             result.reason = 'too_close_resistance';
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
             return res.status(200).json(result);
         }
 
@@ -561,6 +592,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         if (!enter) {
             result.decision = 'WAIT';
             result.reason = entryReason || 'no_entry_signal';
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
             return res.status(200).json(result);
         }
 
