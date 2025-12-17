@@ -155,7 +155,21 @@ function invalidationNotesValid(val: any): boolean {
 }
 
 function buildSystemPrompt() {
-    return `You are a crypto trading Planner agent. Your job is to produce a stable, one-hour plan for the executor. You do NOT place trades, do NOT output BUY/SELL/CLOSE, and do NOT use 1m tape/orderbook micro-noise to choose direction. Use 1D for context risk throttle, 4H for macro regime, 1H for primary structure, and 15m for micro tilt mainly to choose entry_mode. Prefer stability: do not change allowed direction(s) unless there is a clear regime/structure shift. Avoid trading into nearby strong opposing levels by defining no-trade buffers in ATR terms. Cap risk via risk_mode and max_leverage. Output MUST be strict JSON only, parseable by JSON.parse, with no extra keys beyond the schema. exit_urgency.invalidation_notes must be either "NONE" or match the exact grammar: LVL=<number>;FAST=<tf>_close_<above|below>_x<n>;MID=<tf>_close_<above|below>_x<n>;HARD=<tf>_close_<above|below>_x<n>;ACTION=<CLOSE|TRIM50|TRIM30|TRIM70>. Choose LVL that aligns with the directional bias: for shorts use the nearest 1H resistance (fallback to strong 4H resistance), for longs use the nearest 1H support (fallback to strong 4H support). If risk_mode=CONSERVATIVE, make FAST a tight trigger (e.g., 5m_close_above/below_x2). If risk_mode=AGGRESSIVE, a slower FAST trigger (e.g., 15m) is acceptable but must still be present.`;
+    return `
+You are a crypto trading Planner agent. Your job is to produce a stable one-hour plan for the executor to follow. You do not place trades and you do not output BUY/SELL/CLOSE as an action. You output only a strict JSON object matching the provided schema exactly.
+
+Principles:
+- Timeframes: 1D = context risk throttle, 4H = macro regime, 1H = primary structure, 15m = micro tilt (mainly entry preference).
+- Prefer stability: do not flip allowed_directions unless there is a clear regime/structure shift.
+- Avoid micro-noise: do not use 1m tape/orderbook to choose direction.
+- Use proximity to strong opposing levels to restrict entries and tighten invalidation rules.
+- Cap risk via risk_mode and max_leverage (cap only).
+
+Output requirements:
+- Output JSON only, parseable by JSON.parse.
+- No extra keys anywhere; every key in schema must be present.
+- invalidation_notes must be "NONE" or follow the exact grammar provided by the user.
+- Use the user-provided facts as truth; do not invent indicator values.`
 }
 
 function buildUserPrompt(params: {
@@ -208,111 +222,106 @@ You are planning for ${symbol} (mode=${mode}), horizon_minutes=${horizon}, asof=
 Return strict JSON following this schema exactly (no extra keys). Set plan_ts to the asof timestamp provided below:
 ${PLAN_SCHEMA}
 
-invalidation_notes must be either "NONE" or follow exactly:
+VALIDATION RULES (must follow):
+1. No extra keys are allowed anywhere.
+2. All keys in schema must be present.
+3. invalidation_notes must be either "NONE" OR match this grammar exactly:
 LVL=<number>;FAST=<tf>_close_<above|below>_x<n>;MID=<tf>_close_<above|below>_x<n>;HARD=<tf>_close_<above|below>_x<n>;ACTION=<CLOSE|TRIM50|TRIM30|TRIM70>
-Example: LVL=2963.54;FAST=5m_close_above_x2;MID=15m_close_above_x1;HARD=1h_close_above_x1;ACTION=CLOSE
+- <tf> is one of [5m,15m,30m,1H,4H], and <n> is a positive integer.
+- Example: LVL=2963.54;FAST=5m_close_above_x2;MID=15m_close_above_x1;HARD=1h_close_above_x1;ACTION=CLOSE
+4. LVL selection:
 Set LVL to the key level relevant to direction bias: if the plan favors shorts, prefer the nearest 1H resistance; if it favors longs, prefer the nearest 1H support (fallback to the closest strong 4H level if 1H is missing).
-When risk_mode=CONSERVATIVE, make FAST tight (e.g., 5m_close_above/below_x2). When risk_mode=AGGRESSIVE, you may allow a slower FAST trigger (e.g., 15m) but it must still be present.
+- If allowed_directions includes shorts (SHORT_ONLY or BOTH): LVL must be nearest 1H resistance_price; if missing/invalid then use strong 4H resistance_price.
+- If allowed_directions includes longs (LONG_ONLY or BOTH): LVL must be nearest 1H support_price; if missing/invalid then use strong 4H support_price.
+- If allowed_directions=NONE, set invalidation_notes="NONE".
+5. FAST tightness by risk_mode:
+- If risk_mode=CONSERVATIVE, FAST must be tight (prefer 5m_close_*_x2).
+- If risk_mode=AGGRESSIVE, FAST may be slower (15m allowed) but MUST be present.
+
 
 FACTS:
 Base gates:
 
-spread_ok=${baseGates.spread_ok}, liquidity_ok=${baseGates.liquidity_ok}, atr_ok=${baseGates.atr_ok}, slippage_ok=${baseGates.slippage_ok}
-
-spread_bps=${formatNumber(spreadBps, 3)}${coarseLiquidityLine ? `, ${coarseLiquidityLine}` : ''}
+- spread_ok=${baseGates.spread_ok}, liquidity_ok=${baseGates.liquidity_ok}, atr_ok=${baseGates.atr_ok}, slippage_ok=${baseGates.slippage_ok}
+- spread_bps=${formatNumber(spreadBps, 3)}${coarseLiquidityLine ? `, ${coarseLiquidityLine}` : ''}
 
 Costs:
-
-taker_fee_rate=${takerFeeRate}, slippage_bps=${formatNumber(slippageBps, 3)}, total_cost_bps=${formatNumber(totalCostBps, 3)}
+- taker_fee_rate=${takerFeeRate}, slippage_bps=${formatNumber(slippageBps, 3)}, total_cost_bps=${formatNumber(totalCostBps, 3)}
 
 Recent performance:
-
-last_closed_realized_pnl_pct=${formatNumber(lastClosedPnlPct, 3)}
-
-Previous plan (may be null):
-
-prev_plan=${JSON.stringify(prevPlan ?? null)}
+- last_closed_realized_pnl_pct=${formatNumber(lastClosedPnlPct, 3)}
+- prev_plan=${JSON.stringify(prevPlan ?? null)}
 
 1D (context):
-
-trend=${ctx.trend}, rsi=${formatNumber(ctx.rsi, 2)}, atr_pct=${formatNumber(ctx.atr_pct, 4)}
-ema20=${formatNumber(ctx.ema20)}, ema50=${formatNumber(ctx.ema50)}, sma200=${formatNumber(ctx.sma200)}, slope_ema21_10=${formatNumber(ctx.slopeEMA21_10, 4)}
-dist_from_ema20_in_atr=${formatNumber(ctx.dist_from_ema20_in_atr, 3)}
-S/R: support_price=${ctxSupport.price}, dist_to_support_in_atr=${formatNumber(ctxSupport.dist, 3)}, strength=${formatNumber(
+- trend=${ctx.trend}, rsi=${formatNumber(ctx.rsi, 2)}, atr_pct=${formatNumber(ctx.atr_pct, 4)}
+- ema20=${formatNumber(ctx.ema20)}, ema50=${formatNumber(ctx.ema50)}, sma200=${formatNumber(ctx.sma200)}, slope_ema21_10=${formatNumber(ctx.slopeEMA21_10, 4)}
+- dist_from_ema20_in_atr=${formatNumber(ctx.dist_from_ema20_in_atr, 3)}
+- S/R: 
+    support_price=${ctxSupport.price}, dist_to_support_in_atr=${formatNumber(ctxSupport.dist, 3)}, strength=${formatNumber(
         ctxSupport.strength,
         3,
     )}, state=${ctxSupport.state}
-resistance_price=${ctxResistance.price}, dist_to_resistance_in_atr=${formatNumber(
+    resistance_price=${ctxResistance.price}, dist_to_resistance_in_atr=${formatNumber(
         ctxResistance.dist,
         3,
     )}, strength=${formatNumber(ctxResistance.strength, 3)}, state=${ctxResistance.state}
 
 4H (macro):
-
-regime_trend_up=${regime.regime_trend_up}, regime_trend_down=${regime.regime_trend_down}
-trend=${macro.trend}, rsi=${formatNumber(macro.rsi, 2)}, atr_pct=${formatNumber(macro.atr_pct, 4)}
-ema20=${formatNumber(macro.ema20)}, ema50=${formatNumber(macro.ema50)}, slope_ema21_10=${formatNumber(macro.slopeEMA21_10, 4)}
-dist_from_ema20_in_atr=${formatNumber(macro.dist_from_ema20_in_atr, 3)}
-S/R (if available): support_price=${macroSupport.price}, dist_to_support_in_atr=${formatNumber(
+- regime_trend_up=${regime.regime_trend_up}, regime_trend_down=${regime.regime_trend_down}
+- trend=${macro.trend}, rsi=${formatNumber(macro.rsi, 2)}, atr_pct=${formatNumber(macro.atr_pct, 4)}
+- ema20=${formatNumber(macro.ema20)}, ema50=${formatNumber(macro.ema50)}, slope_ema21_10=${formatNumber(macro.slopeEMA21_10, 4)}
+- dist_from_ema20_in_atr=${formatNumber(macro.dist_from_ema20_in_atr, 3)}
+- S/R (if available): 
+    support_price=${macroSupport.price}, dist_to_support_in_atr=${formatNumber(
         macroSupport.dist,
         3,
     )}, strength=${formatNumber(macroSupport.strength, 3)}, state=${macroSupport.state}
-resistance_price=${macroResistance.price}, dist_to_resistance_in_atr=${formatNumber(
+    resistance_price=${macroResistance.price}, dist_to_resistance_in_atr=${formatNumber(
         macroResistance.dist,
         3,
     )}, strength=${formatNumber(macroResistance.strength, 3)}, state=${macroResistance.state}
 
 1H (primary):
-
-trend=${primary.trend}, rsi=${formatNumber(primary.rsi, 2)}, atr_pct=${formatNumber(primary.atr_pct, 4)}
-ema20=${formatNumber(primary.ema20)}, ema50=${formatNumber(primary.ema50)}, sma200=${formatNumber(
+- trend=${primary.trend}, rsi=${formatNumber(primary.rsi, 2)}, atr_pct=${formatNumber(primary.atr_pct, 4)}
+- ema20=${formatNumber(primary.ema20)}, ema50=${formatNumber(primary.ema50)}, sma200=${formatNumber(
         primary.sma200,
     )}, slope_ema21_10=${formatNumber(primary.slopeEMA21_10, 4)}
-dist_from_ema20_in_atr=${formatNumber(primary.dist_from_ema20_in_atr, 3)}
-S/R: support_price=${primarySupport.price}, dist_to_support_in_atr=${formatNumber(
+- dist_from_ema20_in_atr=${formatNumber(primary.dist_from_ema20_in_atr, 3)}
+S/R: 
+    support_price=${primarySupport.price}, dist_to_support_in_atr=${formatNumber(
         primarySupport.dist,
         3,
     )}, strength=${formatNumber(primarySupport.strength, 3)}, state=${primarySupport.state}
-resistance_price=${primaryResistance.price}, dist_to_resistance_in_atr=${formatNumber(
+    resistance_price=${primaryResistance.price}, dist_to_resistance_in_atr=${formatNumber(
         primaryResistance.dist,
         3,
     )}, strength=${formatNumber(primaryResistance.strength, 3)}, state=${primaryResistance.state}
 
 15m (micro tilt):
-
-trend=${micro.trend}, rsi=${formatNumber(micro.rsi, 2)}, atr_pct=${formatNumber(micro.atr_pct, 4)}
-ema20=${formatNumber(micro.ema20)}, ema50=${formatNumber(micro.ema50)}, slope_ema21_10=${formatNumber(
+- trend=${micro.trend}, rsi=${formatNumber(micro.rsi, 2)}, atr_pct=${formatNumber(micro.atr_pct, 4)}
+- ema20=${formatNumber(micro.ema20)}, ema50=${formatNumber(micro.ema50)}, slope_ema21_10=${formatNumber(
         micro.slopeEMA21_10,
         4,
     )}
-dist_from_ema20_in_atr=${formatNumber(micro.dist_from_ema20_in_atr, 3)}
+- dist_from_ema20_in_atr=${formatNumber(micro.dist_from_ema20_in_atr, 3)}
 
 Location:
-
-location_confluence_score=${formatNumber(location.location_confluence_score, 3)}, into_context_support=${location.into_context_support}, into_context_resistance=${location.into_context_resistance}
-context_breakdown_confirmed=${location.context_breakdown_confirmed}, context_breakout_confirmed=${location.context_breakout_confirmed}
+- location_confluence_score=${formatNumber(location.location_confluence_score, 3)}
+- into_context_support=${location.into_context_support}, into_context_resistance=${location.into_context_resistance}
+- context_breakdown_confirmed=${location.context_breakdown_confirmed}, context_breakout_confirmed=${location.context_breakout_confirmed}
 
 News:
-
-news_sentiment=${news.sentiment}, headlines=${JSON.stringify(news.headlines ?? [])}
+- News_sentiment=${news.sentiment} 
+- headlines=${JSON.stringify(news.headlines ?? [])}
 
 TASK:
-
-Decide context_bias/macro_bias/primary_bias/micro_bias (UP/DOWN/NEUTRAL).
-
-Decide allowed_directions, risk_mode, max_leverage cap, entry_mode.
-
-Populate key_levels from the provided S/R.
-
-Set no_trade_rules thresholds sensibly for this hour (ATR-based).
-
-Write exit_urgency notes that define what invalidates trades quickly this hour.
-
-Apply stability: keep plan similar to prev_plan unless clear shift.
-
-If base gates fail, set risk_mode=OFF, allowed_directions=NONE, entry_mode=NONE.
-
-If 1H is near both strong support and strong resistance (e.g., dist_to_support_in_atr_1H < 0.8 AND dist_to_resistance_in_atr_1H < 0.8) OR location_confluence_score is high, prefer allowed_directions=NONE and risk_mode=CONSERVATIVE.
+- Set biases: context_bias, macro_bias, primary_bias, micro_bias (UP/DOWN/NEUTRAL).
+- If ANY base gate is false: allowed_directions=NONE, risk_mode=OFF, entry_mode=NONE, invalidation_notes="NONE".
+- Otherwise decide: allowed_directions, risk_mode, max_leverage cap, entry_mode.
+- Populate key_levels from provided S/R.
+- Keep default no_trade_rules unless there is a clear reason to adjust (ATR-based).
+- Set exit_urgency flags and invalidation_notes using the strict grammar above.
+- Keep plan stable vs prev_plan unless a clear regime/structure shift occurred.
 
 Return strict JSON only.`;
 }
