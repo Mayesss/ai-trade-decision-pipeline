@@ -55,7 +55,7 @@ async function fetchCandles(symbol: string, granularity: string, limit: number) 
 function parseInvalidation(notes: any): ParsedInvalidation | null {
     if (typeof notes !== 'string' || notes === 'NONE') return null;
     const regex =
-        /^LVL=(-?\d+(\.\d+)?);FAST=(\d+[smhd])_close_(above|below)_x(\d+);MID=(\d+[smhd])_close_(above|below)_x(\d+);HARD=(\d+[smhd])_close_(above|below)_x(\d+);ACTION=(CLOSE|TRIM50|TRIM30|TRIM70)$/;
+        /^LVL=(-?\d+(\.\d+)?);FAST=(5m|15m|30m|1H|4H)_close_(above|below)_x(\d+);MID=(5m|15m|30m|1H|4H)_close_(above|below)_x(\d+);HARD=(5m|15m|30m|1H|4H)_close_(above|below)_x(\d+);ACTION=(CLOSE|TRIM50|TRIM30|TRIM70)$/;
     const m = notes.match(regex);
     if (!m) return null;
     const lvl = Number(m[1]);
@@ -174,7 +174,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         }
 
         // Market snapshot
-        const [orderbook, candles1m, candles5m, candles15m, candles1h] = await Promise.all([
+        const [orderbook, candles1m, candles5m, candles15m, candles30m, candles1h, candles4h] = await Promise.all([
             bitgetFetch('GET', '/api/v2/mix/market/orderbook', {
                 symbol,
                 productType: resolveProductType(),
@@ -183,7 +183,9 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             fetchCandles(symbol, '1m', 120),
             fetchCandles(symbol, '5m', 120),
             fetchCandles(symbol, '15m', 120),
+            fetchCandles(symbol, '30m', 120),
             fetchCandles(symbol, '1H', 220),
+            fetchCandles(symbol, '4H', 220),
         ]);
 
         const bestBid = toNum(orderbook?.bids?.[0]?.[0] ?? orderbook?.bids?.[0]?.price);
@@ -257,7 +259,9 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 const minutes = tfMinutes(tf);
                 let candles = candles5m;
                 if (minutes >= 15) candles = candles15m;
+                if (minutes >= 30) candles = candles30m;
                 if (minutes >= 60) candles = candles1h;
+                if (minutes >= 240) candles = candles4h;
                 const closes = candles.map((c: any) => toNum(c[4]));
                 const count = countConsecutive(closes, invalidation.lvl!, rule.direction);
                 return count >= rule.count;

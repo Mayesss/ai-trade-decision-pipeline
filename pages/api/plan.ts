@@ -17,55 +17,48 @@ import {
 } from '../../src/plan/facts';
 
 const PLAN_SCHEMA = `{
-"version": "plan_v1",
-"symbol": "BTCUSDT",
-"mode": "live",
-"plan_ts": "2025-12-16T15:00:00.000Z",
-"horizon_minutes": 60,
-
-"context_bias": "UP|DOWN|NEUTRAL",
-"macro_bias": "UP|DOWN|NEUTRAL",
-"primary_bias": "UP|DOWN|NEUTRAL",
-"micro_bias": "UP|DOWN|NEUTRAL",
-
-"allowed_directions": "LONG_ONLY|SHORT_ONLY|BOTH|NONE",
-"risk_mode": "OFF|CONSERVATIVE|NORMAL|AGGRESSIVE",
-"max_leverage": 1,
-"entry_mode": "PULLBACK|BREAKOUT|EITHER|NONE",
-
-"key_levels": {
-"1H": {
-"support_price": 0,
-"support_strength": 0,
-"support_state": "at_level",
-"resistance_price": 0,
-"resistance_strength": 0,
-"resistance_state": "at_level"
-},
-"4H": { "support_price": 0, "resistance_price": 0 },
-"1D": { "support_price": 0, "resistance_price": 0 }
-},
-
-"no_trade_rules": {
-"avoid_long_if_dist_to_resistance_atr_1H_lt": 0.6,
-"avoid_short_if_dist_to_support_atr_1H_lt": 0.6,
-"max_dist_from_ema20_15m_in_atr_for_new_entries": 2.2
-},
-
-"exit_urgency": {
-"trim_if_near_opposite_level": true,
-"close_if_invalidation": true,
-"invalidation_notes": "string"
-},
-
-"cooldown": {
-"enabled": false,
-"until_ts": null,
-"reason": ""
-},
-
-"summary": "<= 2 lines",
-"reason": "brief rationale"
+  "version": "plan_v1",
+  "symbol": "BTCUSDT",
+  "mode": "live",
+  "plan_ts": "2025-12-16T15:00:00.000Z",
+  "horizon_minutes": 60,
+  "context_bias": "UP|DOWN|NEUTRAL",
+  "macro_bias": "UP|DOWN|NEUTRAL",
+  "primary_bias": "UP|DOWN|NEUTRAL",
+  "micro_bias": "UP|DOWN|NEUTRAL",
+  "allowed_directions": "LONG_ONLY|SHORT_ONLY|BOTH|NONE",
+  "risk_mode": "OFF|CONSERVATIVE|NORMAL|AGGRESSIVE",
+  "max_leverage": 1,
+  "entry_mode": "PULLBACK|BREAKOUT|EITHER|NONE",
+  "key_levels": {
+    "1H": {
+      "support_price": 0,
+      "support_strength": 0,
+      "support_state": "at_level",
+      "resistance_price": 0,
+      "resistance_strength": 0,
+      "resistance_state": "at_level"
+    },
+    "4H": { "support_price": 0, "resistance_price": 0 },
+    "1D": { "support_price": 0, "resistance_price": 0 }
+  },
+  "no_trade_rules": {
+    "avoid_long_if_dist_to_resistance_atr_1H_lt": 0.6,
+    "avoid_short_if_dist_to_support_atr_1H_lt": 0.6,
+    "max_dist_from_ema20_15m_in_atr_for_new_entries": 2.2
+  },
+  "exit_urgency": {
+    "trim_if_near_opposite_level": true,
+    "close_if_invalidation": true,
+    "invalidation_notes": "string"
+  },
+  "cooldown": {
+    "enabled": false,
+    "until_ts": null,
+    "reason": ""
+  },
+  "summary": "<= 2 lines",
+  "reason": "brief rationale"
 }`;
 
 type Plan = Record<string, any>;
@@ -150,7 +143,7 @@ function invalidationNotesValid(val: any): boolean {
     if (val === 'NONE') return true;
     if (typeof val !== 'string') return false;
     const pattern =
-        /^LVL=(-?\d+(\.\d+)?);FAST=\d+[smhd]_close_(above|below)_x\d+;MID=\d+[smhd]_close_(above|below)_x\d+;HARD=\d+[smhd]_close_(above|below)_x\d+;ACTION=(CLOSE|TRIM50|TRIM30|TRIM70)$/;
+        /^LVL=(-?\d+(\.\d+)?);FAST=(5m|15m|30m|1H|4H)_close_(above|below)_x\d+;MID=(5m|15m|30m|1H|4H)_close_(above|below)_x\d+;HARD=(5m|15m|30m|1H|4H)_close_(above|below)_x\d+;ACTION=(CLOSE|TRIM50|TRIM30|TRIM70)$/;
     return pattern.test(val);
 }
 
@@ -167,6 +160,7 @@ Principles:
 
 Output requirements:
 - Output JSON only, parseable by JSON.parse.
+- Do not wrap the output in markdown or code fences.
 - No extra keys anywhere; every key in schema must be present.
 - invalidation_notes must be "NONE" or follow the exact grammar provided by the user.
 - Use the user-provided facts as truth; do not invent indicator values.`
@@ -219,7 +213,7 @@ function buildUserPrompt(params: {
 
     return `
 You are planning for ${symbol} (mode=${mode}), horizon_minutes=${horizon}, asof=${asof}.
-Return strict JSON following this schema exactly (no extra keys). Set plan_ts to the asof timestamp provided below:
+Return strict JSON following this schema exactly (no extra keys). Set plan_ts to the asof timestamp.
 ${PLAN_SCHEMA}
 
 VALIDATION RULES (must follow):
@@ -227,8 +221,8 @@ VALIDATION RULES (must follow):
 2. All keys in schema must be present.
 3. invalidation_notes must be either "NONE" OR match this grammar exactly:
 LVL=<number>;FAST=<tf>_close_<above|below>_x<n>;MID=<tf>_close_<above|below>_x<n>;HARD=<tf>_close_<above|below>_x<n>;ACTION=<CLOSE|TRIM50|TRIM30|TRIM70>
-- <tf> is one of [5m,15m,30m,1H,4H], and <n> is a positive integer.
-- Example: LVL=2963.54;FAST=5m_close_above_x2;MID=15m_close_above_x1;HARD=1h_close_above_x1;ACTION=CLOSE
+- <tf> must be one of [5m, 15m, 30m, 1H, 4H] (case-sensitive), and <n> is a positive integer.
+- Example: LVL=2963.54;FAST=5m_close_above_x2;MID=15m_close_above_x1;HARD=1H_close_above_x1;ACTION=CLOSE
 4. LVL selection:
 Set LVL to the key level relevant to direction bias: if the plan favors shorts, prefer the nearest 1H resistance; if it favors longs, prefer the nearest 1H support (fallback to the closest strong 4H level if 1H is missing).
 - If allowed_directions includes shorts (SHORT_ONLY or BOTH): LVL must be nearest 1H resistance_price; if missing/invalid then use strong 4H resistance_price.
@@ -241,7 +235,6 @@ Set LVL to the key level relevant to direction bias: if the plan favors shorts, 
 
 FACTS:
 Base gates:
-
 - spread_ok=${baseGates.spread_ok}, liquidity_ok=${baseGates.liquidity_ok}, atr_ok=${baseGates.atr_ok}, slippage_ok=${baseGates.slippage_ok}
 - spread_bps=${formatNumber(spreadBps, 3)}${coarseLiquidityLine ? `, ${coarseLiquidityLine}` : ''}
 
