@@ -402,7 +402,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             regime,
             location,
             news: {
-                sentiment: newsBundle.sentiment === 'NEGATIVE' ? 'NEG' : newsBundle.sentiment === 'POSITIVE' ? 'POS' : 'NEU',
+                sentiment: newsBundle.sentiment || 'NEUTRAL',
                 headlines: Array.isArray(newsBundle.headlines) ? newsBundle.headlines.slice(0, 5) : [],
             },
             coarseLiquidity: {
