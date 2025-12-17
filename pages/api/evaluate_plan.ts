@@ -20,6 +20,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     const plan = planRecord.plan;
+    const prompt = planRecord.prompt ?? null;
 
     const system = `You are a plan quality auditor. Review the provided trading plan_v1 JSON for correctness, completeness, stability, and guardrail adherence. Focus on:
 - Schema fidelity: exact keys/types, no extras.
@@ -31,6 +32,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 - Safety: risk_mode/allowed_directions/entry_mode when base gates fail.
 - Chop handling: if location_confluence_score high or both 1H levels close, prefer NONE/CONSERVATIVE.
 - Leverage caps: within 1-4, consistent with risk_mode.
+- Prompt quality: clarity, JSON strictness, alignment with expected fields/constraints, no contradictions, includes invalidation grammar and LVL selection rules.
 Respond in strict JSON parseable by JSON.parse:
 {
   "overall_rating": 0-10,
@@ -43,7 +45,7 @@ Respond in strict JSON parseable by JSON.parse:
     const prevRaw = req.method === 'GET' ? req.query.prev_plan : req.body?.prev_plan;
     const prevPlan = prevRaw ? JSON.parse(String(Array.isArray(prevRaw) ? prevRaw[0] : prevRaw)) : planRecord.plan?.prev_plan ?? null;
 
-    const user = `Symbol: ${symbol}. Plan: ${JSON.stringify(plan)}. Prev plan (optional): ${JSON.stringify(prevPlan)}.`;
+    const user = `Symbol: ${symbol}. Plan: ${JSON.stringify(plan)}. Prev plan (optional): ${JSON.stringify(prevPlan)}. Prompt (system/user): ${JSON.stringify(prompt)}.`;
 
     const evaluation = await callAI(system, user);
 
