@@ -35,8 +35,7 @@ function toNum(x: any) {
 }
 
 function pickParam(req: NextApiRequest, key: string, fallback?: any) {
-    const source = req.method === 'GET' ? req.query : req.body ?? {};
-    const raw = (source as any)?.[key];
+    const raw = req.query?.[key] ?? (req.body as any)?.[key];
     if (Array.isArray(raw)) return raw[0] ?? fallback;
     return raw ?? fallback;
 }

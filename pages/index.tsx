@@ -619,16 +619,17 @@ export default function Home() {
                     <Star className="w-4 h-4 text-amber-600" />
                     <div className="font-semibold text-slate-900">Last Executor Decision (dry-run)</div>
                   </div>
-                  {lastExec ? (
-                    <div className="space-y-1 text-sm text-slate-700">
-                      <div>Decision: {lastExec.decision}</div>
-                      <div>Reason: {lastExec.reason}</div>
-                      <div>Plan ts: {lastExec.plan_ts}</div>
-                    </div>
-                  ) : (
-                    <div className="text-sm text-slate-500">No execution decision.</div>
-                  )}
-                </div>
+      {lastExec ? (
+        <div className="space-y-1 text-sm text-slate-700">
+          <div>Decision: {lastExec.decision}</div>
+          <div>Reason: {lastExec.reason}</div>
+          <div>Plan ts: {lastExec.plan_ts}</div>
+          <div>Exec ts: {lastExec.ts}</div>
+        </div>
+      ) : (
+        <div className="text-sm text-slate-500">No execution decision.</div>
+      )}
+    </div>
                 <div className="rounded-2xl border border-slate-200 bg-white p-4">
                   <div className="flex items-center justify-between gap-2 mb-2">
                     <div className="flex items-center gap-2">

@@ -76,8 +76,7 @@ function formatNumber(n: any, digits = 4) {
 }
 
 function pickParam(req: NextApiRequest, key: string, fallback?: any) {
-    const source = req.method === 'GET' ? req.query : req.body ?? {};
-    const raw = (source as any)?.[key];
+    const raw = req.query?.[key] ?? (req.body as any)?.[key];
     if (Array.isArray(raw)) return raw[0] ?? fallback;
     return raw ?? fallback;
 }
@@ -206,7 +205,7 @@ function buildUserPrompt(params: {
 
     return `
 You are planning for ${symbol} (mode=${mode}), horizon_minutes=${horizon}, asof=${asof}.
-Return strict JSON following this schema exactly (no extra keys):
+Return strict JSON following this schema exactly (no extra keys). Set plan_ts to the asof timestamp provided below:
 ${PLAN_SCHEMA}
 
 invalidation_notes must be either "NONE" or follow exactly:
@@ -435,6 +434,12 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 .status(500)
                 .json({ error: 'plan_validation_failed', attempts: attempts.map((a) => ({ errors: a.errors, raw: a.raw })) });
         }
+
+        // Force deterministic fields
+        plan.plan_ts = asof;
+        plan.symbol = symbol;
+        plan.mode = mode;
+        plan.horizon_minutes = horizon;
 
         const persistResult = await savePlan(symbol, plan, { system: systemPrompt, user: userPrompt });
 
