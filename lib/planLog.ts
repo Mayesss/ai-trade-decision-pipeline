@@ -49,6 +49,19 @@ async function kvZRevRange(key: string, start: number, stop: number): Promise<st
     return Array.isArray(res) ? res : [];
 }
 
+async function kvMGet(keys: string[]): Promise<(string | null)[]> {
+    if (!keys.length) return [];
+    const encoded = keys.map((k) => encodeURIComponent(k)).join('/');
+    const url = `${KV_REST_API_URL}/MGET/${encoded}`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${KV_REST_API_TOKEN}` },
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || 'MGET failed');
+    return Array.isArray(data.result) ? data.result : [];
+}
+
 async function kvZRem(key: string, member: string) {
     return kvCommand('ZREM', key, member);
 }
@@ -80,20 +93,30 @@ export async function appendPlanLog(entry: PlanLogEntry) {
 
 export async function loadPlanLogs(symbol: string, limit = 60): Promise<PlanLogEntry[]> {
     if (!kvConfigured()) return [];
-    const keys = await kvZRevRange(PLAN_LOG_INDEX, 0, limit - 1);
-    const filtered = symbol ? keys.filter((k) => k.endsWith(`:${symbol.toUpperCase()}`)) : keys;
-    const values = await Promise.all(
-        filtered.map(async (k) => {
-            const raw = await kvGet(k);
+    const upper = String(symbol || '').toUpperCase();
+    const batchSize = 200;
+    let start = 0;
+    const matchedKeys: string[] = [];
+    while (matchedKeys.length < limit) {
+        const keys = await kvZRevRange(PLAN_LOG_INDEX, start, start + batchSize - 1);
+        if (!keys.length) break;
+        start += batchSize;
+        const filtered = upper ? keys.filter((k) => k.endsWith(`:${upper}`)) : keys;
+        matchedKeys.push(...filtered);
+    }
+    const slice = matchedKeys.slice(0, limit);
+    const values = await kvMGet(slice);
+    const parsed = values
+        .map((raw) => {
             if (!raw) return null;
             try {
                 return JSON.parse(raw) as PlanLogEntry;
             } catch {
                 return null;
             }
-        }),
-    );
-    return values.filter(Boolean) as PlanLogEntry[];
+        })
+        .filter(Boolean) as PlanLogEntry[];
+    return parsed;
 }
 
 export async function listPlanLogSymbols(limit = 200): Promise<string[]> {

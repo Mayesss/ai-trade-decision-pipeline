@@ -7,7 +7,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const symbolRaw = req.query.symbol;
     const symbol = String(Array.isArray(symbolRaw) ? symbolRaw[0] : symbolRaw || '').toUpperCase();
-    const limit = Math.min(60, Math.max(1, Number(req.query.limit ?? 10)));
+    const limit = Math.min(60 * 24, Math.max(1, Number(req.query.limit ?? 10)));
     if (!symbol) return res.status(400).json({ error: 'symbol_required' });
 
     const logs = await loadExecutionLogs(symbol, limit);
