@@ -1,5 +1,12 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { getAllEvaluations, getEvaluationTimestamp } from '../../lib/utils';
+import {
+  getAllEvaluations,
+  getEvaluationTimestamp,
+  getExecEvaluation,
+  getExecEvaluationTimestamp,
+  getPlanEvaluation,
+  getPlanEvaluationTimestamp,
+} from '../../lib/utils';
 import { loadDecisionHistory } from '../../lib/history';
 import { fetchPositionInfo, fetchRealizedRoi, fetchRecentPositionWindows } from '../../lib/analytics';
 
@@ -7,6 +14,10 @@ type EnrichedEntry = {
   symbol: string;
   evaluation: any;
   evaluationTs?: number | null;
+  planEvaluation?: any;
+  planEvaluationTs?: number | null;
+  execEvaluation?: any;
+  execEvaluationTs?: number | null;
   lastBiasTimeframes?: Record<string, string | undefined> | null;
   pnl24h?: number | null;
   pnl24hWithOpen?: number | null;
@@ -62,6 +73,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let avgWinPct: number | null | undefined = null;
       let avgLossPct: number | null | undefined = null;
       let evaluationTs: number | null | undefined = null;
+      let planEvaluation: any = null;
+      let planEvaluationTs: number | null | undefined = null;
+      let execEvaluation: any = null;
+      let execEvaluationTs: number | null | undefined = null;
       let lastBiasTimeframes: Record<string, string | undefined> | null = null;
 
       try {
@@ -167,6 +182,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         evaluationTs = await getEvaluationTimestamp(symbol);
+
+        try {
+          planEvaluation = await getPlanEvaluation(symbol);
+          planEvaluationTs = await getPlanEvaluationTimestamp(symbol);
+        } catch (err) {
+          console.warn(`Could not load plan evaluation for ${symbol}:`, err);
+        }
+
+        try {
+          execEvaluation = await getExecEvaluation(symbol);
+          execEvaluationTs = await getExecEvaluationTimestamp(symbol);
+        } catch (err) {
+          console.warn(`Could not load exec evaluation for ${symbol}:`, err);
+        }
       } catch (err) {
         // Fail silently per symbol; still return evaluation
         console.warn(`Could not load history for ${symbol}:`, err);
@@ -175,6 +204,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return {
         symbol,
         evaluation: store[symbol],
+        planEvaluation,
+        planEvaluationTs,
+        execEvaluation,
+        execEvaluationTs,
         pnl24h,
         pnl24hWithOpen,
         pnl24hNet,

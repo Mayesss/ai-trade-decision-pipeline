@@ -44,6 +44,10 @@ type EvaluationEntry = {
   symbol: string;
   evaluation: Evaluation;
   evaluationTs?: number | null;
+  planEvaluation?: any;
+  planEvaluationTs?: number | null;
+  execEvaluation?: any;
+  execEvaluationTs?: number | null;
   lastBiasTimeframes?: Record<string, string | undefined> | null;
   pnl24h?: number | null;
   pnl24hWithOpen?: number | null;
@@ -170,11 +174,7 @@ export default function Home() {
   const overlayLayerRef = useRef<HTMLDivElement | null>(null);
   const chartInstanceRef = useRef<any>(null);
   const [plan, setPlan] = useState<any>(null);
-  const [planEval, setPlanEval] = useState<any>(null);
-  const [planEvalTs, setPlanEvalTs] = useState<number | null>(null);
   const [lastExec, setLastExec] = useState<any>(null);
-  const [execEval, setExecEval] = useState<any>(null);
-  const [execEvalTs, setExecEvalTs] = useState<number | null>(null);
 
   const aspectMeta: Record<string, { Icon: LucideIcon; color: string; bg: string }> = {
     data_quality: { Icon: Database, color: 'text-sky-700', bg: 'bg-sky-100' },
@@ -225,10 +225,6 @@ export default function Home() {
     setShowAspects(false);
     setShowDecisionPrompt(false);
     setShowPlanPrompt(false);
-    setPlanEval(null);
-    setPlanEvalTs(null);
-    setExecEval(null);
-    setExecEvalTs(null);
   }, [active, symbols]);
 
   useEffect(() => {
@@ -261,11 +257,7 @@ export default function Home() {
       const symbol = symbols[active];
       if (!symbol) {
         setPlan(null);
-        setPlanEval(null);
-        setPlanEvalTs(null);
         setLastExec(null);
-        setExecEval(null);
-        setExecEvalTs(null);
         return;
       }
       try {
@@ -281,21 +273,6 @@ export default function Home() {
       }
 
       try {
-        const planEvalRes = await fetch(`/api/planEvalLatest?symbol=${symbol}`);
-        if (planEvalRes.ok) {
-          const json = await planEvalRes.json();
-          setPlanEval(json.evaluation ?? null);
-          setPlanEvalTs(typeof json.ts === 'number' ? json.ts : null);
-        } else {
-          setPlanEval(null);
-          setPlanEvalTs(null);
-        }
-      } catch {
-        setPlanEval(null);
-        setPlanEvalTs(null);
-      }
-
-      try {
         const execRes = await fetch(`/api/executeHistory?symbol=${symbol}&limit=1`);
         if (execRes.ok) {
           const ej = await execRes.json();
@@ -306,21 +283,6 @@ export default function Home() {
         }
       } catch {
         setLastExec(null);
-      }
-
-      try {
-        const execEvalRes = await fetch(`/api/execEvalLatest?symbol=${symbol}`);
-        if (execEvalRes.ok) {
-          const json = await execEvalRes.json();
-          setExecEval(json.evaluation ?? null);
-          setExecEvalTs(typeof json.ts === 'number' ? json.ts : null);
-        } else {
-          setExecEval(null);
-          setExecEvalTs(null);
-        }
-      } catch {
-        setExecEval(null);
-        setExecEvalTs(null);
       }
     };
     loadPlanAndExec();
@@ -1032,14 +994,11 @@ export default function Home() {
                 {plan ? (
                   <>
                     <div className="mt-3 text-sm text-slate-800">
-                      Allowed directions:{' '}
-                      <span className="rounded-full bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-700 ring-1 ring-inset ring-sky-200">
-                        {(plan.allowed_directions || '—').toString()}
+                      Allowed:{' '}
+                      <span className="font-semibold text-sky-700">
+                        {((plan.allowed_directions || '') as string).toString() || '—'}
                       </span>
-                    </div>
-                    <div className="mt-3 text-sm text-slate-700">
-                      <span className="font-semibold text-slate-800">Summary: </span>
-                      {(plan.summary || '').toString() || '—'}
+                      {plan.summary ? ` · ${String(plan.summary)}` : ''}
                     </div>
 
                     {plan.reason ? (
@@ -1106,7 +1065,7 @@ export default function Home() {
                     </div>
 
                     {showPlanPrompt && (
-                      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div className="mt-4 space-y-3">
                         <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                           <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">System</div>
                           <div className="mt-2">{renderPromptContent(plan.__prompt?.system)}</div>
@@ -1193,7 +1152,7 @@ export default function Home() {
                     </button>
                   </div>
                   {showDecisionPrompt && (
-                    <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="mt-4 space-y-3">
                       <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                         <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">System</div>
                         <div className="mt-2">{renderPromptContent(current.lastPrompt?.system)}</div>
@@ -1211,25 +1170,25 @@ export default function Home() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
                     <span>Latest Plan Evaluation</span>
-                    {planEvalTs ? (
-                      <span className="lowercase text-slate-400">{formatDecisionTime(planEvalTs)}</span>
+                    {current.planEvaluationTs ? (
+                      <span className="lowercase text-slate-400">{formatDecisionTime(current.planEvaluationTs)}</span>
                     ) : null}
                   </div>
-                  {planEval?.confidence ? (
+                  {current.planEvaluation?.confidence ? (
                     <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
-                      Confidence: {planEval.confidence}
+                      Confidence: {current.planEvaluation.confidence}
                     </div>
                   ) : null}
                 </div>
-                {planEval ? (
+                {current.planEvaluation ? (
                   <>
                     <div className="mt-2 text-lg font-semibold text-slate-900 flex items-center gap-3 flex-wrap">
                       <span>
-                        Rating: <span className="text-sky-600">{planEval.overall_rating ?? '—'}</span>
+                        Rating: <span className="text-sky-600">{current.planEvaluation.overall_rating ?? '—'}</span>
                       </span>
                       <div className="flex flex-wrap items-center gap-1">
                         {Array.from({ length: 10 }).map((_, idx) => {
-                          const ratingVal = Number(planEval.overall_rating ?? 0);
+                          const ratingVal = Number(current.planEvaluation.overall_rating ?? 0);
                           const filled = ratingVal >= idx + 1;
                           const colorClass =
                             ratingVal >= 9
@@ -1253,39 +1212,42 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {(planEval.findings?.length || planEval.issues?.length || planEval.improvements?.length) && (
+                    {(current.planEvaluation.findings?.length ||
+                      current.planEvaluation.issues?.length ||
+                      current.planEvaluation.improvements?.length) && (
                       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                        {Array.isArray(planEval.findings) && planEval.findings.length ? (
+                        {Array.isArray(current.planEvaluation.findings) && current.planEvaluation.findings.length ? (
                           <div className="rounded-xl border border-rose-200 bg-rose-50 p-3">
                             <div className="text-[10px] font-semibold uppercase tracking-wide text-rose-700">
                               Findings
                             </div>
                             <ul className="mt-2 space-y-1 text-sm text-rose-800">
-                              {planEval.findings.map((t: string, i: number) => (
+                              {current.planEvaluation.findings.map((t: string, i: number) => (
                                 <li key={i}>• {t}</li>
                               ))}
                             </ul>
                           </div>
                         ) : null}
-                        {Array.isArray(planEval.issues) && planEval.issues.length ? (
+                        {Array.isArray(current.planEvaluation.issues) && current.planEvaluation.issues.length ? (
                           <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
                             <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">
                               Issues
                             </div>
                             <ul className="mt-2 space-y-1 text-sm text-amber-900">
-                              {planEval.issues.map((t: string, i: number) => (
+                              {current.planEvaluation.issues.map((t: string, i: number) => (
                                 <li key={i}>• {t}</li>
                               ))}
                             </ul>
                           </div>
                         ) : null}
-                        {Array.isArray(planEval.improvements) && planEval.improvements.length ? (
+                        {Array.isArray(current.planEvaluation.improvements) &&
+                        current.planEvaluation.improvements.length ? (
                           <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                             <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                               Improvements
                             </div>
                             <ul className="mt-2 space-y-1 text-sm text-slate-700">
-                              {planEval.improvements.map((t: string, i: number) => (
+                              {current.planEvaluation.improvements.map((t: string, i: number) => (
                                 <li key={i}>• {t}</li>
                               ))}
                             </ul>
@@ -1303,25 +1265,25 @@ export default function Home() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
                     <span>Latest Execute Evaluation</span>
-                    {execEvalTs ? (
-                      <span className="lowercase text-slate-400">{formatDecisionTime(execEvalTs)}</span>
+                    {current.execEvaluationTs ? (
+                      <span className="lowercase text-slate-400">{formatDecisionTime(current.execEvaluationTs)}</span>
                     ) : null}
                   </div>
-                  {execEval?.confidence ? (
+                  {current.execEvaluation?.confidence ? (
                     <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
-                      Confidence: {execEval.confidence}
+                      Confidence: {current.execEvaluation.confidence}
                     </div>
                   ) : null}
                 </div>
-                {execEval ? (
+                {current.execEvaluation ? (
                   <>
                     <div className="mt-2 text-lg font-semibold text-slate-900 flex items-center gap-3 flex-wrap">
                       <span>
-                        Rating: <span className="text-sky-600">{execEval.overall_rating ?? '—'}</span>
+                        Rating: <span className="text-sky-600">{current.execEvaluation.overall_rating ?? '—'}</span>
                       </span>
                       <div className="flex flex-wrap items-center gap-1">
                         {Array.from({ length: 10 }).map((_, idx) => {
-                          const ratingVal = Number(execEval.overall_rating ?? 0);
+                          const ratingVal = Number(current.execEvaluation.overall_rating ?? 0);
                           const filled = ratingVal >= idx + 1;
                           const colorClass =
                             ratingVal >= 9
@@ -1345,39 +1307,42 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {(execEval.findings?.length || execEval.issues?.length || execEval.improvements?.length) && (
+                    {(current.execEvaluation.findings?.length ||
+                      current.execEvaluation.issues?.length ||
+                      current.execEvaluation.improvements?.length) && (
                       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                        {Array.isArray(execEval.findings) && execEval.findings.length ? (
+                        {Array.isArray(current.execEvaluation.findings) && current.execEvaluation.findings.length ? (
                           <div className="rounded-xl border border-rose-200 bg-rose-50 p-3">
                             <div className="text-[10px] font-semibold uppercase tracking-wide text-rose-700">
                               Findings
                             </div>
                             <ul className="mt-2 space-y-1 text-sm text-rose-800">
-                              {execEval.findings.map((t: string, i: number) => (
+                              {current.execEvaluation.findings.map((t: string, i: number) => (
                                 <li key={i}>• {t}</li>
                               ))}
                             </ul>
                           </div>
                         ) : null}
-                        {Array.isArray(execEval.issues) && execEval.issues.length ? (
+                        {Array.isArray(current.execEvaluation.issues) && current.execEvaluation.issues.length ? (
                           <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
                             <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">
                               Issues
                             </div>
                             <ul className="mt-2 space-y-1 text-sm text-amber-900">
-                              {execEval.issues.map((t: string, i: number) => (
+                              {current.execEvaluation.issues.map((t: string, i: number) => (
                                 <li key={i}>• {t}</li>
                               ))}
                             </ul>
                           </div>
                         ) : null}
-                        {Array.isArray(execEval.improvements) && execEval.improvements.length ? (
+                        {Array.isArray(current.execEvaluation.improvements) &&
+                        current.execEvaluation.improvements.length ? (
                           <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                             <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                               Improvements
                             </div>
                             <ul className="mt-2 space-y-1 text-sm text-slate-700">
-                              {execEval.improvements.map((t: string, i: number) => (
+                              {current.execEvaluation.improvements.map((t: string, i: number) => (
                                 <li key={i}>• {t}</li>
                               ))}
                             </ul>
