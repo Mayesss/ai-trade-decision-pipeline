@@ -4,7 +4,7 @@
     { "src": "package.json", "use": "@vercel/next" }
   ],
   "crons": [
-    { "path": "/api/plan?symbol=BTCUSDT", "schedule": "0 59 * * * *" },
+    { "path": "/api/plan?symbol=BTCUSDT", "schedule": "50 59 * * * *" },
     { "path": "/api/execute?symbol=BTCUSDT&notional=10&dryRun=false", "schedule": "0 * * * * *" }
   ],
   "routes": [
