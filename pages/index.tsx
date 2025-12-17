@@ -164,6 +164,8 @@ export default function Home() {
   const [showDecisionPrompt, setShowDecisionPrompt] = useState(false);
   const [showPlanPrompt, setShowPlanPrompt] = useState(false);
   const [showPlanAiResponse, setShowPlanAiResponse] = useState(false);
+  const [showPlanEvalAspects, setShowPlanEvalAspects] = useState(false);
+  const [showExecEvalAspects, setShowExecEvalAspects] = useState(false);
   const [chartData, setChartData] = useState<{ time: number; value: number }[]>([]);
   const [chartMarkers, setChartMarkers] = useState<any[]>([]);
   const [positionOverlays, setPositionOverlays] = useState<PositionOverlay[]>([]);
@@ -227,6 +229,8 @@ export default function Home() {
     setShowDecisionPrompt(false);
     setShowPlanPrompt(false);
     setShowPlanAiResponse(false);
+    setShowPlanEvalAspects(false);
+    setShowExecEvalAspects(false);
   }, [active, symbols]);
 
   useEffect(() => {
@@ -574,6 +578,20 @@ export default function Home() {
       current?.evaluation.what_went_well?.length ||
       current?.evaluation.issues?.length ||
       current?.evaluation.improvements?.length
+    );
+  const hasPlanEvalDetails =
+    !!(
+      current?.planEvaluation?.what_went_well?.length ||
+      current?.planEvaluation?.findings?.length ||
+      current?.planEvaluation?.issues?.length ||
+      current?.planEvaluation?.improvements?.length
+    );
+  const hasExecEvalDetails =
+    !!(
+      current?.execEvaluation?.what_went_well?.length ||
+      current?.execEvaluation?.findings?.length ||
+      current?.execEvaluation?.issues?.length ||
+      current?.execEvaluation?.improvements?.length
     );
   const biasOrder = [
     { key: 'context_bias', label: 'Context' },
@@ -1212,12 +1230,12 @@ export default function Home() {
                     </div>
                   ) : null}
                 </div>
-                {current.planEvaluation ? (
-                  <>
-                    <div className="mt-2 text-lg font-semibold text-slate-900 flex items-center gap-3 flex-wrap">
-                      <span>
-                        Rating: <span className="text-sky-600">{current.planEvaluation.overall_rating ?? '—'}</span>
-                      </span>
+	                {current.planEvaluation ? (
+	                  <>
+	                    <div className="mt-2 text-lg font-semibold text-slate-900 flex items-center gap-3 flex-wrap">
+	                      <span>
+	                        Rating: <span className="text-sky-600">{current.planEvaluation.overall_rating ?? '—'}</span>
+	                      </span>
                       <div className="flex flex-wrap items-center gap-1">
                         {Array.from({ length: 10 }).map((_, idx) => {
                           const ratingVal = Number(current.planEvaluation.overall_rating ?? 0);
@@ -1241,56 +1259,160 @@ export default function Home() {
                             />
                           );
                         })}
-                      </div>
-                    </div>
+	                      </div>
+	                    </div>
+	                    <p className="mt-3 text-sm text-slate-700">
+	                      {current.planEvaluation.overview || current.planEvaluation.summary || 'No overview provided.'}
+	                    </p>
+	                    {Number.isFinite(Number((current.planEvaluation as any)?.sample_size)) ? (
+	                      <p className="mt-2 text-xs text-slate-500">
+	                        Sample size: {(current.planEvaluation as any).sample_size}
+	                        {(current.planEvaluation as any)?.redundance_summary
+	                          ? ` · ${(current.planEvaluation as any).redundance_summary}`
+	                          : ''}
+	                      </p>
+	                    ) : null}
 
-                    {(current.planEvaluation.findings?.length ||
-                      current.planEvaluation.issues?.length ||
-                      current.planEvaluation.improvements?.length) && (
-                      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                        {Array.isArray(current.planEvaluation.findings) && current.planEvaluation.findings.length ? (
-                          <div className="rounded-xl border border-rose-200 bg-rose-50 p-3">
-                            <div className="text-[10px] font-semibold uppercase tracking-wide text-rose-700">
-                              Findings
-                            </div>
-                            <ul className="mt-2 space-y-1 text-sm text-rose-800">
-                              {current.planEvaluation.findings.map((t: string, i: number) => (
-                                <li key={i}>• {t}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        ) : null}
-                        {Array.isArray(current.planEvaluation.issues) && current.planEvaluation.issues.length ? (
-                          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
-                            <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">
-                              Issues
-                            </div>
-                            <ul className="mt-2 space-y-1 text-sm text-amber-900">
-                              {current.planEvaluation.issues.map((t: string, i: number) => (
-                                <li key={i}>• {t}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        ) : null}
-                        {Array.isArray(current.planEvaluation.improvements) &&
-                        current.planEvaluation.improvements.length ? (
-                          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                              Improvements
-                            </div>
-                            <ul className="mt-2 space-y-1 text-sm text-slate-700">
-                              {current.planEvaluation.improvements.map((t: string, i: number) => (
-                                <li key={i}>• {t}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        ) : null}
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div className="mt-3 text-sm text-slate-500">No plan evaluation available.</div>
-                )}
+	                    {(current.planEvaluation.aspects || hasPlanEvalDetails) && (
+	                      <div className="mt-4 space-y-4">
+	                        {current.planEvaluation.aspects && (
+	                          <>
+	                            <button
+	                              onClick={() => setShowPlanEvalAspects((prev) => !prev)}
+	                              className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+	                            >
+	                              {showPlanEvalAspects ? 'Hide aspect ratings' : 'Show aspect ratings'}
+	                            </button>
+	                            {showPlanEvalAspects && (
+	                              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+	                                {Object.entries(current.planEvaluation.aspects).map(([key, val]) => (
+	                                  <div
+	                                    key={key}
+	                                    className="rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-inner shadow-slate-100"
+	                                  >
+	                                    <div className="flex items-center justify-between">
+	                                      <div className="flex items-center gap-2">
+	                                        {(() => {
+	                                          const meta = aspectMeta[key] || {
+	                                            Icon: Circle,
+	                                            color: 'text-slate-600',
+	                                            bg: 'bg-slate-100',
+	                                          };
+	                                          const Icon = meta.Icon;
+	                                          return (
+	                                            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+	                                              <Icon className="h-4 w-4" />
+	                                            </span>
+	                                          );
+	                                        })()}
+	                                        <div className="text-sm font-semibold text-slate-900">{formatLabel(key)}</div>
+	                                      </div>
+	                                      <div className="text-lg font-semibold text-sky-700">{(val as any)?.rating ?? '—'}</div>
+	                                    </div>
+	                                    <p className="mt-2 text-xs text-slate-600">{(val as any)?.comment || 'No comment'}</p>
+	                                    {((val as any)?.checks?.length ||
+	                                      (val as any)?.improvements?.length ||
+	                                      (val as any)?.findings?.length) && (
+	                                      <div className="mt-3 space-y-2">
+	                                        {(val as any)?.checks?.length ? (
+	                                          <div>
+	                                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+	                                              Checks
+	                                            </div>
+	                                            <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-slate-700">
+	                                              {(val as any).checks.map((item: string, idx: number) => (
+	                                                <li key={idx}>{item}</li>
+	                                              ))}
+	                                            </ul>
+	                                          </div>
+	                                        ) : null}
+	                                        {(val as any)?.improvements?.length ? (
+	                                          <div>
+	                                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+	                                              Improvements
+	                                            </div>
+	                                            <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-amber-800">
+	                                              {(val as any).improvements.map((item: string, idx: number) => (
+	                                                <li key={idx}>{item}</li>
+	                                              ))}
+	                                            </ul>
+	                                          </div>
+	                                        ) : null}
+	                                        {(val as any)?.findings?.length ? (
+	                                          <div>
+	                                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+	                                              Findings
+	                                            </div>
+	                                            <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-rose-800">
+	                                              {(val as any).findings.map((item: string, idx: number) => (
+	                                                <li key={idx}>{item}</li>
+	                                              ))}
+	                                            </ul>
+	                                          </div>
+	                                        ) : null}
+	                                      </div>
+	                                    )}
+	                                  </div>
+	                                ))}
+	                              </div>
+	                            )}
+	                          </>
+	                        )}
+
+	                        {((current.planEvaluation.aspects && showPlanEvalAspects) || !current.planEvaluation.aspects) &&
+	                          hasPlanEvalDetails && (
+	                            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+	                              <div className="text-xs uppercase tracking-wide text-slate-500">Details</div>
+	                              <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+	                                {current.planEvaluation.what_went_well?.length ? (
+	                                  <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
+	                                    <div className="text-sm font-semibold text-emerald-800">What went well</div>
+	                                    <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
+	                                      {current.planEvaluation.what_went_well.map((item: string, idx: number) => (
+	                                        <li key={idx}>{item}</li>
+	                                      ))}
+	                                    </ul>
+	                                  </div>
+	                                ) : null}
+	                                {current.planEvaluation.findings?.length ? (
+	                                  <div className="rounded-xl border border-rose-100 bg-rose-50 p-3">
+	                                    <div className="text-sm font-semibold text-rose-800">Findings</div>
+	                                    <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
+	                                      {current.planEvaluation.findings.map((item: string, idx: number) => (
+	                                        <li key={idx}>{item}</li>
+	                                      ))}
+	                                    </ul>
+	                                  </div>
+	                                ) : null}
+	                                {current.planEvaluation.issues?.length ? (
+	                                  <div className="rounded-xl border border-rose-100 bg-rose-50 p-3">
+	                                    <div className="text-sm font-semibold text-rose-800">Issues</div>
+	                                    <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
+	                                      {current.planEvaluation.issues.map((item: string, idx: number) => (
+	                                        <li key={idx}>{item}</li>
+	                                      ))}
+	                                    </ul>
+	                                  </div>
+	                                ) : null}
+	                                {current.planEvaluation.improvements?.length ? (
+	                                  <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">
+	                                    <div className="text-sm font-semibold text-amber-800">Improvements</div>
+	                                    <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
+	                                      {current.planEvaluation.improvements.map((item: string, idx: number) => (
+	                                        <li key={idx}>{item}</li>
+	                                      ))}
+	                                    </ul>
+	                                  </div>
+	                                ) : null}
+	                              </div>
+	                            </div>
+	                          )}
+	                      </div>
+	                    )}
+	                  </>
+	                ) : (
+	                  <div className="mt-3 text-sm text-slate-500">No plan evaluation available.</div>
+	                )}
               </div>
 
               <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
@@ -1307,12 +1429,12 @@ export default function Home() {
                     </div>
                   ) : null}
                 </div>
-                {current.execEvaluation ? (
-                  <>
-                    <div className="mt-2 text-lg font-semibold text-slate-900 flex items-center gap-3 flex-wrap">
-                      <span>
-                        Rating: <span className="text-sky-600">{current.execEvaluation.overall_rating ?? '—'}</span>
-                      </span>
+	                {current.execEvaluation ? (
+	                  <>
+	                    <div className="mt-2 text-lg font-semibold text-slate-900 flex items-center gap-3 flex-wrap">
+	                      <span>
+	                        Rating: <span className="text-sky-600">{current.execEvaluation.overall_rating ?? '—'}</span>
+	                      </span>
                       <div className="flex flex-wrap items-center gap-1">
                         {Array.from({ length: 10 }).map((_, idx) => {
                           const ratingVal = Number(current.execEvaluation.overall_rating ?? 0);
@@ -1336,56 +1458,161 @@ export default function Home() {
                             />
                           );
                         })}
-                      </div>
-                    </div>
+	                      </div>
+	                    </div>
+	                    <p className="mt-3 text-sm text-slate-700">
+	                      {current.execEvaluation.overview || current.execEvaluation.summary || 'No overview provided.'}
+	                    </p>
+	                    {Number.isFinite(Number((current.execEvaluation as any)?.sample_size)) ? (
+	                      <p className="mt-2 text-xs text-slate-500">
+	                        Sample size: {(current.execEvaluation as any).sample_size}
+	                        {(current.execEvaluation as any)?.redundance_summary
+	                          ? ` · ${(current.execEvaluation as any).redundance_summary}`
+	                          : ''}
+	                      </p>
+	                    ) : null}
 
-                    {(current.execEvaluation.findings?.length ||
-                      current.execEvaluation.issues?.length ||
-                      current.execEvaluation.improvements?.length) && (
-                      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                        {Array.isArray(current.execEvaluation.findings) && current.execEvaluation.findings.length ? (
-                          <div className="rounded-xl border border-rose-200 bg-rose-50 p-3">
-                            <div className="text-[10px] font-semibold uppercase tracking-wide text-rose-700">
-                              Findings
-                            </div>
-                            <ul className="mt-2 space-y-1 text-sm text-rose-800">
-                              {current.execEvaluation.findings.map((t: string, i: number) => (
-                                <li key={i}>• {t}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        ) : null}
-                        {Array.isArray(current.execEvaluation.issues) && current.execEvaluation.issues.length ? (
-                          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
-                            <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">
-                              Issues
-                            </div>
-                            <ul className="mt-2 space-y-1 text-sm text-amber-900">
-                              {current.execEvaluation.issues.map((t: string, i: number) => (
-                                <li key={i}>• {t}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        ) : null}
-                        {Array.isArray(current.execEvaluation.improvements) &&
-                        current.execEvaluation.improvements.length ? (
-                          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                              Improvements
-                            </div>
-                            <ul className="mt-2 space-y-1 text-sm text-slate-700">
-                              {current.execEvaluation.improvements.map((t: string, i: number) => (
-                                <li key={i}>• {t}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        ) : null}
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div className="mt-3 text-sm text-slate-500">No execute evaluation available.</div>
-                )}
+	                    {(current.execEvaluation.aspects || hasExecEvalDetails) && (
+	                      <div className="mt-4 space-y-4">
+	                        {current.execEvaluation.aspects && (
+	                          <>
+	                            <button
+	                              onClick={() => setShowExecEvalAspects((prev) => !prev)}
+	                              className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+	                            >
+	                              {showExecEvalAspects ? 'Hide aspect ratings' : 'Show aspect ratings'}
+	                            </button>
+	                            {showExecEvalAspects && (
+	                              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+	                                {Object.entries(current.execEvaluation.aspects).map(([key, val]) => (
+	                                  <div
+	                                    key={key}
+	                                    className="rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-inner shadow-slate-100"
+	                                  >
+	                                    <div className="flex items-center justify-between">
+	                                      <div className="flex items-center gap-2">
+	                                        {(() => {
+	                                          const meta = aspectMeta[key] || {
+	                                            Icon: Circle,
+	                                            color: 'text-slate-600',
+	                                            bg: 'bg-slate-100',
+	                                          };
+	                                          const Icon = meta.Icon;
+	                                          return (
+	                                            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+	                                              <Icon className="h-4 w-4" />
+	                                            </span>
+	                                          );
+	                                        })()}
+	                                        <div className="text-sm font-semibold text-slate-900">{formatLabel(key)}</div>
+	                                      </div>
+	                                      <div className="text-lg font-semibold text-sky-700">{(val as any)?.rating ?? '—'}</div>
+	                                    </div>
+	                                    <p className="mt-2 text-xs text-slate-600">{(val as any)?.comment || 'No comment'}</p>
+	                                    {((val as any)?.checks?.length ||
+	                                      (val as any)?.improvements?.length ||
+	                                      (val as any)?.findings?.length) && (
+	                                      <div className="mt-3 space-y-2">
+	                                        {(val as any)?.checks?.length ? (
+	                                          <div>
+	                                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+	                                              Checks
+	                                            </div>
+	                                            <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-slate-700">
+	                                              {(val as any).checks.map((item: string, idx: number) => (
+	                                                <li key={idx}>{item}</li>
+	                                              ))}
+	                                            </ul>
+	                                          </div>
+	                                        ) : null}
+	                                        {(val as any)?.improvements?.length ? (
+	                                          <div>
+	                                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+	                                              Improvements
+	                                            </div>
+	                                            <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-amber-800">
+	                                              {(val as any).improvements.map((item: string, idx: number) => (
+	                                                <li key={idx}>{item}</li>
+	                                              ))}
+	                                            </ul>
+	                                          </div>
+	                                        ) : null}
+	                                        {(val as any)?.findings?.length ? (
+	                                          <div>
+	                                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+	                                              Findings
+	                                            </div>
+	                                            <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-rose-800">
+	                                              {(val as any).findings.map((item: string, idx: number) => (
+	                                                <li key={idx}>{item}</li>
+	                                              ))}
+	                                            </ul>
+	                                          </div>
+	                                        ) : null}
+	                                      </div>
+	                                    )}
+	                                  </div>
+	                                ))}
+	                              </div>
+	                            )}
+	                          </>
+	                        )}
+
+	                        {((current.execEvaluation.aspects && showExecEvalAspects) || !current.execEvaluation.aspects) &&
+	                          hasExecEvalDetails && (
+	                            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+	                              <div className="text-xs uppercase tracking-wide text-slate-500">Details</div>
+	                              <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+	                                {current.execEvaluation.what_went_well?.length ? (
+	                                  <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
+	                                    <div className="text-sm font-semibold text-emerald-800">What went well</div>
+	                                    <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
+	                                      {current.execEvaluation.what_went_well.map((item: string, idx: number) => (
+	                                        <li key={idx}>{item}</li>
+	                                      ))}
+	                                    </ul>
+	                                  </div>
+	                                ) : null}
+	                                {current.execEvaluation.findings?.length ? (
+	                                  <div className="rounded-xl border border-rose-100 bg-rose-50 p-3">
+	                                    <div className="text-sm font-semibold text-rose-800">Findings</div>
+	                                    <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
+	                                      {current.execEvaluation.findings.map((item: string, idx: number) => (
+	                                        <li key={idx}>{item}</li>
+	                                      ))}
+	                                    </ul>
+	                                  </div>
+	                                ) : null}
+	                                {current.execEvaluation.issues?.length ? (
+	                                  <div className="rounded-xl border border-rose-100 bg-rose-50 p-3">
+	                                    <div className="text-sm font-semibold text-rose-800">Issues</div>
+	                                    <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
+	                                      {current.execEvaluation.issues.map((item: string, idx: number) => (
+	                                        <li key={idx}>{item}</li>
+	                                      ))}
+	                                    </ul>
+	                                  </div>
+	                                ) : null}
+	                                {current.execEvaluation.improvements?.length ? (
+	                                  <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">
+	                                    <div className="text-sm font-semibold text-amber-800">Improvements</div>
+	                                    <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
+	                                      {current.execEvaluation.improvements.map((item: string, idx: number) => (
+	                                        <li key={idx}>{item}</li>
+	                                      ))}
+	                                    </ul>
+	                                  </div>
+	                                ) : null}
+	                              </div>
+	                            </div>
+	                          )}
+	                      </div>
+	                    )}
+
+	                  </>
+	                ) : (
+	                  <div className="mt-3 text-sm text-slate-500">No execute evaluation available.</div>
+	                )}
               </div>
 
                 <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
@@ -1434,6 +1661,12 @@ export default function Home() {
                 <p className="mt-3 text-sm text-slate-700">
                   {current.evaluation.overview || 'No overview provided.'}
                 </p>
+                {Number.isFinite(Number((current.evaluation as any)?.sample_size)) ? (
+                  <p className="mt-2 text-xs text-slate-500">
+                    Sample size: {(current.evaluation as any).sample_size}
+                    {(current.evaluation as any)?.redundance_summary ? ` · ${(current.evaluation as any).redundance_summary}` : ''}
+                  </p>
+                ) : null}
                 {(current.evaluation.aspects || hasDetails) && (
                   <div className="mt-4 space-y-4">
                     {current.evaluation.aspects && (

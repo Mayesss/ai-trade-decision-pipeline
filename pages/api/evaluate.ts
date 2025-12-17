@@ -82,13 +82,25 @@ Rate each aspect 0-10 (0=poor, 10=excellent) with a short comment. Provide per-a
     const user = `Symbol: ${symbol}. Recent decisions (most recent first): ${JSON.stringify(condensed)}. Stats: ${JSON.stringify(stats)}. Include prompt/system text when highlighting prompt issues: ${JSON.stringify(condensed.map((c) => c.prompt))}.`;
 
     const evaluation = await callAI(system, user);
+    const sampleSize = condensed.length;
+    const actionDistribution = actionStats(history);
+    const redundanceSummary = `sample_size=${sampleSize}, ${Object.entries(actionDistribution)
+        .sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => `${k}:${v}`)
+        .join(', ')}`;
+    const evaluationWithMeta = {
+        ...(evaluation && typeof evaluation === 'object' ? evaluation : {}),
+        sample_size: sampleSize,
+        action_distribution: actionDistribution,
+        redundance_summary: redundanceSummary,
+    };
 
     // Persist the latest evaluation for this symbol (single entry per symbol).
     try {
-        await setEvaluation(symbol, evaluation);
+        await setEvaluation(symbol, evaluationWithMeta);
     } catch (err) {
         console.error('Failed to persist evaluation:', err);
     }
 
-    return res.status(200).json({ symbol, stats, samples: condensed, evaluation });
+    return res.status(200).json({ symbol, stats, samples: condensed, evaluation: evaluationWithMeta });
 }

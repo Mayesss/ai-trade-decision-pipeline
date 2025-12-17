@@ -27,7 +27,7 @@ type PositionState = 'FLAT' | 'LONG' | 'SHORT';
 export const config = { runtime: 'nodejs' };
 
 const STALE_GRACE_MINUTES = 10;
-const ENTRY_COOLDOWN_MS = 10 * 60 * 1000;
+const ENTRY_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
 const REENTER_AFTER_INVALIDATION_MS = 3 * 60 * 1000;
 
 function toNum(x: any) {
