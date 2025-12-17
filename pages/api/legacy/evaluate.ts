@@ -81,13 +81,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 Rate each aspect 0-10 (0=poor, 10=excellent) with a short comment. Provide per-aspect improvements only when you have concrete, actionable suggestions (keep each entry brief) and only list them when they exist. Findings are optional—include them only when something is truly critical and only list them when they exist. In prompt_consistency/action_logic, explicitly call out: macro gating vs HIGH signals, price_vs_breakeven sign for shorts, cost mismatches (fees vs taker_fee_rate vs heuristic bps), base gates blocking exits, macro neutral handling, S/R dual at_level, JSON strictness. For ai_freedom, flag over-constrained logic that kills nuanced entries/exits; for guardrail_coverage, flag missing base gate/cost coverage, weak reversal/exit rails, lack of risk-off bias, or hedging ambiguity. Be concise.`;
     const user = `Symbol: ${symbol}. Recent decisions (most recent first): ${JSON.stringify(condensed)}. Stats: ${JSON.stringify(stats)}. Include prompt/system text when highlighting prompt issues: ${JSON.stringify(condensed.map((c) => c.prompt))}.`;
 
-    const evaluation = await callAI(system, user);
-    const sampleSize = condensed.length;
-    const actionDistribution = actionStats(history);
-    const redundanceSummary = `sample_size=${sampleSize}, ${Object.entries(actionDistribution)
-        .sort((a, b) => b[1] - a[1])
-        .map(([k, v]) => `${k}:${v}`)
-        .join(', ')}`;
+	    const evaluation = await callAI(system, user);
+	    const sampleSize = condensed.length;
+	    const actionDistribution = actionStats(history) as Record<string, number>;
+	    const entries = Object.entries(actionDistribution) as [string, number][];
+	    const redundanceSummary = `sample_size=${sampleSize}, ${entries
+	        .sort((a, b) => b[1] - a[1])
+	        .map(([k, v]) => `${k}:${v}`)
+	        .join(', ')}`;
     const evaluationWithMeta = {
         ...(evaluation && typeof evaluation === 'object' ? evaluation : {}),
         sample_size: sampleSize,

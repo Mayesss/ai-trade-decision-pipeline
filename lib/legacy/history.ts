@@ -1,5 +1,5 @@
-import { PositionContext, MomentumSignals } from './ai';
-import { TradeDecision } from './trading';
+import { PositionContext, MomentumSignals } from '../ai';
+import { TradeDecision } from '../trading';
 
 const KV_REST_API_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
 const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN || '';
