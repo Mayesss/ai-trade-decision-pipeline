@@ -6,6 +6,10 @@ const KV_REST_API_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
 const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN || '';
 const EVALUATION_INDEX_KEY = 'evaluation:index';
 const EVALUATION_KEY_PREFIX = 'evaluation';
+const PLAN_EVALUATION_INDEX_KEY = 'plan_evaluation:index';
+const PLAN_EVALUATION_KEY_PREFIX = 'plan_evaluation';
+const EXEC_EVALUATION_INDEX_KEY = 'exec_evaluation:index';
+const EXEC_EVALUATION_KEY_PREFIX = 'exec_evaluation';
 
 function ensureKvConfig() {
   if (!KV_REST_API_URL || !KV_REST_API_TOKEN) {
@@ -15,6 +19,14 @@ function ensureKvConfig() {
 
 function evalKey(symbol: string) {
   return `${EVALUATION_KEY_PREFIX}:${symbol.toUpperCase()}`;
+}
+
+function planEvalKey(symbol: string) {
+  return `${PLAN_EVALUATION_KEY_PREFIX}:${symbol.toUpperCase()}`;
+}
+
+function execEvalKey(symbol: string) {
+  return `${EXEC_EVALUATION_KEY_PREFIX}:${symbol.toUpperCase()}`;
 }
 
 function symbolFromKey(key: string) {
@@ -138,4 +150,74 @@ export async function deleteEvaluation(symbol: string) {
   if (!symbol) return;
   const key = evalKey(symbol);
   await Promise.all([kvDel(key), kvZRem(EVALUATION_INDEX_KEY, key)]);
+}
+
+// --- Plan evaluation persistence (KV only).
+
+export async function setPlanEvaluation(symbol: string, evaluation: any) {
+  if (!symbol) return;
+  const key = planEvalKey(symbol);
+  await Promise.all([
+    kvSet(key, JSON.stringify(evaluation ?? {})),
+    kvZAdd(PLAN_EVALUATION_INDEX_KEY, Date.now(), key),
+  ]);
+}
+
+export async function getPlanEvaluation(symbol: string) {
+  if (!symbol) return null;
+  const raw = await kvGet(planEvalKey(symbol));
+  if (!raw) return null;
+  return JSON.parse(raw);
+}
+
+export async function getPlanEvaluationTimestamp(symbol: string): Promise<number | null> {
+  if (!symbol) return null;
+  const key = planEvalKey(symbol);
+  try {
+    return await kvZScore(PLAN_EVALUATION_INDEX_KEY, key);
+  } catch (err) {
+    console.warn('Could not fetch plan evaluation timestamp from KV:', err);
+    return null;
+  }
+}
+
+export async function deletePlanEvaluation(symbol: string) {
+  if (!symbol) return;
+  const key = planEvalKey(symbol);
+  await Promise.all([kvDel(key), kvZRem(PLAN_EVALUATION_INDEX_KEY, key)]);
+}
+
+// --- Execution evaluation persistence (KV only).
+
+export async function setExecEvaluation(symbol: string, evaluation: any) {
+  if (!symbol) return;
+  const key = execEvalKey(symbol);
+  await Promise.all([
+    kvSet(key, JSON.stringify(evaluation ?? {})),
+    kvZAdd(EXEC_EVALUATION_INDEX_KEY, Date.now(), key),
+  ]);
+}
+
+export async function getExecEvaluation(symbol: string) {
+  if (!symbol) return null;
+  const raw = await kvGet(execEvalKey(symbol));
+  if (!raw) return null;
+  return JSON.parse(raw);
+}
+
+export async function getExecEvaluationTimestamp(symbol: string): Promise<number | null> {
+  if (!symbol) return null;
+  const key = execEvalKey(symbol);
+  try {
+    return await kvZScore(EXEC_EVALUATION_INDEX_KEY, key);
+  } catch (err) {
+    console.warn('Could not fetch exec evaluation timestamp from KV:', err);
+    return null;
+  }
+}
+
+export async function deleteExecEvaluation(symbol: string) {
+  if (!symbol) return;
+  const key = execEvalKey(symbol);
+  await Promise.all([kvDel(key), kvZRem(EXEC_EVALUATION_INDEX_KEY, key)]);
 }

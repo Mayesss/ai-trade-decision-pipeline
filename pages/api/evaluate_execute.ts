@@ -3,6 +3,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { callAI } from '../../lib/ai';
 import { readPlan } from '../../lib/planStore';
 import { readExecState } from '../../lib/execState';
+import { setExecEvaluation } from '../../lib/utils';
 
 type ExecRun = {
     ts?: string | number;
@@ -66,6 +67,12 @@ Return strict JSON parseable by JSON.parse:
     const user = `Symbol: ${symbol}. Plan: ${JSON.stringify(plan)}. Exec state: ${JSON.stringify(execState)}. Recent runs (most recent first preferred): ${JSON.stringify(runs)}.`;
 
     const evaluation = await callAI(system, user);
+
+    try {
+        await setExecEvaluation(symbol, evaluation);
+    } catch (err) {
+        console.warn('Failed to persist exec evaluation:', err);
+    }
 
     return res.status(200).json({ symbol, plan, execState, runs, evaluation });
 }

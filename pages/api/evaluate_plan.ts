@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { callAI } from '../../lib/ai';
 import { readPlan } from '../../lib/planStore';
+import { setPlanEvaluation } from '../../lib/utils';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (req.method !== 'POST' && req.method !== 'GET') {
@@ -48,6 +49,12 @@ Respond in strict JSON parseable by JSON.parse:
     const user = `Symbol: ${symbol}. Plan: ${JSON.stringify(plan)}. Prev plan (optional): ${JSON.stringify(prevPlan)}. Prompt (system/user): ${JSON.stringify(prompt)}.`;
 
     const evaluation = await callAI(system, user);
+
+    try {
+        await setPlanEvaluation(symbol, evaluation);
+    } catch (err) {
+        console.warn('Failed to persist plan evaluation:', err);
+    }
 
     return res.status(200).json({ symbol, plan, evaluation });
 }

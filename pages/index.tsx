@@ -157,7 +157,8 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showAspects, setShowAspects] = useState(false);
-  const [showPrompt, setShowPrompt] = useState(false);
+  const [showDecisionPrompt, setShowDecisionPrompt] = useState(false);
+  const [showPlanPrompt, setShowPlanPrompt] = useState(false);
   const [chartData, setChartData] = useState<{ time: number; value: number }[]>([]);
   const [chartMarkers, setChartMarkers] = useState<any[]>([]);
   const [positionOverlays, setPositionOverlays] = useState<PositionOverlay[]>([]);
@@ -169,7 +170,11 @@ export default function Home() {
   const overlayLayerRef = useRef<HTMLDivElement | null>(null);
   const chartInstanceRef = useRef<any>(null);
   const [plan, setPlan] = useState<any>(null);
+  const [planEval, setPlanEval] = useState<any>(null);
+  const [planEvalTs, setPlanEvalTs] = useState<number | null>(null);
   const [lastExec, setLastExec] = useState<any>(null);
+  const [execEval, setExecEval] = useState<any>(null);
+  const [execEvalTs, setExecEvalTs] = useState<number | null>(null);
 
   const aspectMeta: Record<string, { Icon: LucideIcon; color: string; bg: string }> = {
     data_quality: { Icon: Database, color: 'text-sky-700', bg: 'bg-sky-100' },
@@ -218,7 +223,12 @@ export default function Home() {
 
   useEffect(() => {
     setShowAspects(false);
-    setShowPrompt(false);
+    setShowDecisionPrompt(false);
+    setShowPlanPrompt(false);
+    setPlanEval(null);
+    setPlanEvalTs(null);
+    setExecEval(null);
+    setExecEvalTs(null);
   }, [active, symbols]);
 
   useEffect(() => {
@@ -251,19 +261,38 @@ export default function Home() {
       const symbol = symbols[active];
       if (!symbol) {
         setPlan(null);
+        setPlanEval(null);
+        setPlanEvalTs(null);
         setLastExec(null);
+        setExecEval(null);
+        setExecEvalTs(null);
         return;
       }
       try {
         const planRes = await fetch(`/api/planLatest?symbol=${symbol}`);
         if (planRes.ok) {
           const pj = await planRes.json();
-          setPlan({ ...(pj.plan ?? null), __prompt: pj.prompt ?? null });
+          setPlan({ ...(pj.plan ?? null), __prompt: pj.prompt ?? null, __savedAt: pj.savedAt ?? null });
         } else {
           setPlan(null);
         }
       } catch {
         setPlan(null);
+      }
+
+      try {
+        const planEvalRes = await fetch(`/api/planEvalLatest?symbol=${symbol}`);
+        if (planEvalRes.ok) {
+          const json = await planEvalRes.json();
+          setPlanEval(json.evaluation ?? null);
+          setPlanEvalTs(typeof json.ts === 'number' ? json.ts : null);
+        } else {
+          setPlanEval(null);
+          setPlanEvalTs(null);
+        }
+      } catch {
+        setPlanEval(null);
+        setPlanEvalTs(null);
       }
 
       try {
@@ -277,6 +306,21 @@ export default function Home() {
         }
       } catch {
         setLastExec(null);
+      }
+
+      try {
+        const execEvalRes = await fetch(`/api/execEvalLatest?symbol=${symbol}`);
+        if (execEvalRes.ok) {
+          const json = await execEvalRes.json();
+          setExecEval(json.evaluation ?? null);
+          setExecEvalTs(typeof json.ts === 'number' ? json.ts : null);
+        } else {
+          setExecEval(null);
+          setExecEvalTs(null);
+        }
+      } catch {
+        setExecEval(null);
+        setExecEvalTs(null);
       }
     };
     loadPlanAndExec();
@@ -472,6 +516,25 @@ export default function Home() {
     return `– ${date} ${time}`;
   };
 
+  const normalizeTimestampMs = (value: any): number | null => {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      if (value > 1_000_000_000_000) return value; // ms epoch
+      if (value > 1_000_000_000) return Math.round(value * 1000); // seconds epoch
+      return null;
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      if (/^\\d+$/.test(trimmed)) {
+        return normalizeTimestampMs(Number(trimmed));
+      }
+      const parsed = Date.parse(trimmed);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  };
+
   const formatOverlayTime = (tsSeconds?: number | null) => {
     if (!tsSeconds) return '—';
     const d = new Date(tsSeconds * 1000);
@@ -614,96 +677,9 @@ export default function Home() {
             </div>
           ) : current ? (
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-stretch">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 lg:col-span-2">
-                <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Star className="w-4 h-4 text-amber-600" />
-                    <div className="font-semibold text-slate-900">Last Executor Decision (dry-run)</div>
-                  </div>
-      {lastExec ? (
-        <div className="space-y-1 text-sm text-slate-700">
-          <div>Decision: {lastExec.decision}</div>
-          <div>Reason: {lastExec.reason}</div>
-          <div>Plan ts: {lastExec.plan_ts}</div>
-          <div>Exec ts: {lastExec.ts}</div>
-        </div>
-      ) : (
-        <div className="text-sm text-slate-500">No execution decision.</div>
-      )}
-    </div>
-                <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                  <div className="flex items-center justify-between gap-2 mb-2">
-                    <div className="flex items-center gap-2">
-                      <ShieldPlus className="w-4 h-4 text-slate-800" />
-                      <div className="font-semibold text-slate-900">Current Plan</div>
-                    </div>
-                    <button
-                      className="text-[11px] font-semibold text-slate-600 underline"
-                      onClick={() => setShowPrompt((s) => !s)}
-                    >
-                      {showPrompt ? 'Hide prompt' : 'Show prompt'}
-                    </button>
-                  </div>
-                  {plan ? (
-                    <div className="space-y-2 text-sm text-slate-700">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold">Allowed</span>
-                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-800">
-                          {plan.allowed_directions}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold">Risk</span>
-                        <span className="text-xs font-semibold text-slate-700">
-                          {plan.risk_mode} · max lev {plan.max_leverage} · entry {plan.entry_mode}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold">Bias</span>
-                        <span className="flex items-center gap-1 text-xs font-semibold text-slate-700">
-                          <ArrowUpRight className="w-3 h-3 text-emerald-600" />
-                          C:{plan.context_bias}
-                          <ArrowUpRight className="w-3 h-3 text-emerald-600" />
-                          M:{plan.macro_bias}
-                          <ArrowUpRight className="w-3 h-3 text-emerald-600" />
-                          P:{plan.primary_bias}
-                          <ArrowUpRight className="w-3 h-3 text-emerald-600" />
-                          m:{plan.micro_bias}
-                        </span>
-                      </div>
-                      <div className="text-xs text-slate-700">Summary: {plan.summary}</div>
-                      <div className="text-xs text-slate-700">Invalidation: {plan.exit_urgency?.invalidation_notes}</div>
-                      {showPrompt && (
-                        <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-700">
-                          <div>Plan TS: {plan.plan_ts} · Horizon: {plan.horizon_minutes}m</div>
-                          {plan.__prompt ? (
-                            <details className="mt-1">
-                              <summary className="cursor-pointer text-[11px] font-semibold text-slate-600">Show prompt</summary>
-                              <div className="mt-1 space-y-1">
-                                <div className="font-semibold text-[11px] text-slate-700">System</div>
-                                <pre className="whitespace-pre-wrap rounded border border-slate-200 bg-slate-100 p-2 text-[10px] text-slate-800">
-                                  {plan.__prompt.system}
-                                </pre>
-                                <div className="font-semibold text-[11px] text-slate-700">User</div>
-                                <pre className="whitespace-pre-wrap rounded border border-slate-200 bg-slate-100 p-2 text-[10px] text-slate-800">
-                                  {plan.__prompt.user}
-                                </pre>
-                              </div>
-                            </details>
-                          ) : (
-                            <div className="text-[11px] text-slate-500">Prompt not available</div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="text-sm text-slate-500">No plan available.</div>
-                  )}
-                </div>
-              </div>
               <div className="space-y-4 lg:col-span-2">
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 h-full">
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-500">24h PnL</div>
                       <div className="mt-3 text-3xl font-semibold text-slate-900">
@@ -834,6 +810,41 @@ export default function Home() {
                           'no open position'
                         )}
                       </p>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-wide text-slate-500">
+                        Latest Execution
+                        {lastExec ? (
+                          <span className="ml-1 lowercase text-slate-400">
+                            {(() => {
+                              const execTimeMs = normalizeTimestampMs(lastExec.ts);
+                              return execTimeMs ? formatDecisionTime(execTimeMs) : '';
+                            })()}
+                          </span>
+                        ) : null}
+                      </div>
+                      {lastExec ? (
+                        <>
+                          <div className="mt-3 text-lg font-semibold text-slate-900">
+                            <span className="text-sky-700">{String(lastExec.decision || '—')}</span>
+                          </div>
+                          {lastExec.reason ? (
+                            <div className="mt-1 text-xs text-slate-600 whitespace-pre-wrap">
+                              <span className="font-semibold text-slate-700">Reason: </span>
+                              {String(lastExec.reason)}
+                            </div>
+                          ) : null}
+                          {lastExec.dryRun ? (
+                            <div className="mt-2">
+                              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
+                                dryRun
+                              </span>
+                            </div>
+                          ) : null}
+                        </>
+                      ) : (
+                        <div className="mt-3 text-sm font-semibold text-slate-500">—</div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1004,6 +1015,114 @@ export default function Home() {
                 </div>
               )}
 
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
+                    <span>Current Plan</span>
+                    {(() => {
+                      const planTimeMs =
+                        normalizeTimestampMs(plan?.plan_ts) ?? normalizeTimestampMs(plan?.__savedAt);
+                      return planTimeMs ? (
+                        <span className="lowercase text-slate-400">{formatDecisionTime(planTimeMs)}</span>
+                      ) : null;
+                    })()}
+                  </div>
+                </div>
+
+                {plan ? (
+                  <>
+                    <div className="mt-3 text-sm text-slate-800">
+                      Allowed directions:{' '}
+                      <span className="rounded-full bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-700 ring-1 ring-inset ring-sky-200">
+                        {(plan.allowed_directions || '—').toString()}
+                      </span>
+                    </div>
+                    <div className="mt-3 text-sm text-slate-700">
+                      <span className="font-semibold text-slate-800">Summary: </span>
+                      {(plan.summary || '').toString() || '—'}
+                    </div>
+
+                    {plan.reason ? (
+                      <p className="mt-2 text-sm text-slate-700 whitespace-pre-wrap">
+                        <span className="font-semibold text-slate-800">Reason: </span>
+                        {plan.reason}
+                      </p>
+                    ) : null}
+
+                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Risk Mode</div>
+                        <div className="mt-1 text-sm font-semibold text-slate-800">
+                          {(plan.risk_mode || '').toString() || '—'}
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Max Leverage</div>
+                        <div className="mt-1 text-sm font-semibold text-slate-800">
+                          {typeof plan.max_leverage === 'number' ? `${plan.max_leverage}x` : (plan.max_leverage || '—').toString()}
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Entry Mode</div>
+                        <div className="mt-1 text-sm font-semibold text-slate-800">
+                          {(plan.entry_mode || '').toString() || '—'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      {biasOrder.map(({ key, label }) => {
+                        const raw = plan?.[key];
+                        const val = typeof raw === 'string' ? raw.toUpperCase() : raw;
+                        const meta =
+                          val === 'UP'
+                            ? { color: 'text-emerald-600', Icon: ArrowUpRight }
+                            : val === 'DOWN'
+                            ? { color: 'text-rose-600', Icon: ArrowDownRight }
+                            : { color: 'text-slate-500', Icon: Circle };
+                        const Icon = meta.Icon;
+                        return (
+                          <div
+                            key={key}
+                            className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-3 py-2"
+                          >
+                            <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</span>
+                            <span className={`flex items-center gap-1 text-sm font-semibold ${meta.color}`}>
+                              <Icon className="h-4 w-4" />
+                              {val || '—'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="mt-3">
+                      <button
+                        onClick={() => setShowPlanPrompt((prev) => !prev)}
+                        className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                      >
+                        {showPlanPrompt ? 'Hide prompt' : 'Show prompt'}
+                      </button>
+                    </div>
+
+                    {showPlanPrompt && (
+                      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">System</div>
+                          <div className="mt-2">{renderPromptContent(plan.__prompt?.system)}</div>
+                        </div>
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">User</div>
+                          <div className="mt-2">{renderPromptContent(plan.__prompt?.user)}</div>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="mt-3 text-sm text-slate-500">No plan available.</div>
+                )}
+              </div>
+
               {hasLastDecision && (
                 <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
                   <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1067,13 +1186,13 @@ export default function Home() {
                   </div>
                   <div className="mt-3">
                     <button
-                      onClick={() => setShowPrompt((prev) => !prev)}
+                      onClick={() => setShowDecisionPrompt((prev) => !prev)}
                       className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
                     >
-                      {showPrompt ? 'Hide prompt' : 'Show prompt'}
+                      {showDecisionPrompt ? 'Hide prompt' : 'Show prompt'}
                     </button>
                   </div>
-                  {showPrompt && (
+                  {showDecisionPrompt && (
                     <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                         <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">System</div>
@@ -1087,6 +1206,190 @@ export default function Home() {
                   )}
                 </div>
               )}
+
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
+                    <span>Latest Plan Evaluation</span>
+                    {planEvalTs ? (
+                      <span className="lowercase text-slate-400">{formatDecisionTime(planEvalTs)}</span>
+                    ) : null}
+                  </div>
+                  {planEval?.confidence ? (
+                    <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                      Confidence: {planEval.confidence}
+                    </div>
+                  ) : null}
+                </div>
+                {planEval ? (
+                  <>
+                    <div className="mt-2 text-lg font-semibold text-slate-900 flex items-center gap-3 flex-wrap">
+                      <span>
+                        Rating: <span className="text-sky-600">{planEval.overall_rating ?? '—'}</span>
+                      </span>
+                      <div className="flex flex-wrap items-center gap-1">
+                        {Array.from({ length: 10 }).map((_, idx) => {
+                          const ratingVal = Number(planEval.overall_rating ?? 0);
+                          const filled = ratingVal >= idx + 1;
+                          const colorClass =
+                            ratingVal >= 9
+                              ? 'text-emerald-500 fill-emerald-500'
+                              : ratingVal >= 8
+                              ? 'text-emerald-400 fill-emerald-400'
+                              : ratingVal >= 6
+                              ? 'text-lime-400 fill-lime-400'
+                              : ratingVal >= 5
+                              ? 'text-amber-400 fill-amber-400'
+                              : ratingVal >= 3
+                              ? 'text-orange-400 fill-orange-400'
+                              : 'text-rose-500 fill-rose-500';
+                          return (
+                            <Star
+                              key={idx}
+                              className={`h-4 w-4 ${filled ? colorClass : 'stroke-slate-300 text-slate-300'}`}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {(planEval.findings?.length || planEval.issues?.length || planEval.improvements?.length) && (
+                      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                        {Array.isArray(planEval.findings) && planEval.findings.length ? (
+                          <div className="rounded-xl border border-rose-200 bg-rose-50 p-3">
+                            <div className="text-[10px] font-semibold uppercase tracking-wide text-rose-700">
+                              Findings
+                            </div>
+                            <ul className="mt-2 space-y-1 text-sm text-rose-800">
+                              {planEval.findings.map((t: string, i: number) => (
+                                <li key={i}>• {t}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {Array.isArray(planEval.issues) && planEval.issues.length ? (
+                          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                            <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                              Issues
+                            </div>
+                            <ul className="mt-2 space-y-1 text-sm text-amber-900">
+                              {planEval.issues.map((t: string, i: number) => (
+                                <li key={i}>• {t}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {Array.isArray(planEval.improvements) && planEval.improvements.length ? (
+                          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                              Improvements
+                            </div>
+                            <ul className="mt-2 space-y-1 text-sm text-slate-700">
+                              {planEval.improvements.map((t: string, i: number) => (
+                                <li key={i}>• {t}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="mt-3 text-sm text-slate-500">No plan evaluation available.</div>
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
+                    <span>Latest Execute Evaluation</span>
+                    {execEvalTs ? (
+                      <span className="lowercase text-slate-400">{formatDecisionTime(execEvalTs)}</span>
+                    ) : null}
+                  </div>
+                  {execEval?.confidence ? (
+                    <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+                      Confidence: {execEval.confidence}
+                    </div>
+                  ) : null}
+                </div>
+                {execEval ? (
+                  <>
+                    <div className="mt-2 text-lg font-semibold text-slate-900 flex items-center gap-3 flex-wrap">
+                      <span>
+                        Rating: <span className="text-sky-600">{execEval.overall_rating ?? '—'}</span>
+                      </span>
+                      <div className="flex flex-wrap items-center gap-1">
+                        {Array.from({ length: 10 }).map((_, idx) => {
+                          const ratingVal = Number(execEval.overall_rating ?? 0);
+                          const filled = ratingVal >= idx + 1;
+                          const colorClass =
+                            ratingVal >= 9
+                              ? 'text-emerald-500 fill-emerald-500'
+                              : ratingVal >= 8
+                              ? 'text-emerald-400 fill-emerald-400'
+                              : ratingVal >= 6
+                              ? 'text-lime-400 fill-lime-400'
+                              : ratingVal >= 5
+                              ? 'text-amber-400 fill-amber-400'
+                              : ratingVal >= 3
+                              ? 'text-orange-400 fill-orange-400'
+                              : 'text-rose-500 fill-rose-500';
+                          return (
+                            <Star
+                              key={idx}
+                              className={`h-4 w-4 ${filled ? colorClass : 'stroke-slate-300 text-slate-300'}`}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {(execEval.findings?.length || execEval.issues?.length || execEval.improvements?.length) && (
+                      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                        {Array.isArray(execEval.findings) && execEval.findings.length ? (
+                          <div className="rounded-xl border border-rose-200 bg-rose-50 p-3">
+                            <div className="text-[10px] font-semibold uppercase tracking-wide text-rose-700">
+                              Findings
+                            </div>
+                            <ul className="mt-2 space-y-1 text-sm text-rose-800">
+                              {execEval.findings.map((t: string, i: number) => (
+                                <li key={i}>• {t}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {Array.isArray(execEval.issues) && execEval.issues.length ? (
+                          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                            <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                              Issues
+                            </div>
+                            <ul className="mt-2 space-y-1 text-sm text-amber-900">
+                              {execEval.issues.map((t: string, i: number) => (
+                                <li key={i}>• {t}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                        {Array.isArray(execEval.improvements) && execEval.improvements.length ? (
+                          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                              Improvements
+                            </div>
+                            <ul className="mt-2 space-y-1 text-sm text-slate-700">
+                              {execEval.improvements.map((t: string, i: number) => (
+                                <li key={i}>• {t}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="mt-3 text-sm text-slate-500">No execute evaluation available.</div>
+                )}
+              </div>
 
                 <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
                 <div className="flex items-center justify-between">
