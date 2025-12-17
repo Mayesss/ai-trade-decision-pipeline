@@ -4,6 +4,7 @@ import { callAI } from '../../lib/ai';
 import { readPlan } from '../../lib/planStore';
 import { readExecState } from '../../lib/execState';
 import { setExecEvaluation } from '../../lib/utils';
+import { loadExecutionLogs } from '../../lib/execLog';
 
 type ExecRun = {
     ts?: string | number;
@@ -28,23 +29,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(400).json({ error: 'symbol_required' });
     }
 
-    const runsRaw = req.method === 'GET' ? req.query.runs : req.body?.runs;
-    let runs: ExecRun[] = [];
-    if (runsRaw) {
-        try {
-            const parsed = typeof runsRaw === 'string' ? JSON.parse(runsRaw) : runsRaw;
-            if (Array.isArray(parsed)) runs = parsed as ExecRun[];
-        } catch {
-            return res.status(400).json({ error: 'invalid_runs_json' });
-        }
-    }
-    if (!runs.length) {
-        return res.status(400).json({ error: 'runs_required', message: 'Provide recent executor runs array' });
-    }
-
     const planRecord = await readPlan(symbol);
     const plan = planRecord?.plan ?? null;
     const execState = await readExecState(symbol);
+    const logs = await loadExecutionLogs(symbol, 60);
+    const runs: ExecRun[] = logs
+        .map((l) => (l?.payload && typeof l.payload === 'object' ? l.payload : l))
+        .filter(Boolean) as ExecRun[];
+
+    if (!runs.length) {
+        return res.status(404).json({ error: 'no_execution_history', symbol });
+    }
 
     const system = `You are an execution auditor. Evaluate whether executor decisions respect the latest plan and risk constraints. Check:
 - Plan freshness: plan_ts vs run ts.

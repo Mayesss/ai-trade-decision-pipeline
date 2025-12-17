@@ -43,10 +43,7 @@ Respond in strict JSON parseable by JSON.parse:
   "confidence": "LOW|MEDIUM|HIGH"
 }`;
 
-    const prevRaw = req.method === 'GET' ? req.query.prev_plan : req.body?.prev_plan;
-    const prevPlan = prevRaw ? JSON.parse(String(Array.isArray(prevRaw) ? prevRaw[0] : prevRaw)) : planRecord.plan?.prev_plan ?? null;
-
-    const user = `Symbol: ${symbol}. Plan: ${JSON.stringify(plan)}. Prev plan (optional): ${JSON.stringify(prevPlan)}. Prompt (system/user): ${JSON.stringify(prompt)}.`;
+    const user = `Symbol: ${symbol}. Plan: ${JSON.stringify(plan)}. Prompt (system/user): ${JSON.stringify(prompt)}.`;
 
     const evaluation = await callAI(system, user);
 

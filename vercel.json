@@ -6,8 +6,8 @@
   "crons": [
     { "path": "/api/plan?symbol=BTCUSDT", "schedule": "59 * * * *" },
     { "path": "/api/execute?symbol=BTCUSDT&notional=10&dryRun=false", "schedule": "* * * * *" },
-    { "path": "/api/evaluate_plan", "schedule": "10 3 * * *" },
-    { "path": "/api/evaluate_execute", "schedule": "10 3 * * *" }
+    { "path": "/api/evaluate_plan?symbol=BTCUSDT", "schedule": "10 3 * * *" },
+    { "path": "/api/evaluate_execute?symbol=BTCUSDT", "schedule": "10 3 * * *" }
   ],
   "routes": [
     { "src": "/api/(.*)", "dest": "/api/$1" }
