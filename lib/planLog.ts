@@ -1,15 +1,16 @@
 const KV_REST_API_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
 const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN || '';
 
-const EXEC_LOG_INDEX = 'exec_log:index';
-const EXEC_LOG_PREFIX = 'exec_log';
-const EXEC_LOG_TTL_SECONDS = 3 * 24 * 60 * 60; // 3 days
-const EXEC_LOG_MAX = 60;
+const PLAN_LOG_INDEX = 'plan_log:index';
+const PLAN_LOG_PREFIX = 'plan_log';
+const PLAN_LOG_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
+const PLAN_LOG_MAX = 60;
 
-export type ExecLogEntry = {
+export type PlanLogEntry = {
     symbol: string;
     timestamp: number;
-    payload: any;
+    plan: any;
+    prompt?: { system: string; user: string } | null;
 };
 
 function kvConfigured() {
@@ -61,56 +62,53 @@ async function kvZRemRangeByRank(key: string, start: number, stop: number) {
 }
 
 function entryKey(symbol: string, ts: number) {
-    return `${EXEC_LOG_PREFIX}:${ts}:${symbol.toUpperCase()}`;
+    return `${PLAN_LOG_PREFIX}:${ts}:${symbol.toUpperCase()}`;
 }
 
-export async function appendExecutionLog(entry: ExecLogEntry) {
+export async function appendPlanLog(entry: PlanLogEntry) {
     if (!kvConfigured()) return;
     const key = entryKey(entry.symbol, entry.timestamp);
     const payload = JSON.stringify(entry);
-    await Promise.all([
-        kvSetEx(key, EXEC_LOG_TTL_SECONDS, payload),
-        kvZAdd(EXEC_LOG_INDEX, entry.timestamp, key),
-    ]);
-    // prune oldest beyond EXEC_LOG_MAX
+    await Promise.all([kvSetEx(key, PLAN_LOG_TTL_SECONDS, payload), kvZAdd(PLAN_LOG_INDEX, entry.timestamp, key)]);
     try {
-        const countToRemove = -EXEC_LOG_MAX - 1;
-        await kvZRemRangeByRank(EXEC_LOG_INDEX, 0, countToRemove);
+        const countToRemove = -PLAN_LOG_MAX - 1;
+        await kvZRemRangeByRank(PLAN_LOG_INDEX, 0, countToRemove);
     } catch {
         // ignore prune errors
     }
 }
 
-export async function loadExecutionLogs(symbol: string, limit = 60): Promise<ExecLogEntry[]> {
+export async function loadPlanLogs(symbol: string, limit = 60): Promise<PlanLogEntry[]> {
     if (!kvConfigured()) return [];
-    const keys = await kvZRevRange(EXEC_LOG_INDEX, 0, limit - 1);
+    const keys = await kvZRevRange(PLAN_LOG_INDEX, 0, limit - 1);
     const filtered = symbol ? keys.filter((k) => k.endsWith(`:${symbol.toUpperCase()}`)) : keys;
     const values = await Promise.all(
         filtered.map(async (k) => {
             const raw = await kvGet(k);
             if (!raw) return null;
             try {
-                return JSON.parse(raw) as ExecLogEntry;
+                return JSON.parse(raw) as PlanLogEntry;
             } catch {
                 return null;
             }
         }),
     );
-    return values.filter(Boolean) as ExecLogEntry[];
+    return values.filter(Boolean) as PlanLogEntry[];
 }
 
-export async function clearExecutionLogs(symbol?: string) {
+export async function clearPlanLogs(symbol?: string) {
     if (!kvConfigured()) return { cleared: false, error: 'kv_not_configured' as const };
-    const allKeys = await kvZRevRange(EXEC_LOG_INDEX, 0, -1);
+    const allKeys = await kvZRevRange(PLAN_LOG_INDEX, 0, -1);
     const filtered = symbol ? allKeys.filter((k) => k.endsWith(`:${symbol.toUpperCase()}`)) : allKeys;
     await Promise.all(
         filtered.flatMap((key) => {
-            if (symbol) return [kvDel(key), kvZRem(EXEC_LOG_INDEX, key)];
+            if (symbol) return [kvDel(key), kvZRem(PLAN_LOG_INDEX, key)];
             return [kvDel(key)];
         }),
     );
     if (!symbol) {
-        await kvDel(EXEC_LOG_INDEX);
+        await kvDel(PLAN_LOG_INDEX);
     }
     return { cleared: true as const };
 }
+

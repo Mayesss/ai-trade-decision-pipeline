@@ -1,3 +1,5 @@
+import { appendPlanLog } from './planLog';
+
 const KV_REST_API_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
 const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN || '';
 
@@ -64,8 +66,10 @@ export async function savePlan(
     if (!symbol) return { persisted: false, error: 'symbol_missing' };
     if (!kvConfigured()) return { persisted: false, error: 'kv_not_configured' };
     try {
-        const payload = JSON.stringify({ plan, savedAt: Date.now(), prompt });
+        const savedAt = Date.now();
+        const payload = JSON.stringify({ plan, savedAt, prompt });
         await kvSetEx(planKey(symbol), PLAN_TTL_SECONDS, payload);
+        await appendPlanLog({ symbol, timestamp: savedAt, plan, prompt: prompt ?? null });
         return { persisted: true };
     } catch (err) {
         console.warn('Failed to persist plan to KV:', err);
