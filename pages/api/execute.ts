@@ -222,7 +222,7 @@ function pickDirection(allowed: string, macro: string, primary: string) {
 
 function leverageFromRisk(risk: string, cap: number) {
     const base = risk === 'AGGRESSIVE' ? 3 : risk === 'NORMAL' ? 2 : 1;
-    return Math.min(cap || base, base);
+    return Math.min(cap || base, cap ? cap : base);
 }
 
 function sizeFromRisk(notional: number, risk: string) {
