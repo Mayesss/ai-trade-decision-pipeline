@@ -6,6 +6,7 @@ import { DEFAULT_TAKER_FEE_RATE, TRADE_WINDOW_MINUTES } from '../../lib/constant
 import { getGates } from '../../lib/gates';
 import { fetchNewsWithHeadlines } from '../../lib/news';
 import { readPlan, savePlan } from '../../lib/planStore';
+import { loadExecutionLogs } from '../../lib/execLog';
 import {
     buildIndicatorsFromMetrics,
     computeLocationConfluence,
@@ -119,6 +120,84 @@ async function fetchPlanBucketTs(symbol: string, nowMs: number): Promise<string>
         const closeMs = Math.floor(nowMs / ms) * ms;
         return new Date(closeMs).toISOString();
     }
+}
+
+function safeNum(v: any) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+}
+
+function execWindowSummary(logs: any[], nowMs: number) {
+    const windowStart = nowMs - 60 * 60 * 1000;
+    const window = (logs || [])
+        .map((l) => (l?.payload && typeof l.payload === 'object' ? l.payload : l))
+        .filter((p: any) => Number(p?.ts ? Date.parse(p.ts) : p?.timestamp) >= windowStart);
+
+    const isEntry = (d: string) => d.startsWith('ENTER_');
+    const isExit = (d: string) => d === 'CLOSE' || d === 'TRIM';
+
+    let trades = 0;
+    let entries = 0;
+    let exits = 0;
+    const holdSecs: number[] = [];
+    const slippageBps: number[] = [];
+    const exitCauses: Record<string, number> = {};
+    const invalidationHits = { fast: 0, mid: 0, hard: 0 };
+    let blockedEntries = 0;
+    let planAlignmentIssues = 0;
+
+    for (const p of window) {
+        const decision = String(p?.decision || '').toUpperCase();
+        if (isEntry(decision)) entries += 1;
+        if (isExit(decision)) exits += 1;
+        if (isEntry(decision) || isExit(decision)) trades += 1;
+        const hs = safeNum(p?.hold_seconds);
+        if (hs !== null) holdSecs.push(hs);
+        const slip = safeNum(p?.fill_slippage_bps);
+        if (slip !== null) slippageBps.push(slip);
+        const ec = String(p?.exit_cause || '').toUpperCase();
+        if (ec) exitCauses[ec] = (exitCauses[ec] || 0) + 1;
+        const trig = String(p?.trigger || '').toUpperCase();
+        if (trig.startsWith('INVALIDATION')) {
+            if (trig.includes('FAST')) invalidationHits.fast += 1;
+            else if (trig.includes('MID')) invalidationHits.mid += 1;
+            else if (trig.includes('HARD')) invalidationHits.hard += 1;
+        }
+        if (Array.isArray(p?.entry_blockers) && p.entry_blockers.length > 0) blockedEntries += 1;
+        if (ec === 'DIRECTION_NOT_ALLOWED' || trig === 'DIR_MISMATCH') planAlignmentIssues += 1;
+    }
+
+    const avg = (arr: number[]) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
+    const median = (arr: number[]) => {
+        if (!arr.length) return null;
+        const sorted = [...arr].sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    };
+
+    const winRate = null; // not tracked here (needs realized PnL); leave null
+    const churnFlag = trades >= 4 && median(holdSecs) !== null && median(holdSecs)! < 120;
+
+    return {
+        window_minutes: 60,
+        sample_size: window.length,
+        trades_count: trades,
+        entries_count: entries,
+        exits_count: exits,
+        avg_hold_seconds: avg(holdSecs),
+        median_hold_seconds: median(holdSecs),
+        realized_pnl_pct_sum: null,
+        realized_pnl_pct_avg: null,
+        win_rate: winRate,
+        slippage_bps_avg: avg(slippageBps),
+        fees_bps_est_total: null,
+        top_exit_causes: exitCauses,
+        invalidation_hits: invalidationHits,
+        blocked_entries_count: blockedEntries,
+        plan_alignment_issues: planAlignmentIssues,
+        churn_flag: churnFlag,
+        executor_scalping_detected: churnFlag,
+    };
 }
 
 function pickParam(req: NextApiRequest, key: string, fallback?: any) {
@@ -313,9 +392,10 @@ function buildUserPrompt(params: {
     };
     news: { sentiment: string; headlines: string[] };
     coarseLiquidity?: { bidBandUsd?: number; askBandUsd?: number; bandBps?: number };
+    execSummary: any;
 }) {
     const { symbol, mode, asof, planBucketTs, horizon, baseGates, spreadBps, takerFeeRate, slippageBps, totalCostBps } = params;
-    const { tf, prevPlan, regime, location, news, lastClosedPnlPct, coarseLiquidity } = params;
+    const { tf, prevPlan, regime, location, news, lastClosedPnlPct, coarseLiquidity, execSummary } = params;
 
     const ctx = tf['1D'];
     const macro = tf['4H'];
@@ -377,6 +457,8 @@ FACTS:
 Base gates:
 - spread_ok=${baseGates.spread_ok}, liquidity_ok=${baseGates.liquidity_ok}, atr_ok=${baseGates.atr_ok}, slippage_ok=${baseGates.slippage_ok}
 - spread_bps=${formatNumber(spreadBps, 3)}${coarseLiquidityLine ? `, ${coarseLiquidityLine}` : ''}
+Exec window summary (last 60m, deterministic):
+${JSON.stringify(execSummary)}
 
 Costs:
 - taker_fee_rate=${takerFeeRate}, slippage_bps=${formatNumber(slippageBps, 3)}, total_cost_bps=${formatNumber(totalCostBps, 3)}
@@ -488,11 +570,14 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         const asof = new Date(now).toISOString();
         const planBucketTs = await fetchPlanBucketTs(symbol, now);
 
-        const [tfMetrics, prevPlan, newsBundle] = await Promise.all([
+        const [tfMetrics, prevPlan, newsBundle, execLogs] = await Promise.all([
             fetchTimeframeMetrics(symbol),
             readPlan(symbol),
             fetchNewsWithHeadlines(symbol),
+            loadExecutionLogs(symbol, 120),
         ]);
+
+        const execSummary = execWindowSummary(execLogs || [], now);
 
         const indicators = buildIndicatorsFromMetrics(tfMetrics);
         const regime = deriveRegimeFlags(tfMetrics['4H']);
@@ -527,32 +612,33 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         const takerFeeRate = Number.isFinite(envFee) ? envFee : DEFAULT_TAKER_FEE_RATE;
         const totalCostBps = takerFeeRate * 2 * 10000 + slippageBps;
 
-        const userPrompt = buildUserPrompt({
-            symbol,
-            mode,
-            asof,
-            planBucketTs,
-            horizon,
-            baseGates,
-            spreadBps,
-            takerFeeRate,
-            slippageBps,
-            totalCostBps,
-            lastClosedPnlPct: roi.lastNetPct ?? null,
-            prevPlan: prevPlan?.plan ?? null,
-            tf: tfMetrics,
-            regime,
-            location,
-            news: {
-                sentiment: newsBundle.sentiment || 'NEUTRAL',
-                headlines: Array.isArray(newsBundle.headlines) ? newsBundle.headlines.slice(0, 5) : [],
-            },
-            coarseLiquidity: {
-                bidBandUsd: gateMetrics.bidBandUsdNow,
-                askBandUsd: gateMetrics.askBandUsdNow,
-                bandBps: gateMetrics.bandBps,
-            },
-        });
+    const userPrompt = buildUserPrompt({
+        symbol,
+        mode,
+        asof,
+        planBucketTs,
+        horizon,
+        baseGates,
+        spreadBps,
+        takerFeeRate,
+        slippageBps,
+        totalCostBps,
+        lastClosedPnlPct: roi.lastNetPct ?? null,
+        prevPlan: prevPlan?.plan ?? null,
+        tf: tfMetrics,
+        regime,
+        location,
+        news: {
+            sentiment: newsBundle.sentiment || 'NEUTRAL',
+            headlines: Array.isArray(newsBundle.headlines) ? newsBundle.headlines.slice(0, 5) : [],
+        },
+        coarseLiquidity: {
+            bidBandUsd: gateMetrics.bidBandUsdNow,
+            askBandUsd: gateMetrics.askBandUsdNow,
+            bandBps: gateMetrics.bandBps,
+        },
+        execSummary,
+    });
 
         const systemPrompt = buildSystemPrompt();
 
