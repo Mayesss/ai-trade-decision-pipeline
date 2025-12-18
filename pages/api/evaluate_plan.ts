@@ -60,7 +60,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const plan = planRecord.plan;
     const prompt = planRecord.prompt ?? null;
-    const limit = Math.min(60, Math.max(1, Number(req.method === 'GET' ? req.query.limit ?? 20 : req.body?.limit ?? 20)));
+    const limit = Math.min(60, Math.max(1, Number(req.method === 'GET' ? req.query.limit ?? 24 : req.body?.limit ?? 24)));
     const planHistory = await loadPlanLogs(symbol, limit);
     const planSamples = planHistory.length ? planHistory : [{ symbol, timestamp: planRecord.savedAt ?? Date.now(), plan, prompt }];
 

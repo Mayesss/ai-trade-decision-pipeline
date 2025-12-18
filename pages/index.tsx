@@ -169,6 +169,14 @@ export default function Home() {
     action_logic: { Icon: Braces, color: 'text-orange-700', bg: 'bg-orange-100' },
     ai_freedom: { Icon: Wand2, color: 'text-indigo-700', bg: 'bg-indigo-100' },
     guardrail_coverage: { Icon: ShieldPlus, color: 'text-rose-700', bg: 'bg-rose-100' },
+
+    // Exec evaluation (metrics-driven)
+    why_no_trade: { Icon: BookOpen, color: 'text-purple-700', bg: 'bg-purple-100' },
+    blockers_and_filters: { Icon: ListChecks, color: 'text-lime-700', bg: 'bg-lime-100' },
+    confirmation_signals: { Icon: Activity, color: 'text-amber-700', bg: 'bg-amber-100' },
+    predictive_power: { Icon: BarChart3, color: 'text-emerald-700', bg: 'bg-emerald-100' },
+    exit_and_invalidation: { Icon: Zap, color: 'text-teal-700', bg: 'bg-teal-100' },
+    logging_quality: { Icon: Database, color: 'text-sky-700', bg: 'bg-sky-100' },
   };
 
   const formatLabel = (key: string) => key.replace(/_/g, ' ');
@@ -1437,6 +1445,60 @@ export default function Home() {
 	                            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
 	                              <div className="text-xs uppercase tracking-wide text-slate-500">Details</div>
 	                              <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+	                                {(current.execEvaluation as any)?.diagnostics ? (
+	                                  <div className="rounded-xl border border-slate-200 bg-white p-3 md:col-span-3">
+	                                    <div className="text-sm font-semibold text-slate-900">Diagnostics</div>
+	                                    {(current.execEvaluation as any)?.diagnostics?.profitability_summary ? (
+	                                      <p className="mt-2 text-sm text-slate-700">
+	                                        {(current.execEvaluation as any).diagnostics.profitability_summary}
+	                                      </p>
+	                                    ) : null}
+	                                    <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+	                                      {Array.isArray((current.execEvaluation as any)?.diagnostics?.top_no_trade_reasons) ? (
+	                                        <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+	                                          <div className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+	                                            Top no-trade reasons
+	                                          </div>
+	                                          <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
+	                                            {(current.execEvaluation as any).diagnostics.top_no_trade_reasons
+	                                              .slice(0, 8)
+	                                              .map((item: string, idx: number) => (
+	                                                <li key={idx}>{item}</li>
+	                                              ))}
+	                                          </ul>
+	                                        </div>
+	                                      ) : null}
+	                                      {Array.isArray((current.execEvaluation as any)?.diagnostics?.top_entry_blockers) ? (
+	                                        <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+	                                          <div className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+	                                            Top entry blockers
+	                                          </div>
+	                                          <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
+	                                            {(current.execEvaluation as any).diagnostics.top_entry_blockers
+	                                              .slice(0, 8)
+	                                              .map((item: string, idx: number) => (
+	                                                <li key={idx}>{item}</li>
+	                                              ))}
+	                                          </ul>
+	                                        </div>
+	                                      ) : null}
+	                                      {Array.isArray((current.execEvaluation as any)?.diagnostics?.confirmation_insights) ? (
+	                                        <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+	                                          <div className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+	                                            Confirmation insights
+	                                          </div>
+	                                          <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-800">
+	                                            {(current.execEvaluation as any).diagnostics.confirmation_insights
+	                                              .slice(0, 8)
+	                                              .map((item: string, idx: number) => (
+	                                                <li key={idx}>{item}</li>
+	                                              ))}
+	                                          </ul>
+	                                        </div>
+	                                      ) : null}
+	                                    </div>
+	                                  </div>
+	                                ) : null}
 	                                {current.execEvaluation.what_went_well?.length ? (
 	                                  <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
 	                                    <div className="text-sm font-semibold text-emerald-800">What went well</div>
