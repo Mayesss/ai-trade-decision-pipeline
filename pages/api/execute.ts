@@ -86,6 +86,30 @@ function obImbCentered(obImb: number) {
     return obImb;
 }
 
+function compactExecutionResult(x: any) {
+    if (!x || typeof x !== 'object') return x ?? null;
+    const keep: any = {};
+    const keys = [
+        'placed',
+        'orderId',
+        'clientOid',
+        'leverage',
+        'leverageApplied',
+        'leverageError',
+        'closed',
+        'partial',
+        'partialClosePct',
+        'size',
+        'reversed',
+        'targetSide',
+        'note',
+    ];
+    for (const k of keys) {
+        if (k in x) keep[k] = (x as any)[k];
+    }
+    return keep;
+}
+
 function pickParam(req: NextApiRequest, key: string, fallback?: any) {
     const raw = req.query?.[key] ?? (req.body as any)?.[key];
     if (Array.isArray(raw)) return raw[0] ?? fallback;
@@ -252,15 +276,29 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
 
         if (positionState === 'FLAT' && entriesDisabled) {
             const reason = !plan ? 'no_plan' : planStale ? 'stale_plan' : 'plan_entries_disabled';
+            const entry_blockers = [];
+            if (!plan) entry_blockers.push('no_plan');
+            if (planStale) entry_blockers.push('stale_plan');
+            if (plan?.allowed_directions === 'NONE') entry_blockers.push('dir_none');
+            if (plan?.risk_mode === 'OFF') entry_blockers.push('risk_off');
+            if (plan?.entry_mode === 'NONE') entry_blockers.push('entry_mode_none');
             const payload = {
                 ts: asofIso,
                 symbol,
+                plan_id: plan?.plan_ts ? `${symbol}:${plan.plan_ts}` : null,
                 plan_ts: plan?.plan_ts || null,
                 plan_stale: planStale,
                 plan_allowed_directions: plan?.allowed_directions,
                 plan_risk_mode: plan?.risk_mode,
                 plan_entry_mode: plan?.entry_mode,
                 position_state: positionState,
+                entries_disabled: true,
+                entry_blockers,
+                market: null,
+                indicators: null,
+                levels: null,
+                entry_eval: null,
+                invalidation_eval: null,
                 decision: 'WAIT',
                 reason,
                 orders: [],
@@ -334,12 +372,44 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         const result: any = {
             ts: asofIso,
             symbol,
+            plan_id: plan?.plan_ts ? `${symbol}:${plan.plan_ts}` : null,
             plan_ts: plan?.plan_ts || null,
             plan_stale: planStale,
             plan_allowed_directions: plan?.allowed_directions,
             plan_risk_mode: plan?.risk_mode,
             plan_entry_mode: plan?.entry_mode,
             position_state: positionState,
+            entries_disabled: false,
+            entry_blockers: [] as string[],
+            market: {
+                last,
+                spreadBps,
+                depthUSD,
+            },
+            indicators: {
+                atr1h,
+                atr15m,
+                rsi5m,
+                ema20_15m,
+                dist_from_ema20_15m_in_atr,
+            },
+            levels: {
+                support: plan?.key_levels?.['1H']?.support_price ?? null,
+                resistance: plan?.key_levels?.['1H']?.resistance_price ?? null,
+                distSupportAtr: null as number | null,
+                distResistanceAtr: null as number | null,
+            },
+            entry_eval: {
+                preferredDir: null as any,
+                confirmationCount: 0,
+                rsiOk: null as boolean | null,
+                emaOk: null as boolean | null,
+                obImbCentered: obImbCentered(Number(analytics.obImb ?? 0)),
+                obImbOk: null as boolean | null,
+                inPullbackZone: null as boolean | null,
+                breakout2x5m: null as boolean | null,
+            },
+            invalidation_eval: null as any,
             decision: 'WAIT',
             reason: '',
             orders: [],
@@ -359,9 +429,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         if (!gatesNow.spread_ok_now || !gatesNow.liquidity_ok_now || !gatesNow.slippage_ok_now)
             baseEntryBlockers.push('gates_fail');
         const entryBlocked = baseEntryBlockers.length > 0;
+        result.entries_disabled = entryBlocked;
+        result.entry_blockers = baseEntryBlockers;
 
         // Invalidation checks for open position (explicitly enabled by plan contract)
-        if (positionState !== 'FLAT' && plan?.exit_urgency?.close_if_invalidation === true && invalidation && invalidation.lvl !== null) {
+        if (positionState !== 'FLAT' && invalidation && invalidation.lvl !== null) {
             const evalRule = (rule?: InvalidationRule) => {
                 if (!rule) return false;
                 const tf = normalizeTf(rule.tf);
@@ -375,21 +447,39 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 const count = countConsecutive(closes, invalidation.lvl!, rule.direction);
                 return count >= rule.count;
             };
-            const triggered = evalRule(invalidation.fast) || evalRule(invalidation.mid) || evalRule(invalidation.hard);
-            if (triggered) {
+            const fastHit = evalRule(invalidation.fast);
+            const midHit = evalRule(invalidation.mid);
+            const hardHit = evalRule(invalidation.hard);
+            const triggered = fastHit || midHit || hardHit;
+            result.invalidation_eval = {
+                lvl: invalidation.lvl,
+                action: invalidation.action || 'CLOSE',
+                fastHit,
+                midHit,
+                hardHit,
+                triggered,
+                enabled: plan?.exit_urgency?.close_if_invalidation === true,
+            };
+            if (triggered && plan?.exit_urgency?.close_if_invalidation === true) {
                 const act = invalidation.action || 'CLOSE';
                 const trimPct = act === 'TRIM30' ? 30 : act === 'TRIM50' ? 50 : act === 'TRIM70' ? 70 : 100;
                 result.decision = trimPct === 100 ? 'CLOSE' : 'TRIM';
                 result.reason = `invalidation_${act}`;
                 const tradeAction = positionState === 'LONG' ? 'SELL' : 'BUY';
                 if (!dryRun) {
-                    await executeDecision(
+                    const exec = await executeDecision(
                         symbol,
                         notional,
                         { action: tradeAction as any, exit_size_pct: trimPct, summary: 'invalidation', reason: act },
                         resolveProductType(),
                         false,
                     );
+                    result.order_details = {
+                        intended: { action: tradeAction, exit_size_pct: trimPct, sizeUSDT: notional },
+                        execution: compactExecutionResult(exec),
+                    };
+                } else {
+                    result.order_details = { intended: { action: tradeAction, exit_size_pct: trimPct, sizeUSDT: notional }, execution: null };
                 }
                 await saveExecState(symbol, {
                     ...execState,
@@ -417,13 +507,19 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.decision = 'CLOSE';
             result.reason = 'direction_not_allowed';
             if (!dryRun) {
-                await executeDecision(
+                const exec = await executeDecision(
                     symbol,
                     notional,
                     { action: tradeAction as any, exit_size_pct: 100, summary: 'dir_mismatch', reason: result.reason },
                     resolveProductType(),
                     false,
                 );
+                result.order_details = {
+                    intended: { action: tradeAction, exit_size_pct: 100, sizeUSDT: notional },
+                    execution: compactExecutionResult(exec),
+                };
+            } else {
+                result.order_details = { intended: { action: tradeAction, exit_size_pct: 100, sizeUSDT: notional }, execution: null };
             }
             await saveExecState(symbol, {
                 ...execState,
@@ -459,13 +555,19 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 const pct = plan.risk_mode === 'CONSERVATIVE' ? 50 : 30;
                 const tradeAction = positionState === 'LONG' ? 'SELL' : 'BUY';
                 if (!dryRun) {
-                    await executeDecision(
+                    const exec = await executeDecision(
                         symbol,
                         notional,
                         { action: tradeAction as any, exit_size_pct: pct, summary: 'trim', reason: result.reason },
                         resolveProductType(),
                         false,
                     );
+                    result.order_details = {
+                        intended: { action: tradeAction, exit_size_pct: pct, sizeUSDT: notional },
+                        execution: compactExecutionResult(exec),
+                    };
+                } else {
+                    result.order_details = { intended: { action: tradeAction, exit_size_pct: pct, sizeUSDT: notional }, execution: null };
                 }
                 await saveExecState(symbol, {
                     ...execState,
@@ -544,14 +646,24 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             return res.status(200).json(result);
         }
 
+        const supportPx = toNum(plan?.key_levels?.['1H']?.support_price);
+        const resistancePx = toNum(plan?.key_levels?.['1H']?.resistance_price);
+
         const distSupportAtr =
-            plan?.key_levels?.['1H']?.support_price && atr1h
-                ? Math.abs(last - Number(plan.key_levels['1H'].support_price)) / atr1h
+            Number.isFinite(supportPx) && atr1h
+                ? Math.abs(last - supportPx) / atr1h
                 : Infinity;
         const distResistanceAtr =
-            plan?.key_levels?.['1H']?.resistance_price && atr1h
-                ? Math.abs(Number(plan.key_levels['1H'].resistance_price) - last) / atr1h
+            Number.isFinite(resistancePx) && atr1h
+                ? Math.abs(resistancePx - last) / atr1h
                 : Infinity;
+
+        result.levels = {
+            support: Number.isFinite(supportPx) ? supportPx : null,
+            resistance: Number.isFinite(resistancePx) ? resistancePx : null,
+            distSupportAtr: Number.isFinite(distSupportAtr) && distSupportAtr !== Infinity ? distSupportAtr : null,
+            distResistanceAtr: Number.isFinite(distResistanceAtr) && distResistanceAtr !== Infinity ? distResistanceAtr : null,
+        };
 
         // Extension filter
         if (
@@ -570,6 +682,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
 
         // Direction choice
         const preferredDir = pickDirection(plan.allowed_directions, plan.macro_bias, plan.primary_bias);
+        result.entry_eval.preferredDir = preferredDir;
         if (!preferredDir) {
             result.decision = 'WAIT';
             result.reason = 'no_dir';
@@ -629,18 +742,27 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             const obImb = obImbCentered(Number(analytics.obImb ?? 0));
             const obImbOk =
                 preferredDir === 'LONG' ? obImb >= 0.08 : preferredDir === 'SHORT' ? obImb <= -0.08 : false;
+            const rsiOk = preferredDir === 'LONG' ? rsiOkLong : rsiOkShort;
+            const emaOk = preferredDir === 'LONG' ? emaCheckLong : emaCheckShort;
             const confirmationCount = [
                 rsiOkShort || rsiOkLong,
                 emaCheckShort || emaCheckLong,
                 obImbOk,
             ].filter(Boolean).length;
+            result.entry_eval.rsiOk = rsiOk;
+            result.entry_eval.emaOk = emaOk;
+            result.entry_eval.obImbCentered = obImb;
+            result.entry_eval.obImbOk = obImbOk;
+            result.entry_eval.confirmationCount = confirmationCount;
 
             if (plan.entry_mode === 'PULLBACK' || plan.entry_mode === 'EITHER') {
                 if (preferredDir === 'SHORT' && Number.isFinite(plan.key_levels?.['1H']?.resistance_price)) {
                     const resPx = Number(plan.key_levels['1H'].resistance_price);
                     const zoneHigh = resPx + 0.05 * atr1h;
                     const zoneLow = resPx - 0.35 * atr1h;
-                    if (last <= zoneHigh && last >= zoneLow && confirmationCount >= 2) {
+                    const inZone = last <= zoneHigh && last >= zoneLow;
+                    result.entry_eval.inPullbackZone = inZone;
+                    if (inZone && confirmationCount >= 2) {
                         enter = true;
                         entryReason = 'pullback_short';
                     }
@@ -649,7 +771,9 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     const supPx = Number(plan.key_levels['1H'].support_price);
                     const zoneLow = supPx - 0.05 * atr1h;
                     const zoneHigh = supPx + 0.35 * atr1h;
-                    if (last >= zoneLow && last <= zoneHigh && confirmationCount >= 2) {
+                    const inZone = last >= zoneLow && last <= zoneHigh;
+                    result.entry_eval.inPullbackZone = inZone;
+                    if (inZone && confirmationCount >= 2) {
                         enter = true;
                         entryReason = 'pullback_long';
                     }
@@ -662,6 +786,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     const lastClose5m = closes5m.at(-1)!;
                     const prevClose5m = closes5m.at(-2)!;
                     const below = lastClose5m < supPx && prevClose5m < supPx;
+                    result.entry_eval.breakout2x5m = below;
                     if (below && confirmationCount >= 1) {
                         enter = true;
                         entryReason = 'breakout_short';
@@ -672,6 +797,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     const lastClose5m = closes5m.at(-1)!;
                     const prevClose5m = closes5m.at(-2)!;
                     const above = lastClose5m > resPx && prevClose5m > resPx;
+                    result.entry_eval.breakout2x5m = above;
                     if (above && confirmationCount >= 1) {
                         enter = true;
                         entryReason = 'breakout_long';
@@ -700,13 +826,19 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         result.orders = dryRun ? [] : [{ side: tradeAction, leverage, size: sideSize }];
 
         if (!dryRun) {
-            await executeDecision(
+            const exec = await executeDecision(
                 symbol,
                 sideSize,
                 { action: tradeAction as any, leverage, summary: entryReason, reason: entryReason },
                 resolveProductType(),
                 false,
             );
+            result.order_details = {
+                intended: { action: tradeAction, leverage, sizeUSDT: sideSize, summary: entryReason },
+                execution: compactExecutionResult(exec),
+            };
+        } else {
+            result.order_details = { intended: { action: tradeAction, leverage, sizeUSDT: sideSize, summary: entryReason }, execution: null };
         }
 
         await saveExecState(symbol, {

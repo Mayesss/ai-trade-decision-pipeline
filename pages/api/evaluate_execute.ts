@@ -17,6 +17,14 @@ type ExecRun = {
     plan_risk_mode?: string;
     plan_entry_mode?: string;
     gatesNow?: Record<string, any>;
+    entries_disabled?: boolean;
+    entry_blockers?: string[];
+    market?: { last?: number; spreadBps?: number; depthUSD?: number } | null;
+    indicators?: Record<string, any> | null;
+    levels?: Record<string, any> | null;
+    entry_eval?: Record<string, any> | null;
+    invalidation_eval?: Record<string, any> | null;
+    order_details?: Record<string, any> | null;
 };
 
 function distribution<T extends string>(items: T[]) {
@@ -42,6 +50,28 @@ function safeNumber(n: any): number | null {
     return Number.isFinite(v) ? v : null;
 }
 
+function safeTsMs(ts: unknown): number | null {
+    if (typeof ts === 'number' && Number.isFinite(ts)) return ts;
+    if (typeof ts === 'string' && ts) {
+        const ms = Date.parse(ts);
+        return Number.isFinite(ms) ? ms : null;
+    }
+    return null;
+}
+
+function decisionSide(decision: string): 'long' | 'short' | null {
+    const d = String(decision || '').toUpperCase();
+    if (d.includes('ENTER_LONG')) return 'long';
+    if (d.includes('ENTER_SHORT')) return 'short';
+    return null;
+}
+
+function truthyBoolean(x: any): boolean | null {
+    if (x === true) return true;
+    if (x === false) return false;
+    return null;
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (req.method !== 'POST' && req.method !== 'GET') {
         return res.status(405).json({ error: 'Method Not Allowed', message: 'Use POST or GET' });
@@ -65,40 +95,71 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(404).json({ error: 'no_execution_history', symbol });
     }
 
-    const system = `You are an execution quality evaluator for an algorithmic executor (NOT a chatty AI trader). The executor is deterministic logic based on an hourly AI plan. Rate execution quality using objective outcomes and rule adherence:
-	- Trade quality: entries near intended levels/zones, exits/trims near opposite levels or invalidations, avoiding churn, not trading into costs.
-	- Profitability: realized ROI, win-rate/avg win/loss, drawdowns (if available), and whether results are consistent with the plan's risk_mode.
-	- Risk & discipline: never violate allowed_directions, respect cooldowns and base gates for entries, allow exits when needed.
-	- Robustness: behaves sensibly in chop (WAIT more), avoids over-trading when signals are weak, uses trims prudently.
-	- Data quality: if execution uses noisy/insufficient data, call it out.
+    const system = `You are an execution quality evaluator for a deterministic trade executor (NOT a chatty AI trader).
+Your goal is to produce an evaluation that is measurable from the execution logs' structured fields:
+- Answer "why didn't it trade?" using entries_disabled, entry_blockers, gatesNow, reason, and key filters.
+- Answer "which confirmations predict profit?" using entry_eval flags and realized PnL windows (if present).
 
-	Return strict JSON parseable by JSON.parse (no markdown, no trailing commas):
-	{
-	  "aspects": {
-	    "data_quality": {"rating": 0-10, "comment": "market data freshness/quality for execution", "improvements": ["optional"], "findings": ["critical only"], "checks": ["orderbook/ATR/RSI availability", "spread/depth sanity"]},
-	    "data_quantity": {"rating": 0-10, "comment": "enough bars/history to justify signals", "improvements": ["optional"], "findings": ["critical only"], "checks": ["candle depth", "sample size sufficient"]},
-	    "ai_performance": {"rating": 0-10, "comment": "plan adherence quality (not 'AI')", "improvements": ["optional"], "findings": ["critical only"], "checks": ["allowed_directions compliance", "risk_mode sizing/leverage", "cooldown respect"]},
-	    "strategy_performance": {"rating": 0-10, "comment": "trade quality (entries/exits/trims) + profitability", "improvements": ["optional"], "findings": ["critical only"], "checks": ["entry timing vs levels", "exit discipline", "churn vs costs", "ROI/win-rate"]},
-	    "signal_strength_clarity": {"rating": 0-10, "comment": "reasons/labels are meaningful for monitoring", "improvements": ["optional"], "findings": ["critical only"], "checks": ["reason codes", "decision labels"]},
-	    "risk_management": {"rating": 0-10, "comment": "risk containment and loss control", "improvements": ["optional"], "findings": ["critical only"], "checks": ["loss containment", "no entries when gates fail", "invalidation action"]},
-	    "consistency": {"rating": 0-10, "comment": "stable behavior across runs and regimes", "improvements": ["optional"], "findings": ["critical only"], "checks": ["no flip-flop", "repeatable entry rules"]},
-	    "explainability": {"rating": 0-10, "comment": "is it easy to understand why trades happened", "improvements": ["optional"], "findings": ["critical only"], "checks": ["reason is specific", "plan fields referenced"]},
-	    "responsiveness": {"rating": 0-10, "comment": "reacts quickly to invalidations/plan changes", "improvements": ["optional"], "findings": ["critical only"], "checks": ["stale plan handling", "invalidation speed"]},
-	    "prompt_engineering": {"rating": 0-10, "comment": "rule engineering quality (deterministic logic)", "improvements": ["optional"], "findings": ["critical only"], "checks": ["logic simplicity", "edge vs cost awareness"]},
-	    "prompt_consistency": {"rating": 0-10, "comment": "rule consistency vs plan intent", "improvements": ["optional"], "findings": ["critical only"], "checks": ["entry_mode alignment", "buffer alignment"]},
-	    "action_logic": {"rating": 0-10, "comment": "decision logic correctness", "improvements": ["optional"], "findings": ["critical only"], "checks": ["TRIM only in profit", "gates block entries only", "no forbidden entries"]},
-	    "ai_freedom": {"rating": 0-10, "comment": "not applicable; treat as 'flexibility' of executor", "improvements": ["optional"], "findings": ["critical only"], "checks": ["handles edge cases without breaking rules"]},
-	    "guardrail_coverage": {"rating": 0-10, "comment": "coverage of critical guardrails in execution", "improvements": ["optional"], "findings": ["critical only"], "checks": ["stale plan", "cooldown", "gate checks", "direction mismatch exits"]}
-	  },
-	  "overall_rating": 0-10,
-	  "overview": "string",
-	  "what_went_well": ["..."],
-	  "issues": ["..."],
-	  "improvements": ["..."],
-	  "confidence": "LOW|MEDIUM|HIGH"
-	}
+Return strict JSON parseable by JSON.parse (no markdown, no trailing commas):
+{
+  "aspects": {
+    "why_no_trade": {
+      "rating": 0-10,
+      "comment": "How well the logs/logic explain WAIT / no-entry outcomes",
+      "checks": ["uses entries_disabled + entry_blockers", "reasons are specific and consistent", "gate failures are visible"],
+      "findings": ["critical only"],
+      "improvements": ["optional"]
+    },
+    "blockers_and_filters": {
+      "rating": 0-10,
+      "comment": "Correctness/impact of gates, cooldowns, extension and level-distance filters",
+      "checks": ["gates_fail frequency vs conditions", "cooldown behavior", "extension_block rate", "too_close_support/resistance behavior"],
+      "findings": ["critical only"],
+      "improvements": ["optional"]
+    },
+    "confirmation_signals": {
+      "rating": 0-10,
+      "comment": "Quality of confirmation logic + whether confirmations are meaningfully selective",
+      "checks": ["rsiOk/emaOk/obImbOk hit-rates", "confirmationCount distribution", "pullback vs breakout mix"],
+      "findings": ["critical only"],
+      "improvements": ["optional"]
+    },
+    "predictive_power": {
+      "rating": 0-10,
+      "comment": "Do logged confirmations correlate with better realized PnL?",
+      "checks": ["feature→outcome stats (if any matches)", "separate by side (long/short) if available"],
+      "findings": ["critical only"],
+      "improvements": ["optional"]
+    },
+    "exit_and_invalidation": {
+      "rating": 0-10,
+      "comment": "Responsiveness/correctness of trims and forced closes (direction mismatch, invalidations)",
+      "checks": ["invalidation_eval.triggered vs action", "close_if_invalidation respected", "forced close is full size"],
+      "findings": ["critical only"],
+      "improvements": ["optional"]
+    },
+    "logging_quality": {
+      "rating": 0-10,
+      "comment": "Are the logged fields sufficient for analysis without being huge?",
+      "checks": ["market/indicators/levels present", "entry_eval present", "entry_blockers present", "order_details compact on trades only"],
+      "findings": ["critical only"],
+      "improvements": ["optional"]
+    }
+  },
+  "overall_rating": 0-10,
+  "overview": "string",
+  "diagnostics": {
+    "top_no_trade_reasons": ["..."],
+    "top_entry_blockers": ["..."],
+    "confirmation_insights": ["..."],
+    "profitability_summary": "string"
+  },
+  "issues": ["..."],
+  "improvements": ["..."],
+  "confidence": "LOW|MEDIUM|HIGH"
+}
 
-	Keep the overview concise (<= 3 sentences).`;
+Keep the overview concise (<= 3 sentences). Use the provided Run aggregates when possible.`;
 
     const [roi24h, recentWindows, posInfo] = await Promise.all([
         fetchRealizedRoi(symbol, 24).catch(() => null),
@@ -126,16 +187,112 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         open_position: posInfo,
     };
 
+    // ------------------------------
+    // Lightweight analytics from run logs
+    // ------------------------------
+    const decisions = runs.map((r) => String(r?.decision || 'UNKNOWN').toUpperCase());
+    const decisionDistribution = distribution(decisions);
+    const reasons = runs.map((r) => String(r?.reason || 'UNKNOWN'));
+    const reasonDistribution = distribution(reasons);
+    const entryBlockers = runs.flatMap((r) => (Array.isArray(r?.entry_blockers) ? r.entry_blockers : []));
+    const entryBlockerDistribution = distribution(entryBlockers.map((b) => String(b || 'UNKNOWN')));
+    const entriesDisabledCount = runs.filter((r) => r?.entries_disabled === true).length;
+
+    const confirmationKeys = ['rsiOk', 'emaOk', 'obImbOk', 'inPullbackZone', 'breakout2x5m'] as const;
+    const confirmationHitCounts: Record<(typeof confirmationKeys)[number], { true: number; false: number; null: number }> =
+        Object.fromEntries(confirmationKeys.map((k) => [k, { true: 0, false: 0, null: 0 }])) as any;
+    for (const r of runs) {
+        const ev = (r as any)?.entry_eval;
+        for (const k of confirmationKeys) {
+            const v = truthyBoolean(ev?.[k]);
+            if (v === true) confirmationHitCounts[k].true += 1;
+            else if (v === false) confirmationHitCounts[k].false += 1;
+            else confirmationHitCounts[k].null += 1;
+        }
+    }
+
+    // Attempt to align entry runs to realized position windows for basic feature→outcome signal checks.
+    const entryRuns = runs
+        .map((r) => ({ r, tsMs: safeTsMs(r?.ts), side: decisionSide(String(r?.decision || '')) }))
+        .filter((x) => x.tsMs && x.side) as { r: ExecRun; tsMs: number; side: 'long' | 'short' }[];
+
+    const windows = closed
+        .map((w: any) => ({
+            ...w,
+            entryTimestamp: typeof w?.entryTimestamp === 'number' ? w.entryTimestamp : null,
+            pnlPct: typeof w?.pnlPct === 'number' ? w.pnlPct : null,
+            side: w?.side === 'long' || w?.side === 'short' ? (w.side as 'long' | 'short') : null,
+        }))
+        .filter((w: any) => w.entryTimestamp && w.pnlPct !== null) as any[];
+
+    const usedWindowIds = new Set<string>();
+    const matchedOutcomes: Array<{
+        entry_ts: number;
+        side: 'long' | 'short';
+        pnlPct: number;
+        features: Record<string, boolean | null>;
+    }> = [];
+
+    const maxMatchMs = 20 * 60 * 1000;
+    for (const e of entryRuns) {
+        let best: any = null;
+        let bestDt = Infinity;
+        for (const w of windows) {
+            if (usedWindowIds.has(String(w.id))) continue;
+            if (w.side && w.side !== e.side) continue;
+            const dt = Math.abs(Number(w.entryTimestamp) - e.tsMs);
+            if (dt < bestDt && dt <= maxMatchMs) {
+                best = w;
+                bestDt = dt;
+            }
+        }
+        if (!best) continue;
+        usedWindowIds.add(String(best.id));
+        const ev = (e.r as any)?.entry_eval || {};
+        const features: Record<string, boolean | null> = {};
+        for (const k of confirmationKeys) features[k] = truthyBoolean(ev?.[k]);
+        matchedOutcomes.push({
+            entry_ts: e.tsMs,
+            side: e.side,
+            pnlPct: Number(best.pnlPct),
+            features,
+        });
+    }
+
+    const confirmationOutcomeStats: Record<
+        string,
+        { true_count: number; false_count: number; true_avg_pnl_pct: number | null; false_avg_pnl_pct: number | null }
+    > = {};
+    for (const k of confirmationKeys) {
+        const trues = matchedOutcomes.filter((m) => m.features[k] === true).map((m) => m.pnlPct);
+        const falses = matchedOutcomes.filter((m) => m.features[k] === false).map((m) => m.pnlPct);
+        const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+        confirmationOutcomeStats[k] = {
+            true_count: trues.length,
+            false_count: falses.length,
+            true_avg_pnl_pct: avg(trues),
+            false_avg_pnl_pct: avg(falses),
+        };
+    }
+
     const user = `Symbol: ${symbol}.
 This executor is deterministic logic (not an AI agent). Evaluate the EXECUTOR based on logs + objective performance stats.
 Latest plan (may be null): ${JSON.stringify(plan)}.
 Exec state: ${JSON.stringify(execState)}.
 Recent execution runs (most recent first): ${JSON.stringify(runs)}.
+Run aggregates: ${JSON.stringify({
+        sample_size: runs.length,
+        decisions: decisionDistribution,
+        reasons: reasonDistribution,
+        entries_disabled_count: entriesDisabledCount,
+        entry_blockers: entryBlockerDistribution,
+        confirmation_hit_counts: confirmationHitCounts,
+        matched_entry_outcomes_count: matchedOutcomes.length,
+        confirmation_outcome_stats: confirmationOutcomeStats,
+    })}.
 Performance stats (24h): ${JSON.stringify(tradeStats)}.`;
 
     const evaluation = await callAI(system, user);
-    const decisions = runs.map((r) => String(r?.decision || 'UNKNOWN').toUpperCase());
-    const decisionDistribution = distribution(decisions);
     const sampleSize = runs.length;
     const redundanceSummary = formatDistributionSummary(decisionDistribution, sampleSize);
     const evaluationWithMeta = {
