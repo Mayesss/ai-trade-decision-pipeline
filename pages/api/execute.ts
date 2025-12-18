@@ -35,6 +35,57 @@ function toNum(x: any) {
     return Number.isFinite(n) ? n : NaN;
 }
 
+function normalizeTf(tf: string) {
+    const m = String(tf || '').trim().match(/^(\d+)([a-zA-Z])$/);
+    if (!m) return String(tf || '').trim();
+    const v = m[1];
+    const unit = m[2];
+    if (unit === 'm' || unit === 'M') return `${v}m`;
+    if (unit === 'h' || unit === 'H') return `${v}H`;
+    if (unit === 'd' || unit === 'D') return `${v}D`;
+    if (unit === 's' || unit === 'S') return `${v}s`;
+    return `${v}${unit}`;
+}
+
+function tfMs(tf: string) {
+    const m = normalizeTf(tf).match(/^(\d+)([smSMHD])$/);
+    if (!m) return 0;
+    const v = Number(m[1]);
+    const unit = m[2];
+    if (!Number.isFinite(v) || v <= 0) return 0;
+    switch (unit) {
+        case 's':
+        case 'S':
+            return v * 1000;
+        case 'm':
+            return v * 60 * 1000;
+        case 'H':
+            return v * 60 * 60 * 1000;
+        case 'D':
+            return v * 24 * 60 * 60 * 1000;
+        default:
+            return 0;
+    }
+}
+
+function confirmedCandles(candles: any[], tf: string, nowMs: number) {
+    if (!Array.isArray(candles) || candles.length === 0) return [];
+    const ms = tfMs(tf);
+    if (!ms) return candles;
+    const lastTs = Number(candles.at(-1)?.[0]);
+    if (!Number.isFinite(lastTs)) return candles;
+    // Bitget often includes the currently-forming candle; drop it so we only use confirmed closes.
+    if (nowMs < lastTs + ms) return candles.slice(0, -1);
+    return candles;
+}
+
+function obImbCentered(obImb: number) {
+    if (!Number.isFinite(obImb)) return 0;
+    // Our computeAnalytics() uses [-1,1], but normalize [0,1] inputs defensively.
+    if (obImb >= 0 && obImb <= 1) return obImb - 0.5;
+    return obImb;
+}
+
 function pickParam(req: NextApiRequest, key: string, fallback?: any) {
     const raw = req.query?.[key] ?? (req.body as any)?.[key];
     if (Array.isArray(raw)) return raw[0] ?? fallback;
@@ -55,14 +106,29 @@ async function fetchCandles(symbol: string, granularity: string, limit: number) 
 function parseInvalidation(notes: any): ParsedInvalidation | null {
     if (typeof notes !== 'string' || notes === 'NONE') return null;
     const regex =
-        /^LVL=(-?\d+(\.\d+)?);FAST=(5m|15m|30m|1H|4H)_close_(above|below)_x(\d+);MID=(5m|15m|30m|1H|4H)_close_(above|below)_x(\d+);HARD=(5m|15m|30m|1H|4H)_close_(above|below)_x(\d+);ACTION=(CLOSE|TRIM50|TRIM30|TRIM70)$/;
+        /^LVL=(-?\d+(?:\.\d+)?);FAST=(5m|15m|1h)_close_(above|below)_x(\d+);MID=(5m|15m|1h)_close_(above|below)_x(\d+);HARD=(5m|15m|1h)_close_(above|below)_x(\d+);ACTION=(CLOSE|TRIM50|TRIM30|TRIM70)$/i;
     const m = notes.match(regex);
-    if (!m) return null;
+    if (!m) {
+        if (notes.startsWith('LVL=')) console.warn('Invalid invalidation_notes format:', notes);
+        return null;
+    }
     const lvl = Number(m[1]);
-    const fast: InvalidationRule = { tf: m[3], direction: m[4] as any, count: Number(m[5]) };
-    const mid: InvalidationRule = { tf: m[6], direction: m[7] as any, count: Number(m[8]) };
-    const hard: InvalidationRule = { tf: m[9], direction: m[10] as any, count: Number(m[11]) };
-    const action = m[12] as ParsedInvalidation['action'];
+    const fast: InvalidationRule = {
+        tf: normalizeTf(String(m[2])),
+        direction: String(m[3]).toLowerCase() as any,
+        count: Number(m[4]),
+    };
+    const mid: InvalidationRule = {
+        tf: normalizeTf(String(m[5])),
+        direction: String(m[6]).toLowerCase() as any,
+        count: Number(m[7]),
+    };
+    const hard: InvalidationRule = {
+        tf: normalizeTf(String(m[8])),
+        direction: String(m[9]).toLowerCase() as any,
+        count: Number(m[10]),
+    };
+    const action = String(m[11]).toUpperCase() as ParsedInvalidation['action'];
     return { lvl, fast, mid, hard, action };
 }
 
@@ -77,18 +143,22 @@ function countConsecutive(closes: number[], lvl: number, direction: 'above' | 'b
 }
 
 function tfMinutes(tf: string) {
-    const m = tf.match(/^(\d+)([smhd])$/);
+    const m = String(tf || '').trim().match(/^(\d+)([smhdSMHD])$/);
     if (!m) return 1;
     const v = Number(m[1]);
     const unit = m[2];
     switch (unit) {
         case 's':
+        case 'S':
             return Math.max(1 / 60, v / 60);
         case 'm':
+        case 'M':
             return v;
         case 'h':
+        case 'H':
             return v * 60;
         case 'd':
+        case 'D':
             return v * 60 * 24;
         default:
             return 1;
@@ -221,6 +291,12 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             fetchCandles(symbol, '4H', 220),
         ]);
 
+        const candles5mConfirmed = confirmedCandles(candles5m, '5m', now);
+        const candles15mConfirmed = confirmedCandles(candles15m, '15m', now);
+        const candles30mConfirmed = confirmedCandles(candles30m, '30m', now);
+        const candles1hConfirmed = confirmedCandles(candles1h, '1H', now);
+        const candles4hConfirmed = confirmedCandles(candles4h, '4H', now);
+
         const bestBid = toNum(orderbook?.bids?.[0]?.[0] ?? orderbook?.bids?.[0]?.price);
         const bestAsk = toNum(orderbook?.asks?.[0]?.[0] ?? orderbook?.asks?.[0]?.price);
         const entryPx =
@@ -242,12 +318,12 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         });
 
         // Indicators
-        const closes5m = candles5m.map((c: any) => toNum(c[4]));
-        const closes15m = candles15m.map((c: any) => toNum(c[4]));
+        const closes5m = candles5mConfirmed.map((c: any) => toNum(c[4]));
+        const closes15m = candles15mConfirmed.map((c: any) => toNum(c[4]));
         //const closes1h = candles1h.map((c: any) => toNum(c[4]));
         //const atr5m = computeATR(candles5m, 14);
-        const atr15m = computeATR(candles15m, 14);
-        const atr1h = computeATR(candles1h, 14);
+        const atr15m = computeATR(candles15mConfirmed, 14);
+        const atr1h = computeATR(candles1hConfirmed, 14);
         const ema20_15m = computeEMA(closes15m, 20).at(-1) ?? last;
         const rsi5m = computeRSI_Wilder(closes5m, 14);
         //const rsi15m = computeRSI_Wilder(closes15m, 14);
@@ -284,17 +360,17 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             baseEntryBlockers.push('gates_fail');
         const entryBlocked = baseEntryBlockers.length > 0;
 
-        // Invalidation checks for open position
-        if (positionState !== 'FLAT' && invalidation && invalidation.lvl !== null) {
+        // Invalidation checks for open position (explicitly enabled by plan contract)
+        if (positionState !== 'FLAT' && plan?.exit_urgency?.close_if_invalidation === true && invalidation && invalidation.lvl !== null) {
             const evalRule = (rule?: InvalidationRule) => {
                 if (!rule) return false;
-                const tf = rule.tf.toLowerCase();
+                const tf = normalizeTf(rule.tf);
                 const minutes = tfMinutes(tf);
-                let candles = candles5m;
-                if (minutes >= 15) candles = candles15m;
-                if (minutes >= 30) candles = candles30m;
-                if (minutes >= 60) candles = candles1h;
-                if (minutes >= 240) candles = candles4h;
+                let candles = candles5mConfirmed;
+                if (minutes >= 15) candles = candles15mConfirmed;
+                if (minutes >= 30) candles = candles30mConfirmed;
+                if (minutes >= 60) candles = candles1hConfirmed;
+                if (minutes >= 240) candles = candles4hConfirmed;
                 const closes = candles.map((c: any) => toNum(c[4]));
                 const count = countConsecutive(closes, invalidation.lvl!, rule.direction);
                 return count >= rule.count;
@@ -344,7 +420,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 await executeDecision(
                     symbol,
                     notional,
-                    { action: tradeAction as any, summary: 'dir_mismatch', reason: result.reason },
+                    { action: tradeAction as any, exit_size_pct: 100, summary: 'dir_mismatch', reason: result.reason },
                     resolveProductType(),
                     false,
                 );
@@ -456,13 +532,25 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             return res.status(200).json(result);
         }
 
+        // Market data guards (Bitget can return short arrays / partial data)
+        if (closes5m.length < 25 || !Number.isFinite(atr1h) || atr1h <= 0) {
+            result.decision = 'WAIT';
+            result.reason = `insufficient_market_data(closes5m=${closes5m.length},atr1h=${Number.isFinite(atr1h) ? atr1h.toFixed(6) : 'NaN'})`;
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
+            return res.status(200).json(result);
+        }
+
         const distSupportAtr =
             plan?.key_levels?.['1H']?.support_price && atr1h
-                ? (last - Number(plan.key_levels['1H'].support_price)) / atr1h
+                ? Math.abs(last - Number(plan.key_levels['1H'].support_price)) / atr1h
                 : Infinity;
         const distResistanceAtr =
             plan?.key_levels?.['1H']?.resistance_price && atr1h
-                ? (Number(plan.key_levels['1H'].resistance_price) - last) / atr1h
+                ? Math.abs(Number(plan.key_levels['1H'].resistance_price) - last) / atr1h
                 : Infinity;
 
         // Extension filter
@@ -496,7 +584,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         // No-trade buffers
         if (
             preferredDir === 'SHORT' &&
-            Math.abs(distSupportAtr) < (plan.no_trade_rules?.avoid_short_if_dist_to_support_atr_1H_lt ?? 0.6)
+            distSupportAtr < (plan.no_trade_rules?.avoid_short_if_dist_to_support_atr_1H_lt ?? 0.6)
         ) {
             result.decision = 'WAIT';
             result.reason = 'too_close_support';
@@ -509,7 +597,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         }
         if (
             preferredDir === 'LONG' &&
-            Math.abs(distResistanceAtr) < (plan.no_trade_rules?.avoid_long_if_dist_to_resistance_atr_1H_lt ?? 0.6)
+            distResistanceAtr < (plan.no_trade_rules?.avoid_long_if_dist_to_resistance_atr_1H_lt ?? 0.6)
         ) {
             result.decision = 'WAIT';
             result.reason = 'too_close_resistance';
@@ -538,10 +626,13 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 preferredDir === 'LONG'
                     ? closes5m.at(-1)! > (computeEMA(closes5m, 20).at(-1) ?? closes5m.at(-1)!)
                     : false;
+            const obImb = obImbCentered(Number(analytics.obImb ?? 0));
+            const obImbOk =
+                preferredDir === 'LONG' ? obImb >= 0.08 : preferredDir === 'SHORT' ? obImb <= -0.08 : false;
             const confirmationCount = [
                 rsiOkShort || rsiOkLong,
                 emaCheckShort || emaCheckLong,
-                analytics.obImb < -0.1 || analytics.obImb > 0.1,
+                obImbOk,
             ].filter(Boolean).length;
 
             if (plan.entry_mode === 'PULLBACK' || plan.entry_mode === 'EITHER') {
