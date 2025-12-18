@@ -225,6 +225,11 @@ function leverageFromRisk(risk: string, cap: number) {
     return Math.min(cap || base, cap ? cap : base);
 }
 
+function reasonCode(reason: string) {
+    if (!reason) return '';
+    return String(reason).trim().replace(/\s+/g, '_').toUpperCase();
+}
+
 function sizeFromRisk(notional: number, risk: string) {
     if (!Number.isFinite(notional) || notional <= 0) return 0;
     if (risk === 'CONSERVATIVE') return notional * 0.5;
@@ -301,10 +306,17 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 invalidation_eval: null,
                 decision: 'WAIT',
                 reason,
+                reason_code: reasonCode(reason),
+                trigger: null,
                 orders: [],
                 dryRun,
                 gatesNow: null,
                 skipped_market_fetch: true,
+                hold_seconds: null,
+                mfe: null,
+                mae: null,
+                fill_slippage_bps: null,
+                exit_cause: null,
             };
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload });
@@ -412,9 +424,16 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             invalidation_eval: null as any,
             decision: 'WAIT',
             reason: '',
+            reason_code: '',
+            trigger: null as string | null,
             orders: [],
             dryRun,
             gatesNow,
+            hold_seconds: null as number | null,
+            mfe: null as number | null,
+            mae: null as number | null,
+            fill_slippage_bps: null as number | null,
+            exit_cause: null as string | null,
         };
 
         const invalidation = parseInvalidation(plan?.exit_urgency?.invalidation_notes);
@@ -465,6 +484,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 const trimPct = act === 'TRIM30' ? 30 : act === 'TRIM50' ? 50 : act === 'TRIM70' ? 70 : 100;
                 result.decision = trimPct === 100 ? 'CLOSE' : 'TRIM';
                 result.reason = `invalidation_${act}`;
+                result.reason_code = reasonCode(result.reason);
+                result.trigger = fastHit ? 'INVALIDATION_FAST' : midHit ? 'INVALIDATION_MID' : hardHit ? 'INVALIDATION_HARD' : 'INVALIDATION';
+                result.exit_cause = trimPct === 100 ? result.trigger : 'INVALIDATION_TRIM';
+                result.hold_seconds =
+                    execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
                 const tradeAction = positionState === 'LONG' ? 'SELL' : 'BUY';
                 if (!dryRun) {
                     const exec = await executeDecision(
@@ -506,6 +530,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             const tradeAction = positionState === 'LONG' ? 'SELL' : 'BUY';
             result.decision = 'CLOSE';
             result.reason = 'direction_not_allowed';
+            result.reason_code = reasonCode(result.reason);
+            result.exit_cause = 'DIRECTION_NOT_ALLOWED';
+            result.trigger = 'DIR_MISMATCH';
+            result.hold_seconds =
+                execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
             if (!dryRun) {
                 const exec = await executeDecision(
                     symbol,
@@ -546,10 +575,20 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             if (positionState === 'SHORT' && inProfit && distSupportAtr < threshold) {
                 result.decision = 'TRIM';
                 result.reason = 'trim_near_support';
+                result.reason_code = reasonCode(result.reason);
+                result.trigger = 'TRIM_NEAR_LEVEL';
+                result.exit_cause = 'TRIM_NEAR_LEVEL';
+                result.hold_seconds =
+                    execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
             }
             if (positionState === 'LONG' && inProfit && distResistanceAtr < threshold) {
                 result.decision = 'TRIM';
                 result.reason = 'trim_near_resistance';
+                result.reason_code = reasonCode(result.reason);
+                result.trigger = 'TRIM_NEAR_LEVEL';
+                result.exit_cause = 'TRIM_NEAR_LEVEL';
+                result.hold_seconds =
+                    execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
             }
             if (result.decision === 'TRIM') {
                 const pct = plan.risk_mode === 'CONSERVATIVE' ? 50 : 30;
@@ -588,6 +627,9 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         if (positionState !== 'FLAT') {
             result.decision = 'WAIT';
             result.reason = 'holding';
+            result.reason_code = reasonCode(result.reason);
+            result.hold_seconds =
+                execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: result });
             } catch (err) {
@@ -600,6 +642,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         if (entryBlocked) {
             result.decision = baseEntryBlockers.includes('gates_fail') ? 'GATES_FAIL' : 'WAIT';
             result.reason = baseEntryBlockers.join(',');
+            result.reason_code = reasonCode(result.reason);
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: result });
             } catch (err) {
@@ -616,6 +659,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         ) {
             result.decision = 'WAIT';
             result.reason = 'recent_exit_cooldown';
+            result.reason_code = reasonCode(result.reason);
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: result });
             } catch (err) {
@@ -626,6 +670,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         if (execState.last_entry_ts && now - execState.last_entry_ts < ENTRY_COOLDOWN_MS) {
             result.decision = 'WAIT';
             result.reason = 'entry_cooldown';
+            result.reason_code = reasonCode(result.reason);
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: result });
             } catch (err) {
@@ -672,6 +717,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         ) {
             result.decision = 'WAIT';
             result.reason = 'extension_block';
+            result.reason_code = reasonCode(result.reason);
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: result });
             } catch (err) {
@@ -686,6 +732,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         if (!preferredDir) {
             result.decision = 'WAIT';
             result.reason = 'no_dir';
+            result.reason_code = reasonCode(result.reason);
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: result });
             } catch (err) {
@@ -701,6 +748,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         ) {
             result.decision = 'WAIT';
             result.reason = 'too_close_support';
+            result.reason_code = reasonCode(result.reason);
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: result });
             } catch (err) {
@@ -714,6 +762,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         ) {
             result.decision = 'WAIT';
             result.reason = 'too_close_resistance';
+            result.reason_code = reasonCode(result.reason);
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: result });
             } catch (err) {
