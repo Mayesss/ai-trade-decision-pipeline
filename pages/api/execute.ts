@@ -2,7 +2,15 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { computeATR, computeEMA, computeRSI_Wilder } from '../../lib/indicators';
 import { bitgetFetch, resolveProductType } from '../../lib/bitget';
-import { computeAnalytics, fetchPositionInfo, PositionInfo } from '../../lib/analytics';
+import { computeAnalytics, fetchPositionInfo, fetchTradesBudgeted, PositionInfo } from '../../lib/analytics';
+import {
+    FLOW_SURGE_MULT_1M,
+    FLOW_SURGE_WINDOW_1M,
+    TRIM_MIN_HOLD_SECONDS_CONSERVATIVE,
+    TRIM_MIN_HOLD_SECONDS_DEFAULT,
+    TRIM_PROXIMITY_ATR_CONSERVATIVE,
+    TRIM_PROXIMITY_ATR_DEFAULT,
+} from '../../lib/constants';
 import { readPlan } from '../../lib/planStore';
 import { readExecState, saveExecState } from '../../lib/execState';
 import { executeDecision } from '../../lib/trading';
@@ -30,16 +38,6 @@ const STALE_GRACE_MINUTES = 10;
 const ENTRY_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
 const REENTER_AFTER_INVALIDATION_MS = 3 * 60 * 1000;
 const EXIT_ORDER_LOCK_MS = 60 * 1000;
-
-function envNumber(name: string, fallback: number, min = 0) {
-    const raw = Number(process.env[name]);
-    return Number.isFinite(raw) && raw >= min ? raw : fallback;
-}
-
-const TRIM_PROXIMITY_ATR_CONSERVATIVE = envNumber('TRIM_PROXIMITY_ATR_CONSERVATIVE', 0.35, 0.01);
-const TRIM_PROXIMITY_ATR_DEFAULT = envNumber('TRIM_PROXIMITY_ATR_DEFAULT', 0.5, 0.01);
-const TRIM_MIN_HOLD_SECONDS_CONSERVATIVE = envNumber('TRIM_MIN_HOLD_SECONDS_CONSERVATIVE', 300, 0);
-const TRIM_MIN_HOLD_SECONDS_DEFAULT = envNumber('TRIM_MIN_HOLD_SECONDS_DEFAULT', 180, 0);
 
 function toNum(x: any) {
     const n = Number(x);
@@ -356,10 +354,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         }
 
         // Market snapshot
-        const [orderbook, candles1m, candles5m, candles15m, candles30m, candles1h, candles4h] = await Promise.all([
+        const productType = resolveProductType();
+        const [orderbook, candles1m, candles5m, candles15m, candles30m, candles1h, candles4h, trades] = await Promise.all([
             bitgetFetch('GET', '/api/v2/mix/market/orderbook', {
                 symbol,
-                productType: resolveProductType(),
+                productType,
                 limit: 50,
             }),
             fetchCandles(symbol, '1m', 120),
@@ -368,8 +367,10 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             fetchCandles(symbol, '30m', 120),
             fetchCandles(symbol, '1H', 220),
             fetchCandles(symbol, '4H', 220),
+            fetchTradesBudgeted(symbol, productType, { minutes: 5, maxTrades: 800, maxPages: 5, maxMs: 1200 }),
         ]);
 
+        const candles1mConfirmed = confirmedCandles(candles1m, '1m', now);
         const candles5mConfirmed = confirmedCandles(candles5m, '5m', now);
         const candles15mConfirmed = confirmedCandles(candles15m, '15m', now);
         const candles30mConfirmed = confirmedCandles(candles30m, '30m', now);
@@ -400,10 +401,19 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
 
         const analytics = computeAnalytics({
             orderbook,
-            trades: [],
+            trades,
             ticker: { lastPr: last, last },
             candles: candles1m,
         });
+        const flowTotal = Number(analytics.buys) + Number(analytics.sells);
+        const flowBias = flowTotal > 0 ? (Number(analytics.buys) - Number(analytics.sells)) / flowTotal : 0;
+        const surgeWindow = Math.max(5, Math.min(120, FLOW_SURGE_WINDOW_1M));
+        const surgeMult = FLOW_SURGE_MULT_1M;
+        const recentVolumes = candles1mConfirmed.slice(-surgeWindow).map((c: any) => toNum(c[5]));
+        const volSum = recentVolumes.reduce((acc, v) => acc + (Number.isFinite(v) ? v : 0), 0);
+        const volAvg = recentVolumes.length ? volSum / recentVolumes.length : 0;
+        const lastVol = toNum(candles1mConfirmed.at(-1)?.[5]);
+        const flowSurge = Number.isFinite(lastVol) && volAvg > 0 ? lastVol >= volAvg * surgeMult : false;
 
         // Indicators
         const closes5m = candles5mConfirmed.map((c: any) => toNum(c[4]));
@@ -414,10 +424,12 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         const atr1h = computeATR(candles1hConfirmed, 14);
         const ema20_15m = computeEMA(closes15m, 20).at(-1) ?? last;
         const rsi5m = computeRSI_Wilder(closes5m, 14);
+        const rsi15m = computeRSI_Wilder(closes15m, 14);
         //const rsi15m = computeRSI_Wilder(closes15m, 14);
         const dist_from_ema20_15m_in_atr = atr15m > 0 ? (last - ema20_15m) / atr15m : 0;
 
-        const gatesNow = gateChecks(spreadBps, depthUSD, 5);
+        const slippageBpsEstimate = spreadBps;
+        const gatesNow = gateChecks(spreadBps, depthUSD, slippageBpsEstimate);
 
         const result: any = {
             ts: asofIso,
@@ -435,6 +447,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 last,
                 spreadBps,
                 depthUSD,
+                flowBias,
+                flowCvd: Number(analytics.cvd ?? 0),
+                flowBuys: Number(analytics.buys ?? 0),
+                flowSells: Number(analytics.sells ?? 0),
+                flowSurge,
             },
             indicators: {
                 atr1h,
@@ -456,6 +473,9 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 emaOk: null as boolean | null,
                 obImbCentered: obImbCentered(Number(analytics.obImb ?? 0)),
                 obImbOk: null as boolean | null,
+                flowBias: flowBias as number,
+                flowOk: null as boolean | null,
+                flowSurge: flowSurge as boolean,
                 inPullbackZone: null as boolean | null,
                 breakout2x5m: null as boolean | null,
             },
@@ -666,8 +686,65 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             return res.status(200).json(result);
         }
 
-        // Trim near opposite level
-        if (positionState !== 'FLAT' && plan && plan.exit_urgency?.trim_if_near_opposite_level) {
+        // Flow reversal trim (tape/flow safety)
+        if (positionState !== 'FLAT') {
+            const holdSeconds =
+                execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
+            const inProfit = profitActive(pos, last);
+            const flowExitThreshold = 0.35;
+            const flowAgainst =
+                positionState === 'LONG' ? flowBias <= -flowExitThreshold : positionState === 'SHORT' ? flowBias >= flowExitThreshold : false;
+            const rsiAgainst = positionState === 'LONG' ? rsi5m < 45 : positionState === 'SHORT' ? rsi5m > 55 : false;
+            const holdOk = holdSeconds !== null && holdSeconds >= 120;
+            if (flowAgainst && flowSurge && rsiAgainst && holdOk && inProfit) {
+                const riskMode = plan?.risk_mode ?? 'NORMAL';
+                const pct = riskMode === 'CONSERVATIVE' ? 50 : 30;
+                result.decision = 'TRIM';
+                result.reason = 'flow_reversal';
+                result.reason_code = reasonCode(result.reason);
+                result.trigger = 'FLOW_REVERSAL';
+                result.exit_cause = 'FLOW_REVERSAL';
+                result.exit_order_reduce_only = true;
+                result.hold_seconds = holdSeconds;
+                if (!dryRun) {
+                    const exec = await executeDecision(
+                        symbol,
+                        notional,
+                        { action: 'CLOSE', exit_size_pct: pct, summary: 'flow_reversal', reason: result.reason },
+                        productType,
+                        false,
+                    );
+                    result.order_details = {
+                        intended: { action: 'CLOSE', exit_size_pct: pct, sizeUSDT: notional },
+                        execution: compactExecutionResult(exec),
+                    };
+                    const execSizeBase = Number(exec?.size);
+                    result.exit_order_size_base = Number.isFinite(execSizeBase) && execSizeBase > 0 ? execSizeBase : null;
+                    result.exit_order_size_notional =
+                        result.exit_order_size_base && last > 0 ? result.exit_order_size_base * last : null;
+                    if (exec?.placed || exec?.closed) {
+                        execState.last_exit_order_ts = now;
+                    }
+                } else {
+                    result.order_details = { intended: { action: 'CLOSE', exit_size_pct: pct, sizeUSDT: notional }, execution: null };
+                }
+                await saveExecState(symbol, {
+                    ...execState,
+                    last_exit_ts: now,
+                    last_action: result.decision,
+                    last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
+                });
+                try {
+                    await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                } catch (err) {
+                    console.warn('Failed to append execution log:', err);
+                }
+                return res.status(200).json(result);
+            }
+        }
+
+        // Trim near opposite level (skip trims on stale plans; keep invalidation safety)
+        if (positionState !== 'FLAT' && plan && !planStale && plan.exit_urgency?.trim_if_near_opposite_level) {
             const support = toNum(plan.key_levels?.['1H']?.support_price);
             const resistance = toNum(plan.key_levels?.['1H']?.resistance_price);
             const proximityAtr = atr15m || atr1h;
@@ -854,6 +931,61 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             return res.status(200).json(result);
         }
 
+        if (preferredDir === 'SHORT' && plan.micro_bias === 'UP') {
+            result.decision = 'WAIT';
+            result.reason = 'micro_bias_block';
+            result.reason_code = reasonCode(result.reason);
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
+            return res.status(200).json(result);
+        }
+        if (preferredDir === 'LONG' && plan.micro_bias === 'DOWN') {
+            result.decision = 'WAIT';
+            result.reason = 'micro_bias_block';
+            result.reason_code = reasonCode(result.reason);
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
+            return res.status(200).json(result);
+        }
+
+        const rsi15mOk = Number.isFinite(rsi15m)
+            ? preferredDir === 'LONG'
+                ? rsi15m >= 50
+                : rsi15m <= 50
+            : true;
+        const ema15mOk = preferredDir === 'LONG' ? last >= ema20_15m : last <= ema20_15m;
+        if (!rsi15mOk || !ema15mOk) {
+            result.decision = 'WAIT';
+            result.reason = 'micro_filter_block';
+            result.reason_code = reasonCode(result.reason);
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
+            return res.status(200).json(result);
+        }
+
+        const flowAgainst = preferredDir === 'LONG' ? flowBias < -0.1 : flowBias > 0.1;
+        result.entry_eval.flowOk = !(flowAgainst && flowSurge);
+        if (flowAgainst && flowSurge) {
+            result.decision = 'WAIT';
+            result.reason = 'flow_against';
+            result.reason_code = reasonCode(result.reason);
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
+            return res.status(200).json(result);
+        }
+
         // No-trade buffers
         if (
             preferredDir === 'SHORT' &&
@@ -943,11 +1075,13 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             }
 
             if (!enter && (plan.entry_mode === 'BREAKOUT' || plan.entry_mode === 'EITHER')) {
+                const breakoutAtr = atr15m || atr1h;
+                const breakoutBuffer = breakoutAtr && Number.isFinite(breakoutAtr) ? 0.1 * breakoutAtr : 0;
                 if (preferredDir === 'SHORT' && Number.isFinite(plan.key_levels?.['1H']?.support_price)) {
                     const supPx = Number(plan.key_levels['1H'].support_price);
                     const lastClose5m = closes5m.at(-1)!;
                     const prevClose5m = closes5m.at(-2)!;
-                    const below = lastClose5m < supPx && prevClose5m < supPx;
+                    const below = lastClose5m < supPx - breakoutBuffer && prevClose5m < supPx - breakoutBuffer;
                     result.entry_eval.breakout2x5m = below;
                     if (below && confirmationCount >= 1) {
                         enter = true;
@@ -958,7 +1092,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     const resPx = Number(plan.key_levels['1H'].resistance_price);
                     const lastClose5m = closes5m.at(-1)!;
                     const prevClose5m = closes5m.at(-2)!;
-                    const above = lastClose5m > resPx && prevClose5m > resPx;
+                    const above = lastClose5m > resPx + breakoutBuffer && prevClose5m > resPx + breakoutBuffer;
                     result.entry_eval.breakout2x5m = above;
                     if (above && confirmationCount >= 1) {
                         enter = true;
