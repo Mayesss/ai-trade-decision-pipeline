@@ -7,6 +7,7 @@ const EXEC_STATE_TTL_SECONDS = 3 * 24 * 60 * 60; // 3 days
 type ExecState = {
     last_entry_ts?: number | null;
     last_exit_ts?: number | null;
+    last_exit_order_ts?: number | null;
     last_action?: string | null;
     last_plan_ts?: string | null;
 };

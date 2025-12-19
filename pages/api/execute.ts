@@ -29,6 +29,7 @@ export const config = { runtime: 'nodejs' };
 const STALE_GRACE_MINUTES = 10;
 const ENTRY_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
 const REENTER_AFTER_INVALIDATION_MS = 3 * 60 * 1000;
+const EXIT_ORDER_LOCK_MS = 60 * 1000;
 
 function toNum(x: any) {
     const n = Number(x);
@@ -154,6 +155,17 @@ function parseInvalidation(notes: any): ParsedInvalidation | null {
     };
     const action = String(m[11]).toUpperCase() as ParsedInvalidation['action'];
     return { lvl, fast, mid, hard, action };
+}
+
+function invalidationDirectionInfo(parsed: ParsedInvalidation | null): { direction: 'above' | 'below' | null; mixed: boolean } {
+    if (!parsed) return { direction: null, mixed: false };
+    const dirs = new Set<string>();
+    if (parsed.fast?.direction) dirs.add(parsed.fast.direction);
+    if (parsed.mid?.direction) dirs.add(parsed.mid.direction);
+    if (parsed.hard?.direction) dirs.add(parsed.hard.direction);
+    if (dirs.size === 1) return { direction: dirs.values().next().value as 'above' | 'below', mixed: false };
+    if (dirs.size > 1) return { direction: null, mixed: true };
+    return { direction: null, mixed: false };
 }
 
 function countConsecutive(closes: number[], lvl: number, direction: 'above' | 'below') {
@@ -317,6 +329,13 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 mae: null,
                 fill_slippage_bps: null,
                 exit_cause: null,
+                position_size_base: null,
+                position_notional: null,
+                exit_order_reduce_only: null,
+                exit_order_size_base: null,
+                exit_order_size_notional: null,
+                invalidation_notes: plan?.exit_urgency?.invalidation_notes ?? null,
+                invalidation_rule_direction: invalidationDirectionInfo(parseInvalidation(plan?.exit_urgency?.invalidation_notes)).direction,
             };
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload });
@@ -359,6 +378,15 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         const depthUSD =
             (orderbook?.bids || []).slice(0, 10).reduce((acc: number, [p, s]: any) => acc + Number(p) * Number(s), 0) +
             (orderbook?.asks || []).slice(0, 10).reduce((acc: number, [p, s]: any) => acc + Number(p) * Number(s), 0);
+
+        let positionSizeBaseRaw = NaN;
+        if (pos && (pos as PositionInfo).status === 'open') {
+            const openPos = pos as Extract<PositionInfo, { status: 'open' }>;
+            positionSizeBaseRaw = toNum(openPos.total ?? openPos.available);
+        }
+        const positionSizeBase = Number.isFinite(positionSizeBaseRaw) && positionSizeBaseRaw !== 0 ? Math.abs(positionSizeBaseRaw) : null;
+        const positionNotional =
+            positionSizeBase && Number.isFinite(last) && last > 0 ? positionSizeBase * last : null;
 
         const analytics = computeAnalytics({
             orderbook,
@@ -434,25 +462,70 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             mae: null as number | null,
             fill_slippage_bps: null as number | null,
             exit_cause: null as string | null,
+            position_size_base: positionSizeBase,
+            position_notional: positionNotional,
+            exit_order_reduce_only: null as boolean | null,
+            exit_order_size_base: null as number | null,
+            exit_order_size_notional: null as number | null,
+            invalidation_notes: plan?.exit_urgency?.invalidation_notes ?? null,
+            invalidation_rule_direction: invalidationDirectionInfo(null).direction,
         };
 
         const invalidation = parseInvalidation(plan?.exit_urgency?.invalidation_notes);
+        const invalidationDirection = invalidationDirectionInfo(invalidation);
+        result.invalidation_rule_direction = invalidationDirection.direction;
 
         const baseEntryBlockers = [];
         if (planStale) baseEntryBlockers.push('stale_plan');
         if (!plan) baseEntryBlockers.push('no_plan');
         if (plan?.risk_mode === 'OFF') baseEntryBlockers.push('risk_off');
         if (plan?.allowed_directions === 'NONE') baseEntryBlockers.push('dir_none');
-        if (plan?.cooldown?.enabled && plan.cooldown?.until_ts && now < Date.parse(plan.cooldown.until_ts))
-            baseEntryBlockers.push('cooldown');
+        if (plan?.cooldown?.enabled) {
+            const untilTs = plan.cooldown?.until_ts ? Date.parse(plan.cooldown.until_ts) : NaN;
+            if (!plan.cooldown?.until_ts || !Number.isFinite(untilTs)) baseEntryBlockers.push('cooldown_missing_until');
+            if (!Number.isFinite(untilTs) || now < untilTs) baseEntryBlockers.push('cooldown');
+        }
         if (!gatesNow.spread_ok_now || !gatesNow.liquidity_ok_now || !gatesNow.slippage_ok_now)
             baseEntryBlockers.push('gates_fail');
         const entryBlocked = baseEntryBlockers.length > 0;
         result.entries_disabled = entryBlocked;
         result.entry_blockers = baseEntryBlockers;
 
+        const exitOrderLockActive =
+            positionState !== 'FLAT' &&
+            execState.last_exit_order_ts &&
+            now - execState.last_exit_order_ts < EXIT_ORDER_LOCK_MS;
+
+        if (exitOrderLockActive) {
+            result.decision = 'WAIT';
+            result.reason = 'pending_exit_order';
+            result.reason_code = reasonCode(result.reason);
+            result.hold_seconds =
+                execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
+            try {
+                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            } catch (err) {
+                console.warn('Failed to append execution log:', err);
+            }
+            return res.status(200).json(result);
+        }
+
         // Invalidation checks for open position (explicitly enabled by plan contract)
         if (positionState !== 'FLAT' && invalidation && invalidation.lvl !== null) {
+            const expectedDirection = positionState === 'SHORT' ? 'above' : positionState === 'LONG' ? 'below' : null;
+            let invalidationDirectionOk = true;
+            let invalidationDirectionError: string | null = null;
+            if (invalidationDirection.mixed) {
+                invalidationDirectionOk = false;
+                invalidationDirectionError = 'direction_mixed';
+            } else if (invalidationDirection.direction && expectedDirection && invalidationDirection.direction !== expectedDirection) {
+                invalidationDirectionOk = false;
+                invalidationDirectionError = `direction_mismatch(expected_${expectedDirection})`;
+            } else if (!invalidationDirection.direction) {
+                invalidationDirectionOk = false;
+                invalidationDirectionError = 'direction_missing';
+            }
+
             const evalRule = (rule?: InvalidationRule) => {
                 if (!rule) return false;
                 const tf = normalizeTf(rule.tf);
@@ -466,9 +539,9 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 const count = countConsecutive(closes, invalidation.lvl!, rule.direction);
                 return count >= rule.count;
             };
-            const fastHit = evalRule(invalidation.fast);
-            const midHit = evalRule(invalidation.mid);
-            const hardHit = evalRule(invalidation.hard);
+            const fastHit = invalidationDirectionOk ? evalRule(invalidation.fast) : false;
+            const midHit = invalidationDirectionOk ? evalRule(invalidation.mid) : false;
+            const hardHit = invalidationDirectionOk ? evalRule(invalidation.hard) : false;
             const triggered = fastHit || midHit || hardHit;
             result.invalidation_eval = {
                 lvl: invalidation.lvl,
@@ -477,9 +550,14 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 midHit,
                 hardHit,
                 triggered,
-                enabled: plan?.exit_urgency?.close_if_invalidation === true,
+                enabled: plan?.exit_urgency?.close_if_invalidation === true && invalidationDirectionOk,
+                direction_ok: invalidationDirectionOk,
+                error: invalidationDirectionError,
             };
-            if (triggered && plan?.exit_urgency?.close_if_invalidation === true) {
+            if (!invalidationDirectionOk && invalidationDirectionError) {
+                console.warn('Invalidation direction mismatch:', invalidationDirectionError, plan?.exit_urgency?.invalidation_notes);
+            }
+            if (triggered && plan?.exit_urgency?.close_if_invalidation === true && invalidationDirectionOk) {
                 const act = invalidation.action || 'CLOSE';
                 const trimPct = act === 'TRIM30' ? 30 : act === 'TRIM50' ? 50 : act === 'TRIM70' ? 70 : 100;
                 result.decision = trimPct === 100 ? 'CLOSE' : 'TRIM';
@@ -487,6 +565,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 result.reason_code = reasonCode(result.reason);
                 result.trigger = fastHit ? 'INVALIDATION_FAST' : midHit ? 'INVALIDATION_MID' : hardHit ? 'INVALIDATION_HARD' : 'INVALIDATION';
                 result.exit_cause = trimPct === 100 ? result.trigger : 'INVALIDATION_TRIM';
+                result.exit_order_reduce_only = trimPct < 100;
                 result.hold_seconds =
                     execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
                 if (!dryRun) {
@@ -501,6 +580,13 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                         intended: { action: 'CLOSE', exit_size_pct: trimPct, sizeUSDT: notional },
                         execution: compactExecutionResult(exec),
                     };
+                    const execSizeBase = Number(exec?.size);
+                    result.exit_order_size_base = Number.isFinite(execSizeBase) && execSizeBase > 0 ? execSizeBase : null;
+                    result.exit_order_size_notional =
+                        result.exit_order_size_base && last > 0 ? result.exit_order_size_base * last : null;
+                    if (exec?.placed || exec?.closed) {
+                        execState.last_exit_order_ts = now;
+                    }
                 } else {
                     result.order_details = { intended: { action: 'CLOSE', exit_size_pct: trimPct, sizeUSDT: notional }, execution: null };
                 }
@@ -531,6 +617,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.reason_code = reasonCode(result.reason);
             result.exit_cause = 'DIRECTION_NOT_ALLOWED';
             result.trigger = 'DIR_MISMATCH';
+            result.exit_order_reduce_only = false;
             result.hold_seconds =
                 execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
             if (!dryRun) {
@@ -545,6 +632,13 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     intended: { action: 'CLOSE', exit_size_pct: 100, sizeUSDT: notional },
                     execution: compactExecutionResult(exec),
                 };
+                const execSizeBase = Number(exec?.size);
+                result.exit_order_size_base = Number.isFinite(execSizeBase) && execSizeBase > 0 ? execSizeBase : null;
+                result.exit_order_size_notional =
+                    result.exit_order_size_base && last > 0 ? result.exit_order_size_base * last : null;
+                if (exec?.placed || exec?.closed) {
+                    execState.last_exit_order_ts = now;
+                }
             } else {
                 result.order_details = { intended: { action: 'CLOSE', exit_size_pct: 100, sizeUSDT: notional }, execution: null };
             }
@@ -590,6 +684,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             }
             if (result.decision === 'TRIM') {
                 const pct = plan.risk_mode === 'CONSERVATIVE' ? 50 : 30;
+                result.exit_order_reduce_only = true;
                 if (!dryRun) {
                     const exec = await executeDecision(
                         symbol,
@@ -602,6 +697,13 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                         intended: { action: 'CLOSE', exit_size_pct: pct, sizeUSDT: notional },
                         execution: compactExecutionResult(exec),
                     };
+                    const execSizeBase = Number(exec?.size);
+                    result.exit_order_size_base = Number.isFinite(execSizeBase) && execSizeBase > 0 ? execSizeBase : null;
+                    result.exit_order_size_notional =
+                        result.exit_order_size_base && last > 0 ? result.exit_order_size_base * last : null;
+                    if (exec?.placed || exec?.closed) {
+                        execState.last_exit_order_ts = now;
+                    }
                 } else {
                     result.order_details = { intended: { action: 'CLOSE', exit_size_pct: pct, sizeUSDT: notional }, execution: null };
                 }
