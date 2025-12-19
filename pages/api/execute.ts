@@ -489,21 +489,20 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 result.exit_cause = trimPct === 100 ? result.trigger : 'INVALIDATION_TRIM';
                 result.hold_seconds =
                     execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
-                const tradeAction = positionState === 'LONG' ? 'SELL' : 'BUY';
                 if (!dryRun) {
                     const exec = await executeDecision(
                         symbol,
                         notional,
-                        { action: tradeAction as any, exit_size_pct: trimPct, summary: 'invalidation', reason: act },
+                        { action: 'CLOSE', exit_size_pct: trimPct, summary: 'invalidation', reason: act },
                         resolveProductType(),
                         false,
                     );
                     result.order_details = {
-                        intended: { action: tradeAction, exit_size_pct: trimPct, sizeUSDT: notional },
+                        intended: { action: 'CLOSE', exit_size_pct: trimPct, sizeUSDT: notional },
                         execution: compactExecutionResult(exec),
                     };
                 } else {
-                    result.order_details = { intended: { action: tradeAction, exit_size_pct: trimPct, sizeUSDT: notional }, execution: null };
+                    result.order_details = { intended: { action: 'CLOSE', exit_size_pct: trimPct, sizeUSDT: notional }, execution: null };
                 }
                 await saveExecState(symbol, {
                     ...execState,
@@ -527,7 +526,6 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             !planStale &&
             !allowedForDirection(plan.allowed_directions, positionState)
         ) {
-            const tradeAction = positionState === 'LONG' ? 'SELL' : 'BUY';
             result.decision = 'CLOSE';
             result.reason = 'direction_not_allowed';
             result.reason_code = reasonCode(result.reason);
@@ -539,16 +537,16 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 const exec = await executeDecision(
                     symbol,
                     notional,
-                    { action: tradeAction as any, exit_size_pct: 100, summary: 'dir_mismatch', reason: result.reason },
+                    { action: 'CLOSE', exit_size_pct: 100, summary: 'dir_mismatch', reason: result.reason },
                     resolveProductType(),
                     false,
                 );
                 result.order_details = {
-                    intended: { action: tradeAction, exit_size_pct: 100, sizeUSDT: notional },
+                    intended: { action: 'CLOSE', exit_size_pct: 100, sizeUSDT: notional },
                     execution: compactExecutionResult(exec),
                 };
             } else {
-                result.order_details = { intended: { action: tradeAction, exit_size_pct: 100, sizeUSDT: notional }, execution: null };
+                result.order_details = { intended: { action: 'CLOSE', exit_size_pct: 100, sizeUSDT: notional }, execution: null };
             }
             await saveExecState(symbol, {
                 ...execState,
@@ -592,21 +590,20 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             }
             if (result.decision === 'TRIM') {
                 const pct = plan.risk_mode === 'CONSERVATIVE' ? 50 : 30;
-                const tradeAction = positionState === 'LONG' ? 'SELL' : 'BUY';
                 if (!dryRun) {
                     const exec = await executeDecision(
                         symbol,
                         notional,
-                        { action: tradeAction as any, exit_size_pct: pct, summary: 'trim', reason: result.reason },
+                        { action: 'CLOSE', exit_size_pct: pct, summary: 'trim', reason: result.reason },
                         resolveProductType(),
                         false,
                     );
                     result.order_details = {
-                        intended: { action: tradeAction, exit_size_pct: pct, sizeUSDT: notional },
+                        intended: { action: 'CLOSE', exit_size_pct: pct, sizeUSDT: notional },
                         execution: compactExecutionResult(exec),
                     };
                 } else {
-                    result.order_details = { intended: { action: tradeAction, exit_size_pct: pct, sizeUSDT: notional }, execution: null };
+                    result.order_details = { intended: { action: 'CLOSE', exit_size_pct: pct, sizeUSDT: notional }, execution: null };
                 }
                 await saveExecState(symbol, {
                     ...execState,
