@@ -186,6 +186,18 @@ function countConsecutive(closes: number[], lvl: number, direction: 'above' | 'b
     return count;
 }
 
+function countConsecutiveWithBuffer(closes: number[], lvl: number, direction: 'above' | 'below', buffer: number) {
+    const adj = Number.isFinite(buffer) ? buffer : 0;
+    const threshold = direction === 'above' ? lvl + adj : lvl - adj;
+    let count = 0;
+    for (let i = closes.length - 1; i >= 0; i -= 1) {
+        const c = closes[i];
+        if (direction === 'above' ? c > threshold : c < threshold) count += 1;
+        else break;
+    }
+    return count;
+}
+
 function tfMinutes(tf: string) {
     const m = String(tf || '').trim().match(/^(\d+)([smhdSMHD])$/);
     if (!m) return 1;
@@ -556,6 +568,8 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 invalidationDirectionError = 'direction_missing';
             }
 
+            const invalidationBuffer =
+                (Number.isFinite(atr15m) && atr15m > 0 ? atr15m : Number.isFinite(atr1h) && atr1h > 0 ? atr1h : 0) * 0.1;
             const evalRule = (rule?: InvalidationRule) => {
                 if (!rule) return false;
                 const tf = normalizeTf(rule.tf);
@@ -566,7 +580,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 if (minutes >= 60) candles = candles1hConfirmed;
                 if (minutes >= 240) candles = candles4hConfirmed;
                 const closes = candles.map((c: any) => toNum(c[4]));
-                const count = countConsecutive(closes, invalidation.lvl!, rule.direction);
+                const count = countConsecutiveWithBuffer(closes, invalidation.lvl!, rule.direction, invalidationBuffer);
                 return count >= rule.count;
             };
             const fastHit = invalidationDirectionOk ? evalRule(invalidation.fast) : false;
@@ -1056,7 +1070,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     const zoneLow = resPx - 0.35 * atr1h;
                     const inZone = last <= zoneHigh && last >= zoneLow;
                     result.entry_eval.inPullbackZone = inZone;
-                    if (inZone && confirmationCount >= 2) {
+                    if (inZone && confirmationCount >= 1) {
                         enter = true;
                         entryReason = 'pullback_short';
                     }
@@ -1067,7 +1081,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     const zoneHigh = supPx + 0.35 * atr1h;
                     const inZone = last >= zoneLow && last <= zoneHigh;
                     result.entry_eval.inPullbackZone = inZone;
-                    if (inZone && confirmationCount >= 2) {
+                    if (inZone && confirmationCount >= 1) {
                         enter = true;
                         entryReason = 'pullback_long';
                     }
@@ -1080,8 +1094,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 if (preferredDir === 'SHORT' && Number.isFinite(plan.key_levels?.['1H']?.support_price)) {
                     const supPx = Number(plan.key_levels['1H'].support_price);
                     const lastClose5m = closes5m.at(-1)!;
-                    const prevClose5m = closes5m.at(-2)!;
-                    const below = lastClose5m < supPx - breakoutBuffer && prevClose5m < supPx - breakoutBuffer;
+                    const below = lastClose5m < supPx - breakoutBuffer && last < supPx - breakoutBuffer;
                     result.entry_eval.breakout2x5m = below;
                     if (below && confirmationCount >= 1) {
                         enter = true;
@@ -1091,8 +1104,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 if (preferredDir === 'LONG' && Number.isFinite(plan.key_levels?.['1H']?.resistance_price)) {
                     const resPx = Number(plan.key_levels['1H'].resistance_price);
                     const lastClose5m = closes5m.at(-1)!;
-                    const prevClose5m = closes5m.at(-2)!;
-                    const above = lastClose5m > resPx + breakoutBuffer && prevClose5m > resPx + breakoutBuffer;
+                    const above = lastClose5m > resPx + breakoutBuffer && last > resPx + breakoutBuffer;
                     result.entry_eval.breakout2x5m = above;
                     if (above && confirmationCount >= 1) {
                         enter = true;
