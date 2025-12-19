@@ -31,6 +31,16 @@ const ENTRY_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
 const REENTER_AFTER_INVALIDATION_MS = 3 * 60 * 1000;
 const EXIT_ORDER_LOCK_MS = 60 * 1000;
 
+function envNumber(name: string, fallback: number, min = 0) {
+    const raw = Number(process.env[name]);
+    return Number.isFinite(raw) && raw >= min ? raw : fallback;
+}
+
+const TRIM_PROXIMITY_ATR_CONSERVATIVE = envNumber('TRIM_PROXIMITY_ATR_CONSERVATIVE', 0.35, 0.01);
+const TRIM_PROXIMITY_ATR_DEFAULT = envNumber('TRIM_PROXIMITY_ATR_DEFAULT', 0.5, 0.01);
+const TRIM_MIN_HOLD_SECONDS_CONSERVATIVE = envNumber('TRIM_MIN_HOLD_SECONDS_CONSERVATIVE', 300, 0);
+const TRIM_MIN_HOLD_SECONDS_DEFAULT = envNumber('TRIM_MIN_HOLD_SECONDS_DEFAULT', 180, 0);
+
 function toNum(x: any) {
     const n = Number(x);
     return Number.isFinite(n) ? n : NaN;
@@ -660,27 +670,31 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         if (positionState !== 'FLAT' && plan && plan.exit_urgency?.trim_if_near_opposite_level) {
             const support = toNum(plan.key_levels?.['1H']?.support_price);
             const resistance = toNum(plan.key_levels?.['1H']?.resistance_price);
-            const distSupportAtr = support && atr1h ? Math.abs(last - support) / atr1h : Infinity;
-            const distResistanceAtr = resistance && atr1h ? Math.abs(last - resistance) / atr1h : Infinity;
-            const threshold = 0.7;
+            const proximityAtr = atr15m || atr1h;
+            const distSupportAtr = support && proximityAtr ? Math.abs(last - support) / proximityAtr : Infinity;
+            const distResistanceAtr = resistance && proximityAtr ? Math.abs(last - resistance) / proximityAtr : Infinity;
+            const threshold = plan.risk_mode === 'CONSERVATIVE' ? TRIM_PROXIMITY_ATR_CONSERVATIVE : TRIM_PROXIMITY_ATR_DEFAULT;
+            const minHoldSeconds =
+                plan.risk_mode === 'CONSERVATIVE' ? TRIM_MIN_HOLD_SECONDS_CONSERVATIVE : TRIM_MIN_HOLD_SECONDS_DEFAULT;
+            const holdSeconds =
+                execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
             const inProfit = profitActive(pos, last);
-            if (positionState === 'SHORT' && inProfit && distSupportAtr < threshold) {
+            const holdOk = holdSeconds !== null && holdSeconds >= minHoldSeconds;
+            if (positionState === 'SHORT' && inProfit && holdOk && distSupportAtr < threshold) {
                 result.decision = 'TRIM';
                 result.reason = 'trim_near_support';
                 result.reason_code = reasonCode(result.reason);
                 result.trigger = 'TRIM_NEAR_LEVEL';
                 result.exit_cause = 'TRIM_NEAR_LEVEL';
-                result.hold_seconds =
-                    execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
+                result.hold_seconds = holdSeconds;
             }
-            if (positionState === 'LONG' && inProfit && distResistanceAtr < threshold) {
+            if (positionState === 'LONG' && inProfit && holdOk && distResistanceAtr < threshold) {
                 result.decision = 'TRIM';
                 result.reason = 'trim_near_resistance';
                 result.reason_code = reasonCode(result.reason);
                 result.trigger = 'TRIM_NEAR_LEVEL';
                 result.exit_cause = 'TRIM_NEAR_LEVEL';
-                result.hold_seconds =
-                    execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
+                result.hold_seconds = holdSeconds;
             }
             if (result.decision === 'TRIM') {
                 const pct = plan.risk_mode === 'CONSERVATIVE' ? 50 : 30;

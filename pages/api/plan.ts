@@ -346,6 +346,30 @@ function invalidationNotesValid(val: any): boolean {
     return pattern.test(val);
 }
 
+function expectedInvalidationDirection(allowedDirections: string, primaryBias?: string): 'above' | 'below' | null {
+    if (allowedDirections === 'SHORT_ONLY') return 'above';
+    if (allowedDirections === 'LONG_ONLY') return 'below';
+    if (allowedDirections === 'BOTH') {
+        if (primaryBias === 'DOWN') return 'above';
+        if (primaryBias === 'UP') return 'below';
+    }
+    return null;
+}
+
+function normalizeInvalidationNotes(plan: Plan) {
+    if (!plan || typeof plan !== 'object') return;
+    if (plan.allowed_directions === 'NONE' && plan.exit_urgency?.invalidation_notes !== 'NONE') {
+        plan.exit_urgency.invalidation_notes = 'NONE';
+        return;
+    }
+    const notes = plan?.exit_urgency?.invalidation_notes;
+    if (notes === 'NONE' || typeof notes !== 'string') return;
+    if (!invalidationNotesValid(notes)) return;
+    const expected = expectedInvalidationDirection(plan.allowed_directions, plan.primary_bias);
+    if (!expected) return;
+    plan.exit_urgency.invalidation_notes = notes.replace(/_close_(above|below)_x/g, `_close_${expected}_x`);
+}
+
 function buildSystemPrompt() {
     return `
 You are a crypto trading Planner agent. Your job is to produce a stable one-hour plan for the executor to follow. You do not place trades and you do not output BUY/SELL/CLOSE as an action. You output only a strict JSON object matching the provided schema exactly.
@@ -443,6 +467,10 @@ LVL=<number>;FAST=<tf>_close_<above|below>_x<n>;MID=<tf>_close_<above|below>_x<n
 - <tf> must be one of [5m, 15m, 1H] (case-sensitive), and <n> is a positive integer.
 - Note: Bitget expects lowercase 'm' for minutes and uppercase 'H' for hours. Use '1H' (not '1h').
 - Example: LVL=2963.54;FAST=5m_close_above_x2;MID=15m_close_above_x1;HARD=1H_close_above_x1;ACTION=CLOSE
+5b. Direction rule:
+- If allowed_directions=SHORT_ONLY, FAST/MID/HARD must all use close_above (invalidation is resistance break).
+- If allowed_directions=LONG_ONLY, FAST/MID/HARD must all use close_below (invalidation is support break).
+- If allowed_directions=BOTH, keep direction consistent with primary_bias (DOWN => close_above, UP => close_below); if NEUTRAL, choose one and keep all three consistent.
 6. LVL selection:
 Set LVL to the key level relevant to direction bias: if the plan favors shorts, prefer the nearest 1H resistance; if it favors longs, prefer the nearest 1H support (fallback to the closest strong 4H level if 1H is missing).
 - If allowed_directions includes shorts (SHORT_ONLY or BOTH): LVL must be nearest 1H resistance_price; if missing/invalid then use strong 4H resistance_price.
@@ -673,6 +701,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         plan.symbol = symbol;
         plan.mode = mode;
         plan.horizon_minutes = horizon;
+        normalizeInvalidationNotes(plan);
 
         const persistResult = await savePlan(symbol, plan, { system: systemPrompt, user: userPrompt });
 
