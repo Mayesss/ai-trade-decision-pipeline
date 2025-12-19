@@ -108,6 +108,13 @@ type RenderedOverlay = PositionOverlay & {
   showEntryWall: boolean;
 };
 
+type ChartLevelSegment = {
+  startTime: number;
+  endTime: number;
+  support?: number | null;
+  resistance?: number | null;
+};
+
 const formatCompactPrice = (value: number) => {
   const abs = Math.abs(value);
   if (abs >= 1_000_000) {
@@ -160,6 +167,7 @@ export default function Home() {
   const [showPrompt, setShowPrompt] = useState(false);
   const [chartData, setChartData] = useState<{ time: number; value: number }[]>([]);
   const [chartMarkers, setChartMarkers] = useState<any[]>([]);
+  const [chartLevels, setChartLevels] = useState<ChartLevelSegment[]>([]);
   const [positionOverlays, setPositionOverlays] = useState<PositionOverlay[]>([]);
   const [renderedOverlays, setRenderedOverlays] = useState<RenderedOverlay[]>([]);
   const [hoveredOverlay, setHoveredOverlay] = useState<RenderedOverlay | null>(null);
@@ -228,16 +236,18 @@ export default function Home() {
     const fetchChart = async () => {
       if (!symbols[active]) return;
       try {
-        const res = await fetch(`/api/chart?symbol=${symbols[active]}&timeframe=15m`);
+        const res = await fetch(`/api/chart?symbol=${symbols[active]}&timeframe=5m&limit=72`);
         if (!res.ok) throw new Error('Failed to load chart');
         const json = await res.json();
         const mapped = (json.candles || []).map((c: any) => ({ time: c.time, value: c.close }));
         setChartData(mapped);
         setChartMarkers(json.markers || []);
+        setChartLevels(json.levels || []);
         setPositionOverlays(json.positions || []);
       } catch {
         setChartData([]);
         setChartMarkers([]);
+        setChartLevels([]);
         setPositionOverlays([]);
       }
     };
@@ -304,6 +314,13 @@ export default function Home() {
 
       const AreaSeriesCtor = (lw as any).AreaSeries || (lw as any)?.default?.AreaSeries;
       const LineSeriesCtor = (lw as any).LineSeries || (lw as any)?.default?.LineSeries;
+      const candleTimes = chartData.map((c) => c.time);
+      const snapTime = (target: number) => {
+        if (!candleTimes.length) return target;
+        return candleTimes.reduce((prev, curr) => {
+          return Math.abs(curr - target) < Math.abs(prev - target) ? curr : prev;
+        }, candleTimes[0]);
+      };
 
       const series =
         typeof chart.addAreaSeries === 'function'
@@ -333,6 +350,47 @@ export default function Home() {
       if (Array.isArray(chartMarkers) && chartMarkers.length && typeof series.setMarkers === 'function') {
         series.setMarkers(chartMarkers);
       }
+      if (Array.isArray(chartLevels) && chartLevels.length) {
+        const levelColor = 'rgba(148,163,184,0.9)';
+        const addLevelSeries = () => {
+          if (typeof chart.addLineSeries === 'function') {
+            return chart.addLineSeries({
+              color: levelColor,
+              lineWidth: 2,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            });
+          }
+          if (typeof chart.addSeries === 'function' && LineSeriesCtor) {
+            return chart.addSeries(LineSeriesCtor, {
+              color: levelColor,
+              lineWidth: 2,
+              priceLineVisible: false,
+              lastValueVisible: false,
+            });
+          }
+          return null;
+        };
+
+        chartLevels.forEach((lvl) => {
+          const start = snapTime(lvl.startTime);
+          const end = snapTime(lvl.endTime);
+          if (Number.isFinite(lvl.support as number)) {
+            const supportSeries = addLevelSeries();
+            supportSeries?.setData([
+              { time: start, value: lvl.support as number },
+              { time: end, value: lvl.support as number },
+            ]);
+          }
+          if (Number.isFinite(lvl.resistance as number)) {
+            const resistanceSeries = addLevelSeries();
+            resistanceSeries?.setData([
+              { time: start, value: lvl.resistance as number },
+              { time: end, value: lvl.resistance as number },
+            ]);
+          }
+        });
+      }
       chart.timeScale().fitContent();
       setChartInitToken((t) => t + 1);
     })();
@@ -351,7 +409,7 @@ export default function Home() {
         chartInstanceRef.current = null;
       }
     };
-  }, [chartData, chartMarkers]);
+  }, [chartData, chartMarkers, chartLevels]);
 
   useEffect(() => {
     const recalcOverlays = () => {
@@ -718,7 +776,7 @@ export default function Home() {
               {chartData.length > 0 && (
                 <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
                   <div className="flex items-center justify-between">
-                    <div className="text-xs uppercase tracking-wide text-slate-500">24h Price</div>
+                    <div className="text-xs uppercase tracking-wide text-slate-500">6h Price</div>
                     <div className="text-xs text-slate-400">15m bars</div>
                   </div>
                   <div className="relative mt-3 h-[260px] w-full" style={{ minHeight: 260 }}>

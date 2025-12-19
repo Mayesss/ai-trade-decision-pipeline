@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { fetchMarketBundle, fetchPositionInfo, fetchRecentPositionWindows } from '../../lib/analytics';
 import { loadExecutionLogs } from '../../lib/execLog';
+import { loadPlanLogs } from '../../lib/planLog';
 
 function timeframeToSeconds(tf: string): number {
   const match = /^(\d+)([smhd])$/i.exec(tf.trim());
@@ -180,7 +181,44 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       positions = [];
     }
 
-    res.status(200).json({ symbol, timeframe, candles, markers, positions });
+    let levels: { startTime: number; endTime: number; support: number | null; resistance: number | null }[] = [];
+    try {
+      const tfSeconds = timeframeToSeconds(timeframe);
+      const chartStartMs = candleTimes.length ? candleTimes[0] * 1000 : nowMs - limit * tfSeconds * 1000;
+      const planHistory = await loadPlanLogs(symbol, 60);
+      const buckets = new Map<number, { ts: number; support: number | null; resistance: number | null }>();
+      for (const entry of planHistory) {
+        const ts = Number(entry?.timestamp);
+        if (!Number.isFinite(ts) || ts < chartStartMs || ts > nowMs) continue;
+        const hourStart = Math.floor(ts / 3_600_000) * 3_600_000;
+        const support = Number(entry?.plan?.key_levels?.['1H']?.support_price);
+        const resistance = Number(entry?.plan?.key_levels?.['1H']?.resistance_price);
+        const hasSupport = Number.isFinite(support);
+        const hasResistance = Number.isFinite(resistance);
+        if (!hasSupport && !hasResistance) continue;
+        const existing = buckets.get(hourStart);
+        if (!existing || ts > existing.ts) {
+          buckets.set(hourStart, {
+            ts,
+            support: hasSupport ? support : null,
+            resistance: hasResistance ? resistance : null,
+          });
+        }
+      }
+      levels = Array.from(buckets.entries())
+        .map(([hourStart, data]) => ({
+          startTime: Math.floor(hourStart / 1000),
+          endTime: Math.floor(Math.min(hourStart + 3_600_000, nowMs) / 1000),
+          support: data.support,
+          resistance: data.resistance,
+        }))
+        .sort((a, b) => a.startTime - b.startTime);
+    } catch (err) {
+      console.warn(`Failed to load plan levels for ${symbol}:`, err);
+      levels = [];
+    }
+
+    res.status(200).json({ symbol, timeframe, candles, markers, positions, levels });
   } catch (err: any) {
     console.error('Error fetching chart data:', err);
     res.status(500).json({ error: err?.message || 'chart_fetch_failed' });
