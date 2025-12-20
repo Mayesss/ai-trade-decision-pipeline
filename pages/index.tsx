@@ -848,6 +848,12 @@ export default function Home() {
                               {String(lastExec.reason)}
                             </div>
                           ) : null}
+                          {lastExec.reason_detail ? (
+                            <div className="mt-1 text-xs text-slate-500 whitespace-pre-wrap">
+                              <span className="font-semibold text-slate-700">Detail: </span>
+                              {String(lastExec.reason_detail)}
+                            </div>
+                          ) : null}
                           {lastExec.dryRun ? (
                             <div className="mt-2">
                               <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">

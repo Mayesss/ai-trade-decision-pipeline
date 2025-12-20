@@ -119,6 +119,60 @@ function compactExecutionResult(x: any) {
     return keep;
 }
 
+function formatLevel(level: any) {
+    return Number.isFinite(level) ? Number(level).toFixed(2) : null;
+}
+
+function buildReasonDetail(payload: any) {
+    const reason = String(payload?.reason || '').trim();
+    const decision = String(payload?.decision || '').trim();
+    const blockers = Array.isArray(payload?.entry_blockers) ? payload.entry_blockers.filter(Boolean) : [];
+    const invalidation = payload?.invalidation_eval;
+
+    if (decision === 'WAIT' && blockers.length) {
+        return `Entries disabled: ${blockers.join(', ')}.`;
+    }
+    if (reason === 'pending_exit_order') {
+        return 'Exit order recently placed; waiting for lock expiry.';
+    }
+    if (reason.startsWith('invalidation_')) {
+        const lvl = formatLevel(invalidation?.lvl);
+        const trigger = String(payload?.trigger || 'invalidation').replace(/_/g, ' ');
+        return `Invalidation triggered${lvl ? ` at ${lvl}` : ''} (${trigger}).`;
+    }
+    if (reason === 'direction_not_allowed') return 'Open position conflicts with plan allowed directions.';
+    if (reason === 'flow_reversal') return 'Flow reversal against position while in profit; trimming risk.';
+    if (reason === 'trim_near_support') return 'Trim as price nears 1H support.';
+    if (reason === 'trim_near_resistance') return 'Trim as price nears 1H resistance.';
+    if (reason === 'holding') return 'No exit or trim trigger; holding position.';
+    if (reason === 'recent_exit_cooldown') return 'Recent exit cooldown active; waiting before re-entry.';
+    if (reason === 'entry_cooldown') return 'Entry cooldown active.';
+    if (reason.startsWith('insufficient_market_data')) return 'Insufficient market data for indicators; skipping.';
+    if (reason === 'extension_block') return 'Price too extended from 15m EMA20; no entry.';
+    if (reason === 'no_dir') return 'No clear preferred direction.';
+    if (reason === 'micro_bias_block') return 'Micro trend bias conflicts with entry direction.';
+    if (reason === 'micro_filter_block') return 'Micro filters failed (RSI/EMA/orderbook).';
+    if (reason === 'flow_against') return 'Orderflow against preferred direction.';
+    if (reason === 'too_close_support') return 'Too close to plan 1H support; avoid shorting into support.';
+    if (reason === 'too_close_resistance') return 'Too close to plan 1H resistance; avoid longing into resistance.';
+    if (reason === 'entry_mode_none') return 'Plan entry mode is NONE.';
+    if (reason === 'pullback_long') return 'Pullback into 1H support zone with confirmation.';
+    if (reason === 'pullback_short') return 'Pullback into 1H resistance zone with confirmation.';
+    if (reason === 'breakout_long') return 'Breakout above 1H resistance with confirmation.';
+    if (reason === 'breakout_short') return 'Breakout below 1H support with confirmation.';
+    if (reason === 'no_entry_signal') return 'No entry conditions met for the current mode.';
+    if (reason === 'stale_plan') return 'Plan is stale; entries disabled.';
+    if (reason === 'no_plan') return 'No plan available.';
+    if (reason === 'plan_entries_disabled') return 'Plan disables entries.';
+    if (!reason) return null;
+    return `Decision ${decision || 'WAIT'} due to ${reason.replace(/_/g, ' ')}.`;
+}
+
+function enrichReasonDetail(payload: any) {
+    payload.reason_detail = buildReasonDetail(payload);
+    return payload;
+}
+
 function pickParam(req: NextApiRequest, key: string, fallback?: any) {
     const raw = req.query?.[key] ?? (req.body as any)?.[key];
     if (Array.isArray(raw)) return raw[0] ?? fallback;
@@ -357,12 +411,13 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 invalidation_notes: plan?.exit_urgency?.invalidation_notes ?? null,
                 invalidation_rule_direction: invalidationDirectionInfo(parseInvalidation(plan?.exit_urgency?.invalidation_notes)).direction,
             };
+            const finalizedPayload = enrichReasonDetail(payload);
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload });
+                await appendExecutionLog({ symbol, timestamp: now, payload: finalizedPayload });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
-            return res.status(200).json(payload);
+            return res.status(200).json(finalizedPayload);
         }
 
         // Market snapshot
@@ -545,7 +600,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.hold_seconds =
                 execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
@@ -641,7 +696,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
                 });
                 try {
-                    await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                    await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
                 } catch (err) {
                     console.warn('Failed to append execution log:', err);
                 }
@@ -693,7 +748,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
             });
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
@@ -749,7 +804,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
                 });
                 try {
-                    await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                    await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
                 } catch (err) {
                     console.warn('Failed to append execution log:', err);
                 }
@@ -819,7 +874,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
                 });
                 try {
-                    await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                    await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
                 } catch (err) {
                     console.warn('Failed to append execution log:', err);
                 }
@@ -835,7 +890,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.hold_seconds =
                 execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
@@ -848,7 +903,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.reason = baseEntryBlockers.join(',');
             result.reason_code = reasonCode(result.reason);
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
@@ -865,7 +920,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.reason = 'recent_exit_cooldown';
             result.reason_code = reasonCode(result.reason);
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
@@ -876,7 +931,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.reason = 'entry_cooldown';
             result.reason_code = reasonCode(result.reason);
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
@@ -888,7 +943,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.decision = 'WAIT';
             result.reason = `insufficient_market_data(closes5m=${closes5m.length},atr1h=${Number.isFinite(atr1h) ? atr1h.toFixed(6) : 'NaN'})`;
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
@@ -923,7 +978,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.reason = 'extension_block';
             result.reason_code = reasonCode(result.reason);
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
@@ -938,7 +993,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.reason = 'no_dir';
             result.reason_code = reasonCode(result.reason);
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
@@ -950,7 +1005,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.reason = 'micro_bias_block';
             result.reason_code = reasonCode(result.reason);
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
@@ -961,7 +1016,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.reason = 'micro_bias_block';
             result.reason_code = reasonCode(result.reason);
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
@@ -979,7 +1034,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.reason = 'micro_filter_block';
             result.reason_code = reasonCode(result.reason);
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
@@ -993,7 +1048,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.reason = 'flow_against';
             result.reason_code = reasonCode(result.reason);
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
@@ -1009,7 +1064,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.reason = 'too_close_support';
             result.reason_code = reasonCode(result.reason);
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
@@ -1023,7 +1078,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.reason = 'too_close_resistance';
             result.reason_code = reasonCode(result.reason);
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
@@ -1118,7 +1173,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.decision = 'WAIT';
             result.reason = entryReason || 'no_entry_signal';
             try {
-                await appendExecutionLog({ symbol, timestamp: now, payload: result });
+                await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
             }
@@ -1157,7 +1212,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         });
 
         try {
-            await appendExecutionLog({ symbol, timestamp: now, payload: result });
+            await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
         } catch (err) {
             console.warn('Failed to append execution log:', err);
         }
