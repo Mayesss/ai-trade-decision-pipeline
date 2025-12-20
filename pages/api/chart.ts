@@ -176,6 +176,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         entryDecision: findNearestDecision(p.entryTimestamp),
         exitDecision: findNearestDecision(p.exitTimestamp),
       }));
+
+      if (candleTimes.length) {
+        const minTime = candleTimes[0];
+        const maxTime = candleTimes[candleTimes.length - 1];
+        positions = positions.filter((p) => {
+          const entry = typeof p.entryTime === 'number' ? p.entryTime : null;
+          const exit = typeof p.exitTime === 'number' ? p.exitTime : null;
+          if (entry === null && exit === null) return false;
+          if (exit === null) return entry !== null && entry <= maxTime && entry >= minTime;
+          return exit >= minTime && entry !== null && entry <= maxTime;
+        });
+      }
     } catch (err) {
       console.warn(`Failed to build position overlays for ${symbol}:`, err);
       positions = [];

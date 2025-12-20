@@ -404,8 +404,16 @@ export default function Home() {
         };
 
         chartLevels.forEach((lvl) => {
-          const start = snapTime(lvl.startTime);
-          const end = snapTime(lvl.endTime);
+          let start = snapTime(lvl.startTime);
+          let end = snapTime(lvl.endTime);
+          if (start > end) {
+            const tmp = start;
+            start = end;
+            end = tmp;
+          }
+          if (start === end) {
+            end = start + 1;
+          }
           if (Number.isFinite(lvl.support as number)) {
             const supportSeries = addLevelSeries();
             supportSeries?.setData([
