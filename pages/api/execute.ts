@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { computeATR, computeEMA, computeRSI_Wilder } from '../../lib/indicators';
 import { bitgetFetch, resolveProductType } from '../../lib/bitget';
-import { computeAnalytics, fetchPositionInfo, fetchTradesBudgeted, PositionInfo } from '../../lib/analytics';
+import { computeAnalytics, fetchPositionInfo, fetchRecentPositionWindows, fetchTradesBudgeted, PositionInfo } from '../../lib/analytics';
 import {
     FLOW_SURGE_MULT_1M,
     FLOW_SURGE_WINDOW_1M,
@@ -151,8 +151,16 @@ function buildReasonDetail(payload: any) {
     if (reason === 'extension_block') return 'Price too extended from 15m EMA20; no entry.';
     if (reason === 'no_dir') return 'No clear preferred direction.';
     if (reason === 'micro_bias_block') return 'Micro trend bias conflicts with entry direction.';
-    if (reason === 'micro_filter_block') return 'Micro filters failed (RSI/EMA/orderbook).';
-    if (reason === 'flow_against') return 'Orderflow against preferred direction.';
+    if (reason === 'micro_filter_block') {
+        const failures = Array.isArray(payload?.entry_eval?.micro_filter_failures)
+            ? payload.entry_eval.micro_filter_failures.filter(Boolean)
+            : [];
+        return failures.length ? `Micro filters failed: ${failures.join(', ')}.` : 'Micro filters failed (RSI/EMA/orderbook).';
+    }
+    if (reason === 'flow_against') {
+        const gateReason = payload?.entry_eval?.flowGateReason ? ` (${payload.entry_eval.flowGateReason})` : '';
+        return `Orderflow against preferred direction${gateReason}.`;
+    }
     if (reason === 'too_close_support') return 'Too close to plan 1H support; avoid shorting into support.';
     if (reason === 'too_close_resistance') return 'Too close to plan 1H resistance; avoid longing into resistance.';
     if (reason === 'entry_mode_none') return 'Plan entry mode is NONE.';
@@ -170,6 +178,41 @@ function buildReasonDetail(payload: any) {
 
 function enrichReasonDetail(payload: any) {
     payload.reason_detail = buildReasonDetail(payload);
+    return payload;
+}
+
+async function lookupRecentRealizedPnl(symbol: string, nowMs: number) {
+    const windows = await fetchRecentPositionWindows(symbol, 6);
+    const closed = windows.filter((w) => typeof w.exitTimestamp === 'number' && w.exitTimestamp <= nowMs);
+    if (!closed.length) return null;
+    const closest = closed.reduce((best, curr) => {
+        const bestDiff = Math.abs(nowMs - (best.exitTimestamp as number));
+        const currDiff = Math.abs(nowMs - (curr.exitTimestamp as number));
+        return currDiff < bestDiff ? curr : best;
+    }, closed[0]);
+    const diffMs = Math.abs(nowMs - Number(closest.exitTimestamp || 0));
+    if (diffMs > 2 * 60 * 60 * 1000) return null;
+    return {
+        id: closest.id,
+        side: closest.side ?? null,
+        entry_ts: closest.entryTimestamp ?? null,
+        exit_ts: closest.exitTimestamp ?? null,
+        pnl_net: closest.pnlNet ?? null,
+        pnl_gross: closest.pnlGross ?? null,
+        pnl_pct: closest.pnlPct ?? null,
+        pnl_gross_pct: closest.pnlGrossPct ?? null,
+        notional: closest.notional ?? null,
+    };
+}
+
+async function maybeAttachRealizedPnl(payload: any, symbol: string, nowMs: number) {
+    if (payload?.dryRun) return payload;
+    const decision = String(payload?.decision || '').toUpperCase();
+    if (decision !== 'CLOSE' && decision !== 'TRIM') return payload;
+    const exec = payload?.order_details?.execution;
+    const executed = exec?.placed || exec?.closed || exec?.partial;
+    if (!executed) return payload;
+    payload.realized_pnl = await lookupRecentRealizedPnl(symbol, nowMs);
     return payload;
 }
 
@@ -537,11 +580,17 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 preferredDir: null as any,
                 confirmationCount: 0,
                 rsiOk: null as boolean | null,
+                rsi15mOk: null as boolean | null,
                 emaOk: null as boolean | null,
+                ema15mOk: null as boolean | null,
                 obImbCentered: obImbCentered(Number(analytics.obImb ?? 0)),
                 obImbOk: null as boolean | null,
+                micro_filter_failures: [] as string[],
                 flowBias: flowBias as number,
                 flowOk: null as boolean | null,
+                flowAgainst: null as boolean | null,
+                flowGate: null as string | null,
+                flowGateReason: null as string | null,
                 flowSurge: flowSurge as boolean,
                 inPullbackZone: null as boolean | null,
                 breakout2x5m: null as boolean | null,
@@ -696,6 +745,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
                 });
                 try {
+                    await maybeAttachRealizedPnl(result, symbol, now);
                     await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
                 } catch (err) {
                     console.warn('Failed to append execution log:', err);
@@ -748,6 +798,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
             });
             try {
+                await maybeAttachRealizedPnl(result, symbol, now);
                 await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
@@ -804,6 +855,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
                 });
                 try {
+                    await maybeAttachRealizedPnl(result, symbol, now);
                     await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
                 } catch (err) {
                     console.warn('Failed to append execution log:', err);
@@ -874,6 +926,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
                 });
                 try {
+                    await maybeAttachRealizedPnl(result, symbol, now);
                     await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
                 } catch (err) {
                     console.warn('Failed to append execution log:', err);
@@ -1029,7 +1082,13 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 : rsi15m <= 50
             : true;
         const ema15mOk = preferredDir === 'LONG' ? last >= ema20_15m : last <= ema20_15m;
-        if (!rsi15mOk || !ema15mOk) {
+        const microFilterFailures: string[] = [];
+        if (!rsi15mOk) microFilterFailures.push('rsi15m');
+        if (!ema15mOk) microFilterFailures.push('ema15m');
+        result.entry_eval.rsi15mOk = rsi15mOk;
+        result.entry_eval.ema15mOk = ema15mOk;
+        result.entry_eval.micro_filter_failures = microFilterFailures;
+        if (microFilterFailures.length) {
             result.decision = 'WAIT';
             result.reason = 'micro_filter_block';
             result.reason_code = reasonCode(result.reason);
@@ -1042,7 +1101,16 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         }
 
         const flowAgainst = preferredDir === 'LONG' ? flowBias < -0.1 : flowBias > 0.1;
+        result.entry_eval.flowAgainst = flowAgainst;
         result.entry_eval.flowOk = !(flowAgainst && flowSurge);
+        result.entry_eval.flowGate = result.entry_eval.flowOk ? 'ok' : 'blocked';
+        result.entry_eval.flowGateReason = flowAgainst && flowSurge
+            ? 'flow_against_with_surge'
+            : flowAgainst
+            ? 'flow_against_no_surge'
+            : flowSurge
+            ? 'flow_surge_with_dir'
+            : null;
         if (flowAgainst && flowSurge) {
             result.decision = 'WAIT';
             result.reason = 'flow_against';
