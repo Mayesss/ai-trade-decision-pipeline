@@ -581,16 +581,21 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 confirmationCount: 0,
                 rsiOk: null as boolean | null,
                 rsi15mOk: null as boolean | null,
+                rsi15mValue: null as number | null,
+                rsi15mThreshold: null as number | null,
                 emaOk: null as boolean | null,
                 ema15mOk: null as boolean | null,
+                ema15mLast: null as number | null,
+                ema20_15m: null as number | null,
+                ema15mDirection: null as string | null,
                 obImbCentered: obImbCentered(Number(analytics.obImb ?? 0)),
                 obImbOk: null as boolean | null,
                 micro_filter_failures: [] as string[],
                 flowBias: flowBias as number,
                 flowOk: null as boolean | null,
                 flowAgainst: null as boolean | null,
-                flowGate: null as string | null,
-                flowGateReason: null as string | null,
+                flowGate: 'skipped' as string | null,
+                flowGateReason: 'not_evaluated' as string | null,
                 flowSurge: flowSurge as boolean,
                 inPullbackZone: null as boolean | null,
                 breakout2x5m: null as boolean | null,
@@ -608,6 +613,13 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             mae: null as number | null,
             fill_slippage_bps: null as number | null,
             exit_cause: null as string | null,
+            exit_signal_ts: null as string | null,
+            exit_signal_ms: null as number | null,
+            exit_order_ts: null as string | null,
+            exit_order_ts_ms: null as number | null,
+            exit_intended_size_pct: null as number | null,
+            exit_intended_size_base: null as number | null,
+            exit_intended_notional: null as number | null,
             position_size_base: positionSizeBase,
             position_notional: positionNotional,
             exit_order_reduce_only: null as boolean | null,
@@ -615,6 +627,11 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             exit_order_size_notional: null as number | null,
             invalidation_notes: plan?.exit_urgency?.invalidation_notes ?? null,
             invalidation_rule_direction: invalidationDirectionInfo(null).direction,
+            invalidation_triggered: null as boolean | null,
+            invalidation_trigger: null as string | null,
+            invalidation_requested_action: null as string | null,
+            invalidation_executed_action: null as string | null,
+            invalidation_executed_size_pct: null as number | null,
         };
 
         const invalidation = parseInvalidation(plan?.exit_urgency?.invalidation_notes);
@@ -691,17 +708,26 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             const midHit = invalidationDirectionOk ? evalRule(invalidation.mid) : false;
             const hardHit = invalidationDirectionOk ? evalRule(invalidation.hard) : false;
             const triggered = fastHit || midHit || hardHit;
+            const invalidationTriggeredBy = fastHit ? 'FAST' : midHit ? 'MID' : hardHit ? 'HARD' : null;
+            const invalidationAction = invalidation.action || 'CLOSE';
             result.invalidation_eval = {
                 lvl: invalidation.lvl,
-                action: invalidation.action || 'CLOSE',
+                action: invalidationAction,
                 fastHit,
                 midHit,
                 hardHit,
                 triggered,
+                triggered_by: invalidationTriggeredBy,
                 enabled: plan?.exit_urgency?.close_if_invalidation === true && invalidationDirectionOk,
                 direction_ok: invalidationDirectionOk,
                 error: invalidationDirectionError,
+                requested_action: invalidationAction,
+                executed_action: null as string | null,
+                executed_size_pct: null as number | null,
             };
+            result.invalidation_triggered = triggered;
+            result.invalidation_trigger = invalidationTriggeredBy;
+            result.invalidation_requested_action = invalidationAction;
             if (!invalidationDirectionOk && invalidationDirectionError) {
                 console.warn('Invalidation direction mismatch:', invalidationDirectionError, plan?.exit_urgency?.invalidation_notes);
             }
@@ -714,6 +740,16 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 result.trigger = fastHit ? 'INVALIDATION_FAST' : midHit ? 'INVALIDATION_MID' : hardHit ? 'INVALIDATION_HARD' : 'INVALIDATION';
                 result.exit_cause = trimPct === 100 ? result.trigger : 'INVALIDATION_TRIM';
                 result.exit_order_reduce_only = trimPct < 100;
+                result.exit_signal_ts = asofIso;
+                result.exit_signal_ms = now;
+                result.exit_intended_size_pct = trimPct;
+                result.exit_intended_notional = notional;
+                result.exit_intended_size_base =
+                    positionSizeBase && Number.isFinite(positionSizeBase) ? (positionSizeBase * trimPct) / 100 : null;
+                result.invalidation_executed_action = result.decision;
+                result.invalidation_executed_size_pct = trimPct;
+                result.invalidation_eval.executed_action = result.decision;
+                result.invalidation_eval.executed_size_pct = trimPct;
                 result.hold_seconds =
                     execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
                 if (!dryRun) {
@@ -733,10 +769,14 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     result.exit_order_size_notional =
                         result.exit_order_size_base && last > 0 ? result.exit_order_size_base * last : null;
                     if (exec?.placed || exec?.closed) {
+                        result.exit_order_ts = asofIso;
+                        result.exit_order_ts_ms = now;
                         execState.last_exit_order_ts = now;
                     }
                 } else {
                     result.order_details = { intended: { action: 'CLOSE', exit_size_pct: trimPct, sizeUSDT: notional }, execution: null };
+                    result.exit_order_ts = asofIso;
+                    result.exit_order_ts_ms = now;
                 }
                 await saveExecState(symbol, {
                     ...execState,
@@ -767,6 +807,12 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.exit_cause = 'DIRECTION_NOT_ALLOWED';
             result.trigger = 'DIR_MISMATCH';
             result.exit_order_reduce_only = false;
+            result.exit_signal_ts = asofIso;
+            result.exit_signal_ms = now;
+            result.exit_intended_size_pct = 100;
+            result.exit_intended_notional = notional;
+            result.exit_intended_size_base =
+                positionSizeBase && Number.isFinite(positionSizeBase) ? positionSizeBase : null;
             result.hold_seconds =
                 execState.last_entry_ts && execState.last_entry_ts > 0 ? Math.floor((now - execState.last_entry_ts) / 1000) : null;
             if (!dryRun) {
@@ -786,10 +832,14 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 result.exit_order_size_notional =
                     result.exit_order_size_base && last > 0 ? result.exit_order_size_base * last : null;
                 if (exec?.placed || exec?.closed) {
+                    result.exit_order_ts = asofIso;
+                    result.exit_order_ts_ms = now;
                     execState.last_exit_order_ts = now;
                 }
             } else {
                 result.order_details = { intended: { action: 'CLOSE', exit_size_pct: 100, sizeUSDT: notional }, execution: null };
+                result.exit_order_ts = asofIso;
+                result.exit_order_ts_ms = now;
             }
             await saveExecState(symbol, {
                 ...execState,
@@ -825,6 +875,12 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 result.trigger = 'FLOW_REVERSAL';
                 result.exit_cause = 'FLOW_REVERSAL';
                 result.exit_order_reduce_only = true;
+                result.exit_signal_ts = asofIso;
+                result.exit_signal_ms = now;
+                result.exit_intended_size_pct = pct;
+                result.exit_intended_notional = notional;
+                result.exit_intended_size_base =
+                    positionSizeBase && Number.isFinite(positionSizeBase) ? (positionSizeBase * pct) / 100 : null;
                 result.hold_seconds = holdSeconds;
                 if (!dryRun) {
                     const exec = await executeDecision(
@@ -843,10 +899,14 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     result.exit_order_size_notional =
                         result.exit_order_size_base && last > 0 ? result.exit_order_size_base * last : null;
                     if (exec?.placed || exec?.closed) {
+                        result.exit_order_ts = asofIso;
+                        result.exit_order_ts_ms = now;
                         execState.last_exit_order_ts = now;
                     }
                 } else {
                     result.order_details = { intended: { action: 'CLOSE', exit_size_pct: pct, sizeUSDT: notional }, execution: null };
+                    result.exit_order_ts = asofIso;
+                    result.exit_order_ts_ms = now;
                 }
                 await saveExecState(symbol, {
                     ...execState,
@@ -897,6 +957,12 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             if (result.decision === 'TRIM') {
                 const pct = plan.risk_mode === 'CONSERVATIVE' ? 50 : 30;
                 result.exit_order_reduce_only = true;
+                result.exit_signal_ts = asofIso;
+                result.exit_signal_ms = now;
+                result.exit_intended_size_pct = pct;
+                result.exit_intended_notional = notional;
+                result.exit_intended_size_base =
+                    positionSizeBase && Number.isFinite(positionSizeBase) ? (positionSizeBase * pct) / 100 : null;
                 if (!dryRun) {
                     const exec = await executeDecision(
                         symbol,
@@ -914,10 +980,14 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     result.exit_order_size_notional =
                         result.exit_order_size_base && last > 0 ? result.exit_order_size_base * last : null;
                     if (exec?.placed || exec?.closed) {
+                        result.exit_order_ts = asofIso;
+                        result.exit_order_ts_ms = now;
                         execState.last_exit_order_ts = now;
                     }
                 } else {
                     result.order_details = { intended: { action: 'CLOSE', exit_size_pct: pct, sizeUSDT: notional }, execution: null };
+                    result.exit_order_ts = asofIso;
+                    result.exit_order_ts_ms = now;
                 }
                 await saveExecState(symbol, {
                     ...execState,
@@ -955,6 +1025,8 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.decision = baseEntryBlockers.includes('gates_fail') ? 'GATES_FAIL' : 'WAIT';
             result.reason = baseEntryBlockers.join(',');
             result.reason_code = reasonCode(result.reason);
+            result.entry_eval.flowGate = 'skipped';
+            result.entry_eval.flowGateReason = 'skipped_entry_blocked';
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
@@ -972,6 +1044,8 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.decision = 'WAIT';
             result.reason = 'recent_exit_cooldown';
             result.reason_code = reasonCode(result.reason);
+            result.entry_eval.flowGate = 'skipped';
+            result.entry_eval.flowGateReason = 'skipped_recent_exit_cooldown';
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
@@ -983,6 +1057,8 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.decision = 'WAIT';
             result.reason = 'entry_cooldown';
             result.reason_code = reasonCode(result.reason);
+            result.entry_eval.flowGate = 'skipped';
+            result.entry_eval.flowGateReason = 'skipped_entry_cooldown';
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
@@ -995,6 +1071,8 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         if (closes5m.length < 25 || !Number.isFinite(atr1h) || atr1h <= 0) {
             result.decision = 'WAIT';
             result.reason = `insufficient_market_data(closes5m=${closes5m.length},atr1h=${Number.isFinite(atr1h) ? atr1h.toFixed(6) : 'NaN'})`;
+            result.entry_eval.flowGate = 'skipped';
+            result.entry_eval.flowGateReason = 'skipped_insufficient_market_data';
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
@@ -1030,6 +1108,8 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.decision = 'WAIT';
             result.reason = 'extension_block';
             result.reason_code = reasonCode(result.reason);
+            result.entry_eval.flowGate = 'skipped';
+            result.entry_eval.flowGateReason = 'skipped_extension_block';
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
@@ -1045,6 +1125,8 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.decision = 'WAIT';
             result.reason = 'no_dir';
             result.reason_code = reasonCode(result.reason);
+            result.entry_eval.flowGate = 'skipped';
+            result.entry_eval.flowGateReason = 'skipped_no_dir';
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
@@ -1057,6 +1139,8 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.decision = 'WAIT';
             result.reason = 'micro_bias_block';
             result.reason_code = reasonCode(result.reason);
+            result.entry_eval.flowGate = 'skipped';
+            result.entry_eval.flowGateReason = 'skipped_micro_bias';
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
@@ -1068,6 +1152,8 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.decision = 'WAIT';
             result.reason = 'micro_bias_block';
             result.reason_code = reasonCode(result.reason);
+            result.entry_eval.flowGate = 'skipped';
+            result.entry_eval.flowGateReason = 'skipped_micro_bias';
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
@@ -1083,15 +1169,37 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             : true;
         const ema15mOk = preferredDir === 'LONG' ? last >= ema20_15m : last <= ema20_15m;
         const microFilterFailures: string[] = [];
-        if (!rsi15mOk) microFilterFailures.push('rsi15m');
-        if (!ema15mOk) microFilterFailures.push('ema15m');
+        const rsi15mThreshold = 50;
+        const emaDirection = preferredDir === 'LONG' ? 'above' : 'below';
+        const rsi15mValue = Number.isFinite(rsi15m) ? Number(rsi15m.toFixed(2)) : null;
+        const ema20_15mValue = Number.isFinite(ema20_15m) ? Number(ema20_15m.toFixed(6)) : null;
+        const lastValue = Number.isFinite(last) ? Number(last.toFixed(6)) : null;
+        if (!rsi15mOk) {
+            microFilterFailures.push(
+                rsi15mValue !== null ? `rsi15m(${rsi15mValue}<${rsi15mThreshold})` : 'rsi15m(unavailable)',
+            );
+        }
+        if (!ema15mOk) {
+            microFilterFailures.push(
+                lastValue !== null && ema20_15mValue !== null
+                    ? `ema15m(last=${lastValue},ema20=${ema20_15mValue},need_${emaDirection})`
+                    : 'ema15m(unavailable)',
+            );
+        }
         result.entry_eval.rsi15mOk = rsi15mOk;
+        result.entry_eval.rsi15mValue = rsi15mValue;
+        result.entry_eval.rsi15mThreshold = rsi15mThreshold;
         result.entry_eval.ema15mOk = ema15mOk;
+        result.entry_eval.ema15mLast = lastValue;
+        result.entry_eval.ema20_15m = ema20_15mValue;
+        result.entry_eval.ema15mDirection = emaDirection;
         result.entry_eval.micro_filter_failures = microFilterFailures;
         if (microFilterFailures.length) {
             result.decision = 'WAIT';
             result.reason = 'micro_filter_block';
             result.reason_code = reasonCode(result.reason);
+            result.entry_eval.flowGate = 'skipped';
+            result.entry_eval.flowGateReason = 'skipped_micro_filter';
             try {
                 await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
@@ -1109,8 +1217,8 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             : flowAgainst
             ? 'flow_against_no_surge'
             : flowSurge
-            ? 'flow_surge_with_dir'
-            : null;
+            ? 'flow_with_surge'
+            : 'flow_align_no_surge';
         if (flowAgainst && flowSurge) {
             result.decision = 'WAIT';
             result.reason = 'flow_against';
