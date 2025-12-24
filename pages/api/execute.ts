@@ -1162,33 +1162,37 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             return res.status(200).json(result);
         }
 
+        const rsiThreshold = preferredDir === 'LONG' ? 48 : 52;
         const rsi15mOk = Number.isFinite(rsi15m)
             ? preferredDir === 'LONG'
-                ? rsi15m >= 50
-                : rsi15m <= 50
+                ? rsi15m >= rsiThreshold
+                : rsi15m <= rsiThreshold
             : true;
-        const ema15mOk = preferredDir === 'LONG' ? last >= ema20_15m : last <= ema20_15m;
+        const emaBuffer = Number.isFinite(atr15m) && atr15m > 0 ? 0.15 * atr15m : 0;
+        const ema15mOk =
+            preferredDir === 'LONG'
+                ? last >= ema20_15m - emaBuffer
+                : last <= ema20_15m + emaBuffer;
         const microFilterFailures: string[] = [];
-        const rsi15mThreshold = 50;
         const emaDirection = preferredDir === 'LONG' ? 'above' : 'below';
         const rsi15mValue = Number.isFinite(rsi15m) ? Number(rsi15m.toFixed(2)) : null;
         const ema20_15mValue = Number.isFinite(ema20_15m) ? Number(ema20_15m.toFixed(6)) : null;
         const lastValue = Number.isFinite(last) ? Number(last.toFixed(6)) : null;
         if (!rsi15mOk) {
             microFilterFailures.push(
-                rsi15mValue !== null ? `rsi15m(${rsi15mValue}<${rsi15mThreshold})` : 'rsi15m(unavailable)',
+                rsi15mValue !== null ? `rsi15m(${rsi15mValue}<${rsiThreshold})` : 'rsi15m(unavailable)',
             );
         }
         if (!ema15mOk) {
             microFilterFailures.push(
                 lastValue !== null && ema20_15mValue !== null
-                    ? `ema15m(last=${lastValue},ema20=${ema20_15mValue},need_${emaDirection})`
+                    ? `ema15m(last=${lastValue},ema20=${ema20_15mValue},buf=${Number(emaBuffer.toFixed(6))},need_${emaDirection})`
                     : 'ema15m(unavailable)',
             );
         }
         result.entry_eval.rsi15mOk = rsi15mOk;
         result.entry_eval.rsi15mValue = rsi15mValue;
-        result.entry_eval.rsi15mThreshold = rsi15mThreshold;
+        result.entry_eval.rsi15mThreshold = rsiThreshold;
         result.entry_eval.ema15mOk = ema15mOk;
         result.entry_eval.ema15mLast = lastValue;
         result.entry_eval.ema20_15m = ema20_15mValue;
