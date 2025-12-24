@@ -86,7 +86,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const planRecord = await readPlan(symbol);
     const plan = planRecord?.plan ?? null;
     const execState = await readExecState(symbol);
-    const logs = await loadExecutionLogs(symbol, 500);
+    const logs = await loadExecutionLogs(symbol, 1440); // last 24 hours
     const runs: ExecRun[] = logs
         .map((l) => (l?.payload && typeof l.payload === 'object' ? l.payload : l))
         .filter(Boolean) as ExecRun[];
