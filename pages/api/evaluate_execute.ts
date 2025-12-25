@@ -28,13 +28,10 @@ type ExecRun = {
 };
 
 function distribution<T extends string>(items: T[]) {
-    return items.reduce(
-        (acc, item) => {
-            acc[item] = (acc[item] || 0) + 1;
-            return acc;
-        },
-        {} as Record<T, number>,
-    );
+    return items.reduce((acc, item) => {
+        acc[item] = (acc[item] || 0) + 1;
+        return acc;
+    }, {} as Record<T, number>);
 }
 
 function formatDistributionSummary(dist: Record<string, number>, sampleSize: number, maxItems = 6) {
@@ -86,7 +83,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const planRecord = await readPlan(symbol);
     const plan = planRecord?.plan ?? null;
     const execState = await readExecState(symbol);
-    const logs = await loadExecutionLogs(symbol, 1440); // last 24 hours
+    const logs = await loadExecutionLogs(symbol, 720); // last 12 hours
     const runs: ExecRun[] = logs
         .map((l) => (l?.payload && typeof l.payload === 'object' ? l.payload : l))
         .filter(Boolean) as ExecRun[];
@@ -174,8 +171,12 @@ Keep the overview concise (<= 3 sentences). Use the provided Run aggregates when
     const losses = closed.filter((w: any) => typeof w?.pnlPct === 'number' && w.pnlPct < 0);
     const realizedCount = closed.filter((w: any) => typeof w?.pnlPct === 'number').length;
     const winRate = realizedCount ? (wins.length / realizedCount) * 100 : null;
-    const avgWinPct = wins.length ? wins.reduce((acc: number, w: any) => acc + (w.pnlPct as number), 0) / wins.length : null;
-    const avgLossPct = losses.length ? losses.reduce((acc: number, w: any) => acc + (w.pnlPct as number), 0) / losses.length : null;
+    const avgWinPct = wins.length
+        ? wins.reduce((acc: number, w: any) => acc + (w.pnlPct as number), 0) / wins.length
+        : null;
+    const avgLossPct = losses.length
+        ? losses.reduce((acc: number, w: any) => acc + (w.pnlPct as number), 0) / losses.length
+        : null;
     const tradeStats = {
         realized_count_24h: realizedCount,
         win_rate_24h: winRate,
@@ -199,8 +200,10 @@ Keep the overview concise (<= 3 sentences). Use the provided Run aggregates when
     const entriesDisabledCount = runs.filter((r) => r?.entries_disabled === true).length;
 
     const confirmationKeys = ['rsiOk', 'emaOk', 'obImbOk', 'inPullbackZone', 'breakout2x5m'] as const;
-    const confirmationHitCounts: Record<(typeof confirmationKeys)[number], { true: number; false: number; null: number }> =
-        Object.fromEntries(confirmationKeys.map((k) => [k, { true: 0, false: 0, null: 0 }])) as any;
+    const confirmationHitCounts: Record<
+        (typeof confirmationKeys)[number],
+        { true: number; false: number; null: number }
+    > = Object.fromEntries(confirmationKeys.map((k) => [k, { true: 0, false: 0, null: 0 }])) as any;
     for (const r of runs) {
         const ev = (r as any)?.entry_eval;
         for (const k of confirmationKeys) {
