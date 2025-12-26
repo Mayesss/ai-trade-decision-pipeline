@@ -10,8 +10,8 @@
     { "path": "/api/evaluate_execute?symbol=BTCUSDT", "schedule": "10 3 * * *" },
         { "path": "/api/plan?symbol=XAUUSDT", "schedule": "0 * * * *" },
     { "path": "/api/execute?symbol=XAUUSDT&notional=50&dryRun=false", "schedule": "* * * * *" },
-    { "path": "/api/evaluate_plan?symbol=XAUUSDT", "schedule": "10 3 * * *" },
-    { "path": "/api/evaluate_execute?symbol=XAUUSDT", "schedule": "10 3 * * *" }
+    { "path": "/api/evaluate_plan?symbol=XAUUSDT", "schedule": "10 4 * * *" },
+    { "path": "/api/evaluate_execute?symbol=XAUUSDT", "schedule": "10 4 * * *" }
   ],
   "routes": [
     { "src": "/api/(.*)", "dest": "/api/$1" }
