@@ -176,8 +176,44 @@ function buildReasonDetail(payload: any) {
     return `Decision ${decision || 'WAIT'} due to ${reason.replace(/_/g, ' ')}.`;
 }
 
+function buildConfirmationSnapshot(entryEval: any) {
+    if (!entryEval || typeof entryEval !== 'object') {
+        return {
+            preferredDir: null,
+            confirmationCount: null,
+            rsiOk: null,
+            rsi15mOk: null,
+            emaOk: null,
+            ema15mOk: null,
+            obImbOk: null,
+            flowOk: null,
+            flowAgainst: null,
+            flowSurge: null,
+            micro_filter_failures: [],
+            inPullbackZone: null,
+            breakout2x5m: null,
+        };
+    }
+    return {
+        preferredDir: entryEval.preferredDir ?? null,
+        confirmationCount: entryEval.confirmationCount ?? null,
+        rsiOk: entryEval.rsiOk ?? null,
+        rsi15mOk: entryEval.rsi15mOk ?? null,
+        emaOk: entryEval.emaOk ?? null,
+        ema15mOk: entryEval.ema15mOk ?? null,
+        obImbOk: entryEval.obImbOk ?? null,
+        flowOk: entryEval.flowOk ?? null,
+        flowAgainst: entryEval.flowAgainst ?? null,
+        flowSurge: entryEval.flowSurge ?? null,
+        micro_filter_failures: Array.isArray(entryEval.micro_filter_failures) ? entryEval.micro_filter_failures : [],
+        inPullbackZone: entryEval.inPullbackZone ?? null,
+        breakout2x5m: entryEval.breakout2x5m ?? null,
+    };
+}
+
 function enrichReasonDetail(payload: any) {
     payload.reason_detail = buildReasonDetail(payload);
+    payload.confirmation_snapshot = buildConfirmationSnapshot(payload.entry_eval);
     return payload;
 }
 
@@ -205,13 +241,15 @@ async function lookupRecentRealizedPnl(symbol: string, nowMs: number) {
     };
 }
 
-async function maybeAttachRealizedPnl(payload: any, symbol: string, nowMs: number) {
+async function maybeAttachRealizedPnl(payload: any, symbol: string, nowMs: number, execState: any) {
     if (payload?.dryRun) return payload;
     const decision = String(payload?.decision || '').toUpperCase();
     if (decision !== 'CLOSE' && decision !== 'TRIM') return payload;
     const exec = payload?.order_details?.execution;
     const executed = exec?.placed || exec?.closed || exec?.partial;
     if (!executed) return payload;
+    payload.entry_confirmation = execState?.last_entry_confirmation ?? null;
+    payload.entry_reason = execState?.last_entry_reason ?? null;
     payload.realized_pnl = await lookupRecentRealizedPnl(symbol, nowMs);
     return payload;
 }
@@ -785,7 +823,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
                 });
                 try {
-                    await maybeAttachRealizedPnl(result, symbol, now);
+                    await maybeAttachRealizedPnl(result, symbol, now, execState);
                     await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
                 } catch (err) {
                     console.warn('Failed to append execution log:', err);
@@ -848,7 +886,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                 last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
             });
             try {
-                await maybeAttachRealizedPnl(result, symbol, now);
+                await maybeAttachRealizedPnl(result, symbol, now, execState);
                 await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
             } catch (err) {
                 console.warn('Failed to append execution log:', err);
@@ -915,7 +953,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
                 });
                 try {
-                    await maybeAttachRealizedPnl(result, symbol, now);
+                    await maybeAttachRealizedPnl(result, symbol, now, execState);
                     await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
                 } catch (err) {
                     console.warn('Failed to append execution log:', err);
@@ -996,7 +1034,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
                     last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
                 });
                 try {
-                    await maybeAttachRealizedPnl(result, symbol, now);
+                    await maybeAttachRealizedPnl(result, symbol, now, execState);
                     await appendExecutionLog({ symbol, timestamp: now, payload: enrichReasonDetail(result) });
                 } catch (err) {
                     console.warn('Failed to append execution log:', err);
@@ -1384,11 +1422,14 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
             result.order_details = { intended: { action: tradeAction, leverage, sizeUSDT: sideSize, summary: entryReason }, execution: null };
         }
 
+        const entryConfirmation = buildConfirmationSnapshot(result.entry_eval);
         await saveExecState(symbol, {
             ...execState,
             last_entry_ts: now,
             last_action: result.decision,
             last_plan_ts: plan?.plan_ts ?? execState.last_plan_ts,
+            last_entry_confirmation: entryConfirmation,
+            last_entry_reason: entryReason || null,
         });
 
         try {

@@ -10,6 +10,8 @@ type ExecState = {
     last_exit_order_ts?: number | null;
     last_action?: string | null;
     last_plan_ts?: string | null;
+    last_entry_confirmation?: Record<string, any> | null;
+    last_entry_reason?: string | null;
 };
 
 function kvConfigured() {
