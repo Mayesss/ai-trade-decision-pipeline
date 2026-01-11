@@ -370,6 +370,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         const body = req.query ?? {};
+        const parseBoolParam = (value: string | string[] | undefined, fallback: boolean) => {
+            if (value === undefined) return fallback;
+            const v = Array.isArray(value) ? value[0] : value;
+            if (v === undefined) return fallback;
+            const normalized = String(v).toLowerCase();
+            if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+            if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+            return fallback;
+        };
         const symbols = body.symbols as string[] | undefined;
 
         if (!Array.isArray(symbols) || symbols.length === 0) {
@@ -383,7 +392,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const microTimeFrame: string = MICRO_TIMEFRAME;
         const macroTimeFrame: string = MACRO_TIMEFRAME;
         const contextTimeFrame: string = CONTEXT_TIMEFRAME;
-        const dryRun: boolean = body.dryRun !== undefined ? body.dryRun !== 'false' && body.dryRun !== false : false;
+        const dryRun: boolean = parseBoolParam(body.dryRun as string | string[] | undefined, false);
         const sideSizeUSDT: number = Number(body.notional ?? DEFAULT_NOTIONAL_USDT);
         const productType = getTradeProductType();
 
