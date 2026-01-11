@@ -17,6 +17,7 @@ export interface MultiTFIndicators {
     context?: IndicatorSummary;
     contextTimeFrame?: string;
     sr?: Record<string, SRLevels | undefined>;
+    metrics?: Record<string, TimeframeMetrics | undefined>;
 }
 
 export interface IndicatorTimeframeOptions {
@@ -41,6 +42,24 @@ export interface SRLevels {
     atr: number;
     support?: LevelDescriptor;
     resistance?: LevelDescriptor;
+}
+
+export type StructureState = 'bull' | 'bear' | 'range';
+export type ValueState = 'above_vah' | 'below_val' | 'inside_value';
+
+export interface TimeframeMetrics {
+    atrPctile?: number;
+    rvol?: number;
+    structure?: StructureState;
+    bos?: boolean;
+    bosDir?: 'up' | 'down' | null;
+    structureBreakState?: 'above' | 'below' | 'inside';
+    choch?: boolean;
+    breakoutRetestOk?: boolean;
+    breakoutRetestDir?: 'up' | 'down' | null;
+    valueState?: ValueState;
+    vah?: number;
+    val?: number;
 }
 
 // ------------------------------
@@ -117,6 +136,200 @@ export function computeATR(candles: any[], period = 14): number {
     }
     if (trs.length < period) return 0;
     return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
+}
+
+function computeAtrSeries(candles: any[], period = 14): number[] {
+    if (!candles || candles.length < period + 1) return [];
+    const trs: number[] = [];
+    for (let i = 1; i < candles.length; i++) {
+        const high = Number(candles[i][2]);
+        const low = Number(candles[i][3]);
+        const prevClose = Number(candles[i - 1][4]);
+        const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+        trs.push(tr);
+    }
+    if (trs.length < period) return [];
+    const atrs: number[] = [];
+    let sum = 0;
+    for (let i = 0; i < trs.length; i++) {
+        sum += trs[i]!;
+        if (i >= period) sum -= trs[i - period]!;
+        if (i >= period - 1) atrs.push(sum / period);
+    }
+    return atrs.filter((v) => Number.isFinite(v));
+}
+
+function percentileRank(values: number[], current: number): number | undefined {
+    if (!values.length || !Number.isFinite(current)) return undefined;
+    const sorted = values.slice().sort((a, b) => a - b);
+    let count = 0;
+    for (const v of sorted) if (v <= current) count += 1;
+    return (count / sorted.length) * 100;
+}
+
+function computeRvol(candles: any[], lookback = 20): number | undefined {
+    if (!Array.isArray(candles) || candles.length <= lookback) return undefined;
+    const vols = candles.map((c) => Number(c?.[5] ?? c?.volume)).filter((v) => Number.isFinite(v));
+    if (vols.length <= lookback) return undefined;
+    const current = vols[vols.length - 1]!;
+    const window = vols.slice(vols.length - 1 - lookback, vols.length - 1);
+    const avg = window.reduce((a, b) => a + b, 0) / window.length;
+    if (!Number.isFinite(avg) || avg <= 0) return undefined;
+    return current / avg;
+}
+
+function computeValueArea(candles: any[], binsCount = 24, valuePct = 0.7) {
+    if (!Array.isArray(candles) || candles.length < 20) return undefined;
+    const points = candles
+        .map((c) => {
+            const high = Number(c?.[2]);
+            const low = Number(c?.[3]);
+            const close = Number(c?.[4]);
+            const vol = Number(c?.[5] ?? c?.volume);
+            if (!Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close) || !Number.isFinite(vol)) {
+                return null;
+            }
+            const typical = (high + low + close) / 3;
+            return { price: typical, volume: Math.max(0, vol) };
+        })
+        .filter((p) => p !== null) as { price: number; volume: number }[];
+
+    if (!points.length) return undefined;
+    const prices = points.map((p) => p.price);
+    const minP = Math.min(...prices);
+    const maxP = Math.max(...prices);
+    if (!Number.isFinite(minP) || !Number.isFinite(maxP) || maxP <= minP) return undefined;
+    const binSize = (maxP - minP) / binsCount;
+    if (!(binSize > 0)) return undefined;
+
+    const bins = new Array<number>(binsCount).fill(0);
+    let totalVol = 0;
+    for (const p of points) {
+        const idx = Math.min(binsCount - 1, Math.max(0, Math.floor((p.price - minP) / binSize)));
+        bins[idx] = (bins[idx] || 0) + p.volume;
+        totalVol += p.volume;
+    }
+    if (!(totalVol > 0)) return undefined;
+
+    const ranked = bins
+        .map((v, i) => ({ v, i }))
+        .sort((a, b) => b.v - a.v);
+
+    let acc = 0;
+    let minIdx = binsCount - 1;
+    let maxIdx = 0;
+    for (const bin of ranked) {
+        acc += bin.v;
+        minIdx = Math.min(minIdx, bin.i);
+        maxIdx = Math.max(maxIdx, bin.i);
+        if (acc / totalVol >= valuePct) break;
+    }
+
+    const val = minP + minIdx * binSize;
+    const vah = minP + (maxIdx + 1) * binSize;
+    return { val, vah };
+}
+
+function computeStructureMetrics(candles: any[]): TimeframeMetrics {
+    if (!Array.isArray(candles) || candles.length < 20) {
+        return { structure: 'range', bos: false, choch: false, breakoutRetestOk: false };
+    }
+    const swings = computeSwingLevels(candles, 120);
+    const highs = swings.filter((s) => s.type === 'high');
+    const lows = swings.filter((s) => s.type === 'low');
+    if (highs.length < 2 || lows.length < 2) {
+        return { structure: 'range', bos: false, choch: false, breakoutRetestOk: false };
+    }
+
+    const lastHigh = highs[highs.length - 1]!;
+    const prevHigh = highs[highs.length - 2]!;
+    const lastLow = lows[lows.length - 1]!;
+    const prevLow = lows[lows.length - 2]!;
+
+    const atrLocal = computeATR(candles, 14);
+    const highDelta = Math.abs(lastHigh.price - prevHigh.price);
+    const lowDelta = Math.abs(lastLow.price - prevLow.price);
+    const rangeLike = Number.isFinite(atrLocal) && atrLocal > 0 ? highDelta < 0.5 * atrLocal && lowDelta < 0.5 * atrLocal : false;
+
+    const state: StructureState =
+        rangeLike
+            ? 'range'
+            : lastHigh.price > prevHigh.price && lastLow.price > prevLow.price
+            ? 'bull'
+            : lastHigh.price < prevHigh.price && lastLow.price < prevLow.price
+            ? 'bear'
+            : 'range';
+
+    const lastClose = Number(candles.at(-1)?.[4]);
+    const prevClose = Number(candles.at(-2)?.[4]);
+    const bosUp =
+        Number.isFinite(prevClose) && Number.isFinite(lastClose) && prevClose <= lastHigh.price && lastClose > lastHigh.price;
+    const bosDown =
+        Number.isFinite(prevClose) && Number.isFinite(lastClose) && prevClose >= lastLow.price && lastClose < lastLow.price;
+    const bos = state === 'bull' ? bosUp : state === 'bear' ? bosDown : bosUp || bosDown;
+    const bosDir = bosUp ? 'up' : bosDown ? 'down' : null;
+    const structureBreakState =
+        Number.isFinite(lastClose) && lastClose > lastHigh.price
+            ? 'above'
+            : Number.isFinite(lastClose) && lastClose < lastLow.price
+            ? 'below'
+            : 'inside';
+    const choch = state === 'bull' ? bosDown : state === 'bear' ? bosUp : false;
+
+    const retestLookback = 10;
+    const startIdx = Math.max(1, candles.length - retestLookback);
+    let bosIdxUp: number | null = null;
+    let bosIdxDown: number | null = null;
+    for (let i = candles.length - 1; i >= startIdx; i--) {
+        const closeNow = Number(candles[i]?.[4]);
+        const closePrev = Number(candles[i - 1]?.[4]);
+        if (Number.isFinite(closePrev) && Number.isFinite(closeNow) && closePrev <= lastHigh.price && closeNow > lastHigh.price) {
+            bosIdxUp = i;
+            break;
+        }
+    }
+    for (let i = candles.length - 1; i >= startIdx; i--) {
+        const closeNow = Number(candles[i]?.[4]);
+        const closePrev = Number(candles[i - 1]?.[4]);
+        if (Number.isFinite(closePrev) && Number.isFinite(closeNow) && closePrev >= lastLow.price && closeNow < lastLow.price) {
+            bosIdxDown = i;
+            break;
+        }
+    }
+
+    const retestBuffer = Number.isFinite(atrLocal) && atrLocal > 0 ? atrLocal * 0.2 : 0;
+    const hasUp = bosIdxUp !== null;
+    const hasDown = bosIdxDown !== null;
+    const breakoutDir =
+        hasUp && hasDown
+            ? (bosIdxUp as number) > (bosIdxDown as number)
+                ? 'up'
+                : 'down'
+            : hasUp
+            ? 'up'
+            : hasDown
+            ? 'down'
+            : null;
+
+    let breakoutRetestOk = false;
+    if (breakoutDir === 'up' && bosIdxUp !== null && Number.isFinite(lastClose) && lastClose > lastHigh.price) {
+        let minLow = Infinity;
+        for (let i = bosIdxUp; i < candles.length; i++) {
+            const low = Number(candles[i]?.[3]);
+            if (Number.isFinite(low)) minLow = Math.min(minLow, low);
+        }
+        breakoutRetestOk = minLow <= lastHigh.price + retestBuffer;
+    } else if (breakoutDir === 'down' && bosIdxDown !== null && Number.isFinite(lastClose) && lastClose < lastLow.price) {
+        let maxHigh = -Infinity;
+        for (let i = bosIdxDown; i < candles.length; i++) {
+            const high = Number(candles[i]?.[2]);
+            if (Number.isFinite(high)) maxHigh = Math.max(maxHigh, high);
+        }
+        breakoutRetestOk = maxHigh >= lastLow.price - retestBuffer;
+    }
+    const breakoutRetestDir = breakoutDir;
+
+    return { structure: state, bos, bosDir, structureBreakState, choch, breakoutRetestOk, breakoutRetestDir };
 }
 
 function ensureAscending(cs: any[]) {
@@ -221,17 +434,6 @@ function computeSRLevels(candles: any[], atr: number, timeframe: string): SRLeve
     const support = levelFromSwing('support', nearestSupport);
     const resistance = levelFromSwing('resistance', nearestResistance);
 
-    // Avoid contradictory "at_level" on both sides; keep the closer one as at_level, downgrade the other to approaching.
-    if (support?.level_state === 'at_level' && resistance?.level_state === 'at_level') {
-        const supportDist = Math.abs(((lastClose - support.price) / atr));
-        const resistanceDist = Math.abs(((lastClose - resistance.price) / atr));
-        if (supportDist <= resistanceDist) {
-            resistance.level_state = 'approaching';
-        } else {
-            support.level_state = 'approaching';
-        }
-    }
-
     return {
         timeframe,
         atr,
@@ -285,7 +487,7 @@ export async function calculateMultiTFIndicators(
     addRequest(primaryTF);
 
     const entries = Array.from(requests.entries());
-    const summaries = new Map<string, { summary: string; atr: number; sr?: SRLevels }>();
+    const summaries = new Map<string, { summary: string; atr: number; sr?: SRLevels; metrics?: TimeframeMetrics }>();
 
     const build = (candles: any[], tf: string) => {
         const closes = candles.map((c) => parseFloat(c[4]));
@@ -307,6 +509,20 @@ export async function calculateMultiTFIndicators(
         const trend = e20 > e50 ? 'up' : 'down';
 
         const atr = computeATR(candles, 14);
+        const atrSeries = computeAtrSeries(candles, 14);
+        const atrPctile = percentileRank(atrSeries, atr);
+        const rvol = computeRvol(candles, 20);
+        const structureMetrics = computeStructureMetrics(candles);
+        const valueArea = computeValueArea(candles, 24, 0.7);
+        const lastClose = Number(candles.at(-1)?.[4]);
+        const valueState: ValueState | undefined =
+            valueArea && Number.isFinite(lastClose)
+                ? lastClose > valueArea.vah
+                    ? 'above_vah'
+                    : lastClose < valueArea.val
+                    ? 'below_val'
+                    : 'inside_value'
+                : undefined;
 
         // momentum slope gate (10-bar slope of EMA21)
         const momSlope = slopePct(ema21, 10); // % per bar
@@ -319,6 +535,20 @@ export async function calculateMultiTFIndicators(
             )}, SMA200=${s200.toFixed(2)}, slopeEMA21_10=${momSlope.toFixed(3)}%/bar`,
             atr,
             sr: computeSRLevels(candles, atr, tf),
+            metrics: {
+                atrPctile,
+                rvol,
+                structure: structureMetrics.structure,
+                bos: structureMetrics.bos,
+                bosDir: structureMetrics.bosDir,
+                structureBreakState: structureMetrics.structureBreakState,
+                choch: structureMetrics.choch,
+                breakoutRetestOk: structureMetrics.breakoutRetestOk,
+                breakoutRetestDir: structureMetrics.breakoutRetestDir,
+                valueState,
+                vah: valueArea?.vah,
+                val: valueArea?.val,
+            },
         };
     };
 
@@ -336,17 +566,22 @@ export async function calculateMultiTFIndicators(
         macroTimeFrame: macroTF,
         contextTimeFrame: contextTF,
         sr: {},
+        metrics: {},
     };
 
     out.sr![microTF] = summaries.get(microTF)?.sr;
     out.sr![macroTF] = summaries.get(macroTF)?.sr;
     out.sr![contextTF] = summaries.get(contextTF)?.sr;
+    out.metrics![microTF] = summaries.get(microTF)?.metrics;
+    out.metrics![macroTF] = summaries.get(macroTF)?.metrics;
+    out.metrics![contextTF] = summaries.get(contextTF)?.metrics;
 
     out.primary = {
         timeframe: primaryTF,
         summary: summaries.get(primaryTF)?.summary ?? summaries.get(microTF)?.summary ?? '',
     };
     out.sr![primaryTF] = summaries.get(primaryTF)?.sr;
+    out.metrics![primaryTF] = summaries.get(primaryTF)?.metrics;
 
     out.context = {
         timeframe: contextTF,

@@ -197,7 +197,6 @@ async function runAnalysisForSymbol(params: {
 
             const momentumSignals = computeMomentumSignals({
                 price: effectivePrice,
-                analytics,
                 indicators,
                 gates: gatesOut.gates,
                 primaryTimeframe: timeFrame,

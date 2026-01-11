@@ -92,10 +92,6 @@ function toPriceSizeArrays(side: OrderbookSideLevelArr | OrderbookSideObjArr): [
   return (side as OrderbookSideObjArr).map(l => [Number(l.price), Number(l.size)]);
 }
 
-function sumTopSize(levels: [number, number][], n: number): number {
-  return levels.slice(0, n).reduce((a, [, s]) => a + Number(s), 0);
-}
-
 function percentile(arr: number[], p: number): number | undefined {
   if (!arr || arr.length === 0) return undefined;
   const a = arr.slice().sort((x, y) => x - y);

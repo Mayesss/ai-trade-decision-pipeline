@@ -170,7 +170,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         const momentumSignals = computeMomentumSignals({
             price: effectivePrice,
-            analytics,
             indicators,
             gates: gatesOut.gates,
             primaryTimeframe: timeFrame,

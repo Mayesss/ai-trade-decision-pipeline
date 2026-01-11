@@ -1,6 +1,15 @@
 // lib/ai.ts
 
-import { AI_BASE_URL, AI_MODEL, DEFAULT_TAKER_FEE_RATE, TRADE_WINDOW_MINUTES } from './constants';
+import {
+    AI_BASE_URL,
+    AI_MODEL,
+    CONTEXT_TIMEFRAME,
+    DEFAULT_TAKER_FEE_RATE,
+    MACRO_TIMEFRAME,
+    MICRO_TIMEFRAME,
+    PRIMARY_TIMEFRAME,
+    TRADE_WINDOW_MINUTES,
+} from './constants';
 import type { MultiTFIndicators } from './indicators';
 import { setEvaluation, getEvaluation } from './utils';
 
@@ -57,12 +66,11 @@ function microDistanceOk(price: number, target: number | null, atr: number | nul
 
 export function computeMomentumSignals(params: {
     price: number;
-    analytics: any;
     indicators: MultiTFIndicators;
     gates: { regime_trend_up: boolean; regime_trend_down: boolean };
     primaryTimeframe: string;
 }): MomentumSignals {
-    const { price, analytics, indicators, gates, primaryTimeframe } = params;
+    const { price, indicators, gates, primaryTimeframe } = params;
     const macroSummary = indicators.macro || '';
     const microSummary = indicators.micro || '';
     const primarySummary = indicators.primary?.summary || '';
@@ -156,16 +164,23 @@ export function buildPrompt(
     realizedRoiPct?: number | null,
     dryRun?: boolean,
 ) {
+    const toNum = (value: any) => {
+        const n = Number(value);
+        return Number.isFinite(n) ? n : null;
+    };
+
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
     const change = Number(t?.change24h ?? t?.changeUtc24h ?? t?.chgPct);
     const last = price; // Use price as 'last'
-    const primaryTimeframe = indicators.primary?.timeframe ?? timeframe;
+    const microTimeframe = indicators.microTimeFrame ?? MICRO_TIMEFRAME;
+    const macroTimeframe = indicators.macroTimeFrame ?? MACRO_TIMEFRAME;
+    const primaryTimeframe = indicators.primary?.timeframe ?? PRIMARY_TIMEFRAME;
+    const contextTimeframe = indicators.context?.timeframe ?? indicators.contextTimeFrame ?? CONTEXT_TIMEFRAME;
     const momentumSignals =
         momentumSignalsOverride ??
         computeMomentumSignals({
             price: last,
-            analytics,
             indicators,
             gates,
             primaryTimeframe,
@@ -180,6 +195,48 @@ export function buildPrompt(
     const derivatives = `funding=${bundle.funding?.[0]?.fundingRate ?? 'n/a'}, openInterest=${
         bundle.oi?.openInterestList?.[0]?.size ?? bundle.oi?.openInterestList?.[0]?.openInterest ?? 'n/a'
     }`;
+
+    const extractFundingSeries = (funding: any): number[] => {
+        const arr = Array.isArray(funding) ? funding : funding?.data || [];
+        return (arr || [])
+            .map((f: any) => toNum(f?.fundingRate ?? f?.rate ?? f?.interestRate))
+            .filter((v: number | null): v is number => Number.isFinite(v));
+    };
+
+    const extractOiSeries = (oi: any): number[] => {
+        const list = oi?.openInterestList || oi?.data || [];
+        return (list || [])
+            .map((item: any) =>
+                toNum(item?.size ?? item?.openInterest ?? item?.openInterestUsd ?? item?.openInterestValue),
+            )
+            .filter((v: number | null): v is number => Number.isFinite(v));
+    };
+
+    const computeZScore = (values: number[]): number | null => {
+        if (values.length < 5) return null;
+        const mean = values.reduce((a, b) => a + b, 0) / values.length;
+        const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length;
+        const std = Math.sqrt(variance);
+        if (!(std > 0)) return null;
+        return (values[values.length - 1]! - mean) / std;
+    };
+
+    const fundingRates = extractFundingSeries(bundle.funding);
+    const fundingZ14d = computeZScore(fundingRates);
+    const oiSeries = extractOiSeries(bundle.oi);
+    const oiChg24hPct =
+        oiSeries.length >= 2 && oiSeries[0]! > 0 ? ((oiSeries[oiSeries.length - 1]! - oiSeries[0]!) / oiSeries[0]!) * 100 : null;
+
+    const oiPriceDiv =
+        Number.isFinite(oiChg24hPct) && Number.isFinite(change)
+            ? oiChg24hPct! > 0 && change > 0
+                ? 'trend_supported'
+                : oiChg24hPct! > 0 && change < 0
+                ? 'crowded'
+                : oiChg24hPct! < 0 && change > 0
+                ? 'short_cover'
+                : 'neutral'
+            : 'neutral';
 
     const candles = Array.isArray(bundle.candles) ? bundle.candles : [];
     const priceTrendPoints = candles
@@ -231,9 +288,8 @@ export function buildPrompt(
         ? `- Position context (JSON): ${JSON.stringify(position_context)}\n`
         : '';
     const primaryIndicatorsBlock = indicators.primary
-        ? `- Primary timeframe (${indicators.primary.timeframe}) indicators: ${indicators.primary.summary}\n`
+        ? `- Primary timeframe (${primaryTimeframe}) indicators: ${indicators.primary.summary}\n`
         : '';
-    const contextTimeframe = indicators.context?.timeframe ?? indicators.contextTimeFrame ?? 'context';
     const sr = indicators.sr || {};
     const primarySR = sr[primaryTimeframe] ?? sr[indicators.primary?.timeframe || primaryTimeframe];
     const contextSR = sr[contextTimeframe] ?? sr[indicators.context?.timeframe || contextTimeframe];
@@ -291,15 +347,13 @@ export function buildPrompt(
     const htfResistanceDist = contextSR?.resistance?.dist_in_atr;
     let intoContextSupport = false;
     let intoContextResistance = false;
-    if (Number.isFinite(htfSupportDist as number) || Number.isFinite(htfResistanceDist as number)) {
-        const supportDist = Number.isFinite(htfSupportDist as number) ? (htfSupportDist as number) : Infinity;
-        const resistanceDist = Number.isFinite(htfResistanceDist as number) ? (htfResistanceDist as number) : Infinity;
-        if (supportDist <= resistanceDist) {
-            intoContextSupport = supportDist < 0.6;
-        } else {
-            intoContextResistance = resistanceDist < 0.6;
-        }
+    if (Number.isFinite(htfSupportDist as number)) {
+        intoContextSupport = (htfSupportDist as number) < 0.6;
     }
+    if (Number.isFinite(htfResistanceDist as number)) {
+        intoContextResistance = (htfResistanceDist as number) < 0.6;
+    }
+    const chopRisk = intoContextSupport && intoContextResistance;
     const htfBreakdownConfirmed = contextSR?.support?.level_state === 'broken';
     const htfBreakoutConfirmed = contextSR?.resistance?.level_state === 'broken';
 
@@ -323,6 +377,22 @@ export function buildPrompt(
     const rsiMicroDisplay = Number.isFinite(rsi_micro as number) ? (rsi_micro as number).toFixed(1) : 'n/a';
     const rsiMacroDisplay = Number.isFinite(rsi_macro as number) ? (rsi_macro as number).toFixed(1) : 'n/a';
     const rsiPrimaryDisplay = Number.isFinite(rsi_primary as number) ? (rsi_primary as number).toFixed(1) : 'n/a';
+    const metricsByTf = indicators.metrics || {};
+    const primaryMetrics = metricsByTf[primaryTimeframe] || {};
+    const macroMetrics = metricsByTf[macroTimeframe] || {};
+
+    const atrPctile4h = typeof primaryMetrics.atrPctile === 'number' ? primaryMetrics.atrPctile : null;
+    const atrPctile1d = typeof macroMetrics.atrPctile === 'number' ? macroMetrics.atrPctile : null;
+    const rvol4h = typeof primaryMetrics.rvol === 'number' ? primaryMetrics.rvol : null;
+    const rvol1d = typeof macroMetrics.rvol === 'number' ? macroMetrics.rvol : null;
+    const structure4hState = primaryMetrics.structure ?? 'range';
+    const bos4h = Boolean(primaryMetrics.bos);
+    const bosDir4h = primaryMetrics.bosDir ?? null;
+    const choch4h = Boolean(primaryMetrics.choch);
+    const breakoutRetestOk4h = Boolean(primaryMetrics.breakoutRetestOk);
+    const breakoutRetestDir4h = primaryMetrics.breakoutRetestDir ?? null;
+    const structureBreakState4h = primaryMetrics.structureBreakState ?? 'inside';
+    const valueState1d = macroMetrics.valueState ?? 'n/a';
     const primaryBias =
         Number.isFinite(slope21_primary as number) &&
         Number.isFinite(rsi_primary as number) &&
@@ -334,16 +404,23 @@ export function buildPrompt(
                 : 'neutral'
             : 'neutral';
 
+    const formatNum = (value: number | null | undefined, digits = 2) =>
+        Number.isFinite(value as number) ? Number(value).toFixed(digits) : 'n/a';
+
+    const microKey = microTimeframe.toLowerCase();
+    const primaryKey = primaryTimeframe.toLowerCase();
+    const macroKey = macroTimeframe.toLowerCase();
+
     const key_metrics =
-        `spread_bps=${spread_bps.toFixed(2)}, atr_pct_${indicators.macroTimeFrame}=${atr_pct_macro.toFixed(2)}%, rsi_${
-            indicators.microTimeFrame
-        }=${rsiMicroDisplay}, ` +
-        `rsi_${indicators.macroTimeFrame}=${rsiMacroDisplay}, micro_slope_pct_per_bar=${slope21_micro.toFixed(4)}, ` +
-        `dist_from_ema20_${indicators.microTimeFrame}_in_atr=${distance_from_ema_atr.toFixed(2)}, ` +
-        `atr_pct_${primaryTimeframe}=${atr_pct_primary.toFixed(2)}%, rsi_${primaryTimeframe}=${rsiPrimaryDisplay}, ` +
-        `primary_slope_pct_per_bar=${slope21_primary.toFixed(
-            4,
-        )}, dist_from_ema20_${primaryTimeframe}_in_atr=${distance_from_ema20_primary_atr.toFixed(2)}`;
+        `spread_bps=${spread_bps.toFixed(2)}, ` +
+        `atr_pct_${macroKey}=${atr_pct_macro.toFixed(2)}%, atr_pct_${primaryKey}=${atr_pct_primary.toFixed(2)}%, ` +
+        `atr_pctile_${macroKey}=${formatNum(atrPctile1d, 0)}, atr_pctile_${primaryKey}=${formatNum(atrPctile4h, 0)}, ` +
+        `rsi_${microKey}=${rsiMicroDisplay}, rsi_${primaryKey}=${rsiPrimaryDisplay}, rsi_${macroKey}=${rsiMacroDisplay}, ` +
+        `primary_slope_pct_per_bar=${slope21_primary.toFixed(4)}, ` +
+        `dist_from_ema20_${microKey}_in_atr=${distance_from_ema_atr.toFixed(2)}, dist_from_ema20_${primaryKey}_in_atr=${distance_from_ema20_primary_atr.toFixed(2)}, ` +
+        `structure_${primaryKey}=${structure4hState}, bos_${primaryKey}=${bos4h ? 1 : 0}, choch_${primaryKey}=${choch4h ? 1 : 0}, ` +
+        `rvol_${primaryKey}=${formatNum(rvol4h, 2)}, rvol_${macroKey}=${formatNum(rvol1d, 2)}, value_state_${macroKey}=${valueState1d}, ` +
+        `funding_z_14d=${formatNum(fundingZ14d, 2)}, oi_chg_24h_pct=${formatNum(oiChg24hPct, 2)}, oi_price_div=${oiPriceDiv}`;
 
     // --- SIGNAL STRENGTH DRIVERS & CLOSING GUIDANCE ---
     const clampNumber = (value: number | null | undefined, digits = 3) =>
@@ -357,58 +434,123 @@ export function buildPrompt(
     const supportProximity = typeof htfSupportDist === 'number' ? Math.max(0, 1 - Math.min(htfSupportDist, 2) / 2) : 0;
     const resistanceProximity =
         typeof htfResistanceDist === 'number' ? Math.max(0, 1 - Math.min(htfResistanceDist, 2) / 2) : 0;
-    const locationConfluenceScore = Math.min(
-        1,
-        Math.max(supportProximity, resistanceProximity) + (htfBreakoutConfirmed || htfBreakdownConfirmed ? 0.3 : 0),
-    );
+    const locationScoreLong = Math.min(1, supportProximity + (htfBreakoutConfirmed ? 0.3 : 0));
+    const locationScoreShort = Math.min(1, resistanceProximity + (htfBreakdownConfirmed ? 0.3 : 0));
+    const locationConfluenceScore = Math.max(locationScoreLong, locationScoreShort);
 
-    const driverComponents = [
-        trendBias,
-        slope21_micro,
-        distance_from_ema_atr,
-        slope21_primary,
-        distance_from_ema20_primary_atr,
-        contextBiasDriver,
+    const nearPrimarySupport = typeof primarySR?.support?.dist_in_atr === 'number' ? primarySR.support.dist_in_atr <= 0.6 : false;
+    const nearPrimaryResistance =
+        typeof primarySR?.resistance?.dist_in_atr === 'number' ? primarySR.resistance.dist_in_atr <= 0.6 : false;
+
+    const macroBias = momentumSignals.macroTrendUp ? 'UP' : momentumSignals.macroTrendDown ? 'DOWN' : 'NEUTRAL';
+    const regimeAlignmentRaw =
+        primaryBias === 'up'
+            ? (macroBias === 'UP' ? 1 : macroBias === 'DOWN' ? -1 : 0) +
+              (contextBias === 'UP' ? 1 : contextBias === 'DOWN' ? -1 : 0)
+            : primaryBias === 'down'
+            ? (macroBias === 'DOWN' ? 1 : macroBias === 'UP' ? -1 : 0) +
+              (contextBias === 'DOWN' ? 1 : contextBias === 'UP' ? -1 : 0)
+            : 0;
+    const regimeAlignment = Math.max(-1, Math.min(1, regimeAlignmentRaw / 2));
+
+    const valueOkLong = valueState1d === 'n/a' ? false : valueState1d !== 'below_val';
+    const valueOkShort = valueState1d === 'n/a' ? false : valueState1d !== 'above_vah';
+    const fundingOkLong = Number.isFinite(fundingZ14d as number) ? (fundingZ14d as number) < 1.5 : false;
+    const fundingOkShort = Number.isFinite(fundingZ14d as number) ? (fundingZ14d as number) > -1.5 : false;
+
+    const longDrivers = [
+        structure4hState === 'bull' || bosDir4h === 'up',
+        (breakoutRetestOk4h && breakoutRetestDir4h === 'up') || nearPrimarySupport,
+        macroBias !== 'DOWN',
+        contextBias !== 'DOWN' || intoContextSupport,
+        valueOkLong,
+        Number.isFinite(rvol4h as number) ? (rvol4h as number) >= 1.2 : false,
+        fundingOkLong,
     ];
-    const longAlignedDriverCount = driverComponents.filter((v) => v >= 0.35).length;
-    const shortAlignedDriverCount = driverComponents.filter((v) => v <= -0.35).length;
+
+    const shortDrivers = [
+        structure4hState === 'bear' || bosDir4h === 'down',
+        (breakoutRetestOk4h && breakoutRetestDir4h === 'down') || nearPrimaryResistance,
+        macroBias !== 'UP',
+        contextBias !== 'UP' || intoContextResistance,
+        valueOkShort,
+        Number.isFinite(rvol4h as number) ? (rvol4h as number) >= 1.2 : false,
+        fundingOkShort,
+    ];
+
+    const countTrue = (items: boolean[]) => items.reduce((acc, v) => acc + (v ? 1 : 0), 0);
+    const longAlignedDriverCount = countTrue(longDrivers);
+    const shortAlignedDriverCount = countTrue(shortDrivers);
     const alignedDriverCount = Math.max(longAlignedDriverCount, shortAlignedDriverCount);
+    const favoredSide =
+        longAlignedDriverCount > shortAlignedDriverCount
+            ? 'long'
+            : shortAlignedDriverCount > longAlignedDriverCount
+            ? 'short'
+            : 'neutral';
 
     const mediumActionReady =
-        alignedDriverCount >= 3 && (momentumSignals.longMomentum || momentumSignals.shortMomentum);
+        alignedDriverCount >= 4 && (momentumSignals.longMomentum || momentumSignals.shortMomentum);
 
-    const signalDrivers = {
-        trend_bias: trendBias,
-        momentum_slope_pct_per_bar: clampNumber(slope21_micro, 4),
-        extension_atr: clampNumber(distance_from_ema_atr, 3),
-        atr_pct_macro: clampNumber(atr_pct_macro, 3),
-        rsi_micro,
-        rsi_macro,
-        rsi_primary,
-        oversold_rsi_micro: oversoldMicro,
-        overbought_rsi_micro: overboughtMicro,
+    const signalDrivers: Record<string, any> = {
+        macro_trend_up: momentumSignals.macroTrendUp,
+        macro_trend_down: momentumSignals.macroTrendDown,
+        context_bias: contextBias,
+        context_bias_driver: clampNumber(contextBiasDriver, 3),
+        regime_alignment: clampNumber(regimeAlignment, 2),
+
+        primary_slope_pct_per_bar: clampNumber(slope21_primary, 4),
+        micro_slope_pct_per_bar: clampNumber(slope21_micro, 4),
+
+        funding_z_14d: clampNumber(fundingZ14d, 2),
+        oi_chg_24h_pct: clampNumber(oiChg24hPct, 2),
+        oi_price_divergence: oiPriceDiv,
+
         aligned_driver_count: alignedDriverCount,
         aligned_driver_count_long: longAlignedDriverCount,
         aligned_driver_count_short: shortAlignedDriverCount,
+        favored_side: favoredSide,
+
         medium_action_ready: mediumActionReady,
-        macro_trend_up: momentumSignals.macroTrendUp,
-        macro_trend_down: momentumSignals.macroTrendDown,
         long_momentum: momentumSignals.longMomentum,
         short_momentum: momentumSignals.shortMomentum,
         micro_extension_atr: clampNumber(momentumSignals.microExtensionInAtr ?? null, 3),
-        atr_pct_primary: clampNumber(atr_pct_primary, 3),
         primary_extension_atr: clampNumber(distance_from_ema20_primary_atr, 3),
-        primary_slope_pct_per_bar: clampNumber(slope21_primary, 4),
-        context_bias: contextBias,
-        context_bias_driver: clampNumber(contextBiasDriver, 3),
         location_confluence_score: clampNumber(locationConfluenceScore, 3),
+        location_score_long: clampNumber(locationScoreLong, 3),
+        location_score_short: clampNumber(locationScoreShort, 3),
         into_context_support: intoContextSupport,
         into_context_resistance: intoContextResistance,
+        chop_risk: chopRisk,
         context_breakdown_confirmed: htfBreakdownConfirmed,
         context_breakout_confirmed: htfBreakoutConfirmed,
         context_support_dist_atr: clampNumber(htfSupportDist ?? null, 3),
         context_resistance_dist_atr: clampNumber(htfResistanceDist ?? null, 3),
     };
+
+    signalDrivers[`rsi_${microKey}`] = rsi_micro;
+    signalDrivers[`rsi_${primaryKey}`] = rsi_primary;
+    signalDrivers[`rsi_${macroKey}`] = rsi_macro;
+
+    signalDrivers[`dist_from_ema20_${microKey}_in_atr`] = clampNumber(distance_from_ema_atr, 3);
+    signalDrivers[`dist_from_ema20_${primaryKey}_in_atr`] = clampNumber(distance_from_ema20_primary_atr, 3);
+
+    signalDrivers[`atr_pct_${macroKey}`] = clampNumber(atr_pct_macro, 3);
+    signalDrivers[`atr_pct_${primaryKey}`] = clampNumber(atr_pct_primary, 3);
+    signalDrivers[`atr_pctile_${macroKey}`] = clampNumber(atrPctile1d, 0);
+    signalDrivers[`atr_pctile_${primaryKey}`] = clampNumber(atrPctile4h, 0);
+
+    signalDrivers[`structure_${primaryKey}_state`] = structure4hState;
+    signalDrivers[`bos_${primaryKey}`] = bos4h;
+    signalDrivers[`bos_dir_${primaryKey}`] = bosDir4h;
+    signalDrivers[`choch_${primaryKey}`] = choch4h;
+    signalDrivers[`breakout_retest_ok_${primaryKey}`] = breakoutRetestOk4h;
+    signalDrivers[`breakout_retest_dir_${primaryKey}`] = breakoutRetestDir4h;
+    signalDrivers[`structure_break_state_${primaryKey}`] = structureBreakState4h;
+
+    signalDrivers[`rvol_${primaryKey}`] = clampNumber(rvol4h, 2);
+    signalDrivers[`rvol_${macroKey}`] = clampNumber(rvol1d, 2);
+    signalDrivers[`value_state_${macroKey}`] = valueState1d;
     const positionSide = position_context?.side;
     const priceVsBreakevenPctRaw =
         position_context?.breakeven_price && Number.isFinite(position_context.breakeven_price) && price > 0
@@ -445,10 +587,20 @@ export function buildPrompt(
     const slippage_bps = 2;
     const total_cost_bps = Number((taker_round_trip_bps + slippage_bps).toFixed(1));
 
+    const tfToMinutes = (tf: string): number => {
+        const m = tf.match(/^(\d+)\s*(m|h|d)$/i);
+        if (!m) return 240;
+        const n = Number(m[1]);
+        const unit = m[2].toLowerCase();
+        if (!Number.isFinite(n) || n <= 0) return 240;
+        return unit === 'm' ? n : unit === 'h' ? n * 60 : n * 1440;
+    };
+    const time_stop_minutes = tfToMinutes(primaryTimeframe) * 3;
+
     const risk_policy =
         `fees=${taker_round_trip_bps}bps round-trip, slippage=${slippage_bps}bps, ` +
-        `stop=1.5xATR(${indicators.macroTimeFrame}), take_profit=2.5xATR(${indicators.macroTimeFrame}), ` +
-        `time_stop=${parseInt(timeframe, 10) * 3} minutes (execution-layer timer)`;
+        `stop=1.5xATR(${primaryTimeframe}), take_profit=2.5xATR(${primaryTimeframe}), ` +
+        `time_stop=${time_stop_minutes} minutes (execution-layer timer)`;
 
     // We only pass the BASE gates now, as the AI will judge the strategy gates using metrics
     const base_gating_flags = `spread_ok=${gates.spread_ok}, liquidity_ok=${gates.liquidity_ok}, atr_ok=${gates.atr_ok}, slippage_ok=${gates.slippage_ok}`;
@@ -465,13 +617,13 @@ export function buildPrompt(
 You are an expert crypto swing-trading market structure analyst and trading assistant.
 
 TIMEFRAMES (fixed for this mode)
-- micro: ${indicators.microTimeFrame} (entry timing / confirmation)
+- micro: ${microTimeframe} (entry timing / confirmation)
 - primary: ${primaryTimeframe} (setup + execution timeframe)
-- macro: ${indicators.macroTimeFrame
+- macro: ${macroTimeframe
 } (regime bias, not a hard filter)
 - context: ${contextTimeframe} (higher-timeframe location + major levels, risk lever)
 
-Primary strategy: ${primaryTimeframe} swing setups executed with ${indicators.microTimeFrame} confirmation, aligned with (or tactically fading) the ${indicators.macroTimeFrame
+Primary strategy: ${primaryTimeframe} swing setups executed with ${microTimeframe} confirmation, aligned with (or tactically fading) the ${macroTimeframe
 } regime while respecting ${contextTimeframe} location/levels.
 Holding horizon: typically 1–10 days. Prefer fewer, higher-quality trades; avoid churn.
 
@@ -486,7 +638,7 @@ GENERAL RULES
 - **Leverage**: For BUY/SELL/REVERSE pick leverage 1–5 (integer). Default null on HOLD/CLOSE.
   - Choose leverage based on conviction AND risk (regime alignment, extension, proximity to major levels, volatility). Even on HIGH conviction, use 1–2x if stretched or near major ${contextTimeframe} levels. Never exceed 5.
 - **Macro/context usage**:
-  - macro_bias (${indicators.macroTimeFrame
+  - macro_bias (${macroTimeframe
 }) is a bias, not a hard filter. Trades with macro_bias are preferred.
   - context_bias (${contextTimeframe}) is a risk lever: when aligned, accept MEDIUM setups; when opposed, require HIGH quality and non-extended entries. Use it to adjust selectivity and leverage, not as a hard gate.
 - **Support/Resistance & location**: swing-pivot derived per timeframe; distances in ATR of that timeframe.
@@ -498,27 +650,27 @@ GENERAL RULES
 
 BIAS DEFINITIONS (swing-oriented)
 - primary_bias (${primaryTimeframe}): trend/structure bias from EMA alignment/slope, RSI, HH/HL vs LH/LL, and ${primaryTimeframe} range state.
-- micro_bias (${indicators.microTimeFrame}): timing bias from ${indicators.microTimeFrame} structure (break/retest, pullback continuation, reversal failure), momentum, and reaction at levels.
-- macro_bias (${indicators.macroTimeFrame
+- micro_bias (${microTimeframe}): timing bias from ${microTimeframe} structure (break/retest, pullback continuation, reversal failure), momentum, and reaction at levels.
+- macro_bias (${macroTimeframe
 }): regime trend up/down; if both false → NEUTRAL.
 - context_bias (${contextTimeframe}): higher-timeframe regime/trend + location; modulates risk/selectivity.
 
 SETUP DRIVERS (what “aligned_driver_count” should represent)
 Count drivers that materially support a directional swing trade:
-- Structure: HH/HL or LH/LL alignment on ${primaryTimeframe}, with ${indicators.microTimeFrame} confirmation (break + hold / retest).
+- Structure: HH/HL or LH/LL alignment on ${primaryTimeframe}, with ${microTimeframe} confirmation (break + hold / retest).
 - Level logic: entry near meaningful ${primaryTimeframe} support/resistance, or post-breakout retest; clean invalidation.
-- Regime alignment: ${indicators.macroTimeFrame
+- Regime alignment: ${macroTimeframe
 } + ${contextTimeframe} supportive (or a high-quality counter-regime mean-reversion at extreme location).
-- Momentum quality: RSI/slope confirmation on ${primaryTimeframe}; ${indicators.microTimeFrame} impulse/continuation vs fading.
+- Momentum quality: RSI/slope confirmation on ${primaryTimeframe}; ${microTimeframe} impulse/continuation vs fading.
 - Positioning/derivatives context: funding/OI extremes or supportive trend in OI (as a modifier, not primary).
 - Volatility/ATR sanity: not entering after exhausted expansion unless continuation setup is exceptionally clean.
 
 ACTIONS LOGIC
 - **No position open**:
-  - With base gates true + HIGH + aligned_driver_count ≥ 4 → BUY/SELL in the direction of the primary_bias, unless ${indicators.microTimeFrame} invalidates.
+  - With base gates true + HIGH + aligned_driver_count ≥ 4 → BUY/SELL in the direction of the primary_bias, unless ${microTimeframe} invalidates.
   - MEDIUM requires aligned_driver_count ≥ 4 AND acceptable location (not into strong opposite level, not overly extended).
   - Counter-macro trades are allowed but selective:
-    - Require HIGH, aligned_driver_count ≥ 5, clear ${primaryTimeframe} structure reversal, and non-extended entry (|dist_from_ema20_${indicators.microTimeFrame}_in_atr| ≤ 1.8 and |dist_from_ema20_${primaryTimeframe}_in_atr| ≤ 2.0).
+    - Require HIGH, aligned_driver_count ≥ 5, clear ${primaryTimeframe} structure reversal, and non-extended entry (|dist_from_ema20_${microTimeframe}_in_atr| ≤ 1.8 and |dist_from_ema20_${primaryTimeframe}_in_atr| ≤ 2.0).
   - Avoid new shorts when dist_to_support_in_atr_${contextTimeframe} < 0.6 unless breakdown_confirmed=true; mirror for longs vs resistance/breakout.
   - HOLD on LOW signals, unclear structure, mixed regime/location, or extreme extension without clean continuation logic.
 - **Position open**:
@@ -528,19 +680,19 @@ ACTIONS LOGIC
 
 REVERSAL DISCIPLINE (swing)
 - REVERSE = close entire current position (exit_size_pct=100) then open opposite side. No partial reversals.
-- REVERSE only if reverse_confidence="high", aligned_driver_count ≥ 5, and signal_strength = HIGH, plus clear ${primaryTimeframe} structure flip (break + acceptance) confirmed by ${indicators.microTimeFrame}.
+- REVERSE only if reverse_confidence="high", aligned_driver_count ≥ 5, and signal_strength = HIGH, plus clear ${primaryTimeframe} structure flip (break + acceptance) confirmed by ${microTimeframe}.
 - Do NOT REVERSE if unrealized_pnl_pct < -0.5% without major regime/structure change; if conditions fail, prefer CLOSE (risk-off) or HOLD (if still valid).
 
 EXTENSION / OVERBOUGHT-OVERSOLD (swing)
 - Use extension as risk control, not as a standalone signal.
-- On ${indicators.microTimeFrame}: |dist_from_ema20_${indicators.microTimeFrame}_in_atr| in [2,2.5) → require cleaner level/invalidation; ≥ 2.5 → avoid fresh entries; > 3 → strongly prefer no new entries.
+- On ${microTimeframe}: |dist_from_ema20_${microTimeframe}_in_atr| in [2,2.5) → require cleaner level/invalidation; ≥ 2.5 → avoid fresh entries; > 3 → strongly prefer no new entries.
 - On ${primaryTimeframe}: |dist_from_ema20_${primaryTimeframe}_in_atr| ≥ 2.0 → be selective and tighten profit-taking; ≥ 2.5 avoid fresh entries unless this is a post-breakout retest with HIGH strength.
 `.trim();
 
     const modeLabel = dryRun ? 'simulation' : 'live';
     const user = `
 You are analyzing ${symbol} for swing trading (mode=${modeLabel}).
-Timeframes: micro=${indicators.microTimeFrame}, primary=${primaryTimeframe}, macro=${indicators.macroTimeFrame
+Timeframes: micro=${microTimeframe}, primary=${primaryTimeframe}, macro=${macroTimeframe
 }, context=${contextTimeframe}. I will call you roughly once per ${primaryTimeframe}.
 
 RISK/COSTS:
@@ -552,7 +704,7 @@ BASE GATES (tradeability):
 - ${base_gating_flags}
 
 REGIME / BIASES:
-- ${regime_flags}  // macro (${indicators.macroTimeFrame
+- ${regime_flags}  // macro (${macroTimeframe
 }) regime flags
 - Context bias (${contextTimeframe}): ${contextBias}
 
@@ -563,12 +715,12 @@ DATA INPUTS (swing-relevant windows):
 - Current price and % change (now): ${market_data}
 - Volume / activity (lookback window = ${TRADE_WINDOW_MINUTES}m): ${vol_profile_str}
 - Price action (recent bars for structure context): ${priceTrendSeries}
-- Derivatives positioning (last 4–2${primaryTimeframe}): ${derivatives}
+- Derivatives positioning (last 2–4 ${primaryTimeframe}): ${derivatives}
 - Liquidity/spread snapshot (cost sanity check): ${liquidity_data}
 ${newsSentimentBlock}${newsHeadlinesBlock}${recentActionsBlock}- Current position: ${position_status}
-${positionContextBlock}- Technical (micro ${indicators.microTimeFrame}, last 60 candles): ${indicators.micro}
-- Primary (${primaryTimeframe}, last 60 candles): ${indicators.primary ?? indicators.macro /* if you already have primary block, use it */}
-- Macro (${indicators.macroTimeFrame
+${positionContextBlock}- Technical (micro ${microTimeframe}, last 60 candles): ${indicators.micro}
+- Primary (${primaryTimeframe}, last 60 candles): ${indicators.primary?.summary ?? 'n/a'}
+- Macro (${macroTimeframe
 }, last 60 candles): ${indicators.macro}
 ${contextIndicatorsBlock}${contextSRBlock}${primaryIndicatorsBlock}${primarySRBlock}
 - HTF location flags: {into_support=${intoContextSupport}, into_resistance=${intoContextResistance}, breakdown_confirmed=${htfBreakdownConfirmed}, breakout_confirmed=${htfBreakoutConfirmed}, location_confluence_score=${clampNumber(locationConfluenceScore, 3)}}
@@ -584,7 +736,7 @@ ${JSON.stringify({
   context_breakdown_confirmed: htfBreakdownConfirmed,
   context_breakout_confirmed: htfBreakoutConfirmed,
   location_confluence_score: clampNumber(locationConfluenceScore, 3),
-  micro_extension_atr: momentumSignals.microExtensionInAtr,              // interpret as ${indicators.microTimeFrame}
+  micro_extension_atr: momentumSignals.microExtensionInAtr,              // interpret as ${microTimeframe}
   primary_extension_atr: clampNumber(distance_from_ema20_primary_atr, 3) // interpret as ${primaryTimeframe}
 })}
 
@@ -592,7 +744,7 @@ ${JSON.stringify({
 - Closing guardrails: ${JSON.stringify(closingGuidance)}
 
 TASKS:
-1) Determine micro_bias (${indicators.microTimeFrame}), primary_bias (${primaryTimeframe}), macro_bias (${indicators.macroTimeFrame
+1) Determine micro_bias (${microTimeframe}), primary_bias (${primaryTimeframe}), macro_bias (${macroTimeframe
 }), and context_bias (${contextTimeframe}).
 2) Output exactly one action: "BUY", "SELL", "HOLD", "CLOSE", or "REVERSE".
    - If no position: BUY/SELL/HOLD.
