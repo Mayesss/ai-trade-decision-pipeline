@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getAllEvaluations, getEvaluationTimestamp } from '../../lib/utils';
-import { loadDecisionHistory } from '../../lib/history';
+import { loadDecisionHistory, listHistorySymbols } from '../../lib/history';
 import { fetchPositionInfo, fetchRealizedRoi, fetchRecentPositionWindows } from '../../lib/analytics';
 
 type EnrichedEntry = {
@@ -38,7 +38,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   const store = await getAllEvaluations();
-  const symbols = Object.keys(store);
+  let symbols = Object.keys(store);
+  try {
+    const historySymbols = await listHistorySymbols();
+    if (historySymbols.length) {
+      symbols = historySymbols;
+    }
+  } catch {
+    // If KV isn't configured, fall back to evaluations only.
+  }
 
   const data: EnrichedEntry[] = await Promise.all(
     symbols.map(async (symbol) => {

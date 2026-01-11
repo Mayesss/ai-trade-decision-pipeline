@@ -506,9 +506,9 @@ export default function Home() {
     );
   const hasDetails =
     !!(
-      current?.evaluation.what_went_well?.length ||
-      current?.evaluation.issues?.length ||
-      current?.evaluation.improvements?.length
+      current?.evaluation?.what_went_well?.length ||
+      current?.evaluation?.issues?.length ||
+      current?.evaluation?.improvements?.length
     );
   const biasOrder = [
     { key: 'context_bias', label: 'Context' },
@@ -971,7 +971,7 @@ export default function Home() {
                       <span className="lowercase text-slate-400">{formatDecisionTime(current.evaluationTs)}</span>
                     ) : null}
                   </div>
-                  {current.evaluation.confidence && (
+                  {current?.evaluation?.confidence && (
                     <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
                       Confidence: {current.evaluation.confidence}
                     </div>
@@ -979,11 +979,11 @@ export default function Home() {
                 </div>
                 <div className="mt-2 text-lg font-semibold text-slate-900 flex items-center gap-3 flex-wrap">
                   <span>
-                    Rating: <span className="text-sky-600">{current.evaluation.overall_rating ?? '—'}</span>
+                    Rating: <span className="text-sky-600">{current?.evaluation?.overall_rating ?? '—'}</span>
                   </span>
                   <div className="flex flex-wrap items-center gap-1">
                     {Array.from({ length: 10 }).map((_, idx) => {
-                      const ratingVal = Number(current.evaluation.overall_rating ?? 0);
+                      const ratingVal = Number(current?.evaluation?.overall_rating ?? 0);
                       const filled = ratingVal >= idx + 1;
                       const colorClass =
                         ratingVal >= 9
@@ -1007,11 +1007,11 @@ export default function Home() {
                   </div>
                 </div>
                 <p className="mt-3 text-sm text-slate-700">
-                  {current.evaluation.overview || 'No overview provided.'}
+                  {current?.evaluation?.overview || 'No overview provided.'}
                 </p>
-                {(current.evaluation.aspects || hasDetails) && (
+                {((current?.evaluation?.aspects ?? null) || hasDetails) && (
                   <div className="mt-4 space-y-4">
-                    {current.evaluation.aspects && (
+                    {current?.evaluation?.aspects && (
                       <>
                         <button
                           onClick={() => setShowAspects((prev) => !prev)}
@@ -1095,7 +1095,7 @@ export default function Home() {
                       </>
                     )}
 
-                    {((current.evaluation.aspects && showAspects) || !current.evaluation.aspects) && hasDetails && (
+                    {((current?.evaluation?.aspects && showAspects) || !current?.evaluation?.aspects) && hasDetails && (
                       <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                         <div className="text-xs uppercase tracking-wide text-slate-500">Details</div>
                         <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">

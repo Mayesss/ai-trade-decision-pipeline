@@ -160,3 +160,15 @@ export async function clearDecisionHistory() {
     await Promise.all(allKeys.map((key) => kvDel(key)));
     await kvDel(HISTORY_INDEX_KEY);
 }
+
+export async function listHistorySymbols(): Promise<string[]> {
+    ensureKvConfig();
+    const keys = await kvZRevRange(HISTORY_INDEX_KEY, 0, -1);
+    const symbols = new Set<string>();
+    for (const key of keys) {
+        const parts = String(key).split(':');
+        const sym = parts[parts.length - 1];
+        if (sym) symbols.add(sym.toUpperCase());
+    }
+    return Array.from(symbols);
+}
