@@ -236,7 +236,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 6) Build prompt with allowed_actions, gates, and close_conditions
         const roiRes = await fetchRealizedRoi(symbol, 24);
 
-        const { system, user } = buildPrompt(
+        const { system, user } = await buildPrompt(
             symbol, // e.g. "BTCUSDT"
             timeFrame, // e.g. "45m"
             bundle, // from fetchMarketBundle(...)

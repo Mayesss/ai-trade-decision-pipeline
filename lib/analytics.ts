@@ -430,7 +430,7 @@ export async function fetchMarketBundle(symbol: string, bundleTimeFrame: string,
     const productType = resolveProductType(); // e.g., 'USDT-FUTURES'
 
     // Run independent calls in parallel
-    const [tickerRaw, candlesRaw, orderbook, fundingRes, oiRes] = await Promise.all([
+    const [tickerRaw, candlesRaw, orderbook, fundingRes, fundingHistoryRes, oiRes] = await Promise.all([
         bitgetFetch('GET', '/api/v2/mix/market/ticker', { symbol, productType }),
         bitgetFetch('GET', '/api/v2/mix/market/candles', {
             symbol,
@@ -447,6 +447,13 @@ export async function fetchMarketBundle(symbol: string, bundleTimeFrame: string,
         (async () => {
             try {
                 return await bitgetFetch('GET', '/api/v2/mix/market/current-fund-rate', { symbol, productType });
+            } catch {
+                return null;
+            }
+        })(),
+        (async () => {
+            try {
+                return await bitgetFetch('GET', '/api/v2/mix/market/history-fund-rate', { symbol, productType });
             } catch {
                 return null;
             }
@@ -473,7 +480,7 @@ export async function fetchMarketBundle(symbol: string, bundleTimeFrame: string,
         });
     }
 
-    return { ticker, candles, trades, orderbook, funding: fundingRes, oi: oiRes, productType };
+    return { ticker, candles, trades, orderbook, funding: fundingRes, fundingHistory: fundingHistoryRes, oi: oiRes, productType };
 }
 
 // ------------------------------

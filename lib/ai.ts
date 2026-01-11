@@ -11,6 +11,7 @@ import {
     TRADE_WINDOW_MINUTES,
 } from './constants';
 import type { MultiTFIndicators } from './indicators';
+import { kvGetJson, kvSetJson } from './kv';
 import { setEvaluation, getEvaluation } from './utils';
 
 export type PositionContext = {
@@ -148,7 +149,7 @@ export async function getLastEvaluation(symbol: string) {
 // Prompt Builder (with guardrails, regime, momentum & extension gates)
 // ------------------------------
 
-export function buildPrompt(
+export async function buildPrompt(
     symbol: string,
     timeframe: string,
     bundle: any,
@@ -197,19 +198,38 @@ export function buildPrompt(
     }`;
 
     const extractFundingSeries = (funding: any): number[] => {
-        const arr = Array.isArray(funding) ? funding : funding?.data || [];
+        const arr = Array.isArray(funding) ? funding : funding?.data || funding?.list || [];
         return (arr || [])
             .map((f: any) => toNum(f?.fundingRate ?? f?.rate ?? f?.interestRate))
             .filter((v: number | null): v is number => Number.isFinite(v));
     };
 
-    const extractOiSeries = (oi: any): number[] => {
+    const extractFundingIntervalHours = (funding: any): number | null => {
+        const raw = toNum(
+            funding?.fundingRateInterval ??
+                funding?.fundingRateIntervalTime ??
+                funding?.data?.[0]?.fundingRateInterval ??
+                funding?.data?.[0]?.fundingRateIntervalTime ??
+                funding?.list?.[0]?.fundingRateInterval ??
+                funding?.list?.[0]?.fundingRateIntervalTime,
+        );
+        return Number.isFinite(raw as number) ? Number(raw) : null;
+    };
+
+    const extractOiSeries = (oi: any): { ts: number | null; value: number }[] => {
         const list = oi?.openInterestList || oi?.data || [];
         return (list || [])
-            .map((item: any) =>
-                toNum(item?.size ?? item?.openInterest ?? item?.openInterestUsd ?? item?.openInterestValue),
-            )
-            .filter((v: number | null): v is number => Number.isFinite(v));
+            .map((item: any) => {
+                const value = toNum(item?.size ?? item?.openInterest ?? item?.openInterestUsd ?? item?.openInterestValue);
+                const tsRaw = toNum(item?.ts ?? item?.timestamp ?? item?.time ?? item?.cTime ?? item?.uTime);
+                const ts =
+                    Number.isFinite(tsRaw as number) && (tsRaw as number) < 1e12
+                        ? (tsRaw as number) * 1000
+                        : tsRaw;
+                if (!Number.isFinite(value as number)) return null;
+                return { ts: Number.isFinite(ts as number) ? (ts as number) : null, value: value as number };
+            })
+            .filter((v: { ts: number | null; value: number } | null): v is { ts: number | null; value: number } => Boolean(v));
     };
 
     const computeZScore = (values: number[]): number | null => {
@@ -221,11 +241,81 @@ export function buildPrompt(
         return (values[values.length - 1]! - mean) / std;
     };
 
-    const fundingRates = extractFundingSeries(bundle.funding);
-    const fundingZ14d = computeZScore(fundingRates);
+    const productType = bundle?.productType || 'usdt-futures';
+    const fundingHistory = bundle?.fundingHistory ?? null;
+    const fundingKey = `funding:history:${productType}:${symbol}`;
+    const oiKey = `oi:samples:${productType}:${symbol}`;
+    const FUNDING_CACHE_TTL_SECONDS = 12 * 60 * 60;
+    const OI_SAMPLES_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+    let fundingRates = extractFundingSeries(fundingHistory);
+    if (!fundingRates.length) {
+        fundingRates = extractFundingSeries(bundle.funding);
+    }
+    let fundingIntervalHours = extractFundingIntervalHours(fundingHistory);
+    if (!Number.isFinite(fundingIntervalHours as number)) {
+        fundingIntervalHours = extractFundingIntervalHours(bundle.funding);
+    }
+    if (!fundingRates.length) {
+        const cachedFunding = await kvGetJson<{
+            ts: number;
+            rates: number[];
+            intervalHours: number | null;
+        }>(fundingKey);
+        if (cachedFunding?.rates?.length) {
+            fundingRates = cachedFunding.rates;
+            fundingIntervalHours = cachedFunding.intervalHours ?? null;
+        }
+    }
+    if (fundingRates.length) {
+        await kvSetJson(
+            fundingKey,
+            { ts: Date.now(), rates: fundingRates, intervalHours: fundingIntervalHours },
+            FUNDING_CACHE_TTL_SECONDS,
+        );
+    }
+    const fundingZ = computeZScore(fundingRates);
+    const fundingSamplesN = fundingRates.length;
+    const fundingWindowHours =
+        Number.isFinite(fundingIntervalHours as number) && fundingSamplesN > 0
+            ? (fundingIntervalHours as number) * fundingSamplesN
+            : null;
+
     const oiSeries = extractOiSeries(bundle.oi);
-    const oiChg24hPct =
-        oiSeries.length >= 2 && oiSeries[0]! > 0 ? ((oiSeries[oiSeries.length - 1]! - oiSeries[0]!) / oiSeries[0]!) * 100 : null;
+    const latestOi = oiSeries.length ? oiSeries[oiSeries.length - 1]! : null;
+    const nowTs = latestOi?.ts ?? Date.now();
+    const cachedOiSamples = (await kvGetJson<{ ts: number; value: number }[]>(oiKey)) ?? [];
+    const oiSamples = cachedOiSamples.slice().filter((s) => Number.isFinite(s.ts) && Number.isFinite(s.value));
+    if (latestOi && Number.isFinite(latestOi.value)) {
+        const ts = Number.isFinite(latestOi.ts as number) ? (latestOi.ts as number) : nowTs;
+        const lastSample = oiSamples.length ? oiSamples[oiSamples.length - 1]! : null;
+        if (!lastSample || ts > lastSample.ts) {
+            oiSamples.push({ ts, value: latestOi.value });
+        }
+    }
+    const cutoffTs = nowTs - 3 * 24 * 60 * 60 * 1000;
+    const trimmedOiSamples = oiSamples.filter((s) => s.ts >= cutoffTs).sort((a, b) => a.ts - b.ts);
+    await kvSetJson(oiKey, trimmedOiSamples, OI_SAMPLES_TTL_SECONDS);
+
+    let oiChg24hPct: number | null = null;
+    let oiWindowHoursActual: number | null = null;
+    if (trimmedOiSamples.length >= 2) {
+        const targetTs = nowTs - 24 * 60 * 60 * 1000;
+        let closest = trimmedOiSamples[0]!;
+        let minDiff = Math.abs(closest.ts - targetTs);
+        for (const entry of trimmedOiSamples) {
+            const diff = Math.abs(entry.ts - targetTs);
+            if (diff < minDiff) {
+                minDiff = diff;
+                closest = entry;
+            }
+        }
+        if (closest.value > 0 && latestOi?.value) {
+            oiChg24hPct = ((latestOi.value - closest.value) / closest.value) * 100;
+            oiWindowHoursActual = (nowTs - closest.ts) / (60 * 60 * 1000);
+        }
+    }
+    const oiSamplesN = trimmedOiSamples.length;
 
     const oiPriceDiv =
         Number.isFinite(oiChg24hPct) && Number.isFinite(change)
@@ -420,7 +510,7 @@ export function buildPrompt(
         `dist_from_ema20_${microKey}_in_atr=${distance_from_ema_atr.toFixed(2)}, dist_from_ema20_${primaryKey}_in_atr=${distance_from_ema20_primary_atr.toFixed(2)}, ` +
         `structure_${primaryKey}=${structure4hState}, bos_${primaryKey}=${bos4h ? 1 : 0}, choch_${primaryKey}=${choch4h ? 1 : 0}, ` +
         `rvol_${primaryKey}=${formatNum(rvol4h, 2)}, rvol_${macroKey}=${formatNum(rvol1d, 2)}, value_state_${macroKey}=${valueState1d}, ` +
-        `funding_z_14d=${formatNum(fundingZ14d, 2)}, oi_chg_24h_pct=${formatNum(oiChg24hPct, 2)}, oi_price_div=${oiPriceDiv}`;
+        `funding_z=${formatNum(fundingZ, 2)}, oi_chg_24h_pct=${formatNum(oiChg24hPct, 2)}, oi_price_div=${oiPriceDiv}`;
 
     // --- SIGNAL STRENGTH DRIVERS & CLOSING GUIDANCE ---
     const clampNumber = (value: number | null | undefined, digits = 3) =>
@@ -455,8 +545,8 @@ export function buildPrompt(
 
     const valueOkLong = valueState1d === 'n/a' ? false : valueState1d !== 'below_val';
     const valueOkShort = valueState1d === 'n/a' ? false : valueState1d !== 'above_vah';
-    const fundingOkLong = Number.isFinite(fundingZ14d as number) ? (fundingZ14d as number) < 1.5 : false;
-    const fundingOkShort = Number.isFinite(fundingZ14d as number) ? (fundingZ14d as number) > -1.5 : false;
+    const fundingOkLong = Number.isFinite(fundingZ as number) ? (fundingZ as number) < 1.5 : false;
+    const fundingOkShort = Number.isFinite(fundingZ as number) ? (fundingZ as number) > -1.5 : false;
 
     const longDrivers = [
         structure4hState === 'bull' || bosDir4h === 'up',
@@ -502,9 +592,14 @@ export function buildPrompt(
         primary_slope_pct_per_bar: clampNumber(slope21_primary, 4),
         micro_slope_pct_per_bar: clampNumber(slope21_micro, 4),
 
-        funding_z_14d: clampNumber(fundingZ14d, 2),
+        funding_z: clampNumber(fundingZ, 2),
+        funding_samples_n: fundingSamplesN || null,
+        funding_interval_hours: Number.isFinite(fundingIntervalHours as number) ? fundingIntervalHours : null,
+        funding_window_hours: Number.isFinite(fundingWindowHours as number) ? fundingWindowHours : null,
         oi_chg_24h_pct: clampNumber(oiChg24hPct, 2),
         oi_price_divergence: oiPriceDiv,
+        oi_samples_n: oiSamplesN || null,
+        oi_window_hours_actual: Number.isFinite(oiWindowHoursActual as number) ? oiWindowHoursActual : null,
 
         aligned_driver_count: alignedDriverCount,
         aligned_driver_count_long: longAlignedDriverCount,
@@ -619,12 +714,10 @@ You are an expert crypto swing-trading market structure analyst and trading assi
 TIMEFRAMES (fixed for this mode)
 - micro: ${microTimeframe} (entry timing / confirmation)
 - primary: ${primaryTimeframe} (setup + execution timeframe)
-- macro: ${macroTimeframe
-} (regime bias, not a hard filter)
+- macro: ${macroTimeframe} (regime bias, not a hard filter)
 - context: ${contextTimeframe} (higher-timeframe location + major levels, risk lever)
 
-Primary strategy: ${primaryTimeframe} swing setups executed with ${microTimeframe} confirmation, aligned with (or tactically fading) the ${macroTimeframe
-} regime while respecting ${contextTimeframe} location/levels.
+Primary strategy: ${primaryTimeframe} swing setups executed with ${microTimeframe} confirmation, aligned with (or tactically fading) the ${macroTimeframe} regime while respecting ${contextTimeframe} location/levels.
 Holding horizon: typically 1–10 days. Prefer fewer, higher-quality trades; avoid churn.
 
 Decision ladder: Base gates → biases (context/macro/primary) → setup drivers → action.
@@ -638,8 +731,7 @@ GENERAL RULES
 - **Leverage**: For BUY/SELL/REVERSE pick leverage 1–5 (integer). Default null on HOLD/CLOSE.
   - Choose leverage based on conviction AND risk (regime alignment, extension, proximity to major levels, volatility). Even on HIGH conviction, use 1–2x if stretched or near major ${contextTimeframe} levels. Never exceed 5.
 - **Macro/context usage**:
-  - macro_bias (${macroTimeframe
-}) is a bias, not a hard filter. Trades with macro_bias are preferred.
+  - macro_bias (${macroTimeframe}) is a bias, not a hard filter. Trades with macro_bias are preferred.
   - context_bias (${contextTimeframe}) is a risk lever: when aligned, accept MEDIUM setups; when opposed, require HIGH quality and non-extended entries. Use it to adjust selectivity and leverage, not as a hard gate.
 - **Support/Resistance & location**: swing-pivot derived per timeframe; distances in ATR of that timeframe.
   - Avoid opening new positions directly into strong opposite levels (e.g., long into nearby resistance, short into nearby support) unless breakout/breakdown is confirmed and strength is HIGH.
@@ -651,16 +743,14 @@ GENERAL RULES
 BIAS DEFINITIONS (swing-oriented)
 - primary_bias (${primaryTimeframe}): trend/structure bias from EMA alignment/slope, RSI, HH/HL vs LH/LL, and ${primaryTimeframe} range state.
 - micro_bias (${microTimeframe}): timing bias from ${microTimeframe} structure (break/retest, pullback continuation, reversal failure), momentum, and reaction at levels.
-- macro_bias (${macroTimeframe
-}): regime trend up/down; if both false → NEUTRAL.
+- macro_bias (${macroTimeframe}): regime trend up/down; if both false → NEUTRAL.
 - context_bias (${contextTimeframe}): higher-timeframe regime/trend + location; modulates risk/selectivity.
 
 SETUP DRIVERS (what “aligned_driver_count” should represent)
 Count drivers that materially support a directional swing trade:
 - Structure: HH/HL or LH/LL alignment on ${primaryTimeframe}, with ${microTimeframe} confirmation (break + hold / retest).
 - Level logic: entry near meaningful ${primaryTimeframe} support/resistance, or post-breakout retest; clean invalidation.
-- Regime alignment: ${macroTimeframe
-} + ${contextTimeframe} supportive (or a high-quality counter-regime mean-reversion at extreme location).
+- Regime alignment: ${macroTimeframe} + ${contextTimeframe} supportive (or a high-quality counter-regime mean-reversion at extreme location).
 - Momentum quality: RSI/slope confirmation on ${primaryTimeframe}; ${microTimeframe} impulse/continuation vs fading.
 - Positioning/derivatives context: funding/OI extremes or supportive trend in OI (as a modifier, not primary).
 - Volatility/ATR sanity: not entering after exhausted expansion unless continuation setup is exceptionally clean.
@@ -692,8 +782,7 @@ EXTENSION / OVERBOUGHT-OVERSOLD (swing)
     const modeLabel = dryRun ? 'simulation' : 'live';
     const user = `
 You are analyzing ${symbol} for swing trading (mode=${modeLabel}).
-Timeframes: micro=${microTimeframe}, primary=${primaryTimeframe}, macro=${macroTimeframe
-}, context=${contextTimeframe}. I will call you roughly once per ${primaryTimeframe}.
+Timeframes: micro=${microTimeframe}, primary=${primaryTimeframe}, macro=${macroTimeframe}, context=${contextTimeframe}. I will call you roughly once per ${microTimeframe}.
 
 RISK/COSTS:
 - ${risk_policy}
@@ -704,8 +793,7 @@ BASE GATES (tradeability):
 - ${base_gating_flags}
 
 REGIME / BIASES:
-- ${regime_flags}  // macro (${macroTimeframe
-}) regime flags
+- ${regime_flags}  // macro (${macroTimeframe}) regime flags
 - Context bias (${contextTimeframe}): ${contextBias}
 
 KEY METRICS:
@@ -720,8 +808,7 @@ DATA INPUTS (swing-relevant windows):
 ${newsSentimentBlock}${newsHeadlinesBlock}${recentActionsBlock}- Current position: ${position_status}
 ${positionContextBlock}- Technical (micro ${microTimeframe}, last 60 candles): ${indicators.micro}
 - Primary (${primaryTimeframe}, last 60 candles): ${indicators.primary?.summary ?? 'n/a'}
-- Macro (${macroTimeframe
-}, last 60 candles): ${indicators.macro}
+- Macro (${macroTimeframe}, last 60 candles): ${indicators.macro}
 ${contextIndicatorsBlock}${contextSRBlock}${primaryIndicatorsBlock}${primarySRBlock}
 - HTF location flags: {into_support=${intoContextSupport}, into_resistance=${intoContextResistance}, breakdown_confirmed=${htfBreakdownConfirmed}, breakout_confirmed=${htfBreakoutConfirmed}, location_confluence_score=${clampNumber(locationConfluenceScore, 3)}}
 
@@ -744,8 +831,7 @@ ${JSON.stringify({
 - Closing guardrails: ${JSON.stringify(closingGuidance)}
 
 TASKS:
-1) Determine micro_bias (${microTimeframe}), primary_bias (${primaryTimeframe}), macro_bias (${macroTimeframe
-}), and context_bias (${contextTimeframe}).
+1) Determine micro_bias (${microTimeframe}), primary_bias (${primaryTimeframe}), macro_bias (${macroTimeframe}), and context_bias (${contextTimeframe}).
 2) Output exactly one action: "BUY", "SELL", "HOLD", "CLOSE", or "REVERSE".
    - If no position: BUY/SELL/HOLD.
    - If in position: HOLD/CLOSE/REVERSE only.

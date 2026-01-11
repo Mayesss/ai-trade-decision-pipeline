@@ -261,7 +261,7 @@ async function runAnalysisForSymbol(params: {
 
             // 6) Build prompt
             const roiRes = await fetchRealizedRoi(symbol, 24);
-            const { system, user } = buildPrompt(
+            const { system, user } = await buildPrompt(
                 symbol,
                 timeFrame,
                 bundle,
