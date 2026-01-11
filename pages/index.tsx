@@ -161,6 +161,7 @@ export default function Home() {
   const [chartData, setChartData] = useState<{ time: number; value: number }[]>([]);
   const [chartMarkers, setChartMarkers] = useState<any[]>([]);
   const [positionOverlays, setPositionOverlays] = useState<PositionOverlay[]>([]);
+  const [chartLoading, setChartLoading] = useState(false);
   const [renderedOverlays, setRenderedOverlays] = useState<RenderedOverlay[]>([]);
   const [hoveredOverlay, setHoveredOverlay] = useState<RenderedOverlay | null>(null);
   const [hoverX, setHoverX] = useState<number | null>(null);
@@ -228,6 +229,7 @@ export default function Home() {
     const fetchChart = async () => {
       if (!symbols[active]) return;
       try {
+        setChartLoading(true);
         const res = await fetch(`/api/chart?symbol=${symbols[active]}&timeframe=15m`);
         if (!res.ok) throw new Error('Failed to load chart');
         const json = await res.json();
@@ -239,6 +241,8 @@ export default function Home() {
         setChartData([]);
         setChartMarkers([]);
         setPositionOverlays([]);
+      } finally {
+        setChartLoading(false);
       }
     };
     fetchChart();
@@ -715,166 +719,186 @@ export default function Home() {
 
               </div>
 
-              {chartData.length > 0 && (
+              {(chartLoading || chartData.length > 0) && (
                 <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
                   <div className="flex items-center justify-between">
                     <div className="text-xs uppercase tracking-wide text-slate-500">24h Price</div>
                     <div className="text-xs text-slate-400">15m bars</div>
                   </div>
                   <div className="relative mt-3 h-[260px] w-full" style={{ minHeight: 260 }}>
-                    <div ref={chartContainerRef} className="h-full w-full" style={{ minHeight: 260 }} />
-                    <div ref={overlayLayerRef} className="pointer-events-none absolute inset-0">
-                      {renderedOverlays.map((pos) => {
-                        const profitable = typeof pos.pnlPct === 'number' ? pos.pnlPct >= 0 : null;
-                        const pnlLabel = typeof pos.pnlPct === 'number' ? `${pos.pnlPct.toFixed(1)}%` : null;
-                        const leverageLabel = typeof pos.leverage === 'number' ? `${pos.leverage.toFixed(0)}x` : null;
-                        const fill =
-                          profitable === null
-                            ? 'rgba(148,163,184,0.08)'
-                            : profitable
-                            ? 'rgba(16,185,129,0.12)'
-                            : 'rgba(248,113,113,0.12)';
-                        const stroke =
-                          profitable === null
-                            ? 'rgba(100,116,139,0.4)'
-                            : profitable
-                            ? 'rgba(16,185,129,0.9)'
-                            : 'rgba(239,68,68,0.9)';
-                        return (
+                    {chartLoading ? (
+                      <div className="flex h-full w-full items-center justify-center rounded-xl bg-slate-50 text-sm font-semibold text-slate-500">
+                        Loading chart...
+                      </div>
+                    ) : (
+                      <div ref={chartContainerRef} className="h-full w-full" style={{ minHeight: 260 }} />
+                    )}
+                    {!chartLoading && (
+                      <>
+                        <div ref={overlayLayerRef} className="pointer-events-none absolute inset-0">
+                          {renderedOverlays.map((pos) => {
+                            const profitable = typeof pos.pnlPct === 'number' ? pos.pnlPct >= 0 : null;
+                            const pnlLabel = typeof pos.pnlPct === 'number' ? `${pos.pnlPct.toFixed(1)}%` : null;
+                            const leverageLabel = typeof pos.leverage === 'number' ? `${pos.leverage.toFixed(0)}x` : null;
+                            const fill =
+                              profitable === null
+                                ? 'rgba(148,163,184,0.08)'
+                                : profitable
+                                ? 'rgba(16,185,129,0.12)'
+                                : 'rgba(248,113,113,0.12)';
+                            const stroke =
+                              profitable === null
+                                ? 'rgba(100,116,139,0.4)'
+                                : profitable
+                                ? 'rgba(16,185,129,0.9)'
+                                : 'rgba(239,68,68,0.9)';
+                            return (
+                              <div
+                                key={pos.id}
+                                className="absolute inset-y-3 rounded-md shadow-[inset_0_0_0_1px_rgba(0,0,0,0.04)]"
+                                style={{ left: pos.left, width: pos.width, background: fill, pointerEvents: 'auto' }}
+                                onMouseEnter={() => {
+                                  setHoveredOverlay(pos);
+                                  setHoverX(pos.left + pos.width / 2);
+                                }}
+                                onMouseLeave={() => {
+                                  setHoveredOverlay(null);
+                                  setHoverX(null);
+                                }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setHoveredOverlay((cur) => (cur?.id === pos.id ? null : pos));
+                                  setHoverX(pos.left + pos.width / 2);
+                                }}
+                              >
+                                {pos.showEntryWall && (
+                                  <div
+                                    className="absolute top-0 bottom-0 w-[2px]"
+                                    style={{ left: 0, backgroundColor: stroke }}
+                                  />
+                                )}
+                                {pos.status === 'closed' ? (
+                                  <div
+                                    className="absolute top-0 bottom-0 w-[2px]"
+                                    style={{ right: 0, backgroundColor: stroke }}
+                                  />
+                                ) : (
+                                  <div
+                                    className="absolute top-0 bottom-0 w-[2px]"
+                                    style={{ right: 0, backgroundColor: 'rgba(148,163,184,0.8)' }}
+                                  />
+                                )}
+                                <div className="pointer-events-none absolute right-1 top-1 rounded-full bg-white/90 p-2 shadow-sm">
+                                  {pos.side === 'long' ? (
+                                    <ArrowUpRight className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
+                                  ) : pos.side === 'short' ? (
+                                    <ArrowDownRight className="h-3.5 w-3.5 text-rose-600" aria-hidden="true" />
+                                  ) : null}
+                                </div>
+                                {pnlLabel && (
+                                  <div className="pointer-events-none absolute right-1 top-10 rounded-full bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-slate-700 shadow-sm">
+                                    {pnlLabel}
+                                  </div>
+                                )}
+                                {leverageLabel ? (
+                                  <div className="pointer-events-none absolute right-9 top-3.5 rounded-full bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-slate-700 shadow-sm">
+                                    {leverageLabel}
+                                  </div>
+                                ) : null}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {hoveredOverlay && hoverX !== null && (
                           <div
-                            key={pos.id}
-                            className="absolute inset-y-3 rounded-md shadow-[inset_0_0_0_1px_rgba(0,0,0,0.04)]"
-                            style={{ left: pos.left, width: pos.width, background: fill, pointerEvents: 'auto' }}
-                            onMouseEnter={() => {
-                              setHoveredOverlay(pos);
-                              setHoverX(pos.left + pos.width / 2);
-                            }}
-                            onMouseLeave={() => {
-                              setHoveredOverlay(null);
-                              setHoverX(null);
-                            }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setHoveredOverlay((cur) => (cur?.id === pos.id ? null : pos));
-                              setHoverX(pos.left + pos.width / 2);
+                            className="absolute z-20"
+                            style={{
+                              left: Math.min(
+                                Math.max(hoverX - 130, 8),
+                                (overlayLayerRef.current?.clientWidth || 280) - 220
+                              ),
+                              top: 10,
                             }}
                           >
-                            {pos.showEntryWall && (
-                              <div className="absolute top-0 bottom-0 w-[2px]" style={{ left: 0, backgroundColor: stroke }} />
-                            )}
-                            {pos.status === 'closed' ? (
-                              <div className="absolute top-0 bottom-0 w-[2px]" style={{ right: 0, backgroundColor: stroke }} />
-                            ) : (
-                              <div className="absolute top-0 bottom-0 w-[2px]" style={{ right: 0, backgroundColor: 'rgba(148,163,184,0.8)' }} />
-                            )}
-                            <div className="pointer-events-none absolute right-1 top-1 rounded-full bg-white/90 p-2 shadow-sm">
-                              {pos.side === 'long' ? (
-                                <ArrowUpRight className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
-                              ) : pos.side === 'short' ? (
-                                <ArrowDownRight className="h-3.5 w-3.5 text-rose-600" aria-hidden="true" />
-                              ) : null}
-                            </div>
-                            {pnlLabel && (
-                              <div className="pointer-events-none absolute right-1 top-10 rounded-full bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-slate-700 shadow-sm">
-                                {pnlLabel}
+                            <div className="pointer-events-none rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-[11px] text-slate-700 shadow-lg backdrop-blur">
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="font-semibold text-slate-900">
+                                  {hoveredOverlay.status === 'open' ? 'Open position' : 'Closed position'}
+                                </span>
+                                <span
+                                  className={
+                                    typeof hoveredOverlay.pnlPct === 'number'
+                                      ? hoveredOverlay.pnlPct >= 0
+                                        ? 'font-semibold text-emerald-600'
+                                        : 'font-semibold text-rose-600'
+                                      : 'text-slate-500'
+                                  }
+                                >
+                                  {typeof hoveredOverlay.pnlPct === 'number'
+                                    ? `${hoveredOverlay.pnlPct.toFixed(2)}%`
+                                    : '—'}
+                                </span>
                               </div>
-                            )}
-                            {leverageLabel ? (
-                              <div className="pointer-events-none absolute right-9 top-3.5 rounded-full bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-slate-700 shadow-sm">
-                                {leverageLabel}
+                              <div className="mt-1 text-[10px] uppercase tracking-wide text-slate-500">
+                                {hoveredOverlay.side || 'position'} · entry {formatOverlayTime(hoveredOverlay.entryTime)}
+                                {hoveredOverlay.exitTime ? ` · exit ${formatOverlayTime(hoveredOverlay.exitTime)}` : ''}
                               </div>
-                            ) : null}
-                          </div>
-                        );
-                      })}
-
-                      {hoveredOverlay && hoverX !== null && (
-                        <div
-                          className="absolute z-20"
-                          style={{
-                            left: Math.min(
-                              Math.max(hoverX - 130, 8),
-                              (overlayLayerRef.current?.clientWidth || 280) - 220
-                            ),
-                            top: 10,
-                          }}
-                        >
-                          <div className="pointer-events-none rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-[11px] text-slate-700 shadow-lg backdrop-blur">
-                            <div className="flex items-center justify-between gap-3">
-                              <span className="font-semibold text-slate-900">
-                                {hoveredOverlay.status === 'open' ? 'Open position' : 'Closed position'}
-                              </span>
-                              <span
-                                className={
-                                  typeof hoveredOverlay.pnlPct === 'number'
-                                    ? hoveredOverlay.pnlPct >= 0
-                                      ? 'font-semibold text-emerald-600'
-                                      : 'font-semibold text-rose-600'
-                                    : 'text-slate-500'
-                                }
-                              >
-                                {typeof hoveredOverlay.pnlPct === 'number'
-                                  ? `${hoveredOverlay.pnlPct.toFixed(2)}%`
-                                  : '—'}
-                              </span>
-                            </div>
-                            <div className="mt-1 text-[10px] uppercase tracking-wide text-slate-500">
-                              {hoveredOverlay.side || 'position'} · entry {formatOverlayTime(hoveredOverlay.entryTime)}
-                              {hoveredOverlay.exitTime ? ` · exit ${formatOverlayTime(hoveredOverlay.exitTime)}` : ''}
-                            </div>
-                            <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-600">
-                              {typeof hoveredOverlay.leverage === 'number' ? (
-                                <span className="font-semibold text-slate-800">{hoveredOverlay.leverage.toFixed(0)}x</span>
-                              ) : null}
-                              {typeof hoveredOverlay.entryPrice === 'number' ? (
-                                <span>Entry {hoveredOverlay.entryPrice.toFixed(2)}</span>
-                              ) : null}
-                              {typeof hoveredOverlay.exitPrice === 'number' ? (
-                                <span>Exit {hoveredOverlay.exitPrice.toFixed(2)}</span>
-                              ) : null}
-                            </div>
-
-                            {hoveredOverlay.entryDecision && (
-                              <div className="mt-2 space-y-0.5 rounded-lg bg-slate-50/80 p-2">
-                                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                                  Entry AI decision
-                                </div>
-                                <div className="text-[11px] text-slate-800">
-                                  <span className="font-semibold text-sky-700">
-                                    {hoveredOverlay.entryDecision.action || 'Decision'}
+                              <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-600">
+                                {typeof hoveredOverlay.leverage === 'number' ? (
+                                  <span className="font-semibold text-slate-800">
+                                    {hoveredOverlay.leverage.toFixed(0)}x
                                   </span>
-                                  {hoveredOverlay.entryDecision.summary
-                                    ? ` · ${hoveredOverlay.entryDecision.summary}`
-                                    : ''}
-                                </div>
-                                <div className="text-[10px] text-slate-500">
-                                  {formatOverlayDecisionTs(hoveredOverlay.entryDecision.timestamp || null)}
-                                </div>
+                                ) : null}
+                                {typeof hoveredOverlay.entryPrice === 'number' ? (
+                                  <span>Entry {hoveredOverlay.entryPrice.toFixed(2)}</span>
+                                ) : null}
+                                {typeof hoveredOverlay.exitPrice === 'number' ? (
+                                  <span>Exit {hoveredOverlay.exitPrice.toFixed(2)}</span>
+                                ) : null}
                               </div>
-                            )}
 
-                            {hoveredOverlay.exitDecision && (
-                              <div className="mt-2 space-y-0.5 rounded-lg bg-slate-50/80 p-2">
-                                <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                                  Exit AI decision
+                              {hoveredOverlay.entryDecision && (
+                                <div className="mt-2 space-y-0.5 rounded-lg bg-slate-50/80 p-2">
+                                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                    Entry AI decision
+                                  </div>
+                                  <div className="text-[11px] text-slate-800">
+                                    <span className="font-semibold text-sky-700">
+                                      {hoveredOverlay.entryDecision.action || 'Decision'}
+                                    </span>
+                                    {hoveredOverlay.entryDecision.summary
+                                      ? ` · ${hoveredOverlay.entryDecision.summary}`
+                                      : ''}
+                                  </div>
+                                  <div className="text-[10px] text-slate-500">
+                                    {formatOverlayDecisionTs(hoveredOverlay.entryDecision.timestamp || null)}
+                                  </div>
                                 </div>
-                                <div className="text-[11px] text-slate-800">
-                                  <span className="font-semibold text-sky-700">
-                                    {hoveredOverlay.exitDecision.action || 'Decision'}
-                                  </span>
-                                  {hoveredOverlay.exitDecision.summary
-                                    ? ` · ${hoveredOverlay.exitDecision.summary}`
-                                    : ''}
+                              )}
+
+                              {hoveredOverlay.exitDecision && (
+                                <div className="mt-2 space-y-0.5 rounded-lg bg-slate-50/80 p-2">
+                                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                    Exit AI decision
+                                  </div>
+                                  <div className="text-[11px] text-slate-800">
+                                    <span className="font-semibold text-sky-700">
+                                      {hoveredOverlay.exitDecision.action || 'Decision'}
+                                    </span>
+                                    {hoveredOverlay.exitDecision.summary
+                                      ? ` · ${hoveredOverlay.exitDecision.summary}`
+                                      : ''}
+                                  </div>
+                                  <div className="text-[10px] text-slate-500">
+                                    {formatOverlayDecisionTs(hoveredOverlay.exitDecision.timestamp || null)}
+                                  </div>
                                 </div>
-                                <div className="text-[10px] text-slate-500">
-                                  {formatOverlayDecisionTs(hoveredOverlay.exitDecision.timestamp || null)}
-                                </div>
-                              </div>
-                            )}
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      )}
-                    </div>
+                        )}
+                      </>
+                    )}
                   </div>
                 </div>
               )}
