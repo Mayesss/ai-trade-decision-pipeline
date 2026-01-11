@@ -13,7 +13,13 @@ import { getGates } from '../../lib/gates';
 import { executeDecision, getTradeProductType } from '../../lib/trading';
 import { composePositionContext } from '../../lib/positionContext';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
-import { CONTEXT_TIMEFRAME, MACRO_TIMEFRAME, MICRO_TIMEFRAME, PRIMARY_TIMEFRAME } from '../../lib/constants';
+import {
+    CONTEXT_TIMEFRAME,
+    DEFAULT_NOTIONAL_USDT,
+    MACRO_TIMEFRAME,
+    MICRO_TIMEFRAME,
+    PRIMARY_TIMEFRAME,
+} from '../../lib/constants';
 
 // ------------------------------------------------------------------
 // Small utilities
@@ -77,8 +83,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const microTimeFrame = MICRO_TIMEFRAME;
         const macroTimeFrame = MACRO_TIMEFRAME;
         const contextTimeFrame = CONTEXT_TIMEFRAME;
-        const dryRun = body.dryRun !== 'false' && body.dryRun !== false; // default true
-        const sideSizeUSDT = Number(body.notional || 10);
+        const dryRun = body.dryRun !== undefined ? body.dryRun !== 'false' && body.dryRun !== false : false;
+        const sideSizeUSDT = Number(body.notional ?? DEFAULT_NOTIONAL_USDT);
 
         // 1) Product & parallel baseline fetches (fast)
         const productType = getTradeProductType();

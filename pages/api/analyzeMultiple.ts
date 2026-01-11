@@ -14,7 +14,13 @@ import { getGates } from '../../lib/gates';
 import { executeDecision, getTradeProductType } from '../../lib/trading';
 import { composePositionContext } from '../../lib/positionContext';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
-import { CONTEXT_TIMEFRAME, MACRO_TIMEFRAME, MICRO_TIMEFRAME, PRIMARY_TIMEFRAME } from '../../lib/constants';
+import {
+    CONTEXT_TIMEFRAME,
+    DEFAULT_NOTIONAL_USDT,
+    MACRO_TIMEFRAME,
+    MICRO_TIMEFRAME,
+    PRIMARY_TIMEFRAME,
+} from '../../lib/constants';
 
 // ------------------------------------------------------------------
 // Small utilities (same as analyze.ts)
@@ -377,8 +383,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const microTimeFrame: string = MICRO_TIMEFRAME;
         const macroTimeFrame: string = MACRO_TIMEFRAME;
         const contextTimeFrame: string = CONTEXT_TIMEFRAME;
-        const dryRun: boolean = body.dryRun !== false; // default true
-        const sideSizeUSDT: number = Number(body.notional || 10);
+        const dryRun: boolean = body.dryRun !== undefined ? body.dryRun !== 'false' && body.dryRun !== false : false;
+        const sideSizeUSDT: number = Number(body.notional ?? DEFAULT_NOTIONAL_USDT);
         const productType = getTradeProductType();
 
         const MAX_CONCURRENCY = 5;

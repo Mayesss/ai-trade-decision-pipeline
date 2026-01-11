@@ -5,6 +5,7 @@ export const COINDESK_API_BASE = 'https://data-api.coindesk.com';
 export const COINDESK_NEWS_LIST_PATH = '/news/v1/article/list';
 export const TRADE_WINDOW_MINUTES = 60;
 export const DEFAULT_TAKER_FEE_RATE = Number(process.env.TAKER_FEE_RATE ?? '0.0006');
+export const DEFAULT_NOTIONAL_USDT = 10;
 export const MICRO_TIMEFRAME = '1H';
 export const PRIMARY_TIMEFRAME = '4H';
 export const MACRO_TIMEFRAME = '1D';
