@@ -80,11 +80,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const body = req.query ?? {};
         const symbolParam = Array.isArray(body.symbol) ? body.symbol[0] : body.symbol;
         const symbol = String(symbolParam || 'ETHUSDT').toUpperCase();
+        const parseBoolParam = (value: string | string[] | undefined, fallback: boolean) => {
+            if (value === undefined) return fallback;
+            const v = Array.isArray(value) ? value[0] : value;
+            if (v === undefined) return fallback;
+            const normalized = String(v).toLowerCase();
+            if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+            if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+            return fallback;
+        };
         const timeFrame = PRIMARY_TIMEFRAME;
         const microTimeFrame = MICRO_TIMEFRAME;
         const macroTimeFrame = MACRO_TIMEFRAME;
         const contextTimeFrame = CONTEXT_TIMEFRAME;
-        const dryRun = body.dryRun !== undefined ? body.dryRun !== 'false' && body.dryRun !== false : false;
+        const dryRun = parseBoolParam(body.dryRun as string | string[] | undefined, false);
         const sideSizeUSDT = Number(body.notional ?? DEFAULT_NOTIONAL_USDT);
 
         // 1) Product & parallel baseline fetches (fast)
