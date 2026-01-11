@@ -266,6 +266,7 @@ export default function Home() {
         return;
       }
 
+      const priceScaleWidth = 56;
       chart = createChart(container, {
         width: container.clientWidth,
         height: 260,
@@ -281,6 +282,7 @@ export default function Home() {
         },
         rightPriceScale: {
           borderVisible: false,
+          minimumWidth: priceScaleWidth,
         },
         timeScale: {
           borderVisible: false,
@@ -750,7 +752,11 @@ export default function Home() {
                     )}
                     {!chartLoading && (
                       <>
-                        <div ref={overlayLayerRef} className="pointer-events-none absolute inset-0">
+                        <div
+                          ref={overlayLayerRef}
+                          className="pointer-events-none absolute inset-0"
+                          style={{ right: 56 }}
+                        >
                           {renderedOverlays.map((pos) => {
                             const profitable = typeof pos.pnlPct === 'number' ? pos.pnlPct >= 0 : null;
                             const pnlLabel = typeof pos.pnlPct === 'number' ? `${pos.pnlPct.toFixed(1)}%` : null;
