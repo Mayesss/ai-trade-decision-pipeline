@@ -365,11 +365,11 @@ async function runAnalysisForSymbol(params: {
 type ProductType = 'usdt-futures' | 'usdc-futures' | 'coin-futures';
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     try {
-        if (req.method !== 'POST') {
-            return res.status(405).json({ error: 'Method Not Allowed', message: 'Use POST' });
+        if (req.method !== 'GET') {
+            return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
         }
 
-        const body = req.body ?? {};
+        const body = req.query ?? {};
         const symbols = body.symbols as string[] | undefined;
 
         if (!Array.isArray(symbols) || symbols.length === 0) {

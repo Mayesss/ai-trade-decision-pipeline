@@ -17,11 +17,11 @@ function actionStats(items: any[]) {
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-    if (req.method !== 'POST' && req.method !== 'GET') {
-        return res.status(405).json({ error: 'Method Not Allowed', message: 'Use POST or GET' });
+    if (req.method !== 'GET') {
+        return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
     }
 
-    const body = req.method === 'GET' ? req.query : req.body ?? {};
+    const body = req.query ?? {};
     const symbol = String(body?.symbol || '').toUpperCase();
     const limit = Math.min(30, Math.max(5, Number(body?.limit ?? 50)));
 

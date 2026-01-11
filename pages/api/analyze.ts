@@ -73,12 +73,13 @@ function shouldSkipMomentumCall(params: { signals: MomentumSignals; price: numbe
 // ------------------------------------------------------------------
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     try {
-        if (req.method !== 'POST' && req.method !== 'GET') {
-            return res.status(405).json({ error: 'Method Not Allowed', message: 'Use POST or GET' });
+        if (req.method !== 'GET') {
+            return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
         }
 
-        const body = req.method === 'GET' ? req.query : req.body ?? {};
-        const symbol = (body.symbol as string) || 'ETHUSDT';
+        const body = req.query ?? {};
+        const symbolParam = Array.isArray(body.symbol) ? body.symbol[0] : body.symbol;
+        const symbol = String(symbolParam || 'ETHUSDT').toUpperCase();
         const timeFrame = PRIMARY_TIMEFRAME;
         const microTimeFrame = MICRO_TIMEFRAME;
         const macroTimeFrame = MACRO_TIMEFRAME;
