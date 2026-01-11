@@ -11,7 +11,7 @@ import { buildPrompt, callAI, computeMomentumSignals } from '../../lib/ai';
 import type { MomentumSignals } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
-import { executeDecision, getTradeProductType } from '../../lib/trading';
+import { executeDecision, getTargetLeverage, getTradeProductType } from '../../lib/trading';
 import { composePositionContext } from '../../lib/positionContext';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
 import {
@@ -287,7 +287,36 @@ async function runAnalysisForSymbol(params: {
             // 7) AI decision
             const decision = await callAI(system, user);
 
-            // 8) Execute (dry run unless explicitly disabled)
+            // 8) Execute (dry run unless explicitly disabled), using leveraged notional for gates
+            const execLeverage = getTargetLeverage(decision);
+            const execNotionalUSDT = sideSizeUSDT * (execLeverage ?? 1);
+            const gatesForExec =
+                execNotionalUSDT !== sideSizeUSDT
+                    ? getGates({
+                          symbol,
+                          bundle,
+                          analytics,
+                          indicators,
+                          notionalUSDT: execNotionalUSDT,
+                          positionOpen,
+                      })
+                    : gatesOut;
+
+            if (
+                !positionOpen &&
+                (decision.action === 'BUY' || decision.action === 'SELL') &&
+                gatesForExec.preDecision
+            ) {
+                return {
+                    symbol,
+                    decision,
+                    execRes: { placed: false, reason: 'gates_short_circuit' },
+                    gates: { ...gatesForExec.gates, metrics: gatesForExec.metrics },
+                    promptSkipped: false,
+                    usedTape,
+                };
+            }
+
             const execRes = await executeDecision(symbol, sideSizeUSDT, decision, productType, dryRun);
             // recent actions fetched from history; no in-memory persistence
 
@@ -296,8 +325,8 @@ async function runAnalysisForSymbol(params: {
                 price: Number.isFinite(lastPrice) ? lastPrice : undefined,
                 change24h: Number.isFinite(change24h) ? change24h : undefined,
                 spread: safeNum(analytics.spread, 0),
-                gates: gatesOut.gates,
-                metrics: gatesOut.metrics,
+                gates: gatesForExec.gates,
+                metrics: gatesForExec.metrics,
                 momentumSignals,
                 newsSentiment: newsBundle?.sentiment ?? null,
                 newsHeadlines: newsBundle?.headlines ?? [],
@@ -326,7 +355,7 @@ async function runAnalysisForSymbol(params: {
                 symbol,
                 decision,
                 execRes,
-                gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+                gates: { ...gatesForExec.gates, metrics: gatesForExec.metrics },
                 close_conditions,
                 promptSkipped: false,
                 prompt: { system, user },

@@ -10,7 +10,7 @@ import { buildPrompt, callAI, computeMomentumSignals } from '../../lib/ai';
 import type { MomentumSignals } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
-import { executeDecision, getTradeProductType } from '../../lib/trading';
+import { executeDecision, getTargetLeverage, getTradeProductType } from '../../lib/trading';
 import { composePositionContext } from '../../lib/positionContext';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
 import {
@@ -272,7 +272,37 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions)
         const decision = await callAI(system, user);
 
-        // 8) Execute (dry run unless explicitly disabled)
+        // 8) Execute (dry run unless explicitly disabled), using leveraged notional for gates
+        const execLeverage = getTargetLeverage(decision);
+        const execNotionalUSDT = sideSizeUSDT * (execLeverage ?? 1);
+        const gatesForExec =
+            execNotionalUSDT !== sideSizeUSDT
+                ? getGates({
+                      symbol,
+                      bundle,
+                      analytics,
+                      indicators,
+                      notionalUSDT: execNotionalUSDT,
+                      positionOpen,
+                  })
+                : gatesOut;
+
+        if (
+            !positionOpen &&
+            (decision.action === 'BUY' || decision.action === 'SELL') &&
+            gatesForExec.preDecision
+        ) {
+            return res.status(200).json({
+                symbol,
+                timeFrame,
+                dryRun,
+                decision,
+                execRes: { placed: false, orderId: null, clientOid: null, reason: 'gates_short_circuit' },
+                gates: { ...gatesForExec.gates, metrics: gatesForExec.metrics },
+                usedTape,
+            });
+        }
+
         const execRes = await executeDecision(symbol, sideSizeUSDT, decision, productType, dryRun);
 
         const change24h = Number(tickerData?.change24h ?? tickerData?.changeUtc24h ?? tickerData?.chgPct);
@@ -280,8 +310,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             price: Number.isFinite(lastPrice) ? lastPrice : undefined,
             change24h: Number.isFinite(change24h) ? change24h : undefined,
             spread: safeNum(analytics.spread, 0),
-            gates: gatesOut.gates,
-            metrics: gatesOut.metrics,
+            gates: gatesForExec.gates,
+            metrics: gatesForExec.metrics,
             newsSentiment: newsBundle?.sentiment ?? null,
             newsHeadlines: newsBundle?.headlines ?? [],
             positionContext,
@@ -312,7 +342,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             dryRun,
             decision,
             execRes,
-            gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
+            gates: { ...gatesForExec.gates, metrics: gatesForExec.metrics },
             usedTape,
         });
     } catch (err: any) {

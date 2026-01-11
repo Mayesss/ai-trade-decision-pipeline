@@ -56,6 +56,11 @@ function deriveLeverage(decision: TradeDecision): number | null {
     return null;
 }
 
+function deriveOrderNotional(sideSizeUSDT: number, leverage: number | null): number {
+    const lev = clampLeverage(leverage) ?? 1;
+    return sideSizeUSDT * lev;
+}
+
 async function applyLeverage(params: {
     symbol: string;
     productType: ProductType;
@@ -135,6 +140,10 @@ export async function flashClosePosition(symbol: string, productType: ProductTyp
 // Execute Trade Decision
 // ------------------------------
 
+export function getTargetLeverage(decision: TradeDecision): number | null {
+    return deriveLeverage(decision);
+}
+
 export async function executeDecision(
     symbol: string,
     sideSizeUSDT: number,
@@ -154,7 +163,8 @@ export async function executeDecision(
         const holdSide: 'long' | 'short' = decision.action === 'BUY' ? 'long' : 'short';
         const leverageResult = await applyLeverage({ symbol, productType, leverage: targetLeverage, holdSide, dryRun });
         if (dryRun) return { placed: false, orderId: null, clientOid, leverage: leverageResult.leverage };
-        const size = await computeOrderSize(symbol, sideSizeUSDT, productType);
+        const orderNotionalUSDT = deriveOrderNotional(sideSizeUSDT, targetLeverage);
+        const size = await computeOrderSize(symbol, orderNotionalUSDT, productType);
 
         const body: PlaceOrderBody = {
             symbol,
@@ -272,7 +282,8 @@ export async function executeDecision(
         if (!closeOk) {
             return { placed: false, orderId: null, clientOid, note: 'failed to close before reverse' };
         }
-        const size = await computeOrderSize(symbol, sideSizeUSDT, productType);
+        const orderNotionalUSDT = deriveOrderNotional(sideSizeUSDT, targetLeverage);
+        const size = await computeOrderSize(symbol, orderNotionalUSDT, productType);
         const body: PlaceOrderBody = {
             symbol,
             productType,
