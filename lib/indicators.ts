@@ -462,10 +462,14 @@ export async function calculateMultiTFIndicators(
     opts: IndicatorTimeframeOptions = {},
 ): Promise<MultiTFIndicators> {
     const productType = resolveProductType(); // futures only
-    const microTF = opts.micro || MICRO_TIMEFRAME;
-    const macroTF = opts.macro || MACRO_TIMEFRAME;
-    const primaryTF = opts.primary || PRIMARY_TIMEFRAME;
-    const contextTF = opts.context || CONTEXT_TIMEFRAME;
+    const normalizeTimeframe = (tf: string) => {
+        if (tf === '4D') return '1W';
+        return tf;
+    };
+    const microTF = normalizeTimeframe(opts.micro || MICRO_TIMEFRAME);
+    const macroTF = normalizeTimeframe(opts.macro || MACRO_TIMEFRAME);
+    const primaryTF = normalizeTimeframe(opts.primary || PRIMARY_TIMEFRAME);
+    const contextTF = normalizeTimeframe(opts.context || CONTEXT_TIMEFRAME);
 
     async function fetchCandles(tf: string) {
         const cs = await bitgetFetch('GET', '/api/v2/mix/market/candles', {

@@ -8,4 +8,4 @@ export const DEFAULT_TAKER_FEE_RATE = Number(process.env.TAKER_FEE_RATE ?? '0.00
 export const MICRO_TIMEFRAME = '1H';
 export const PRIMARY_TIMEFRAME = '4H';
 export const MACRO_TIMEFRAME = '1D';
-export const CONTEXT_TIMEFRAME = '4D';
+export const CONTEXT_TIMEFRAME = '1W';
