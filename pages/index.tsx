@@ -552,14 +552,29 @@ export default function Home() {
           <div className="flex flex-wrap items-center gap-2 px-6 py-4">
             {symbols.map((sym, i) => {
               const isActive = i === active;
+              const tab = tabData[sym];
+              const pnl24hValue =
+                typeof tab?.pnl24hWithOpen === 'number'
+                  ? tab.pnl24hWithOpen
+                  : typeof tab?.pnl24h === 'number'
+                  ? tab.pnl24h
+                  : null;
+              const pnlTone =
+                typeof pnl24hValue === 'number' ? (pnl24hValue < 0 ? 'negative' : 'positive') : 'neutral';
               return (
                 <button
                   key={sym}
                   onClick={() => setActive(i)}
                   className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
-                    isActive
-                      ? 'border-sky-400 bg-sky-100 text-sky-800 shadow-sm'
+                    pnlTone === 'positive'
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:text-emerald-800'
+                      : pnlTone === 'negative'
+                      ? 'border-rose-200 bg-rose-50 text-rose-700 hover:border-rose-300 hover:text-rose-800'
                       : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-800'
+                  } ${
+                    isActive
+                      ? 'shadow-md ring-2 ring-slate-400/70 outline outline-2 outline-offset-2 outline-slate-200/80'
+                      : ''
                   }`}
                 >
                   {sym}
