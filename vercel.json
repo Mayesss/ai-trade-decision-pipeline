@@ -5,5 +5,11 @@
   ],
   "routes": [
     { "src": "/api/(.*)", "dest": "/api/$1" }
+  ],
+  "crons": [
+    { "path": "/api/analyze?symbol=BTCUSDT", "schedule": "0 * * * *" },
+    { "path": "/api/analyze?symbol=XAUUSDT", "schedule": "0 * * * *" },
+    { "path": "/api/evaluate?symbol=BTCUSDT", "schedule": "0 0 * * *" },
+    { "path": "/api/evaluate?symbol=XAUUSDT", "schedule": "0 0 * * *" }
   ]
 }
