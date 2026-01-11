@@ -477,14 +477,13 @@ export async function fetchMarketBundle(symbol: string, bundleTimeFrame: string,
 }
 
 // ------------------------------
-// Analytics: CVD, VP, liquidity
+// Analytics: volume profile, liquidity
 // ------------------------------
 export function computeAnalytics(bundle: any) {
     const normTrades = (bundle.trades || [])
         .map((t: any) => ({
             price: num(t.price ?? t.fillPrice ?? t.p ?? t[1] ?? NaN),
             size: num(t.size ?? t.fillQuantity ?? t.q ?? t[2] ?? NaN),
-            side: String(t.side ?? t.S ?? t[3] ?? '').toLowerCase(),
             ts: Number(t.ts ?? t.tradeTime ?? t[0] ?? Date.now()),
         }))
         .filter((t: any) => Number.isFinite(t.price) && Number.isFinite(t.size) && t.size > 0);
@@ -492,29 +491,13 @@ export function computeAnalytics(bundle: any) {
     const bestBid = num(bundle.orderbook?.bids?.[0]?.[0] ?? bundle.orderbook?.bids?.[0]?.price);
     const bestAsk = num(bundle.orderbook?.asks?.[0]?.[0] ?? bundle.orderbook?.asks?.[0]?.price);
     const spread = bestAsk > 0 && bestBid > 0 ? bestAsk - bestBid : 0;
-    const mid = bestAsk > 0 && bestBid > 0 ? (bestAsk + bestBid) / 2 : 0;
-
-    let lastPrice = normTrades[0]?.price || 0;
-    const enriched = normTrades.map((tr: any) => {
-        let dir = tr.side;
-        if (!dir || dir === '') {
-            if (mid > 0) dir = tr.price >= mid ? 'buy' : 'sell';
-            else dir = tr.price >= lastPrice ? 'buy' : 'sell';
-        }
-        lastPrice = tr.price;
-        return { ...tr, dir };
-    });
-
-    const cvd = enriched.reduce((acc: number, t: any) => acc + (t.dir === 'buy' ? t.size : -t.size), 0);
-    const buys = enriched.filter((t: any) => t.dir === 'buy').reduce((a: number, t: any) => a + t.size, 0);
-    const sells = enriched.filter((t: any) => t.dir === 'sell').reduce((a: number, t: any) => a + t.size, 0);
-
+    const lastPrice = normTrades[0]?.price || 0;
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const last = num(t?.lastPr ?? t?.last ?? t?.close ?? lastPrice) || 0;
 
     const pct = Math.max(0.0005, spread && last ? (spread / last) * 3 : 0.0005);
     const bins = new Map<number, number>();
-    for (const tr of enriched) {
+    for (const tr of normTrades) {
         const bin = Math.round((tr.price - last) / (last * pct));
         bins.set(bin, (bins.get(bin) || 0) + tr.size);
     }
@@ -550,12 +533,5 @@ export function computeAnalytics(bundle: any) {
             .slice(0, 5),
     };
 
-    const sumTop = (lvls: OBLevel[], n: number): number =>
-        (lvls || []).slice(0, n).reduce((acc: number, l: OBLevel) => acc + l.size, 0);
-
-    const topBid = sumTop(bids, 5);
-    const topAsk = sumTop(asks, 5);
-    const obImb = topBid + topAsk > 0 ? (topBid - topAsk) / (topBid + topAsk) : 0;
-
-    return { cvd, buys, sells, volume_profile, topWalls, obImb, spread, last, bestBid, bestAsk };
+    return { volume_profile, topWalls, spread, last, bestBid, bestAsk };
 }

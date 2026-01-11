@@ -14,6 +14,7 @@ import { getGates } from '../../lib/gates';
 import { executeDecision, getTradeProductType } from '../../lib/trading';
 import { composePositionContext } from '../../lib/positionContext';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
+import { CONTEXT_TIMEFRAME, MACRO_TIMEFRAME, MICRO_TIMEFRAME, PRIMARY_TIMEFRAME } from '../../lib/constants';
 
 // ------------------------------------------------------------------
 // Small utilities (same as analyze.ts)
@@ -59,106 +60,30 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: nu
 }
 
 // ------------------------------------------------------------------
-// Robust CVD flip detection with persistence + confirmation
-// (same logic as in analyze.ts)
+// In-memory position tracking for best-effort hold timing (resets on cold start).
 // ------------------------------------------------------------------
 type PersistState = {
-    lastFlipDir?: 'against' | 'for';
-    streak: number;
     enteredAt?: number;
     lastSide?: 'long' | 'short';
 };
 const persist = new Map<string, PersistState>();
 
 function touchPersist(key: string): PersistState {
-    if (!persist.has(key)) persist.set(key, { streak: 0 });
+    if (!persist.has(key)) persist.set(key, {});
     return persist.get(key)!;
 }
 
 const ATR_ACTIVE_MIN_PCT = 0.0007;
 
-function shouldSkipMomentumCall(params: { analytics: any; signals: MomentumSignals; price: number }) {
-    const { analytics, signals, price } = params;
-    const obActive = Math.abs(safeNum(analytics.obImb, 0)) > 0.2;
-    const flowActive = Math.abs(signals.flowBias ?? 0) > 0.3;
+function shouldSkipMomentumCall(params: { signals: MomentumSignals; price: number }) {
+    const { signals, price } = params;
     const extensionActive = Math.abs(signals.microExtensionInAtr ?? 0) > 0.5;
     const primaryAtr = Number(signals.primaryAtr ?? 0);
     const atrPct = price > 0 && primaryAtr > 0 ? primaryAtr / price : 0;
     const atrActive = atrPct > ATR_ACTIVE_MIN_PCT;
-    return !(obActive || flowActive || extensionActive || atrActive);
+    return !(extensionActive || atrActive);
 }
 
-function robustCvdFlip(params: {
-    side: 'long' | 'short';
-    cvdShort: number; // short-window CVD
-    cvdMedium?: number; // optional
-    midRetBps?: number; // mid-price change (bps) over the short window
-    obImb?: number; // order-book imbalance [-1,1]
-    symbolKey: string; // `${symbol}:${timeFrame}`
-    minHoldMs?: number; // default 15m
-    nowTs?: number; // Date.now()
-    enteredAt?: number; // if tracked
-}): boolean {
-    const {
-        side,
-        cvdShort,
-        cvdMedium = 0,
-        midRetBps = 0,
-        obImb = 0,
-        symbolKey,
-        minHoldMs = 15 * 60_000,
-        nowTs = Date.now(),
-        enteredAt,
-    } = params;
-
-    // Min-hold: ignore flips in the first bar after entry
-    if (enteredAt && nowTs - enteredAt < minHoldMs) return false;
-
-    // Raw sign flip against side?
-    const against = (side === 'long' && cvdShort < 0) || (side === 'short' && cvdShort > 0);
-    if (!against) {
-        const s = touchPersist(symbolKey);
-        s.lastFlipDir = 'for';
-        s.streak = 0;
-        return false;
-    }
-
-    // Magnitude: at least 5 units or 20% of medium-window CVD
-    const magOk = Math.abs(cvdShort) >= Math.max(5, Math.abs(cvdMedium) * 0.2);
-
-    // Confirmation by price or book imbalance
-    const confOk = side === 'long' ? midRetBps <= -2 || obImb <= -0.15 : midRetBps >= +2 || obImb >= +0.15;
-
-    if (!(magOk && confOk)) {
-        const s = touchPersist(symbolKey);
-        s.lastFlipDir = 'against';
-        s.streak = 0; // don't count if not confirmed
-        return false;
-    }
-
-    // Persistence: require 2 consecutive ticks of confirmed "against"
-    const s = touchPersist(symbolKey);
-    if (s.lastFlipDir === 'against') s.streak += 1;
-    else s.streak = 1;
-    s.lastFlipDir = 'against';
-
-    return s.streak >= 2;
-}
-
-// Compute mid-return in bps vs previous candle close
-function computeMidRetBps(bundle: any): number {
-    const bids = bundle?.orderbook?.bids;
-    const asks = bundle?.orderbook?.asks;
-    const bestBid = safeNum(bids?.[0]?.[0] ?? bids?.[0]?.price);
-    const bestAsk = safeNum(asks?.[0]?.[0] ?? asks?.[0]?.price);
-    const midNow = bestBid > 0 && bestAsk > 0 ? (bestBid + bestAsk) / 2 : NaN;
-
-    const candles = Array.isArray(bundle?.candles) ? bundle.candles : [];
-    const prevClose = candles.length >= 2 ? safeNum(candles[candles.length - 2]?.[4]) : NaN;
-
-    if (!Number.isFinite(midNow) || !Number.isFinite(prevClose) || prevClose <= 0) return 0;
-    return (midNow / prevClose - 1) * 1e4; // bps
-}
 
 // ------------------------------------------------------------------
 // Core per-symbol runner with retry & 429 backoff
@@ -208,8 +133,6 @@ async function runAnalysisForSymbol(params: {
                 if (pstate.lastSide !== positionInfo.holdSide) {
                     pstate.enteredAt = entryTimestamp ?? Date.now();
                     pstate.lastSide = positionInfo.holdSide;
-                    pstate.streak = 0;
-                    pstate.lastFlipDir = undefined;
                 } else if (!pstate.enteredAt) {
                     pstate.enteredAt = entryTimestamp ?? Date.now();
                 }
@@ -281,8 +204,7 @@ async function runAnalysisForSymbol(params: {
             });
 
             const positionOpen = positionInfo.status === 'open';
-            const calmMarket =
-                !positionOpen && shouldSkipMomentumCall({ analytics, signals: momentumSignals, price: effectivePrice });
+            const calmMarket = !positionOpen && shouldSkipMomentumCall({ signals: momentumSignals, price: effectivePrice });
 
 
             // 5) CLOSE conditions (not yet wired into prompt but computed)
@@ -292,7 +214,6 @@ async function runAnalysisForSymbol(params: {
                       pnl_gt_pos?: boolean;
                       pnl_lt_neg?: boolean;
                       opposite_regime?: boolean;
-                      cvd_flip?: boolean;
                   }
                 | undefined;
 
@@ -304,27 +225,10 @@ async function runAnalysisForSymbol(params: {
                 const regimeDown = indicators.macro.includes('trend=down');
                 const opposite_regime = (side === 'long' && regimeDown) || (side === 'short' && regimeUp);
 
-                const midRetBps = computeMidRetBps(bundle);
-                const obImb = safeNum(analytics.obImb, 0);
-
-                const cvdShort = safeNum(analytics.cvd, 0);
-                const cvdMedium = undefined;
-
-                const cvd_flip = robustCvdFlip({
-                    side,
-                    cvdShort,
-                    cvdMedium,
-                    midRetBps,
-                    obImb,
-                    symbolKey: persistKey,
-                    enteredAt: pstate.enteredAt,
-                });
-
                 close_conditions = {
                     pnl_gt_pos: pnlPct >= 1.0, // take profit ≥ +1%
                     pnl_lt_neg: pnlPct <= -1.0, // stop loss ≤ -1%
                     opposite_regime,
-                    cvd_flip,
                 };
             }
 
@@ -349,8 +253,6 @@ async function runAnalysisForSymbol(params: {
             const positionContext = composePositionContext({
                 position: positionInfo,
                 pnlPct,
-                cvd: safeNum(analytics.cvd, 0),
-                obImb: safeNum(analytics.obImb, 0),
                 enteredAt: pstate.enteredAt,
             });
             const recentHistory = await loadDecisionHistory(symbol, 5);
@@ -388,8 +290,6 @@ async function runAnalysisForSymbol(params: {
             const snapshot = {
                 price: Number.isFinite(lastPrice) ? lastPrice : undefined,
                 change24h: Number.isFinite(change24h) ? change24h : undefined,
-                obImb: safeNum(analytics.obImb, 0),
-                cvd: safeNum(analytics.cvd, 0),
                 spread: safeNum(analytics.spread, 0),
                 gates: gatesOut.gates,
                 metrics: gatesOut.metrics,
@@ -474,10 +374,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
 
-        const timeFrame: string = body.timeFrame || '15m';
-        const microTimeFrame: string = body.microTimeFrame || '1m';
-        const macroTimeFrame: string = body.macroTimeFrame || '1H';
-        const contextTimeFrame: string = body.contextTimeFrame || '1D';
+        const timeFrame: string = PRIMARY_TIMEFRAME;
+        const microTimeFrame: string = MICRO_TIMEFRAME;
+        const macroTimeFrame: string = MACRO_TIMEFRAME;
+        const contextTimeFrame: string = CONTEXT_TIMEFRAME;
         const dryRun: boolean = body.dryRun !== false; // default true
         const sideSizeUSDT: number = Number(body.notional || 10);
         const productType = getTradeProductType();

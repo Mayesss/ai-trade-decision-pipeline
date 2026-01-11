@@ -4,9 +4,6 @@ import type { PositionContext } from './ai';
 import type { PositionInfo } from './analytics';
 import { DEFAULT_TAKER_FEE_RATE } from './constants';
 
-const PRESSURE_SCALE = 50; // governs how aggressively we squash CVD into [-1, 1]
-const ALIGNMENT_THRESHOLD = 0.2;
-
 const toFixedNumber = (value: number, digits: number) => {
     const n = Number(value);
     return Number.isFinite(n) ? Number(n.toFixed(digits)) : undefined;
@@ -15,8 +12,6 @@ const toFixedNumber = (value: number, digits: number) => {
 export function composePositionContext(params: {
     position: PositionInfo;
     pnlPct: number;
-    cvd: number;
-    obImb: number;
     enteredAt?: number;
 }): PositionContext | null {
     if (params.position.status !== 'open') return null;
@@ -41,22 +36,6 @@ export function composePositionContext(params: {
     const denominator = positionSize * (direction - takerFeeRate);
     const breakevenPrice = positionSize > 0 && denominator !== 0 ? numerator / denominator : undefined;
 
-    const cvdScaled = Math.tanh(params.cvd / PRESSURE_SCALE);
-    const pressureDelta = params.obImb - cvdScaled;
-    const alignmentScore = params.obImb + cvdScaled;
-    const alignment =
-        alignmentScore >= ALIGNMENT_THRESHOLD
-            ? 'bullish'
-            : alignmentScore <= -ALIGNMENT_THRESHOLD
-            ? 'bearish'
-            : 'neutral';
-    const againstPosition =
-        alignment === 'neutral'
-            ? false
-            : side === 'long'
-            ? alignment === 'bearish'
-            : alignment === 'bullish';
-
     return {
         side,
         entry_price: toFixedNumber(entryPriceNum, 6),
@@ -65,12 +44,5 @@ export function composePositionContext(params: {
         unrealized_pnl_pct: toFixedNumber(params.pnlPct, 2),
         breakeven_price: toFixedNumber(breakevenPrice ?? entryPriceNum, 6),
         taker_fee_rate: toFixedNumber(takerFeeRate, 6),
-        flow: {
-            cvd: toFixedNumber(params.cvd, 3),
-            ob_imbalance: toFixedNumber(params.obImb, 3),
-            pressure_delta: toFixedNumber(pressureDelta, 3),
-            alignment,
-            against_position: againstPosition,
-        },
     };
 }

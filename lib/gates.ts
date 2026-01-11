@@ -47,7 +47,6 @@ export interface GatesOutput {
     bidBandUsdNow: number;
     askBandUsdNow: number;
     expectedSlippageBps: number;
-    obImbNow: number;     // [-1,1], from top sizes
     atrPctNow: number;    // 0.0123 => 1.23%
 
     // Percentiles (if available)
@@ -95,13 +94,6 @@ function toPriceSizeArrays(side: OrderbookSideLevelArr | OrderbookSideObjArr): [
 
 function sumTopSize(levels: [number, number][], n: number): number {
   return levels.slice(0, n).reduce((a, [, s]) => a + Number(s), 0);
-}
-
-function obImbalance(bids: [number, number][], asks: [number, number][], n = 5): number {
-  const b = sumTopSize(bids, n);
-  const a = sumTopSize(asks, n);
-  const denom = Math.max(1e-9, b + a);
-  return (b - a) / denom; // [-1,1]
 }
 
 function percentile(arr: number[], p: number): number | undefined {
@@ -299,7 +291,6 @@ export function computeAdaptiveGates(input: GatesInput): GatesOutput {
   const spread = Math.max(0, bestAsk - bestBid);
   const spreadBpsNow = last > 0 ? (spread / last) * 1e4 : Infinity;
 
-  const obImbNow = obImbalance(bids, asks, 5);
   const atrPctNow = last > 0 ? atrAbsMacro / last : NaN;
 
   // Dynamic band and banded depth
@@ -379,7 +370,6 @@ export function computeAdaptiveGates(input: GatesInput): GatesOutput {
       bidBandUsdNow: bidBandUsd,
       askBandUsdNow: askBandUsd,
       expectedSlippageBps: slipBpsNow,
-      obImbNow,
       atrPctNow,
 
       spreadBpsP50: spreadP50,

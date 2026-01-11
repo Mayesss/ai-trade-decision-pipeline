@@ -1,6 +1,7 @@
 // lib/indicators.ts
 
 import { bitgetFetch, resolveProductType } from './bitget';
+import { CONTEXT_TIMEFRAME, MACRO_TIMEFRAME, MICRO_TIMEFRAME, PRIMARY_TIMEFRAME } from './constants';
 
 export interface IndicatorSummary {
     timeframe: string;
@@ -259,10 +260,10 @@ export async function calculateMultiTFIndicators(
     opts: IndicatorTimeframeOptions = {},
 ): Promise<MultiTFIndicators> {
     const productType = resolveProductType(); // futures only
-    const microTF = opts.micro || '15m';
-    const macroTF = opts.macro || '4H';
-    const primaryTF = opts.primary || '1H';
-    const contextTF = opts.context || '1D';
+    const microTF = opts.micro || MICRO_TIMEFRAME;
+    const macroTF = opts.macro || MACRO_TIMEFRAME;
+    const primaryTF = opts.primary || PRIMARY_TIMEFRAME;
+    const contextTF = opts.context || CONTEXT_TIMEFRAME;
 
     async function fetchCandles(tf: string) {
         const cs = await bitgetFetch('GET', '/api/v2/mix/market/candles', {

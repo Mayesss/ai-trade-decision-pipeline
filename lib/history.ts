@@ -79,8 +79,6 @@ async function kvMGet(keys: string[]): Promise<(string | null)[]> {
 export type DecisionSnapshot = {
     price?: number;
     change24h?: number;
-    obImb?: number;
-    cvd?: number;
     spread?: number;
     gates?: any;
     metrics?: any;
