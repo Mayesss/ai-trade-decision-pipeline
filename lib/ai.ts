@@ -336,7 +336,7 @@ export async function buildPrompt(
     const rvol1d = typeof macroMetrics.rvol === 'number' ? macroMetrics.rvol : null;
     const structure4hState = primaryMetrics.structure ?? 'range';
     const bos4h = Boolean(primaryMetrics.bos);
-    const bosDir4h = primaryMetrics.bosDir ?? null;
+    const bosDir4h = bos4h ? (primaryMetrics.bosDir ?? null) : null;
     const choch4h = Boolean(primaryMetrics.choch);
     const breakoutRetestOk4h = Boolean(primaryMetrics.breakoutRetestOk);
     const breakoutRetestDir4h = primaryMetrics.breakoutRetestDir ?? null;
@@ -374,8 +374,8 @@ export async function buildPrompt(
     const clampNumber = (value: number | null | undefined, digits = 3) =>
         Number.isFinite(value as number) ? Number((value as number).toFixed(digits)) : null;
     const trendBias = gates.regime_trend_up ? 1 : gates.regime_trend_down ? -1 : 0;
-    const oversoldMicro = typeof rsi_micro === 'number' && rsi_micro < 35;
-    const overboughtMicro = typeof rsi_micro === 'number' && rsi_micro > 65;
+    const oversoldMicro = typeof rsi_micro === 'number' && rsi_micro <= 35;
+    const overboughtMicro = typeof rsi_micro === 'number' && rsi_micro >= 65;
     const reversalOpportunity = oversoldMicro ? 'oversold' : overboughtMicro ? 'overbought' : null;
 
     const contextBiasDriver = contextBias === 'UP' ? 0.6 : contextBias === 'DOWN' ? -0.6 : 0;
@@ -405,21 +405,19 @@ export async function buildPrompt(
     const valueOkShort = valueState1d === 'n/a' ? false : valueState1d !== 'above_vah';
 
     const longDrivers = [
-        structure4hState === 'bull' || bosDir4h === 'up',
+        structure4hState === 'bull' || (bos4h && bosDir4h === 'up'),
         (breakoutRetestOk4h && breakoutRetestDir4h === 'up') || nearPrimarySupport,
         macroBias !== 'DOWN',
         contextBias !== 'DOWN' || intoContextSupport,
         valueOkLong,
-        Number.isFinite(rvol4h as number) ? (rvol4h as number) >= 1.2 : false,
     ];
 
     const shortDrivers = [
-        structure4hState === 'bear' || bosDir4h === 'down',
+        structure4hState === 'bear' || (bos4h && bosDir4h === 'down'),
         (breakoutRetestOk4h && breakoutRetestDir4h === 'down') || nearPrimaryResistance,
         macroBias !== 'UP',
         contextBias !== 'UP' || intoContextResistance,
         valueOkShort,
-        Number.isFinite(rvol4h as number) ? (rvol4h as number) >= 1.2 : false,
     ];
 
     const countTrue = (items: boolean[]) => items.reduce((acc, v) => acc + (v ? 1 : 0), 0);
@@ -433,8 +431,11 @@ export async function buildPrompt(
             ? 'short'
             : 'neutral';
 
+    const macroPenalty =
+        (momentumSignals.macroTrendDown && favoredSide === 'long') ||
+        (momentumSignals.macroTrendUp && favoredSide === 'short');
     const mediumActionReady =
-        alignedDriverCount >= 4 && (momentumSignals.longMomentum || momentumSignals.shortMomentum);
+        alignedDriverCount >= 4 && (momentumSignals.longMomentum || momentumSignals.shortMomentum) && !macroPenalty;
 
     const signalDrivers: Record<string, any> = {
         macro_trend_up: momentumSignals.macroTrendUp,
@@ -442,6 +443,7 @@ export async function buildPrompt(
         context_bias: contextBias,
         context_bias_driver: clampNumber(contextBiasDriver, 3),
         regime_alignment: clampNumber(regimeAlignment, 2),
+        micro_entry_ok: Boolean(momentumSignals.info?.microEntryOk),
 
         primary_slope_pct_per_bar: clampNumber(slope21_primary, 4),
         micro_slope_pct_per_bar: clampNumber(slope21_micro, 4),
@@ -572,6 +574,7 @@ Output must be valid JSON parseable by JSON.parse with no trailing commas or ext
 
 GENERAL RULES
 - **Base gates**: when flat, if ANY spread_ok/liquidity_ok/atr_ok/slippage_ok is false → action="HOLD". In a position, never block exits; if gates fail, prefer risk-off (CLOSE) over HOLD.
+- If flat and micro_entry_ok=false → HOLD unless signal_strength=HIGH and breakout_retest_ok_primary=true.
 - **Costs / churn control**: total_cost_bps = ~${total_cost_bps}bps (round-trip fees + slippage). For swing entries, avoid trades where the expected move is not clearly larger than costs; default filter: if edge is unclear or setup quality is MED/LOW → HOLD.
 - **Leverage**: For BUY/SELL/REVERSE pick leverage 1–5 (integer). Default null on HOLD/CLOSE.
   - Choose leverage based on conviction AND risk (regime alignment, extension, proximity to major levels, volatility). Even on HIGH conviction, use 1–2x if stretched or near major ${contextTimeframe} levels. Never exceed 5.
