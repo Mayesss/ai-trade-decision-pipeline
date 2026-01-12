@@ -11,7 +11,6 @@ import {
     TRADE_WINDOW_MINUTES,
 } from './constants';
 import type { MultiTFIndicators } from './indicators';
-import { kvGetJson, kvSetJson } from './kv';
 import { setEvaluation, getEvaluation } from './utils';
 
 export type PositionContext = {
@@ -108,8 +107,8 @@ export function computeMomentumSignals(params: {
     const microOverbought = Number.isFinite(rsiMicro as number) ? (rsiMicro as number) >= 60 : false;
     const microEntryOk = nearPrimary || nearMicro || microOversold || microOverbought;
 
-    const longMomentum = macroTrendUp && priceAbovePrimary50 && rsiPullbackLong && slopeUp;
-    const shortMomentum = macroTrendDown && priceBelowPrimary50 && rsiPullbackShort && slopeDown;
+    const longMomentum =  priceAbovePrimary50 && rsiPullbackLong && slopeUp;
+    const shortMomentum =  priceBelowPrimary50 && rsiPullbackShort && slopeDown;
 
     const microExtensionInAtr =
         Number.isFinite(atrMicro as number) && (atrMicro as number) > 0 && Number.isFinite(ema20Micro as number)
@@ -165,11 +164,6 @@ export async function buildPrompt(
     realizedRoiPct?: number | null,
     dryRun?: boolean,
 ) {
-    const toNum = (value: any) => {
-        const n = Number(value);
-        return Number.isFinite(n) ? n : null;
-    };
-
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
     const change = Number(t?.change24h ?? t?.changeUtc24h ?? t?.chgPct);
@@ -192,141 +186,6 @@ export async function buildPrompt(
     const liquidity_data = `top bid walls: ${JSON.stringify(analytics.topWalls.bid)}, top ask walls: ${JSON.stringify(
         analytics.topWalls.ask,
     )}`;
-
-    const derivatives = `funding=${bundle.funding?.[0]?.fundingRate ?? 'n/a'}, openInterest=${
-        bundle.oi?.openInterestList?.[0]?.size ?? bundle.oi?.openInterestList?.[0]?.openInterest ?? 'n/a'
-    }`;
-
-    const extractFundingSeries = (funding: any): number[] => {
-        const arr = Array.isArray(funding) ? funding : funding?.data || funding?.list || [];
-        return (arr || [])
-            .map((f: any) => toNum(f?.fundingRate ?? f?.rate ?? f?.interestRate))
-            .filter((v: number | null): v is number => Number.isFinite(v));
-    };
-
-    const extractFundingIntervalHours = (funding: any): number | null => {
-        const raw = toNum(
-            funding?.fundingRateInterval ??
-                funding?.fundingRateIntervalTime ??
-                funding?.data?.[0]?.fundingRateInterval ??
-                funding?.data?.[0]?.fundingRateIntervalTime ??
-                funding?.list?.[0]?.fundingRateInterval ??
-                funding?.list?.[0]?.fundingRateIntervalTime,
-        );
-        return Number.isFinite(raw as number) ? Number(raw) : null;
-    };
-
-    const extractOiSeries = (oi: any): { ts: number | null; value: number }[] => {
-        const list = oi?.openInterestList || oi?.data || [];
-        return (list || [])
-            .map((item: any) => {
-                const value = toNum(item?.size ?? item?.openInterest ?? item?.openInterestUsd ?? item?.openInterestValue);
-                const tsRaw = toNum(item?.ts ?? item?.timestamp ?? item?.time ?? item?.cTime ?? item?.uTime);
-                const ts =
-                    Number.isFinite(tsRaw as number) && (tsRaw as number) < 1e12
-                        ? (tsRaw as number) * 1000
-                        : tsRaw;
-                if (!Number.isFinite(value as number)) return null;
-                return { ts: Number.isFinite(ts as number) ? (ts as number) : null, value: value as number };
-            })
-            .filter((v: { ts: number | null; value: number } | null): v is { ts: number | null; value: number } => Boolean(v));
-    };
-
-    const computeZScore = (values: number[]): number | null => {
-        if (values.length < 5) return null;
-        const mean = values.reduce((a, b) => a + b, 0) / values.length;
-        const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length;
-        const std = Math.sqrt(variance);
-        if (!(std > 0)) return null;
-        return (values[values.length - 1]! - mean) / std;
-    };
-
-    const productType = bundle?.productType || 'usdt-futures';
-    const fundingHistory = bundle?.fundingHistory ?? null;
-    const fundingKey = `funding:history:${productType}:${symbol}`;
-    const oiKey = `oi:samples:${productType}:${symbol}`;
-    const FUNDING_CACHE_TTL_SECONDS = 12 * 60 * 60;
-    const OI_SAMPLES_TTL_SECONDS = 7 * 24 * 60 * 60;
-
-    let fundingRates = extractFundingSeries(fundingHistory);
-    if (!fundingRates.length) {
-        fundingRates = extractFundingSeries(bundle.funding);
-    }
-    let fundingIntervalHours = extractFundingIntervalHours(fundingHistory);
-    if (!Number.isFinite(fundingIntervalHours as number)) {
-        fundingIntervalHours = extractFundingIntervalHours(bundle.funding);
-    }
-    if (!fundingRates.length) {
-        const cachedFunding = await kvGetJson<{
-            ts: number;
-            rates: number[];
-            intervalHours: number | null;
-        }>(fundingKey);
-        if (cachedFunding?.rates?.length) {
-            fundingRates = cachedFunding.rates;
-            fundingIntervalHours = cachedFunding.intervalHours ?? null;
-        }
-    }
-    if (fundingRates.length) {
-        await kvSetJson(
-            fundingKey,
-            { ts: Date.now(), rates: fundingRates, intervalHours: fundingIntervalHours },
-            FUNDING_CACHE_TTL_SECONDS,
-        );
-    }
-    const fundingZ = computeZScore(fundingRates);
-    const fundingSamplesN = fundingRates.length;
-    const fundingWindowHours =
-        Number.isFinite(fundingIntervalHours as number) && fundingSamplesN > 0
-            ? (fundingIntervalHours as number) * fundingSamplesN
-            : null;
-
-    const oiSeries = extractOiSeries(bundle.oi);
-    const latestOi = oiSeries.length ? oiSeries[oiSeries.length - 1]! : null;
-    const nowTs = latestOi?.ts ?? Date.now();
-    const cachedOiSamples = (await kvGetJson<{ ts: number; value: number }[]>(oiKey)) ?? [];
-    const oiSamples = cachedOiSamples.slice().filter((s) => Number.isFinite(s.ts) && Number.isFinite(s.value));
-    if (latestOi && Number.isFinite(latestOi.value)) {
-        const ts = Number.isFinite(latestOi.ts as number) ? (latestOi.ts as number) : nowTs;
-        const lastSample = oiSamples.length ? oiSamples[oiSamples.length - 1]! : null;
-        if (!lastSample || ts > lastSample.ts) {
-            oiSamples.push({ ts, value: latestOi.value });
-        }
-    }
-    const cutoffTs = nowTs - 3 * 24 * 60 * 60 * 1000;
-    const trimmedOiSamples = oiSamples.filter((s) => s.ts >= cutoffTs).sort((a, b) => a.ts - b.ts);
-    await kvSetJson(oiKey, trimmedOiSamples, OI_SAMPLES_TTL_SECONDS);
-
-    let oiChg24hPct: number | null = null;
-    let oiWindowHoursActual: number | null = null;
-    if (trimmedOiSamples.length >= 2) {
-        const targetTs = nowTs - 24 * 60 * 60 * 1000;
-        let closest = trimmedOiSamples[0]!;
-        let minDiff = Math.abs(closest.ts - targetTs);
-        for (const entry of trimmedOiSamples) {
-            const diff = Math.abs(entry.ts - targetTs);
-            if (diff < minDiff) {
-                minDiff = diff;
-                closest = entry;
-            }
-        }
-        if (closest.value > 0 && latestOi?.value) {
-            oiChg24hPct = ((latestOi.value - closest.value) / closest.value) * 100;
-            oiWindowHoursActual = (nowTs - closest.ts) / (60 * 60 * 1000);
-        }
-    }
-    const oiSamplesN = trimmedOiSamples.length;
-
-    const oiPriceDiv =
-        Number.isFinite(oiChg24hPct) && Number.isFinite(change)
-            ? oiChg24hPct! > 0 && change > 0
-                ? 'trend_supported'
-                : oiChg24hPct! > 0 && change < 0
-                ? 'crowded'
-                : oiChg24hPct! < 0 && change > 0
-                ? 'short_cover'
-                : 'neutral'
-            : 'neutral';
 
     const candles = Array.isArray(bundle.candles) ? bundle.candles : [];
     const priceTrendPoints = candles
@@ -509,8 +368,7 @@ export async function buildPrompt(
         `primary_slope_pct_per_bar=${slope21_primary.toFixed(4)}, ` +
         `dist_from_ema20_${microKey}_in_atr=${distance_from_ema_atr.toFixed(2)}, dist_from_ema20_${primaryKey}_in_atr=${distance_from_ema20_primary_atr.toFixed(2)}, ` +
         `structure_${primaryKey}=${structure4hState}, bos_${primaryKey}=${bos4h ? 1 : 0}, choch_${primaryKey}=${choch4h ? 1 : 0}, ` +
-        `rvol_${primaryKey}=${formatNum(rvol4h, 2)}, rvol_${macroKey}=${formatNum(rvol1d, 2)}, value_state_${macroKey}=${valueState1d}, ` +
-        `funding_z=${formatNum(fundingZ, 2)}, oi_chg_24h_pct=${formatNum(oiChg24hPct, 2)}, oi_price_div=${oiPriceDiv}`;
+        `rvol_${primaryKey}=${formatNum(rvol4h, 2)}, rvol_${macroKey}=${formatNum(rvol1d, 2)}, value_state_${macroKey}=${valueState1d}`;
 
     // --- SIGNAL STRENGTH DRIVERS & CLOSING GUIDANCE ---
     const clampNumber = (value: number | null | undefined, digits = 3) =>
@@ -545,8 +403,6 @@ export async function buildPrompt(
 
     const valueOkLong = valueState1d === 'n/a' ? false : valueState1d !== 'below_val';
     const valueOkShort = valueState1d === 'n/a' ? false : valueState1d !== 'above_vah';
-    const fundingOkLong = Number.isFinite(fundingZ as number) ? (fundingZ as number) < 1.5 : false;
-    const fundingOkShort = Number.isFinite(fundingZ as number) ? (fundingZ as number) > -1.5 : false;
 
     const longDrivers = [
         structure4hState === 'bull' || bosDir4h === 'up',
@@ -555,7 +411,6 @@ export async function buildPrompt(
         contextBias !== 'DOWN' || intoContextSupport,
         valueOkLong,
         Number.isFinite(rvol4h as number) ? (rvol4h as number) >= 1.2 : false,
-        fundingOkLong,
     ];
 
     const shortDrivers = [
@@ -565,7 +420,6 @@ export async function buildPrompt(
         contextBias !== 'UP' || intoContextResistance,
         valueOkShort,
         Number.isFinite(rvol4h as number) ? (rvol4h as number) >= 1.2 : false,
-        fundingOkShort,
     ];
 
     const countTrue = (items: boolean[]) => items.reduce((acc, v) => acc + (v ? 1 : 0), 0);
@@ -591,15 +445,6 @@ export async function buildPrompt(
 
         primary_slope_pct_per_bar: clampNumber(slope21_primary, 4),
         micro_slope_pct_per_bar: clampNumber(slope21_micro, 4),
-
-        funding_z: clampNumber(fundingZ, 2),
-        funding_samples_n: fundingSamplesN || null,
-        funding_interval_hours: Number.isFinite(fundingIntervalHours as number) ? fundingIntervalHours : null,
-        funding_window_hours: Number.isFinite(fundingWindowHours as number) ? fundingWindowHours : null,
-        oi_chg_24h_pct: clampNumber(oiChg24hPct, 2),
-        oi_price_divergence: oiPriceDiv,
-        oi_samples_n: oiSamplesN || null,
-        oi_window_hours_actual: Number.isFinite(oiWindowHoursActual as number) ? oiWindowHoursActual : null,
 
         aligned_driver_count: alignedDriverCount,
         aligned_driver_count_long: longAlignedDriverCount,
@@ -709,7 +554,7 @@ export async function buildPrompt(
             : '';
 
     const sys = `
-You are an expert crypto swing-trading market structure analyst and trading assistant.
+You are an expert swing-trading market structure analyst and trading assistant.
 
 TIMEFRAMES (fixed for this mode)
 - micro: ${microTimeframe} (entry timing / confirmation)
@@ -752,7 +597,6 @@ Count drivers that materially support a directional swing trade:
 - Level logic: entry near meaningful ${primaryTimeframe} support/resistance, or post-breakout retest; clean invalidation.
 - Regime alignment: ${macroTimeframe} + ${contextTimeframe} supportive (or a high-quality counter-regime mean-reversion at extreme location).
 - Momentum quality: RSI/slope confirmation on ${primaryTimeframe}; ${microTimeframe} impulse/continuation vs fading.
-- Positioning/derivatives context: funding/OI extremes or supportive trend in OI (as a modifier, not primary).
 - Volatility/ATR sanity: not entering after exhausted expansion unless continuation setup is exceptionally clean.
 
 ACTIONS LOGIC
@@ -780,8 +624,9 @@ EXTENSION / OVERBOUGHT-OVERSOLD (swing)
 `.trim();
 
     const modeLabel = dryRun ? 'simulation' : 'live';
+    const baseSymbol = symbol.replace(/USDT$/i, '');
     const user = `
-You are analyzing ${symbol} for swing trading (mode=${modeLabel}).
+You are analyzing ${baseSymbol} for swing trading (mode=${modeLabel}).
 Timeframes: micro=${microTimeframe}, primary=${primaryTimeframe}, macro=${macroTimeframe}, context=${contextTimeframe}. I will call you roughly once per ${microTimeframe}.
 
 RISK/COSTS:
@@ -803,7 +648,6 @@ DATA INPUTS (swing-relevant windows):
 - Current price and % change (now): ${market_data}
 - Volume / activity (lookback window = ${TRADE_WINDOW_MINUTES}m): ${vol_profile_str}
 - Price action (recent bars for structure context): ${priceTrendSeries}
-- Derivatives positioning (last 2–4 ${primaryTimeframe}): ${derivatives}
 - Liquidity/spread snapshot (cost sanity check): ${liquidity_data}
 ${newsSentimentBlock}${newsHeadlinesBlock}${recentActionsBlock}- Current position: ${position_status}
 ${positionContextBlock}- Technical (micro ${microTimeframe}, last 60 candles): ${indicators.micro}
