@@ -35,6 +35,23 @@ function safeNum(x: any, def = 0): number {
     return Number.isFinite(n) ? n : def;
 }
 
+function timeframeToMinutes(tf: string): number {
+    const match = String(tf).trim().toLowerCase().match(/^(\d+)\s*(m|h|d)$/);
+    if (!match) return 0;
+    const value = Number(match[1]);
+    if (!Number.isFinite(value) || value <= 0) return 0;
+    const unit = match[2];
+    return unit === 'm' ? value : unit === 'h' ? value * 60 : value * 1440;
+}
+
+function isPrimaryCloseTime(tf: string, now = new Date(), toleranceMinutes = 2): boolean {
+    const minutes = timeframeToMinutes(tf);
+    if (!minutes) return true;
+    const totalMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+    const remainder = totalMinutes % minutes;
+    return remainder === 0 || remainder <= toleranceMinutes || remainder >= minutes - toleranceMinutes;
+}
+
 // ------------------------------------------------------------------
 // In-memory position tracking for best-effort hold timing (resets on cold start).
 // ------------------------------------------------------------------
@@ -96,11 +113,32 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const dryRun = parseBoolParam(body.dryRun as string | string[] | undefined, false);
         const sideSizeUSDT = Number(body.notional ?? DEFAULT_NOTIONAL_USDT);
 
+        const positionInfo = await fetchPositionInfo(symbol);
+        const positionOpen = positionInfo.status === 'open';
+        const primaryCloseTime = isPrimaryCloseTime(timeFrame);
+
+        if (!positionOpen && !primaryCloseTime) {
+            return res.status(200).json({
+                symbol,
+                timeFrame,
+                dryRun,
+                decision: {
+                    action: 'HOLD',
+                    bias: 'NEUTRAL',
+                    signal_strength: 'LOW',
+                    summary: 'not_primary_close',
+                    reason: 'flat_skip_until_primary_close',
+                },
+                execRes: { placed: false, orderId: null, clientOid: null, reason: 'not_primary_close' },
+                usedTape: false,
+                promptSkipped: true,
+            });
+        }
+
         // 1) Product & parallel baseline fetches (fast)
         const productType = getTradeProductType();
 
-        const [positionInfo, newsBundle, bundleLight, indicators] = await Promise.all([
-            fetchPositionInfo(symbol),
+        const [newsBundle, bundleLight, indicators] = await Promise.all([
             fetchNewsWithHeadlines(symbol),
             // Light bundle: skip tape (fills)
             fetchMarketBundle(symbol, timeFrame, { includeTrades: false }),
@@ -113,14 +151,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         ]);
 
         const positionForPrompt =
-            positionInfo.status === 'open'
+            positionOpen
                 ? `${positionInfo.holdSide}, entryPrice: ${positionInfo.entryPrice}, currentPnl=${positionInfo.currentPnl}`
                 : 'none';
 
         // Store/refresh entry timestamp for min-hold (best-effort, in-memory)
         const persistKey = `${symbol}:${timeFrame}`;
         const pstate = touchPersist(persistKey);
-        if (positionInfo.status === 'open') {
+        if (positionOpen) {
             const entryTimestamp = typeof positionInfo.entryTimestamp === 'number' ? positionInfo.entryTimestamp : undefined;
             if (pstate.lastSide !== positionInfo.holdSide) {
                 pstate.enteredAt = entryTimestamp ?? Date.now();
@@ -143,11 +181,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             analytics: analyticsLight,
             indicators,
             notionalUSDT: sideSizeUSDT,
-            positionOpen: positionInfo.status === 'open',
+            positionOpen,
         });
 
         // 3b) Short-circuit if no trade allowed and no open position
-        if (gatesOut.preDecision && positionInfo.status !== 'open') {
+        if (gatesOut.preDecision && !positionOpen) {
             return res.status(200).json({
                 symbol,
                 timeFrame,
@@ -160,8 +198,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         // 4) Decide whether we need tape; if yes, fetch with tight budgets
-        const needTape =
-            positionInfo.status === 'open' || gatesOut.allowed_actions.some((a) => a === 'BUY' || a === 'SELL');
+        const needTape = positionOpen || gatesOut.allowed_actions.some((a) => a === 'BUY' || a === 'SELL');
 
         let bundle = bundleLight;
         let analytics = analyticsLight;
@@ -191,7 +228,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             primaryTimeframe: timeFrame,
         });
 
-        const positionOpen = positionInfo.status === 'open';
         const calmMarket = !positionOpen && shouldSkipMomentumCall({ signals: momentumSignals, price: effectivePrice });
 
         if (!positionOpen && calmMarket) {
@@ -223,7 +259,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               }
             | undefined;
 
-        if (positionInfo.status === 'open') {
+        if (positionOpen) {
             pnlPct = parsePnlPct(positionInfo.currentPnl);
             const side = positionInfo.holdSide as 'long' | 'short';
 

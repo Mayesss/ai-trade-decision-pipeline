@@ -38,6 +38,23 @@ function safeNum(x: any, def = 0): number {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function timeframeToMinutes(tf: string): number {
+    const match = String(tf).trim().toLowerCase().match(/^(\d+)\s*(m|h|d)$/);
+    if (!match) return 0;
+    const value = Number(match[1]);
+    if (!Number.isFinite(value) || value <= 0) return 0;
+    const unit = match[2];
+    return unit === 'm' ? value : unit === 'h' ? value * 60 : value * 1440;
+}
+
+function isPrimaryCloseTime(tf: string, now = new Date(), toleranceMinutes = 2): boolean {
+    const minutes = timeframeToMinutes(tf);
+    if (!minutes) return true;
+    const totalMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+    const remainder = totalMinutes % minutes;
+    return remainder === 0 || remainder <= toleranceMinutes || remainder >= minutes - toleranceMinutes;
+}
+
 // ------------------------------------------------------------------
 // mapLimit: run a function over items with bounded concurrency
 // ------------------------------------------------------------------
@@ -112,9 +129,28 @@ async function runAnalysisForSymbol(params: {
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
+            const positionInfo = await fetchPositionInfo(symbol);
+            const positionOpen = positionInfo.status === 'open';
+            const primaryCloseTime = isPrimaryCloseTime(timeFrame);
+
+            if (!positionOpen && !primaryCloseTime) {
+                return {
+                    symbol,
+                    decision: {
+                        action: 'HOLD',
+                        bias: 'NEUTRAL',
+                        signal_strength: 'LOW',
+                        summary: 'not_primary_close',
+                        reason: 'flat_skip_until_primary_close',
+                    },
+                    execRes: { placed: false, reason: 'not_primary_close' },
+                    promptSkipped: true,
+                    usedTape: false,
+                };
+            }
+
             // 1) Parallel baseline fetches (light bundle)
-            const [positionInfo, newsBundle, bundleLight, indicators] = await Promise.all([
-                fetchPositionInfo(symbol),
+            const [newsBundle, bundleLight, indicators] = await Promise.all([
                 fetchNewsWithHeadlines(symbol),
                 fetchMarketBundle(symbol, timeFrame, { includeTrades: false }),
                 calculateMultiTFIndicators(symbol, {
@@ -126,14 +162,14 @@ async function runAnalysisForSymbol(params: {
             ]);
 
             const positionForPrompt =
-                positionInfo.status === 'open'
+                positionOpen
                     ? `${positionInfo.holdSide}, entryPrice: ${positionInfo.entryPrice}, currentPnl=${positionInfo.currentPnl}`
                     : 'none';
 
             // Persist state for robustCvdFlip
             const persistKey = `${symbol}:${timeFrame}`;
             const pstate = touchPersist(persistKey);
-            if (positionInfo.status === 'open') {
+            if (positionOpen) {
                 const entryTimestamp =
                     typeof positionInfo.entryTimestamp === 'number' ? positionInfo.entryTimestamp : undefined;
                 if (pstate.lastSide !== positionInfo.holdSide) {
@@ -157,11 +193,11 @@ async function runAnalysisForSymbol(params: {
                 analytics: analyticsLight,
                 indicators,
                 notionalUSDT: sideSizeUSDT,
-                positionOpen: positionInfo.status === 'open',
+                positionOpen,
             });
 
             // Short-circuit if no trade allowed and no open position
-            if (gatesOut.preDecision && positionInfo.status !== 'open') {
+            if (gatesOut.preDecision && !positionOpen) {
                 return {
                     symbol,
                     decision: gatesOut.preDecision,
@@ -176,9 +212,7 @@ async function runAnalysisForSymbol(params: {
             }
 
             // 4) Decide whether we need tape; if yes, fetch full bundle
-            const needTape =
-                positionInfo.status === 'open' ||
-                gatesOut.allowed_actions.some((a: string) => a === 'BUY' || a === 'SELL');
+            const needTape = positionOpen || gatesOut.allowed_actions.some((a: string) => a === 'BUY' || a === 'SELL');
 
             let bundle = bundleLight;
             let analytics = analyticsLight;
@@ -208,7 +242,6 @@ async function runAnalysisForSymbol(params: {
                 primaryTimeframe: timeFrame,
             });
 
-            const positionOpen = positionInfo.status === 'open';
             const calmMarket = !positionOpen && shouldSkipMomentumCall({ signals: momentumSignals, price: effectivePrice });
 
 
@@ -222,7 +255,7 @@ async function runAnalysisForSymbol(params: {
                   }
                 | undefined;
 
-            if (positionInfo.status === 'open') {
+            if (positionOpen) {
                 pnlPct = parsePnlPct(positionInfo.currentPnl);
                 const side = positionInfo.holdSide as 'long' | 'short';
 
