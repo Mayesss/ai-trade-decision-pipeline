@@ -352,6 +352,22 @@ export async function buildPrompt(
                 ? 'down'
                 : 'neutral'
             : 'neutral';
+    const microBiasCalc =
+        Number.isFinite(slope21_micro as number) &&
+        Number.isFinite(rsi_micro as number) &&
+        Number.isFinite(ema20_micro as number)
+            ? (slope21_micro as number) > 0 && (rsi_micro as number) >= 50 && price >= (ema20_micro as number)
+                ? 'up'
+                : (slope21_micro as number) < 0 && (rsi_micro as number) <= 50 && price <= (ema20_micro as number)
+                ? 'down'
+                : 'neutral'
+            : 'neutral';
+    const primaryTrendUp = structure4hState === 'bull' || (bos4h && bosDir4h === 'up') || primaryBias === 'up';
+    const primaryTrendDown = structure4hState === 'bear' || (bos4h && bosDir4h === 'down') || primaryBias === 'down';
+    const primaryBreakdownConfirmed =
+        structureBreakState4h === 'below' || (breakoutRetestOk4h && breakoutRetestDir4h === 'down');
+    const primaryBreakoutConfirmed =
+        structureBreakState4h === 'above' || (breakoutRetestOk4h && breakoutRetestDir4h === 'up');
 
     const formatNum = (value: number | null | undefined, digits = 2) =>
         Number.isFinite(value as number) ? Number(value).toFixed(digits) : 'n/a';
@@ -444,6 +460,11 @@ export async function buildPrompt(
         context_bias_driver: clampNumber(contextBiasDriver, 3),
         regime_alignment: clampNumber(regimeAlignment, 2),
         micro_entry_ok: Boolean(momentumSignals.info?.microEntryOk),
+        micro_bias_calc: microBiasCalc,
+        primary_trend_up: primaryTrendUp,
+        primary_trend_down: primaryTrendDown,
+        primary_breakdown_confirmed: primaryBreakdownConfirmed,
+        primary_breakout_confirmed: primaryBreakoutConfirmed,
 
         primary_slope_pct_per_bar: clampNumber(slope21_primary, 4),
         micro_slope_pct_per_bar: clampNumber(slope21_micro, 4),
@@ -581,9 +602,17 @@ GENERAL RULES
 - **Macro/context usage**:
   - macro_bias (${macroTimeframe}) is a bias, not a hard filter. Trades with macro_bias are preferred.
   - context_bias (${contextTimeframe}) is a risk lever: when aligned, accept MEDIUM setups; when opposed, require HIGH quality and non-extended entries. Use it to adjust selectivity and leverage, not as a hard gate.
+- **Hard trend guard (${microTimeframe}+${primaryTimeframe})**:
+  - If ${primaryTimeframe} trend is UP (primary_trend_up=true) AND ${microTimeframe} trend is UP (micro_bias=UP), do NOT short.
+    - Exception: only allow a short if primary_breakdown_confirmed=true AND ${microTimeframe} confirms with lower-high + breakdown/retest (micro_bias=DOWN with clear bearish structure).
+  - If ${primaryTimeframe} trend is DOWN (primary_trend_down=true) AND ${microTimeframe} trend is DOWN (micro_bias=DOWN), do NOT long.
+    - Exception: only allow a long if primary_breakout_confirmed=true AND ${microTimeframe} confirms with higher-low + breakout/retest (micro_bias=UP with clear bullish structure).
 - **Support/Resistance & location**: swing-pivot derived per timeframe; distances in ATR of that timeframe.
   - Avoid opening new positions directly into strong opposite levels (e.g., long into nearby resistance, short into nearby support) unless breakout/breakdown is confirmed and strength is HIGH.
   - If both nearest support and resistance are close / at_level, treat as range/chop: avoid fresh entries unless signal_strength is HIGH with clean level logic.
+- **Range handling (${primaryTimeframe})**:
+  - If structure_${primaryKey}=range, do NOT pick direction from ${macroTimeframe}/${contextTimeframe} trend alone. Favor edge trades (near ${primaryTimeframe} support/resistance with tight invalidation) or breakout + retest in the breakout direction.
+  - When range and breakout state conflicts with location (e.g., approaching resistance but structure_break_state_${primaryKey}=above with breakout_retest_ok_${primaryKey}=true and dir=up), treat it as a breakout+retest and prefer LONG setups; do not short into that conflict.
 - **Position truthfulness**: NEVER describe a position as winning if unrealized_pnl_pct < 0 or if price_vs_breakeven_pct is on the losing side for that direction.
 - **Temporal inertia (anti-flip)**: avoid more than one action change (CLOSE/REVERSE) in the same direction within the last 2 calls unless signal_strength stays HIGH and regime/structure invalidation is strengthening.
 - **Exit sizing**: Default exit_size_pct = 100 (full close). Use 30–70 when trimming risk (approaching major opposite level with gains, regime weakening, structure damage without full reversal). Avoid trims <20%; omit when not needed.
@@ -622,6 +651,7 @@ REVERSAL DISCIPLINE (swing)
 
 EXTENSION / OVERBOUGHT-OVERSOLD (swing)
 - Use extension as risk control, not as a standalone signal.
+- Overbought/oversold is NOT a counter-trend trigger by itself. Treat RSI extremes + extension as "permission" only when structure shows damage/flip (e.g., ${microTimeframe} fails to make HH/LL and breaks key support/resistance, followed by ${primaryTimeframe} rolling over).
 - On ${microTimeframe}: |dist_from_ema20_${microTimeframe}_in_atr| in [2,2.5) → require cleaner level/invalidation; ≥ 2.5 → avoid fresh entries; > 3 → strongly prefer no new entries.
 - On ${primaryTimeframe}: |dist_from_ema20_${primaryTimeframe}_in_atr| ≥ 2.0 → be selective and tighten profit-taking; ≥ 2.5 avoid fresh entries unless this is a post-breakout retest with HIGH strength.
 `.trim();
@@ -665,6 +695,11 @@ ${JSON.stringify({
   macro_trend_down: momentumSignals.macroTrendDown,
   primary_bias: primaryBias,
   context_bias: contextBias,
+  micro_bias_calc: microBiasCalc,
+  primary_trend_up: primaryTrendUp,
+  primary_trend_down: primaryTrendDown,
+  primary_breakdown_confirmed: primaryBreakdownConfirmed,
+  primary_breakout_confirmed: primaryBreakoutConfirmed,
   into_context_support: intoContextSupport,
   into_context_resistance: intoContextResistance,
   context_breakdown_confirmed: htfBreakdownConfirmed,
