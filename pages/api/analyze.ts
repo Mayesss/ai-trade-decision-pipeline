@@ -6,7 +6,7 @@ import { fetchMarketBundle, computeAnalytics, fetchPositionInfo, fetchRealizedRo
 import { calculateMultiTFIndicators } from '../../lib/indicators';
 import { fetchNewsWithHeadlines } from '../../lib/news';
 
-import { buildPrompt, callAI, computeMomentumSignals } from '../../lib/ai';
+import { buildPrompt, callAI, computeMomentumSignals, postprocessDecision } from '../../lib/ai';
 import type { MomentumSignals } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
@@ -288,7 +288,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 6) Build prompt with allowed_actions, gates, and close_conditions
         const roiRes = await fetchRealizedRoi(symbol, 24);
 
-        const { system, user } = await buildPrompt(
+        const { system, user, context } = await buildPrompt(
             symbol, // e.g. "BTCUSDT"
             timeFrame, // e.g. "45m"
             bundle, // from fetchMarketBundle(...)
@@ -306,7 +306,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         );
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions)
-        const decision = await callAI(system, user);
+        const decisionRaw = await callAI(system, user);
+        const decision = postprocessDecision({
+            decision: decisionRaw,
+            context,
+            gates: gatesOut.gates,
+            positionOpen,
+            recentActions,
+            positionContext,
+        });
 
         // 8) Execute (dry run unless explicitly disabled), using leveraged notional for gates
         const execLeverage = getTargetLeverage(decision);

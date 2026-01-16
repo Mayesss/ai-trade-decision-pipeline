@@ -7,7 +7,7 @@ import { fetchMarketBundle, computeAnalytics, fetchPositionInfo, fetchRealizedRo
 import { calculateMultiTFIndicators } from '../../lib/indicators';
 import { fetchNewsWithHeadlines } from '../../lib/news';
 
-import { buildPrompt, callAI, computeMomentumSignals } from '../../lib/ai';
+import { buildPrompt, callAI, computeMomentumSignals, postprocessDecision } from '../../lib/ai';
 import type { MomentumSignals } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
@@ -300,7 +300,7 @@ async function runAnalysisForSymbol(params: {
 
             // 6) Build prompt
             const roiRes = await fetchRealizedRoi(symbol, 24);
-            const { system, user } = await buildPrompt(
+            const { system, user, context } = await buildPrompt(
                 symbol,
                 timeFrame,
                 bundle,
@@ -318,7 +318,15 @@ async function runAnalysisForSymbol(params: {
             );
 
             // 7) AI decision
-            const decision = await callAI(system, user);
+            const decisionRaw = await callAI(system, user);
+            const decision = postprocessDecision({
+                decision: decisionRaw,
+                context,
+                gates: gatesOut.gates,
+                positionOpen,
+                recentActions,
+                positionContext,
+            });
 
             // 8) Execute (dry run unless explicitly disabled), using leveraged notional for gates
             const execLeverage = getTargetLeverage(decision);

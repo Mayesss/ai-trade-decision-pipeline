@@ -713,19 +713,178 @@ ${JSON.stringify({
 - Closing guardrails: ${JSON.stringify(closingGuidance)}
 
 TASKS:
-1) Determine micro_bias (${microTimeframe}), primary_bias (${primaryTimeframe}), macro_bias (${macroTimeframe}), and context_bias (${contextTimeframe}).
-2) Output exactly one action: "BUY", "SELL", "HOLD", "CLOSE", or "REVERSE".
+1) Output exactly one action: "BUY", "SELL", "HOLD", "CLOSE", or "REVERSE".
    - If no position: BUY/SELL/HOLD.
    - If in position: HOLD/CLOSE/REVERSE only.
-3) Pick leverage (1–5) for BUY/SELL/REVERSE; use null for HOLD/CLOSE.
-4) Provide signal_strength (1–5 or LOW/MEDIUM/HIGH).
-5) Summarize in ≤2 lines.
+2) Pick leverage (1–5) for BUY/SELL/REVERSE; use null for HOLD/CLOSE.
+3) Summarize in ≤2 lines.
 
 JSON OUTPUT (strict):
-{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","micro_bias":"UP|DOWN|NEUTRAL","primary_bias":"UP|DOWN|NEUTRAL","macro_bias":"UP|DOWN|NEUTRAL","context_bias":"UP|DOWN|NEUTRAL","signal_strength":"1|2|3|4|5|LOW|MEDIUM|HIGH","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"leverage":null|1|2|3|4|5}
+{"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"leverage":null|1|2|3|4|5}
 `;
 
-    return { system: sys, user };
+    const context = {
+        micro_bias_calc: microBiasCalc,
+        primary_bias: primaryBias,
+        macro_bias: macroBias,
+        context_bias: contextBias,
+        primary_trend_up: primaryTrendUp,
+        primary_trend_down: primaryTrendDown,
+        primary_breakdown_confirmed: primaryBreakdownConfirmed,
+        primary_breakout_confirmed: primaryBreakoutConfirmed,
+        micro_entry_ok: Boolean(momentumSignals.info?.microEntryOk),
+        aligned_driver_count: alignedDriverCount,
+        regime_alignment: regimeAlignment,
+        location_confluence_score: locationConfluenceScore,
+        micro_extension_atr: momentumSignals.microExtensionInAtr ?? null,
+        primary_extension_atr: distance_from_ema20_primary_atr,
+        breakout_retest_ok_primary: breakoutRetestOk4h,
+        breakout_retest_dir_primary: breakoutRetestDir4h ?? null,
+    };
+
+    return { system: sys, user, context };
+}
+
+export type PromptDecisionContext = {
+    micro_bias_calc: string;
+    primary_bias: string;
+    macro_bias: string;
+    context_bias: string;
+    primary_trend_up: boolean;
+    primary_trend_down: boolean;
+    primary_breakdown_confirmed: boolean;
+    primary_breakout_confirmed: boolean;
+    micro_entry_ok: boolean;
+    aligned_driver_count: number;
+    regime_alignment: number;
+    location_confluence_score: number;
+    micro_extension_atr: number | null;
+    primary_extension_atr: number | null;
+    breakout_retest_ok_primary: boolean;
+    breakout_retest_dir_primary: string | null;
+};
+
+const toBiasLabel = (value: string): 'UP' | 'DOWN' | 'NEUTRAL' => {
+    const v = value.toLowerCase();
+    if (v === 'up') return 'UP';
+    if (v === 'down') return 'DOWN';
+    return 'NEUTRAL';
+};
+
+export function computeSignalStrength(context: PromptDecisionContext): 'LOW' | 'MEDIUM' | 'HIGH' {
+    const aligned = Number.isFinite(context.aligned_driver_count) ? context.aligned_driver_count : 0;
+    const regime = Number.isFinite(context.regime_alignment) ? Math.abs(context.regime_alignment) : 0;
+    const location = Number.isFinite(context.location_confluence_score)
+        ? context.location_confluence_score
+        : 0;
+    const microExt = Number.isFinite(context.micro_extension_atr as number) ? Math.abs(context.micro_extension_atr as number) : 0;
+    const primaryExt = Number.isFinite(context.primary_extension_atr as number)
+        ? Math.abs(context.primary_extension_atr as number)
+        : 0;
+
+    let score = 0;
+    if (aligned >= 5) score += 3;
+    else if (aligned >= 4) score += 2;
+    else if (aligned >= 3) score += 1;
+
+    if (regime >= 0.5) score += 1;
+    if (location >= 0.6) score += 1;
+
+    if (microExt >= 2.5 || primaryExt >= 2.5) score -= 1;
+    if (microExt >= 3 || primaryExt >= 3) score -= 1;
+
+    if (score >= 4) return 'HIGH';
+    if (score >= 2) return 'MEDIUM';
+    return 'LOW';
+}
+
+export function postprocessDecision(params: {
+    decision: any;
+    context: PromptDecisionContext;
+    gates: { spread_ok: boolean; liquidity_ok: boolean; atr_ok: boolean; slippage_ok: boolean };
+    positionOpen: boolean;
+    recentActions: { action: string; timestamp: number }[];
+    positionContext: PositionContext | null;
+}) {
+    const { decision, context, gates, positionOpen, recentActions, positionContext } = params;
+    const signalStrength = computeSignalStrength(context);
+    const microBias = toBiasLabel(context.micro_bias_calc);
+    const primaryBias = toBiasLabel(context.primary_bias);
+    const macroBias = toBiasLabel(context.macro_bias);
+    const contextBias = toBiasLabel(context.context_bias);
+
+    const allowedActions = positionOpen ? ['HOLD', 'CLOSE', 'REVERSE'] : ['BUY', 'SELL', 'HOLD'];
+    let action = String(decision?.action || 'HOLD').toUpperCase();
+    if (!allowedActions.includes(action)) action = 'HOLD';
+
+    const desiredSide =
+        action === 'BUY'
+            ? 'long'
+            : action === 'SELL'
+            ? 'short'
+            : action === 'REVERSE'
+            ? positionContext?.side === 'long'
+                ? 'short'
+                : positionContext?.side === 'short'
+                ? 'long'
+                : null
+            : null;
+
+    if (desiredSide === 'short' && context.primary_trend_up && microBias === 'UP') {
+        action = 'HOLD';
+    }
+    if (desiredSide === 'long' && context.primary_trend_down && microBias === 'DOWN') {
+        action = 'HOLD';
+    }
+
+    if (!positionOpen && !context.micro_entry_ok && (action === 'BUY' || action === 'SELL')) {
+        const allowException = signalStrength === 'HIGH' && context.breakout_retest_ok_primary;
+        if (!allowException) action = 'HOLD';
+    }
+
+    if (action === 'CLOSE' || action === 'REVERSE') {
+        const recent = (recentActions || [])
+            .slice(-2)
+            .map((a) => String(a.action || '').toUpperCase())
+            .filter((a) => a);
+        if (signalStrength !== 'HIGH' && recent.includes(action)) {
+            action = 'HOLD';
+        }
+    }
+
+    const baseGatesOk = Boolean(gates?.spread_ok && gates?.liquidity_ok && gates?.atr_ok && gates?.slippage_ok);
+    if (!baseGatesOk) {
+        if (positionOpen) {
+            action = 'CLOSE';
+        } else {
+            action = 'HOLD';
+        }
+    }
+
+    const leverage =
+        action === 'BUY' || action === 'SELL' || action === 'REVERSE'
+            ? Number.isFinite(decision?.leverage as number)
+                ? Number(decision.leverage)
+                : null
+            : null;
+    const exit_size_pct =
+        action === 'CLOSE' || action === 'REVERSE'
+            ? Number.isFinite(decision?.exit_size_pct as number)
+                ? Number(decision.exit_size_pct)
+                : null
+            : null;
+
+    return {
+        ...decision,
+        action,
+        leverage,
+        exit_size_pct,
+        signal_strength: signalStrength,
+        micro_bias: microBias,
+        primary_bias: primaryBias,
+        macro_bias: macroBias,
+        context_bias: contextBias,
+    };
 }
 
 // ------------------------------
