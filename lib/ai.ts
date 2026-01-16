@@ -717,7 +717,7 @@ TASKS:
    - If no position: BUY/SELL/HOLD.
    - If in position: HOLD/CLOSE/REVERSE only.
 2) Pick leverage (1–5) for BUY/SELL/REVERSE; use null for HOLD/CLOSE.
-3) Summarize in ≤2 lines.
+3) Summarize in ≤3 lines.
 
 JSON OUTPUT (strict):
 {"action":"BUY|SELL|HOLD|CLOSE|REVERSE","summary":"≤2 lines","reason":"brief rationale","exit_size_pct":null|0-100,"leverage":null|1|2|3|4|5}
