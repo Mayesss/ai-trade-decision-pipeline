@@ -599,6 +599,7 @@ GENERAL RULES
 - **Costs / churn control**: total_cost_bps = ~${total_cost_bps}bps (round-trip fees + slippage). For swing entries, avoid trades where the expected move is not clearly larger than costs; default filter: if edge is unclear or setup quality is MED/LOW → HOLD.
 - **Leverage**: For BUY/SELL/REVERSE pick leverage 1–5 (integer). Default null on HOLD/CLOSE.
   - Choose leverage based on conviction AND risk (regime alignment, extension, proximity to major levels, volatility). Even on HIGH conviction, use 1–2x if stretched or near major ${contextTimeframe} levels. Never exceed 5.
+  - Avoid defaulting to 2x. Use the full range: HIGH + non-extended → 4–5x, MEDIUM → 2–3x, LOW or extended → 1x.
 - **Macro/context usage**:
   - macro_bias (${macroTimeframe}) is a bias, not a hard filter. Trades with macro_bias are preferred.
   - context_bias (${contextTimeframe}) is a risk lever: when aligned, accept MEDIUM setups; when opposed, require HIGH quality and non-extended entries. Use it to adjust selectivity and leverage, not as a hard gate.
@@ -616,6 +617,7 @@ GENERAL RULES
 - **Position truthfulness**: NEVER describe a position as winning if unrealized_pnl_pct < 0 or if price_vs_breakeven_pct is on the losing side for that direction.
 - **Temporal inertia (anti-flip)**: avoid more than one action change (CLOSE/REVERSE) in the same direction within the last 2 calls unless signal_strength stays HIGH and regime/structure invalidation is strengthening.
 - **Exit sizing**: Default exit_size_pct = 100 (full close). Use 30–70 when trimming risk (approaching major opposite level with gains, regime weakening, structure damage without full reversal). Avoid trims <20%; omit when not needed.
+  - If in profit AND RSI is extreme (≥65 long / ≤35 short) with elevated extension (|dist_from_ema20_${microTimeframe}_in_atr| ≥ 2.2 or |dist_from_ema20_${primaryTimeframe}_in_atr| ≥ 2.0), trim 30–60 even if no level is immediately ahead.
 
 BIAS DEFINITIONS (swing-oriented)
 - primary_bias (${primaryTimeframe}): trend/structure bias from EMA alignment/slope, RSI, HH/HL vs LH/LL, and ${primaryTimeframe} range state.
@@ -738,6 +740,8 @@ JSON OUTPUT (strict):
         location_confluence_score: locationConfluenceScore,
         micro_extension_atr: momentumSignals.microExtensionInAtr ?? null,
         primary_extension_atr: distance_from_ema20_primary_atr,
+        micro_rsi: Number.isFinite(rsi_micro as number) ? (rsi_micro as number) : null,
+        primary_rsi: Number.isFinite(rsi_primary as number) ? (rsi_primary as number) : null,
         breakout_retest_ok_primary: breakoutRetestOk4h,
         breakout_retest_dir_primary: breakoutRetestDir4h ?? null,
     };
@@ -760,6 +764,8 @@ export type PromptDecisionContext = {
     location_confluence_score: number;
     micro_extension_atr: number | null;
     primary_extension_atr: number | null;
+    micro_rsi: number | null;
+    primary_rsi: number | null;
     breakout_retest_ok_primary: boolean;
     breakout_retest_dir_primary: string | null;
 };
@@ -853,13 +859,6 @@ export function postprocessDecision(params: {
     }
 
     const baseGatesOk = Boolean(gates?.spread_ok && gates?.liquidity_ok && gates?.atr_ok && gates?.slippage_ok);
-    if (!baseGatesOk) {
-        if (positionOpen) {
-            action = 'CLOSE';
-        } else {
-            action = 'HOLD';
-        }
-    }
 
     const leverage =
         action === 'BUY' || action === 'SELL' || action === 'REVERSE'
@@ -874,11 +873,72 @@ export function postprocessDecision(params: {
                 : null
             : null;
 
+    const microExt = Number.isFinite(context.micro_extension_atr as number) ? Math.abs(context.micro_extension_atr as number) : 0;
+    const primaryExt = Number.isFinite(context.primary_extension_atr as number)
+        ? Math.abs(context.primary_extension_atr as number)
+        : 0;
+    const microRsi = Number.isFinite(context.micro_rsi as number) ? (context.micro_rsi as number) : null;
+    const primaryRsi = Number.isFinite(context.primary_rsi as number) ? (context.primary_rsi as number) : null;
+    const pnlPct = Number.isFinite(positionContext?.unrealized_pnl_pct as number)
+        ? (positionContext?.unrealized_pnl_pct as number)
+        : null;
+    const side = positionContext?.side;
+
+    const rsiExtreme =
+        side === 'long'
+            ? Math.max(microRsi ?? -Infinity, primaryRsi ?? -Infinity) >= 65
+            : side === 'short'
+            ? Math.min(microRsi ?? Infinity, primaryRsi ?? Infinity) <= 35
+            : false;
+    const extensionElevated = microExt >= 2.2 || primaryExt >= 2.0;
+    const extensionVery = microExt >= 2.8 || primaryExt >= 2.6;
+    const inProfit = (pnlPct ?? 0) >= 0.4;
+
+    let adjustedAction = action;
+    let adjustedExitSize = exit_size_pct;
+    let adjustedLeverage = leverage;
+
+    if (baseGatesOk && positionOpen && inProfit && extensionElevated && rsiExtreme) {
+        if (action === 'HOLD' || (action === 'CLOSE' && adjustedExitSize === null)) {
+            adjustedAction = 'CLOSE';
+            adjustedExitSize = extensionVery ? 60 : 40;
+        }
+    }
+
+    if (!baseGatesOk) {
+        adjustedAction = positionOpen ? 'CLOSE' : 'HOLD';
+        adjustedExitSize = adjustedAction === 'CLOSE' ? 100 : null;
+    }
+
+    if (adjustedAction === 'BUY' || adjustedAction === 'SELL' || adjustedAction === 'REVERSE') {
+        const clampLev = (value: number) => Math.max(1, Math.min(5, Math.round(value)));
+        const aligned = Number.isFinite(context.aligned_driver_count) ? context.aligned_driver_count : 0;
+        const regime = Number.isFinite(context.regime_alignment) ? Math.abs(context.regime_alignment) : 0;
+        const location = Number.isFinite(context.location_confluence_score)
+            ? context.location_confluence_score
+            : 0;
+
+        let derived = signalStrength === 'HIGH' ? 4 : signalStrength === 'MEDIUM' ? 3 : 1;
+        if (extensionElevated) derived -= 1;
+        if (regime >= 0.6 && location >= 0.7 && microExt < 1.4 && primaryExt < 1.4 && aligned >= 5) {
+            derived += 1;
+        }
+        derived = clampLev(derived);
+
+        if (!Number.isFinite(adjustedLeverage as number)) {
+            adjustedLeverage = derived;
+        } else if (adjustedLeverage === 2 && derived !== 2) {
+            adjustedLeverage = derived;
+        }
+    } else {
+        adjustedLeverage = null;
+    }
+
     return {
         ...decision,
-        action,
-        leverage,
-        exit_size_pct,
+        action: adjustedAction,
+        leverage: adjustedLeverage,
+        exit_size_pct: adjustedExitSize,
         signal_strength: signalStrength,
         micro_bias: microBias,
         primary_bias: primaryBias,
