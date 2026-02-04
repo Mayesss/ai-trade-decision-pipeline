@@ -617,7 +617,6 @@ GENERAL RULES
 - **Position truthfulness**: NEVER describe a position as winning if unrealized_pnl_pct < 0 or if price_vs_breakeven_pct is on the losing side for that direction.
 - **Temporal inertia (anti-flip)**: avoid more than one action change (CLOSE/REVERSE) in the same direction within the last 2 calls unless signal_strength stays HIGH and regime/structure invalidation is strengthening.
 - **Exit sizing**: Default exit_size_pct = 100 (full close). Use 30–70 when trimming risk (approaching major opposite level with gains, regime weakening, structure damage without full reversal). Avoid trims <20%; omit when not needed.
-  - If in profit AND RSI is extreme (≥65 long / ≤35 short) with elevated extension (|dist_from_ema20_${microTimeframe}_in_atr| ≥ 2.2 or |dist_from_ema20_${primaryTimeframe}_in_atr| ≥ 2.0), trim 30–60 even if no level is immediately ahead.
 
 BIAS DEFINITIONS (swing-oriented)
 - primary_bias (${primaryTimeframe}): trend/structure bias from EMA alignment/slope, RSI, HH/HL vs LH/LL, and ${primaryTimeframe} range state.
