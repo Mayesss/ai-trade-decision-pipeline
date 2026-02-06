@@ -150,7 +150,16 @@ const formatBerlinTime = (time: any, opts: Intl.DateTimeFormatOptions = {}) => {
   }).format(date);
 };
 
+const ADMIN_SECRET_STORAGE_KEY = 'admin_access_secret';
+const ADMIN_AUTH_TIMEOUT_MS = 4000;
+
 export default function Home() {
+  const [adminReady, setAdminReady] = useState(false);
+  const [adminGranted, setAdminGranted] = useState(false);
+  const [adminSecret, setAdminSecret] = useState<string | null>(null);
+  const [adminInput, setAdminInput] = useState('');
+  const [adminError, setAdminError] = useState<string | null>(null);
+  const [adminSubmitting, setAdminSubmitting] = useState(false);
   const [symbols, setSymbols] = useState<string[]>([]);
   const [active, setActive] = useState(0);
   const [tabData, setTabData] = useState<Record<string, EvaluationEntry>>({});
@@ -169,6 +178,45 @@ export default function Home() {
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const overlayLayerRef = useRef<HTMLDivElement | null>(null);
   const chartInstanceRef = useRef<any>(null);
+
+  const validateAdminAccess = async (secret: string | null) => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), ADMIN_AUTH_TIMEOUT_MS);
+    try {
+      const res = await fetch('/api/admin-auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ secret: secret || '' }),
+        signal: controller.signal,
+      });
+      const json = await res.json().catch(() => null);
+      const required = json?.required !== false;
+      const ok = Boolean(json?.ok);
+      return { ok: res.ok && ok, required };
+    } catch {
+      return { ok: false, required: true };
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  };
+
+  const handleAdminSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setAdminError(null);
+    setAdminSubmitting(true);
+    const result = await validateAdminAccess(adminInput);
+    if (result.ok) {
+      if (result.required) {
+        window.localStorage.setItem(ADMIN_SECRET_STORAGE_KEY, adminInput);
+        setAdminSecret(adminInput);
+      }
+      setAdminGranted(true);
+      setAdminInput('');
+    } else {
+      setAdminError('Invalid access secret.');
+    }
+    setAdminSubmitting(false);
+  };
 
   const aspectMeta: Record<string, { Icon: LucideIcon; color: string; bg: string }> = {
     data_quality: { Icon: Database, color: 'text-sky-700', bg: 'bg-sky-100' },
@@ -191,7 +239,9 @@ export default function Home() {
   const loadEvaluations = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/evaluations');
+      const res = await fetch('/api/evaluations', {
+        headers: adminSecret ? { 'x-admin-access-secret': adminSecret } : undefined,
+      });
       if (!res.ok) {
         throw new Error(`Request failed with status ${res.status}`);
       }
@@ -212,8 +262,34 @@ export default function Home() {
   };
 
   useEffect(() => {
-    loadEvaluations();
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem(ADMIN_SECRET_STORAGE_KEY);
+    (async () => {
+      let result = { ok: false, required: true };
+      try {
+        result = await validateAdminAccess(stored);
+      } catch {
+        result = { ok: false, required: true };
+      }
+      if (result.ok) {
+        if (result.required && stored) {
+          setAdminSecret(stored);
+        }
+        setAdminGranted(true);
+      } else if (stored) {
+        window.localStorage.removeItem(ADMIN_SECRET_STORAGE_KEY);
+      }
+      setAdminReady(true);
+      if (!result.ok) {
+        setLoading(false);
+      }
+    })();
   }, []);
+
+  useEffect(() => {
+    if (!adminGranted) return;
+    loadEvaluations();
+  }, [adminGranted]);
 
   useEffect(() => {
     setShowAspects(false);
@@ -227,10 +303,12 @@ export default function Home() {
 
   useEffect(() => {
     const fetchChart = async () => {
-      if (!symbols[active]) return;
+      if (!adminGranted || !symbols[active]) return;
       try {
         setChartLoading(true);
-        const res = await fetch(`/api/chart?symbol=${symbols[active]}&timeframe=15m`);
+        const res = await fetch(`/api/chart?symbol=${symbols[active]}&timeframe=15m`, {
+          headers: adminSecret ? { 'x-admin-access-secret': adminSecret } : undefined,
+        });
         if (!res.ok) throw new Error('Failed to load chart');
         const json = await res.json();
         const mapped = (json.candles || []).map((c: any) => ({ time: c.time, value: c.close }));
@@ -246,7 +324,7 @@ export default function Home() {
       }
     };
     fetchChart();
-  }, [active, symbols]);
+  }, [active, symbols, adminGranted, adminSecret]);
 
   useEffect(() => {
     const container = chartContainerRef.current;
@@ -524,12 +602,46 @@ export default function Home() {
   ] as const;
 
   return (
-    <html lang="en">
+    <>
       <Head>
         <title>AI Trade Dashboard</title>
         <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
       </Head>
-      <div className="min-h-screen bg-slate-50 text-slate-900 flex items-center justify-center px-4 py-10">
+      <div className="min-h-screen bg-slate-50 text-slate-900 flex items-center justify-center px-4 py-10 relative">
+        {adminReady && !adminGranted && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm px-4">
+            <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl pointer-events-auto">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100">
+                  <ShieldCheck className="h-5 w-5 text-slate-700" />
+                </div>
+                <div>
+                  <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Admin Access</div>
+                  <h2 className="text-xl font-semibold text-slate-900">Enter access secret</h2>
+                </div>
+              </div>
+              <form className="mt-5 space-y-3" onSubmit={handleAdminSubmit}>
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  autoFocus
+                  value={adminInput}
+                  onChange={(event) => setAdminInput(event.target.value)}
+                  placeholder="ADMIN_ACCESS_SECRET"
+                  className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-900 shadow-sm focus:border-slate-400 focus:outline-none"
+                />
+                {adminError && <div className="text-sm font-semibold text-rose-600">{adminError}</div>}
+                <button
+                  type="submit"
+                  disabled={adminSubmitting || !adminInput.trim()}
+                  className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+                >
+                  {adminSubmitting ? 'Checking…' : 'Unlock dashboard'}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
         <div className="w-full max-w-6xl rounded-3xl border border-slate-200 bg-white shadow-xl">
         <div className="flex items-center justify-between gap-4 border-b border-slate-200 px-6 py-5">
           <div>
@@ -538,7 +650,8 @@ export default function Home() {
           </div>
           <button
             onClick={loadEvaluations}
-            className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800"
+            disabled={!adminGranted}
+            className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
           >
             Refresh
           </button>
@@ -1188,7 +1301,7 @@ export default function Home() {
           )}
         </div>
       </div>
-    </div>
-    </html>
+      </div>
+    </>
   );
 }

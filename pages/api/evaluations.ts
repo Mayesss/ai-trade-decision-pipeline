@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { getAllEvaluations, getEvaluationTimestamp } from '../../lib/utils';
 import { loadDecisionHistory, listHistorySymbols } from '../../lib/history';
 import { fetchPositionInfo, fetchRealizedRoi, fetchRecentPositionWindows } from '../../lib/analytics';
+import { requireAdminAccess } from './_admin';
 
 type EnrichedEntry = {
   symbol: string;
@@ -36,6 +37,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
     return;
   }
+  if (!requireAdminAccess(req, res)) return;
 
   const store = await getAllEvaluations();
   let symbols = Object.keys(store);

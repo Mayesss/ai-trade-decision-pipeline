@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { fetchMarketBundle, fetchPositionInfo, fetchRecentPositionWindows } from '../../lib/analytics';
 import { loadDecisionHistory } from '../../lib/history';
+import { requireAdminAccess } from './_admin';
 
 function timeframeToSeconds(tf: string): number {
   const match = /^(\d+)([smhd])$/i.exec(tf.trim());
@@ -25,6 +26,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
   }
+  if (!requireAdminAccess(req, res)) return;
 
   const symbol = String(req.query.symbol || '').toUpperCase();
   const timeframe = String(req.query.timeframe || '15m');
