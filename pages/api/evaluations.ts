@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { getAllEvaluations, getEvaluationTimestamp } from '../../lib/utils';
 import { loadDecisionHistory, listHistorySymbols } from '../../lib/history';
 import { fetchPositionInfo, fetchRealizedRoi, fetchRecentPositionWindows } from '../../lib/analytics';
-import { requireAdminAccess } from './_admin';
+import { requireAdminAccess } from '../../lib/admin';
 
 type EnrichedEntry = {
   symbol: string;

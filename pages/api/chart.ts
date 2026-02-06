@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { fetchMarketBundle, fetchPositionInfo, fetchRecentPositionWindows } from '../../lib/analytics';
 import { loadDecisionHistory } from '../../lib/history';
-import { requireAdminAccess } from './_admin';
+import { requireAdminAccess } from '../../lib/admin';
 
 function timeframeToSeconds(tf: string): number {
   const match = /^(\d+)([smhd])$/i.exec(tf.trim());
