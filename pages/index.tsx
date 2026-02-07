@@ -77,6 +77,15 @@ type EvaluationsResponse = {
   data: EvaluationEntry[];
 };
 
+type EvaluateJobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
+
+type EvaluateJobRecord = {
+  id: string;
+  status: EvaluateJobStatus;
+  updatedAt?: number;
+  error?: string;
+};
+
 type DecisionBrief = {
   timestamp?: number | null;
   action?: string;
@@ -166,6 +175,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showAspects, setShowAspects] = useState(false);
+  const [showRawEvaluation, setShowRawEvaluation] = useState(false);
   const [showPrompt, setShowPrompt] = useState(false);
   const [chartData, setChartData] = useState<{ time: number; value: number }[]>([]);
   const [chartMarkers, setChartMarkers] = useState<any[]>([]);
@@ -175,9 +185,12 @@ export default function Home() {
   const [hoveredOverlay, setHoveredOverlay] = useState<RenderedOverlay | null>(null);
   const [hoverX, setHoverX] = useState<number | null>(null);
   const [chartInitToken, setChartInitToken] = useState(0);
+  const [evaluateJobs, setEvaluateJobs] = useState<Record<string, EvaluateJobRecord>>({});
+  const [evaluateSubmittingSymbol, setEvaluateSubmittingSymbol] = useState<string | null>(null);
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const overlayLayerRef = useRef<HTMLDivElement | null>(null);
   const chartInstanceRef = useRef<any>(null);
+  const evaluatePollTimersRef = useRef<Record<string, number>>({});
 
   const validateAdminAccess = async (secret: string | null) => {
     const controller = new AbortController();
@@ -236,6 +249,80 @@ export default function Home() {
   };
 
   const formatLabel = (key: string) => key.replace(/_/g, ' ');
+  const clearEvaluatePollTimer = (symbol: string) => {
+    const timerId = evaluatePollTimersRef.current[symbol];
+    if (timerId) {
+      window.clearInterval(timerId);
+      delete evaluatePollTimersRef.current[symbol];
+    }
+  };
+  const pollEvaluationJob = async (symbol: string, jobId: string) => {
+    try {
+      const res = await fetch(`/api/evaluate?jobId=${encodeURIComponent(jobId)}`, {
+        headers: adminSecret ? { 'x-admin-access-secret': adminSecret } : undefined,
+      });
+      if (!res.ok) return;
+      const json = await res.json();
+      const status = String(json?.status || '') as EvaluateJobStatus;
+      if (!status) return;
+      setEvaluateJobs((prev) => ({
+        ...prev,
+        [symbol]: {
+          id: jobId,
+          status,
+          updatedAt: Number(json?.updatedAt) || Date.now(),
+          error: typeof json?.error === 'string' ? json.error : undefined,
+        },
+      }));
+
+      if (status === 'succeeded' || status === 'failed') {
+        clearEvaluatePollTimer(symbol);
+        if (status === 'succeeded') {
+          await loadEvaluations();
+        }
+      }
+    } catch {
+      // keep polling on transient fetch issues
+    }
+  };
+  const triggerEvaluation = async (symbol: string) => {
+    if (!symbol || evaluateSubmittingSymbol) return;
+    setEvaluateSubmittingSymbol(symbol);
+    setError(null);
+    try {
+      const params = new URLSearchParams({
+        symbol,
+        async: 'true',
+      });
+      const res = await fetch(`/api/evaluate?${params.toString()}`, {
+        headers: adminSecret ? { 'x-admin-access-secret': adminSecret } : undefined,
+      });
+      if (!res.ok) {
+        let msg = `Failed to queue evaluation (${res.status})`;
+        try {
+          const body = await res.json();
+          msg = body?.error ? `${msg}: ${String(body.error)}` : msg;
+        } catch {}
+        throw new Error(msg);
+      }
+      const json = await res.json();
+      const jobId = String(json?.jobId || '');
+      if (!jobId) throw new Error('Missing evaluation job ID');
+      setEvaluateJobs((prev) => ({
+        ...prev,
+        [symbol]: { id: jobId, status: 'queued', updatedAt: Date.now() },
+      }));
+      clearEvaluatePollTimer(symbol);
+      void pollEvaluationJob(symbol, jobId);
+      evaluatePollTimersRef.current[symbol] = window.setInterval(() => {
+        void pollEvaluationJob(symbol, jobId);
+      }, 5000);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to queue evaluation');
+    } finally {
+      setEvaluateSubmittingSymbol(null);
+    }
+  };
   const loadEvaluations = async () => {
     try {
       setLoading(true);
@@ -292,7 +379,16 @@ export default function Home() {
   }, [adminGranted]);
 
   useEffect(() => {
+    return () => {
+      Object.keys(evaluatePollTimersRef.current).forEach((symbol) => {
+        clearEvaluatePollTimer(symbol);
+      });
+    };
+  }, []);
+
+  useEffect(() => {
     setShowAspects(false);
+    setShowRawEvaluation(false);
     setShowPrompt(false);
   }, [active, symbols]);
 
@@ -579,6 +675,13 @@ export default function Home() {
   };
 
   const current = symbols[active] ? tabData[symbols[active]] : null;
+  const activeSymbol = symbols[active] || null;
+  const currentEvalJob = activeSymbol ? evaluateJobs[activeSymbol] : null;
+  const evaluateRunning = Boolean(
+    activeSymbol &&
+      currentEvalJob &&
+      (currentEvalJob.status === 'queued' || currentEvalJob.status === 'running'),
+  );
   const hasLastDecision =
     !!(
       current &&
@@ -647,14 +750,30 @@ export default function Home() {
           <div>
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Performance</p>
             <h1 className="text-3xl font-semibold leading-tight text-slate-900">AI Trade Dashboard</h1>
+            {activeSymbol && currentEvalJob ? (
+              <p className="mt-1 text-xs text-slate-500">
+                Eval job for {activeSymbol}:{' '}
+                <span className="font-semibold text-slate-700">{currentEvalJob.status}</span>
+                {currentEvalJob.error ? ` (${currentEvalJob.error})` : ''}
+              </p>
+            ) : null}
           </div>
-          <button
-            onClick={loadEvaluations}
-            disabled={!adminGranted}
-            className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            Refresh
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => (activeSymbol ? triggerEvaluation(activeSymbol) : undefined)}
+              disabled={!adminGranted || !activeSymbol || !!evaluateSubmittingSymbol || evaluateRunning}
+              className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {evaluateSubmittingSymbol ? 'Queueing…' : evaluateRunning ? 'Evaluating…' : 'Run Evaluation'}
+            </button>
+            <button
+              onClick={loadEvaluations}
+              disabled={!adminGranted}
+              className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Refresh
+            </button>
+          </div>
         </div>
 
         {error && (
@@ -1171,12 +1290,25 @@ export default function Home() {
                   <div className="mt-4 space-y-4">
                     {current?.evaluation?.aspects && (
                       <>
-                        <button
-                          onClick={() => setShowAspects((prev) => !prev)}
-                          className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
-                        >
-                          {showAspects ? 'Hide aspect ratings' : 'Show aspect ratings'}
-                        </button>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            onClick={() => setShowAspects((prev) => !prev)}
+                            className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                          >
+                            {showAspects ? 'Hide aspect ratings' : 'Show aspect ratings'}
+                          </button>
+                          <button
+                            onClick={() => setShowRawEvaluation((prev) => !prev)}
+                            className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-slate-300"
+                          >
+                            {showRawEvaluation ? 'Hide raw JSON' : 'Show raw JSON'}
+                          </button>
+                        </div>
+                        {showRawEvaluation && (
+                          <pre className="overflow-auto rounded-xl border border-slate-800 bg-slate-900/95 p-3 font-mono text-[11px] leading-snug text-slate-100">
+                            {JSON.stringify(current.evaluation, null, 2)}
+                          </pre>
+                        )}
                         {showAspects && (
                           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                             {Object.entries(current.evaluation.aspects).map(([key, val]) => (

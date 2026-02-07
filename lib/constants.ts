@@ -1,5 +1,5 @@
 export const BITGET_ACCOUNT_TYPE = 'usdt-futures';
-export const AI_MODEL = 'gpt-4.1-mini';
+export const AI_MODEL = 'gpt-5.2';
 export const AI_BASE_URL = 'https://api.openai.com/v1';
 export const COINDESK_API_BASE = 'https://data-api.coindesk.com';
 export const COINDESK_NEWS_LIST_PATH = '/news/v1/article/list';

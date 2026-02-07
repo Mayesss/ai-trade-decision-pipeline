@@ -109,8 +109,8 @@ export function computeMomentumSignals(params: {
     const microOverbought = Number.isFinite(rsiMicro as number) ? (rsiMicro as number) >= 60 : false;
     const microEntryOk = nearPrimary || nearMicro || microOversold || microOverbought;
 
-    const longMomentum =  priceAbovePrimary50 && rsiPullbackLong && slopeUp;
-    const shortMomentum =  priceBelowPrimary50 && rsiPullbackShort && slopeDown;
+    const longMomentum = priceAbovePrimary50 && rsiPullbackLong && slopeUp;
+    const shortMomentum = priceBelowPrimary50 && rsiPullbackShort && slopeDown;
 
     const microExtensionInAtr =
         Number.isFinite(atrMicro as number) && (atrMicro as number) > 0 && Number.isFinite(ema20Micro as number)
@@ -249,8 +249,8 @@ export async function buildPrompt(
     const contextBias = contextSummary.includes('trend=up')
         ? 'UP'
         : contextSummary.includes('trend=down')
-        ? 'DOWN'
-        : 'NEUTRAL';
+          ? 'DOWN'
+          : 'NEUTRAL';
     const contextIndicatorsBlock =
         contextSummary && contextTimeframe
             ? `- Context timeframe (${contextTimeframe}) indicators: ${contextSummary}\n`
@@ -351,8 +351,8 @@ export async function buildPrompt(
             ? (slope21_primary as number) > 0 && (rsi_primary as number) >= 50 && price >= (ema20_primary as number)
                 ? 'up'
                 : (slope21_primary as number) < 0 && (rsi_primary as number) <= 50 && price <= (ema20_primary as number)
-                ? 'down'
-                : 'neutral'
+                  ? 'down'
+                  : 'neutral'
             : 'neutral';
     const microBiasCalc =
         Number.isFinite(slope21_micro as number) &&
@@ -361,8 +361,8 @@ export async function buildPrompt(
             ? (slope21_micro as number) > 0 && (rsi_micro as number) >= 50 && price >= (ema20_micro as number)
                 ? 'up'
                 : (slope21_micro as number) < 0 && (rsi_micro as number) <= 50 && price <= (ema20_micro as number)
-                ? 'down'
-                : 'neutral'
+                  ? 'down'
+                  : 'neutral'
             : 'neutral';
     const primaryTrendUp = structure4hState === 'bull' || (bos4h && bosDir4h === 'up') || primaryBias === 'up';
     const primaryTrendDown = structure4hState === 'bear' || (bos4h && bosDir4h === 'down') || primaryBias === 'down';
@@ -404,7 +404,8 @@ export async function buildPrompt(
     const locationScoreShort = Math.min(1, resistanceProximity + (htfBreakdownConfirmed ? 0.3 : 0));
     const locationConfluenceScore = Math.max(locationScoreLong, locationScoreShort);
 
-    const nearPrimarySupport = typeof primarySR?.support?.dist_in_atr === 'number' ? primarySR.support.dist_in_atr <= 0.6 : false;
+    const nearPrimarySupport =
+        typeof primarySR?.support?.dist_in_atr === 'number' ? primarySR.support.dist_in_atr <= 0.6 : false;
     const nearPrimaryResistance =
         typeof primarySR?.resistance?.dist_in_atr === 'number' ? primarySR.resistance.dist_in_atr <= 0.6 : false;
 
@@ -414,9 +415,9 @@ export async function buildPrompt(
             ? (macroBias === 'UP' ? 1 : macroBias === 'DOWN' ? -1 : 0) +
               (contextBias === 'UP' ? 1 : contextBias === 'DOWN' ? -1 : 0)
             : primaryBias === 'down'
-            ? (macroBias === 'DOWN' ? 1 : macroBias === 'UP' ? -1 : 0) +
-              (contextBias === 'DOWN' ? 1 : contextBias === 'UP' ? -1 : 0)
-            : 0;
+              ? (macroBias === 'DOWN' ? 1 : macroBias === 'UP' ? -1 : 0) +
+                (contextBias === 'DOWN' ? 1 : contextBias === 'UP' ? -1 : 0)
+              : 0;
     const regimeAlignment = Math.max(-1, Math.min(1, regimeAlignmentRaw / 2));
 
     const valueOkLong = valueState1d === 'n/a' ? false : valueState1d !== 'below_val';
@@ -446,8 +447,8 @@ export async function buildPrompt(
         longAlignedDriverCount > shortAlignedDriverCount
             ? 'long'
             : shortAlignedDriverCount > longAlignedDriverCount
-            ? 'short'
-            : 'neutral';
+              ? 'short'
+              : 'neutral';
 
     const macroPenalty =
         (momentumSignals.macroTrendDown && favoredSide === 'long') ||
@@ -562,10 +563,9 @@ export async function buildPrompt(
     };
     const time_stop_minutes = tfToMinutes(primaryTimeframe) * 3;
 
-    const risk_policy =
-        `fees=${taker_round_trip_bps}bps round-trip, slippage=${slippage_bps}bps, ` +
-        `stop=1.5xATR(${primaryTimeframe}), take_profit=2.5xATR(${primaryTimeframe}), ` +
-        `time_stop=${time_stop_minutes} minutes (execution-layer timer)`;
+    const risk_policy = `fees=${taker_round_trip_bps}bps round-trip, slippage=${slippage_bps}bps, `;
+    // `stop=1.5xATR(${primaryTimeframe}), take_profit=2.5xATR(${primaryTimeframe}), ` +
+    //`time_stop=${time_stop_minutes} minutes (execution-layer timer)`;
 
     // We only pass the BASE gates now, as the AI will judge the strategy gates using metrics
     const base_gating_flags = `spread_ok=${gates.spread_ok}, liquidity_ok=${gates.liquidity_ok}, atr_ok=${gates.atr_ok}, slippage_ok=${gates.slippage_ok}`;
@@ -693,22 +693,22 @@ ${contextIndicatorsBlock}${contextSRBlock}${primaryIndicatorsBlock}${primarySRBl
 
 - Swing state (compact):
 ${JSON.stringify({
-  macro_trend_up: momentumSignals.macroTrendUp,
-  macro_trend_down: momentumSignals.macroTrendDown,
-  primary_bias: primaryBias,
-  context_bias: contextBias,
-  micro_bias_calc: microBiasCalc,
-  primary_trend_up: primaryTrendUp,
-  primary_trend_down: primaryTrendDown,
-  primary_breakdown_confirmed: primaryBreakdownConfirmed,
-  primary_breakout_confirmed: primaryBreakoutConfirmed,
-  into_context_support: intoContextSupport,
-  into_context_resistance: intoContextResistance,
-  context_breakdown_confirmed: htfBreakdownConfirmed,
-  context_breakout_confirmed: htfBreakoutConfirmed,
-  location_confluence_score: clampNumber(locationConfluenceScore, 3),
-  micro_extension_atr: momentumSignals.microExtensionInAtr,              // interpret as ${microTimeframe}
-  primary_extension_atr: clampNumber(distance_from_ema20_primary_atr, 3) // interpret as ${primaryTimeframe}
+    macro_trend_up: momentumSignals.macroTrendUp,
+    macro_trend_down: momentumSignals.macroTrendDown,
+    primary_bias: primaryBias,
+    context_bias: contextBias,
+    micro_bias_calc: microBiasCalc,
+    primary_trend_up: primaryTrendUp,
+    primary_trend_down: primaryTrendDown,
+    primary_breakdown_confirmed: primaryBreakdownConfirmed,
+    primary_breakout_confirmed: primaryBreakoutConfirmed,
+    into_context_support: intoContextSupport,
+    into_context_resistance: intoContextResistance,
+    context_breakdown_confirmed: htfBreakdownConfirmed,
+    context_breakout_confirmed: htfBreakoutConfirmed,
+    location_confluence_score: clampNumber(locationConfluenceScore, 3),
+    micro_extension_atr: momentumSignals.microExtensionInAtr, // interpret as ${microTimeframe}
+    primary_extension_atr: clampNumber(distance_from_ema20_primary_atr, 3), // interpret as ${primaryTimeframe}
 })}
 
 - Signal strength drivers: ${JSON.stringify(signalDrivers)}
@@ -776,10 +776,10 @@ const toBiasLabel = (value: string): 'UP' | 'DOWN' | 'NEUTRAL' => {
 export function computeSignalStrength(context: PromptDecisionContext): 'LOW' | 'MEDIUM' | 'HIGH' {
     const aligned = Number.isFinite(context.aligned_driver_count) ? context.aligned_driver_count : 0;
     const regime = Number.isFinite(context.regime_alignment) ? Math.abs(context.regime_alignment) : 0;
-    const location = Number.isFinite(context.location_confluence_score)
-        ? context.location_confluence_score
+    const location = Number.isFinite(context.location_confluence_score) ? context.location_confluence_score : 0;
+    const microExt = Number.isFinite(context.micro_extension_atr as number)
+        ? Math.abs(context.micro_extension_atr as number)
         : 0;
-    const microExt = Number.isFinite(context.micro_extension_atr as number) ? Math.abs(context.micro_extension_atr as number) : 0;
     const primaryExt = Number.isFinite(context.primary_extension_atr as number)
         ? Math.abs(context.primary_extension_atr as number)
         : 0;
@@ -823,14 +823,14 @@ export function postprocessDecision(params: {
         action === 'BUY'
             ? 'long'
             : action === 'SELL'
-            ? 'short'
-            : action === 'REVERSE'
-            ? positionContext?.side === 'long'
-                ? 'short'
-                : positionContext?.side === 'short'
-                ? 'long'
-                : null
-            : null;
+              ? 'short'
+              : action === 'REVERSE'
+                ? positionContext?.side === 'long'
+                    ? 'short'
+                    : positionContext?.side === 'short'
+                      ? 'long'
+                      : null
+                : null;
 
     if (desiredSide === 'short' && context.primary_trend_up && microBias === 'UP') {
         action = 'HOLD';
@@ -917,9 +917,31 @@ export async function callAI(system: string, user: string) {
         }),
     });
 
-    if (!res.ok) throw new Error(`AI error: ${res.status} ${res.statusText}`);
+    if (!res.ok) {
+        let details = '';
+        try {
+            const errJson = await res.json();
+            const msg =
+                errJson?.error?.message ||
+                errJson?.message ||
+                (typeof errJson === 'string' ? errJson : JSON.stringify(errJson));
+            details = msg ? ` - ${msg}` : '';
+        } catch {
+            try {
+                const errText = await res.text();
+                details = errText ? ` - ${errText.slice(0, 600)}` : '';
+            } catch {
+                details = '';
+            }
+        }
+        throw new Error(`AI error: ${res.status} ${res.statusText}${details}`);
+    }
 
     const data = await res.json();
     const text = data.choices?.[0]?.message?.content || '{}';
-    return JSON.parse(text);
+    try {
+        return JSON.parse(text);
+    } catch {
+        throw new Error(`AI returned non-JSON content: ${String(text).slice(0, 600)}`);
+    }
 }

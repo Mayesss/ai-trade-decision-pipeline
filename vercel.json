@@ -8,8 +8,6 @@
   ],
   "crons": [
     { "path": "/api/analyze?symbol=BTCUSDT&dryRun=false", "schedule": "0 * * * *" },
-    { "path": "/api/evaluate?symbol=BTCUSDT", "schedule": "0 0 * * *" },
-        { "path": "/api/analyze?symbol=XAUUSDT&dryRun=false", "schedule": "0 * * * *" },
-    { "path": "/api/evaluate?symbol=XAUUSDT", "schedule": "0 0 * * *" }
+    { "path": "/api/analyze?symbol=XAUUSDT&dryRun=false", "schedule": "0 * * * *" }
   ]
 }
