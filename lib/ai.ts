@@ -19,6 +19,8 @@ export type PositionContext = {
     entry_ts?: string;
     hold_minutes?: number;
     unrealized_pnl_pct?: number;
+    max_drawdown_pct?: number;
+    max_profit_pct?: number;
     breakeven_price?: number;
     taker_fee_rate?: number;
 };

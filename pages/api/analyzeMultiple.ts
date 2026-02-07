@@ -13,6 +13,7 @@ import { getGates } from '../../lib/gates';
 
 import { executeDecision, getTargetLeverage, getTradeProductType } from '../../lib/trading';
 import { composePositionContext } from '../../lib/positionContext';
+import { updatePositionExtrema } from '../../lib/positionExtrema';
 import { appendDecisionHistory, loadDecisionHistory } from '../../lib/history';
 import {
     CONTEXT_TIMEFRAME,
@@ -270,6 +271,15 @@ async function runAnalysisForSymbol(params: {
                 };
             }
 
+            const positionExtrema = positionOpen
+                ? await updatePositionExtrema({
+                      symbol,
+                      timeFrame,
+                      position: positionInfo,
+                      pnlPct,
+                  })
+                : {};
+
             if (!positionOpen && calmMarket) {
                 return {
                     symbol,
@@ -291,6 +301,8 @@ async function runAnalysisForSymbol(params: {
             const positionContext = composePositionContext({
                 position: positionInfo,
                 pnlPct,
+                maxDrawdownPct: positionExtrema.maxDrawdownPct,
+                maxProfitPct: positionExtrema.maxProfitPct,
                 enteredAt: pstate.enteredAt,
             });
             const recentHistory = await loadDecisionHistory(symbol, 5);

@@ -4,7 +4,7 @@ import type { PositionContext } from './ai';
 import type { PositionInfo } from './analytics';
 import { DEFAULT_TAKER_FEE_RATE } from './constants';
 
-const toFixedNumber = (value: number, digits: number) => {
+const toFixedNumber = (value: number | null | undefined, digits: number) => {
     const n = Number(value);
     return Number.isFinite(n) ? Number(n.toFixed(digits)) : undefined;
 };
@@ -12,6 +12,8 @@ const toFixedNumber = (value: number, digits: number) => {
 export function composePositionContext(params: {
     position: PositionInfo;
     pnlPct: number;
+    maxDrawdownPct?: number;
+    maxProfitPct?: number;
     enteredAt?: number;
 }): PositionContext | null {
     if (params.position.status !== 'open') return null;
@@ -42,6 +44,8 @@ export function composePositionContext(params: {
         entry_ts: entryTsIso,
         hold_minutes: toFixedNumber(holdMinutes, 1),
         unrealized_pnl_pct: toFixedNumber(params.pnlPct, 2),
+        max_drawdown_pct: toFixedNumber(params.maxDrawdownPct, 2),
+        max_profit_pct: toFixedNumber(params.maxProfitPct, 2),
         breakeven_price: toFixedNumber(breakevenPrice ?? entryPriceNum, 6),
         taker_fee_rate: toFixedNumber(takerFeeRate, 6),
     };
