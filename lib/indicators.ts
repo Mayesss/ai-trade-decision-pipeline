@@ -125,7 +125,7 @@ export function computeEMA(closes: number[], period: number): number[] {
 
 // ATR (simple version)
 export function computeATR(candles: any[], period = 14): number {
-    if (!candles || candles.length < period + 1) return 0;
+    if (!candles || candles.length < 2) return 0;
     const trs: number[] = [];
     for (let i = 1; i < candles.length; i++) {
         const high = Number(candles[i][2]);
@@ -134,12 +134,13 @@ export function computeATR(candles: any[], period = 14): number {
         const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
         trs.push(tr);
     }
-    if (trs.length < period) return 0;
-    return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
+    const effectivePeriod = Math.min(period, trs.length);
+    if (effectivePeriod <= 0) return 0;
+    return trs.slice(-effectivePeriod).reduce((a, b) => a + b, 0) / effectivePeriod;
 }
 
 function computeAtrSeries(candles: any[], period = 14): number[] {
-    if (!candles || candles.length < period + 1) return [];
+    if (!candles || candles.length < 2) return [];
     const trs: number[] = [];
     for (let i = 1; i < candles.length; i++) {
         const high = Number(candles[i][2]);
@@ -148,13 +149,14 @@ function computeAtrSeries(candles: any[], period = 14): number[] {
         const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
         trs.push(tr);
     }
-    if (trs.length < period) return [];
+    const effectivePeriod = Math.min(period, trs.length);
+    if (effectivePeriod <= 0) return [];
     const atrs: number[] = [];
     let sum = 0;
     for (let i = 0; i < trs.length; i++) {
         sum += trs[i]!;
-        if (i >= period) sum -= trs[i - period]!;
-        if (i >= period - 1) atrs.push(sum / period);
+        if (i >= effectivePeriod) sum -= trs[i - effectivePeriod]!;
+        if (i >= effectivePeriod - 1) atrs.push(sum / effectivePeriod);
     }
     return atrs.filter((v) => Number.isFinite(v));
 }
