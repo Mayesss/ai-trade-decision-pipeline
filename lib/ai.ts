@@ -349,8 +349,17 @@ export async function buildPrompt(
     const rsiMacroDisplay = Number.isFinite(rsi_macro as number) ? (rsi_macro as number).toFixed(1) : 'n/a';
     const rsiPrimaryDisplay = Number.isFinite(rsi_primary as number) ? (rsi_primary as number).toFixed(1) : 'n/a';
     const metricsByTf = indicators.metrics || {};
+    const microMetrics = metricsByTf[microTimeframe] || {};
     const primaryMetrics = metricsByTf[primaryTimeframe] || {};
     const macroMetrics = metricsByTf[macroTimeframe] || {};
+
+    const microStructureState = microMetrics.structure ?? 'range';
+    const microBos = Boolean(microMetrics.bos);
+    const microBosDir = microBos ? (microMetrics.bosDir ?? null) : null;
+    const microChoch = Boolean(microMetrics.choch);
+    const microBreakoutRetestOk = Boolean(microMetrics.breakoutRetestOk);
+    const microBreakoutRetestDir = microMetrics.breakoutRetestDir ?? null;
+    const microStructureBreakState = microMetrics.structureBreakState ?? 'inside';
 
     const atrPctile4h = typeof primaryMetrics.atrPctile === 'number' ? primaryMetrics.atrPctile : null;
     const atrPctile1d = typeof macroMetrics.atrPctile === 'number' ? macroMetrics.atrPctile : null;
@@ -374,16 +383,54 @@ export async function buildPrompt(
                   ? 'down'
                   : 'neutral'
             : 'neutral';
-    const microBiasCalc =
+    let microBiasCalc: 'up' | 'down' | 'neutral' = 'neutral';
+    let microBiasSource:
+        | 'structure_breakout_retest'
+        | 'structure_break_state'
+        | 'structure_bos'
+        | 'structure_state'
+        | 'ema_slope_rsi'
+        | 'neutral' = 'neutral';
+    // Precedence for micro bias:
+    // 1) structure (breakout/retest, break-state, BOS, structure state), 2) EMA+slope+RSI, 3) neutral.
+    if (microBreakoutRetestOk && microBreakoutRetestDir === 'up') {
+        microBiasCalc = 'up';
+        microBiasSource = 'structure_breakout_retest';
+    } else if (microBreakoutRetestOk && microBreakoutRetestDir === 'down') {
+        microBiasCalc = 'down';
+        microBiasSource = 'structure_breakout_retest';
+    } else if (microStructureBreakState === 'above') {
+        microBiasCalc = 'up';
+        microBiasSource = 'structure_break_state';
+    } else if (microStructureBreakState === 'below') {
+        microBiasCalc = 'down';
+        microBiasSource = 'structure_break_state';
+    } else if (microBos && microBosDir === 'up') {
+        microBiasCalc = 'up';
+        microBiasSource = 'structure_bos';
+    } else if (microBos && microBosDir === 'down') {
+        microBiasCalc = 'down';
+        microBiasSource = 'structure_bos';
+    } else if (microStructureState === 'bull') {
+        microBiasCalc = 'up';
+        microBiasSource = 'structure_state';
+    } else if (microStructureState === 'bear') {
+        microBiasCalc = 'down';
+        microBiasSource = 'structure_state';
+    } else if (
         Number.isFinite(slope21_micro as number) &&
         Number.isFinite(rsi_micro as number) &&
         Number.isFinite(ema20_micro as number)
-            ? (slope21_micro as number) > 0 && (rsi_micro as number) >= 50 && price >= (ema20_micro as number)
+    ) {
+        microBiasCalc =
+            (slope21_micro as number) > 0 && (rsi_micro as number) >= 50 && price >= (ema20_micro as number)
                 ? 'up'
                 : (slope21_micro as number) < 0 && (rsi_micro as number) <= 50 && price <= (ema20_micro as number)
                   ? 'down'
-                  : 'neutral'
-            : 'neutral';
+                  : 'neutral';
+        microBiasSource = microBiasCalc === 'neutral' ? 'neutral' : 'ema_slope_rsi';
+    }
+    const microBiasLabel = microBiasCalc.toUpperCase();
     const primaryTrendUp = structure4hState === 'bull' || (bos4h && bosDir4h === 'up') || primaryBias === 'up';
     const primaryTrendDown = structure4hState === 'bear' || (bos4h && bosDir4h === 'down') || primaryBias === 'down';
     const primaryBreakdownConfirmed =
@@ -405,7 +452,7 @@ export async function buildPrompt(
         `rsi_${microKey}=${rsiMicroDisplay}, rsi_${primaryKey}=${rsiPrimaryDisplay}, rsi_${macroKey}=${rsiMacroDisplay}, ` +
         `primary_slope_pct_per_bar=${slope21_primary.toFixed(4)}, ` +
         `dist_from_ema20_${microKey}_in_atr=${distance_from_ema_atr.toFixed(2)}, dist_from_ema20_${primaryKey}_in_atr=${distance_from_ema20_primary_atr.toFixed(2)}, ` +
-        `structure_${primaryKey}=${structure4hState}, bos_${primaryKey}=${bos4h ? 1 : 0}, choch_${primaryKey}=${choch4h ? 1 : 0}, ` +
+        `structure_${primaryKey}=${structure4hState}, bos_${primaryKey}=${String(bos4h)}, choch_${primaryKey}=${String(choch4h)}, ` +
         `rvol_${primaryKey}=${formatNum(rvol4h, 2)}, rvol_${macroKey}=${formatNum(rvol1d, 2)}, value_state_${macroKey}=${valueState1d}`;
 
     // --- SIGNAL STRENGTH DRIVERS & CLOSING GUIDANCE ---
@@ -483,7 +530,16 @@ export async function buildPrompt(
         context_bias_driver: clampNumber(contextBiasDriver, 3),
         regime_alignment: clampNumber(regimeAlignment, 2),
         micro_entry_ok: Boolean(momentumSignals.info?.microEntryOk),
-        micro_bias_calc: microBiasCalc,
+        micro_bias: microBiasLabel,
+        micro_bias_calc: microBiasLabel,
+        micro_bias_source: microBiasSource,
+        micro_structure_state: microStructureState,
+        micro_structure_break_state: microStructureBreakState,
+        micro_bos: microBos,
+        micro_bos_dir: microBosDir,
+        micro_choch: microChoch,
+        micro_breakout_retest_ok: microBreakoutRetestOk,
+        micro_breakout_retest_dir: microBreakoutRetestDir,
         primary_trend_up: primaryTrendUp,
         primary_trend_down: primaryTrendDown,
         primary_breakdown_confirmed: primaryBreakdownConfirmed,
@@ -645,6 +701,13 @@ BIAS DEFINITIONS (swing-oriented)
 - macro_bias (${macroTimeframe}): regime trend up/down; if both false → NEUTRAL.
 - context_bias (${contextTimeframe}): higher-timeframe regime/trend + location; modulates risk/selectivity.
 
+MICRO BIAS NORMALIZATION (${microTimeframe})
+- Compute micro_bias with strict precedence:
+  1) Structure first: breakout_retest_dir_${microKey} → structure_break_state_${microKey} → bos_dir_${microKey} → structure_${microKey}_state
+  2) Momentum fallback: EMA slope + RSI + price vs EMA20 on ${microTimeframe}
+  3) Else NEUTRAL
+- If structure and momentum disagree, structure wins.
+
 SETUP DRIVERS (what “aligned_driver_count” should represent)
 Count drivers that materially support a directional swing trade:
 - Structure: HH/HL or LH/LL alignment on ${primaryTimeframe}, with ${microTimeframe} confirmation (break + hold / retest).
@@ -717,7 +780,11 @@ ${JSON.stringify({
     macro_trend_down: momentumSignals.macroTrendDown,
     primary_bias: primaryBias,
     context_bias: contextBias,
-    micro_bias_calc: microBiasCalc,
+    micro_bias: microBiasLabel,
+    micro_bias_calc: microBiasLabel,
+    micro_bias_source: microBiasSource,
+    micro_structure_state: microStructureState,
+    micro_structure_break_state: microStructureBreakState,
     primary_trend_up: primaryTrendUp,
     primary_trend_down: primaryTrendDown,
     primary_breakdown_confirmed: primaryBreakdownConfirmed,
@@ -746,7 +813,7 @@ JSON OUTPUT (strict):
 `;
 
     const context = {
-        micro_bias_calc: microBiasCalc,
+        micro_bias_calc: microBiasLabel,
         primary_bias: primaryBias,
         macro_bias: macroBias,
         context_bias: contextBias,
