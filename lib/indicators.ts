@@ -400,7 +400,11 @@ function deriveLevelState(price: number, levelPrice: number, atr: number, side: 
 }
 
 function computeSRLevels(candles: any[], atr: number, timeframe: string): SRLevels | undefined {
-    if (!Array.isArray(candles) || candles.length < 20) return undefined;
+    if (!Array.isArray(candles) || candles.length < 2) return undefined;
+    const tf = String(timeframe || '').trim().toUpperCase();
+    // Weekly candles are sparse on Bitget for newer listings; allow earlier S/R generation there.
+    const minCandles = tf.endsWith('W') ? 8 : 20;
+    if (candles.length < minCandles) return undefined;
     const lookback = 150;
     const swings = computeSwingLevels(candles, lookback);
     const lastClose = Number(candles.at(-1)?.[4]);
@@ -416,6 +420,25 @@ function computeSRLevels(candles: any[], atr: number, timeframe: string): SRLeve
             if (!nearestResistance || s.price < nearestResistance.price)
                 nearestResistance = { price: s.price, idx: s.index };
         }
+    }
+
+    // Fallback for sparse/high-timeframe data where strict pivot detection yields no usable level.
+    if (!nearestSupport || !nearestResistance) {
+        const startIdx = Math.max(0, candles.length - Math.min(40, candles.length));
+        let fallbackSupport: { price: number; idx: number } | null = null;
+        let fallbackResistance: { price: number; idx: number } | null = null;
+        for (let i = startIdx; i < candles.length; i++) {
+            const low = Number(candles[i]?.[3]);
+            const high = Number(candles[i]?.[2]);
+            if (!nearestSupport && Number.isFinite(low) && low <= lastClose) {
+                if (!fallbackSupport || low > fallbackSupport.price) fallbackSupport = { price: low, idx: i };
+            }
+            if (!nearestResistance && Number.isFinite(high) && high >= lastClose) {
+                if (!fallbackResistance || high < fallbackResistance.price) fallbackResistance = { price: high, idx: i };
+            }
+        }
+        if (!nearestSupport && fallbackSupport) nearestSupport = fallbackSupport;
+        if (!nearestResistance && fallbackResistance) nearestResistance = fallbackResistance;
     }
 
     const levelFromSwing = (side: 'support' | 'resistance', level: { price: number; idx: number } | null) => {
