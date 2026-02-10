@@ -327,6 +327,7 @@ async function runAnalysisForSymbol(params: {
                 recentActions,
                 roiRes.lastNetPct,
                 dryRun,
+                Number(gatesOut.metrics?.spreadBpsNow),
             );
 
             // 7) AI decision
@@ -374,10 +375,18 @@ async function runAnalysisForSymbol(params: {
             // recent actions fetched from history; no in-memory persistence
 
             const change24h = Number(tickerData?.change24h ?? tickerData?.changeUtc24h ?? tickerData?.chgPct);
+            const spreadBpsSnapshot = safeNum(gatesForExec.metrics?.spreadBpsNow, safeNum(analytics.spreadBps, 0));
+            const spreadAbsSnapshot = safeNum(analytics.spreadAbs ?? analytics.spread, 0);
+            const bestBid = Number(analytics.bestBid);
+            const bestAsk = Number(analytics.bestAsk);
             const snapshot = {
                 price: Number.isFinite(lastPrice) ? lastPrice : undefined,
                 change24h: Number.isFinite(change24h) ? change24h : undefined,
-                spread: safeNum(analytics.spread, 0),
+                spread: spreadBpsSnapshot,
+                spreadBps: spreadBpsSnapshot,
+                spreadAbs: spreadAbsSnapshot,
+                bestBid: Number.isFinite(bestBid) ? bestBid : undefined,
+                bestAsk: Number.isFinite(bestAsk) ? bestAsk : undefined,
                 gates: gatesForExec.gates,
                 metrics: gatesForExec.metrics,
                 momentumSignals,

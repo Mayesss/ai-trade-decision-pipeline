@@ -16,6 +16,7 @@ export interface MultiTFIndicators {
     primary?: IndicatorSummary;
     context?: IndicatorSummary;
     contextTimeFrame?: string;
+    candleDepth?: Record<string, number | undefined>;
     sr?: Record<string, SRLevels | undefined>;
     metrics?: Record<string, TimeframeMetrics | undefined>;
 }
@@ -516,7 +517,10 @@ export async function calculateMultiTFIndicators(
     addRequest(primaryTF);
 
     const entries = Array.from(requests.entries());
-    const summaries = new Map<string, { summary: string; atr: number; sr?: SRLevels; metrics?: TimeframeMetrics }>();
+    const summaries = new Map<
+        string,
+        { summary: string; atr: number; candleCount: number; sr?: SRLevels; metrics?: TimeframeMetrics }
+    >();
 
     const build = (candles: any[], tf: string) => {
         const closes = candles.map((c) => parseFloat(c[4]));
@@ -563,6 +567,7 @@ export async function calculateMultiTFIndicators(
                 2,
             )}, SMA200=${s200.toFixed(2)}, slopeEMA21_10=${momSlope.toFixed(3)}%/bar`,
             atr,
+            candleCount: candles.length,
             sr: computeSRLevels(candles, atr, tf),
             metrics: {
                 atrPctile,
@@ -594,9 +599,15 @@ export async function calculateMultiTFIndicators(
         microTimeFrame: microTF,
         macroTimeFrame: macroTF,
         contextTimeFrame: contextTF,
+        candleDepth: {},
         sr: {},
         metrics: {},
     };
+
+    out.candleDepth![microTF] = summaries.get(microTF)?.candleCount;
+    out.candleDepth![macroTF] = summaries.get(macroTF)?.candleCount;
+    out.candleDepth![contextTF] = summaries.get(contextTF)?.candleCount;
+    out.candleDepth![primaryTF] = summaries.get(primaryTF)?.candleCount;
 
     out.sr![microTF] = summaries.get(microTF)?.sr;
     out.sr![macroTF] = summaries.get(macroTF)?.sr;

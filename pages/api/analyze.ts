@@ -315,6 +315,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             recentActions,
             roiRes.lastNetPct,
             dryRun,
+            Number(gatesOut.metrics?.spreadBpsNow),
         );
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions)
@@ -362,10 +363,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const execRes = await executeDecision(symbol, sideSizeUSDT, decision, productType, dryRun);
 
         const change24h = Number(tickerData?.change24h ?? tickerData?.changeUtc24h ?? tickerData?.chgPct);
+        const spreadBpsSnapshot = safeNum(gatesForExec.metrics?.spreadBpsNow, safeNum(analytics.spreadBps, 0));
+        const spreadAbsSnapshot = safeNum(analytics.spreadAbs ?? analytics.spread, 0);
+        const bestBid = Number(analytics.bestBid);
+        const bestAsk = Number(analytics.bestAsk);
         const snapshot = {
             price: Number.isFinite(lastPrice) ? lastPrice : undefined,
             change24h: Number.isFinite(change24h) ? change24h : undefined,
-            spread: safeNum(analytics.spread, 0),
+            spread: spreadBpsSnapshot,
+            spreadBps: spreadBpsSnapshot,
+            spreadAbs: spreadAbsSnapshot,
+            bestBid: Number.isFinite(bestBid) ? bestBid : undefined,
+            bestAsk: Number.isFinite(bestAsk) ? bestAsk : undefined,
             gates: gatesForExec.gates,
             metrics: gatesForExec.metrics,
             newsSentiment: newsBundle?.sentiment ?? null,

@@ -165,6 +165,7 @@ export async function buildPrompt(
     recentActions: { action: string; timestamp: number }[] = [],
     realizedRoiPct?: number | null,
     dryRun?: boolean,
+    spreadBpsOverride?: number,
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
@@ -182,12 +183,25 @@ export async function buildPrompt(
             gates,
             primaryTimeframe,
         });
+    const spreadAbsRaw = Number(analytics?.spreadAbs ?? analytics?.spread);
+    const spreadBpsFromAnalytics = Number(analytics?.spreadBps);
+    const spreadBpsCanonical = Number.isFinite(spreadBpsOverride as number)
+        ? Number(spreadBpsOverride)
+        : Number.isFinite(spreadBpsFromAnalytics)
+          ? spreadBpsFromAnalytics
+          : Number.isFinite(spreadAbsRaw) && last > 0
+            ? (spreadAbsRaw / last) * 1e4
+            : 999;
+    const bestBidRaw = Number(analytics?.bestBid);
+    const bestAskRaw = Number(analytics?.bestAsk);
+    const bestBidLabel = Number.isFinite(bestBidRaw) ? bestBidRaw.toFixed(2) : 'n/a';
+    const bestAskLabel = Number.isFinite(bestAskRaw) ? bestAskRaw.toFixed(2) : 'n/a';
 
     const market_data = `price=${price}, change24h=${Number.isFinite(change) ? change : 'n/a'}`;
 
-    const liquidity_data = `top bid walls: ${JSON.stringify(analytics.topWalls.bid)}, top ask walls: ${JSON.stringify(
-        analytics.topWalls.ask,
-    )}`;
+    const liquidity_data = `spread_bps=${spreadBpsCanonical.toFixed(6)}, best_bid=${bestBidLabel}, best_ask=${bestAskLabel}, top bid walls: ${JSON.stringify(
+        analytics.topWalls.bid,
+    )}, top ask walls: ${JSON.stringify(analytics.topWalls.ask)}`;
 
     const candles = Array.isArray(bundle.candles) ? bundle.candles : [];
     const priceTrendPoints = candles
@@ -251,6 +265,12 @@ export async function buildPrompt(
         : contextSummary.includes('trend=down')
           ? 'DOWN'
           : 'NEUTRAL';
+    const contextCandleDepthRaw = indicators.candleDepth?.[contextTimeframe];
+    const contextCandleDepth = Number.isFinite(contextCandleDepthRaw as number) ? Number(contextCandleDepthRaw) : null;
+    const contextDepthBlock =
+        contextCandleDepth !== null
+            ? `- Context candle depth (${contextTimeframe}): ${contextCandleDepth} candles loaded (requested up to 200)\n`
+            : '';
     const contextIndicatorsBlock =
         contextSummary && contextTimeframe
             ? `- Context timeframe (${contextTimeframe}) indicators: ${contextSummary}\n`
@@ -309,7 +329,7 @@ export async function buildPrompt(
     const htfBreakoutConfirmed = contextSR?.resistance?.level_state === 'broken';
 
     // --- KEY METRICS (VALUES, NOT JUDGMENTS) ---
-    const spread_bps = last > 0 ? ((analytics.spread || 0) / last) * 1e4 : 999;
+    const spread_bps = spreadBpsCanonical;
     const atr_pct_macro = last > 0 && atr_macro ? (atr_macro / last) * 100 : 0;
     const atr_pct_primary = last > 0 && atr_primary ? (atr_primary / last) * 100 : 0;
 
@@ -379,7 +399,7 @@ export async function buildPrompt(
     const macroKey = macroTimeframe.toLowerCase();
 
     const key_metrics =
-        `spread_bps=${spread_bps.toFixed(2)}, ` +
+        `spread_bps=${spread_bps.toFixed(6)}, ` +
         `atr_pct_${macroKey}=${atr_pct_macro.toFixed(2)}%, atr_pct_${primaryKey}=${atr_pct_primary.toFixed(2)}%, ` +
         `atr_pctile_${macroKey}=${formatNum(atrPctile1d, 0)}, atr_pctile_${primaryKey}=${formatNum(atrPctile4h, 0)}, ` +
         `rsi_${microKey}=${rsiMicroDisplay}, rsi_${primaryKey}=${rsiPrimaryDisplay}, rsi_${macroKey}=${rsiMacroDisplay}, ` +
@@ -688,7 +708,7 @@ ${newsSentimentBlock}${newsHeadlinesBlock}${recentActionsBlock}- Current positio
 ${positionContextBlock}- Technical (micro ${microTimeframe}, last 60 candles): ${indicators.micro}
 - Primary (${primaryTimeframe}, last 60 candles): ${indicators.primary?.summary ?? 'n/a'}
 - Macro (${macroTimeframe}, last 60 candles): ${indicators.macro}
-${contextIndicatorsBlock}${contextSRBlock}${primaryIndicatorsBlock}${primarySRBlock}
+${contextIndicatorsBlock}${contextDepthBlock}${contextSRBlock}${primaryIndicatorsBlock}${primarySRBlock}
 - HTF location flags: {into_support=${intoContextSupport}, into_resistance=${intoContextResistance}, breakdown_confirmed=${htfBreakdownConfirmed}, breakout_confirmed=${htfBreakoutConfirmed}, location_confluence_score=${clampNumber(locationConfluenceScore, 3)}}
 
 - Swing state (compact):

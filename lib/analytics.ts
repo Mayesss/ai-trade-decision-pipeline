@@ -497,12 +497,13 @@ export function computeAnalytics(bundle: any) {
 
     const bestBid = num(bundle.orderbook?.bids?.[0]?.[0] ?? bundle.orderbook?.bids?.[0]?.price);
     const bestAsk = num(bundle.orderbook?.asks?.[0]?.[0] ?? bundle.orderbook?.asks?.[0]?.price);
-    const spread = bestAsk > 0 && bestBid > 0 ? bestAsk - bestBid : 0;
+    const spreadAbs = bestAsk > 0 && bestBid > 0 ? bestAsk - bestBid : 0;
     const lastPrice = normTrades[0]?.price || 0;
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const last = num(t?.lastPr ?? t?.last ?? t?.close ?? lastPrice) || 0;
+    const spreadBps = last > 0 && Number.isFinite(spreadAbs) ? (spreadAbs / last) * 1e4 : 0;
 
-    const pct = Math.max(0.0005, spread && last ? (spread / last) * 3 : 0.0005);
+    const pct = Math.max(0.0005, spreadAbs && last ? (spreadAbs / last) * 3 : 0.0005);
     const bins = new Map<number, number>();
     for (const tr of normTrades) {
         const bin = Math.round((tr.price - last) / (last * pct));
@@ -540,5 +541,15 @@ export function computeAnalytics(bundle: any) {
             .slice(0, 5),
     };
 
-    return { volume_profile, topWalls, spread, last, bestBid, bestAsk };
+    return {
+        volume_profile,
+        topWalls,
+        // Legacy alias; absolute spread in price units.
+        spread: spreadAbs,
+        spreadAbs,
+        spreadBps,
+        last,
+        bestBid,
+        bestAsk,
+    };
 }

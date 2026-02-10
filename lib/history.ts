@@ -79,7 +79,11 @@ async function kvMGet(keys: string[]): Promise<(string | null)[]> {
 export type DecisionSnapshot = {
     price?: number;
     change24h?: number;
-    spread?: number;
+    spread?: number; // canonical bps (legacy alias)
+    spreadBps?: number;
+    spreadAbs?: number;
+    bestBid?: number;
+    bestAsk?: number;
     gates?: any;
     metrics?: any;
     newsSentiment?: string | null;
