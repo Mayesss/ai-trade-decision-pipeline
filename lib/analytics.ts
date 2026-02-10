@@ -212,21 +212,37 @@ export async function fetchRecentPositionWindows(symbol: string, hours = 24): Pr
                 const notional = size * (exitPrice || entryPrice || 0);
                 const pnlGross = num(it.pnl, NaN);
                 const pnlNet = num(it.netProfit ?? it.pnl, NaN);
-                const pnlPct = Number.isFinite(pnlNet) && notional > 0 ? (pnlNet / notional) * 100 : null;
-                const pnlGrossPct = Number.isFinite(pnlGross) && notional > 0 ? (pnlGross / notional) * 100 : null;
                 const sideRaw = (it.holdSide ?? it.side ?? it.direction ?? '').toLowerCase();
                 const side = sideRaw === 'long' || sideRaw === 'short' ? sideRaw : null;
+                const marginVal = num(
+                    it.margin ?? it.marginAmount ?? it.marginValue ?? it.fixedMargin ?? it.cMargin,
+                    NaN,
+                );
                 const levRaw = Number(it.leverage ?? it.marginLeverage ?? it.lever);
                 let leverage = Number.isFinite(levRaw) && levRaw > 0 ? levRaw : null;
-                if ((leverage === null || leverage === 0) && Number.isFinite(notional) && notional! > 0) {
-                    const marginVal = num(
-                        it.margin ?? it.marginAmount ?? it.marginValue ?? it.fixedMargin ?? it.cMargin,
-                        NaN,
-                    );
-                    if (Number.isFinite(marginVal) && marginVal > 0) {
-                        leverage = notional! / marginVal;
-                    }
+                if (
+                    (leverage === null || leverage === 0) &&
+                    Number.isFinite(notional) &&
+                    notional! > 0 &&
+                    Number.isFinite(marginVal) &&
+                    marginVal > 0
+                ) {
+                    leverage = notional! / marginVal;
                 }
+                const marginBasisRaw =
+                    Number.isFinite(marginVal) && marginVal > 0
+                        ? marginVal
+                        : Number.isFinite(notional) && notional > 0 && Number.isFinite(leverage) && leverage! > 0
+                        ? notional / leverage!
+                        : Number.isFinite(notional) && notional > 0
+                        ? notional
+                        : null;
+                const marginBasis =
+                    typeof marginBasisRaw === 'number' && Number.isFinite(marginBasisRaw) && marginBasisRaw > 0
+                        ? marginBasisRaw
+                        : null;
+                const pnlPct = Number.isFinite(pnlNet) && marginBasis ? (pnlNet / marginBasis) * 100 : null;
+                const pnlGrossPct = Number.isFinite(pnlGross) && marginBasis ? (pnlGross / marginBasis) * 100 : null;
                 const id = String(
                     it.id ??
                         it.positionId ??

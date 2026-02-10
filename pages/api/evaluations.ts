@@ -9,11 +9,11 @@ type EnrichedEntry = {
   evaluation: any;
   evaluationTs?: number | null;
   lastBiasTimeframes?: Record<string, string | undefined> | null;
-  pnl24h?: number | null;
-  pnl24hWithOpen?: number | null;
-  pnl24hNet?: number | null;
-  pnl24hGross?: number | null;
-  pnl24hTrades?: number | null;
+  pnl7d?: number | null;
+  pnl7dWithOpen?: number | null;
+  pnl7dNet?: number | null;
+  pnl7dGross?: number | null;
+  pnl7dTrades?: number | null;
   pnlSpark?: number[] | null;
   openPnl?: number | null;
   openDirection?: 'long' | 'short' | null;
@@ -30,8 +30,10 @@ type EnrichedEntry = {
   avgLossPct?: number | null;
 };
 
+const PNL_LOOKBACK_HOURS = 7 * 24;
+
 // Returns the latest evaluation per symbol from the in-memory store,
-// plus last decision info + 24h change pulled from recent history.
+// plus last decision info + 7d change pulled from recent history.
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
     res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
@@ -52,11 +54,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const data: EnrichedEntry[] = await Promise.all(
     symbols.map(async (symbol) => {
-      let pnl24h: number | null | undefined = null;
-      let pnl24hWithOpen: number | null | undefined = null;
-      let pnl24hNet: number | null | undefined = null;
-      let pnl24hGross: number | null | undefined = null;
-      let pnl24hTrades: number | null | undefined = null;
+      let pnl7d: number | null | undefined = null;
+      let pnl7dWithOpen: number | null | undefined = null;
+      let pnl7dNet: number | null | undefined = null;
+      let pnl7dGross: number | null | undefined = null;
+      let pnl7dTrades: number | null | undefined = null;
       let pnlSpark: number[] | null | undefined = null;
       let openPnl: number | null | undefined = null;
       let openDirection: 'long' | 'short' | null | undefined = null;
@@ -96,16 +98,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           })
           .find((v) => v !== null);
 
-        const roiRes = await fetchRealizedRoi(symbol, 24);
-        pnl24h = Number.isFinite(roiRes.sumPct as number) ? (roiRes.sumPct as number) : null;
-        pnl24hNet = Number.isFinite(roiRes.roi as number) ? (roiRes.roi as number) : null;
-        pnl24hTrades = roiRes.count;
+        const roiRes = await fetchRealizedRoi(symbol, PNL_LOOKBACK_HOURS);
+        pnl7dNet = Number.isFinite(roiRes.roi as number) ? (roiRes.roi as number) : null;
+        pnl7dTrades = roiRes.count;
         lastPositionPnl = Number.isFinite(roiRes.lastNetPct as number) ? (roiRes.lastNetPct as number) : null;
         lastPositionDirection = roiRes.lastSide ?? null;
 
         try {
-          const recentWindows = await fetchRecentPositionWindows(symbol, 24);
-          const lastWindows = recentWindows.slice(-10);
+          const recentWindows = await fetchRecentPositionWindows(symbol, PNL_LOOKBACK_HOURS);
+          const lastWindows = recentWindows.slice(-14);
           const spark = lastWindows
             .map((w) => (Number.isFinite(w.pnlPct as number) ? (w.pnlPct as number) : null))
             .filter((v): v is number => typeof v === 'number');
@@ -117,17 +118,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           const netPcts = recentWindows
             .map((w) => (Number.isFinite(w.pnlPct as number) ? (w.pnlPct as number) : null))
             .filter((v): v is number => typeof v === 'number');
-          pnl24hGross = grossPcts.length ? grossPcts.reduce((a, b) => a + b, 0) : null;
-          // pnl24h (net) already uses sumPct from ROI; if missing, fallback to netPcts sum
-          if (pnl24h === null && netPcts.length) {
-            pnl24h = netPcts.reduce((a, b) => a + b, 0);
-          }
+          pnl7dGross = grossPcts.length ? grossPcts.reduce((a, b) => a + b, 0) : null;
+          pnl7d = netPcts.length ? netPcts.reduce((a, b) => a + b, 0) : null;
 
-          const lastTen = lastWindows.filter((w) => Number.isFinite(w.pnlPct as number));
-          if (lastTen.length) {
-            const wins = lastTen.filter((w) => (w.pnlPct as number) > 0);
-            const losses = lastTen.filter((w) => (w.pnlPct as number) < 0);
-            winRate = (wins.length / lastTen.length) * 100;
+          const sampledWindows = lastWindows.filter((w) => Number.isFinite(w.pnlPct as number));
+          if (sampledWindows.length) {
+            const wins = sampledWindows.filter((w) => (w.pnlPct as number) > 0);
+            const losses = sampledWindows.filter((w) => (w.pnlPct as number) < 0);
+            winRate = (wins.length / sampledWindows.length) * 100;
             avgWinPct = wins.length
               ? wins.reduce((acc, w) => acc + (w.pnlPct as number), 0) / wins.length
               : null;
@@ -144,6 +142,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 ? (lastWithLev.leverage as number)
                 : leverageFromHistory ?? null;
           }
+
+          const lastWindow = recentWindows.length ? recentWindows[recentWindows.length - 1] : null;
+          if (lastWindow) {
+            lastPositionPnl = Number.isFinite(lastWindow.pnlPct as number) ? (lastWindow.pnlPct as number) : null;
+            lastPositionDirection = lastWindow.side ?? null;
+            if (lastPositionLeverage === null) {
+              lastPositionLeverage = Number.isFinite(lastWindow.leverage as number)
+                ? (lastWindow.leverage as number)
+                : leverageFromHistory ?? null;
+            }
+          } else {
+            lastPositionPnl = Number.isFinite(roiRes.lastNetPct as number) ? (roiRes.lastNetPct as number) : null;
+            lastPositionDirection = roiRes.lastSide ?? null;
+          }
         } catch (err) {
           console.warn(`Could not fetch sparkline PnL for ${symbol}:`, err);
         }
@@ -155,7 +167,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             const val = Number(raw);
             openPnl = Number.isFinite(val) ? val : null;
             openDirection = pos.holdSide ?? null;
-            openLeverage = leverageFromHistory ?? null;
+            openLeverage = Number.isFinite(pos.leverage as number)
+              ? (pos.leverage as number)
+              : leverageFromHistory ?? null;
           } else {
             openPnl = null;
             openDirection = null;
@@ -165,15 +179,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           console.warn(`Could not fetch open PnL for ${symbol}:`, err);
         }
 
-        // Combine realized 24h PnL with current open PnL (percentage-based)
-        if (typeof pnl24h === 'number' && typeof openPnl === 'number') {
-          pnl24hWithOpen = pnl24h + openPnl;
-        } else if (typeof pnl24h === 'number') {
-          pnl24hWithOpen = pnl24h;
+        // Combine realized 7d PnL with current open PnL (both percentage-based)
+        if (typeof pnl7d === 'number' && typeof openPnl === 'number') {
+          pnl7dWithOpen = pnl7d + openPnl;
+        } else if (typeof pnl7d === 'number') {
+          pnl7dWithOpen = pnl7d;
         } else if (typeof openPnl === 'number') {
-          pnl24hWithOpen = openPnl;
+          pnl7dWithOpen = openPnl;
         } else {
-          pnl24hWithOpen = null;
+          pnl7dWithOpen = null;
         }
 
         evaluationTs = await getEvaluationTimestamp(symbol);
@@ -185,11 +199,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return {
         symbol,
         evaluation: store[symbol],
-        pnl24h,
-        pnl24hWithOpen,
-        pnl24hNet,
-        pnl24hGross,
-        pnl24hTrades,
+        pnl7d,
+        pnl7dWithOpen,
+        pnl7dNet,
+        pnl7dGross,
+        pnl7dTrades,
         pnlSpark,
         openPnl,
         openDirection,

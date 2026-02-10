@@ -29,19 +29,38 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!requireAdminAccess(req, res)) return;
 
   const symbol = String(req.query.symbol || '').toUpperCase();
-  const timeframe = String(req.query.timeframe || '15m');
-  const limit = Number(req.query.limit || 96); // 24h of 15m candles = 96
+  const timeframeRaw = String(req.query.timeframe || '1H');
+  const tfMatch = /^(\d+)([a-zA-Z])$/.exec(timeframeRaw.trim());
+  const timeframe = tfMatch
+    ? (() => {
+        const value = tfMatch[1];
+        const unit = tfMatch[2];
+        if (unit === 'M') return `${value}M`;
+        const lower = unit.toLowerCase();
+        if (lower === 'h') return `${value}H`;
+        if (lower === 'd') return `${value}D`;
+        if (lower === 'w') return `${value}W`;
+        if (lower === 'm') return `${value}m`;
+        if (lower === 's') return `${value}s`;
+        return `${value}${unit}`;
+      })()
+    : timeframeRaw;
+  const tfSeconds = timeframeToSeconds(timeframe);
+  const defaultLimit = Math.max(16, Math.ceil((7 * 24 * 60 * 60) / Math.max(1, tfSeconds)));
+  const rawLimit = Number(req.query.limit);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.floor(rawLimit) : defaultLimit;
+  const boundedLimit = Math.min(Math.max(limit, 16), 2_000);
 
   if (!symbol) {
     return res.status(400).json({ error: 'symbol_required' });
   }
 
   try {
-    const bundle = await fetchMarketBundle(symbol, timeframe, { includeTrades: false, candleLimit: limit + 10 });
+    const bundle = await fetchMarketBundle(symbol, timeframe, { includeTrades: false, candleLimit: boundedLimit + 10 });
 
     const candles = Array.isArray(bundle.candles)
       ? bundle.candles
-          .slice(-limit)
+          .slice(-boundedLimit)
           .map((c: any) => ({
             time: Math.floor(Number(c?.[0]) / 1000),
             open: Number(c?.[1]),
@@ -57,13 +76,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       candleMap.set(c.time, c);
     }
     const candleTimes = candles.map((c) => c.time);
-    // Positions/decisions in last 24h
+    // Positions/decisions in chart window.
     const nowMs = Date.now();
-    const dayAgo = nowMs - 24 * 60 * 60 * 1000;
-    const history = await loadDecisionHistory(symbol, 200);
+    const inferredRangeMs = boundedLimit * tfSeconds * 1000;
+    const firstCandleMs = candles.length ? candles[0].time * 1000 : nowMs - inferredRangeMs;
+    const windowStartMs = Math.max(0, Math.min(firstCandleMs, nowMs - inferredRangeMs));
+    const historyHours = Math.max(24, Math.ceil((nowMs - windowStartMs) / (60 * 60 * 1000)));
+    const historyLimit = Math.max(200, Math.min(1_200, historyHours * 8));
+    const history = await loadDecisionHistory(symbol, historyLimit);
     const markers =
       history
-        ?.filter((h) => h.timestamp && Number(h.timestamp) >= dayAgo && Number(h.timestamp) <= nowMs)
+        ?.filter((h) => h.timestamp && Number(h.timestamp) >= windowStartMs && Number(h.timestamp) <= nowMs)
         .map((h) => {
           const rawTsSec = Math.floor(Number(h.timestamp) / 1000);
           const action = (h.aiDecision?.action || '').toUpperCase() || 'DECISION';
@@ -131,7 +154,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     let positions: any[] = [];
     try {
-      const closed = await fetchRecentPositionWindows(symbol, 24);
+      const closed = await fetchRecentPositionWindows(symbol, historyHours);
       let openOverlay: any = null;
       try {
         const open = await fetchPositionInfo(symbol);
@@ -147,7 +170,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             pnlPct: Number.isFinite(pnlVal) ? pnlVal : null,
             entryPrice: Number(open.entryPrice) || null,
             exitPrice: null,
-            leverage: leverageFromHistory,
+            leverage: Number.isFinite(open.leverage as number) ? (open.leverage as number) : leverageFromHistory,
           };
         }
       } catch (err) {
