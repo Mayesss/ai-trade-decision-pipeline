@@ -6,7 +6,7 @@ Next.js app that runs an AI-driven trading loop for Bitget futures: pull market 
 
 ## What’s Inside
 - **Next.js API routes** for analysis (`/api/analyze`, `/api/analyzeMultiple`), AI-driven evaluations (`/api/evaluate`), history/PNL enrichment (`/api/evaluations`, `/api/rest-history`, `/api/chart`), and health/debug helpers.
-- **Bitget integration** for market data, positions, and live order placement (dry-run by default).
+- **Bitget integration** for market data, positions, and live order placement.
 - **Signal stack**: order-flow analytics, multi-timeframe indicators (context/macro/primary/micro), support/resistance levels, momentum/extension gates, and CoinDesk news sentiment.
 - **LLM prompts** built in `lib/ai.ts` with guardrails and momentum overrides; responses are persisted for replay and review.
 - **Dashboard** (`pages/index.tsx`) showing latest decisions, prompts, aspect ratings, PnL, open positions, and chart overlays of recent trades.
@@ -18,6 +18,7 @@ Next.js app that runs an AI-driven trading loop for Bitget futures: pull market 
 - OpenAI-compatible API key (used by `callAI`)
 - CoinDesk API key (required for news sentiment)
 - Upstash/Redis REST endpoint + token for KV (`KV_REST_API_URL`, `KV_REST_API_TOKEN`)
+- Optional admin secret for protected routes (`ADMIN_ACCESS_SECRET`)
 
 ## Setup
 1) Install deps:
@@ -44,8 +45,9 @@ KV_REST_API_TOKEN=...
 
 # Optional
 TAKER_FEE_RATE=0.0006          # used in prompts/edge checks
+# ADMIN_ACCESS_SECRET=...       # enables auth on /api/evaluations and /api/chart
 # BITGET_ACCOUNT_TYPE is set in lib/constants.ts (default: usdt-futures)
-# AI_MODEL and AI_BASE_URL are set in lib/constants.ts (default: gpt-4.1-mini @ api.openai.com)
+# AI_MODEL and AI_BASE_URL are set in lib/constants.ts (current defaults: gpt-5.2 @ api.openai.com)
 ```
 
 3) Run the app:
@@ -60,16 +62,48 @@ npm run build
 npm run start
 ```
 
-## Core API Routes (quick reference)
-- `POST /api/analyze` — run the pipeline for one symbol. Body fields: `symbol` (e.g., `ETHUSDT`), `timeFrame` (default `1H`), `microTimeFrame` (`15m`), `macroTimeFrame` (`4H`), `contextTimeFrame` (`1D`), `dryRun` (defaults to `true`), `notional` (USDT sizing). Persists prompt, AI decision, metrics, and optional exec result.
-- `POST /api/analyzeMultiple` — same as above, but concurrent over a list of symbols with built-in rate limiting/backoff.
-- `POST /api/evaluate` — LLM critique of recent decisions for a symbol; saves the latest evaluation used by the dashboard.
-- `GET /api/evaluations` — aggregated dashboard payload: last evaluation, last decision/prompt/metrics, open PnL, 24h realized PnL, win-rate sparkline, bias timeframes.
-- `GET /api/chart?symbol=...&timeframe=15m` — candles + markers + position overlays for the dashboard.
-- `GET /api/rest-history?symbol=...&limit=...` — raw stored decision history (KV).
-- `GET /api/health` — liveness; `GET /api/bitget-ping` — Bitget connectivity; `GET /api/debug-env-values` — redacted env status for debugging.
+## API Routes (current behavior)
+- `GET /api/analyze`
+  - Query params: `symbol` (default `ETHUSDT`), `dryRun` (`true|false`, default `false`), `notional` (default `100`)
+  - Timeframes are currently fixed from `lib/constants.ts`:
+    - `MICRO_TIMEFRAME=1H`, `PRIMARY_TIMEFRAME=4H`, `MACRO_TIMEFRAME=1D`, `CONTEXT_TIMEFRAME=1W`
+  - Persists prompt, decision, execution result, and snapshot to KV.
+- `GET /api/analyzeMultiple`
+  - Query params: `symbols` (array, required), `dryRun` (`true|false`, default `false`), `notional` (default `100`)
+  - Runs per-symbol analysis with bounded concurrency and retry/backoff.
+- `GET /api/evaluate`
+  - Query params: `symbol` (required), `limit` (clamped `5..30`, default `30`), `batchSize` (clamped `2..10`, default `5`), `includeBatchEvaluations` (`true|false`), `async` (`true|false`)
+  - Async mode returns a `jobId`; poll with `GET /api/evaluate?jobId=...`.
+- `GET /api/evaluations`
+  - Aggregated payload for dashboard (evaluation + latest prompt/decision + PnL context).
+  - Requires `x-admin-access-secret` header only when `ADMIN_ACCESS_SECRET` is set.
+- `GET /api/chart?symbol=...&timeframe=15m&limit=96`
+  - Candles + decision markers + recent position overlays.
+  - Requires `x-admin-access-secret` header only when `ADMIN_ACCESS_SECRET` is set.
+- `GET /api/rest-history?symbol=...`
+  - Returns recent history entries for a symbol.
+- `DELETE /api/rest-history`
+  - Clears all decision history.
+- `GET /api/health`
+  - Liveness check.
+- `GET /api/bitget-ping`
+  - Public Bitget connectivity check.
+- `GET /api/debug-env-values`
+  - Redacted env presence check.
+- `POST /api/admin-auth`
+  - Body: `{ "secret": "..." }` to validate admin access when `ADMIN_ACCESS_SECRET` is set.
 
-**Dry-run vs live trades:** `dryRun` defaults to `true`. Set `dryRun:false` to place real market orders on Bitget (uses isolated USDT futures and clamps leverage 1–5x).
+## Dry-Run Safety
+`dryRun` defaults to `false` in the analysis routes. If you are testing and do not want real orders, pass `dryRun=true` explicitly.
+
+Examples:
+```bash
+# Safe single-symbol run
+curl "http://localhost:3000/api/analyze?symbol=ETHUSDT&dryRun=true&notional=100"
+
+# Safe multi-symbol run
+curl "http://localhost:3000/api/analyzeMultiple?symbols=BTCUSDT&symbols=ETHUSDT&dryRun=true&notional=100"
+```
 
 ## Data Flow
 1) **Analyze** pulls Bitget market data (ticker, candles, order book, funding, OI, trades optional) + news sentiment, computes indicators/analytics, builds the prompt, calls the LLM, and (optionally) executes the trade.  
@@ -80,11 +114,12 @@ npm run start
 ## Frontend Notes
 - UI lives in `pages/index.tsx`; Tailwind 4 utility classes are inlined (no config required).
 - Charts use `lightweight-charts` with custom overlays; resize-safe.
-- If no evaluations are present, run `POST /api/analyze` then `POST /api/evaluate` to seed data before opening the page.
+- If no evaluations are present, run `GET /api/analyze?...&dryRun=true` then `GET /api/evaluate?...` to seed data before opening the page.
 
 ## Deployment
 - Vercel-ready (`vercel.json` routes `/api/*` to Next API handlers). Provide the same env vars in Vercel’s dashboard or your host of choice.
 - KV REST endpoint/token must be reachable from the runtime; Bitget/AI/News calls require outbound network access.
+- Current cron entries in `vercel.json` call `/api/analyze?...&dryRun=false` hourly, which is live-trading mode.
 
 ## Troubleshooting
 - `GET /api/debug-env-values` to confirm env vars are detected.
