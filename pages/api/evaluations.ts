@@ -18,6 +18,7 @@ type EnrichedEntry = {
   openPnl?: number | null;
   openDirection?: 'long' | 'short' | null;
   openLeverage?: number | null;
+  openEntryPrice?: number | null;
   lastPositionPnl?: number | null;
   lastPositionDirection?: 'long' | 'short' | null;
   lastPositionLeverage?: number | null;
@@ -63,6 +64,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let openPnl: number | null | undefined = null;
       let openDirection: 'long' | 'short' | null | undefined = null;
       let openLeverage: number | null | undefined = null;
+      let openEntryPrice: number | null | undefined = null;
       let lastPositionPnl: number | null | undefined = null;
       let lastPositionDirection: 'long' | 'short' | null | undefined = null;
       let lastPositionLeverage: number | null | undefined = null;
@@ -170,10 +172,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             openLeverage = Number.isFinite(pos.leverage as number)
               ? (pos.leverage as number)
               : leverageFromHistory ?? null;
+            const entryPriceVal = Number(pos.entryPrice);
+            openEntryPrice = Number.isFinite(entryPriceVal) && entryPriceVal > 0 ? entryPriceVal : null;
           } else {
             openPnl = null;
             openDirection = null;
             openLeverage = null;
+            openEntryPrice = null;
           }
         } catch (err) {
           console.warn(`Could not fetch open PnL for ${symbol}:`, err);
@@ -208,6 +213,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         openPnl,
         openDirection,
         openLeverage,
+        openEntryPrice,
         lastPositionPnl,
         lastPositionDirection,
         lastPositionLeverage,

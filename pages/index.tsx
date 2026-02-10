@@ -55,6 +55,7 @@ type EvaluationEntry = {
   openPnl?: number | null;
   openDirection?: 'long' | 'short' | null;
   openLeverage?: number | null;
+  openEntryPrice?: number | null;
   lastPositionPnl?: number | null;
   lastPositionDirection?: 'long' | 'short' | null;
   lastPositionLeverage?: number | null;
@@ -98,6 +99,9 @@ const formatUsd = (value: number) => {
 };
 
 const BERLIN_TZ = 'Europe/Berlin';
+const BITGET_PUBLIC_WS_URL = 'wss://ws.bitget.com/v2/ws/public';
+const WS_RECONNECT_MS = 1500;
+const WS_PING_MS = 25_000;
 
 const ADMIN_SECRET_STORAGE_KEY = 'admin_access_secret';
 const ADMIN_AUTH_TIMEOUT_MS = 4000;
@@ -144,6 +148,9 @@ export default function Home() {
   const [showPrompt, setShowPrompt] = useState(false);
   const [evaluateJobs, setEvaluateJobs] = useState<Record<string, EvaluateJobRecord>>({});
   const [evaluateSubmittingSymbol, setEvaluateSubmittingSymbol] = useState<string | null>(null);
+  const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
+  const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
+  const [livePriceConnected, setLivePriceConnected] = useState(false);
   const evaluatePollTimersRef = useRef<Record<string, number>>({});
 
   const validateAdminAccess = async (secret: string | null) => {
@@ -346,6 +353,120 @@ export default function Home() {
     setShowPrompt(false);
   }, [active, symbols]);
 
+  useEffect(() => {
+    const symbol = symbols[active] || null;
+    if (!adminGranted || !symbol) {
+      setLivePriceNow(null);
+      setLivePriceTs(null);
+      setLivePriceConnected(false);
+      return;
+    }
+
+    let closed = false;
+    let ws: WebSocket | null = null;
+    let pingTimer: number | null = null;
+    let reconnectTimer: number | null = null;
+
+    const clearTimers = () => {
+      if (pingTimer) {
+        window.clearInterval(pingTimer);
+        pingTimer = null;
+      }
+      if (reconnectTimer) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (closed) return;
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      reconnectTimer = window.setTimeout(() => {
+        if (closed) return;
+        connect();
+      }, WS_RECONNECT_MS);
+    };
+
+    const connect = () => {
+      try {
+        ws = new WebSocket(BITGET_PUBLIC_WS_URL);
+      } catch {
+        scheduleReconnect();
+        return;
+      }
+
+      ws.onopen = () => {
+        if (closed || !ws) return;
+        setLivePriceConnected(true);
+        try {
+          ws.send(
+            JSON.stringify({
+              op: 'subscribe',
+              args: [{ instType: 'USDT-FUTURES', channel: 'ticker', instId: symbol }],
+            }),
+          );
+        } catch {}
+
+        pingTimer = window.setInterval(() => {
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          try {
+            ws.send('ping');
+          } catch {}
+        }, WS_PING_MS);
+      };
+
+      ws.onmessage = (event) => {
+        if (closed) return;
+        const raw = String(event.data ?? '');
+        if (!raw || raw === 'pong' || raw === 'ping') return;
+        let parsed: any = null;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          return;
+        }
+        const rows = Array.isArray(parsed?.data) ? parsed.data : [];
+        for (const row of rows) {
+          const px = Number(row?.lastPr ?? row?.last ?? row?.price);
+          if (!Number.isFinite(px) || px <= 0) continue;
+          const ts = Number(row?.ts ?? parsed?.ts ?? Date.now());
+          setLivePriceNow(px);
+          setLivePriceTs(Number.isFinite(ts) ? ts : Date.now());
+          break;
+        }
+      };
+
+      ws.onerror = () => {
+        if (closed) return;
+        setLivePriceConnected(false);
+      };
+
+      ws.onclose = () => {
+        if (closed) return;
+        setLivePriceConnected(false);
+        clearTimers();
+        scheduleReconnect();
+      };
+    };
+
+    setLivePriceNow(null);
+    setLivePriceTs(null);
+    setLivePriceConnected(false);
+    connect();
+
+    return () => {
+      closed = true;
+      clearTimers();
+      setLivePriceConnected(false);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.close();
+        } catch {}
+      }
+      ws = null;
+    };
+  }, [adminGranted, symbols, active]);
+
   const formatDecisionTime = (ts?: number | null) => {
     if (!ts) return '';
     const d = new Date(ts);
@@ -406,6 +527,36 @@ export default function Home() {
 
   const current = symbols[active] ? tabData[symbols[active]] : null;
   const activeSymbol = symbols[active] || null;
+  const liveOpenPnl =
+    current &&
+    typeof livePriceNow === 'number' &&
+    Number.isFinite(livePriceNow) &&
+    typeof current.openEntryPrice === 'number' &&
+    Number.isFinite(current.openEntryPrice) &&
+    current.openEntryPrice > 0 &&
+    (current.openDirection === 'long' || current.openDirection === 'short')
+      ? (((livePriceNow - current.openEntryPrice) / current.openEntryPrice) *
+          (current.openDirection === 'long' ? 1 : -1) *
+          (typeof current.openLeverage === 'number' && current.openLeverage > 0 ? current.openLeverage : 1) *
+          100)
+      : null;
+  const effectiveOpenPnl =
+    typeof liveOpenPnl === 'number'
+      ? liveOpenPnl
+      : current && typeof current.openPnl === 'number'
+      ? current.openPnl
+      : null;
+  const effectivePnl7dWithOpen =
+    current && typeof current.pnl7d === 'number' && typeof effectiveOpenPnl === 'number'
+      ? current.pnl7d + effectiveOpenPnl
+      : current && typeof current.pnl7d === 'number'
+      ? current.pnl7d
+      : typeof effectiveOpenPnl === 'number'
+      ? effectiveOpenPnl
+      : current && typeof current.pnl7dWithOpen === 'number'
+      ? current.pnl7dWithOpen
+      : null;
+  const openPnlIsLive = typeof liveOpenPnl === 'number';
   const showChartPanel = Boolean(adminGranted && activeSymbol);
   const currentEvalJob = activeSymbol ? evaluateJobs[activeSymbol] : null;
   const evaluateRunning = Boolean(
@@ -488,6 +639,15 @@ export default function Home() {
                 {currentEvalJob.error ? ` (${currentEvalJob.error})` : ''}
               </p>
             ) : null}
+            {activeSymbol ? (
+              <p className="mt-1 text-xs text-slate-500">
+                Live price:{' '}
+                <span className={livePriceConnected ? 'font-semibold text-emerald-700' : 'font-semibold text-slate-600'}>
+                  {livePriceConnected ? 'connected' : 'connecting'}
+                </span>
+                {typeof livePriceNow === 'number' ? ` · ${livePriceNow.toFixed(2)}` : ''}
+              </p>
+            ) : null}
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -568,15 +728,15 @@ export default function Home() {
                       <div className="mt-3 text-3xl font-semibold text-slate-900">
                         <span
                           className={
-                            typeof current.pnl7dWithOpen === 'number'
-                              ? current.pnl7dWithOpen >= 0
+                            typeof effectivePnl7dWithOpen === 'number'
+                              ? effectivePnl7dWithOpen >= 0
                                 ? 'text-emerald-600'
                                 : 'text-rose-600'
                               : 'text-slate-500'
                           }
                         >
-                          {typeof current.pnl7dWithOpen === 'number'
-                            ? `${current.pnl7dWithOpen.toFixed(2)}%`
+                          {typeof effectivePnl7dWithOpen === 'number'
+                            ? `${effectivePnl7dWithOpen.toFixed(2)}%`
                             : typeof current.pnl7d === 'number'
                             ? `${current.pnl7d.toFixed(2)}%`
                             : '—'}
@@ -590,7 +750,7 @@ export default function Home() {
                       </div>
                       <p className="mt-1 text-xs text-slate-500">
                         from {current.pnl7dTrades ?? 0} {current.pnl7dTrades === 1 ? 'trade' : 'trades'} in last 7d
-                        {typeof current.openPnl === 'number' ? ' + open position' : ''}
+                        {typeof effectiveOpenPnl === 'number' ? ' + open position' : ''}
                       </p>
                       <div className="mt-1 text-[11px] text-slate-500">
                         {typeof current.pnl7dGross === 'number' || typeof current.pnl7d === 'number' ? (
@@ -662,18 +822,18 @@ export default function Home() {
                       <div className="mt-3 text-3xl font-semibold text-slate-900">
                         <span
                           className={
-                            typeof current.openPnl === 'number'
-                              ? current.openPnl >= 0
+                            typeof effectiveOpenPnl === 'number'
+                              ? effectiveOpenPnl >= 0
                                 ? 'text-emerald-600'
                                 : 'text-rose-600'
                               : 'text-slate-500'
                           }
                         >
-                          {typeof current.openPnl === 'number' ? `${current.openPnl.toFixed(2)}%` : '—'}
+                          {typeof effectiveOpenPnl === 'number' ? `${effectiveOpenPnl.toFixed(2)}%` : '—'}
                         </span>
                       </div>
                       <p className="mt-1 text-xs text-slate-500">
-                        {typeof current.openPnl === 'number' ? (
+                        {typeof effectiveOpenPnl === 'number' ? (
                           <span className="flex flex-wrap items-center gap-2">
                             <span className="flex items-center gap-1">
                               direction –
@@ -686,6 +846,11 @@ export default function Home() {
                             {typeof current.openLeverage === 'number' ? (
                               <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
                                 {current.openLeverage.toFixed(0)}x
+                              </span>
+                            ) : null}
+                            {openPnlIsLive ? (
+                              <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+                                live
                               </span>
                             ) : null}
                           </span>
@@ -706,6 +871,9 @@ export default function Home() {
                   adminGranted={adminGranted}
                   timeframe="1H"
                   limit={168}
+                  livePrice={livePriceNow}
+                  liveTimestamp={livePriceTs}
+                  liveConnected={livePriceConnected}
                 />
               ) : null}
 

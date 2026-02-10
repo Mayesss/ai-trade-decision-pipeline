@@ -49,6 +49,9 @@ type ChartPanelProps = {
   adminGranted: boolean;
   timeframe?: string;
   limit?: number;
+  livePrice?: number | null;
+  liveTimestamp?: number | null;
+  liveConnected?: boolean;
 };
 
 const BERLIN_TZ = 'Europe/Berlin';
@@ -116,7 +119,16 @@ const formatOverlayDecisionTs = (tsMs?: number | null) => {
 };
 
 export default function ChartPanel(props: ChartPanelProps) {
-  const { symbol, adminSecret, adminGranted, timeframe = '1H', limit } = props;
+  const {
+    symbol,
+    adminSecret,
+    adminGranted,
+    timeframe = '1H',
+    limit,
+    livePrice = null,
+    liveTimestamp = null,
+    liveConnected = false,
+  } = props;
 
   const [chartData, setChartData] = useState<{ time: number; value: number }[]>([]);
   const [chartMarkers, setChartMarkers] = useState<any[]>([]);
@@ -126,11 +138,15 @@ export default function ChartPanel(props: ChartPanelProps) {
   const [renderedOverlays, setRenderedOverlays] = useState<RenderedOverlay[]>([]);
   const [hoveredOverlay, setHoveredOverlay] = useState<RenderedOverlay | null>(null);
   const [hoverX, setHoverX] = useState<number | null>(null);
+  const [livePulseY, setLivePulseY] = useState<number | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [chartInitToken, setChartInitToken] = useState(0);
 
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const overlayLayerRef = useRef<HTMLDivElement | null>(null);
   const chartInstanceRef = useRef<any>(null);
+  const chartSeriesRef = useRef<any>(null);
   const chartCacheRef = useRef<Map<string, CachedChartEntry>>(new Map());
   const timeframeSeconds = timeframeToSeconds(timeframe);
   const resolvedLimit = Math.max(
@@ -148,6 +164,7 @@ export default function ChartPanel(props: ChartPanelProps) {
 
   useEffect(() => {
     if (!adminGranted || !symbol) {
+      setIsFullscreen(false);
       setChartLoading(false);
       setChartAttempted(false);
       setChartData([]);
@@ -233,9 +250,70 @@ export default function ChartPanel(props: ChartPanelProps) {
   }, [symbol, timeframe, adminSecret, adminGranted, resolvedLimit]);
 
   useEffect(() => {
+    if (!isFullscreen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsFullscreen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isFullscreen]);
+
+  useEffect(() => {
+    if (!adminGranted || !symbol) return;
+    const price = Number(livePrice);
+    if (!Number.isFinite(price) || price <= 0) return;
+    const interval = Math.max(1, timeframeSeconds);
+    const tsMs = Number.isFinite(liveTimestamp as number) ? Number(liveTimestamp) : Date.now();
+    const barTime = Math.floor(Math.floor(tsMs / 1000) / interval) * interval;
+
+    setChartData((prev) => {
+      if (!prev.length || barTime < prev[0].time) return prev;
+      const last = prev[prev.length - 1];
+      if (!last) return prev;
+      if (barTime === last.time) {
+        if (Math.abs(last.value - price) < 1e-9) return prev;
+        const next = prev.slice();
+        next[next.length - 1] = { time: last.time, value: price };
+        return next;
+      }
+      if (barTime > last.time) {
+        const next = [...prev, { time: barTime, value: price }];
+        if (next.length > resolvedLimit) {
+          next.splice(0, next.length - resolvedLimit);
+        }
+        return next;
+      }
+      return prev;
+    });
+
+    setPositionOverlays((prev) =>
+      prev.map((pos) => {
+        if (
+          pos.status !== 'open' ||
+          typeof pos.entryPrice !== 'number' ||
+          !Number.isFinite(pos.entryPrice) ||
+          pos.entryPrice <= 0 ||
+          (pos.side !== 'long' && pos.side !== 'short')
+        ) {
+          return pos;
+        }
+        const lev = typeof pos.leverage === 'number' && pos.leverage > 0 ? pos.leverage : 1;
+        const sideSign = pos.side === 'long' ? 1 : -1;
+        const nextPnlPct = ((price - pos.entryPrice) / pos.entryPrice) * sideSign * lev * 100;
+        if (!Number.isFinite(nextPnlPct)) return pos;
+        if (typeof pos.pnlPct === 'number' && Math.abs(pos.pnlPct - nextPnlPct) < 0.01) return pos;
+        return { ...pos, pnlPct: nextPnlPct };
+      }),
+    );
+  }, [livePrice, liveTimestamp, timeframeSeconds, resolvedLimit, adminGranted, symbol]);
+
+  useEffect(() => {
     const container = chartContainerRef.current;
     if (!container || !chartData.length) return;
     let chart: any;
+    let disposed = false;
 
     (async () => {
       const lw = await import('lightweight-charts');
@@ -245,12 +323,13 @@ export default function ChartPanel(props: ChartPanelProps) {
           : typeof (lw as any)?.default?.createChart === 'function'
           ? (lw as any).default.createChart
           : null;
-      if (!createChart) return;
+      if (!createChart || disposed) return;
 
       const priceScaleWidth = 56;
+      const initialHeight = Math.max(260, Math.floor(container.clientHeight || 260));
       chart = createChart(container, {
         width: container.clientWidth,
-        height: 260,
+        height: initialHeight,
         handleScroll: false,
         handleScale: false,
         layout: {
@@ -313,6 +392,7 @@ export default function ChartPanel(props: ChartPanelProps) {
 
       if (!series) return;
 
+      chartSeriesRef.current = series;
       series.setData(chartData);
       if (Array.isArray(chartMarkers) && chartMarkers.length && typeof series.setMarkers === 'function') {
         series.setMarkers(chartMarkers);
@@ -323,18 +403,32 @@ export default function ChartPanel(props: ChartPanelProps) {
 
     const handleResize = () => {
       if (chart && chartContainerRef.current) {
-        chart.applyOptions({ width: chartContainerRef.current.clientWidth });
+        chart.applyOptions({
+          width: chartContainerRef.current.clientWidth,
+          height: Math.max(260, Math.floor(chartContainerRef.current.clientHeight || 260)),
+        });
       }
     };
 
     window.addEventListener('resize', handleResize);
     return () => {
+      disposed = true;
       window.removeEventListener('resize', handleResize);
       if (chart) {
         chart.remove();
         chartInstanceRef.current = null;
       }
+      chartSeriesRef.current = null;
     };
+  }, [symbol, timeframe, chartData.length, isFullscreen]);
+
+  useEffect(() => {
+    const series = chartSeriesRef.current;
+    if (!series || !chartData.length) return;
+    series.setData(chartData);
+    if (Array.isArray(chartMarkers) && typeof series.setMarkers === 'function') {
+      series.setMarkers(chartMarkers);
+    }
   }, [chartData, chartMarkers]);
 
   useEffect(() => {
@@ -393,6 +487,38 @@ export default function ChartPanel(props: ChartPanelProps) {
     return () => window.removeEventListener('resize', recalcOverlays);
   }, [positionOverlays, chartData, chartInitToken]);
 
+  useEffect(() => {
+    const recalcLivePulse = () => {
+      if (!liveConnected) {
+        setLivePulseY(null);
+        return;
+      }
+      const series = chartSeriesRef.current;
+      const layer = overlayLayerRef.current;
+      if (!series || !layer || !chartData.length || typeof series.priceToCoordinate !== 'function') {
+        setLivePulseY(null);
+        return;
+      }
+      const fallback = chartData[chartData.length - 1]?.value;
+      const price = typeof livePrice === 'number' ? livePrice : fallback;
+      if (!Number.isFinite(price)) {
+        setLivePulseY(null);
+        return;
+      }
+      const y = Number(series.priceToCoordinate(price));
+      if (!Number.isFinite(y)) {
+        setLivePulseY(null);
+        return;
+      }
+      const clampedY = Math.min(Math.max(y, 6), Math.max(6, layer.clientHeight - 6));
+      setLivePulseY(clampedY);
+    };
+
+    recalcLivePulse();
+    window.addEventListener('resize', recalcLivePulse);
+    return () => window.removeEventListener('resize', recalcLivePulse);
+  }, [chartData, livePrice, liveConnected, chartInitToken]);
+
   if (!adminGranted || !symbol) return null;
 
   const hasChartData = chartData.length > 0;
@@ -400,14 +526,50 @@ export default function ChartPanel(props: ChartPanelProps) {
   const showEmpty = !chartLoading && chartAttempted && !hasChartData;
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+    <div
+      ref={panelRef}
+      className={`bg-white p-4 ${
+        isFullscreen
+          ? 'fixed inset-0 z-[90] rounded-none border-0 shadow-none'
+          : 'rounded-2xl border border-slate-200 shadow-sm lg:col-span-2'
+      }`}
+    >
       <div className="flex items-center justify-between">
         <div className="text-xs uppercase tracking-wide text-slate-500">7D Price</div>
         <div className="text-xs text-slate-400">
-          {timeframe} bars · {windowDays.toFixed(0)}D window {chartLoading && hasChartData ? '· updating…' : ''}
+          {timeframe} bars · {windowDays.toFixed(0)}D window
+          {liveConnected ? ' · live' : ''}
+          {typeof livePrice === 'number' ? ` · ${livePrice.toFixed(2)}` : ''}
+          {chartLoading && hasChartData ? ' · updating…' : ''}
         </div>
       </div>
-      <div className="relative mt-3 h-[260px] w-full" style={{ minHeight: 260 }}>
+      <div
+        className={`relative mt-3 w-full ${isFullscreen ? 'h-[calc(100vh-96px)]' : 'h-[260px]'}`}
+        style={{ minHeight: 260 }}
+      >
+        <button
+          type="button"
+          onClick={() => setIsFullscreen((prev) => !prev)}
+          className="absolute bottom-0 right-3 z-30 inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white/95 text-slate-600 shadow-sm backdrop-blur transition hover:border-sky-300 hover:text-sky-700"
+          aria-label={isFullscreen ? 'Exit fullscreen chart' : 'Enter fullscreen chart'}
+          title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.9"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-4 w-4"
+            aria-hidden="true"
+          >
+            <path d="M4 9V4h5" />
+            <path d="M15 4h5v5" />
+            <path d="M20 15v5h-5" />
+            <path d="M9 20H4v-5" />
+          </svg>
+        </button>
         {showSkeleton ? (
           <div className="h-full w-full rounded-xl border border-slate-200 bg-slate-50/80 p-4">
             <div className="flex h-full w-full animate-pulse flex-col justify-between">
@@ -430,6 +592,14 @@ export default function ChartPanel(props: ChartPanelProps) {
         {hasChartData && (
           <>
             <div ref={overlayLayerRef} className="pointer-events-none absolute inset-0" style={{ right: 56 }}>
+              {liveConnected && livePulseY !== null ? (
+                <div className="pointer-events-none absolute" style={{ top: livePulseY - 14, right: 1 }}>
+                  <span className="relative inline-flex h-2 w-2">
+                    <span className="absolute inset-0 animate-ping rounded-full bg-sky-400/80" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-sky-500 ring-1 ring-white/90 shadow-sm" />
+                  </span>
+                </div>
+              ) : null}
               {renderedOverlays.map((pos) => {
                 const profitable = typeof pos.pnlPct === 'number' ? pos.pnlPct >= 0 : null;
                 const pnlLabel = typeof pos.pnlPct === 'number' ? `${pos.pnlPct.toFixed(1)}%` : null;
