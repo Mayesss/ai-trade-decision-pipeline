@@ -11,7 +11,11 @@ Maintain and iterate an AI-driven trading decision pipeline safely. Prompt and d
 - `pages/api/analyzeMultiple.ts`: multi-symbol analysis pipeline with concurrency + retries.
 - `lib/trading.ts`: execution layer (market orders, close/reverse handling, leverage).
 - `pages/api/evaluate.ts`: LLM-based evaluation/audit of recent decisions.
+- `pages/api/evaluations.ts`: dashboard aggregate payload (evaluation + latest prompt/decision + 7D PnL/open-position context).
+- `pages/api/chart.ts`: chart candles, decision markers, and position overlays for the requested timeframe/window.
 - `lib/history.ts`: KV persistence for prompts, decisions, snapshots, and exec results.
+- `pages/index.tsx`: dashboard shell, admin gate, live ticker socket, and live PnL recomputation.
+- `components/ChartPanel.tsx`: chart rendering (`lightweight-charts`), overlays, live pulse marker, and fullscreen mode.
 
 ## Safety Rules
 1. Treat analysis routes as potentially live-trading.
@@ -27,6 +31,21 @@ Maintain and iterate an AI-driven trading decision pipeline safely. Prompt and d
   - `PRIMARY_TIMEFRAME=4H`
   - `MACRO_TIMEFRAME=1D`
   - `CONTEXT_TIMEFRAME=1W`
+- `GET /api/evaluations` returns latest evaluation plus 7D realized PnL and open-position fields used by UI live updates:
+  - `openDirection`, `openLeverage`, `openEntryPrice`, `openPnl`, `pnl7d`, `pnl7dWithOpen`.
+- `GET /api/chart` defaults to a 7-day window if `limit` is omitted.
+  - Timeframe input is normalized to Bitget-compatible values (for example `1h` becomes `1H`).
+  - The dashboard uses `timeframe=1H&limit=168` as the standard 7D chart window.
+
+## Dashboard Data Contract
+1. Keep `pages/api/evaluations.ts` response shape aligned with `EvaluationEntry` in `pages/index.tsx`.
+2. Keep `pages/api/chart.ts` response shape aligned with `ChartApiResponse`/overlay types in `components/ChartPanel.tsx`.
+3. Live ticker comes from Bitget public WS (`ticker` channel on `USDT-FUTURES`).
+4. Live open-PnL formula in UI is leverage-aware:
+   - `((livePrice - entryPrice) / entryPrice) * sideSign * leverage * 100`.
+5. When changing PnL semantics, update both:
+   - server-side values in `pages/api/evaluations.ts`
+   - client-side live recomputation in `pages/index.tsx` and open overlay refresh in `components/ChartPanel.tsx`.
 
 ## Prompt-Change Workflow
 1. Edit `lib/ai.ts` only where needed.
@@ -49,6 +68,9 @@ When debugging prompt/decision issues:
 
 ## Useful Local Checks
 ```bash
+# If ADMIN_ACCESS_SECRET is set, include:
+#   -H "x-admin-access-secret: $ADMIN_ACCESS_SECRET"
+
 # env presence (redacted)
 curl "http://localhost:3000/api/debug-env-values"
 
@@ -63,6 +85,12 @@ curl "http://localhost:3000/api/rest-history?symbol=ETHUSDT"
 
 # run evaluator
 curl "http://localhost:3000/api/evaluate?symbol=ETHUSDT&limit=20&batchSize=5"
+
+# chart payload (1H bars, 7D window)
+curl "http://localhost:3000/api/chart?symbol=BTCUSDT&timeframe=1H&limit=168"
+
+# dashboard aggregate payload
+curl "http://localhost:3000/api/evaluations"
 ```
 
 ## Done Checklist

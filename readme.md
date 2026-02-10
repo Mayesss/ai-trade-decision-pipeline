@@ -9,7 +9,7 @@ Next.js app that runs an AI-driven trading loop for Bitget futures: pull market 
 - **Bitget integration** for market data, positions, and live order placement.
 - **Signal stack**: order-flow analytics, multi-timeframe indicators (context/macro/primary/micro), support/resistance levels, momentum/extension gates, and CoinDesk news sentiment.
 - **LLM prompts** built in `lib/ai.ts` with guardrails and momentum overrides; responses are persisted for replay and review.
-- **Dashboard** (`pages/index.tsx`) showing latest decisions, prompts, aspect ratings, PnL, open positions, and chart overlays of recent trades.
+- **Dashboard** (`pages/index.tsx` + `components/ChartPanel.tsx`) showing latest decisions, prompts, aspect ratings, 7D PnL, open positions, live ticker updates, and chart overlays of recent trades.
 - **KV storage** (Upstash-compatible REST) for decision history, evaluations, and cached news (7d TTL for history, 1h for news).
 
 ## Requirements
@@ -75,10 +75,13 @@ npm run start
   - Query params: `symbol` (required), `limit` (clamped `5..30`, default `30`), `batchSize` (clamped `2..10`, default `5`), `includeBatchEvaluations` (`true|false`), `async` (`true|false`)
   - Async mode returns a `jobId`; poll with `GET /api/evaluate?jobId=...`.
 - `GET /api/evaluations`
-  - Aggregated payload for dashboard (evaluation + latest prompt/decision + PnL context).
+  - Aggregated payload for dashboard (evaluation + latest prompt/decision + 7D PnL context).
+  - Includes open-position fields used for live UI recomputation (direction, leverage, entry price).
   - Requires `x-admin-access-secret` header only when `ADMIN_ACCESS_SECRET` is set.
-- `GET /api/chart?symbol=...&timeframe=15m&limit=96`
-  - Candles + decision markers + recent position overlays.
+- `GET /api/chart?symbol=...&timeframe=1H&limit=168`
+  - Candles + decision markers + recent position overlays for the requested window.
+  - Defaults to a 7-day window if `limit` is omitted.
+  - Normalizes timeframe strings to Bitget-compatible granularity (for example `1h` -> `1H`).
   - Requires `x-admin-access-secret` header only when `ADMIN_ACCESS_SECRET` is set.
 - `GET /api/rest-history?symbol=...`
   - Returns recent history entries for a symbol.
@@ -112,8 +115,9 @@ curl "http://localhost:3000/api/analyzeMultiple?symbols=BTCUSDT&symbols=ETHUSDT&
 4) The dashboard consumes `/api/evaluations` and `/api/chart` to render PnL, prompts, biases, aspect ratings, and recent position overlays.
 
 ## Frontend Notes
-- UI lives in `pages/index.tsx`; Tailwind 4 utility classes are inlined (no config required).
-- Charts use `lightweight-charts` with custom overlays; resize-safe.
+- Dashboard shell/state lives in `pages/index.tsx`; chart rendering lives in `components/ChartPanel.tsx`.
+- Charts use `lightweight-charts` with custom overlays, a live pulse marker, and a fullscreen toggle.
+- The UI uses Bitget public WebSocket ticker stream for live price updates and live open-PnL display.
 - If no evaluations are present, run `GET /api/analyze?...&dryRun=true` then `GET /api/evaluate?...` to seed data before opening the page.
 
 ## Deployment
