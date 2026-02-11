@@ -153,14 +153,43 @@ export default function Home() {
   const [livePriceConnected, setLivePriceConnected] = useState(false);
   const evaluatePollTimersRef = useRef<Record<string, number>>({});
 
+  const readStoredAdminSecret = () => {
+    if (typeof window === 'undefined') return null;
+    const stored = window.localStorage.getItem(ADMIN_SECRET_STORAGE_KEY);
+    const normalized = typeof stored === 'string' ? stored.trim() : '';
+    return normalized || null;
+  };
+
+  const resolveAdminSecret = () => {
+    const inMemory = typeof adminSecret === 'string' ? adminSecret.trim() : '';
+    if (inMemory) return inMemory;
+    return readStoredAdminSecret();
+  };
+
+  const buildAdminHeaders = () => {
+    const secret = resolveAdminSecret();
+    return secret ? { 'x-admin-access-secret': secret } : undefined;
+  };
+
+  const handleAuthExpired = (message?: string) => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(ADMIN_SECRET_STORAGE_KEY);
+    }
+    setAdminSecret(null);
+    setAdminGranted(false);
+    setAdminInput('');
+    setAdminError(message || 'Admin session expired. Enter ADMIN_ACCESS_SECRET again.');
+  };
+
   const validateAdminAccess = async (secret: string | null) => {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), ADMIN_AUTH_TIMEOUT_MS);
+    const normalizedSecret = typeof secret === 'string' ? secret.trim() : '';
     try {
       const res = await fetch('/api/admin-auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ secret: secret || '' }),
+        body: JSON.stringify({ secret: normalizedSecret }),
         signal: controller.signal,
       });
       const json = await res.json().catch(() => null);
@@ -178,11 +207,12 @@ export default function Home() {
     event.preventDefault();
     setAdminError(null);
     setAdminSubmitting(true);
-    const result = await validateAdminAccess(adminInput);
+    const normalizedInput = adminInput.trim();
+    const result = await validateAdminAccess(normalizedInput);
     if (result.ok) {
       if (result.required) {
-        window.localStorage.setItem(ADMIN_SECRET_STORAGE_KEY, adminInput);
-        setAdminSecret(adminInput);
+        window.localStorage.setItem(ADMIN_SECRET_STORAGE_KEY, normalizedInput);
+        setAdminSecret(normalizedInput);
       }
       setAdminGranted(true);
       setAdminInput('');
@@ -220,8 +250,14 @@ export default function Home() {
   const pollEvaluationJob = async (symbol: string, jobId: string) => {
     try {
       const res = await fetch(`/api/evaluate?jobId=${encodeURIComponent(jobId)}`, {
-        headers: adminSecret ? { 'x-admin-access-secret': adminSecret } : undefined,
+        headers: buildAdminHeaders(),
       });
+      if (res.status === 401) {
+        clearEvaluatePollTimer(symbol);
+        handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+        setError('Evaluation polling unauthorized (401). Re-enter admin access secret.');
+        return;
+      }
       if (!res.ok) return;
       const json = await res.json();
       const status = String(json?.status || '') as EvaluateJobStatus;
@@ -256,9 +292,12 @@ export default function Home() {
         async: 'true',
       });
       const res = await fetch(`/api/evaluate?${params.toString()}`, {
-        headers: adminSecret ? { 'x-admin-access-secret': adminSecret } : undefined,
+        headers: buildAdminHeaders(),
       });
       if (!res.ok) {
+        if (res.status === 401) {
+          handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+        }
         let msg = `Failed to queue evaluation (${res.status})`;
         try {
           const body = await res.json();
@@ -288,9 +327,12 @@ export default function Home() {
     try {
       setLoading(true);
       const res = await fetch('/api/evaluations', {
-        headers: adminSecret ? { 'x-admin-access-secret': adminSecret } : undefined,
+        headers: buildAdminHeaders(),
       });
       if (!res.ok) {
+        if (res.status === 401) {
+          handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+        }
         throw new Error(`Request failed with status ${res.status}`);
       }
       const json: EvaluationsResponse = await res.json();
@@ -311,7 +353,7 @@ export default function Home() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const stored = window.localStorage.getItem(ADMIN_SECRET_STORAGE_KEY);
+    const stored = readStoredAdminSecret();
     (async () => {
       let result = { ok: false, required: true };
       try {
@@ -867,7 +909,7 @@ export default function Home() {
               {showChartPanel ? (
                 <ChartPanel
                   symbol={activeSymbol}
-                  adminSecret={adminSecret}
+                  adminSecret={resolveAdminSecret()}
                   adminGranted={adminGranted}
                   timeframe="1H"
                   limit={168}
