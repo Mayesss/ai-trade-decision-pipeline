@@ -3,6 +3,9 @@ import { fetchMarketBundle, fetchPositionInfo, fetchRecentPositionWindows } from
 import { loadDecisionHistory } from '../../lib/history';
 import { requireAdminAccess } from '../../lib/admin';
 
+const BTC_SYMBOL = 'BTCUSDT';
+const BTC_CHART_LEVERAGE_OVERRIDE = 3;
+
 function timeframeToSeconds(tf: string): number {
   const match = /^(\d+)([smhd])$/i.exec(tf.trim());
   if (!match) return 60; // default 1m
@@ -155,6 +158,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     let positions: any[] = [];
     try {
       const closed = await fetchRecentPositionWindows(symbol, historyHours);
+      const closedNormalized =
+        symbol === BTC_SYMBOL
+          ? closed.map((position) => {
+              const rawLev = Number(position.leverage);
+              const fallbackLev = Number(leverageFromHistory);
+              const detectedLeverage =
+                Number.isFinite(rawLev) && rawLev > 0
+                  ? rawLev
+                  : Number.isFinite(fallbackLev) && fallbackLev > 0
+                  ? fallbackLev
+                  : 1;
+              const scale = BTC_CHART_LEVERAGE_OVERRIDE / detectedLeverage;
+              const rawPnlPct = Number(position.pnlPct);
+              return {
+                ...position,
+                pnlPct: Number.isFinite(rawPnlPct) ? rawPnlPct * scale : position.pnlPct,
+                leverage: BTC_CHART_LEVERAGE_OVERRIDE,
+              };
+            })
+          : closed;
       let openOverlay: any = null;
       try {
         const open = await fetchPositionInfo(symbol);
@@ -177,7 +200,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         console.warn(`Could not fetch open position for ${symbol}:`, err);
       }
 
-      const combined = [...closed];
+      const combined = [...closedNormalized];
       if (openOverlay) combined.push(openOverlay);
 
       positions = combined.map((p) => ({
