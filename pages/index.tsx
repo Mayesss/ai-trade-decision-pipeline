@@ -16,6 +16,8 @@ import {
   PenTool,
   Repeat,
   ShieldCheck,
+  Moon,
+  Sun,
   Zap,
   Star,
   ArrowUpRight,
@@ -88,7 +90,11 @@ type EvaluateJobRecord = {
   error?: string;
 };
 
+type ThemePreference = 'system' | 'light' | 'dark';
+type ResolvedTheme = 'light' | 'dark';
+
 const CURRENCY_SYMBOL = '₮'; // Tether-style symbol
+const THEME_PREFERENCE_STORAGE_KEY = 'dashboard_theme_preference';
 const formatUsd = (value: number) => {
   const abs = Math.abs(value);
   const sign = value < 0 ? '-' : '';
@@ -151,6 +157,8 @@ export default function Home() {
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
   const [livePriceConnected, setLivePriceConnected] = useState(false);
+  const [themePreference, setThemePreference] = useState<ThemePreference>('system');
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>('light');
   const evaluatePollTimersRef = useRef<Record<string, number>>({});
 
   const readStoredAdminSecret = () => {
@@ -169,6 +177,11 @@ export default function Home() {
   const buildAdminHeaders = () => {
     const secret = resolveAdminSecret();
     return secret ? { 'x-admin-access-secret': secret } : undefined;
+  };
+
+  const resolveSystemTheme = (): ResolvedTheme => {
+    if (typeof window === 'undefined') return 'light';
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   };
 
   const handleAuthExpired = (message?: string) => {
@@ -375,6 +388,40 @@ export default function Home() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem(THEME_PREFERENCE_STORAGE_KEY);
+    const normalizedThemePreference: ThemePreference =
+      stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system';
+    setThemePreference(normalizedThemePreference);
+    if (normalizedThemePreference === 'system') {
+      setResolvedTheme(resolveSystemTheme());
+      return;
+    }
+    setResolvedTheme(normalizedThemePreference);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (themePreference !== 'system') return;
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleThemeChange = () => {
+      setResolvedTheme(media.matches ? 'dark' : 'light');
+    };
+    handleThemeChange();
+    if (typeof media.addEventListener === 'function') {
+      media.addEventListener('change', handleThemeChange);
+      return () => media.removeEventListener('change', handleThemeChange);
+    }
+    media.addListener(handleThemeChange);
+    return () => media.removeListener(handleThemeChange);
+  }, [themePreference]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    document.documentElement.style.colorScheme = resolvedTheme;
+  }, [resolvedTheme]);
 
   useEffect(() => {
     if (!adminGranted) return;
@@ -627,6 +674,83 @@ export default function Home() {
     { key: 'primary_bias', label: 'Primary' },
     { key: 'micro_bias', label: 'Micro' },
   ] as const;
+  const isInitialLoading = loading && !symbols.length;
+  const loadingLabel = !symbols.length
+    ? 'Loading evaluations...'
+    : activeSymbol
+    ? `Loading ${activeSymbol}...`
+    : 'Loading selected symbol...';
+
+  const renderDashboardSkeleton = () => (
+    <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-stretch">
+      <div className="space-y-4 lg:col-span-2">
+        <div className="h-full rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            {Array.from({ length: 3 }).map((_, idx) => (
+              <div key={`summary-skeleton-${idx}`} className="animate-pulse space-y-2">
+                <div className="h-3 w-20 rounded-full bg-slate-200" />
+                <div className="h-8 w-28 rounded-lg bg-slate-200" />
+                <div className="h-3 w-full max-w-[200px] rounded-full bg-slate-200" />
+                <div className="h-3 w-full max-w-[150px] rounded-full bg-slate-200" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+        <div className="animate-pulse">
+          <div className="h-3 w-24 rounded-full bg-slate-200" />
+          <div className="mt-2 h-3 w-44 rounded-full bg-slate-200" />
+          <div className="mt-3 h-[260px] w-full rounded-xl border border-slate-200 bg-slate-50/80 p-4">
+            <div className="flex h-full w-full flex-col justify-between">
+              <div className="h-3 w-28 rounded-full bg-slate-200" />
+              <div className="space-y-2">
+                <div className="h-2.5 w-full rounded-full bg-slate-200" />
+                <div className="h-2.5 w-11/12 rounded-full bg-slate-200" />
+                <div className="h-2.5 w-10/12 rounded-full bg-slate-200" />
+              </div>
+              <div className="h-3 w-40 rounded-full bg-slate-200" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+        <div className="animate-pulse">
+          <div className="h-3 w-32 rounded-full bg-slate-200" />
+          <div className="mt-3 h-4 w-3/4 rounded-full bg-slate-200" />
+          <div className="mt-2 h-4 w-2/3 rounded-full bg-slate-200" />
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, idx) => (
+              <div key={`bias-skeleton-${idx}`} className="h-12 rounded-lg border border-slate-200 bg-slate-50" />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
+        <div className="animate-pulse">
+          <div className="h-3 w-36 rounded-full bg-slate-200" />
+          <div className="mt-3 h-5 w-52 rounded-full bg-slate-200" />
+          <div className="mt-3 space-y-2">
+            <div className="h-3 w-full rounded-full bg-slate-200" />
+            <div className="h-3 w-11/12 rounded-full bg-slate-200" />
+            <div className="h-3 w-10/12 rounded-full bg-slate-200" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const handleThemeToggle = () => {
+    const nextTheme: ThemePreference = resolvedTheme === 'dark' ? 'light' : 'dark';
+    setThemePreference(nextTheme);
+    setResolvedTheme(nextTheme);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(THEME_PREFERENCE_STORAGE_KEY, nextTheme);
+    }
+  };
 
   return (
     <>
@@ -634,7 +758,26 @@ export default function Home() {
         <title>AI Trade Dashboard</title>
         <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
       </Head>
-      <div className="min-h-screen bg-slate-50 text-slate-900 flex items-center justify-center px-4 py-10 relative">
+      <div
+        className={`min-h-screen px-4 py-6 relative sm:px-6 lg:px-8 ${
+          resolvedTheme === 'dark'
+            ? 'theme-dark bg-slate-950 text-slate-100'
+            : 'theme-light bg-slate-50 text-slate-900'
+        }`}
+      >
+        <button
+          type="button"
+          onClick={handleThemeToggle}
+          className={`fixed right-4 top-4 z-[60] inline-flex h-10 w-10 items-center justify-center rounded-full border shadow-sm backdrop-blur transition ${
+            resolvedTheme === 'dark'
+              ? 'border-slate-700 bg-slate-900/90 text-slate-100 hover:border-sky-600 hover:text-sky-300'
+              : 'border-slate-200 bg-white/90 text-slate-700 hover:border-sky-300 hover:text-sky-700'
+          }`}
+          aria-label={resolvedTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          title={resolvedTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+        >
+          {resolvedTheme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+        </button>
         {adminReady && !adminGranted && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm px-4">
             <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl pointer-events-auto">
@@ -669,8 +812,8 @@ export default function Home() {
             </div>
           </div>
         )}
-        <div className="w-full max-w-6xl rounded-3xl border border-slate-200 bg-white shadow-xl">
-        <div className="flex items-center justify-between gap-4 border-b border-slate-200 px-6 py-5">
+        <div className="w-full">
+        <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white px-6 py-5 shadow-sm">
           <div>
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Performance</p>
             <h1 className="text-3xl font-semibold leading-tight text-slate-900">AI Trade Dashboard</h1>
@@ -690,6 +833,7 @@ export default function Home() {
                 {typeof livePriceNow === 'number' ? ` · ${livePriceNow.toFixed(2)}` : ''}
               </p>
             ) : null}
+            {loading ? <p className="mt-1 text-xs text-slate-500">{loadingLabel}</p> : null}
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -710,13 +854,13 @@ export default function Home() {
         </div>
 
         {error && (
-          <div className="mx-6 mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+          <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
             Could not load evaluations: {error}
           </div>
         )}
 
         {!error && (
-          <div className="flex flex-wrap items-center gap-2 px-6 py-4">
+          <div className="mt-4 flex flex-wrap items-center gap-2">
             {symbols.map((sym, i) => {
               const isActive = i === active;
               const tab = tabData[sym];
@@ -748,14 +892,19 @@ export default function Home() {
                 </button>
               );
             })}
+            {isInitialLoading &&
+              Array.from({ length: 4 }).map((_, idx) => (
+                <span
+                  key={`tab-skeleton-${idx}`}
+                  className="h-9 w-24 animate-pulse rounded-full border border-slate-200 bg-slate-100"
+                />
+              ))}
           </div>
         )}
 
-        <div className="px-6 pb-8">
-          {loading ? (
-            <div className="flex items-center justify-center py-12 text-sm font-semibold text-slate-500">
-              Loading...
-            </div>
+        <div className="mt-4 pb-8">
+          {isInitialLoading ? (
+            renderDashboardSkeleton()
           ) : !symbols.length ? (
             <div className="flex items-center justify-center py-12 text-sm font-semibold text-slate-500">
               No evaluations found.
@@ -908,9 +1057,11 @@ export default function Home() {
 
               {showChartPanel ? (
                 <ChartPanel
+                  key={activeSymbol}
                   symbol={activeSymbol}
                   adminSecret={resolveAdminSecret()}
                   adminGranted={adminGranted}
+                  isDark={resolvedTheme === 'dark'}
                   timeframe="1H"
                   limit={168}
                   livePrice={livePriceNow}
@@ -1190,9 +1341,7 @@ export default function Home() {
               </div>
             </div>
           ) : (
-            <div className="flex items-center justify-center py-12 text-sm font-semibold text-slate-500">
-              Loading...
-            </div>
+            renderDashboardSkeleton()
           )}
         </div>
       </div>

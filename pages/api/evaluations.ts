@@ -32,6 +32,13 @@ type EnrichedEntry = {
 };
 
 const PNL_LOOKBACK_HOURS = 7 * 24;
+const BTC_SYMBOL = 'BTCUSDT';
+const BTC_LAST_POSITION_LEVERAGE_OVERRIDE = 3;
+
+const scalePct = (value: number | null | undefined, factor: number): number | null | undefined => {
+  if (typeof value !== 'number') return value;
+  return value * factor;
+};
 
 // Returns the latest evaluation per symbol from the in-memory store,
 // plus last decision info + 7d change pulled from recent history.
@@ -182,6 +189,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           }
         } catch (err) {
           console.warn(`Could not fetch open PnL for ${symbol}:`, err);
+        }
+
+        // Temporary override requested by user: force BTCUSDT realized/last-position metrics to 3x leverage.
+        if (symbol.toUpperCase() === BTC_SYMBOL) {
+          const detectedLeverage =
+            Number.isFinite(lastPositionLeverage as number) && (lastPositionLeverage as number) > 0
+              ? (lastPositionLeverage as number)
+              : 1;
+          const scale = BTC_LAST_POSITION_LEVERAGE_OVERRIDE / detectedLeverage;
+          if (Math.abs(scale - 1) > 1e-9) {
+            lastPositionPnl = scalePct(lastPositionPnl, scale);
+            pnl7d = scalePct(pnl7d, scale);
+            pnl7dGross = scalePct(pnl7dGross, scale);
+            avgWinPct = scalePct(avgWinPct, scale);
+            avgLossPct = scalePct(avgLossPct, scale);
+            pnlSpark = Array.isArray(pnlSpark) ? pnlSpark.map((v) => (typeof v === 'number' ? v * scale : v)) : pnlSpark;
+          }
+          lastPositionLeverage = BTC_LAST_POSITION_LEVERAGE_OVERRIDE;
         }
 
         // Combine realized 7d PnL with current open PnL (both percentage-based)

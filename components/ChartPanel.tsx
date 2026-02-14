@@ -47,6 +47,7 @@ type ChartPanelProps = {
   symbol: string | null;
   adminSecret: string | null;
   adminGranted: boolean;
+  isDark?: boolean;
   timeframe?: string;
   limit?: number;
   livePrice?: number | null;
@@ -123,6 +124,7 @@ export default function ChartPanel(props: ChartPanelProps) {
     symbol,
     adminSecret,
     adminGranted,
+    isDark = false,
     timeframe = '1H',
     limit,
     livePrice = null,
@@ -154,6 +156,11 @@ export default function ChartPanel(props: ChartPanelProps) {
     Math.floor(limit ?? (DEFAULT_WINDOW_DAYS * 24 * 60 * 60) / Math.max(1, timeframeSeconds)),
   );
   const windowDays = (resolvedLimit * Math.max(1, timeframeSeconds)) / (24 * 60 * 60);
+  const chartTextColor = isDark ? '#cbd5e1' : '#0f172a';
+  const chartGridColor = isDark ? '#334155' : '#e2e8f0';
+  const chartLineColor = isDark ? '#38bdf8' : '#0ea5e9';
+  const chartAreaTopColor = isDark ? 'rgba(56,189,248,0.26)' : 'rgba(14,165,233,0.3)';
+  const chartAreaBottomColor = isDark ? 'rgba(14,165,233,0.08)' : 'rgba(14,165,233,0.05)';
 
   const applyPayload = (payload: ChartApiResponse) => {
     const mapped = (payload.candles || []).map((c: any) => ({ time: Number(c.time), value: Number(c.close) }));
@@ -334,11 +341,11 @@ export default function ChartPanel(props: ChartPanelProps) {
         handleScale: false,
         layout: {
           background: { type: 'solid', color: 'transparent' },
-          textColor: '#0f172a',
+          textColor: chartTextColor,
         },
         grid: {
-          vertLines: { color: '#e2e8f0' },
-          horzLines: { color: '#e2e8f0' },
+          vertLines: { color: chartGridColor },
+          horzLines: { color: chartGridColor },
         },
         rightPriceScale: {
           borderVisible: false,
@@ -374,20 +381,20 @@ export default function ChartPanel(props: ChartPanelProps) {
       const series =
         typeof chart.addAreaSeries === 'function'
           ? chart.addAreaSeries({
-              lineColor: '#0ea5e9',
-              topColor: 'rgba(14,165,233,0.3)',
-              bottomColor: 'rgba(14,165,233,0.05)',
+              lineColor: chartLineColor,
+              topColor: chartAreaTopColor,
+              bottomColor: chartAreaBottomColor,
             })
           : typeof chart.addSeries === 'function' && AreaSeriesCtor
           ? chart.addSeries(AreaSeriesCtor, {
-              lineColor: '#0ea5e9',
-              topColor: 'rgba(14,165,233,0.3)',
-              bottomColor: 'rgba(14,165,233,0.05)',
+              lineColor: chartLineColor,
+              topColor: chartAreaTopColor,
+              bottomColor: chartAreaBottomColor,
             })
           : typeof chart.addLineSeries === 'function'
-          ? chart.addLineSeries({ color: '#0ea5e9', lineWidth: 2 })
+          ? chart.addLineSeries({ color: chartLineColor, lineWidth: 2 })
           : typeof chart.addSeries === 'function' && LineSeriesCtor
-          ? chart.addSeries(LineSeriesCtor, { color: '#0ea5e9', lineWidth: 2 })
+          ? chart.addSeries(LineSeriesCtor, { color: chartLineColor, lineWidth: 2 })
           : null;
 
       if (!series) return;
@@ -420,7 +427,7 @@ export default function ChartPanel(props: ChartPanelProps) {
       }
       chartSeriesRef.current = null;
     };
-  }, [symbol, timeframe, chartData.length, isFullscreen]);
+  }, [symbol, timeframe, chartData.length, isFullscreen, chartAreaBottomColor, chartAreaTopColor, chartGridColor, chartLineColor, chartTextColor]);
 
   useEffect(() => {
     const series = chartSeriesRef.current;
