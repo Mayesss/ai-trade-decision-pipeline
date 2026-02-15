@@ -262,8 +262,13 @@ export default function Home() {
   };
   const pollEvaluationJob = async (symbol: string, jobId: string) => {
     try {
-      const res = await fetch(`/api/evaluate?jobId=${encodeURIComponent(jobId)}`, {
+      const params = new URLSearchParams({
+        jobId,
+        t: String(Date.now()),
+      });
+      const res = await fetch(`/api/evaluate?${params.toString()}`, {
         headers: buildAdminHeaders(),
+        cache: 'no-store',
       });
       if (res.status === 401) {
         clearEvaluatePollTimer(symbol);
@@ -271,6 +276,7 @@ export default function Home() {
         setError('Evaluation polling unauthorized (401). Re-enter admin access secret.');
         return;
       }
+      if (res.status === 304) return;
       if (!res.ok) return;
       const json = await res.json();
       const status = String(json?.status || '') as EvaluateJobStatus;
@@ -306,6 +312,7 @@ export default function Home() {
       });
       const res = await fetch(`/api/evaluate?${params.toString()}`, {
         headers: buildAdminHeaders(),
+        cache: 'no-store',
       });
       if (!res.ok) {
         if (res.status === 401) {

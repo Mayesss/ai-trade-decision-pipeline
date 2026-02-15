@@ -75,6 +75,18 @@ function jobKey(jobId: string) {
     return `${EVALUATE_JOB_KEY_PREFIX}:${jobId}`;
 }
 
+function firstHeaderValue(value: string | string[] | undefined): string | undefined {
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value) && value.length) return value[0];
+    return undefined;
+}
+
+function setNoStoreHeaders(res: NextApiResponse) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+}
+
 const EVALUATION_SYSTEM_PROMPT = `You are an expert trading performance evaluator AND prompt auditor. Review historical AI trading decisions and the prompts/system instructions used to produce them. Find anomalies, contradictions, confusing naming, missing guards, and cost/logic mismatches. Respond in strict JSON parseable by JSON.parse with no trailing commas:
 {
     "aspects": {
@@ -272,6 +284,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (req.method !== 'GET') {
         return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
     }
+    setNoStoreHeaders(res);
 
     const body = req.query ?? {};
     const jobId = String(body?.jobId || '').trim();
@@ -328,9 +341,36 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 : 'https';
         if (host) {
             const workerUrl = `${proto}://${host}/api/evaluate?jobId=${encodeURIComponent(id)}&execute=true`;
-            void fetch(workerUrl, { method: 'GET' }).catch((err) => {
-                console.error('Failed to trigger async evaluate worker:', err);
-            });
+            const workerHeaders: Record<string, string> = {};
+            const adminHeader = firstHeaderValue(req.headers['x-admin-access-secret']);
+            const cookieHeader = firstHeaderValue(req.headers.cookie);
+            const vercelBypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+            if (adminHeader) workerHeaders['x-admin-access-secret'] = adminHeader;
+            if (cookieHeader) workerHeaders.cookie = cookieHeader;
+            if (vercelBypass) workerHeaders['x-vercel-protection-bypass'] = vercelBypass;
+
+            void fetch(workerUrl, {
+                method: 'GET',
+                headers: Object.keys(workerHeaders).length ? workerHeaders : undefined,
+                cache: 'no-store',
+            })
+                .then(async (workerRes) => {
+                    if (workerRes.ok) return;
+                    await kvSetJson<EvaluateJobRecord>(
+                        jobKey(id),
+                        {
+                            ...record,
+                            status: 'failed',
+                            updatedAt: Date.now(),
+                            error: `worker_trigger_failed_status_${workerRes.status}`,
+                        },
+                        EVALUATE_JOB_TTL_SECONDS,
+                    );
+                    console.error(`Failed to trigger async evaluate worker: HTTP ${workerRes.status}`);
+                })
+                .catch((err) => {
+                    console.error('Failed to trigger async evaluate worker:', err);
+                });
         } else {
             // Fallback for unusual runtime where host header is unavailable.
             void runEvaluationJob(record).catch((err) => {
