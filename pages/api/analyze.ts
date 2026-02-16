@@ -68,14 +68,31 @@ function touchPersist(key: string): PersistState {
 }
 
 const ATR_ACTIVE_MIN_PCT = 0.0007; // ~0.07%
+const STALE_TRADE_MINUTES = 15;
 
-function shouldSkipMomentumCall(params: { signals: MomentumSignals; price: number }) {
-    const { signals, price } = params;
+function readLatestTradeTimestamp(trades: any[]): number | null {
+    if (!Array.isArray(trades) || trades.length === 0) return null;
+    let latest = 0;
+    for (const t of trades) {
+        const tsRaw = Number(t?.ts ?? t?.tradeTime ?? t?.[0]);
+        if (!Number.isFinite(tsRaw) || tsRaw <= 0) continue;
+        const tsMs = tsRaw > 1e12 ? tsRaw : tsRaw * 1000;
+        if (tsMs > latest) latest = tsMs;
+    }
+    return latest > 0 ? latest : null;
+}
+
+function shouldSkipMomentumCall(params: { signals: MomentumSignals; price: number; trades: any[] }) {
+    const { signals, price, trades } = params;
     const extensionActive = Math.abs(signals.microExtensionInAtr ?? 0) > 0.5;
     const primaryAtr = Number(signals.primaryAtr ?? 0);
     const atrPct = price > 0 && primaryAtr > 0 ? primaryAtr / price : 0;
     const atrActive = atrPct > ATR_ACTIVE_MIN_PCT;
-    return !(extensionActive || atrActive);
+    const latestTradeTs = readLatestTradeTimestamp(trades);
+    const minutesSinceLastTrade = latestTradeTs ? (Date.now() - latestTradeTs) / 60000 : Infinity;
+    const tapeInactive =
+        !Array.isArray(trades) || trades.length === 0 || !Number.isFinite(minutesSinceLastTrade) || minutesSinceLastTrade > STALE_TRADE_MINUTES;
+    return tapeInactive || !(extensionActive || atrActive);
 }
 
 /**
@@ -233,7 +250,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             primaryTimeframe: timeFrame,
         });
 
-        const calmMarket = !positionOpen && shouldSkipMomentumCall({ signals: momentumSignals, price: effectivePrice });
+        const calmMarket =
+            !positionOpen &&
+            shouldSkipMomentumCall({
+                signals: momentumSignals,
+                price: effectivePrice,
+                trades: Array.isArray(bundle?.trades) ? bundle.trades : [],
+            });
 
         if (!positionOpen && calmMarket) {
             return res.status(200).json({
@@ -246,7 +269,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     bias: 'NEUTRAL',
                     signal_strength: 'LOW',
                     summary: 'calm_market',
-                    reason: 'conditions_below_momentum_thresholds',
+                    reason: 'conditions_below_momentum_thresholds_or_no_recent_trades',
                 },
                 execRes: { placed: false, orderId: null, clientOid: null, reason: 'calm_market' },
                 gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
