@@ -7,8 +7,8 @@ import { fetchMarketBundle, computeAnalytics, fetchPositionInfo, fetchRealizedRo
 import { calculateMultiTFIndicators } from '../../lib/indicators';
 import { fetchNewsWithHeadlines } from '../../lib/news';
 
-import { buildPrompt, callAI, computeMomentumSignals, postprocessDecision } from '../../lib/ai';
-import type { MomentumSignals } from '../../lib/ai';
+import { buildPrompt, callAI, computeMomentumSignals, postprocessDecision, resolveDecisionPolicy } from '../../lib/ai';
+import type { DecisionPolicy, MomentumSignals } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
 import { executeDecision, getTargetLeverage, getTradeProductType } from '../../lib/trading';
@@ -116,14 +116,24 @@ async function runAnalysisForSymbol(params: {
     symbol: string;
     timeFrame: string;
     dryRun: boolean;
+    decisionPolicy: DecisionPolicy;
     sideSizeUSDT: number;
     productType: ProductType;
     microTimeFrame: string;
     macroTimeFrame: string;
     contextTimeFrame: string;
 }) {
-    const { symbol, timeFrame, dryRun, sideSizeUSDT, productType, microTimeFrame, macroTimeFrame, contextTimeFrame } =
-        params;
+    const {
+        symbol,
+        timeFrame,
+        dryRun,
+        decisionPolicy,
+        sideSizeUSDT,
+        productType,
+        microTimeFrame,
+        macroTimeFrame,
+        contextTimeFrame,
+    } = params;
 
     const MAX_RETRIES = 3;
     const BASE_DELAY_MS = 300; // base delay for 429 backoff
@@ -137,6 +147,7 @@ async function runAnalysisForSymbol(params: {
             if (!positionOpen && !primaryCloseTime) {
                 return {
                     symbol,
+                    decisionPolicy,
                     decision: {
                         action: 'HOLD',
                         bias: 'NEUTRAL',
@@ -201,6 +212,7 @@ async function runAnalysisForSymbol(params: {
             if (gatesOut.preDecision && !positionOpen) {
                 return {
                     symbol,
+                    decisionPolicy,
                     decision: gatesOut.preDecision,
                     execRes: {
                         placed: false,
@@ -283,6 +295,7 @@ async function runAnalysisForSymbol(params: {
             if (!positionOpen && calmMarket) {
                 return {
                     symbol,
+                    decisionPolicy,
                     decision: {
                         action: 'HOLD',
                         bias: 'NEUTRAL',
@@ -328,6 +341,7 @@ async function runAnalysisForSymbol(params: {
                 roiRes.lastNetPct,
                 dryRun,
                 Number(gatesOut.metrics?.spreadBpsNow),
+                decisionPolicy,
             );
 
             // 7) AI decision
@@ -339,6 +353,7 @@ async function runAnalysisForSymbol(params: {
                 positionOpen,
                 recentActions,
                 positionContext,
+                policy: decisionPolicy,
             });
 
             // 8) Execute (dry run unless explicitly disabled), using leveraged notional for gates
@@ -363,6 +378,7 @@ async function runAnalysisForSymbol(params: {
             ) {
                 return {
                     symbol,
+                    decisionPolicy,
                     decision,
                     execRes: { placed: false, reason: 'gates_short_circuit' },
                     gates: { ...gatesForExec.gates, metrics: gatesForExec.metrics },
@@ -415,6 +431,7 @@ async function runAnalysisForSymbol(params: {
             // 9) Return result for this symbol
             return {
                 symbol,
+                decisionPolicy,
                 decision,
                 execRes,
                 gates: { ...gatesForExec.gates, metrics: gatesForExec.metrics },
@@ -484,6 +501,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const macroTimeFrame: string = MACRO_TIMEFRAME;
         const contextTimeFrame: string = CONTEXT_TIMEFRAME;
         const dryRun: boolean = parseBoolParam(body.dryRun as string | string[] | undefined, false);
+        const decisionPolicyParam = Array.isArray(body.decisionPolicy) ? body.decisionPolicy[0] : body.decisionPolicy;
+        const decisionPolicy: DecisionPolicy = resolveDecisionPolicy(decisionPolicyParam as string | undefined);
         const sideSizeUSDT: number = Number(body.notional ?? DEFAULT_NOTIONAL_USDT);
         const productType = getTradeProductType();
 
@@ -495,6 +514,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 symbol: String(sym),
                 timeFrame,
                 dryRun,
+                decisionPolicy,
                 sideSizeUSDT,
                 productType,
                 microTimeFrame,
@@ -512,6 +532,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(200).json({
             timeFrame,
             dryRun,
+            decisionPolicy,
             notional: sideSizeUSDT,
             productType,
             results,

@@ -6,8 +6,8 @@ import { fetchMarketBundle, computeAnalytics, fetchPositionInfo, fetchRealizedRo
 import { calculateMultiTFIndicators } from '../../lib/indicators';
 import { fetchNewsWithHeadlines } from '../../lib/news';
 
-import { buildPrompt, callAI, computeMomentumSignals, postprocessDecision } from '../../lib/ai';
-import type { MomentumSignals } from '../../lib/ai';
+import { buildPrompt, callAI, computeMomentumSignals, postprocessDecision, resolveDecisionPolicy } from '../../lib/ai';
+import type { DecisionPolicy, MomentumSignals } from '../../lib/ai';
 import { getGates } from '../../lib/gates';
 
 import { executeDecision, getTargetLeverage, getTradeProductType } from '../../lib/trading';
@@ -112,6 +112,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const macroTimeFrame = MACRO_TIMEFRAME;
         const contextTimeFrame = CONTEXT_TIMEFRAME;
         const dryRun = parseBoolParam(body.dryRun as string | string[] | undefined, false);
+        const decisionPolicyParam = Array.isArray(body.decisionPolicy) ? body.decisionPolicy[0] : body.decisionPolicy;
+        const decisionPolicy: DecisionPolicy = resolveDecisionPolicy(decisionPolicyParam as string | undefined);
         const sideSizeUSDT = Number(body.notional ?? DEFAULT_NOTIONAL_USDT);
 
         const positionInfo = await fetchPositionInfo(symbol);
@@ -123,6 +125,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 symbol,
                 timeFrame,
                 dryRun,
+                decisionPolicy,
                 decision: {
                     action: 'HOLD',
                     bias: 'NEUTRAL',
@@ -191,6 +194,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 symbol,
                 timeFrame,
                 dryRun,
+                decisionPolicy,
                 decision: gatesOut.preDecision,
                 execRes: { placed: false, orderId: null, clientOid: null, reason: 'gates_short_circuit' },
                 gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
@@ -236,6 +240,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 symbol,
                 timeFrame,
                 dryRun,
+                decisionPolicy,
                 decision: {
                     action: 'HOLD',
                     bias: 'NEUTRAL',
@@ -316,6 +321,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             roiRes.lastNetPct,
             dryRun,
             Number(gatesOut.metrics?.spreadBpsNow),
+            decisionPolicy,
         );
 
         // 7) Query AI (post-parse enforces allowed_actions + close_conditions)
@@ -327,6 +333,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             positionOpen,
             recentActions,
             positionContext,
+            policy: decisionPolicy,
         });
 
         // 8) Execute (dry run unless explicitly disabled), using leveraged notional for gates
@@ -353,6 +360,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 symbol,
                 timeFrame,
                 dryRun,
+                decisionPolicy,
                 decision,
                 execRes: { placed: false, orderId: null, clientOid: null, reason: 'gates_short_circuit' },
                 gates: { ...gatesForExec.gates, metrics: gatesForExec.metrics },
@@ -405,6 +413,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             symbol,
             timeFrame,
             dryRun,
+            decisionPolicy,
             decision,
             execRes,
             gates: { ...gatesForExec.gates, metrics: gatesForExec.metrics },

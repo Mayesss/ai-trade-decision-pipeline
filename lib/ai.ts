@@ -40,6 +40,15 @@ export type MomentumSignals = {
     info?: Record<string, any>;
 };
 
+export type DecisionPolicy = 'strict' | 'balanced';
+
+export function resolveDecisionPolicy(value?: string | null): DecisionPolicy {
+    const raw = String(value ?? process.env.AI_DECISION_POLICY ?? 'strict')
+        .trim()
+        .toLowerCase();
+    return raw === 'balanced' ? 'balanced' : 'strict';
+}
+
 const indicatorRegexCache = new Map<string, RegExp>();
 
 function readIndicator(name: string, src: string): number | null {
@@ -166,6 +175,7 @@ export async function buildPrompt(
     realizedRoiPct?: number | null,
     dryRun?: boolean,
     spreadBpsOverride?: number,
+    decisionPolicy?: DecisionPolicy,
 ) {
     const t = Array.isArray(bundle.ticker) ? bundle.ticker[0] : bundle.ticker;
     const price = Number(t?.lastPr ?? t?.last ?? t?.close ?? t?.price);
@@ -653,6 +663,38 @@ export async function buildPrompt(
         realizedRoiPct !== undefined && realizedRoiPct !== null && Number.isFinite(realizedRoiPct)
             ? `- Recent realized PnL (last closed): ${Number(realizedRoiPct).toFixed(2)}%`
             : '';
+    const resolvedDecisionPolicy = resolveDecisionPolicy(decisionPolicy);
+    const strictPolicy = resolvedDecisionPolicy === 'strict';
+    const decisionPolicyLabel = strictPolicy ? 'strict_guardrails' : 'balanced_guardrails';
+    const baseGatesRule = strictPolicy
+        ? '**Base gates**: when flat, if ANY spread_ok/liquidity_ok/atr_ok/slippage_ok is false -> action="HOLD". In a position, never block exits; if gates fail, prefer risk-off (CLOSE) over HOLD.'
+        : '**Base gates**: when flat, default to HOLD if spread/liquidity/ATR/slippage is poor. In a position, never add risk when gates fail; prefer HOLD/CLOSE and avoid REVERSE unless the invalidation is very clear.';
+    const microEntryRule = strictPolicy
+        ? 'If flat and micro_entry_ok=false -> HOLD unless signal_strength=HIGH and breakout_retest_ok_primary=true.'
+        : 'If flat and micro_entry_ok=false, treat as caution: favor HOLD unless setup quality is at least MEDIUM with clear structure confirmation (e.g., breakout/retest).';
+    const trendGuardHeading = strictPolicy
+        ? `**Hard trend guard (${microTimeframe}+${primaryTimeframe})**:`
+        : `**Trend guard (${microTimeframe}+${primaryTimeframe})**:`;
+    const trendGuardShortRule = strictPolicy
+        ? `If ${primaryTimeframe} trend is UP (primary_trend_up=true) AND ${microTimeframe} trend is UP (micro_bias=UP), do NOT short.`
+        : `If ${primaryTimeframe} trend is UP (primary_trend_up=true) AND ${microTimeframe} trend is UP (micro_bias=UP), strongly avoid shorts unless there is explicit structural invalidation.`;
+    const trendGuardLongRule = strictPolicy
+        ? `If ${primaryTimeframe} trend is DOWN (primary_trend_down=true) AND ${microTimeframe} trend is DOWN (micro_bias=DOWN), do NOT long.`
+        : `If ${primaryTimeframe} trend is DOWN (primary_trend_down=true) AND ${microTimeframe} trend is DOWN (micro_bias=DOWN), strongly avoid longs unless there is explicit structural invalidation.`;
+    const rangeHandlingRule = strictPolicy
+        ? `If structure_${primaryKey}=range, do NOT pick direction from ${macroTimeframe}/${contextTimeframe} trend alone. Favor edge trades (near ${primaryTimeframe} support/resistance with tight invalidation) or breakout + retest in the breakout direction.`
+        : `If structure_${primaryKey}=range, de-prioritize direction picks from ${macroTimeframe}/${contextTimeframe} trend alone. Prefer edge trades (near ${primaryTimeframe} support/resistance) or breakout + retest in the breakout direction.`;
+    const antiFlipRule = strictPolicy
+        ? '**Temporal inertia (anti-flip)**: avoid more than one action change (CLOSE/REVERSE) in the same direction within the last 2 calls unless signal_strength stays HIGH and regime/structure invalidation is strengthening.'
+        : '**Temporal inertia (anti-flip)**: avoid repeated CLOSE/REVERSE flips in back-to-back calls unless signal_strength is at least MEDIUM and invalidation keeps strengthening.';
+    const reversalLossRule = strictPolicy
+        ? 'Do NOT REVERSE if unrealized_pnl_pct < -0.5% without major regime/structure change; if conditions fail, prefer CLOSE (risk-off) or HOLD (if still valid).'
+        : 'If unrealized_pnl_pct < -0.5%, be conservative on REVERSE unless there is a major regime/structure change; otherwise prefer CLOSE or HOLD.';
+    const extensionMicroWarn = strictPolicy ? 2 : 2.3;
+    const extensionMicroAvoid = strictPolicy ? 2.5 : 2.8;
+    const extensionMicroNoEntry = strictPolicy ? 3 : 3.3;
+    const extensionPrimaryWarn = strictPolicy ? 2 : 2.3;
+    const extensionPrimaryAvoid = strictPolicy ? 2.5 : 2.8;
 
     const sys = `
 You are an expert swing-trading market structure analyst and trading assistant.
@@ -670,29 +712,30 @@ Decision ladder: Base gates → biases (context/macro/primary) → setup drivers
 Signal strength is driven by aligned_driver_count + regime_alignment + location/level_quality + extension/mean-reversion risk; use a 1–5 scale (1=weak, 3=base, 5=strongest). LOW/MEDIUM/HIGH are acceptable aliases (LOW≈1-2, MEDIUM≈3, HIGH≈4-5).
 Respond in strict JSON ONLY.
 Output must be valid JSON parseable by JSON.parse with no trailing commas or extra keys; no markdown or commentary. Keep keys minimal—no extra fields.
+Decision policy mode: ${decisionPolicyLabel}.
 
 GENERAL RULES
-- **Base gates**: when flat, if ANY spread_ok/liquidity_ok/atr_ok/slippage_ok is false → action="HOLD". In a position, never block exits; if gates fail, prefer risk-off (CLOSE) over HOLD.
-- If flat and micro_entry_ok=false → HOLD unless signal_strength=HIGH and breakout_retest_ok_primary=true.
+- ${baseGatesRule}
+- ${microEntryRule}
 - **Costs / churn control**: total_cost_bps = ~${total_cost_bps}bps (round-trip fees + slippage). For swing entries, avoid trades where the expected move is not clearly larger than costs; default filter: if edge is unclear or setup quality is MED/LOW → HOLD.
 - **Leverage**: For BUY/SELL/REVERSE pick leverage 1–5 (integer). Default null on HOLD/CLOSE.
   - Choose leverage based on conviction AND risk (regime alignment, extension, proximity to major levels, volatility). Even on HIGH conviction, use 1–2x if stretched or near major ${contextTimeframe} levels. Never exceed 5.
 - **Macro/context usage**:
   - macro_bias (${macroTimeframe}) is a bias, not a hard filter. Trades with macro_bias are preferred.
   - context_bias (${contextTimeframe}) is a risk lever: when aligned, accept MEDIUM setups; when opposed, require HIGH quality and non-extended entries. Use it to adjust selectivity and leverage, not as a hard gate.
-- **Hard trend guard (${microTimeframe}+${primaryTimeframe})**:
-  - If ${primaryTimeframe} trend is UP (primary_trend_up=true) AND ${microTimeframe} trend is UP (micro_bias=UP), do NOT short.
+- ${trendGuardHeading}
+  - ${trendGuardShortRule}
     - Exception: only allow a short if primary_breakdown_confirmed=true AND ${microTimeframe} confirms with lower-high + breakdown/retest (micro_bias=DOWN with clear bearish structure).
-  - If ${primaryTimeframe} trend is DOWN (primary_trend_down=true) AND ${microTimeframe} trend is DOWN (micro_bias=DOWN), do NOT long.
+  - ${trendGuardLongRule}
     - Exception: only allow a long if primary_breakout_confirmed=true AND ${microTimeframe} confirms with higher-low + breakout/retest (micro_bias=UP with clear bullish structure).
 - **Support/Resistance & location**: swing-pivot derived per timeframe; distances in ATR of that timeframe.
   - Avoid opening new positions directly into strong opposite levels (e.g., long into nearby resistance, short into nearby support) unless breakout/breakdown is confirmed and strength is HIGH.
   - If both nearest support and resistance are close / at_level, treat as range/chop: avoid fresh entries unless signal_strength is HIGH with clean level logic.
 - **Range handling (${primaryTimeframe})**:
-  - If structure_${primaryKey}=range, do NOT pick direction from ${macroTimeframe}/${contextTimeframe} trend alone. Favor edge trades (near ${primaryTimeframe} support/resistance with tight invalidation) or breakout + retest in the breakout direction.
+  - ${rangeHandlingRule}
   - When range and breakout state conflicts with location (e.g., approaching resistance but structure_break_state_${primaryKey}=above with breakout_retest_ok_${primaryKey}=true and dir=up), treat it as a breakout+retest and prefer LONG setups; do not short into that conflict.
 - **Position truthfulness**: NEVER describe a position as winning if unrealized_pnl_pct < 0 or if price_vs_breakeven_pct is on the losing side for that direction.
-- **Temporal inertia (anti-flip)**: avoid more than one action change (CLOSE/REVERSE) in the same direction within the last 2 calls unless signal_strength stays HIGH and regime/structure invalidation is strengthening.
+- ${antiFlipRule}
 - **Exit sizing**: Default exit_size_pct = 100 (full close). Use 30–70 when trimming risk (approaching major opposite level with gains, regime weakening, structure damage without full reversal). Avoid trims <20%; omit when not needed.
 
 BIAS DEFINITIONS (swing-oriented)
@@ -732,13 +775,13 @@ ACTIONS LOGIC
 REVERSAL DISCIPLINE (swing)
 - REVERSE = close entire current position (exit_size_pct=100) then open opposite side. No partial reversals.
 - REVERSE only if reverse_confidence="high", aligned_driver_count ≥ 5, and signal_strength = HIGH, plus clear ${primaryTimeframe} structure flip (break + acceptance) confirmed by ${microTimeframe}.
-- Do NOT REVERSE if unrealized_pnl_pct < -0.5% without major regime/structure change; if conditions fail, prefer CLOSE (risk-off) or HOLD (if still valid).
+- ${reversalLossRule}
 
 EXTENSION / OVERBOUGHT-OVERSOLD (swing)
 - Use extension as risk control, not as a standalone signal.
 - Overbought/oversold is NOT a counter-trend trigger by itself. Treat RSI extremes + extension as "permission" only when structure shows damage/flip (e.g., ${microTimeframe} fails to make HH/LL and breaks key support/resistance, followed by ${primaryTimeframe} rolling over).
-- On ${microTimeframe}: |dist_from_ema20_${microTimeframe}_in_atr| in [2,2.5) → require cleaner level/invalidation; ≥ 2.5 → avoid fresh entries; > 3 → strongly prefer no new entries.
-- On ${primaryTimeframe}: |dist_from_ema20_${primaryTimeframe}_in_atr| ≥ 2.0 → be selective and tighten profit-taking; ≥ 2.5 avoid fresh entries unless this is a post-breakout retest with HIGH strength.
+- On ${microTimeframe}: |dist_from_ema20_${microTimeframe}_in_atr| in [${extensionMicroWarn},${extensionMicroAvoid}) → require cleaner level/invalidation; ≥ ${extensionMicroAvoid} → avoid fresh entries; > ${extensionMicroNoEntry} → strongly prefer no new entries.
+- On ${primaryTimeframe}: |dist_from_ema20_${primaryTimeframe}_in_atr| ≥ ${extensionPrimaryWarn} → be selective and tighten profit-taking; ≥ ${extensionPrimaryAvoid} avoid fresh entries unless this is a post-breakout retest with HIGH strength.
 `.trim();
 
     const modeLabel = dryRun ? 'simulation' : 'live';
@@ -746,6 +789,7 @@ EXTENSION / OVERBOUGHT-OVERSOLD (swing)
     const user = `
 You are analyzing ${baseSymbol} for swing trading (mode=${modeLabel}).
 Timeframes: micro=${microTimeframe}, primary=${primaryTimeframe}, macro=${macroTimeframe}, context=${contextTimeframe}. I will call you roughly once per ${microTimeframe}.
+Decision policy: ${decisionPolicyLabel}.
 
 RISK/COSTS:
 - ${risk_policy}
@@ -894,8 +938,11 @@ export function postprocessDecision(params: {
     positionOpen: boolean;
     recentActions: { action: string; timestamp: number }[];
     positionContext: PositionContext | null;
+    policy?: DecisionPolicy;
 }) {
-    const { decision, context, gates, positionOpen, recentActions, positionContext } = params;
+    const { decision, context, gates, positionOpen, recentActions, positionContext, policy } = params;
+    const resolvedDecisionPolicy = resolveDecisionPolicy(policy);
+    const strictPolicy = resolvedDecisionPolicy === 'strict';
     const signalStrength = computeSignalStrength(context);
     const microBias = toBiasLabel(context.micro_bias_calc);
     const primaryBias = toBiasLabel(context.primary_bias);
@@ -920,23 +967,31 @@ export function postprocessDecision(params: {
                 : null;
 
     if (desiredSide === 'short' && context.primary_trend_up && microBias === 'UP') {
-        action = 'HOLD';
+        const allowCounterTrend = !strictPolicy && signalStrength === 'HIGH' && context.primary_breakdown_confirmed;
+        if (!allowCounterTrend) action = 'HOLD';
     }
     if (desiredSide === 'long' && context.primary_trend_down && microBias === 'DOWN') {
-        action = 'HOLD';
+        const allowCounterTrend = !strictPolicy && signalStrength === 'HIGH' && context.primary_breakout_confirmed;
+        if (!allowCounterTrend) action = 'HOLD';
     }
 
     if (!positionOpen && !context.micro_entry_ok && (action === 'BUY' || action === 'SELL')) {
-        const allowException = signalStrength === 'HIGH' && context.breakout_retest_ok_primary;
+        const allowException =
+            (signalStrength === 'HIGH' && context.breakout_retest_ok_primary) ||
+            (!strictPolicy &&
+                signalStrength !== 'LOW' &&
+                (context.breakout_retest_ok_primary || context.aligned_driver_count >= 4));
         if (!allowException) action = 'HOLD';
     }
 
     if (action === 'CLOSE' || action === 'REVERSE') {
+        const antiFlipLookback = strictPolicy ? 2 : 1;
         const recent = (recentActions || [])
-            .slice(-2)
+            .slice(-antiFlipLookback)
             .map((a) => String(a.action || '').toUpperCase())
             .filter((a) => a);
-        if (signalStrength !== 'HIGH' && recent.includes(action)) {
+        const strongEnoughForRepeat = signalStrength === 'HIGH' || (!strictPolicy && signalStrength === 'MEDIUM');
+        if (!strongEnoughForRepeat && recent.includes(action)) {
             action = 'HOLD';
         }
     }
@@ -944,7 +999,13 @@ export function postprocessDecision(params: {
     const baseGatesOk = Boolean(gates?.spread_ok && gates?.liquidity_ok && gates?.atr_ok && gates?.slippage_ok);
     if (!baseGatesOk) {
         if (positionOpen) {
-            action = 'CLOSE';
+            if (strictPolicy) {
+                action = 'CLOSE';
+            } else if (action === 'REVERSE') {
+                action = 'CLOSE';
+            } else if (action !== 'CLOSE') {
+                action = 'HOLD';
+            }
         } else {
             action = 'HOLD';
         }

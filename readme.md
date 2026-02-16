@@ -45,6 +45,7 @@ KV_REST_API_TOKEN=...
 
 # Optional
 TAKER_FEE_RATE=0.0006          # used in prompts/edge checks
+# AI_DECISION_POLICY=strict     # strict (default) | balanced
 # ADMIN_ACCESS_SECRET=...       # enables auth on /api/evaluations and /api/chart
 # BITGET_ACCOUNT_TYPE is set in lib/constants.ts (default: usdt-futures)
 # AI_MODEL and AI_BASE_URL are set in lib/constants.ts (current defaults: gpt-5.2 @ api.openai.com)
@@ -64,12 +65,12 @@ npm run start
 
 ## API Routes (current behavior)
 - `GET /api/analyze`
-  - Query params: `symbol` (default `ETHUSDT`), `dryRun` (`true|false`, default `false`), `notional` (default `100`)
+  - Query params: `symbol` (default `ETHUSDT`), `dryRun` (`true|false`, default `false`), `notional` (default `100`), `decisionPolicy` (`strict|balanced`, default `strict`)
   - Timeframes are currently fixed from `lib/constants.ts`:
     - `MICRO_TIMEFRAME=1H`, `PRIMARY_TIMEFRAME=4H`, `MACRO_TIMEFRAME=1D`, `CONTEXT_TIMEFRAME=1W`
   - Persists prompt, decision, execution result, and snapshot to KV.
 - `GET /api/analyzeMultiple`
-  - Query params: `symbols` (array, required), `dryRun` (`true|false`, default `false`), `notional` (default `100`)
+  - Query params: `symbols` (array, required), `dryRun` (`true|false`, default `false`), `notional` (default `100`), `decisionPolicy` (`strict|balanced`, default `strict`)
   - Runs per-symbol analysis with bounded concurrency and retry/backoff.
 - `GET /api/evaluate`
   - Query params: `symbol` (required), `limit` (clamped `5..30`, default `30`), `batchSize` (clamped `2..10`, default `5`), `includeBatchEvaluations` (`true|false`), `async` (`true|false`)
@@ -103,6 +104,9 @@ Examples:
 ```bash
 # Safe single-symbol run
 curl "http://localhost:3000/api/analyze?symbol=ETHUSDT&dryRun=true&notional=100"
+
+# Safe single-symbol run with looser AI guardrails
+curl "http://localhost:3000/api/analyze?symbol=ETHUSDT&dryRun=true&notional=100&decisionPolicy=balanced"
 
 # Safe multi-symbol run
 curl "http://localhost:3000/api/analyzeMultiple?symbols=BTCUSDT&symbols=ETHUSDT&dryRun=true&notional=100"
