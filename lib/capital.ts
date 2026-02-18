@@ -64,13 +64,16 @@ type MarketDetails = {
 type ResolveEpicResult = {
     ticker: string;
     epic: string;
-    source: 'env' | 'default' | 'passthrough';
+    source: 'env' | 'default' | 'passthrough' | 'discovered';
 };
 
 const CAPITAL_API_BASE = (process.env.CAPITAL_API_BASE || 'https://api-capital.backend-capital.com').replace(/\/+$/, '');
 const SESSION_TTL_MS = 10 * 60 * 1000;
 
 let cachedSession: SessionState | null = null;
+const resolvedEpicCache = new Map<string, ResolveEpicResult>();
+
+const QUOTE_SUFFIXES = ['USDT', 'USDC', 'USD', 'EUR', 'GBP', 'PERP'];
 
 function parseEnvTickerMap(): CapitalTickerMap {
     const raw = process.env.CAPITAL_TICKER_EPIC_MAP;
@@ -106,6 +109,25 @@ function buildQuery(params: Record<string, string | number | undefined>) {
 function safeNumber(value: unknown, fallback = 0): number {
     const n = Number(value);
     return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeTicker(symbol: string): string {
+    return String(symbol || '').trim().toUpperCase();
+}
+
+function baseFromTicker(symbol: string): string {
+    const ticker = normalizeTicker(symbol);
+    for (const suffix of QUOTE_SUFFIXES) {
+        if (ticker.endsWith(suffix) && ticker.length > suffix.length) {
+            return ticker.slice(0, ticker.length - suffix.length).replace(/[-_]/g, '');
+        }
+    }
+    return ticker.replace(/[-_]/g, '');
+}
+
+function isCapitalEpicNotFoundError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err);
+    return msg.includes('error.not-found.epic') || (msg.includes('Capital API error 404') && msg.toLowerCase().includes('epic'));
 }
 
 function midFromQuote(value: any): number | null {
@@ -404,7 +426,7 @@ function extractPositionRows(payload: any): CapitalPositionRow[] {
 }
 
 export function resolveCapitalEpic(symbol: string): ResolveEpicResult {
-    const ticker = String(symbol || '').trim().toUpperCase();
+    const ticker = normalizeTicker(symbol);
     const envMap = parseEnvTickerMap();
     const defaultMap = defaultTickerEpicMap as CapitalTickerMap;
 
@@ -415,6 +437,124 @@ export function resolveCapitalEpic(symbol: string): ResolveEpicResult {
     if (defaultEpic) return { ticker, epic: defaultEpic, source: 'default' };
 
     return { ticker, epic: ticker, source: 'passthrough' };
+}
+
+type CapitalMarketSearchRow = {
+    epic?: string;
+    symbol?: string;
+    marketName?: string;
+    instrumentName?: string;
+    displayName?: string;
+    status?: string;
+    snapshot?: {
+        marketStatus?: string;
+    };
+};
+
+function scoreMarketCandidate(row: CapitalMarketSearchRow, term: string, ticker: string, base: string): number {
+    const epic = normalizeTicker(row?.epic || '');
+    const symbol = normalizeTicker(row?.symbol || '');
+    const marketName = normalizeTicker(row?.marketName || row?.instrumentName || row?.displayName || '');
+    const normalizedTerm = normalizeTicker(term);
+
+    let score = 0;
+    if (!epic) return -1;
+    if (epic === ticker) score += 120;
+    if (epic === normalizedTerm) score += 115;
+    if (symbol === ticker) score += 100;
+    if (symbol === normalizedTerm) score += 95;
+    if (epic.includes(ticker)) score += 75;
+    if (epic.includes(base)) score += 50;
+    if (symbol.includes(base)) score += 40;
+    if (marketName.includes(base)) score += 35;
+    if (marketName.includes(normalizedTerm)) score += 45;
+    if (row?.status === 'TRADEABLE' || row?.snapshot?.marketStatus === 'TRADEABLE') score += 20;
+    return score;
+}
+
+async function discoverCapitalEpic(symbol: string, candidateEpics: string[]): Promise<ResolveEpicResult | null> {
+    const ticker = normalizeTicker(symbol);
+    const base = baseFromTicker(ticker);
+    const terms = Array.from(
+        new Set(
+            [
+                ticker,
+                base,
+                ...candidateEpics,
+                ...candidateEpics.map((c) => baseFromTicker(c)),
+            ]
+                .map((v) => normalizeTicker(v))
+                .filter((v) => v.length > 0),
+        ),
+    );
+
+    let best: { epic: string; score: number } | null = null;
+    for (const term of terms) {
+        let payload: any;
+        try {
+            payload = await capitalFetch('GET', '/api/v1/markets', { searchTerm: term, pageSize: 50 }, undefined, true);
+        } catch {
+            continue;
+        }
+        const rows = extractRows<CapitalMarketSearchRow>(payload, ['markets', 'data']);
+        for (const row of rows) {
+            const epic = normalizeTicker(row?.epic || '');
+            if (!epic) continue;
+            const score = scoreMarketCandidate(row, term, ticker, base);
+            if (!best || score > best.score) {
+                best = { epic, score };
+            }
+        }
+    }
+
+    if (!best) return null;
+    return {
+        ticker,
+        epic: best.epic,
+        source: 'discovered',
+    };
+}
+
+export async function resolveCapitalEpicRuntime(symbol: string): Promise<ResolveEpicResult> {
+    const ticker = normalizeTicker(symbol);
+    const cached = resolvedEpicCache.get(ticker);
+    if (cached) return cached;
+
+    const preferred = resolveCapitalEpic(ticker);
+    const fallbackBase = baseFromTicker(ticker);
+    const candidates = Array.from(
+        new Set(
+            [preferred.epic, ticker, fallbackBase]
+                .map((v) => normalizeTicker(v))
+                .filter((v) => v.length > 0),
+        ),
+    );
+
+    for (const epic of candidates) {
+        try {
+            await capitalFetch('GET', `/api/v1/markets/${encodeURIComponent(epic)}`, {}, undefined, true);
+            const result: ResolveEpicResult = {
+                ticker,
+                epic,
+                source: epic === preferred.epic ? preferred.source : 'discovered',
+            };
+            resolvedEpicCache.set(ticker, result);
+            return result;
+        } catch (err) {
+            if (isCapitalEpicNotFoundError(err)) continue;
+            throw err;
+        }
+    }
+
+    const discovered = await discoverCapitalEpic(ticker, candidates);
+    if (discovered) {
+        resolvedEpicCache.set(ticker, discovered);
+        return discovered;
+    }
+
+    throw new Error(
+        `Capital epic resolution failed for ${ticker}. Set CAPITAL_TICKER_EPIC_MAP for this symbol.`,
+    );
 }
 
 export async function fetchCapitalCandlesByEpic(epic: string, timeframe: string, limit = 200): Promise<any[]> {
@@ -434,7 +574,7 @@ export async function fetchCapitalCandlesByEpic(epic: string, timeframe: string,
 
 export async function fetchCapitalMarketBundle(symbol: string, bundleTimeFrame: string, opts: BundleOpts = {}) {
     const { includeTrades = true, tradeMinutes = Number(TRADE_WINDOW_MINUTES || 60), candleLimit = 30 } = opts;
-    const resolved = resolveCapitalEpic(symbol);
+    const resolved = await resolveCapitalEpicRuntime(symbol);
     const candles = await fetchCapitalCandlesByEpic(resolved.epic, bundleTimeFrame, candleLimit + 10);
     const ticker = buildCapitalTicker(candles, bundleTimeFrame);
     const last = safeNumber(ticker.last, 0);
@@ -521,10 +661,9 @@ async function listOpenCapitalPositions(): Promise<CapitalPositionRow[]> {
     return extractPositionRows(payload);
 }
 
-async function findOpenCapitalPosition(symbol: string): Promise<CapitalPositionRow | null> {
-    const resolved = resolveCapitalEpic(symbol);
+async function findOpenCapitalPositionByEpic(epic: string): Promise<CapitalPositionRow | null> {
     const rows = await listOpenCapitalPositions();
-    const match = rows.find((row) => String(row?.market?.epic || '').toUpperCase() === resolved.epic.toUpperCase());
+    const match = rows.find((row) => String(row?.market?.epic || '').toUpperCase() === normalizeTicker(epic));
     return match ?? null;
 }
 
@@ -545,10 +684,10 @@ function computeOpenPnlPct(position: CapitalPositionRow, details: MarketDetails 
 }
 
 export async function fetchCapitalPositionInfo(symbol: string): Promise<PositionInfo> {
-    const open = await findOpenCapitalPosition(symbol);
+    const resolved = await resolveCapitalEpicRuntime(symbol);
+    const open = await findOpenCapitalPositionByEpic(resolved.epic);
     if (!open) return { status: 'none' };
 
-    const resolved = resolveCapitalEpic(symbol);
     let details: MarketDetails | null = null;
     try {
         details = await loadMarketDetails(resolved.epic);
@@ -626,7 +765,7 @@ export async function calculateCapitalMultiTFIndicators(
     const macroTF = normalizeTimeframe(opts.macro || MACRO_TIMEFRAME);
     const primaryTF = normalizeTimeframe(opts.primary || PRIMARY_TIMEFRAME);
     const contextTF = normalizeTimeframe(opts.context || CONTEXT_TIMEFRAME);
-    const epic = resolveCapitalEpic(symbol).epic;
+    const epic = (await resolveCapitalEpicRuntime(symbol)).epic;
 
     const byTf = new Map<string, any[]>();
     const tfs = Array.from(new Set([microTF, macroTF, primaryTF, contextTF]));
@@ -681,7 +820,7 @@ async function openCapitalPosition(params: {
     clientOid: string;
 }) {
     const { symbol, direction, sideSizeUSDT, leverage, clientOid } = params;
-    const resolved = resolveCapitalEpic(symbol);
+    const resolved = await resolveCapitalEpicRuntime(symbol);
     const details = await loadMarketDetails(resolved.epic);
     const priceCandidate = Number.isFinite(details.bid as number) && Number.isFinite(details.offer as number)
         ? ((details.bid as number) + (details.offer as number)) / 2
@@ -789,7 +928,8 @@ export async function executeCapitalDecision(symbol: string, sideSizeUSDT: numbe
 
     if (decision.action === 'CLOSE') {
         if (dryRun) return { placed: false, orderId: null, clientOid, closed: true, partialClosePct };
-        const open = await findOpenCapitalPosition(symbol);
+        const resolved = await resolveCapitalEpicRuntime(symbol);
+        const open = await findOpenCapitalPositionByEpic(resolved.epic);
         if (!open) return { placed: false, orderId: null, clientOid, closed: false, note: 'no open position' };
         const closed = await closeCapitalPosition(open, partialClosePct, clientOid);
         return {
@@ -804,7 +944,8 @@ export async function executeCapitalDecision(symbol: string, sideSizeUSDT: numbe
 
     if (decision.action === 'REVERSE') {
         if (dryRun) return { placed: false, orderId: null, clientOid, reversed: true, leverage };
-        const open = await findOpenCapitalPosition(symbol);
+        const resolved = await resolveCapitalEpicRuntime(symbol);
+        const open = await findOpenCapitalPositionByEpic(resolved.epic);
         if (!open) return { placed: false, orderId: null, clientOid, reversed: false, note: 'no open position' };
         const side = extractDirection(open);
         if (!side) return { placed: false, orderId: null, clientOid, reversed: false, note: 'unknown position side' };

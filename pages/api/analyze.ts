@@ -17,6 +17,7 @@ import {
     fetchCapitalPositionInfo,
     fetchCapitalRealizedRoi,
     resolveCapitalEpic,
+    resolveCapitalEpicRuntime,
 } from '../../lib/capital';
 import { resolveAnalysisPlatform, resolveInstrumentId, resolveNewsSource, type AnalysisPlatform } from '../../lib/platform';
 
@@ -156,7 +157,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             platform === 'capital' ? calculateCapitalMultiTFIndicators : calculateBitgetMultiTFIndicators;
         const fetchPositionInfo = platform === 'capital' ? fetchCapitalPositionInfo : fetchBitgetPositionInfo;
         const fetchRealizedRoi = platform === 'capital' ? fetchCapitalRealizedRoi : fetchBitgetRealizedRoi;
-        const instrumentId =
+        let instrumentId =
             platform === 'capital' ? resolveCapitalEpic(symbol).epic : resolveInstrumentId(symbol, platform);
 
         const positionInfo = await fetchPositionInfo(symbol);
@@ -199,6 +200,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 context: contextTimeFrame,
             }),
         ]);
+        if (platform === 'capital') {
+            instrumentId =
+                typeof (bundleLight as any)?.epic === 'string' && (bundleLight as any).epic
+                    ? (bundleLight as any).epic
+                    : (await resolveCapitalEpicRuntime(symbol)).epic;
+        }
 
         const positionForPrompt =
             positionOpen
