@@ -8,6 +8,7 @@
   ],
   "crons": [
     { "path": "/api/analyze?symbol=BTCUSDT&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
-    { "path": "/api/analyze?symbol=XAUUSDT&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" }
+    { "path": "/api/analyze?symbol=XAUUSDT&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
+    { "path": "/api/analyze?symbol=QQQUSDT&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" }
   ]
 }
