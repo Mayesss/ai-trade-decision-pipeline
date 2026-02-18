@@ -2,9 +2,23 @@
 export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
-import { fetchMarketBundle, computeAnalytics, fetchPositionInfo, fetchRealizedRoi } from '../../lib/analytics';
-import { calculateMultiTFIndicators } from '../../lib/indicators';
+import {
+    fetchMarketBundle as fetchBitgetMarketBundle,
+    computeAnalytics,
+    fetchPositionInfo as fetchBitgetPositionInfo,
+    fetchRealizedRoi as fetchBitgetRealizedRoi,
+} from '../../lib/analytics';
+import { calculateMultiTFIndicators as calculateBitgetMultiTFIndicators } from '../../lib/indicators';
 import { fetchNewsWithHeadlines } from '../../lib/news';
+import {
+    calculateCapitalMultiTFIndicators,
+    executeCapitalDecision,
+    fetchCapitalMarketBundle,
+    fetchCapitalPositionInfo,
+    fetchCapitalRealizedRoi,
+    resolveCapitalEpic,
+} from '../../lib/capital';
+import { resolveAnalysisPlatform, resolveInstrumentId, resolveNewsSource, type AnalysisPlatform } from '../../lib/platform';
 
 import { buildPrompt, callAI, computeMomentumSignals, postprocessDecision, resolveDecisionPolicy } from '../../lib/ai';
 import type { DecisionPolicy, MomentumSignals } from '../../lib/ai';
@@ -115,6 +129,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const body = req.query ?? {};
         const symbolParam = Array.isArray(body.symbol) ? body.symbol[0] : body.symbol;
         const symbol = String(symbolParam || 'ETHUSDT').toUpperCase();
+        const platformParam = Array.isArray(body.platform) ? body.platform[0] : body.platform;
+        const platform: AnalysisPlatform = resolveAnalysisPlatform(platformParam as string | undefined);
+        const newsSourceParam = Array.isArray(body.newsSource) ? body.newsSource[0] : body.newsSource;
+        const newsSource = resolveNewsSource(platform, newsSourceParam as string | undefined);
         const parseBoolParam = (value: string | string[] | undefined, fallback: boolean) => {
             if (value === undefined) return fallback;
             const v = Array.isArray(value) ? value[0] : value;
@@ -133,6 +151,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const decisionPolicy: DecisionPolicy = resolveDecisionPolicy(decisionPolicyParam as string | undefined);
         const sideSizeUSDT = Number(body.notional ?? DEFAULT_NOTIONAL_USDT);
 
+        const fetchMarketBundle = platform === 'capital' ? fetchCapitalMarketBundle : fetchBitgetMarketBundle;
+        const calculateMultiTFIndicators =
+            platform === 'capital' ? calculateCapitalMultiTFIndicators : calculateBitgetMultiTFIndicators;
+        const fetchPositionInfo = platform === 'capital' ? fetchCapitalPositionInfo : fetchBitgetPositionInfo;
+        const fetchRealizedRoi = platform === 'capital' ? fetchCapitalRealizedRoi : fetchBitgetRealizedRoi;
+        const instrumentId =
+            platform === 'capital' ? resolveCapitalEpic(symbol).epic : resolveInstrumentId(symbol, platform);
+
         const positionInfo = await fetchPositionInfo(symbol);
         const positionOpen = positionInfo.status === 'open';
         const primaryCloseTime = isPrimaryCloseTime(timeFrame);
@@ -140,6 +166,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (!positionOpen && !primaryCloseTime) {
             return res.status(200).json({
                 symbol,
+                platform,
+                newsSource,
+                instrumentId,
                 timeFrame,
                 dryRun,
                 decisionPolicy,
@@ -157,10 +186,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         // 1) Product & parallel baseline fetches (fast)
-        const productType = getTradeProductType();
+        const productType = platform === 'bitget' ? getTradeProductType() : null;
 
         const [newsBundle, bundleLight, indicators] = await Promise.all([
-            fetchNewsWithHeadlines(symbol),
+            fetchNewsWithHeadlines(symbol, { platform, source: newsSource }),
             // Light bundle: skip tape (fills)
             fetchMarketBundle(symbol, timeFrame, { includeTrades: false }),
             calculateMultiTFIndicators(symbol, {
@@ -203,12 +232,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             indicators,
             notionalUSDT: sideSizeUSDT,
             positionOpen,
+            disableSymbolExclusions: platform === 'capital',
         });
 
         // 3b) Short-circuit if no trade allowed and no open position
         if (gatesOut.preDecision && !positionOpen) {
             return res.status(200).json({
                 symbol,
+                platform,
+                newsSource,
+                instrumentId,
                 timeFrame,
                 dryRun,
                 decisionPolicy,
@@ -261,6 +294,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (!positionOpen && calmMarket) {
             return res.status(200).json({
                 symbol,
+                platform,
+                newsSource,
+                instrumentId,
                 timeFrame,
                 dryRun,
                 decisionPolicy,
@@ -320,7 +356,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             maxProfitPct: positionExtrema.maxProfitPct,
             enteredAt: pstate.enteredAt,
         });
-        const recentHistory = await loadDecisionHistory(symbol, 5);
+        const recentHistory = await loadDecisionHistory(symbol, 5, platform);
         const recentActions = recentHistory
             .map((h) => ({ action: h.aiDecision?.action, timestamp: h.timestamp }))
             .filter((a) => a.action);
@@ -371,6 +407,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                       indicators,
                       notionalUSDT: execNotionalUSDT,
                       positionOpen,
+                      disableSymbolExclusions: platform === 'capital',
                   })
                 : gatesOut;
 
@@ -381,6 +418,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         ) {
             return res.status(200).json({
                 symbol,
+                platform,
+                newsSource,
+                instrumentId,
                 timeFrame,
                 dryRun,
                 decisionPolicy,
@@ -391,7 +431,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
         }
 
-        const execRes = await executeDecision(symbol, sideSizeUSDT, decision, productType, dryRun);
+        const execRes =
+            platform === 'capital'
+                ? await executeCapitalDecision(symbol, sideSizeUSDT, decision, dryRun)
+                : await executeDecision(symbol, sideSizeUSDT, decision, productType!, dryRun);
 
         const change24h = Number(tickerData?.change24h ?? tickerData?.changeUtc24h ?? tickerData?.chgPct);
         const spreadBpsSnapshot = safeNum(gatesForExec.metrics?.spreadBpsNow, safeNum(analytics.spreadBps, 0));
@@ -399,6 +442,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const bestBid = Number(analytics.bestBid);
         const bestAsk = Number(analytics.bestAsk);
         const snapshot = {
+            platform,
+            newsSource,
+            instrumentId,
             price: Number.isFinite(lastPrice) ? lastPrice : undefined,
             change24h: Number.isFinite(change24h) ? change24h : undefined,
             spread: spreadBpsSnapshot,
@@ -417,6 +463,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         await appendDecisionHistory({
             timestamp: Date.now(),
             symbol,
+            platform,
+            instrumentId,
+            newsSource,
             timeFrame,
             dryRun,
             prompt: { system, user },
@@ -434,6 +483,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // 9) Respond
         return res.status(200).json({
             symbol,
+            platform,
+            newsSource,
+            instrumentId,
             timeFrame,
             dryRun,
             decisionPolicy,

@@ -35,6 +35,7 @@ export interface GatesInput {
   // Optional for tiering
   vol24hUSD?: number;
   medianSpreadBps24h?: number;
+  disableSymbolExclusions?: boolean;
 }
 
 /** Output of the adaptive gate computation */
@@ -276,7 +277,7 @@ export function computeAdaptiveGates(input: GatesInput): GatesOutput {
   const {
     symbol, last, orderbook, notionalUSDT, atrAbsMacro, macroTimeframeMinutes,
     spreadBpsHistory, top5BidUsdHistory, atrPctHistory, slippageBpsHistory,
-    vol24hUSD, medianSpreadBps24h, regime, positionOpen,
+    vol24hUSD, medianSpreadBps24h, regime, positionOpen, disableSymbolExclusions,
   } = input;
 
   const bids = toPriceSizeArrays(orderbook.bids);
@@ -343,7 +344,7 @@ export function computeAdaptiveGates(input: GatesInput): GatesOutput {
   const slippage_ok = slipBpsNow <= slippageCap;
 
   // Exclusion (tokenized stocks, etc.)
-  const isExcluded = EXCLUDED_SYMBOLS.has(symbol.toUpperCase());
+  const isExcluded = !disableSymbolExclusions && EXCLUDED_SYMBOLS.has(symbol.toUpperCase());
 
   // Final pass condition: must not be excluded; spread & ATR OK; and (liquidity OR slippage) OK
   const gatesPass = !isExcluded && spread_ok && atr_ok && (liquidity_ok || slippage_ok);
@@ -418,6 +419,7 @@ export function getGates(args: {
   notionalUSDT: number;
   positionOpen: boolean;
   histories?: GatesHistories;
+  disableSymbolExclusions?: boolean;
 }): {
   allowed_actions: ('BUY' | 'SELL' | 'HOLD' | 'CLOSE' | 'REVERSE')[];
   gates: {
@@ -438,7 +440,7 @@ export function getGates(args: {
     reason: string;
   };
 } {
-  const { symbol, bundle, analytics, indicators, notionalUSDT, positionOpen, histories } = args;
+  const { symbol, bundle, analytics, indicators, notionalUSDT, positionOpen, histories, disableSymbolExclusions } = args;
 
   const last = analytics?.last || extractLastPrice(bundle, NaN);
   const atrAbsMacro = parseAtr1hAbs(indicators);
@@ -464,6 +466,7 @@ export function getGates(args: {
     slippageBpsHistory: histories?.slippageBpsHistory,
     vol24hUSD: histories?.vol24hUSD,
     medianSpreadBps24h: histories?.medianSpreadBps24h,
+    disableSymbolExclusions: Boolean(disableSymbolExclusions),
   });
 
   const gates = {

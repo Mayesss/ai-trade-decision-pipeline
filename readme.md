@@ -1,13 +1,13 @@
 # AI Trade Decision Pipeline
 
-Next.js app that runs an AI-driven trading loop for Bitget futures: pull market data, compute flow/indicator gates, ask an OpenAI-compatible model for an action, optionally place the trade, store the decision history, and render a dashboard with PnL, prompts, and aspect evaluations.
+Next.js app that runs an AI-driven trading loop for multiple platforms (Bitget + Capital.com): pull market data, compute flow/indicator gates, ask an OpenAI-compatible model for an action, optionally place the trade, store the decision history, and render a dashboard with PnL, prompts, and aspect evaluations.
 
 ---
 
 ## What’s Inside
-- **Next.js API routes** for analysis (`/api/analyze`, `/api/analyzeMultiple`), AI-driven evaluations (`/api/evaluate`), history/PNL enrichment (`/api/evaluations`, `/api/rest-history`, `/api/chart`), and health/debug helpers.
-- **Bitget integration** for market data, positions, and live order placement.
-- **Signal stack**: order-flow analytics, multi-timeframe indicators (context/macro/primary/micro), support/resistance levels, momentum/extension gates, and CoinDesk news sentiment.
+- **Next.js API routes** for analysis (`/api/analyze`), AI-driven evaluations (`/api/evaluate`), history/PNL enrichment (`/api/evaluations`, `/api/rest-history`, `/api/chart`), and health/debug helpers.
+- **Platform integrations**: Bitget (futures) and Capital.com (CFD/spot-style market access) with platform-selected market/execution paths.
+- **Signal stack**: multi-timeframe indicators (context/macro/primary/micro), support/resistance levels, momentum/extension gates, and provider-selected news sentiment (`coindesk` or `marketaux`).
 - **LLM prompts** built in `lib/ai.ts` with guardrails and momentum overrides; responses are persisted for replay and review.
 - **Dashboard** (`pages/index.tsx` + `components/ChartPanel.tsx`) showing latest decisions, prompts, aspect ratings, 7D PnL, open positions, live ticker updates, and chart overlays of recent trades.
 - **KV storage** (Upstash-compatible REST) for decision history, evaluations, and cached news (7d TTL for history, 1h for news).
@@ -15,8 +15,10 @@ Next.js app that runs an AI-driven trading loop for Bitget futures: pull market 
 ## Requirements
 - Node.js 18+ (matches Next 16)
 - Bitget API key (futures) with trading permissions
+- Capital.com Open API credentials (for `platform=capital`)
 - OpenAI-compatible API key (used by `callAI`)
-- CoinDesk API key (required for news sentiment)
+- CoinDesk API key (required for `newsSource=coindesk`)
+- Marketaux API key (required for `newsSource=marketaux`)
 - Upstash/Redis REST endpoint + token for KV (`KV_REST_API_URL`, `KV_REST_API_TOKEN`)
 - Optional admin secret for protected routes (`ADMIN_ACCESS_SECRET`)
 
@@ -33,11 +35,19 @@ BITGET_API_KEY=...
 BITGET_API_SECRET=...
 BITGET_API_PASSPHRASE=...
 
+# Capital.com
+CAPITAL_API_KEY=...
+CAPITAL_IDENTIFIER=...
+CAPITAL_PASSWORD=...
+# Optional custom ticker->epic map override (JSON string)
+# CAPITAL_TICKER_EPIC_MAP={"QQQUSDT":"QQQ","XAUUSDT":"XAUUSD"}
+
 # AI
 OPENAI_API_KEY=...
 
 # News
 COINDESK_API_KEY=...
+MARKETAUX_API_KEY=...
 
 # KV (Upstash REST)
 KV_REST_API_URL=https://...
@@ -65,13 +75,16 @@ npm run start
 
 ## API Routes (current behavior)
 - `GET /api/analyze`
-  - Query params: `symbol` (default `ETHUSDT`), `dryRun` (`true|false`, default `false`), `notional` (default `100`), `decisionPolicy` (`strict|balanced`, default `strict`)
+  - Query params:
+    - `symbol` (default `ETHUSDT`)
+    - `platform` (`bitget|capital`, default `bitget`)
+    - `newsSource` (`coindesk|marketaux`, default depends on platform: `bitget->coindesk`, `capital->marketaux`)
+    - `dryRun` (`true|false`, default `false`)
+    - `notional` (default `100`)
+    - `decisionPolicy` (`strict|balanced`, default `strict`)
   - Timeframes are currently fixed from `lib/constants.ts`:
     - `MICRO_TIMEFRAME=1H`, `PRIMARY_TIMEFRAME=4H`, `MACRO_TIMEFRAME=1D`, `CONTEXT_TIMEFRAME=1W`
-  - Persists prompt, decision, execution result, and snapshot to KV.
-- `GET /api/analyzeMultiple`
-  - Query params: `symbols` (array, required), `dryRun` (`true|false`, default `false`), `notional` (default `100`), `decisionPolicy` (`strict|balanced`, default `strict`)
-  - Runs per-symbol analysis with bounded concurrency and retry/backoff.
+  - Persists prompt, decision, execution result, and snapshot to KV (including `platform`, `newsSource`, and instrument identifier).
 - `GET /api/evaluate`
   - Query params: `symbol` (required), `limit` (clamped `5..30`, default `30`), `batchSize` (clamped `2..10`, default `5`), `includeBatchEvaluations` (`true|false`), `async` (`true|false`)
   - Async mode returns a `jobId`; poll with `GET /api/evaluate?jobId=...`.
@@ -84,7 +97,7 @@ npm run start
   - Defaults to a 7-day window if `limit` is omitted.
   - Normalizes timeframe strings to Bitget-compatible granularity (for example `1h` -> `1H`).
   - Requires `x-admin-access-secret` header only when `ADMIN_ACCESS_SECRET` is set.
-- `GET /api/rest-history?symbol=...`
+- `GET /api/rest-history?symbol=...&platform=...`
   - Returns recent history entries for a symbol.
 - `DELETE /api/rest-history`
   - Clears all decision history.
@@ -103,17 +116,17 @@ npm run start
 Examples:
 ```bash
 # Safe single-symbol run
-curl "http://localhost:3000/api/analyze?symbol=ETHUSDT&dryRun=true&notional=100"
+curl "http://localhost:3000/api/analyze?symbol=ETHUSDT&platform=bitget&newsSource=coindesk&dryRun=true&notional=100"
 
 # Safe single-symbol run with looser AI guardrails
-curl "http://localhost:3000/api/analyze?symbol=ETHUSDT&dryRun=true&notional=100&decisionPolicy=balanced"
+curl "http://localhost:3000/api/analyze?symbol=ETHUSDT&platform=bitget&dryRun=true&notional=100&decisionPolicy=balanced"
 
-# Safe multi-symbol run
-curl "http://localhost:3000/api/analyzeMultiple?symbols=BTCUSDT&symbols=ETHUSDT&dryRun=true&notional=100"
+# Safe non-crypto run on Capital.com
+curl "http://localhost:3000/api/analyze?symbol=QQQUSDT&platform=capital&newsSource=marketaux&dryRun=true&notional=100"
 ```
 
 ## Data Flow
-1) **Analyze** pulls Bitget market data (ticker, candles, order book, funding, OI, trades optional) + news sentiment, computes indicators/analytics, builds the prompt, calls the LLM, and (optionally) executes the trade.  
+1) **Analyze** selects provider by `platform`, pulls market data + selected news source, computes indicators/analytics, builds the prompt, calls the LLM, and (optionally) executes the trade.  
 2) The decision, snapshot, prompt, and execution result are appended to KV history.  
 3) **Evaluate** replays recent history through another LLM to score data quality, action logic, guardrails, etc., then stores a single latest evaluation per symbol.  
 4) The dashboard consumes `/api/evaluations` and `/api/chart` to render PnL, prompts, biases, aspect ratings, and recent position overlays.
@@ -132,4 +145,4 @@ curl "http://localhost:3000/api/analyzeMultiple?symbols=BTCUSDT&symbols=ETHUSDT&
 ## Troubleshooting
 - `GET /api/debug-env-values` to confirm env vars are detected.
 - `GET /api/bitget-ping` to verify Bitget credentials/connectivity.
-- Watch server logs for KV errors (missing `KV_REST_API_URL`/`KV_REST_API_TOKEN`) or CoinDesk auth failures.
+- Watch server logs for KV errors (missing `KV_REST_API_URL`/`KV_REST_API_TOKEN`) or news/provider auth failures (`COINDESK_API_KEY`, `MARKETAUX_API_KEY`, Capital credentials).

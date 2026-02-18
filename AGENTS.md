@@ -8,7 +8,6 @@ Maintain and iterate an AI-driven trading decision pipeline safely. Prompt and d
 ## Repo Map
 - `lib/ai.ts`: prompt builder (`buildPrompt`), AI call (`callAI`), and decision post-processing (`postprocessDecision`).
 - `pages/api/analyze.ts`: single-symbol analysis pipeline.
-- `pages/api/analyzeMultiple.ts`: multi-symbol analysis pipeline with concurrency + retries.
 - `lib/trading.ts`: execution layer (market orders, close/reverse handling, leverage).
 - `pages/api/evaluate.ts`: LLM-based evaluation/audit of recent decisions.
 - `pages/api/evaluations.ts`: dashboard aggregate payload (evaluation + latest prompt/decision + 7D PnL/open-position context).
@@ -24,8 +23,10 @@ Maintain and iterate an AI-driven trading decision pipeline safely. Prompt and d
 4. Avoid widening live-trading behavior by default in docs or code.
 
 ## Current API Contract (important)
-- `GET /api/analyze` and `GET /api/analyzeMultiple` (not POST).
+- `GET /api/analyze` (not POST).
 - `dryRun` currently defaults to `false` if omitted.
+- `platform` query selects execution/data provider (`bitget` default, `capital` optional).
+- `newsSource` query selects news provider (`coindesk` or `marketaux`, default depends on platform).
 - Timeframes in analyze routes are fixed by `lib/constants.ts`:
   - `MICRO_TIMEFRAME=1H`
   - `PRIMARY_TIMEFRAME=4H`
@@ -77,8 +78,8 @@ curl "http://localhost:3000/api/debug-env-values"
 # safe pipeline run (single symbol)
 curl "http://localhost:3000/api/analyze?symbol=ETHUSDT&dryRun=true&notional=100"
 
-# safe pipeline run (multi symbol)
-curl "http://localhost:3000/api/analyzeMultiple?symbols=BTCUSDT&symbols=ETHUSDT&dryRun=true&notional=100"
+# safe pipeline run (Capital + non-crypto)
+curl "http://localhost:3000/api/analyze?symbol=QQQUSDT&platform=capital&newsSource=marketaux&dryRun=true&notional=100"
 
 # recent stored decisions
 curl "http://localhost:3000/api/rest-history?symbol=ETHUSDT"

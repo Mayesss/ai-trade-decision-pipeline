@@ -7,8 +7,9 @@
     { "src": "/api/(.*)", "dest": "/api/$1" }
   ],
   "crons": [
-    { "path": "/api/analyze?symbol=BTCUSDT&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
-    { "path": "/api/analyze?symbol=XAUUSDT&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
-    { "path": "/api/analyze?symbol=QQQUSDT&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" }
+    { "path": "/api/analyze?symbol=BTCUSDT&platform=bitget&newsSource=coindesk&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
+    { "path": "/api/analyze?symbol=XAUUSD&platform=capital&newsSource=marketaux&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
+    { "path": "/api/analyze?symbol=PL1USD&platform=capital&newsSource=marketaux&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
+    { "path": "/api/analyze?symbol=EURUSD&platform=capital&newsSource=marketaux&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" }
   ]
 }

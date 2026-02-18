@@ -90,11 +90,17 @@ export type DecisionSnapshot = {
     newsHeadlines?: string[];
     positionContext?: PositionContext | null;
     momentumSignals?: MomentumSignals;
+    platform?: string;
+    newsSource?: string;
+    instrumentId?: string;
 };
 
 export type DecisionHistoryEntry = {
     timestamp: number;
     symbol: string;
+    platform?: string;
+    instrumentId?: string;
+    newsSource?: string;
     timeFrame: string;
     dryRun: boolean;
     prompt: { system: string; user: string };
@@ -109,13 +115,33 @@ export type DecisionHistoryEntry = {
     };
 };
 
-function keyFor(symbol: string, timestamp: number) {
-    return `${HISTORY_KEY_PREFIX}:${timestamp}:${symbol.toUpperCase()}`;
+function normalizeHistoryPlatform(value?: string) {
+    const raw = String(value || '').trim().toLowerCase();
+    return raw || 'bitget';
+}
+
+function parseHistoryKey(key: string): { symbol: string | null; platform: string | null } {
+    const parts = String(key).split(':');
+    if (parts.length >= 4) {
+        const symbol = parts[parts.length - 1] || null;
+        const platform = parts[parts.length - 2] || null;
+        return { symbol: symbol ? symbol.toUpperCase() : null, platform: platform ? platform.toLowerCase() : null };
+    }
+    if (parts.length >= 3) {
+        const symbol = parts[parts.length - 1] || null;
+        return { symbol: symbol ? symbol.toUpperCase() : null, platform: 'bitget' };
+    }
+    return { symbol: null, platform: null };
+}
+
+function keyFor(symbol: string, timestamp: number, platform?: string) {
+    const normalizedPlatform = normalizeHistoryPlatform(platform);
+    return `${HISTORY_KEY_PREFIX}:${timestamp}:${normalizedPlatform}:${symbol.toUpperCase()}`;
 }
 
 export async function appendDecisionHistory(entry: DecisionHistoryEntry) {
     try {
-        const key = keyFor(entry.symbol, entry.timestamp);
+        const key = keyFor(entry.symbol, entry.timestamp, entry.platform);
         // store entry with TTL
         await kvSetEx(key, HISTORY_TTL_SECONDS, JSON.stringify(entry));
         // add to index
@@ -129,9 +155,10 @@ export async function appendDecisionHistory(entry: DecisionHistoryEntry) {
     }
 }
 
-export async function loadDecisionHistory(symbol?: string, limit = 20): Promise<DecisionHistoryEntry[]> {
+export async function loadDecisionHistory(symbol?: string, limit = 20, platform?: string): Promise<DecisionHistoryEntry[]> {
     ensureKvConfig();
     const upperSymbol = symbol?.toUpperCase();
+    const normalizedPlatform = platform ? normalizeHistoryPlatform(platform) : undefined;
     const batchSize = 50;
     let start = 0;
     const results: DecisionHistoryEntry[] = [];
@@ -139,7 +166,12 @@ export async function loadDecisionHistory(symbol?: string, limit = 20): Promise<
         const keys = await kvZRevRange(HISTORY_INDEX_KEY, start, start + batchSize - 1);
         if (!keys.length) break;
         start += batchSize;
-        const filteredKeys = upperSymbol ? keys.filter((k) => k.endsWith(`:${upperSymbol}`)) : keys;
+        const filteredKeys = keys.filter((k) => {
+            const parsed = parseHistoryKey(k);
+            if (upperSymbol && parsed.symbol !== upperSymbol) return false;
+            if (normalizedPlatform && parsed.platform !== normalizedPlatform) return false;
+            return true;
+        });
         if (!filteredKeys.length) continue;
         const values = await kvMGet(filteredKeys);
         for (let i = 0; i < filteredKeys.length; i += 1) {
@@ -148,6 +180,7 @@ export async function loadDecisionHistory(symbol?: string, limit = 20): Promise<
             try {
                 const parsed = JSON.parse(raw);
                 if (upperSymbol && parsed.symbol?.toUpperCase() !== upperSymbol) continue;
+                if (normalizedPlatform && normalizeHistoryPlatform(parsed.platform) !== normalizedPlatform) continue;
                 results.push(parsed);
                 if (results.length >= limit) break;
             } catch (err) {
@@ -170,9 +203,8 @@ export async function listHistorySymbols(): Promise<string[]> {
     const keys = await kvZRevRange(HISTORY_INDEX_KEY, 0, -1);
     const symbols = new Set<string>();
     for (const key of keys) {
-        const parts = String(key).split(':');
-        const sym = parts[parts.length - 1];
-        if (sym) symbols.add(sym.toUpperCase());
+        const parsed = parseHistoryKey(key);
+        if (parsed.symbol) symbols.add(parsed.symbol.toUpperCase());
     }
     return Array.from(symbols);
 }

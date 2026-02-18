@@ -18,6 +18,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             COINDESK_API_KEY: process.env.COINDESK_API_KEY
                 ? process.env.COINDESK_API_KEY.slice(0, 6) + '...'
                 : '❌ missing',
+            MARKETAUX_API_KEY: process.env.MARKETAUX_API_KEY
+                ? process.env.MARKETAUX_API_KEY.slice(0, 6) + '...'
+                : '❌ missing',
+            CAPITAL_API_KEY: process.env.CAPITAL_API_KEY
+                ? process.env.CAPITAL_API_KEY.slice(0, 6) + '...'
+                : '❌ missing',
+            CAPITAL_IDENTIFIER: process.env.CAPITAL_IDENTIFIER
+                ? process.env.CAPITAL_IDENTIFIER.slice(0, 2) + '...'
+                : '❌ missing',
+            CAPITAL_PASSWORD: process.env.CAPITAL_PASSWORD ? '✅ set' : '❌ missing',
             BITGET_ACCOUNT_TYPE: BITGET_ACCOUNT_TYPE || '(default: usdt-futures)',
         });
 
@@ -27,6 +37,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             BITGET_API_PASSPHRASE: process.env.BITGET_API_PASSPHRASE ? '✅ set' : '❌ missing',
             OPENAI_API_KEY: process.env.OPENAI_API_KEY ? '✅ set' : '❌ missing',
             COINDESK_API_KEY: process.env.COINDESK_API_KEY ? '✅ set' : '❌ missing',
+            MARKETAUX_API_KEY: process.env.MARKETAUX_API_KEY ? '✅ set' : '❌ missing',
+            CAPITAL_API_KEY: process.env.CAPITAL_API_KEY ? '✅ set' : '❌ missing',
+            CAPITAL_IDENTIFIER: process.env.CAPITAL_IDENTIFIER ? '✅ set' : '❌ missing',
+            CAPITAL_PASSWORD: process.env.CAPITAL_PASSWORD ? '✅ set' : '❌ missing',
             BITGET_ACCOUNT_TYPE: BITGET_ACCOUNT_TYPE || '(default: usdt-futures)',
         });
     } catch (err: any) {
