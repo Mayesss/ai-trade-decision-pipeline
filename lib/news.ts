@@ -96,6 +96,18 @@ async function marketauxFetch(path: string, query: Record<string, string | numbe
     return res.json();
 }
 
+const MARKETAUX_SYMBOL_ALIASES: Record<string, string> = {
+    PLATINUM: 'PLAT',
+    OIL_CRUDE: 'WTI',
+    COFFEEARABICA: 'KC',
+};
+
+function resolveMarketauxQuerySymbols(base: string): string {
+    const normalized = base.toUpperCase();
+    const alias = MARKETAUX_SYMBOL_ALIASES[normalized];
+    return alias && alias !== normalized ? `${alias},${normalized}` : normalized;
+}
+
 /** Extracts the base asset ticker (e.g., BTC from BTCUSDT or ETH-PERP). */
 export function baseFromSymbol(symbol: string): string {
     const s = symbol.toUpperCase();
@@ -202,8 +214,9 @@ async function fetchCoinDeskNews(base: string): Promise<{ sentiment: Sentiment |
 }
 
 async function fetchMarketauxNews(base: string): Promise<{ sentiment: Sentiment | null; headlines: string[] }> {
+    const querySymbols = resolveMarketauxQuerySymbols(base);
     const payload = await marketauxFetch('/news/all', {
-        symbols: base,
+        symbols: querySymbols,
         language: 'en',
         limit: 25,
         filter_entities: 'true',

@@ -163,7 +163,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const positionInfo = await fetchPositionInfo(symbol);
         const positionOpen = positionInfo.status === 'open';
         const primaryCloseTime = isPrimaryCloseTime(timeFrame);
-
         if (!positionOpen && !primaryCloseTime) {
             return res.status(200).json({
                 symbol,

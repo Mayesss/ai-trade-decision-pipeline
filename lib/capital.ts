@@ -69,6 +69,7 @@ type ResolveEpicResult = {
 
 const CAPITAL_API_BASE = (process.env.CAPITAL_API_BASE || 'https://api-capital.backend-capital.com').replace(/\/+$/, '');
 const SESSION_TTL_MS = 10 * 60 * 1000;
+const MIN_DISCOVERY_SCORE = 45;
 
 let cachedSession: SessionState | null = null;
 const resolvedEpicCache = new Map<string, ResolveEpicResult>();
@@ -109,6 +110,10 @@ function buildQuery(params: Record<string, string | number | undefined>) {
 function safeNumber(value: unknown, fallback = 0): number {
     const n = Number(value);
     return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeComparable(value: string): string {
+    return normalizeTicker(value).replace(/[^A-Z0-9]/g, '');
 }
 
 function normalizeTicker(symbol: string): string {
@@ -456,19 +461,28 @@ function scoreMarketCandidate(row: CapitalMarketSearchRow, term: string, ticker:
     const symbol = normalizeTicker(row?.symbol || '');
     const marketName = normalizeTicker(row?.marketName || row?.instrumentName || row?.displayName || '');
     const normalizedTerm = normalizeTicker(term);
+    const termCmp = normalizeComparable(normalizedTerm);
+    const tickerCmp = normalizeComparable(ticker);
+    const baseCmp = normalizeComparable(base);
+    const epicCmp = normalizeComparable(epic);
+    const symbolCmp = normalizeComparable(symbol);
+    const marketCmp = normalizeComparable(marketName);
 
     let score = 0;
     if (!epic) return -1;
-    if (epic === ticker) score += 120;
-    if (epic === normalizedTerm) score += 115;
-    if (symbol === ticker) score += 100;
-    if (symbol === normalizedTerm) score += 95;
-    if (epic.includes(ticker)) score += 75;
-    if (epic.includes(base)) score += 50;
-    if (symbol.includes(base)) score += 40;
-    if (marketName.includes(base)) score += 35;
-    if (marketName.includes(normalizedTerm)) score += 45;
-    if (row?.status === 'TRADEABLE' || row?.snapshot?.marketStatus === 'TRADEABLE') score += 20;
+    if (epicCmp === tickerCmp) score += 140;
+    if (symbolCmp === tickerCmp) score += 130;
+    if (epicCmp === termCmp) score += 120;
+    if (symbolCmp === termCmp) score += 115;
+    if (epicCmp.startsWith(termCmp) && termCmp.length >= 2) score += 85;
+    if (symbolCmp.startsWith(termCmp) && termCmp.length >= 2) score += 80;
+    if (epicCmp.includes(termCmp) && termCmp.length >= 2) score += 60;
+    if (symbolCmp.includes(termCmp) && termCmp.length >= 2) score += 55;
+    if (baseCmp.length >= 2 && epicCmp.includes(baseCmp)) score += 40;
+    if (baseCmp.length >= 2 && symbolCmp.includes(baseCmp)) score += 35;
+    if (baseCmp.length >= 2 && marketCmp.includes(baseCmp)) score += 25;
+    if (termCmp.length >= 2 && marketCmp.includes(termCmp)) score += 25;
+    if (row?.status === 'TRADEABLE' || row?.snapshot?.marketStatus === 'TRADEABLE') score += 8;
     return score;
 }
 
@@ -507,7 +521,7 @@ async function discoverCapitalEpic(symbol: string, candidateEpics: string[]): Pr
         }
     }
 
-    if (!best) return null;
+    if (!best || best.score < MIN_DISCOVERY_SCORE) return null;
     return {
         ticker,
         epic: best.epic,
@@ -522,6 +536,20 @@ export async function resolveCapitalEpicRuntime(symbol: string): Promise<Resolve
 
     const preferred = resolveCapitalEpic(ticker);
     const fallbackBase = baseFromTicker(ticker);
+    const searchFirstCandidates = Array.from(
+        new Set(
+            [ticker, fallbackBase, preferred.epic]
+                .map((v) => normalizeTicker(v))
+                .filter((v) => v.length > 0),
+        ),
+    );
+
+    const discoveredFirst = await discoverCapitalEpic(ticker, searchFirstCandidates);
+    if (discoveredFirst) {
+        resolvedEpicCache.set(ticker, discoveredFirst);
+        return discoveredFirst;
+    }
+
     const candidates = Array.from(
         new Set(
             [preferred.epic, ticker, fallbackBase]
