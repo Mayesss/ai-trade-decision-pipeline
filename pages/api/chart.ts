@@ -1,10 +1,29 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { fetchMarketBundle, fetchPositionInfo, fetchRecentPositionWindows } from '../../lib/analytics';
+import {
+  fetchMarketBundle as fetchBitgetMarketBundle,
+  fetchPositionInfo as fetchBitgetPositionInfo,
+  fetchRecentPositionWindows,
+} from '../../lib/analytics';
+import { fetchCapitalMarketBundle, fetchCapitalPositionInfo } from '../../lib/capital';
 import { loadDecisionHistory } from '../../lib/history';
 import { requireAdminAccess } from '../../lib/admin';
+import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
 
 const BTC_SYMBOL = 'BTCUSDT';
 const BTC_CHART_LEVERAGE_OVERRIDE = 3;
+type ChartCandle = {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+};
+
+function isBitgetUnknownSymbolError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  const lower = msg.toLowerCase();
+  return msg.includes('40034') || (lower.includes('parameter') && lower.includes('does not exist'));
+}
 
 function timeframeToSeconds(tf: string): number {
   const match = /^(\d+)([smhd])$/i.exec(tf.trim());
@@ -32,6 +51,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!requireAdminAccess(req, res)) return;
 
   const symbol = String(req.query.symbol || '').toUpperCase();
+  const platformParam = Array.isArray(req.query.platform) ? req.query.platform[0] : req.query.platform;
+  const explicitPlatform =
+    typeof platformParam === 'string' && platformParam.trim().length
+      ? resolveAnalysisPlatform(platformParam)
+      : null;
   const timeframeRaw = String(req.query.timeframe || '1H');
   const tfMatch = /^(\d+)([a-zA-Z])$/.exec(timeframeRaw.trim());
   const timeframe = tfMatch
@@ -59,9 +83,42 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
-    const bundle = await fetchMarketBundle(symbol, timeframe, { includeTrades: false, candleLimit: boundedLimit + 10 });
+    let platform: AnalysisPlatform = explicitPlatform ?? 'bitget';
+    if (!explicitPlatform) {
+      try {
+        const latestHistory = await loadDecisionHistory(symbol, 1);
+        const latest = latestHistory[0];
+        const inferred =
+          typeof latest?.platform === 'string'
+            ? latest.platform
+            : typeof latest?.snapshot?.platform === 'string'
+            ? latest.snapshot.platform
+            : undefined;
+        platform = resolveAnalysisPlatform(inferred);
+      } catch {
+        platform = 'bitget';
+      }
+    }
 
-    const candles = Array.isArray(bundle.candles)
+    const fetchBundleByPlatform = async (targetPlatform: AnalysisPlatform) => {
+      const fetchMarketBundle = targetPlatform === 'capital' ? fetchCapitalMarketBundle : fetchBitgetMarketBundle;
+      return fetchMarketBundle(symbol, timeframe, { includeTrades: false, candleLimit: boundedLimit + 10 });
+    };
+    let bundle: any;
+    try {
+      bundle = await fetchBundleByPlatform(platform);
+    } catch (err) {
+      if (!explicitPlatform && platform === 'bitget' && isBitgetUnknownSymbolError(err)) {
+        platform = 'capital';
+        bundle = await fetchBundleByPlatform(platform);
+      } else {
+        throw err;
+      }
+    }
+
+    const fetchPositionInfo = platform === 'capital' ? fetchCapitalPositionInfo : fetchBitgetPositionInfo;
+
+    const candles: ChartCandle[] = Array.isArray(bundle.candles)
       ? bundle.candles
           .slice(-boundedLimit)
           .map((c: any) => ({
@@ -71,7 +128,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             low: Number(c?.[3]),
             close: Number(c?.[4]),
           }))
-          .sort((a, b) => a.time - b.time)
+          .sort((a: ChartCandle, b: ChartCandle) => a.time - b.time)
       : [];
 
     const candleMap = new Map<number, { close: number; open: number; high: number; low: number }>();
@@ -86,7 +143,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const windowStartMs = Math.max(0, Math.min(firstCandleMs, nowMs - inferredRangeMs));
     const historyHours = Math.max(24, Math.ceil((nowMs - windowStartMs) / (60 * 60 * 1000)));
     const historyLimit = Math.max(200, Math.min(1_200, historyHours * 8));
-    const history = await loadDecisionHistory(symbol, historyLimit);
+    const history = await loadDecisionHistory(symbol, historyLimit, platform);
     const markers =
       history
         ?.filter((h) => h.timestamp && Number(h.timestamp) >= windowStartMs && Number(h.timestamp) <= nowMs)
@@ -157,9 +214,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     let positions: any[] = [];
     try {
-      const closed = await fetchRecentPositionWindows(symbol, historyHours);
+      const closed = platform === 'capital' ? [] : await fetchRecentPositionWindows(symbol, historyHours);
       const closedNormalized =
-        symbol === BTC_SYMBOL
+        platform === 'bitget' && symbol === BTC_SYMBOL
           ? closed.map((position) => {
               const rawLev = Number(position.leverage);
               const fallbackLev = Number(leverageFromHistory);
@@ -185,7 +242,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           const pnl = typeof open.currentPnl === 'string' ? open.currentPnl.replace('%', '') : open.currentPnl;
           const pnlVal = Number(pnl);
           openOverlay = {
-            id: `${symbol}-open-position`,
+            id: `${platform}:${symbol}-open-position`,
             symbol,
             side: open.holdSide ?? null,
             entryTimestamp: open.entryTimestamp ?? null,
@@ -221,7 +278,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       positions = [];
     }
 
-    res.status(200).json({ symbol, timeframe, candles, markers, positions });
+    res.status(200).json({ symbol, platform, timeframe, candles, markers, positions });
   } catch (err: any) {
     console.error('Error fetching chart data:', err);
     res.status(500).json({ error: err?.message || 'chart_fetch_failed' });

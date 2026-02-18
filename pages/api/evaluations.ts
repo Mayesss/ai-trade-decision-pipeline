@@ -1,8 +1,15 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getAllEvaluations, getEvaluationTimestamp } from '../../lib/utils';
 import { loadDecisionHistory, listHistorySymbols } from '../../lib/history';
-import { fetchPositionInfo, fetchRealizedRoi, fetchRecentPositionWindows } from '../../lib/analytics';
+import {
+  fetchPositionInfo as fetchBitgetPositionInfo,
+  fetchRealizedRoi as fetchBitgetRealizedRoi,
+  fetchRecentPositionWindows,
+} from '../../lib/analytics';
+import { fetchCapitalPositionInfo, fetchCapitalRealizedRoi } from '../../lib/capital';
 import { requireAdminAccess } from '../../lib/admin';
+import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../lib/platform';
+import { bitgetFetch, resolveProductType } from '../../lib/bitget';
 
 type EnrichedEntry = {
   symbol: string;
@@ -41,6 +48,44 @@ const scalePct = (value: number | null | undefined, factor: number): number | nu
   if (typeof value !== 'number') return value;
   return value * factor;
 };
+
+function extractPlatformFromHistoryEntry(entry: any): AnalysisPlatform {
+  const raw =
+    typeof entry?.platform === 'string'
+      ? entry.platform
+      : typeof entry?.snapshot?.platform === 'string'
+      ? entry.snapshot.platform
+      : undefined;
+  return resolveAnalysisPlatform(raw);
+}
+
+function isBitgetUnknownSymbolError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  const lower = msg.toLowerCase();
+  return msg.includes('40034') || (lower.includes('parameter') && lower.includes('does not exist'));
+}
+
+const legacyPlatformCache = new Map<string, AnalysisPlatform>();
+
+async function inferLegacyPlatform(symbol: string): Promise<AnalysisPlatform> {
+  const key = String(symbol || '').toUpperCase();
+  const cached = legacyPlatformCache.get(key);
+  if (cached) return cached;
+
+  try {
+    const productType = String(resolveProductType() || '').toUpperCase();
+    await bitgetFetch('GET', '/api/v2/mix/market/ticker', { symbol: key, productType });
+    legacyPlatformCache.set(key, 'bitget');
+    return 'bitget';
+  } catch (err) {
+    if (isBitgetUnknownSymbolError(err)) {
+      legacyPlatformCache.set(key, 'capital');
+      return 'capital';
+    }
+    legacyPlatformCache.set(key, 'bitget');
+    return 'bitget';
+  }
+}
 
 // Returns the latest evaluation per symbol from the in-memory store,
 // plus last decision info + 7d change pulled from recent history.
@@ -88,23 +133,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let avgLossPct: number | null | undefined = null;
       let evaluationTs: number | null | undefined = null;
       let lastBiasTimeframes: Record<string, string | undefined> | null = null;
+      let platform: AnalysisPlatform = 'bitget';
 
       try {
-        const history = await loadDecisionHistory(symbol, 120);
+        const historyAny = await loadDecisionHistory(symbol, 120);
 
-        const latest = history[0];
+        const latest = historyAny[0];
+        const latestPlatformRaw =
+          typeof latest?.platform === 'string'
+            ? latest.platform
+            : typeof latest?.snapshot?.platform === 'string'
+            ? latest.snapshot.platform
+            : undefined;
+        const hasExplicitLatestPlatform = typeof latestPlatformRaw === 'string' && latestPlatformRaw.trim().length > 0;
         if (latest) {
+          platform = hasExplicitLatestPlatform ? resolveAnalysisPlatform(latestPlatformRaw) : await inferLegacyPlatform(symbol);
           lastDecision = latest.aiDecision ?? null;
           lastMetrics = latest.snapshot?.metrics ?? null;
           lastDecisionTs = Number.isFinite(latest.timestamp) ? Number(latest.timestamp) : null;
           lastPrompt = latest.prompt ?? null;
           lastBiasTimeframes = latest.biasTimeframes ?? null;
-          lastPlatform =
-            typeof latest.platform === 'string'
-              ? latest.platform
-              : typeof latest.snapshot?.platform === 'string'
-              ? latest.snapshot.platform
-              : null;
+          lastPlatform = platform;
           lastNewsSource =
             typeof latest.newsSource === 'string'
               ? latest.newsSource
@@ -112,6 +161,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               ? latest.snapshot.newsSource
               : null;
         }
+        const history = latest && hasExplicitLatestPlatform
+          ? historyAny.filter((entry) => extractPlatformFromHistoryEntry(entry) === platform)
+          : historyAny;
         // Get latest leverage we set/applied from history (execResult or aiDecision hint)
         const leverageFromHistory = history
           .map((h) => {
@@ -123,66 +175,71 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           })
           .find((v) => v !== null);
 
+        const fetchRealizedRoi = platform === 'capital' ? fetchCapitalRealizedRoi : fetchBitgetRealizedRoi;
+        const fetchPositionInfo = platform === 'capital' ? fetchCapitalPositionInfo : fetchBitgetPositionInfo;
+
         const roiRes = await fetchRealizedRoi(symbol, PNL_LOOKBACK_HOURS);
         pnl7dNet = Number.isFinite(roiRes.roi as number) ? (roiRes.roi as number) : null;
         pnl7dTrades = roiRes.count;
         lastPositionPnl = Number.isFinite(roiRes.lastNetPct as number) ? (roiRes.lastNetPct as number) : null;
         lastPositionDirection = roiRes.lastSide ?? null;
 
-        try {
-          const recentWindows = await fetchRecentPositionWindows(symbol, PNL_LOOKBACK_HOURS);
-          const lastWindows = recentWindows.slice(-14);
-          const spark = lastWindows
-            .map((w) => (Number.isFinite(w.pnlPct as number) ? (w.pnlPct as number) : null))
-            .filter((v): v is number => typeof v === 'number');
-          pnlSpark = spark.length ? spark : null;
+        if (platform !== 'capital') {
+          try {
+            const recentWindows = await fetchRecentPositionWindows(symbol, PNL_LOOKBACK_HOURS);
+            const lastWindows = recentWindows.slice(-14);
+            const spark = lastWindows
+              .map((w) => (Number.isFinite(w.pnlPct as number) ? (w.pnlPct as number) : null))
+              .filter((v): v is number => typeof v === 'number');
+            pnlSpark = spark.length ? spark : null;
 
-          const grossPcts = recentWindows
-            .map((w) => (Number.isFinite(w.pnlGrossPct as number) ? (w.pnlGrossPct as number) : null))
-            .filter((v): v is number => typeof v === 'number');
-          const netPcts = recentWindows
-            .map((w) => (Number.isFinite(w.pnlPct as number) ? (w.pnlPct as number) : null))
-            .filter((v): v is number => typeof v === 'number');
-          pnl7dGross = grossPcts.length ? grossPcts.reduce((a, b) => a + b, 0) : null;
-          pnl7d = netPcts.length ? netPcts.reduce((a, b) => a + b, 0) : null;
+            const grossPcts = recentWindows
+              .map((w) => (Number.isFinite(w.pnlGrossPct as number) ? (w.pnlGrossPct as number) : null))
+              .filter((v): v is number => typeof v === 'number');
+            const netPcts = recentWindows
+              .map((w) => (Number.isFinite(w.pnlPct as number) ? (w.pnlPct as number) : null))
+              .filter((v): v is number => typeof v === 'number');
+            pnl7dGross = grossPcts.length ? grossPcts.reduce((a, b) => a + b, 0) : null;
+            pnl7d = netPcts.length ? netPcts.reduce((a, b) => a + b, 0) : null;
 
-          const sampledWindows = lastWindows.filter((w) => Number.isFinite(w.pnlPct as number));
-          if (sampledWindows.length) {
-            const wins = sampledWindows.filter((w) => (w.pnlPct as number) > 0);
-            const losses = sampledWindows.filter((w) => (w.pnlPct as number) < 0);
-            winRate = (wins.length / sampledWindows.length) * 100;
-            avgWinPct = wins.length
-              ? wins.reduce((acc, w) => acc + (w.pnlPct as number), 0) / wins.length
-              : null;
-            avgLossPct = losses.length
-              ? losses.reduce((acc, w) => acc + (w.pnlPct as number), 0) / losses.length
-              : null;
-            // Pick the most recent window that has leverage info
-            const lastWithLev = lastWindows
-              .slice()
-              .reverse()
-              .find((w) => Number.isFinite(w.leverage as number));
-            lastPositionLeverage =
-              lastWithLev && Number.isFinite(lastWithLev.leverage as number)
-                ? (lastWithLev.leverage as number)
-                : leverageFromHistory ?? null;
-          }
-
-          const lastWindow = recentWindows.length ? recentWindows[recentWindows.length - 1] : null;
-          if (lastWindow) {
-            lastPositionPnl = Number.isFinite(lastWindow.pnlPct as number) ? (lastWindow.pnlPct as number) : null;
-            lastPositionDirection = lastWindow.side ?? null;
-            if (lastPositionLeverage === null) {
-              lastPositionLeverage = Number.isFinite(lastWindow.leverage as number)
-                ? (lastWindow.leverage as number)
-                : leverageFromHistory ?? null;
+            const sampledWindows = lastWindows.filter((w) => Number.isFinite(w.pnlPct as number));
+            if (sampledWindows.length) {
+              const wins = sampledWindows.filter((w) => (w.pnlPct as number) > 0);
+              const losses = sampledWindows.filter((w) => (w.pnlPct as number) < 0);
+              winRate = (wins.length / sampledWindows.length) * 100;
+              avgWinPct = wins.length
+                ? wins.reduce((acc, w) => acc + (w.pnlPct as number), 0) / wins.length
+                : null;
+              avgLossPct = losses.length
+                ? losses.reduce((acc, w) => acc + (w.pnlPct as number), 0) / losses.length
+                : null;
+              // Pick the most recent window that has leverage info
+              const lastWithLev = lastWindows
+                .slice()
+                .reverse()
+                .find((w) => Number.isFinite(w.leverage as number));
+              lastPositionLeverage =
+                lastWithLev && Number.isFinite(lastWithLev.leverage as number)
+                  ? (lastWithLev.leverage as number)
+                  : leverageFromHistory ?? null;
             }
-          } else {
-            lastPositionPnl = Number.isFinite(roiRes.lastNetPct as number) ? (roiRes.lastNetPct as number) : null;
-            lastPositionDirection = roiRes.lastSide ?? null;
+
+            const lastWindow = recentWindows.length ? recentWindows[recentWindows.length - 1] : null;
+            if (lastWindow) {
+              lastPositionPnl = Number.isFinite(lastWindow.pnlPct as number) ? (lastWindow.pnlPct as number) : null;
+              lastPositionDirection = lastWindow.side ?? null;
+              if (lastPositionLeverage === null) {
+                lastPositionLeverage = Number.isFinite(lastWindow.leverage as number)
+                  ? (lastWindow.leverage as number)
+                  : leverageFromHistory ?? null;
+              }
+            } else {
+              lastPositionPnl = Number.isFinite(roiRes.lastNetPct as number) ? (roiRes.lastNetPct as number) : null;
+              lastPositionDirection = roiRes.lastSide ?? null;
+            }
+          } catch (err) {
+            console.warn(`Could not fetch sparkline PnL for ${symbol}:`, err);
           }
-        } catch (err) {
-          console.warn(`Could not fetch sparkline PnL for ${symbol}:`, err);
         }
 
         try {
@@ -208,7 +265,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         // Temporary override requested by user: force BTCUSDT realized/last-position metrics to 3x leverage.
-        if (symbol.toUpperCase() === BTC_SYMBOL) {
+        if (platform === 'bitget' && symbol.toUpperCase() === BTC_SYMBOL) {
           const detectedLeverage =
             Number.isFinite(lastPositionLeverage as number) && (lastPositionLeverage as number) > 0
               ? (lastPositionLeverage as number)

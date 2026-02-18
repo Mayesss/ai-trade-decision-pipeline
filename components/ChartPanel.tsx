@@ -45,6 +45,7 @@ type CachedChartEntry = {
 
 type ChartPanelProps = {
   symbol: string | null;
+  platform?: string | null;
   adminSecret: string | null;
   adminGranted: boolean;
   isDark?: boolean;
@@ -122,6 +123,7 @@ const formatOverlayDecisionTs = (tsMs?: number | null) => {
 export default function ChartPanel(props: ChartPanelProps) {
   const {
     symbol,
+    platform = null,
     adminSecret,
     adminGranted,
     isDark = false,
@@ -186,7 +188,7 @@ export default function ChartPanel(props: ChartPanelProps) {
     let cancelled = false;
     const controller = new AbortController();
     let timeoutId: number | null = null;
-    const cacheKey = `${symbol}|${timeframe}|${resolvedLimit}`;
+    const cacheKey = `${symbol}|${platform || 'bitget'}|${timeframe}|${resolvedLimit}`;
     const cached = chartCacheRef.current.get(cacheKey);
     const hasFresh = !!cached && Date.now() - cached.fetchedAt <= CHART_CACHE_TTL_MS;
 
@@ -206,8 +208,14 @@ export default function ChartPanel(props: ChartPanelProps) {
     }
 
     const fetchChart = async (limit: number): Promise<ChartApiResponse> => {
+      const params = new URLSearchParams({
+        symbol,
+        timeframe,
+        limit: String(limit),
+      });
+      if (platform) params.set('platform', platform);
       const res = await fetch(
-        `/api/chart?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`,
+        `/api/chart?${params.toString()}`,
         {
           headers: adminSecret ? { 'x-admin-access-secret': adminSecret } : undefined,
           signal: controller.signal,
@@ -254,7 +262,7 @@ export default function ChartPanel(props: ChartPanelProps) {
       controller.abort();
       if (timeoutId) window.clearTimeout(timeoutId);
     };
-  }, [symbol, timeframe, adminSecret, adminGranted, resolvedLimit]);
+  }, [symbol, platform, timeframe, adminSecret, adminGranted, resolvedLimit]);
 
   useEffect(() => {
     if (!isFullscreen) return;
