@@ -48,6 +48,8 @@ type EvaluationEntry = {
   evaluation: Evaluation;
   evaluationTs?: number | null;
   lastBiasTimeframes?: Record<string, string | undefined> | null;
+  lastPlatform?: string | null;
+  lastNewsSource?: string | null;
   pnl7d?: number | null;
   pnl7dWithOpen?: number | null;
   pnl7dNet?: number | null;
@@ -1103,6 +1105,20 @@ export default function Home() {
                     </span>
                     {(current.lastDecision as any)?.summary ? ` · ${(current.lastDecision as any).summary}` : ''}
                   </div>
+                  {(current.lastPlatform || current.lastNewsSource) ? (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {current.lastPlatform ? (
+                        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
+                          Platform: {current.lastPlatform}
+                        </span>
+                      ) : null}
+                      {current.lastNewsSource ? (
+                        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
+                          News: {current.lastNewsSource}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {(current.lastDecision as any)?.reason ? (
                     <p className="mt-2 text-sm text-slate-700 whitespace-pre-wrap">
                       <span className="font-semibold text-slate-800">Reason: </span>

@@ -9,6 +9,8 @@ type EnrichedEntry = {
   evaluation: any;
   evaluationTs?: number | null;
   lastBiasTimeframes?: Record<string, string | undefined> | null;
+  lastPlatform?: string | null;
+  lastNewsSource?: string | null;
   pnl7d?: number | null;
   pnl7dWithOpen?: number | null;
   pnl7dNet?: number | null;
@@ -79,6 +81,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let lastDecision: any = null;
       let lastMetrics: any = null;
       let lastPrompt: { system?: string; user?: string } | null = null;
+      let lastPlatform: string | null | undefined = null;
+      let lastNewsSource: string | null | undefined = null;
       let winRate: number | null | undefined = null;
       let avgWinPct: number | null | undefined = null;
       let avgLossPct: number | null | undefined = null;
@@ -95,6 +99,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           lastDecisionTs = Number.isFinite(latest.timestamp) ? Number(latest.timestamp) : null;
           lastPrompt = latest.prompt ?? null;
           lastBiasTimeframes = latest.biasTimeframes ?? null;
+          lastPlatform =
+            typeof latest.platform === 'string'
+              ? latest.platform
+              : typeof latest.snapshot?.platform === 'string'
+              ? latest.snapshot.platform
+              : null;
+          lastNewsSource =
+            typeof latest.newsSource === 'string'
+              ? latest.newsSource
+              : typeof latest.snapshot?.newsSource === 'string'
+              ? latest.snapshot.newsSource
+              : null;
         }
         // Get latest leverage we set/applied from history (execResult or aiDecision hint)
         const leverageFromHistory = history
@@ -244,6 +260,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         lastPositionLeverage,
         evaluationTs,
         lastBiasTimeframes,
+        lastPlatform,
+        lastNewsSource,
         lastDecisionTs,
         lastDecision,
         lastMetrics,
