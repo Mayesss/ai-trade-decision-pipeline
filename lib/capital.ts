@@ -56,6 +56,8 @@ type BundleOpts = {
 type MarketDetails = {
     bid: number | null;
     offer: number | null;
+    lastTraded: number | null;
+    snapshotTsMs: number | null;
     minDealSize: number | null;
     sizeDecimals: number;
     epic: string;
@@ -638,15 +640,57 @@ async function loadMarketDetails(epic: string): Promise<MarketDetails> {
     const market = payload?.market ?? payload?.data ?? payload;
     const bid = safeNumber(market?.snapshot?.bid ?? market?.bid, NaN);
     const offer = safeNumber(market?.snapshot?.offer ?? market?.offer, NaN);
+    const lastTraded = safeNumber(market?.snapshot?.lastTraded ?? market?.lastTraded ?? market?.last, NaN);
+    const snapshotTsMs =
+        toIsoTimestampMs(
+            market?.snapshot?.updateTimeUTC ??
+            market?.snapshot?.updateTime ??
+            market?.snapshotTimeUTC ??
+            market?.snapshotTime ??
+            market?.updateTime ??
+            market?.timestamp,
+        ) ?? null;
     const minDealSize = safeNumber(market?.dealingRules?.minDealSize?.value, NaN);
     const minDealSizeSafe = Number.isFinite(minDealSize) && minDealSize > 0 ? minDealSize : null;
     const sizeDecimals = numberOfDecimals(minDealSizeSafe ?? 0.0001);
     return {
         bid: Number.isFinite(bid) ? bid : null,
         offer: Number.isFinite(offer) ? offer : null,
+        lastTraded: Number.isFinite(lastTraded) ? lastTraded : null,
+        snapshotTsMs,
         minDealSize: minDealSizeSafe,
         sizeDecimals,
         epic: String(market?.epic ?? epic),
+    };
+}
+
+export async function fetchCapitalLivePrice(symbol: string) {
+    const normalizedSymbol = normalizeTicker(symbol);
+    const resolved = await resolveCapitalEpicRuntime(normalizedSymbol);
+    const details = await loadMarketDetails(resolved.epic);
+    const bid = safeNumber(details.bid, NaN);
+    const offer = safeNumber(details.offer, NaN);
+    const lastTraded = safeNumber(details.lastTraded, NaN);
+    const price =
+        Number.isFinite(lastTraded) && lastTraded > 0
+            ? lastTraded
+            : Number.isFinite(bid) && Number.isFinite(offer)
+              ? (bid + offer) / 2
+              : Number.isFinite(bid)
+                ? bid
+                : offer;
+    if (!(Number.isFinite(price) && price > 0)) {
+        throw new Error(`Capital live quote unavailable for ${normalizedSymbol}`);
+    }
+
+    return {
+        symbol: normalizedSymbol,
+        epic: details.epic,
+        price,
+        bid: Number.isFinite(bid) ? bid : null,
+        offer: Number.isFinite(offer) ? offer : null,
+        ts: Number.isFinite(details.snapshotTsMs as number) ? Number(details.snapshotTsMs) : Date.now(),
+        mappingSource: resolved.source,
     };
 }
 

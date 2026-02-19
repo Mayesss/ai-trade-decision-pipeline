@@ -162,6 +162,7 @@ const BERLIN_TZ = 'Europe/Berlin';
 const BITGET_PUBLIC_WS_URL = 'wss://ws.bitget.com/v2/ws/public';
 const WS_RECONNECT_MS = 1500;
 const WS_PING_MS = 25_000;
+const CAPITAL_LIVE_POLL_MS = 3000;
 
 const ADMIN_SECRET_STORAGE_KEY = 'admin_access_secret';
 const ADMIN_AUTH_TIMEOUT_MS = 4000;
@@ -652,7 +653,94 @@ export default function Home() {
   useEffect(() => {
     const symbol = symbols[active] || null;
     const platform = symbol ? String(tabData[symbol]?.lastPlatform || '').toLowerCase() : '';
-    if (!adminGranted || !symbol || (platform && platform !== 'bitget')) {
+    if (!adminGranted || !symbol) {
+      setLivePriceNow(null);
+      setLivePriceTs(null);
+      setLivePriceConnected(false);
+      return;
+    }
+
+    if (platform === 'capital') {
+      let closed = false;
+      let pollTimer: number | null = null;
+      let inFlight: AbortController | null = null;
+
+      const clearPoll = () => {
+        if (pollTimer) {
+          window.clearTimeout(pollTimer);
+          pollTimer = null;
+        }
+        if (inFlight) {
+          inFlight.abort();
+          inFlight = null;
+        }
+      };
+
+      const schedulePoll = () => {
+        if (closed) return;
+        pollTimer = window.setTimeout(() => {
+          if (closed) return;
+          void poll();
+        }, CAPITAL_LIVE_POLL_MS);
+      };
+
+      const poll = async () => {
+        if (closed) return;
+        inFlight = new AbortController();
+        try {
+          const params = new URLSearchParams({
+            symbol,
+            platform: 'capital',
+            t: String(Date.now()),
+          });
+          const res = await fetch(`/api/dashboard/live-price?${params.toString()}`, {
+            headers: buildAdminHeaders(),
+            cache: 'no-store',
+            signal: inFlight.signal,
+          });
+          if (res.status === 401) {
+            closed = true;
+            clearPoll();
+            setLivePriceConnected(false);
+            handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+            return;
+          }
+          if (!res.ok) {
+            throw new Error(`Capital live price failed (${res.status})`);
+          }
+          const payload = await res.json();
+          const px = Number(payload?.price);
+          const ts = Number(payload?.ts);
+          if (Number.isFinite(px) && px > 0) {
+            setLivePriceNow(px);
+            setLivePriceTs(Number.isFinite(ts) ? ts : Date.now());
+            setLivePriceConnected(true);
+          } else {
+            setLivePriceConnected(false);
+          }
+        } catch (err: any) {
+          if (err?.name !== 'AbortError') {
+            setLivePriceConnected(false);
+          }
+        } finally {
+          inFlight = null;
+          schedulePoll();
+        }
+      };
+
+      setLivePriceNow(null);
+      setLivePriceTs(null);
+      setLivePriceConnected(false);
+      void poll();
+
+      return () => {
+        closed = true;
+        clearPoll();
+        setLivePriceConnected(false);
+      };
+    }
+
+    if (platform && platform !== 'bitget') {
       setLivePriceNow(null);
       setLivePriceTs(null);
       setLivePriceConnected(false);
@@ -762,7 +850,7 @@ export default function Home() {
       }
       ws = null;
     };
-  }, [adminGranted, symbols, active, tabData]);
+  }, [adminGranted, symbols, active, tabData, adminSecret]);
 
   const formatDecisionTime = (ts?: number | null) => {
     if (!ts) return '';
