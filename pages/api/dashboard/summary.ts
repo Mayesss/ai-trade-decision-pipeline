@@ -33,7 +33,12 @@ type SummaryEntry = {
   avgLossPct?: number | null;
 };
 
-const PNL_LOOKBACK_HOURS = 7 * 24;
+type SummaryRangeKey = '7D' | '30D' | '6M';
+const SUMMARY_RANGE_LOOKBACK_HOURS: Record<SummaryRangeKey, number> = {
+  '7D': 7 * 24,
+  '30D': 30 * 24,
+  '6M': 183 * 24,
+};
 const BTC_SYMBOL = 'BTCUSDT';
 const BTC_LAST_POSITION_LEVERAGE_OVERRIDE = 3;
 
@@ -42,11 +47,24 @@ const scalePct = (value: number | null | undefined, factor: number): number | nu
   return value * factor;
 };
 
+function resolveSummaryRange(raw: unknown): SummaryRangeKey {
+  const normalized = String(raw || '')
+    .trim()
+    .toUpperCase();
+  if (normalized === '30D') return '30D';
+  if (normalized === '6M') return '6M';
+  return '7D';
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
   }
   if (!requireAdminAccess(req, res)) return;
+
+  const rangeParam = Array.isArray(req.query.range) ? req.query.range[0] : req.query.range;
+  const range = resolveSummaryRange(rangeParam);
+  const lookbackHours = SUMMARY_RANGE_LOOKBACK_HOURS[range];
 
   const configs = getCronSymbolConfigs();
   const symbols = configs.map((item) => item.symbol);
@@ -98,7 +116,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const fetchRealizedRoi = platform === 'capital' ? fetchCapitalRealizedRoi : fetchBitgetRealizedRoi;
         const fetchPositionInfo = platform === 'capital' ? fetchCapitalPositionInfo : fetchBitgetPositionInfo;
 
-        const roiRes = await fetchRealizedRoi(symbol, PNL_LOOKBACK_HOURS);
+        const roiRes = await fetchRealizedRoi(symbol, lookbackHours);
         pnl7dNet = Number.isFinite(roiRes.roi as number) ? (roiRes.roi as number) : null;
         pnl7dTrades = roiRes.count;
         lastPositionPnl = Number.isFinite(roiRes.lastNetPct as number) ? (roiRes.lastNetPct as number) : null;
@@ -106,7 +124,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         if (platform !== 'capital') {
           try {
-            const recentWindows = await fetchRecentPositionWindows(symbol, PNL_LOOKBACK_HOURS);
+            const recentWindows = await fetchRecentPositionWindows(symbol, lookbackHours);
             const lastWindows = recentWindows.slice(-14);
             const spark = lastWindows
               .map((w) => (Number.isFinite(w.pnlPct as number) ? (w.pnlPct as number) : null))
@@ -237,6 +255,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }),
   );
 
-  return res.status(200).json({ symbols, data });
+  return res.status(200).json({ symbols, data, range });
 }
-

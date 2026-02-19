@@ -43,14 +43,16 @@ type CachedChartEntry = {
   fetchedAt: number;
 };
 
+export type ChartRangeKey = '7D' | '30D' | '6M';
+
 type ChartPanelProps = {
   symbol: string | null;
   platform?: string | null;
   adminSecret: string | null;
   adminGranted: boolean;
   isDark?: boolean;
-  timeframe?: string;
-  limit?: number;
+  rangeKey: ChartRangeKey;
+  onRangeChange: (nextRange: ChartRangeKey) => void;
   livePrice?: number | null;
   liveTimestamp?: number | null;
   liveConnected?: boolean;
@@ -59,7 +61,12 @@ type ChartPanelProps = {
 const BERLIN_TZ = 'Europe/Berlin';
 const CHART_CACHE_TTL_MS = 60_000;
 const CHART_FETCH_DEFER_MS = 120;
-const DEFAULT_WINDOW_DAYS = 7;
+const CHART_RANGE_ORDER: ChartRangeKey[] = ['7D', '30D', '6M'];
+const CHART_RANGE_PRESETS: Record<ChartRangeKey, { timeframe: string; limit: number }> = {
+  '7D': { timeframe: '1H', limit: 168 },
+  '30D': { timeframe: '4H', limit: 180 },
+  '6M': { timeframe: '1D', limit: 183 },
+};
 
 const timeframeToSeconds = (tf: string): number => {
   const match = /^(\d+)([smhd])$/i.exec(String(tf || '').trim());
@@ -87,13 +94,18 @@ const formatCompactPrice = (value: number) => {
   return value.toFixed(2);
 };
 
-const formatBerlinTime = (time: any, opts: Intl.DateTimeFormatOptions = {}) => {
+const toUnixSeconds = (time: any): number => {
   const seconds =
     typeof time === 'number'
       ? time
       : typeof time === 'object' && time !== null && 'timestamp' in time
       ? Number((time as any).timestamp)
       : Number(time);
+  return Number.isFinite(seconds) ? seconds : NaN;
+};
+
+const formatBerlinTime = (time: any, opts: Intl.DateTimeFormatOptions = {}) => {
+  const seconds = toUnixSeconds(time);
   if (!Number.isFinite(seconds)) return '';
   const date = new Date(seconds * 1000);
   return new Intl.DateTimeFormat('de-DE', {
@@ -101,6 +113,54 @@ const formatBerlinTime = (time: any, opts: Intl.DateTimeFormatOptions = {}) => {
     hour: '2-digit',
     minute: '2-digit',
     ...opts,
+  }).format(date);
+};
+
+const formatAxisTick = (time: any, rangeKey: ChartRangeKey) => {
+  const seconds = toUnixSeconds(time);
+  if (!Number.isFinite(seconds)) return '';
+  const date = new Date(seconds * 1000);
+  if (rangeKey === '6M') {
+    return new Intl.DateTimeFormat('de-DE', {
+      timeZone: BERLIN_TZ,
+      month: 'short',
+      year: '2-digit',
+    }).format(date);
+  }
+  if (rangeKey === '30D') {
+    return new Intl.DateTimeFormat('de-DE', {
+      timeZone: BERLIN_TZ,
+      day: '2-digit',
+      month: '2-digit',
+    }).format(date);
+  }
+  return new Intl.DateTimeFormat('de-DE', {
+    timeZone: BERLIN_TZ,
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+};
+
+const formatCrosshairTime = (time: any, rangeKey: ChartRangeKey) => {
+  const seconds = toUnixSeconds(time);
+  if (!Number.isFinite(seconds)) return '';
+  const date = new Date(seconds * 1000);
+  if (rangeKey === '6M') {
+    return new Intl.DateTimeFormat('de-DE', {
+      timeZone: BERLIN_TZ,
+      day: '2-digit',
+      month: '2-digit',
+      year: '2-digit',
+    }).format(date);
+  }
+  return new Intl.DateTimeFormat('de-DE', {
+    timeZone: BERLIN_TZ,
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
   }).format(date);
 };
 
@@ -127,8 +187,8 @@ export default function ChartPanel(props: ChartPanelProps) {
     adminSecret,
     adminGranted,
     isDark = false,
-    timeframe = '1H',
-    limit,
+    rangeKey,
+    onRangeChange,
     livePrice = null,
     liveTimestamp = null,
     liveConnected = false,
@@ -152,12 +212,10 @@ export default function ChartPanel(props: ChartPanelProps) {
   const chartInstanceRef = useRef<any>(null);
   const chartSeriesRef = useRef<any>(null);
   const chartCacheRef = useRef<Map<string, CachedChartEntry>>(new Map());
+  const rangePreset = CHART_RANGE_PRESETS[rangeKey];
+  const timeframe = rangePreset.timeframe;
   const timeframeSeconds = timeframeToSeconds(timeframe);
-  const resolvedLimit = Math.max(
-    32,
-    Math.floor(limit ?? (DEFAULT_WINDOW_DAYS * 24 * 60 * 60) / Math.max(1, timeframeSeconds)),
-  );
-  const windowDays = (resolvedLimit * Math.max(1, timeframeSeconds)) / (24 * 60 * 60);
+  const resolvedLimit = Math.max(32, rangePreset.limit);
   const chartTextColor = isDark ? '#cbd5e1' : '#0f172a';
   const chartGridColor = isDark ? '#334155' : '#e2e8f0';
   const chartLineColor = isDark ? '#38bdf8' : '#0ea5e9';
@@ -368,19 +426,13 @@ export default function ChartPanel(props: ChartPanelProps) {
         },
         localization: {
           priceFormatter: formatCompactPrice,
-          timeFormatter: (time: any) =>
-            formatBerlinTime(time, {
-              day: '2-digit',
-              month: '2-digit',
-              hour: '2-digit',
-              minute: '2-digit',
-            }),
+          timeFormatter: (time: any) => formatCrosshairTime(time, rangeKey),
         },
       });
 
       chartInstanceRef.current = chart;
       chart.timeScale().applyOptions({
-        tickMarkFormatter: (time: any) => formatBerlinTime(time),
+        tickMarkFormatter: (time: any) => formatAxisTick(time, rangeKey),
       });
 
       const AreaSeriesCtor = (lw as any).AreaSeries || (lw as any)?.default?.AreaSeries;
@@ -435,7 +487,18 @@ export default function ChartPanel(props: ChartPanelProps) {
       }
       chartSeriesRef.current = null;
     };
-  }, [symbol, timeframe, chartData.length, isFullscreen, chartAreaBottomColor, chartAreaTopColor, chartGridColor, chartLineColor, chartTextColor]);
+  }, [
+    symbol,
+    timeframe,
+    rangeKey,
+    chartData.length,
+    isFullscreen,
+    chartAreaBottomColor,
+    chartAreaTopColor,
+    chartGridColor,
+    chartLineColor,
+    chartTextColor,
+  ]);
 
   useEffect(() => {
     const series = chartSeriesRef.current;
@@ -550,9 +613,29 @@ export default function ChartPanel(props: ChartPanelProps) {
       }`}
     >
       <div className="flex items-center justify-between">
-        <div className="text-xs uppercase tracking-wide text-slate-500">7D Price</div>
+        <div className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 p-1">
+          {CHART_RANGE_ORDER.map((key) => {
+            const active = key === rangeKey;
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => onRangeChange(key)}
+                className={`rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
+                  active
+                    ? 'bg-sky-600 text-white shadow-sm'
+                    : 'text-slate-600 hover:bg-slate-200/70 hover:text-slate-900'
+                }`}
+                aria-pressed={active}
+                aria-label={`Switch chart range to ${key}`}
+              >
+                {key}
+              </button>
+            );
+          })}
+        </div>
         <div className="text-xs text-slate-400">
-          {timeframe} bars · {windowDays.toFixed(0)}D window
+          {timeframe} bars · {rangeKey} window
           {liveConnected ? ' · live' : ''}
           {typeof livePrice === 'number' ? ` · ${livePrice.toFixed(2)}` : ''}
           {chartLoading && hasChartData ? ' · updating…' : ''}

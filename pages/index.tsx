@@ -116,6 +116,7 @@ type DashboardSummaryRow = {
 type DashboardSummaryResponse = {
   symbols: string[];
   data: DashboardSummaryRow[];
+  range?: DashboardRangeKey;
 };
 
 type DashboardDecisionResponse = {
@@ -144,6 +145,7 @@ type EvaluateJobRecord = {
   error?: string;
 };
 
+type DashboardRangeKey = '7D' | '30D' | '6M';
 type ThemePreference = 'system' | 'light' | 'dark';
 type ResolvedTheme = 'light' | 'dark';
 
@@ -172,7 +174,11 @@ const ChartPanel = dynamic(() => import('../components/ChartPanel'), {
   loading: () => (
     <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
       <div className="flex items-center justify-between">
-        <div className="text-xs uppercase tracking-wide text-slate-500">7D Price</div>
+        <div className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 p-1 text-[11px] font-semibold text-slate-500">
+          <span className="rounded-full bg-slate-200 px-2.5 py-1 text-slate-700">7D</span>
+          <span className="px-2.5 py-1">30D</span>
+          <span className="px-2.5 py-1">6M</span>
+        </div>
         <div className="text-xs text-slate-400">1H bars · 7D window</div>
       </div>
       <div className="relative mt-3 h-[260px] w-full" style={{ minHeight: 260 }}>
@@ -209,6 +215,7 @@ export default function Home() {
   const [showPrompt, setShowPrompt] = useState(false);
   const [evaluateJobs, setEvaluateJobs] = useState<Record<string, EvaluateJobRecord>>({});
   const [evaluateSubmittingSymbol, setEvaluateSubmittingSymbol] = useState<string | null>(null);
+  const [dashboardRange, setDashboardRange] = useState<DashboardRangeKey>('7D');
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
   const [livePriceConnected, setLivePriceConnected] = useState(false);
@@ -420,7 +427,8 @@ export default function Home() {
       });
 
       try {
-        const summaryRes = await fetch('/api/dashboard/summary', {
+        const summaryParams = new URLSearchParams({ range: dashboardRange });
+        const summaryRes = await fetch(`/api/dashboard/summary?${summaryParams.toString()}`, {
           headers: buildAdminHeaders(),
           cache: 'no-store',
         });
@@ -615,7 +623,7 @@ export default function Home() {
   useEffect(() => {
     if (!adminGranted) return;
     loadDashboard();
-  }, [adminGranted]);
+  }, [adminGranted, dashboardRange]);
 
   useEffect(() => {
     const symbol = symbols[active] || null;
@@ -914,6 +922,7 @@ export default function Home() {
   const activeSymbol = symbols[active] || null;
   const activePlatform = current?.lastPlatform?.toLowerCase() === 'capital' ? 'capital' : 'bitget';
   const activePlatformLogo = activePlatform === 'capital' ? '/capital.svg' : '/bitget.svg';
+  const dashboardRangeText = dashboardRange === '6M' ? '6m' : dashboardRange.toLowerCase();
   const liveOpenPnl =
     current &&
     typeof livePriceNow === 'number' &&
@@ -1220,7 +1229,7 @@ export default function Home() {
                   </div>
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                     <div>
-                      <div className="text-xs uppercase tracking-wide text-slate-500">7D PnL</div>
+                      <div className="text-xs uppercase tracking-wide text-slate-500">{dashboardRange} PnL</div>
                       <div className="mt-3 text-3xl font-semibold text-slate-900">
                         <span
                           className={
@@ -1245,7 +1254,8 @@ export default function Home() {
                         </span>
                       </div>
                       <p className="mt-1 text-xs text-slate-500">
-                        from {current.pnl7dTrades ?? 0} {current.pnl7dTrades === 1 ? 'trade' : 'trades'} in last 7d
+                        from {current.pnl7dTrades ?? 0} {current.pnl7dTrades === 1 ? 'trade' : 'trades'} in last{' '}
+                        {dashboardRangeText}
                         {typeof effectiveOpenPnl === 'number' ? ' + open position' : ''}
                       </p>
                       <div className="mt-1 text-[11px] text-slate-500">
@@ -1368,8 +1378,8 @@ export default function Home() {
                   adminSecret={resolveAdminSecret()}
                   adminGranted={adminGranted}
                   isDark={resolvedTheme === 'dark'}
-                  timeframe="1H"
-                  limit={168}
+                  rangeKey={dashboardRange}
+                  onRangeChange={setDashboardRange}
                   livePrice={livePriceNow}
                   liveTimestamp={livePriceTs}
                   liveConnected={livePriceConnected}
