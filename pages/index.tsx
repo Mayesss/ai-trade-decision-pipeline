@@ -78,9 +78,61 @@ type EvaluationEntry = {
   avgLossPct?: number | null;
 };
 
-type EvaluationsResponse = {
+type DashboardSymbolRow = {
+  symbol: string;
+  platform?: string | null;
+  newsSource?: string | null;
+  schedule?: string | null;
+  decisionPolicy?: string | null;
+};
+
+type DashboardSymbolsResponse = {
   symbols: string[];
-  data: EvaluationEntry[];
+  data: DashboardSymbolRow[];
+};
+
+type DashboardSummaryRow = {
+  symbol: string;
+  lastPlatform?: string | null;
+  lastNewsSource?: string | null;
+  pnl7d?: number | null;
+  pnl7dWithOpen?: number | null;
+  pnl7dNet?: number | null;
+  pnl7dGross?: number | null;
+  pnl7dTrades?: number | null;
+  pnlSpark?: number[] | null;
+  openPnl?: number | null;
+  openDirection?: 'long' | 'short' | null;
+  openLeverage?: number | null;
+  openEntryPrice?: number | null;
+  lastPositionPnl?: number | null;
+  lastPositionDirection?: 'long' | 'short' | null;
+  lastPositionLeverage?: number | null;
+  winRate?: number | null;
+  avgWinPct?: number | null;
+  avgLossPct?: number | null;
+};
+
+type DashboardSummaryResponse = {
+  symbols: string[];
+  data: DashboardSummaryRow[];
+};
+
+type DashboardDecisionResponse = {
+  symbol: string;
+  platform?: string | null;
+  lastDecisionTs?: number | null;
+  lastDecision?: EvaluationEntry['lastDecision'];
+  lastPrompt?: { system?: string; user?: string } | null;
+  lastMetrics?: Record<string, any> | null;
+  lastBiasTimeframes?: Record<string, string | undefined> | null;
+  lastNewsSource?: string | null;
+};
+
+type DashboardEvaluationResponse = {
+  symbol: string;
+  evaluation: Evaluation;
+  evaluationTs?: number | null;
 };
 
 type EvaluateJobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
@@ -255,6 +307,158 @@ export default function Home() {
   };
 
   const formatLabel = (key: string) => key.replace(/_/g, ' ');
+  const mergeTabPatch = (symbol: string, patch: Partial<EvaluationEntry>) => {
+    setTabData((prev) => {
+      const current = prev[symbol] || { symbol, evaluation: {} };
+      const nextEvaluation = patch.evaluation ?? current.evaluation ?? {};
+      return {
+        ...prev,
+        [symbol]: {
+          ...current,
+          ...patch,
+          symbol,
+          evaluation: nextEvaluation,
+        },
+      };
+    });
+  };
+
+  const loadSymbolDecision = async (symbol: string, platform?: string | null) => {
+    if (!symbol) return;
+    const params = new URLSearchParams({ symbol });
+    if (platform) params.set('platform', platform);
+    const res = await fetch(`/api/dashboard/decision?${params.toString()}`, {
+      headers: buildAdminHeaders(),
+      cache: 'no-store',
+    });
+    if (res.status === 401) {
+      handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+      throw new Error('Unauthorized');
+    }
+    if (!res.ok) {
+      throw new Error(`Failed to load decision (${res.status})`);
+    }
+    const json: DashboardDecisionResponse = await res.json();
+    mergeTabPatch(symbol, {
+      lastPlatform: json.platform ?? platform ?? null,
+      lastNewsSource: json.lastNewsSource ?? null,
+      lastDecisionTs: json.lastDecisionTs ?? null,
+      lastDecision: json.lastDecision ?? null,
+      lastPrompt: json.lastPrompt ?? null,
+      lastMetrics: json.lastMetrics ?? null,
+      lastBiasTimeframes: json.lastBiasTimeframes ?? null,
+    });
+  };
+
+  const loadSymbolEvaluation = async (symbol: string) => {
+    if (!symbol) return;
+    const params = new URLSearchParams({ symbol });
+    const res = await fetch(`/api/dashboard/evaluation?${params.toString()}`, {
+      headers: buildAdminHeaders(),
+      cache: 'no-store',
+    });
+    if (res.status === 401) {
+      handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+      throw new Error('Unauthorized');
+    }
+    if (!res.ok) {
+      throw new Error(`Failed to load evaluation (${res.status})`);
+    }
+    const json: DashboardEvaluationResponse = await res.json();
+    mergeTabPatch(symbol, {
+      evaluation: json.evaluation || {},
+      evaluationTs: json.evaluationTs ?? null,
+    });
+  };
+
+  const loadDashboard = async () => {
+    setLoading(true);
+    try {
+      let summaryError: string | null = null;
+      const symbolsRes = await fetch('/api/dashboard/symbols', {
+        headers: buildAdminHeaders(),
+        cache: 'no-store',
+      });
+      if (!symbolsRes.ok) {
+        if (symbolsRes.status === 401) {
+          handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+        }
+        throw new Error(`Failed to load symbols (${symbolsRes.status})`);
+      }
+      const symbolsJson: DashboardSymbolsResponse = await symbolsRes.json();
+      const orderedSymbols = symbolsJson.symbols || [];
+      const symbolMeta = new Map<string, DashboardSymbolRow>();
+      for (const row of symbolsJson.data || []) {
+        if (!row?.symbol) continue;
+        symbolMeta.set(row.symbol.toUpperCase(), row);
+      }
+
+      const activeSymbolBefore = symbols[active] || null;
+      setSymbols(orderedSymbols);
+      setActive(() => {
+        if (!activeSymbolBefore) return 0;
+        const nextIdx = orderedSymbols.findIndex((s) => s === activeSymbolBefore);
+        return nextIdx >= 0 ? nextIdx : 0;
+      });
+
+      setTabData((prev) => {
+        const next: Record<string, EvaluationEntry> = {};
+        for (const symbol of orderedSymbols) {
+          const key = symbol.toUpperCase();
+          const meta = symbolMeta.get(key);
+          const existing = prev[key] || prev[symbol] || { symbol: key, evaluation: {} };
+          next[key] = {
+            ...existing,
+            symbol: key,
+            evaluation: existing.evaluation || {},
+            lastPlatform: meta?.platform ?? existing.lastPlatform ?? null,
+            lastNewsSource: meta?.newsSource ?? existing.lastNewsSource ?? null,
+          };
+        }
+        return next;
+      });
+
+      try {
+        const summaryRes = await fetch('/api/dashboard/summary', {
+          headers: buildAdminHeaders(),
+          cache: 'no-store',
+        });
+        if (summaryRes.status === 401) {
+          handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+          throw new Error('Unauthorized');
+        }
+        if (!summaryRes.ok) {
+          throw new Error(`Failed to load summary (${summaryRes.status})`);
+        }
+        const summaryJson: DashboardSummaryResponse = await summaryRes.json();
+        const summaryRows = Array.isArray(summaryJson.data) ? summaryJson.data : [];
+        setTabData((prev) => {
+          const next = { ...prev };
+          for (const row of summaryRows) {
+            if (!row?.symbol) continue;
+            const key = row.symbol.toUpperCase();
+            const existing = next[key] || { symbol: key, evaluation: {} };
+            next[key] = {
+              ...existing,
+              ...row,
+              symbol: key,
+              evaluation: existing.evaluation || {},
+            };
+          }
+          return next;
+        });
+      } catch (summaryErr: any) {
+        summaryError = summaryErr?.message || 'Failed to load dashboard summary';
+      }
+
+      setError(summaryError);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load dashboard');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const clearEvaluatePollTimer = (symbol: string) => {
     const timerId = evaluatePollTimersRef.current[symbol];
     if (timerId) {
@@ -296,7 +500,9 @@ export default function Home() {
       if (status === 'succeeded' || status === 'failed') {
         clearEvaluatePollTimer(symbol);
         if (status === 'succeeded') {
-          await loadEvaluations();
+          try {
+            await loadSymbolEvaluation(symbol);
+          } catch {}
         }
       }
     } catch {
@@ -343,33 +549,6 @@ export default function Home() {
       setError(err?.message || 'Failed to queue evaluation');
     } finally {
       setEvaluateSubmittingSymbol(null);
-    }
-  };
-  const loadEvaluations = async () => {
-    try {
-      setLoading(true);
-      const res = await fetch('/api/evaluations', {
-        headers: buildAdminHeaders(),
-      });
-      if (!res.ok) {
-        if (res.status === 401) {
-          handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
-        }
-        throw new Error(`Request failed with status ${res.status}`);
-      }
-      const json: EvaluationsResponse = await res.json();
-      setSymbols(json.symbols || []);
-      const mapped: Record<string, EvaluationEntry> = {};
-      for (const entry of json.data || []) {
-        mapped[entry.symbol] = entry;
-      }
-      setTabData(mapped);
-      setActive(0);
-      setError(null);
-    } catch (err: any) {
-      setError(err?.message || 'Failed to load evaluations');
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -434,8 +613,27 @@ export default function Home() {
 
   useEffect(() => {
     if (!adminGranted) return;
-    loadEvaluations();
+    loadDashboard();
   }, [adminGranted]);
+
+  useEffect(() => {
+    const symbol = symbols[active] || null;
+    if (!adminGranted || !symbol) return;
+    const platform = tabData[symbol]?.lastPlatform ?? null;
+    let cancelled = false;
+    (async () => {
+      try {
+        await Promise.all([loadSymbolDecision(symbol, platform), loadSymbolEvaluation(symbol)]);
+        if (!cancelled) setError(null);
+      } catch (err: any) {
+        if (cancelled) return;
+        setError(err?.message || `Failed to load details for ${symbol}`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [adminGranted, symbols, active]);
 
   useEffect(() => {
     return () => {
@@ -453,7 +651,8 @@ export default function Home() {
 
   useEffect(() => {
     const symbol = symbols[active] || null;
-    if (!adminGranted || !symbol) {
+    const platform = symbol ? String(tabData[symbol]?.lastPlatform || '').toLowerCase() : '';
+    if (!adminGranted || !symbol || (platform && platform !== 'bitget')) {
       setLivePriceNow(null);
       setLivePriceTs(null);
       setLivePriceConnected(false);
@@ -563,7 +762,7 @@ export default function Home() {
       }
       ws = null;
     };
-  }, [adminGranted, symbols, active]);
+  }, [adminGranted, symbols, active, tabData]);
 
   const formatDecisionTime = (ts?: number | null) => {
     if (!ts) return '';
@@ -855,7 +1054,7 @@ export default function Home() {
               {evaluateSubmittingSymbol ? 'Queueing…' : evaluateRunning ? 'Evaluating…' : 'Run Evaluation'}
             </button>
             <button
-              onClick={loadEvaluations}
+              onClick={loadDashboard}
               disabled={!adminGranted}
               className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -866,7 +1065,7 @@ export default function Home() {
 
         {error && (
           <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
-            Could not load evaluations: {error}
+            Could not load dashboard data: {error}
           </div>
         )}
 
@@ -1077,6 +1276,7 @@ export default function Home() {
                 <ChartPanel
                   key={activeSymbol}
                   symbol={activeSymbol}
+                  platform={current?.lastPlatform || null}
                   adminSecret={resolveAdminSecret()}
                   adminGranted={adminGranted}
                   isDark={resolvedTheme === 'dark'}
