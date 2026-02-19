@@ -625,6 +625,8 @@ export default function Home() {
 
   const current = symbols[active] ? tabData[symbols[active]] : null;
   const activeSymbol = symbols[active] || null;
+  const activePlatform = current?.lastPlatform?.toLowerCase() === 'capital' ? 'capital' : 'bitget';
+  const activePlatformLogo = activePlatform === 'capital' ? '/capital.svg' : '/bitget.svg';
   const liveOpenPnl =
     current &&
     typeof livePriceNow === 'number' &&
@@ -921,7 +923,14 @@ export default function Home() {
           ) : current ? (
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-stretch">
               <div className="space-y-4 lg:col-span-2">
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 h-full">
+                <div className="relative rounded-2xl border border-slate-200 bg-slate-50 p-4 h-full">
+                  <div className="absolute right-4 top-4">
+                    <img
+                      src={activePlatformLogo}
+                      alt={`${activePlatform} platform`}
+                      className="h-5 w-auto opacity-80"
+                    />
+                  </div>
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-500">7D PnL</div>
@@ -1105,20 +1114,6 @@ export default function Home() {
                     </span>
                     {(current.lastDecision as any)?.summary ? ` · ${(current.lastDecision as any).summary}` : ''}
                   </div>
-                  {(current.lastPlatform || current.lastNewsSource) ? (
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      {current.lastPlatform ? (
-                        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
-                          Platform: {current.lastPlatform}
-                        </span>
-                      ) : null}
-                      {current.lastNewsSource ? (
-                        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
-                          News: {current.lastNewsSource}
-                        </span>
-                      ) : null}
-                    </div>
-                  ) : null}
                   {(current.lastDecision as any)?.reason ? (
                     <p className="mt-2 text-sm text-slate-700 whitespace-pre-wrap">
                       <span className="font-semibold text-slate-800">Reason: </span>
