@@ -83,6 +83,7 @@ function buildLatestExecution(entry: ForexJournalEntry | null) {
     const reasonCodes = Array.isArray(entry.reasonCodes) ? entry.reasonCodes : [];
     const holdingOpenPosition = reasonCodes.includes('OPEN_POSITION_HELD_NO_EXIT_TRIGGER');
     const marketClosed = reasonCodes.includes('MARKET_CLOSED_HARD_GATE');
+    const reasonCodeStatus = inferExecutionStatusFromReasonCodes(reasonCodes);
     const status = holdingOpenPosition
         ? 'position_open_hold'
         : marketClosed
@@ -93,6 +94,8 @@ function buildLatestExecution(entry: ForexJournalEntry | null) {
         ? dryRun
             ? 'dry_run_attempt'
             : 'attempted_not_placed'
+        : reasonCodeStatus
+        ? reasonCodeStatus
         : payload.risk || payload.gate
         ? 'blocked_or_no_signal'
         : 'info';
@@ -112,6 +115,53 @@ function buildLatestExecution(entry: ForexJournalEntry | null) {
         clientOid,
         reasonCodes,
     };
+}
+
+function normalizeReasonCodeStatus(reasonCode: string): string {
+    const raw = String(reasonCode || '')
+        .trim()
+        .toUpperCase();
+    if (!raw) return 'blocked_unknown';
+
+    const customMap: Record<string, string> = {
+        NO_TRADE_SELECTOR_PERCENTILE: 'blocked_selector_top40',
+        REENTRY_NEXT_BAR_LOCK: 'reentry_next_bar_lock',
+        NO_TRADE_PACKET_STALE: 'packet_stale',
+        NO_MODULE_SIGNAL: 'blocked_no_module_signal',
+        ENTRY_BLOCKED: 'blocked_entry_gate',
+        EVENT_MEDIUM_BLOCK_NEW: 'blocked_event_medium',
+        EVENT_WINDOW_ACTIVE_BLOCK: 'blocked_event_window',
+        EVENT_DATA_STALE_BLOCK_NON_NORMAL_RISK: 'blocked_event_data_stale',
+        NO_TRADE_SPREAD_TOO_HIGH: 'blocked_spread_too_high',
+        NO_TRADE_RISK_CAP_PORTFOLIO: 'blocked_portfolio_risk_cap',
+        NO_TRADE_RISK_CAP_CURRENCY: 'blocked_currency_risk_cap',
+    };
+    return customMap[raw] || raw.toLowerCase();
+}
+
+function inferExecutionStatusFromReasonCodes(reasonCodes: string[]): string | null {
+    if (!Array.isArray(reasonCodes) || !reasonCodes.length) return null;
+    const normalized = reasonCodes
+        .map((code) => String(code || '').trim().toUpperCase())
+        .filter((code) => code.length > 0);
+    if (!normalized.length) return null;
+
+    const priority = [
+        'REENTRY_NEXT_BAR_LOCK',
+        'NO_TRADE_PACKET_STALE',
+        'NO_TRADE_SELECTOR_PERCENTILE',
+        'NO_TRADE_RISK_CAP_PORTFOLIO',
+        'NO_TRADE_RISK_CAP_CURRENCY',
+        'NO_TRADE_SPREAD_TOO_HIGH',
+        'EVENT_MEDIUM_BLOCK_NEW',
+        'EVENT_WINDOW_ACTIVE_BLOCK',
+        'NO_MODULE_SIGNAL',
+        'ENTRY_BLOCKED',
+    ];
+
+    const matched = priority.find((code) => normalized.includes(code));
+    if (matched) return normalizeReasonCodeStatus(matched);
+    return normalizeReasonCodeStatus(normalized[0]!);
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
