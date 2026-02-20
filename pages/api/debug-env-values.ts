@@ -21,6 +21,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             MARKETAUX_API_KEY: process.env.MARKETAUX_API_KEY
                 ? process.env.MARKETAUX_API_KEY.slice(0, 6) + '...'
                 : '❌ missing',
+            FMP_API_KEY: process.env.FMP_API_KEY ? process.env.FMP_API_KEY.slice(0, 6) + '...' : '❌ missing',
             CAPITAL_API_KEY: process.env.CAPITAL_API_KEY
                 ? process.env.CAPITAL_API_KEY.slice(0, 6) + '...'
                 : '❌ missing',
@@ -38,6 +39,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             OPENAI_API_KEY: process.env.OPENAI_API_KEY ? '✅ set' : '❌ missing',
             COINDESK_API_KEY: process.env.COINDESK_API_KEY ? '✅ set' : '❌ missing',
             MARKETAUX_API_KEY: process.env.MARKETAUX_API_KEY ? '✅ set' : '❌ missing',
+            FMP_API_KEY: process.env.FMP_API_KEY ? '✅ set' : '❌ missing',
             CAPITAL_API_KEY: process.env.CAPITAL_API_KEY ? '✅ set' : '❌ missing',
             CAPITAL_IDENTIFIER: process.env.CAPITAL_IDENTIFIER ? '✅ set' : '❌ missing',
             CAPITAL_PASSWORD: process.env.CAPITAL_PASSWORD ? '✅ set' : '❌ missing',

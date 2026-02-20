@@ -19,6 +19,7 @@ Next.js app that runs an AI-driven trading loop for multiple platforms (Bitget +
 - OpenAI-compatible API key (used by `callAI`)
 - CoinDesk API key (required for `newsSource=coindesk`)
 - Marketaux API key (required for `newsSource=marketaux`)
+- Financial Modeling Prep API key (required for forex event-gate routes)
 - Upstash/Redis REST endpoint + token for KV (`KV_REST_API_URL`, `KV_REST_API_TOKEN`)
 - Optional admin secret for protected routes (`ADMIN_ACCESS_SECRET`)
 
@@ -48,6 +49,15 @@ OPENAI_API_KEY=...
 # News
 COINDESK_API_KEY=...
 MARKETAUX_API_KEY=...
+
+# Forex event calendar (FMP)
+FMP_API_KEY=...
+# Optional override:
+# FMP_BASE_URL=https://financialmodelingprep.com/api/v3
+# FOREX_EVENT_REFRESH_MINUTES=15
+# FOREX_EVENT_STALE_MINUTES=45
+# FOREX_EVENT_BLOCK_IMPACTS=HIGH
+# FOREX_EVENT_CALL_WARN_THRESHOLD=180
 
 # KV (Upstash REST)
 KV_REST_API_URL=https://...
@@ -109,6 +119,12 @@ npm run start
   - Redacted env presence check.
 - `POST /api/admin-auth`
   - Body: `{ "secret": "..." }` to validate admin access when `ADMIN_ACCESS_SECRET` is set.
+- `GET /api/forex/events/refresh`
+  - Pulls and normalizes FMP economic calendar events into KV cache.
+  - Query: `force=true|false` (default `false`) to bypass refresh interval throttling.
+- `GET /api/forex/dashboard/events`
+  - Returns forex event-gate state (freshness, call budget, normalized events).
+  - Optional query: `pair=EURUSD&riskState=normal|elevated|extreme` for pair-level gate evaluation.
 
 ## Dry-Run Safety
 `dryRun` defaults to `false` in the analysis routes. If you are testing and do not want real orders, pass `dryRun=true` explicitly.
@@ -145,4 +161,4 @@ curl "http://localhost:3000/api/analyze?symbol=QQQUSDT&platform=capital&newsSour
 ## Troubleshooting
 - `GET /api/debug-env-values` to confirm env vars are detected.
 - `GET /api/bitget-ping` to verify Bitget credentials/connectivity.
-- Watch server logs for KV errors (missing `KV_REST_API_URL`/`KV_REST_API_TOKEN`) or news/provider auth failures (`COINDESK_API_KEY`, `MARKETAUX_API_KEY`, Capital credentials).
+- Watch server logs for KV errors (missing `KV_REST_API_URL`/`KV_REST_API_TOKEN`) or provider auth failures (`COINDESK_API_KEY`, `MARKETAUX_API_KEY`, `FMP_API_KEY`, Capital credentials).
