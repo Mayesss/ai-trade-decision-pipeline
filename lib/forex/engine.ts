@@ -5,6 +5,7 @@ import { getForexStrategyConfig, getForexUniversePairs } from './config';
 import { buildForexPacketSnapshot } from './ai';
 import { refreshForexEvents, getForexEventsState } from './events/forexFactory';
 import { evaluateForexEventGate } from './events/gate';
+import { evaluateForexMarketGate } from './marketHours';
 import { loadForexPairMarketState } from './marketData';
 import { evaluateBreakoutRetestModule } from './modules/breakoutRetest';
 import { evaluatePullbackModule } from './modules/pullback';
@@ -91,6 +92,39 @@ async function ensureEventState(nowMs: number) {
 
 export async function runForexScanCycle(opts: { nowMs?: number } = {}): Promise<ForexScanSnapshot> {
     const nowMs = Number.isFinite(opts.nowMs as number) ? Number(opts.nowMs) : Date.now();
+    const marketGate = evaluateForexMarketGate(nowMs);
+    if (marketGate.marketClosed) {
+        await safeAppendJournal(
+            journalEntry({
+                type: 'scan',
+                level: 'info',
+                reasonCodes: ['MARKET_CLOSED_HARD_GATE', marketGate.reasonCode],
+                payload: {
+                    nowMs,
+                    reopensAtMs: marketGate.reopensAtMs,
+                    config: marketGate.config,
+                },
+            }),
+        );
+        const existing = await loadForexScanSnapshot();
+        if (existing) {
+            return {
+                ...existing,
+                marketClosed: true,
+                reasonCodes: ['MARKET_CLOSED_HARD_GATE', marketGate.reasonCode],
+                reopensAtMs: marketGate.reopensAtMs,
+            } as ForexScanSnapshot;
+        }
+        return {
+            generatedAtMs: nowMs,
+            staleEvents: false,
+            pairs: [],
+            marketClosed: true,
+            reasonCodes: ['MARKET_CLOSED_HARD_GATE', marketGate.reasonCode],
+            reopensAtMs: marketGate.reopensAtMs,
+        } as ForexScanSnapshot;
+    }
+
     const eventState = await ensureEventState(nowMs);
     const events = eventState.snapshot?.events ?? [];
 
@@ -127,6 +161,38 @@ function packetMap(snapshot: ForexPacketSnapshot | null): Map<string, ForexRegim
 
 export async function runForexRegimeCycle(opts: { nowMs?: number } = {}): Promise<ForexPacketSnapshot> {
     const nowMs = Number.isFinite(opts.nowMs as number) ? Number(opts.nowMs) : Date.now();
+    const marketGate = evaluateForexMarketGate(nowMs);
+    if (marketGate.marketClosed) {
+        await safeAppendJournal(
+            journalEntry({
+                type: 'regime',
+                level: 'info',
+                reasonCodes: ['MARKET_CLOSED_HARD_GATE', marketGate.reasonCode],
+                payload: {
+                    nowMs,
+                    reopensAtMs: marketGate.reopensAtMs,
+                    config: marketGate.config,
+                },
+            }),
+        );
+        const existing = await loadForexPacketSnapshot();
+        if (existing) {
+            return {
+                ...existing,
+                marketClosed: true,
+                reasonCodes: ['MARKET_CLOSED_HARD_GATE', marketGate.reasonCode],
+                reopensAtMs: marketGate.reopensAtMs,
+            } as ForexPacketSnapshot;
+        }
+        return {
+            generatedAtMs: nowMs,
+            packets: [],
+            marketClosed: true,
+            reasonCodes: ['MARKET_CLOSED_HARD_GATE', marketGate.reasonCode],
+            reopensAtMs: marketGate.reopensAtMs,
+        } as ForexPacketSnapshot;
+    }
+
     const scan = (await loadForexScanSnapshot()) ?? (await runForexScanCycle({ nowMs }));
     const eventState = await ensureEventState(nowMs);
     const events = eventState.snapshot?.events ?? [];
@@ -272,6 +338,32 @@ export async function runForexExecuteCycle(opts: { nowMs?: number; dryRun?: bool
     const notionalUsd = Number.isFinite(opts.notionalUsd as number)
         ? Number(opts.notionalUsd)
         : cfg.defaultNotionalUsd;
+    const marketGate = evaluateForexMarketGate(nowMs);
+    if (marketGate.marketClosed) {
+        await safeAppendJournal(
+            journalEntry({
+                type: 'execution',
+                level: 'info',
+                reasonCodes: ['MARKET_CLOSED_HARD_GATE', marketGate.reasonCode],
+                payload: {
+                    nowMs,
+                    dryRun,
+                    notionalUsd,
+                    reopensAtMs: marketGate.reopensAtMs,
+                    config: marketGate.config,
+                },
+            }),
+        );
+        return {
+            generatedAtMs: nowMs,
+            dryRun,
+            notionalUsd,
+            marketClosed: true,
+            reasonCodes: ['MARKET_CLOSED_HARD_GATE', marketGate.reasonCode],
+            reopensAtMs: marketGate.reopensAtMs,
+            results: [],
+        };
+    }
 
     const scan = (await loadForexScanSnapshot()) ?? (await runForexScanCycle({ nowMs }));
     const packets = (await loadForexPacketSnapshot()) ?? (await runForexRegimeCycle({ nowMs }));

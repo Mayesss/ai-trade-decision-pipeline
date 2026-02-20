@@ -80,7 +80,14 @@ function buildLatestExecution(entry: ForexJournalEntry | null) {
     const hasDecisionObject = Boolean(payload.decision && typeof payload.decision === 'object' && !Array.isArray(payload.decision));
 
     const attempted = Boolean(module || action || orderId || clientOid || hasExecutionObject || hasDecisionObject);
-    const status = placed
+    const reasonCodes = Array.isArray(entry.reasonCodes) ? entry.reasonCodes : [];
+    const holdingOpenPosition = reasonCodes.includes('OPEN_POSITION_HELD_NO_EXIT_TRIGGER');
+    const marketClosed = reasonCodes.includes('MARKET_CLOSED_HARD_GATE');
+    const status = holdingOpenPosition
+        ? 'position_open_hold'
+        : marketClosed
+        ? 'market_closed'
+        : placed
         ? 'placed'
         : attempted
         ? dryRun
@@ -103,7 +110,7 @@ function buildLatestExecution(entry: ForexJournalEntry | null) {
         reason: typeof decision.reason === 'string' ? decision.reason : null,
         orderId,
         clientOid,
-        reasonCodes: Array.isArray(entry.reasonCodes) ? entry.reasonCodes : [],
+        reasonCodes,
     };
 }
 
