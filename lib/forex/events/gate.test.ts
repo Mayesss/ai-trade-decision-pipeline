@@ -56,6 +56,22 @@ test('evaluateForexEventGate blocks entry when active event window exists', () =
     assert.equal(decision.blockNewEntries, true);
     assert.equal(decision.allowRiskReduction, true);
     assert.ok(decision.reasonCodes.includes('EVENT_WINDOW_ACTIVE_BLOCK'));
+    assert.deepEqual(decision.activeImpactLevels, ['HIGH']);
+});
+
+test('evaluateForexEventGate reports active impact levels for medium filters', () => {
+    const events = [eventAt(5, 'USD', 'MEDIUM')];
+    const decision = evaluateForexEventGate({
+        pair: 'EURUSD',
+        events,
+        staleData: false,
+        riskState: 'normal',
+        nowMs: NOW_MS,
+        blockedImpacts: ['MEDIUM'],
+    });
+
+    assert.equal(decision.blockNewEntries, true);
+    assert.deepEqual(decision.activeImpactLevels, ['MEDIUM']);
 });
 
 test('evaluateForexEventGate enforces exact T-30 and T+15 event window boundaries', () => {

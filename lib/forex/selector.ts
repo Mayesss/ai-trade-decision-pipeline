@@ -11,6 +11,24 @@ function isSessionTradeable(sessionTag: string): boolean {
     return sessionTag !== 'DEAD_HOURS';
 }
 
+export function selectorTopRankCutoff(totalRows: number, topPercent: number): number {
+    const safeTotal = Math.max(0, Math.floor(Number(totalRows) || 0));
+    if (safeTotal <= 0) return 0;
+    const pct = Math.max(1, Math.min(100, Number(topPercent) || 100));
+    return Math.max(1, Math.ceil((safeTotal * pct) / 100));
+}
+
+export function isWithinSelectorTopPercentile(params: {
+    rank: number;
+    totalRows: number;
+    topPercent: number;
+}): boolean {
+    const rank = Math.floor(Number(params.rank) || 0);
+    if (rank <= 0) return false;
+    const cutoff = selectorTopRankCutoff(params.totalRows, params.topPercent);
+    return cutoff > 0 && rank <= cutoff;
+}
+
 export function evaluatePairEligibility(params: {
     pair: string;
     metrics: ReturnType<typeof toPairMetrics>;

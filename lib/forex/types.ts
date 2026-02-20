@@ -10,6 +10,8 @@ export type ForexPermission = 'long_only' | 'short_only' | 'both' | 'flat';
 export type ForexModuleName = 'pullback' | 'breakout_retest' | 'range_fade' | 'none';
 export type ForexSide = 'BUY' | 'SELL';
 export type ForexExecutionAction = ForexSide | 'CLOSE' | 'REVERSE' | 'NONE';
+export type ForexTrailingMode = 'none' | 'structure' | 'atr' | 'range_protective';
+export type ForexManageDecisionType = 'CLOSE_FULL' | 'CLOSE_PARTIAL' | 'TIGHTEN_STOP' | 'HOLD';
 
 export interface NormalizedForexEconomicEvent {
     id: string;
@@ -57,6 +59,7 @@ export interface ForexEventGateDecision {
     reasonCodes: string[];
     matchedEvents: NormalizedForexEconomicEvent[];
     riskStateApplied: ForexRiskState;
+    activeImpactLevels?: ForexEventImpact[];
 }
 
 export interface ForexPairMetrics {
@@ -129,17 +132,44 @@ export interface ForexModuleSignal {
     stopPrice: number;
     confidence: number;
     reasonCodes: string[];
+    tp1Price?: number | null;
+    tp2Price?: number | null;
+    rangeLowerBoundary?: number | null;
+    rangeUpperBoundary?: number | null;
 }
 
 export interface ForexPositionContext {
     pair: string;
     side: ForexSide;
-    module: Exclude<ForexModuleName, 'none'>;
+    entryModule: Exclude<ForexModuleName, 'none'>;
     entryPrice: number;
-    stopPrice: number;
+    initialStopPrice: number;
+    currentStopPrice: number;
+    initialRiskPrice: number;
+    partialTakenPct: number;
+    trailingActive: boolean;
+    trailingMode: ForexTrailingMode;
+    tp1Price: number | null;
+    tp2Price: number | null;
+    rangeLowerBoundary?: number | null;
+    rangeUpperBoundary?: number | null;
     openedAtMs: number;
-    updatedAtMs: number;
+    lastManagedAtMs: number;
+    lastCloseAtMs: number | null;
+    // Legacy/backward-compatible aliases, still accepted on load.
+    module?: Exclude<ForexModuleName, 'none'>;
+    stopPrice?: number;
+    updatedAtMs?: number;
+    entryNotionalUsd?: number | null;
+    entryLeverage?: number | null;
     packet: ForexRegimePacket;
+}
+
+export interface ForexManageDecision {
+    action: ForexManageDecisionType;
+    closePct?: number;
+    nextStopPrice?: number | null;
+    reasonCodes: string[];
 }
 
 export interface ForexExecutionResultSummary {
@@ -153,6 +183,8 @@ export interface ForexExecutionResultSummary {
     orderId: string | null;
     clientOid: string | null;
     packet: ForexRegimePacket | null;
+    managementAction?: ForexManageDecisionType | null;
+    packetAgeMinutes?: number | null;
 }
 
 export type ForexJournalEntryType = 'scan' | 'regime' | 'execution' | 'risk' | 'event_refresh';

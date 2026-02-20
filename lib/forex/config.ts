@@ -20,6 +20,15 @@ function toBool(value: string | undefined, fallback: boolean): boolean {
     return fallback;
 }
 
+function parseCsvUpper(raw: string | undefined, fallback: string[]): string[] {
+    if (!raw) return fallback.slice();
+    const values = String(raw)
+        .split(',')
+        .map((item) => item.trim().toUpperCase())
+        .filter((item) => item.length > 0);
+    return values.length ? values : fallback.slice();
+}
+
 function parsePairNumberMap(raw: string | undefined): Record<string, number> {
     if (!raw) return {};
     try {
@@ -73,6 +82,23 @@ export function getForexStrategyConfig() {
             maxSpreadToAtr1h: toPositiveNumber(process.env.FOREX_MAX_SPREAD_TO_ATR1H, 0.12),
             minAtr1hPercent: toPositiveNumber(process.env.FOREX_MIN_ATR1H_PERCENT, 0.0004),
             minScore: toPositiveNumber(process.env.FOREX_MIN_SELECTOR_SCORE, 0.1),
+            topPercent: Math.max(1, Math.min(100, toPositiveInt(process.env.FOREX_SELECTOR_TOP_PERCENT, 40))),
+        },
+        packet: {
+            staleMinutes: toPositiveInt(process.env.FOREX_PACKET_STALE_MINUTES, 120),
+        },
+        timeStop: {
+            noFollowBars: toPositiveInt(process.env.FOREX_TIME_STOP_NO_FOLLOW_BARS, 18),
+            minFollowR: toPositiveNumber(process.env.FOREX_TIME_STOP_MIN_FOLLOW_R, 0.3),
+            maxHoldHours: toPositiveNumber(process.env.FOREX_TIME_STOP_MAX_HOLD_HOURS, 10),
+        },
+        reentry: {
+            lockMinutes: toPositiveInt(process.env.FOREX_REENTRY_LOCK_MINUTES, 5),
+        },
+        events: {
+            forceCloseImpacts: parseCsvUpper(process.env.FOREX_EVENT_FORCE_CLOSE_IMPACTS, ['HIGH']),
+            blockNewImpacts: parseCsvUpper(process.env.FOREX_EVENT_BLOCK_NEW_IMPACTS, ['HIGH', 'MEDIUM']),
+            tightenOnlyImpacts: parseCsvUpper(process.env.FOREX_EVENT_TIGHTEN_ONLY_IMPACTS, ['MEDIUM']),
         },
         risk: {
             spreadPipsCapDefault: toPositiveNumber(process.env.FOREX_SPREAD_PIPS_CAP_DEFAULT, 3.5),
@@ -81,6 +107,11 @@ export function getForexStrategyConfig() {
             shockCandleAtr5m: toPositiveNumber(process.env.FOREX_SHOCK_CANDLE_ATR5M, 2.2),
             shockCooldownMinutes: toPositiveInt(process.env.FOREX_SHOCK_COOLDOWN_MINUTES, 30),
             maxCurrencyExposure: toPositiveInt(process.env.FOREX_MAX_CURRENCY_EXPOSURE, 2),
+            riskPerTradePct: toPositiveNumber(process.env.FOREX_RISK_PER_TRADE_PCT, 0.5),
+            referenceEquityUsd: toPositiveNumber(process.env.FOREX_RISK_REFERENCE_EQUITY_USD, NaN),
+            maxPortfolioOpenPct: toPositiveNumber(process.env.FOREX_RISK_MAX_PORTFOLIO_OPEN_PCT, 2.0),
+            maxCurrencyOpenPct: toPositiveNumber(process.env.FOREX_RISK_MAX_CURRENCY_OPEN_PCT, 1.0),
+            maxLeveragePerPair: toPositiveInt(process.env.FOREX_MAX_LEVERAGE_PER_PAIR, 3),
         },
         modules: {
             pullbackAtrBuffer: toPositiveNumber(process.env.FOREX_PULLBACK_ATR5M_BUFFER, 0.4),

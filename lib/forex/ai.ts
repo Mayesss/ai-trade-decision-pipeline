@@ -36,6 +36,13 @@ function normalizeModules(value: unknown): ForexModuleName[] {
     return Array.from(new Set(modules));
 }
 
+export function regimeExclusiveModules(regime: ForexRegime): ForexModuleName[] {
+    if (regime === 'trend_up' || regime === 'trend_down') return ['pullback'];
+    if (regime === 'high_vol') return ['breakout_retest'];
+    if (regime === 'range') return ['range_fade'];
+    return ['none'];
+}
+
 function fallbackPacket(entry: ForexPairEligibility, nowMs: number): ForexRegimePacket {
     const trend = entry.metrics.trendStrength;
     const chop = entry.metrics.chopScore;
@@ -116,6 +123,13 @@ function enforceHardRules(packet: ForexRegimePacket, opts: { eventBlocked: boole
 
     if (next.permission === 'flat') {
         next.allowed_modules = ['none'];
+    } else {
+        // Keep module execution deterministic and non-conflicting across regimes.
+        const exclusive = regimeExclusiveModules(next.regime);
+        next.allowed_modules = exclusive;
+        if (!next.notes_codes.includes('MODULE_EXCLUSIVITY_ENFORCED')) {
+            next.notes_codes.push('MODULE_EXCLUSIVITY_ENFORCED');
+        }
     }
 
     return next;

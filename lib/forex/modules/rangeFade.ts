@@ -60,6 +60,7 @@ export function evaluateRangeFadeModule(params: {
 
     const upperBoundary = Math.max(...highs);
     const lowerBoundary = Math.min(...lows);
+    const midBoundary = (upperBoundary + lowerBoundary) / 2;
     const rangeWidth = upperBoundary - lowerBoundary;
     const minRangeWidth = metrics.atr1h * cfg.modules.rangeFadeMinWidthAtr1h;
     if (!(rangeWidth > minRangeWidth && minRangeWidth > 0)) {
@@ -123,6 +124,10 @@ export function evaluateRangeFadeModule(params: {
                 stopPrice,
                 confidence: Math.max(0.55, packet.confidence),
                 reasonCodes: ['MODULE_RANGE_FADE_SHORT_REJECTION'],
+                tp1Price: midBoundary,
+                tp2Price: lowerBoundary,
+                rangeLowerBoundary: lowerBoundary,
+                rangeUpperBoundary: upperBoundary,
             },
             killSwitchTriggered: false,
             reasonCodes: ['MODULE_RANGE_FADE_SIGNAL_SHORT'],
@@ -141,6 +146,10 @@ export function evaluateRangeFadeModule(params: {
                 stopPrice,
                 confidence: Math.max(0.55, packet.confidence),
                 reasonCodes: ['MODULE_RANGE_FADE_LONG_REJECTION'],
+                tp1Price: midBoundary,
+                tp2Price: upperBoundary,
+                rangeLowerBoundary: lowerBoundary,
+                rangeUpperBoundary: upperBoundary,
             },
             killSwitchTriggered: false,
             reasonCodes: ['MODULE_RANGE_FADE_SIGNAL_LONG'],

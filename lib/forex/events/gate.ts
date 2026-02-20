@@ -62,7 +62,8 @@ export function listPairEventMatches(params: {
 }): PairEventMatch[] {
     const pair = normalizePair(params.pair);
     const nowMs = Number.isFinite(params.nowMs as number) ? Number(params.nowMs) : Date.now();
-    const configuredBlockedImpacts = (params.blockedImpacts ?? getForexEventConfig().blockImpacts).map((impact) =>
+    const cfg = getForexEventConfig();
+    const configuredBlockedImpacts = (params.blockedImpacts ?? cfg.blockNewImpacts ?? cfg.blockImpacts).map((impact) =>
         impact.toUpperCase(),
     );
 
@@ -107,6 +108,7 @@ export function evaluateForexEventGate(params: {
                 reasonCodes,
                 matchedEvents: [],
                 riskStateApplied,
+                activeImpactLevels: [],
             };
         }
 
@@ -120,6 +122,7 @@ export function evaluateForexEventGate(params: {
             reasonCodes,
             matchedEvents: [],
             riskStateApplied,
+            activeImpactLevels: [],
         };
     }
 
@@ -132,6 +135,13 @@ export function evaluateForexEventGate(params: {
 
     const activeEvents = matches.filter((match) => match.activeWindow).map((match) => match.event);
     if (activeEvents.length) {
+        const activeImpactLevels = Array.from(
+            new Set(
+                activeEvents
+                    .map((event) => String(event.impact || '').toUpperCase())
+                    .filter((impact) => impact.length > 0),
+            ),
+        ) as ForexEventGateDecision['activeImpactLevels'];
         reasonCodes.push('EVENT_WINDOW_ACTIVE_BLOCK');
         return {
             pair,
@@ -142,6 +152,7 @@ export function evaluateForexEventGate(params: {
             reasonCodes,
             matchedEvents: activeEvents,
             riskStateApplied,
+            activeImpactLevels,
         };
     }
 
@@ -155,5 +166,6 @@ export function evaluateForexEventGate(params: {
         reasonCodes,
         matchedEvents: [],
         riskStateApplied,
+        activeImpactLevels: [],
     };
 }

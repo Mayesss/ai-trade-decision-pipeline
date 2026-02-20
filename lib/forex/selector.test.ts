@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { evaluatePairEligibility } from './selector';
+import { evaluatePairEligibility, isWithinSelectorTopPercentile, selectorTopRankCutoff } from './selector';
 import type { NormalizedForexEconomicEvent } from './types';
 
 const baseMetrics = {
@@ -70,4 +70,24 @@ test('evaluatePairEligibility blocks on active high-impact event window', () => 
 
     assert.equal(out.eligible, false);
     assert.ok(out.reasons.includes('EVENT_WINDOW_ACTIVE_BLOCK'));
+});
+
+test('selector top percentile gate keeps only top configured slice', () => {
+    assert.equal(selectorTopRankCutoff(10, 40), 4);
+    assert.equal(
+        isWithinSelectorTopPercentile({
+            rank: 4,
+            totalRows: 10,
+            topPercent: 40,
+        }),
+        true,
+    );
+    assert.equal(
+        isWithinSelectorTopPercentile({
+            rank: 5,
+            totalRows: 10,
+            topPercent: 40,
+        }),
+        false,
+    );
 });
