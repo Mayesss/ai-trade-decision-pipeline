@@ -1150,17 +1150,16 @@ export default function Home() {
     : activeSymbol
     ? `Loading ${activeSymbol}...`
     : 'Loading selected symbol...';
-  const forexLatestRegime = (() => {
+  const forexTotalOpenPnl = (() => {
     const rows = Array.isArray(forexSummary?.pairs) ? forexSummary.pairs : [];
-    const candidates = rows.filter((row) => Boolean(row.packet?.regime));
-    if (!candidates.length) return null;
-    return candidates
-      .slice()
-      .sort((a, b) => {
-        const aRank = Number.isFinite(Number(a.rank)) ? Number(a.rank) : Number.MAX_SAFE_INTEGER;
-        const bRank = Number.isFinite(Number(b.rank)) ? Number(b.rank) : Number.MAX_SAFE_INTEGER;
-        return aRank - bRank;
-      })[0];
+    const openRows = rows.filter(
+      (row) => row.openPosition?.isOpen && typeof row.openPosition?.pnlPct === 'number',
+    );
+    if (!openRows.length) {
+      return { totalPct: null as number | null, openCount: 0 };
+    }
+    const totalPct = openRows.reduce((sum, row) => sum + Number(row.openPosition?.pnlPct || 0), 0);
+    return { totalPct, openCount: openRows.length };
   })();
 
   const renderDashboardSkeleton = () => (
@@ -1453,10 +1452,22 @@ export default function Home() {
                   <div className="mt-2 text-sm text-slate-700">
                     Latest regime:{' '}
                     {forexSummary.packetsGeneratedAtMs ? formatDecisionTime(forexSummary.packetsGeneratedAtMs) : 'n/a'}
-                    {forexLatestRegime?.pair ? ` · ${forexLatestRegime.pair}` : ''}
-                    {forexLatestRegime?.packet?.regime ? ` · ${forexLatestRegime.packet.regime}` : ''}
-                    {forexLatestRegime?.packet?.permission ? ` · ${forexLatestRegime.packet.permission}` : ''}
-                    {forexLatestRegime?.packet?.risk_state ? ` · ${forexLatestRegime.packet.risk_state}` : ''}
+                    {' · '}
+                    Total open PnL:{' '}
+                    <span
+                      className={
+                        typeof forexTotalOpenPnl.totalPct === 'number'
+                          ? forexTotalOpenPnl.totalPct >= 0
+                            ? 'text-emerald-600'
+                            : 'text-rose-600'
+                          : 'text-slate-700'
+                      }
+                    >
+                      {typeof forexTotalOpenPnl.totalPct === 'number'
+                        ? `${forexTotalOpenPnl.totalPct.toFixed(2)}%`
+                        : '—'}
+                    </span>
+                    {forexTotalOpenPnl.openCount > 0 ? ` (${forexTotalOpenPnl.openCount} open)` : ''}
                   </div>
                 </div>
                 <div className="overflow-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
