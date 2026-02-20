@@ -11,7 +11,7 @@ import { currentUtcDayKey, formatUtcDate, getForexEventConfig, normalizeImpact }
 
 const EVENTS_SNAPSHOT_KEY = 'forex:events:snapshot:v1';
 const EVENTS_META_KEY = 'forex:events:meta:v1';
-const EVENTS_CALL_COUNTER_PREFIX = 'forex:events:fmp:calls';
+const EVENTS_CALL_COUNTER_PREFIX = 'forex:events:forexfactory:calls';
 const EVENTS_STORE_TTL_SECONDS = 14 * 24 * 60 * 60;
 const EVENTS_CALL_COUNTER_TTL_SECONDS = 8 * 24 * 60 * 60;
 
@@ -64,7 +64,7 @@ export function resolveCountryCurrency(value: unknown): string | null {
 }
 
 function resolveCurrency(row: Record<string, unknown>): string | null {
-    const direct = String(row.currency ?? row.ccy ?? '')
+    const direct = String(row.currency ?? row.ccy ?? row.country ?? '')
         .trim()
         .toUpperCase();
     if (/^[A-Z]{3}$/.test(direct)) return direct;
@@ -118,7 +118,7 @@ function buildEventId(currency: string, timestampUtc: string, eventName: string)
     return crypto.createHash('sha1').update(base).digest('hex').slice(0, 20);
 }
 
-export function normalizeFmpEventRow(value: unknown): NormalizedForexEconomicEvent | null {
+export function normalizeForexFactoryEventRow(value: unknown): NormalizedForexEconomicEvent | null {
     const row = safeRecord(value);
     const currency = resolveCurrency(row);
     if (!currency) return null;
@@ -138,7 +138,7 @@ export function normalizeFmpEventRow(value: unknown): NormalizedForexEconomicEve
         actual: normalizeMetricValue(row.actual),
         forecast: normalizeMetricValue(row.forecast ?? row.estimate),
         previous: normalizeMetricValue(row.previous),
-        source: 'fmp',
+        source: 'forexfactory',
     };
 }
 
@@ -190,35 +190,47 @@ function isSnapshotStale(lastSuccessAtMs: number | null, staleMinutes: number, n
     return nowMs - Number(lastSuccessAtMs) > staleMinutes * 60_000;
 }
 
-async function fetchFmpCalendar(fromDate: string, toDate: string): Promise<NormalizedForexEconomicEvent[]> {
+function timestampMs(isoTimestamp: string): number {
+    const ts = Date.parse(isoTimestamp);
+    return Number.isFinite(ts) ? ts : NaN;
+}
+
+function normalizeCalendarUrl(raw: string): string {
+    const value = String(raw || '').trim();
+    if (!value) return 'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
+    if (value.startsWith('http://') || value.startsWith('https://')) return value;
+    return `https://${value.replace(/^\/+/, '')}`;
+}
+
+async function fetchForexFactoryCalendar(fromDate: string, toDate: string): Promise<NormalizedForexEconomicEvent[]> {
     const cfg = getForexEventConfig();
-    if (!cfg.fmpApiKey) {
-        throw new Error('Missing FMP_API_KEY');
-    }
-
-    const query = new URLSearchParams({
-        from: fromDate,
-        to: toDate,
-        apikey: cfg.fmpApiKey,
-    });
-
-    const url = `${cfg.fmpBaseUrl}/economic_calendar?${query.toString()}`;
+    const url = normalizeCalendarUrl(cfg.forexFactoryCalendarUrl);
     const res = await fetch(url, { method: 'GET' });
 
     if (!res.ok) {
         const message = await res.text().catch(() => '');
-        throw new Error(`FMP economic calendar error ${res.status}: ${message || res.statusText}`);
+        throw new Error(`ForexFactory calendar error ${res.status}: ${message || res.statusText}`);
     }
 
     const payload: unknown = await res.json();
     if (!Array.isArray(payload)) {
-        throw new Error('FMP economic calendar returned invalid payload');
+        throw new Error('ForexFactory calendar returned invalid payload');
     }
 
-    return payload
-        .map((row) => normalizeFmpEventRow(row))
-        .filter((row): row is NormalizedForexEconomicEvent => row !== null)
-        .sort((a, b) => Date.parse(a.timestamp_utc) - Date.parse(b.timestamp_utc));
+    const fromMs = Date.parse(`${fromDate}T00:00:00.000Z`);
+    const toMs = Date.parse(`${toDate}T23:59:59.999Z`);
+
+    const deduped = new Map<string, NormalizedForexEconomicEvent>();
+    for (const row of payload) {
+        const normalized = normalizeForexFactoryEventRow(row);
+        if (!normalized) continue;
+        const ts = timestampMs(normalized.timestamp_utc);
+        if (!Number.isFinite(ts)) continue;
+        if (ts < fromMs || ts > toMs) continue;
+        deduped.set(normalized.id, normalized);
+    }
+
+    return Array.from(deduped.values()).sort((a, b) => Date.parse(a.timestamp_utc) - Date.parse(b.timestamp_utc));
 }
 
 export async function getForexEventsState(nowMs = Date.now()): Promise<ForexEventState> {
@@ -281,7 +293,7 @@ export async function refreshForexEvents(opts: { force?: boolean; nowMs?: number
     const callCounter = await bumpCallCounter(dayKey);
     if (shouldWarnCallBudget(callCounter, cfg.callWarnThreshold)) {
         console.warn(
-            `Forex events FMP call counter warning: ${callCounter} calls today (threshold=${cfg.callWarnThreshold}).`,
+            `Forex events ForexFactory call counter warning: ${callCounter} calls today (threshold=${cfg.callWarnThreshold}).`,
         );
     }
 
@@ -294,9 +306,9 @@ export async function refreshForexEvents(opts: { force?: boolean; nowMs?: number
     await kvSetJson(EVENTS_META_KEY, attemptMeta, EVENTS_STORE_TTL_SECONDS);
 
     try {
-        const events = await fetchFmpCalendar(fromDate, toDate);
+        const events = await fetchForexFactoryCalendar(fromDate, toDate);
         const snapshot: ForexEventSnapshot = {
-            source: 'fmp',
+            source: 'forexfactory',
             fetchedAtMs: nowMs,
             fromDate,
             toDate,

@@ -19,7 +19,7 @@ Next.js app that runs an AI-driven trading loop for multiple platforms (Bitget +
 - OpenAI-compatible API key (used by `callAI`)
 - CoinDesk API key (required for `newsSource=coindesk`)
 - Marketaux API key (required for `newsSource=marketaux`)
-- Financial Modeling Prep API key (required for forex event-gate routes)
+- ForexFactory public calendar feed (used for forex event-gate routes; no API key required)
 - Upstash/Redis REST endpoint + token for KV (`KV_REST_API_URL`, `KV_REST_API_TOKEN`)
 - Optional admin secret for protected routes (`ADMIN_ACCESS_SECRET`)
 
@@ -50,14 +50,14 @@ OPENAI_API_KEY=...
 COINDESK_API_KEY=...
 MARKETAUX_API_KEY=...
 
-# Forex event calendar (FMP)
-FMP_API_KEY=...
+# Forex event calendar (ForexFactory)
 # Optional override:
-# FMP_BASE_URL=https://financialmodelingprep.com/api/v3
+# FOREX_FACTORY_CALENDAR_URL=https://nfs.faireconomy.media/ff_calendar_thisweek.json
 # FOREX_EVENT_REFRESH_MINUTES=15
 # FOREX_EVENT_STALE_MINUTES=45
 # FOREX_EVENT_BLOCK_IMPACTS=HIGH
 # FOREX_EVENT_CALL_WARN_THRESHOLD=180
+# FOREX_DEFAULT_NOTIONAL_USD=100
 
 # KV (Upstash REST)
 KV_REST_API_URL=https://...
@@ -84,7 +84,8 @@ npm run start
 ```
 
 ## API Routes (current behavior)
-- `GET /api/analyze`
+- `GET /api/swing/analyze`
+  - Legacy alias: `GET /api/analyze`
   - Query params:
     - `symbol` (default `ETHUSDT`)
     - `platform` (`bitget|capital`, default `bitget`)
@@ -95,21 +96,26 @@ npm run start
   - Timeframes are currently fixed from `lib/constants.ts`:
     - `MICRO_TIMEFRAME=1H`, `PRIMARY_TIMEFRAME=4H`, `MACRO_TIMEFRAME=1D`, `CONTEXT_TIMEFRAME=1W`
   - Persists prompt, decision, execution result, and snapshot to KV (including `platform`, `newsSource`, and instrument identifier).
-- `GET /api/evaluate`
+- `GET /api/swing/evaluate`
+  - Legacy alias: `GET /api/evaluate`
   - Query params: `symbol` (required), `limit` (clamped `5..30`, default `30`), `batchSize` (clamped `2..10`, default `5`), `includeBatchEvaluations` (`true|false`), `async` (`true|false`)
-  - Async mode returns a `jobId`; poll with `GET /api/evaluate?jobId=...`.
-- `GET /api/evaluations`
+  - Async mode returns a `jobId`; poll with `GET /api/swing/evaluate?jobId=...`.
+- `GET /api/swing/evaluations`
+  - Legacy alias: `GET /api/evaluations`
   - Aggregated payload for dashboard (evaluation + latest prompt/decision + 7D PnL context).
   - Includes open-position fields used for live UI recomputation (direction, leverage, entry price).
-  - Requires `x-admin-access-secret` header only when `ADMIN_ACCESS_SECRET` is set.
-- `GET /api/chart?symbol=...&timeframe=1H&limit=168`
+  - Requires admin secret header when `ADMIN_ACCESS_SECRET` is set.
+- `GET /api/swing/chart?symbol=...&timeframe=1H&limit=168`
+  - Legacy alias: `GET /api/chart`
   - Candles + decision markers + recent position overlays for the requested window.
   - Defaults to a 7-day window if `limit` is omitted.
   - Normalizes timeframe strings to Bitget-compatible granularity (for example `1h` -> `1H`).
-  - Requires `x-admin-access-secret` header only when `ADMIN_ACCESS_SECRET` is set.
-- `GET /api/rest-history?symbol=...&platform=...`
+  - Requires admin secret header when `ADMIN_ACCESS_SECRET` is set.
+- `GET /api/swing/rest-history?symbol=...&platform=...`
+  - Legacy alias: `GET /api/rest-history`
   - Returns recent history entries for a symbol.
-- `DELETE /api/rest-history`
+- `DELETE /api/swing/rest-history`
+  - Legacy alias: `DELETE /api/rest-history`
   - Clears all decision history.
 - `GET /api/health`
   - Liveness check.
@@ -119,12 +125,29 @@ npm run start
   - Redacted env presence check.
 - `POST /api/admin-auth`
   - Body: `{ "secret": "..." }` to validate admin access when `ADMIN_ACCESS_SECRET` is set.
+- Admin protection policy
+  - All API routes except `/api/admin-auth` require `x-admin-access-secret: <ADMIN_ACCESS_SECRET>` (or `Authorization: Bearer <ADMIN_ACCESS_SECRET>`) when `ADMIN_ACCESS_SECRET` is set.
+  - Unauthenticated exception for cron routes declared in `vercel.json`: `/api/swing/analyze`, `/api/forex/cron/execute`, `/api/forex/cron/scan`, `/api/forex/cron/regime`, `/api/forex/events/refresh`.
 - `GET /api/forex/events/refresh`
-  - Pulls and normalizes FMP economic calendar events into KV cache.
+  - Pulls and normalizes ForexFactory economic calendar events into KV cache.
   - Query: `force=true|false` (default `false`) to bypass refresh interval throttling.
 - `GET /api/forex/dashboard/events`
   - Returns forex event-gate state (freshness, call budget, normalized events).
   - Optional query: `pair=EURUSD&riskState=normal|elevated|extreme` for pair-level gate evaluation.
+- `GET /api/forex/cron/scan`
+  - Capital-only forex universe scan and eligibility ranking snapshot.
+- `GET /api/forex/cron/regime`
+  - Capital-only forex AI regime packet refresh from latest scan snapshot.
+- `GET /api/forex/cron/execute?dryRun=true`
+  - Capital-only forex deterministic execution cycle (pullback/breakout-retest modules).
+  - Optional query: `notional=100` to override default notional for this run (default is `100`).
+- `GET /api/forex/dashboard/summary`
+  - Forex dashboard aggregate (eligibility, packet state, event gate status, execution recency).
+- `GET /api/forex/dashboard/packets`
+  - Latest forex AI packets.
+- `GET /api/forex/dashboard/journal`
+  - Forex journal rows (signals/decisions/overrides/execution outcomes).
+  - Optional query: `pair=EURUSD&limit=200`.
 
 ## Dry-Run Safety
 `dryRun` defaults to `false` in the analysis routes. If you are testing and do not want real orders, pass `dryRun=true` explicitly.
@@ -132,33 +155,34 @@ npm run start
 Examples:
 ```bash
 # Safe single-symbol run
-curl "http://localhost:3000/api/analyze?symbol=ETHUSDT&platform=bitget&newsSource=coindesk&dryRun=true&notional=100"
+curl "http://localhost:3000/api/swing/analyze?symbol=ETHUSDT&platform=bitget&newsSource=coindesk&dryRun=true&notional=100"
 
 # Safe single-symbol run with looser AI guardrails
-curl "http://localhost:3000/api/analyze?symbol=ETHUSDT&platform=bitget&dryRun=true&notional=100&decisionPolicy=balanced"
+curl "http://localhost:3000/api/swing/analyze?symbol=ETHUSDT&platform=bitget&dryRun=true&notional=100&decisionPolicy=balanced"
 
 # Safe non-crypto run on Capital.com
-curl "http://localhost:3000/api/analyze?symbol=QQQUSDT&platform=capital&newsSource=marketaux&dryRun=true&notional=100"
+curl "http://localhost:3000/api/swing/analyze?symbol=QQQUSDT&platform=capital&newsSource=marketaux&dryRun=true&notional=100"
 ```
 
 ## Data Flow
 1) **Analyze** selects provider by `platform`, pulls market data + selected news source, computes indicators/analytics, builds the prompt, calls the LLM, and (optionally) executes the trade.  
 2) The decision, snapshot, prompt, and execution result are appended to KV history.  
 3) **Evaluate** replays recent history through another LLM to score data quality, action logic, guardrails, etc., then stores a single latest evaluation per symbol.  
-4) The dashboard consumes `/api/evaluations` and `/api/chart` to render PnL, prompts, biases, aspect ratings, and recent position overlays.
+4) The dashboard consumes `/api/swing/evaluations` and `/api/swing/chart` to render PnL, prompts, biases, aspect ratings, and recent position overlays.
 
 ## Frontend Notes
 - Dashboard shell/state lives in `pages/index.tsx`; chart rendering lives in `components/ChartPanel.tsx`.
 - Charts use `lightweight-charts` with custom overlays, a live pulse marker, and a fullscreen toggle.
 - The UI uses Bitget public WebSocket ticker stream for live price updates and live open-PnL display.
-- If no evaluations are present, run `GET /api/analyze?...&dryRun=true` then `GET /api/evaluate?...` to seed data before opening the page.
+- If no evaluations are present, run `GET /api/swing/analyze?...&dryRun=true` then `GET /api/swing/evaluate?...` to seed data before opening the page.
 
 ## Deployment
 - Vercel-ready (`vercel.json` routes `/api/*` to Next API handlers). Provide the same env vars in Vercel’s dashboard or your host of choice.
 - KV REST endpoint/token must be reachable from the runtime; Bitget/AI/News calls require outbound network access.
-- Current cron entries in `vercel.json` call `/api/analyze?...&dryRun=false` hourly, which is live-trading mode.
+- Current cron entries in `vercel.json` call `/api/swing/analyze?...&dryRun=false` hourly, which is live-trading mode.
+- Cron-declared routes are intentionally allowed without admin secret; non-cron routes remain protected when `ADMIN_ACCESS_SECRET` is set.
 
 ## Troubleshooting
 - `GET /api/debug-env-values` to confirm env vars are detected.
-- `GET /api/bitget-ping` to verify Bitget credentials/connectivity.
-- Watch server logs for KV errors (missing `KV_REST_API_URL`/`KV_REST_API_TOKEN`) or provider auth failures (`COINDESK_API_KEY`, `MARKETAUX_API_KEY`, `FMP_API_KEY`, Capital credentials).
+- `GET /api/swing/bitget-ping` to verify Bitget credentials/connectivity.
+- Watch server logs for KV errors (missing `KV_REST_API_URL`/`KV_REST_API_TOKEN`) or provider failures (`COINDESK_API_KEY`, `MARKETAUX_API_KEY`, ForexFactory feed reachability, Capital credentials).

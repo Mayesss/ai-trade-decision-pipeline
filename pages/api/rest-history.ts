@@ -1,8 +1,11 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 
+import { requireAdminAccess } from '../../lib/admin';
 import { clearDecisionHistory, loadDecisionHistory } from '../../lib/history';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+    if (!requireAdminAccess(req, res)) return;
+
     if (req.method == 'POST') {
         return res.status(405).json({ error: 'Method Not Allowed', message: 'Use DELETE or GET' });
     }

@@ -1,4 +1,4 @@
-const DEFAULT_FMP_BASE_URL = 'https://financialmodelingprep.com/api/v3';
+const DEFAULT_FOREX_FACTORY_CALENDAR_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
 const DEFAULT_REFRESH_MINUTES = 15;
 const DEFAULT_STALE_MINUTES = 45;
 const DEFAULT_BLOCK_IMPACTS = ['HIGH'];
@@ -20,9 +20,12 @@ function parseImpacts(raw: string | undefined): string[] {
 }
 
 export function getForexEventConfig() {
+    const calendarUrl = String(
+        process.env.FOREX_FACTORY_CALENDAR_URL || process.env.FOREX_EVENT_CALENDAR_URL || DEFAULT_FOREX_FACTORY_CALENDAR_URL,
+    ).trim();
+
     return {
-        fmpApiKey: String(process.env.FMP_API_KEY || '').trim(),
-        fmpBaseUrl: String(process.env.FMP_BASE_URL || DEFAULT_FMP_BASE_URL).replace(/\/+$/, ''),
+        forexFactoryCalendarUrl: calendarUrl || DEFAULT_FOREX_FACTORY_CALENDAR_URL,
         refreshMinutes: toPositiveInt(process.env.FOREX_EVENT_REFRESH_MINUTES, DEFAULT_REFRESH_MINUTES),
         staleMinutes: toPositiveInt(process.env.FOREX_EVENT_STALE_MINUTES, DEFAULT_STALE_MINUTES),
         blockImpacts: parseImpacts(process.env.FOREX_EVENT_BLOCK_IMPACTS),

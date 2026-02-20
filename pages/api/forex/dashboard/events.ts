@@ -4,7 +4,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
 import { getForexEventConfig } from '../../../../lib/forex/events/config';
-import { getForexEventsState } from '../../../../lib/forex/events/fmp';
+import { getForexEventsState } from '../../../../lib/forex/events/forexFactory';
 import { evaluateForexEventGate, listPairEventMatches } from '../../../../lib/forex/events/gate';
 import type { ForexRiskState } from '../../../../lib/forex/types';
 
@@ -52,7 +52,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             .slice(0, limit);
 
         const payload: Record<string, unknown> = {
-            source: 'fmp',
+            source: state.snapshot?.source ?? 'forexfactory',
             nowMs,
             config: {
                 refreshMinutes: config.refreshMinutes,

@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import crypto from 'crypto';
 
+import { requireAdminAccess } from '../../lib/admin';
 import { loadDecisionHistory } from '../../lib/history';
 import { callAI } from '../../lib/ai';
 import { AI_MODEL } from '../../lib/constants';
@@ -284,9 +285,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (req.method !== 'GET') {
         return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
     }
+    if (!requireAdminAccess(req, res)) return;
     setNoStoreHeaders(res);
 
     const body = req.query ?? {};
+    const requestPath = String(req.url || '/api/evaluate').split('?')[0] || '/api/evaluate';
+    const evaluatePath = requestPath.includes('/api/swing/evaluate') ? '/api/swing/evaluate' : '/api/evaluate';
     const jobId = String(body?.jobId || '').trim();
     const executeMode = parseBoolParam(body?.execute as string | string[] | undefined, false);
     if (jobId) {
@@ -340,12 +344,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 ? 'http'
                 : 'https';
         if (host) {
-            const workerUrl = `${proto}://${host}/api/evaluate?jobId=${encodeURIComponent(id)}&execute=true`;
+            const workerUrl = `${proto}://${host}${evaluatePath}?jobId=${encodeURIComponent(id)}&execute=true`;
             const workerHeaders: Record<string, string> = {};
             const adminHeader = firstHeaderValue(req.headers['x-admin-access-secret']);
+            const authHeader = firstHeaderValue(req.headers.authorization);
             const cookieHeader = firstHeaderValue(req.headers.cookie);
             const vercelBypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
             if (adminHeader) workerHeaders['x-admin-access-secret'] = adminHeader;
+            if (authHeader) workerHeaders.authorization = authHeader;
             if (cookieHeader) workerHeaders.cookie = cookieHeader;
             if (vercelBypass) workerHeaders['x-vercel-protection-bypass'] = vercelBypass;
 
@@ -380,7 +386,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(202).json({
             jobId: id,
             status: 'queued',
-            poll: `/api/evaluate?jobId=${id}`,
+            poll: `${evaluatePath}?jobId=${id}`,
         });
     }
 

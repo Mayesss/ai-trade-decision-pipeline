@@ -69,12 +69,29 @@ type ResolveEpicResult = {
     source: 'env' | 'default' | 'passthrough' | 'discovered';
 };
 
+export type CapitalOpenPositionSnapshot = {
+    epic: string;
+    dealId: string | null;
+    side: 'long' | 'short' | null;
+    entryPrice: number | null;
+    leverage: number | null;
+    size: number | null;
+    pnlPct: number | null;
+    bid: number | null;
+    offer: number | null;
+    updatedAtMs: number;
+};
+
 const CAPITAL_API_BASE = (process.env.CAPITAL_API_BASE || 'https://api-capital.backend-capital.com').replace(/\/+$/, '');
 const SESSION_TTL_MS = 10 * 60 * 1000;
 const MIN_DISCOVERY_SCORE = 45;
+const CAPITAL_MAX_REQUESTS_PER_SECOND = 10;
+const CAPITAL_MIN_REQUEST_INTERVAL_MS = Math.ceil(1000 / CAPITAL_MAX_REQUESTS_PER_SECOND);
 
 let cachedSession: SessionState | null = null;
 const resolvedEpicCache = new Map<string, ResolveEpicResult>();
+let capitalRateLimitChain: Promise<void> = Promise.resolve();
+let capitalNextAllowedAtMs = 0;
 
 const QUOTE_SUFFIXES = ['USDT', 'USDC', 'USD', 'EUR', 'GBP', 'PERP'];
 
@@ -195,6 +212,29 @@ function getSessionExpired() {
     return Date.now() >= cachedSession.expiresAtMs;
 }
 
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForCapitalRateLimitSlot() {
+    const reservation = capitalRateLimitChain.then(async () => {
+        const nowMs = Date.now();
+        const startAtMs = Math.max(nowMs, capitalNextAllowedAtMs);
+        const waitMs = startAtMs - nowMs;
+        if (waitMs > 0) {
+            await sleep(waitMs);
+        }
+        capitalNextAllowedAtMs = startAtMs + CAPITAL_MIN_REQUEST_INTERVAL_MS;
+    });
+    capitalRateLimitChain = reservation.catch(() => undefined);
+    await reservation;
+}
+
+async function fetchCapitalRateLimited(url: string, init: RequestInit): Promise<Response> {
+    await waitForCapitalRateLimitSlot();
+    return fetch(url, init);
+}
+
 async function parseResponsePayload(res: Response): Promise<any> {
     const text = await res.text();
     if (!text) return null;
@@ -210,7 +250,7 @@ async function createSession(forceRefresh = false): Promise<SessionState> {
     ensureCapitalConfig();
 
     const url = `${CAPITAL_API_BASE}/api/v1/session`;
-    const res = await fetch(url, {
+    const res = await fetchCapitalRateLimited(url, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -265,7 +305,7 @@ async function capitalFetch(
         headers['X-SECURITY-TOKEN'] = session.securityToken;
     }
 
-    const res = await fetch(url, {
+    const res = await fetchCapitalRateLimited(url, {
         method,
         headers,
         body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -737,6 +777,48 @@ async function findOpenCapitalPositionByEpic(epic: string): Promise<CapitalPosit
     const rows = await listOpenCapitalPositions();
     const match = rows.find((row) => String(row?.market?.epic || '').toUpperCase() === normalizeTicker(epic));
     return match ?? null;
+}
+
+function computeOpenPnlPctFromPositionRow(position: CapitalPositionRow): number | null {
+    const side = extractDirection(position);
+    const entry = extractEntryPrice(position);
+    if (!side || !entry || entry <= 0) return null;
+
+    const bid = safeNumber(position?.market?.bid, NaN);
+    const offer = safeNumber(position?.market?.offer, NaN);
+    const mark = Number.isFinite(bid) && Number.isFinite(offer) ? (bid + offer) / 2 : Number.isFinite(bid) ? bid : offer;
+    if (!Number.isFinite(mark) || mark <= 0) return null;
+
+    const lev = extractLeverage(position) ?? 1;
+    const sideSign = side === 'long' ? 1 : -1;
+    const pct = ((mark - entry) / entry) * sideSign * lev * 100;
+    return Number.isFinite(pct) ? pct : null;
+}
+
+export async function fetchCapitalOpenPositionSnapshots(): Promise<CapitalOpenPositionSnapshot[]> {
+    const rows = await listOpenCapitalPositions();
+    const updatedAtMs = Date.now();
+
+    return rows
+        .map((row) => {
+            const epic = normalizeTicker(String(row?.market?.epic || ''));
+            if (!epic) return null;
+            const bid = safeNumber(row?.market?.bid, NaN);
+            const offer = safeNumber(row?.market?.offer, NaN);
+            return {
+                epic,
+                dealId: extractDealId(row),
+                side: extractDirection(row),
+                entryPrice: extractEntryPrice(row),
+                leverage: extractLeverage(row),
+                size: extractPositionSize(row),
+                pnlPct: computeOpenPnlPctFromPositionRow(row),
+                bid: Number.isFinite(bid) ? bid : null,
+                offer: Number.isFinite(offer) ? offer : null,
+                updatedAtMs,
+            } satisfies CapitalOpenPositionSnapshot;
+        })
+        .filter((row): row is CapitalOpenPositionSnapshot => row !== null);
 }
 
 function computeOpenPnlPct(position: CapitalPositionRow, details: MarketDetails | null): number | null {

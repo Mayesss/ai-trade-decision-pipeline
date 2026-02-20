@@ -17,7 +17,7 @@ function eventAt(minutesFromNow: number, currency: string, impact: 'HIGH' | 'MED
         actual: null,
         forecast: null,
         previous: null,
-        source: 'fmp',
+        source: 'forexfactory',
     };
 }
 

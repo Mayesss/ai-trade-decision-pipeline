@@ -273,7 +273,7 @@ export default function ChartPanel(props: ChartPanelProps) {
       });
       if (platform) params.set('platform', platform);
       const res = await fetch(
-        `/api/chart?${params.toString()}`,
+        `/api/swing/chart?${params.toString()}`,
         {
           headers: adminSecret ? { 'x-admin-access-secret': adminSecret } : undefined,
           signal: controller.signal,

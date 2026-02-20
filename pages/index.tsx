@@ -119,6 +119,75 @@ type DashboardSummaryResponse = {
   range?: DashboardRangeKey;
 };
 
+type ForexSummaryPair = {
+  pair: string;
+  eligible: boolean;
+  rank: number;
+  score: number;
+  reasons: string[];
+  metrics?: {
+    spreadPips?: number;
+    spreadToAtr1h?: number;
+    atr1hPercent?: number;
+    sessionTag?: string;
+    [key: string]: any;
+  } | null;
+  packet?: {
+    regime?: string;
+    permission?: string;
+    allowed_modules?: string[];
+    risk_state?: string;
+    confidence?: number;
+    [key: string]: any;
+  } | null;
+  gate?: {
+    allowNewEntries?: boolean;
+    blockNewEntries?: boolean;
+    staleData?: boolean;
+    reasonCodes?: string[];
+    [key: string]: any;
+  } | null;
+  journalCount24h?: number;
+  lastExecutionAtMs?: number | null;
+  lastExecutionReasonCodes?: string[];
+  latestExecution?: {
+    pair?: string | null;
+    timestampMs?: number | null;
+    status?: string | null;
+    attempted?: boolean;
+    placed?: boolean;
+    dryRun?: boolean;
+    module?: string | null;
+    action?: string | null;
+    summary?: string | null;
+    reason?: string | null;
+    orderId?: string | null;
+    clientOid?: string | null;
+    reasonCodes?: string[];
+  } | null;
+  openPosition?: {
+    isOpen?: boolean;
+    epic?: string | null;
+    dealId?: string | null;
+    side?: 'long' | 'short' | null;
+    entryPrice?: number | null;
+    leverage?: number | null;
+    size?: number | null;
+    pnlPct?: number | null;
+    updatedAtMs?: number | null;
+  } | null;
+};
+
+type ForexSummaryResponse = {
+  mode?: 'forex';
+  generatedAtMs?: number;
+  scanGeneratedAtMs?: number | null;
+  packetsGeneratedAtMs?: number | null;
+  staleEvents?: boolean;
+  latestExecution?: ForexSummaryPair['latestExecution'];
+  pairs?: ForexSummaryPair[];
+};
+
 type DashboardDecisionResponse = {
   symbol: string;
   platform?: string | null;
@@ -148,6 +217,7 @@ type EvaluateJobRecord = {
 type DashboardRangeKey = '7D' | '30D' | '6M';
 type ThemePreference = 'system' | 'light' | 'dark';
 type ResolvedTheme = 'light' | 'dark';
+type StrategyMode = 'swing' | 'forex';
 
 const CURRENCY_SYMBOL = '₮'; // Tether-style symbol
 const THEME_PREFERENCE_STORAGE_KEY = 'dashboard_theme_preference';
@@ -165,9 +235,11 @@ const BITGET_PUBLIC_WS_URL = 'wss://ws.bitget.com/v2/ws/public';
 const WS_RECONNECT_MS = 1500;
 const WS_PING_MS = 25_000;
 const CAPITAL_LIVE_POLL_MS = 3000;
+const FOREX_LIVE_POLL_MS = 3000;
 
 const ADMIN_SECRET_STORAGE_KEY = 'admin_access_secret';
 const ADMIN_AUTH_TIMEOUT_MS = 4000;
+const STRATEGY_MODE_STORAGE_KEY = 'strategy_mode';
 
 const ChartPanel = dynamic(() => import('../components/ChartPanel'), {
   ssr: false,
@@ -215,7 +287,10 @@ export default function Home() {
   const [showPrompt, setShowPrompt] = useState(false);
   const [evaluateJobs, setEvaluateJobs] = useState<Record<string, EvaluateJobRecord>>({});
   const [evaluateSubmittingSymbol, setEvaluateSubmittingSymbol] = useState<string | null>(null);
+  const [forexExecuteSubmitting, setForexExecuteSubmitting] = useState(false);
   const [dashboardRange, setDashboardRange] = useState<DashboardRangeKey>('7D');
+  const [strategyMode, setStrategyMode] = useState<StrategyMode>('swing');
+  const [forexSummary, setForexSummary] = useState<ForexSummaryResponse | null>(null);
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
   const [livePriceConnected, setLivePriceConnected] = useState(false);
@@ -335,7 +410,7 @@ export default function Home() {
     if (!symbol) return;
     const params = new URLSearchParams({ symbol });
     if (platform) params.set('platform', platform);
-    const res = await fetch(`/api/dashboard/decision?${params.toString()}`, {
+    const res = await fetch(`/api/swing/dashboard/decision?${params.toString()}`, {
       headers: buildAdminHeaders(),
       cache: 'no-store',
     });
@@ -361,7 +436,7 @@ export default function Home() {
   const loadSymbolEvaluation = async (symbol: string) => {
     if (!symbol) return;
     const params = new URLSearchParams({ symbol });
-    const res = await fetch(`/api/dashboard/evaluation?${params.toString()}`, {
+    const res = await fetch(`/api/swing/dashboard/evaluation?${params.toString()}`, {
       headers: buildAdminHeaders(),
       cache: 'no-store',
     });
@@ -383,7 +458,7 @@ export default function Home() {
     setLoading(true);
     try {
       let summaryError: string | null = null;
-      const symbolsRes = await fetch('/api/dashboard/symbols', {
+      const symbolsRes = await fetch('/api/swing/dashboard/symbols', {
         headers: buildAdminHeaders(),
         cache: 'no-store',
       });
@@ -428,7 +503,7 @@ export default function Home() {
 
       try {
         const summaryParams = new URLSearchParams({ range: dashboardRange });
-        const summaryRes = await fetch(`/api/dashboard/summary?${summaryParams.toString()}`, {
+        const summaryRes = await fetch(`/api/swing/dashboard/summary?${summaryParams.toString()}`, {
           headers: buildAdminHeaders(),
           cache: 'no-store',
         });
@@ -468,6 +543,65 @@ export default function Home() {
     }
   };
 
+  const loadForexDashboard = async (opts: { silent?: boolean } = {}) => {
+    const silent = opts.silent === true;
+    if (!silent) setLoading(true);
+    try {
+      const summaryRes = await fetch('/api/forex/dashboard/summary', {
+        headers: buildAdminHeaders(),
+        cache: 'no-store',
+      });
+      if (summaryRes.status === 401) {
+        handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+        throw new Error('Unauthorized');
+      }
+      if (!summaryRes.ok) {
+        throw new Error(`Failed to load forex summary (${summaryRes.status})`);
+      }
+      const summaryJson: ForexSummaryResponse = await summaryRes.json();
+      setForexSummary(summaryJson);
+      setError(null);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load forex dashboard');
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  };
+
+  const runForexExecute = async () => {
+    if (forexExecuteSubmitting) return;
+    setForexExecuteSubmitting(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams({
+        dryRun: 'false',
+        notional: '100',
+        t: String(Date.now()),
+      });
+      const executeRes = await fetch(`/api/forex/cron/execute?${params.toString()}`, {
+        headers: buildAdminHeaders(),
+        cache: 'no-store',
+      });
+      if (executeRes.status === 401) {
+        handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+        throw new Error('Unauthorized');
+      }
+      if (!executeRes.ok) {
+        let message = `Failed to run forex execute (${executeRes.status})`;
+        try {
+          const body = await executeRes.json();
+          if (body?.error) message = `${message}: ${String(body.error)}`;
+        } catch {}
+        throw new Error(message);
+      }
+      await loadForexDashboard();
+    } catch (err: any) {
+      setError(err?.message || 'Failed to run forex execute');
+    } finally {
+      setForexExecuteSubmitting(false);
+    }
+  };
+
   const clearEvaluatePollTimer = (symbol: string) => {
     const timerId = evaluatePollTimersRef.current[symbol];
     if (timerId) {
@@ -481,7 +615,7 @@ export default function Home() {
         jobId,
         t: String(Date.now()),
       });
-      const res = await fetch(`/api/evaluate?${params.toString()}`, {
+      const res = await fetch(`/api/swing/evaluate?${params.toString()}`, {
         headers: buildAdminHeaders(),
         cache: 'no-store',
       });
@@ -527,7 +661,7 @@ export default function Home() {
         symbol,
         async: 'true',
       });
-      const res = await fetch(`/api/evaluate?${params.toString()}`, {
+      const res = await fetch(`/api/swing/evaluate?${params.toString()}`, {
         headers: buildAdminHeaders(),
         cache: 'no-store',
       });
@@ -601,6 +735,14 @@ export default function Home() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem(STRATEGY_MODE_STORAGE_KEY);
+    if (stored === 'forex' || stored === 'swing') {
+      setStrategyMode(stored);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
     if (themePreference !== 'system') return;
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const handleThemeChange = () => {
@@ -622,11 +764,24 @@ export default function Home() {
 
   useEffect(() => {
     if (!adminGranted) return;
+    if (strategyMode === 'forex') {
+      loadForexDashboard();
+      return;
+    }
     loadDashboard();
-  }, [adminGranted, dashboardRange]);
+  }, [adminGranted, dashboardRange, strategyMode]);
+
+  useEffect(() => {
+    if (!adminGranted || strategyMode !== 'forex') return;
+    const timerId = window.setInterval(() => {
+      void loadForexDashboard({ silent: true });
+    }, FOREX_LIVE_POLL_MS);
+    return () => window.clearInterval(timerId);
+  }, [adminGranted, strategyMode, adminSecret]);
 
   useEffect(() => {
     const symbol = symbols[active] || null;
+    if (strategyMode !== 'swing') return;
     if (!adminGranted || !symbol) return;
     const platform = tabData[symbol]?.lastPlatform ?? null;
     let cancelled = false;
@@ -642,7 +797,7 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, [adminGranted, symbols, active]);
+  }, [adminGranted, symbols, active, strategyMode]);
 
   useEffect(() => {
     return () => {
@@ -659,6 +814,12 @@ export default function Home() {
   }, [active, symbols]);
 
   useEffect(() => {
+    if (strategyMode !== 'swing') {
+      setLivePriceNow(null);
+      setLivePriceTs(null);
+      setLivePriceConnected(false);
+      return;
+    }
     const symbol = symbols[active] || null;
     const platform = symbol ? String(tabData[symbol]?.lastPlatform || '').toLowerCase() : '';
     if (!adminGranted || !symbol) {
@@ -701,7 +862,7 @@ export default function Home() {
             platform: 'capital',
             t: String(Date.now()),
           });
-          const res = await fetch(`/api/dashboard/live-price?${params.toString()}`, {
+          const res = await fetch(`/api/swing/dashboard/live-price?${params.toString()}`, {
             headers: buildAdminHeaders(),
             cache: 'no-store',
             signal: inFlight.signal,
@@ -858,7 +1019,7 @@ export default function Home() {
       }
       ws = null;
     };
-  }, [adminGranted, symbols, active, tabData, adminSecret]);
+  }, [adminGranted, symbols, active, tabData, adminSecret, strategyMode]);
 
   const formatDecisionTime = (ts?: number | null) => {
     if (!ts) return '';
@@ -982,11 +1143,25 @@ export default function Home() {
     { key: 'micro_bias', label: 'Micro' },
   ] as const;
   const isInitialLoading = loading && !symbols.length;
-  const loadingLabel = !symbols.length
+  const loadingLabel = strategyMode === 'forex'
+    ? 'Loading forex dashboard...'
+    : !symbols.length
     ? 'Loading evaluations...'
     : activeSymbol
     ? `Loading ${activeSymbol}...`
     : 'Loading selected symbol...';
+  const forexLatestRegime = (() => {
+    const rows = Array.isArray(forexSummary?.pairs) ? forexSummary.pairs : [];
+    const candidates = rows.filter((row) => Boolean(row.packet?.regime));
+    if (!candidates.length) return null;
+    return candidates
+      .slice()
+      .sort((a, b) => {
+        const aRank = Number.isFinite(Number(a.rank)) ? Number(a.rank) : Number.MAX_SAFE_INTEGER;
+        const bRank = Number.isFinite(Number(b.rank)) ? Number(b.rank) : Number.MAX_SAFE_INTEGER;
+        return aRank - bRank;
+      })[0];
+  })();
 
   const renderDashboardSkeleton = () => (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-stretch">
@@ -1059,6 +1234,14 @@ export default function Home() {
     }
   };
 
+  const handleStrategyModeChange = (mode: StrategyMode) => {
+    setStrategyMode(mode);
+    setError(null);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(STRATEGY_MODE_STORAGE_KEY, mode);
+    }
+  };
+
   return (
     <>
       <Head>
@@ -1124,14 +1307,38 @@ export default function Home() {
           <div>
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Performance</p>
             <h1 className="text-3xl font-semibold leading-tight text-slate-900">AI Trade Dashboard</h1>
-            {activeSymbol && currentEvalJob ? (
+            <div className="mt-2 inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 p-1">
+              <button
+                type="button"
+                onClick={() => handleStrategyModeChange('swing')}
+                className={`rounded-full px-3 py-1 text-[11px] font-semibold transition ${
+                  strategyMode === 'swing'
+                    ? 'bg-sky-600 text-white shadow-sm'
+                    : 'text-slate-600 hover:bg-slate-200/70 hover:text-slate-900'
+                }`}
+              >
+                Swing
+              </button>
+              <button
+                type="button"
+                onClick={() => handleStrategyModeChange('forex')}
+                className={`rounded-full px-3 py-1 text-[11px] font-semibold transition ${
+                  strategyMode === 'forex'
+                    ? 'bg-sky-600 text-white shadow-sm'
+                    : 'text-slate-600 hover:bg-slate-200/70 hover:text-slate-900'
+                }`}
+              >
+                Forex
+              </button>
+            </div>
+            {strategyMode === 'swing' && activeSymbol && currentEvalJob ? (
               <p className="mt-1 text-xs text-slate-500">
                 Eval job for {activeSymbol}:{' '}
                 <span className="font-semibold text-slate-700">{currentEvalJob.status}</span>
                 {currentEvalJob.error ? ` (${currentEvalJob.error})` : ''}
               </p>
             ) : null}
-            {activeSymbol ? (
+            {strategyMode === 'swing' && activeSymbol ? (
               <p className="mt-1 text-xs text-slate-500">
                 Live price:{' '}
                 <span className={livePriceConnected ? 'font-semibold text-emerald-700' : 'font-semibold text-slate-600'}>
@@ -1143,15 +1350,26 @@ export default function Home() {
             {loading ? <p className="mt-1 text-xs text-slate-500">{loadingLabel}</p> : null}
           </div>
           <div className="flex items-center gap-2">
+            {strategyMode === 'swing' ? (
+              <button
+                onClick={() => (activeSymbol ? triggerEvaluation(activeSymbol) : undefined)}
+                disabled={!adminGranted || !activeSymbol || !!evaluateSubmittingSymbol || evaluateRunning}
+                className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {evaluateSubmittingSymbol ? 'Queueing…' : evaluateRunning ? 'Evaluating…' : 'Run Evaluation'}
+              </button>
+            ) : null}
+            {strategyMode === 'forex' ? (
+              <button
+                onClick={runForexExecute}
+                disabled={!adminGranted || forexExecuteSubmitting}
+                className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {forexExecuteSubmitting ? 'Running Execute…' : 'Run Execute (Live)'}
+              </button>
+            ) : null}
             <button
-              onClick={() => (activeSymbol ? triggerEvaluation(activeSymbol) : undefined)}
-              disabled={!adminGranted || !activeSymbol || !!evaluateSubmittingSymbol || evaluateRunning}
-              className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {evaluateSubmittingSymbol ? 'Queueing…' : evaluateRunning ? 'Evaluating…' : 'Run Evaluation'}
-            </button>
-            <button
-              onClick={loadDashboard}
+              onClick={() => (strategyMode === 'forex' ? loadForexDashboard() : loadDashboard())}
               disabled={!adminGranted}
               className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -1166,7 +1384,7 @@ export default function Home() {
           </div>
         )}
 
-        {!error && (
+        {strategyMode === 'swing' && !error && (
           <div className="mt-4 flex flex-wrap items-center gap-2">
             {symbols.map((sym, i) => {
               const isActive = i === active;
@@ -1210,7 +1428,131 @@ export default function Home() {
         )}
 
         <div className="mt-4 pb-8">
-          {isInitialLoading ? (
+          {strategyMode === 'forex' ? (
+            loading ? (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="animate-pulse space-y-3">
+                  <div className="h-4 w-52 rounded-full bg-slate-200" />
+                  <div className="h-3 w-72 rounded-full bg-slate-200" />
+                  <div className="h-40 rounded-xl border border-slate-200 bg-slate-50" />
+                </div>
+              </div>
+            ) : !forexSummary?.pairs?.length ? (
+              <div className="flex items-center justify-center py-12 text-sm font-semibold text-slate-500">
+                No forex scan data yet. Trigger `/api/forex/cron/scan` then refresh.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="text-xs uppercase tracking-wide text-slate-500">Forex Overview</div>
+                  <div className="mt-2 text-sm text-slate-700">
+                    Scan: {forexSummary.scanGeneratedAtMs ? formatDecisionTime(forexSummary.scanGeneratedAtMs) : 'n/a'} ·
+                    Packets: {forexSummary.packetsGeneratedAtMs ? formatDecisionTime(forexSummary.packetsGeneratedAtMs) : 'n/a'} ·
+                    Events: {forexSummary.staleEvents ? 'stale' : 'fresh'}
+                  </div>
+                  <div className="mt-2 text-sm text-slate-700">
+                    Latest regime:{' '}
+                    {forexSummary.packetsGeneratedAtMs ? formatDecisionTime(forexSummary.packetsGeneratedAtMs) : 'n/a'}
+                    {forexLatestRegime?.pair ? ` · ${forexLatestRegime.pair}` : ''}
+                    {forexLatestRegime?.packet?.regime ? ` · ${forexLatestRegime.packet.regime}` : ''}
+                    {forexLatestRegime?.packet?.permission ? ` · ${forexLatestRegime.packet.permission}` : ''}
+                    {forexLatestRegime?.packet?.risk_state ? ` · ${forexLatestRegime.packet.risk_state}` : ''}
+                  </div>
+                </div>
+                <div className="overflow-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+                  <table className="min-w-full text-left text-sm">
+                    <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2">Pair</th>
+                        <th className="px-3 py-2">Eligible</th>
+                        <th className="px-3 py-2">Score</th>
+                        <th className="px-3 py-2">Regime</th>
+                        <th className="px-3 py-2">Permission</th>
+                        <th className="px-3 py-2">Risk</th>
+                        <th className="px-3 py-2">Event Gate</th>
+                        <th className="px-3 py-2">Spread/ATR</th>
+                        <th className="px-3 py-2">Open PnL</th>
+                        <th className="px-3 py-2">Latest Exec</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {forexSummary.pairs.map((row) => (
+                        <tr key={row.pair} className="border-t border-slate-100">
+                          <td className="px-3 py-2 font-semibold text-slate-800">{row.pair}</td>
+                          <td className="px-3 py-2">
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                                row.eligible ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'
+                              }`}
+                            >
+                              {row.eligible ? 'yes' : 'no'}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-slate-700">{Number(row.score || 0).toFixed(3)}</td>
+                          <td className="px-3 py-2 text-slate-700">{row.packet?.regime || '—'}</td>
+                          <td className="px-3 py-2 text-slate-700">{row.packet?.permission || '—'}</td>
+                          <td className="px-3 py-2 text-slate-700">{row.packet?.risk_state || '—'}</td>
+                          <td className="px-3 py-2 text-slate-700">
+                            {row.gate?.allowNewEntries ? 'open' : 'blocked'}
+                            {row.gate?.staleData ? ' (stale feed)' : ''}
+                          </td>
+                          <td className="px-3 py-2 text-slate-700">
+                            {typeof row.metrics?.spreadPips === 'number' ? row.metrics.spreadPips.toFixed(2) : '—'} /{' '}
+                            {typeof row.metrics?.spreadToAtr1h === 'number'
+                              ? row.metrics.spreadToAtr1h.toFixed(3)
+                              : '—'}
+                          </td>
+                          <td className="px-3 py-2 text-slate-700">
+                            {row.openPosition?.isOpen ? (
+                              <div className="space-y-0.5">
+                                <div
+                                  className={`font-semibold ${
+                                    typeof row.openPosition?.pnlPct === 'number'
+                                      ? row.openPosition.pnlPct >= 0
+                                        ? 'text-emerald-600'
+                                        : 'text-rose-600'
+                                      : 'text-slate-800'
+                                  }`}
+                                >
+                                  {typeof row.openPosition?.pnlPct === 'number'
+                                    ? `${row.openPosition.pnlPct.toFixed(2)}%`
+                                    : 'open'}
+                                </div>
+                                <div className="text-xs text-slate-600">
+                                  {row.openPosition?.side || '—'}
+                                  {typeof row.openPosition?.leverage === 'number'
+                                    ? ` · ${row.openPosition.leverage.toFixed(0)}x`
+                                    : ''}
+                                </div>
+                              </div>
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-slate-700">
+                            {row.latestExecution?.timestampMs ? (
+                              <div className="space-y-0.5">
+                                <div className="font-semibold text-slate-800">
+                                  {formatDecisionTime(row.latestExecution.timestampMs)}
+                                </div>
+                                <div className="text-xs text-slate-600">
+                                  {row.latestExecution.module || '—'}
+                                  {row.latestExecution.action ? ` · ${row.latestExecution.action}` : ''}
+                                  {row.latestExecution.status ? ` · ${row.latestExecution.status}` : ''}
+                                </div>
+                              </div>
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
+          ) : isInitialLoading ? (
             renderDashboardSkeleton()
           ) : !symbols.length ? (
             <div className="flex items-center justify-center py-12 text-sm font-semibold text-slate-500">

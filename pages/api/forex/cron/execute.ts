@@ -3,7 +3,7 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
-import { refreshForexEvents } from '../../../../lib/forex/events/forexFactory';
+import { runForexExecuteCycle } from '../../../../lib/forex/engine';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean) {
     if (value === undefined) return fallback;
@@ -29,18 +29,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     setNoStoreHeaders(res);
 
-    const force = parseBoolParam(req.query.force as string | string[] | undefined, false);
+    const dryRun = parseBoolParam(req.query.dryRun as string | string[] | undefined, true);
+    const notionalRaw = Number(Array.isArray(req.query.notional) ? req.query.notional[0] : req.query.notional);
+    const notionalUsd = Number.isFinite(notionalRaw) && notionalRaw > 0 ? notionalRaw : undefined;
 
     try {
-        const result = await refreshForexEvents({ force });
-        if (!result.ok) {
-            return res.status(502).json(result);
-        }
-        return res.status(200).json(result);
+        const result = await runForexExecuteCycle({ dryRun, notionalUsd });
+        return res.status(200).json({ ok: true, ...result });
     } catch (err: any) {
-        console.error('Error in /api/forex/events/refresh:', err);
-        return res.status(500).json({
-            error: err?.message || String(err),
-        });
+        console.error('Error in /api/forex/cron/execute:', err);
+        return res.status(500).json({ error: err?.message || String(err) });
     }
 }

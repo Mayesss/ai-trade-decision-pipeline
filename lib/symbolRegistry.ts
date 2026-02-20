@@ -26,7 +26,9 @@ function parseCronAnalyzePath(path: string, schedule: string | null): CronSymbol
     return null;
   }
 
-  if (parsed.pathname !== '/api/analyze') return null;
+  const pathname = String(parsed.pathname || '').trim();
+  const isAnalyzeRoute = pathname === '/api/analyze' || pathname === '/api/swing/analyze';
+  if (!isAnalyzeRoute) return null;
 
   const symbol = String(parsed.searchParams.get('symbol') || '')
     .trim()
@@ -67,4 +69,3 @@ export function getCronSymbolConfigs(): CronSymbolConfig[] {
 export function getCronSymbols(): string[] {
   return getCronSymbolConfigs().map((item) => item.symbol);
 }
-
