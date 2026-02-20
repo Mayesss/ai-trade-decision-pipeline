@@ -66,7 +66,12 @@ function buildLatestExecution(entry: ForexJournalEntry | null) {
     const execution = safeRecord(payload.execution);
 
     const module = typeof signal.module === 'string' ? signal.module : null;
-    const action = typeof signal.side === 'string' ? signal.side : null;
+    const action =
+        typeof signal.side === 'string'
+            ? signal.side
+            : typeof decision.action === 'string'
+            ? decision.action
+            : null;
     const placed = Boolean(execution.placed);
     const orderId = typeof execution.orderId === 'string' ? execution.orderId : null;
     const clientOid = typeof execution.clientOid === 'string' ? execution.clientOid : null;

@@ -9,6 +9,7 @@ export type ForexRegime = 'trend_up' | 'trend_down' | 'range' | 'high_vol' | 'ev
 export type ForexPermission = 'long_only' | 'short_only' | 'both' | 'flat';
 export type ForexModuleName = 'pullback' | 'breakout_retest' | 'range_fade' | 'none';
 export type ForexSide = 'BUY' | 'SELL';
+export type ForexExecutionAction = ForexSide | 'CLOSE' | 'REVERSE' | 'NONE';
 
 export interface NormalizedForexEconomicEvent {
     id: string;
@@ -130,12 +131,23 @@ export interface ForexModuleSignal {
     reasonCodes: string[];
 }
 
+export interface ForexPositionContext {
+    pair: string;
+    side: ForexSide;
+    module: Exclude<ForexModuleName, 'none'>;
+    entryPrice: number;
+    stopPrice: number;
+    openedAtMs: number;
+    updatedAtMs: number;
+    packet: ForexRegimePacket;
+}
+
 export interface ForexExecutionResultSummary {
     pair: string;
     attempted: boolean;
     placed: boolean;
     dryRun: boolean;
-    action: ForexSide | 'NONE';
+    action: ForexExecutionAction;
     module: ForexModuleName;
     reasonCodes: string[];
     orderId: string | null;

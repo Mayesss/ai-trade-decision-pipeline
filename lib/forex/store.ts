@@ -2,6 +2,7 @@ import { kvGetJson, kvSetJson } from '../kv';
 import type {
     ForexJournalEntry,
     ForexPacketSnapshot,
+    ForexPositionContext,
     ForexScanSnapshot,
 } from './types';
 
@@ -10,6 +11,7 @@ const FOREX_PACKETS_KEY = 'forex:packets:latest:v1';
 const FOREX_JOURNAL_KEY = 'forex:journal:latest:v1';
 const FOREX_COOLDOWN_KEY_PREFIX = 'forex:risk:cooldown';
 const FOREX_RANGE_FADE_COOLDOWN_KEY_PREFIX = 'forex:module:range_fade:cooldown';
+const FOREX_POSITION_CONTEXT_KEY_PREFIX = 'forex:position:context';
 const FOREX_STORE_TTL_SECONDS = 14 * 24 * 60 * 60;
 const FOREX_JOURNAL_MAX = 1200;
 
@@ -19,6 +21,10 @@ function cooldownKey(pair: string): string {
 
 function rangeFadeCooldownKey(pair: string): string {
     return `${FOREX_RANGE_FADE_COOLDOWN_KEY_PREFIX}:${String(pair || '').toUpperCase()}`;
+}
+
+function positionContextKey(pair: string): string {
+    return `${FOREX_POSITION_CONTEXT_KEY_PREFIX}:${String(pair || '').toUpperCase()}`;
 }
 
 export async function saveForexScanSnapshot(snapshot: ForexScanSnapshot) {
@@ -71,4 +77,20 @@ export async function getForexRangeFadeCooldownUntil(pair: string): Promise<numb
     const raw = await kvGetJson<{ untilMs?: number }>(rangeFadeCooldownKey(pair));
     const value = Number(raw?.untilMs);
     return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+export async function saveForexPositionContext(context: ForexPositionContext) {
+    await kvSetJson(positionContextKey(context.pair), context, FOREX_STORE_TTL_SECONDS);
+}
+
+export async function loadForexPositionContext(pair: string): Promise<ForexPositionContext | null> {
+    const raw = await kvGetJson<ForexPositionContext | null>(positionContextKey(pair));
+    if (!raw || typeof raw !== 'object') return null;
+    if (raw.side !== 'BUY' && raw.side !== 'SELL') return null;
+    if (!(Number.isFinite(Number(raw.stopPrice)) && Number(raw.stopPrice) > 0)) return null;
+    return raw;
+}
+
+export async function deleteForexPositionContext(pair: string) {
+    await kvSetJson(positionContextKey(pair), null, 5);
 }
