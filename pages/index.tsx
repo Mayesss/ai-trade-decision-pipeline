@@ -575,7 +575,7 @@ export default function Home() {
     try {
       const params = new URLSearchParams({
         dryRun: 'false',
-        notional: '100',
+        notional: '850',
         t: String(Date.now()),
       });
       const executeRes = await fetch(`/api/forex/cron/execute?${params.toString()}`, {

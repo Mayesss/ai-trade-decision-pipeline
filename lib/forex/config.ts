@@ -1,6 +1,6 @@
 import universeConfig from '../../data/forexUniverse.json';
 
-const DEFAULT_NOTIONAL_USD = 100;
+const DEFAULT_NOTIONAL_USD = 850;
 
 function toPositiveNumber(value: string | undefined, fallback: number): number {
     const n = Number(value);
