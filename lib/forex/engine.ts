@@ -467,9 +467,11 @@ function packetForContext(packet: ForexRegimePacket): ForexRegimePacket {
 export function shouldInvalidateByStop(params: {
     context: ForexPositionContext | null;
     openSide: ForexSide | null;
+    bidPrice: number | null;
+    offerPrice: number | null;
     midPrice: number | null;
 }): { invalidated: boolean; reasonCode?: string } {
-    const { context, openSide, midPrice } = params;
+    const { context, openSide, bidPrice, offerPrice, midPrice } = params;
     if (!context || !openSide || context.side !== openSide) {
         return { invalidated: false };
     }
@@ -477,15 +479,35 @@ export function shouldInvalidateByStop(params: {
     if (!(Number.isFinite(stopPrice as number) && (stopPrice as number) > 0)) {
         return { invalidated: false };
     }
-    if (!(Number.isFinite(midPrice as number) && (midPrice as number) > 0)) {
+
+    const bid = Number(bidPrice);
+    const offer = Number(offerPrice);
+    const mid = Number(midPrice);
+
+    if (openSide === 'BUY') {
+        const triggerPrice =
+            Number.isFinite(bid) && bid > 0 ? bid : Number.isFinite(mid) && mid > 0 ? mid : NaN;
+        if (!(Number.isFinite(triggerPrice) && triggerPrice > 0)) {
+            return { invalidated: false };
+        }
+        if (triggerPrice <= Number(stopPrice)) {
+            return { invalidated: true, reasonCode: 'STOP_INVALIDATED_LONG' };
+        }
         return { invalidated: false };
     }
-    if (openSide === 'BUY' && Number(midPrice) <= Number(stopPrice)) {
-        return { invalidated: true, reasonCode: 'STOP_INVALIDATED_LONG' };
+
+    if (openSide === 'SELL') {
+        const triggerPrice =
+            Number.isFinite(offer) && offer > 0 ? offer : Number.isFinite(mid) && mid > 0 ? mid : NaN;
+        if (!(Number.isFinite(triggerPrice) && triggerPrice > 0)) {
+            return { invalidated: false };
+        }
+        if (triggerPrice >= Number(stopPrice)) {
+            return { invalidated: true, reasonCode: 'STOP_INVALIDATED_SHORT' };
+        }
+        return { invalidated: false };
     }
-    if (openSide === 'SELL' && Number(midPrice) >= Number(stopPrice)) {
-        return { invalidated: true, reasonCode: 'STOP_INVALIDATED_SHORT' };
-    }
+
     return { invalidated: false };
 }
 
@@ -973,6 +995,8 @@ export async function runForexExecuteCycle(opts: { nowMs?: number; dryRun?: bool
             const stopInvalidation = shouldInvalidateByStop({
                 context: positionContext,
                 openSide,
+                bidPrice: Number(openPosition.bid),
+                offerPrice: Number(openPosition.offer),
                 midPrice,
             });
             if (stopInvalidation.invalidated) {
