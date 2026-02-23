@@ -175,6 +175,54 @@ curl "http://localhost:3000/api/swing/analyze?symbol=ETHUSDT&platform=bitget&dry
 curl "http://localhost:3000/api/swing/analyze?symbol=QQQUSDT&platform=capital&newsSource=marketaux&dryRun=true&notional=100"
 ```
 
+## Forex Replay Harness (Phase 1)
+- Purpose:
+  - Lightweight, quote-aware replay for forex execution/management logic validation.
+  - Validates bid/ask stop sides, spread stress windows, partial/BE/trailing sequencing, contextual re-entry locks, and rollover fee effects.
+- Safety:
+  - Replay mode is fully offline (`scripts/forex-replay.ts`) and does not call Capital APIs.
+  - Capital rate-limit note: keep live/capture integrations at or below `10 req/s` (recommended headroom target: `<=8 req/s`).
+- Inputs:
+  - JSON quote stream with `ts`, `bid`, `ask` (plus optional `eventRisk`, `shock`, `rollover`, `spreadMultiplier`, `forceCloseReasonCode`).
+  - Optional entry signals (`side`, `stopPrice`, optional `takeProfitPrice`/`notionalUsd`).
+- Usage:
+```bash
+# run sample replay and write artifacts to /tmp/forex-replay
+npm run replay:run
+
+# run spread/slippage/shock stress matrix and write /tmp/forex-replay-matrix
+npm run replay:matrix
+
+# run every curated fixture
+node --import tsx scripts/forex-replay-matrix.ts --fixtures all --fixturesIndex data/replay/fixtures/index.json --outDir /tmp/forex-replay-matrix
+
+# run a fixture subset
+node --import tsx scripts/forex-replay-matrix.ts --fixtures london_whip_spread_spike,event_gap_through_stop --outDir /tmp/forex-replay-matrix
+
+# run ad-hoc single file (no fixture index)
+node --import tsx scripts/forex-replay-matrix.ts --input data/replay/eurusd.sample.json --outDir /tmp/forex-replay-matrix
+
+# override shock profiles (none, occasional, clustered, frequent)
+node --import tsx scripts/forex-replay-matrix.ts --fixtures core --shockProfiles none,clustered,frequent --outDir /tmp/forex-replay-matrix
+
+# override constrained shortlist thresholds
+node --import tsx scripts/forex-replay-matrix.ts --fixtures core --minCoverage 55 --maxChurn 70 --maxTailGap 2.5 --topKConstrained 10 --outDir /tmp/forex-replay-matrix
+
+# run replay tests
+npm run test:forex
+```
+- Artifacts written:
+  - `summary.json`
+  - `equity.json`
+  - `timeline.json`
+  - `ledger.csv`
+  - matrix mode writes `matrix.summary.json`, `matrix.summary.csv`, and `matrix.frontier.csv` grouped by fixture + scenario, with fixture-level and scenario-level aggregates
+  - `matrix.frontier.csv` includes scenario tradeoff columns (`robustnessScore`, `tailGap`, `churnPenaltyPct`, `tradeCoveragePct`, `worstFixtureId`)
+  - `matrix.summary.json` includes scenario robustness fields (`tradeCoveragePct`, `medianAvgRTraded`, `worstTradedAvgR`, `tailGap`, `costDragBps`, `churnPenaltyPct`, `robustnessScore`)
+  - overview includes `topRobustScenarios`, `topRobustScenariosConstrained` (coverage/churn/tail-gated shortlist with rejection counts), `robustnessFrontier`, `topRobustByShockProfile`, `worstFixtureHeatmap`, and `scoreAudit`
+  - score-audit dominance flags now trigger only on combined thresholds (`|rho| > 0.92` and top-k overlap `> 80%`)
+  - curated fixture manifest lives at `data/replay/fixtures/index.json`
+
 ## Data Flow
 1) **Analyze** selects provider by `platform`, pulls market data + selected news source, computes indicators/analytics, builds the prompt, calls the LLM, and (optionally) executes the trade.  
 2) The decision, snapshot, prompt, and execution result are appended to KV history.  

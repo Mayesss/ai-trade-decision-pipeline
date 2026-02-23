@@ -63,7 +63,13 @@ test('shouldInvalidateByStop invalidates long when bid is below stop', () => {
 
 test('shouldInvalidateByStop invalidates short when offer is above stop', () => {
     const out = shouldInvalidateByStop({
-        context: { ...baseContext, side: 'SELL', stopPrice: 1.105 },
+        context: {
+            ...baseContext,
+            side: 'SELL',
+            initialStopPrice: 1.105,
+            currentStopPrice: 1.105,
+            stopPrice: 1.105,
+        },
         openSide: 'SELL',
         bidPrice: 1.1046,
         offerPrice: 1.106,
@@ -88,7 +94,13 @@ test('shouldInvalidateByStop does not invalidate long when only mid is below sto
 
 test('shouldInvalidateByStop does not invalidate short when only mid is above stop but offer remains below', () => {
     const out = shouldInvalidateByStop({
-        context: { ...baseContext, side: 'SELL', stopPrice: 1.105 },
+        context: {
+            ...baseContext,
+            side: 'SELL',
+            initialStopPrice: 1.105,
+            currentStopPrice: 1.105,
+            stopPrice: 1.105,
+        },
         openSide: 'SELL',
         bidPrice: 1.1046,
         offerPrice: 1.1048,

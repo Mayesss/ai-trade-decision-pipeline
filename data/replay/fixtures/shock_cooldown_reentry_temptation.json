@@ -1,0 +1,71 @@
+{
+  "pair": "EURUSD",
+  "quotes": [
+    { "ts": "2026-02-23T15:00:00.000Z", "bid": 1.40000, "ask": 1.40008 },
+    { "ts": "2026-02-23T15:02:00.000Z", "bid": 1.40018, "ask": 1.40028, "shock": true },
+    {
+      "ts": "2026-02-23T15:04:00.000Z",
+      "bid": 1.39992,
+      "ask": 1.40012,
+      "shock": true,
+      "forceCloseReasonCode": "CLOSE_TIME_STOP_MAX_HOLD"
+    },
+    { "ts": "2026-02-23T15:05:00.000Z", "bid": 1.39998, "ask": 1.40010, "shock": true },
+    { "ts": "2026-02-23T15:06:00.000Z", "bid": 1.40004, "ask": 1.40012, "shock": true },
+    { "ts": "2026-02-23T15:08:00.000Z", "bid": 1.40010, "ask": 1.40018 },
+    { "ts": "2026-02-23T15:10:00.000Z", "bid": 1.40024, "ask": 1.40034 },
+    { "ts": "2026-02-23T15:12:00.000Z", "bid": 1.40014, "ask": 1.40028, "eventRisk": "high" },
+    { "ts": "2026-02-23T15:18:00.000Z", "bid": 1.40018, "ask": 1.40026 },
+    { "ts": "2026-02-23T15:20:00.000Z", "bid": 1.40008, "ask": 1.40016 },
+    { "ts": "2026-02-23T15:34:00.000Z", "bid": 1.40030, "ask": 1.40038 },
+    {
+      "ts": "2026-02-23T15:36:00.000Z",
+      "bid": 1.40024,
+      "ask": 1.40034,
+      "forceCloseReasonCode": "REGIME_FLIP_CLOSE"
+    },
+    { "ts": "2026-02-23T15:40:00.000Z", "bid": 1.40018, "ask": 1.40026 }
+  ],
+  "entries": [
+    {
+      "ts": "2026-02-23T15:00:00.000Z",
+      "side": "BUY",
+      "stopPrice": 1.39940,
+      "takeProfitPrice": 1.40100,
+      "notionalUsd": 1000,
+      "label": "pre-shock entry"
+    },
+    {
+      "ts": "2026-02-23T15:05:00.000Z",
+      "side": "BUY",
+      "stopPrice": 1.39950,
+      "takeProfitPrice": 1.40080,
+      "notionalUsd": 1000,
+      "label": "lock-window temptation"
+    },
+    {
+      "ts": "2026-02-23T15:10:00.000Z",
+      "side": "BUY",
+      "stopPrice": 1.39970,
+      "takeProfitPrice": 1.40100,
+      "notionalUsd": 1000,
+      "label": "post-lock re-entry"
+    },
+    {
+      "ts": "2026-02-23T15:18:00.000Z",
+      "side": "BUY",
+      "stopPrice": 1.39990,
+      "takeProfitPrice": 1.40090,
+      "notionalUsd": 1000,
+      "label": "event-lock temptation"
+    },
+    {
+      "ts": "2026-02-23T15:34:00.000Z",
+      "side": "BUY",
+      "stopPrice": 1.39995,
+      "takeProfitPrice": 1.40090,
+      "notionalUsd": 1000,
+      "label": "post-event resume"
+    }
+  ]
+}

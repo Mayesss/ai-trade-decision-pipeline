@@ -1,0 +1,44 @@
+{
+  "fixtures": [
+    {
+      "id": "london_whip_spread_spike",
+      "file": "./london_whip_spread_spike.json",
+      "tier": "core",
+      "tags": ["session-transition", "spread", "whipsaw", "gating"],
+      "description": "London transition spread blowout with whip action and re-entry temptation.",
+      "purpose": "Validate transition spread gating and churn control around open."
+    },
+    {
+      "id": "event_gap_through_stop",
+      "file": "./event_gap_through_stop.json",
+      "tier": "core",
+      "tags": ["event", "gap", "stop", "slippage"],
+      "description": "Pre-event calm followed by a gap-through-stop and post-event high-risk close.",
+      "purpose": "Validate adverse stop execution and event-risk forced close behavior."
+    },
+    {
+      "id": "rollover_widen_fee_drag",
+      "file": "./rollover_widen_fee_drag.json",
+      "tier": "core",
+      "tags": ["rollover", "fees", "spread", "carry"],
+      "description": "Overnight hold through rollover widening with financing drag.",
+      "purpose": "Validate rollover fee accounting and hold behavior under widening."
+    },
+    {
+      "id": "fake_breakout_reversal",
+      "file": "./fake_breakout_reversal.json",
+      "tier": "core",
+      "tags": ["breakout", "reversal", "false-break", "confirmation"],
+      "description": "One false breakout reversal followed by a valid continuation segment.",
+      "purpose": "Validate breakout whipsaw handling and quick invalidation response."
+    },
+    {
+      "id": "shock_cooldown_reentry_temptation",
+      "file": "./shock_cooldown_reentry_temptation.json",
+      "tier": "core",
+      "tags": ["shock", "cooldown", "reentry-lock", "event-risk"],
+      "description": "Shock-heavy chop with repeated entry temptation and lock-reason sequencing.",
+      "purpose": "Validate shock gating plus contextual lock ordering under stress."
+    }
+  ]
+}

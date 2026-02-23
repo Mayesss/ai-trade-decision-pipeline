@@ -19,9 +19,14 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test:ts": "node --import tsx --test",
+    "test:forex": "node --import tsx --test lib/forex/*.test.ts lib/forex/modules/*.test.ts lib/forex/replay/*.test.ts",
+    "replay:run": "node --import tsx scripts/forex-replay.ts --input data/replay/eurusd.sample.json --outDir /tmp/forex-replay",
+    "replay:matrix": "node --import tsx scripts/forex-replay-matrix.ts --fixtures core --fixturesIndex data/replay/fixtures/index.json --outDir /tmp/forex-replay-matrix"
   },
   "devDependencies": {
-    "baseline-browser-mapping": "^2.9.19"
+    "baseline-browser-mapping": "^2.9.19",
+    "tsx": "^4.21.0"
   }
 }

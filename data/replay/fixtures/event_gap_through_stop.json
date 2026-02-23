@@ -1,0 +1,30 @@
+{
+  "pair": "EURUSD",
+  "quotes": [
+    { "ts": "2026-02-23T13:20:00.000Z", "bid": 1.10100, "ask": 1.10108 },
+    { "ts": "2026-02-23T13:22:00.000Z", "bid": 1.10125, "ask": 1.10134 },
+    { "ts": "2026-02-23T13:25:00.000Z", "bid": 1.09935, "ask": 1.09995, "eventRisk": "medium", "shock": true },
+    { "ts": "2026-02-23T13:26:00.000Z", "bid": 1.09910, "ask": 1.09960, "shock": true },
+    { "ts": "2026-02-23T13:30:00.000Z", "bid": 1.09930, "ask": 1.09938 },
+    { "ts": "2026-02-23T13:31:00.000Z", "bid": 1.09922, "ask": 1.09932, "eventRisk": "high" },
+    { "ts": "2026-02-23T13:34:00.000Z", "bid": 1.09920, "ask": 1.09930 }
+  ],
+  "entries": [
+    {
+      "ts": "2026-02-23T13:20:00.000Z",
+      "side": "BUY",
+      "stopPrice": 1.10045,
+      "takeProfitPrice": 1.10200,
+      "notionalUsd": 1000,
+      "label": "pre-event long"
+    },
+    {
+      "ts": "2026-02-23T13:30:00.000Z",
+      "side": "SELL",
+      "stopPrice": 1.10010,
+      "takeProfitPrice": 1.09860,
+      "notionalUsd": 1000,
+      "label": "post-gap short"
+    }
+  ]
+}

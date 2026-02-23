@@ -67,6 +67,57 @@ When debugging prompt/decision issues:
 3. Gate verbose logging behind a temporary flag (query/env) when practical.
 4. Remove debug-only logs before finishing unless user asks to keep them.
 
+## Forex Strategy Self-Improvement Loop
+Use this loop for forex execution/management changes so improvements are measurable and reversible.
+
+1. Keep validation offline-first:
+   - Run replay/matrix tooling first (`npm run test:forex`, `npm run replay:matrix`).
+   - Do not use Capital live calls for strategy iteration.
+   - Keep manual API checks in `dryRun=true`.
+2. Treat churn as a symptom:
+   - Diagnose what creates churn (`breakevenExitPct`, `partialTradePct`, `shortHoldTradePct`) before changing weights.
+   - Use fixture/scenario artifacts to identify which management rule is causing exits.
+3. Use one-change/one-hypothesis experiments:
+   - Change one rule at a time (for example BE threshold, trailing activation, time-stop guard).
+   - Rerun invariants + matrix after each change and compare deltas.
+4. Use constrained shortlist as policy gate:
+   - Use `topRobustScenariosConstrained` as pass/fail policy, not raw score ranking.
+   - CLI knobs:
+     - `--minCoverage`
+     - `--maxChurn`
+     - `--maxTailGap`
+     - `--topKConstrained`
+5. Track rejection reasons:
+   - Review `rejectedByCoverage`, `rejectedByChurn`, `rejectedByTailGap`, `rejectedByMultiple`.
+   - Optimize the binding constraint first (most common reject reason).
+6. Fix catastrophic tails before cosmetic score gains:
+   - Prioritize event-gap and rollover tail control before churn tuning if tails are extreme.
+   - Verify `worstFixtureHeatmap` and `worstTradedAvgR` improve, not just `robustnessScore`.
+7. Optimize by fixture class, not globally:
+   - `london_whip_spread_spike`: churn and spread handling.
+   - `event_gap_through_stop`: event tail handling.
+   - `rollover_widen_fee_drag`: rollover hold/fee risk.
+   - `fake_breakout_reversal`: entry quality confirmation.
+   - `shock_cooldown_reentry_temptation`: lock/cooldown discipline.
+8. Prefer management changes with high leverage first:
+   - First default experiment: delay BE and trailing activation and make them spread-aware.
+   - Success signal: lower churn floor and more eligible scenarios under stricter churn caps without worsening tails.
+
+### Forex Iteration Commands
+```bash
+# baseline matrix
+npm run replay:matrix
+
+# stricter constrained policy run
+node --import tsx scripts/forex-replay-matrix.ts \
+  --fixtures core \
+  --minCoverage 50 \
+  --maxChurn 65 \
+  --maxTailGap 2.8 \
+  --topKConstrained 10 \
+  --outDir /tmp/forex-replay-matrix-strict
+```
+
 ## Useful Local Checks
 ```bash
 # If ADMIN_ACCESS_SECRET is set, include:
