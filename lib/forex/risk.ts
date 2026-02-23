@@ -1,6 +1,11 @@
 import type { CapitalOpenPositionSnapshot } from '../capital';
 import { fetchCapitalPositionInfo } from '../capital';
-import { getForexStrategyConfig, spreadPipsCapForPair } from './config';
+import {
+    getForexStrategyConfig,
+    isWithinSessionTransitionBuffer,
+    spreadPipsCapForPair,
+    tightenSpreadToAtrCap,
+} from './config';
 import { getForexPairCooldownUntil, setForexPairCooldown } from './store';
 import type { ForexEventGateDecision, ForexPairMetrics, ForexPositionContext, ForexRiskCheck } from './types';
 import { pairCurrencies } from './events/gate';
@@ -245,6 +250,17 @@ export async function evaluateForexRiskCheck(params: {
     if (params.metrics.spreadToAtr1h > cfg.risk.maxSpreadToAtr1h) {
         allowEntry = false;
         reasons.push('SPREAD_TO_ATR_RISK_CAP_EXCEEDED');
+        reasons.push('NO_TRADE_SPREAD_TOO_HIGH');
+    }
+
+    const transitionStress =
+        isWithinSessionTransitionBuffer(nowMs, cfg.risk.sessionTransitionBufferMinutes) &&
+        params.metrics.spreadToAtr1h >
+            tightenSpreadToAtrCap(cfg.risk.maxSpreadToAtr1h, cfg.risk.transitionSpreadToAtrMultiplier);
+    if (transitionStress) {
+        allowEntry = false;
+        reasons.push('SESSION_TRANSITION_SPREAD_STRESS');
+        reasons.push('SPREAD_TO_ATR_TRANSITION_RISK_CAP_EXCEEDED');
         reasons.push('NO_TRADE_SPREAD_TOO_HIGH');
     }
 

@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
     computeHybridRiskSize,
     computeOpenRiskUsage,
+    evaluateForexRiskCheck,
     evaluateRiskCapBudget,
 } from './risk';
 import type { ForexPositionContext, ForexRegimePacket } from './types';
@@ -109,4 +110,43 @@ test('evaluateRiskCapBudget blocks when portfolio risk would breach cap', () => 
 
     assert.equal(cap.allow, false);
     assert.ok(cap.reasonCodes.includes('NO_TRADE_RISK_CAP_PORTFOLIO'));
+});
+
+test('evaluateForexRiskCheck blocks entries on session-transition spread stress', async () => {
+    const out = await evaluateForexRiskCheck({
+        pair: 'EURUSD',
+        nowMs: Date.UTC(2026, 1, 23, 7, 0, 0),
+        metrics: {
+            pair: 'EURUSD',
+            epic: 'EURUSD',
+            sessionTag: 'LONDON',
+            price: 1.09,
+            spreadAbs: 0.0001,
+            spreadPips: 1,
+            spreadToAtr1h: 0.13,
+            atr1h: 0.002,
+            atr4h: 0.004,
+            atr1hPercent: 0.002,
+            trendStrength: 0.8,
+            chopScore: 0.3,
+            shockFlag: false,
+            timestampMs: Date.now(),
+        },
+        eventGate: {
+            pair: 'EURUSD',
+            blockNewEntries: false,
+            allowNewEntries: true,
+            allowRiskReduction: true,
+            staleData: false,
+            reasonCodes: ['EVENT_WINDOW_CLEAR'],
+            matchedEvents: [],
+            riskStateApplied: 'normal',
+            activeImpactLevels: [],
+        },
+        exposure: {},
+    });
+
+    assert.equal(out.allowEntry, false);
+    assert.ok(out.reasonCodes.includes('SESSION_TRANSITION_SPREAD_STRESS'));
+    assert.ok(out.reasonCodes.includes('SPREAD_TO_ATR_TRANSITION_RISK_CAP_EXCEEDED'));
 });

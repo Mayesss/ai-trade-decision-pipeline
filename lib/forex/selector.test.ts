@@ -72,6 +72,35 @@ test('evaluatePairEligibility blocks on active high-impact event window', () => 
     assert.ok(out.reasons.includes('EVENT_WINDOW_ACTIVE_BLOCK'));
 });
 
+test('evaluatePairEligibility applies stricter spread-to-ATR cap around session transitions', () => {
+    const transitionNowMs = Date.UTC(2026, 1, 23, 7, 0, 0);
+    const out = evaluatePairEligibility({
+        pair: 'EURUSD',
+        metrics: { ...baseMetrics, spreadToAtr1h: 0.1 },
+        staleEvents: false,
+        events: [],
+        nowMs: transitionNowMs,
+    });
+
+    assert.equal(out.eligible, false);
+    assert.ok(out.reasons.includes('SESSION_TRANSITION_SPREAD_STRESS'));
+    assert.ok(out.reasons.includes('SPREAD_TO_ATR_TRANSITION_CAP_EXCEEDED'));
+});
+
+test('evaluatePairEligibility keeps pair eligible outside session transition buffer when base cap is respected', () => {
+    const normalNowMs = Date.UTC(2026, 1, 23, 9, 0, 0);
+    const out = evaluatePairEligibility({
+        pair: 'EURUSD',
+        metrics: { ...baseMetrics, spreadToAtr1h: 0.1 },
+        staleEvents: false,
+        events: [],
+        nowMs: normalNowMs,
+    });
+
+    assert.equal(out.eligible, true);
+    assert.ok(!out.reasons.includes('SESSION_TRANSITION_SPREAD_STRESS'));
+});
+
 test('selector top percentile gate keeps only top configured slice', () => {
     assert.equal(selectorTopRankCutoff(10, 40), 4);
     assert.equal(

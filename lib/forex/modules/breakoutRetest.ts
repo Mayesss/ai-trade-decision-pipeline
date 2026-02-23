@@ -25,60 +25,75 @@ export function evaluateBreakoutRetestModule(params: {
     const cfg = getForexStrategyConfig();
 
     const candles = market.candles.m15;
-    if (!Array.isArray(candles) || candles.length < 40) return null;
+    if (!Array.isArray(candles) || candles.length < 45) return null;
 
+    // Two-step confirmation flow:
+    // 1) breakout candle closes outside range,
+    // 2) retest candle accepts back in breakout direction,
+    // 3) confirmation candle continues in breakout direction.
     const recent = candles.slice(-30, -5);
     const rangeHigh = Math.max(...recent.map((c) => num(c?.[2])));
     const rangeLow = Math.min(...recent.map((c) => num(c?.[3])));
 
-    const last = candles[candles.length - 1];
-    const prev = candles[candles.length - 2];
-    const prevClose = num(prev?.[4]);
-    const lastClose = num(last?.[4]);
-    const lastLow = num(last?.[3]);
-    const lastHigh = num(last?.[2]);
+    const breakoutCandle = candles[candles.length - 3];
+    const retestCandle = candles[candles.length - 2];
+    const confirmCandle = candles[candles.length - 1];
 
-    const buffer = market.atr5m * cfg.modules.breakoutAtrBuffer;
+    const breakoutClose = num(breakoutCandle?.[4]);
+    const breakoutLow = num(breakoutCandle?.[3]);
+    const breakoutHigh = num(breakoutCandle?.[2]);
+    const retestClose = num(retestCandle?.[4]);
+    const retestLow = num(retestCandle?.[3]);
+    const retestHigh = num(retestCandle?.[2]);
+    const confirmClose = num(confirmCandle?.[4]);
+    const confirmLow = num(confirmCandle?.[3]);
+    const confirmHigh = num(confirmCandle?.[2]);
 
-    const longBreak = prevClose > rangeHigh + buffer;
-    const longRetest = lastLow <= rangeHigh + buffer && lastClose > rangeHigh;
+    const buffer = Math.max(1e-9, market.atr5m * cfg.modules.breakoutAtrBuffer);
+
+    const longBreak = breakoutClose > rangeHigh + buffer;
+    const longRetest = retestLow <= rangeHigh + buffer && retestClose > rangeHigh;
+    const longConfirm = confirmClose > Math.max(rangeHigh, retestClose) && confirmLow > rangeHigh - buffer;
 
     if (
         (packet.regime === 'trend_up' || packet.regime === 'high_vol') &&
         permissionAllowsLong(packet.permission) &&
         longBreak &&
-        longRetest
+        longRetest &&
+        longConfirm
     ) {
-        const stop = Math.min(rangeHigh - buffer, lastLow - buffer);
+        const stop = Math.min(rangeHigh - buffer, retestLow - buffer, breakoutLow - buffer);
         return {
             pair,
             module: 'breakout_retest',
             side: 'BUY',
-            entryPrice: lastClose,
+            entryPrice: confirmClose,
             stopPrice: stop,
             confidence: Math.max(0.6, packet.confidence),
-            reasonCodes: ['MODULE_BREAKOUT_RETEST_LONG_TRIGGER'],
+            reasonCodes: ['MODULE_BREAKOUT_RETEST_LONG_TWO_STEP_CONFIRMED'],
         };
     }
 
-    const shortBreak = prevClose < rangeLow - buffer;
-    const shortRetest = lastHigh >= rangeLow - buffer && lastClose < rangeLow;
+    const shortBreak = breakoutClose < rangeLow - buffer;
+    const shortRetest = retestHigh >= rangeLow - buffer && retestClose < rangeLow;
+    const shortConfirm = confirmClose < Math.min(rangeLow, retestClose) && confirmHigh < rangeLow + buffer;
 
     if (
         (packet.regime === 'trend_down' || packet.regime === 'high_vol') &&
         permissionAllowsShort(packet.permission) &&
         shortBreak &&
-        shortRetest
+        shortRetest &&
+        shortConfirm
     ) {
-        const stop = Math.max(rangeLow + buffer, lastHigh + buffer);
+        const stop = Math.max(rangeLow + buffer, retestHigh + buffer, breakoutHigh + buffer);
         return {
             pair,
             module: 'breakout_retest',
             side: 'SELL',
-            entryPrice: lastClose,
+            entryPrice: confirmClose,
             stopPrice: stop,
             confidence: Math.max(0.6, packet.confidence),
-            reasonCodes: ['MODULE_BREAKOUT_RETEST_SHORT_TRIGGER'],
+            reasonCodes: ['MODULE_BREAKOUT_RETEST_SHORT_TWO_STEP_CONFIRMED'],
         };
     }
 

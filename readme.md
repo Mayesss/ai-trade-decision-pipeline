@@ -58,6 +58,14 @@ MARKETAUX_API_KEY=...
 # FOREX_EVENT_BLOCK_IMPACTS=HIGH
 # FOREX_EVENT_CALL_WARN_THRESHOLD=180
 # FOREX_DEFAULT_NOTIONAL_USD=100
+# FOREX_SESSION_TRANSITION_BUFFER_MINUTES=20
+# FOREX_SELECTOR_TRANSITION_SPREAD_TO_ATR_MULTIPLIER=0.8
+# FOREX_RISK_SESSION_TRANSITION_BUFFER_MINUTES=20
+# FOREX_RISK_TRANSITION_SPREAD_TO_ATR_MULTIPLIER=0.75
+# FOREX_REENTRY_LOCK_MINUTES=5
+# FOREX_REENTRY_LOCK_MINUTES_TIME_STOP=5
+# FOREX_REENTRY_LOCK_MINUTES_REGIME_FLIP=10
+# FOREX_REENTRY_LOCK_MINUTES_EVENT_RISK=20
 
 # KV (Upstash REST)
 KV_REST_API_URL=https://...
@@ -139,7 +147,10 @@ npm run start
 - `GET /api/forex/cron/regime`
   - Capital-only forex AI regime packet refresh from latest scan snapshot.
 - `GET /api/forex/cron/execute?dryRun=true`
-  - Capital-only forex deterministic execution cycle (pullback/breakout-retest modules).
+  - Capital-only forex deterministic execution cycle (pullback/breakout-retest/range-fade modules).
+  - Breakout-retest entries use breakout -> retest -> continuation confirmation (3-candle sequence).
+  - Re-entry lock duration is contextual (for example event-risk > regime-flip > time-stop).
+  - Applies stricter spread-to-ATR gating around session transition windows.
   - Optional query: `notional=100` to override default notional for this run (default is `100`).
 - `GET /api/forex/dashboard/summary`
   - Forex dashboard aggregate (eligibility, packet state, event gate status, execution recency).

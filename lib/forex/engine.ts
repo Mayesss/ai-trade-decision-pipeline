@@ -450,6 +450,34 @@ export function isOppositePermission(side: ForexSide, permission: ForexRegimePac
     return permission === 'long_only';
 }
 
+export function resolveReentryLockMinutes(params: {
+    reasonCodes: string[];
+    reentry: {
+        lockMinutes: number;
+        lockMinutesTimeStop: number;
+        lockMinutesRegimeFlip: number;
+        lockMinutesEventRisk: number;
+    };
+    executeMinutes: number;
+}): number | null {
+    const reasonSet = new Set(
+        (params.reasonCodes || [])
+            .map((code) => String(code || '').trim().toUpperCase())
+            .filter((code) => code.length > 0),
+    );
+    const minCycleLock = Math.max(1, Math.floor(Number(params.executeMinutes) || 1));
+    const defaultLock = Math.max(minCycleLock, Math.floor(Number(params.reentry.lockMinutes) || minCycleLock));
+    const timeStopLock = Math.max(minCycleLock, Math.floor(Number(params.reentry.lockMinutesTimeStop) || minCycleLock));
+    const regimeFlipLock = Math.max(defaultLock, Math.floor(Number(params.reentry.lockMinutesRegimeFlip) || defaultLock));
+    const eventRiskLock = Math.max(regimeFlipLock, Math.floor(Number(params.reentry.lockMinutesEventRisk) || regimeFlipLock));
+
+    if (reasonSet.has('EVENT_HIGH_FORCE_CLOSE')) return eventRiskLock;
+    if (reasonSet.has('REGIME_FLIP_CLOSE')) return regimeFlipLock;
+    if (reasonSet.has('CLOSE_TIME_STOP_NO_PROGRESS') || reasonSet.has('CLOSE_TIME_STOP_MAX_HOLD')) return timeStopLock;
+
+    return null;
+}
+
 function packetForContext(packet: ForexRegimePacket): ForexRegimePacket {
     return {
         pair: packet.pair,
@@ -812,7 +840,6 @@ export async function runForexExecuteCycle(opts: { nowMs?: number; dryRun?: bool
         let contextMutated = false;
         let exitAction: 'CLOSE' | null = null;
         let partialClosePct: number | null = null;
-        let reentryLockNeeded = false;
         const exitReasonCodes: string[] = [];
         let managementAction: ForexExecutionResultSummary['managementAction'] = null;
 
@@ -1024,7 +1051,6 @@ export async function runForexExecuteCycle(opts: { nowMs?: number; dryRun?: bool
                 exitReasonCodes.push('REGIME_FLAT_CLOSE');
             } else if (openSide && isOppositePermission(openSide, packet.permission)) {
                 exitAction = 'CLOSE';
-                reentryLockNeeded = true;
                 exitReasonCodes.push('REGIME_FLIP_CLOSE');
             }
         }
@@ -1146,8 +1172,12 @@ export async function runForexExecuteCycle(opts: { nowMs?: number; dryRun?: bool
                 await deleteForexPositionContext(pair);
                 contextsByPair.delete(pair);
                 adjustUsageForClose(pair, 1);
-                if (reentryLockNeeded) {
-                    const lockMinutes = Math.max(cfg.reentry.lockMinutes, cfg.cadence.executeMinutes);
+                const lockMinutes = resolveReentryLockMinutes({
+                    reasonCodes,
+                    reentry: cfg.reentry,
+                    executeMinutes: cfg.cadence.executeMinutes,
+                });
+                if (typeof lockMinutes === 'number' && Number.isFinite(lockMinutes) && lockMinutes > 0) {
                     await setForexReentryLock(pair, nowMs + lockMinutes * 60_000);
                 } else {
                     await clearForexReentryLock(pair);

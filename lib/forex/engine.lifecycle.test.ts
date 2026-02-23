@@ -5,6 +5,7 @@ import {
     computePositionProgress,
     isPacketStale,
     packetAgeMinutes,
+    resolveReentryLockMinutes,
     shouldTimeStopMaxHold,
     shouldTimeStopNoFollowThrough,
 } from './engine';
@@ -98,5 +99,47 @@ test('max-hold time-stop respects trend+trailing exception', () => {
             trailingActive: true,
         }),
         true,
+    );
+});
+
+test('resolveReentryLockMinutes maps lock duration by exit context', () => {
+    const reentry = {
+        lockMinutes: 5,
+        lockMinutesTimeStop: 5,
+        lockMinutesRegimeFlip: 10,
+        lockMinutesEventRisk: 20,
+    };
+
+    assert.equal(
+        resolveReentryLockMinutes({
+            reasonCodes: ['EVENT_HIGH_FORCE_CLOSE'],
+            reentry,
+            executeMinutes: 5,
+        }),
+        20,
+    );
+    assert.equal(
+        resolveReentryLockMinutes({
+            reasonCodes: ['REGIME_FLIP_CLOSE'],
+            reentry,
+            executeMinutes: 5,
+        }),
+        10,
+    );
+    assert.equal(
+        resolveReentryLockMinutes({
+            reasonCodes: ['CLOSE_TIME_STOP_NO_PROGRESS'],
+            reentry,
+            executeMinutes: 5,
+        }),
+        5,
+    );
+    assert.equal(
+        resolveReentryLockMinutes({
+            reasonCodes: ['STOP_INVALIDATED_LONG'],
+            reentry,
+            executeMinutes: 5,
+        }),
+        null,
     );
 });

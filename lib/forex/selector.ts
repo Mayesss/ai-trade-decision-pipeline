@@ -1,5 +1,10 @@
 import { computeSelectorScore, loadForexPairMarketState, toPairMetrics } from './marketData';
-import { getForexStrategyConfig, getForexUniversePairs } from './config';
+import {
+    getForexStrategyConfig,
+    getForexUniversePairs,
+    isWithinSessionTransitionBuffer,
+    tightenSpreadToAtrCap,
+} from './config';
 import { evaluateForexEventGate } from './events/gate';
 import type {
     ForexPairEligibility,
@@ -34,12 +39,24 @@ export function evaluatePairEligibility(params: {
     metrics: ReturnType<typeof toPairMetrics>;
     staleEvents: boolean;
     events: NormalizedForexEconomicEvent[];
+    nowMs?: number;
 }): ForexPairEligibility {
     const cfg = getForexStrategyConfig();
     const reasons: string[] = [];
     let eligible = true;
 
     const { pair, metrics, staleEvents, events } = params;
+    const nowMs = Number.isFinite(params.nowMs as number) ? Number(params.nowMs) : Date.now();
+
+    const transitionStress =
+        isWithinSessionTransitionBuffer(nowMs, cfg.selector.sessionTransitionBufferMinutes) &&
+        metrics.spreadToAtr1h >=
+            tightenSpreadToAtrCap(cfg.selector.maxSpreadToAtr1h, cfg.selector.transitionSpreadToAtrMultiplier);
+    if (transitionStress) {
+        eligible = false;
+        reasons.push('SESSION_TRANSITION_SPREAD_STRESS');
+        reasons.push('SPREAD_TO_ATR_TRANSITION_CAP_EXCEEDED');
+    }
 
     if (metrics.spreadToAtr1h >= cfg.selector.maxSpreadToAtr1h) {
         eligible = false;
@@ -66,6 +83,7 @@ export function evaluatePairEligibility(params: {
         events,
         staleData: staleEvents,
         riskState: 'normal',
+        nowMs,
     });
     if (gate.blockNewEntries) {
         eligible = false;
@@ -107,6 +125,7 @@ export async function runForexUniverseScan(params: {
                 metrics,
                 staleEvents: params.staleEvents,
                 events: params.events,
+                nowMs,
             });
         }),
     );
