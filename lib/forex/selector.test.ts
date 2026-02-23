@@ -41,6 +41,7 @@ test('evaluatePairEligibility returns eligible pair with good metrics', () => {
         metrics: { ...baseMetrics },
         staleEvents: false,
         events: [],
+        nowMs: Date.UTC(2026, 1, 23, 9, 0, 0),
     });
 
     assert.equal(out.eligible, true);
@@ -53,6 +54,7 @@ test('evaluatePairEligibility blocks pair when spread_to_atr is too high', () =>
         metrics: { ...baseMetrics, spreadToAtr1h: 0.5 },
         staleEvents: false,
         events: [],
+        nowMs: Date.UTC(2026, 1, 23, 9, 0, 0),
     });
 
     assert.equal(out.eligible, false);
@@ -60,12 +62,14 @@ test('evaluatePairEligibility blocks pair when spread_to_atr is too high', () =>
 });
 
 test('evaluatePairEligibility blocks on active high-impact event window', () => {
-    const nowIso = new Date(Date.now() + 10 * 60_000).toISOString();
+    const nowMs = Date.UTC(2026, 1, 23, 9, 0, 0);
+    const nowIso = new Date(nowMs + 10 * 60_000).toISOString();
     const out = evaluatePairEligibility({
         pair: 'EURUSD',
         metrics: { ...baseMetrics },
         staleEvents: false,
         events: [eventAt(nowIso, 'USD')],
+        nowMs,
     });
 
     assert.equal(out.eligible, false);
@@ -99,6 +103,19 @@ test('evaluatePairEligibility keeps pair eligible outside session transition buf
 
     assert.equal(out.eligible, true);
     assert.ok(!out.reasons.includes('SESSION_TRANSITION_SPREAD_STRESS'));
+});
+
+test('evaluatePairEligibility blocks entries in pre-rollover window', () => {
+    const out = evaluatePairEligibility({
+        pair: 'EURUSD',
+        metrics: { ...baseMetrics },
+        staleEvents: false,
+        events: [],
+        nowMs: Date.UTC(2026, 1, 23, 23, 30, 0),
+    });
+
+    assert.equal(out.eligible, false);
+    assert.ok(out.reasons.includes('ROLLOVER_ENTRY_BLOCK_WINDOW'));
 });
 
 test('selector top percentile gate keeps only top configured slice', () => {

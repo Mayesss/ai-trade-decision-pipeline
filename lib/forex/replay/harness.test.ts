@@ -61,6 +61,24 @@ test('replay entry gate blocks transition-window spread stress using tightened s
     assert.ok(blocked?.reasonCodes.includes('SPREAD_TO_ATR_TRANSITION_CAP_EXCEEDED'));
 });
 
+test('replay blocks new entries inside configured pre-rollover window', () => {
+    const cfg = withNoSlippage();
+    cfg.rollover.entryBlockMinutes = 45;
+    cfg.rollover.rolloverHourUtc = 0;
+
+    const quotes: ReplayQuote[] = [
+        { ts: ts('2026-02-23T23:30:00.000Z'), bid: 1.1, ask: 1.10008 },
+    ];
+    const entries: ReplayEntrySignal[] = [
+        { ts: quotes[0]!.ts, side: 'BUY', stopPrice: 1.099, notionalUsd: 1000 },
+    ];
+
+    const result = runReplay({ quotes, entries, config: cfg });
+    const blocked = result.timeline.find((event) => event.type === 'ENTRY_BLOCKED');
+    assert.ok(blocked);
+    assert.ok(blocked?.reasonCodes.includes('ROLLOVER_ENTRY_BLOCK_WINDOW'));
+});
+
 test('breakout-retest module requires breakout + retest + continuation confirmation', () => {
     const packet: ForexRegimePacket = {
         pair: 'EURUSD',
@@ -185,10 +203,12 @@ test('replay handles partial -> BE/trailing -> stop close sequencing under sprea
 test('replay applies rollover fee when holding across rollover boundary', () => {
     const cfg = withNoSlippage();
     cfg.rollover.dailyFeeBps = 1.2;
+    cfg.rollover.entryBlockMinutes = 0;
+    cfg.rollover.forceCloseMinutes = 0;
     cfg.spreadStress.transitionBufferMinutes = 0;
 
     const quotes: ReplayQuote[] = [
-        { ts: ts('2026-02-23T23:58:00.000Z'), bid: 1.1, ask: 1.1002 },
+        { ts: ts('2026-02-23T23:10:00.000Z'), bid: 1.1, ask: 1.1002 },
         { ts: ts('2026-02-24T00:01:00.000Z'), bid: 1.1, ask: 1.1003, rollover: true },
         { ts: ts('2026-02-24T00:02:00.000Z'), bid: 1.1001, ask: 1.1003 },
     ];
@@ -199,4 +219,88 @@ test('replay applies rollover fee when holding across rollover boundary', () => 
     const result = runReplay({ quotes, entries, config: cfg });
     assert.ok(result.summary.rolloverFeesUsd > 0);
     assert.ok(result.ledger.some((row) => row.kind === 'ROLLOVER_FEE'));
+});
+
+test('replay force-closes positions before rollover when spread stress is elevated', () => {
+    const cfg = withNoSlippage();
+    cfg.rollover.entryBlockMinutes = 0;
+    cfg.rollover.forceCloseMinutes = 20;
+    cfg.rollover.forceCloseSpreadToAtr1hMin = 0.12;
+    cfg.rollover.rolloverHourUtc = 0;
+
+    const quotes: ReplayQuote[] = [
+        { ts: ts('2026-02-23T22:50:00.000Z'), bid: 1.2, ask: 1.20008 },
+        { ts: ts('2026-02-23T23:50:00.000Z'), bid: 1.2, ask: 1.2015 },
+        { ts: ts('2026-02-24T00:01:00.000Z'), bid: 1.2, ask: 1.2004, rollover: true },
+    ];
+    const entries: ReplayEntrySignal[] = [
+        { ts: quotes[0]!.ts, side: 'BUY', stopPrice: 1.19, notionalUsd: 1000 },
+    ];
+
+    const result = runReplay({ quotes, entries, config: cfg });
+    const exit = result.ledger.find((row) => row.kind === 'EXIT');
+    assert.ok(exit);
+    assert.ok(exit?.reasonCodes.includes('ROLLOVER_PREEMPTIVE_FORCE_CLOSE'));
+    assert.ok(!result.ledger.some((row) => row.kind === 'ROLLOVER_FEE'));
+});
+
+test('replay derisks pre-rollover winners with partial close instead of full close', () => {
+    const cfg = withNoSlippage();
+    cfg.management.partialAtR = 99;
+    cfg.rollover.entryBlockMinutes = 0;
+    cfg.rollover.forceCloseMinutes = 20;
+    cfg.rollover.forceCloseSpreadToAtr1hMin = 0.12;
+    cfg.rollover.rolloverHourUtc = 0;
+    cfg.rollover.forceCloseMode = 'derisk';
+    cfg.rollover.deriskWinnerMfeRMin = 0.8;
+    cfg.rollover.deriskLoserCloseRMax = 0.2;
+    cfg.rollover.deriskPartialClosePct = 50;
+
+    const quotes: ReplayQuote[] = [
+        { ts: ts('2026-02-23T22:50:00.000Z'), bid: 1.2, ask: 1.20008 },
+        { ts: ts('2026-02-23T23:20:00.000Z'), bid: 1.209, ask: 1.20908 },
+        { ts: ts('2026-02-23T23:50:00.000Z'), bid: 1.2065, ask: 1.2077 },
+        { ts: ts('2026-02-23T23:59:00.000Z'), bid: 1.206, ask: 1.2064 },
+    ];
+    const entries: ReplayEntrySignal[] = [
+        { ts: quotes[0]!.ts, side: 'BUY', stopPrice: 1.19, notionalUsd: 1000 },
+    ];
+
+    const result = runReplay({ quotes, entries, config: cfg });
+    const partial = result.ledger.find((row) => row.kind === 'PARTIAL_EXIT');
+    assert.ok(partial);
+    assert.ok(partial?.reasonCodes.includes('ROLLOVER_PREEMPTIVE_DERISK_PARTIAL'));
+    assert.ok(
+        !result.ledger.some(
+            (row) => row.kind === 'EXIT' && row.reasonCodes.includes('ROLLOVER_PREEMPTIVE_FORCE_CLOSE'),
+        ),
+    );
+});
+
+test('replay derisk mode still force-closes weak pre-rollover positions', () => {
+    const cfg = withNoSlippage();
+    cfg.rollover.entryBlockMinutes = 0;
+    cfg.rollover.forceCloseMinutes = 20;
+    cfg.rollover.forceCloseSpreadToAtr1hMin = 0.12;
+    cfg.rollover.rolloverHourUtc = 0;
+    cfg.rollover.forceCloseMode = 'derisk';
+    cfg.rollover.deriskWinnerMfeRMin = 0.8;
+    cfg.rollover.deriskLoserCloseRMax = 0.2;
+    cfg.rollover.deriskPartialClosePct = 50;
+
+    const quotes: ReplayQuote[] = [
+        { ts: ts('2026-02-23T22:50:00.000Z'), bid: 1.2, ask: 1.20008 },
+        { ts: ts('2026-02-23T23:50:00.000Z'), bid: 1.1998, ask: 1.2013 },
+        { ts: ts('2026-02-24T00:01:00.000Z'), bid: 1.2, ask: 1.2004, rollover: true },
+    ];
+    const entries: ReplayEntrySignal[] = [
+        { ts: quotes[0]!.ts, side: 'BUY', stopPrice: 1.19, notionalUsd: 1000 },
+    ];
+
+    const result = runReplay({ quotes, entries, config: cfg });
+    const exit = result.ledger.find((row) => row.kind === 'EXIT');
+    assert.ok(exit);
+    assert.ok(exit?.reasonCodes.includes('ROLLOVER_PREEMPTIVE_FORCE_CLOSE'));
+    assert.ok(exit?.reasonCodes.includes('ROLLOVER_PREEMPTIVE_DERISK_CLOSE'));
+    assert.ok(!result.ledger.some((row) => row.kind === 'ROLLOVER_FEE'));
 });

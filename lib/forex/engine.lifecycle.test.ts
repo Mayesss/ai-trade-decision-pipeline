@@ -108,6 +108,8 @@ test('resolveReentryLockMinutes maps lock duration by exit context', () => {
         lockMinutesTimeStop: 5,
         lockMinutesRegimeFlip: 10,
         lockMinutesEventRisk: 20,
+        lockMinutesStopInvalidated: 0,
+        lockMinutesStopInvalidatedStress: 0,
     };
 
     assert.equal(
@@ -141,5 +143,31 @@ test('resolveReentryLockMinutes maps lock duration by exit context', () => {
             executeMinutes: 5,
         }),
         null,
+    );
+
+    assert.equal(
+        resolveReentryLockMinutes({
+            reasonCodes: ['STOP_INVALIDATED_SHORT'],
+            reentry: {
+                ...reentry,
+                lockMinutesStopInvalidated: 30,
+                lockMinutesStopInvalidatedStress: 60,
+            },
+            executeMinutes: 5,
+        }),
+        30,
+    );
+    assert.equal(
+        resolveReentryLockMinutes({
+            reasonCodes: ['STOP_INVALIDATED_SHORT'],
+            reentry: {
+                ...reentry,
+                lockMinutesStopInvalidated: 30,
+                lockMinutesStopInvalidatedStress: 60,
+            },
+            executeMinutes: 5,
+            stopInvalidationStressActive: true,
+        }),
+        60,
     );
 });

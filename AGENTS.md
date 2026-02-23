@@ -74,34 +74,42 @@ Use this loop for forex execution/management changes so improvements are measura
    - Run replay/matrix tooling first (`npm run test:forex`, `npm run replay:matrix`).
    - Do not use Capital live calls for strategy iteration.
    - Keep manual API checks in `dryRun=true`.
-2. Treat churn as a symptom:
-   - Diagnose what creates churn (`breakevenExitPct`, `partialTradePct`, `shortHoldTradePct`) before changing weights.
+2. Use two-stage validation:
+   - Stage A (offline): prove the change with replay/matrix before any runtime checks.
+   - Stage B (limited live dry-run): run 1-2 cycles on 1-2 pairs with `dryRun=true` and confirm no unexpected orders, expected gating, and expected journaling.
+3. Treat churn as a symptom:
+   - Diagnose what creates churn (`breakevenExitPct`, `partialTradePct`, `shortHold10mPct`, `shortHoldTradePct`) before changing weights.
+   - `shortHoldTradePctForChurn` is the thresholded metric used in `churnPenaltyPct`; tune it with `--churnShortHoldMin`.
    - Use fixture/scenario artifacts to identify which management rule is causing exits.
-3. Use one-change/one-hypothesis experiments:
+4. Use one-change/one-hypothesis experiments:
    - Change one rule at a time (for example BE threshold, trailing activation, time-stop guard).
    - Rerun invariants + matrix after each change and compare deltas.
-4. Use constrained shortlist as policy gate:
+5. Run a metric/fixture feasibility check before strict constraints:
+   - For trade-active scenarios, inspect min/median/max for `churnPenaltyPct`, `tailGap`, and `tradeCoveragePct`.
+   - If `min(churnPenaltyPct) > --maxChurn`, the strict run is definitionally infeasible on that fixture pack.
+   - If infeasible, adjust thresholds or `--churnShortHoldMin` before treating strict runs as pass/fail.
+6. Use constrained shortlist as policy gate:
    - Use `topRobustScenariosConstrained` as pass/fail policy, not raw score ranking.
    - CLI knobs:
      - `--minCoverage`
      - `--maxChurn`
      - `--maxTailGap`
+     - `--churnShortHoldMin` (core fixtures default to 10; longer-horizon fixture packs can use 60)
      - `--topKConstrained`
-5. Track rejection reasons:
+7. Track rejection reasons:
    - Review `rejectedByCoverage`, `rejectedByChurn`, `rejectedByTailGap`, `rejectedByMultiple`.
    - Optimize the binding constraint first (most common reject reason).
-6. Fix catastrophic tails before cosmetic score gains:
-   - Prioritize event-gap and rollover tail control before churn tuning if tails are extreme.
+8. Pick the next lever using binding constraint + `worstFixtureHeatmap`:
+   - rollover tails -> pre-rollover close/derisk policy.
+   - event tails -> event window/gating policy.
+   - stop-out churn/re-entry loops -> stop-invalidation cooldown and spread-aware invalidation handling.
    - Verify `worstFixtureHeatmap` and `worstTradedAvgR` improve, not just `robustnessScore`.
-7. Optimize by fixture class, not globally:
-   - `london_whip_spread_spike`: churn and spread handling.
-   - `event_gap_through_stop`: event tail handling.
-   - `rollover_widen_fee_drag`: rollover hold/fee risk.
-   - `fake_breakout_reversal`: entry quality confirmation.
-   - `shock_cooldown_reentry_temptation`: lock/cooldown discipline.
-8. Prefer management changes with high leverage first:
-   - First default experiment: delay BE and trailing activation and make them spread-aware.
-   - Success signal: lower churn floor and more eligible scenarios under stricter churn caps without worsening tails.
+9. Fix catastrophic tails before cosmetic score gains:
+   - Prioritize extreme tail-risk control (event-gap/rollover) before score tuning.
+   - Success signal: frontier shift (better worst/tail metrics without collapsing coverage).
+10. Keep every experiment reversible:
+   - Put each policy experiment behind config/CLI flags or maintain a clean revert path.
+   - If constrained eligibility drops materially or worst tails worsen, roll back immediately.
 
 ### Forex Iteration Commands
 ```bash
@@ -114,6 +122,7 @@ node --import tsx scripts/forex-replay-matrix.ts \
   --minCoverage 50 \
   --maxChurn 65 \
   --maxTailGap 2.8 \
+  --churnShortHoldMin 10 \
   --topKConstrained 10 \
   --outDir /tmp/forex-replay-matrix-strict
 ```

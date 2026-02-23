@@ -1,6 +1,8 @@
 const DEFAULT_FOREX_FACTORY_CALENDAR_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
 const DEFAULT_REFRESH_MINUTES = 15;
 const DEFAULT_STALE_MINUTES = 45;
+const DEFAULT_PRE_EVENT_BLOCK_MINUTES = 30;
+const DEFAULT_POST_EVENT_BLOCK_MINUTES = 15;
 const DEFAULT_BLOCK_IMPACTS = ['HIGH'];
 const DEFAULT_BLOCK_NEW_IMPACTS = ['HIGH', 'MEDIUM'];
 const DEFAULT_FORCE_CLOSE_IMPACTS = ['HIGH'];
@@ -10,6 +12,12 @@ const DEFAULT_CALL_WARN_THRESHOLD = 180;
 function toPositiveInt(value: string | undefined, fallback: number) {
     const n = Number(value);
     if (!Number.isFinite(n) || n <= 0) return fallback;
+    return Math.floor(n);
+}
+
+function toNonNegativeInt(value: string | undefined, fallback: number) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return fallback;
     return Math.floor(n);
 }
 
@@ -40,6 +48,8 @@ export function getForexEventConfig() {
         forexFactoryCalendarUrl: calendarUrl || DEFAULT_FOREX_FACTORY_CALENDAR_URL,
         refreshMinutes: toPositiveInt(process.env.FOREX_EVENT_REFRESH_MINUTES, DEFAULT_REFRESH_MINUTES),
         staleMinutes: toPositiveInt(process.env.FOREX_EVENT_STALE_MINUTES, DEFAULT_STALE_MINUTES),
+        preEventBlockMinutes: toNonNegativeInt(process.env.FOREX_EVENT_PRE_BLOCK_MINUTES, DEFAULT_PRE_EVENT_BLOCK_MINUTES),
+        postEventBlockMinutes: toNonNegativeInt(process.env.FOREX_EVENT_POST_BLOCK_MINUTES, DEFAULT_POST_EVENT_BLOCK_MINUTES),
         blockImpacts: parseImpacts(process.env.FOREX_EVENT_BLOCK_IMPACTS),
         blockNewImpacts: parseImpactsWithFallback(
             process.env.FOREX_EVENT_BLOCK_NEW_IMPACTS || process.env.FOREX_EVENT_BLOCK_IMPACTS,

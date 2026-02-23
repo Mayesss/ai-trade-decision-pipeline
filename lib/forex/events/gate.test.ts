@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { evaluateForexEventGate, listPairEventMatches, pairCurrencies } from './gate';
+import { evaluateForexEventGate, isWithinEventWindow, listPairEventMatches, pairCurrencies } from './gate';
 import type { NormalizedForexEconomicEvent } from '../types';
 
 const NOW_MS = Date.parse('2026-02-20T12:00:00.000Z');
@@ -98,6 +98,18 @@ test('evaluateForexEventGate enforces exact T-30 and T+15 event window boundarie
 
     assert.equal(minusBoundary.blockNewEntries, true);
     assert.equal(plusBoundary.blockNewEntries, true);
+});
+
+test('isWithinEventWindow respects configurable pre/post minute windows', () => {
+    const eventTs = eventAt(45, 'USD', 'HIGH').timestamp_utc;
+    const defaults = isWithinEventWindow(eventTs, NOW_MS);
+    const widened = isWithinEventWindow(eventTs, NOW_MS, {
+        preEventBlockMinutes: 60,
+        postEventBlockMinutes: 30,
+    });
+
+    assert.equal(defaults, false);
+    assert.equal(widened, true);
 });
 
 test('evaluateForexEventGate stale policy allows normal risk and blocks elevated risk', () => {

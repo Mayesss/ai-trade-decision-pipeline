@@ -9,8 +9,20 @@ function toPositiveNumber(value: string | undefined, fallback: number): number {
     return n;
 }
 
+function toNonNegativeNumber(value: string | undefined, fallback: number): number {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return fallback;
+    return n;
+}
+
 function toPositiveInt(value: string | undefined, fallback: number): number {
     return Math.floor(toPositiveNumber(value, fallback));
+}
+
+function toNonNegativeInt(value: string | undefined, fallback: number): number {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return Math.floor(fallback);
+    return Math.floor(n);
 }
 
 function toBool(value: string | undefined, fallback: boolean): boolean {
@@ -45,6 +57,20 @@ function parsePairNumberMap(raw: string | undefined): Record<string, number> {
     } catch {
         return {};
     }
+}
+
+function toUtcHour(value: string | undefined, fallback: number): number {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return Math.max(0, Math.min(23, Math.floor(fallback)));
+    return Math.max(0, Math.min(23, Math.floor(n)));
+}
+
+function parseRolloverForceCloseMode(value: string | undefined): 'close' | 'derisk' {
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase();
+    if (normalized === 'derisk') return 'derisk';
+    return 'close';
 }
 
 export function getForexUniversePairs(): string[] {
@@ -105,6 +131,14 @@ export function getForexStrategyConfig() {
         process.env.FOREX_REENTRY_LOCK_MINUTES_TIME_STOP,
         Math.max(1, executeMinutes),
     );
+    const lockMinutesStopInvalidated = toNonNegativeInt(
+        process.env.FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED,
+        0,
+    );
+    const lockMinutesStopInvalidatedStress = toNonNegativeInt(
+        process.env.FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED_STRESS,
+        lockMinutesStopInvalidated > 0 ? lockMinutesStopInvalidated * 2 : 0,
+    );
 
     return {
         capitalOnly: true,
@@ -139,6 +173,8 @@ export function getForexStrategyConfig() {
             lockMinutesTimeStop,
             lockMinutesRegimeFlip,
             lockMinutesEventRisk,
+            lockMinutesStopInvalidated,
+            lockMinutesStopInvalidatedStress,
         },
         events: {
             forceCloseImpacts: parseCsvUpper(process.env.FOREX_EVENT_FORCE_CLOSE_IMPACTS, ['HIGH']),
@@ -162,6 +198,22 @@ export function getForexStrategyConfig() {
             maxPortfolioOpenPct: toPositiveNumber(process.env.FOREX_RISK_MAX_PORTFOLIO_OPEN_PCT, 2.0),
             maxCurrencyOpenPct: toPositiveNumber(process.env.FOREX_RISK_MAX_CURRENCY_OPEN_PCT, 1.0),
             maxLeveragePerPair: toPositiveInt(process.env.FOREX_MAX_LEVERAGE_PER_PAIR, 3),
+            rolloverHourUtc: toUtcHour(process.env.FOREX_ROLLOVER_UTC_HOUR, 0),
+            rolloverEntryBlockMinutes: toNonNegativeInt(process.env.FOREX_ROLLOVER_ENTRY_BLOCK_MINUTES, 45),
+            rolloverForceCloseMinutes: toNonNegativeInt(process.env.FOREX_ROLLOVER_FORCE_CLOSE_MINUTES, 0),
+            rolloverForceCloseSpreadToAtr1hMin: toPositiveNumber(
+                process.env.FOREX_ROLLOVER_FORCE_CLOSE_SPREAD_TO_ATR1H_MIN,
+                0.12,
+            ),
+            rolloverForceCloseMode: parseRolloverForceCloseMode(process.env.FOREX_ROLLOVER_FORCE_CLOSE_MODE),
+            rolloverDeriskWinnerMfeRMin: toNonNegativeNumber(process.env.FOREX_ROLLOVER_DERISK_WINNER_MFE_R_MIN, 0.8),
+            rolloverDeriskLoserCloseRMax: Number.isFinite(Number(process.env.FOREX_ROLLOVER_DERISK_LOSER_CLOSE_R_MAX))
+                ? Number(process.env.FOREX_ROLLOVER_DERISK_LOSER_CLOSE_R_MAX)
+                : 0.2,
+            rolloverDeriskPartialClosePct: Math.max(
+                0,
+                Math.min(100, toNonNegativeNumber(process.env.FOREX_ROLLOVER_DERISK_PARTIAL_CLOSE_PCT, 50)),
+            ),
         },
         modules: {
             pullbackAtrBuffer: toPositiveNumber(process.env.FOREX_PULLBACK_ATR5M_BUFFER, 0.4),

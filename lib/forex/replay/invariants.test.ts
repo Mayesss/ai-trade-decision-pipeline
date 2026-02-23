@@ -272,7 +272,7 @@ test('integration: lock update timeline is monotonic across event/time-stop/regi
     const cfg = noFrictionConfig();
     const t0 = baseTs('2026-02-23T10:00:00.000Z');
     const quotes: ReplayQuote[] = [
-        { ts: t0, bid: 1.1, ask: 1.1001 },
+        { ts: t0 - 40 * 60_000, bid: 1.1, ask: 1.1001 },
         { ts: t0 + 5 * 60_000, bid: 1.1, ask: 1.1001, eventRisk: 'high' },
         { ts: t0 + 25 * 60_000, bid: 1.1, ask: 1.1001 },
         { ts: t0 + 30 * 60_000, bid: 1.1, ask: 1.1001, forceCloseReasonCode: 'CLOSE_TIME_STOP_MAX_HOLD' },
@@ -280,7 +280,7 @@ test('integration: lock update timeline is monotonic across event/time-stop/regi
         { ts: t0 + 40 * 60_000, bid: 1.1, ask: 1.1001, forceCloseReasonCode: 'REGIME_FLIP_CLOSE' },
     ];
     const entries: ReplayEntrySignal[] = [
-        { ts: t0, side: 'BUY', stopPrice: 1.095, notionalUsd: 1000 },
+        { ts: t0 - 40 * 60_000, side: 'BUY', stopPrice: 1.095, notionalUsd: 1000 },
         { ts: t0 + 25 * 60_000, side: 'BUY', stopPrice: 1.095, notionalUsd: 1000 },
         { ts: t0 + 36 * 60_000, side: 'BUY', stopPrice: 1.095, notionalUsd: 1000 },
     ];

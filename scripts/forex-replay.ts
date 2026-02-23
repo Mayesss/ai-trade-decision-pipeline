@@ -21,6 +21,15 @@ function usage() {
         '  --transitionBufferMin <int>    Session transition buffer in minutes',
         '  --transitionSpreadMult <float> Transition spread multiplier',
         '  --rolloverFeeBps <float>       Daily rollover fee in bps',
+        '  --rolloverEntryBlockMin <int>  Block new entries this many minutes before rollover',
+        '  --rolloverForceCloseMin <int>  Pre-rollover force-close window in minutes',
+        '  --rolloverForceCloseSpreadToAtr <float>  Force-close spread_to_atr1h threshold',
+        '  --rolloverForceCloseMode <close|derisk>  Pre-rollover action mode (default: close)',
+        '  --rolloverDeriskWinnerMfeR <float>  Min MFE(R) to derisk winners (default: 0.8)',
+        '  --rolloverDeriskLoserCloseR <float>  Max current R treated as weak/losing (default: 0.2)',
+        '  --rolloverDeriskPartialClosePct <pct>  Target partial close pct in derisk mode (default: 50)',
+        '  --reentryStopInvalidatedLockMin <int>  Lock minutes after STOP_INVALIDATED_* close (default: 0=disabled)',
+        '  --reentryStopInvalidatedLockStressMin <int>  Stress lock minutes for STOP_INVALIDATED_* (default: 2x base)',
         '  --help                         Show help',
     ].join('\n');
 }
@@ -47,6 +56,14 @@ function toNum(value: unknown): number | undefined {
     return Number.isFinite(n) ? n : undefined;
 }
 
+function parseRolloverForceCloseMode(value: unknown): 'close' | 'derisk' | undefined {
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase();
+    if (normalized === 'close' || normalized === 'derisk') return normalized;
+    return undefined;
+}
+
 function applyOverrides(config: ReplayRuntimeConfig, args: Record<string, string | boolean>): ReplayRuntimeConfig {
     const next = { ...config };
     const pair = typeof args.pair === 'string' ? String(args.pair).trim().toUpperCase() : '';
@@ -71,6 +88,42 @@ function applyOverrides(config: ReplayRuntimeConfig, args: Record<string, string
     const rolloverFeeBps = toNum(args.rolloverFeeBps);
     if (rolloverFeeBps !== undefined && rolloverFeeBps >= 0) {
         next.rollover.dailyFeeBps = rolloverFeeBps;
+    }
+    const rolloverEntryBlockMin = toNum(args.rolloverEntryBlockMin);
+    if (rolloverEntryBlockMin !== undefined && rolloverEntryBlockMin >= 0) {
+        next.rollover.entryBlockMinutes = Math.floor(rolloverEntryBlockMin);
+    }
+    const rolloverForceCloseMin = toNum(args.rolloverForceCloseMin);
+    if (rolloverForceCloseMin !== undefined && rolloverForceCloseMin >= 0) {
+        next.rollover.forceCloseMinutes = Math.floor(rolloverForceCloseMin);
+    }
+    const rolloverForceCloseSpreadToAtr = toNum(args.rolloverForceCloseSpreadToAtr);
+    if (rolloverForceCloseSpreadToAtr !== undefined && rolloverForceCloseSpreadToAtr > 0) {
+        next.rollover.forceCloseSpreadToAtr1hMin = rolloverForceCloseSpreadToAtr;
+    }
+    const rolloverForceCloseMode = parseRolloverForceCloseMode(args.rolloverForceCloseMode);
+    if (rolloverForceCloseMode) {
+        next.rollover.forceCloseMode = rolloverForceCloseMode;
+    }
+    const rolloverDeriskWinnerMfeR = toNum(args.rolloverDeriskWinnerMfeR);
+    if (rolloverDeriskWinnerMfeR !== undefined && rolloverDeriskWinnerMfeR >= 0) {
+        next.rollover.deriskWinnerMfeRMin = rolloverDeriskWinnerMfeR;
+    }
+    const rolloverDeriskLoserCloseR = toNum(args.rolloverDeriskLoserCloseR);
+    if (rolloverDeriskLoserCloseR !== undefined) {
+        next.rollover.deriskLoserCloseRMax = rolloverDeriskLoserCloseR;
+    }
+    const rolloverDeriskPartialClosePct = toNum(args.rolloverDeriskPartialClosePct);
+    if (rolloverDeriskPartialClosePct !== undefined && rolloverDeriskPartialClosePct >= 0) {
+        next.rollover.deriskPartialClosePct = Math.max(0, Math.min(100, rolloverDeriskPartialClosePct));
+    }
+    const reentryStopInvalidatedLockMin = toNum(args.reentryStopInvalidatedLockMin);
+    if (reentryStopInvalidatedLockMin !== undefined && reentryStopInvalidatedLockMin >= 0) {
+        next.reentry.lockMinutesStopInvalidated = Math.floor(reentryStopInvalidatedLockMin);
+    }
+    const reentryStopInvalidatedLockStressMin = toNum(args.reentryStopInvalidatedLockStressMin);
+    if (reentryStopInvalidatedLockStressMin !== undefined && reentryStopInvalidatedLockStressMin >= 0) {
+        next.reentry.lockMinutesStopInvalidatedStress = Math.floor(reentryStopInvalidatedLockStressMin);
     }
     return next;
 }

@@ -28,6 +28,8 @@ export interface ReplayReentryConfig {
     lockMinutesTimeStop: number;
     lockMinutesRegimeFlip: number;
     lockMinutesEventRisk: number;
+    lockMinutesStopInvalidated?: number;
+    lockMinutesStopInvalidatedStress?: number;
 }
 
 export interface ReplaySpreadStressConfig {
@@ -55,8 +57,18 @@ export interface ReplayManagementConfig {
     enableTrailing: boolean;
 }
 
+export type ReplayRolloverForceCloseMode = 'close' | 'derisk';
+
 export interface ReplayRolloverConfig {
     dailyFeeBps: number;
+    rolloverHourUtc: number;
+    entryBlockMinutes: number;
+    forceCloseMinutes: number;
+    forceCloseSpreadToAtr1hMin: number;
+    forceCloseMode: ReplayRolloverForceCloseMode;
+    deriskWinnerMfeRMin: number;
+    deriskLoserCloseRMax: number;
+    deriskPartialClosePct: number;
 }
 
 export interface ReplayRuntimeConfig {

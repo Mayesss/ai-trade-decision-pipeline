@@ -55,6 +55,8 @@ MARKETAUX_API_KEY=...
 # FOREX_FACTORY_CALENDAR_URL=https://nfs.faireconomy.media/ff_calendar_thisweek.json
 # FOREX_EVENT_REFRESH_MINUTES=15
 # FOREX_EVENT_STALE_MINUTES=45
+# FOREX_EVENT_PRE_BLOCK_MINUTES=30
+# FOREX_EVENT_POST_BLOCK_MINUTES=15
 # FOREX_EVENT_BLOCK_IMPACTS=HIGH
 # FOREX_EVENT_CALL_WARN_THRESHOLD=180
 # FOREX_DEFAULT_NOTIONAL_USD=100
@@ -62,7 +64,17 @@ MARKETAUX_API_KEY=...
 # FOREX_SELECTOR_TRANSITION_SPREAD_TO_ATR_MULTIPLIER=0.8
 # FOREX_RISK_SESSION_TRANSITION_BUFFER_MINUTES=20
 # FOREX_RISK_TRANSITION_SPREAD_TO_ATR_MULTIPLIER=0.75
+# FOREX_ROLLOVER_UTC_HOUR=0
+# FOREX_ROLLOVER_ENTRY_BLOCK_MINUTES=45
+# FOREX_ROLLOVER_FORCE_CLOSE_MINUTES=0
+# FOREX_ROLLOVER_FORCE_CLOSE_SPREAD_TO_ATR1H_MIN=0.12
+# FOREX_ROLLOVER_FORCE_CLOSE_MODE=close
+# FOREX_ROLLOVER_DERISK_WINNER_MFE_R_MIN=0.8
+# FOREX_ROLLOVER_DERISK_LOSER_CLOSE_R_MAX=0.2
+# FOREX_ROLLOVER_DERISK_PARTIAL_CLOSE_PCT=50
 # FOREX_REENTRY_LOCK_MINUTES=5
+# FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED=0
+# FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED_STRESS=0
 # FOREX_REENTRY_LOCK_MINUTES_TIME_STOP=5
 # FOREX_REENTRY_LOCK_MINUTES_REGIME_FLIP=10
 # FOREX_REENTRY_LOCK_MINUTES_EVENT_RISK=20
@@ -208,6 +220,12 @@ node --import tsx scripts/forex-replay-matrix.ts --fixtures core --shockProfiles
 # override constrained shortlist thresholds
 node --import tsx scripts/forex-replay-matrix.ts --fixtures core --minCoverage 55 --maxChurn 70 --maxTailGap 2.5 --topKConstrained 10 --outDir /tmp/forex-replay-matrix
 
+# run derisk pre-rollover profile and fixture-scale churn threshold
+node --import tsx scripts/forex-replay-matrix.ts --fixtures core --rolloverForceCloseMin 20 --rolloverForceCloseMode derisk --rolloverDeriskPartialClosePct 50 --churnShortHoldMin 10 --outDir /tmp/forex-replay-matrix
+
+# compare stop-invalidation cooldown profiles (disabled vs 30/60)
+node --import tsx scripts/forex-replay-matrix.ts --fixtures core --rolloverForceCloseMin 20 --rolloverForceCloseSpreadToAtr 0.30 --rolloverForceCloseMode close --churnShortHoldMin 10 --reentryStopInvalidatedLockMin 30 --reentryStopInvalidatedLockStressMin 60 --outDir /tmp/forex-replay-matrix
+
 # run replay tests
 npm run test:forex
 ```
@@ -217,9 +235,10 @@ npm run test:forex
   - `timeline.json`
   - `ledger.csv`
   - matrix mode writes `matrix.summary.json`, `matrix.summary.csv`, and `matrix.frontier.csv` grouped by fixture + scenario, with fixture-level and scenario-level aggregates
+  - `matrix.summary.csv` includes `shortHoldTradePct` (<=60m), `shortHold10mPct`, and `shortHoldTradePctForChurn` (threshold-controlled)
   - `matrix.frontier.csv` includes scenario tradeoff columns (`robustnessScore`, `tailGap`, `churnPenaltyPct`, `tradeCoveragePct`, `worstFixtureId`)
   - `matrix.summary.json` includes scenario robustness fields (`tradeCoveragePct`, `medianAvgRTraded`, `worstTradedAvgR`, `tailGap`, `costDragBps`, `churnPenaltyPct`, `robustnessScore`)
-  - overview includes `topRobustScenarios`, `topRobustScenariosConstrained` (coverage/churn/tail-gated shortlist with rejection counts), `robustnessFrontier`, `topRobustByShockProfile`, `worstFixtureHeatmap`, and `scoreAudit`
+  - overview includes `churnShortHoldThresholdMinutes`, `topRobustScenarios`, `topRobustScenariosConstrained` (coverage/churn/tail-gated shortlist with rejection counts), `robustnessFrontier`, `topRobustByShockProfile`, `worstFixtureHeatmap`, and `scoreAudit`
   - score-audit dominance flags now trigger only on combined thresholds (`|rho| > 0.92` and top-k overlap `> 80%`)
   - curated fixture manifest lives at `data/replay/fixtures/index.json`
 

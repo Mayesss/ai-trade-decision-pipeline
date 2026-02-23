@@ -36,6 +36,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             BITGET_ACCOUNT_TYPE: BITGET_ACCOUNT_TYPE || '(default: usdt-futures)',
             FOREX_EVENT_REFRESH_MINUTES: process.env.FOREX_EVENT_REFRESH_MINUTES || '(default: 15)',
             FOREX_EVENT_STALE_MINUTES: process.env.FOREX_EVENT_STALE_MINUTES || '(default: 45)',
+            FOREX_EVENT_PRE_BLOCK_MINUTES: process.env.FOREX_EVENT_PRE_BLOCK_MINUTES || '(default: 30)',
+            FOREX_EVENT_POST_BLOCK_MINUTES: process.env.FOREX_EVENT_POST_BLOCK_MINUTES || '(default: 15)',
             FOREX_EVENT_BLOCK_IMPACTS: process.env.FOREX_EVENT_BLOCK_IMPACTS || '(default: HIGH)',
             FOREX_EVENT_BLOCK_NEW_IMPACTS: process.env.FOREX_EVENT_BLOCK_NEW_IMPACTS || '(default: HIGH,MEDIUM)',
             FOREX_EVENT_FORCE_CLOSE_IMPACTS: process.env.FOREX_EVENT_FORCE_CLOSE_IMPACTS || '(default: HIGH)',
@@ -49,7 +51,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             FOREX_RISK_MAX_PORTFOLIO_OPEN_PCT: process.env.FOREX_RISK_MAX_PORTFOLIO_OPEN_PCT || '(default: 2.0)',
             FOREX_RISK_MAX_CURRENCY_OPEN_PCT: process.env.FOREX_RISK_MAX_CURRENCY_OPEN_PCT || '(default: 1.0)',
             FOREX_MAX_LEVERAGE_PER_PAIR: process.env.FOREX_MAX_LEVERAGE_PER_PAIR || '(default: 3)',
+            FOREX_ROLLOVER_UTC_HOUR: process.env.FOREX_ROLLOVER_UTC_HOUR || '(default: 0)',
+            FOREX_ROLLOVER_ENTRY_BLOCK_MINUTES: process.env.FOREX_ROLLOVER_ENTRY_BLOCK_MINUTES || '(default: 45)',
+            FOREX_ROLLOVER_FORCE_CLOSE_MINUTES: process.env.FOREX_ROLLOVER_FORCE_CLOSE_MINUTES || '(default: 0)',
+            FOREX_ROLLOVER_FORCE_CLOSE_SPREAD_TO_ATR1H_MIN:
+                process.env.FOREX_ROLLOVER_FORCE_CLOSE_SPREAD_TO_ATR1H_MIN || '(default: 0.12)',
+            FOREX_ROLLOVER_FORCE_CLOSE_MODE: process.env.FOREX_ROLLOVER_FORCE_CLOSE_MODE || '(default: close)',
+            FOREX_ROLLOVER_DERISK_WINNER_MFE_R_MIN: process.env.FOREX_ROLLOVER_DERISK_WINNER_MFE_R_MIN || '(default: 0.8)',
+            FOREX_ROLLOVER_DERISK_LOSER_CLOSE_R_MAX: process.env.FOREX_ROLLOVER_DERISK_LOSER_CLOSE_R_MAX || '(default: 0.2)',
+            FOREX_ROLLOVER_DERISK_PARTIAL_CLOSE_PCT: process.env.FOREX_ROLLOVER_DERISK_PARTIAL_CLOSE_PCT || '(default: 50)',
             FOREX_REENTRY_LOCK_MINUTES: process.env.FOREX_REENTRY_LOCK_MINUTES || '(default: 5)',
+            FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED:
+                process.env.FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED || '(default: 0)',
+            FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED_STRESS:
+                process.env.FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED_STRESS || '(default: auto 2x base)',
             FOREX_SELECTOR_TOP_PERCENT: process.env.FOREX_SELECTOR_TOP_PERCENT || '(default: 40)',
         });
 
@@ -68,6 +83,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             BITGET_ACCOUNT_TYPE: BITGET_ACCOUNT_TYPE || '(default: usdt-futures)',
             FOREX_EVENT_REFRESH_MINUTES: process.env.FOREX_EVENT_REFRESH_MINUTES || '(default: 15)',
             FOREX_EVENT_STALE_MINUTES: process.env.FOREX_EVENT_STALE_MINUTES || '(default: 45)',
+            FOREX_EVENT_PRE_BLOCK_MINUTES: process.env.FOREX_EVENT_PRE_BLOCK_MINUTES || '(default: 30)',
+            FOREX_EVENT_POST_BLOCK_MINUTES: process.env.FOREX_EVENT_POST_BLOCK_MINUTES || '(default: 15)',
             FOREX_EVENT_BLOCK_IMPACTS: process.env.FOREX_EVENT_BLOCK_IMPACTS || '(default: HIGH)',
             FOREX_EVENT_BLOCK_NEW_IMPACTS: process.env.FOREX_EVENT_BLOCK_NEW_IMPACTS || '(default: HIGH,MEDIUM)',
             FOREX_EVENT_FORCE_CLOSE_IMPACTS: process.env.FOREX_EVENT_FORCE_CLOSE_IMPACTS || '(default: HIGH)',
@@ -81,7 +98,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             FOREX_RISK_MAX_PORTFOLIO_OPEN_PCT: process.env.FOREX_RISK_MAX_PORTFOLIO_OPEN_PCT || '(default: 2.0)',
             FOREX_RISK_MAX_CURRENCY_OPEN_PCT: process.env.FOREX_RISK_MAX_CURRENCY_OPEN_PCT || '(default: 1.0)',
             FOREX_MAX_LEVERAGE_PER_PAIR: process.env.FOREX_MAX_LEVERAGE_PER_PAIR || '(default: 3)',
+            FOREX_ROLLOVER_UTC_HOUR: process.env.FOREX_ROLLOVER_UTC_HOUR || '(default: 0)',
+            FOREX_ROLLOVER_ENTRY_BLOCK_MINUTES: process.env.FOREX_ROLLOVER_ENTRY_BLOCK_MINUTES || '(default: 45)',
+            FOREX_ROLLOVER_FORCE_CLOSE_MINUTES: process.env.FOREX_ROLLOVER_FORCE_CLOSE_MINUTES || '(default: 0)',
+            FOREX_ROLLOVER_FORCE_CLOSE_SPREAD_TO_ATR1H_MIN:
+                process.env.FOREX_ROLLOVER_FORCE_CLOSE_SPREAD_TO_ATR1H_MIN || '(default: 0.12)',
+            FOREX_ROLLOVER_FORCE_CLOSE_MODE: process.env.FOREX_ROLLOVER_FORCE_CLOSE_MODE || '(default: close)',
+            FOREX_ROLLOVER_DERISK_WINNER_MFE_R_MIN: process.env.FOREX_ROLLOVER_DERISK_WINNER_MFE_R_MIN || '(default: 0.8)',
+            FOREX_ROLLOVER_DERISK_LOSER_CLOSE_R_MAX: process.env.FOREX_ROLLOVER_DERISK_LOSER_CLOSE_R_MAX || '(default: 0.2)',
+            FOREX_ROLLOVER_DERISK_PARTIAL_CLOSE_PCT: process.env.FOREX_ROLLOVER_DERISK_PARTIAL_CLOSE_PCT || '(default: 50)',
             FOREX_REENTRY_LOCK_MINUTES: process.env.FOREX_REENTRY_LOCK_MINUTES || '(default: 5)',
+            FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED:
+                process.env.FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED || '(default: 0)',
+            FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED_STRESS:
+                process.env.FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED_STRESS || '(default: auto 2x base)',
             FOREX_SELECTOR_TOP_PERCENT: process.env.FOREX_SELECTOR_TOP_PERCENT || '(default: 40)',
         });
     } catch (err: any) {

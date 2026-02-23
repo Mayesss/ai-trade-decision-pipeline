@@ -6,6 +6,7 @@ import {
     tightenSpreadToAtrCap,
 } from './config';
 import { evaluateForexEventGate } from './events/gate';
+import { isWithinPreRolloverWindow } from './rollover';
 import type {
     ForexPairEligibility,
     ForexScanSnapshot,
@@ -76,6 +77,11 @@ export function evaluatePairEligibility(params: {
     if (metrics.shockFlag) {
         eligible = false;
         reasons.push('POST_SHOCK_COOLDOWN');
+    }
+
+    if (isWithinPreRolloverWindow(nowMs, cfg.risk.rolloverEntryBlockMinutes, cfg.risk.rolloverHourUtc)) {
+        eligible = false;
+        reasons.push('ROLLOVER_ENTRY_BLOCK_WINDOW');
     }
 
     const gate = evaluateForexEventGate({

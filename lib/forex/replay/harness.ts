@@ -1,6 +1,9 @@
 import { evaluatePairEligibility } from '../selector';
 import { resolveReentryLockMinutes, shouldInvalidateByStop } from '../engine';
-import type { ForexPositionContext, ForexRegimePacket, ForexSide } from '../types';
+import { pairCurrencies } from '../events/gate';
+import { isWithinPreRolloverWindow } from '../rollover';
+import { isWithinSessionTransitionBuffer } from '../config';
+import type { ForexPositionContext, ForexRegimePacket, ForexSide, NormalizedForexEconomicEvent } from '../types';
 import { createSeededRng } from './random';
 import { applyExecutionPrice, applySpreadStress, executionSlippageBps } from './models';
 import type { StressedQuote } from './models';
@@ -29,6 +32,7 @@ type PositionState = {
     trailingActive: boolean;
     openedAtMs: number;
     entryNotionalUsd: number;
+    maxFavorableR: number;
 };
 
 function utcDayKey(ts: number): string {
@@ -59,6 +63,40 @@ function sideSign(side: ForexSide): number {
 
 function closeSide(side: ForexSide): ForexSide {
     return side === 'BUY' ? 'SELL' : 'BUY';
+}
+
+function toReplayEventImpact(value: ReplayQuote['eventRisk']): 'MEDIUM' | 'HIGH' | null {
+    const normalized = String(value || '')
+        .trim()
+        .toUpperCase();
+    if (normalized === 'HIGH') return 'HIGH';
+    if (normalized === 'MEDIUM') return 'MEDIUM';
+    return null;
+}
+
+function buildReplayEvents(pair: string, quotes: ReplayQuote[]): NormalizedForexEconomicEvent[] {
+    const currencies = pairCurrencies(pair);
+    const fallbackCurrency = currencies[1] || currencies[0] || 'USD';
+
+    return quotes
+        .map((quote, idx) => {
+            const impact = toReplayEventImpact(quote.eventRisk);
+            const ts = Number(quote.ts);
+            if (!impact || !(Number.isFinite(ts) && ts > 0)) return null;
+
+            return {
+                id: `replay-${pair}-${ts}-${impact}-${idx}`,
+                timestamp_utc: new Date(ts).toISOString(),
+                currency: fallbackCurrency,
+                impact,
+                event_name: `Replay ${impact} risk marker`,
+                actual: null,
+                forecast: null,
+                previous: null,
+                source: 'forexfactory',
+            } as NormalizedForexEconomicEvent;
+        })
+        .filter((event): event is NormalizedForexEconomicEvent => Boolean(event));
 }
 
 function buildPacket(pair: string): ForexRegimePacket {
@@ -137,6 +175,8 @@ export function defaultReplayConfig(pair = 'EURUSD'): ReplayRuntimeConfig {
             lockMinutesTimeStop: 5,
             lockMinutesRegimeFlip: 10,
             lockMinutesEventRisk: 20,
+            lockMinutesStopInvalidated: 0,
+            lockMinutesStopInvalidatedStress: 0,
         },
         spreadStress: {
             transitionBufferMinutes: 20,
@@ -162,6 +202,14 @@ export function defaultReplayConfig(pair = 'EURUSD'): ReplayRuntimeConfig {
         },
         rollover: {
             dailyFeeBps: 0.8,
+            rolloverHourUtc: 0,
+            entryBlockMinutes: 45,
+            forceCloseMinutes: 0,
+            forceCloseSpreadToAtr1hMin: 0.12,
+            forceCloseMode: 'close',
+            deriskWinnerMfeRMin: 0.8,
+            deriskLoserCloseRMax: 0.2,
+            deriskPartialClosePct: 50,
         },
     };
 }
@@ -229,6 +277,7 @@ export function runReplay(params: {
     let lastDayKey: string | null = null;
     let entryIndex = 0;
     let rowId = 1;
+    const replayEvents = buildReplayEvents(cfg.pair, quotes);
 
     const ledger: ReplayLedgerRow[] = [];
     const timeline: ReplayTimelineEvent[] = [];
@@ -253,11 +302,12 @@ export function runReplay(params: {
         });
     };
 
-    const updateLock = (ts: number, reasonCodes: string[]) => {
+    const updateLock = (ts: number, reasonCodes: string[], stopInvalidationStressActive = false) => {
         const lockMinutes = resolveReentryLockMinutes({
             reasonCodes,
             reentry: cfg.reentry,
             executeMinutes: cfg.executeMinutes,
+            stopInvalidationStressActive,
         });
         if (!(typeof lockMinutes === 'number' && Number.isFinite(lockMinutes) && lockMinutes > 0)) return;
         const nextUntil = ts + lockMinutes * 60_000;
@@ -273,7 +323,11 @@ export function runReplay(params: {
         }
     };
 
-    const closePosition = (reasonCodes: string[], quote: StressedQuote) => {
+    const closePosition = (
+        reasonCodes: string[],
+        quote: StressedQuote,
+        opts?: { stopInvalidationStressActive?: boolean },
+    ) => {
         if (!position) return;
         const exitSide = closeSide(position.side);
         const reference = exitSide === 'BUY' ? quote.ask : quote.bid;
@@ -317,13 +371,114 @@ export function runReplay(params: {
             },
         });
 
-        updateLock(quote.ts, reasonCodes);
+        updateLock(quote.ts, reasonCodes, Boolean(opts?.stopInvalidationStressActive));
         position = null;
+    };
+
+    const partialClosePosition = (params: { reasonCodes: string[]; quote: StressedQuote; closePct: number }): boolean => {
+        if (!position) return false;
+        const fraction = clamp(params.closePct / 100, 0, 1);
+        if (!(fraction > 0 && fraction <= 1)) return false;
+
+        const closeUnits = position.units * fraction;
+        if (!(Number.isFinite(closeUnits) && closeUnits > 0)) return false;
+
+        const exitSide = closeSide(position.side);
+        const reference = exitSide === 'BUY' ? params.quote.ask : params.quote.bid;
+        const slippageBps = executionSlippageBps({
+            quote: params.quote,
+            cfg: cfg.slippage,
+            rng,
+            isEntry: false,
+        });
+        const partialExitPrice = applyExecutionPrice({
+            side: exitSide,
+            referencePrice: reference,
+            slippageBps,
+        });
+        const pnlUsd = (partialExitPrice - position.entryPrice) * sideSign(position.side) * closeUnits;
+        realizedPnlUsd += pnlUsd;
+        equityUsd += pnlUsd;
+        position.units = Math.max(0, position.units - closeUnits);
+        const pctTaken = position.initialUnits > 0 ? (1 - position.units / position.initialUnits) * 100 : 0;
+        position.partialTakenPct = clamp(pctTaken, 0, 100);
+
+        addLedgerRow({
+            ts: params.quote.ts,
+            kind: 'PARTIAL_EXIT',
+            side: exitSide,
+            price: partialExitPrice,
+            units: closeUnits,
+            notionalUsd: closeUnits * partialExitPrice,
+            pnlUsd,
+            feeUsd: 0,
+            reasonCodes: params.reasonCodes,
+            positionUnitsAfter: position.units,
+            equityUsdAfter: equityUsd,
+        });
+        timeline.push({
+            ts: params.quote.ts,
+            type: 'PARTIAL_TAKEN',
+            reasonCodes: params.reasonCodes,
+            details: { closeUnits, partialExitPrice, closePct: params.closePct },
+        });
+        return true;
     };
 
     for (const quote of quotes) {
         const stressed = applySpreadStress(quote, cfg.spreadStress);
         const dayKey = utcDayKey(stressed.ts);
+        const spreadToAtr1h = cfg.atr1hAbs > 0 ? stressed.spreadAbs / cfg.atr1hAbs : Number.POSITIVE_INFINITY;
+
+        if (position && Number.isFinite(position.initialRiskAbs) && position.initialRiskAbs > 0) {
+            const currentR =
+                position.side === 'BUY'
+                    ? (stressed.bid - position.entryPrice) / position.initialRiskAbs
+                    : (position.entryPrice - stressed.ask) / position.initialRiskAbs;
+            if (Number.isFinite(currentR)) {
+                position.maxFavorableR = Math.max(position.maxFavorableR, currentR);
+            }
+        }
+
+        if (
+            position &&
+            isWithinPreRolloverWindow(stressed.ts, cfg.rollover.forceCloseMinutes, cfg.rollover.rolloverHourUtc) &&
+            Number.isFinite(spreadToAtr1h) &&
+            spreadToAtr1h >= cfg.rollover.forceCloseSpreadToAtr1hMin
+        ) {
+            if (cfg.rollover.forceCloseMode === 'derisk') {
+                const currentR =
+                    position.initialRiskAbs > 0
+                        ? position.side === 'BUY'
+                            ? (stressed.bid - position.entryPrice) / position.initialRiskAbs
+                            : (position.entryPrice - stressed.ask) / position.initialRiskAbs
+                        : NaN;
+                const weakOrLosing =
+                    !Number.isFinite(currentR) || currentR <= cfg.rollover.deriskLoserCloseRMax;
+                const winnerByMfe =
+                    Number.isFinite(position.maxFavorableR) && position.maxFavorableR >= cfg.rollover.deriskWinnerMfeRMin;
+                const targetPartialPct = clamp(cfg.rollover.deriskPartialClosePct, 0, 100);
+                const closePct = clamp(targetPartialPct - position.partialTakenPct, 0, 100);
+
+                if (weakOrLosing || !winnerByMfe || targetPartialPct >= 100) {
+                    closePosition(['ROLLOVER_PREEMPTIVE_FORCE_CLOSE', 'ROLLOVER_PREEMPTIVE_DERISK_CLOSE'], stressed);
+                } else if (closePct > 0) {
+                    const partialApplied = partialClosePosition({
+                        reasonCodes: ['ROLLOVER_PREEMPTIVE_DERISK_PARTIAL'],
+                        quote: stressed,
+                        closePct,
+                    });
+                    if (!partialApplied) {
+                        closePosition(
+                            ['ROLLOVER_PREEMPTIVE_FORCE_CLOSE', 'ROLLOVER_PREEMPTIVE_DERISK_CLOSE'],
+                            stressed,
+                        );
+                    }
+                }
+            } else {
+                closePosition(['ROLLOVER_PREEMPTIVE_FORCE_CLOSE'], stressed);
+            }
+        }
 
         if (position && (quote.rollover || (lastDayKey !== null && dayKey !== lastDayKey))) {
             const markMid = (stressed.bid + stressed.ask) / 2;
@@ -371,48 +526,18 @@ export function runReplay(params: {
                     cfg.management.partialClosePct > 0 &&
                     rMultiple >= cfg.management.partialAtR
                 ) {
-                    const fraction = clamp(cfg.management.partialClosePct / 100, 0, 1);
-                    const closeUnits = position.units * fraction;
-                    const exitSide = closeSide(position.side);
-                    const reference = exitSide === 'BUY' ? stressed.ask : stressed.bid;
-                    const slippageBps = executionSlippageBps({
-                        quote: stressed,
-                        cfg: cfg.slippage,
-                        rng,
-                        isEntry: false,
-                    });
-                    const partialExitPrice = applyExecutionPrice({
-                        side: exitSide,
-                        referencePrice: reference,
-                        slippageBps,
-                    });
-                    const pnlUsd = (partialExitPrice - position.entryPrice) * sideSign(position.side) * closeUnits;
-                    realizedPnlUsd += pnlUsd;
-                    equityUsd += pnlUsd;
-                    position.units -= closeUnits;
-                    position.partialTakenPct = cfg.management.partialClosePct;
-                    position.currentStopPrice = position.entryPrice;
-                    position.trailingActive = cfg.management.enableTrailing;
-
-                    addLedgerRow({
-                        ts: stressed.ts,
-                        kind: 'PARTIAL_EXIT',
-                        side: exitSide,
-                        price: partialExitPrice,
-                        units: closeUnits,
-                        notionalUsd: closeUnits * partialExitPrice,
-                        pnlUsd,
-                        feeUsd: 0,
-                        reasonCodes: ['PARTIAL_AT_TARGET_R'],
-                        positionUnitsAfter: position.units,
-                        equityUsdAfter: equityUsd,
-                    });
-                    timeline.push({
-                        ts: stressed.ts,
-                        type: 'PARTIAL_TAKEN',
-                        reasonCodes: ['PARTIAL_AT_TARGET_R'],
-                        details: { closeUnits, partialExitPrice, rMultiple },
-                    });
+                    const closePct = clamp(cfg.management.partialClosePct - position.partialTakenPct, 0, 100);
+                    const partialApplied = closePct > 0
+                        ? partialClosePosition({
+                            reasonCodes: ['PARTIAL_AT_TARGET_R'],
+                            quote: stressed,
+                            closePct,
+                        })
+                        : false;
+                    if (partialApplied && position) {
+                        position.currentStopPrice = position.entryPrice;
+                        position.trailingActive = cfg.management.enableTrailing;
+                    }
                 }
 
                 if (position && position.trailingActive) {
@@ -460,7 +585,15 @@ export function runReplay(params: {
                         midPrice: stressed.mid,
                     });
                     if (stopCheck.invalidated) {
-                        closePosition([stopCheck.reasonCode || 'STOP_INVALIDATED'], stressed);
+                        const stopInvalidationStressActive =
+                            (Number.isFinite(spreadToAtr1h) && spreadToAtr1h >= 0.12) ||
+                            Boolean(stressed.shock) ||
+                            isWithinSessionTransitionBuffer(stressed.ts, cfg.spreadStress.transitionBufferMinutes);
+                        closePosition(
+                            [stopCheck.reasonCode || 'STOP_INVALIDATED'],
+                            stressed,
+                            { stopInvalidationStressActive },
+                        );
                     }
                 }
             }
@@ -480,12 +613,23 @@ export function runReplay(params: {
                 continue;
             }
 
-            const spreadToAtr1h = cfg.atr1hAbs > 0 ? stressed.spreadAbs / cfg.atr1hAbs : Number.POSITIVE_INFINITY;
+            if (isWithinPreRolloverWindow(stressed.ts, cfg.rollover.entryBlockMinutes, cfg.rollover.rolloverHourUtc)) {
+                timeline.push({
+                    ts: stressed.ts,
+                    type: 'ENTRY_BLOCKED',
+                    reasonCodes: ['ROLLOVER_ENTRY_BLOCK_WINDOW', 'NO_TRADE_ROLLOVER_WINDOW'],
+                    details: {
+                        entryBlockMinutes: cfg.rollover.entryBlockMinutes,
+                    },
+                });
+                continue;
+            }
+
             const eligibility = evaluatePairEligibility({
                 pair: cfg.pair,
                 nowMs: stressed.ts,
                 staleEvents: false,
-                events: [],
+                events: replayEvents,
                 metrics: {
                     pair: cfg.pair,
                     epic: cfg.pair,
@@ -555,6 +699,7 @@ export function runReplay(params: {
                 trailingActive: false,
                 openedAtMs: stressed.ts,
                 entryNotionalUsd: notionalUsd,
+                maxFavorableR: 0,
             };
 
             addLedgerRow({

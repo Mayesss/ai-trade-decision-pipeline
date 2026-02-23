@@ -76,6 +76,8 @@ type MatrixRunSummary = {
     avgSlippageBps: number;
     avgHoldMinutes: number;
     shortHoldTradePct: number;
+    shortHold10mPct: number;
+    shortHoldTradePctForChurn: number;
     partialTradePct: number;
     breakevenExitPct: number;
     totalRolloverUsd: number;
@@ -183,6 +185,7 @@ type MatrixReport = {
     fixtureSummaries: FixtureSummary[];
     scenarioSummaries: ScenarioSummary[];
     overview: {
+        churnShortHoldThresholdMinutes: number;
         totalRuns: number;
         scenariosWithTrades: number;
         scenariosWithoutTrades: number;
@@ -255,6 +258,7 @@ function usage() {
         '  --shockProfiles <csv>          Shock profiles: none,occasional,clustered,frequent',
         '  --minCoverage <pct>            Constrained shortlist min trade coverage % (default: 50)',
         '  --maxChurn <pct>               Constrained shortlist max churn penalty % (default: 75)',
+        '  --churnShortHoldMin <int>      Minutes used for short-hold churn metric (default: core=10, else 60)',
         '  --maxTailGap <R>               Constrained shortlist max tail gap in R (default: 2.8)',
         '  --topKConstrained <int>        Constrained shortlist size (default: 5)',
         '  --startingEquity <usd>         Starting equity override',
@@ -262,6 +266,15 @@ function usage() {
         '  --atr1h <abs>                  ATR1h absolute override',
         '  --transitionBufferMin <int>    Session transition buffer override',
         '  --rolloverFeeBps <float>       Daily rollover fee override',
+        '  --rolloverEntryBlockMin <int>  Pre-rollover entry block window override',
+        '  --rolloverForceCloseMin <int>  Pre-rollover force-close window override',
+        '  --rolloverForceCloseSpreadToAtr <float>  Pre-rollover force-close spread_to_atr threshold',
+        '  --rolloverForceCloseMode <close|derisk>  Pre-rollover action mode override',
+        '  --rolloverDeriskWinnerMfeR <float>  Min MFE(R) to derisk winners',
+        '  --rolloverDeriskLoserCloseR <float>  Max current R treated as weak/losing in derisk mode',
+        '  --rolloverDeriskPartialClosePct <pct>  Target partial close pct in derisk mode',
+        '  --reentryStopInvalidatedLockMin <int>  Lock minutes after STOP_INVALIDATED_* close (default: 0=disabled)',
+        '  --reentryStopInvalidatedLockStressMin <int>  Stress lock minutes for STOP_INVALIDATED_*',
         '  --help                         Show help',
     ].join('\n');
 }
@@ -288,6 +301,14 @@ function toNum(value: unknown): number | undefined {
     return Number.isFinite(n) ? n : undefined;
 }
 
+function parseRolloverForceCloseMode(value: unknown): 'close' | 'derisk' | undefined {
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase();
+    if (normalized === 'close' || normalized === 'derisk') return normalized;
+    return undefined;
+}
+
 function parseNumberCsv(value: unknown, fallback: number[]): number[] {
     if (typeof value !== 'string' || !value.trim()) return fallback.slice();
     const parsed = value
@@ -304,6 +325,16 @@ function parseShockProfiles(value: unknown): ShockProfile[] {
         .map((v) => v.trim().toLowerCase())
         .filter((v): v is ShockProfile => v === 'none' || v === 'occasional' || v === 'clustered' || v === 'frequent');
     return parsed.length ? parsed : ['none', 'occasional', 'clustered', 'frequent'];
+}
+
+function resolveShortHoldThresholdMinutes(
+    args: Record<string, string | boolean>,
+    fixtures: LoadedFixture[],
+): number {
+    const explicit = toNum(args.churnShortHoldMin);
+    if (explicit !== undefined && explicit > 0) return Math.floor(explicit);
+    const allCore = fixtures.length > 0 && fixtures.every((fixture) => fixture.tier === 'core');
+    return allCore ? 10 : 60;
 }
 
 function resolveRobustnessConstraints(args: Record<string, string | boolean>): RobustnessConstraints {
@@ -366,6 +397,45 @@ function applyBaseOverrides(config: ReplayRuntimeConfig, args: Record<string, st
     const rolloverFeeBps = toNum(args.rolloverFeeBps);
     if (rolloverFeeBps !== undefined && rolloverFeeBps >= 0) {
         next.rollover.dailyFeeBps = rolloverFeeBps;
+    }
+
+    const rolloverEntryBlockMin = toNum(args.rolloverEntryBlockMin);
+    if (rolloverEntryBlockMin !== undefined && rolloverEntryBlockMin >= 0) {
+        next.rollover.entryBlockMinutes = Math.floor(rolloverEntryBlockMin);
+    }
+
+    const rolloverForceCloseMin = toNum(args.rolloverForceCloseMin);
+    if (rolloverForceCloseMin !== undefined && rolloverForceCloseMin >= 0) {
+        next.rollover.forceCloseMinutes = Math.floor(rolloverForceCloseMin);
+    }
+
+    const rolloverForceCloseSpreadToAtr = toNum(args.rolloverForceCloseSpreadToAtr);
+    if (rolloverForceCloseSpreadToAtr !== undefined && rolloverForceCloseSpreadToAtr > 0) {
+        next.rollover.forceCloseSpreadToAtr1hMin = rolloverForceCloseSpreadToAtr;
+    }
+    const rolloverForceCloseMode = parseRolloverForceCloseMode(args.rolloverForceCloseMode);
+    if (rolloverForceCloseMode) {
+        next.rollover.forceCloseMode = rolloverForceCloseMode;
+    }
+    const rolloverDeriskWinnerMfeR = toNum(args.rolloverDeriskWinnerMfeR);
+    if (rolloverDeriskWinnerMfeR !== undefined && rolloverDeriskWinnerMfeR >= 0) {
+        next.rollover.deriskWinnerMfeRMin = rolloverDeriskWinnerMfeR;
+    }
+    const rolloverDeriskLoserCloseR = toNum(args.rolloverDeriskLoserCloseR);
+    if (rolloverDeriskLoserCloseR !== undefined) {
+        next.rollover.deriskLoserCloseRMax = rolloverDeriskLoserCloseR;
+    }
+    const rolloverDeriskPartialClosePct = toNum(args.rolloverDeriskPartialClosePct);
+    if (rolloverDeriskPartialClosePct !== undefined && rolloverDeriskPartialClosePct >= 0) {
+        next.rollover.deriskPartialClosePct = clamp(rolloverDeriskPartialClosePct, 0, 100);
+    }
+    const reentryStopInvalidatedLockMin = toNum(args.reentryStopInvalidatedLockMin);
+    if (reentryStopInvalidatedLockMin !== undefined && reentryStopInvalidatedLockMin >= 0) {
+        next.reentry.lockMinutesStopInvalidated = Math.floor(reentryStopInvalidatedLockMin);
+    }
+    const reentryStopInvalidatedLockStressMin = toNum(args.reentryStopInvalidatedLockStressMin);
+    if (reentryStopInvalidatedLockStressMin !== undefined && reentryStopInvalidatedLockStressMin >= 0) {
+        next.reentry.lockMinutesStopInvalidatedStress = Math.floor(reentryStopInvalidatedLockStressMin);
     }
 
     return next;
@@ -570,8 +640,9 @@ function summarizeRun(params: {
     scenario: MatrixScenario;
     quotes: ReplayQuote[];
     config: ReplayRuntimeConfig;
+    shortHoldThresholdMinutes: number;
 }): MatrixRunSummary {
-    const { fixture, result, scenario, quotes, config } = params;
+    const { fixture, result, scenario, quotes, config, shortHoldThresholdMinutes } = params;
     const fillStats = summarizeFills(result, quotes, config);
     const { trades, exitsByReason } = summarizeTrades(result);
 
@@ -579,6 +650,10 @@ function summarizeRun(params: {
     const avgR = mean(trades.map((trade) => trade.rMultiple));
     const avgHoldMinutes = mean(trades.map((trade) => trade.holdMinutes));
     const shortHoldTradePct = trades.length ? (trades.filter((trade) => trade.holdMinutes <= 60).length / trades.length) * 100 : 0;
+    const shortHold10mPct = trades.length ? (trades.filter((trade) => trade.holdMinutes <= 10).length / trades.length) * 100 : 0;
+    const shortHoldTradePctForChurn = trades.length
+        ? (trades.filter((trade) => trade.holdMinutes <= shortHoldThresholdMinutes).length / trades.length) * 100
+        : 0;
     const partialTradePct = trades.length ? (trades.filter((trade) => trade.partials > 0).length / trades.length) * 100 : 0;
     const breakevenExitPct = trades.length ? (trades.filter((trade) => trade.breakevenExit).length / trades.length) * 100 : 0;
 
@@ -597,6 +672,8 @@ function summarizeRun(params: {
         avgSlippageBps: fillStats.avgSlippageBps,
         avgHoldMinutes,
         shortHoldTradePct,
+        shortHold10mPct,
+        shortHoldTradePctForChurn,
         partialTradePct,
         breakevenExitPct,
         totalRolloverUsd: result.summary.rolloverFeesUsd,
@@ -624,6 +701,8 @@ function toCsv(rows: MatrixRunSummary[]): string {
         'avgSlippageBps',
         'avgHoldMinutes',
         'shortHoldTradePct',
+        'shortHold10mPct',
+        'shortHoldTradePctForChurn',
         'partialTradePct',
         'breakevenExitPct',
         'totalRolloverUsd',
@@ -649,6 +728,8 @@ function toCsv(rows: MatrixRunSummary[]): string {
             row.avgSlippageBps.toFixed(6),
             row.avgHoldMinutes.toFixed(6),
             row.shortHoldTradePct.toFixed(6),
+            row.shortHold10mPct.toFixed(6),
+            row.shortHoldTradePctForChurn.toFixed(6),
             row.partialTradePct.toFixed(6),
             row.breakevenExitPct.toFixed(6),
             row.totalRolloverUsd.toFixed(6),
@@ -836,7 +917,10 @@ function percentileScores(
     return scores;
 }
 
-function summarizeScenarios(scenarios: MatrixScenario[], runs: MatrixRunSummary[]): ScenarioSummary[] {
+function summarizeScenarios(
+    scenarios: MatrixScenario[],
+    runs: MatrixRunSummary[],
+): ScenarioSummary[] {
     const baseSummaries = scenarios.map((scenario) => {
         const rows = runs.filter((run) => run.scenario.id === scenario.id);
         const withTrades = rows.filter((run) => run.trades > 0);
@@ -853,7 +937,7 @@ function summarizeScenarios(scenarios: MatrixScenario[], runs: MatrixRunSummary[
                 : null;
         const costDragBps = withTrades.length ? mean(withTrades.map((row) => row.avgSpreadBps + row.avgSlippageBps)) : 0;
         const churnPenaltyPct = withTrades.length
-            ? mean(withTrades.map((row) => row.breakevenExitPct + row.partialTradePct + row.shortHoldTradePct))
+            ? mean(withTrades.map((row) => row.breakevenExitPct + row.partialTradePct + row.shortHoldTradePctForChurn))
             : 0;
 
         return {
@@ -1297,6 +1381,7 @@ async function main() {
         fixtureSelectionUsed = 'input';
         fixtures = [await loadSingleInputFixture(inputPath)];
     }
+    const churnShortHoldThresholdMinutes = resolveShortHoldThresholdMinutes(args, fixtures);
 
     const baseSeed = Math.floor(toNum(args.seed) ?? 17);
     const spreadFactors = parseNumberCsv(args.spreadFactors, [1, 1.5, 2, 3]);
@@ -1340,6 +1425,7 @@ async function main() {
                     scenario,
                     quotes,
                     config,
+                    shortHoldThresholdMinutes: churnShortHoldThresholdMinutes,
                 }),
             );
         }
@@ -1384,6 +1470,7 @@ async function main() {
         fixtureSummaries,
         scenarioSummaries,
         overview: {
+            churnShortHoldThresholdMinutes,
             totalRuns: runs.length,
             scenariosWithTrades: withTrades.length,
             scenariosWithoutTrades: runs.length - withTrades.length,
@@ -1434,6 +1521,7 @@ async function main() {
     console.log(`Matrix complete`);
     console.log(`Fixtures: ${fixtures.length} | Scenarios: ${scenarios.length} | Runs: ${runs.length}`);
     console.log(`Runs with trades: ${withTrades.length}`);
+    console.log(`Churn short-hold threshold: <=${churnShortHoldThresholdMinutes}m`);
     const noTradeFixtures = fixtureSummaries.filter((row) => row.scenariosWithoutTrades > 0).length;
     console.log(`Fixtures with at least one no-trade scenario: ${noTradeFixtures}/${fixtureSummaries.length}`);
     if (report.overview.bestReturnRun) {

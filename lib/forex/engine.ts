@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 
 import { executeCapitalDecision, fetchCapitalOpenPositionSnapshots } from '../capital';
-import { getForexStrategyConfig, getForexUniversePairs } from './config';
+import { getForexStrategyConfig, getForexUniversePairs, isWithinSessionTransitionBuffer } from './config';
 import { buildForexPacketSnapshot } from './ai';
 import { refreshForexEvents, getForexEventsState } from './events/forexFactory';
 import { evaluateForexEventGate } from './events/gate';
@@ -10,6 +10,7 @@ import { loadForexPairMarketState } from './marketData';
 import { evaluateBreakoutRetestModule } from './modules/breakoutRetest';
 import { evaluatePullbackModule } from './modules/pullback';
 import { evaluateRangeFadeModule } from './modules/rangeFade';
+import { isWithinPreRolloverWindow } from './rollover';
 import {
     buildOpenCurrencyExposure,
     computeHybridRiskSize,
@@ -457,8 +458,11 @@ export function resolveReentryLockMinutes(params: {
         lockMinutesTimeStop: number;
         lockMinutesRegimeFlip: number;
         lockMinutesEventRisk: number;
+        lockMinutesStopInvalidated?: number;
+        lockMinutesStopInvalidatedStress?: number;
     };
     executeMinutes: number;
+    stopInvalidationStressActive?: boolean;
 }): number | null {
     const reasonSet = new Set(
         (params.reasonCodes || [])
@@ -470,10 +474,24 @@ export function resolveReentryLockMinutes(params: {
     const timeStopLock = Math.max(minCycleLock, Math.floor(Number(params.reentry.lockMinutesTimeStop) || minCycleLock));
     const regimeFlipLock = Math.max(defaultLock, Math.floor(Number(params.reentry.lockMinutesRegimeFlip) || defaultLock));
     const eventRiskLock = Math.max(regimeFlipLock, Math.floor(Number(params.reentry.lockMinutesEventRisk) || regimeFlipLock));
+    const stopInvalidatedBaseRaw = Math.floor(Number(params.reentry.lockMinutesStopInvalidated) || 0);
+    const stopInvalidatedBase = stopInvalidatedBaseRaw > 0 ? Math.max(defaultLock, stopInvalidatedBaseRaw) : 0;
+    const stopInvalidatedStressRaw = Math.floor(Number(params.reentry.lockMinutesStopInvalidatedStress) || 0);
+    const stopInvalidatedStress = stopInvalidatedStressRaw > 0
+        ? Math.max(stopInvalidatedBase || defaultLock, stopInvalidatedStressRaw)
+        : stopInvalidatedBase > 0
+            ? stopInvalidatedBase * 2
+            : 0;
+    const hasStopInvalidatedReason = Array.from(reasonSet).some(
+        (reason) => reason === 'STOP_INVALIDATED' || reason.startsWith('STOP_INVALIDATED_'),
+    );
 
     if (reasonSet.has('EVENT_HIGH_FORCE_CLOSE')) return eventRiskLock;
     if (reasonSet.has('REGIME_FLIP_CLOSE')) return regimeFlipLock;
     if (reasonSet.has('CLOSE_TIME_STOP_NO_PROGRESS') || reasonSet.has('CLOSE_TIME_STOP_MAX_HOLD')) return timeStopLock;
+    if (hasStopInvalidatedReason && stopInvalidatedBase > 0) {
+        return params.stopInvalidationStressActive ? stopInvalidatedStress : stopInvalidatedBase;
+    }
 
     return null;
 }
@@ -848,6 +866,17 @@ export async function runForexExecuteCycle(opts: { nowMs?: number; dryRun?: bool
             exitReasonCodes.push('EVENT_HIGH_FORCE_CLOSE');
         }
 
+        const spreadToAtr1h = Number(market.spreadToAtr1h);
+        const rolloverForceCloseActive =
+            !exitAction &&
+            isWithinPreRolloverWindow(
+                nowMs,
+                cfg.risk.rolloverForceCloseMinutes,
+                cfg.risk.rolloverHourUtc,
+            ) &&
+            Number.isFinite(spreadToAtr1h) &&
+            spreadToAtr1h >= cfg.risk.rolloverForceCloseSpreadToAtr1hMin;
+
         const stopBefore = currentStopFromContext(positionContext);
         const progress =
             positionContext && openSide
@@ -867,6 +896,37 @@ export async function runForexExecuteCycle(opts: { nowMs?: number; dryRun?: bool
                       maxFavorablePrice: null,
                       minFavorablePrice: null,
                   };
+
+        if (!exitAction && rolloverForceCloseActive && positionContext && openSide) {
+            const currentR =
+                Number.isFinite(progress.rValue) &&
+                progress.rValue > 0 &&
+                Number.isFinite(midPrice as number)
+                    ? openSide === 'BUY'
+                        ? (Number(midPrice) - positionContext.entryPrice) / progress.rValue
+                        : (positionContext.entryPrice - Number(midPrice)) / progress.rValue
+                    : NaN;
+
+            if (cfg.risk.rolloverForceCloseMode === 'derisk') {
+                const weakOrLosing = !Number.isFinite(currentR) || currentR <= cfg.risk.rolloverDeriskLoserCloseRMax;
+                const winnerByMfe = Number.isFinite(progress.mfeR) && progress.mfeR >= cfg.risk.rolloverDeriskWinnerMfeRMin;
+                const targetPartialPct = Math.max(0, Math.min(100, Number(cfg.risk.rolloverDeriskPartialClosePct) || 0));
+                const closePct = Math.max(0, Math.min(100, targetPartialPct - Number(positionContext.partialTakenPct || 0)));
+                if (weakOrLosing || !winnerByMfe || targetPartialPct >= 100) {
+                    exitAction = 'CLOSE';
+                    exitReasonCodes.push('ROLLOVER_PREEMPTIVE_FORCE_CLOSE', 'ROLLOVER_PREEMPTIVE_DERISK_CLOSE');
+                } else if (closePct > 0) {
+                    partialClosePct = closePct;
+                    positionContext.partialTakenPct = Math.min(100, Number(positionContext.partialTakenPct || 0) + closePct);
+                    contextMutated = true;
+                    exitReasonCodes.push('ROLLOVER_PREEMPTIVE_DERISK_PARTIAL');
+                    managementAction = 'CLOSE_PARTIAL';
+                }
+            } else {
+                exitAction = 'CLOSE';
+                exitReasonCodes.push('ROLLOVER_PREEMPTIVE_FORCE_CLOSE');
+            }
+        }
 
         if (!exitAction && eventTier.mediumActive && positionContext && openSide) {
             const atr5m = Number(market.atr5m);
@@ -1172,10 +1232,15 @@ export async function runForexExecuteCycle(opts: { nowMs?: number; dryRun?: bool
                 await deleteForexPositionContext(pair);
                 contextsByPair.delete(pair);
                 adjustUsageForClose(pair, 1);
+                const stopInvalidationStressActive =
+                    (Number.isFinite(spreadToAtr1h) && spreadToAtr1h >= cfg.risk.maxSpreadToAtr1h) ||
+                    Boolean(market.shockFlag) ||
+                    isWithinSessionTransitionBuffer(nowMs, cfg.risk.sessionTransitionBufferMinutes);
                 const lockMinutes = resolveReentryLockMinutes({
                     reasonCodes,
                     reentry: cfg.reentry,
                     executeMinutes: cfg.cadence.executeMinutes,
+                    stopInvalidationStressActive,
                 });
                 if (typeof lockMinutes === 'number' && Number.isFinite(lockMinutes) && lockMinutes > 0) {
                     await setForexReentryLock(pair, nowMs + lockMinutes * 60_000);

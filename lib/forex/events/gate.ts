@@ -5,9 +5,6 @@ import type {
 } from '../types';
 import { getForexEventConfig } from './config';
 
-const PRE_EVENT_BLOCK_MINUTES = 30;
-const POST_EVENT_BLOCK_MINUTES = 15;
-
 function normalizePair(pair: string): string {
     return String(pair || '')
         .trim()
@@ -40,11 +37,21 @@ function isBlockedImpact(impact: string, blockedImpacts: string[]): boolean {
     return blockedImpacts.includes(String(impact || '').toUpperCase());
 }
 
-export function isWithinEventWindow(eventIsoTimestamp: string, nowMs: number): boolean {
+export function isWithinEventWindow(
+    eventIsoTimestamp: string,
+    nowMs: number,
+    window?: { preEventBlockMinutes: number; postEventBlockMinutes: number },
+): boolean {
     const eventMs = timestampMs(eventIsoTimestamp);
     if (!Number.isFinite(eventMs)) return false;
-    const startMs = eventMs - PRE_EVENT_BLOCK_MINUTES * 60_000;
-    const endMs = eventMs + POST_EVENT_BLOCK_MINUTES * 60_000;
+    const cfg = getForexEventConfig();
+    const preEventBlockMinutes = Math.max(0, Math.floor(Number(window?.preEventBlockMinutes ?? cfg.preEventBlockMinutes) || 0));
+    const postEventBlockMinutes = Math.max(
+        0,
+        Math.floor(Number(window?.postEventBlockMinutes ?? cfg.postEventBlockMinutes) || 0),
+    );
+    const startMs = eventMs - preEventBlockMinutes * 60_000;
+    const endMs = eventMs + postEventBlockMinutes * 60_000;
     return nowMs >= startMs && nowMs <= endMs;
 }
 
@@ -77,7 +84,10 @@ export function listPairEventMatches(params: {
             const eventMs = timestampMs(event.timestamp_utc);
             return {
                 event,
-                activeWindow: isWithinEventWindow(event.timestamp_utc, nowMs),
+                activeWindow: isWithinEventWindow(event.timestamp_utc, nowMs, {
+                    preEventBlockMinutes: cfg.preEventBlockMinutes,
+                    postEventBlockMinutes: cfg.postEventBlockMinutes,
+                }),
                 msToEvent: Number.isFinite(eventMs) ? eventMs - nowMs : Number.POSITIVE_INFINITY,
             };
         })

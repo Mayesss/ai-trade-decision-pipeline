@@ -6,6 +6,7 @@ import {
     spreadPipsCapForPair,
     tightenSpreadToAtrCap,
 } from './config';
+import { isWithinPreRolloverWindow } from './rollover';
 import { getForexPairCooldownUntil, setForexPairCooldown } from './store';
 import type { ForexEventGateDecision, ForexPairMetrics, ForexPositionContext, ForexRiskCheck } from './types';
 import { pairCurrencies } from './events/gate';
@@ -262,6 +263,12 @@ export async function evaluateForexRiskCheck(params: {
         reasons.push('SESSION_TRANSITION_SPREAD_STRESS');
         reasons.push('SPREAD_TO_ATR_TRANSITION_RISK_CAP_EXCEEDED');
         reasons.push('NO_TRADE_SPREAD_TOO_HIGH');
+    }
+
+    if (isWithinPreRolloverWindow(nowMs, cfg.risk.rolloverEntryBlockMinutes, cfg.risk.rolloverHourUtc)) {
+        allowEntry = false;
+        reasons.push('ROLLOVER_ENTRY_BLOCK_WINDOW');
+        reasons.push('NO_TRADE_ROLLOVER_WINDOW');
     }
 
     if (params.metrics.shockFlag) {
