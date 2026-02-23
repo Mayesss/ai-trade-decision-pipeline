@@ -85,10 +85,35 @@ export type CapitalOpenPositionSnapshot = {
 const CAPITAL_API_BASE = (process.env.CAPITAL_API_BASE || 'https://api-capital.backend-capital.com').replace(/\/+$/, '');
 const SESSION_TTL_MS = 10 * 60 * 1000;
 const MIN_DISCOVERY_SCORE = 45;
-const CAPITAL_MAX_REQUESTS_PER_SECOND = 10;
-const CAPITAL_MIN_REQUEST_INTERVAL_MS = Math.ceil(1000 / CAPITAL_MAX_REQUESTS_PER_SECOND);
+const CAPITAL_MAX_REQUESTS_PER_SECOND = (() => {
+    const raw = Number(process.env.CAPITAL_MAX_REQUESTS_PER_SECOND ?? 10);
+    if (!Number.isFinite(raw) || raw <= 0) return 10;
+    return Math.max(1, Math.min(10, Math.floor(raw)));
+})();
+const CAPITAL_RATE_LIMIT_SAFETY_MS = (() => {
+    const raw = Number(process.env.CAPITAL_RATE_LIMIT_SAFETY_MS ?? 15);
+    if (!Number.isFinite(raw) || raw < 0) return 15;
+    return Math.floor(raw);
+})();
+const CAPITAL_MIN_REQUEST_INTERVAL_MS = Math.ceil(1000 / CAPITAL_MAX_REQUESTS_PER_SECOND) + CAPITAL_RATE_LIMIT_SAFETY_MS;
+const CAPITAL_MAX_429_RETRIES = (() => {
+    const raw = Number(process.env.CAPITAL_MAX_429_RETRIES ?? 4);
+    if (!Number.isFinite(raw) || raw < 0) return 4;
+    return Math.max(0, Math.min(8, Math.floor(raw)));
+})();
+const CAPITAL_429_BACKOFF_BASE_MS = (() => {
+    const raw = Number(process.env.CAPITAL_429_BACKOFF_BASE_MS ?? 350);
+    if (!Number.isFinite(raw) || raw <= 0) return 350;
+    return Math.floor(raw);
+})();
+const CAPITAL_429_BACKOFF_MAX_MS = (() => {
+    const raw = Number(process.env.CAPITAL_429_BACKOFF_MAX_MS ?? 5000);
+    if (!Number.isFinite(raw) || raw <= 0) return 5000;
+    return Math.max(500, Math.floor(raw));
+})();
 
 let cachedSession: SessionState | null = null;
+let capitalSessionPromise: Promise<SessionState> | null = null;
 const resolvedEpicCache = new Map<string, ResolveEpicResult>();
 let capitalRateLimitChain: Promise<void> = Promise.resolve();
 let capitalNextAllowedAtMs = 0;
@@ -230,9 +255,62 @@ async function waitForCapitalRateLimitSlot() {
     await reservation;
 }
 
-async function fetchCapitalRateLimited(url: string, init: RequestInit): Promise<Response> {
-    await waitForCapitalRateLimitSlot();
-    return fetch(url, init);
+function parseRetryAfterMs(headerValue: string | null): number | null {
+    if (!headerValue) return null;
+    const raw = String(headerValue).trim();
+    if (!raw) return null;
+
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+        return Math.floor(seconds * 1000);
+    }
+
+    const atMs = Date.parse(raw);
+    if (!Number.isFinite(atMs)) return null;
+    const delta = atMs - Date.now();
+    return delta > 0 ? delta : 0;
+}
+
+function noteCapitalCooldown(ms: number) {
+    const cooldown = Math.max(0, Math.floor(ms));
+    if (cooldown <= 0) return;
+    const nextAt = Date.now() + cooldown;
+    if (nextAt > capitalNextAllowedAtMs) {
+        capitalNextAllowedAtMs = nextAt;
+    }
+}
+
+function compute429BackoffMs(res: Response, attempt: number): number {
+    const retryAfter = parseRetryAfterMs(res.headers.get('retry-after'));
+    if (Number.isFinite(retryAfter as number) && Number(retryAfter) >= 0) {
+        return Math.min(Number(retryAfter), CAPITAL_429_BACKOFF_MAX_MS);
+    }
+    const exp = CAPITAL_429_BACKOFF_BASE_MS * Math.pow(2, Math.max(0, attempt));
+    const jitter = Math.floor(Math.random() * 120);
+    return Math.min(CAPITAL_429_BACKOFF_MAX_MS, exp + jitter);
+}
+
+async function fetchCapitalRateLimited(
+    url: string,
+    init: RequestInit,
+    opts: { retry429?: boolean } = {},
+): Promise<Response> {
+    const method = String(init?.method || 'GET').toUpperCase();
+    const canRetry429 = Boolean(opts.retry429) || method === 'GET' || method === 'HEAD';
+    let attempt = 0;
+
+    while (true) {
+        await waitForCapitalRateLimitSlot();
+        const res = await fetch(url, init);
+        if (res.status !== 429 || !canRetry429 || attempt >= CAPITAL_MAX_429_RETRIES) {
+            return res;
+        }
+
+        const backoffMs = compute429BackoffMs(res, attempt);
+        noteCapitalCooldown(backoffMs);
+        await sleep(backoffMs);
+        attempt += 1;
+    }
 }
 
 async function parseResponsePayload(res: Response): Promise<any> {
@@ -247,39 +325,62 @@ async function parseResponsePayload(res: Response): Promise<any> {
 
 async function createSession(forceRefresh = false): Promise<SessionState> {
     if (!forceRefresh && !getSessionExpired() && cachedSession) return cachedSession;
+    if (capitalSessionPromise) {
+        if (!forceRefresh) return capitalSessionPromise;
+        try {
+            return await capitalSessionPromise;
+        } catch {
+            // If the in-flight refresh failed, continue and start a new one.
+        }
+    }
     ensureCapitalConfig();
 
-    const url = `${CAPITAL_API_BASE}/api/v1/session`;
-    const res = await fetchCapitalRateLimited(url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-CAP-API-KEY': process.env.CAPITAL_API_KEY ?? '',
-        },
-        body: JSON.stringify({
-            identifier: process.env.CAPITAL_IDENTIFIER,
-            password: process.env.CAPITAL_PASSWORD,
-        }),
-    });
+    const pending = (async (): Promise<SessionState> => {
+        const url = `${CAPITAL_API_BASE}/api/v1/session`;
+        const res = await fetchCapitalRateLimited(
+            url,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CAP-API-KEY': process.env.CAPITAL_API_KEY ?? '',
+                },
+                body: JSON.stringify({
+                    identifier: process.env.CAPITAL_IDENTIFIER,
+                    password: process.env.CAPITAL_PASSWORD,
+                }),
+            },
+            { retry429: true },
+        );
 
-    const payload = await parseResponsePayload(res);
-    if (!res.ok) {
-        const message = payload?.errorCode || payload?.message || res.statusText;
-        throw new Error(`Capital session error ${res.status}: ${message}`);
+        const payload = await parseResponsePayload(res);
+        if (!res.ok) {
+            const message = payload?.errorCode || payload?.message || res.statusText;
+            throw new Error(`Capital session error ${res.status}: ${message}`);
+        }
+
+        const cst = res.headers.get('CST') || res.headers.get('cst');
+        const securityToken = res.headers.get('X-SECURITY-TOKEN') || res.headers.get('x-security-token');
+        if (!cst || !securityToken) {
+            throw new Error('Capital session missing CST/X-SECURITY-TOKEN headers');
+        }
+
+        cachedSession = {
+            cst,
+            securityToken,
+            expiresAtMs: Date.now() + SESSION_TTL_MS,
+        };
+        return cachedSession;
+    })();
+
+    capitalSessionPromise = pending;
+    try {
+        return await pending;
+    } finally {
+        if (capitalSessionPromise === pending) {
+            capitalSessionPromise = null;
+        }
     }
-
-    const cst = res.headers.get('CST') || res.headers.get('cst');
-    const securityToken = res.headers.get('X-SECURITY-TOKEN') || res.headers.get('x-security-token');
-    if (!cst || !securityToken) {
-        throw new Error('Capital session missing CST/X-SECURITY-TOKEN headers');
-    }
-
-    cachedSession = {
-        cst,
-        securityToken,
-        expiresAtMs: Date.now() + SESSION_TTL_MS,
-    };
-    return cachedSession;
 }
 
 async function capitalFetch(
@@ -305,11 +406,15 @@ async function capitalFetch(
         headers['X-SECURITY-TOKEN'] = session.securityToken;
     }
 
-    const res = await fetchCapitalRateLimited(url, {
-        method,
-        headers,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    const res = await fetchCapitalRateLimited(
+        url,
+        {
+            method,
+            headers,
+            body: body !== undefined ? JSON.stringify(body) : undefined,
+        },
+        { retry429: method === 'GET' },
+    );
 
     if (res.status === 401 && auth && retryAuth) {
         cachedSession = null;
@@ -577,21 +682,11 @@ export async function resolveCapitalEpicRuntime(symbol: string): Promise<Resolve
     if (cached) return cached;
 
     const preferred = resolveCapitalEpic(ticker);
-    const fallbackBase = baseFromTicker(ticker);
-    const searchFirstCandidates = Array.from(
-        new Set(
-            [ticker, fallbackBase, preferred.epic]
-                .map((v) => normalizeTicker(v))
-                .filter((v) => v.length > 0),
-        ),
-    );
-
-    const discoveredFirst = await discoverCapitalEpic(ticker, searchFirstCandidates);
-    if (discoveredFirst) {
-        resolvedEpicCache.set(ticker, discoveredFirst);
-        return discoveredFirst;
+    if (preferred.source === 'env' || preferred.source === 'default') {
+        resolvedEpicCache.set(ticker, preferred);
+        return preferred;
     }
-
+    const fallbackBase = baseFromTicker(ticker);
     const candidates = Array.from(
         new Set(
             [preferred.epic, ticker, fallbackBase]
@@ -616,6 +711,7 @@ export async function resolveCapitalEpicRuntime(symbol: string): Promise<Resolve
         }
     }
 
+    // Discovery is expensive; run only if direct candidate checks fail.
     const discovered = await discoverCapitalEpic(ticker, candidates);
     if (discovered) {
         resolvedEpicCache.set(ticker, discovered);
