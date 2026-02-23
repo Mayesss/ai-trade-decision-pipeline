@@ -557,6 +557,21 @@ export function shouldInvalidateByStop(params: {
     return { invalidated: false };
 }
 
+export function hasReachedStopInvalidationMinHold(params: {
+    context: ForexPositionContext | null;
+    nowMs: number;
+    minHoldMinutes: number;
+}): boolean {
+    const minHoldMinutes = Math.max(0, Number(params.minHoldMinutes) || 0);
+    if (minHoldMinutes <= 0) return true;
+    const openedAtMs = Number(params.context?.openedAtMs);
+    if (!(Number.isFinite(openedAtMs) && openedAtMs > 0)) return true;
+    const nowMs = Number(params.nowMs);
+    if (!(Number.isFinite(nowMs) && nowMs > 0)) return true;
+    const heldMinutes = Math.max(0, (nowMs - openedAtMs) / 60_000);
+    return heldMinutes >= minHoldMinutes;
+}
+
 export function shouldInvalidateFallback(params: {
     openSide: ForexSide | null;
     packet: ForexRegimePacket | null;
@@ -1079,16 +1094,25 @@ export async function runForexExecuteCycle(opts: { nowMs?: number; dryRun?: bool
         }
 
         if (!exitAction) {
-            const stopInvalidation = shouldInvalidateByStop({
+            const stopInvalidationHoldReady = hasReachedStopInvalidationMinHold({
                 context: positionContext,
-                openSide,
-                bidPrice: Number(openPosition.bid),
-                offerPrice: Number(openPosition.offer),
-                midPrice,
+                nowMs,
+                minHoldMinutes: cfg.reentry.stopInvalidationMinHoldMinutes,
             });
-            if (stopInvalidation.invalidated) {
-                exitAction = 'CLOSE';
-                exitReasonCodes.push(stopInvalidation.reasonCode || 'STOP_INVALIDATED_CLOSE');
+            if (stopInvalidationHoldReady) {
+                const stopInvalidation = shouldInvalidateByStop({
+                    context: positionContext,
+                    openSide,
+                    bidPrice: Number(openPosition.bid),
+                    offerPrice: Number(openPosition.offer),
+                    midPrice,
+                });
+                if (stopInvalidation.invalidated) {
+                    exitAction = 'CLOSE';
+                    exitReasonCodes.push(stopInvalidation.reasonCode || 'STOP_INVALIDATED_CLOSE');
+                }
+            } else {
+                exitReasonCodes.push('STOP_INVALIDATION_MIN_HOLD_ACTIVE');
             }
         }
 

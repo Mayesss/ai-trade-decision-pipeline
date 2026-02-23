@@ -75,6 +75,7 @@ MARKETAUX_API_KEY=...
 # FOREX_REENTRY_LOCK_MINUTES=5
 # FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED=0
 # FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED_STRESS=0
+# FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES=0  # default disabled; staged rollout recommendation: 8 (after dry-run validation)
 # FOREX_REENTRY_LOCK_MINUTES_TIME_STOP=5
 # FOREX_REENTRY_LOCK_MINUTES_REGIME_FLIP=10
 # FOREX_REENTRY_LOCK_MINUTES_EVENT_RISK=20
@@ -162,6 +163,7 @@ npm run start
   - Capital-only forex deterministic execution cycle (pullback/breakout-retest/range-fade modules).
   - Breakout-retest entries use breakout -> retest -> continuation confirmation (3-candle sequence).
   - Re-entry lock duration is contextual (for example event-risk > regime-flip > time-stop).
+  - Optional hold gate for stop invalidation exits via `FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES` (default `0`, recommended rollout `8` after dry-run checks).
   - Applies stricter spread-to-ATR gating around session transition windows.
   - Optional query: `notional=100` to override default notional for this run (default is `100`).
 - `GET /api/forex/dashboard/summary`
@@ -225,6 +227,13 @@ node --import tsx scripts/forex-replay-matrix.ts --fixtures core --rolloverForce
 
 # compare stop-invalidation cooldown profiles (disabled vs 30/60)
 node --import tsx scripts/forex-replay-matrix.ts --fixtures core --rolloverForceCloseMin 20 --rolloverForceCloseSpreadToAtr 0.30 --rolloverForceCloseMode close --churnShortHoldMin 10 --reentryStopInvalidatedLockMin 30 --reentryStopInvalidatedLockStressMin 60 --outDir /tmp/forex-replay-matrix
+
+# compare stop-invalidation minimum hold windows
+node --import tsx scripts/forex-replay-matrix.ts --fixtures core --minCoverage 50 --maxChurn 65 --maxTailGap 2.8 --churnShortHoldMin 10 --stopInvalidateMinHoldMin 8 --outDir /tmp/forex-replay-matrix
+
+# deterministic fixture to assert STOP_INVALIDATION_MIN_HOLD_ACTIVE appears in timeline output
+node --import tsx scripts/forex-replay.ts --input data/replay/fixtures/stop_invalidation_min_hold_window.json --stopInvalidateMinHoldMin 8 --outDir /tmp/forex-replay-stop-hold
+rg -n "STOP_INVALIDATION_MIN_HOLD_ACTIVE" /tmp/forex-replay-stop-hold/timeline.json
 
 # run replay tests
 npm run test:forex

@@ -44,6 +44,30 @@ test('replay stop checks use long stop side correctly and trigger only when bid 
     assert.ok(exits[0]?.reasonCodes.includes('STOP_INVALIDATED_LONG'));
 });
 
+test('replay can delay stop invalidation until minimum hold window elapses', () => {
+    const cfg = withNoSlippage();
+    cfg.management.minHoldMinutesBeforeStopInvalidation = 5;
+    const quotes: ReplayQuote[] = [
+        { ts: ts('2026-02-23T10:00:00.000Z'), bid: 1.1, ask: 1.1002 },
+        { ts: ts('2026-02-23T10:02:00.000Z'), bid: 1.0994, ask: 1.0997 },
+        { ts: ts('2026-02-23T10:03:00.000Z'), bid: 1.0993, ask: 1.0996 },
+        { ts: ts('2026-02-23T10:05:00.000Z'), bid: 1.0992, ask: 1.0995 },
+    ];
+    const entries: ReplayEntrySignal[] = [
+        { ts: quotes[0]!.ts, side: 'BUY', stopPrice: 1.0995, notionalUsd: 1000 },
+    ];
+
+    const result = runReplay({ quotes, entries, config: cfg });
+    const exits = result.ledger.filter((row) => row.kind === 'EXIT');
+    assert.equal(exits.length, 1);
+    assert.equal(exits[0]?.ts, quotes[3]?.ts);
+    assert.ok(exits[0]?.reasonCodes.includes('STOP_INVALIDATED_LONG'));
+    const minHoldEvents = result.timeline.filter(
+        (event) => event.type === 'POSITION_HELD' && event.reasonCodes.includes('STOP_INVALIDATION_MIN_HOLD_ACTIVE'),
+    );
+    assert.ok(minHoldEvents.length >= 1);
+});
+
 test('replay entry gate blocks transition-window spread stress using tightened spread-to-ATR cap', () => {
     const cfg = withNoSlippage();
     cfg.atr1hAbs = 0.0012; // spread_to_atr1h = 0.10 -> below base cap 0.12, above tightened 0.096

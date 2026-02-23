@@ -33,6 +33,7 @@ type PositionState = {
     openedAtMs: number;
     entryNotionalUsd: number;
     maxFavorableR: number;
+    stopInvalidationMinHoldLogged: boolean;
 };
 
 function utcDayKey(ts: number): string {
@@ -199,6 +200,7 @@ export function defaultReplayConfig(pair = 'EURUSD'): ReplayRuntimeConfig {
             partialClosePct: 50,
             trailingDistanceR: 0.9,
             enableTrailing: true,
+            minHoldMinutesBeforeStopInvalidation: 0,
         },
         rollover: {
             dailyFeeBps: 0.8,
@@ -576,24 +578,42 @@ export function runReplay(params: {
                 }
 
                 if (position) {
-                    const context = toPositionContext(cfg.pair, packet, position);
-                    const stopCheck = shouldInvalidateByStop({
-                        context,
-                        openSide: position.side,
-                        bidPrice: stressed.bid,
-                        offerPrice: stressed.ask,
-                        midPrice: stressed.mid,
-                    });
-                    if (stopCheck.invalidated) {
-                        const stopInvalidationStressActive =
-                            (Number.isFinite(spreadToAtr1h) && spreadToAtr1h >= 0.12) ||
-                            Boolean(stressed.shock) ||
-                            isWithinSessionTransitionBuffer(stressed.ts, cfg.spreadStress.transitionBufferMinutes);
-                        closePosition(
-                            [stopCheck.reasonCode || 'STOP_INVALIDATED'],
-                            stressed,
-                            { stopInvalidationStressActive },
-                        );
+                    const minHoldMinutesBeforeStopInvalidation = Math.max(
+                        0,
+                        Number(cfg.management.minHoldMinutesBeforeStopInvalidation) || 0,
+                    );
+                    const holdMinutes = Math.max(0, (stressed.ts - position.openedAtMs) / 60_000);
+                    if (holdMinutes >= minHoldMinutesBeforeStopInvalidation) {
+                        const context = toPositionContext(cfg.pair, packet, position);
+                        const stopCheck = shouldInvalidateByStop({
+                            context,
+                            openSide: position.side,
+                            bidPrice: stressed.bid,
+                            offerPrice: stressed.ask,
+                            midPrice: stressed.mid,
+                        });
+                        if (stopCheck.invalidated) {
+                            const stopInvalidationStressActive =
+                                (Number.isFinite(spreadToAtr1h) && spreadToAtr1h >= 0.12) ||
+                                Boolean(stressed.shock) ||
+                                isWithinSessionTransitionBuffer(stressed.ts, cfg.spreadStress.transitionBufferMinutes);
+                            closePosition(
+                                [stopCheck.reasonCode || 'STOP_INVALIDATED'],
+                                stressed,
+                                { stopInvalidationStressActive },
+                            );
+                        }
+                    } else if (!position.stopInvalidationMinHoldLogged) {
+                        position.stopInvalidationMinHoldLogged = true;
+                        timeline.push({
+                            ts: stressed.ts,
+                            type: 'POSITION_HELD',
+                            reasonCodes: ['STOP_INVALIDATION_MIN_HOLD_ACTIVE'],
+                            details: {
+                                holdMinutes,
+                                minHoldMinutesBeforeStopInvalidation,
+                            },
+                        });
                     }
                 }
             }
@@ -700,6 +720,7 @@ export function runReplay(params: {
                 openedAtMs: stressed.ts,
                 entryNotionalUsd: notionalUsd,
                 maxFavorableR: 0,
+                stopInvalidationMinHoldLogged: false,
             };
 
             addLedgerRow({

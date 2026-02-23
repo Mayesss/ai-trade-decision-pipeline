@@ -65,6 +65,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 process.env.FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED || '(default: 0)',
             FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED_STRESS:
                 process.env.FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED_STRESS || '(default: auto 2x base)',
+            FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES:
+                process.env.FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES || '(default: 0)',
             FOREX_SELECTOR_TOP_PERCENT: process.env.FOREX_SELECTOR_TOP_PERCENT || '(default: 40)',
         });
 
@@ -112,6 +114,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 process.env.FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED || '(default: 0)',
             FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED_STRESS:
                 process.env.FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED_STRESS || '(default: auto 2x base)',
+            FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES:
+                process.env.FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES || '(default: 0)',
             FOREX_SELECTOR_TOP_PERCENT: process.env.FOREX_SELECTOR_TOP_PERCENT || '(default: 40)',
         });
     } catch (err: any) {

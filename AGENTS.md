@@ -80,6 +80,7 @@ Use this loop for forex execution/management changes so improvements are measura
 3. Treat churn as a symptom:
    - Diagnose what creates churn (`breakevenExitPct`, `partialTradePct`, `shortHold10mPct`, `shortHoldTradePct`) before changing weights.
    - `shortHoldTradePctForChurn` is the thresholded metric used in `churnPenaltyPct`; tune it with `--churnShortHoldMin`.
+   - Identify the dominant exit reason in the worst fixture before adding locks; if exits are mostly `REGIME_FLIP_CLOSE`, a stop-invalidation lock is unlikely to help.
    - Use fixture/scenario artifacts to identify which management rule is causing exits.
 4. Use one-change/one-hypothesis experiments:
    - Change one rule at a time (for example BE threshold, trailing activation, time-stop guard).
@@ -103,6 +104,7 @@ Use this loop for forex execution/management changes so improvements are measura
    - rollover tails -> pre-rollover close/derisk policy.
    - event tails -> event window/gating policy.
    - stop-out churn/re-entry loops -> stop-invalidation cooldown and spread-aware invalidation handling.
+   - regime-flip churn -> regime-flip debounce/confirmation and regime-flip-specific lock policy.
    - Verify `worstFixtureHeatmap` and `worstTradedAvgR` improve, not just `robustnessScore`.
 9. Fix catastrophic tails before cosmetic score gains:
    - Prioritize extreme tail-risk control (event-gap/rollover) before score tuning.

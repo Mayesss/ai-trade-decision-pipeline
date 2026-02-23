@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+    hasReachedStopInvalidationMinHold,
     hasActiveEventWindow,
     isOppositePermission,
     shouldInvalidateByStop,
@@ -108,6 +109,44 @@ test('shouldInvalidateByStop does not invalidate short when only mid is above st
     });
 
     assert.equal(out.invalidated, false);
+});
+
+test('hasReachedStopInvalidationMinHold enforces hold threshold with context timestamp', () => {
+    assert.equal(
+        hasReachedStopInvalidationMinHold({
+            context: baseContext,
+            nowMs: baseContext.openedAtMs + 4 * 60_000,
+            minHoldMinutes: 5,
+        }),
+        false,
+    );
+    assert.equal(
+        hasReachedStopInvalidationMinHold({
+            context: baseContext,
+            nowMs: baseContext.openedAtMs + 5 * 60_000,
+            minHoldMinutes: 5,
+        }),
+        true,
+    );
+});
+
+test('hasReachedStopInvalidationMinHold fails open when disabled or context is missing', () => {
+    assert.equal(
+        hasReachedStopInvalidationMinHold({
+            context: null,
+            nowMs: Date.now(),
+            minHoldMinutes: 5,
+        }),
+        true,
+    );
+    assert.equal(
+        hasReachedStopInvalidationMinHold({
+            context: baseContext,
+            nowMs: baseContext.openedAtMs,
+            minHoldMinutes: 0,
+        }),
+        true,
+    );
 });
 
 test('shouldInvalidateFallback invalidates long on down trend with short/flat permission', () => {

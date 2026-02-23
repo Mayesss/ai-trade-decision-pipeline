@@ -139,6 +139,10 @@ export function getForexStrategyConfig() {
         process.env.FOREX_REENTRY_LOCK_MINUTES_STOP_INVALIDATED_STRESS,
         lockMinutesStopInvalidated > 0 ? lockMinutesStopInvalidated * 2 : 0,
     );
+    const stopInvalidationMinHoldMinutes = toNonNegativeInt(
+        process.env.FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES,
+        0,
+    );
 
     return {
         capitalOnly: true,
@@ -175,6 +179,7 @@ export function getForexStrategyConfig() {
             lockMinutesEventRisk,
             lockMinutesStopInvalidated,
             lockMinutesStopInvalidatedStress,
+            stopInvalidationMinHoldMinutes,
         },
         events: {
             forceCloseImpacts: parseCsvUpper(process.env.FOREX_EVENT_FORCE_CLOSE_IMPACTS, ['HIGH']),

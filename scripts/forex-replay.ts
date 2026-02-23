@@ -28,6 +28,7 @@ function usage() {
         '  --rolloverDeriskWinnerMfeR <float>  Min MFE(R) to derisk winners (default: 0.8)',
         '  --rolloverDeriskLoserCloseR <float>  Max current R treated as weak/losing (default: 0.2)',
         '  --rolloverDeriskPartialClosePct <pct>  Target partial close pct in derisk mode (default: 50)',
+        '  --stopInvalidateMinHoldMin <int>  Min hold minutes before STOP_INVALIDATED_* is allowed',
         '  --reentryStopInvalidatedLockMin <int>  Lock minutes after STOP_INVALIDATED_* close (default: 0=disabled)',
         '  --reentryStopInvalidatedLockStressMin <int>  Stress lock minutes for STOP_INVALIDATED_* (default: 2x base)',
         '  --help                         Show help',
@@ -116,6 +117,10 @@ function applyOverrides(config: ReplayRuntimeConfig, args: Record<string, string
     const rolloverDeriskPartialClosePct = toNum(args.rolloverDeriskPartialClosePct);
     if (rolloverDeriskPartialClosePct !== undefined && rolloverDeriskPartialClosePct >= 0) {
         next.rollover.deriskPartialClosePct = Math.max(0, Math.min(100, rolloverDeriskPartialClosePct));
+    }
+    const stopInvalidateMinHoldMin = toNum(args.stopInvalidateMinHoldMin);
+    if (stopInvalidateMinHoldMin !== undefined && stopInvalidateMinHoldMin >= 0) {
+        next.management.minHoldMinutesBeforeStopInvalidation = Math.floor(stopInvalidateMinHoldMin);
     }
     const reentryStopInvalidatedLockMin = toNum(args.reentryStopInvalidatedLockMin);
     if (reentryStopInvalidatedLockMin !== undefined && reentryStopInvalidatedLockMin >= 0) {

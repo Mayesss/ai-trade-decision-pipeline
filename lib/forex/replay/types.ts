@@ -55,6 +55,7 @@ export interface ReplayManagementConfig {
     partialClosePct: number;
     trailingDistanceR: number;
     enableTrailing: boolean;
+    minHoldMinutesBeforeStopInvalidation?: number;
 }
 
 export type ReplayRolloverForceCloseMode = 'close' | 'derisk';
@@ -107,6 +108,7 @@ export interface ReplayTimelineEvent {
     type:
         | 'ENTRY_OPENED'
         | 'ENTRY_BLOCKED'
+        | 'POSITION_HELD'
         | 'PARTIAL_TAKEN'
         | 'STOP_TIGHTENED'
         | 'POSITION_CLOSED'

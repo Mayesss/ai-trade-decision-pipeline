@@ -39,6 +39,14 @@
       "tags": ["shock", "cooldown", "reentry-lock", "event-risk"],
       "description": "Shock-heavy chop with repeated entry temptation and lock-reason sequencing.",
       "purpose": "Validate shock gating plus contextual lock ordering under stress."
+    },
+    {
+      "id": "stop_invalidation_min_hold_window",
+      "file": "./stop_invalidation_min_hold_window.json",
+      "tier": "extended",
+      "tags": ["stop-invalidation", "min-hold", "execution", "journaling"],
+      "description": "Stop is crossed before hold threshold and only invalidates after hold window unlocks.",
+      "purpose": "Guarantee STOP_INVALIDATION_MIN_HOLD_ACTIVE appears in replay timeline output."
     }
   ]
 }
