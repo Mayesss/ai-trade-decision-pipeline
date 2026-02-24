@@ -98,17 +98,24 @@ function readLatestTradeTimestamp(trades: any[]): number | null {
     return latest > 0 ? latest : null;
 }
 
-function shouldSkipMomentumCall(params: { signals: MomentumSignals; price: number; trades: any[] }) {
-    const { signals, price, trades } = params;
+function shouldSkipMomentumCall(params: {
+    signals: MomentumSignals;
+    price: number;
+    trades: any[];
+    enforceRecentTape?: boolean;
+}) {
+    const { signals, price, trades, enforceRecentTape = true } = params;
     const extensionActive = Math.abs(signals.microExtensionInAtr ?? 0) > 0.5;
     const primaryAtr = Number(signals.primaryAtr ?? 0);
     const atrPct = price > 0 && primaryAtr > 0 ? primaryAtr / price : 0;
     const atrActive = atrPct > ATR_ACTIVE_MIN_PCT;
+    const momentumActive = extensionActive || atrActive;
     const latestTradeTs = readLatestTradeTimestamp(trades);
     const minutesSinceLastTrade = latestTradeTs ? (Date.now() - latestTradeTs) / 60000 : Infinity;
     const tapeInactive =
         !Array.isArray(trades) || trades.length === 0 || !Number.isFinite(minutesSinceLastTrade) || minutesSinceLastTrade > STALE_TRADE_MINUTES;
-    return tapeInactive || !(extensionActive || atrActive);
+    if (!enforceRecentTape) return !momentumActive;
+    return tapeInactive || !momentumActive;
 }
 
 /**
@@ -297,6 +304,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 signals: momentumSignals,
                 price: effectivePrice,
                 trades: Array.isArray(bundle?.trades) ? bundle.trades : [],
+                enforceRecentTape: platform !== 'capital',
             });
 
         if (!positionOpen && calmMarket) {
