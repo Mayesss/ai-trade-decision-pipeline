@@ -43,8 +43,28 @@ type Evaluation = {
   aspects?: Record<string, AspectEvaluation>;
 };
 
+type ForexEventRow = {
+  timestamp_utc?: string;
+  currency?: string;
+  impact?: string;
+  event_name?: string;
+  minutesToEvent?: number;
+};
+
+type ForexEventContext = {
+  source?: string;
+  pair?: string | null;
+  status?: 'clear' | 'active' | 'stale' | string;
+  staleData?: boolean;
+  reasonCodes?: string[];
+  activeEvents?: ForexEventRow[];
+  nextEvents?: ForexEventRow[];
+};
+
 type EvaluationEntry = {
   symbol: string;
+  category?: string | null;
+  forexEventContext?: ForexEventContext | null;
   evaluation: Evaluation;
   evaluationTs?: number | null;
   lastBiasTimeframes?: Record<string, string | undefined> | null;
@@ -82,6 +102,7 @@ type DashboardSymbolRow = {
   symbol: string;
   platform?: string | null;
   newsSource?: string | null;
+  category?: string | null;
   schedule?: string | null;
   decisionPolicy?: string | null;
 };
@@ -93,8 +114,10 @@ type DashboardSymbolsResponse = {
 
 type DashboardSummaryRow = {
   symbol: string;
+  category?: string | null;
   lastPlatform?: string | null;
   lastNewsSource?: string | null;
+  forexEventContext?: ForexEventContext | null;
   pnl7d?: number | null;
   pnl7dWithOpen?: number | null;
   pnl7dNet?: number | null;
@@ -190,6 +213,7 @@ type ForexSummaryResponse = {
 
 type DashboardDecisionResponse = {
   symbol: string;
+  category?: string | null;
   platform?: string | null;
   lastDecisionTs?: number | null;
   lastDecision?: EvaluationEntry['lastDecision'];
@@ -423,6 +447,7 @@ export default function Home() {
     }
     const json: DashboardDecisionResponse = await res.json();
     mergeTabPatch(symbol, {
+      category: json.category ?? null,
       lastPlatform: json.platform ?? platform ?? null,
       lastNewsSource: json.lastNewsSource ?? null,
       lastDecisionTs: json.lastDecisionTs ?? null,
@@ -494,6 +519,7 @@ export default function Home() {
             ...existing,
             symbol: key,
             evaluation: existing.evaluation || {},
+            category: meta?.category ?? existing.category ?? null,
             lastPlatform: meta?.platform ?? existing.lastPlatform ?? null,
             lastNewsSource: meta?.newsSource ?? existing.lastNewsSource ?? null,
           };
@@ -1114,6 +1140,46 @@ export default function Home() {
       ? current.pnl7dWithOpen
       : null;
   const openPnlIsLive = typeof liveOpenPnl === 'number';
+  const isForexCategory = current?.category === 'forex';
+  const forexEventContext = isForexCategory ? current?.forexEventContext ?? null : null;
+  const forexEventStatus =
+    forexEventContext?.status === 'active'
+      ? 'active'
+      : forexEventContext?.status === 'stale'
+      ? 'stale'
+      : 'clear';
+  const forexEventToneClass =
+    forexEventStatus === 'active'
+      ? 'text-rose-600'
+      : forexEventStatus === 'stale'
+      ? 'text-amber-600'
+      : 'text-emerald-600';
+  const forexEventBadgeClass =
+    forexEventStatus === 'active'
+      ? 'bg-rose-50 text-rose-700'
+      : forexEventStatus === 'stale'
+      ? 'bg-amber-50 text-amber-700'
+      : 'bg-emerald-50 text-emerald-700';
+  const forexActiveEvent = forexEventContext?.activeEvents?.[0] ?? null;
+  const forexNextEvent = forexEventContext?.nextEvents?.[0] ?? null;
+  const formatEventMinutes = (minutes?: number) => {
+    if (typeof minutes !== 'number' || !Number.isFinite(minutes)) return '';
+    if (minutes === 0) return 'now';
+    if (minutes > 0) return `in ${minutes}m`;
+    return `${Math.abs(minutes)}m ago`;
+  };
+  const forexEventPrimaryLine = forexActiveEvent
+    ? `${forexActiveEvent.currency || ''} ${forexActiveEvent.event_name || ''}`.trim()
+    : forexNextEvent
+    ? `${forexNextEvent.currency || ''} ${forexNextEvent.event_name || ''}`.trim()
+    : 'no nearby high/medium events';
+  const forexEventSecondaryLine = forexActiveEvent
+    ? `${formatEventMinutes(forexActiveEvent.minutesToEvent)} · ${forexActiveEvent.impact || 'UNKNOWN'} impact`
+    : forexNextEvent
+    ? `${formatEventMinutes(forexNextEvent.minutesToEvent)} · ${forexNextEvent.impact || 'UNKNOWN'} impact`
+    : forexEventContext?.pair
+    ? `${forexEventContext.pair} monitoring`
+    : 'pair unresolved';
   const showChartPanel = Boolean(adminGranted && activeSymbol);
   const currentEvalJob = activeSymbol ? evaluateJobs[activeSymbol] : null;
   const evaluateRunning = Boolean(
@@ -1580,7 +1646,7 @@ export default function Home() {
                       className="h-5 w-auto opacity-80"
                     />
                   </div>
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  <div className={`grid grid-cols-1 gap-4 ${isForexCategory ? 'sm:grid-cols-4' : 'sm:grid-cols-3'}`}>
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-500">{dashboardRange} PnL</div>
                       <div className="mt-3 text-3xl font-semibold text-slate-900">
@@ -1718,6 +1784,26 @@ export default function Home() {
                         )}
                       </p>
                     </div>
+                    {isForexCategory ? (
+                      <div>
+                        <div className="text-xs uppercase tracking-wide text-slate-500">Event Context</div>
+                        <div className="mt-3 text-3xl font-semibold text-slate-900">
+                          <span className={forexEventToneClass}>
+                            {forexEventStatus === 'active'
+                              ? 'ACTIVE'
+                              : forexEventStatus === 'stale'
+                              ? 'STALE'
+                              : 'CLEAR'}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-slate-500">{forexEventPrimaryLine}</p>
+                        <div className="mt-2 text-[11px] text-slate-500">
+                          <span className={`rounded-full px-2 py-0.5 font-semibold ${forexEventBadgeClass}`}>
+                            {forexEventSecondaryLine}
+                          </span>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 

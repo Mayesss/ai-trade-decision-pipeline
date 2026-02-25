@@ -7,6 +7,7 @@ import { resolveAnalysisPlatform, type AnalysisPlatform } from '../../../lib/pla
 
 type DecisionPayload = {
   symbol: string;
+  category: string | null;
   platform: AnalysisPlatform | null;
   lastDecisionTs: number | null;
   lastDecision: any | null;
@@ -38,9 +39,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const platformParam = Array.isArray(req.query.platform) ? req.query.platform[0] : req.query.platform;
   const platform = resolveRequestedPlatform(symbolRaw, platformParam ?? null);
+  const cronConfig = getCronSymbolConfigs().find((item) => item.symbol === symbolRaw);
 
   let payload: DecisionPayload = {
     symbol: symbolRaw,
+    category: cronConfig?.category ?? null,
     platform,
     lastDecisionTs: null,
     lastDecision: null,
@@ -58,6 +61,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (latest) {
       payload = {
         symbol: symbolRaw,
+        category:
+          typeof latest.category === 'string'
+            ? latest.category
+            : typeof latest.snapshot?.category === 'string'
+            ? latest.snapshot.category
+            : cronConfig?.category ?? null,
         platform:
           typeof latest.platform === 'string'
             ? resolveAnalysisPlatform(latest.platform)
@@ -83,4 +92,3 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   return res.status(200).json(payload);
 }
-

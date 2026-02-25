@@ -21,6 +21,8 @@ import {
     resolveCapitalEpicRuntime,
 } from '../../lib/capital';
 import { resolveAnalysisPlatform, resolveInstrumentId, resolveNewsSource, type AnalysisPlatform } from '../../lib/platform';
+import { resolveSwingCategory } from '../../lib/swing/category';
+import { loadForexEventContext } from '../../lib/swing/forexEvents';
 
 import { buildPrompt, callAI, computeMomentumSignals, postprocessDecision, resolveDecisionPolicy } from '../../lib/ai';
 import type { DecisionPolicy, MomentumSignals } from '../../lib/ai';
@@ -143,6 +145,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const platform: AnalysisPlatform = resolveAnalysisPlatform(platformParam as string | undefined);
         const newsSourceParam = Array.isArray(body.newsSource) ? body.newsSource[0] : body.newsSource;
         const newsSource = resolveNewsSource(platform, newsSourceParam as string | undefined);
+        const categoryParam = Array.isArray(body.category) ? body.category[0] : body.category;
         const parseBoolParam = (value: string | string[] | undefined, fallback: boolean) => {
             if (value === undefined) return fallback;
             const v = Array.isArray(value) ? value[0] : value;
@@ -168,6 +171,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const fetchRealizedRoi = platform === 'capital' ? fetchCapitalRealizedRoi : fetchBitgetRealizedRoi;
         let instrumentId =
             platform === 'capital' ? resolveCapitalEpic(symbol).epic : resolveInstrumentId(symbol, platform);
+        let category = resolveSwingCategory({
+            category: categoryParam as string | undefined,
+            symbol,
+            platform,
+            instrumentId,
+        });
 
         const positionInfo = await fetchPositionInfo(symbol);
         const positionOpen = positionInfo.status === 'open';
@@ -177,6 +186,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 symbol,
                 platform,
                 newsSource,
+                category,
                 instrumentId,
                 timeFrame,
                 dryRun,
@@ -213,6 +223,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 typeof (bundleLight as any)?.epic === 'string' && (bundleLight as any).epic
                     ? (bundleLight as any).epic
                     : (await resolveCapitalEpicRuntime(symbol)).epic;
+            category = resolveSwingCategory({
+                category: categoryParam as string | undefined,
+                symbol,
+                platform,
+                instrumentId,
+            });
         }
 
         const positionForPrompt =
@@ -256,6 +272,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 symbol,
                 platform,
                 newsSource,
+                category,
                 instrumentId,
                 timeFrame,
                 dryRun,
@@ -312,6 +329,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 symbol,
                 platform,
                 newsSource,
+                category,
                 instrumentId,
                 timeFrame,
                 dryRun,
@@ -376,6 +394,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const recentActions = recentHistory
             .map((h) => ({ action: h.aiDecision?.action, timestamp: h.timestamp }))
             .filter((a) => a.action);
+        const forexEventContext =
+            category === 'forex'
+                ? await loadForexEventContext({
+                      symbol,
+                      instrumentId,
+                  })
+                : null;
 
         // 6) Build prompt with allowed_actions, gates, and close_conditions
         const roiRes = await fetchRealizedRoi(symbol, 24);
@@ -388,6 +413,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             positionForPrompt, // "none" | JSON string like 'open long @ ...' (your current format)
             newsBundle?.sentiment ?? null, // omit from prompt if unavailable
             newsBundle?.headlines ?? [],
+            forexEventContext,
             indicators, // from calculateMultiTFIndicators(symbol)
             gatesOut.gates, // from getGates(...)
             positionContext,
@@ -436,6 +462,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 symbol,
                 platform,
                 newsSource,
+                category,
                 instrumentId,
                 timeFrame,
                 dryRun,
@@ -443,6 +470,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 decision,
                 execRes: { placed: false, orderId: null, clientOid: null, reason: 'gates_short_circuit' },
                 gates: { ...gatesForExec.gates, metrics: gatesForExec.metrics },
+                forexEventContext: forexEventContext,
                 usedTape,
             });
         }
@@ -458,6 +486,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const bestBid = Number(analytics.bestBid);
         const bestAsk = Number(analytics.bestAsk);
         const snapshot = {
+            category: category ?? undefined,
             platform,
             newsSource,
             instrumentId,
@@ -472,6 +501,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             metrics: gatesForExec.metrics,
             newsSentiment: newsBundle?.sentiment ?? null,
             newsHeadlines: newsBundle?.headlines ?? [],
+            forexEventContext: forexEventContext,
             positionContext,
             momentumSignals,
         };
@@ -479,6 +509,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         await appendDecisionHistory({
             timestamp: Date.now(),
             symbol,
+            category: category ?? undefined,
             platform,
             instrumentId,
             newsSource,
@@ -501,6 +532,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             symbol,
             platform,
             newsSource,
+            category,
             instrumentId,
             timeFrame,
             dryRun,
@@ -508,6 +540,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             decision,
             execRes,
             gates: { ...gatesForExec.gates, metrics: gatesForExec.metrics },
+            forexEventContext: forexEventContext,
             usedTape,
         });
     } catch (err: any) {

@@ -77,6 +77,7 @@ async function kvMGet(keys: string[]): Promise<(string | null)[]> {
 }
 
 export type DecisionSnapshot = {
+    category?: string;
     price?: number;
     change24h?: number;
     spread?: number; // canonical bps (legacy alias)
@@ -93,11 +94,13 @@ export type DecisionSnapshot = {
     platform?: string;
     newsSource?: string;
     instrumentId?: string;
+    forexEventContext?: any;
 };
 
 export type DecisionHistoryEntry = {
     timestamp: number;
     symbol: string;
+    category?: string;
     platform?: string;
     instrumentId?: string;
     newsSource?: string;

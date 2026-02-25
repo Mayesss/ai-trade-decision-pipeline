@@ -10,11 +10,14 @@ import { loadDecisionHistory } from '../../../lib/history';
 import { requireAdminAccess } from '../../../lib/admin';
 import { getCronSymbolConfigs } from '../../../lib/symbolRegistry';
 import type { AnalysisPlatform } from '../../../lib/platform';
+import { buildForexEventContext, ensureForexEventsState } from '../../../lib/swing/forexEvents';
 
 type SummaryEntry = {
   symbol: string;
+  category?: string | null;
   lastPlatform: AnalysisPlatform;
   lastNewsSource?: string | null;
+  forexEventContext?: any | null;
   pnl7d?: number | null;
   pnl7dWithOpen?: number | null;
   pnl7dNet?: number | null;
@@ -68,11 +71,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const configs = getCronSymbolConfigs();
   const symbols = configs.map((item) => item.symbol);
+  const nowMs = Date.now();
+  const hasForexCategory = configs.some((item) => item.category === 'forex');
+  const forexEventsState = hasForexCategory ? await ensureForexEventsState(nowMs) : null;
 
   const data: SummaryEntry[] = await Promise.all(
     configs.map(async (config) => {
       const symbol = config.symbol;
       const platform = config.platform;
+      let category: string | null | undefined = config.category;
 
       let pnl7d: number | null | undefined = null;
       let pnl7dWithOpen: number | null | undefined = null;
@@ -91,17 +98,45 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let avgWinPct: number | null | undefined = null;
       let avgLossPct: number | null | undefined = null;
       let lastNewsSource: string | null | undefined = config.newsSource;
+      let forexEventContext: any | null = null;
 
       try {
         const history = await loadDecisionHistory(symbol, 120, platform);
         const latest = history[0];
         if (latest) {
+          category =
+            typeof latest.category === 'string'
+              ? latest.category
+              : typeof latest.snapshot?.category === 'string'
+              ? latest.snapshot.category
+              : config.category;
           lastNewsSource =
             typeof latest.newsSource === 'string'
               ? latest.newsSource
               : typeof latest.snapshot?.newsSource === 'string'
               ? latest.snapshot.newsSource
               : config.newsSource;
+
+          if (category === 'forex' && forexEventsState) {
+            forexEventContext = buildForexEventContext({
+              symbol,
+              instrumentId:
+                typeof latest.instrumentId === 'string'
+                  ? latest.instrumentId
+                  : typeof latest.snapshot?.instrumentId === 'string'
+                  ? latest.snapshot.instrumentId
+                  : null,
+              state: forexEventsState,
+              nowMs,
+            });
+          }
+        }
+        if (!forexEventContext && category === 'forex' && forexEventsState) {
+          forexEventContext = buildForexEventContext({
+            symbol,
+            state: forexEventsState,
+            nowMs,
+          });
         }
         const leverageFromHistory = history
           .map((h) => {
@@ -233,8 +268,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       return {
         symbol,
+        category,
         lastPlatform: platform,
         lastNewsSource,
+        forexEventContext,
         pnl7d,
         pnl7dWithOpen,
         pnl7dNet,

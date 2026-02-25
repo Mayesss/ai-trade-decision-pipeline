@@ -111,12 +111,14 @@ npm run start
     - `symbol` (default `ETHUSDT`)
     - `platform` (`bitget|capital`, default `bitget`)
     - `newsSource` (`coindesk|marketaux`, default depends on platform: `bitget->coindesk`, `capital->marketaux`)
+    - `category` (optional metadata tag, e.g. `forex|crypto|index|commodity|equity`)
     - `dryRun` (`true|false`, default `false`)
     - `notional` (default `100`)
     - `decisionPolicy` (`strict|balanced`, default `strict`)
   - Timeframes are currently fixed from `lib/constants.ts`:
     - `MICRO_TIMEFRAME=1H`, `PRIMARY_TIMEFRAME=4H`, `MACRO_TIMEFRAME=1D`, `CONTEXT_TIMEFRAME=1W`
-  - Persists prompt, decision, execution result, and snapshot to KV (including `platform`, `newsSource`, and instrument identifier).
+  - Persists prompt, decision, execution result, and snapshot to KV (including `platform`, `newsSource`, `category`, and instrument identifier).
+  - For `category=forex`, a compact macro-event context block is attached to prompt/snapshot as advisory input only (non-blocking).
 - `GET /api/swing/evaluate`
   - Legacy alias: `GET /api/evaluate`
   - Query params: `symbol` (required), `limit` (clamped `5..30`, default `30`), `batchSize` (clamped `2..10`, default `5`), `includeBatchEvaluations` (`true|false`), `async` (`true|false`)

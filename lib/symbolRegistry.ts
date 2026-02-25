@@ -1,5 +1,6 @@
 import vercelConfig from '../vercel.json';
 import { resolveAnalysisPlatform, resolveNewsSource, type AnalysisPlatform, type NewsSource } from './platform';
+import { resolveSwingCategory } from './swing/category';
 
 type VercelCron = {
   path?: string;
@@ -10,6 +11,7 @@ export type CronSymbolConfig = {
   symbol: string;
   platform: AnalysisPlatform;
   newsSource: NewsSource;
+  category: string | null;
   decisionPolicy: string | null;
   schedule: string | null;
   path: string;
@@ -37,12 +39,18 @@ function parseCronAnalyzePath(path: string, schedule: string | null): CronSymbol
 
   const platform = resolveAnalysisPlatform(parsed.searchParams.get('platform'));
   const newsSource = resolveNewsSource(platform, parsed.searchParams.get('newsSource'));
+  const category = resolveSwingCategory({
+    category: parsed.searchParams.get('category'),
+    symbol,
+    platform,
+  });
   const decisionPolicyRaw = String(parsed.searchParams.get('decisionPolicy') || '').trim();
 
   return {
     symbol,
     platform,
     newsSource,
+    category,
     decisionPolicy: decisionPolicyRaw || null,
     schedule,
     path: rawPath,

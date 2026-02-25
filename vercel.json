@@ -7,10 +7,10 @@
     { "src": "/api/(.*)", "dest": "/api/$1" }
   ],
   "crons": [
-    { "path": "/api/swing/analyze?symbol=BTCUSDT&platform=bitget&newsSource=coindesk&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
-    { "path": "/api/swing/analyze?symbol=GOLD&platform=capital&newsSource=marketaux&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
-    { "path": "/api/swing/analyze?symbol=EURUSD&platform=capital&newsSource=marketaux&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
-    { "path": "/api/swing/analyze?symbol=AUDJPY&platform=capital&newsSource=marketaux&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
-    { "path": "/api/swing/analyze?symbol=US500&platform=capital&newsSource=marketaux&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" }
+    { "path": "/api/swing/analyze?symbol=BTCUSDT&platform=bitget&newsSource=coindesk&category=crypto&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
+    { "path": "/api/swing/analyze?symbol=GOLD&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
+    { "path": "/api/swing/analyze?symbol=EURUSD&platform=capital&newsSource=marketaux&category=forex&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
+    { "path": "/api/swing/analyze?symbol=AUDJPY&platform=capital&newsSource=marketaux&category=forex&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
+    { "path": "/api/swing/analyze?symbol=US500&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" }
   ]
 }

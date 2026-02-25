@@ -42,6 +42,28 @@ export type MomentumSignals = {
 
 export type DecisionPolicy = 'strict' | 'balanced';
 
+export type ForexEventContextForPrompt = {
+    source?: string;
+    pair?: string | null;
+    status?: 'clear' | 'active' | 'stale' | string;
+    staleData?: boolean;
+    reasonCodes?: string[];
+    activeEvents?: Array<{
+        timestamp_utc?: string;
+        currency?: string;
+        impact?: string;
+        event_name?: string;
+        minutesToEvent?: number;
+    }>;
+    nextEvents?: Array<{
+        timestamp_utc?: string;
+        currency?: string;
+        impact?: string;
+        event_name?: string;
+        minutesToEvent?: number;
+    }>;
+};
+
 export function resolveDecisionPolicy(value?: string | null): DecisionPolicy {
     const raw = String(value ?? process.env.AI_DECISION_POLICY ?? 'strict')
         .trim()
@@ -167,6 +189,7 @@ export async function buildPrompt(
     position_status: string = 'none',
     news_sentiment: string | null = null,
     news_headlines: string[] = [],
+    forex_event_context: ForexEventContextForPrompt | null = null,
     indicators: MultiTFIndicators,
     gates: any, // <--- Retain the gates object for the base gate checks
     position_context: PositionContext | null = null,
@@ -250,6 +273,10 @@ export async function buildPrompt(
     const newsHeadlinesBlock = normalizedHeadlines.length
         ? `- Latest ${normalizedHeadlines.length} News headlines: ${normalizedHeadlines.join(' | ')}\n`
         : '';
+    const forexEventContextBlock =
+        forex_event_context && typeof forex_event_context === 'object'
+            ? `- Forex macro events (advisory only; not hard-gated): ${JSON.stringify(forex_event_context)}\n`
+            : '';
 
     const recentActionsExists = Array.isArray(recentActions) && recentActions.length > 0;
     const actionsToShow = recentActionsExists ? Math.min(recentActions.length, 5) : 5;
@@ -811,7 +838,7 @@ DATA INPUTS (swing-relevant windows):
 - Volume / activity (lookback window = ${TRADE_WINDOW_MINUTES}m): ${vol_profile_str}
 - Price action (recent bars for structure context): ${priceTrendSeries}
 - Liquidity/spread snapshot (cost sanity check): ${liquidity_data}
-${newsSentimentBlock}${newsHeadlinesBlock}${recentActionsBlock}- Current position: ${position_status}
+${newsSentimentBlock}${newsHeadlinesBlock}${forexEventContextBlock}${recentActionsBlock}- Current position: ${position_status}
 ${positionContextBlock}- Technical (micro ${microTimeframe}, last 60 candles): ${indicators.micro}
 - Primary (${primaryTimeframe}, last 60 candles): ${indicators.primary?.summary ?? 'n/a'}
 - Macro (${macroTimeframe}, last 60 candles): ${indicators.macro}
