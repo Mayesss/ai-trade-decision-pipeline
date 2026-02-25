@@ -9,7 +9,8 @@
   "crons": [
     { "path": "/api/swing/analyze?symbol=BTCUSDT&platform=bitget&newsSource=coindesk&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
     { "path": "/api/swing/analyze?symbol=GOLD&platform=capital&newsSource=marketaux&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
-    { "path": "/api/swing/analyze?symbol=OIL_CRUDE&platform=capital&newsSource=marketaux&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
-    { "path": "/api/swing/analyze?symbol=COFFEEARABICA&platform=capital&newsSource=marketaux&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" }
+    { "path": "/api/swing/analyze?symbol=EURUSD&platform=capital&newsSource=marketaux&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
+    { "path": "/api/swing/analyze?symbol=AUDJPY&platform=capital&newsSource=marketaux&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
+    { "path": "/api/swing/analyze?symbol=US500&platform=capital&newsSource=marketaux&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" }
   ]
 }
