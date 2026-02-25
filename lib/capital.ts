@@ -975,6 +975,7 @@ export async function fetchCapitalRealizedRoi(_symbol: string, _hours = 24) {
 
 function buildSimpleMetrics(candles: any[]) {
     const closes = candles.map((c) => Number(c?.[4])).filter((v) => Number.isFinite(v));
+    const atr = computeATR(candles, 14);
     const last = closes.at(-1);
     const prev = closes.at(-2);
     const prev2 = closes.at(-3);
@@ -997,6 +998,7 @@ function buildSimpleMetrics(candles: any[]) {
         structure = 'bear';
     }
     return {
+        atr,
         structure,
         bos: false,
         bosDir: null as 'up' | 'down' | null,

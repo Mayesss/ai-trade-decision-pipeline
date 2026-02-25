@@ -139,6 +139,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (!requireAdminAccess(req, res)) return;
 
         const body = req.query ?? {};
+        const requestPath = String(req.url || '/api/analyze').split('?')[0] || '/api/analyze';
         const symbolParam = Array.isArray(body.symbol) ? body.symbol[0] : body.symbol;
         const symbol = String(symbolParam || 'ETHUSDT').toUpperCase();
         const platformParam = Array.isArray(body.platform) ? body.platform[0] : body.platform;
@@ -162,7 +163,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const dryRun = parseBoolParam(body.dryRun as string | string[] | undefined, false);
         const decisionPolicyParam = Array.isArray(body.decisionPolicy) ? body.decisionPolicy[0] : body.decisionPolicy;
         const decisionPolicy: DecisionPolicy = resolveDecisionPolicy(decisionPolicyParam as string | undefined);
+        const enforcePrimaryCloseGate = parseBoolParam(body.enforcePrimaryCloseGate as string | string[] | undefined, true);
+        const debugGates = parseBoolParam(body.debugGates as string | string[] | undefined, false);
         const sideSizeUSDT = Number(body.notional ?? DEFAULT_NOTIONAL_USDT);
+        const emitGateDebug = (stage: string, payload: Record<string, unknown>) => {
+            if (!debugGates) return;
+            try {
+                console.log(
+                    `[swing_gate_debug] ${JSON.stringify({
+                        symbol,
+                        platform,
+                        stage,
+                        route: requestPath,
+                        ...payload,
+                    })}`,
+                );
+            } catch {
+                console.log(`[swing_gate_debug] symbol=${symbol} stage=${stage}`);
+            }
+        };
 
         const fetchMarketBundle = platform === 'capital' ? fetchCapitalMarketBundle : fetchBitgetMarketBundle;
         const calculateMultiTFIndicators =
@@ -181,7 +200,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const positionInfo = await fetchPositionInfo(symbol);
         const positionOpen = positionInfo.status === 'open';
         const primaryCloseTime = isPrimaryCloseTime(timeFrame);
-        if (!positionOpen && !primaryCloseTime) {
+        const primaryCloseGateBlocked = !positionOpen && !primaryCloseTime;
+        if (primaryCloseGateBlocked && enforcePrimaryCloseGate) {
+            emitGateDebug('primary_close_gate_blocked', {
+                gate: 'PRIMARY_CLOSE_TIME',
+                primaryCloseTime,
+                positionOpen,
+                enforcePrimaryCloseGate,
+                timeFrame,
+            });
             return res.status(200).json({
                 symbol,
                 platform,
@@ -201,6 +228,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 execRes: { placed: false, orderId: null, clientOid: null, reason: 'not_primary_close' },
                 usedTape: false,
                 promptSkipped: true,
+                ...(debugGates
+                    ? {
+                          gateDebug: {
+                              blockedBy: 'PRIMARY_CLOSE_TIME',
+                              reason: 'flat_skip_until_primary_close',
+                              primaryCloseTime,
+                              enforcePrimaryCloseGate,
+                              positionOpen,
+                              timeFrame,
+                          },
+                      }
+                    : {}),
+            });
+        }
+        if (primaryCloseGateBlocked && !enforcePrimaryCloseGate) {
+            emitGateDebug('primary_close_gate_bypassed', {
+                gate: 'PRIMARY_CLOSE_TIME',
+                primaryCloseTime,
+                positionOpen,
+                enforcePrimaryCloseGate,
+                timeFrame,
             });
         }
 
@@ -254,6 +302,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         // 2) Analytics from light bundle (no tape)
         const analyticsLight = computeAnalytics({ ...bundleLight, trades: [] });
+        const atrFloorScale = platform === 'capital' && category === 'forex' ? 0.8 : 1;
 
         // 3) Gates on light data (orderbook/ATR based)
         const gatesOut = getGates({
@@ -264,10 +313,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             notionalUSDT: sideSizeUSDT,
             positionOpen,
             disableSymbolExclusions: platform === 'capital',
+            atrFloorScale,
         });
 
         // 3b) Short-circuit if no trade allowed and no open position
         if (gatesOut.preDecision && !positionOpen) {
+            emitGateDebug('base_gates_short_circuit', {
+                gate: 'BASE_GATES',
+                preDecisionReason: gatesOut.preDecision.reason,
+                preDecisionSummary: gatesOut.preDecision.summary,
+                gates: gatesOut.gates,
+                spreadBpsNow: safeNum(gatesOut.metrics?.spreadBpsNow, NaN),
+                expectedSlippageBps: safeNum(gatesOut.metrics?.expectedSlippageBps, NaN),
+                atrPctNow: safeNum(gatesOut.metrics?.atrPctNow, NaN),
+            });
             return res.status(200).json({
                 symbol,
                 platform,
@@ -281,6 +340,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 execRes: { placed: false, orderId: null, clientOid: null, reason: 'gates_short_circuit' },
                 gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
                 usedTape: false,
+                ...(debugGates
+                    ? {
+                          gateDebug: {
+                              blockedBy: 'BASE_GATES',
+                              reason: gatesOut.preDecision.reason,
+                              summary: gatesOut.preDecision.summary,
+                              gates: gatesOut.gates,
+                              metrics: gatesOut.metrics,
+                          },
+                      }
+                    : {}),
             });
         }
 
@@ -325,6 +395,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             });
 
         if (!positionOpen && calmMarket) {
+            emitGateDebug('calm_market_short_circuit', {
+                gate: 'MOMENTUM_FILTER',
+                reason: 'conditions_below_momentum_thresholds_or_no_recent_trades',
+                usedTape,
+                microExtensionInAtr: safeNum(momentumSignals.microExtensionInAtr, NaN),
+                primaryAtr: safeNum(momentumSignals.primaryAtr, NaN),
+                tradeCount: Array.isArray(bundle?.trades) ? bundle.trades.length : 0,
+            });
             return res.status(200).json({
                 symbol,
                 platform,
@@ -344,6 +422,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 execRes: { placed: false, orderId: null, clientOid: null, reason: 'calm_market' },
                 gates: { ...gatesOut.gates, metrics: gatesOut.metrics },
                 usedTape,
+                ...(debugGates
+                    ? {
+                          gateDebug: {
+                              blockedBy: 'MOMENTUM_FILTER',
+                              reason: 'conditions_below_momentum_thresholds_or_no_recent_trades',
+                              momentumSignals,
+                              usedTape,
+                          },
+                      }
+                    : {}),
             });
         }
 
@@ -450,6 +538,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                       notionalUSDT: execNotionalUSDT,
                       positionOpen,
                       disableSymbolExclusions: platform === 'capital',
+                      atrFloorScale,
                   })
                 : gatesOut;
 
@@ -458,6 +547,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             (decision.action === 'BUY' || decision.action === 'SELL') &&
             gatesForExec.preDecision
         ) {
+            emitGateDebug('entry_blocked_after_ai', {
+                gate: 'BASE_GATES_EXEC_NOTIONAL',
+                action: decision.action,
+                preDecisionReason: gatesForExec.preDecision.reason,
+                gates: gatesForExec.gates,
+                spreadBpsNow: safeNum(gatesForExec.metrics?.spreadBpsNow, NaN),
+                expectedSlippageBps: safeNum(gatesForExec.metrics?.expectedSlippageBps, NaN),
+                atrPctNow: safeNum(gatesForExec.metrics?.atrPctNow, NaN),
+            });
             return res.status(200).json({
                 symbol,
                 platform,
@@ -472,6 +570,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 gates: { ...gatesForExec.gates, metrics: gatesForExec.metrics },
                 forexEventContext: forexEventContext,
                 usedTape,
+                ...(debugGates
+                    ? {
+                          gateDebug: {
+                              blockedBy: 'BASE_GATES_EXEC_NOTIONAL',
+                              reason: gatesForExec.preDecision.reason,
+                              action: decision.action,
+                              gates: gatesForExec.gates,
+                              metrics: gatesForExec.metrics,
+                          },
+                      }
+                    : {}),
             });
         }
 
@@ -526,6 +635,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 micro: microTimeFrame,
             },
         });
+        emitGateDebug('decision_recorded', {
+            action: decision.action,
+            usedTape,
+            historyRecorded: true,
+        });
 
         // 9) Respond
         return res.status(200).json({
@@ -542,6 +656,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             gates: { ...gatesForExec.gates, metrics: gatesForExec.metrics },
             forexEventContext: forexEventContext,
             usedTape,
+            ...(debugGates
+                ? {
+                      gateDebug: {
+                          enforcePrimaryCloseGate,
+                          primaryCloseTime,
+                          primaryCloseGateBlocked,
+                          positionOpen,
+                          gateChecksCompleted: true,
+                      },
+                  }
+                : {}),
         });
     } catch (err: any) {
         console.error('Error in /api/analyze:', err);

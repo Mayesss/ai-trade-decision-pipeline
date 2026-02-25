@@ -36,6 +36,7 @@ export interface GatesInput {
   vol24hUSD?: number;
   medianSpreadBps24h?: number;
   disableSymbolExclusions?: boolean;
+  atrFloorScale?: number;
 }
 
 /** Output of the adaptive gate computation */
@@ -277,7 +278,7 @@ export function computeAdaptiveGates(input: GatesInput): GatesOutput {
   const {
     symbol, last, orderbook, notionalUSDT, atrAbsMacro, macroTimeframeMinutes,
     spreadBpsHistory, top5BidUsdHistory, atrPctHistory, slippageBpsHistory,
-    vol24hUSD, medianSpreadBps24h, regime, positionOpen, disableSymbolExclusions,
+    vol24hUSD, medianSpreadBps24h, regime, positionOpen, disableSymbolExclusions, atrFloorScale,
   } = input;
 
   const bids = toPriceSizeArrays(orderbook.bids);
@@ -320,7 +321,8 @@ export function computeAdaptiveGates(input: GatesInput): GatesOutput {
   const macroMinutes = Math.max(1, macroTimeframeMinutes || 60);
   const tfScale = Math.sqrt(macroMinutes / 60);
   const [atrFloorBase, atrCeilBase] = t.atrPctRange;
-  const [atrFloor, atrCeil] = [atrFloorBase * tfScale, atrCeilBase * tfScale];
+  const floorScale = Number.isFinite(atrFloorScale) && (atrFloorScale as number) > 0 ? Number(atrFloorScale) : 1;
+  const [atrFloor, atrCeil] = [atrFloorBase * tfScale * floorScale, atrCeilBase * tfScale];
   const atrLo = atrP25 ?? atrFloor;
   const atrHi = atrP85 ?? atrCeil;
   const atr_ok = Number.isFinite(atrPctNow) ? atrPctNow >= atrLo && atrPctNow <= atrHi : true;
@@ -403,9 +405,13 @@ export function parseRegimeFromIndicators(indicators: Pick<MultiTFIndicators, 'm
   return 'neutral';
 }
 
-export function parseAtr1hAbs(indicators: Pick<MultiTFIndicators, 'macro'>): number {
-  const m = indicators?.macro?.match(/ATR=([\d.]+)/);
-  return m ? Number(m[1]) : NaN;
+export function parseAtr1hAbs(indicators: Pick<MultiTFIndicators, 'macro' | 'macroTimeFrame' | 'metrics'>): number {
+  const macroTf = String(indicators?.macroTimeFrame || '').trim();
+  const metricAtrRaw = macroTf ? Number(indicators?.metrics?.[macroTf]?.atr) : NaN;
+  if (Number.isFinite(metricAtrRaw) && metricAtrRaw > 0) return metricAtrRaw;
+  const m = indicators?.macro?.match(/(?:^|,\s*)ATR=([-+]?\d*\.?\d+(?:e[-+]?\d+)?)/i);
+  const parsed = m ? Number(m[1]) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : NaN;
 }
 
 
@@ -420,6 +426,7 @@ export function getGates(args: {
   positionOpen: boolean;
   histories?: GatesHistories;
   disableSymbolExclusions?: boolean;
+  atrFloorScale?: number;
 }): {
   allowed_actions: ('BUY' | 'SELL' | 'HOLD' | 'CLOSE' | 'REVERSE')[];
   gates: {
@@ -440,7 +447,7 @@ export function getGates(args: {
     reason: string;
   };
 } {
-  const { symbol, bundle, analytics, indicators, notionalUSDT, positionOpen, histories, disableSymbolExclusions } = args;
+  const { symbol, bundle, analytics, indicators, notionalUSDT, positionOpen, histories, disableSymbolExclusions, atrFloorScale } = args;
 
   const last = analytics?.last || extractLastPrice(bundle, NaN);
   const atrAbsMacro = parseAtr1hAbs(indicators);
@@ -467,6 +474,7 @@ export function getGates(args: {
     vol24hUSD: histories?.vol24hUSD,
     medianSpreadBps24h: histories?.medianSpreadBps24h,
     disableSymbolExclusions: Boolean(disableSymbolExclusions),
+    atrFloorScale,
   });
 
   const gates = {

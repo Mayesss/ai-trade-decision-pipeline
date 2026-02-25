@@ -49,6 +49,7 @@ export type StructureState = 'bull' | 'bear' | 'range';
 export type ValueState = 'above_vah' | 'below_val' | 'inside_value';
 
 export interface TimeframeMetrics {
+    atr?: number;
     atrPctile?: number;
     rvol?: number;
     structure?: StructureState;
@@ -570,6 +571,7 @@ export async function calculateMultiTFIndicators(
             candleCount: candles.length,
             sr: computeSRLevels(candles, atr, tf),
             metrics: {
+                atr,
                 atrPctile,
                 rvol,
                 structure: structureMetrics.structure,

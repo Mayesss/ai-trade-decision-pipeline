@@ -107,13 +107,19 @@ export function computeMomentumSignals(params: {
     const macroSummary = indicators.macro || '';
     const microSummary = indicators.micro || '';
     const primarySummary = indicators.primary?.summary || '';
+    const primaryTf = String(primaryTimeframe || '').trim();
+    const microTf = String(indicators.microTimeFrame || '').trim();
+    const primaryMetrics = primaryTf ? indicators.metrics?.[primaryTf] : undefined;
+    const microMetrics = microTf ? indicators.metrics?.[microTf] : undefined;
 
     const ema50Macro = readIndicator('EMA50', macroSummary);
     const ema50Primary = readIndicator('EMA50', primarySummary);
     const ema20Primary = readIndicator('EMA20', primarySummary);
     const ema20Micro = readIndicator('EMA20', microSummary);
-    const atrPrimary = readIndicator('ATR', primarySummary);
-    const atrMicro = readIndicator('ATR', microSummary);
+    const atrPrimaryMetric = Number(primaryMetrics?.atr);
+    const atrMicroMetric = Number(microMetrics?.atr);
+    const atrPrimary = Number.isFinite(atrPrimaryMetric) && atrPrimaryMetric > 0 ? atrPrimaryMetric : readIndicator('ATR', primarySummary);
+    const atrMicro = Number.isFinite(atrMicroMetric) && atrMicroMetric > 0 ? atrMicroMetric : readIndicator('ATR', microSummary);
     const rsiPrimary = readIndicator('RSI', primarySummary);
     const rsiMicro = readIndicator('RSI', microSummary);
     const slopePrimary = readIndicator('slopeEMA21_10', primarySummary);
