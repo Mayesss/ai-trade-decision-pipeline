@@ -11,6 +11,9 @@
     { "path": "/api/swing/analyze?symbol=GOLD&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
     { "path": "/api/swing/analyze?symbol=EURUSD&platform=capital&newsSource=marketaux&category=forex&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
     { "path": "/api/swing/analyze?symbol=AUDJPY&platform=capital&newsSource=marketaux&category=forex&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
-    { "path": "/api/swing/analyze?symbol=US500&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" }
+    { "path": "/api/swing/analyze?symbol=US500&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
+    { "path": "/api/swing/analyze?symbol=OIL_CRUDE&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
+    { "path": "/api/swing/analyze?symbol=COFFEEARABICA&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
+    { "path": "/api/swing/analyze?symbol=TSLA&platform=capital&newsSource=marketaux&category=equity&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" }
   ]
 }
