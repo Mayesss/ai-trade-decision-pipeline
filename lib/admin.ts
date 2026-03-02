@@ -7,6 +7,8 @@ const UNAUTHENTICATED_CRON_ROUTES = new Set<string>([
   '/api/forex/cron/scan',
   '/api/forex/cron/regime',
   '/api/forex/events/refresh',
+  '/api/scalp/cron/execute',
+  '/api/scalp/cron/execute-hybrid',
 ]);
 
 function firstHeaderValue(value: string | string[] | undefined): string {

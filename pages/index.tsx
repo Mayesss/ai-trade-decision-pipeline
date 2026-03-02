@@ -211,6 +211,56 @@ type ForexSummaryResponse = {
   pairs?: ForexSummaryPair[];
 };
 
+type ScalpDashboardSymbol = {
+  symbol: string;
+  profile: string;
+  dayKey: string;
+  state: string | null;
+  updatedAtMs?: number | null;
+  lastRunAtMs?: number | null;
+  dryRunLast?: boolean | null;
+  tradesPlaced: number;
+  wins: number;
+  losses: number;
+  inTrade: boolean;
+  tradeSide: 'BUY' | 'SELL' | null;
+  dealReference: string | null;
+  reasonCodes?: string[];
+};
+
+type ScalpSummaryResponse = {
+  mode?: 'scalp';
+  generatedAtMs?: number;
+  dayKey?: string;
+  clockMode?: 'LONDON_TZ' | 'UTC_FIXED' | string;
+  policy?: {
+    version?: number;
+    defaultProfile?: string;
+    profiles?: string[];
+    symbolProfileCount?: number;
+  };
+  summary?: {
+    symbols?: number;
+    openCount?: number;
+    runCount?: number;
+    dryRunCount?: number;
+    totalTradesPlaced?: number;
+    stateCounts?: Record<string, number>;
+  };
+  symbols?: ScalpDashboardSymbol[];
+  latestExecutionBySymbol?: Record<string, Record<string, any>>;
+  journal?: Array<{
+    id?: string;
+    timestampMs?: number;
+    type?: string;
+    level?: 'info' | 'warn' | 'error' | string;
+    symbol?: string | null;
+    dayKey?: string | null;
+    reasonCodes?: string[];
+    payload?: Record<string, any>;
+  }>;
+};
+
 type DashboardDecisionResponse = {
   symbol: string;
   category?: string | null;
@@ -241,7 +291,7 @@ type EvaluateJobRecord = {
 type DashboardRangeKey = '7D' | '30D' | '6M';
 type ThemePreference = 'system' | 'light' | 'dark';
 type ResolvedTheme = 'light' | 'dark';
-type StrategyMode = 'swing' | 'forex';
+type StrategyMode = 'swing' | 'forex' | 'scalp';
 
 const CURRENCY_SYMBOL = '₮'; // Tether-style symbol
 const THEME_PREFERENCE_STORAGE_KEY = 'dashboard_theme_preference';
@@ -315,6 +365,8 @@ export default function Home() {
   const [dashboardRange, setDashboardRange] = useState<DashboardRangeKey>('7D');
   const [strategyMode, setStrategyMode] = useState<StrategyMode>('swing');
   const [forexSummary, setForexSummary] = useState<ForexSummaryResponse | null>(null);
+  const [scalpSummary, setScalpSummary] = useState<ScalpSummaryResponse | null>(null);
+  const [scalpExecuteSubmitting, setScalpExecuteSubmitting] = useState(false);
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
   const [livePriceConnected, setLivePriceConnected] = useState(false);
@@ -594,6 +646,31 @@ export default function Home() {
     }
   };
 
+  const loadScalpDashboard = async (opts: { silent?: boolean } = {}) => {
+    const silent = opts.silent === true;
+    if (!silent) setLoading(true);
+    try {
+      const summaryRes = await fetch('/api/scalp/dashboard/summary', {
+        headers: buildAdminHeaders(),
+        cache: 'no-store',
+      });
+      if (summaryRes.status === 401) {
+        handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+        throw new Error('Unauthorized');
+      }
+      if (!summaryRes.ok) {
+        throw new Error(`Failed to load scalp summary (${summaryRes.status})`);
+      }
+      const summaryJson: ScalpSummaryResponse = await summaryRes.json();
+      setScalpSummary(summaryJson);
+      setError(null);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load scalp dashboard');
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  };
+
   const runForexExecute = async () => {
     if (forexExecuteSubmitting) return;
     setForexExecuteSubmitting(true);
@@ -625,6 +702,40 @@ export default function Home() {
       setError(err?.message || 'Failed to run forex execute');
     } finally {
       setForexExecuteSubmitting(false);
+    }
+  };
+
+  const runScalpExecute = async () => {
+    if (scalpExecuteSubmitting) return;
+    setScalpExecuteSubmitting(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams({
+        all: 'true',
+        dryRun: 'true',
+        t: String(Date.now()),
+      });
+      const executeRes = await fetch(`/api/scalp/cron/execute-hybrid?${params.toString()}`, {
+        headers: buildAdminHeaders(),
+        cache: 'no-store',
+      });
+      if (executeRes.status === 401) {
+        handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+        throw new Error('Unauthorized');
+      }
+      if (!executeRes.ok) {
+        let message = `Failed to run scalp execute (${executeRes.status})`;
+        try {
+          const body = await executeRes.json();
+          if (body?.error) message = `${message}: ${String(body.error)}`;
+        } catch {}
+        throw new Error(message);
+      }
+      await loadScalpDashboard();
+    } catch (err: any) {
+      setError(err?.message || 'Failed to run scalp execute');
+    } finally {
+      setScalpExecuteSubmitting(false);
     }
   };
 
@@ -762,7 +873,7 @@ export default function Home() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const stored = window.localStorage.getItem(STRATEGY_MODE_STORAGE_KEY);
-    if (stored === 'forex' || stored === 'swing') {
+    if (stored === 'forex' || stored === 'swing' || stored === 'scalp') {
       setStrategyMode(stored);
     }
   }, []);
@@ -794,13 +905,21 @@ export default function Home() {
       loadForexDashboard();
       return;
     }
+    if (strategyMode === 'scalp') {
+      loadScalpDashboard();
+      return;
+    }
     loadDashboard();
   }, [adminGranted, dashboardRange, strategyMode]);
 
   useEffect(() => {
-    if (!adminGranted || strategyMode !== 'forex') return;
+    if (!adminGranted || (strategyMode !== 'forex' && strategyMode !== 'scalp')) return;
     const timerId = window.setInterval(() => {
-      void loadForexDashboard({ silent: true });
+      if (strategyMode === 'forex') {
+        void loadForexDashboard({ silent: true });
+        return;
+      }
+      void loadScalpDashboard({ silent: true });
     }, FOREX_LIVE_POLL_MS);
     return () => window.clearInterval(timerId);
   }, [adminGranted, strategyMode, adminSecret]);
@@ -1211,6 +1330,8 @@ export default function Home() {
   const isInitialLoading = loading && !symbols.length;
   const loadingLabel = strategyMode === 'forex'
     ? 'Loading forex dashboard...'
+    : strategyMode === 'scalp'
+    ? 'Loading scalp dashboard...'
     : !symbols.length
     ? 'Loading evaluations...'
     : activeSymbol
@@ -1395,6 +1516,17 @@ export default function Home() {
               >
                 Forex
               </button>
+              <button
+                type="button"
+                onClick={() => handleStrategyModeChange('scalp')}
+                className={`rounded-full px-3 py-1 text-[11px] font-semibold transition ${
+                  strategyMode === 'scalp'
+                    ? 'bg-sky-600 text-white shadow-sm'
+                    : 'text-slate-600 hover:bg-slate-200/70 hover:text-slate-900'
+                }`}
+              >
+                Scalp
+              </button>
             </div>
             {strategyMode === 'swing' && activeSymbol && currentEvalJob ? (
               <p className="mt-1 text-xs text-slate-500">
@@ -1433,8 +1565,27 @@ export default function Home() {
                 {forexExecuteSubmitting ? 'Running Execute…' : 'Run Execute (Live)'}
               </button>
             ) : null}
+            {strategyMode === 'scalp' ? (
+              <button
+                onClick={runScalpExecute}
+                disabled={!adminGranted || scalpExecuteSubmitting}
+                className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {scalpExecuteSubmitting ? 'Running Hybrid…' : 'Run Hybrid (Dry)'}
+              </button>
+            ) : null}
             <button
-              onClick={() => (strategyMode === 'forex' ? loadForexDashboard() : loadDashboard())}
+              onClick={() => {
+                if (strategyMode === 'forex') {
+                  loadForexDashboard();
+                  return;
+                }
+                if (strategyMode === 'scalp') {
+                  loadScalpDashboard();
+                  return;
+                }
+                loadDashboard();
+              }}
               disabled={!adminGranted}
               className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -1627,6 +1778,139 @@ export default function Home() {
                     </tbody>
                   </table>
                 </div>
+              </div>
+            )
+          ) : strategyMode === 'scalp' ? (
+            loading ? (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="animate-pulse space-y-3">
+                  <div className="h-4 w-44 rounded-full bg-slate-200" />
+                  <div className="h-3 w-64 rounded-full bg-slate-200" />
+                  <div className="h-40 rounded-xl border border-slate-200 bg-slate-50" />
+                </div>
+              </div>
+            ) : !scalpSummary?.symbols?.length ? (
+              <div className="flex items-center justify-center py-12 text-sm font-semibold text-slate-500">
+                No scalp data yet. Trigger `/api/scalp/cron/execute-hybrid?all=true&dryRun=true` then refresh.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="text-xs uppercase tracking-wide text-slate-500">Scalp Overview</div>
+                  <div className="mt-2 text-sm text-slate-700">
+                    Day key: {scalpSummary.dayKey || 'n/a'} · Clock:{' '}
+                    {scalpSummary.clockMode || 'n/a'} · Policy:{' '}
+                    {scalpSummary.policy?.defaultProfile || 'baseline'} (v{scalpSummary.policy?.version ?? 1})
+                  </div>
+                  <div className="mt-2 text-sm text-slate-700">
+                    Symbols: {scalpSummary.summary?.symbols ?? scalpSummary.symbols.length} · In trade:{' '}
+                    {scalpSummary.summary?.openCount ?? 0} · Ran today:{' '}
+                    {scalpSummary.summary?.runCount ?? 0} · Dry-run states:{' '}
+                    {scalpSummary.summary?.dryRunCount ?? 0} · Trades placed:{' '}
+                    {scalpSummary.summary?.totalTradesPlaced ?? 0}
+                  </div>
+                  {scalpSummary.summary?.stateCounts ? (
+                    <div className="mt-2 text-xs text-slate-600">
+                      States:{' '}
+                      {Object.entries(scalpSummary.summary.stateCounts)
+                        .map(([state, count]) => `${state}=${count}`)
+                        .join(' · ')}
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="overflow-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+                  <table className="min-w-full text-left text-sm">
+                    <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2">Symbol</th>
+                        <th className="px-3 py-2">Profile</th>
+                        <th className="px-3 py-2">State</th>
+                        <th className="px-3 py-2">In Trade</th>
+                        <th className="px-3 py-2">Trades (W/L)</th>
+                        <th className="px-3 py-2">Last Run</th>
+                        <th className="px-3 py-2">Mode</th>
+                        <th className="px-3 py-2">Reason Codes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(scalpSummary.symbols || []).map((row) => (
+                        <tr key={row.symbol} className="border-t border-slate-100">
+                          <td className="px-3 py-2 font-semibold text-slate-800">{row.symbol}</td>
+                          <td className="px-3 py-2 text-slate-700">{row.profile}</td>
+                          <td className="px-3 py-2 text-slate-700">{row.state || 'MISSING'}</td>
+                          <td className="px-3 py-2">
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                                row.inTrade ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-700'
+                              }`}
+                            >
+                              {row.inTrade ? row.tradeSide || 'YES' : 'NO'}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-slate-700">
+                            {row.tradesPlaced} ({row.wins}/{row.losses})
+                          </td>
+                          <td className="px-3 py-2 text-slate-700">
+                            {typeof row.lastRunAtMs === 'number' ? formatDecisionTime(row.lastRunAtMs) : '—'}
+                          </td>
+                          <td className="px-3 py-2 text-slate-700">
+                            {row.dryRunLast === null || row.dryRunLast === undefined
+                              ? '—'
+                              : row.dryRunLast
+                              ? 'dry'
+                              : 'live'}
+                          </td>
+                          <td className="px-3 py-2 text-slate-600">
+                            {(row.reasonCodes || []).slice(0, 3).join(', ') || '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {scalpSummary.journal?.length ? (
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="text-xs uppercase tracking-wide text-slate-500">Recent Scalp Journal</div>
+                    <div className="mt-3 max-h-64 overflow-auto rounded-xl border border-slate-200 bg-slate-50">
+                      <table className="min-w-full text-left text-xs">
+                        <thead className="bg-slate-100 text-[11px] uppercase tracking-wide text-slate-500">
+                          <tr>
+                            <th className="px-3 py-2">Time</th>
+                            <th className="px-3 py-2">Type</th>
+                            <th className="px-3 py-2">Level</th>
+                            <th className="px-3 py-2">Symbol</th>
+                            <th className="px-3 py-2">Codes</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {scalpSummary.journal.slice(0, 40).map((entry) => (
+                            <tr key={entry.id || `${entry.timestampMs}-${entry.symbol || 'na'}`} className="border-t border-slate-200">
+                              <td className="px-3 py-2 text-slate-700">
+                                {typeof entry.timestampMs === 'number' ? formatDecisionTime(entry.timestampMs) : '—'}
+                              </td>
+                              <td className="px-3 py-2 text-slate-700">{entry.type || '—'}</td>
+                              <td className="px-3 py-2 text-slate-700">{entry.level || '—'}</td>
+                              <td className="px-3 py-2 text-slate-700">{entry.symbol || '—'}</td>
+                              <td className="px-3 py-2 text-slate-600">
+                                {(entry.reasonCodes || []).slice(0, 4).join(', ') || '—'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="mt-3">
+                      <a
+                        href="/scalp-backtest"
+                        className="inline-flex rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800"
+                      >
+                        Open Scalp Backtest Lab
+                      </a>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             )
           ) : isInitialLoading ? (

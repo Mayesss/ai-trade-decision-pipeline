@@ -1,0 +1,11 @@
+{
+  "fixtures": [
+    {
+      "id": "eurusd_sample",
+      "file": "eurusd.sample.json",
+      "tier": "core",
+      "tags": ["synthetic", "fx", "m1"],
+      "description": "Synthetic EURUSD M1 sample with deterministic London raid patterns"
+    }
+  ]
+}

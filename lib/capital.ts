@@ -682,10 +682,6 @@ export async function resolveCapitalEpicRuntime(symbol: string): Promise<Resolve
     if (cached) return cached;
 
     const preferred = resolveCapitalEpic(ticker);
-    if (preferred.source === 'env' || preferred.source === 'default') {
-        resolvedEpicCache.set(ticker, preferred);
-        return preferred;
-    }
     const fallbackBase = baseFromTicker(ticker);
     const candidates = Array.from(
         new Set(
@@ -701,7 +697,12 @@ export async function resolveCapitalEpicRuntime(symbol: string): Promise<Resolve
             const result: ResolveEpicResult = {
                 ticker,
                 epic,
-                source: epic === preferred.epic ? preferred.source : 'discovered',
+                source:
+                    epic === preferred.epic
+                        ? preferred.source
+                        : preferred.source === 'passthrough'
+                          ? 'discovered'
+                          : preferred.source,
             };
             resolvedEpicCache.set(ticker, result);
             return result;
@@ -736,6 +737,206 @@ export async function fetchCapitalCandlesByEpic(epic: string, timeframe: string,
         true,
     );
     return parseCapitalCandles(payload);
+}
+
+function dedupeSortedCandles(candles: any[]): any[] {
+    const byTs = new Map<number, any>();
+    for (const row of candles) {
+        const ts = safeNumber(row?.[0], NaN);
+        if (!Number.isFinite(ts) || ts <= 0) continue;
+        byTs.set(ts, row);
+    }
+    return Array.from(byTs.values()).sort((a, b) => safeNumber(a?.[0], 0) - safeNumber(b?.[0], 0));
+}
+
+function toIsoMs(tsMs: number): string {
+    return new Date(tsMs).toISOString();
+}
+
+function toIsoNoMsUtc(tsMs: number): string {
+    return toIsoMs(tsMs).replace(/\.\d{3}Z$/, 'Z');
+}
+
+function toIsoNoMsNoZone(tsMs: number): string {
+    return toIsoNoMsUtc(tsMs).replace(/Z$/, '');
+}
+
+function logCapitalRangeDebug(
+    enabled: boolean | undefined,
+    event: string,
+    payload: Record<string, unknown>,
+) {
+    if (!enabled) return;
+    try {
+        console.info(`[capital-range] ${JSON.stringify({ event, ...payload })}`);
+    } catch {
+        console.info('[capital-range]', event, payload);
+    }
+}
+
+function isInvalidDateRangeParamError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err || '');
+    return msg.includes('error.invalid.from') || msg.includes('error.invalid.to');
+}
+
+function isPricesNotFoundError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err || '');
+    const lower = msg.toLowerCase();
+    if (lower.includes('error.prices.not-found')) return true;
+    if (lower.includes('prices.not-found')) return true;
+    if (lower.includes('prices not found')) return true;
+    return false;
+}
+
+async function fetchCapitalPriceRangeChunk(params: {
+    epic: string;
+    resolution: string;
+    fromMs: number;
+    toMs: number;
+    max: number;
+}): Promise<any> {
+    const candidates = [
+        { from: toIsoMs(params.fromMs), to: toIsoMs(params.toMs) },
+        { from: toIsoNoMsUtc(params.fromMs), to: toIsoNoMsUtc(params.toMs) },
+        { from: toIsoNoMsNoZone(params.fromMs), to: toIsoNoMsNoZone(params.toMs) },
+    ];
+
+    let lastErr: unknown = null;
+    for (const candidate of candidates) {
+        try {
+            return await capitalFetch(
+                'GET',
+                `/api/v1/prices/${encodeURIComponent(params.epic)}`,
+                {
+                    resolution: params.resolution,
+                    from: candidate.from,
+                    to: candidate.to,
+                    max: params.max,
+                },
+                undefined,
+                true,
+            );
+        } catch (err) {
+            lastErr = err;
+            if (!isInvalidDateRangeParamError(err)) {
+                throw err;
+            }
+        }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error('Capital date-range chunk fetch failed');
+}
+
+export async function fetchCapitalCandlesByEpicDateRange(
+    epic: string,
+    timeframe: string,
+    fromTsMs: number,
+    toTsMs: number,
+    opts: {
+        maxPerRequest?: number;
+        maxRequests?: number;
+        debug?: boolean;
+        debugLabel?: string;
+    } = {},
+): Promise<any[]> {
+    const startMs = Math.floor(Math.min(fromTsMs, toTsMs));
+    const endMs = Math.floor(Math.max(fromTsMs, toTsMs));
+    if (!(Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs)) {
+        return [];
+    }
+
+    const resolution = toCapitalResolution(timeframe);
+    const tfMinutes = Math.max(1, timeframeToMinutes(timeframe));
+    const tfMs = tfMinutes * 60_000;
+    const maxPerRequest = Math.max(20, Math.min(1000, Math.floor(opts.maxPerRequest ?? 1000)));
+    const maxRequests = Math.max(1, Math.min(300, Math.floor(opts.maxRequests ?? 180)));
+    const chunkBars = Math.max(20, maxPerRequest - 10);
+    const chunkSpanMs = chunkBars * tfMs;
+    const candles: any[] = [];
+    const debugLabel = String(opts.debugLabel || `${epic}:${timeframe}`);
+
+    let requestCount = 0;
+    let emptyChunkCount = 0;
+    let pricesNotFoundChunkCount = 0;
+    let cursorFromMs = startMs;
+    while (cursorFromMs <= endMs && requestCount < maxRequests) {
+        const cursorToMs = Math.min(endMs, cursorFromMs + chunkSpanMs);
+        requestCount += 1;
+        let chunk: any[] = [];
+        let chunkStatus: 'ok' | 'empty' | 'prices_not_found' = 'ok';
+        const chunkStartedAt = Date.now();
+        try {
+            const payload = await fetchCapitalPriceRangeChunk({
+                epic,
+                resolution,
+                fromMs: cursorFromMs,
+                toMs: cursorToMs,
+                max: maxPerRequest,
+            });
+            chunk = parseCapitalCandles(payload);
+        } catch (err) {
+            if (!isPricesNotFoundError(err)) {
+                throw err;
+            }
+            chunkStatus = 'prices_not_found';
+            pricesNotFoundChunkCount += 1;
+            chunk = [];
+        }
+
+        if (!chunk.length) {
+            if (chunkStatus === 'ok') {
+                chunkStatus = 'empty';
+                emptyChunkCount += 1;
+            }
+            logCapitalRangeDebug(opts.debug, 'chunk', {
+                label: debugLabel,
+                status: chunkStatus,
+                fromMs: cursorFromMs,
+                toMs: cursorToMs,
+                requestCount,
+                durationMs: Date.now() - chunkStartedAt,
+            });
+            cursorFromMs = cursorToMs + tfMs;
+            continue;
+        }
+
+        logCapitalRangeDebug(opts.debug, 'chunk', {
+            label: debugLabel,
+            status: 'ok',
+            fromMs: cursorFromMs,
+            toMs: cursorToMs,
+            candles: chunk.length,
+            requestCount,
+            durationMs: Date.now() - chunkStartedAt,
+        });
+        candles.push(...chunk);
+        const lastTsMs = safeNumber(chunk.at(-1)?.[0], NaN);
+        if (!(Number.isFinite(lastTsMs) && lastTsMs > cursorFromMs)) {
+            cursorFromMs = cursorToMs + tfMs;
+        } else {
+            cursorFromMs = lastTsMs + tfMs;
+        }
+    }
+
+    const deduped = dedupeSortedCandles(candles);
+    const minFilter = startMs - tfMs;
+    const maxFilter = endMs + tfMs;
+    const filtered = deduped.filter((row) => {
+        const ts = safeNumber(row?.[0], NaN);
+        return Number.isFinite(ts) && ts >= minFilter && ts <= maxFilter;
+    });
+    logCapitalRangeDebug(opts.debug, 'summary', {
+        label: debugLabel,
+        timeframe,
+        fromMs: startMs,
+        toMs: endMs,
+        requestCount,
+        emptyChunkCount,
+        pricesNotFoundChunkCount,
+        rawCandles: candles.length,
+        dedupedCandles: deduped.length,
+        filteredCandles: filtered.length,
+    });
+    return filtered;
 }
 
 export async function fetchCapitalMarketBundle(symbol: string, bundleTimeFrame: string, opts: BundleOpts = {}) {
@@ -1070,8 +1271,24 @@ async function openCapitalPosition(params: {
     sideSizeUSDT: number;
     leverage: number | null;
     clientOid: string;
+    orderType?: 'MARKET' | 'LIMIT';
+    limitLevel?: number | null;
+    stopLevel?: number | null;
+    profitLevel?: number | null;
+    forceOpen?: boolean;
 }) {
-    const { symbol, direction, sideSizeUSDT, leverage, clientOid } = params;
+    const {
+        symbol,
+        direction,
+        sideSizeUSDT,
+        leverage,
+        clientOid,
+        orderType = 'MARKET',
+        limitLevel = null,
+        stopLevel = null,
+        profitLevel = null,
+        forceOpen = true,
+    } = params;
     const resolved = await resolveCapitalEpicRuntime(symbol);
     const details = await loadMarketDetails(resolved.epic);
     const priceCandidate = Number.isFinite(details.bid as number) && Number.isFinite(details.offer as number)
@@ -1098,17 +1315,93 @@ async function openCapitalPosition(params: {
         epic: details.epic,
         direction,
         size,
-        orderType: 'MARKET',
+        orderType,
         currencyCode: 'USD',
-        forceOpen: true,
+        forceOpen,
         dealReference: clientOid,
     };
 
+    if (orderType === 'LIMIT') {
+        const level = safeNumber(limitLevel, NaN);
+        if (!(Number.isFinite(level) && level > 0)) {
+            throw new Error(`LIMIT entry requires valid level for ${symbol}`);
+        }
+        body.level = level;
+    }
+    if (Number.isFinite(safeNumber(stopLevel, NaN)) && Number(stopLevel) > 0) {
+        body.stopLevel = Number(stopLevel);
+    }
+    if (Number.isFinite(safeNumber(profitLevel, NaN)) && Number(profitLevel) > 0) {
+        body.profitLevel = Number(profitLevel);
+    }
     if (leverage) body.leverage = leverage;
 
     const payload = await capitalFetch('POST', '/api/v1/positions', {}, body, true);
     const orderId = payload?.dealId ?? payload?.dealReference ?? payload?.positionDealId ?? payload?.id ?? null;
     return { payload, orderId, size, epic: details.epic };
+}
+
+export async function executeCapitalScalpEntry(params: {
+    symbol: string;
+    direction: 'BUY' | 'SELL';
+    notionalUsd: number;
+    leverage?: number | null;
+    dryRun?: boolean;
+    clientOid?: string;
+    orderType?: 'MARKET' | 'LIMIT';
+    limitLevel?: number | null;
+    stopLevel?: number | null;
+    profitLevel?: number | null;
+}) {
+    const symbol = String(params.symbol || '').trim().toUpperCase();
+    const notionalUsd = Number(params.notionalUsd);
+    if (!(Number.isFinite(notionalUsd) && notionalUsd > 0)) {
+        throw new Error(`Invalid scalp entry notional for ${symbol}`);
+    }
+    const clientOid = String(params.clientOid || `cap-scl-${crypto.randomUUID()}`).slice(0, 64);
+    const leverage = clampLeverage(params.leverage ?? null);
+    const dryRun = params.dryRun ?? true;
+    const orderType = params.orderType === 'LIMIT' ? 'LIMIT' : 'MARKET';
+
+    if (dryRun) {
+        return {
+            placed: false,
+            dryRun: true,
+            orderId: null,
+            clientOid,
+            symbol,
+            direction: params.direction,
+            notionalUsd,
+            leverage,
+            orderType,
+        };
+    }
+
+    const opened = await openCapitalPosition({
+        symbol,
+        direction: params.direction,
+        sideSizeUSDT: notionalUsd,
+        leverage,
+        clientOid,
+        orderType,
+        limitLevel: params.limitLevel ?? null,
+        stopLevel: params.stopLevel ?? null,
+        profitLevel: params.profitLevel ?? null,
+        forceOpen: true,
+    });
+    return {
+        placed: true,
+        dryRun: false,
+        orderId: opened.orderId,
+        clientOid,
+        symbol,
+        direction: params.direction,
+        notionalUsd,
+        leverage,
+        orderType,
+        size: opened.size,
+        epic: opened.epic,
+    };
 }
 
 async function closeCapitalPosition(position: CapitalPositionRow, partialClosePct: number | null, clientOid: string) {

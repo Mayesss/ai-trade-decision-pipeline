@@ -14,6 +14,27 @@
     { "path": "/api/swing/analyze?symbol=US500&platform=capital&newsSource=marketaux&category=index&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
     { "path": "/api/swing/analyze?symbol=OIL_CRUDE&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
     { "path": "/api/swing/analyze?symbol=COFFEEARABICA&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
-    { "path": "/api/swing/analyze?symbol=TSLA&platform=capital&newsSource=marketaux&category=equity&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" }
+    { "path": "/api/swing/analyze?symbol=TSLA&platform=capital&newsSource=marketaux&category=equity&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=BTCUSDT&dryRun=true", "schedule": "*/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=ETHUSDT&dryRun=true", "schedule": "1-59/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=SOLUSDT&dryRun=true", "schedule": "2-59/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=XAUUSDT&dryRun=true", "schedule": "*/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=QQQUSDT&dryRun=true", "schedule": "1-59/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=AAPLUSDT&dryRun=true", "schedule": "2-59/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=TSLAUSDT&dryRun=true", "schedule": "*/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=MSFTUSDT&dryRun=true", "schedule": "1-59/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=NVDAUSDT&dryRun=true", "schedule": "2-59/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=SPXUSDT&dryRun=true", "schedule": "*/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=EURUSD&dryRun=true", "schedule": "1-59/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=GBPUSD&dryRun=true", "schedule": "2-59/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=USDJPY&dryRun=true", "schedule": "*/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=USDCHF&dryRun=true", "schedule": "1-59/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=USDCAD&dryRun=true", "schedule": "2-59/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=AUDUSD&dryRun=true", "schedule": "*/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=NZDUSD&dryRun=true", "schedule": "1-59/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=EURJPY&dryRun=true", "schedule": "2-59/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=GBPJPY&dryRun=true", "schedule": "*/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=EURGBP&dryRun=true", "schedule": "1-59/3 * * * *" },
+    { "path": "/api/scalp/cron/execute-hybrid?symbol=AUDJPY&dryRun=true", "schedule": "2-59/3 * * * *" }
   ]
 }

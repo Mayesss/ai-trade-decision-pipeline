@@ -22,8 +22,11 @@
     "start": "next start",
     "test:ts": "node --import tsx --test",
     "test:forex": "node --import tsx --test lib/forex/*.test.ts lib/forex/modules/*.test.ts lib/forex/replay/*.test.ts",
+    "test:scalp": "node --import tsx --test lib/scalp/replay/*.test.ts",
     "replay:run": "node --import tsx scripts/forex-replay.ts --input data/replay/eurusd.sample.json --outDir /tmp/forex-replay",
-    "replay:matrix": "node --import tsx scripts/forex-replay-matrix.ts --fixtures core --fixturesIndex data/replay/fixtures/index.json --outDir /tmp/forex-replay-matrix"
+    "replay:matrix": "node --import tsx scripts/forex-replay-matrix.ts --fixtures core --fixturesIndex data/replay/fixtures/index.json --outDir /tmp/forex-replay-matrix",
+    "replay:scalp": "node --import tsx scripts/scalp-replay.ts --input data/scalp-replay/fixtures/eurusd.sample.json --outDir /tmp/scalp-replay",
+    "replay:scalp:matrix": "node --import tsx scripts/scalp-replay-matrix.ts --fixtures core --fixturesIndex data/scalp-replay/fixtures/index.json --outDir /tmp/scalp-replay-matrix"
   },
   "devDependencies": {
     "baseline-browser-mapping": "^2.9.19",

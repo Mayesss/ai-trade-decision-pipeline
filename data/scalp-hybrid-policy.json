@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "updatedAt": "2026-03-02T00:00:00.000Z",
+  "notes": "Derived from 30-day scalp matrix (2026-01-30 -> 2026-03-01). Baseline is default; loose applied only where it improved netR.",
+  "lookbackWindow": {
+    "days": 30,
+    "fromIso": "2026-01-30T22:53:04.947Z",
+    "toIso": "2026-03-01T22:53:04.947Z"
+  },
+  "defaultProfile": "baseline",
+  "profiles": {
+    "baseline": {},
+    "strict": {
+      "risk": {
+        "maxTradesPerSymbolPerDay": 1,
+        "takeProfitR": 1.6
+      },
+      "sweep": {
+        "bufferPips": 0.55,
+        "rejectInsidePips": 0.2,
+        "rejectMaxBars": 6,
+        "minWickBodyRatio": 1.4
+      },
+      "confirm": {
+        "displacementBodyAtrMult": 0.2,
+        "displacementRangeAtrMult": 0.35,
+        "mssLookbackBars": 5,
+        "mssBreakBufferPips": 0.2
+      },
+      "ifvg": {
+        "minAtrMult": 0.15,
+        "maxAtrMult": 1.1,
+        "entryMode": "full_fill"
+      }
+    },
+    "loose": {
+      "risk": {
+        "maxTradesPerSymbolPerDay": 4,
+        "takeProfitR": 1.0
+      },
+      "sweep": {
+        "bufferPips": 0.05,
+        "rejectInsidePips": 0,
+        "rejectMaxBars": 24,
+        "minWickBodyRatio": 0.55
+      },
+      "confirm": {
+        "displacementBodyAtrMult": 0.02,
+        "displacementRangeAtrMult": 0.05,
+        "mssLookbackBars": 1,
+        "mssBreakBufferPips": 0
+      },
+      "ifvg": {
+        "minAtrMult": 0,
+        "maxAtrMult": 3,
+        "entryMode": "first_touch"
+      }
+    }
+  },
+  "symbolProfiles": {
+    "SPXUSDT": "loose",
+    "GBPJPY": "loose",
+    "USDCHF": "loose"
+  }
+}

@@ -5,7 +5,7 @@ Next.js app that runs an AI-driven trading loop for multiple platforms (Bitget +
 ---
 
 ## What’s Inside
-- **Next.js API routes** for analysis (`/api/analyze`), AI-driven evaluations (`/api/evaluate`), history/PNL enrichment (`/api/evaluations`, `/api/rest-history`, `/api/chart`), and health/debug helpers.
+- **Next.js API routes** for analysis (`/api/analyze`), AI-driven evaluations (`/api/evaluate`), history/PNL enrichment (`/api/evaluations`, `/api/rest-history`, `/api/chart`), forex/scalp cron execution, and health/debug helpers.
 - **Platform integrations**: Bitget (futures) and Capital.com (CFD/spot-style market access) with platform-selected market/execution paths.
 - **Signal stack**: multi-timeframe indicators (context/macro/primary/micro), support/resistance levels, momentum/extension gates, and provider-selected news sentiment (`coindesk` or `marketaux`).
 - **LLM prompts** built in `lib/ai.ts` with guardrails and momentum overrides; responses are persisted for replay and review.
@@ -80,6 +80,20 @@ MARKETAUX_API_KEY=...
 # FOREX_REENTRY_LOCK_MINUTES_REGIME_FLIP=10
 # FOREX_REENTRY_LOCK_MINUTES_EVENT_RISK=20
 
+# Scalp strategy (Capital-oriented)
+# SCALP_ENABLED=true
+# SCALP_DRY_RUN_DEFAULT=true
+# SCALP_LIVE_ENABLED=false              # keep false by default (fail-closed)
+# SCALP_DEFAULT_SYMBOL=EURUSD
+# SCALP_SESSION_CLOCK_MODE=LONDON_TZ    # or UTC_FIXED
+# SCALP_ENTRY_ORDER_TYPE=MARKET         # or LIMIT
+# SCALP_RISK_PER_TRADE_PCT=0.35
+# SCALP_REFERENCE_EQUITY_USD=10000
+# SCALP_MAX_TRADES_PER_SYMBOL_PER_DAY=2
+# SCALP_MAX_OPEN_POSITIONS_PER_SYMBOL=1
+# CANDLE_HISTORY_STORE=auto             # auto | file | kv
+# CANDLE_HISTORY_DIR=data/candles-history
+
 # KV (Upstash REST)
 KV_REST_API_URL=https://...
 KV_REST_API_TOKEN=...
@@ -150,7 +164,7 @@ npm run start
   - Body: `{ "secret": "..." }` to validate admin access when `ADMIN_ACCESS_SECRET` is set.
 - Admin protection policy
   - All API routes except `/api/admin-auth` require `x-admin-access-secret: <ADMIN_ACCESS_SECRET>` (or `Authorization: Bearer <ADMIN_ACCESS_SECRET>`) when `ADMIN_ACCESS_SECRET` is set.
-  - Unauthenticated exception for cron routes declared in `vercel.json`: `/api/swing/analyze`, `/api/forex/cron/execute`, `/api/forex/cron/scan`, `/api/forex/cron/regime`, `/api/forex/events/refresh`.
+  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/forex/cron/execute`, `/api/forex/cron/scan`, `/api/forex/cron/regime`, `/api/forex/events/refresh`, `/api/scalp/cron/execute`, `/api/scalp/cron/execute-hybrid`.
 - `GET /api/forex/events/refresh`
   - Pulls and normalizes ForexFactory economic calendar events into KV cache.
   - Query: `force=true|false` (default `false`) to bypass refresh interval throttling.
@@ -168,6 +182,32 @@ npm run start
   - Optional hold gate for stop invalidation exits via `FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES` (default `0`, recommended rollout `8` after dry-run checks).
   - Applies stricter spread-to-ATR gating around session transition windows.
   - Optional query: `notional=100` to override default notional for this run (default is `100`).
+- `GET /api/scalp/cron/execute?symbol=EURUSD&dryRun=true`
+  - Capital-oriented scalp strategy phase 3 loop: session windows, Asia range, sweep/rejection, displacement + MSS, iFVG retest, deterministic entry plan, broker reconciliation, and optional execution.
+  - `dryRun=true` simulates entries and persists state/journal without placing orders.
+  - Live entries require both `dryRun=false` and `SCALP_LIVE_ENABLED=true` (fail-closed by default).
+  - Supports optional `nowMs` query for deterministic dry-run replays of cron ticks.
+- `GET /api/scalp/cron/execute-hybrid?symbol=EURUSD&dryRun=true`
+  - Runs the same scalp execute cycle with per-symbol profile overrides from `data/scalp-hybrid-policy.json`.
+  - Defaults to `baseline` profile and applies `loose` only for symbols configured in `symbolProfiles`.
+  - Optional query: `profile=baseline|loose|strict` to force a profile for the request.
+- `GET /api/scalp/dashboard/summary`
+  - Scalp dashboard payload for UI tab (policy metadata, per-symbol state snapshot, aggregated counters, and recent journal tail).
+- `GET /api/scalp/fill-candles-history?symbol=EURUSD&timeframe=15m&direction=backfill&days=30&dryRun=true`
+  - Alias: `GET /api/scalp/candles-history/fill?...`
+  - Fills persisted candle history for backtesting (`data/candles-history` locally, KV when `CANDLE_HISTORY_STORE=kv` or KV is auto-detected).
+  - `direction=backfill` prepends older candles, `direction=forward` appends from the latest stored candle up to now.
+  - `dryRun=true` reports coverage/added counts without writing.
+- `GET /api/scalp/backtest/assets`
+  - Returns Capital backtest symbol choices (merged default map + optional env overrides), grouped by inferred category.
+- `POST /api/scalp/backtest/run`
+  - Runs offline scalp replay on fetched Capital candles with parameter overrides.
+  - Supports both:
+    - lookback mode (`lookbackPastValue`, `lookbackPastUnit`; optional `lookbackCandles` fallback)
+    - date-range mode (`fromTsMs`, `toTsMs`) with paginated historical fetch (safe-capped to 90 days per run).
+  - Optional history-source mode: `useStoredHistory=true` (plus optional `historyBackend=file|kv`, `historyTimeframe=15m`) to backtest from persisted candle cache before live Capital fetch fallback.
+  - Auto-falls back source resolution (`1m -> 5m -> 15m -> 1h`) if `1m` prices are unavailable for the symbol/range.
+  - Returns summary, trades, and chart payload (`candles`, `markers`, `tradeSegments`) for UI rendering.
 - `GET /api/forex/dashboard/summary`
   - Forex dashboard aggregate (eligibility, packet state, event gate status, execution recency).
 - `GET /api/forex/dashboard/packets`
@@ -253,6 +293,69 @@ npm run test:forex
   - score-audit dominance flags now trigger only on combined thresholds (`|rho| > 0.92` and top-k overlap `> 80%`)
   - curated fixture manifest lives at `data/replay/fixtures/index.json`
 
+## Scalp Replay Harness (Phase 4)
+- Purpose:
+  - Offline replay/backtest for the scalp state machine (Asia range -> sweep/rejection -> displacement + MSS -> iFVG retest -> deterministic entry/exit).
+  - Deterministic outputs for parameter tuning across fixtures with spread/slippage stress.
+- Safety:
+  - Replay runs are fully offline and never call Capital APIs.
+  - Use replay first for strategy iteration; only move to cron dry-runs after replay behavior is acceptable.
+- Usage:
+```bash
+# single fixture replay
+npm run replay:scalp
+
+# single fixture replay with parameter overrides
+node --import tsx scripts/scalp-replay.ts \
+  --input data/scalp-replay/fixtures/eurusd.sample.json \
+  --tpR 1.5 \
+  --riskPct 0.25 \
+  --sweepBufferPips 10 \
+  --mssLookbackBars 2 \
+  --ifvgEntryMode first_touch \
+  --outDir /tmp/scalp-replay
+
+# matrix replay on core fixtures (spread/slippage defaults)
+npm run replay:scalp:matrix
+
+# matrix with parameter grid
+node --import tsx scripts/scalp-replay-matrix.ts \
+  --fixtures core \
+  --tpRs 1,1.5,2 \
+  --riskPcts 0.2,0.35 \
+  --sweepBufferPips 8,12 \
+  --mssLookbackBars 2,3 \
+  --ifvgEntryModes first_touch,midline_touch \
+  --outDir /tmp/scalp-replay-matrix
+
+# matrix with explicit scenario file
+node --import tsx scripts/scalp-replay-matrix.ts \
+  --fixtures core \
+  --scenarioFile data/scalp-replay/scenarios/example.json \
+  --outDir /tmp/scalp-replay-matrix
+```
+- Optional scenario-file shape:
+```json
+{
+  "scenarios": [
+    {
+      "id": "base_fast",
+      "spreadFactor": 1.0,
+      "slippagePips": 0.15,
+      "tpR": 1.5,
+      "riskPct": 0.25,
+      "sweepBufferPips": 10,
+      "mssLookbackBars": 2,
+      "ifvgEntryMode": "first_touch"
+    }
+  ]
+}
+```
+- Artifacts:
+  - Single replay: `summary.json`, `config.json`, `trades.json`, `timeline.json`, `trades.csv`, `timeline.csv`
+  - Matrix replay: `matrix.summary.json`, `matrix.summary.csv`, `matrix.scenarios.csv`
+  - `matrix.summary.json` includes both per-run rows and scenario-level robustness summaries (`tradeCoveragePct`, `avgNetR`, `worstMaxDrawdownR`, `robustnessScore`).
+
 ## Data Flow
 1) **Analyze** selects provider by `platform`, pulls market data + selected news source, computes indicators/analytics, builds the prompt, calls the LLM, and (optionally) executes the trade.  
 2) The decision, snapshot, prompt, and execution result are appended to KV history.  
@@ -268,10 +371,14 @@ npm run test:forex
 ## Deployment
 - Vercel-ready (`vercel.json` routes `/api/*` to Next API handlers). Provide the same env vars in Vercel’s dashboard or your host of choice.
 - KV REST endpoint/token must be reachable from the runtime; Bitget/AI/News calls require outbound network access.
-- Current cron entries in `vercel.json` call `/api/swing/analyze?...&dryRun=false` hourly, which is live-trading mode.
+- Current cron entries include:
+  - `/api/swing/analyze?...&dryRun=false` hourly (live-trading mode).
+  - `/api/scalp/cron/execute-hybrid?symbol=...&dryRun=true` hourly per symbol (safe default for rollout).
 - Cron-declared routes are intentionally allowed without admin secret; non-cron routes remain protected when `ADMIN_ACCESS_SECRET` is set.
 
 ## Troubleshooting
 - `GET /api/debug-env-values` to confirm env vars are detected.
 - `GET /api/swing/bitget-ping` to verify Bitget credentials/connectivity.
 - Watch server logs for KV errors (missing `KV_REST_API_URL`/`KV_REST_API_TOKEN`) or provider failures (`COINDESK_API_KEY`, `MARKETAUX_API_KEY`, ForexFactory feed reachability, Capital credentials).
+- UI backtest lab: open `/scalp-backtest` after signing in with `ADMIN_ACCESS_SECRET`.
+  - Includes local preset save/load/delete and multi-run comparison overlays on one chart.

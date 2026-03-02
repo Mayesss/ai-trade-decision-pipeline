@@ -1,0 +1,24 @@
+{
+  "scenarios": [
+    {
+      "id": "base_fast",
+      "spreadFactor": 1.0,
+      "slippagePips": 0.15,
+      "tpR": 1.5,
+      "riskPct": 0.25,
+      "sweepBufferPips": 10,
+      "mssLookbackBars": 2,
+      "ifvgEntryMode": "first_touch"
+    },
+    {
+      "id": "conservative",
+      "spreadFactor": 1.5,
+      "slippagePips": 0.3,
+      "tpR": 1.2,
+      "riskPct": 0.2,
+      "sweepBufferPips": 12,
+      "mssLookbackBars": 3,
+      "ifvgEntryMode": "midline_touch"
+    }
+  ]
+}
