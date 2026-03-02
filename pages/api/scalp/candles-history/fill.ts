@@ -1,5 +1,5 @@
-import handler, { config } from '../fill-candles-history';
+export const config = { runtime: 'nodejs' };
 
-export { config };
+import handler from '../fill-candles-history';
+
 export default handler;
-
