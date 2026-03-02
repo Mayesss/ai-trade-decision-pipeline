@@ -19,11 +19,37 @@ export function timeframeMinutes(tf: ScalpBaseTimeframe | ScalpConfirmTimeframe)
     return 15;
 }
 
-function toCapitalTf(tf: ScalpBaseTimeframe | ScalpConfirmTimeframe): string {
-    if (tf === 'M1') return '1m';
-    if (tf === 'M3') return '3m';
-    if (tf === 'M5') return '5m';
-    return '15m';
+function toCapitalTfSpec(tf: ScalpBaseTimeframe | ScalpConfirmTimeframe): { apiTf: string; sourceMinutes: number } {
+    if (tf === 'M1') return { apiTf: '1m', sourceMinutes: 1 };
+    if (tf === 'M3') {
+        // Capital often rejects native 3m resolution; pull 1m and aggregate locally.
+        return { apiTf: '1m', sourceMinutes: 1 };
+    }
+    if (tf === 'M5') return { apiTf: '5m', sourceMinutes: 5 };
+    return { apiTf: '15m', sourceMinutes: 15 };
+}
+
+function aggregateCandles(candles: ScalpCandle[], tfMinutes: number): ScalpCandle[] {
+    const tfMs = Math.max(1, Math.floor(tfMinutes)) * 60_000;
+    const buckets = new Map<number, ScalpCandle[]>();
+    for (const candle of candles) {
+        const start = Math.floor(candle[0] / tfMs) * tfMs;
+        if (!buckets.has(start)) buckets.set(start, []);
+        buckets.get(start)!.push(candle);
+    }
+    const out: ScalpCandle[] = [];
+    const keys = Array.from(buckets.keys()).sort((a, b) => a - b);
+    for (const key of keys) {
+        const rows = (buckets.get(key) || []).slice().sort((a, b) => a[0] - b[0]);
+        if (!rows.length) continue;
+        const first = rows[0]!;
+        const last = rows[rows.length - 1]!;
+        const high = Math.max(...rows.map((r) => r[2]));
+        const low = Math.min(...rows.map((r) => r[3]));
+        const volume = rows.reduce((acc, row) => acc + Number(row[5] || 0), 0);
+        out.push([key, first[1], high, low, last[4], volume]);
+    }
+    return out;
 }
 
 function normalizeCandle(row: any): ScalpCandle | null {
@@ -90,8 +116,10 @@ export async function loadScalpMarketSnapshot(params: {
         maxCandles: params.maxCandlesPerRequest,
     });
 
-    const baseTfApi = toCapitalTf(params.baseTf);
-    const confirmTfApi = toCapitalTf(params.confirmTf);
+    const baseTfSpec = toCapitalTfSpec(params.baseTf);
+    const confirmTfSpec = toCapitalTfSpec(params.confirmTf);
+    const baseTfApi = baseTfSpec.apiTf;
+    const confirmTfApi = confirmTfSpec.apiTf;
 
     const [quote, baseRaw, confirmRaw] =
         baseTfApi === confirmTfApi
@@ -112,8 +140,15 @@ export async function loadScalpMarketSnapshot(params: {
             ? baseCandlesFull.slice()
             : sortCandles(confirmRaw.map(normalizeCandle).filter((c): c is ScalpCandle => Boolean(c)));
 
-    const baseCandles = onlyClosedCandles(baseCandlesFull, baseMinutes, params.nowMs);
-    const confirmCandles = onlyClosedCandles(confirmCandlesFull, confirmMinutes, params.nowMs);
+    const baseCandlesPreClose =
+        baseTfSpec.sourceMinutes === baseMinutes ? baseCandlesFull : aggregateCandles(baseCandlesFull, baseMinutes);
+    const confirmCandlesPreClose =
+        confirmTfSpec.sourceMinutes === confirmMinutes
+            ? confirmCandlesFull
+            : aggregateCandles(confirmCandlesFull, confirmMinutes);
+
+    const baseCandles = onlyClosedCandles(baseCandlesPreClose, baseMinutes, params.nowMs);
+    const confirmCandles = onlyClosedCandles(confirmCandlesPreClose, confirmMinutes, params.nowMs);
 
     const bid = Number.isFinite(toFinite(quote.bid)) ? toFinite(quote.bid) : null;
     const offer = Number.isFinite(toFinite(quote.offer)) ? toFinite(quote.offer) : null;

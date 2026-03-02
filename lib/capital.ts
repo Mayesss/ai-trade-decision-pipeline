@@ -221,10 +221,20 @@ function toCapitalResolution(tf: string): string {
     const value = Number(match[1]);
     const unit = match[2].toLowerCase();
     if (!Number.isFinite(value) || value <= 0) return 'HOUR';
-    if (unit === 'm') return value === 1 ? 'MINUTE' : `MINUTE_${value}`;
-    if (unit === 'h') return value === 1 ? 'HOUR' : `HOUR_${value}`;
-    if (unit === 'd') return value === 1 ? 'DAY' : `DAY_${value}`;
-    return value === 1 ? 'WEEK' : `WEEK_${value}`;
+    if (unit === 'm') {
+        if (value <= 1) return 'MINUTE';
+        if (value <= 5) return 'MINUTE_5';
+        if (value <= 15) return 'MINUTE_15';
+        if (value <= 30) return 'MINUTE_30';
+        return 'HOUR';
+    }
+    if (unit === 'h') {
+        if (value <= 1) return 'HOUR';
+        if (value <= 4) return 'HOUR_4';
+        return 'DAY';
+    }
+    if (unit === 'd') return 'DAY';
+    return 'WEEK';
 }
 
 function normalizeTimeframe(tf: string): string {
@@ -725,18 +735,36 @@ export async function resolveCapitalEpicRuntime(symbol: string): Promise<Resolve
 }
 
 export async function fetchCapitalCandlesByEpic(epic: string, timeframe: string, limit = 200): Promise<any[]> {
-    const resolution = toCapitalResolution(timeframe);
-    const payload = await capitalFetch(
-        'GET',
-        `/api/v1/prices/${encodeURIComponent(epic)}`,
-        {
-            resolution,
-            max: Math.max(20, Math.min(limit, 1000)),
-        },
-        undefined,
-        true,
-    );
-    return parseCapitalCandles(payload);
+    const preferredResolution = toCapitalResolution(timeframe);
+    const max = Math.max(20, Math.min(limit, 1000));
+    const fallbackResolutions = Array.from(new Set([preferredResolution, 'MINUTE', 'HOUR', 'DAY']));
+
+    let lastInvalidResolutionError: unknown = null;
+    for (const resolution of fallbackResolutions) {
+        try {
+            const payload = await capitalFetch(
+                'GET',
+                `/api/v1/prices/${encodeURIComponent(epic)}`,
+                {
+                    resolution,
+                    max,
+                },
+                undefined,
+                true,
+            );
+            return parseCapitalCandles(payload);
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (!message.includes('error.invalid.resolution')) {
+                throw err;
+            }
+            lastInvalidResolutionError = err;
+        }
+    }
+
+    throw lastInvalidResolutionError instanceof Error
+        ? lastInvalidResolutionError
+        : new Error(`Capital API error 400: error.invalid.resolution (epic=${epic}, timeframe=${timeframe})`);
 }
 
 function dedupeSortedCandles(candles: any[]): any[] {
