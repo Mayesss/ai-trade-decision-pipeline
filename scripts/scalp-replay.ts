@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { defaultScalpReplayConfig, normalizeScalpReplayInput, runScalpReplay } from '../lib/scalp/replay/harness';
 import { writeScalpReplayArtifacts } from '../lib/scalp/replay/io';
+import { getScalpStrategyById, listScalpStrategies, normalizeScalpStrategyId } from '../lib/scalp/strategies/registry';
 import type { ScalpReplayInputFile, ScalpReplayRuntimeConfig } from '../lib/scalp/replay/types';
 
 function usage() {
@@ -14,6 +15,7 @@ function usage() {
         'Options:',
         '  --outDir <path>             Output folder (default: /tmp/scalp-replay)',
         '  --symbol <ticker>           Override symbol',
+        `  --strategyId <id>           Strategy id (${listScalpStrategies().map((row) => row.id).join('|')})`,
         '  --executeMinutes <int>      Replay cron cadence in minutes',
         '  --spreadFactor <float>      Multiplier for input spread',
         '  --slippagePips <float>      Per-fill adverse slippage in pips',
@@ -71,10 +73,19 @@ function parseIfvgEntryMode(value: unknown): ScalpReplayRuntimeConfig['strategy'
     return undefined;
 }
 
+function parseStrategyId(value: unknown, fallback: string): string {
+    const normalized = normalizeScalpStrategyId(value);
+    if (!normalized) return fallback;
+    const strategy = getScalpStrategyById(normalized);
+    if (!strategy) return fallback;
+    return strategy.id;
+}
+
 function applyOverrides(config: ScalpReplayRuntimeConfig, args: Record<string, string | boolean>): ScalpReplayRuntimeConfig {
     const next: ScalpReplayRuntimeConfig = JSON.parse(JSON.stringify(config));
     const symbol = typeof args.symbol === 'string' ? String(args.symbol).trim().toUpperCase() : '';
     if (symbol) next.symbol = symbol;
+    next.strategyId = parseStrategyId(args.strategyId, next.strategyId);
 
     const executeMinutes = toNum(args.executeMinutes);
     if (executeMinutes !== undefined && executeMinutes > 0) next.executeMinutes = Math.floor(executeMinutes);
@@ -171,6 +182,7 @@ async function main() {
     await writeScalpReplayArtifacts(outDir, result);
 
     console.log(`Scalp replay complete for ${result.summary.symbol}`);
+    console.log(`Strategy: ${result.config.strategyId}`);
     console.log(`Window: ${result.summary.startTs ?? 'n/a'} -> ${result.summary.endTs ?? 'n/a'}`);
     console.log(
         `Trades: ${result.summary.trades} | WinRate: ${result.summary.winRatePct.toFixed(2)}% | AvgR: ${result.summary.avgR.toFixed(3)} | NetR: ${result.summary.netR.toFixed(3)}`,

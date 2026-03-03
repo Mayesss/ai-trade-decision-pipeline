@@ -6,7 +6,7 @@ import { requireAdminAccess } from '../../../../lib/admin';
 import { getScalpStrategyConfig } from '../../../../lib/scalp/config';
 import { runScalpExecuteCycle } from '../../../../lib/scalp/engine';
 import { getScalpHybridPolicy, listScalpHybridSymbols, resolveScalpHybridSelection } from '../../../../lib/scalp/hybridPolicy';
-import { loadScalpStrategyControlSnapshot } from '../../../../lib/scalp/store';
+import { loadScalpStrategyRuntimeSnapshot } from '../../../../lib/scalp/store';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean): boolean {
     if (value === undefined) return fallback;
@@ -48,11 +48,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const symbol = firstQueryValue(req.query.symbol);
     const forceProfile = firstQueryValue(req.query.profile);
     const runAll = parseBoolParam(req.query.all, false);
+    const strategyId = firstQueryValue(req.query.strategyId);
 
     try {
         const policy = getScalpHybridPolicy();
         const cfg = getScalpStrategyConfig();
-        const strategy = await loadScalpStrategyControlSnapshot(cfg.enabled);
+        const runtime = await loadScalpStrategyRuntimeSnapshot(cfg.enabled, strategyId);
+        const strategy = runtime.strategy;
 
         if (!strategy.enabled) {
             const reasonCodes = strategy.envEnabled
@@ -67,7 +69,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 requestedSymbol: symbol || null,
                 requestedAll: runAll,
                 forceProfile: forceProfile || null,
+                strategyId: strategy.strategyId,
+                defaultStrategyId: runtime.defaultStrategyId,
                 strategy,
+                strategies: runtime.strategies,
                 policy: {
                     version: policy.version,
                     defaultProfile: policy.defaultProfile,
@@ -105,6 +110,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     dryRun,
                     nowMs,
                     configOverride: selection.configOverride,
+                    strategyId: strategy.strategyId,
                 });
                 results.push({
                     ...cycle,
@@ -126,12 +132,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             requestedSymbol: symbol || null,
             requestedAll: runAll,
             forceProfile: forceProfile || null,
+            strategyId: strategy.strategyId,
+            defaultStrategyId: runtime.defaultStrategyId,
             policy: {
                 version: policy.version,
                 defaultProfile: policy.defaultProfile,
                 symbolProfileCount: Object.keys(policy.symbolProfiles).length,
             },
             strategy,
+            strategies: runtime.strategies,
             results,
             errors,
         });

@@ -240,6 +240,7 @@ export interface ScalpMarketSnapshot {
 export interface ScalpExecuteCycleResult {
     generatedAtMs: number;
     symbol: string;
+    strategyId: string;
     dayKey: string;
     dryRun: boolean;
     runLockAcquired: boolean;

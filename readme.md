@@ -188,12 +188,22 @@ npm run start
   - `dryRun=true` simulates entries and persists state/journal without placing orders.
   - Live entries require both `dryRun=false` and `SCALP_LIVE_ENABLED=true` (fail-closed by default).
   - Supports optional `nowMs` query for deterministic dry-run replays of cron ticks.
+  - Supports optional `strategyId=<id>` (for example `hss_ict_m15_m3`); if omitted, runtime default strategy is used.
 - `GET /api/scalp/cron/execute-hybrid?symbol=EURUSD&dryRun=true`
   - Runs the same scalp execute cycle with per-symbol profile overrides from `data/scalp-hybrid-policy.json`.
   - Defaults to `baseline` profile and applies `loose` only for symbols configured in `symbolProfiles`.
   - Optional query: `profile=baseline|loose|strict` to force a profile for the request.
+  - Optional query: `strategyId=<id>` to run the selected registered scalp strategy.
 - `GET /api/scalp/dashboard/summary`
   - Scalp dashboard payload for UI tab (policy metadata, per-symbol state snapshot, aggregated counters, and recent journal tail).
+  - Optional query: `strategyId=<id>` to view state/journal for a specific strategy.
+- `GET /api/scalp/strategy/control`
+  - Returns runtime scalp strategy controls: selected strategy, default strategy, and per-strategy enabled state.
+- `POST /api/scalp/strategy/control`
+  - Updates runtime scalp strategy controls in KV.
+  - Supported fields:
+    - `strategyId` + `enabled` (toggle one strategy on/off)
+    - `defaultStrategyId` (set default strategy used when `strategyId` is omitted)
 - `GET /api/scalp/fill-candles-history?symbol=EURUSD&timeframe=15m&direction=backfill&days=30&dryRun=true`
   - Alias: `GET /api/scalp/candles-history/fill?...`
   - Fills persisted candle history for backtesting (`data/candles-history` locally, KV when `CANDLE_HISTORY_STORE=kv` or KV is auto-detected).
@@ -204,6 +214,8 @@ npm run start
 - `POST /api/scalp/backtest/run`
   - Runs offline scalp replay on fetched Capital candles with parameter overrides.
   - Backtest runtime enforces the same TF pair as live: `M15` base and `M3` confirmation.
+  - Supports optional `strategyId` to select a registered scalp strategy (default: runtime default strategy).
+  - `/scalp-backtest` UI exposes a strategy selector sourced from `/api/scalp/strategy/control` and sends the selected `strategyId` on each run.
   - Supports both:
     - lookback mode (`lookbackPastValue`, `lookbackPastUnit`; optional `lookbackCandles` fallback)
     - date-range mode (`fromTsMs`, `toTsMs`) with paginated historical fetch (safe-capped to 90 days per run).
@@ -316,6 +328,7 @@ npm run replay:scalp
 # single fixture replay with parameter overrides
 node --import tsx scripts/scalp-replay.ts \
   --input data/scalp-replay/fixtures/eurusd.sample.json \
+  --strategyId hss_ict_m15_m3_guarded \
   --tpR 1.5 \
   --riskPct 0.25 \
   --sweepBufferPips 10 \
@@ -329,6 +342,7 @@ npm run replay:scalp:matrix
 # matrix with parameter grid
 node --import tsx scripts/scalp-replay-matrix.ts \
   --fixtures core \
+  --strategyIds hss_ict_m15_m3,hss_ict_m15_m3_guarded \
   --tpRs 1,1.5,2 \
   --riskPcts 0.2,0.35 \
   --sweepBufferPips 8,12 \
@@ -348,6 +362,7 @@ node --import tsx scripts/scalp-replay-matrix.ts \
   "scenarios": [
     {
       "id": "base_fast",
+      "strategyId": "hss_ict_m15_m3",
       "spreadFactor": 1.0,
       "slippagePips": 0.15,
       "tpR": 1.5,

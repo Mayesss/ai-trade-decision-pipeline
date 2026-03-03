@@ -3,10 +3,12 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { defaultScalpReplayConfig, normalizeScalpReplayInput, runScalpReplay } from '../lib/scalp/replay/harness';
+import { getScalpStrategyById, listScalpStrategies, normalizeScalpStrategyId } from '../lib/scalp/strategies/registry';
 import type { ScalpReplayInputFile, ScalpReplayRuntimeConfig } from '../lib/scalp/replay/types';
 
 type Scenario = {
     id: string;
+    strategyId: string;
     spreadFactor: number;
     slippagePips: number;
     tpR: number;
@@ -36,6 +38,7 @@ type FixtureManifest = {
 type RunSummary = {
     fixtureId: string;
     scenarioId: string;
+    strategyId: string;
     spreadFactor: number;
     slippagePips: number;
     tpR: number;
@@ -55,6 +58,7 @@ type RunSummary = {
 
 type ScenarioAggregate = {
     scenarioId: string;
+    strategyId: string;
     spreadFactor: number;
     slippagePips: number;
     tpR: number;
@@ -95,6 +99,7 @@ function usage() {
         '  --sweepBufferPips <csv>        Sweep buffer in pips (default: config value)',
         '  --mssLookbackBars <csv>        MSS lookback bars (default: config value)',
         '  --ifvgEntryModes <csv>         first_touch|midline_touch|full_fill',
+        `  --strategyIds <csv>            Registered strategy ids (default: ${listScalpStrategies().map((row) => row.id).join(',')})`,
         '  --matrixProgressEveryRuns <int> Matrix progress log interval in completed runs (default: 25)',
         '  --matrixProgressMinIntervalMs <int> Matrix progress minimum interval ms (default: 8000)',
         '  --help',
@@ -167,6 +172,23 @@ function parseIfvgEntryModeCsv(
     return parsed.length ? parsed : fallback.slice();
 }
 
+function parseStrategyId(value: unknown): string | null {
+    const normalized = normalizeScalpStrategyId(value);
+    if (!normalized) return null;
+    const strategy = getScalpStrategyById(normalized);
+    return strategy?.id || null;
+}
+
+function parseStrategyIdsCsv(value: unknown, fallback: string[]): string[] {
+    if (typeof value !== 'string' || !value.trim()) return fallback.slice();
+    const parsed = value
+        .split(',')
+        .map((raw) => parseStrategyId(raw))
+        .filter((row): row is string => Boolean(row));
+    if (!parsed.length) return fallback.slice();
+    return Array.from(new Set(parsed));
+}
+
 async function loadFixtureInput(filePath: string): Promise<ReturnType<typeof normalizeScalpReplayInput>> {
     const raw = await readFile(filePath, 'utf8');
     return normalizeScalpReplayInput(JSON.parse(raw) as ScalpReplayInputFile);
@@ -190,6 +212,7 @@ function selectFixtures(manifest: FixtureManifest, selector: string): FixtureMan
 }
 
 function buildScenarios(params: {
+    strategyIds: string[];
     spreadFactors: number[];
     slippagePips: number[];
     tpRs: number[];
@@ -200,33 +223,37 @@ function buildScenarios(params: {
 }): Scenario[] {
     const out: Scenario[] = [];
     let idx = 0;
-    for (const spread of params.spreadFactors) {
-        for (const slip of params.slippagePips) {
-            for (const tpR of params.tpRs) {
-                for (const riskPct of params.riskPcts) {
-                    for (const sweepBufferPips of params.sweepBufferPips) {
-                        for (const mssLookbackBars of params.mssLookbackBars) {
-                            for (const ifvgEntryMode of params.ifvgEntryModes) {
-                                out.push({
-                                    id: [
-                                        `S${idx.toString().padStart(2, '0')}`,
-                                        `SPR${spread.toFixed(2)}`,
-                                        `SLP${slip.toFixed(2)}`,
-                                        `TP${tpR.toFixed(2)}`,
-                                        `RISK${riskPct.toFixed(2)}`,
-                                        `SWP${sweepBufferPips.toFixed(2)}`,
-                                        `MSS${mssLookbackBars}`,
-                                        `IFVG${ifvgEntryMode.toUpperCase()}`,
-                                    ].join('_'),
-                                    spreadFactor: spread,
-                                    slippagePips: slip,
-                                    tpR,
-                                    riskPct,
-                                    sweepBufferPips,
-                                    mssLookbackBars,
-                                    ifvgEntryMode,
-                                });
-                                idx += 1;
+    for (const strategyId of params.strategyIds) {
+        for (const spread of params.spreadFactors) {
+            for (const slip of params.slippagePips) {
+                for (const tpR of params.tpRs) {
+                    for (const riskPct of params.riskPcts) {
+                        for (const sweepBufferPips of params.sweepBufferPips) {
+                            for (const mssLookbackBars of params.mssLookbackBars) {
+                                for (const ifvgEntryMode of params.ifvgEntryModes) {
+                                    out.push({
+                                        id: [
+                                            `S${idx.toString().padStart(2, '0')}`,
+                                            `STRAT${strategyId.toUpperCase()}`,
+                                            `SPR${spread.toFixed(2)}`,
+                                            `SLP${slip.toFixed(2)}`,
+                                            `TP${tpR.toFixed(2)}`,
+                                            `RISK${riskPct.toFixed(2)}`,
+                                            `SWP${sweepBufferPips.toFixed(2)}`,
+                                            `MSS${mssLookbackBars}`,
+                                            `IFVG${ifvgEntryMode.toUpperCase()}`,
+                                        ].join('_'),
+                                        strategyId,
+                                        spreadFactor: spread,
+                                        slippagePips: slip,
+                                        tpR,
+                                        riskPct,
+                                        sweepBufferPips,
+                                        mssLookbackBars,
+                                        ifvgEntryMode,
+                                    });
+                                    idx += 1;
+                                }
                             }
                         }
                     }
@@ -242,6 +269,7 @@ function toCsv(rows: RunSummary[]): string {
     const headers = [
         'fixtureId',
         'scenarioId',
+        'strategyId',
         'spreadFactor',
         'slippagePips',
         'tpR',
@@ -264,6 +292,7 @@ function toCsv(rows: RunSummary[]): string {
             [
                 row.fixtureId,
                 row.scenarioId,
+                row.strategyId,
                 row.spreadFactor.toFixed(4),
                 row.slippagePips.toFixed(4),
                 row.tpR.toFixed(4),
@@ -288,6 +317,7 @@ function toCsv(rows: RunSummary[]): string {
 function toAggregateCsv(rows: ScenarioAggregate[]): string {
     const headers = [
         'scenarioId',
+        'strategyId',
         'spreadFactor',
         'slippagePips',
         'tpR',
@@ -313,6 +343,7 @@ function toAggregateCsv(rows: ScenarioAggregate[]): string {
         lines.push(
             [
                 row.scenarioId,
+                row.strategyId,
                 row.spreadFactor.toFixed(4),
                 row.slippagePips.toFixed(4),
                 row.tpR.toFixed(4),
@@ -365,6 +396,7 @@ function aggregateScenarios(runs: RunSummary[], fixtureCount: number): ScenarioA
 
         aggregates.push({
             scenarioId,
+            strategyId: sample.strategyId,
             spreadFactor: sample.spreadFactor,
             slippagePips: sample.slippagePips,
             tpR: sample.tpR,
@@ -395,6 +427,7 @@ function sanitizeScenarioFromFile(params: {
     idx: number;
     fallback: Omit<Scenario, 'id'>;
 }): Scenario {
+    const strategyId = parseStrategyId(params.entry.strategyId);
     const spreadFactor = toNum(params.entry.spreadFactor);
     const slippagePips = toNum(params.entry.slippagePips);
     const tpR = toNum(params.entry.tpR);
@@ -406,6 +439,7 @@ function sanitizeScenarioFromFile(params: {
 
     return {
         id,
+        strategyId: strategyId || params.fallback.strategyId,
         spreadFactor: spreadFactor !== undefined && spreadFactor > 0 ? spreadFactor : params.fallback.spreadFactor,
         slippagePips: slippagePips !== undefined && slippagePips >= 0 ? slippagePips : params.fallback.slippagePips,
         tpR: tpR !== undefined && tpR > 0 ? tpR : params.fallback.tpR,
@@ -463,7 +497,10 @@ async function main() {
     if (!fixtureInputs.length) throw new Error('No fixture inputs available');
 
     const seedConfig = defaultScalpReplayConfig(fixtureInputs[0]!.input.symbol);
+    const registeredStrategyIds = listScalpStrategies().map((row) => row.id);
+    const strategyIds = parseStrategyIdsCsv(args.strategyIds, registeredStrategyIds);
     const fallbackScenario: Omit<Scenario, 'id'> = {
+        strategyId: seedConfig.strategyId,
         spreadFactor: 1,
         slippagePips: seedConfig.slippagePips,
         tpR: seedConfig.strategy.takeProfitR,
@@ -480,6 +517,7 @@ async function main() {
                   fallback: fallbackScenario,
               })
             : buildScenarios({
+                  strategyIds,
                   spreadFactors: parsePositiveCsv(args.spreadFactors, [1, 1.5, 2]),
                   slippagePips: parseNonNegativeCsv(args.slippagePips, [0, 0.15, 0.3]),
                   tpRs: parsePositiveCsv(args.tpRs, [fallbackScenario.tpR]),
@@ -518,13 +556,16 @@ async function main() {
         lastProgressAtMs = now;
     };
 
-    console.log(`Matrix replay started | fixtures=${fixtureInputs.length} scenarios=${scenarios.length} plannedRuns=${totalPlannedRuns}`);
+    console.log(
+        `Matrix replay started | fixtures=${fixtureInputs.length} scenarios=${scenarios.length} strategyIds=${Array.from(new Set(scenarios.map((row) => row.strategyId))).join(',')} plannedRuns=${totalPlannedRuns}`,
+    );
 
     for (const fixture of fixtureInputs) {
         for (const scenario of scenarios) {
             const baseConfig = defaultScalpReplayConfig(fixture.input.symbol);
             const config: ScalpReplayRuntimeConfig = {
                 ...baseConfig,
+                strategyId: scenario.strategyId,
                 strategy: {
                     ...baseConfig.strategy,
                     takeProfitR: scenario.tpR,
@@ -547,6 +588,7 @@ async function main() {
             runs.push({
                 fixtureId: fixture.id,
                 scenarioId: scenario.id,
+                strategyId: scenario.strategyId,
                 spreadFactor: scenario.spreadFactor,
                 slippagePips: scenario.slippagePips,
                 tpR: scenario.tpR,
@@ -588,6 +630,7 @@ async function main() {
         worstScenario: worstAggregate,
         topRobustScenarios: aggregates.slice(0, 5).map((row) => ({
             scenarioId: row.scenarioId,
+            strategyId: row.strategyId,
             robustnessScore: row.robustnessScore,
             tradeCoveragePct: row.tradeCoveragePct,
             avgNetR: row.avgNetR,
@@ -602,14 +645,18 @@ async function main() {
 
     console.log(`Scalp replay matrix complete | fixtures=${fixtureInputs.length} scenarios=${scenarios.length} runs=${runs.length}`);
     if (overview.bestRun) {
-        console.log(`Best run: fixture=${overview.bestRun.fixtureId} scenario=${overview.bestRun.scenarioId} netR=${overview.bestRun.netR.toFixed(3)}`);
+        console.log(
+            `Best run: fixture=${overview.bestRun.fixtureId} scenario=${overview.bestRun.scenarioId} strategy=${overview.bestRun.strategyId} netR=${overview.bestRun.netR.toFixed(3)}`,
+        );
     }
     if (overview.worstRun) {
-        console.log(`Worst run: fixture=${overview.worstRun.fixtureId} scenario=${overview.worstRun.scenarioId} netR=${overview.worstRun.netR.toFixed(3)}`);
+        console.log(
+            `Worst run: fixture=${overview.worstRun.fixtureId} scenario=${overview.worstRun.scenarioId} strategy=${overview.worstRun.strategyId} netR=${overview.worstRun.netR.toFixed(3)}`,
+        );
     }
     if (overview.bestScenario) {
         console.log(
-            `Top robust scenario: ${overview.bestScenario.scenarioId} score=${overview.bestScenario.robustnessScore.toFixed(3)} coverage=${overview.bestScenario.tradeCoveragePct.toFixed(1)}%`,
+            `Top robust scenario: ${overview.bestScenario.scenarioId} strategy=${overview.bestScenario.strategyId} score=${overview.bestScenario.robustnessScore.toFixed(3)} coverage=${overview.bestScenario.tradeCoveragePct.toFixed(1)}%`,
         );
     }
     console.log(`Artifacts: ${outDir}`);

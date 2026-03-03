@@ -5,8 +5,9 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { requireAdminAccess } from '../../../../lib/admin';
 import { getScalpStrategyConfig } from '../../../../lib/scalp/config';
 import { getScalpHybridPolicy, listScalpHybridSymbols, resolveScalpHybridSelection } from '../../../../lib/scalp/hybridPolicy';
+import { normalizeScalpStrategyId } from '../../../../lib/scalp/strategies/registry';
 import { deriveScalpDayKey } from '../../../../lib/scalp/stateMachine';
-import { loadScalpJournal, loadScalpSessionState, loadScalpStrategyControlSnapshot } from '../../../../lib/scalp/store';
+import { loadScalpJournal, loadScalpSessionState, loadScalpStrategyRuntimeSnapshot } from '../../../../lib/scalp/store';
 import type { ScalpJournalEntry } from '../../../../lib/scalp/types';
 
 type SymbolSnapshot = {
@@ -31,6 +32,18 @@ function parseLimit(value: string | string[] | undefined, fallback: number): num
   const n = Number(first);
   if (!Number.isFinite(n) || n <= 0) return fallback;
   return Math.max(1, Math.min(300, Math.floor(n)));
+}
+
+function firstQueryValue(value: string | string[] | undefined): string | undefined {
+  if (typeof value === 'string') return value.trim() || undefined;
+  if (Array.isArray(value) && value.length > 0) return String(value[0] || '').trim() || undefined;
+  return undefined;
+}
+
+function journalStrategyId(entry: ScalpJournalEntry): string | null {
+  const payload = entry.payload && typeof entry.payload === 'object' ? (entry.payload as Record<string, unknown>) : {};
+  const normalized = normalizeScalpStrategyId(payload.strategyId);
+  return normalized || null;
 }
 
 function compactJournalEntry(entry: ScalpJournalEntry): Record<string, unknown> {
@@ -62,16 +75,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const nowMs = Date.now();
     const journalLimit = parseLimit(req.query.journalLimit, 80);
+    const requestedStrategyId = firstQueryValue(req.query.strategyId);
     const policy = getScalpHybridPolicy();
     const cfg = getScalpStrategyConfig();
-    const strategy = await loadScalpStrategyControlSnapshot(cfg.enabled);
+    const runtime = await loadScalpStrategyRuntimeSnapshot(cfg.enabled, requestedStrategyId);
+    const strategy = runtime.strategy;
     const dayKey = deriveScalpDayKey(nowMs, cfg.sessions.clockMode);
     const symbols = listScalpHybridSymbols(policy);
 
     const rows: SymbolSnapshot[] = [];
     for (const symbol of symbols) {
       const selection = resolveScalpHybridSelection(symbol, policy);
-      const state = await loadScalpSessionState(selection.symbol, dayKey);
+      const state = await loadScalpSessionState(selection.symbol, dayKey, strategy.strategyId);
       rows.push({
         symbol: selection.symbol,
         profile: selection.profile,
@@ -103,6 +118,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const journal = await loadScalpJournal(journalLimit);
     const latestExecutionBySymbol: Record<string, Record<string, unknown>> = {};
     for (const entry of journal) {
+      const entryStrategy = journalStrategyId(entry);
+      if (entryStrategy && entryStrategy !== strategy.strategyId) continue;
+      if (!entryStrategy && strategy.strategyId !== runtime.defaultStrategyId) continue;
       const symbol = String(entry.symbol || '').toUpperCase();
       if (!symbol || latestExecutionBySymbol[symbol]) continue;
       if (entry.type !== 'execution' && entry.type !== 'state' && entry.type !== 'error') continue;
@@ -120,7 +138,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         profiles: Object.keys(policy.profiles),
         symbolProfileCount: Object.keys(policy.symbolProfiles).length,
       },
+      strategyId: strategy.strategyId,
+      defaultStrategyId: runtime.defaultStrategyId,
       strategy,
+      strategies: runtime.strategies,
       summary: {
         symbols: rows.length,
         openCount,
@@ -131,7 +152,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       },
       symbols: rows,
       latestExecutionBySymbol,
-      journal: journal.map(compactJournalEntry),
+      journal: journal
+        .filter((entry) => {
+          const entryStrategy = journalStrategyId(entry);
+          if (entryStrategy && entryStrategy !== strategy.strategyId) return false;
+          if (!entryStrategy && strategy.strategyId !== runtime.defaultStrategyId) return false;
+          return true;
+        })
+        .map(compactJournalEntry),
     });
   } catch (err: any) {
     return res.status(500).json({

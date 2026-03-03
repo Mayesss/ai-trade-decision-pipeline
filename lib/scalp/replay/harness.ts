@@ -1,4 +1,4 @@
-import { buildAsiaRangeSnapshot, computeAtr, detectConfirmation, detectIfvg, detectIfvgTouch, detectSweepLifecycle } from '../detectors';
+import { getDefaultScalpStrategy, getScalpStrategyById } from '../strategies/registry';
 import { buildScalpEntryPlan } from '../execution';
 import { pipSizeForScalpSymbol, timeframeMinutes } from '../marketData';
 import { buildScalpSessionWindows } from '../sessions';
@@ -140,8 +140,10 @@ function buildStrategyConfig(runtime: ScalpReplayRuntimeConfig): ScalpStrategyCo
 
 export function defaultScalpReplayConfig(symbol = 'EURUSD'): ScalpReplayRuntimeConfig {
     const cfg = getScalpStrategyConfig();
+    const defaultStrategy = getDefaultScalpStrategy();
     return {
         symbol: symbol.toUpperCase(),
+        strategyId: defaultStrategy.id,
         executeMinutes: cfg.cadence.executeMinutes,
         defaultSpreadPips: 1.1,
         spreadFactor: 1,
@@ -246,11 +248,6 @@ function aggregateCandles(candles: ScalpReplayCandle[], tfMinutes: number): Scal
         out.push([key, first.open, high, low, last.close, volume]);
     }
     return out;
-}
-
-function latestTs(candles: ScalpCandle[]): number | null {
-    const ts = candles.at(-1)?.[0];
-    return Number.isFinite(Number(ts)) ? Number(ts) : null;
 }
 
 function sortReplayCandles(candles: ScalpReplayCandle[]): ScalpReplayCandle[] {
@@ -402,141 +399,6 @@ function closePositionAsTrade(params: {
     };
 }
 
-function applyPhaseDetectors(params: {
-    state: ScalpSessionState;
-    market: ScalpMarketSnapshot;
-    nowMs: number;
-    cfg: ScalpStrategyConfig;
-}) {
-    const reasonCodes: string[] = [];
-    let next = {
-        ...params.state,
-        lastProcessed: { ...params.state.lastProcessed },
-    };
-    const baseTs = latestTs(params.market.baseCandles);
-    const confirmTs = latestTs(params.market.confirmCandles);
-    if (params.market.baseTf === 'M1') next.lastProcessed.m1ClosedTsMs = baseTs;
-    if (params.market.baseTf === 'M3') next.lastProcessed.m3ClosedTsMs = baseTs;
-    if (params.market.baseTf === 'M5') next.lastProcessed.m5ClosedTsMs = baseTs;
-    if (params.market.baseTf === 'M15') next.lastProcessed.m15ClosedTsMs = baseTs;
-    if (params.market.confirmTf === 'M1') next.lastProcessed.m1ClosedTsMs = confirmTs;
-    if (params.market.confirmTf === 'M3') next.lastProcessed.m3ClosedTsMs = confirmTs;
-
-    const windows = buildScalpSessionWindows({
-        dayKey: next.dayKey,
-        clockMode: params.cfg.sessions.clockMode,
-        asiaWindowLocal: params.cfg.sessions.asiaWindowLocal,
-        raidWindowLocal: params.cfg.sessions.raidWindowLocal,
-    });
-
-    if (!next.asiaRange) {
-        const asia = buildAsiaRangeSnapshot({
-            nowMs: params.nowMs,
-            windows,
-            candles: params.market.baseCandles,
-            minCandles: params.cfg.data.minAsiaCandles,
-            sourceTf: params.market.baseTf,
-        });
-        reasonCodes.push(...asia.reasonCodes);
-        if (!asia.snapshot) return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        next.asiaRange = asia.snapshot;
-        if (next.state === 'IDLE') next.state = 'ASIA_RANGE_READY';
-    }
-
-    if (!next.sweep && params.nowMs > windows.raidEndMs && next.state === 'ASIA_RANGE_READY') {
-        next.state = 'DONE';
-        reasonCodes.push('RAID_WINDOW_CLOSED_NO_SWEEP');
-        return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-    }
-
-    if (next.state === 'ASIA_RANGE_READY' || next.state === 'SWEEP_DETECTED') {
-        const atrBase = computeAtr(params.market.baseCandles, params.cfg.data.atrPeriod);
-        const sweep = detectSweepLifecycle({
-            existingSweep: next.sweep,
-            candles: params.market.baseCandles,
-            windows,
-            nowMs: params.nowMs,
-            asiaHigh: next.asiaRange.high,
-            asiaLow: next.asiaRange.low,
-            atrAbs: atrBase,
-            spreadAbs: params.market.quote.spreadAbs,
-            pipSize: pipSizeForScalpSymbol(next.symbol),
-            cfg: params.cfg.sweep,
-        });
-        reasonCodes.push(...sweep.reasonCodes);
-        if (sweep.sweep) next.sweep = sweep.sweep;
-        if (sweep.status === 'pending') {
-            next.state = 'SWEEP_DETECTED';
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        }
-        if (sweep.status === 'expired') {
-            next.state = 'DONE';
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        }
-        if (sweep.status === 'none') return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        next.state = 'CONFIRMING';
-    }
-
-    if (next.state === 'CONFIRMING') {
-        const rejectionTsMs = Number(next.sweep?.rejectedTsMs);
-        const direction = next.sweep?.side === 'BUY_SIDE' ? 'BEARISH' : next.sweep?.side === 'SELL_SIDE' ? 'BULLISH' : null;
-        if (!(Number.isFinite(rejectionTsMs) && rejectionTsMs > 0 && direction)) {
-            next.state = 'DONE';
-            reasonCodes.push('CONFIRM_REQUIRES_REJECTED_SWEEP');
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        }
-        const confirmation = detectConfirmation({
-            candles: params.market.confirmCandles,
-            nowMs: params.nowMs,
-            rejectionTsMs,
-            pipSize: pipSizeForScalpSymbol(next.symbol),
-            atrPeriod: params.cfg.data.atrPeriod,
-            direction,
-            cfg: params.cfg.confirm,
-        });
-        next.confirmation = confirmation.snapshot;
-        reasonCodes.push(...confirmation.reasonCodes);
-        if (confirmation.status === 'pending') return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        if (confirmation.status === 'expired') {
-            next.state = 'DONE';
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        }
-        const ifvg = detectIfvg({
-            candles: params.market.confirmCandles,
-            direction,
-            displacementTsMs: confirmation.displacementTsMs!,
-            structureShiftTsMs: confirmation.structureShiftTsMs!,
-            nowMs: params.nowMs,
-            atrPeriod: params.cfg.data.atrPeriod,
-            cfg: params.cfg.ifvg,
-        });
-        reasonCodes.push(...ifvg.reasonCodes);
-        if (!ifvg.zone) return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        next.ifvg = ifvg.zone;
-        next.state = 'WAITING_RETRACE';
-    }
-
-    if (next.state === 'WAITING_RETRACE' && next.ifvg) {
-        const touch = detectIfvgTouch({
-            candles: params.market.confirmCandles,
-            ifvg: next.ifvg,
-            nowMs: params.nowMs,
-        });
-        reasonCodes.push(...touch.reasonCodes);
-        if (touch.touched) {
-            next.ifvg = { ...next.ifvg, touched: true };
-            reasonCodes.push('ENTRY_SIGNAL_READY');
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        }
-        if (touch.expired) {
-            next.state = 'DONE';
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        }
-    }
-
-    return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-}
-
 function summarize(params: {
     symbol: string;
     runs: number;
@@ -591,7 +453,11 @@ export function runScalpReplay(params: {
 }): ScalpReplayResult {
     const candles = params.candles.slice().sort((a, b) => a.ts - b.ts);
     if (!candles.length) throw new Error('Replay requires candles');
-    const runtime = params.config;
+    const strategyDef = getScalpStrategyById(params.config.strategyId) || getDefaultScalpStrategy();
+    const runtime: ScalpReplayRuntimeConfig = {
+        ...params.config,
+        strategyId: strategyDef.id,
+    };
     const strategyCfg = buildStrategyConfig(runtime);
     const prepared = prepareReplaySeries({
         candles,
@@ -718,9 +584,16 @@ export function runScalpReplay(params: {
                 pipSize: params.pipSize,
                 runtime,
             });
-            const phase = applyPhaseDetectors({
+            const windows = buildScalpSessionWindows({
+                dayKey: state.dayKey,
+                clockMode: strategyCfg.sessions.clockMode,
+                asiaWindowLocal: strategyCfg.sessions.asiaWindowLocal,
+                raidWindowLocal: strategyCfg.sessions.raidWindowLocal,
+            });
+            const phase = strategyDef.applyPhaseDetectors({
                 state,
                 market,
+                windows,
                 nowMs,
                 cfg: strategyCfg,
             });

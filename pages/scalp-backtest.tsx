@@ -25,8 +25,9 @@ type AggressivityLevel = 'conservative' | 'medium' | 'aggressive';
 
 type BacktestRunResponse = {
   symbol: string;
+  strategyId: string;
   epic: string;
-  candleSource?: 'ui_cache' | 'capital_api';
+  candleSource?: 'ui_cache' | 'capital_api' | 'history_store';
   mappingSource?: 'env' | 'default' | 'passthrough' | 'discovered';
   sourceTimeframe: string;
   sourceFallbackUsed?: boolean;
@@ -91,7 +92,15 @@ type CachedCandleEntry = {
   cachedAtMs: number;
 };
 
+type ScalpStrategyOption = {
+  strategyId: string;
+  shortName: string;
+  longName: string;
+  enabled: boolean;
+};
+
 type FormState = {
+  strategyId: string;
   aggressivity: AggressivityLevel;
   backtestMode: BacktestMode;
   rangeStartLocal: string;
@@ -140,6 +149,7 @@ const ADMIN_SECRET_STORAGE_KEY = 'admin_access_secret';
 const PRESETS_STORAGE_KEY = 'scalp_backtest_presets_v1';
 const COMPARE_COLORS = ['#f59e0b', '#a855f7', '#10b981', '#3b82f6', '#ef4444', '#eab308', '#14b8a6'];
 const CANDLE_CACHE_TTL_MS = 20 * 60_000;
+const DEFAULT_SCALP_STRATEGY_ID = 'hss_ict_m15_m3';
 const AGGRESSIVITY_LEVELS: AggressivityLevel[] = ['conservative', 'medium', 'aggressive'];
 const DEFAULT_AGGRESSIVITY_LEVEL: AggressivityLevel = 'medium';
 
@@ -211,6 +221,7 @@ function toLocalDateTimeValue(tsMs: number): string {
 
 const nowMs = Date.now();
 const DEFAULT_FORM: FormState = {
+  strategyId: DEFAULT_SCALP_STRATEGY_ID,
   aggressivity: DEFAULT_AGGRESSIVITY_LEVEL,
   backtestMode: 'LOOKBACK',
   rangeStartLocal: toLocalDateTimeValue(nowMs - 3 * 24 * 60 * 60 * 1000),
@@ -240,6 +251,7 @@ function normalizeForm(input: Partial<FormState> | null | undefined): FormState 
   return {
     ...DEFAULT_FORM,
     ...value,
+    strategyId: normalizeStrategyId(value.strategyId) || DEFAULT_SCALP_STRATEGY_ID,
     aggressivity,
     backtestMode: mode,
     lookbackPastUnit:
@@ -310,6 +322,13 @@ function toPositiveInt(value: string, fallback: number): number {
   const n = Math.floor(toNumber(value, fallback));
   if (!Number.isFinite(n) || n <= 0) return fallback;
   return n;
+}
+
+function normalizeStrategyId(value: unknown): string {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, '');
 }
 
 function normalizeProfileInput(value: string): string {
@@ -390,6 +409,9 @@ export default function ScalpBacktestPage() {
   const [assetLoading, setAssetLoading] = useState(false);
   const [assetError, setAssetError] = useState<string | null>(null);
   const [selectedSymbol, setSelectedSymbol] = useState('EURUSD');
+  const [scalpStrategies, setScalpStrategies] = useState<ScalpStrategyOption[]>([]);
+  const [strategyLoading, setStrategyLoading] = useState(false);
+  const [strategyError, setStrategyError] = useState<string | null>(null);
 
   const [form, setForm] = useState<FormState>(DEFAULT_FORM);
   const [runLoading, setRunLoading] = useState(false);
@@ -418,6 +440,14 @@ export default function ScalpBacktestPage() {
   }, [assets]);
 
   const selectedAsset = useMemo(() => assets.find((a) => a.symbol === selectedSymbol) || null, [assets, selectedSymbol]);
+  const strategyById = useMemo(() => {
+    const map = new Map<string, ScalpStrategyOption>();
+    for (const row of scalpStrategies) {
+      map.set(row.strategyId, row);
+    }
+    return map;
+  }, [scalpStrategies]);
+  const selectedStrategy = strategyById.get(form.strategyId) || null;
 
   const estimatedRangeCandles = useMemo(() => {
     if (form.backtestMode === 'LOOKBACK') {
@@ -474,6 +504,83 @@ export default function ScalpBacktestPage() {
       setAssets([]);
     } finally {
       setAssetLoading(false);
+    }
+  };
+
+  const loadScalpStrategies = async (secret: string) => {
+    setStrategyLoading(true);
+    setStrategyError(null);
+    try {
+      const res = await fetch('/api/scalp/strategy/control', {
+        headers: secret ? { 'x-admin-access-secret': secret } : undefined,
+      });
+      const payload = (await res.json().catch(() => ({}))) as {
+        message?: string;
+        defaultStrategyId?: string;
+        strategyId?: string;
+        strategies?: Array<{
+          strategyId?: string;
+          shortName?: string;
+          longName?: string;
+          enabled?: boolean;
+        }>;
+      };
+      if (!res.ok) {
+        throw new Error(payload?.message || `strategy request failed (${res.status})`);
+      }
+      const rows = (Array.isArray(payload.strategies) ? payload.strategies : [])
+        .map((row) => {
+          const strategyId = normalizeStrategyId(row?.strategyId);
+          if (!strategyId) return null;
+          return {
+            strategyId,
+            shortName: String(row?.shortName || strategyId),
+            longName: String(row?.longName || row?.shortName || strategyId),
+            enabled: Boolean(row?.enabled),
+          } satisfies ScalpStrategyOption;
+        })
+        .filter((row): row is ScalpStrategyOption => Boolean(row));
+      const fallbackId = normalizeStrategyId(payload.strategyId) || normalizeStrategyId(payload.defaultStrategyId) || DEFAULT_SCALP_STRATEGY_ID;
+      if (rows.length === 0) {
+        setScalpStrategies([
+          {
+            strategyId: fallbackId,
+            shortName: fallbackId,
+            longName: fallbackId,
+            enabled: true,
+          },
+        ]);
+        setForm((prev) => ({ ...prev, strategyId: fallbackId }));
+        return;
+      }
+      setScalpStrategies(rows);
+      setForm((prev) => {
+        const current = normalizeStrategyId(prev.strategyId);
+        const fromRuntime = normalizeStrategyId(payload.strategyId);
+        const preferred = rows.find((row) => row.strategyId === current)
+          ? current
+          : rows.find((row) => row.strategyId === fromRuntime)
+          ? fromRuntime
+          : rows[0]!.strategyId;
+        return { ...prev, strategyId: preferred };
+      });
+    } catch (err: any) {
+      const message = err?.message || 'Failed to load scalp strategies.';
+      setStrategyError(message);
+      setScalpStrategies([
+        {
+          strategyId: DEFAULT_SCALP_STRATEGY_ID,
+          shortName: DEFAULT_SCALP_STRATEGY_ID,
+          longName: DEFAULT_SCALP_STRATEGY_ID,
+          enabled: true,
+        },
+      ]);
+      setForm((prev) => ({
+        ...prev,
+        strategyId: normalizeStrategyId(prev.strategyId) || DEFAULT_SCALP_STRATEGY_ID,
+      }));
+    } finally {
+      setStrategyLoading(false);
     }
   };
 
@@ -540,7 +647,7 @@ export default function ScalpBacktestPage() {
 
   useEffect(() => {
     if (!adminGranted || !adminSecret) return;
-    void loadAssets(adminSecret);
+    void Promise.all([loadAssets(adminSecret), loadScalpStrategies(adminSecret)]);
   }, [adminGranted, adminSecret]);
 
   const submitAdminSecret = async () => {
@@ -565,7 +672,7 @@ export default function ScalpBacktestPage() {
       setAdminGranted(true);
       setAdminSecret(candidate);
       setAdminError(null);
-      await loadAssets(candidate);
+      await Promise.all([loadAssets(candidate), loadScalpStrategies(candidate)]);
     } finally {
       setAdminSubmitting(false);
       setAdminReady(true);
@@ -640,8 +747,10 @@ export default function ScalpBacktestPage() {
     try {
       const presetFallback = AGGRESSIVITY_PRESETS[form.aggressivity] || AGGRESSIVITY_PRESETS[DEFAULT_AGGRESSIVITY_LEVEL];
       const candleCacheKey = buildCandleCacheKey(selectedSymbol, form);
+      const strategyId = normalizeStrategyId(form.strategyId) || DEFAULT_SCALP_STRATEGY_ID;
       const payload: any = {
         symbol: selectedSymbol,
+        strategyId,
         debug: form.debugVerbose,
         executeMinutes: toPositiveInt(form.executeMinutes, 3),
         spreadPips: toNumber(form.spreadPips, 1.1),
@@ -714,7 +823,12 @@ export default function ScalpBacktestPage() {
           cachedAtMs: Date.now(),
         });
       }
-      setResult(data);
+      const resolvedStrategyId = normalizeStrategyId(data?.strategyId) || strategyId;
+      setForm((prev) => ({ ...prev, strategyId: resolvedStrategyId }));
+      setResult({
+        ...data,
+        strategyId: resolvedStrategyId,
+      });
     } catch (err: any) {
       setRunError(err?.message || 'Backtest failed.');
     } finally {
@@ -774,7 +888,9 @@ export default function ScalpBacktestPage() {
 
   const addCurrentRunToCompare = () => {
     if (!result) return;
-    const label = compareLabel.trim() || `${result.symbol} ${new Date().toLocaleTimeString('en-GB')}`;
+    const runStrategy = strategyById.get(normalizeStrategyId(result.strategyId));
+    const defaultLabel = `${result.symbol} · ${runStrategy?.shortName || result.strategyId} · ${new Date().toLocaleTimeString('en-GB')}`;
+    const label = compareLabel.trim() || defaultLabel;
     const id = `cmp_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
     const color = COMPARE_COLORS[comparedRuns.length % COMPARE_COLORS.length] || '#f59e0b';
     const item: ComparedRun = {
@@ -946,6 +1062,37 @@ export default function ScalpBacktestPage() {
                         <option value="LOOKBACK">LOOKBACK</option>
                         <option value="DATE_RANGE">DATE_RANGE</option>
                       </select>
+                    </label>
+
+                    <label className="col-span-2 text-xs text-slate-300">
+                      Strategy
+                      <select
+                        value={form.strategyId}
+                        onChange={(e) => setForm((prev) => ({ ...prev, strategyId: normalizeStrategyId(e.target.value) }))}
+                        className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm"
+                      >
+                        {(scalpStrategies.length
+                          ? scalpStrategies
+                          : [
+                              {
+                                strategyId: form.strategyId || DEFAULT_SCALP_STRATEGY_ID,
+                                shortName: form.strategyId || DEFAULT_SCALP_STRATEGY_ID,
+                                longName: form.strategyId || DEFAULT_SCALP_STRATEGY_ID,
+                                enabled: true,
+                              } satisfies ScalpStrategyOption,
+                            ]
+                        ).map((strategy) => (
+                          <option key={strategy.strategyId} value={strategy.strategyId}>
+                            {strategy.shortName}
+                            {strategy.enabled ? '' : ' (disabled)'}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="mt-1 block text-[11px] text-slate-400">
+                        {selectedStrategy?.longName || 'Select which registered scalp strategy to replay.'}
+                        {strategyLoading ? ' Loading strategy controls…' : ''}
+                      </span>
+                      {strategyError ? <span className="mt-1 block text-[11px] text-rose-300">{strategyError}</span> : null}
                     </label>
 
                     {form.backtestMode === 'LOOKBACK' ? (
@@ -1172,7 +1319,12 @@ export default function ScalpBacktestPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setForm(DEFAULT_FORM)}
+                      onClick={() =>
+                        setForm((prev) => ({
+                          ...DEFAULT_FORM,
+                          strategyId: normalizeStrategyId(prev.strategyId) || DEFAULT_SCALP_STRATEGY_ID,
+                        }))
+                      }
                       className="rounded-xl border border-slate-700 px-3 py-2.5 text-sm text-slate-200"
                     >
                       Reset
@@ -1189,7 +1341,13 @@ export default function ScalpBacktestPage() {
                   </div>
                 ) : (
                   <>
-                    <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+                    <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
+                      <div className="rounded-xl border border-slate-800 bg-slate-900 p-3">
+                        <p className="text-xs text-slate-400">Strategy</p>
+                        <p className="mt-1 text-sm font-semibold text-cyan-200">
+                          {strategyById.get(normalizeStrategyId(result.strategyId))?.shortName || result.strategyId}
+                        </p>
+                      </div>
                       <div className="rounded-xl border border-slate-800 bg-slate-900 p-3">
                         <p className="text-xs text-slate-400">Trades</p>
                         <p className="mt-1 text-lg font-semibold">{result.summary.trades}</p>
@@ -1222,6 +1380,7 @@ export default function ScalpBacktestPage() {
                       <div className="flex flex-col gap-2 text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between">
                         <div>
                           {result.symbol} ({result.epic}) · source TF {result.sourceTimeframe} · candles {result.fetchedCandles}
+                          {` · strategy ${strategyById.get(normalizeStrategyId(result.strategyId))?.shortName || result.strategyId}`}
                           {result.clampedBySourceLimit ? ' (clamped by source limit)' : ''}
                           {result.mappingSource ? ` · map ${result.mappingSource}` : ''}
                           {result.candleSource ? ` · data ${result.candleSource}` : ''}
@@ -1353,6 +1512,9 @@ export default function ScalpBacktestPage() {
                                 />
                                 <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: run.color }} />
                                 {run.label}
+                                <span className="text-slate-400">
+                                  ({strategyById.get(normalizeStrategyId(run.result.strategyId))?.shortName || run.result.strategyId})
+                                </span>
                               </label>
                               <div className="flex items-center gap-3">
                                 <span className={run.result.summary.netR >= 0 ? 'text-emerald-300' : 'text-rose-300'}>

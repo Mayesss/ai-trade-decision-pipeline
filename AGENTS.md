@@ -129,6 +129,58 @@ node --import tsx scripts/forex-replay-matrix.ts \
   --outDir /tmp/forex-replay-matrix-strict
 ```
 
+## Scalp Strategy Extension Workflow
+Use this playbook when adding or iterating scalp strategies so they remain testable, selectable, and safe to roll out.
+
+1. Add strategy logic as a module:
+   - Create `lib/scalp/strategies/<strategyName>.ts`.
+   - Export a stable id (lowercase slug) and a `ScalpStrategyDefinition`.
+   - Keep detection logic inside `applyPhaseDetectors(input)` and return deterministic reason codes.
+2. Register strategy in the central registry:
+   - Add to `lib/scalp/strategies/registry.ts`.
+   - Do not change `DEFAULT_SCALP_STRATEGY_ID` unless explicitly requested.
+3. Keep runtime selection path intact:
+   - Live execute path resolves strategy from runtime/KV in `lib/scalp/engine.ts`.
+   - Replay path resolves strategy from config `strategyId` in `lib/scalp/replay/harness.ts`.
+   - Backtest API accepts `strategyId` in `pages/api/scalp/backtest/run.ts`.
+4. Ensure UI and control surfaces can discover/select it:
+   - Strategy control API (`GET /api/scalp/strategy/control`) should expose it automatically via registry.
+   - Backtest UI (`/scalp-backtest`) should allow choosing `strategyId`.
+   - Dashboard summary queries may be filtered via `strategyId`.
+5. Add/update tests:
+   - Registry test coverage in `lib/scalp/strategies/registry.test.ts` (id uniqueness + lookup).
+   - Replay harness tests in `lib/scalp/replay/harness.test.ts` (unknown id fallback + non-default strategy acceptance).
+6. Validate offline first:
+```bash
+# unit/integration checks for scalp replay + strategy registry
+npm run test:scalp
+
+# single replay for a specific strategy
+node --import tsx scripts/scalp-replay.ts \
+  --input data/scalp-replay/fixtures/eurusd.sample.json \
+  --strategyId hss_ict_m15_m3 \
+  --outDir /tmp/scalp-replay
+
+# matrix compare across strategies
+node --import tsx scripts/scalp-replay-matrix.ts \
+  --fixtures core \
+  --strategyIds hss_ict_m15_m3,hss_ict_m15_m3_guarded \
+  --outDir /tmp/scalp-replay-matrix
+```
+7. Validate runtime safely (`dryRun=true`):
+```bash
+# one execution cycle for explicit strategy
+curl "http://localhost:3000/api/scalp/cron/execute?symbol=EURUSD&dryRun=true&strategyId=hss_ict_m15_m3"
+
+# strategy-scoped dashboard state/journal
+curl "http://localhost:3000/api/scalp/dashboard/summary?strategyId=hss_ict_m15_m3"
+```
+8. Rollout guidance:
+   - Keep new strategy non-default until replay/backtest evidence is acceptable.
+   - Enable/disable per strategy with `POST /api/scalp/strategy/control`.
+   - Promote default only after evidence using `defaultStrategyId`.
+   - Preserve rollback path by keeping previous strategy registered.
+
 ## Useful Local Checks
 ```bash
 # If ADMIN_ACCESS_SECRET is set, include:

@@ -2,33 +2,24 @@ import crypto from 'crypto';
 
 import { applyScalpStrategyConfigOverride, getScalpStrategyConfig, normalizeScalpSymbol } from './config';
 import type { ScalpStrategyConfigOverride } from './config';
-import {
-    buildAsiaRangeSnapshot,
-    computeAtr,
-    detectConfirmation,
-    detectIfvg,
-    detectIfvgTouch,
-    detectSweepLifecycle,
-} from './detectors';
 import { buildScalpEntryPlan, executeScalpEntryPlan, reconcileScalpBrokerPosition } from './execution';
-import { loadScalpMarketSnapshot, pipSizeForScalpSymbol } from './marketData';
+import { loadScalpMarketSnapshot } from './marketData';
 import { buildScalpSessionWindows } from './sessions';
+import { getDefaultScalpStrategy, getScalpStrategyById } from './strategies/registry';
 import { advanceScalpStateMachine, createInitialScalpSessionState, deriveScalpDayKey } from './stateMachine';
 import {
     appendScalpJournal,
     loadScalpSessionState,
-    loadScalpStrategyControlSnapshot,
+    loadScalpStrategyRuntimeSnapshot,
     releaseScalpRunLock,
     saveScalpSessionState,
     tryAcquireScalpRunLock,
 } from './store';
 import type {
-    ScalpDirectionalBias,
     ScalpExecuteCycleResult,
     ScalpJournalEntry,
     ScalpMarketSnapshot,
     ScalpSessionState,
-    ScalpSessionWindows,
 } from './types';
 
 function journalEntry(params: {
@@ -76,188 +67,8 @@ function withRunContext(
     };
 }
 
-function latestTs(candles: Array<[number, number, number, number, number, number]>): number | null {
-    const ts = candles.at(-1)?.[0];
-    return Number.isFinite(Number(ts)) ? Number(ts) : null;
-}
-
 function dedupeReasonCodes(codes: string[]): string[] {
     return Array.from(new Set(codes.map((code) => String(code || '').trim().toUpperCase()).filter((code) => code.length > 0)));
-}
-
-function withLastProcessed(state: ScalpSessionState, market: ScalpMarketSnapshot): ScalpSessionState {
-    const next = {
-        ...state,
-        lastProcessed: {
-            ...state.lastProcessed,
-        },
-    };
-    const baseTs = latestTs(market.baseCandles);
-    const confirmTs = latestTs(market.confirmCandles);
-    if (market.baseTf === 'M1') next.lastProcessed.m1ClosedTsMs = baseTs;
-    if (market.baseTf === 'M3') next.lastProcessed.m3ClosedTsMs = baseTs;
-    if (market.baseTf === 'M5') next.lastProcessed.m5ClosedTsMs = baseTs;
-    if (market.baseTf === 'M15') next.lastProcessed.m15ClosedTsMs = baseTs;
-
-    if (market.confirmTf === 'M1') next.lastProcessed.m1ClosedTsMs = confirmTs;
-    if (market.confirmTf === 'M3') next.lastProcessed.m3ClosedTsMs = confirmTs;
-    return next;
-}
-
-function expectedDirectionFromSweep(state: ScalpSessionState): ScalpDirectionalBias | null {
-    if (!state.sweep) return null;
-    return state.sweep.side === 'BUY_SIDE' ? 'BEARISH' : 'BULLISH';
-}
-
-function applyPhase2Detectors(params: {
-    state: ScalpSessionState;
-    market: ScalpMarketSnapshot;
-    windows: ScalpSessionWindows;
-    nowMs: number;
-    cfg: ReturnType<typeof getScalpStrategyConfig>;
-}): { state: ScalpSessionState; reasonCodes: string[] } {
-    const reasonCodes: string[] = [];
-    let next = withLastProcessed(params.state, params.market);
-
-    if (next.state === 'IN_TRADE' || next.state === 'COOLDOWN') {
-        return { state: next, reasonCodes: ['STATE_SKIPPED_MANAGED_EXTERNALLY'] };
-    }
-    if (next.state === 'DONE') {
-        return { state: next, reasonCodes: ['DAY_ALREADY_DONE'] };
-    }
-
-    if (!next.asiaRange) {
-        const asia = buildAsiaRangeSnapshot({
-            nowMs: params.nowMs,
-            windows: params.windows,
-            candles: params.market.baseCandles,
-            minCandles: params.cfg.data.minAsiaCandles,
-            sourceTf: params.market.baseTf,
-        });
-        reasonCodes.push(...asia.reasonCodes);
-        if (asia.snapshot) {
-            next.asiaRange = asia.snapshot;
-            if (next.state === 'IDLE' || next.state === 'ASIA_RANGE_READY') {
-                next.state = 'ASIA_RANGE_READY';
-            }
-        } else {
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        }
-    }
-
-    if (!next.sweep && params.nowMs > params.windows.raidEndMs && next.state === 'ASIA_RANGE_READY') {
-        next.state = 'DONE';
-        reasonCodes.push('RAID_WINDOW_CLOSED_NO_SWEEP');
-        return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-    }
-
-    if (next.state === 'IDLE') {
-        next.state = 'ASIA_RANGE_READY';
-    }
-
-    if (next.state === 'ASIA_RANGE_READY' || next.state === 'SWEEP_DETECTED') {
-        const atrBase = computeAtr(params.market.baseCandles, params.cfg.data.atrPeriod);
-        const sweep = detectSweepLifecycle({
-            existingSweep: next.sweep,
-            candles: params.market.baseCandles,
-            windows: params.windows,
-            nowMs: params.nowMs,
-            asiaHigh: next.asiaRange.high,
-            asiaLow: next.asiaRange.low,
-            atrAbs: atrBase,
-            spreadAbs: params.market.quote.spreadAbs,
-            pipSize: pipSizeForScalpSymbol(next.symbol),
-            cfg: params.cfg.sweep,
-        });
-        reasonCodes.push(...sweep.reasonCodes);
-        if (sweep.sweep) next.sweep = sweep.sweep;
-        if (sweep.status === 'rejected') {
-            next.state = 'CONFIRMING';
-        } else if (sweep.status === 'pending') {
-            next.state = 'SWEEP_DETECTED';
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        } else if (sweep.status === 'expired') {
-            next.state = 'DONE';
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        } else if (sweep.status === 'none') {
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        }
-    }
-
-    if (next.state === 'CONFIRMING') {
-        const rejectionTsMs = Number(next.sweep?.rejectedTsMs);
-        const direction = expectedDirectionFromSweep(next);
-        if (!(Number.isFinite(rejectionTsMs) && rejectionTsMs > 0 && direction)) {
-            reasonCodes.push('CONFIRM_REQUIRES_REJECTED_SWEEP');
-            next.state = 'DONE';
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        }
-
-        const confirmation = detectConfirmation({
-            candles: params.market.confirmCandles,
-            nowMs: params.nowMs,
-            rejectionTsMs,
-            pipSize: pipSizeForScalpSymbol(next.symbol),
-            atrPeriod: params.cfg.data.atrPeriod,
-            direction,
-            cfg: params.cfg.confirm,
-        });
-        next.confirmation = confirmation.snapshot;
-        reasonCodes.push(...confirmation.reasonCodes);
-        if (confirmation.status === 'pending') {
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        }
-        if (confirmation.status === 'expired') {
-            next.state = 'DONE';
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        }
-
-        if (confirmation.status === 'confirmed' && confirmation.displacementTsMs && confirmation.structureShiftTsMs) {
-            const ifvg = detectIfvg({
-                candles: params.market.confirmCandles,
-                direction,
-                displacementTsMs: confirmation.displacementTsMs,
-                structureShiftTsMs: confirmation.structureShiftTsMs,
-                nowMs: params.nowMs,
-                atrPeriod: params.cfg.data.atrPeriod,
-                cfg: params.cfg.ifvg,
-            });
-            reasonCodes.push(...ifvg.reasonCodes);
-            if (!ifvg.zone) {
-                if (params.nowMs > rejectionTsMs + params.cfg.confirm.ttlMinutes * 60_000) {
-                    next.state = 'DONE';
-                    reasonCodes.push('IFVG_NOT_FOUND_BEFORE_CONFIRM_TTL');
-                }
-                return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-            }
-            next.ifvg = ifvg.zone;
-            next.state = 'WAITING_RETRACE';
-        }
-    }
-
-    if (next.state === 'WAITING_RETRACE' && next.ifvg) {
-        const touch = detectIfvgTouch({
-            candles: params.market.confirmCandles,
-            ifvg: next.ifvg,
-            nowMs: params.nowMs,
-        });
-        reasonCodes.push(...touch.reasonCodes);
-        if (touch.touched) {
-            next.ifvg = {
-                ...next.ifvg,
-                touched: true,
-            };
-            next.state = 'WAITING_RETRACE';
-            reasonCodes.push('ENTRY_SIGNAL_READY');
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        }
-        if (touch.expired) {
-            next.state = 'DONE';
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
-        }
-    }
-
-    return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
 }
 
 export async function runScalpExecuteCycle(opts: {
@@ -265,6 +76,7 @@ export async function runScalpExecuteCycle(opts: {
     dryRun?: boolean;
     nowMs?: number;
     configOverride?: ScalpStrategyConfigOverride;
+    strategyId?: string;
 } = {}): Promise<ScalpExecuteCycleResult> {
     const cfg = applyScalpStrategyConfigOverride(getScalpStrategyConfig(), opts.configOverride);
     const nowMs = Number.isFinite(opts.nowMs as number) ? Number(opts.nowMs) : Date.now();
@@ -272,7 +84,13 @@ export async function runScalpExecuteCycle(opts: {
     const symbol = normalizeScalpSymbol(opts.symbol || cfg.defaultSymbol);
     const dayKey = deriveScalpDayKey(nowMs, cfg.sessions.clockMode);
     const runId = crypto.randomUUID();
-    const strategyControl = await loadScalpStrategyControlSnapshot(cfg.enabled);
+    const runtime = await loadScalpStrategyRuntimeSnapshot(cfg.enabled, opts.strategyId);
+    const strategyControl = runtime.strategy;
+    const strategyId = strategyControl.strategyId;
+    const strategyDef =
+        getScalpStrategyById(strategyId) ||
+        getScalpStrategyById(runtime.defaultStrategyId) ||
+        getDefaultScalpStrategy();
 
     if (!strategyControl.enabled) {
         const reasonCodes = strategyControl.envEnabled
@@ -289,6 +107,7 @@ export async function runScalpExecuteCycle(opts: {
                     dryRun,
                     nowMs,
                     runId,
+                    strategyId,
                     strategyEnabled: strategyControl.enabled,
                     strategyEnvEnabled: strategyControl.envEnabled,
                     strategyKvEnabled: strategyControl.kvEnabled,
@@ -299,6 +118,7 @@ export async function runScalpExecuteCycle(opts: {
         return {
             generatedAtMs: nowMs,
             symbol,
+            strategyId,
             dayKey,
             dryRun,
             runLockAcquired: false,
@@ -307,7 +127,7 @@ export async function runScalpExecuteCycle(opts: {
         };
     }
 
-    const runLockAcquired = await tryAcquireScalpRunLock(symbol, runId, cfg.idempotency.runLockSeconds);
+    const runLockAcquired = await tryAcquireScalpRunLock(symbol, runId, cfg.idempotency.runLockSeconds, strategyId);
 
     if (!runLockAcquired) {
         const reasonCodes = ['SCALP_RUN_LOCK_ACTIVE'];
@@ -318,13 +138,14 @@ export async function runScalpExecuteCycle(opts: {
                 dayKey,
                 level: 'warn',
                 reasonCodes,
-                payload: { dryRun, nowMs, runId },
+                payload: { dryRun, nowMs, runId, strategyId },
             }),
             cfg.storage.journalMax,
         );
         return {
             generatedAtMs: nowMs,
             symbol,
+            strategyId,
             dayKey,
             dryRun,
             runLockAcquired: false,
@@ -334,7 +155,7 @@ export async function runScalpExecuteCycle(opts: {
     }
 
     try {
-        const loadedState = await loadScalpSessionState(symbol, dayKey);
+        const loadedState = await loadScalpSessionState(symbol, dayKey, strategyId);
         const currentState =
             loadedState ||
             createInitialScalpSessionState({
@@ -369,7 +190,7 @@ export async function runScalpExecuteCycle(opts: {
                     minConfirmCandles: cfg.data.minConfirmCandles,
                     maxCandlesPerRequest: cfg.data.maxCandlesPerRequest,
                 });
-                const phase = applyPhase2Detectors({
+                const phase = strategyDef.applyPhaseDetectors({
                     state: nextState,
                     market,
                     windows,
@@ -420,6 +241,7 @@ export async function runScalpExecuteCycle(opts: {
                             dryRun,
                             nowMs,
                             runId,
+                            strategyId,
                             message: err?.message || String(err),
                         },
                     }),
@@ -439,7 +261,7 @@ export async function runScalpExecuteCycle(opts: {
             killSwitch: cfg.risk.killSwitch,
         });
 
-        await saveScalpSessionState(nextState, cfg.storage.sessionTtlSeconds);
+        await saveScalpSessionState(nextState, cfg.storage.sessionTtlSeconds, strategyId);
         await safeAppendJournal(
             journalEntry({
                 type: transition.transitioned ? 'state' : 'execution',
@@ -450,6 +272,7 @@ export async function runScalpExecuteCycle(opts: {
                     dryRun,
                     nowMs,
                     runId,
+                    strategyId,
                     state: nextState.state,
                     transitioned: transition.transitioned,
                     maxTradesPerDay: cfg.risk.maxTradesPerSymbolPerDay,
@@ -482,6 +305,7 @@ export async function runScalpExecuteCycle(opts: {
         return {
             generatedAtMs: nowMs,
             symbol,
+            strategyId,
             dayKey,
             dryRun,
             runLockAcquired: true,
@@ -500,6 +324,7 @@ export async function runScalpExecuteCycle(opts: {
                     dryRun,
                     nowMs,
                     runId,
+                    strategyId,
                     message: err?.message || String(err),
                 },
             }),
@@ -507,6 +332,6 @@ export async function runScalpExecuteCycle(opts: {
         );
         throw err;
     } finally {
-        await releaseScalpRunLock(symbol, runId);
+        await releaseScalpRunLock(symbol, runId, strategyId);
     }
 }

@@ -4,6 +4,7 @@ import { fetchCapitalCandlesByEpic, fetchCapitalCandlesByEpicDateRange, resolveC
 import { requireAdminAccess } from '../../../../lib/admin';
 import { type CandleHistoryBackend, loadScalpCandleHistory, normalizeHistoryTimeframe } from '../../../../lib/scalp/candleHistory';
 import { defaultScalpReplayConfig, normalizeScalpReplayInput, runScalpReplay } from '../../../../lib/scalp/replay/harness';
+import { getDefaultScalpStrategy, getScalpStrategyById, normalizeScalpStrategyId } from '../../../../lib/scalp/strategies/registry';
 import { pipSizeForScalpSymbol } from '../../../../lib/scalp/marketData';
 import type { ScalpReplayInputFile, ScalpReplayRuntimeConfig } from '../../../../lib/scalp/replay/types';
 import type { ScalpCandle } from '../../../../lib/scalp/types';
@@ -30,6 +31,7 @@ type BacktestRequestBody = {
   useStoredHistory?: boolean | string;
   historyBackend?: 'file' | 'kv' | string;
   historyTimeframe?: string;
+  strategyId?: string;
   strategy?: Partial<ScalpReplayRuntimeConfig['strategy']>;
 };
 
@@ -204,6 +206,13 @@ function parseHistoryBackend(value: unknown): CandleHistoryBackend | undefined {
   if (normalized === 'file') return 'file';
   if (normalized === 'kv') return 'kv';
   return undefined;
+}
+
+function parseStrategyId(value: unknown, fallback: string): string {
+  const normalized = normalizeScalpStrategyId(value);
+  if (!normalized) return fallback;
+  const strategy = getScalpStrategyById(normalized);
+  return strategy?.id || fallback;
 }
 
 function unitToMs(unit: 'minutes' | 'hours' | 'days'): number {
@@ -392,6 +401,7 @@ async function fetchReplayCandlesWithFallback(params: {
 function applyRuntimeOverrides(runtime: ScalpReplayRuntimeConfig, body: BacktestRequestBody): ScalpReplayRuntimeConfig {
   const next: ScalpReplayRuntimeConfig = JSON.parse(JSON.stringify(runtime));
   const strategy = body.strategy || {};
+  next.strategyId = parseStrategyId(body.strategyId, next.strategyId || getDefaultScalpStrategy().id);
 
   next.executeMinutes = toPositiveInt(body.executeMinutes, next.executeMinutes);
   next.spreadFactor = toPositiveNumber(body.spreadFactor, next.spreadFactor);
@@ -556,6 +566,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       'request',
       {
         symbol,
+        strategyId: body.strategyId ? parseStrategyId(body.strategyId, getDefaultScalpStrategy().id) : getDefaultScalpStrategy().id,
         mode: requestedMode,
         dataFetchMode,
         hasEffectiveRange,
@@ -825,6 +836,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       'replay_started',
       {
         symbol,
+        strategyId: runtime.strategyId,
         candles: normalized.candles.length,
         baseSourceTimeframe: replayBaseSourceTimeframe,
         confirmSourceTimeframe: replayConfirmSourceTimeframe,
@@ -855,6 +867,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             'replay_progress',
             {
               symbol,
+              strategyId: runtime.strategyId,
               runs: progress.runs,
               estimatedTotalRuns: progress.estimatedTotalRuns,
               completedPct: Number(progress.completedPct.toFixed(2)),
@@ -891,6 +904,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       'replay_complete',
       {
         symbol,
+        strategyId: runtime.strategyId,
         sourceTimeframe: replayBaseSourceTimeframe,
         confirmSourceTimeframe: replayConfirmSourceTimeframe,
         fetchedCandles: normalized.candles.length,
@@ -950,6 +964,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     return res.status(200).json({
       symbol,
+      strategyId: replay.config.strategyId,
       epic: resolved.epic,
       candleSource,
       historyEnabled: useStoredHistory,

@@ -1,4 +1,10 @@
 import { kvGetJson, kvListPushJson, kvListRangeJson, kvListTrim, kvSetJson } from '../kv';
+import {
+    getDefaultScalpStrategy,
+    getScalpStrategyById,
+    listScalpStrategies,
+    normalizeScalpStrategyId,
+} from './strategies/registry';
 import type { ScalpJournalEntry, ScalpSessionState } from './types';
 
 const SCALP_STATE_KEY_PREFIX = 'scalp:state:v1';
@@ -8,16 +14,23 @@ const SCALP_RUNTIME_SETTINGS_KEY = 'scalp:runtime:settings:v1';
 const SCALP_DEFAULT_STATE_TTL_SECONDS = 3 * 24 * 60 * 60;
 const SCALP_DEFAULT_JOURNAL_MAX = 500;
 
-export const SCALP_STRATEGY_SHORT_NAME = 'HSS-ICT M15/M3';
-export const SCALP_STRATEGY_LONG_NAME = 'Hybrid Session-Scoped ICT Scalp (M15/M3)';
+const defaultScalpStrategy = getDefaultScalpStrategy();
+export const SCALP_STRATEGY_SHORT_NAME = defaultScalpStrategy.shortName;
+export const SCALP_STRATEGY_LONG_NAME = defaultScalpStrategy.longName;
 
-interface ScalpRuntimeSettings {
-    strategyEnabled: boolean;
-    updatedAtMs: number;
+interface ScalpRuntimeStrategySettings {
+    enabled: boolean | null;
+    updatedAtMs: number | null;
     updatedBy: string | null;
 }
 
+interface ScalpRuntimeSettings {
+    defaultStrategyId: string;
+    strategies: Record<string, ScalpRuntimeStrategySettings>;
+}
+
 export interface ScalpStrategyControlSnapshot {
+    strategyId: string;
     shortName: string;
     longName: string;
     enabled: boolean;
@@ -27,15 +40,33 @@ export interface ScalpStrategyControlSnapshot {
     updatedBy: string | null;
 }
 
+export interface ScalpStrategyRuntimeSnapshot {
+    defaultStrategyId: string;
+    strategyId: string;
+    strategy: ScalpStrategyControlSnapshot;
+    strategies: ScalpStrategyControlSnapshot[];
+}
+
 const KV_REST_API_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
 const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN || '';
 
-function stateKey(symbol: string, dayKey: string): string {
+function resolveStrategyId(value: unknown, fallback = defaultScalpStrategy.id): string {
+    const normalized = normalizeScalpStrategyId(value);
+    if (!normalized) return fallback;
+    const strategy = getScalpStrategyById(normalized);
+    return strategy?.id || fallback;
+}
+
+function stateKey(strategyId: string, symbol: string, dayKey: string): string {
+    return `${SCALP_STATE_KEY_PREFIX}:${strategyId}:${String(symbol || '').toUpperCase()}:${dayKey}`;
+}
+
+function legacyStateKey(symbol: string, dayKey: string): string {
     return `${SCALP_STATE_KEY_PREFIX}:${String(symbol || '').toUpperCase()}:${dayKey}`;
 }
 
-function runLockKey(symbol: string): string {
-    return `${SCALP_RUN_LOCK_KEY_PREFIX}:${String(symbol || '').toUpperCase()}`;
+function runLockKey(strategyId: string, symbol: string): string {
+    return `${SCALP_RUN_LOCK_KEY_PREFIX}:${strategyId}:${String(symbol || '').toUpperCase()}`;
 }
 
 function safeRecord(value: unknown): Record<string, unknown> {
@@ -72,54 +103,153 @@ function parseBool(value: unknown): boolean | null {
     return null;
 }
 
-function parseScalpRuntimeSettings(raw: unknown): ScalpRuntimeSettings | null {
+function parseOptionalTime(value: unknown): number | null {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return Math.floor(n);
+}
+
+function parseUpdatedBy(value: unknown): string | null {
+    const normalized = String(value || '').trim();
+    if (!normalized) return null;
+    return normalized.slice(0, 120);
+}
+
+function parseScalpRuntimeSettings(raw: unknown): ScalpRuntimeSettings {
     const row = safeRecord(raw);
-    const strategyEnabled = parseBool(row.strategyEnabled);
-    if (strategyEnabled === null) return null;
-    const updatedAtMs = Number(row.updatedAtMs);
-    const updatedByRaw = String(row.updatedBy || '').trim();
+    const strategiesRaw = safeRecord(row.strategies);
+    const defaultStrategyId = resolveStrategyId(row.defaultStrategyId, defaultScalpStrategy.id);
+    const legacyStrategyEnabled = parseBool(row.strategyEnabled);
+    const legacyUpdatedAtMs = parseOptionalTime(row.updatedAtMs);
+    const legacyUpdatedBy = parseUpdatedBy(row.updatedBy);
+    const strategies: Record<string, ScalpRuntimeStrategySettings> = {};
+
+    for (const strategy of listScalpStrategies()) {
+        const rawSettings = safeRecord(strategiesRaw[strategy.id]);
+        let enabled = parseBool(rawSettings.enabled);
+        let updatedAtMs = parseOptionalTime(rawSettings.updatedAtMs);
+        let updatedBy = parseUpdatedBy(rawSettings.updatedBy);
+
+        if (enabled === null && strategy.id === defaultStrategyId && legacyStrategyEnabled !== null) {
+            enabled = legacyStrategyEnabled;
+            if (!updatedAtMs) updatedAtMs = legacyUpdatedAtMs;
+            if (!updatedBy) updatedBy = legacyUpdatedBy;
+        }
+
+        strategies[strategy.id] = {
+            enabled,
+            updatedAtMs,
+            updatedBy,
+        };
+    }
+
     return {
-        strategyEnabled,
-        updatedAtMs: Number.isFinite(updatedAtMs) && updatedAtMs > 0 ? Math.floor(updatedAtMs) : Date.now(),
-        updatedBy: updatedByRaw ? updatedByRaw.slice(0, 120) : null,
+        defaultStrategyId,
+        strategies,
     };
 }
 
-export async function loadScalpStrategyControlSnapshot(envEnabled: boolean): Promise<ScalpStrategyControlSnapshot> {
-    const settings = parseScalpRuntimeSettings(await kvGetJson<ScalpRuntimeSettings>(SCALP_RUNTIME_SETTINGS_KEY));
-    const kvEnabled = settings?.strategyEnabled ?? null;
-    const effectiveEnabled = Boolean(envEnabled) && (kvEnabled ?? true);
+function toControlSnapshot(
+    settings: ScalpRuntimeSettings,
+    strategyId: string,
+    envEnabled: boolean,
+): ScalpStrategyControlSnapshot {
+    const strategy = getScalpStrategyById(strategyId);
+    if (!strategy) {
+        throw new Error(`Unknown scalp strategy: ${strategyId}`);
+    }
+    const runtime = settings.strategies[strategy.id] || { enabled: null, updatedAtMs: null, updatedBy: null };
+    const kvEnabled = runtime.enabled;
     return {
-        shortName: SCALP_STRATEGY_SHORT_NAME,
-        longName: SCALP_STRATEGY_LONG_NAME,
-        enabled: effectiveEnabled,
+        strategyId: strategy.id,
+        shortName: strategy.shortName,
+        longName: strategy.longName,
+        enabled: Boolean(envEnabled) && (kvEnabled ?? true),
         envEnabled: Boolean(envEnabled),
         kvEnabled,
-        updatedAtMs: settings?.updatedAtMs ?? null,
-        updatedBy: settings?.updatedBy ?? null,
+        updatedAtMs: runtime.updatedAtMs,
+        updatedBy: runtime.updatedBy,
     };
+}
+
+function serializeScalpRuntimeSettings(settings: ScalpRuntimeSettings): Record<string, unknown> {
+    const strategies: Record<string, unknown> = {};
+    for (const strategy of listScalpStrategies()) {
+        const row = settings.strategies[strategy.id];
+        if (!row) continue;
+        const entry: Record<string, unknown> = {};
+        if (typeof row.enabled === 'boolean') entry.enabled = row.enabled;
+        if (Number.isFinite(Number(row.updatedAtMs)) && Number(row.updatedAtMs) > 0) entry.updatedAtMs = Number(row.updatedAtMs);
+        if (row.updatedBy) entry.updatedBy = row.updatedBy;
+        if (Object.keys(entry).length > 0) {
+            strategies[strategy.id] = entry;
+        }
+    }
+    return {
+        defaultStrategyId: resolveStrategyId(settings.defaultStrategyId, defaultScalpStrategy.id),
+        strategies,
+    };
+}
+
+export async function loadScalpStrategyRuntimeSnapshot(
+    envEnabled: boolean,
+    preferredStrategyId?: string,
+): Promise<ScalpStrategyRuntimeSnapshot> {
+    const settings = parseScalpRuntimeSettings(await kvGetJson<ScalpRuntimeSettings>(SCALP_RUNTIME_SETTINGS_KEY));
+    const defaultStrategyId = resolveStrategyId(settings.defaultStrategyId, defaultScalpStrategy.id);
+    const selectedStrategyId = resolveStrategyId(preferredStrategyId, defaultStrategyId);
+    const strategies = listScalpStrategies().map((strategy) => toControlSnapshot(settings, strategy.id, envEnabled));
+    const strategy = strategies.find((row) => row.strategyId === selectedStrategyId) || toControlSnapshot(settings, defaultStrategyId, envEnabled);
+
+    return {
+        defaultStrategyId,
+        strategyId: strategy.strategyId,
+        strategy,
+        strategies,
+    };
+}
+
+export async function loadScalpStrategyControlSnapshot(
+    envEnabled: boolean,
+    preferredStrategyId?: string,
+): Promise<ScalpStrategyControlSnapshot> {
+    const runtime = await loadScalpStrategyRuntimeSnapshot(envEnabled, preferredStrategyId);
+    return runtime.strategy;
 }
 
 export async function setScalpStrategyKvEnabled(params: {
+    strategyId?: string;
     enabled: boolean;
     envEnabled: boolean;
     updatedBy?: string | null;
-}): Promise<ScalpStrategyControlSnapshot> {
+}): Promise<ScalpStrategyRuntimeSnapshot> {
+    const current = parseScalpRuntimeSettings(await kvGetJson<ScalpRuntimeSettings>(SCALP_RUNTIME_SETTINGS_KEY));
+    const strategyId = resolveStrategyId(params.strategyId, current.defaultStrategyId);
     const nextSettings: ScalpRuntimeSettings = {
-        strategyEnabled: Boolean(params.enabled),
+        defaultStrategyId: current.defaultStrategyId,
+        strategies: { ...current.strategies },
+    };
+    nextSettings.strategies[strategyId] = {
+        enabled: Boolean(params.enabled),
         updatedAtMs: Date.now(),
-        updatedBy: String(params.updatedBy || '').trim() || null,
+        updatedBy: parseUpdatedBy(params.updatedBy),
     };
-    await kvSetJson(SCALP_RUNTIME_SETTINGS_KEY, nextSettings);
-    return {
-        shortName: SCALP_STRATEGY_SHORT_NAME,
-        longName: SCALP_STRATEGY_LONG_NAME,
-        enabled: Boolean(params.envEnabled) && nextSettings.strategyEnabled,
-        envEnabled: Boolean(params.envEnabled),
-        kvEnabled: nextSettings.strategyEnabled,
-        updatedAtMs: nextSettings.updatedAtMs,
-        updatedBy: nextSettings.updatedBy,
+    await kvSetJson(SCALP_RUNTIME_SETTINGS_KEY, serializeScalpRuntimeSettings(nextSettings));
+    return loadScalpStrategyRuntimeSnapshot(params.envEnabled, strategyId);
+}
+
+export async function setScalpDefaultStrategy(params: {
+    strategyId: string;
+    envEnabled: boolean;
+}): Promise<ScalpStrategyRuntimeSnapshot> {
+    const current = parseScalpRuntimeSettings(await kvGetJson<ScalpRuntimeSettings>(SCALP_RUNTIME_SETTINGS_KEY));
+    const strategyId = resolveStrategyId(params.strategyId, current.defaultStrategyId);
+    const nextSettings: ScalpRuntimeSettings = {
+        defaultStrategyId: strategyId,
+        strategies: { ...current.strategies },
     };
+    await kvSetJson(SCALP_RUNTIME_SETTINGS_KEY, serializeScalpRuntimeSettings(nextSettings));
+    return loadScalpStrategyRuntimeSnapshot(params.envEnabled, strategyId);
 }
 
 function parseSessionState(raw: unknown): ScalpSessionState | null {
@@ -185,16 +315,30 @@ function parseSessionState(raw: unknown): ScalpSessionState | null {
     };
 }
 
-export async function loadScalpSessionState(symbol: string, dayKey: string): Promise<ScalpSessionState | null> {
-    const raw = await kvGetJson<ScalpSessionState>(stateKey(symbol, dayKey));
-    return parseSessionState(raw);
+export async function loadScalpSessionState(
+    symbol: string,
+    dayKey: string,
+    strategyId = defaultScalpStrategy.id,
+): Promise<ScalpSessionState | null> {
+    const resolvedStrategyId = resolveStrategyId(strategyId, defaultScalpStrategy.id);
+    const raw = await kvGetJson<ScalpSessionState>(stateKey(resolvedStrategyId, symbol, dayKey));
+    const parsed = parseSessionState(raw);
+    if (parsed) return parsed;
+
+    if (resolvedStrategyId === defaultScalpStrategy.id) {
+        const legacyRaw = await kvGetJson<ScalpSessionState>(legacyStateKey(symbol, dayKey));
+        return parseSessionState(legacyRaw);
+    }
+    return null;
 }
 
 export async function saveScalpSessionState(
     state: ScalpSessionState,
     ttlSeconds = SCALP_DEFAULT_STATE_TTL_SECONDS,
+    strategyId = defaultScalpStrategy.id,
 ): Promise<void> {
-    await kvSetJson(stateKey(state.symbol, state.dayKey), state, Math.max(30, Math.floor(ttlSeconds)));
+    const resolvedStrategyId = resolveStrategyId(strategyId, defaultScalpStrategy.id);
+    await kvSetJson(stateKey(resolvedStrategyId, state.symbol, state.dayKey), state, Math.max(30, Math.floor(ttlSeconds)));
 }
 
 function sanitizeJournalEntry(entry: ScalpJournalEntry): ScalpJournalEntry {
@@ -245,19 +389,24 @@ async function kvRawCommand(command: string, ...args: Array<string | number>): P
     return (data as any).result ?? null;
 }
 
-export async function tryAcquireScalpRunLock(symbol: string, token: string, ttlSeconds: number): Promise<boolean> {
+export async function tryAcquireScalpRunLock(
+    symbol: string,
+    token: string,
+    ttlSeconds: number,
+    strategyId = defaultScalpStrategy.id,
+): Promise<boolean> {
     if (!KV_REST_API_URL || !KV_REST_API_TOKEN) {
         return true;
     }
-    const key = runLockKey(symbol);
+    const key = runLockKey(resolveStrategyId(strategyId, defaultScalpStrategy.id), symbol);
     const ttl = Math.max(15, Math.floor(ttlSeconds));
     const result = await kvRawCommand('SET', key, token, 'NX', 'EX', ttl);
     return String(result || '').toUpperCase() === 'OK';
 }
 
-export async function releaseScalpRunLock(symbol: string, token: string): Promise<void> {
+export async function releaseScalpRunLock(symbol: string, token: string, strategyId = defaultScalpStrategy.id): Promise<void> {
     if (!KV_REST_API_URL || !KV_REST_API_TOKEN) return;
-    const key = runLockKey(symbol);
+    const key = runLockKey(resolveStrategyId(strategyId, defaultScalpStrategy.id), symbol);
     const current = await kvRawCommand('GET', key);
     if (String(current || '') !== token) return;
     await kvRawCommand('DEL', key);

@@ -228,6 +228,17 @@ type ScalpDashboardSymbol = {
   reasonCodes?: string[];
 };
 
+type ScalpStrategyControl = {
+  strategyId?: string;
+  shortName?: string;
+  longName?: string;
+  enabled?: boolean;
+  envEnabled?: boolean;
+  kvEnabled?: boolean | null;
+  updatedAtMs?: number | null;
+  updatedBy?: string | null;
+};
+
 type ScalpSummaryResponse = {
   mode?: 'scalp';
   generatedAtMs?: number;
@@ -239,15 +250,10 @@ type ScalpSummaryResponse = {
     profiles?: string[];
     symbolProfileCount?: number;
   };
-  strategy?: {
-    shortName?: string;
-    longName?: string;
-    enabled?: boolean;
-    envEnabled?: boolean;
-    kvEnabled?: boolean | null;
-    updatedAtMs?: number | null;
-    updatedBy?: string | null;
-  };
+  strategyId?: string;
+  defaultStrategyId?: string;
+  strategy?: ScalpStrategyControl;
+  strategies?: ScalpStrategyControl[];
   summary?: {
     symbols?: number;
     openCount?: number;
@@ -323,6 +329,7 @@ const FOREX_LIVE_POLL_MS = 3000;
 const ADMIN_SECRET_STORAGE_KEY = 'admin_access_secret';
 const ADMIN_AUTH_TIMEOUT_MS = 4000;
 const STRATEGY_MODE_STORAGE_KEY = 'strategy_mode';
+const SCALP_SELECTED_STRATEGY_STORAGE_KEY = 'scalp_selected_strategy_id';
 
 const ChartPanel = dynamic(() => import('../components/ChartPanel'), {
   ssr: false,
@@ -375,6 +382,7 @@ export default function Home() {
   const [strategyMode, setStrategyMode] = useState<StrategyMode>('swing');
   const [forexSummary, setForexSummary] = useState<ForexSummaryResponse | null>(null);
   const [scalpSummary, setScalpSummary] = useState<ScalpSummaryResponse | null>(null);
+  const [scalpSelectedStrategyId, setScalpSelectedStrategyId] = useState<string | null>(null);
   const [scalpExecuteSubmitting, setScalpExecuteSubmitting] = useState(false);
   const [scalpStrategySubmitting, setScalpStrategySubmitting] = useState(false);
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
@@ -656,11 +664,18 @@ export default function Home() {
     }
   };
 
-  const loadScalpDashboard = async (opts: { silent?: boolean } = {}) => {
+  const loadScalpDashboard = async (opts: { silent?: boolean; strategyId?: string | null } = {}) => {
     const silent = opts.silent === true;
+    const preferredStrategyId = typeof opts.strategyId === 'string' ? opts.strategyId.trim() : '';
+    const effectiveStrategyId = preferredStrategyId || (scalpSelectedStrategyId || '').trim();
     if (!silent) setLoading(true);
     try {
-      const summaryRes = await fetch('/api/scalp/dashboard/summary', {
+      const params = new URLSearchParams();
+      if (effectiveStrategyId) params.set('strategyId', effectiveStrategyId);
+      const path = params.toString()
+        ? `/api/scalp/dashboard/summary?${params.toString()}`
+        : '/api/scalp/dashboard/summary';
+      const summaryRes = await fetch(path, {
         headers: buildAdminHeaders(),
         cache: 'no-store',
       });
@@ -673,6 +688,13 @@ export default function Home() {
       }
       const summaryJson: ScalpSummaryResponse = await summaryRes.json();
       setScalpSummary(summaryJson);
+      const resolvedStrategyId = String(summaryJson.strategy?.strategyId || summaryJson.strategyId || '').trim();
+      if (resolvedStrategyId && resolvedStrategyId !== scalpSelectedStrategyId) {
+        setScalpSelectedStrategyId(resolvedStrategyId);
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem(SCALP_SELECTED_STRATEGY_STORAGE_KEY, resolvedStrategyId);
+        }
+      }
       setError(null);
     } catch (err: any) {
       setError(err?.message || 'Failed to load scalp dashboard');
@@ -720,11 +742,15 @@ export default function Home() {
     setScalpExecuteSubmitting(true);
     setError(null);
     try {
+      const strategyId = String(
+        scalpSummary?.strategy?.strategyId || scalpSummary?.strategyId || scalpSelectedStrategyId || '',
+      ).trim();
       const params = new URLSearchParams({
         all: 'true',
         dryRun: 'true',
         t: String(Date.now()),
       });
+      if (strategyId) params.set('strategyId', strategyId);
       const executeRes = await fetch(`/api/scalp/cron/execute-hybrid?${params.toString()}`, {
         headers: buildAdminHeaders(),
         cache: 'no-store',
@@ -741,7 +767,7 @@ export default function Home() {
         } catch {}
         throw new Error(message);
       }
-      await loadScalpDashboard();
+      await loadScalpDashboard({ strategyId });
     } catch (err: any) {
       setError(err?.message || 'Failed to run scalp execute');
     } finally {
@@ -749,7 +775,7 @@ export default function Home() {
     }
   };
 
-  const updateScalpStrategyEnabled = async (enabled: boolean) => {
+  const updateScalpStrategyEnabled = async (enabled: boolean, strategyId: string) => {
     if (scalpStrategySubmitting) return;
     setScalpStrategySubmitting(true);
     setError(null);
@@ -761,6 +787,7 @@ export default function Home() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
+          strategyId,
           enabled,
           updatedBy: 'dashboard-ui',
         }),
@@ -778,9 +805,46 @@ export default function Home() {
         } catch {}
         throw new Error(message);
       }
-      await loadScalpDashboard({ silent: true });
+      await loadScalpDashboard({ silent: true, strategyId });
     } catch (err: any) {
       setError(err?.message || 'Failed to update scalp strategy');
+    } finally {
+      setScalpStrategySubmitting(false);
+    }
+  };
+
+  const setScalpDefaultStrategy = async (strategyId: string) => {
+    if (scalpStrategySubmitting) return;
+    setScalpStrategySubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/scalp/strategy/control', {
+        method: 'POST',
+        headers: {
+          ...(buildAdminHeaders() || {}),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          defaultStrategyId: strategyId,
+          updatedBy: 'dashboard-ui',
+        }),
+        cache: 'no-store',
+      });
+      if (res.status === 401) {
+        handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+        throw new Error('Unauthorized');
+      }
+      if (!res.ok) {
+        let message = `Failed to set scalp default strategy (${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.error) message = `${message}: ${String(body.error)}`;
+        } catch {}
+        throw new Error(message);
+      }
+      await loadScalpDashboard({ silent: true, strategyId });
+    } catch (err: any) {
+      setError(err?.message || 'Failed to set scalp default strategy');
     } finally {
       setScalpStrategySubmitting(false);
     }
@@ -927,6 +991,14 @@ export default function Home() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    const stored = String(window.localStorage.getItem(SCALP_SELECTED_STRATEGY_STORAGE_KEY) || '').trim();
+    if (stored) {
+      setScalpSelectedStrategyId(stored);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
     if (themePreference !== 'system') return;
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const handleThemeChange = () => {
@@ -953,11 +1025,11 @@ export default function Home() {
       return;
     }
     if (strategyMode === 'scalp') {
-      loadScalpDashboard();
+      loadScalpDashboard({ strategyId: scalpSelectedStrategyId });
       return;
     }
     loadDashboard();
-  }, [adminGranted, dashboardRange, strategyMode]);
+  }, [adminGranted, dashboardRange, strategyMode, scalpSelectedStrategyId]);
 
   useEffect(() => {
     if (!adminGranted || (strategyMode !== 'forex' && strategyMode !== 'scalp')) return;
@@ -966,10 +1038,10 @@ export default function Home() {
         void loadForexDashboard({ silent: true });
         return;
       }
-      void loadScalpDashboard({ silent: true });
+      void loadScalpDashboard({ silent: true, strategyId: scalpSelectedStrategyId });
     }, FOREX_LIVE_POLL_MS);
     return () => window.clearInterval(timerId);
-  }, [adminGranted, strategyMode, adminSecret]);
+  }, [adminGranted, strategyMode, adminSecret, scalpSelectedStrategyId]);
 
   useEffect(() => {
     const symbol = symbols[active] || null;
@@ -1384,13 +1456,28 @@ export default function Home() {
     : activeSymbol
     ? `Loading ${activeSymbol}...`
     : 'Loading selected symbol...';
-  const scalpStrategyShortName = scalpSummary?.strategy?.shortName || 'HSS-ICT M15/M3';
-  const scalpStrategyLongName =
-    scalpSummary?.strategy?.longName || 'Hybrid Session-Scoped ICT Scalp (M15/M3)';
-  const scalpStrategyEnabled = scalpSummary?.strategy?.enabled !== false;
-  const scalpStrategyEnvEnabled = scalpSummary?.strategy?.envEnabled !== false;
+  const scalpStrategies = Array.isArray(scalpSummary?.strategies) ? scalpSummary!.strategies! : [];
+  const scalpCurrentStrategy =
+    scalpSummary?.strategy ||
+    scalpStrategies.find((row) => row?.strategyId && row.strategyId === scalpSummary?.strategyId) ||
+    scalpStrategies[0] ||
+    null;
+  const scalpCurrentStrategyId = String(
+    scalpCurrentStrategy?.strategyId || scalpSummary?.strategyId || scalpSelectedStrategyId || '',
+  ).trim();
+  const scalpDefaultStrategyId = String(scalpSummary?.defaultStrategyId || '').trim();
+  const scalpStrategyShortName = scalpCurrentStrategy?.shortName || 'HSS-ICT M15/M3';
+  const scalpStrategyLongName = scalpCurrentStrategy?.longName || 'Hybrid Session-Scoped ICT Scalp (M15/M3)';
+  const scalpStrategyEnabled = scalpCurrentStrategy?.enabled !== false;
+  const scalpStrategyEnvEnabled = scalpCurrentStrategy?.envEnabled !== false;
+  const scalpSelectedIsDefault = scalpCurrentStrategyId && scalpCurrentStrategyId === scalpDefaultStrategyId;
   const scalpSwitchDisabled =
-    !adminGranted || scalpStrategySubmitting || loading || !scalpSummary || !scalpStrategyEnvEnabled;
+    !adminGranted ||
+    scalpStrategySubmitting ||
+    loading ||
+    !scalpSummary ||
+    !scalpStrategyEnvEnabled ||
+    !scalpCurrentStrategyId;
   const forexTotalOpenPnl = (() => {
     const rows = Array.isArray(forexSummary?.pairs) ? forexSummary.pairs : [];
     const openRows = rows.filter(
@@ -1622,6 +1709,36 @@ export default function Home() {
             {strategyMode === 'scalp' ? (
               <>
                 <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5">
+                  <select
+                    value={scalpCurrentStrategyId}
+                    onChange={(event) => {
+                      const nextId = String(event.target.value || '').trim();
+                      setScalpSelectedStrategyId(nextId || null);
+                      if (typeof window !== 'undefined') {
+                        if (nextId) {
+                          window.localStorage.setItem(SCALP_SELECTED_STRATEGY_STORAGE_KEY, nextId);
+                        } else {
+                          window.localStorage.removeItem(SCALP_SELECTED_STRATEGY_STORAGE_KEY);
+                        }
+                      }
+                      void loadScalpDashboard({ strategyId: nextId || null });
+                    }}
+                    disabled={!adminGranted || loading || !scalpStrategies.length || scalpStrategySubmitting}
+                    className="rounded-full border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                    title={scalpStrategyLongName}
+                  >
+                    {scalpStrategies.map((row) => {
+                      const id = String(row?.strategyId || '').trim();
+                      if (!id) return null;
+                      const shortName = String(row?.shortName || id);
+                      const defaultTag = id === scalpDefaultStrategyId ? ' (default)' : '';
+                      return (
+                        <option key={id} value={id}>
+                          {shortName}{defaultTag}
+                        </option>
+                      );
+                    })}
+                  </select>
                   <span
                     className="text-xs font-semibold text-slate-700"
                     title={scalpStrategyLongName}
@@ -1634,7 +1751,7 @@ export default function Home() {
                     aria-checked={scalpStrategyEnabled}
                     aria-label={`${scalpStrategyShortName} strategy switch`}
                     title={scalpStrategyLongName}
-                    onClick={() => void updateScalpStrategyEnabled(!scalpStrategyEnabled)}
+                    onClick={() => void updateScalpStrategyEnabled(!scalpStrategyEnabled, scalpCurrentStrategyId)}
                     disabled={scalpSwitchDisabled}
                     className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
                       scalpStrategyEnabled ? 'bg-emerald-500' : 'bg-slate-300'
@@ -1649,10 +1766,20 @@ export default function Home() {
                   <span className="text-xs font-semibold text-slate-600">
                     {scalpStrategySubmitting ? 'Saving…' : scalpStrategyEnabled ? 'On' : 'Off'}
                   </span>
+                  {!scalpSelectedIsDefault && scalpCurrentStrategyId ? (
+                    <button
+                      type="button"
+                      onClick={() => void setScalpDefaultStrategy(scalpCurrentStrategyId)}
+                      disabled={scalpStrategySubmitting || !adminGranted}
+                      className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Make Default
+                    </button>
+                  ) : null}
                 </div>
                 <button
                   onClick={runScalpExecute}
-                  disabled={!adminGranted || scalpExecuteSubmitting || !scalpStrategyEnabled}
+                  disabled={!adminGranted || scalpExecuteSubmitting || !scalpStrategyEnabled || !scalpCurrentStrategyId}
                   className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {scalpExecuteSubmitting ? 'Running Hybrid…' : 'Run Hybrid (Dry)'}
@@ -1666,7 +1793,7 @@ export default function Home() {
                   return;
                 }
                 if (strategyMode === 'scalp') {
-                  loadScalpDashboard();
+                  loadScalpDashboard({ strategyId: scalpSelectedStrategyId });
                   return;
                 }
                 loadDashboard();
@@ -1877,7 +2004,7 @@ export default function Home() {
             ) : !scalpSummary?.symbols?.length ? (
               <div className="flex items-center justify-center py-12 text-sm font-semibold text-slate-500">
                 {scalpStrategyEnabled
-                  ? 'No scalp data yet. Trigger `/api/scalp/cron/execute-hybrid?all=true&dryRun=true` then refresh.'
+                  ? `No scalp data yet for ${scalpStrategyShortName}. Trigger /api/scalp/cron/execute-hybrid?all=true&dryRun=true then refresh.`
                   : 'Scalp strategy is OFF. Turn the switch on to run cycles.'}
               </div>
             ) : (
@@ -1893,6 +2020,10 @@ export default function Home() {
                     Strategy:{' '}
                     <span className="font-semibold text-slate-800" title={scalpStrategyLongName}>
                       {scalpStrategyShortName}
+                    </span>{' '}
+                    {scalpCurrentStrategyId ? `(${scalpCurrentStrategyId})` : ''} · Default:{' '}
+                    <span className="font-semibold text-slate-800">
+                      {scalpDefaultStrategyId || 'n/a'}
                     </span>{' '}
                     · Switch:{' '}
                     <span className={scalpStrategyEnabled ? 'font-semibold text-emerald-700' : 'font-semibold text-rose-700'}>

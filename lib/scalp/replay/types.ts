@@ -26,6 +26,7 @@ export interface ScalpReplayCandle {
 
 export interface ScalpReplayRuntimeConfig {
     symbol: string;
+    strategyId: string;
     executeMinutes: number;
     defaultSpreadPips: number;
     spreadFactor: number;

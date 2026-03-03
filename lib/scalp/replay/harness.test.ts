@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { defaultScalpReplayConfig, normalizeScalpReplayInput, runScalpReplay } from './harness';
+import { getDefaultScalpStrategy, listScalpStrategies } from '../strategies/registry';
 import type { ScalpReplayInputFile } from './types';
 
 test('scalp replay sample fixture produces deterministic non-empty run summary', async () => {
@@ -27,4 +28,41 @@ test('scalp replay sample fixture produces deterministic non-empty run summary',
     assert.ok(result.summary.trades >= 0, 'expected trades count to be non-negative');
     assert.ok(Number.isFinite(result.summary.expectancyR), 'expectancy must be finite');
     assert.ok(Number.isFinite(result.summary.maxDrawdownR), 'maxDrawdownR must be finite');
+});
+
+test('scalp replay resolves unknown strategy id to default strategy', async () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const fixturePath = path.resolve(here, '../../../data/scalp-replay/fixtures/eurusd.sample.json');
+    const raw = await readFile(fixturePath, 'utf8');
+    const input = normalizeScalpReplayInput(JSON.parse(raw) as ScalpReplayInputFile);
+    const config = defaultScalpReplayConfig(input.symbol);
+    config.strategyId = 'does-not-exist';
+
+    const result = runScalpReplay({
+        candles: input.candles,
+        pipSize: input.pipSize,
+        config,
+    });
+
+    assert.equal(result.config.strategyId, getDefaultScalpStrategy().id);
+});
+
+test('scalp replay accepts a registered non-default strategy id', async () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const fixturePath = path.resolve(here, '../../../data/scalp-replay/fixtures/eurusd.sample.json');
+    const raw = await readFile(fixturePath, 'utf8');
+    const input = normalizeScalpReplayInput(JSON.parse(raw) as ScalpReplayInputFile);
+    const config = defaultScalpReplayConfig(input.symbol);
+    const alt = listScalpStrategies().find((row) => row.id !== config.strategyId);
+    assert.ok(alt, 'expected at least one alternate registered scalp strategy');
+    config.strategyId = alt!.id;
+
+    const result = runScalpReplay({
+        candles: input.candles,
+        pipSize: input.pipSize,
+        config,
+    });
+
+    assert.equal(result.config.strategyId, alt!.id);
+    assert.ok(result.summary.runs > 0, 'expected replay runs > 0');
 });
