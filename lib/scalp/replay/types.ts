@@ -122,3 +122,12 @@ export interface ScalpReplayResult {
     trades: ScalpReplayTrade[];
     timeline: ScalpReplayTimelineEvent[];
 }
+
+export interface ScalpReplayProgressEvent {
+    runs: number;
+    estimatedTotalRuns: number;
+    completedPct: number;
+    trades: number;
+    nowTs: number;
+    elapsedMs: number;
+}

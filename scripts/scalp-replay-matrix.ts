@@ -95,6 +95,8 @@ function usage() {
         '  --sweepBufferPips <csv>        Sweep buffer in pips (default: config value)',
         '  --mssLookbackBars <csv>        MSS lookback bars (default: config value)',
         '  --ifvgEntryModes <csv>         first_touch|midline_touch|full_fill',
+        '  --matrixProgressEveryRuns <int> Matrix progress log interval in completed runs (default: 25)',
+        '  --matrixProgressMinIntervalMs <int> Matrix progress minimum interval ms (default: 8000)',
         '  --help',
     ].join('\n');
 }
@@ -488,6 +490,36 @@ async function main() {
               });
 
     const runs: RunSummary[] = [];
+    const totalPlannedRuns = fixtureInputs.length * scenarios.length;
+    const matrixProgressEveryRunsRaw = toNum(args.matrixProgressEveryRuns);
+    const matrixProgressEveryRuns =
+        matrixProgressEveryRunsRaw !== undefined && matrixProgressEveryRunsRaw > 0 ? Math.floor(matrixProgressEveryRunsRaw) : 25;
+    const matrixProgressMinIntervalMsRaw = toNum(args.matrixProgressMinIntervalMs);
+    const matrixProgressMinIntervalMs =
+        matrixProgressMinIntervalMsRaw !== undefined && matrixProgressMinIntervalMsRaw >= 0
+            ? Math.floor(matrixProgressMinIntervalMsRaw)
+            : 8000;
+    const matrixStartedAtMs = Date.now();
+    let completedRuns = 0;
+    let lastProgressRuns = 0;
+    let lastProgressAtMs = matrixStartedAtMs;
+
+    const logMatrixProgress = (fixtureId: string, scenarioId: string, force = false) => {
+        const now = Date.now();
+        if (force && completedRuns === lastProgressRuns) return;
+        const dueByRuns = completedRuns - lastProgressRuns >= matrixProgressEveryRuns;
+        const dueByTime = matrixProgressMinIntervalMs > 0 && now - lastProgressAtMs >= matrixProgressMinIntervalMs;
+        if (!force && !dueByRuns && !dueByTime) return;
+        const pct = totalPlannedRuns > 0 ? (completedRuns / totalPlannedRuns) * 100 : 100;
+        console.log(
+            `[matrix-progress] completed=${completedRuns}/${totalPlannedRuns} pct=${pct.toFixed(2)} latest=${fixtureId}:${scenarioId} elapsedMs=${now - matrixStartedAtMs}`,
+        );
+        lastProgressRuns = completedRuns;
+        lastProgressAtMs = now;
+    };
+
+    console.log(`Matrix replay started | fixtures=${fixtureInputs.length} scenarios=${scenarios.length} plannedRuns=${totalPlannedRuns}`);
+
     for (const fixture of fixtureInputs) {
         for (const scenario of scenarios) {
             const baseConfig = defaultScalpReplayConfig(fixture.input.symbol);
@@ -531,8 +563,12 @@ async function main() {
                 maxDrawdownR: replay.summary.maxDrawdownR,
                 avgHoldMinutes: replay.summary.avgHoldMinutes,
             });
+            completedRuns += 1;
+            logMatrixProgress(fixture.id, scenario.id);
         }
     }
+
+    logMatrixProgress(fixtureInputs[fixtureInputs.length - 1]!.id, scenarios[scenarios.length - 1]!.id, true);
 
     const byNetR = runs.slice().sort((a, b) => b.netR - a.netR);
     const aggregates = aggregateScenarios(runs, fixtureInputs.length);

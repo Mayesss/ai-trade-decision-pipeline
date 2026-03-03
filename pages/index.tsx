@@ -239,6 +239,15 @@ type ScalpSummaryResponse = {
     profiles?: string[];
     symbolProfileCount?: number;
   };
+  strategy?: {
+    shortName?: string;
+    longName?: string;
+    enabled?: boolean;
+    envEnabled?: boolean;
+    kvEnabled?: boolean | null;
+    updatedAtMs?: number | null;
+    updatedBy?: string | null;
+  };
   summary?: {
     symbols?: number;
     openCount?: number;
@@ -367,6 +376,7 @@ export default function Home() {
   const [forexSummary, setForexSummary] = useState<ForexSummaryResponse | null>(null);
   const [scalpSummary, setScalpSummary] = useState<ScalpSummaryResponse | null>(null);
   const [scalpExecuteSubmitting, setScalpExecuteSubmitting] = useState(false);
+  const [scalpStrategySubmitting, setScalpStrategySubmitting] = useState(false);
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
   const [livePriceConnected, setLivePriceConnected] = useState(false);
@@ -736,6 +746,43 @@ export default function Home() {
       setError(err?.message || 'Failed to run scalp execute');
     } finally {
       setScalpExecuteSubmitting(false);
+    }
+  };
+
+  const updateScalpStrategyEnabled = async (enabled: boolean) => {
+    if (scalpStrategySubmitting) return;
+    setScalpStrategySubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/scalp/strategy/control', {
+        method: 'POST',
+        headers: {
+          ...(buildAdminHeaders() || {}),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          enabled,
+          updatedBy: 'dashboard-ui',
+        }),
+        cache: 'no-store',
+      });
+      if (res.status === 401) {
+        handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+        throw new Error('Unauthorized');
+      }
+      if (!res.ok) {
+        let message = `Failed to update scalp strategy (${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.error) message = `${message}: ${String(body.error)}`;
+        } catch {}
+        throw new Error(message);
+      }
+      await loadScalpDashboard({ silent: true });
+    } catch (err: any) {
+      setError(err?.message || 'Failed to update scalp strategy');
+    } finally {
+      setScalpStrategySubmitting(false);
     }
   };
 
@@ -1337,6 +1384,13 @@ export default function Home() {
     : activeSymbol
     ? `Loading ${activeSymbol}...`
     : 'Loading selected symbol...';
+  const scalpStrategyShortName = scalpSummary?.strategy?.shortName || 'HSS-ICT M15/M3';
+  const scalpStrategyLongName =
+    scalpSummary?.strategy?.longName || 'Hybrid Session-Scoped ICT Scalp (M15/M3)';
+  const scalpStrategyEnabled = scalpSummary?.strategy?.enabled !== false;
+  const scalpStrategyEnvEnabled = scalpSummary?.strategy?.envEnabled !== false;
+  const scalpSwitchDisabled =
+    !adminGranted || scalpStrategySubmitting || loading || !scalpSummary || !scalpStrategyEnvEnabled;
   const forexTotalOpenPnl = (() => {
     const rows = Array.isArray(forexSummary?.pairs) ? forexSummary.pairs : [];
     const openRows = rows.filter(
@@ -1566,13 +1620,44 @@ export default function Home() {
               </button>
             ) : null}
             {strategyMode === 'scalp' ? (
-              <button
-                onClick={runScalpExecute}
-                disabled={!adminGranted || scalpExecuteSubmitting}
-                className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {scalpExecuteSubmitting ? 'Running Hybrid…' : 'Run Hybrid (Dry)'}
-              </button>
+              <>
+                <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5">
+                  <span
+                    className="text-xs font-semibold text-slate-700"
+                    title={scalpStrategyLongName}
+                  >
+                    {scalpStrategyShortName}
+                  </span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={scalpStrategyEnabled}
+                    aria-label={`${scalpStrategyShortName} strategy switch`}
+                    title={scalpStrategyLongName}
+                    onClick={() => void updateScalpStrategyEnabled(!scalpStrategyEnabled)}
+                    disabled={scalpSwitchDisabled}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
+                      scalpStrategyEnabled ? 'bg-emerald-500' : 'bg-slate-300'
+                    } disabled:cursor-not-allowed disabled:opacity-60`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
+                        scalpStrategyEnabled ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                  <span className="text-xs font-semibold text-slate-600">
+                    {scalpStrategySubmitting ? 'Saving…' : scalpStrategyEnabled ? 'On' : 'Off'}
+                  </span>
+                </div>
+                <button
+                  onClick={runScalpExecute}
+                  disabled={!adminGranted || scalpExecuteSubmitting || !scalpStrategyEnabled}
+                  className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {scalpExecuteSubmitting ? 'Running Hybrid…' : 'Run Hybrid (Dry)'}
+                </button>
+              </>
             ) : null}
             <button
               onClick={() => {
@@ -1791,7 +1876,9 @@ export default function Home() {
               </div>
             ) : !scalpSummary?.symbols?.length ? (
               <div className="flex items-center justify-center py-12 text-sm font-semibold text-slate-500">
-                No scalp data yet. Trigger `/api/scalp/cron/execute-hybrid?all=true&dryRun=true` then refresh.
+                {scalpStrategyEnabled
+                  ? 'No scalp data yet. Trigger `/api/scalp/cron/execute-hybrid?all=true&dryRun=true` then refresh.'
+                  : 'Scalp strategy is OFF. Turn the switch on to run cycles.'}
               </div>
             ) : (
               <div className="space-y-4">
@@ -1801,6 +1888,17 @@ export default function Home() {
                     Day key: {scalpSummary.dayKey || 'n/a'} · Clock:{' '}
                     {scalpSummary.clockMode || 'n/a'} · Policy:{' '}
                     {scalpSummary.policy?.defaultProfile || 'baseline'} (v{scalpSummary.policy?.version ?? 1})
+                  </div>
+                  <div className="mt-2 text-sm text-slate-700">
+                    Strategy:{' '}
+                    <span className="font-semibold text-slate-800" title={scalpStrategyLongName}>
+                      {scalpStrategyShortName}
+                    </span>{' '}
+                    · Switch:{' '}
+                    <span className={scalpStrategyEnabled ? 'font-semibold text-emerald-700' : 'font-semibold text-rose-700'}>
+                      {scalpStrategyEnabled ? 'ON' : 'OFF'}
+                    </span>
+                    {scalpSummary.strategy?.envEnabled === false ? ' · Forced off by SCALP_ENABLED' : ''}
                   </div>
                   <div className="mt-2 text-sm text-slate-700">
                     Symbols: {scalpSummary.summary?.symbols ?? scalpSummary.symbols.length} · In trade:{' '}

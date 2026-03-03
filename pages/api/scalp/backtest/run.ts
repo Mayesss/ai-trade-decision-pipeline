@@ -20,6 +20,8 @@ type BacktestRequestBody = {
   slippagePips?: number;
   defaultSpreadPips?: number;
   executeMinutes?: number;
+  progressEveryRuns?: number | string;
+  progressMinIntervalMs?: number | string;
   preferStopWhenBothHit?: boolean;
   forceCloseAtEnd?: boolean;
   debug?: boolean | string;
@@ -259,6 +261,26 @@ function selectStoredHistoryRows(params: {
   return toRawRowsFromStoredHistory(sorted.slice(-limit));
 }
 
+async function loadStoredHistoryRowsForTimeframe(params: {
+  symbol: string;
+  timeframe: string;
+  backend?: CandleHistoryBackend;
+  hasEffectiveRange: boolean;
+  fromTsMs: number | null;
+  toTsMs: number | null;
+  lookbackCandles: number;
+}): Promise<any[]> {
+  const history = await loadScalpCandleHistory(params.symbol, params.timeframe, { backend: params.backend });
+  return selectStoredHistoryRows({
+    rows: history.record?.candles ?? [],
+    hasEffectiveRange: params.hasEffectiveRange,
+    fromTsMs: params.fromTsMs,
+    toTsMs: params.toTsMs,
+    lookbackCandles: params.lookbackCandles,
+    timeframe: params.timeframe,
+  });
+}
+
 async function fetchReplayCandlesWithFallback(params: {
   epic: string;
   lookbackCandles: number;
@@ -379,8 +401,8 @@ function applyRuntimeOverrides(runtime: ScalpReplayRuntimeConfig, body: Backtest
   next.forceCloseAtEnd = toBool(body.forceCloseAtEnd, next.forceCloseAtEnd);
 
   next.strategy.sessionClockMode = parseClockMode(strategy.sessionClockMode, next.strategy.sessionClockMode);
-  next.strategy.asiaBaseTf = parseBaseTf(strategy.asiaBaseTf, next.strategy.asiaBaseTf);
-  next.strategy.confirmTf = parseConfirmTf(strategy.confirmTf, next.strategy.confirmTf);
+  next.strategy.asiaBaseTf = 'M15';
+  next.strategy.confirmTf = 'M3';
   next.strategy.maxTradesPerDay = toPositiveInt(strategy.maxTradesPerDay, next.strategy.maxTradesPerDay);
   next.strategy.riskPerTradePct = toPositiveNumber(strategy.riskPerTradePct, next.strategy.riskPerTradePct);
   next.strategy.referenceEquityUsd = toPositiveNumber(strategy.referenceEquityUsd, next.strategy.referenceEquityUsd);
@@ -688,7 +710,85 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       },
       debugEnabled,
     );
-    const rawCandles = fetched.candles;
+    let replayBaseRawCandles = Array.isArray(fetched.candles) ? fetched.candles : [];
+    let replayConfirmRawCandles: any[] | null = null;
+    let replayPriceRawCandles: any[] | null = null;
+    let replayBaseSourceTimeframe = fetched.sourceTimeframe;
+    let replayConfirmSourceTimeframe: string | null = null;
+
+    const canUseDualStoredSources =
+      useStoredHistory &&
+      runtime.strategy.asiaBaseTf === 'M15' &&
+      runtime.strategy.confirmTf === 'M3';
+    if (canUseDualStoredSources) {
+      try {
+        const [base15Rows, confirm1Rows] = await Promise.all([
+          loadStoredHistoryRowsForTimeframe({
+            symbol,
+            timeframe: '15m',
+            backend: requestedHistoryBackend,
+            hasEffectiveRange,
+            fromTsMs: effectiveRequestedFromTsMs,
+            toTsMs: effectiveRequestedToTsMs,
+            lookbackCandles,
+          }),
+          loadStoredHistoryRowsForTimeframe({
+            symbol,
+            timeframe: '1m',
+            backend: requestedHistoryBackend,
+            hasEffectiveRange,
+            fromTsMs: effectiveRequestedFromTsMs,
+            toTsMs: effectiveRequestedToTsMs,
+            lookbackCandles,
+          }),
+        ]);
+        if (base15Rows.length >= MIN_LOOKBACK_CANDLES && confirm1Rows.length >= MIN_LOOKBACK_CANDLES) {
+          replayBaseRawCandles = base15Rows;
+          replayConfirmRawCandles = confirm1Rows;
+          replayPriceRawCandles = confirm1Rows;
+          replayBaseSourceTimeframe = '15m';
+          replayConfirmSourceTimeframe = '1m';
+          logBacktest(
+            'replay_dual_timeframe_sources',
+            {
+              symbol,
+              enabled: true,
+              baseSourceTimeframe: replayBaseSourceTimeframe,
+              baseCandles: replayBaseRawCandles.length,
+              confirmSourceTimeframe: replayConfirmSourceTimeframe,
+              confirmCandles: replayConfirmRawCandles.length,
+            },
+            true,
+          );
+        } else {
+          logBacktest(
+            'replay_dual_timeframe_sources',
+            {
+              symbol,
+              enabled: false,
+              reason: 'insufficient_history_rows',
+              baseCandles: base15Rows.length,
+              confirmCandles: confirm1Rows.length,
+            },
+            true,
+          );
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err || 'unknown error');
+        logBacktest(
+          'replay_dual_timeframe_sources',
+          {
+            symbol,
+            enabled: false,
+            reason: 'load_failed',
+            errorMessage: message,
+          },
+          true,
+        );
+      }
+    }
+
+    const rawCandles = replayBaseRawCandles;
     if (!Array.isArray(rawCandles) || rawCandles.length < MIN_LOOKBACK_CANDLES) {
       return res.status(422).json({
         error: 'insufficient_candles',
@@ -696,16 +796,76 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
+    const replayBaseCandles = toReplayInputCandles(rawCandles, spreadPips);
+    const replayConfirmInputCandles = replayConfirmRawCandles ? toReplayInputCandles(replayConfirmRawCandles, spreadPips) : null;
+    const replayPriceInputCandles = replayPriceRawCandles ? toReplayInputCandles(replayPriceRawCandles, spreadPips) : null;
     const replayInput: ScalpReplayInputFile = {
       symbol,
       pipSize: pipSizeForScalpSymbol(symbol),
-      candles: toReplayInputCandles(rawCandles, spreadPips),
+      candles: replayBaseCandles,
     };
     const normalized = normalizeScalpReplayInput(replayInput);
+    const replayConfirmCandles = replayConfirmInputCandles
+      ? normalizeScalpReplayInput({
+          symbol,
+          pipSize: normalized.pipSize,
+          candles: replayConfirmInputCandles,
+        }).candles
+      : null;
+    const replayPriceCandles = replayPriceInputCandles
+      ? normalizeScalpReplayInput({
+          symbol,
+          pipSize: normalized.pipSize,
+          candles: replayPriceInputCandles,
+        }).candles
+      : null;
+    const replayProgressEveryRuns = toPositiveInt(body.progressEveryRuns, 2000);
+    const replayProgressMinIntervalMs = toNonNegativeInt(body.progressMinIntervalMs, 5000);
+    logBacktest(
+      'replay_started',
+      {
+        symbol,
+        candles: normalized.candles.length,
+        baseSourceTimeframe: replayBaseSourceTimeframe,
+        confirmSourceTimeframe: replayConfirmSourceTimeframe,
+        confirmCandles: replayConfirmCandles?.length ?? null,
+        executeMinutes: runtime.executeMinutes,
+        progressEveryRuns: replayProgressEveryRuns,
+        progressMinIntervalMs: replayProgressMinIntervalMs,
+      },
+      true,
+    );
     const replay = runScalpReplay({
       candles: normalized.candles,
       pipSize: normalized.pipSize,
       config: runtime,
+      marketData:
+        replayConfirmCandles && replayPriceCandles
+          ? {
+              baseCandles: normalized.candles,
+              confirmCandles: replayConfirmCandles,
+              priceCandles: replayPriceCandles,
+            }
+          : undefined,
+      progress: {
+        everyRuns: replayProgressEveryRuns,
+        minIntervalMs: replayProgressMinIntervalMs,
+        onProgress: (progress) => {
+          logBacktest(
+            'replay_progress',
+            {
+              symbol,
+              runs: progress.runs,
+              estimatedTotalRuns: progress.estimatedTotalRuns,
+              completedPct: Number(progress.completedPct.toFixed(2)),
+              trades: progress.trades,
+              elapsedMs: progress.elapsedMs,
+              nowTs: progress.nowTs,
+            },
+            true,
+          );
+        },
+      },
     });
     const reasonCodeCounts = replay.timeline.reduce<Record<string, number>>((acc, event) => {
       const codes = Array.isArray(event.reasonCodes) ? event.reasonCodes : [];
@@ -731,7 +891,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       'replay_complete',
       {
         symbol,
-        sourceTimeframe: fetched.sourceTimeframe,
+        sourceTimeframe: replayBaseSourceTimeframe,
+        confirmSourceTimeframe: replayConfirmSourceTimeframe,
         fetchedCandles: normalized.candles.length,
         trades: replay.summary.trades,
         winRatePct: replay.summary.winRatePct,
@@ -796,7 +957,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       historyTimeframeRequested: requestedHistoryTf,
       historyRowsAvailable: storedHistoryRows.length,
       mappingSource: resolved.source,
-      sourceTimeframe: fetched.sourceTimeframe,
+      sourceTimeframe: replayBaseSourceTimeframe,
+      confirmSourceTimeframe: replayConfirmSourceTimeframe,
       sourceFallbackUsed: fetched.fallbackUsed,
       attemptedSourceTimeframes: fetched.attempted,
       fetchDiagnostics: fetched.diagnostics,

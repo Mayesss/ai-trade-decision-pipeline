@@ -222,8 +222,8 @@ const DEFAULT_FORM: FormState = {
   spreadPips: '1.1',
   spreadFactor: '1',
   slippagePips: '0.15',
-  asiaBaseTf: 'M1',
-  confirmTf: 'M1',
+  asiaBaseTf: 'M15',
+  confirmTf: 'M3',
   riskPerTradePct: '0.35',
   ...AGGRESSIVITY_PRESETS[DEFAULT_AGGRESSIVITY_LEVEL],
   ifvgEntryMode: 'first_touch',
@@ -246,11 +246,8 @@ function normalizeForm(input: Partial<FormState> | null | undefined): FormState 
       value.lookbackPastUnit === 'minutes' || value.lookbackPastUnit === 'hours' || value.lookbackPastUnit === 'days'
         ? value.lookbackPastUnit
         : DEFAULT_FORM.lookbackPastUnit,
-    asiaBaseTf:
-      value.asiaBaseTf === 'M1' || value.asiaBaseTf === 'M3' || value.asiaBaseTf === 'M5' || value.asiaBaseTf === 'M15'
-        ? value.asiaBaseTf
-        : DEFAULT_FORM.asiaBaseTf,
-    confirmTf: value.confirmTf === 'M1' || value.confirmTf === 'M3' ? value.confirmTf : DEFAULT_FORM.confirmTf,
+    asiaBaseTf: 'M15',
+    confirmTf: 'M3',
     ifvgEntryMode:
       value.ifvgEntryMode === 'first_touch' || value.ifvgEntryMode === 'midline_touch' || value.ifvgEntryMode === 'full_fill'
         ? value.ifvgEntryMode
@@ -1069,11 +1066,9 @@ export default function ScalpBacktestPage() {
                       <select
                         value={form.asiaBaseTf}
                         onChange={(e) => setForm((prev) => ({ ...prev, asiaBaseTf: e.target.value as FormState['asiaBaseTf'] }))}
+                        disabled
                         className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm"
                       >
-                        <option value="M1">M1</option>
-                        <option value="M3">M3</option>
-                        <option value="M5">M5</option>
                         <option value="M15">M15</option>
                       </select>
                     </label>
@@ -1082,9 +1077,9 @@ export default function ScalpBacktestPage() {
                       <select
                         value={form.confirmTf}
                         onChange={(e) => setForm((prev) => ({ ...prev, confirmTf: e.target.value as FormState['confirmTf'] }))}
+                        disabled
                         className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm"
                       >
-                        <option value="M1">M1</option>
                         <option value="M3">M3</option>
                       </select>
                     </label>

@@ -4,8 +4,28 @@ import type { ScalpJournalEntry, ScalpSessionState } from './types';
 const SCALP_STATE_KEY_PREFIX = 'scalp:state:v1';
 const SCALP_RUN_LOCK_KEY_PREFIX = 'scalp:runlock:v1';
 const SCALP_JOURNAL_LIST_KEY = 'scalp:journal:list:v1';
+const SCALP_RUNTIME_SETTINGS_KEY = 'scalp:runtime:settings:v1';
 const SCALP_DEFAULT_STATE_TTL_SECONDS = 3 * 24 * 60 * 60;
 const SCALP_DEFAULT_JOURNAL_MAX = 500;
+
+export const SCALP_STRATEGY_SHORT_NAME = 'HSS-ICT M15/M3';
+export const SCALP_STRATEGY_LONG_NAME = 'Hybrid Session-Scoped ICT Scalp (M15/M3)';
+
+interface ScalpRuntimeSettings {
+    strategyEnabled: boolean;
+    updatedAtMs: number;
+    updatedBy: string | null;
+}
+
+export interface ScalpStrategyControlSnapshot {
+    shortName: string;
+    longName: string;
+    enabled: boolean;
+    envEnabled: boolean;
+    kvEnabled: boolean | null;
+    updatedAtMs: number | null;
+    updatedBy: string | null;
+}
 
 const KV_REST_API_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
 const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN || '';
@@ -35,6 +55,71 @@ function compactReasonCodes(value: unknown): string[] {
         if (out.length >= 16) break;
     }
     return out;
+}
+
+function parseBool(value: unknown): boolean | null {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') {
+        if (value === 1) return true;
+        if (value === 0) return false;
+        return null;
+    }
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+    return null;
+}
+
+function parseScalpRuntimeSettings(raw: unknown): ScalpRuntimeSettings | null {
+    const row = safeRecord(raw);
+    const strategyEnabled = parseBool(row.strategyEnabled);
+    if (strategyEnabled === null) return null;
+    const updatedAtMs = Number(row.updatedAtMs);
+    const updatedByRaw = String(row.updatedBy || '').trim();
+    return {
+        strategyEnabled,
+        updatedAtMs: Number.isFinite(updatedAtMs) && updatedAtMs > 0 ? Math.floor(updatedAtMs) : Date.now(),
+        updatedBy: updatedByRaw ? updatedByRaw.slice(0, 120) : null,
+    };
+}
+
+export async function loadScalpStrategyControlSnapshot(envEnabled: boolean): Promise<ScalpStrategyControlSnapshot> {
+    const settings = parseScalpRuntimeSettings(await kvGetJson<ScalpRuntimeSettings>(SCALP_RUNTIME_SETTINGS_KEY));
+    const kvEnabled = settings?.strategyEnabled ?? null;
+    const effectiveEnabled = Boolean(envEnabled) && (kvEnabled ?? true);
+    return {
+        shortName: SCALP_STRATEGY_SHORT_NAME,
+        longName: SCALP_STRATEGY_LONG_NAME,
+        enabled: effectiveEnabled,
+        envEnabled: Boolean(envEnabled),
+        kvEnabled,
+        updatedAtMs: settings?.updatedAtMs ?? null,
+        updatedBy: settings?.updatedBy ?? null,
+    };
+}
+
+export async function setScalpStrategyKvEnabled(params: {
+    enabled: boolean;
+    envEnabled: boolean;
+    updatedBy?: string | null;
+}): Promise<ScalpStrategyControlSnapshot> {
+    const nextSettings: ScalpRuntimeSettings = {
+        strategyEnabled: Boolean(params.enabled),
+        updatedAtMs: Date.now(),
+        updatedBy: String(params.updatedBy || '').trim() || null,
+    };
+    await kvSetJson(SCALP_RUNTIME_SETTINGS_KEY, nextSettings);
+    return {
+        shortName: SCALP_STRATEGY_SHORT_NAME,
+        longName: SCALP_STRATEGY_LONG_NAME,
+        enabled: Boolean(params.envEnabled) && nextSettings.strategyEnabled,
+        envEnabled: Boolean(params.envEnabled),
+        kvEnabled: nextSettings.strategyEnabled,
+        updatedAtMs: nextSettings.updatedAtMs,
+        updatedBy: nextSettings.updatedBy,
+    };
 }
 
 function parseSessionState(raw: unknown): ScalpSessionState | null {

@@ -3,7 +3,9 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
+import { getScalpStrategyConfig, normalizeScalpSymbol } from '../../../../lib/scalp/config';
 import { runScalpExecuteCycle } from '../../../../lib/scalp/engine';
+import { loadScalpStrategyControlSnapshot } from '../../../../lib/scalp/store';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean): boolean {
     if (value === undefined) return fallback;
@@ -48,8 +50,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const nowMs = parseNowMs(firstQueryValue(req.query.nowMs));
 
     try {
+        const cfg = getScalpStrategyConfig();
+        const strategy = await loadScalpStrategyControlSnapshot(cfg.enabled);
+        if (!strategy.enabled) {
+            const reasonCodes = strategy.envEnabled
+                ? ['SCALP_ENGINE_DISABLED', 'SCALP_STRATEGY_DISABLED_BY_KV']
+                : ['SCALP_ENGINE_DISABLED', 'SCALP_ENGINE_DISABLED_BY_ENV'];
+            return res.status(200).json({
+                ok: true,
+                skipped: true,
+                symbol: normalizeScalpSymbol(symbol || cfg.defaultSymbol),
+                dryRun,
+                strategy,
+                reasonCodes,
+            });
+        }
         const result = await runScalpExecuteCycle({ symbol, dryRun, nowMs });
-        return res.status(200).json({ ok: true, ...result });
+        return res.status(200).json({ ok: true, strategy, ...result });
     } catch (err: any) {
         console.error('Error in /api/scalp/cron/execute:', err);
         return res.status(500).json({ error: err?.message || String(err) });

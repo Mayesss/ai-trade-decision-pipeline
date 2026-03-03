@@ -184,6 +184,7 @@ npm run start
   - Optional query: `notional=100` to override default notional for this run (default is `100`).
 - `GET /api/scalp/cron/execute?symbol=EURUSD&dryRun=true`
   - Capital-oriented scalp strategy phase 3 loop: session windows, Asia range, sweep/rejection, displacement + MSS, iFVG retest, deterministic entry plan, broker reconciliation, and optional execution.
+  - Scalp timeframes are fixed to `M15` base (`asiaBase`) and `M3` confirmation (`confirm`).
   - `dryRun=true` simulates entries and persists state/journal without placing orders.
   - Live entries require both `dryRun=false` and `SCALP_LIVE_ENABLED=true` (fail-closed by default).
   - Supports optional `nowMs` query for deterministic dry-run replays of cron ticks.
@@ -202,10 +203,12 @@ npm run start
   - Returns Capital backtest symbol choices (merged default map + optional env overrides), grouped by inferred category.
 - `POST /api/scalp/backtest/run`
   - Runs offline scalp replay on fetched Capital candles with parameter overrides.
+  - Backtest runtime enforces the same TF pair as live: `M15` base and `M3` confirmation.
   - Supports both:
     - lookback mode (`lookbackPastValue`, `lookbackPastUnit`; optional `lookbackCandles` fallback)
     - date-range mode (`fromTsMs`, `toTsMs`) with paginated historical fetch (safe-capped to 90 days per run).
   - Optional history-source mode: `useStoredHistory=true` (plus optional `historyBackend=file|kv`, `historyTimeframe=15m`) to backtest from persisted candle cache before live Capital fetch fallback.
+  - In history-source mode with `M15/M3`, replay uses `15m` candles for base/chart and `1m` candles for confirmation/price (aggregated to `M3`) to mirror live logic and reduce runtime cost.
   - Auto-falls back source resolution (`1m -> 5m -> 15m -> 1h`) if `1m` prices are unavailable for the symbol/range.
   - Returns summary, trades, and chart payload (`candles`, `markers`, `tradeSegments`) for UI rendering.
 - `POST /api/scalp/hybrid/promote-backtest`

@@ -18,6 +18,9 @@ function usage() {
         '  --spreadFactor <float>      Multiplier for input spread',
         '  --slippagePips <float>      Per-fill adverse slippage in pips',
         '  --defaultSpreadPips <float> Fallback spread when missing in candles',
+        '  --progressEveryRuns <int>    Progress log interval in replay runs (default: 2000)',
+        '  --progressMinIntervalMs <int> Progress log minimum interval ms (default: 5000)',
+        '  --noProgress                 Disable periodic replay progress logs',
         '  --asiaBaseTf <M1|M3|M5|M15>',
         '  --confirmTf <M1|M3>',
         '  --maxTradesPerDay <int>',
@@ -142,10 +145,28 @@ async function main() {
     const baseConfig = defaultScalpReplayConfig(normalized.symbol);
     const config = applyOverrides(baseConfig, args);
     config.symbol = normalized.symbol;
+    const progressEnabled = !Boolean(args.noProgress);
+    const progressEveryRunsRaw = toNum(args.progressEveryRuns);
+    const progressEveryRuns = progressEveryRunsRaw !== undefined && progressEveryRunsRaw > 0 ? Math.floor(progressEveryRunsRaw) : 2000;
+    const progressMinIntervalMsRaw = toNum(args.progressMinIntervalMs);
+    const progressMinIntervalMs =
+        progressMinIntervalMsRaw !== undefined && progressMinIntervalMsRaw >= 0 ? Math.floor(progressMinIntervalMsRaw) : 5000;
+
     const result = runScalpReplay({
         candles: normalized.candles,
         pipSize: normalized.pipSize,
         config,
+        progress: progressEnabled
+            ? {
+                  everyRuns: progressEveryRuns,
+                  minIntervalMs: progressMinIntervalMs,
+                  onProgress: (progress) => {
+                      console.log(
+                          `[replay-progress] symbol=${normalized.symbol} runs=${progress.runs}/${progress.estimatedTotalRuns} pct=${progress.completedPct.toFixed(2)} trades=${progress.trades} elapsedMs=${progress.elapsedMs}`,
+                      );
+                  },
+              }
+            : undefined,
     });
     await writeScalpReplayArtifacts(outDir, result);
 

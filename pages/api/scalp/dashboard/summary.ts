@@ -6,7 +6,7 @@ import { requireAdminAccess } from '../../../../lib/admin';
 import { getScalpStrategyConfig } from '../../../../lib/scalp/config';
 import { getScalpHybridPolicy, listScalpHybridSymbols, resolveScalpHybridSelection } from '../../../../lib/scalp/hybridPolicy';
 import { deriveScalpDayKey } from '../../../../lib/scalp/stateMachine';
-import { loadScalpJournal, loadScalpSessionState } from '../../../../lib/scalp/store';
+import { loadScalpJournal, loadScalpSessionState, loadScalpStrategyControlSnapshot } from '../../../../lib/scalp/store';
 import type { ScalpJournalEntry } from '../../../../lib/scalp/types';
 
 type SymbolSnapshot = {
@@ -64,6 +64,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const journalLimit = parseLimit(req.query.journalLimit, 80);
     const policy = getScalpHybridPolicy();
     const cfg = getScalpStrategyConfig();
+    const strategy = await loadScalpStrategyControlSnapshot(cfg.enabled);
     const dayKey = deriveScalpDayKey(nowMs, cfg.sessions.clockMode);
     const symbols = listScalpHybridSymbols(policy);
 
@@ -119,6 +120,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         profiles: Object.keys(policy.profiles),
         symbolProfileCount: Object.keys(policy.symbolProfiles).length,
       },
+      strategy,
       summary: {
         symbols: rows.length,
         openCount,
@@ -138,4 +140,3 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
   }
 }
-

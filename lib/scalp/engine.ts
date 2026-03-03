@@ -14,7 +14,14 @@ import { buildScalpEntryPlan, executeScalpEntryPlan, reconcileScalpBrokerPositio
 import { loadScalpMarketSnapshot, pipSizeForScalpSymbol } from './marketData';
 import { buildScalpSessionWindows } from './sessions';
 import { advanceScalpStateMachine, createInitialScalpSessionState, deriveScalpDayKey } from './stateMachine';
-import { appendScalpJournal, loadScalpSessionState, releaseScalpRunLock, saveScalpSessionState, tryAcquireScalpRunLock } from './store';
+import {
+    appendScalpJournal,
+    loadScalpSessionState,
+    loadScalpStrategyControlSnapshot,
+    releaseScalpRunLock,
+    saveScalpSessionState,
+    tryAcquireScalpRunLock,
+} from './store';
 import type {
     ScalpDirectionalBias,
     ScalpExecuteCycleResult,
@@ -265,6 +272,41 @@ export async function runScalpExecuteCycle(opts: {
     const symbol = normalizeScalpSymbol(opts.symbol || cfg.defaultSymbol);
     const dayKey = deriveScalpDayKey(nowMs, cfg.sessions.clockMode);
     const runId = crypto.randomUUID();
+    const strategyControl = await loadScalpStrategyControlSnapshot(cfg.enabled);
+
+    if (!strategyControl.enabled) {
+        const reasonCodes = strategyControl.envEnabled
+            ? ['SCALP_ENGINE_DISABLED', 'SCALP_STRATEGY_DISABLED_BY_KV']
+            : ['SCALP_ENGINE_DISABLED', 'SCALP_ENGINE_DISABLED_BY_ENV'];
+        await safeAppendJournal(
+            journalEntry({
+                type: 'execution',
+                symbol,
+                dayKey,
+                level: 'warn',
+                reasonCodes,
+                payload: {
+                    dryRun,
+                    nowMs,
+                    runId,
+                    strategyEnabled: strategyControl.enabled,
+                    strategyEnvEnabled: strategyControl.envEnabled,
+                    strategyKvEnabled: strategyControl.kvEnabled,
+                },
+            }),
+            cfg.storage.journalMax,
+        );
+        return {
+            generatedAtMs: nowMs,
+            symbol,
+            dayKey,
+            dryRun,
+            runLockAcquired: false,
+            state: 'IDLE',
+            reasonCodes,
+        };
+    }
+
     const runLockAcquired = await tryAcquireScalpRunLock(symbol, runId, cfg.idempotency.runLockSeconds);
 
     if (!runLockAcquired) {
@@ -292,46 +334,6 @@ export async function runScalpExecuteCycle(opts: {
     }
 
     try {
-        if (!cfg.enabled) {
-            const disabledState = withRunContext(
-                createInitialScalpSessionState({
-                    symbol,
-                    dayKey,
-                    nowMs,
-                    killSwitchActive: cfg.risk.killSwitch,
-                }),
-                {
-                    nowMs,
-                    runId,
-                    dryRun,
-                    reasonCodes: ['SCALP_ENGINE_DISABLED'],
-                    killSwitch: cfg.risk.killSwitch,
-                },
-            );
-
-            await saveScalpSessionState(disabledState, cfg.storage.sessionTtlSeconds);
-            await safeAppendJournal(
-                journalEntry({
-                    type: 'execution',
-                    symbol,
-                    dayKey,
-                    level: 'warn',
-                    reasonCodes: ['SCALP_ENGINE_DISABLED'],
-                    payload: { dryRun, nowMs, runId },
-                }),
-                cfg.storage.journalMax,
-            );
-            return {
-                generatedAtMs: nowMs,
-                symbol,
-                dayKey,
-                dryRun,
-                runLockAcquired: true,
-                state: disabledState.state,
-                reasonCodes: ['SCALP_ENGINE_DISABLED'],
-            };
-        }
-
         const loadedState = await loadScalpSessionState(symbol, dayKey);
         const currentState =
             loadedState ||

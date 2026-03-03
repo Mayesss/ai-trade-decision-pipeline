@@ -8,6 +8,7 @@ import type { ScalpCandle, ScalpMarketSnapshot, ScalpSessionState, ScalpStrategy
 import type {
     ScalpReplayCandle,
     ScalpReplayInputFile,
+    ScalpReplayProgressEvent,
     ScalpReplayResult,
     ScalpReplayRuntimeConfig,
     ScalpReplaySummary,
@@ -27,6 +28,26 @@ type ReplayPosition = {
     riskUsd: number;
     notionalUsd: number;
     activeFromIndex: number;
+};
+
+type ScalpReplayProgressOptions = {
+    everyRuns?: number;
+    minIntervalMs?: number;
+    onProgress?: (event: ScalpReplayProgressEvent) => void;
+};
+
+type ScalpReplayMarketDataSources = {
+    baseCandles?: ScalpReplayCandle[];
+    confirmCandles?: ScalpReplayCandle[];
+    priceCandles?: ScalpReplayCandle[];
+};
+
+type PreparedReplaySeries = {
+    driverCandles: ScalpReplayCandle[];
+    baseCandlesAll: ScalpCandle[];
+    confirmCandlesAll: ScalpCandle[];
+    baseTfMs: number;
+    confirmTfMs: number;
 };
 
 function toTs(value: number | string): number {
@@ -131,8 +152,8 @@ export function defaultScalpReplayConfig(symbol = 'EURUSD'): ScalpReplayRuntimeC
             sessionClockMode: cfg.sessions.clockMode,
             asiaWindowLocal: cfg.sessions.asiaWindowLocal,
             raidWindowLocal: cfg.sessions.raidWindowLocal,
-            asiaBaseTf: 'M1',
-            confirmTf: 'M1',
+            asiaBaseTf: 'M15',
+            confirmTf: 'M3',
             maxTradesPerDay: cfg.risk.maxTradesPerSymbolPerDay,
             riskPerTradePct: cfg.risk.riskPerTradePct,
             referenceEquityUsd: cfg.risk.referenceEquityUsd,
@@ -232,24 +253,49 @@ function latestTs(candles: ScalpCandle[]): number | null {
     return Number.isFinite(Number(ts)) ? Number(ts) : null;
 }
 
+function sortReplayCandles(candles: ScalpReplayCandle[]): ScalpReplayCandle[] {
+    return candles.slice().sort((a, b) => a.ts - b.ts);
+}
+
+function prepareReplaySeries(params: {
+    candles: ScalpReplayCandle[];
+    runtime: ScalpReplayRuntimeConfig;
+    marketData?: ScalpReplayMarketDataSources;
+}): PreparedReplaySeries {
+    const baseTfMinutes = timeframeMinutes(params.runtime.strategy.asiaBaseTf);
+    const confirmTfMinutes = timeframeMinutes(params.runtime.strategy.confirmTf);
+    const baseSource = Array.isArray(params.marketData?.baseCandles) && params.marketData!.baseCandles!.length
+        ? sortReplayCandles(params.marketData!.baseCandles!)
+        : params.candles;
+    const confirmSource = Array.isArray(params.marketData?.confirmCandles) && params.marketData!.confirmCandles!.length
+        ? sortReplayCandles(params.marketData!.confirmCandles!)
+        : params.candles;
+    const priceSource = Array.isArray(params.marketData?.priceCandles) && params.marketData!.priceCandles!.length
+        ? sortReplayCandles(params.marketData!.priceCandles!)
+        : params.candles;
+    if (!priceSource.length) {
+        throw new Error('Replay requires at least one driver candle');
+    }
+
+    return {
+        driverCandles: priceSource,
+        baseCandlesAll: aggregateCandles(baseSource, baseTfMinutes),
+        confirmCandlesAll: aggregateCandles(confirmSource, confirmTfMinutes),
+        baseTfMs: baseTfMinutes * 60_000,
+        confirmTfMs: confirmTfMinutes * 60_000,
+    };
+}
+
 function buildReplayMarketSnapshot(params: {
     symbol: string;
     nowMs: number;
-    sourceCandles: ScalpReplayCandle[];
+    priceCandle: ScalpReplayCandle;
+    baseCandles: ScalpCandle[];
+    confirmCandles: ScalpCandle[];
     pipSize: number;
     runtime: ScalpReplayRuntimeConfig;
 }): ScalpMarketSnapshot {
-    const upto = params.sourceCandles.filter((c) => c.ts <= params.nowMs);
-    const baseTfMinutes = timeframeMinutes(params.runtime.strategy.asiaBaseTf);
-    const confirmTfMinutes = timeframeMinutes(params.runtime.strategy.confirmTf);
-    const baseTfMs = baseTfMinutes * 60_000;
-    const confirmTfMs = confirmTfMinutes * 60_000;
-    const baseCandles = aggregateCandles(upto, baseTfMinutes).filter((c) => c[0] + baseTfMs <= params.nowMs);
-    const confirmCandles = aggregateCandles(upto, confirmTfMinutes).filter((c) => c[0] + confirmTfMs <= params.nowMs);
-    const last = upto[upto.length - 1];
-    if (!last) {
-        throw new Error('No candle available at replay nowMs');
-    }
+    const last = params.priceCandle;
     const spreadPipsRaw = Number.isFinite(last.spreadPips) ? last.spreadPips : params.runtime.defaultSpreadPips;
     const spreadPips = Math.max(0, spreadPipsRaw * params.runtime.spreadFactor);
     const spreadAbs = spreadPips * params.pipSize;
@@ -270,8 +316,8 @@ function buildReplayMarketSnapshot(params: {
         },
         baseTf: params.runtime.strategy.asiaBaseTf,
         confirmTf: params.runtime.strategy.confirmTf,
-        baseCandles,
-        confirmCandles,
+        baseCandles: params.baseCandles,
+        confirmCandles: params.confirmCandles,
     };
 }
 
@@ -540,22 +586,66 @@ export function runScalpReplay(params: {
     candles: ScalpReplayCandle[];
     pipSize: number;
     config: ScalpReplayRuntimeConfig;
+    progress?: ScalpReplayProgressOptions;
+    marketData?: ScalpReplayMarketDataSources;
 }): ScalpReplayResult {
     const candles = params.candles.slice().sort((a, b) => a.ts - b.ts);
     if (!candles.length) throw new Error('Replay requires candles');
     const runtime = params.config;
     const strategyCfg = buildStrategyConfig(runtime);
+    const prepared = prepareReplaySeries({
+        candles,
+        runtime,
+        marketData: params.marketData,
+    });
+    const driverCandles = prepared.driverCandles;
     const intervalMs = Math.max(1, Math.floor(runtime.executeMinutes)) * 60_000;
+    const estimatedTotalRuns = Math.max(
+        1,
+        Math.floor((driverCandles[driverCandles.length - 1]!.ts - driverCandles[0]!.ts) / intervalMs) + 1,
+    );
+    const progressEveryRuns = Math.max(1, Math.floor(params.progress?.everyRuns ?? 2000));
+    const progressMinIntervalMs = Math.max(0, Math.floor(params.progress?.minIntervalMs ?? 5000));
+    const onProgress = params.progress?.onProgress;
+    const replayStartedAtMs = Date.now();
+    let lastProgressEmittedAtMs = replayStartedAtMs;
+    let lastProgressRuns = 0;
+
+    const emitProgress = (nowTs: number, force = false) => {
+        if (!onProgress) return;
+        const now = Date.now();
+        if (force && runs === lastProgressRuns) return;
+        const dueByRuns = runs - lastProgressRuns >= progressEveryRuns;
+        const dueByTime = progressMinIntervalMs > 0 && now - lastProgressEmittedAtMs >= progressMinIntervalMs;
+        if (!force && !dueByRuns && !dueByTime) return;
+
+        onProgress({
+            runs,
+            estimatedTotalRuns,
+            completedPct: Math.max(0, Math.min(100, (runs / estimatedTotalRuns) * 100)),
+            trades: trades.length,
+            nowTs,
+            elapsedMs: now - replayStartedAtMs,
+        });
+        lastProgressRuns = runs;
+        lastProgressEmittedAtMs = now;
+    };
+
     const slippageAbs = runtime.slippagePips * params.pipSize;
     const timeline: ScalpReplayTimelineEvent[] = [];
     const trades: ScalpReplayTrade[] = [];
     let runs = 0;
     let state: ScalpSessionState | null = null;
     let position: ReplayPosition | null = null;
-    let nextRunTs = candles[0]!.ts;
+    let nextRunTs = driverCandles[0]!.ts;
+    let priceCursor = 0;
+    let baseCursor = 0;
+    let confirmCursor = 0;
+    const baseClosedCandles: ScalpCandle[] = [];
+    const confirmClosedCandles: ScalpCandle[] = [];
 
-    for (let i = 0; i < candles.length; i += 1) {
-        const candle = candles[i]!;
+    for (let i = 0; i < driverCandles.length; i += 1) {
+        const candle = driverCandles[i]!;
         if (position && i >= position.activeFromIndex) {
             const exit = resolveExitFromCandle({
                 position,
@@ -590,6 +680,24 @@ export function runScalpReplay(params: {
         while (nextRunTs <= candle.ts) {
             runs += 1;
             const nowMs = nextRunTs;
+            while (baseCursor < prepared.baseCandlesAll.length && prepared.baseCandlesAll[baseCursor]![0] + prepared.baseTfMs <= nowMs) {
+                baseClosedCandles.push(prepared.baseCandlesAll[baseCursor]!);
+                baseCursor += 1;
+            }
+            while (
+                confirmCursor < prepared.confirmCandlesAll.length &&
+                prepared.confirmCandlesAll[confirmCursor]![0] + prepared.confirmTfMs <= nowMs
+            ) {
+                confirmClosedCandles.push(prepared.confirmCandlesAll[confirmCursor]!);
+                confirmCursor += 1;
+            }
+            while (priceCursor + 1 < driverCandles.length && driverCandles[priceCursor + 1]!.ts <= nowMs) {
+                priceCursor += 1;
+            }
+            const priceCandle = driverCandles[priceCursor];
+            if (!priceCandle) {
+                throw new Error('No candle available at replay nowMs');
+            }
             const dayKey = deriveScalpDayKey(nowMs, strategyCfg.sessions.clockMode);
             if (!state) {
                 state = createInitialScalpSessionState({
@@ -604,7 +712,9 @@ export function runScalpReplay(params: {
             const market = buildReplayMarketSnapshot({
                 symbol: runtime.symbol,
                 nowMs,
-                sourceCandles: candles,
+                priceCandle,
+                baseCandles: baseClosedCandles,
+                confirmCandles: confirmClosedCandles,
                 pipSize: params.pipSize,
                 runtime,
             });
@@ -699,12 +809,13 @@ export function runScalpReplay(params: {
                     }
                 }
             }
+            emitProgress(nowMs);
             nextRunTs += intervalMs;
         }
     }
 
     if (position && runtime.forceCloseAtEnd) {
-        const last = candles[candles.length - 1]!;
+        const last = driverCandles[driverCandles.length - 1]!;
         const exitPrice = position.side === 'BUY' ? last.close - slippageAbs : last.close + slippageAbs;
         const trade = closePositionAsTrade({
             position,
@@ -727,12 +838,14 @@ export function runScalpReplay(params: {
         position = null;
     }
 
+    emitProgress(driverCandles[driverCandles.length - 1]!.ts, true);
+
     const summary = summarize({
         symbol: runtime.symbol,
         runs,
         trades,
-        startTs: candles[0]?.ts ?? null,
-        endTs: candles[candles.length - 1]?.ts ?? null,
+        startTs: driverCandles[0]?.ts ?? null,
+        endTs: driverCandles[driverCandles.length - 1]?.ts ?? null,
     });
 
     return {

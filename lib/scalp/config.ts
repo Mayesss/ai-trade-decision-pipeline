@@ -66,20 +66,12 @@ function normalizeClockLabel(value: string | undefined, fallback: string): strin
 }
 
 function parseAsiaTf(value: string | undefined): ScalpBaseTimeframe {
-    const normalized = String(value || '')
-        .trim()
-        .toUpperCase();
-    if (normalized === 'M1' || normalized === 'M3' || normalized === 'M5' || normalized === 'M15') {
-        return normalized;
-    }
-    return 'M5';
+    void value;
+    return 'M15';
 }
 
 function parseConfirmTf(value: string | undefined): ScalpConfirmTimeframe {
-    const normalized = String(value || '')
-        .trim()
-        .toUpperCase();
-    if (normalized === 'M1' || normalized === 'M3') return normalized;
+    void value;
     return 'M3';
 }
 

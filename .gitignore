@@ -167,3 +167,12 @@ dist
 !.env.example
 .wrangler/
 .vercel
+
+# Local generated trading data (large)
+data/candles-history/*
+!data/candles-history/.gitkeep
+
+# Local test/backtest output folders
+test-results/
+backtest-results/
+replay-results/
