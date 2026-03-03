@@ -208,6 +208,11 @@ npm run start
   - Optional history-source mode: `useStoredHistory=true` (plus optional `historyBackend=file|kv`, `historyTimeframe=15m`) to backtest from persisted candle cache before live Capital fetch fallback.
   - Auto-falls back source resolution (`1m -> 5m -> 15m -> 1h`) if `1m` prices are unavailable for the symbol/range.
   - Returns summary, trades, and chart payload (`candles`, `markers`, `tradeSegments`) for UI rendering.
+- `POST /api/scalp/hybrid/promote-backtest`
+  - Admin-only endpoint to promote a backtest result into hybrid live policy.
+  - Assigns `symbol -> profile` in `data/scalp-hybrid-policy.json`.
+  - Optional `applyProfileParams=true` applies profile overrides from backtest `effectiveConfig` (risk/sweep/confirm/ifvg).
+  - Updates `updatedAt`, increments `version`, and returns the resolved policy/profile summary.
 - `GET /api/forex/dashboard/summary`
   - Forex dashboard aggregate (eligibility, packet state, event gate status, execution recency).
 - `GET /api/forex/dashboard/packets`

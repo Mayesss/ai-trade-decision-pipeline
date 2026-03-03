@@ -68,6 +68,23 @@ type BacktestRunResponse = {
   effectiveConfig: any;
 };
 
+type PromoteHybridResponse = {
+  ok: boolean;
+  message?: string;
+  promoted?: {
+    symbol: string;
+    profile: string;
+    applyProfileParams: boolean;
+    replaceProfile: boolean;
+  };
+  policy?: {
+    version?: number | null;
+    defaultProfile?: string;
+    symbolProfileCount?: number;
+    symbolProfile?: string | null;
+  };
+};
+
 type CachedCandleEntry = {
   candles: ScalpBacktestChartCandle[];
   sourceTimeframe: string;
@@ -298,6 +315,15 @@ function toPositiveInt(value: string, fallback: number): number {
   return n;
 }
 
+function normalizeProfileInput(value: string): string {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+    .toLowerCase()
+    .slice(0, 64);
+}
+
 function parseLocalDateTimeToMs(value: string): number | null {
   const raw = String(value || '').trim();
   if (!raw) return null;
@@ -379,6 +405,12 @@ export default function ScalpBacktestPage() {
 
   const [comparedRuns, setComparedRuns] = useState<ComparedRun[]>([]);
   const [compareLabel, setCompareLabel] = useState('');
+  const [promoteProfile, setPromoteProfile] = useState('loose');
+  const [promoteApplyProfileParams, setPromoteApplyProfileParams] = useState(false);
+  const [promoteReplaceProfile, setPromoteReplaceProfile] = useState(false);
+  const [promoteLoading, setPromoteLoading] = useState(false);
+  const [promoteError, setPromoteError] = useState<string | null>(null);
+  const [promoteMessage, setPromoteMessage] = useState<string | null>(null);
   const candleCacheRef = useRef<Map<string, CachedCandleEntry>>(new Map());
 
   const categoryCounts = useMemo(() => {
@@ -606,6 +638,8 @@ export default function ScalpBacktestPage() {
     }
     setRunLoading(true);
     setRunError(null);
+    setPromoteError(null);
+    setPromoteMessage(null);
     try {
       const presetFallback = AGGRESSIVITY_PRESETS[form.aggressivity] || AGGRESSIVITY_PRESETS[DEFAULT_AGGRESSIVITY_LEVEL];
       const candleCacheKey = buildCandleCacheKey(selectedSymbol, form);
@@ -688,6 +722,56 @@ export default function ScalpBacktestPage() {
       setRunError(err?.message || 'Backtest failed.');
     } finally {
       setRunLoading(false);
+    }
+  };
+
+  const promoteBacktestToHybridPolicy = async () => {
+    if (!result) {
+      setPromoteError('Run a backtest first.');
+      return;
+    }
+    if (!adminSecret) {
+      setPromoteError('Admin secret is required.');
+      return;
+    }
+    const profile = normalizeProfileInput(promoteProfile) || 'loose';
+    setPromoteLoading(true);
+    setPromoteError(null);
+    setPromoteMessage(null);
+    try {
+      const payload: Record<string, unknown> = {
+        symbol: result.symbol,
+        profile,
+        applyProfileParams: promoteApplyProfileParams,
+        replaceProfile: promoteReplaceProfile,
+      };
+      if (promoteApplyProfileParams) {
+        payload.effectiveConfig = result.effectiveConfig || null;
+      }
+      const res = await fetch('/api/scalp/hybrid/promote-backtest', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-access-secret': adminSecret,
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = (await res.json().catch(() => ({}))) as PromoteHybridResponse;
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.message || `Promote request failed (${res.status})`);
+      }
+      const version = Number(data?.policy?.version);
+      const symbolProfile = String(data?.policy?.symbolProfile || profile);
+      setPromoteProfile(symbolProfile);
+      setPromoteMessage(
+        Number.isFinite(version)
+          ? `Promoted ${result.symbol} to profile ${symbolProfile} (policy v${version}).`
+          : `Promoted ${result.symbol} to profile ${symbolProfile}.`,
+      );
+    } catch (err: any) {
+      setPromoteError(err?.message || 'Failed to promote backtest to hybrid policy.');
+    } finally {
+      setPromoteLoading(false);
     }
   };
 
@@ -1184,6 +1268,53 @@ export default function ScalpBacktestPage() {
                           </table>
                         </div>
                       ) : null}
+                    </div>
+
+                    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+                      <h3 className="text-sm font-semibold text-cyan-200">Promote To Hybrid Policy</h3>
+                      <p className="mt-1 text-xs text-slate-400">
+                        Assign this symbol to a hybrid profile. Optionally overwrite profile parameters with this backtest effective config.
+                      </p>
+                      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <label className="text-xs text-slate-300">
+                          Target profile
+                          <input
+                            value={promoteProfile}
+                            onChange={(e) => setPromoteProfile(e.target.value)}
+                            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm"
+                            placeholder="loose"
+                          />
+                        </label>
+                        <label className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={promoteApplyProfileParams}
+                            onChange={(e) => setPromoteApplyProfileParams(e.target.checked)}
+                          />
+                          Apply params from effectiveConfig
+                        </label>
+                        <label className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={promoteReplaceProfile}
+                            onChange={(e) => setPromoteReplaceProfile(e.target.checked)}
+                            disabled={!promoteApplyProfileParams}
+                          />
+                          Replace profile override (instead of merge)
+                        </label>
+                        <div className="flex items-center">
+                          <button
+                            type="button"
+                            onClick={() => void promoteBacktestToHybridPolicy()}
+                            disabled={promoteLoading}
+                            className="w-full rounded-lg border border-cyan-500/60 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-200 disabled:opacity-50"
+                          >
+                            {promoteLoading ? 'Promoting…' : `Promote ${result.symbol}`}
+                          </button>
+                        </div>
+                      </div>
+                      {promoteMessage ? <p className="mt-2 text-xs text-emerald-300">{promoteMessage}</p> : null}
+                      {promoteError ? <p className="mt-2 text-xs text-rose-300">{promoteError}</p> : null}
                     </div>
 
                     <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">

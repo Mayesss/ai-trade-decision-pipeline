@@ -1,5 +1,8 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import defaultTickerEpicMap from '../../data/capitalTickerMap.json';
-import rawPolicy from '../../data/scalp-hybrid-policy.json';
+import bundledPolicy from '../../data/scalp-hybrid-policy.json';
 import type { ScalpStrategyConfigOverride } from './config';
 
 export interface ScalpHybridPolicy {
@@ -17,6 +20,8 @@ const DEFAULT_POLICY: ScalpHybridPolicy = {
     symbolProfiles: {},
     symbols: Object.keys(defaultTickerEpicMap as Record<string, string>).map((symbol) => symbol.toUpperCase()),
 };
+
+const SCALP_HYBRID_POLICY_FILE = path.resolve(process.cwd(), 'data/scalp-hybrid-policy.json');
 
 function normalizeSymbol(value: string): string {
     return String(value || '')
@@ -74,8 +79,21 @@ function parsePolicy(raw: unknown): ScalpHybridPolicy {
     };
 }
 
+function loadScalpHybridPolicyRaw(): unknown {
+    try {
+        const text = fs.readFileSync(SCALP_HYBRID_POLICY_FILE, 'utf8');
+        return JSON.parse(text);
+    } catch {
+        return bundledPolicy;
+    }
+}
+
+export function scalpHybridPolicyPath(): string {
+    return SCALP_HYBRID_POLICY_FILE;
+}
+
 export function getScalpHybridPolicy(): ScalpHybridPolicy {
-    return parsePolicy(rawPolicy);
+    return parsePolicy(loadScalpHybridPolicyRaw());
 }
 
 export function listScalpHybridSymbols(policy: ScalpHybridPolicy = getScalpHybridPolicy()): string[] {
@@ -104,4 +122,3 @@ export function resolveScalpHybridSelection(
         configOverride: policy.profiles[profile] || {},
     };
 }
-
