@@ -1,4 +1,5 @@
 import { REGIME_PULLBACK_M15_M3_STRATEGY_ID, regimePullbackM15M3Strategy } from './regimePullbackM15M3';
+import { regimePullbackM15M3BtcusdtGuardedStrategy } from './regimePullbackM15M3BtcusdtGuarded';
 import { regimePullbackM15M3XauusdGuardedStrategy } from './regimePullbackM15M3XauusdGuarded';
 import type { ScalpStrategyDefinition } from './types';
 
@@ -6,6 +7,7 @@ export const DEFAULT_SCALP_STRATEGY_ID = REGIME_PULLBACK_M15_M3_STRATEGY_ID;
 
 const REGISTRY: Record<string, ScalpStrategyDefinition> = Object.freeze({
     [regimePullbackM15M3Strategy.id]: regimePullbackM15M3Strategy,
+    [regimePullbackM15M3BtcusdtGuardedStrategy.id]: regimePullbackM15M3BtcusdtGuardedStrategy,
     [regimePullbackM15M3XauusdGuardedStrategy.id]: regimePullbackM15M3XauusdGuardedStrategy,
 });
 

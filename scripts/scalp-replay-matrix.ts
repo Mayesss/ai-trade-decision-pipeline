@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { defaultScalpReplayConfig, normalizeScalpReplayInput, runScalpReplay } from '../lib/scalp/replay/harness';
 import { getScalpStrategyById, listScalpStrategies, normalizeScalpStrategyId } from '../lib/scalp/strategies/registry';
-import { applyXauusdGuardRiskDefaultsToReplayRuntime } from '../lib/scalp/strategies/regimePullbackM15M3XauusdGuarded';
+import { applySymbolGuardRiskDefaultsToReplayRuntime } from '../lib/scalp/strategies/guardDefaults';
 import type { ScalpReplayInputFile, ScalpReplayRuntimeConfig } from '../lib/scalp/replay/types';
 
 type Scenario = {
@@ -588,7 +588,7 @@ async function main() {
                 spreadFactor: scenario.spreadFactor,
                 slippagePips: scenario.slippagePips,
             };
-            config = applyXauusdGuardRiskDefaultsToReplayRuntime(config);
+            config = applySymbolGuardRiskDefaultsToReplayRuntime(config);
 
             const replay = await runScalpReplay({
                 candles: fixture.input.candles,

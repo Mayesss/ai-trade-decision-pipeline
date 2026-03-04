@@ -1,5 +1,5 @@
 import { getDefaultScalpStrategy, getScalpStrategyById, resolveScalpStrategyIdForSymbol } from '../strategies/registry';
-import { applyXauusdGuardRiskDefaultsToReplayRuntime } from '../strategies/regimePullbackM15M3XauusdGuarded';
+import { applySymbolGuardRiskDefaultsToReplayRuntime } from '../strategies/guardDefaults';
 import { buildScalpEntryPlan, manageScalpOpenTrade, resolveLegacyIfvgEntryIntent } from '../execution';
 import { pipSizeForScalpSymbol, timeframeMinutes } from '../marketData';
 import { buildScalpSessionWindows } from '../sessions';
@@ -209,7 +209,7 @@ export function defaultScalpReplayConfig(symbol = 'EURUSD'): ScalpReplayRuntimeC
             minConfirmCandles: cfg.data.minConfirmCandles,
         },
     };
-    return applyXauusdGuardRiskDefaultsToReplayRuntime(base);
+    return applySymbolGuardRiskDefaultsToReplayRuntime(base);
 }
 
 export function normalizeScalpReplayInput(input: ScalpReplayInputFile): {
@@ -457,10 +457,10 @@ export async function runScalpReplay(params: {
     const candles = params.candles.slice().sort((a, b) => a.ts - b.ts);
     if (!candles.length) throw new Error('Replay requires candles');
     const strategyDef = getScalpStrategyById(params.config.strategyId) || getDefaultScalpStrategy();
-    const runtime: ScalpReplayRuntimeConfig = {
+    const runtime = applySymbolGuardRiskDefaultsToReplayRuntime({
         ...params.config,
         strategyId: strategyDef.id,
-    };
+    });
     const strategyCfg = buildStrategyConfig(runtime);
     const prepared = prepareReplaySeries({
         candles,

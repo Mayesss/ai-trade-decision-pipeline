@@ -12,7 +12,7 @@ import {
 import { loadScalpMarketSnapshot } from './marketData';
 import { buildScalpSessionWindows } from './sessions';
 import { getDefaultScalpStrategy, getScalpStrategyById } from './strategies/registry';
-import { applyXauusdGuardRiskDefaultsToStrategyConfig } from './strategies/regimePullbackM15M3XauusdGuarded';
+import { applySymbolGuardRiskDefaultsToStrategyConfig } from './strategies/guardDefaults';
 import { advanceScalpStateMachine, createInitialScalpSessionState, deriveScalpDayKey } from './stateMachine';
 import {
     appendScalpJournal,
@@ -99,7 +99,7 @@ export async function runScalpExecuteCycle(opts: {
         getScalpStrategyById(strategyId) ||
         getScalpStrategyById(runtime.defaultStrategyId) ||
         getDefaultScalpStrategy();
-    cfg = applyXauusdGuardRiskDefaultsToStrategyConfig({ cfg, symbol, strategyId });
+    cfg = applySymbolGuardRiskDefaultsToStrategyConfig({ cfg, symbol, strategyId });
     if (opts.configOverride) {
         cfg = applyScalpStrategyConfigOverride(cfg, opts.configOverride);
     }

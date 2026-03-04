@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID } from './regimePullbackM15M3BtcusdtGuarded';
 import { REGIME_PULLBACK_M15_M3_STRATEGY_ID } from './regimePullbackM15M3';
 import { REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID } from './regimePullbackM15M3XauusdGuarded';
 import {
@@ -20,9 +21,10 @@ test('default scalp strategy is registered and stable', () => {
 
 test('strategy registry exposes unique ids and supports lookup', () => {
     const all = listScalpStrategies();
-    assert.ok(all.length >= 2, 'expected at least two registered strategies');
+    assert.ok(all.length >= 3, 'expected at least three registered strategies');
     const ids = all.map((row) => row.id);
     assert.ok(ids.includes(REGIME_PULLBACK_M15_M3_STRATEGY_ID), 'expected default strategy in registry');
+    assert.ok(ids.includes(REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID), 'expected BTCUSDT guarded regime strategy in registry');
     assert.ok(ids.includes(REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID), 'expected XAUUSD guarded regime strategy in registry');
     const uniqueIds = new Set(ids);
     assert.equal(ids.length, uniqueIds.size, 'strategy IDs must be unique');
@@ -41,6 +43,13 @@ test('symbol strategy resolution uses explicit fallback and defaults otherwise',
             fallbackStrategyId: REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID,
         }),
         REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID,
+    );
+    assert.equal(
+        resolveScalpStrategyIdForSymbol({
+            symbol: 'BTCUSDT',
+            fallbackStrategyId: REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID,
+        }),
+        REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID,
     );
     assert.equal(
         resolveScalpStrategyIdForSymbol({

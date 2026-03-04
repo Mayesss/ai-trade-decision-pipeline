@@ -5,7 +5,7 @@ import { requireAdminAccess } from '../../../../lib/admin';
 import { type CandleHistoryBackend, loadScalpCandleHistory, normalizeHistoryTimeframe } from '../../../../lib/scalp/candleHistory';
 import { defaultScalpReplayConfig, normalizeScalpReplayInput, runScalpReplay } from '../../../../lib/scalp/replay/harness';
 import { getDefaultScalpStrategy, getScalpStrategyById, normalizeScalpStrategyId } from '../../../../lib/scalp/strategies/registry';
-import { applyXauusdGuardRiskDefaultsToReplayRuntime } from '../../../../lib/scalp/strategies/regimePullbackM15M3XauusdGuarded';
+import { applySymbolGuardRiskDefaultsToReplayRuntime } from '../../../../lib/scalp/strategies/guardDefaults';
 import { pipSizeForScalpSymbol } from '../../../../lib/scalp/marketData';
 import type { ScalpReplayInputFile, ScalpReplayRuntimeConfig } from '../../../../lib/scalp/replay/types';
 import type { ScalpCandle } from '../../../../lib/scalp/types';
@@ -403,7 +403,7 @@ function applyRuntimeOverrides(runtime: ScalpReplayRuntimeConfig, body: Backtest
   let next: ScalpReplayRuntimeConfig = JSON.parse(JSON.stringify(runtime));
   const strategy = body.strategy || {};
   next.strategyId = parseStrategyId(body.strategyId, next.strategyId || getDefaultScalpStrategy().id);
-  next = applyXauusdGuardRiskDefaultsToReplayRuntime(next);
+  next = applySymbolGuardRiskDefaultsToReplayRuntime(next);
 
   next.executeMinutes = toPositiveInt(body.executeMinutes, next.executeMinutes);
   next.spreadFactor = toPositiveNumber(body.spreadFactor, next.spreadFactor);

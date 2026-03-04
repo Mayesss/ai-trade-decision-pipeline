@@ -99,6 +99,12 @@ MARKETAUX_API_KEY=...
 # SCALP_XAUUSD_GUARD_TIME_STOP_BARS=18
 # SCALP_XAUUSD_GUARD_BLOCKED_HOURS_VARIANT=xauusd_return   # xauusd_return | xauusd_low_dd | xauusd_high_pf | off
 # SCALP_XAUUSD_GUARD_BLOCKED_HOURS_BERLIN=15               # explicit hour list override (wins over variant)
+# BTCUSDT guard defaults for strategyId=regime_pullback_m15_m3_btcusdt
+# SCALP_BTCUSDT_GUARD_TP1_CLOSE_PCT=20
+# SCALP_BTCUSDT_GUARD_TRAIL_ATR_MULT=1.4
+# SCALP_BTCUSDT_GUARD_TIME_STOP_BARS=15
+# SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT=btcusdt_high_pf # btcusdt_return | btcusdt_low_dd | btcusdt_high_pf | off
+# SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_BERLIN=10,11            # explicit hour list override (wins over variant)
 
 # KV (Upstash REST)
 KV_REST_API_URL=https://...
@@ -325,7 +331,7 @@ npm run replay:scalp:matrix
 # matrix with parameter grid
 node --import tsx scripts/scalp-replay-matrix.ts \
   --fixtures core \
-  --strategyIds regime_pullback_m15_m3,regime_pullback_m15_m3_xauusd \
+  --strategyIds regime_pullback_m15_m3,regime_pullback_m15_m3_btcusdt,regime_pullback_m15_m3_xauusd \
   --tpRs 1,1.5,2 \
   --riskPcts 0.2,0.35 \
   --sweepBufferPips 8,12 \
@@ -380,6 +386,7 @@ node --import tsx scripts/scalp-replay-matrix.ts \
 - Current cron entries include:
   - `/api/swing/analyze?...&dryRun=false` hourly (live-trading mode).
   - `/api/scalp/cron/execute-hybrid?symbol=...&dryRun=true` hourly per symbol (safe default for rollout).
+  - Symbol-specific scalp tuning can be pinned via query `strategyId=...` (for example `strategyId=regime_pullback_m15_m3_btcusdt` for BTCUSDT).
 - Cron-declared routes are intentionally allowed without admin secret; non-cron routes remain protected when `ADMIN_ACCESS_SECRET` is set.
 
 ## Troubleshooting

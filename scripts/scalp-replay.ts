@@ -5,7 +5,7 @@ import path from 'node:path';
 import { defaultScalpReplayConfig, normalizeScalpReplayInput, runScalpReplay } from '../lib/scalp/replay/harness';
 import { writeScalpReplayArtifacts } from '../lib/scalp/replay/io';
 import { getScalpStrategyById, listScalpStrategies, normalizeScalpStrategyId } from '../lib/scalp/strategies/registry';
-import { applyXauusdGuardRiskDefaultsToReplayRuntime } from '../lib/scalp/strategies/regimePullbackM15M3XauusdGuarded';
+import { applySymbolGuardRiskDefaultsToReplayRuntime } from '../lib/scalp/strategies/guardDefaults';
 import type { ScalpReplayInputFile, ScalpReplayRuntimeConfig } from '../lib/scalp/replay/types';
 
 function usage() {
@@ -87,7 +87,7 @@ function applyOverrides(config: ScalpReplayRuntimeConfig, args: Record<string, s
     const symbol = typeof args.symbol === 'string' ? String(args.symbol).trim().toUpperCase() : '';
     if (symbol) next.symbol = symbol;
     next.strategyId = parseStrategyId(args.strategyId, next.strategyId);
-    next = applyXauusdGuardRiskDefaultsToReplayRuntime(next);
+    next = applySymbolGuardRiskDefaultsToReplayRuntime(next);
 
     const executeMinutes = toNum(args.executeMinutes);
     if (executeMinutes !== undefined && executeMinutes > 0) next.executeMinutes = Math.floor(executeMinutes);

@@ -7,6 +7,12 @@ import test from 'node:test';
 import { defaultScalpReplayConfig, normalizeScalpReplayInput, runScalpReplay } from './harness';
 import { getDefaultScalpStrategy, listScalpStrategies } from '../strategies/registry';
 import {
+    REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID,
+    applyBtcusdtGuardRiskDefaultsToReplayRuntime,
+    resolveBtcusdtGuardBlockedBerlinHours,
+    resolveBtcusdtGuardOptimizedRiskDefaults,
+} from '../strategies/regimePullbackM15M3BtcusdtGuarded';
+import {
     REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID,
     applyXauusdGuardRiskDefaultsToReplayRuntime,
     resolveXauusdGuardBlockedBerlinHours,
@@ -78,6 +84,11 @@ test('default gold replay config does not auto-select XAUUSD guarded strategy', 
     assert.notEqual(cfg.strategyId, REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID);
 });
 
+test('default btc replay config does not auto-select BTCUSDT guarded strategy', () => {
+    const cfg = defaultScalpReplayConfig('BTCUSDT');
+    assert.notEqual(cfg.strategyId, REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID);
+});
+
 test('gold replay config applies XAUUSD guarded optimized risk defaults only when XAU strategy is selected', () => {
     const prevTp1 = process.env.SCALP_XAUUSD_GUARD_TP1_CLOSE_PCT;
     const prevTrail = process.env.SCALP_XAUUSD_GUARD_TRAIL_ATR_MULT;
@@ -103,6 +114,34 @@ test('gold replay config applies XAUUSD guarded optimized risk defaults only whe
         else process.env.SCALP_XAUUSD_GUARD_TRAIL_ATR_MULT = prevTrail;
         if (prevTimeStop === undefined) delete process.env.SCALP_XAUUSD_GUARD_TIME_STOP_BARS;
         else process.env.SCALP_XAUUSD_GUARD_TIME_STOP_BARS = prevTimeStop;
+    }
+});
+
+test('btc replay config applies BTCUSDT guarded optimized risk defaults only when BTC strategy is selected', () => {
+    const prevTp1 = process.env.SCALP_BTCUSDT_GUARD_TP1_CLOSE_PCT;
+    const prevTrail = process.env.SCALP_BTCUSDT_GUARD_TRAIL_ATR_MULT;
+    const prevTimeStop = process.env.SCALP_BTCUSDT_GUARD_TIME_STOP_BARS;
+    delete process.env.SCALP_BTCUSDT_GUARD_TP1_CLOSE_PCT;
+    delete process.env.SCALP_BTCUSDT_GUARD_TRAIL_ATR_MULT;
+    delete process.env.SCALP_BTCUSDT_GUARD_TIME_STOP_BARS;
+    try {
+        const optimized = resolveBtcusdtGuardOptimizedRiskDefaults();
+        const cfg = defaultScalpReplayConfig('BTCUSDT');
+        cfg.strategyId = REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID;
+        const guarded = applyBtcusdtGuardRiskDefaultsToReplayRuntime(cfg);
+        assert.equal(guarded.strategy.tp1ClosePct, optimized.tp1ClosePct);
+        assert.equal(guarded.strategy.trailAtrMult, optimized.trailAtrMult);
+        assert.equal(guarded.strategy.timeStopBars, optimized.timeStopBars);
+        assert.equal(optimized.tp1ClosePct, 20);
+        assert.equal(optimized.trailAtrMult, 1.4);
+        assert.equal(optimized.timeStopBars, 15);
+    } finally {
+        if (prevTp1 === undefined) delete process.env.SCALP_BTCUSDT_GUARD_TP1_CLOSE_PCT;
+        else process.env.SCALP_BTCUSDT_GUARD_TP1_CLOSE_PCT = prevTp1;
+        if (prevTrail === undefined) delete process.env.SCALP_BTCUSDT_GUARD_TRAIL_ATR_MULT;
+        else process.env.SCALP_BTCUSDT_GUARD_TRAIL_ATR_MULT = prevTrail;
+        if (prevTimeStop === undefined) delete process.env.SCALP_BTCUSDT_GUARD_TIME_STOP_BARS;
+        else process.env.SCALP_BTCUSDT_GUARD_TIME_STOP_BARS = prevTimeStop;
     }
 });
 
@@ -134,5 +173,36 @@ test('xauusd blocked-hour variants are configurable and explicit hours override 
         else process.env.SCALP_XAUUSD_GUARD_BLOCKED_HOURS_VARIANT = prevVariant;
         if (prevHours === undefined) delete process.env.SCALP_XAUUSD_GUARD_BLOCKED_HOURS_BERLIN;
         else process.env.SCALP_XAUUSD_GUARD_BLOCKED_HOURS_BERLIN = prevHours;
+    }
+});
+
+test('btcusdt blocked-hour variants are configurable and explicit hours override variant', () => {
+    const prevVariant = process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT;
+    const prevHours = process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_BERLIN;
+    delete process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT;
+    delete process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_BERLIN;
+    try {
+        assert.deepEqual(resolveBtcusdtGuardBlockedBerlinHours(), [10, 11]);
+
+        process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT = 'btcusdt_low_dd';
+        assert.deepEqual(resolveBtcusdtGuardBlockedBerlinHours(), [10]);
+
+        process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT = 'btcusdt_high_pf';
+        assert.deepEqual(resolveBtcusdtGuardBlockedBerlinHours(), [10, 11]);
+
+        process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT = 'off';
+        assert.deepEqual(resolveBtcusdtGuardBlockedBerlinHours(), []);
+
+        process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT = 'unknown_variant';
+        assert.deepEqual(resolveBtcusdtGuardBlockedBerlinHours(), [10, 11]);
+
+        process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT = 'btcusdt_high_pf';
+        process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_BERLIN = '11,10,11';
+        assert.deepEqual(resolveBtcusdtGuardBlockedBerlinHours(), [10, 11]);
+    } finally {
+        if (prevVariant === undefined) delete process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT;
+        else process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT = prevVariant;
+        if (prevHours === undefined) delete process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_BERLIN;
+        else process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_BERLIN = prevHours;
     }
 });
