@@ -5,6 +5,7 @@ import path from 'node:path';
 import { defaultScalpReplayConfig, normalizeScalpReplayInput, runScalpReplay } from '../lib/scalp/replay/harness';
 import { writeScalpReplayArtifacts } from '../lib/scalp/replay/io';
 import { getScalpStrategyById, listScalpStrategies, normalizeScalpStrategyId } from '../lib/scalp/strategies/registry';
+import { applyXauusdGuardRiskDefaultsToReplayRuntime } from '../lib/scalp/strategies/regimePullbackM15M3XauusdGuarded';
 import type { ScalpReplayInputFile, ScalpReplayRuntimeConfig } from '../lib/scalp/replay/types';
 
 function usage() {
@@ -82,10 +83,11 @@ function parseStrategyId(value: unknown, fallback: string): string {
 }
 
 function applyOverrides(config: ScalpReplayRuntimeConfig, args: Record<string, string | boolean>): ScalpReplayRuntimeConfig {
-    const next: ScalpReplayRuntimeConfig = JSON.parse(JSON.stringify(config));
+    let next: ScalpReplayRuntimeConfig = JSON.parse(JSON.stringify(config));
     const symbol = typeof args.symbol === 'string' ? String(args.symbol).trim().toUpperCase() : '';
     if (symbol) next.symbol = symbol;
     next.strategyId = parseStrategyId(args.strategyId, next.strategyId);
+    next = applyXauusdGuardRiskDefaultsToReplayRuntime(next);
 
     const executeMinutes = toNum(args.executeMinutes);
     if (executeMinutes !== undefined && executeMinutes > 0) next.executeMinutes = Math.floor(executeMinutes);
@@ -163,7 +165,7 @@ async function main() {
     const progressMinIntervalMs =
         progressMinIntervalMsRaw !== undefined && progressMinIntervalMsRaw >= 0 ? Math.floor(progressMinIntervalMsRaw) : 5000;
 
-    const result = runScalpReplay({
+    const result = await runScalpReplay({
         candles: normalized.candles,
         pipSize: normalized.pipSize,
         config,
@@ -186,6 +188,11 @@ async function main() {
     console.log(`Window: ${result.summary.startTs ?? 'n/a'} -> ${result.summary.endTs ?? 'n/a'}`);
     console.log(
         `Trades: ${result.summary.trades} | WinRate: ${result.summary.winRatePct.toFixed(2)}% | AvgR: ${result.summary.avgR.toFixed(3)} | NetR: ${result.summary.netR.toFixed(3)}`,
+    );
+    console.log(
+        `Gross +R: ${result.summary.grossProfitR.toFixed(3)} | Gross -R: ${result.summary.grossLossR.toFixed(3)} | PF: ${
+            result.summary.profitFactor === null ? 'n/a' : result.summary.profitFactor.toFixed(3)
+        }`,
     );
     console.log(`NetPnL: ${result.summary.netPnlUsd.toFixed(2)} USD | MaxDD(R): ${result.summary.maxDrawdownR.toFixed(3)}`);
     console.log(`Artifacts: ${path.resolve(outDir)}`);

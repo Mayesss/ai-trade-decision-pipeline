@@ -5,6 +5,7 @@ import { requireAdminAccess } from '../../../../lib/admin';
 import { type CandleHistoryBackend, loadScalpCandleHistory, normalizeHistoryTimeframe } from '../../../../lib/scalp/candleHistory';
 import { defaultScalpReplayConfig, normalizeScalpReplayInput, runScalpReplay } from '../../../../lib/scalp/replay/harness';
 import { getDefaultScalpStrategy, getScalpStrategyById, normalizeScalpStrategyId } from '../../../../lib/scalp/strategies/registry';
+import { applyXauusdGuardRiskDefaultsToReplayRuntime } from '../../../../lib/scalp/strategies/regimePullbackM15M3XauusdGuarded';
 import { pipSizeForScalpSymbol } from '../../../../lib/scalp/marketData';
 import type { ScalpReplayInputFile, ScalpReplayRuntimeConfig } from '../../../../lib/scalp/replay/types';
 import type { ScalpCandle } from '../../../../lib/scalp/types';
@@ -399,9 +400,10 @@ async function fetchReplayCandlesWithFallback(params: {
 }
 
 function applyRuntimeOverrides(runtime: ScalpReplayRuntimeConfig, body: BacktestRequestBody): ScalpReplayRuntimeConfig {
-  const next: ScalpReplayRuntimeConfig = JSON.parse(JSON.stringify(runtime));
+  let next: ScalpReplayRuntimeConfig = JSON.parse(JSON.stringify(runtime));
   const strategy = body.strategy || {};
   next.strategyId = parseStrategyId(body.strategyId, next.strategyId || getDefaultScalpStrategy().id);
+  next = applyXauusdGuardRiskDefaultsToReplayRuntime(next);
 
   next.executeMinutes = toPositiveInt(body.executeMinutes, next.executeMinutes);
   next.spreadFactor = toPositiveNumber(body.spreadFactor, next.spreadFactor);
@@ -421,6 +423,25 @@ function applyRuntimeOverrides(runtime: ScalpReplayRuntimeConfig, body: Backtest
   next.strategy.takeProfitR = toPositiveNumber(strategy.takeProfitR, next.strategy.takeProfitR);
   next.strategy.stopBufferPips = toNonNegativeNumber(strategy.stopBufferPips, next.strategy.stopBufferPips);
   next.strategy.stopBufferSpreadMult = toNonNegativeNumber(strategy.stopBufferSpreadMult, next.strategy.stopBufferSpreadMult);
+  next.strategy.breakEvenOffsetR = toNonNegativeNumber(strategy.breakEvenOffsetR, next.strategy.breakEvenOffsetR);
+  next.strategy.tp1R = toPositiveNumber(strategy.tp1R, next.strategy.tp1R);
+  next.strategy.tp1ClosePct = Math.max(
+    0,
+    Math.min(100, toNonNegativeNumber(strategy.tp1ClosePct, next.strategy.tp1ClosePct)),
+  );
+  next.strategy.trailStartR = toPositiveNumber(strategy.trailStartR, next.strategy.trailStartR);
+  next.strategy.trailAtrMult = toPositiveNumber(strategy.trailAtrMult, next.strategy.trailAtrMult);
+  next.strategy.timeStopBars = toPositiveInt(strategy.timeStopBars, next.strategy.timeStopBars);
+  const dailyLossLimitR = toFinite(strategy.dailyLossLimitR);
+  if (dailyLossLimitR !== undefined) next.strategy.dailyLossLimitR = dailyLossLimitR;
+  next.strategy.consecutiveLossPauseThreshold = toPositiveInt(
+    strategy.consecutiveLossPauseThreshold,
+    next.strategy.consecutiveLossPauseThreshold,
+  );
+  next.strategy.consecutiveLossCooldownBars = toNonNegativeInt(
+    strategy.consecutiveLossCooldownBars,
+    next.strategy.consecutiveLossCooldownBars,
+  );
   next.strategy.minStopDistancePips = toPositiveNumber(strategy.minStopDistancePips, next.strategy.minStopDistancePips);
   next.strategy.sweepBufferPips = toNonNegativeNumber(strategy.sweepBufferPips, next.strategy.sweepBufferPips);
   next.strategy.sweepBufferAtrMult = toNonNegativeNumber(strategy.sweepBufferAtrMult, next.strategy.sweepBufferAtrMult);
@@ -847,7 +868,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       },
       true,
     );
-    const replay = runScalpReplay({
+    const replay = await runScalpReplay({
       candles: normalized.candles,
       pipSize: normalized.pipSize,
       config: runtime,

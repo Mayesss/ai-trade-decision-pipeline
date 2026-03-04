@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { defaultScalpReplayConfig, normalizeScalpReplayInput, runScalpReplay } from '../lib/scalp/replay/harness';
 import { getScalpStrategyById, listScalpStrategies, normalizeScalpStrategyId } from '../lib/scalp/strategies/registry';
+import { applyXauusdGuardRiskDefaultsToReplayRuntime } from '../lib/scalp/strategies/regimePullbackM15M3XauusdGuarded';
 import type { ScalpReplayInputFile, ScalpReplayRuntimeConfig } from '../lib/scalp/replay/types';
 
 type Scenario = {
@@ -51,6 +52,9 @@ type RunSummary = {
     avgR: number;
     expectancyR: number;
     netR: number;
+    grossProfitR: number;
+    grossLossR: number;
+    profitFactor: number | null;
     netPnlUsd: number;
     maxDrawdownR: number;
     avgHoldMinutes: number;
@@ -282,6 +286,9 @@ function toCsv(rows: RunSummary[]): string {
         'avgR',
         'expectancyR',
         'netR',
+        'grossProfitR',
+        'grossLossR',
+        'profitFactor',
         'netPnlUsd',
         'maxDrawdownR',
         'avgHoldMinutes',
@@ -305,6 +312,9 @@ function toCsv(rows: RunSummary[]): string {
                 row.avgR.toFixed(6),
                 row.expectancyR.toFixed(6),
                 row.netR.toFixed(6),
+                row.grossProfitR.toFixed(6),
+                row.grossLossR.toFixed(6),
+                row.profitFactor === null ? '' : row.profitFactor.toFixed(6),
                 row.netPnlUsd.toFixed(4),
                 row.maxDrawdownR.toFixed(6),
                 row.avgHoldMinutes.toFixed(4),
@@ -563,7 +573,7 @@ async function main() {
     for (const fixture of fixtureInputs) {
         for (const scenario of scenarios) {
             const baseConfig = defaultScalpReplayConfig(fixture.input.symbol);
-            const config: ScalpReplayRuntimeConfig = {
+            let config: ScalpReplayRuntimeConfig = {
                 ...baseConfig,
                 strategyId: scenario.strategyId,
                 strategy: {
@@ -578,8 +588,9 @@ async function main() {
                 spreadFactor: scenario.spreadFactor,
                 slippagePips: scenario.slippagePips,
             };
+            config = applyXauusdGuardRiskDefaultsToReplayRuntime(config);
 
-            const replay = runScalpReplay({
+            const replay = await runScalpReplay({
                 candles: fixture.input.candles,
                 pipSize: fixture.input.pipSize,
                 config,
@@ -601,6 +612,9 @@ async function main() {
                 avgR: replay.summary.avgR,
                 expectancyR: replay.summary.expectancyR,
                 netR: replay.summary.netR,
+                grossProfitR: replay.summary.grossProfitR,
+                grossLossR: replay.summary.grossLossR,
+                profitFactor: replay.summary.profitFactor,
                 netPnlUsd: replay.summary.netPnlUsd,
                 maxDrawdownR: replay.summary.maxDrawdownR,
                 avgHoldMinutes: replay.summary.avgHoldMinutes,

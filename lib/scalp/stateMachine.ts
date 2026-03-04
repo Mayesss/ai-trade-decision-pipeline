@@ -51,6 +51,9 @@ export function createInitialScalpSessionState(params: {
             tradesPlaced: 0,
             wins: 0,
             losses: 0,
+            realizedR: 0,
+            consecutiveLosses: 0,
+            lastExitAtMs: null,
             lastTradeAtMs: null,
         },
         run: {

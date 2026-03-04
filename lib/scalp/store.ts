@@ -304,6 +304,9 @@ function parseSessionState(raw: unknown): ScalpSessionState | null {
             tradesPlaced: Math.max(0, Math.floor(Number(stats.tradesPlaced) || 0)),
             wins: Math.max(0, Math.floor(Number(stats.wins) || 0)),
             losses: Math.max(0, Math.floor(Number(stats.losses) || 0)),
+            realizedR: Number.isFinite(Number(stats.realizedR)) ? Number(stats.realizedR) : 0,
+            consecutiveLosses: Math.max(0, Math.floor(Number(stats.consecutiveLosses) || 0)),
+            lastExitAtMs: Number.isFinite(Number(stats.lastExitAtMs)) ? Number(stats.lastExitAtMs) : null,
             lastTradeAtMs: Number.isFinite(Number(stats.lastTradeAtMs)) ? Number(stats.lastTradeAtMs) : null,
         },
         run: {

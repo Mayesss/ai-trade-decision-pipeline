@@ -216,8 +216,8 @@ export default function ChartPanel(props: ChartPanelProps) {
   const timeframe = rangePreset.timeframe;
   const timeframeSeconds = timeframeToSeconds(timeframe);
   const resolvedLimit = Math.max(32, rangePreset.limit);
-  const chartTextColor = isDark ? '#cbd5e1' : '#0f172a';
-  const chartGridColor = isDark ? '#334155' : '#e2e8f0';
+  const chartTextColor = isDark ? '#d4d4d8' : '#0f172a';
+  const chartGridColor = isDark ? '#3f3f46' : '#e2e8f0';
   const chartLineColor = isDark ? '#38bdf8' : '#0ea5e9';
   const chartAreaTopColor = isDark ? 'rgba(56,189,248,0.26)' : 'rgba(14,165,233,0.3)';
   const chartAreaBottomColor = isDark ? 'rgba(14,165,233,0.08)' : 'rgba(14,165,233,0.05)';
@@ -704,13 +704,13 @@ export default function ChartPanel(props: ChartPanelProps) {
                 const leverageLabel = typeof pos.leverage === 'number' ? `${pos.leverage.toFixed(0)}x` : null;
                 const fill =
                   profitable === null
-                    ? 'rgba(148,163,184,0.08)'
+                    ? 'rgba(161,161,170,0.08)'
                     : profitable
                     ? 'rgba(16,185,129,0.12)'
                     : 'rgba(248,113,113,0.12)';
                 const stroke =
                   profitable === null
-                    ? 'rgba(100,116,139,0.4)'
+                    ? 'rgba(113,113,122,0.4)'
                     : profitable
                     ? 'rgba(16,185,129,0.9)'
                     : 'rgba(239,68,68,0.9)';
@@ -741,7 +741,7 @@ export default function ChartPanel(props: ChartPanelProps) {
                     ) : (
                       <div
                         className="absolute top-0 bottom-0 w-[2px]"
-                        style={{ right: 0, backgroundColor: 'rgba(148,163,184,0.8)' }}
+                        style={{ right: 0, backgroundColor: 'rgba(161,161,170,0.8)' }}
                       />
                     )}
                     <div className="pointer-events-none absolute right-1 top-1 rounded-full bg-white/90 p-2 shadow-sm">

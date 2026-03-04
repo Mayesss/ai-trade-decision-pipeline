@@ -1,12 +1,12 @@
-import { hssIctM15M3GuardedStrategy } from './hssIctM15M3Guarded';
-import { HSS_ICT_M15_M3_STRATEGY_ID, hssIctM15M3Strategy } from './hssIctM15M3';
+import { REGIME_PULLBACK_M15_M3_STRATEGY_ID, regimePullbackM15M3Strategy } from './regimePullbackM15M3';
+import { regimePullbackM15M3XauusdGuardedStrategy } from './regimePullbackM15M3XauusdGuarded';
 import type { ScalpStrategyDefinition } from './types';
 
-export const DEFAULT_SCALP_STRATEGY_ID = HSS_ICT_M15_M3_STRATEGY_ID;
+export const DEFAULT_SCALP_STRATEGY_ID = REGIME_PULLBACK_M15_M3_STRATEGY_ID;
 
 const REGISTRY: Record<string, ScalpStrategyDefinition> = Object.freeze({
-    [hssIctM15M3Strategy.id]: hssIctM15M3Strategy,
-    [hssIctM15M3GuardedStrategy.id]: hssIctM15M3GuardedStrategy,
+    [regimePullbackM15M3Strategy.id]: regimePullbackM15M3Strategy,
+    [regimePullbackM15M3XauusdGuardedStrategy.id]: regimePullbackM15M3XauusdGuardedStrategy,
 });
 
 export function listScalpStrategies(): ScalpStrategyDefinition[] {
@@ -24,6 +24,15 @@ export function normalizeScalpStrategyId(value: unknown): string {
         .trim()
         .toLowerCase()
         .replace(/[^a-z0-9._-]/g, '');
+}
+
+export function resolveScalpStrategyIdForSymbol(params: {
+    symbol: string;
+    fallbackStrategyId?: string;
+}): string {
+    const fallback = getScalpStrategyById(params.fallbackStrategyId || '');
+    if (fallback) return fallback.id;
+    return getDefaultScalpStrategy().id;
 }
 
 export function getDefaultScalpStrategy(): ScalpStrategyDefinition {

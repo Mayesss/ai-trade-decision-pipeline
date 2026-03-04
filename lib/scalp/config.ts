@@ -38,6 +38,18 @@ function toNonNegativeInt(value: string | undefined, fallback: number): number {
     return Math.max(0, Math.floor(toNonNegativeNumber(value, fallback)));
 }
 
+function toSignedNumber(value: string | undefined, fallback: number): number {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    return n;
+}
+
+function toPercent(value: string | undefined, fallback: number): number {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(0, Math.min(100, n));
+}
+
 function toBool(value: string | undefined, fallback: boolean): boolean {
     if (value === undefined) return fallback;
     const normalized = String(value).trim().toLowerCase();
@@ -147,6 +159,9 @@ export function getScalpStrategyConfig(): ScalpStrategyConfig {
             cooldownAfterLossMinutes: toPositiveInt(process.env.SCALP_COOLDOWN_AFTER_LOSS_MINUTES, 90),
             maxTradesPerSymbolPerDay: toPositiveInt(process.env.SCALP_MAX_TRADES_PER_SYMBOL_PER_DAY, 2),
             maxOpenPositionsPerSymbol: toPositiveInt(process.env.SCALP_MAX_OPEN_POSITIONS_PER_SYMBOL, 1),
+            dailyLossLimitR: Math.min(-0.1, toSignedNumber(process.env.SCALP_DAILY_LOSS_LIMIT_R, -3)),
+            consecutiveLossPauseThreshold: toPositiveInt(process.env.SCALP_CONSECUTIVE_LOSS_PAUSE_THRESHOLD, 2),
+            consecutiveLossCooldownBars: toPositiveInt(process.env.SCALP_CONSECUTIVE_LOSS_COOLDOWN_BARS, 3),
             killSwitch: toBool(process.env.SCALP_KILL_SWITCH, false),
             riskPerTradePct: toPositiveNumber(process.env.SCALP_RISK_PER_TRADE_PCT, 0.35),
             referenceEquityUsd: toPositiveNumber(process.env.SCALP_REFERENCE_EQUITY_USD, 10_000),
@@ -155,6 +170,12 @@ export function getScalpStrategyConfig(): ScalpStrategyConfig {
             takeProfitR: toPositiveNumber(process.env.SCALP_TAKE_PROFIT_R, 2),
             stopBufferPips: toNonNegativeNumber(process.env.SCALP_STOP_BUFFER_PIPS, 0.8),
             stopBufferSpreadMult: toNonNegativeNumber(process.env.SCALP_STOP_BUFFER_SPREAD_MULT, 1.0),
+            breakEvenOffsetR: toNonNegativeNumber(process.env.SCALP_BREAK_EVEN_OFFSET_R, 0),
+            tp1R: toPositiveNumber(process.env.SCALP_TP1_R, 1),
+            tp1ClosePct: toPercent(process.env.SCALP_TP1_CLOSE_PCT, 50),
+            trailStartR: toPositiveNumber(process.env.SCALP_TRAIL_START_R, 1),
+            trailAtrMult: toPositiveNumber(process.env.SCALP_TRAIL_ATR_MULT, 2),
+            timeStopBars: toPositiveInt(process.env.SCALP_TIME_STOP_BARS, 30),
             minStopDistancePips: toPositiveNumber(process.env.SCALP_MIN_STOP_DISTANCE_PIPS, 0.5),
         },
         execution: {

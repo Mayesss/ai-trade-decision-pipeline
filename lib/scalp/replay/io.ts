@@ -29,6 +29,10 @@ function toTradesCsv(result: ScalpReplayResult): string {
         'notionalUsd',
         'rMultiple',
         'pnlUsd',
+        'realizedRBeforeFinalExit',
+        'remainingSizePctAtExit',
+        'tp1Taken',
+        'trailingActiveAtExit',
     ];
     const lines = [headers.join(',')];
     for (const trade of result.trades) {
@@ -49,6 +53,14 @@ function toTradesCsv(result: ScalpReplayResult): string {
             trade.notionalUsd.toFixed(4),
             trade.rMultiple.toFixed(6),
             trade.pnlUsd.toFixed(4),
+            Number.isFinite(Number(trade.realizedRBeforeFinalExit))
+                ? Number(trade.realizedRBeforeFinalExit).toFixed(6)
+                : '',
+            Number.isFinite(Number(trade.remainingSizePctAtExit))
+                ? Number(trade.remainingSizePctAtExit).toFixed(6)
+                : '',
+            trade.tp1Taken ? 'true' : trade.tp1Taken === false ? 'false' : '',
+            trade.trailingActiveAtExit ? 'true' : trade.trailingActiveAtExit === false ? 'false' : '',
         ];
         lines.push(row.map(csvEscape).join(','));
     }

@@ -5,6 +5,7 @@ import capitalTickerMap from '../data/capitalTickerMap.json';
 import { loadScalpCandleHistory } from '../lib/scalp/candleHistory';
 import { pipSizeForScalpSymbol } from '../lib/scalp/marketData';
 import { defaultScalpReplayConfig, runScalpReplay } from '../lib/scalp/replay/harness';
+import { applyXauusdGuardRiskDefaultsToReplayRuntime } from '../lib/scalp/strategies/regimePullbackM15M3XauusdGuarded';
 import type { ScalpReplayCandle, ScalpReplayRuntimeConfig } from '../lib/scalp/replay/types';
 
 type ProfileId = 'strict' | 'baseline' | 'loose';
@@ -214,10 +215,11 @@ async function main() {
 
             const profileRuns: ProfileRun[] = [];
             for (const profile of PROFILES) {
-                const runtime = JSON.parse(JSON.stringify(baseRuntime)) as ScalpReplayRuntimeConfig;
+                let runtime = JSON.parse(JSON.stringify(baseRuntime)) as ScalpReplayRuntimeConfig;
                 runtime.strategy = { ...runtime.strategy, ...profile.strategy };
+                runtime = applyXauusdGuardRiskDefaultsToReplayRuntime(runtime);
                 const replayStartedAtMs = Date.now();
-                const replay = runScalpReplay({
+                const replay = await runScalpReplay({
                     candles: baseCandles,
                     pipSize,
                     config: runtime,

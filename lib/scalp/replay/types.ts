@@ -47,6 +47,15 @@ export interface ScalpReplayRuntimeConfig {
         takeProfitR: number;
         stopBufferPips: number;
         stopBufferSpreadMult: number;
+        breakEvenOffsetR: number;
+        tp1R: number;
+        tp1ClosePct: number;
+        trailStartR: number;
+        trailAtrMult: number;
+        timeStopBars: number;
+        dailyLossLimitR: number;
+        consecutiveLossPauseThreshold: number;
+        consecutiveLossCooldownBars: number;
         minStopDistancePips: number;
         sweepBufferPips: number;
         sweepBufferAtrMult: number;
@@ -83,12 +92,16 @@ export interface ScalpReplayTrade {
     stopPrice: number;
     takeProfitPrice: number;
     exitPrice: number;
-    exitReason: 'STOP' | 'TP' | 'FORCE_CLOSE';
+    exitReason: 'STOP' | 'TP' | 'TIME_STOP' | 'FORCE_CLOSE';
     riskAbs: number;
     riskUsd: number;
     notionalUsd: number;
     rMultiple: number;
     pnlUsd: number;
+    realizedRBeforeFinalExit?: number;
+    remainingSizePctAtExit?: number;
+    tp1Taken?: boolean;
+    trailingActiveAtExit?: boolean;
 }
 
 export interface ScalpReplayTimelineEvent {
@@ -111,6 +124,9 @@ export interface ScalpReplaySummary {
     avgR: number;
     expectancyR: number;
     netR: number;
+    grossProfitR: number;
+    grossLossR: number;
+    profitFactor: number | null;
     netPnlUsd: number;
     maxDrawdownR: number;
     avgHoldMinutes: number;

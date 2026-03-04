@@ -3,7 +3,8 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
-import { getScalpStrategyConfig } from '../../../../lib/scalp/config';
+import { getScalpCronSymbolConfigs } from '../../../../lib/symbolRegistry';
+import { getScalpStrategyConfig, normalizeScalpSymbol } from '../../../../lib/scalp/config';
 import { runScalpExecuteCycle } from '../../../../lib/scalp/engine';
 import { getScalpHybridPolicy, listScalpHybridSymbols, resolveScalpHybridSelection } from '../../../../lib/scalp/hybridPolicy';
 import { loadScalpStrategyRuntimeSnapshot } from '../../../../lib/scalp/store';
@@ -52,36 +53,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     try {
         const policy = getScalpHybridPolicy();
+        const cronSymbolConfigs = getScalpCronSymbolConfigs();
+        const cronSymbolStrategyBySymbol = new Map(
+            cronSymbolConfigs.map((row) => [row.symbol.toUpperCase(), String(row.strategyId || '').trim()]),
+        );
         const cfg = getScalpStrategyConfig();
         const runtime = await loadScalpStrategyRuntimeSnapshot(cfg.enabled, strategyId);
         const strategy = runtime.strategy;
-
-        if (!strategy.enabled) {
-            const reasonCodes = strategy.envEnabled
-                ? ['SCALP_ENGINE_DISABLED', 'SCALP_STRATEGY_DISABLED_BY_KV']
-                : ['SCALP_ENGINE_DISABLED', 'SCALP_ENGINE_DISABLED_BY_ENV'];
-            return res.status(200).json({
-                ok: true,
-                skipped: true,
-                skipReason: reasonCodes[1],
-                reasonCodes,
-                dryRun,
-                requestedSymbol: symbol || null,
-                requestedAll: runAll,
-                forceProfile: forceProfile || null,
-                strategyId: strategy.strategyId,
-                defaultStrategyId: runtime.defaultStrategyId,
-                strategy,
-                strategies: runtime.strategies,
-                policy: {
-                    version: policy.version,
-                    defaultProfile: policy.defaultProfile,
-                    symbolProfileCount: Object.keys(policy.symbolProfiles).length,
-                },
-                results: [],
-                errors: [],
-            });
-        }
 
         if (forceProfile && !policy.profiles[forceProfile]) {
             return res.status(400).json({
@@ -90,7 +68,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 availableProfiles: Object.keys(policy.profiles),
             });
         }
-        const symbols = symbol ? [symbol] : runAll ? listScalpHybridSymbols(policy) : [];
+        const symbols = symbol
+            ? [symbol]
+            : runAll
+            ? cronSymbolConfigs.length > 0
+                ? cronSymbolConfigs.map((row) => row.symbol)
+                : listScalpHybridSymbols(policy)
+            : [];
         if (!symbols.length) {
             return res.status(400).json({
                 error: 'symbol_required',
@@ -104,13 +88,35 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             let selectedProfile = policy.defaultProfile;
             try {
                 const selection = resolveScalpHybridSelection(symbolValue, policy, forceProfile);
+                const normalizedSymbol = normalizeScalpSymbol(selection.symbol);
+                const cronStrategyId = cronSymbolStrategyBySymbol.get(normalizedSymbol) || '';
+                const effectiveStrategy =
+                    runtime.strategies.find((row) => row.strategyId === cronStrategyId) || strategy;
                 selectedProfile = selection.profile;
+                if (!effectiveStrategy.enabled) {
+                    const reasonCodes = effectiveStrategy.envEnabled
+                        ? ['SCALP_ENGINE_DISABLED', 'SCALP_STRATEGY_DISABLED_BY_KV']
+                        : ['SCALP_ENGINE_DISABLED', 'SCALP_ENGINE_DISABLED_BY_ENV'];
+                    results.push({
+                        generatedAtMs: Date.now(),
+                        symbol: normalizedSymbol,
+                        strategyId: effectiveStrategy.strategyId,
+                        dayKey: null,
+                        dryRun,
+                        runLockAcquired: false,
+                        state: 'IDLE',
+                        reasonCodes,
+                        skipped: true,
+                        profile: selection.profile,
+                    });
+                    continue;
+                }
                 const cycle = await runScalpExecuteCycle({
-                    symbol: selection.symbol,
+                    symbol: normalizedSymbol,
                     dryRun,
                     nowMs,
                     configOverride: selection.configOverride,
-                    strategyId: strategy.strategyId,
+                    strategyId: effectiveStrategy.strategyId,
                 });
                 results.push({
                     ...cycle,

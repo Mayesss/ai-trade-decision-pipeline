@@ -3,8 +3,8 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
+import { getScalpCronSymbolConfigs } from '../../../../lib/symbolRegistry';
 import { getScalpStrategyConfig } from '../../../../lib/scalp/config';
-import { getScalpHybridPolicy, listScalpHybridSymbols, resolveScalpHybridSelection } from '../../../../lib/scalp/hybridPolicy';
 import { normalizeScalpStrategyId } from '../../../../lib/scalp/strategies/registry';
 import { deriveScalpDayKey } from '../../../../lib/scalp/stateMachine';
 import { loadScalpJournal, loadScalpSessionState, loadScalpStrategyRuntimeSnapshot } from '../../../../lib/scalp/store';
@@ -12,7 +12,11 @@ import type { ScalpJournalEntry } from '../../../../lib/scalp/types';
 
 type SymbolSnapshot = {
   symbol: string;
-  profile: string;
+  strategyId: string;
+  tune: string;
+  cronSchedule: string | null;
+  cronRoute: 'execute' | 'execute-hybrid';
+  cronPath: string;
   dayKey: string;
   state: string | null;
   updatedAtMs: number | null;
@@ -59,6 +63,21 @@ function compactJournalEntry(entry: ScalpJournalEntry): Record<string, unknown> 
   };
 }
 
+function deriveTuneLabel(params: {
+  strategyId: string;
+  defaultStrategyId: string;
+}): string {
+  const strategyId = normalizeScalpStrategyId(params.strategyId);
+  const defaultStrategyId = normalizeScalpStrategyId(params.defaultStrategyId);
+  if (!strategyId) return 'default';
+  if (!defaultStrategyId || strategyId === defaultStrategyId) return 'default';
+  const prefix = `${defaultStrategyId}_`;
+  if (strategyId.startsWith(prefix) && strategyId.length > prefix.length) {
+    return strategyId.slice(prefix.length);
+  }
+  return strategyId;
+}
+
 function setNoStoreHeaders(res: NextApiResponse): void {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
@@ -76,20 +95,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const nowMs = Date.now();
     const journalLimit = parseLimit(req.query.journalLimit, 80);
     const requestedStrategyId = firstQueryValue(req.query.strategyId);
-    const policy = getScalpHybridPolicy();
     const cfg = getScalpStrategyConfig();
     const runtime = await loadScalpStrategyRuntimeSnapshot(cfg.enabled, requestedStrategyId);
     const strategy = runtime.strategy;
     const dayKey = deriveScalpDayKey(nowMs, cfg.sessions.clockMode);
-    const symbols = listScalpHybridSymbols(policy);
+    const cronSymbols = getScalpCronSymbolConfigs();
 
     const rows: SymbolSnapshot[] = [];
-    for (const symbol of symbols) {
-      const selection = resolveScalpHybridSelection(symbol, policy);
-      const state = await loadScalpSessionState(selection.symbol, dayKey, strategy.strategyId);
+    for (const cronSymbol of cronSymbols) {
+      const preferredStrategyId = normalizeScalpStrategyId(cronSymbol.strategyId);
+      const strategyControl =
+        runtime.strategies.find((row) => row.strategyId === preferredStrategyId) || strategy;
+      const effectiveStrategyId = strategyControl.strategyId;
+      const state = await loadScalpSessionState(cronSymbol.symbol, dayKey, effectiveStrategyId);
       rows.push({
-        symbol: selection.symbol,
-        profile: selection.profile,
+        symbol: cronSymbol.symbol,
+        strategyId: effectiveStrategyId,
+        tune: deriveTuneLabel({
+          strategyId: effectiveStrategyId,
+          defaultStrategyId: runtime.defaultStrategyId,
+        }),
+        cronSchedule: cronSymbol.schedule,
+        cronRoute: cronSymbol.route,
+        cronPath: cronSymbol.path,
         dayKey,
         state: state?.state ?? null,
         updatedAtMs: state?.updatedAtMs ?? null,
@@ -116,13 +144,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const totalTradesPlaced = rows.reduce((acc, row) => acc + row.tradesPlaced, 0);
 
     const journal = await loadScalpJournal(journalLimit);
+    const strategyBySymbol = new Map(rows.map((row) => [row.symbol.toUpperCase(), row.strategyId]));
+    const allowedStrategyIds = new Set(rows.map((row) => row.strategyId));
     const latestExecutionBySymbol: Record<string, Record<string, unknown>> = {};
     for (const entry of journal) {
       const entryStrategy = journalStrategyId(entry);
-      if (entryStrategy && entryStrategy !== strategy.strategyId) continue;
-      if (!entryStrategy && strategy.strategyId !== runtime.defaultStrategyId) continue;
       const symbol = String(entry.symbol || '').toUpperCase();
       if (!symbol || latestExecutionBySymbol[symbol]) continue;
+      const expectedStrategyId = strategyBySymbol.get(symbol) || strategy.strategyId;
+      if (entryStrategy && entryStrategy !== expectedStrategyId) continue;
+      if (!entryStrategy && expectedStrategyId !== runtime.defaultStrategyId) continue;
       if (entry.type !== 'execution' && entry.type !== 'state' && entry.type !== 'error') continue;
       latestExecutionBySymbol[symbol] = compactJournalEntry(entry);
     }
@@ -132,12 +163,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       generatedAtMs: nowMs,
       dayKey,
       clockMode: cfg.sessions.clockMode,
-      policy: {
-        version: policy.version,
-        defaultProfile: policy.defaultProfile,
-        profiles: Object.keys(policy.profiles),
-        symbolProfileCount: Object.keys(policy.symbolProfiles).length,
-      },
       strategyId: strategy.strategyId,
       defaultStrategyId: runtime.defaultStrategyId,
       strategy,
@@ -155,8 +180,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       journal: journal
         .filter((entry) => {
           const entryStrategy = journalStrategyId(entry);
-          if (entryStrategy && entryStrategy !== strategy.strategyId) return false;
-          if (!entryStrategy && strategy.strategyId !== runtime.defaultStrategyId) return false;
+          if (entryStrategy && !allowedStrategyIds.has(entryStrategy)) return false;
+          if (!entryStrategy && !allowedStrategyIds.has(runtime.defaultStrategyId)) return false;
           return true;
         })
         .map(compactJournalEntry),

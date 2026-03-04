@@ -1,7 +1,7 @@
 import { buildAsiaRangeSnapshot, computeAtr, detectConfirmation, detectIfvg, detectIfvgTouch, detectSweepLifecycle } from '../detectors';
 import { pipSizeForScalpSymbol } from '../marketData';
 import type { ScalpCandle, ScalpDirectionalBias, ScalpSessionState } from '../types';
-import type { ScalpStrategyDefinition, ScalpStrategyPhaseInput, ScalpStrategyPhaseOutput } from './types';
+import type { ScalpStrategyDefinition, ScalpStrategyEntryIntent, ScalpStrategyPhaseInput, ScalpStrategyPhaseOutput } from './types';
 
 function latestTs(candles: ScalpCandle[]): number | null {
     const ts = candles.at(-1)?.[0];
@@ -37,15 +37,30 @@ function expectedDirectionFromSweep(state: ScalpSessionState): ScalpDirectionalB
     return state.sweep.side === 'BUY_SIDE' ? 'BEARISH' : 'BULLISH';
 }
 
+function finalizePhase(params: {
+    state: ScalpSessionState;
+    reasonCodes: string[];
+    entryIntent?: ScalpStrategyEntryIntent | null;
+}): ScalpStrategyPhaseOutput {
+    return {
+        state: params.state,
+        reasonCodes: dedupeReasonCodes(params.reasonCodes),
+        entryIntent: params.entryIntent ?? null,
+    };
+}
+
 function applyPhaseDetectors(params: ScalpStrategyPhaseInput): ScalpStrategyPhaseOutput {
     const reasonCodes: string[] = [];
     let next = withLastProcessed(params.state, params.market);
 
     if (next.state === 'IN_TRADE' || next.state === 'COOLDOWN') {
-        return { state: next, reasonCodes: ['STATE_SKIPPED_MANAGED_EXTERNALLY'] };
+        return finalizePhase({
+            state: next,
+            reasonCodes: ['STATE_SKIPPED_MANAGED_EXTERNALLY'],
+        });
     }
     if (next.state === 'DONE') {
-        return { state: next, reasonCodes: ['DAY_ALREADY_DONE'] };
+        return finalizePhase({ state: next, reasonCodes: ['DAY_ALREADY_DONE'] });
     }
 
     if (!next.asiaRange) {
@@ -63,14 +78,14 @@ function applyPhaseDetectors(params: ScalpStrategyPhaseInput): ScalpStrategyPhas
                 next.state = 'ASIA_RANGE_READY';
             }
         } else {
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
+            return finalizePhase({ state: next, reasonCodes });
         }
     }
 
     if (!next.sweep && params.nowMs > params.windows.raidEndMs && next.state === 'ASIA_RANGE_READY') {
         next.state = 'DONE';
         reasonCodes.push('RAID_WINDOW_CLOSED_NO_SWEEP');
-        return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
+        return finalizePhase({ state: next, reasonCodes });
     }
 
     if (next.state === 'IDLE') {
@@ -97,12 +112,12 @@ function applyPhaseDetectors(params: ScalpStrategyPhaseInput): ScalpStrategyPhas
             next.state = 'CONFIRMING';
         } else if (sweep.status === 'pending') {
             next.state = 'SWEEP_DETECTED';
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
+            return finalizePhase({ state: next, reasonCodes });
         } else if (sweep.status === 'expired') {
             next.state = 'DONE';
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
+            return finalizePhase({ state: next, reasonCodes });
         } else if (sweep.status === 'none') {
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
+            return finalizePhase({ state: next, reasonCodes });
         }
     }
 
@@ -112,7 +127,7 @@ function applyPhaseDetectors(params: ScalpStrategyPhaseInput): ScalpStrategyPhas
         if (!(Number.isFinite(rejectionTsMs) && rejectionTsMs > 0 && direction)) {
             reasonCodes.push('CONFIRM_REQUIRES_REJECTED_SWEEP');
             next.state = 'DONE';
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
+            return finalizePhase({ state: next, reasonCodes });
         }
 
         const confirmation = detectConfirmation({
@@ -127,11 +142,11 @@ function applyPhaseDetectors(params: ScalpStrategyPhaseInput): ScalpStrategyPhas
         next.confirmation = confirmation.snapshot;
         reasonCodes.push(...confirmation.reasonCodes);
         if (confirmation.status === 'pending') {
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
+            return finalizePhase({ state: next, reasonCodes });
         }
         if (confirmation.status === 'expired') {
             next.state = 'DONE';
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
+            return finalizePhase({ state: next, reasonCodes });
         }
 
         if (confirmation.status === 'confirmed' && confirmation.displacementTsMs && confirmation.structureShiftTsMs) {
@@ -150,7 +165,7 @@ function applyPhaseDetectors(params: ScalpStrategyPhaseInput): ScalpStrategyPhas
                     next.state = 'DONE';
                     reasonCodes.push('IFVG_NOT_FOUND_BEFORE_CONFIRM_TTL');
                 }
-                return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
+                return finalizePhase({ state: next, reasonCodes });
             }
             next.ifvg = ifvg.zone;
             next.state = 'WAITING_RETRACE';
@@ -171,15 +186,19 @@ function applyPhaseDetectors(params: ScalpStrategyPhaseInput): ScalpStrategyPhas
             };
             next.state = 'WAITING_RETRACE';
             reasonCodes.push('ENTRY_SIGNAL_READY');
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
+            return finalizePhase({
+                state: next,
+                reasonCodes,
+                entryIntent: { model: 'ifvg_touch' },
+            });
         }
         if (touch.expired) {
             next.state = 'DONE';
-            return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
+            return finalizePhase({ state: next, reasonCodes });
         }
     }
 
-    return { state: next, reasonCodes: dedupeReasonCodes(reasonCodes) };
+    return finalizePhase({ state: next, reasonCodes });
 }
 
 export const HSS_ICT_M15_M3_STRATEGY_ID = 'hss_ict_m15_m3';

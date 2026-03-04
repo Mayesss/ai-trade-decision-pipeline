@@ -62,6 +62,18 @@ export interface ScalpTradeSnapshot {
     stopPrice: number;
     takeProfitPrice: number | null;
     riskR: number;
+    riskAbs?: number;
+    riskUsd?: number;
+    notionalUsd?: number;
+    initialStopPrice?: number;
+    remainingSizePct?: number;
+    realizedR?: number;
+    tp1Done?: boolean;
+    tp1Price?: number | null;
+    trailActive?: boolean;
+    trailStopPrice?: number | null;
+    favorableExtremePrice?: number | null;
+    barsHeld?: number;
     openedAtMs: number;
     brokerOrderId: string | null;
     dryRun: boolean;
@@ -78,6 +90,9 @@ export interface ScalpDailyStats {
     tradesPlaced: number;
     wins: number;
     losses: number;
+    realizedR: number;
+    consecutiveLosses: number;
+    lastExitAtMs: number | null;
     lastTradeAtMs: number | null;
 }
 
@@ -163,6 +178,9 @@ export interface ScalpStrategyConfig {
         cooldownAfterLossMinutes: number;
         maxTradesPerSymbolPerDay: number;
         maxOpenPositionsPerSymbol: number;
+        dailyLossLimitR: number;
+        consecutiveLossPauseThreshold: number;
+        consecutiveLossCooldownBars: number;
         killSwitch: boolean;
         riskPerTradePct: number;
         referenceEquityUsd: number;
@@ -171,6 +189,12 @@ export interface ScalpStrategyConfig {
         takeProfitR: number;
         stopBufferPips: number;
         stopBufferSpreadMult: number;
+        breakEvenOffsetR: number;
+        tp1R: number;
+        tp1ClosePct: number;
+        trailStartR: number;
+        trailAtrMult: number;
+        timeStopBars: number;
         minStopDistancePips: number;
     };
     execution: {

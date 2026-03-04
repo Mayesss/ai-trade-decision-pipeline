@@ -2,10 +2,17 @@ import crypto from 'crypto';
 
 import { applyScalpStrategyConfigOverride, getScalpStrategyConfig, normalizeScalpSymbol } from './config';
 import type { ScalpStrategyConfigOverride } from './config';
-import { buildScalpEntryPlan, executeScalpEntryPlan, reconcileScalpBrokerPosition } from './execution';
+import {
+    buildScalpEntryPlan,
+    executeScalpEntryPlan,
+    manageScalpOpenTrade,
+    reconcileScalpBrokerPosition,
+    resolveLegacyIfvgEntryIntent,
+} from './execution';
 import { loadScalpMarketSnapshot } from './marketData';
 import { buildScalpSessionWindows } from './sessions';
 import { getDefaultScalpStrategy, getScalpStrategyById } from './strategies/registry';
+import { applyXauusdGuardRiskDefaultsToStrategyConfig } from './strategies/regimePullbackM15M3XauusdGuarded';
 import { advanceScalpStateMachine, createInitialScalpSessionState, deriveScalpDayKey } from './stateMachine';
 import {
     appendScalpJournal,
@@ -78,7 +85,8 @@ export async function runScalpExecuteCycle(opts: {
     configOverride?: ScalpStrategyConfigOverride;
     strategyId?: string;
 } = {}): Promise<ScalpExecuteCycleResult> {
-    const cfg = applyScalpStrategyConfigOverride(getScalpStrategyConfig(), opts.configOverride);
+    const baseCfg = getScalpStrategyConfig();
+    let cfg = applyScalpStrategyConfigOverride(baseCfg, opts.configOverride);
     const nowMs = Number.isFinite(opts.nowMs as number) ? Number(opts.nowMs) : Date.now();
     const dryRun = opts.dryRun ?? cfg.dryRunDefault;
     const symbol = normalizeScalpSymbol(opts.symbol || cfg.defaultSymbol);
@@ -91,6 +99,10 @@ export async function runScalpExecuteCycle(opts: {
         getScalpStrategyById(strategyId) ||
         getScalpStrategyById(runtime.defaultStrategyId) ||
         getDefaultScalpStrategy();
+    cfg = applyXauusdGuardRiskDefaultsToStrategyConfig({ cfg, symbol, strategyId });
+    if (opts.configOverride) {
+        cfg = applyScalpStrategyConfigOverride(cfg, opts.configOverride);
+    }
 
     if (!strategyControl.enabled) {
         const reasonCodes = strategyControl.envEnabled
@@ -208,12 +220,37 @@ export async function runScalpExecuteCycle(opts: {
                 });
                 nextState = reconciled.state;
                 phaseReasonCodes.push(...reconciled.reasonCodes);
+                const hadOpenTradeAtStartOfManage = Boolean(nextState.trade);
 
-                if (nextState.state === 'WAITING_RETRACE' && nextState.ifvg?.touched && !nextState.trade) {
+                const managed = await manageScalpOpenTrade({
+                    state: nextState,
+                    market,
+                    cfg,
+                    dryRun,
+                    nowMs,
+                });
+                nextState = managed.state;
+                phaseReasonCodes.push(...managed.reasonCodes);
+
+                const strategyEntryIntent = phase.entryIntent ?? null;
+                const legacyEntryIntent = strategyEntryIntent ? null : resolveLegacyIfvgEntryIntent(nextState);
+                if (!strategyEntryIntent && legacyEntryIntent) {
+                    phaseReasonCodes.push('ENTRY_INTENT_LEGACY_FALLBACK');
+                }
+                const entryIntent = strategyEntryIntent || legacyEntryIntent;
+
+                const realizedR = Number.isFinite(Number(nextState.stats.realizedR)) ? Number(nextState.stats.realizedR) : 0;
+                if (realizedR <= cfg.risk.dailyLossLimitR) {
+                    nextState.state = 'DONE';
+                    phaseReasonCodes.push('DAILY_LOSS_LIMIT_BLOCKED_NEW_ENTRY');
+                }
+
+                if (!hadOpenTradeAtStartOfManage && !nextState.trade && entryIntent && nextState.state !== 'DONE' && nextState.state !== 'COOLDOWN') {
                     const planRes = buildScalpEntryPlan({
                         state: nextState,
                         market,
                         cfg,
+                        entryIntent,
                     });
                     phaseReasonCodes.push(...planRes.reasonCodes);
                     if (planRes.plan) {

@@ -3,10 +3,6 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 export type AdminAccessResult = { ok: boolean; required: boolean };
 const UNAUTHENTICATED_CRON_ROUTES = new Set<string>([
   '/api/swing/analyze',
-  '/api/forex/cron/execute',
-  '/api/forex/cron/scan',
-  '/api/forex/cron/regime',
-  '/api/forex/events/refresh',
   '/api/scalp/cron/execute',
   '/api/scalp/cron/execute-hybrid',
 ]);

@@ -43,28 +43,9 @@ type Evaluation = {
   aspects?: Record<string, AspectEvaluation>;
 };
 
-type ForexEventRow = {
-  timestamp_utc?: string;
-  currency?: string;
-  impact?: string;
-  event_name?: string;
-  minutesToEvent?: number;
-};
-
-type ForexEventContext = {
-  source?: string;
-  pair?: string | null;
-  status?: 'clear' | 'active' | 'stale' | string;
-  staleData?: boolean;
-  reasonCodes?: string[];
-  activeEvents?: ForexEventRow[];
-  nextEvents?: ForexEventRow[];
-};
-
 type EvaluationEntry = {
   symbol: string;
   category?: string | null;
-  forexEventContext?: ForexEventContext | null;
   evaluation: Evaluation;
   evaluationTs?: number | null;
   lastBiasTimeframes?: Record<string, string | undefined> | null;
@@ -117,7 +98,6 @@ type DashboardSummaryRow = {
   category?: string | null;
   lastPlatform?: string | null;
   lastNewsSource?: string | null;
-  forexEventContext?: ForexEventContext | null;
   pnl7d?: number | null;
   pnl7dWithOpen?: number | null;
   pnl7dNet?: number | null;
@@ -142,78 +122,13 @@ type DashboardSummaryResponse = {
   range?: DashboardRangeKey;
 };
 
-type ForexSummaryPair = {
-  pair: string;
-  eligible: boolean;
-  rank: number;
-  score: number;
-  reasons: string[];
-  metrics?: {
-    spreadPips?: number;
-    spreadToAtr1h?: number;
-    atr1hPercent?: number;
-    sessionTag?: string;
-    [key: string]: any;
-  } | null;
-  packet?: {
-    regime?: string;
-    permission?: string;
-    allowed_modules?: string[];
-    risk_state?: string;
-    confidence?: number;
-    [key: string]: any;
-  } | null;
-  gate?: {
-    allowNewEntries?: boolean;
-    blockNewEntries?: boolean;
-    staleData?: boolean;
-    reasonCodes?: string[];
-    [key: string]: any;
-  } | null;
-  journalCount24h?: number;
-  lastExecutionAtMs?: number | null;
-  lastExecutionReasonCodes?: string[];
-  latestExecution?: {
-    pair?: string | null;
-    timestampMs?: number | null;
-    status?: string | null;
-    attempted?: boolean;
-    placed?: boolean;
-    dryRun?: boolean;
-    module?: string | null;
-    action?: string | null;
-    summary?: string | null;
-    reason?: string | null;
-    orderId?: string | null;
-    clientOid?: string | null;
-    reasonCodes?: string[];
-  } | null;
-  openPosition?: {
-    isOpen?: boolean;
-    epic?: string | null;
-    dealId?: string | null;
-    side?: 'long' | 'short' | null;
-    entryPrice?: number | null;
-    leverage?: number | null;
-    size?: number | null;
-    pnlPct?: number | null;
-    updatedAtMs?: number | null;
-  } | null;
-};
-
-type ForexSummaryResponse = {
-  mode?: 'forex';
-  generatedAtMs?: number;
-  scanGeneratedAtMs?: number | null;
-  packetsGeneratedAtMs?: number | null;
-  staleEvents?: boolean;
-  latestExecution?: ForexSummaryPair['latestExecution'];
-  pairs?: ForexSummaryPair[];
-};
-
 type ScalpDashboardSymbol = {
   symbol: string;
-  profile: string;
+  strategyId: string;
+  tune: string;
+  cronSchedule?: string | null;
+  cronRoute?: 'execute' | 'execute-hybrid' | string;
+  cronPath?: string | null;
   dayKey: string;
   state: string | null;
   updatedAtMs?: number | null;
@@ -244,12 +159,6 @@ type ScalpSummaryResponse = {
   generatedAtMs?: number;
   dayKey?: string;
   clockMode?: 'LONDON_TZ' | 'UTC_FIXED' | string;
-  policy?: {
-    version?: number;
-    defaultProfile?: string;
-    profiles?: string[];
-    symbolProfileCount?: number;
-  };
   strategyId?: string;
   defaultStrategyId?: string;
   strategy?: ScalpStrategyControl;
@@ -306,7 +215,7 @@ type EvaluateJobRecord = {
 type DashboardRangeKey = '7D' | '30D' | '6M';
 type ThemePreference = 'system' | 'light' | 'dark';
 type ResolvedTheme = 'light' | 'dark';
-type StrategyMode = 'swing' | 'forex' | 'scalp';
+type StrategyMode = 'swing' | 'scalp';
 
 const CURRENCY_SYMBOL = '₮'; // Tether-style symbol
 const THEME_PREFERENCE_STORAGE_KEY = 'dashboard_theme_preference';
@@ -324,12 +233,11 @@ const BITGET_PUBLIC_WS_URL = 'wss://ws.bitget.com/v2/ws/public';
 const WS_RECONNECT_MS = 1500;
 const WS_PING_MS = 25_000;
 const CAPITAL_LIVE_POLL_MS = 3000;
-const FOREX_LIVE_POLL_MS = 3000;
+const SCALP_LIVE_POLL_MS = 3000;
 
 const ADMIN_SECRET_STORAGE_KEY = 'admin_access_secret';
 const ADMIN_AUTH_TIMEOUT_MS = 4000;
 const STRATEGY_MODE_STORAGE_KEY = 'strategy_mode';
-const SCALP_SELECTED_STRATEGY_STORAGE_KEY = 'scalp_selected_strategy_id';
 
 const ChartPanel = dynamic(() => import('../components/ChartPanel'), {
   ssr: false,
@@ -377,14 +285,10 @@ export default function Home() {
   const [showPrompt, setShowPrompt] = useState(false);
   const [evaluateJobs, setEvaluateJobs] = useState<Record<string, EvaluateJobRecord>>({});
   const [evaluateSubmittingSymbol, setEvaluateSubmittingSymbol] = useState<string | null>(null);
-  const [forexExecuteSubmitting, setForexExecuteSubmitting] = useState(false);
   const [dashboardRange, setDashboardRange] = useState<DashboardRangeKey>('7D');
   const [strategyMode, setStrategyMode] = useState<StrategyMode>('swing');
-  const [forexSummary, setForexSummary] = useState<ForexSummaryResponse | null>(null);
   const [scalpSummary, setScalpSummary] = useState<ScalpSummaryResponse | null>(null);
-  const [scalpSelectedStrategyId, setScalpSelectedStrategyId] = useState<string | null>(null);
-  const [scalpExecuteSubmitting, setScalpExecuteSubmitting] = useState(false);
-  const [scalpStrategySubmitting, setScalpStrategySubmitting] = useState(false);
+  const [scalpActiveSymbol, setScalpActiveSymbol] = useState<string | null>(null);
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
   const [livePriceConnected, setLivePriceConnected] = useState(false);
@@ -639,43 +543,11 @@ export default function Home() {
     }
   };
 
-  const loadForexDashboard = async (opts: { silent?: boolean } = {}) => {
+  const loadScalpDashboard = async (opts: { silent?: boolean } = {}) => {
     const silent = opts.silent === true;
     if (!silent) setLoading(true);
     try {
-      const summaryRes = await fetch('/api/forex/dashboard/summary', {
-        headers: buildAdminHeaders(),
-        cache: 'no-store',
-      });
-      if (summaryRes.status === 401) {
-        handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
-        throw new Error('Unauthorized');
-      }
-      if (!summaryRes.ok) {
-        throw new Error(`Failed to load forex summary (${summaryRes.status})`);
-      }
-      const summaryJson: ForexSummaryResponse = await summaryRes.json();
-      setForexSummary(summaryJson);
-      setError(null);
-    } catch (err: any) {
-      setError(err?.message || 'Failed to load forex dashboard');
-    } finally {
-      if (!silent) setLoading(false);
-    }
-  };
-
-  const loadScalpDashboard = async (opts: { silent?: boolean; strategyId?: string | null } = {}) => {
-    const silent = opts.silent === true;
-    const preferredStrategyId = typeof opts.strategyId === 'string' ? opts.strategyId.trim() : '';
-    const effectiveStrategyId = preferredStrategyId || (scalpSelectedStrategyId || '').trim();
-    if (!silent) setLoading(true);
-    try {
-      const params = new URLSearchParams();
-      if (effectiveStrategyId) params.set('strategyId', effectiveStrategyId);
-      const path = params.toString()
-        ? `/api/scalp/dashboard/summary?${params.toString()}`
-        : '/api/scalp/dashboard/summary';
-      const summaryRes = await fetch(path, {
+      const summaryRes = await fetch('/api/scalp/dashboard/summary', {
         headers: buildAdminHeaders(),
         cache: 'no-store',
       });
@@ -688,165 +560,11 @@ export default function Home() {
       }
       const summaryJson: ScalpSummaryResponse = await summaryRes.json();
       setScalpSummary(summaryJson);
-      const resolvedStrategyId = String(summaryJson.strategy?.strategyId || summaryJson.strategyId || '').trim();
-      if (resolvedStrategyId && resolvedStrategyId !== scalpSelectedStrategyId) {
-        setScalpSelectedStrategyId(resolvedStrategyId);
-        if (typeof window !== 'undefined') {
-          window.localStorage.setItem(SCALP_SELECTED_STRATEGY_STORAGE_KEY, resolvedStrategyId);
-        }
-      }
       setError(null);
     } catch (err: any) {
       setError(err?.message || 'Failed to load scalp dashboard');
     } finally {
       if (!silent) setLoading(false);
-    }
-  };
-
-  const runForexExecute = async () => {
-    if (forexExecuteSubmitting) return;
-    setForexExecuteSubmitting(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams({
-        dryRun: 'false',
-        notional: '850',
-        t: String(Date.now()),
-      });
-      const executeRes = await fetch(`/api/forex/cron/execute?${params.toString()}`, {
-        headers: buildAdminHeaders(),
-        cache: 'no-store',
-      });
-      if (executeRes.status === 401) {
-        handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
-        throw new Error('Unauthorized');
-      }
-      if (!executeRes.ok) {
-        let message = `Failed to run forex execute (${executeRes.status})`;
-        try {
-          const body = await executeRes.json();
-          if (body?.error) message = `${message}: ${String(body.error)}`;
-        } catch {}
-        throw new Error(message);
-      }
-      await loadForexDashboard();
-    } catch (err: any) {
-      setError(err?.message || 'Failed to run forex execute');
-    } finally {
-      setForexExecuteSubmitting(false);
-    }
-  };
-
-  const runScalpExecute = async () => {
-    if (scalpExecuteSubmitting) return;
-    setScalpExecuteSubmitting(true);
-    setError(null);
-    try {
-      const strategyId = String(
-        scalpSummary?.strategy?.strategyId || scalpSummary?.strategyId || scalpSelectedStrategyId || '',
-      ).trim();
-      const params = new URLSearchParams({
-        all: 'true',
-        dryRun: 'true',
-        t: String(Date.now()),
-      });
-      if (strategyId) params.set('strategyId', strategyId);
-      const executeRes = await fetch(`/api/scalp/cron/execute-hybrid?${params.toString()}`, {
-        headers: buildAdminHeaders(),
-        cache: 'no-store',
-      });
-      if (executeRes.status === 401) {
-        handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
-        throw new Error('Unauthorized');
-      }
-      if (!executeRes.ok) {
-        let message = `Failed to run scalp execute (${executeRes.status})`;
-        try {
-          const body = await executeRes.json();
-          if (body?.error) message = `${message}: ${String(body.error)}`;
-        } catch {}
-        throw new Error(message);
-      }
-      await loadScalpDashboard({ strategyId });
-    } catch (err: any) {
-      setError(err?.message || 'Failed to run scalp execute');
-    } finally {
-      setScalpExecuteSubmitting(false);
-    }
-  };
-
-  const updateScalpStrategyEnabled = async (enabled: boolean, strategyId: string) => {
-    if (scalpStrategySubmitting) return;
-    setScalpStrategySubmitting(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/scalp/strategy/control', {
-        method: 'POST',
-        headers: {
-          ...(buildAdminHeaders() || {}),
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          strategyId,
-          enabled,
-          updatedBy: 'dashboard-ui',
-        }),
-        cache: 'no-store',
-      });
-      if (res.status === 401) {
-        handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
-        throw new Error('Unauthorized');
-      }
-      if (!res.ok) {
-        let message = `Failed to update scalp strategy (${res.status})`;
-        try {
-          const body = await res.json();
-          if (body?.error) message = `${message}: ${String(body.error)}`;
-        } catch {}
-        throw new Error(message);
-      }
-      await loadScalpDashboard({ silent: true, strategyId });
-    } catch (err: any) {
-      setError(err?.message || 'Failed to update scalp strategy');
-    } finally {
-      setScalpStrategySubmitting(false);
-    }
-  };
-
-  const setScalpDefaultStrategy = async (strategyId: string) => {
-    if (scalpStrategySubmitting) return;
-    setScalpStrategySubmitting(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/scalp/strategy/control', {
-        method: 'POST',
-        headers: {
-          ...(buildAdminHeaders() || {}),
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          defaultStrategyId: strategyId,
-          updatedBy: 'dashboard-ui',
-        }),
-        cache: 'no-store',
-      });
-      if (res.status === 401) {
-        handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
-        throw new Error('Unauthorized');
-      }
-      if (!res.ok) {
-        let message = `Failed to set scalp default strategy (${res.status})`;
-        try {
-          const body = await res.json();
-          if (body?.error) message = `${message}: ${String(body.error)}`;
-        } catch {}
-        throw new Error(message);
-      }
-      await loadScalpDashboard({ silent: true, strategyId });
-    } catch (err: any) {
-      setError(err?.message || 'Failed to set scalp default strategy');
-    } finally {
-      setScalpStrategySubmitting(false);
     }
   };
 
@@ -984,16 +702,12 @@ export default function Home() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const stored = window.localStorage.getItem(STRATEGY_MODE_STORAGE_KEY);
-    if (stored === 'forex' || stored === 'swing' || stored === 'scalp') {
+    if (stored === 'swing' || stored === 'scalp') {
       setStrategyMode(stored);
+      return;
     }
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const stored = String(window.localStorage.getItem(SCALP_SELECTED_STRATEGY_STORAGE_KEY) || '').trim();
-    if (stored) {
-      setScalpSelectedStrategyId(stored);
+    if (stored === 'forex') {
+      window.localStorage.setItem(STRATEGY_MODE_STORAGE_KEY, 'swing');
     }
   }, []);
 
@@ -1020,28 +734,32 @@ export default function Home() {
 
   useEffect(() => {
     if (!adminGranted) return;
-    if (strategyMode === 'forex') {
-      loadForexDashboard();
-      return;
-    }
     if (strategyMode === 'scalp') {
-      loadScalpDashboard({ strategyId: scalpSelectedStrategyId });
+      loadScalpDashboard();
       return;
     }
     loadDashboard();
-  }, [adminGranted, dashboardRange, strategyMode, scalpSelectedStrategyId]);
+  }, [adminGranted, dashboardRange, strategyMode]);
 
   useEffect(() => {
-    if (!adminGranted || (strategyMode !== 'forex' && strategyMode !== 'scalp')) return;
+    if (!adminGranted || strategyMode !== 'scalp') return;
     const timerId = window.setInterval(() => {
-      if (strategyMode === 'forex') {
-        void loadForexDashboard({ silent: true });
-        return;
-      }
-      void loadScalpDashboard({ silent: true, strategyId: scalpSelectedStrategyId });
-    }, FOREX_LIVE_POLL_MS);
+      void loadScalpDashboard({ silent: true });
+    }, SCALP_LIVE_POLL_MS);
     return () => window.clearInterval(timerId);
-  }, [adminGranted, strategyMode, adminSecret, scalpSelectedStrategyId]);
+  }, [adminGranted, strategyMode, adminSecret]);
+
+  useEffect(() => {
+    const rows = Array.isArray(scalpSummary?.symbols) ? scalpSummary.symbols : [];
+    if (!rows.length) {
+      setScalpActiveSymbol(null);
+      return;
+    }
+    setScalpActiveSymbol((prev) => {
+      if (prev && rows.some((row) => row.symbol === prev)) return prev;
+      return rows[0]?.symbol || null;
+    });
+  }, [scalpSummary]);
 
   useEffect(() => {
     const symbol = symbols[active] || null;
@@ -1378,46 +1096,6 @@ export default function Home() {
       ? current.pnl7dWithOpen
       : null;
   const openPnlIsLive = typeof liveOpenPnl === 'number';
-  const isForexCategory = current?.category === 'forex';
-  const forexEventContext = isForexCategory ? current?.forexEventContext ?? null : null;
-  const forexEventStatus =
-    forexEventContext?.status === 'active'
-      ? 'active'
-      : forexEventContext?.status === 'stale'
-      ? 'stale'
-      : 'clear';
-  const forexEventToneClass =
-    forexEventStatus === 'active'
-      ? 'text-rose-600'
-      : forexEventStatus === 'stale'
-      ? 'text-amber-600'
-      : 'text-emerald-600';
-  const forexEventBadgeClass =
-    forexEventStatus === 'active'
-      ? 'bg-rose-50 text-rose-700'
-      : forexEventStatus === 'stale'
-      ? 'bg-amber-50 text-amber-700'
-      : 'bg-emerald-50 text-emerald-700';
-  const forexActiveEvent = forexEventContext?.activeEvents?.[0] ?? null;
-  const forexNextEvent = forexEventContext?.nextEvents?.[0] ?? null;
-  const formatEventMinutes = (minutes?: number) => {
-    if (typeof minutes !== 'number' || !Number.isFinite(minutes)) return '';
-    if (minutes === 0) return 'now';
-    if (minutes > 0) return `in ${minutes}m`;
-    return `${Math.abs(minutes)}m ago`;
-  };
-  const forexEventPrimaryLine = forexActiveEvent
-    ? `${forexActiveEvent.currency || ''} ${forexActiveEvent.event_name || ''}`.trim()
-    : forexNextEvent
-    ? `${forexNextEvent.currency || ''} ${forexNextEvent.event_name || ''}`.trim()
-    : 'no nearby high/medium events';
-  const forexEventSecondaryLine = forexActiveEvent
-    ? `${formatEventMinutes(forexActiveEvent.minutesToEvent)} · ${forexActiveEvent.impact || 'UNKNOWN'} impact`
-    : forexNextEvent
-    ? `${formatEventMinutes(forexNextEvent.minutesToEvent)} · ${forexNextEvent.impact || 'UNKNOWN'} impact`
-    : forexEventContext?.pair
-    ? `${forexEventContext.pair} monitoring`
-    : 'pair unresolved';
   const showChartPanel = Boolean(adminGranted && activeSymbol);
   const currentEvalJob = activeSymbol ? evaluateJobs[activeSymbol] : null;
   const evaluateRunning = Boolean(
@@ -1447,48 +1125,37 @@ export default function Home() {
     { key: 'micro_bias', label: 'Micro' },
   ] as const;
   const isInitialLoading = loading && !symbols.length;
-  const loadingLabel = strategyMode === 'forex'
-    ? 'Loading forex dashboard...'
-    : strategyMode === 'scalp'
+  const loadingLabel = strategyMode === 'scalp'
     ? 'Loading scalp dashboard...'
     : !symbols.length
     ? 'Loading evaluations...'
     : activeSymbol
     ? `Loading ${activeSymbol}...`
     : 'Loading selected symbol...';
-  const scalpStrategies = Array.isArray(scalpSummary?.strategies) ? scalpSummary!.strategies! : [];
-  const scalpCurrentStrategy =
-    scalpSummary?.strategy ||
-    scalpStrategies.find((row) => row?.strategyId && row.strategyId === scalpSummary?.strategyId) ||
-    scalpStrategies[0] ||
-    null;
-  const scalpCurrentStrategyId = String(
-    scalpCurrentStrategy?.strategyId || scalpSummary?.strategyId || scalpSelectedStrategyId || '',
-  ).trim();
-  const scalpDefaultStrategyId = String(scalpSummary?.defaultStrategyId || '').trim();
-  const scalpStrategyShortName = scalpCurrentStrategy?.shortName || 'HSS-ICT M15/M3';
-  const scalpStrategyLongName = scalpCurrentStrategy?.longName || 'Hybrid Session-Scoped ICT Scalp (M15/M3)';
-  const scalpStrategyEnabled = scalpCurrentStrategy?.enabled !== false;
-  const scalpStrategyEnvEnabled = scalpCurrentStrategy?.envEnabled !== false;
-  const scalpSelectedIsDefault = scalpCurrentStrategyId && scalpCurrentStrategyId === scalpDefaultStrategyId;
-  const scalpSwitchDisabled =
-    !adminGranted ||
-    scalpStrategySubmitting ||
-    loading ||
-    !scalpSummary ||
-    !scalpStrategyEnvEnabled ||
-    !scalpCurrentStrategyId;
-  const forexTotalOpenPnl = (() => {
-    const rows = Array.isArray(forexSummary?.pairs) ? forexSummary.pairs : [];
-    const openRows = rows.filter(
-      (row) => row.openPosition?.isOpen && typeof row.openPosition?.pnlPct === 'number',
-    );
-    if (!openRows.length) {
-      return { totalPct: null as number | null, openCount: 0 };
-    }
-    const totalPct = openRows.reduce((sum, row) => sum + Number(row.openPosition?.pnlPct || 0), 0);
-    return { totalPct, openCount: openRows.length };
-  })();
+  const scalpRows = Array.isArray(scalpSummary?.symbols) ? scalpSummary.symbols : [];
+  const scalpActiveRow =
+    (scalpActiveSymbol ? scalpRows.find((row) => row.symbol === scalpActiveSymbol) : null) || scalpRows[0] || null;
+  const scalpActiveJournal = Array.isArray(scalpSummary?.journal)
+    ? scalpSummary.journal.filter((entry) => {
+        if (!scalpActiveRow) return true;
+        return String(entry.symbol || '')
+          .trim()
+          .toUpperCase() === scalpActiveRow.symbol.toUpperCase();
+      })
+    : [];
+  const scalpLatestExecutionBySymbol =
+    scalpSummary?.latestExecutionBySymbol && typeof scalpSummary.latestExecutionBySymbol === 'object'
+      ? scalpSummary.latestExecutionBySymbol
+      : {};
+  const scalpActiveExecution = scalpActiveRow
+    ? (scalpLatestExecutionBySymbol[scalpActiveRow.symbol] ??
+        scalpLatestExecutionBySymbol[scalpActiveRow.symbol.toUpperCase()] ??
+        null)
+    : null;
+  const scalpActiveReasonCodes =
+    (Array.isArray((scalpActiveExecution as any)?.reasonCodes)
+      ? (scalpActiveExecution as any).reasonCodes
+      : scalpActiveRow?.reasonCodes) || [];
 
   const renderDashboardSkeleton = () => (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-stretch">
@@ -1648,17 +1315,6 @@ export default function Home() {
               </button>
               <button
                 type="button"
-                onClick={() => handleStrategyModeChange('forex')}
-                className={`rounded-full px-3 py-1 text-[11px] font-semibold transition ${
-                  strategyMode === 'forex'
-                    ? 'bg-sky-600 text-white shadow-sm'
-                    : 'text-slate-600 hover:bg-slate-200/70 hover:text-slate-900'
-                }`}
-              >
-                Forex
-              </button>
-              <button
-                type="button"
                 onClick={() => handleStrategyModeChange('scalp')}
                 className={`rounded-full px-3 py-1 text-[11px] font-semibold transition ${
                   strategyMode === 'scalp'
@@ -1697,103 +1353,10 @@ export default function Home() {
                 {evaluateSubmittingSymbol ? 'Queueing…' : evaluateRunning ? 'Evaluating…' : 'Run Evaluation'}
               </button>
             ) : null}
-            {strategyMode === 'forex' ? (
-              <button
-                onClick={runForexExecute}
-                disabled={!adminGranted || forexExecuteSubmitting}
-                className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {forexExecuteSubmitting ? 'Running Execute…' : 'Run Execute (Live)'}
-              </button>
-            ) : null}
-            {strategyMode === 'scalp' ? (
-              <>
-                <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5">
-                  <select
-                    value={scalpCurrentStrategyId}
-                    onChange={(event) => {
-                      const nextId = String(event.target.value || '').trim();
-                      setScalpSelectedStrategyId(nextId || null);
-                      if (typeof window !== 'undefined') {
-                        if (nextId) {
-                          window.localStorage.setItem(SCALP_SELECTED_STRATEGY_STORAGE_KEY, nextId);
-                        } else {
-                          window.localStorage.removeItem(SCALP_SELECTED_STRATEGY_STORAGE_KEY);
-                        }
-                      }
-                      void loadScalpDashboard({ strategyId: nextId || null });
-                    }}
-                    disabled={!adminGranted || loading || !scalpStrategies.length || scalpStrategySubmitting}
-                    className="rounded-full border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-                    title={scalpStrategyLongName}
-                  >
-                    {scalpStrategies.map((row) => {
-                      const id = String(row?.strategyId || '').trim();
-                      if (!id) return null;
-                      const shortName = String(row?.shortName || id);
-                      const defaultTag = id === scalpDefaultStrategyId ? ' (default)' : '';
-                      return (
-                        <option key={id} value={id}>
-                          {shortName}{defaultTag}
-                        </option>
-                      );
-                    })}
-                  </select>
-                  <span
-                    className="text-xs font-semibold text-slate-700"
-                    title={scalpStrategyLongName}
-                  >
-                    {scalpStrategyShortName}
-                  </span>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={scalpStrategyEnabled}
-                    aria-label={`${scalpStrategyShortName} strategy switch`}
-                    title={scalpStrategyLongName}
-                    onClick={() => void updateScalpStrategyEnabled(!scalpStrategyEnabled, scalpCurrentStrategyId)}
-                    disabled={scalpSwitchDisabled}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
-                      scalpStrategyEnabled ? 'bg-emerald-500' : 'bg-slate-300'
-                    } disabled:cursor-not-allowed disabled:opacity-60`}
-                  >
-                    <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
-                        scalpStrategyEnabled ? 'translate-x-6' : 'translate-x-1'
-                      }`}
-                    />
-                  </button>
-                  <span className="text-xs font-semibold text-slate-600">
-                    {scalpStrategySubmitting ? 'Saving…' : scalpStrategyEnabled ? 'On' : 'Off'}
-                  </span>
-                  {!scalpSelectedIsDefault && scalpCurrentStrategyId ? (
-                    <button
-                      type="button"
-                      onClick={() => void setScalpDefaultStrategy(scalpCurrentStrategyId)}
-                      disabled={scalpStrategySubmitting || !adminGranted}
-                      className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      Make Default
-                    </button>
-                  ) : null}
-                </div>
-                <button
-                  onClick={runScalpExecute}
-                  disabled={!adminGranted || scalpExecuteSubmitting || !scalpStrategyEnabled || !scalpCurrentStrategyId}
-                  className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-800 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {scalpExecuteSubmitting ? 'Running Hybrid…' : 'Run Hybrid (Dry)'}
-                </button>
-              </>
-            ) : null}
             <button
               onClick={() => {
-                if (strategyMode === 'forex') {
-                  loadForexDashboard();
-                  return;
-                }
                 if (strategyMode === 'scalp') {
-                  loadScalpDashboard({ strategyId: scalpSelectedStrategyId });
+                  loadScalpDashboard();
                   return;
                 }
                 loadDashboard();
@@ -1855,144 +1418,40 @@ export default function Home() {
           </div>
         )}
 
+        {strategyMode === 'scalp' && !error && (
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            {scalpRows.map((row) => {
+              const isActive = scalpActiveRow?.symbol === row.symbol;
+              return (
+                <button
+                  key={row.symbol}
+                  onClick={() => setScalpActiveSymbol(row.symbol)}
+                  className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                    row.inTrade
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:text-emerald-800'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-800'
+                  } ${
+                    isActive
+                      ? 'shadow-md ring-2 ring-slate-400/70 outline outline-2 outline-offset-2 outline-slate-200/80'
+                      : ''
+                  }`}
+                >
+                  {row.symbol}
+                </button>
+              );
+            })}
+            {loading &&
+              Array.from({ length: 4 }).map((_, idx) => (
+                <span
+                  key={`scalp-tab-skeleton-${idx}`}
+                  className="h-9 w-24 animate-pulse rounded-full border border-slate-200 bg-slate-100"
+                />
+              ))}
+          </div>
+        )}
+
         <div className="mt-4 pb-8">
-          {strategyMode === 'forex' ? (
-            loading ? (
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <div className="animate-pulse space-y-3">
-                  <div className="h-4 w-52 rounded-full bg-slate-200" />
-                  <div className="h-3 w-72 rounded-full bg-slate-200" />
-                  <div className="h-40 rounded-xl border border-slate-200 bg-slate-50" />
-                </div>
-              </div>
-            ) : !forexSummary?.pairs?.length ? (
-              <div className="flex items-center justify-center py-12 text-sm font-semibold text-slate-500">
-                No forex scan data yet. Trigger `/api/forex/cron/scan` then refresh.
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <div className="text-xs uppercase tracking-wide text-slate-500">Forex Overview</div>
-                  <div className="mt-2 text-sm text-slate-700">
-                    Scan: {forexSummary.scanGeneratedAtMs ? formatDecisionTime(forexSummary.scanGeneratedAtMs) : 'n/a'} ·
-                    Packets: {forexSummary.packetsGeneratedAtMs ? formatDecisionTime(forexSummary.packetsGeneratedAtMs) : 'n/a'} ·
-                    Events: {forexSummary.staleEvents ? 'stale' : 'fresh'}
-                  </div>
-                  <div className="mt-2 text-sm text-slate-700">
-                    Latest regime:{' '}
-                    {forexSummary.packetsGeneratedAtMs ? formatDecisionTime(forexSummary.packetsGeneratedAtMs) : 'n/a'}
-                    {' · '}
-                    Total open PnL:{' '}
-                    <span
-                      className={
-                        typeof forexTotalOpenPnl.totalPct === 'number'
-                          ? forexTotalOpenPnl.totalPct >= 0
-                            ? 'text-emerald-600'
-                            : 'text-rose-600'
-                          : 'text-slate-700'
-                      }
-                    >
-                      {typeof forexTotalOpenPnl.totalPct === 'number'
-                        ? `${forexTotalOpenPnl.totalPct.toFixed(2)}%`
-                        : '—'}
-                    </span>
-                    {forexTotalOpenPnl.openCount > 0 ? ` (${forexTotalOpenPnl.openCount} open)` : ''}
-                  </div>
-                </div>
-                <div className="overflow-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
-                  <table className="min-w-full text-left text-sm">
-                    <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                      <tr>
-                        <th className="px-3 py-2">Pair</th>
-                        <th className="px-3 py-2">Eligible</th>
-                        <th className="px-3 py-2">Score</th>
-                        <th className="px-3 py-2">Regime</th>
-                        <th className="px-3 py-2">Permission</th>
-                        <th className="px-3 py-2">Risk</th>
-                        <th className="px-3 py-2">Event Gate</th>
-                        <th className="px-3 py-2">Spread/ATR</th>
-                        <th className="px-3 py-2">Open PnL</th>
-                        <th className="px-3 py-2">Latest Exec</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {forexSummary.pairs.map((row) => (
-                        <tr key={row.pair} className="border-t border-slate-100">
-                          <td className="px-3 py-2 font-semibold text-slate-800">{row.pair}</td>
-                          <td className="px-3 py-2">
-                            <span
-                              className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-                                row.eligible ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'
-                              }`}
-                            >
-                              {row.eligible ? 'yes' : 'no'}
-                            </span>
-                          </td>
-                          <td className="px-3 py-2 text-slate-700">{Number(row.score || 0).toFixed(3)}</td>
-                          <td className="px-3 py-2 text-slate-700">{row.packet?.regime || '—'}</td>
-                          <td className="px-3 py-2 text-slate-700">{row.packet?.permission || '—'}</td>
-                          <td className="px-3 py-2 text-slate-700">{row.packet?.risk_state || '—'}</td>
-                          <td className="px-3 py-2 text-slate-700">
-                            {row.gate?.allowNewEntries ? 'open' : 'blocked'}
-                            {row.gate?.staleData ? ' (stale feed)' : ''}
-                          </td>
-                          <td className="px-3 py-2 text-slate-700">
-                            {typeof row.metrics?.spreadPips === 'number' ? row.metrics.spreadPips.toFixed(2) : '—'} /{' '}
-                            {typeof row.metrics?.spreadToAtr1h === 'number'
-                              ? row.metrics.spreadToAtr1h.toFixed(3)
-                              : '—'}
-                          </td>
-                          <td className="px-3 py-2 text-slate-700">
-                            {row.openPosition?.isOpen ? (
-                              <div className="space-y-0.5">
-                                <div
-                                  className={`font-semibold ${
-                                    typeof row.openPosition?.pnlPct === 'number'
-                                      ? row.openPosition.pnlPct >= 0
-                                        ? 'text-emerald-600'
-                                        : 'text-rose-600'
-                                      : 'text-slate-800'
-                                  }`}
-                                >
-                                  {typeof row.openPosition?.pnlPct === 'number'
-                                    ? `${row.openPosition.pnlPct.toFixed(2)}%`
-                                    : 'open'}
-                                </div>
-                                <div className="text-xs text-slate-600">
-                                  {row.openPosition?.side || '—'}
-                                  {typeof row.openPosition?.leverage === 'number'
-                                    ? ` · ${row.openPosition.leverage.toFixed(0)}x`
-                                    : ''}
-                                </div>
-                              </div>
-                            ) : (
-                              '—'
-                            )}
-                          </td>
-                          <td className="px-3 py-2 text-slate-700">
-                            {row.latestExecution?.timestampMs ? (
-                              <div className="space-y-0.5">
-                                <div className="font-semibold text-slate-800">
-                                  {formatDecisionTime(row.latestExecution.timestampMs)}
-                                </div>
-                                <div className="text-xs text-slate-600">
-                                  {row.latestExecution.module || '—'}
-                                  {row.latestExecution.action ? ` · ${row.latestExecution.action}` : ''}
-                                  {row.latestExecution.status ? ` · ${row.latestExecution.status}` : ''}
-                                </div>
-                              </div>
-                            ) : (
-                              '—'
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )
-          ) : strategyMode === 'scalp' ? (
+          {strategyMode === 'scalp' ? (
             loading ? (
               <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                 <div className="animate-pulse space-y-3">
@@ -2001,134 +1460,127 @@ export default function Home() {
                   <div className="h-40 rounded-xl border border-slate-200 bg-slate-50" />
                 </div>
               </div>
-            ) : !scalpSummary?.symbols?.length ? (
+            ) : !scalpRows.length ? (
               <div className="flex items-center justify-center py-12 text-sm font-semibold text-slate-500">
-                {scalpStrategyEnabled
-                  ? `No scalp data yet for ${scalpStrategyShortName}. Trigger /api/scalp/cron/execute-hybrid?all=true&dryRun=true then refresh.`
-                  : 'Scalp strategy is OFF. Turn the switch on to run cycles.'}
+                No scalp data yet. Add scalp cron calls in `vercel.json`, run one cycle, then refresh.
               </div>
             ) : (
               <div className="space-y-4">
-                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <div className="text-xs uppercase tracking-wide text-slate-500">Scalp Overview</div>
-                  <div className="mt-2 text-sm text-slate-700">
-                    Day key: {scalpSummary.dayKey || 'n/a'} · Clock:{' '}
-                    {scalpSummary.clockMode || 'n/a'} · Policy:{' '}
-                    {scalpSummary.policy?.defaultProfile || 'baseline'} (v{scalpSummary.policy?.version ?? 1})
-                  </div>
-                  <div className="mt-2 text-sm text-slate-700">
-                    Strategy:{' '}
-                    <span className="font-semibold text-slate-800" title={scalpStrategyLongName}>
-                      {scalpStrategyShortName}
-                    </span>{' '}
-                    {scalpCurrentStrategyId ? `(${scalpCurrentStrategyId})` : ''} · Default:{' '}
-                    <span className="font-semibold text-slate-800">
-                      {scalpDefaultStrategyId || 'n/a'}
-                    </span>{' '}
-                    · Switch:{' '}
-                    <span className={scalpStrategyEnabled ? 'font-semibold text-emerald-700' : 'font-semibold text-rose-700'}>
-                      {scalpStrategyEnabled ? 'ON' : 'OFF'}
-                    </span>
-                    {scalpSummary.strategy?.envEnabled === false ? ' · Forced off by SCALP_ENABLED' : ''}
-                  </div>
-                  <div className="mt-2 text-sm text-slate-700">
-                    Symbols: {scalpSummary.summary?.symbols ?? scalpSummary.symbols.length} · In trade:{' '}
-                    {scalpSummary.summary?.openCount ?? 0} · Ran today:{' '}
-                    {scalpSummary.summary?.runCount ?? 0} · Dry-run states:{' '}
-                    {scalpSummary.summary?.dryRunCount ?? 0} · Trades placed:{' '}
-                    {scalpSummary.summary?.totalTradesPlaced ?? 0}
-                  </div>
-                  {scalpSummary.summary?.stateCounts ? (
-                    <div className="mt-2 text-xs text-slate-600">
-                      States:{' '}
-                      {Object.entries(scalpSummary.summary.stateCounts)
-                        .map(([state, count]) => `${state}=${count}`)
-                        .join(' · ')}
+                {scalpActiveRow ? (
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="text-xs uppercase tracking-wide text-slate-500">Active Symbol</div>
+                      <div className="mt-2 text-xl font-semibold text-slate-900">{scalpActiveRow.symbol}</div>
+                      <div className="mt-2 text-sm text-slate-700">
+                        State:{' '}
+                        <span className="font-semibold text-slate-900">{scalpActiveRow.state || 'MISSING'}</span>
+                      </div>
+                      <div className="mt-2 text-sm text-slate-700">
+                        Strategy:{' '}
+                        <span className="font-semibold text-slate-900">{scalpActiveRow.strategyId || 'n/a'}</span>
+                      </div>
+                      <div className="mt-2 text-sm text-slate-700">
+                        Last run:{' '}
+                        <span className="font-semibold text-slate-900">
+                          {typeof scalpActiveRow.lastRunAtMs === 'number' ? formatDecisionTime(scalpActiveRow.lastRunAtMs) : '—'}
+                        </span>
+                      </div>
                     </div>
-                  ) : null}
-                </div>
 
-                <div className="overflow-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
-                  <table className="min-w-full text-left text-sm">
-                    <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                      <tr>
-                        <th className="px-3 py-2">Symbol</th>
-                        <th className="px-3 py-2">Profile</th>
-                        <th className="px-3 py-2">State</th>
-                        <th className="px-3 py-2">In Trade</th>
-                        <th className="px-3 py-2">Trades (W/L)</th>
-                        <th className="px-3 py-2">Last Run</th>
-                        <th className="px-3 py-2">Mode</th>
-                        <th className="px-3 py-2">Reason Codes</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(scalpSummary.symbols || []).map((row) => (
-                        <tr key={row.symbol} className="border-t border-slate-100">
-                          <td className="px-3 py-2 font-semibold text-slate-800">{row.symbol}</td>
-                          <td className="px-3 py-2 text-slate-700">{row.profile}</td>
-                          <td className="px-3 py-2 text-slate-700">{row.state || 'MISSING'}</td>
-                          <td className="px-3 py-2">
-                            <span
-                              className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-                                row.inTrade ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-700'
-                              }`}
-                            >
-                              {row.inTrade ? row.tradeSide || 'YES' : 'NO'}
-                            </span>
-                          </td>
-                          <td className="px-3 py-2 text-slate-700">
-                            {row.tradesPlaced} ({row.wins}/{row.losses})
-                          </td>
-                          <td className="px-3 py-2 text-slate-700">
-                            {typeof row.lastRunAtMs === 'number' ? formatDecisionTime(row.lastRunAtMs) : '—'}
-                          </td>
-                          <td className="px-3 py-2 text-slate-700">
-                            {row.dryRunLast === null || row.dryRunLast === undefined
-                              ? '—'
-                              : row.dryRunLast
-                              ? 'dry'
-                              : 'live'}
-                          </td>
-                          <td className="px-3 py-2 text-slate-600">
-                            {(row.reasonCodes || []).slice(0, 3).join(', ') || '—'}
-                          </td>
-                        </tr>
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="text-xs uppercase tracking-wide text-slate-500">Tune & Schedule</div>
+                      <div className="mt-2 text-sm text-slate-700">
+                        Tune: <span className="font-semibold text-slate-900">{scalpActiveRow.tune || 'default'}</span>
+                      </div>
+                      <div className="mt-2 text-sm text-slate-700">
+                        Cron: <span className="font-semibold text-slate-900">{scalpActiveRow.cronSchedule || '—'}</span>
+                      </div>
+                      <div className="mt-2 text-sm text-slate-700">
+                        Route: <span className="font-semibold text-slate-900">{scalpActiveRow.cronRoute || '—'}</span>
+                      </div>
+                      <div className="mt-2 text-xs text-slate-600 break-all">
+                        Path: <span className="font-mono">{scalpActiveRow.cronPath || '—'}</span>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="text-xs uppercase tracking-wide text-slate-500">Last Cycle</div>
+                      <div className="mt-2 text-sm text-slate-700">
+                        Type:{' '}
+                        <span className="font-semibold text-slate-900">
+                          {String((scalpActiveExecution as any)?.type || '—').toUpperCase()}
+                        </span>
+                      </div>
+                      <div className="mt-2 text-sm text-slate-700">
+                        Level:{' '}
+                        <span className="font-semibold text-slate-900">
+                          {String((scalpActiveExecution as any)?.level || '—').toUpperCase()}
+                        </span>
+                      </div>
+                      <div className="mt-2 text-sm text-slate-700">
+                        Time:{' '}
+                        <span className="font-semibold text-slate-900">
+                          {typeof (scalpActiveExecution as any)?.timestampMs === 'number'
+                            ? formatDecisionTime((scalpActiveExecution as any).timestampMs)
+                            : typeof scalpActiveRow.lastRunAtMs === 'number'
+                            ? formatDecisionTime(scalpActiveRow.lastRunAtMs)
+                            : '—'}
+                        </span>
+                      </div>
+                      <div className="mt-2 text-sm text-slate-700">
+                        Mode:{' '}
+                        <span className="font-semibold text-slate-900">
+                          {scalpActiveRow.dryRunLast === null || scalpActiveRow.dryRunLast === undefined
+                            ? '—'
+                            : scalpActiveRow.dryRunLast
+                            ? 'dry'
+                            : 'live'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="text-xs uppercase tracking-wide text-slate-500">
+                    Reason Snapshot{scalpActiveRow ? ` · ${scalpActiveRow.symbol}` : ''}
+                  </div>
+                  {scalpActiveReasonCodes.length ? (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {scalpActiveReasonCodes.slice(0, 8).map((code: string, idx: number) => (
+                        <span
+                          key={`${code}-${idx}`}
+                          className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-semibold text-slate-700"
+                        >
+                          {code}
+                        </span>
                       ))}
-                    </tbody>
-                  </table>
+                    </div>
+                  ) : (
+                    <div className="mt-3 text-sm text-slate-500">No reason codes for the active symbol yet.</div>
+                  )}
                 </div>
 
-                {scalpSummary.journal?.length ? (
+                {scalpActiveJournal.length ? (
                   <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <div className="text-xs uppercase tracking-wide text-slate-500">Recent Scalp Journal</div>
-                    <div className="mt-3 max-h-64 overflow-auto rounded-xl border border-slate-200 bg-slate-50">
-                      <table className="min-w-full text-left text-xs">
-                        <thead className="bg-slate-100 text-[11px] uppercase tracking-wide text-slate-500">
-                          <tr>
-                            <th className="px-3 py-2">Time</th>
-                            <th className="px-3 py-2">Type</th>
-                            <th className="px-3 py-2">Level</th>
-                            <th className="px-3 py-2">Symbol</th>
-                            <th className="px-3 py-2">Codes</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {scalpSummary.journal.slice(0, 40).map((entry) => (
-                            <tr key={entry.id || `${entry.timestampMs}-${entry.symbol || 'na'}`} className="border-t border-slate-200">
-                              <td className="px-3 py-2 text-slate-700">
-                                {typeof entry.timestampMs === 'number' ? formatDecisionTime(entry.timestampMs) : '—'}
-                              </td>
-                              <td className="px-3 py-2 text-slate-700">{entry.type || '—'}</td>
-                              <td className="px-3 py-2 text-slate-700">{entry.level || '—'}</td>
-                              <td className="px-3 py-2 text-slate-700">{entry.symbol || '—'}</td>
-                              <td className="px-3 py-2 text-slate-600">
-                                {(entry.reasonCodes || []).slice(0, 4).join(', ') || '—'}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                    <div className="text-xs uppercase tracking-wide text-slate-500">
+                      Journal Snapshot{scalpActiveRow ? ` · ${scalpActiveRow.symbol}` : ''}
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      {scalpActiveJournal.slice(0, 8).map((entry) => (
+                        <div
+                          key={entry.id || `${entry.timestampMs}-${entry.symbol || 'na'}`}
+                          className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700"
+                        >
+                          <div className="font-semibold text-slate-800">
+                            {typeof entry.timestampMs === 'number' ? formatDecisionTime(entry.timestampMs) : '—'} ·{' '}
+                            {String(entry.type || 'event').toUpperCase()} · {String(entry.level || 'info').toUpperCase()}
+                          </div>
+                          <div className="mt-1 text-slate-600">
+                            {(entry.reasonCodes || []).slice(0, 4).join(', ') || '—'}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                     <div className="mt-3">
                       <a
@@ -2159,7 +1611,7 @@ export default function Home() {
                       className="h-5 w-auto opacity-80"
                     />
                   </div>
-                  <div className={`grid grid-cols-1 gap-4 ${isForexCategory ? 'sm:grid-cols-4' : 'sm:grid-cols-3'}`}>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                     <div>
                       <div className="text-xs uppercase tracking-wide text-slate-500">{dashboardRange} PnL</div>
                       <div className="mt-3 text-3xl font-semibold text-slate-900">
@@ -2297,26 +1749,6 @@ export default function Home() {
                         )}
                       </p>
                     </div>
-                    {isForexCategory ? (
-                      <div>
-                        <div className="text-xs uppercase tracking-wide text-slate-500">Event Context</div>
-                        <div className="mt-3 text-3xl font-semibold text-slate-900">
-                          <span className={forexEventToneClass}>
-                            {forexEventStatus === 'active'
-                              ? 'ACTIVE'
-                              : forexEventStatus === 'stale'
-                              ? 'STALE'
-                              : 'CLEAR'}
-                          </span>
-                        </div>
-                        <p className="mt-1 text-xs text-slate-500">{forexEventPrimaryLine}</p>
-                        <div className="mt-2 text-[11px] text-slate-500">
-                          <span className={`rounded-full px-2 py-0.5 font-semibold ${forexEventBadgeClass}`}>
-                            {forexEventSecondaryLine}
-                          </span>
-                        </div>
-                      </div>
-                    ) : null}
                   </div>
                 </div>
 

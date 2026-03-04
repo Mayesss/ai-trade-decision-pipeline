@@ -5,7 +5,7 @@ Next.js app that runs an AI-driven trading loop for multiple platforms (Bitget +
 ---
 
 ## What’s Inside
-- **Next.js API routes** for analysis (`/api/analyze`), AI-driven evaluations (`/api/evaluate`), history/PNL enrichment (`/api/evaluations`, `/api/rest-history`, `/api/chart`), forex/scalp cron execution, and health/debug helpers.
+- **Next.js API routes** for analysis (`/api/analyze`), AI-driven evaluations (`/api/evaluate`), history/PNL enrichment (`/api/evaluations`, `/api/rest-history`, `/api/chart`), scalp cron execution, and health/debug helpers.
 - **Platform integrations**: Bitget (futures) and Capital.com (CFD/spot-style market access) with platform-selected market/execution paths.
 - **Signal stack**: multi-timeframe indicators (context/macro/primary/micro), support/resistance levels, momentum/extension gates, and provider-selected news sentiment (`coindesk` or `marketaux`).
 - **LLM prompts** built in `lib/ai.ts` with guardrails and momentum overrides; responses are persisted for replay and review.
@@ -93,6 +93,12 @@ MARKETAUX_API_KEY=...
 # SCALP_MAX_OPEN_POSITIONS_PER_SYMBOL=1
 # CANDLE_HISTORY_STORE=auto             # auto | file | kv
 # CANDLE_HISTORY_DIR=data/candles-history
+# XAUUSD guard defaults for strategyId=regime_pullback_m15_m3_xauusd
+# SCALP_XAUUSD_GUARD_TP1_CLOSE_PCT=20
+# SCALP_XAUUSD_GUARD_TRAIL_ATR_MULT=1.6
+# SCALP_XAUUSD_GUARD_TIME_STOP_BARS=18
+# SCALP_XAUUSD_GUARD_BLOCKED_HOURS_VARIANT=xauusd_return   # xauusd_return | xauusd_low_dd | xauusd_high_pf | off
+# SCALP_XAUUSD_GUARD_BLOCKED_HOURS_BERLIN=15               # explicit hour list override (wins over variant)
 
 # KV (Upstash REST)
 KV_REST_API_URL=https://...
@@ -164,36 +170,21 @@ npm run start
   - Body: `{ "secret": "..." }` to validate admin access when `ADMIN_ACCESS_SECRET` is set.
 - Admin protection policy
   - All API routes except `/api/admin-auth` require `x-admin-access-secret: <ADMIN_ACCESS_SECRET>` (or `Authorization: Bearer <ADMIN_ACCESS_SECRET>`) when `ADMIN_ACCESS_SECRET` is set.
-  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/forex/cron/execute`, `/api/forex/cron/scan`, `/api/forex/cron/regime`, `/api/forex/events/refresh`, `/api/scalp/cron/execute`, `/api/scalp/cron/execute-hybrid`.
-- `GET /api/forex/events/refresh`
-  - Pulls and normalizes ForexFactory economic calendar events into KV cache.
-  - Query: `force=true|false` (default `false`) to bypass refresh interval throttling.
-- `GET /api/forex/dashboard/events`
-  - Returns forex event-gate state (freshness, call budget, normalized events).
-  - Optional query: `pair=EURUSD&riskState=normal|elevated|extreme` for pair-level gate evaluation.
-- `GET /api/forex/cron/scan`
-  - Capital-only forex universe scan and eligibility ranking snapshot.
-- `GET /api/forex/cron/regime`
-  - Capital-only forex AI regime packet refresh from latest scan snapshot.
-- `GET /api/forex/cron/execute?dryRun=true`
-  - Capital-only forex deterministic execution cycle (pullback/breakout-retest/range-fade modules).
-  - Breakout-retest entries use breakout -> retest -> continuation confirmation (3-candle sequence).
-  - Re-entry lock duration is contextual (for example event-risk > regime-flip > time-stop).
-  - Optional hold gate for stop invalidation exits via `FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES` (default `0`, recommended rollout `8` after dry-run checks).
-  - Applies stricter spread-to-ATR gating around session transition windows.
-  - Optional query: `notional=100` to override default notional for this run (default is `100`).
+  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/scalp/cron/execute`, `/api/scalp/cron/execute-hybrid`.
+- `GET /api/forex/*`
+  - Forex mode routes are deprecated and currently return `410` with `error=forex_mode_deprecated`.
 - `GET /api/scalp/cron/execute?symbol=EURUSD&dryRun=true`
   - Capital-oriented scalp strategy phase 3 loop: session windows, Asia range, sweep/rejection, displacement + MSS, iFVG retest, deterministic entry plan, broker reconciliation, and optional execution.
   - Scalp timeframes are fixed to `M15` base (`asiaBase`) and `M3` confirmation (`confirm`).
   - `dryRun=true` simulates entries and persists state/journal without placing orders.
   - Live entries require both `dryRun=false` and `SCALP_LIVE_ENABLED=true` (fail-closed by default).
   - Supports optional `nowMs` query for deterministic dry-run replays of cron ticks.
-  - Supports optional `strategyId=<id>` (for example `hss_ict_m15_m3`); if omitted, runtime default strategy is used.
+  - Supports optional `strategyId=<id>` (for example `regime_pullback_m15_m3`); if omitted, runtime default strategy is used.
 - `GET /api/scalp/cron/execute-hybrid?symbol=EURUSD&dryRun=true`
   - Runs the same scalp execute cycle with per-symbol profile overrides from `data/scalp-hybrid-policy.json`.
   - Defaults to `baseline` profile and applies `loose` only for symbols configured in `symbolProfiles`.
   - Optional query: `profile=baseline|loose|strict` to force a profile for the request.
-  - Optional query: `strategyId=<id>` to run the selected registered scalp strategy.
+  - Optional query: `strategyId=<id>` to run the selected registered scalp strategy; this is how symbol-specific tuning is pinned from cron paths.
 - `GET /api/scalp/dashboard/summary`
   - Scalp dashboard payload for UI tab (policy metadata, per-symbol state snapshot, aggregated counters, and recent journal tail).
   - Optional query: `strategyId=<id>` to view state/journal for a specific strategy.
@@ -228,14 +219,6 @@ npm run start
   - Assigns `symbol -> profile` in `data/scalp-hybrid-policy.json`.
   - Optional `applyProfileParams=true` applies profile overrides from backtest `effectiveConfig` (risk/sweep/confirm/ifvg).
   - Updates `updatedAt`, increments `version`, and returns the resolved policy/profile summary.
-- `GET /api/forex/dashboard/summary`
-  - Forex dashboard aggregate (eligibility, packet state, event gate status, execution recency).
-- `GET /api/forex/dashboard/packets`
-  - Latest forex AI packets.
-- `GET /api/forex/dashboard/journal`
-  - Forex journal rows (signals/decisions/overrides/execution outcomes).
-  - Optional query: `pair=EURUSD&limit=200`.
-
 ## Dry-Run Safety
 `dryRun` defaults to `false` in the analysis routes. If you are testing and do not want real orders, pass `dryRun=true` explicitly.
 
@@ -328,7 +311,7 @@ npm run replay:scalp
 # single fixture replay with parameter overrides
 node --import tsx scripts/scalp-replay.ts \
   --input data/scalp-replay/fixtures/eurusd.sample.json \
-  --strategyId hss_ict_m15_m3_guarded \
+  --strategyId regime_pullback_m15_m3 \
   --tpR 1.5 \
   --riskPct 0.25 \
   --sweepBufferPips 10 \
@@ -342,7 +325,7 @@ npm run replay:scalp:matrix
 # matrix with parameter grid
 node --import tsx scripts/scalp-replay-matrix.ts \
   --fixtures core \
-  --strategyIds hss_ict_m15_m3,hss_ict_m15_m3_guarded \
+  --strategyIds regime_pullback_m15_m3,regime_pullback_m15_m3_xauusd \
   --tpRs 1,1.5,2 \
   --riskPcts 0.2,0.35 \
   --sweepBufferPips 8,12 \
@@ -362,7 +345,7 @@ node --import tsx scripts/scalp-replay-matrix.ts \
   "scenarios": [
     {
       "id": "base_fast",
-      "strategyId": "hss_ict_m15_m3",
+      "strategyId": "regime_pullback_m15_m3",
       "spreadFactor": 1.0,
       "slippagePips": 0.15,
       "tpR": 1.5,

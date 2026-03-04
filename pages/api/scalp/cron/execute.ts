@@ -52,6 +52,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     try {
         const cfg = getScalpStrategyConfig();
+        const normalizedSymbol = normalizeScalpSymbol(symbol || cfg.defaultSymbol);
         const runtime = await loadScalpStrategyRuntimeSnapshot(cfg.enabled, strategyId);
         const strategy = runtime.strategy;
         if (!strategy.enabled) {
@@ -61,7 +62,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             return res.status(200).json({
                 ok: true,
                 skipped: true,
-                symbol: normalizeScalpSymbol(symbol || cfg.defaultSymbol),
+                symbol: normalizedSymbol,
                 dryRun,
                 strategyId: strategy.strategyId,
                 defaultStrategyId: runtime.defaultStrategyId,
@@ -70,7 +71,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 reasonCodes,
             });
         }
-        const result = await runScalpExecuteCycle({ symbol, dryRun, nowMs, strategyId: strategy.strategyId });
+        const result = await runScalpExecuteCycle({
+            symbol: normalizedSymbol,
+            dryRun,
+            nowMs,
+            strategyId: strategy.strategyId,
+        });
         return res.status(200).json({
             ok: true,
             defaultStrategyId: runtime.defaultStrategyId,

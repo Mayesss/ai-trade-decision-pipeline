@@ -158,28 +158,76 @@ npm run test:scalp
 # single replay for a specific strategy
 node --import tsx scripts/scalp-replay.ts \
   --input data/scalp-replay/fixtures/eurusd.sample.json \
-  --strategyId hss_ict_m15_m3 \
+  --strategyId regime_pullback_m15_m3 \
   --outDir /tmp/scalp-replay
 
 # matrix compare across strategies
 node --import tsx scripts/scalp-replay-matrix.ts \
   --fixtures core \
-  --strategyIds hss_ict_m15_m3,hss_ict_m15_m3_guarded \
+  --strategyIds regime_pullback_m15_m3,regime_pullback_m15_m3_xauusd \
   --outDir /tmp/scalp-replay-matrix
 ```
 7. Validate runtime safely (`dryRun=true`):
 ```bash
 # one execution cycle for explicit strategy
-curl "http://localhost:3000/api/scalp/cron/execute?symbol=EURUSD&dryRun=true&strategyId=hss_ict_m15_m3"
+curl "http://localhost:3000/api/scalp/cron/execute?symbol=EURUSD&dryRun=true&strategyId=regime_pullback_m15_m3"
 
 # strategy-scoped dashboard state/journal
-curl "http://localhost:3000/api/scalp/dashboard/summary?strategyId=hss_ict_m15_m3"
+curl "http://localhost:3000/api/scalp/dashboard/summary?strategyId=regime_pullback_m15_m3"
 ```
 8. Rollout guidance:
    - Keep new strategy non-default until replay/backtest evidence is acceptable.
    - Enable/disable per strategy with `POST /api/scalp/strategy/control`.
    - Promote default only after evidence using `defaultStrategyId`.
    - Preserve rollback path by keeping previous strategy registered.
+
+## Symbol Guard Backtesting Workflow (Scalp)
+Use this playbook for symbol-specific tuning (for example XAUUSD) without forking core entry logic.
+
+1. Keep base logic in shared strategy; put symbol deltas in a guard wrapper:
+   - Keep `lib/scalp/strategies/regimePullbackM15M3.ts` generic.
+   - Put symbol-only overrides in `lib/scalp/strategies/<strategyName><Symbol>Guarded.ts`.
+   - Restrict guard scope to risk/session filters first (for example `tp1ClosePct`, `trailAtrMult`, `timeStopBars`, blocked hours).
+2. Select guard by symbol at runtime via cron `strategyId`:
+   - Keep global default strategy unchanged.
+   - Pin symbol-specific guard in cron URL (for example XAU uses `strategyId=regime_pullback_m15_m3_xauusd`).
+3. Backtest with production-like data and cadence:
+   - Use stored 15m + 1m candles for `M15/M3` strategy runs.
+   - Use the same execution cadence as prod (currently 1 minute).
+   - Evaluate at least a 90-day window before changing defaults.
+4. Require baseline vs candidate + robustness checks:
+   - Compare candidate against current production baseline.
+   - Run split-window validation (`3 x 30d`) to detect overfitting.
+   - Accept only if improvement persists across windows, not just aggregate.
+5. Track metrics in this order:
+   - Primary: `netR`, `profitFactor`.
+   - Risk: `maxDrawdownR`.
+   - Stability: `trades`, `winRatePct`, `avgHoldMinutes`, exit reason mix.
+6. For session guards, test named hour variants:
+   - Use env-driven variants (for example `return`, `low_dd`, `high_pf`) with one safe default.
+   - Keep explicit hour override env as highest precedence for quick A/B.
+7. Guardrail for promotion:
+   - Do not promote if `maxDrawdownR` degrades materially even when `netR` improves.
+   - Prefer smaller but stable gains over unstable headline gains.
+8. After promoting guard defaults:
+   - Add/adjust tests for default values and variant resolution.
+   - Run `npm run test:scalp`.
+   - Run 1-2 `dryRun=true` cron cycles and verify expected strategy id + reason codes in journal.
+
+### Guard A/B Environment Pattern
+```bash
+# tuned risk defaults (example: XAUUSD)
+SCALP_XAUUSD_GUARD_TP1_CLOSE_PCT=20
+SCALP_XAUUSD_GUARD_TRAIL_ATR_MULT=1.6
+SCALP_XAUUSD_GUARD_TIME_STOP_BARS=18
+
+# named hour-profile switch
+SCALP_XAUUSD_GUARD_BLOCKED_HOURS_VARIANT=xauusd_return
+# supported variants: xauusd_return | xauusd_low_dd | xauusd_high_pf | off
+
+# explicit override (wins over variant)
+SCALP_XAUUSD_GUARD_BLOCKED_HOURS_BERLIN=15
+```
 
 ## Useful Local Checks
 ```bash

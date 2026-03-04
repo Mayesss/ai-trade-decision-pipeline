@@ -1,5 +1,6 @@
-import { getDefaultScalpStrategy, getScalpStrategyById } from '../strategies/registry';
-import { buildScalpEntryPlan } from '../execution';
+import { getDefaultScalpStrategy, getScalpStrategyById, resolveScalpStrategyIdForSymbol } from '../strategies/registry';
+import { applyXauusdGuardRiskDefaultsToReplayRuntime } from '../strategies/regimePullbackM15M3XauusdGuarded';
+import { buildScalpEntryPlan, manageScalpOpenTrade, resolveLegacyIfvgEntryIntent } from '../execution';
 import { pipSizeForScalpSymbol, timeframeMinutes } from '../marketData';
 import { buildScalpSessionWindows } from '../sessions';
 import { getScalpStrategyConfig } from '../config';
@@ -22,12 +23,12 @@ type ReplayPosition = {
     side: 'BUY' | 'SELL';
     entryTs: number;
     entryPrice: number;
+    initialStopPrice: number;
     stopPrice: number;
     takeProfitPrice: number;
     riskAbs: number;
     riskUsd: number;
     notionalUsd: number;
-    activeFromIndex: number;
 };
 
 type ScalpReplayProgressOptions = {
@@ -111,6 +112,9 @@ function buildStrategyConfig(runtime: ScalpReplayRuntimeConfig): ScalpStrategyCo
             cooldownAfterLossMinutes: 0,
             maxTradesPerSymbolPerDay: runtime.strategy.maxTradesPerDay,
             maxOpenPositionsPerSymbol: 1,
+            dailyLossLimitR: runtime.strategy.dailyLossLimitR,
+            consecutiveLossPauseThreshold: runtime.strategy.consecutiveLossPauseThreshold,
+            consecutiveLossCooldownBars: runtime.strategy.consecutiveLossCooldownBars,
             killSwitch: false,
             riskPerTradePct: runtime.strategy.riskPerTradePct,
             referenceEquityUsd: runtime.strategy.referenceEquityUsd,
@@ -119,6 +123,12 @@ function buildStrategyConfig(runtime: ScalpReplayRuntimeConfig): ScalpStrategyCo
             takeProfitR: runtime.strategy.takeProfitR,
             stopBufferPips: runtime.strategy.stopBufferPips,
             stopBufferSpreadMult: runtime.strategy.stopBufferSpreadMult,
+            breakEvenOffsetR: runtime.strategy.breakEvenOffsetR,
+            tp1R: runtime.strategy.tp1R,
+            tp1ClosePct: runtime.strategy.tp1ClosePct,
+            trailStartR: runtime.strategy.trailStartR,
+            trailAtrMult: runtime.strategy.trailAtrMult,
+            timeStopBars: runtime.strategy.timeStopBars,
             minStopDistancePips: runtime.strategy.minStopDistancePips,
         },
         execution: {
@@ -141,9 +151,10 @@ function buildStrategyConfig(runtime: ScalpReplayRuntimeConfig): ScalpStrategyCo
 export function defaultScalpReplayConfig(symbol = 'EURUSD'): ScalpReplayRuntimeConfig {
     const cfg = getScalpStrategyConfig();
     const defaultStrategy = getDefaultScalpStrategy();
-    return {
-        symbol: symbol.toUpperCase(),
-        strategyId: defaultStrategy.id,
+    const normalizedSymbol = symbol.toUpperCase();
+    const base: ScalpReplayRuntimeConfig = {
+        symbol: normalizedSymbol,
+        strategyId: resolveScalpStrategyIdForSymbol({ symbol: normalizedSymbol, fallbackStrategyId: defaultStrategy.id }),
         executeMinutes: cfg.cadence.executeMinutes,
         defaultSpreadPips: 1.1,
         spreadFactor: 1,
@@ -164,6 +175,15 @@ export function defaultScalpReplayConfig(symbol = 'EURUSD'): ScalpReplayRuntimeC
             takeProfitR: Math.min(cfg.risk.takeProfitR, 1.2),
             stopBufferPips: cfg.risk.stopBufferPips,
             stopBufferSpreadMult: cfg.risk.stopBufferSpreadMult,
+            breakEvenOffsetR: cfg.risk.breakEvenOffsetR,
+            tp1R: cfg.risk.tp1R,
+            tp1ClosePct: cfg.risk.tp1ClosePct,
+            trailStartR: cfg.risk.trailStartR,
+            trailAtrMult: cfg.risk.trailAtrMult,
+            timeStopBars: cfg.risk.timeStopBars,
+            dailyLossLimitR: cfg.risk.dailyLossLimitR,
+            consecutiveLossPauseThreshold: cfg.risk.consecutiveLossPauseThreshold,
+            consecutiveLossCooldownBars: cfg.risk.consecutiveLossCooldownBars,
             minStopDistancePips: cfg.risk.minStopDistancePips,
             // Aggressive defaults: prioritize setup frequency for parameter exploration.
             sweepBufferPips: Math.max(0.05, Math.min(cfg.sweep.bufferPips, 0.25)),
@@ -189,6 +209,7 @@ export function defaultScalpReplayConfig(symbol = 'EURUSD'): ScalpReplayRuntimeC
             minConfirmCandles: cfg.data.minConfirmCandles,
         },
     };
+    return applyXauusdGuardRiskDefaultsToReplayRuntime(base);
 }
 
 export function normalizeScalpReplayInput(input: ScalpReplayInputFile): {
@@ -328,56 +349,27 @@ function appendTimeline(timeline: ScalpReplayTimelineEvent[], event: ScalpReplay
     });
 }
 
-function resolveExitFromCandle(params: {
-    position: ReplayPosition;
-    candle: ScalpReplayCandle;
-    slippageAbs: number;
-    preferStopWhenBothHit: boolean;
-}): { hit: boolean; exitPrice: number; reason: 'STOP' | 'TP' } | null {
-    const p = params.position;
-    const c = params.candle;
-    const slip = Math.max(0, params.slippageAbs);
-
-    if (p.side === 'BUY') {
-        const stopHit = c.low <= p.stopPrice;
-        const tpHit = c.high >= p.takeProfitPrice;
-        if (!stopHit && !tpHit) return null;
-        if (stopHit && tpHit && params.preferStopWhenBothHit) {
-            return { hit: true, exitPrice: p.stopPrice - slip, reason: 'STOP' };
-        }
-        if (stopHit && tpHit && !params.preferStopWhenBothHit) {
-            return { hit: true, exitPrice: p.takeProfitPrice - slip, reason: 'TP' };
-        }
-        if (stopHit) return { hit: true, exitPrice: p.stopPrice - slip, reason: 'STOP' };
-        return { hit: true, exitPrice: p.takeProfitPrice - slip, reason: 'TP' };
-    }
-
-    const stopHit = c.high >= p.stopPrice;
-    const tpHit = c.low <= p.takeProfitPrice;
-    if (!stopHit && !tpHit) return null;
-    if (stopHit && tpHit && params.preferStopWhenBothHit) {
-        return { hit: true, exitPrice: p.stopPrice + slip, reason: 'STOP' };
-    }
-    if (stopHit && tpHit && !params.preferStopWhenBothHit) {
-        return { hit: true, exitPrice: p.takeProfitPrice + slip, reason: 'TP' };
-    }
-    if (stopHit) return { hit: true, exitPrice: p.stopPrice + slip, reason: 'STOP' };
-    return { hit: true, exitPrice: p.takeProfitPrice + slip, reason: 'TP' };
+function inferExitReasonFromManageCodes(codes: string[]): 'STOP' | 'TIME_STOP' {
+    const normalized = dedupeReasonCodes(codes);
+    if (normalized.includes('TRADE_EXIT_TIME_STOP')) return 'TIME_STOP';
+    return 'STOP';
 }
 
 function closePositionAsTrade(params: {
     position: ReplayPosition;
     exitTs: number;
     exitPrice: number;
-    exitReason: 'STOP' | 'TP' | 'FORCE_CLOSE';
+    exitReason: 'STOP' | 'TIME_STOP' | 'FORCE_CLOSE';
+    totalTradeR: number;
+    tradeBeforeExit: NonNullable<ScalpSessionState['trade']> | null;
 }): ScalpReplayTrade {
     const holdMinutes = Math.max(0, (params.exitTs - params.position.entryTs) / 60_000);
-    const pnlAbs =
-        params.position.side === 'BUY'
-            ? params.exitPrice - params.position.entryPrice
-            : params.position.entryPrice - params.exitPrice;
-    const rMultiple = params.position.riskAbs > 0 ? pnlAbs / params.position.riskAbs : 0;
+    const rMultiple = Number.isFinite(params.totalTradeR) ? params.totalTradeR : 0;
     const pnlUsd = rMultiple * params.position.riskUsd;
+    const realizedRBeforeFinalExit = params.tradeBeforeExit ? toFinite(params.tradeBeforeExit.realizedR, 0) : 0;
+    const remainingSizePctAtExit = params.tradeBeforeExit ? toFinite(params.tradeBeforeExit.remainingSizePct, 1) : 1;
+    const tp1Taken = Boolean(params.tradeBeforeExit?.tp1Done);
+    const trailingActiveAtExit = Boolean(params.tradeBeforeExit?.trailActive);
 
     return {
         id: params.position.tradeId,
@@ -396,6 +388,10 @@ function closePositionAsTrade(params: {
         notionalUsd: params.position.notionalUsd,
         rMultiple,
         pnlUsd,
+        realizedRBeforeFinalExit,
+        remainingSizePctAtExit,
+        tp1Taken,
+        trailingActiveAtExit,
     };
 }
 
@@ -408,8 +404,12 @@ function summarize(params: {
 }): ScalpReplaySummary {
     const trades = params.trades;
     const wins = trades.filter((t) => t.rMultiple > 0).length;
-    const losses = trades.filter((t) => t.rMultiple <= 0).length;
+    const losses = trades.filter((t) => t.rMultiple < 0).length;
     const netR = trades.reduce((acc, t) => acc + t.rMultiple, 0);
+    const grossProfitR = trades.reduce((acc, t) => acc + Math.max(0, t.rMultiple), 0);
+    const grossLossAbsR = trades.reduce((acc, t) => acc + Math.max(0, -t.rMultiple), 0);
+    const grossLossR = -grossLossAbsR;
+    const profitFactor = grossLossAbsR > 0 ? grossProfitR / grossLossAbsR : null;
     const avgR = trades.length ? netR / trades.length : 0;
     const expectancyR = avgR;
     const netPnlUsd = trades.reduce((acc, t) => acc + t.pnlUsd, 0);
@@ -437,6 +437,9 @@ function summarize(params: {
         avgR,
         expectancyR,
         netR,
+        grossProfitR,
+        grossLossR,
+        profitFactor,
         netPnlUsd,
         maxDrawdownR: maxDd,
         avgHoldMinutes,
@@ -444,13 +447,13 @@ function summarize(params: {
     };
 }
 
-export function runScalpReplay(params: {
+export async function runScalpReplay(params: {
     candles: ScalpReplayCandle[];
     pipSize: number;
     config: ScalpReplayRuntimeConfig;
     progress?: ScalpReplayProgressOptions;
     marketData?: ScalpReplayMarketDataSources;
-}): ScalpReplayResult {
+}): Promise<ScalpReplayResult> {
     const candles = params.candles.slice().sort((a, b) => a.ts - b.ts);
     if (!candles.length) throw new Error('Replay requires candles');
     const strategyDef = getScalpStrategyById(params.config.strategyId) || getDefaultScalpStrategy();
@@ -512,36 +515,6 @@ export function runScalpReplay(params: {
 
     for (let i = 0; i < driverCandles.length; i += 1) {
         const candle = driverCandles[i]!;
-        if (position && i >= position.activeFromIndex) {
-            const exit = resolveExitFromCandle({
-                position,
-                candle,
-                slippageAbs,
-                preferStopWhenBothHit: runtime.preferStopWhenBothHit,
-            });
-            if (exit?.hit) {
-                const trade = closePositionAsTrade({
-                    position,
-                    exitTs: candle.ts,
-                    exitPrice: exit.exitPrice,
-                    exitReason: exit.reason,
-                });
-                trades.push(trade);
-                appendTimeline(timeline, {
-                    ts: candle.ts,
-                    type: 'exit',
-                    state: state?.state,
-                    reasonCodes: [exit.reason === 'TP' ? 'EXIT_TP' : 'EXIT_STOP'],
-                    payload: { tradeId: trade.id, r: trade.rMultiple, pnlUsd: trade.pnlUsd },
-                });
-                position = null;
-                if (state) {
-                    state.trade = null;
-                    state.state = 'DONE';
-                }
-            }
-        }
-
         if (candle.ts < nextRunTs) continue;
         while (nextRunTs <= candle.ts) {
             runs += 1;
@@ -598,8 +571,100 @@ export function runScalpReplay(params: {
                 cfg: strategyCfg,
             });
             state = phase.state;
+            const manageReasonCodes: string[] = [];
+            if (position && !state.trade) {
+                state.trade = {
+                    setupId: position.tradeId,
+                    dealReference: `replay:${position.tradeId}`,
+                    side: position.side,
+                    entryPrice: position.entryPrice,
+                    stopPrice: position.stopPrice,
+                    takeProfitPrice: position.takeProfitPrice,
+                    riskR: 1,
+                    riskAbs: position.riskAbs,
+                    riskUsd: position.riskUsd,
+                    notionalUsd: position.notionalUsd,
+                    initialStopPrice: position.initialStopPrice,
+                    remainingSizePct: 1,
+                    realizedR: 0,
+                    tp1Done: false,
+                    tp1Price: null,
+                    trailActive: false,
+                    trailStopPrice: null,
+                    favorableExtremePrice: position.entryPrice,
+                    barsHeld: 0,
+                    openedAtMs: position.entryTs,
+                    brokerOrderId: null,
+                    dryRun: true,
+                };
+                state.state = 'IN_TRADE';
+                manageReasonCodes.push('REPLAY_TRADE_CONTEXT_RESTORED');
+            }
+            const hadOpenTradeAtStartOfManage = Boolean(position && state.trade);
+            if (position && state.trade) {
+                const priorRealizedR = toFinite(state.stats.realizedR, 0);
+                const tradeBeforeManage: NonNullable<ScalpSessionState['trade']> = { ...state.trade };
+                const managed = await manageScalpOpenTrade({
+                    state,
+                    market,
+                    cfg: strategyCfg,
+                    dryRun: true,
+                    nowMs,
+                });
+                state = managed.state;
+                manageReasonCodes.push(...managed.reasonCodes);
 
-            const runReasons = dedupeReasonCodes(['SCALP_REPLAY_RUN', ...transitioned.reasonCodes, ...phase.reasonCodes]);
+                const managedCodes = dedupeReasonCodes(managed.reasonCodes);
+                const significantManagedCodes = managedCodes.filter((code) => code !== 'TRADE_MANAGE_ACTIVE');
+                if (significantManagedCodes.length) {
+                    appendTimeline(timeline, {
+                        ts: nowMs,
+                        type: 'note',
+                        state: state.state,
+                        reasonCodes: significantManagedCodes,
+                    });
+                }
+
+                if (!state.trade) {
+                    const exitReason = inferExitReasonFromManageCodes(managedCodes);
+                    const totalTradeR = toFinite(state.stats.realizedR, 0) - priorRealizedR;
+                    const exitPrice = toFinite(market.quote.price, tradeBeforeManage.stopPrice);
+                    const trade = closePositionAsTrade({
+                        position,
+                        exitTs: nowMs,
+                        exitPrice,
+                        exitReason,
+                        totalTradeR,
+                        tradeBeforeExit: tradeBeforeManage,
+                    });
+                    trades.push(trade);
+                    appendTimeline(timeline, {
+                        ts: nowMs,
+                        type: 'exit',
+                        state: state.state,
+                        reasonCodes: [...managedCodes, exitReason === 'TIME_STOP' ? 'EXIT_TIME_STOP' : 'EXIT_STOP'],
+                        payload: { tradeId: trade.id, r: trade.rMultiple, pnlUsd: trade.pnlUsd },
+                    });
+                    position = null;
+                } else {
+                    position.stopPrice = toFinite(state.trade.stopPrice, position.stopPrice);
+                }
+            }
+            const strategyEntryIntent = phase.entryIntent ?? null;
+            const legacyEntryIntent = strategyEntryIntent ? null : resolveLegacyIfvgEntryIntent(state);
+            const entryIntent = strategyEntryIntent || legacyEntryIntent;
+            if (toFinite(state.stats.realizedR, 0) <= strategyCfg.risk.dailyLossLimitR) {
+                state.state = 'DONE';
+                manageReasonCodes.push('DAILY_LOSS_LIMIT_BLOCKED_NEW_ENTRY');
+            }
+
+            const runReasons = dedupeReasonCodes([
+                'SCALP_REPLAY_RUN',
+                ...transitioned.reasonCodes,
+                ...phase.reasonCodes,
+                ...manageReasonCodes,
+                ...(legacyEntryIntent ? ['ENTRY_INTENT_LEGACY_FALLBACK'] : []),
+            ]);
             appendTimeline(timeline, {
                 ts: nowMs,
                 type: 'state',
@@ -617,11 +682,12 @@ export function runScalpReplay(params: {
                         : undefined,
             });
 
-            if (!position && state.state === 'WAITING_RETRACE' && state.ifvg?.touched && !state.trade) {
+            if (!hadOpenTradeAtStartOfManage && !position && !state.trade && entryIntent && state.state !== 'DONE' && state.state !== 'COOLDOWN') {
                 const planRes = buildScalpEntryPlan({
                     state,
                     market,
                     cfg: strategyCfg,
+                    entryIntent,
                 });
                 const reasons = dedupeReasonCodes(planRes.reasonCodes);
                 appendTimeline(timeline, {
@@ -641,12 +707,12 @@ export function runScalpReplay(params: {
                             side: planRes.plan.side,
                             entryTs: nowMs,
                             entryPrice: fillPrice,
+                            initialStopPrice: planRes.plan.stopPrice,
                             stopPrice: planRes.plan.stopPrice,
                             takeProfitPrice: planRes.plan.takeProfitPrice,
                             riskAbs,
                             riskUsd: planRes.plan.riskUsd,
                             notionalUsd: planRes.plan.notionalUsd,
-                            activeFromIndex: i + 1,
                         };
                         state.trade = {
                             setupId: planRes.plan.setupId,
@@ -656,6 +722,18 @@ export function runScalpReplay(params: {
                             stopPrice: planRes.plan.stopPrice,
                             takeProfitPrice: planRes.plan.takeProfitPrice,
                             riskR: 1,
+                            riskAbs,
+                            riskUsd: planRes.plan.riskUsd,
+                            notionalUsd: planRes.plan.notionalUsd,
+                            initialStopPrice: planRes.plan.stopPrice,
+                            remainingSizePct: 1,
+                            realizedR: 0,
+                            tp1Done: false,
+                            tp1Price: null,
+                            trailActive: false,
+                            trailStopPrice: null,
+                            favorableExtremePrice: fillPrice,
+                            barsHeld: 0,
                             openedAtMs: nowMs,
                             brokerOrderId: null,
                             dryRun: true,
@@ -677,6 +755,7 @@ export function runScalpReplay(params: {
                                 entry: fillPrice,
                                 stop: planRes.plan.stopPrice,
                                 tp: planRes.plan.takeProfitPrice,
+                                riskAbs,
                             },
                         });
                     }
@@ -687,14 +766,21 @@ export function runScalpReplay(params: {
         }
     }
 
-    if (position && runtime.forceCloseAtEnd) {
+    if (position && state?.trade && runtime.forceCloseAtEnd) {
         const last = driverCandles[driverCandles.length - 1]!;
         const exitPrice = position.side === 'BUY' ? last.close - slippageAbs : last.close + slippageAbs;
+        const signedMove = position.side === 'BUY' ? exitPrice - position.entryPrice : position.entryPrice - exitPrice;
+        const currentR = position.riskAbs > 0 ? signedMove / position.riskAbs : 0;
+        const remainingSizePct = Math.max(0, Math.min(1, toFinite(state.trade.remainingSizePct, 1)));
+        const realizedRBeforeFinalExit = toFinite(state.trade.realizedR, 0);
+        const totalTradeR = realizedRBeforeFinalExit + remainingSizePct * currentR;
         const trade = closePositionAsTrade({
             position,
             exitTs: last.ts,
             exitPrice,
             exitReason: 'FORCE_CLOSE',
+            totalTradeR,
+            tradeBeforeExit: { ...state.trade },
         });
         trades.push(trade);
         appendTimeline(timeline, {
