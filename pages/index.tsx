@@ -1156,6 +1156,142 @@ export default function Home() {
     (Array.isArray((scalpActiveExecution as any)?.reasonCodes)
       ? (scalpActiveExecution as any).reasonCodes
       : scalpActiveRow?.reasonCodes) || [];
+  const scalpSummaryOpenCount =
+    typeof scalpSummary?.summary?.openCount === 'number'
+      ? scalpSummary.summary.openCount
+      : scalpRows.filter((row) => row.inTrade).length;
+  const scalpSummaryRunCount =
+    typeof scalpSummary?.summary?.runCount === 'number'
+      ? scalpSummary.summary.runCount
+      : scalpRows.filter((row) => typeof row.lastRunAtMs === 'number').length;
+  const scalpSummaryDryRunCount =
+    typeof scalpSummary?.summary?.dryRunCount === 'number'
+      ? scalpSummary.summary.dryRunCount
+      : scalpRows.filter((row) => row.dryRunLast === true).length;
+  const scalpSummaryTotalTradesPlaced =
+    typeof scalpSummary?.summary?.totalTradesPlaced === 'number'
+      ? scalpSummary.summary.totalTradesPlaced
+      : scalpRows.reduce((acc, row) => acc + row.tradesPlaced, 0);
+  const scalpTopStates = Object.entries(scalpSummary?.summary?.stateCounts ?? {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4);
+  const scalpActiveWinRatePct =
+    scalpActiveRow && scalpActiveRow.tradesPlaced > 0
+      ? (scalpActiveRow.wins / scalpActiveRow.tradesPlaced) * 100
+      : null;
+
+  const formatScalpTime = (ts?: number | null) => {
+    const raw = formatDecisionTime(ts);
+    return raw ? raw.replace(/^–\s*/, '') : '—';
+  };
+
+  const scalpStateMeta = (state?: string | null) => {
+    const normalized = String(state || 'MISSING').trim().toUpperCase();
+    if (normalized === 'IN_TRADE') {
+      return {
+        label: 'IN TRADE',
+        className: 'border-emerald-200 bg-emerald-100 text-emerald-800',
+        Icon: ArrowUpRight,
+      };
+    }
+    if (normalized.includes('ERROR') || normalized.includes('BLOCK') || normalized === 'MISSING') {
+      return {
+        label: normalized,
+        className: 'border-rose-200 bg-rose-100 text-rose-800',
+        Icon: ShieldPlus,
+      };
+    }
+    if (normalized.includes('WAIT') || normalized.includes('IDLE') || normalized.includes('COOLDOWN')) {
+      return {
+        label: normalized,
+        className: 'border-amber-200 bg-amber-100 text-amber-800',
+        Icon: Repeat,
+      };
+    }
+    return {
+      label: normalized,
+      className: 'border-sky-200 bg-sky-100 text-sky-800',
+      Icon: Circle,
+    };
+  };
+
+  const scalpModeMeta = (dryRunLast?: boolean | null) => {
+    if (dryRunLast === true) {
+      return {
+        label: 'DRY',
+        className: 'border-amber-200 bg-amber-100 text-amber-800',
+      };
+    }
+    if (dryRunLast === false) {
+      return {
+        label: 'LIVE',
+        className: 'border-rose-200 bg-rose-100 text-rose-800',
+      };
+    }
+    return {
+      label: 'UNKNOWN',
+      className: 'border-slate-200 bg-slate-100 text-slate-600',
+    };
+  };
+
+  const scalpReasonMeta = (code: string) => {
+    const upper = code.toUpperCase();
+    if (/ERROR|FAIL|REJECT|INVALID|BLOCK/.test(upper)) {
+      return {
+        className: 'border-rose-200 bg-rose-50 text-rose-700',
+        Icon: ShieldPlus,
+      };
+    }
+    if (/ENTRY|EXEC|OPEN|CLOSE|BUY|SELL|TP|SL|TRAIL/.test(upper)) {
+      return {
+        className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+        Icon: Zap,
+      };
+    }
+    if (/WAIT|COOLDOWN|PAUSE|HOLD|IDLE/.test(upper)) {
+      return {
+        className: 'border-amber-200 bg-amber-50 text-amber-700',
+        Icon: Activity,
+      };
+    }
+    return {
+      className: 'border-slate-200 bg-slate-100 text-slate-700',
+      Icon: Circle,
+    };
+  };
+
+  const scalpJournalMeta = (entry: { type?: string; level?: string }) => {
+    const type = String(entry.type || '').trim().toUpperCase();
+    const level = String(entry.level || '').trim().toUpperCase();
+    if (level === 'ERROR' || type === 'ERROR') {
+      return {
+        className: 'border-rose-200 bg-rose-50 text-rose-700',
+        Icon: ShieldPlus,
+      };
+    }
+    if (level === 'WARN') {
+      return {
+        className: 'border-amber-200 bg-amber-50 text-amber-700',
+        Icon: Activity,
+      };
+    }
+    if (type === 'EXECUTION') {
+      return {
+        className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+        Icon: Zap,
+      };
+    }
+    if (type === 'STATE') {
+      return {
+        className: 'border-sky-200 bg-sky-50 text-sky-700',
+        Icon: Repeat,
+      };
+    }
+    return {
+      className: 'border-slate-200 bg-slate-100 text-slate-700',
+      Icon: BookOpen,
+    };
+  };
 
   const renderDashboardSkeleton = () => (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-stretch">
@@ -1419,24 +1555,54 @@ export default function Home() {
         )}
 
         {strategyMode === 'scalp' && !error && (
-          <div className="mt-4 flex flex-wrap items-center gap-2">
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">
             {scalpRows.map((row) => {
               const isActive = scalpActiveRow?.symbol === row.symbol;
+              const state = scalpStateMeta(row.state);
+              const StateIcon = state.Icon;
+              const mode = scalpModeMeta(row.dryRunLast);
+              const SideIcon =
+                row.tradeSide === 'BUY' ? ArrowUpRight : row.tradeSide === 'SELL' ? ArrowDownRight : Circle;
               return (
                 <button
                   key={row.symbol}
                   onClick={() => setScalpActiveSymbol(row.symbol)}
-                  className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                  className={`rounded-2xl border px-3 py-2 text-left transition ${
                     row.inTrade
-                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:text-emerald-800'
-                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-800'
+                      ? 'border-emerald-200 bg-emerald-50/80 hover:border-emerald-300'
+                      : 'border-slate-200 bg-white hover:border-slate-300'
                   } ${
                     isActive
-                      ? 'shadow-md ring-2 ring-slate-400/70 outline outline-2 outline-offset-2 outline-slate-200/80'
+                      ? 'shadow-md ring-2 ring-sky-400/70 outline outline-2 outline-offset-2 outline-sky-100'
                       : ''
                   }`}
                 >
-                  {row.symbol}
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-900">{row.symbol}</div>
+                      <div className="max-w-[180px] truncate font-mono text-[10px] text-slate-500" title={row.strategyId}>
+                        {row.strategyId || 'unknown'}
+                      </div>
+                    </div>
+                    <span
+                      className={`inline-flex h-7 w-7 items-center justify-center rounded-full ${
+                        row.inTrade ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'
+                      }`}
+                    >
+                      <SideIcon className="h-4 w-4" />
+                    </span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${state.className}`}
+                    >
+                      <StateIcon className="h-3 w-3" />
+                      {state.label}
+                    </span>
+                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${mode.className}`}>
+                      {mode.label}
+                    </span>
+                  </div>
                 </button>
               );
             })}
@@ -1444,7 +1610,7 @@ export default function Home() {
               Array.from({ length: 4 }).map((_, idx) => (
                 <span
                   key={`scalp-tab-skeleton-${idx}`}
-                  className="h-9 w-24 animate-pulse rounded-full border border-slate-200 bg-slate-100"
+                  className="h-[82px] animate-pulse rounded-2xl border border-slate-200 bg-slate-100"
                 />
               ))}
           </div>
@@ -1467,131 +1633,251 @@ export default function Home() {
             ) : (
               <div className="space-y-4">
                 {scalpActiveRow ? (
-                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-                    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                      <div className="text-xs uppercase tracking-wide text-slate-500">Active Symbol</div>
-                      <div className="mt-2 text-xl font-semibold text-slate-900">{scalpActiveRow.symbol}</div>
-                      <div className="mt-2 text-sm text-slate-700">
-                        State:{' '}
-                        <span className="font-semibold text-slate-900">{scalpActiveRow.state || 'MISSING'}</span>
-                      </div>
-                      <div className="mt-2 text-sm text-slate-700">
-                        Strategy:{' '}
-                        <span className="font-semibold text-slate-900">{scalpActiveRow.strategyId || 'n/a'}</span>
-                      </div>
-                      <div className="mt-2 text-sm text-slate-700">
-                        Last run:{' '}
-                        <span className="font-semibold text-slate-900">
-                          {typeof scalpActiveRow.lastRunAtMs === 'number' ? formatDecisionTime(scalpActiveRow.lastRunAtMs) : '—'}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                      <div className="text-xs uppercase tracking-wide text-slate-500">Tune & Schedule</div>
-                      <div className="mt-2 text-sm text-slate-700">
-                        Tune: <span className="font-semibold text-slate-900">{scalpActiveRow.tune || 'default'}</span>
-                      </div>
-                      <div className="mt-2 text-sm text-slate-700">
-                        Cron: <span className="font-semibold text-slate-900">{scalpActiveRow.cronSchedule || '—'}</span>
-                      </div>
-                      <div className="mt-2 text-sm text-slate-700">
-                        Route: <span className="font-semibold text-slate-900">{scalpActiveRow.cronRoute || '—'}</span>
-                      </div>
-                      <div className="mt-2 text-xs text-slate-600 break-all">
-                        Path: <span className="font-mono">{scalpActiveRow.cronPath || '—'}</span>
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                      <div className="text-xs uppercase tracking-wide text-slate-500">Last Cycle</div>
-                      <div className="mt-2 text-sm text-slate-700">
-                        Type:{' '}
-                        <span className="font-semibold text-slate-900">
-                          {String((scalpActiveExecution as any)?.type || '—').toUpperCase()}
-                        </span>
-                      </div>
-                      <div className="mt-2 text-sm text-slate-700">
-                        Level:{' '}
-                        <span className="font-semibold text-slate-900">
-                          {String((scalpActiveExecution as any)?.level || '—').toUpperCase()}
-                        </span>
-                      </div>
-                      <div className="mt-2 text-sm text-slate-700">
-                        Time:{' '}
-                        <span className="font-semibold text-slate-900">
-                          {typeof (scalpActiveExecution as any)?.timestampMs === 'number'
-                            ? formatDecisionTime((scalpActiveExecution as any).timestampMs)
-                            : typeof scalpActiveRow.lastRunAtMs === 'number'
-                            ? formatDecisionTime(scalpActiveRow.lastRunAtMs)
-                            : '—'}
-                        </span>
-                      </div>
-                      <div className="mt-2 text-sm text-slate-700">
-                        Mode:{' '}
-                        <span className="font-semibold text-slate-900">
-                          {scalpActiveRow.dryRunLast === null || scalpActiveRow.dryRunLast === undefined
-                            ? '—'
-                            : scalpActiveRow.dryRunLast
-                            ? 'dry'
-                            : 'live'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
-
-                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <div className="text-xs uppercase tracking-wide text-slate-500">
-                    Reason Snapshot{scalpActiveRow ? ` · ${scalpActiveRow.symbol}` : ''}
-                  </div>
-                  {scalpActiveReasonCodes.length ? (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {scalpActiveReasonCodes.slice(0, 8).map((code: string, idx: number) => (
-                        <span
-                          key={`${code}-${idx}`}
-                          className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-semibold text-slate-700"
-                        >
-                          {code}
-                        </span>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="mt-3 text-sm text-slate-500">No reason codes for the active symbol yet.</div>
-                  )}
-                </div>
-
-                {scalpActiveJournal.length ? (
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <div className="text-xs uppercase tracking-wide text-slate-500">
-                      Journal Snapshot{scalpActiveRow ? ` · ${scalpActiveRow.symbol}` : ''}
-                    </div>
-                    <div className="mt-3 space-y-2">
-                      {scalpActiveJournal.slice(0, 8).map((entry) => (
-                        <div
-                          key={entry.id || `${entry.timestampMs}-${entry.symbol || 'na'}`}
-                          className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700"
-                        >
-                          <div className="font-semibold text-slate-800">
-                            {typeof entry.timestampMs === 'number' ? formatDecisionTime(entry.timestampMs) : '—'} ·{' '}
-                            {String(entry.type || 'event').toUpperCase()} · {String(entry.level || 'info').toUpperCase()}
+                  <>
+                    <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-sky-50 via-cyan-50 to-emerald-50 p-4 shadow-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <div className="text-xs uppercase tracking-wide text-slate-600">Scalp Focus</div>
+                          <div className="mt-1 flex flex-wrap items-center gap-2">
+                            <span className="text-2xl font-semibold text-slate-900">{scalpActiveRow.symbol}</span>
+                            {(() => {
+                              const state = scalpStateMeta(scalpActiveRow.state);
+                              const StateIcon = state.Icon;
+                              return (
+                                <span
+                                  className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${state.className}`}
+                                >
+                                  <StateIcon className="h-3.5 w-3.5" />
+                                  {state.label}
+                                </span>
+                              );
+                            })()}
+                            {(() => {
+                              const mode = scalpModeMeta(scalpActiveRow.dryRunLast);
+                              return (
+                                <span
+                                  className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${mode.className}`}
+                                >
+                                  {mode.label}
+                                </span>
+                              );
+                            })()}
                           </div>
-                          <div className="mt-1 text-slate-600">
-                            {(entry.reasonCodes || []).slice(0, 4).join(', ') || '—'}
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                            <span
+                              className="inline-flex max-w-full items-center gap-1 rounded-full border border-slate-200 bg-white/80 px-2 py-0.5"
+                              title={scalpActiveRow.strategyId}
+                            >
+                              <Repeat className="h-3.5 w-3.5 text-slate-500" />
+                              <span className="max-w-[280px] truncate font-mono">{scalpActiveRow.strategyId || 'unknown'}</span>
+                            </span>
+                            <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white/80 px-2 py-0.5">
+                              <Activity className="h-3.5 w-3.5 text-slate-500" />
+                              {scalpActiveRow.cronSchedule || 'no schedule'}
+                            </span>
                           </div>
                         </div>
-                      ))}
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 font-semibold ${
+                              scalpActiveRow.inTrade
+                                ? 'border-emerald-200 bg-emerald-100 text-emerald-700'
+                                : 'border-slate-200 bg-white text-slate-600'
+                            }`}
+                          >
+                            {scalpActiveRow.tradeSide === 'BUY' ? (
+                              <ArrowUpRight className="h-3.5 w-3.5" />
+                            ) : scalpActiveRow.tradeSide === 'SELL' ? (
+                              <ArrowDownRight className="h-3.5 w-3.5" />
+                            ) : (
+                              <Circle className="h-3.5 w-3.5" />
+                            )}
+                            {scalpActiveRow.inTrade ? 'Open Trade' : 'Flat'}
+                          </span>
+                          <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 font-semibold text-slate-700">
+                            <Zap className="h-3.5 w-3.5 text-sky-600" />
+                            {formatScalpTime(
+                              typeof (scalpActiveExecution as any)?.timestampMs === 'number'
+                                ? (scalpActiveExecution as any).timestampMs
+                                : scalpActiveRow.lastRunAtMs,
+                            )}
+                          </span>
+                        </div>
+                      </div>
                     </div>
-                    <div className="mt-3">
-                      <a
-                        href="/scalp-backtest"
-                        className="inline-flex rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800"
-                      >
-                        Open Scalp Backtest Lab
-                      </a>
+
+                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                      {[
+                        {
+                          label: 'Trades',
+                          value: String(scalpActiveRow.tradesPlaced),
+                          tone: 'text-sky-700',
+                          Icon: BarChart3,
+                        },
+                        {
+                          label: 'Win Rate',
+                          value: scalpActiveWinRatePct === null ? '—' : `${scalpActiveWinRatePct.toFixed(0)}%`,
+                          tone: 'text-emerald-700',
+                          Icon: Star,
+                        },
+                        {
+                          label: 'Open',
+                          value: String(scalpSummaryOpenCount),
+                          tone: 'text-emerald-700',
+                          Icon: ArrowUpRight,
+                        },
+                        {
+                          label: 'Cycles',
+                          value: String(scalpSummaryRunCount),
+                          tone: 'text-indigo-700',
+                          Icon: Repeat,
+                        },
+                        {
+                          label: 'Dry Cycles',
+                          value: String(scalpSummaryDryRunCount),
+                          tone: 'text-amber-700',
+                          Icon: ShieldCheck,
+                        },
+                      ].map((item) => {
+                        const Icon = item.Icon;
+                        return (
+                          <div
+                            key={item.label}
+                            className="rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                                {item.label}
+                              </span>
+                              <Icon className={`h-4 w-4 ${item.tone}`} />
+                            </div>
+                            <div className={`mt-1 text-xl font-semibold ${item.tone}`}>{item.value}</div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  </div>
+                  </>
                 ) : null}
+
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
+                        <Zap className="h-3.5 w-3.5 text-sky-600" />
+                        Reason Snapshot{scalpActiveRow ? ` · ${scalpActiveRow.symbol}` : ''}
+                      </div>
+                      <div className="text-[11px] font-semibold text-slate-500">
+                        {scalpActiveReasonCodes.length ? `${Math.min(scalpActiveReasonCodes.length, 8)} shown` : 'none'}
+                      </div>
+                    </div>
+                    {scalpActiveReasonCodes.length ? (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {scalpActiveReasonCodes.slice(0, 8).map((code: string, idx: number) => {
+                          const meta = scalpReasonMeta(code);
+                          const Icon = meta.Icon;
+                          return (
+                            <span
+                              key={`${code}-${idx}`}
+                              className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${meta.className}`}
+                            >
+                              <Icon className="h-3.5 w-3.5" />
+                              {code.replace(/_/g, ' ')}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="mt-3 text-sm text-slate-500">No reason codes for the active symbol yet.</div>
+                    )}
+                    {scalpTopStates.length ? (
+                      <div className="mt-4 border-t border-slate-100 pt-3">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                          State Mix
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {scalpTopStates.map(([state, count]) => {
+                            const meta = scalpStateMeta(state);
+                            const Icon = meta.Icon;
+                            return (
+                              <span
+                                key={`${state}-${count}`}
+                                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${meta.className}`}
+                              >
+                                <Icon className="h-3 w-3" />
+                                {state}
+                                <span className="rounded-full bg-white/60 px-1.5 py-0.5">{count}</span>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
+                        <BookOpen className="h-3.5 w-3.5 text-indigo-600" />
+                        Journal Snapshot{scalpActiveRow ? ` · ${scalpActiveRow.symbol}` : ''}
+                      </div>
+                      <div className="text-[11px] font-semibold text-slate-500">
+                        {scalpActiveJournal.length ? `${Math.min(scalpActiveJournal.length, 8)} events` : 'empty'}
+                      </div>
+                    </div>
+                    {scalpActiveJournal.length ? (
+                      <div className="mt-3 space-y-2">
+                        {scalpActiveJournal.slice(0, 8).map((entry) => {
+                          const meta = scalpJournalMeta({
+                            type: String(entry.type || ''),
+                            level: String(entry.level || ''),
+                          });
+                          const Icon = meta.Icon;
+                          return (
+                            <div
+                              key={entry.id || `${entry.timestampMs}-${entry.symbol || 'na'}`}
+                              className={`rounded-xl border px-3 py-2 text-xs ${meta.className}`}
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="inline-flex items-center gap-1.5 font-semibold">
+                                  <Icon className="h-3.5 w-3.5" />
+                                  {String(entry.type || 'event').toUpperCase()}
+                                </div>
+                                <div>{formatScalpTime(entry.timestampMs)}</div>
+                              </div>
+                              {(entry.reasonCodes || []).length ? (
+                                <div className="mt-1 flex flex-wrap gap-1">
+                                  {(entry.reasonCodes || []).slice(0, 3).map((code, idx) => (
+                                    <span
+                                      key={`${entry.id || entry.timestampMs || idx}-${code}-${idx}`}
+                                      className="rounded-full border border-current/30 bg-white/50 px-1.5 py-0.5 text-[10px] font-semibold"
+                                    >
+                                      {code.replace(/_/g, ' ')}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="mt-3 text-sm text-slate-500">No journal events for this symbol yet.</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                    <BarChart3 className="h-4 w-4 text-sky-600" />
+                    Total Trades Placed: <span className="text-slate-900">{scalpSummaryTotalTradesPlaced}</span>
+                  </div>
+                  <a
+                    href="/scalp-backtest"
+                    className="inline-flex rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800"
+                  >
+                    Open Scalp Backtest Lab
+                  </a>
+                </div>
               </div>
             )
           ) : isInitialLoading ? (
