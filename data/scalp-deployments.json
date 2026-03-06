@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-03-06T11:52:21.836Z",
+  "updatedAt": "2026-03-06T14:47:59.695Z",
   "deployments": [
     {
       "symbol": "BTCUSDT",
@@ -140,6 +140,81 @@
       "leaderboardEntry": null,
       "createdAtMs": 1772746662000,
       "updatedAtMs": 1772746662000,
+      "updatedBy": "codex"
+    },
+    {
+      "symbol": "XAUUSDT",
+      "strategyId": "trend_day_reacceleration_m15_m3",
+      "tuneId": "tp08",
+      "deploymentId": "XAUUSDT~trend_day_reacceleration_m15_m3~tp08",
+      "enabled": true,
+      "source": "matrix",
+      "notes": "Promoted from XAUUSDT trend_day_reacceleration focused optimization (current rolling 90d window).",
+      "configOverride": {
+        "risk": {
+          "maxTradesPerSymbolPerDay": 2,
+          "riskPerTradePct": 0.35,
+          "referenceEquityUsd": 10000,
+          "minNotionalUsd": 100,
+          "maxNotionalUsd": 2000,
+          "takeProfitR": 0.8,
+          "stopBufferPips": 0.8,
+          "stopBufferSpreadMult": 1,
+          "minStopDistancePips": 0.5,
+          "breakEvenOffsetR": 0,
+          "tp1R": 1,
+          "tp1ClosePct": 20,
+          "trailStartR": 1,
+          "trailAtrMult": 1.6,
+          "timeStopBars": 24,
+          "dailyLossLimitR": -3,
+          "consecutiveLossPauseThreshold": 2,
+          "consecutiveLossCooldownBars": 3
+        },
+        "sweep": {
+          "bufferPips": 0.25,
+          "bufferAtrMult": 0.08,
+          "bufferSpreadMult": 1.2,
+          "rejectInsidePips": 0,
+          "rejectMaxBars": 20,
+          "minWickBodyRatio": 0.8
+        },
+        "confirm": {
+          "displacementBodyAtrMult": 0.08,
+          "displacementRangeAtrMult": 0.15,
+          "closeInExtremePct": 0.25,
+          "mssLookbackBars": 1,
+          "mssBreakBufferPips": 0.3,
+          "mssBreakBufferAtrMult": 0,
+          "ttlMinutes": 45
+        },
+        "ifvg": {
+          "minAtrMult": 0,
+          "maxAtrMult": 3,
+          "ttlMinutes": 90,
+          "entryMode": "first_touch"
+        },
+        "timeframes": {
+          "asiaBase": "M15",
+          "confirm": "M3"
+        }
+      },
+      "leaderboardEntry": {
+        "symbol": "XAUUSDT",
+        "strategyId": "trend_day_reacceleration_m15_m3",
+        "tuneId": "tp08",
+        "deploymentId": "XAUUSDT~trend_day_reacceleration_m15_m3~tp08",
+        "tuneLabel": "tp08",
+        "netR": 111.80419173836634,
+        "profitFactor": 2.523706280243943,
+        "maxDrawdownR": 14.949794388950153,
+        "trades": 172,
+        "winRatePct": 48.837209302325576,
+        "avgHoldMinutes": 37.23255813953488,
+        "expectancyR": 0.6500243705718973
+      },
+      "createdAtMs": 1772808479695,
+      "updatedAtMs": 1772808479695,
       "updatedBy": "codex"
     }
   ]
