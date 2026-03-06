@@ -16,6 +16,7 @@ import { getDefaultScalpStrategy, getScalpStrategyById, getScalpStrategyPreferre
 import { applySymbolGuardRiskDefaultsToStrategyConfig } from './strategies/guardDefaults';
 import { advanceScalpStateMachine, createInitialScalpSessionState, deriveScalpDayKey } from './stateMachine';
 import {
+    appendScalpTradeLedgerEntry,
     appendScalpJournal,
     loadScalpSessionState,
     loadScalpStrategyRuntimeSnapshot,
@@ -28,6 +29,7 @@ import type {
     ScalpJournalEntry,
     ScalpMarketSnapshot,
     ScalpSessionState,
+    ScalpTradeLedgerEntry,
 } from './types';
 
 function journalEntry(params: {
@@ -55,6 +57,14 @@ async function safeAppendJournal(entry: ScalpJournalEntry, maxRows: number): Pro
         await appendScalpJournal(entry, maxRows);
     } catch (err) {
         console.warn('Failed to append scalp journal:', err);
+    }
+}
+
+async function safeAppendTradeLedgerEntry(entry: ScalpTradeLedgerEntry): Promise<void> {
+    try {
+        await appendScalpTradeLedgerEntry(entry);
+    } catch (err) {
+        console.warn('Failed to append scalp trade ledger entry:', err);
     }
 }
 
@@ -263,6 +273,8 @@ export async function runScalpExecuteCycle(opts: {
                 nextState = reconciled.state;
                 phaseReasonCodes.push(...reconciled.reasonCodes);
                 const hadOpenTradeAtStartOfManage = Boolean(nextState.trade);
+                const tradeBeforeManage = hadOpenTradeAtStartOfManage && nextState.trade ? { ...nextState.trade } : null;
+                const priorRealizedR = Number.isFinite(Number(nextState.stats.realizedR)) ? Number(nextState.stats.realizedR) : 0;
 
                 const managed = await manageScalpOpenTrade({
                     state: nextState,
@@ -273,6 +285,25 @@ export async function runScalpExecuteCycle(opts: {
                 });
                 nextState = managed.state;
                 phaseReasonCodes.push(...managed.reasonCodes);
+                if (hadOpenTradeAtStartOfManage && tradeBeforeManage && !nextState.trade) {
+                    const nextRealizedR = Number.isFinite(Number(nextState.stats.realizedR)) ? Number(nextState.stats.realizedR) : priorRealizedR;
+                    const totalTradeR = nextRealizedR - priorRealizedR;
+                    await safeAppendTradeLedgerEntry({
+                        id: crypto.randomUUID(),
+                        timestampMs: nowMs,
+                        exitAtMs: Number.isFinite(Number(nextState.stats.lastExitAtMs))
+                            ? Number(nextState.stats.lastExitAtMs)
+                            : nowMs,
+                        symbol: deployment.symbol,
+                        strategyId: deployment.strategyId,
+                        tuneId: deployment.tuneId,
+                        deploymentId: deployment.deploymentId,
+                        side: tradeBeforeManage.side,
+                        dryRun: Boolean(tradeBeforeManage.dryRun),
+                        rMultiple: Number.isFinite(totalTradeR) ? totalTradeR : 0,
+                        reasonCodes: dedupeReasonCodes(managed.reasonCodes),
+                    });
+                }
 
                 const strategyEntryIntent = phase.entryIntent ?? null;
                 const legacyEntryIntent = strategyEntryIntent ? null : resolveLegacyIfvgEntryIntent(nextState);

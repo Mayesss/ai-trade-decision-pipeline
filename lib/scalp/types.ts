@@ -147,6 +147,20 @@ export interface ScalpJournalEntry {
     payload: Record<string, unknown>;
 }
 
+export interface ScalpTradeLedgerEntry {
+    id: string;
+    timestampMs: number;
+    exitAtMs: number;
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    deploymentId: string;
+    side: 'BUY' | 'SELL' | null;
+    dryRun: boolean;
+    rMultiple: number;
+    reasonCodes: string[];
+}
+
 export interface ScalpStrategyConfig {
     enabled: boolean;
     defaultSymbol: string;

@@ -9,8 +9,15 @@ import { listScalpDeploymentRegistryEntries } from '../../../../lib/scalp/deploy
 import { DEFAULT_SCALP_TUNE_ID, resolveScalpDeployment } from '../../../../lib/scalp/deployments';
 import { normalizeScalpStrategyId } from '../../../../lib/scalp/strategies/registry';
 import { deriveScalpDayKey } from '../../../../lib/scalp/stateMachine';
-import { loadScalpJournal, loadScalpSessionState, loadScalpStrategyRuntimeSnapshot } from '../../../../lib/scalp/store';
-import type { ScalpJournalEntry } from '../../../../lib/scalp/types';
+import { loadScalpJournal, loadScalpSessionState, loadScalpStrategyRuntimeSnapshot, loadScalpTradeLedger } from '../../../../lib/scalp/store';
+import type { ScalpJournalEntry, ScalpTradeLedgerEntry } from '../../../../lib/scalp/types';
+
+type SummaryRangeKey = '7D' | '30D' | '6M';
+const SUMMARY_RANGE_LOOKBACK_MS: Record<SummaryRangeKey, number> = {
+  '7D': 7 * 24 * 60 * 60 * 1000,
+  '30D': 30 * 24 * 60 * 60 * 1000,
+  '6M': 183 * 24 * 60 * 60 * 1000,
+};
 
 type SymbolSnapshot = {
   symbol: string;
@@ -33,6 +40,8 @@ type SymbolSnapshot = {
   tradeSide: 'BUY' | 'SELL' | null;
   dealReference: string | null;
   reasonCodes: string[];
+  netR: number | null;
+  maxDrawdownR: number | null;
 };
 
 function parseLimit(value: string | string[] | undefined, fallback: number): number {
@@ -42,6 +51,13 @@ function parseLimit(value: string | string[] | undefined, fallback: number): num
   return Math.max(1, Math.min(300, Math.floor(n)));
 }
 
+function parseTradeLimit(value: string | string[] | undefined, fallback: number): number {
+  const first = Array.isArray(value) ? value[0] : value;
+  const n = Number(first);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.max(200, Math.min(50_000, Math.floor(n)));
+}
+
 function parseBool(value: string | string[] | undefined, fallback: boolean): boolean {
   const first = firstQueryValue(value);
   if (!first) return fallback;
@@ -49,6 +65,15 @@ function parseBool(value: string | string[] | undefined, fallback: boolean): boo
   if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
   if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
   return fallback;
+}
+
+function resolveSummaryRange(raw: unknown): SummaryRangeKey {
+  const normalized = String(raw || '')
+    .trim()
+    .toUpperCase();
+  if (normalized === '30D') return '30D';
+  if (normalized === '6M') return '6M';
+  return '7D';
 }
 
 function firstQueryValue(value: string | string[] | undefined): string | undefined {
@@ -80,6 +105,24 @@ function compactJournalEntry(entry: ScalpJournalEntry): Record<string, unknown> 
     reasonCodes: Array.isArray(entry.reasonCodes) ? entry.reasonCodes.slice(0, 8) : [],
     payload: entry.payload ?? {},
   };
+}
+
+function computeRangePerformance(trades: ScalpTradeLedgerEntry[]): { netR: number; maxDrawdownR: number } | null {
+  if (!trades.length) return null;
+  const ordered = trades.slice().sort((a, b) => a.exitAtMs - b.exitAtMs);
+  let netR = 0;
+  let equityR = 0;
+  let peakR = 0;
+  let maxDd = 0;
+  for (const trade of ordered) {
+    const r = Number(trade.rMultiple);
+    if (!Number.isFinite(r)) continue;
+    netR += r;
+    equityR += r;
+    peakR = Math.max(peakR, equityR);
+    maxDd = Math.max(maxDd, peakR - equityR);
+  }
+  return { netR, maxDrawdownR: maxDd };
 }
 
 function deriveTuneLabel(params: {
@@ -116,6 +159,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const nowMs = Date.now();
     const journalLimit = parseLimit(req.query.journalLimit, 80);
+    const tradeLimit = parseTradeLimit(req.query.tradeLimit, 5000);
+    const rangeParam = Array.isArray(req.query.range) ? req.query.range[0] : req.query.range;
+    const range = resolveSummaryRange(rangeParam);
+    const rangeStartMs = nowMs - SUMMARY_RANGE_LOOKBACK_MS[range];
     const requestedStrategyId = firstQueryValue(req.query.strategyId);
     const useDeployments = parseBool(req.query.useDeploymentRegistry, false);
     const cfg = getScalpStrategyConfig();
@@ -170,6 +217,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           tradeSide: state?.trade?.side ?? null,
           dealReference: state?.trade?.dealReference ?? null,
           reasonCodes: Array.isArray(state?.run?.lastReasonCodes) ? state!.run.lastReasonCodes.slice(0, 8) : [],
+          netR: null,
+          maxDrawdownR: null,
         });
       }
     } else {
@@ -213,8 +262,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           tradeSide: state?.trade?.side ?? null,
           dealReference: state?.trade?.dealReference ?? null,
           reasonCodes: Array.isArray(state?.run?.lastReasonCodes) ? state!.run.lastReasonCodes.slice(0, 8) : [],
+          netR: null,
+          maxDrawdownR: null,
         });
       }
+    }
+
+    const tradeLedger = await loadScalpTradeLedger(tradeLimit);
+    const tradesByDeploymentId = new Map<string, ScalpTradeLedgerEntry[]>();
+    for (const trade of tradeLedger) {
+      if (trade.dryRun) continue;
+      if (!(Number.isFinite(Number(trade.exitAtMs)) && Number(trade.exitAtMs) >= rangeStartMs)) continue;
+      const deploymentId = String(trade.deploymentId || '').trim();
+      if (!deploymentId) continue;
+      const bucket = tradesByDeploymentId.get(deploymentId) || [];
+      bucket.push(trade);
+      tradesByDeploymentId.set(deploymentId, bucket);
+    }
+    for (const row of rows) {
+      const perf = computeRangePerformance(tradesByDeploymentId.get(row.deploymentId) || []);
+      row.netR = perf?.netR ?? null;
+      row.maxDrawdownR = perf?.maxDrawdownR ?? null;
     }
 
     const stateCounts = rows.reduce<Record<string, number>>((acc, row) => {
@@ -269,6 +337,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         totalTradesPlaced,
         stateCounts,
       },
+      range,
       symbols: rows,
       latestExecutionByDeploymentId,
       latestExecutionBySymbol,

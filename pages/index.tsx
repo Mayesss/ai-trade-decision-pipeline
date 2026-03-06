@@ -143,6 +143,8 @@ type ScalpDashboardSymbol = {
   tradeSide: 'BUY' | 'SELL' | null;
   dealReference: string | null;
   reasonCodes?: string[];
+  netR?: number | null;
+  maxDrawdownR?: number | null;
 };
 
 type ScalpStrategyControl = {
@@ -159,6 +161,7 @@ type ScalpStrategyControl = {
 type ScalpSummaryResponse = {
   mode?: 'scalp';
   generatedAtMs?: number;
+  range?: DashboardRangeKey;
   dayKey?: string;
   clockMode?: 'LONDON_TZ' | 'UTC_FIXED' | string;
   source?: 'deployment_registry' | 'cron_symbols' | string;
@@ -231,6 +234,7 @@ const formatUsd = (value: number) => {
   if (abs >= 1_000) return `${sign}${CURRENCY_SYMBOL}${(v / 1_000).toFixed(1)}K`;
   return `${sign}${CURRENCY_SYMBOL}${v.toFixed(0)}`;
 };
+const formatSignedR = (value: number): string => `${value >= 0 ? '+' : ''}${value.toFixed(2)}R`;
 
 const BERLIN_TZ = 'Europe/Berlin';
 const BITGET_PUBLIC_WS_URL = 'wss://ws.bitget.com/v2/ws/public';
@@ -551,7 +555,11 @@ export default function Home() {
     const silent = opts.silent === true;
     if (!silent) setLoading(true);
     try {
-      const summaryRes = await fetch('/api/scalp/dashboard/summary?useDeploymentRegistry=true', {
+      const params = new URLSearchParams({
+        useDeploymentRegistry: 'true',
+        range: dashboardRange,
+      });
+      const summaryRes = await fetch(`/api/scalp/dashboard/summary?${params.toString()}`, {
         headers: buildAdminHeaders(),
         cache: 'no-store',
       });
@@ -1170,18 +1178,6 @@ export default function Home() {
     (Array.isArray((scalpActiveExecution as any)?.reasonCodes)
       ? (scalpActiveExecution as any).reasonCodes
       : scalpActiveRow?.reasonCodes) || [];
-  const scalpSummaryOpenCount =
-    typeof scalpSummary?.summary?.openCount === 'number'
-      ? scalpSummary.summary.openCount
-      : scalpRows.filter((row) => row.inTrade).length;
-  const scalpSummaryRunCount =
-    typeof scalpSummary?.summary?.runCount === 'number'
-      ? scalpSummary.summary.runCount
-      : scalpRows.filter((row) => typeof row.lastRunAtMs === 'number').length;
-  const scalpSummaryDryRunCount =
-    typeof scalpSummary?.summary?.dryRunCount === 'number'
-      ? scalpSummary.summary.dryRunCount
-      : scalpRows.filter((row) => row.dryRunLast === true).length;
   const scalpSummaryTotalTradesPlaced =
     typeof scalpSummary?.summary?.totalTradesPlaced === 'number'
       ? scalpSummary.summary.totalTradesPlaced
@@ -1192,6 +1188,14 @@ export default function Home() {
   const scalpActiveWinRatePct =
     scalpActiveRow && scalpActiveRow.tradesPlaced > 0
       ? (scalpActiveRow.wins / scalpActiveRow.tradesPlaced) * 100
+      : null;
+  const scalpActiveNetR =
+    scalpActiveRow && typeof scalpActiveRow.netR === 'number' && Number.isFinite(scalpActiveRow.netR)
+      ? scalpActiveRow.netR
+      : null;
+  const scalpActiveMaxDdR =
+    scalpActiveRow && typeof scalpActiveRow.maxDrawdownR === 'number' && Number.isFinite(scalpActiveRow.maxDrawdownR)
+      ? scalpActiveRow.maxDrawdownR
       : null;
 
   const formatScalpTime = (ts?: number | null) => {
@@ -1749,28 +1753,16 @@ export default function Home() {
                           Icon: Star,
                         },
                         {
-                          label: 'Open Deployments',
-                          value: String(scalpSummaryOpenCount),
-                          tone: 'text-emerald-700',
-                          Icon: ArrowUpRight,
+                          label: 'Net R',
+                          value: scalpActiveNetR === null ? '—' : formatSignedR(scalpActiveNetR),
+                          tone: scalpActiveNetR === null ? 'text-slate-700' : scalpActiveNetR >= 0 ? 'text-emerald-700' : 'text-rose-700',
+                          Icon: BarChart3,
                         },
                         {
-                          label: 'Deployments',
-                          value: String(scalpRows.length),
-                          tone: 'text-sky-700',
-                          Icon: Layers3,
-                        },
-                        {
-                          label: 'Cycles',
-                          value: String(scalpSummaryRunCount),
-                          tone: 'text-indigo-700',
-                          Icon: Repeat,
-                        },
-                        {
-                          label: 'Dry Cycles',
-                          value: String(scalpSummaryDryRunCount),
-                          tone: 'text-amber-700',
-                          Icon: ShieldCheck,
+                          label: 'DD',
+                          value: scalpActiveMaxDdR === null ? '—' : formatSignedR(-Math.abs(scalpActiveMaxDdR)),
+                          tone: scalpActiveMaxDdR === null ? 'text-slate-700' : 'text-rose-700',
+                          Icon: ShieldPlus,
                         },
                       ].map((item) => {
                         const Icon = item.Icon;

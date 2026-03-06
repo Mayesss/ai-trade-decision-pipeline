@@ -6,15 +6,17 @@ import {
     listScalpStrategies,
     normalizeScalpStrategyId,
 } from './strategies/registry';
-import type { ScalpJournalEntry, ScalpSessionState } from './types';
+import type { ScalpJournalEntry, ScalpSessionState, ScalpTradeLedgerEntry } from './types';
 
 const SCALP_STATE_KEY_PREFIX = 'scalp:state:v2';
 const SCALP_STATE_KEY_PREFIX_V1 = 'scalp:state:v1';
 const SCALP_RUN_LOCK_KEY_PREFIX = 'scalp:runlock:v2';
 const SCALP_JOURNAL_LIST_KEY = 'scalp:journal:list:v1';
+const SCALP_TRADE_LEDGER_LIST_KEY = 'scalp:trade-ledger:list:v1';
 const SCALP_RUNTIME_SETTINGS_KEY = 'scalp:runtime:settings:v1';
 const SCALP_DEFAULT_STATE_TTL_SECONDS = 3 * 24 * 60 * 60;
 const SCALP_DEFAULT_JOURNAL_MAX = 500;
+const SCALP_DEFAULT_TRADE_LEDGER_MAX = 10_000;
 
 const defaultScalpStrategy = getDefaultScalpStrategy();
 export const SCALP_STRATEGY_SHORT_NAME = defaultScalpStrategy.shortName;
@@ -441,11 +443,59 @@ export async function appendScalpJournal(entry: ScalpJournalEntry, maxRows = SCA
 }
 
 export async function loadScalpJournal(limit = 200): Promise<ScalpJournalEntry[]> {
-    const safeLimit = Math.max(1, Math.min(1_000, Math.floor(limit)));
-    const rows = await kvListRangeJson<ScalpJournalEntry>(SCALP_JOURNAL_LIST_KEY, 0, safeLimit - 1);
+  const safeLimit = Math.max(1, Math.min(1_000, Math.floor(limit)));
+  const rows = await kvListRangeJson<ScalpJournalEntry>(SCALP_JOURNAL_LIST_KEY, 0, safeLimit - 1);
     const out: ScalpJournalEntry[] = [];
     for (const row of rows) {
         out.push(sanitizeJournalEntry(row));
+    }
+  return out;
+}
+
+function sanitizeTradeLedgerEntry(entry: ScalpTradeLedgerEntry): ScalpTradeLedgerEntry {
+    const symbol = String(entry?.symbol || '')
+        .trim()
+        .toUpperCase();
+    const strategyId = normalizeScalpStrategyId(entry?.strategyId) || defaultScalpStrategy.id;
+    const tuneId = normalizeScalpTuneId(entry?.tuneId, DEFAULT_SCALP_TUNE_ID);
+    const deploymentId = String(entry?.deploymentId || '')
+        .trim();
+    const sideRaw = String(entry?.side || '')
+        .trim()
+        .toUpperCase();
+    const side = sideRaw === 'BUY' || sideRaw === 'SELL' ? sideRaw : null;
+    const rMultiple = Number(entry?.rMultiple);
+    return {
+        id: String(entry?.id || `${Date.now()}`),
+        timestampMs: Number.isFinite(Number(entry?.timestampMs)) ? Number(entry.timestampMs) : Date.now(),
+        exitAtMs: Number.isFinite(Number(entry?.exitAtMs)) ? Number(entry.exitAtMs) : Date.now(),
+        symbol: symbol || 'UNKNOWN',
+        strategyId,
+        tuneId,
+        deploymentId,
+        side,
+        dryRun: Boolean(entry?.dryRun),
+        rMultiple: Number.isFinite(rMultiple) ? rMultiple : 0,
+        reasonCodes: compactReasonCodes(entry?.reasonCodes),
+    };
+}
+
+export async function appendScalpTradeLedgerEntry(
+    entry: ScalpTradeLedgerEntry,
+    maxRows = SCALP_DEFAULT_TRADE_LEDGER_MAX,
+): Promise<void> {
+    const sanitized = sanitizeTradeLedgerEntry(entry);
+    const max = Math.max(200, Math.min(50_000, Math.floor(maxRows)));
+    await kvListPushJson(SCALP_TRADE_LEDGER_LIST_KEY, sanitized);
+    await kvListTrim(SCALP_TRADE_LEDGER_LIST_KEY, 0, max - 1);
+}
+
+export async function loadScalpTradeLedger(limit = 2_000): Promise<ScalpTradeLedgerEntry[]> {
+    const safeLimit = Math.max(1, Math.min(50_000, Math.floor(limit)));
+    const rows = await kvListRangeJson<ScalpTradeLedgerEntry>(SCALP_TRADE_LEDGER_LIST_KEY, 0, safeLimit - 1);
+    const out: ScalpTradeLedgerEntry[] = [];
+    for (const row of rows) {
+        out.push(sanitizeTradeLedgerEntry(row));
     }
     return out;
 }
