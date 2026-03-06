@@ -1178,10 +1178,6 @@ export default function Home() {
     (Array.isArray((scalpActiveExecution as any)?.reasonCodes)
       ? (scalpActiveExecution as any).reasonCodes
       : scalpActiveRow?.reasonCodes) || [];
-  const scalpSummaryTotalTradesPlaced =
-    typeof scalpSummary?.summary?.totalTradesPlaced === 'number'
-      ? scalpSummary.summary.totalTradesPlaced
-      : scalpRows.reduce((acc, row) => acc + row.tradesPlaced, 0);
   const scalpTopStates = Object.entries(scalpSummary?.summary?.stateCounts ?? {})
     .sort((a, b) => b[1] - a[1])
     .slice(0, 4);
@@ -1406,10 +1402,10 @@ export default function Home() {
         <button
           type="button"
           onClick={handleThemeToggle}
-          className={`fixed right-4 top-4 z-[60] inline-flex h-10 w-10 items-center justify-center rounded-full border shadow-sm backdrop-blur transition ${
+          className={`fixed right-4 top-4 z-[60] inline-flex h-10 w-10 items-center justify-center rounded-full border shadow-sm transition focus:outline-none focus-visible:ring-2 ${
             resolvedTheme === 'dark'
-              ? 'border-slate-700 bg-slate-900/90 text-slate-100 hover:border-sky-600 hover:text-sky-300'
-              : 'border-slate-200 bg-white/90 text-slate-700 hover:border-sky-300 hover:text-sky-700'
+              ? 'border-zinc-700 bg-zinc-900 text-zinc-100 hover:border-zinc-500 hover:bg-zinc-800 hover:text-zinc-50 focus-visible:ring-zinc-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950'
+              : 'border-slate-300 bg-white text-slate-700 hover:border-slate-500 hover:bg-slate-50 hover:text-slate-900 focus-visible:ring-slate-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-50'
           }`}
           aria-label={resolvedTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
           title={resolvedTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
@@ -1892,18 +1888,6 @@ export default function Home() {
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-                    <BarChart3 className="h-4 w-4 text-sky-600" />
-                    Total Trades Placed: <span className="text-slate-900">{scalpSummaryTotalTradesPlaced}</span>
-                  </div>
-                  <a
-                    href="/scalp-backtest"
-                    className="inline-flex rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800"
-                  >
-                    Open Scalp Backtest Lab
-                  </a>
-                </div>
               </div>
             )
           ) : isInitialLoading ? (

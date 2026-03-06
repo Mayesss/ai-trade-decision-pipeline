@@ -22,6 +22,18 @@
   background-color: rgb(24 24 27 / 0.9);
 }
 
+.theme-dark .bg-white\/80 {
+  background-color: rgb(24 24 27 / 0.8);
+}
+
+.theme-dark .bg-white\/60 {
+  background-color: rgb(24 24 27 / 0.6);
+}
+
+.theme-dark .bg-white\/50 {
+  background-color: rgb(24 24 27 / 0.5);
+}
+
 .theme-dark .bg-slate-50 {
   background-color: rgb(24 24 27 / 1);
 }
@@ -86,6 +98,10 @@
   background-color: rgb(6 78 59 / 0.3);
 }
 
+.theme-dark .bg-emerald-100 {
+  background-color: rgb(6 78 59 / 0.45);
+}
+
 .theme-dark .border-emerald-100,
 .theme-dark .border-emerald-200 {
   border-color: rgb(16 185 129 / 0.35);
@@ -95,6 +111,10 @@
   background-color: rgb(127 29 29 / 0.28);
 }
 
+.theme-dark .bg-rose-100 {
+  background-color: rgb(127 29 29 / 0.4);
+}
+
 .theme-dark .border-rose-100,
 .theme-dark .border-rose-200 {
   border-color: rgb(244 63 94 / 0.35);
@@ -102,6 +122,10 @@
 
 .theme-dark .bg-amber-50 {
   background-color: rgb(120 53 15 / 0.3);
+}
+
+.theme-dark .bg-amber-100 {
+  background-color: rgb(120 53 15 / 0.42);
 }
 
 .theme-dark .border-amber-100 {
@@ -118,4 +142,19 @@
 
 .theme-dark .text-amber-800 {
   color: rgb(252 211 77 / 1);
+}
+
+.theme-dark .from-sky-50 {
+  --tw-gradient-from: rgb(8 47 73 / 0.42) var(--tw-gradient-from-position);
+  --tw-gradient-to: rgb(8 47 73 / 0) var(--tw-gradient-to-position);
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+}
+
+.theme-dark .via-cyan-50 {
+  --tw-gradient-to: rgb(22 78 99 / 0) var(--tw-gradient-to-position);
+  --tw-gradient-stops: var(--tw-gradient-from), rgb(22 78 99 / 0.28) var(--tw-gradient-via-position), var(--tw-gradient-to);
+}
+
+.theme-dark .to-emerald-50 {
+  --tw-gradient-to: rgb(6 78 59 / 0.28) var(--tw-gradient-to-position);
 }
