@@ -76,13 +76,20 @@ function onlyClosedCandles(candles: ScalpCandle[], tfMinutes: number, nowMs: num
 function estimateLimit(params: {
     nowMs: number;
     startMs: number;
-    tfMinutes: number;
+    targetTfMinutes: number;
+    sourceTfMinutes: number;
     minCandles: number;
     maxCandles: number;
 }): number {
     const spanMs = Math.max(0, params.nowMs - params.startMs);
-    const bars = Math.ceil(spanMs / (params.tfMinutes * 60_000));
-    return Math.max(params.minCandles, Math.min(params.maxCandles, bars + 40));
+    const sourceTfMinutes = Math.max(1, Math.floor(params.sourceTfMinutes));
+    const targetTfMinutes = Math.max(1, Math.floor(params.targetTfMinutes));
+    const sourcePerTarget = Math.max(1, Math.ceil(targetTfMinutes / sourceTfMinutes));
+    const barsFromSpanInSourceTf = Math.ceil(spanMs / (sourceTfMinutes * 60_000));
+    const minSourceCandles = Math.max(1, Math.floor(params.minCandles)) * sourcePerTarget;
+    const bufferSourceCandles = 40 * sourcePerTarget;
+    const required = Math.max(minSourceCandles, barsFromSpanInSourceTf + bufferSourceCandles);
+    return Math.max(minSourceCandles, Math.min(params.maxCandles, required));
 }
 
 export async function loadScalpMarketSnapshot(params: {
@@ -100,24 +107,25 @@ export async function loadScalpMarketSnapshot(params: {
     const baseMinutes = timeframeMinutes(params.baseTf);
     const confirmMinutes = timeframeMinutes(params.confirmTf);
     const lookbackStartMs = Math.min(params.windows.asiaStartMs, params.windows.raidStartMs) - 60 * 60 * 1000;
+    const baseTfSpec = toCapitalTfSpec(params.baseTf);
+    const confirmTfSpec = toCapitalTfSpec(params.confirmTf);
 
     const baseLimit = estimateLimit({
         nowMs: params.nowMs,
         startMs: lookbackStartMs,
-        tfMinutes: baseMinutes,
+        targetTfMinutes: baseMinutes,
+        sourceTfMinutes: baseTfSpec.sourceMinutes,
         minCandles: params.minBaseCandles,
         maxCandles: params.maxCandlesPerRequest,
     });
     const confirmLimit = estimateLimit({
         nowMs: params.nowMs,
         startMs: lookbackStartMs,
-        tfMinutes: confirmMinutes,
+        targetTfMinutes: confirmMinutes,
+        sourceTfMinutes: confirmTfSpec.sourceMinutes,
         minCandles: params.minConfirmCandles,
         maxCandles: params.maxCandlesPerRequest,
     });
-
-    const baseTfSpec = toCapitalTfSpec(params.baseTf);
-    const confirmTfSpec = toCapitalTfSpec(params.confirmTf);
     const baseTfApi = baseTfSpec.apiTf;
     const confirmTfApi = confirmTfSpec.apiTf;
 

@@ -100,6 +100,7 @@ export async function runScalpExecuteCycle(opts: {
     strategyId?: string;
     tuneId?: string;
     deploymentId?: string;
+    debug?: boolean;
 } = {}): Promise<ScalpExecuteCycleResult> {
     const baseCfg = getScalpStrategyConfig();
     let cfg = applyScalpStrategyConfigOverride(baseCfg, opts.configOverride);
@@ -108,6 +109,7 @@ export async function runScalpExecuteCycle(opts: {
     const symbol = normalizeScalpSymbol(opts.symbol || cfg.defaultSymbol);
     const dayKey = deriveScalpDayKey(nowMs, cfg.sessions.clockMode);
     const runId = crypto.randomUUID();
+    const debug = Boolean(opts.debug);
     const runtime = await loadScalpStrategyRuntimeSnapshot(cfg.enabled, opts.strategyId);
     const strategyControl = runtime.strategy;
     const strategyId = strategyControl.strategyId;
@@ -257,6 +259,27 @@ export async function runScalpExecuteCycle(opts: {
                     minConfirmCandles: cfg.data.minConfirmCandles,
                     maxCandlesPerRequest: cfg.data.maxCandlesPerRequest,
                 });
+                if (debug) {
+                    console.info(
+                        JSON.stringify({
+                            scope: 'scalp_debug',
+                            event: 'market_snapshot_loaded',
+                            symbol: deployment.symbol,
+                            strategyId: deployment.strategyId,
+                            tuneId: deployment.tuneId,
+                            deploymentId: deployment.deploymentId,
+                            nowMs,
+                            dryRun,
+                            baseTf: cfg.timeframes.asiaBase,
+                            confirmTf: cfg.timeframes.confirm,
+                            baseCandles: market.baseCandles.length,
+                            confirmCandles: market.confirmCandles.length,
+                            minBaseCandles: cfg.data.minBaseCandles,
+                            minConfirmCandles: cfg.data.minConfirmCandles,
+                            maxCandlesPerRequest: cfg.data.maxCandlesPerRequest,
+                        }),
+                    );
+                }
                 const phase = strategyDef.applyPhaseDetectors({
                     state: nextState,
                     market,
@@ -266,6 +289,25 @@ export async function runScalpExecuteCycle(opts: {
                 });
                 nextState = phase.state;
                 phaseReasonCodes.push(...phase.reasonCodes);
+                if (debug) {
+                    const volCodes = phase.reasonCodes.filter((code) => String(code || '').includes('VOL_FILTER'));
+                    console.info(
+                        JSON.stringify({
+                            scope: 'scalp_debug',
+                            event: 'phase_detectors_applied',
+                            symbol: deployment.symbol,
+                            strategyId: deployment.strategyId,
+                            tuneId: deployment.tuneId,
+                            deploymentId: deployment.deploymentId,
+                            nowMs,
+                            state: nextState.state,
+                            reasonCodes: phase.reasonCodes,
+                            volFilterCodes: volCodes,
+                            baseCandles: market.baseCandles.length,
+                            confirmCandles: market.confirmCandles.length,
+                        }),
+                    );
+                }
 
                 const reconciled = await reconcileScalpBrokerPosition({
                     state: nextState,

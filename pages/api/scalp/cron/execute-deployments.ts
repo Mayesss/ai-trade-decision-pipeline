@@ -42,6 +42,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     setNoStoreHeaders(res);
 
     const dryRun = parseBoolParam(req.query.dryRun, true);
+    const debug = parseBoolParam(req.query.debug, false);
     const nowMs = parseNowMs(firstQueryValue(req.query.nowMs));
     const symbol = firstQueryValue(req.query.symbol);
     const all = parseBoolParam(req.query.all, false);
@@ -75,6 +76,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 const cycle = await runScalpExecuteCycle({
                     symbol: deployment.symbol,
                     dryRun,
+                    debug,
                     nowMs,
                     strategyId: deployment.strategyId,
                     tuneId: deployment.tuneId,
@@ -101,6 +103,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(errors.length ? 207 : 200).json({
             ok: errors.length === 0,
             dryRun,
+            debug,
             requestedSymbol: symbol || null,
             requestedAll: all,
             count: deployments.length,
