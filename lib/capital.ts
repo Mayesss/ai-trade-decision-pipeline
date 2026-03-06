@@ -1135,6 +1135,50 @@ async function listOpenCapitalPositions(): Promise<CapitalPositionRow[]> {
     return extractPositionRows(payload);
 }
 
+function extractAccountRows(payload: any): any[] {
+    return extractRows<any>(payload, ['accounts', 'accountInfo', 'data']);
+}
+
+function toPositiveFinite(value: unknown): number | null {
+    const n = safeNumber(value, NaN);
+    if (!(Number.isFinite(n) && n > 0)) return null;
+    return n;
+}
+
+function extractAccountEquityUsd(account: any): number | null {
+    const directEquity = toPositiveFinite(
+        account?.balance?.equity ??
+            account?.equity ??
+            account?.funds ??
+            account?.available,
+    );
+    if (directEquity !== null) return directEquity;
+
+    const balance = toPositiveFinite(account?.balance?.balance ?? account?.balance);
+    const profitLoss = safeNumber(account?.balance?.profitLoss ?? account?.profitLoss, NaN);
+    if (balance !== null && Number.isFinite(profitLoss)) {
+        const computedEquity = balance + profitLoss;
+        if (computedEquity > 0) return computedEquity;
+    }
+
+    return balance;
+}
+
+export async function fetchCapitalAccountEquityUsd(): Promise<number | null> {
+    const payload = await capitalFetch('GET', '/api/v1/accounts', {}, undefined, true);
+    const rows = extractAccountRows(payload);
+    if (!rows.length) return null;
+
+    // Use the largest positive equity among returned accounts to avoid selecting an empty/inactive account.
+    let best: number | null = null;
+    for (const row of rows) {
+        const equity = extractAccountEquityUsd(row);
+        if (equity === null) continue;
+        if (best === null || equity > best) best = equity;
+    }
+    return best;
+}
+
 async function findOpenCapitalPositionByEpic(epic: string): Promise<CapitalPositionRow | null> {
     const rows = await listOpenCapitalPositions();
     const match = rows.find((row) => String(row?.market?.epic || '').toUpperCase() === normalizeTicker(epic));

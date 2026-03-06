@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 
+import { fetchCapitalAccountEquityUsd } from '../capital';
 import { applyScalpStrategyConfigOverride, getScalpStrategyConfig, normalizeScalpSymbol } from './config';
 import type { ScalpStrategyConfigOverride } from './config';
 import { resolveScalpDeployment } from './deployments';
@@ -88,6 +89,8 @@ function withRunContext(
 function dedupeReasonCodes(codes: string[]): string[] {
     return Array.from(new Set(codes.map((code) => String(code || '').trim().toUpperCase()).filter((code) => code.length > 0)));
 }
+
+const SCALP_ENFORCED_RISK_PCT_OF_EQUITY = 10;
 
 export async function runScalpExecuteCycle(opts: {
     symbol?: string;
@@ -319,23 +322,59 @@ export async function runScalpExecuteCycle(opts: {
                 }
 
                 if (!hadOpenTradeAtStartOfManage && !nextState.trade && entryIntent && nextState.state !== 'DONE' && nextState.state !== 'COOLDOWN') {
-                    const planRes = buildScalpEntryPlan({
-                        state: nextState,
-                        market,
-                        cfg,
-                        entryIntent,
-                    });
-                    phaseReasonCodes.push(...planRes.reasonCodes);
-                    if (planRes.plan) {
-                        const entryRes = await executeScalpEntryPlan({
+                    let entryCfg = {
+                        ...cfg,
+                        risk: {
+                            ...cfg.risk,
+                            riskPerTradePct: SCALP_ENFORCED_RISK_PCT_OF_EQUITY,
+                        },
+                    };
+                    let canPlanEntry = dryRun;
+
+                    if (!dryRun) {
+                        try {
+                            const liveEquityUsd = await fetchCapitalAccountEquityUsd();
+                            if (Number.isFinite(liveEquityUsd as number) && Number(liveEquityUsd) > 0) {
+                                entryCfg = {
+                                    ...entryCfg,
+                                    risk: {
+                                        ...entryCfg.risk,
+                                        referenceEquityUsd: Number(liveEquityUsd),
+                                    },
+                                };
+                                phaseReasonCodes.push('ENTRY_RISK_10PCT_LIVE_EQUITY');
+                                canPlanEntry = true;
+                            } else {
+                                phaseReasonCodes.push('ENTRY_BLOCKED_LIVE_EQUITY_UNAVAILABLE');
+                            }
+                        } catch {
+                            phaseReasonCodes.push('ENTRY_BLOCKED_LIVE_EQUITY_UNAVAILABLE');
+                        }
+                    } else {
+                        phaseReasonCodes.push('ENTRY_RISK_10PCT_REFERENCE_EQUITY');
+                    }
+
+                    if (!canPlanEntry) {
+                        phaseReasonCodes.push('ENTRY_SKIPPED_RISK_SIZING_GUARD');
+                    } else {
+                        const planRes = buildScalpEntryPlan({
                             state: nextState,
-                            plan: planRes.plan,
-                            cfg,
-                            dryRun,
-                            nowMs,
+                            market,
+                            cfg: entryCfg,
+                            entryIntent,
                         });
-                        nextState = entryRes.state;
-                        phaseReasonCodes.push(...entryRes.reasonCodes);
+                        phaseReasonCodes.push(...planRes.reasonCodes);
+                        if (planRes.plan) {
+                            const entryRes = await executeScalpEntryPlan({
+                                state: nextState,
+                                plan: planRes.plan,
+                                cfg: entryCfg,
+                                dryRun,
+                                nowMs,
+                            });
+                            nextState = entryRes.state;
+                            phaseReasonCodes.push(...entryRes.reasonCodes);
+                        }
                     }
                 }
             } catch (err: any) {

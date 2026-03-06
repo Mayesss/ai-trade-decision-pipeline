@@ -1,7 +1,82 @@
 {
   "version": 1,
-  "updatedAt": "2026-03-06T00:20:07.000Z",
+  "updatedAt": "2026-03-06T11:52:21.836Z",
   "deployments": [
+    {
+      "symbol": "BTCUSDT",
+      "strategyId": "compression_breakout_pullback_m15_m3",
+      "tuneId": "cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20",
+      "deploymentId": "BTCUSDT~compression_breakout_pullback_m15_m3~cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20",
+      "enabled": true,
+      "source": "matrix",
+      "notes": "Promoted from focused strict drawdown sweep (target maxDrawdownR<=8, feasible floor observed at 8.7319R) on the local Dec 3, 2025 to Mar 3, 2026 window.",
+      "configOverride": {
+        "risk": {
+          "maxTradesPerSymbolPerDay": 2,
+          "riskPerTradePct": 0.25,
+          "referenceEquityUsd": 10000,
+          "minNotionalUsd": 100,
+          "maxNotionalUsd": 2000,
+          "takeProfitR": 1,
+          "stopBufferPips": 0.8,
+          "stopBufferSpreadMult": 1,
+          "minStopDistancePips": 0.5,
+          "breakEvenOffsetR": 0,
+          "tp1R": 1,
+          "tp1ClosePct": 8,
+          "trailStartR": 1,
+          "trailAtrMult": 1.5,
+          "timeStopBars": 18,
+          "dailyLossLimitR": -3,
+          "consecutiveLossPauseThreshold": 2,
+          "consecutiveLossCooldownBars": 3
+        },
+        "sweep": {
+          "bufferPips": 0.2,
+          "bufferAtrMult": 0.08,
+          "bufferSpreadMult": 1.2,
+          "rejectInsidePips": 0,
+          "rejectMaxBars": 20,
+          "minWickBodyRatio": 0.8
+        },
+        "confirm": {
+          "displacementBodyAtrMult": 0.08,
+          "displacementRangeAtrMult": 0.15,
+          "closeInExtremePct": 0.25,
+          "mssLookbackBars": 1,
+          "mssBreakBufferPips": 0.3,
+          "mssBreakBufferAtrMult": 0,
+          "ttlMinutes": 45
+        },
+        "ifvg": {
+          "minAtrMult": 0,
+          "maxAtrMult": 3,
+          "ttlMinutes": 90,
+          "entryMode": "first_touch"
+        },
+        "timeframes": {
+          "asiaBase": "M15",
+          "confirm": "M3"
+        }
+      },
+      "leaderboardEntry": {
+        "symbol": "BTCUSDT",
+        "strategyId": "compression_breakout_pullback_m15_m3",
+        "tuneId": "cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20",
+        "deploymentId": "BTCUSDT~compression_breakout_pullback_m15_m3~cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20",
+        "tuneLabel": "cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20",
+        "netR": 46.59472183135337,
+        "profitFactor": 2.6658054318511617,
+        "maxDrawdownR": 8.731939279518471,
+        "trades": 172,
+        "winRatePct": 51.162790697674424,
+        "avgHoldMinutes": 32.69767441860465,
+        "expectancyR": 0.2708995455311242
+      },
+      "createdAtMs": 1772797816483,
+      "updatedAtMs": 1772797941836,
+      "updatedBy": "codex"
+    },
     {
       "symbol": "BTCUSDT",
       "strategyId": "regime_pullback_m15_m3_btcusdt",
@@ -9,7 +84,7 @@
       "deploymentId": "BTCUSDT~regime_pullback_m15_m3_btcusdt~guarded_high_pf_default",
       "enabled": true,
       "source": "backtest",
-      "notes": "Promoted from the BTC family confirmation pass on the local Dec 3, 2025 to Mar 3, 2026 window. Uses the BTCUSDT guarded regime-pullback strategy with its current guarded default risk and btcusdt_high_pf blocked-hour profile.",
+      "notes": "Promoted from the BTC family confirmation pass on the local Dec 3, 2025 to Mar 3, 2026 window. Uses the BTCUSDT guarded regime-pullback strategy with its current guarded default risk and btcusdt_high_pf blocked-hour profile. Superseded by compression_breakout_pullback_m15_m3 tune cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20 on 2026-03-06T11:50:16.483Z",
       "configOverride": null,
       "leaderboardEntry": {
         "symbol": "BTCUSDT",
@@ -26,7 +101,7 @@
         "expectancyR": 0.4607501110055654
       },
       "createdAtMs": 1772756407000,
-      "updatedAtMs": 1772756407000,
+      "updatedAtMs": 1772797941836,
       "updatedBy": "codex"
     },
     {
