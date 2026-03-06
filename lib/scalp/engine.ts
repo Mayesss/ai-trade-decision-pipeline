@@ -101,6 +101,7 @@ export async function runScalpExecuteCycle(opts: {
     tuneId?: string;
     deploymentId?: string;
     debug?: boolean;
+    marketSnapshotCache?: Map<string, ScalpMarketSnapshot>;
 } = {}): Promise<ScalpExecuteCycleResult> {
     const baseCfg = getScalpStrategyConfig();
     let cfg = applyScalpStrategyConfigOverride(baseCfg, opts.configOverride);
@@ -249,16 +250,48 @@ export async function runScalpExecuteCycle(opts: {
 
         if (!cfg.risk.killSwitch) {
             try {
-                market = await loadScalpMarketSnapshot({
-                    symbol,
+                const snapshotCacheKey = [
+                    deployment.symbol,
+                    cfg.timeframes.asiaBase,
+                    cfg.timeframes.confirm,
                     nowMs,
-                    windows,
-                    baseTf: cfg.timeframes.asiaBase,
-                    confirmTf: cfg.timeframes.confirm,
-                    minBaseCandles: cfg.data.minBaseCandles,
-                    minConfirmCandles: cfg.data.minConfirmCandles,
-                    maxCandlesPerRequest: cfg.data.maxCandlesPerRequest,
-                });
+                    cfg.data.minBaseCandles,
+                    cfg.data.minConfirmCandles,
+                    cfg.data.maxCandlesPerRequest,
+                ].join('|');
+                if (opts.marketSnapshotCache?.has(snapshotCacheKey)) {
+                    market = opts.marketSnapshotCache.get(snapshotCacheKey)!;
+                    if (debug) {
+                        console.info(
+                            JSON.stringify({
+                                scope: 'scalp_debug',
+                                event: 'market_snapshot_reused',
+                                symbol: deployment.symbol,
+                                strategyId: deployment.strategyId,
+                                tuneId: deployment.tuneId,
+                                deploymentId: deployment.deploymentId,
+                                nowMs,
+                                dryRun,
+                                baseTf: cfg.timeframes.asiaBase,
+                                confirmTf: cfg.timeframes.confirm,
+                                baseCandles: market.baseCandles.length,
+                                confirmCandles: market.confirmCandles.length,
+                            }),
+                        );
+                    }
+                } else {
+                    market = await loadScalpMarketSnapshot({
+                        symbol,
+                        nowMs,
+                        windows,
+                        baseTf: cfg.timeframes.asiaBase,
+                        confirmTf: cfg.timeframes.confirm,
+                        minBaseCandles: cfg.data.minBaseCandles,
+                        minConfirmCandles: cfg.data.minConfirmCandles,
+                        maxCandlesPerRequest: cfg.data.maxCandlesPerRequest,
+                    });
+                    opts.marketSnapshotCache?.set(snapshotCacheKey, market);
+                }
                 if (debug) {
                     console.info(
                         JSON.stringify({

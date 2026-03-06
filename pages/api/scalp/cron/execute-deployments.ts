@@ -5,6 +5,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { requireAdminAccess } from '../../../../lib/admin';
 import { listScalpDeploymentRegistryEntries } from '../../../../lib/scalp/deploymentRegistry';
 import { runScalpExecuteCycle } from '../../../../lib/scalp/engine';
+import type { ScalpMarketSnapshot } from '../../../../lib/scalp/types';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean): boolean {
     if (value === undefined) return fallback;
@@ -71,17 +72,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         const results: Array<Record<string, unknown>> = [];
         const errors: Array<Record<string, unknown>> = [];
+        const marketSnapshotCache = new Map<string, ScalpMarketSnapshot>();
+        const effectiveNowMs = nowMs ?? Date.now();
         for (const deployment of deployments) {
             try {
                 const cycle = await runScalpExecuteCycle({
                     symbol: deployment.symbol,
                     dryRun,
                     debug,
-                    nowMs,
+                    nowMs: effectiveNowMs,
                     strategyId: deployment.strategyId,
                     tuneId: deployment.tuneId,
                     deploymentId: deployment.deploymentId,
                     configOverride: deployment.configOverride || undefined,
+                    marketSnapshotCache,
                 });
                 results.push({
                     ...cycle,
