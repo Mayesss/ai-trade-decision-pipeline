@@ -1135,6 +1135,124 @@ async function listOpenCapitalPositions(): Promise<CapitalPositionRow[]> {
     return extractPositionRows(payload);
 }
 
+function stringsEqualIgnoreCase(a: string | null | undefined, b: string | null | undefined): boolean {
+    return String(a || '').trim().toUpperCase() === String(b || '').trim().toUpperCase();
+}
+
+function isApproximatelyEqual(a: number | null, b: number | null, tolerance: number): boolean {
+    if (!(Number.isFinite(a as number) && Number.isFinite(b as number))) return false;
+    return Math.abs(Number(a) - Number(b)) <= Math.max(0, tolerance);
+}
+
+function pickNewestPosition(rows: CapitalPositionRow[]): CapitalPositionRow | null {
+    if (!rows.length) return null;
+    const sorted = rows
+        .slice()
+        .sort((a, b) => {
+            const aTs = extractEntryTimestamp(a) ?? 0;
+            const bTs = extractEntryTimestamp(b) ?? 0;
+            return bTs - aTs;
+        });
+    return sorted[0] ?? null;
+}
+
+function extractConfirmDealId(payload: any): string | null {
+    const direct = payload?.dealId ?? payload?.positionDealId ?? payload?.affectedDeals?.[0]?.dealId ?? null;
+    if (!direct) return null;
+    const value = String(direct).trim();
+    return value || null;
+}
+
+function extractConfirmDealReference(payload: any): string | null {
+    const direct = payload?.dealReference ?? payload?.positionDealReference ?? payload?.affectedDeals?.[0]?.dealReference ?? null;
+    if (!direct) return null;
+    const value = String(direct).trim();
+    return value || null;
+}
+
+async function resolveOpenedPositionOwnership(params: {
+    epic: string;
+    direction: 'BUY' | 'SELL';
+    size: number;
+    submittedAtMs: number;
+    submittedDealReference: string | null;
+    fallbackDealId: string | null;
+    fallbackDealReference: string | null;
+}): Promise<{ dealId: string | null; dealReference: string | null }> {
+    if (params.fallbackDealId) {
+        return {
+            dealId: params.fallbackDealId,
+            dealReference: params.fallbackDealReference ?? params.submittedDealReference ?? null,
+        };
+    }
+
+    const submittedDealReference = String(params.submittedDealReference || '').trim() || null;
+    if (submittedDealReference) {
+        try {
+            const confirm = await capitalFetch(
+                'GET',
+                `/api/v1/confirms/${encodeURIComponent(submittedDealReference)}`,
+                {},
+                undefined,
+                true,
+            );
+            const confirmDealId = extractConfirmDealId(confirm);
+            const confirmDealReference = extractConfirmDealReference(confirm);
+            if (confirmDealId) {
+                return {
+                    dealId: confirmDealId,
+                    dealReference: confirmDealReference ?? params.fallbackDealReference ?? submittedDealReference,
+                };
+            }
+        } catch {
+            // Ignore confirm lookup failures and fall back to short position polling.
+        }
+    }
+
+    const direction = params.direction === 'BUY' ? 'long' : 'short';
+    const deadlineMs = Date.now() + 5_000;
+    while (Date.now() < deadlineMs) {
+        let rows: CapitalPositionRow[] = [];
+        try {
+            rows = await listOpenCapitalPositions();
+        } catch {
+            rows = [];
+        }
+        if (rows.length > 0) {
+            const sameEpicAndSide = rows.filter(
+                (row) =>
+                    stringsEqualIgnoreCase(String(row?.market?.epic || ''), params.epic) &&
+                    extractDirection(row) === direction,
+            );
+            const freshRows = sameEpicAndSide.filter((row) => {
+                const createdAtMs = extractEntryTimestamp(row);
+                if (!Number.isFinite(createdAtMs as number)) return true;
+                return Number(createdAtMs) >= params.submittedAtMs - 120_000;
+            });
+            const candidatePool = freshRows.length > 0 ? freshRows : sameEpicAndSide;
+            const sized = candidatePool.filter((row) =>
+                isApproximatelyEqual(extractPositionSize(row), params.size, Math.max(1e-6, params.size * 0.01)),
+            );
+            const picked = pickNewestPosition(sized.length > 0 ? sized : candidatePool);
+            if (picked) {
+                const dealId = extractDealId(picked);
+                if (dealId) {
+                    return {
+                        dealId,
+                        dealReference: extractDealReference(picked) ?? params.fallbackDealReference ?? submittedDealReference,
+                    };
+                }
+            }
+        }
+        await sleep(250);
+    }
+
+    return {
+        dealId: params.fallbackDealId ?? null,
+        dealReference: params.fallbackDealReference ?? submittedDealReference ?? null,
+    };
+}
+
 function extractAccountRows(payload: any): any[] {
     return extractRows<any>(payload, ['accounts', 'accountInfo', 'data']);
 }
@@ -1447,9 +1565,21 @@ async function openCapitalPosition(params: {
     }
     if (leverage) body.leverage = leverage;
 
+    const submittedAtMs = Date.now();
     const payload = await capitalFetch('POST', '/api/v1/positions', {}, body, true);
-    const dealId = payload?.dealId ?? payload?.positionDealId ?? null;
-    const dealReference = payload?.dealReference ?? clientOid;
+    const dealIdRaw = payload?.dealId ?? payload?.positionDealId ?? null;
+    const dealReferenceRaw = payload?.dealReference ?? clientOid;
+    const resolvedOwnership = await resolveOpenedPositionOwnership({
+        epic: details.epic,
+        direction,
+        size,
+        submittedAtMs,
+        submittedDealReference: clientOid,
+        fallbackDealId: dealIdRaw,
+        fallbackDealReference: dealReferenceRaw,
+    });
+    const dealId = resolvedOwnership.dealId;
+    const dealReference = resolvedOwnership.dealReference ?? dealReferenceRaw ?? clientOid;
     const orderId = dealId ?? dealReference ?? payload?.id ?? null;
     return { payload, orderId, dealId, dealReference, size, epic: details.epic };
 }

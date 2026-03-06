@@ -1174,10 +1174,22 @@ export default function Home() {
         scalpLatestExecutionBySymbol[scalpActiveRow.symbol.toUpperCase()] ??
         null)
     : null;
-  const scalpActiveReasonCodes =
-    (Array.isArray((scalpActiveExecution as any)?.reasonCodes)
-      ? (scalpActiveExecution as any).reasonCodes
-      : scalpActiveRow?.reasonCodes) || [];
+  const scalpActiveReasonCodesRaw = (Array.isArray(scalpActiveRow?.reasonCodes)
+    ? scalpActiveRow?.reasonCodes
+    : []) as string[];
+  const scalpActiveReasonCodes = (() => {
+    if (!scalpActiveReasonCodesRaw.length) return [];
+    const nonGeneric = scalpActiveReasonCodesRaw.filter((code) => {
+      const upper = String(code || '').trim().toUpperCase();
+      return upper !== 'SCALP_PHASE3_EXECUTION' && upper !== 'NO_STATE_CHANGE';
+    });
+    return nonGeneric.length ? nonGeneric : scalpActiveReasonCodesRaw;
+  })();
+  const scalpReasonSnapshotState = !scalpActiveRow
+    ? 'none'
+    : scalpActiveReasonCodesRaw.length
+      ? 'fresh'
+      : 'none';
   const scalpTopStates = Object.entries(scalpSummary?.summary?.stateCounts ?? {})
     .sort((a, b) => b[1] - a[1])
     .slice(0, 4);
@@ -1789,7 +1801,11 @@ export default function Home() {
                         Reason Snapshot{scalpActiveRow ? ` · ${scalpActiveRow.symbol}` : ''}
                       </div>
                       <div className="text-[11px] font-semibold text-slate-500">
-                        {scalpActiveReasonCodes.length ? `${Math.min(scalpActiveReasonCodes.length, 8)} shown` : 'none'}
+                        {scalpReasonSnapshotState === 'fresh'
+                          ? scalpActiveReasonCodes.length
+                            ? `${Math.min(scalpActiveReasonCodes.length, 8)} shown`
+                            : 'none'
+                          : 'none'}
                       </div>
                     </div>
                     {scalpActiveReasonCodes.length ? (
@@ -1809,7 +1825,9 @@ export default function Home() {
                         })}
                       </div>
                     ) : (
-                      <div className="mt-3 text-sm text-slate-500">No reason codes for the active symbol yet.</div>
+                      <div className="mt-3 text-sm text-slate-500">
+                        No reason codes for the active deployment yet.
+                      </div>
                     )}
                     {scalpTopStates.length ? (
                       <div className="mt-4 border-t border-slate-100 pt-3">
