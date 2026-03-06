@@ -1,7 +1,34 @@
 {
   "version": 1,
-  "updatedAt": "2026-03-05T22:10:00.000Z",
+  "updatedAt": "2026-03-06T00:20:07.000Z",
   "deployments": [
+    {
+      "symbol": "BTCUSDT",
+      "strategyId": "regime_pullback_m15_m3_btcusdt",
+      "tuneId": "guarded_high_pf_default",
+      "deploymentId": "BTCUSDT~regime_pullback_m15_m3_btcusdt~guarded_high_pf_default",
+      "enabled": true,
+      "source": "backtest",
+      "notes": "Promoted from the BTC family confirmation pass on the local Dec 3, 2025 to Mar 3, 2026 window. Uses the BTCUSDT guarded regime-pullback strategy with its current guarded default risk and btcusdt_high_pf blocked-hour profile.",
+      "configOverride": null,
+      "leaderboardEntry": {
+        "symbol": "BTCUSDT",
+        "strategyId": "regime_pullback_m15_m3_btcusdt",
+        "tuneId": "guarded_high_pf_default",
+        "deploymentId": "BTCUSDT~regime_pullback_m15_m3_btcusdt~guarded_high_pf_default",
+        "tuneLabel": "guarded high pf default",
+        "netR": 41.92826010150645,
+        "profitFactor": 2.088844694053849,
+        "maxDrawdownR": 11.254685626102654,
+        "trades": 91,
+        "winRatePct": 49.45054945054945,
+        "avgHoldMinutes": 33.16483516483517,
+        "expectancyR": 0.4607501110055654
+      },
+      "createdAtMs": 1772756407000,
+      "updatedAtMs": 1772756407000,
+      "updatedBy": "codex"
+    },
     {
       "symbol": "XAUUSDT",
       "strategyId": "regime_pullback_m15_m3_xauusd",
