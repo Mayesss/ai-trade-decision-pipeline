@@ -1220,6 +1220,16 @@ export default function Home() {
         Icon: ArrowUpRight,
       };
     }
+    if (normalized === 'DONE') {
+      return {
+        label: 'DONE',
+        className:
+          resolvedTheme === 'dark'
+            ? 'border-sky-500/60 bg-sky-500/20 text-sky-100'
+            : 'border-sky-200 bg-sky-50 text-sky-700',
+        Icon: Circle,
+      };
+    }
     if (normalized.includes('ERROR') || normalized.includes('BLOCK') || normalized === 'MISSING') {
       return {
         label: normalized,
@@ -1619,9 +1629,6 @@ export default function Home() {
                     </span>
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
-                      tune {row.tune || 'default'}
-                    </span>
                     <span
                       className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${state.className}`}
                     >
@@ -1829,29 +1836,6 @@ export default function Home() {
                         No reason codes for the active deployment yet.
                       </div>
                     )}
-                    {scalpTopStates.length ? (
-                      <div className="mt-4 border-t border-slate-100 pt-3">
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                          State Mix
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {scalpTopStates.map(([state, count]) => {
-                            const meta = scalpStateMeta(state);
-                            const Icon = meta.Icon;
-                            return (
-                              <span
-                                key={`${state}-${count}`}
-                                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${meta.className}`}
-                              >
-                                <Icon className="h-3 w-3" />
-                                {state}
-                                <span className="rounded-full bg-white/60 px-1.5 py-0.5">{count}</span>
-                              </span>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ) : null}
                   </div>
 
                   <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
