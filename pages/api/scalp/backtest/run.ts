@@ -3,8 +3,15 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { fetchCapitalCandlesByEpic, fetchCapitalCandlesByEpicDateRange, resolveCapitalEpicRuntime } from '../../../../lib/capital';
 import { requireAdminAccess } from '../../../../lib/admin';
 import { type CandleHistoryBackend, loadScalpCandleHistory, normalizeHistoryTimeframe } from '../../../../lib/scalp/candleHistory';
+import { resolveScalpDeployment } from '../../../../lib/scalp/deployments';
 import { defaultScalpReplayConfig, normalizeScalpReplayInput, runScalpReplay } from '../../../../lib/scalp/replay/harness';
-import { getDefaultScalpStrategy, getScalpStrategyById, normalizeScalpStrategyId } from '../../../../lib/scalp/strategies/registry';
+import { toScalpBacktestLeaderboardEntry } from '../../../../lib/scalp/replay/results';
+import {
+  getDefaultScalpStrategy,
+  getScalpStrategyById,
+  getScalpStrategyPreferredTimeframes,
+  normalizeScalpStrategyId,
+} from '../../../../lib/scalp/strategies/registry';
 import { applySymbolGuardRiskDefaultsToReplayRuntime } from '../../../../lib/scalp/strategies/guardDefaults';
 import { pipSizeForScalpSymbol } from '../../../../lib/scalp/marketData';
 import type { ScalpReplayInputFile, ScalpReplayRuntimeConfig } from '../../../../lib/scalp/replay/types';
@@ -33,6 +40,8 @@ type BacktestRequestBody = {
   historyBackend?: 'file' | 'kv' | string;
   historyTimeframe?: string;
   strategyId?: string;
+  tuneId?: string;
+  deploymentId?: string;
   strategy?: Partial<ScalpReplayRuntimeConfig['strategy']>;
 };
 
@@ -404,6 +413,7 @@ function applyRuntimeOverrides(runtime: ScalpReplayRuntimeConfig, body: Backtest
   const strategy = body.strategy || {};
   next.strategyId = parseStrategyId(body.strategyId, next.strategyId || getDefaultScalpStrategy().id);
   next = applySymbolGuardRiskDefaultsToReplayRuntime(next);
+  const preferredTimeframes = getScalpStrategyPreferredTimeframes(next.strategyId);
 
   next.executeMinutes = toPositiveInt(body.executeMinutes, next.executeMinutes);
   next.spreadFactor = toPositiveNumber(body.spreadFactor, next.spreadFactor);
@@ -413,8 +423,10 @@ function applyRuntimeOverrides(runtime: ScalpReplayRuntimeConfig, body: Backtest
   next.forceCloseAtEnd = toBool(body.forceCloseAtEnd, next.forceCloseAtEnd);
 
   next.strategy.sessionClockMode = parseClockMode(strategy.sessionClockMode, next.strategy.sessionClockMode);
-  next.strategy.asiaBaseTf = 'M15';
-  next.strategy.confirmTf = 'M3';
+  next.strategy.asiaBaseTf = preferredTimeframes?.asiaBaseTf ?? 'M15';
+  next.strategy.confirmTf = preferredTimeframes?.confirmTf ?? 'M3';
+  next.strategy.asiaBaseTf = parseBaseTf(strategy.asiaBaseTf, next.strategy.asiaBaseTf);
+  next.strategy.confirmTf = parseConfirmTf(strategy.confirmTf, next.strategy.confirmTf);
   next.strategy.maxTradesPerDay = toPositiveInt(strategy.maxTradesPerDay, next.strategy.maxTradesPerDay);
   next.strategy.riskPerTradePct = toPositiveNumber(strategy.riskPerTradePct, next.strategy.riskPerTradePct);
   next.strategy.referenceEquityUsd = toPositiveNumber(strategy.referenceEquityUsd, next.strategy.referenceEquityUsd);
@@ -583,11 +595,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         ? 'DATE_RANGE'
         : 'LOOKBACK_DURATION'
       : 'LOOKBACK_CANDLES';
+    const requestedStrategyId = body.strategyId
+      ? parseStrategyId(body.strategyId, getDefaultScalpStrategy().id)
+      : getDefaultScalpStrategy().id;
+    const deployment = resolveScalpDeployment({
+      symbol,
+      strategyId: requestedStrategyId,
+      tuneId: body.tuneId,
+      deploymentId: body.deploymentId,
+    });
     logBacktest(
       'request',
       {
         symbol,
-        strategyId: body.strategyId ? parseStrategyId(body.strategyId, getDefaultScalpStrategy().id) : getDefaultScalpStrategy().id,
+        strategyId: deployment.strategyId,
+        tuneId: deployment.tuneId,
+        deploymentId: deployment.deploymentId,
         mode: requestedMode,
         dataFetchMode,
         hasEffectiveRange,
@@ -612,7 +635,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const runtimeBase = defaultScalpReplayConfig(symbol);
     const runtime = applyRuntimeOverrides(runtimeBase, body);
-    runtime.symbol = symbol;
+    runtime.symbol = deployment.symbol;
+    runtime.strategyId = deployment.strategyId;
+    runtime.tuneId = deployment.tuneId;
+    runtime.deploymentId = deployment.deploymentId;
+    runtime.tuneLabel = deployment.tuneLabel;
 
     const spreadPips = toNonNegativeNumber(body.spreadPips, runtime.defaultSpreadPips);
     runtime.defaultSpreadPips = spreadPips;
@@ -858,6 +885,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       {
         symbol,
         strategyId: runtime.strategyId,
+        tuneId: runtime.tuneId,
+        deploymentId: runtime.deploymentId,
         candles: normalized.candles.length,
         baseSourceTimeframe: replayBaseSourceTimeframe,
         confirmSourceTimeframe: replayConfirmSourceTimeframe,
@@ -889,6 +918,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             {
               symbol,
               strategyId: runtime.strategyId,
+              tuneId: runtime.tuneId,
+              deploymentId: runtime.deploymentId,
               runs: progress.runs,
               estimatedTotalRuns: progress.estimatedTotalRuns,
               completedPct: Number(progress.completedPct.toFixed(2)),
@@ -926,6 +957,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       {
         symbol,
         strategyId: runtime.strategyId,
+        tuneId: runtime.tuneId,
+        deploymentId: runtime.deploymentId,
         sourceTimeframe: replayBaseSourceTimeframe,
         confirmSourceTimeframe: replayConfirmSourceTimeframe,
         fetchedCandles: normalized.candles.length,
@@ -982,10 +1015,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       exitReason: trade.exitReason,
       holdMinutes: trade.holdMinutes,
     }));
+    const leaderboardEntry = toScalpBacktestLeaderboardEntry(replay);
 
     return res.status(200).json({
       symbol,
       strategyId: replay.config.strategyId,
+      tuneId: replay.config.tuneId,
+      deploymentId: replay.config.deploymentId,
+      deployment: {
+        symbol: replay.config.symbol,
+        strategyId: replay.config.strategyId,
+        tuneId: replay.config.tuneId,
+        deploymentId: replay.config.deploymentId,
+        tuneLabel: replay.config.tuneLabel,
+      },
       epic: resolved.epic,
       candleSource,
       historyEnabled: useStoredHistory,
@@ -1018,6 +1061,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         markers,
         tradeSegments,
       },
+      leaderboardEntry,
       effectiveConfig: runtime,
       diagnostics: {
         topReasonCodes,

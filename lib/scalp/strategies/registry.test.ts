@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { COMPRESSION_BREAKOUT_PULLBACK_M15_M3_STRATEGY_ID } from './compressionBreakoutPullbackM15M3';
+import { FAILED_AUCTION_EXTREME_REVERSAL_M15_M1_STRATEGY_ID } from './failedAuctionExtremeReversalM15M1';
+import { HSS_ICT_M15_M3_GUARDED_STRATEGY_ID } from './hssIctM15M3Guarded';
+import { OPENING_RANGE_BREAKOUT_RETEST_M5_M1_STRATEGY_ID } from './openingRangeBreakoutRetestM5M1';
+import { PDH_PDL_RECLAIM_M15_M3_STRATEGY_ID } from './pdhPdlReclaimM15M3';
 import { REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID } from './regimePullbackM15M3BtcusdtGuarded';
 import { REGIME_PULLBACK_M15_M3_STRATEGY_ID } from './regimePullbackM15M3';
 import { REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID } from './regimePullbackM15M3XauusdGuarded';
+import { TREND_DAY_REACCELERATION_M15_M3_STRATEGY_ID } from './trendDayReaccelerationM15M3';
 import {
     DEFAULT_SCALP_STRATEGY_ID,
     getDefaultScalpStrategy,
@@ -21,11 +27,17 @@ test('default scalp strategy is registered and stable', () => {
 
 test('strategy registry exposes unique ids and supports lookup', () => {
     const all = listScalpStrategies();
-    assert.ok(all.length >= 3, 'expected at least three registered strategies');
+    assert.ok(all.length >= 9, 'expected at least nine registered strategies');
     const ids = all.map((row) => row.id);
     assert.ok(ids.includes(REGIME_PULLBACK_M15_M3_STRATEGY_ID), 'expected default strategy in registry');
     assert.ok(ids.includes(REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID), 'expected BTCUSDT guarded regime strategy in registry');
     assert.ok(ids.includes(REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID), 'expected XAUUSD guarded regime strategy in registry');
+    assert.ok(ids.includes(HSS_ICT_M15_M3_GUARDED_STRATEGY_ID), 'expected guarded HSS-ICT strategy in registry');
+    assert.ok(ids.includes(OPENING_RANGE_BREAKOUT_RETEST_M5_M1_STRATEGY_ID), 'expected opening range breakout strategy in registry');
+    assert.ok(ids.includes(PDH_PDL_RECLAIM_M15_M3_STRATEGY_ID), 'expected PDH/PDL reclaim strategy in registry');
+    assert.ok(ids.includes(COMPRESSION_BREAKOUT_PULLBACK_M15_M3_STRATEGY_ID), 'expected compression breakout strategy in registry');
+    assert.ok(ids.includes(FAILED_AUCTION_EXTREME_REVERSAL_M15_M1_STRATEGY_ID), 'expected failed auction reversal strategy in registry');
+    assert.ok(ids.includes(TREND_DAY_REACCELERATION_M15_M3_STRATEGY_ID), 'expected trend-day reacceleration strategy in registry');
     const uniqueIds = new Set(ids);
     assert.equal(ids.length, uniqueIds.size, 'strategy IDs must be unique');
     for (const id of ids) {

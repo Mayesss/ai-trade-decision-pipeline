@@ -5,6 +5,7 @@ const UNAUTHENTICATED_CRON_ROUTES = new Set<string>([
   '/api/swing/analyze',
   '/api/scalp/cron/execute',
   '/api/scalp/cron/execute-hybrid',
+  '/api/scalp/cron/execute-deployments',
 ]);
 
 function firstHeaderValue(value: string | string[] | undefined): string {

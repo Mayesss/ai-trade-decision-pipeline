@@ -1,5 +1,6 @@
 import vercelConfig from '../vercel.json';
 import { resolveAnalysisPlatform, resolveNewsSource, type AnalysisPlatform, type NewsSource } from './platform';
+import { buildScalpDeploymentId, normalizeScalpTuneId } from './scalp/deployments';
 import { resolveSwingCategory } from './swing/category';
 
 type VercelCron = {
@@ -10,9 +11,11 @@ type VercelCron = {
 export type ScalpCronSymbolConfig = {
   symbol: string;
   strategyId: string | null;
+  tuneId: string | null;
+  deploymentId: string | null;
   schedule: string | null;
   path: string;
-  route: 'execute' | 'execute-hybrid';
+  route: 'execute' | 'execute-hybrid' | 'execute-deployments';
 };
 
 export type CronSymbolConfig = {
@@ -87,7 +90,8 @@ function parseScalpCronPath(path: string, schedule: string | null): ScalpCronSym
   const pathname = String(parsed.pathname || '').trim();
   const isExecuteRoute = pathname === '/api/scalp/cron/execute';
   const isExecuteHybridRoute = pathname === '/api/scalp/cron/execute-hybrid';
-  if (!isExecuteRoute && !isExecuteHybridRoute) return null;
+  const isExecuteDeploymentsRoute = pathname === '/api/scalp/cron/execute-deployments';
+  if (!isExecuteRoute && !isExecuteHybridRoute && !isExecuteDeploymentsRoute) return null;
 
   const symbol = String(parsed.searchParams.get('symbol') || '')
     .trim()
@@ -97,9 +101,19 @@ function parseScalpCronPath(path: string, schedule: string | null): ScalpCronSym
   return {
     symbol,
     strategyId: normalizeScalpStrategyId(parsed.searchParams.get('strategyId')),
+    tuneId: parsed.searchParams.get('tuneId') ? normalizeScalpTuneId(parsed.searchParams.get('tuneId')) : null,
+    deploymentId:
+      parsed.searchParams.get('deploymentId') ||
+      (symbol && parsed.searchParams.get('strategyId')
+        ? buildScalpDeploymentId({
+            symbol,
+            strategyId: String(parsed.searchParams.get('strategyId') || ''),
+            tuneId: parsed.searchParams.get('tuneId'),
+          })
+        : null),
     schedule,
     path: rawPath,
-    route: isExecuteHybridRoute ? 'execute-hybrid' : 'execute',
+    route: isExecuteHybridRoute ? 'execute-hybrid' : isExecuteDeploymentsRoute ? 'execute-deployments' : 'execute',
   };
 }
 
@@ -124,21 +138,39 @@ export function getCronSymbols(): string[] {
   return getCronSymbolConfigs().map((item) => item.symbol);
 }
 
-export function getScalpCronSymbolConfigs(): ScalpCronSymbolConfig[] {
+export function getScalpCronDeploymentConfigs(): ScalpCronSymbolConfig[] {
   const crons: VercelCron[] = Array.isArray((vercelConfig as any)?.crons) ? (vercelConfig as any).crons : [];
-  const bySymbol = new Map<string, ScalpCronSymbolConfig>();
+  const out: ScalpCronSymbolConfig[] = [];
+  const seen = new Set<string>();
 
   for (const cron of crons) {
     const schedule = typeof cron?.schedule === 'string' ? cron.schedule : null;
     const path = typeof cron?.path === 'string' ? cron.path : '';
     const parsed = parseScalpCronPath(path, schedule);
     if (!parsed) continue;
+    const key = parsed.deploymentId || `${parsed.symbol}:${parsed.path}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(parsed);
+  }
+
+  return out;
+}
+
+export function getScalpCronSymbolConfigs(): ScalpCronSymbolConfig[] {
+  const bySymbol = new Map<string, ScalpCronSymbolConfig>();
+
+  for (const parsed of getScalpCronDeploymentConfigs()) {
     const existing = bySymbol.get(parsed.symbol);
     if (!existing) {
       bySymbol.set(parsed.symbol, parsed);
       continue;
     }
     if (!existing.strategyId && parsed.strategyId) {
+      bySymbol.set(parsed.symbol, parsed);
+      continue;
+    }
+    if (!existing.deploymentId && parsed.deploymentId) {
       bySymbol.set(parsed.symbol, parsed);
     }
   }

@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 
-import { executeCapitalDecision, executeCapitalScalpEntry, fetchCapitalOpenPositionSnapshots } from '../capital';
+import { closeCapitalPositionByOwnership, executeCapitalScalpEntry, fetchCapitalOpenPositionSnapshots } from '../capital';
 import { computeAtr } from './detectors';
 import type { ScalpStrategyEntryIntent } from './strategies/types';
 import type { ScalpEntryPlan, ScalpMarketSnapshot, ScalpSessionState, ScalpStrategyConfig } from './types';
@@ -61,6 +61,25 @@ function buildSetupId(state: ScalpSessionState): string | null {
     return `scalp:${hashForSetup(seed)}`;
 }
 
+function scalpDeploymentOwnershipToken(deploymentId: string): string {
+    return hashForSetup(`deployment:${deploymentId}`).slice(0, 10);
+}
+
+function scalpDeploymentDealReferencePrefix(deploymentId: string): string {
+    return `sclp-${scalpDeploymentOwnershipToken(deploymentId)}-`;
+}
+
+export function buildScalpDealReference(params: { deploymentId: string; setupId: string; dayKey: string }): string {
+    const suffix = hashForSetup(`${params.setupId}:${params.dayKey}`).slice(0, 12);
+    return `${scalpDeploymentDealReferencePrefix(params.deploymentId)}${suffix}`;
+}
+
+export function matchesScalpDeploymentDealReference(dealReference: string | null | undefined, deploymentId: string): boolean {
+    const normalized = String(dealReference || '').trim();
+    if (!normalized) return false;
+    return normalized.startsWith(scalpDeploymentDealReferencePrefix(deploymentId));
+}
+
 export function resolveLegacyIfvgEntryIntent(state: ScalpSessionState): ScalpStrategyEntryIntent | null {
     if (state.trade) return null;
     if (state.state !== 'WAITING_RETRACE') return null;
@@ -79,7 +98,7 @@ function currentRForTrade(trade: NonNullable<ScalpSessionState['trade']>, price:
 }
 
 async function closeScalpTradePortion(params: {
-    symbol: string;
+    trade: NonNullable<ScalpSessionState['trade']>;
     closePct: number;
     dryRun: boolean;
     reason: string;
@@ -91,22 +110,29 @@ async function closeScalpTradePortion(params: {
     if (params.dryRun) {
         return { closed: true, reasonCodes: ['TRADE_CLOSE_SIMULATED_DRYRUN'] };
     }
+    const brokerPositionId = String(params.trade.brokerPositionId ?? params.trade.brokerOrderId ?? '').trim() || null;
+    const dealReference = String(params.trade.dealReference || '').trim() || null;
+    if (!brokerPositionId && !dealReference) {
+        return { closed: false, reasonCodes: ['TRADE_CLOSE_MISSING_OWNERSHIP'] };
+    }
     try {
-        const closeRes = await executeCapitalDecision(
-            params.symbol,
-            0,
-            {
-                action: 'CLOSE',
-                summary: `scalp-manage:${params.reason}`,
-                reason: params.reason,
-                close_size_pct: closePct,
-            },
-            false,
-        );
-        const closed = Boolean((closeRes as any)?.closed || (closeRes as any)?.placed);
+        const closeRes = await closeCapitalPositionByOwnership({
+            dealId: brokerPositionId,
+            dealReference,
+            partialClosePct: closePct,
+            clientOid: `scalp-close-${hashForSetup(`${dealReference || brokerPositionId}:${params.reason}:${closePct}`)}`,
+        });
+        const closed = Boolean(closeRes.closed);
+        const note = String(closeRes.note || '').trim();
         return {
             closed,
-            reasonCodes: [closed ? 'TRADE_CLOSE_CONFIRMED' : 'TRADE_CLOSE_NOT_CONFIRMED'],
+            reasonCodes: [
+                closed ? 'TRADE_CLOSE_CONFIRMED' : note === 'ambiguous_matching_positions'
+                    ? 'TRADE_CLOSE_OWNERSHIP_AMBIGUOUS'
+                    : note === 'no_matching_position'
+                      ? 'TRADE_CLOSE_OWNED_POSITION_NOT_FOUND'
+                      : 'TRADE_CLOSE_NOT_CONFIRMED',
+            ],
         };
     } catch (err) {
         return {
@@ -135,7 +161,11 @@ export function buildScalpEntryPlan(params: {
 
     const setupId = buildSetupId(state);
     if (!setupId) return { plan: null, reasonCodes: ['ENTRY_PLAN_SETUP_ID_FAILED'] };
-    const dealReference = `scalp-${hashForSetup(`${setupId}:${state.dayKey}`)}`;
+    const dealReference = buildScalpDealReference({
+        deploymentId: state.deploymentId,
+        setupId,
+        dayKey: state.dayKey,
+    });
     const side = sideFromDirection(ifvg.direction);
     const pipSize = pipSizeForScalpSymbol(state.symbol);
     const price = toFinite(params.market.quote.price);
@@ -205,52 +235,110 @@ export function buildScalpEntryPlan(params: {
     };
 }
 
+type CapitalPositionSnapshot = Awaited<ReturnType<typeof fetchCapitalOpenPositionSnapshots>>[number];
+
+function tradeBrokerPositionId(trade: ScalpSessionState['trade']): string | null {
+    const brokerPositionId = String(trade?.brokerPositionId ?? trade?.brokerOrderId ?? '').trim();
+    return brokerPositionId || null;
+}
+
+function resolveOwnedScalpBrokerMatches(params: {
+    snapshots: CapitalPositionSnapshot[];
+    epic: string;
+    deploymentId: string;
+    trade: ScalpSessionState['trade'];
+}): {
+    matches: CapitalPositionSnapshot[];
+    matchedBy: 'dealId' | 'dealReference' | 'deployment' | null;
+    sameEpic: CapitalPositionSnapshot[];
+} {
+    const sameEpic = params.snapshots.filter((row) => String(row.epic || '').trim() === params.epic);
+    const brokerPositionId = tradeBrokerPositionId(params.trade);
+    if (brokerPositionId) {
+        const matches = sameEpic.filter((row) => String(row.dealId || '').trim() === brokerPositionId);
+        if (matches.length > 0) return { matches, matchedBy: 'dealId', sameEpic };
+    }
+
+    const dealReference = String(params.trade?.dealReference || '').trim();
+    if (dealReference) {
+        const matches = sameEpic.filter((row) => String(row.dealReference || '').trim() === dealReference);
+        if (matches.length > 0) return { matches, matchedBy: 'dealReference', sameEpic };
+    }
+
+    const matches = sameEpic.filter((row) => matchesScalpDeploymentDealReference(row.dealReference, params.deploymentId));
+    if (matches.length > 0) return { matches, matchedBy: 'deployment', sameEpic };
+
+    return { matches: [], matchedBy: null, sameEpic };
+}
+
 export async function reconcileScalpBrokerPosition(params: {
     state: ScalpSessionState;
     market: ScalpMarketSnapshot;
     dryRun: boolean;
     maxOpenPositionsPerSymbol: number;
+    snapshots?: Awaited<ReturnType<typeof fetchCapitalOpenPositionSnapshots>>;
 }): Promise<{ state: ScalpSessionState; reasonCodes: string[] }> {
     if (params.dryRun) return { state: params.state, reasonCodes: ['BROKER_RECONCILE_SKIPPED_DRY_RUN'] };
 
-    let snapshots: Awaited<ReturnType<typeof fetchCapitalOpenPositionSnapshots>> = [];
-    try {
-        snapshots = await fetchCapitalOpenPositionSnapshots();
-    } catch {
-        return { state: params.state, reasonCodes: ['BROKER_RECONCILE_UNAVAILABLE'] };
+    let snapshots = params.snapshots ?? [];
+    if (!params.snapshots) {
+        try {
+            snapshots = await fetchCapitalOpenPositionSnapshots();
+        } catch {
+            return { state: params.state, reasonCodes: ['BROKER_RECONCILE_UNAVAILABLE'] };
+        }
     }
 
-    const matching = snapshots.filter((row) => String(row.epic || '').trim() === params.market.epic);
-    const byEpic = matching[0] || null;
     const next: ScalpSessionState = { ...params.state, trade: params.state.trade ? { ...params.state.trade } : null };
-
-    if (matching.length > Math.max(1, params.maxOpenPositionsPerSymbol)) {
+    const owned = resolveOwnedScalpBrokerMatches({
+        snapshots,
+        epic: params.market.epic,
+        deploymentId: next.deploymentId,
+        trade: next.trade,
+    });
+    if (owned.matches.length > 1) {
         next.state = 'DONE';
-        return { state: next, reasonCodes: ['BROKER_OPEN_POSITION_LIMIT_EXCEEDED'] };
+        return {
+            state: next,
+            reasonCodes: [owned.matchedBy === 'deployment' ? 'BROKER_DEPLOYMENT_POSITION_AMBIGUOUS' : 'BROKER_OWNED_POSITION_AMBIGUOUS'],
+        };
     }
+    const ownedPosition = owned.matches[0] || null;
 
-    if (!byEpic) {
+    if (!ownedPosition) {
         if (next.state === 'IN_TRADE' && next.trade && !next.trade.dryRun) {
             next.state = 'DONE';
-            return { state: next, reasonCodes: ['BROKER_POSITION_NOT_FOUND_MARK_DONE'] };
+            return { state: next, reasonCodes: ['BROKER_OWNED_POSITION_NOT_FOUND_MARK_DONE'] };
         }
         return { state: next, reasonCodes: ['BROKER_POSITION_NONE'] };
     }
 
-    const side = byEpic.side === 'long' ? 'BUY' : byEpic.side === 'short' ? 'SELL' : null;
-    const entryPrice = toFinite(byEpic.entryPrice);
+    const side = ownedPosition.side === 'long' ? 'BUY' : ownedPosition.side === 'short' ? 'SELL' : null;
+    const entryPrice = toFinite(ownedPosition.entryPrice);
     if (!side || !(Number.isFinite(entryPrice) && entryPrice > 0)) {
         return { state: next, reasonCodes: ['BROKER_POSITION_INVALID_PAYLOAD'] };
     }
 
     if (next.trade && !next.trade.dryRun) {
+        next.trade.dealReference = String(ownedPosition.dealReference || next.trade.dealReference || '').trim() || next.trade.dealReference;
+        next.trade.brokerOrderId = String(ownedPosition.dealId || next.trade.brokerOrderId || '').trim() || null;
+        next.trade.brokerPositionId = String(ownedPosition.dealId || next.trade.brokerPositionId || next.trade.brokerOrderId || '').trim() || null;
         next.state = 'IN_TRADE';
-        return { state: next, reasonCodes: ['BROKER_POSITION_CONFIRMED'] };
+        return {
+            state: next,
+            reasonCodes: [
+                owned.matchedBy === 'dealId'
+                    ? 'BROKER_POSITION_CONFIRMED_BY_DEALID'
+                    : owned.matchedBy === 'dealReference'
+                      ? 'BROKER_POSITION_CONFIRMED_BY_DEALREFERENCE'
+                      : 'BROKER_POSITION_CONFIRMED_BY_DEPLOYMENT',
+            ],
+        };
     }
 
     next.trade = {
-        setupId: `recovered:${params.market.epic}`,
-        dealReference: String(byEpic.dealId || `recovered-${params.market.epic}`),
+        setupId: `recovered:${next.deploymentId}`,
+        dealReference: String(ownedPosition.dealReference || `recovered-${next.deploymentId}`),
         side,
         entryPrice,
         stopPrice: next.trade?.stopPrice ?? entryPrice,
@@ -268,12 +356,20 @@ export async function reconcileScalpBrokerPosition(params: {
         trailStopPrice: next.trade?.trailStopPrice ?? null,
         favorableExtremePrice: next.trade?.favorableExtremePrice ?? entryPrice,
         barsHeld: next.trade?.barsHeld ?? 0,
-        openedAtMs: params.market.nowMs,
-        brokerOrderId: byEpic.dealId || null,
+        openedAtMs: ownedPosition.createdAtMs ?? params.market.nowMs,
+        brokerOrderId: ownedPosition.dealId || null,
+        brokerPositionId: ownedPosition.dealId || null,
         dryRun: false,
     };
     next.state = 'IN_TRADE';
-    return { state: next, reasonCodes: ['BROKER_POSITION_RECOVERED'] };
+    return {
+        state: next,
+        reasonCodes: [
+            owned.matchedBy === 'dealReference' || owned.matchedBy === 'deployment'
+                ? 'BROKER_POSITION_RECOVERED'
+                : 'BROKER_POSITION_RECOVERED_BY_DEALID',
+        ],
+    };
 }
 
 export async function executeScalpEntryPlan(params: {
@@ -318,7 +414,7 @@ export async function executeScalpEntryPlan(params: {
 
     next.trade = {
         setupId: params.plan.setupId,
-        dealReference: params.plan.dealReference,
+        dealReference: String(exec.dealReference || params.plan.dealReference),
         side: params.plan.side,
         entryPrice: params.plan.entryReferencePrice,
         stopPrice: params.plan.stopPrice,
@@ -338,6 +434,7 @@ export async function executeScalpEntryPlan(params: {
         barsHeld: 0,
         openedAtMs: params.nowMs,
         brokerOrderId: exec.orderId || null,
+        brokerPositionId: exec.dealId || null,
         dryRun: params.dryRun,
     };
     next.stats.tradesPlaced += 1;
@@ -415,7 +512,7 @@ export async function manageScalpOpenTrade(params: {
         const tp1Pct = clamp(params.cfg.risk.tp1ClosePct, 0, 100);
         if (tp1Pct > 0) {
             const tp1Close = await closeScalpTradePortion({
-                symbol: next.symbol,
+                trade,
                 closePct: tp1Pct,
                 dryRun: params.dryRun,
                 reason: 'tp1_partial',
@@ -470,7 +567,7 @@ export async function manageScalpOpenTrade(params: {
     }
 
     const closeRes = await closeScalpTradePortion({
-        symbol: next.symbol,
+        trade,
         closePct: 100,
         dryRun: params.dryRun,
         reason: stopHit ? 'stop_exit' : 'time_stop_exit',

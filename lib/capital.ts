@@ -26,6 +26,7 @@ type CapitalPositionRow = {
     };
     position?: {
         dealId?: string;
+        dealReference?: string;
         direction?: string;
         size?: number | string;
         level?: number | string;
@@ -38,6 +39,7 @@ type CapitalPositionRow = {
         profit?: number | string;
     };
     dealId?: string;
+    dealReference?: string;
     direction?: string;
     size?: number | string;
     level?: number | string;
@@ -72,6 +74,7 @@ type ResolveEpicResult = {
 export type CapitalOpenPositionSnapshot = {
     epic: string;
     dealId: string | null;
+    dealReference: string | null;
     side: 'long' | 'short' | null;
     entryPrice: number | null;
     leverage: number | null;
@@ -79,8 +82,11 @@ export type CapitalOpenPositionSnapshot = {
     pnlPct: number | null;
     bid: number | null;
     offer: number | null;
+    createdAtMs: number | null;
     updatedAtMs: number;
 };
+
+export type CapitalPositionOwnershipMatch = 'dealId' | 'dealReference' | 'epic' | null;
 
 const CAPITAL_API_BASE = (process.env.CAPITAL_API_BASE || 'https://api-capital.backend-capital.com').replace(/\/+$/, '');
 const SESSION_TTL_MS = 10 * 60 * 1000;
@@ -1093,6 +1099,37 @@ function extractDealId(position: CapitalPositionRow): string | null {
     return String(id);
 }
 
+function extractDealReference(position: CapitalPositionRow): string | null {
+    const reference = position?.position?.dealReference ?? position?.dealReference;
+    if (!reference) return null;
+    return String(reference);
+}
+
+function filterOpenCapitalPositionsByOwnership(
+    rows: CapitalPositionRow[],
+    params: { epic?: string | null; dealId?: string | null; dealReference?: string | null },
+): { matches: CapitalPositionRow[]; matchedBy: CapitalPositionOwnershipMatch } {
+    const dealId = String(params.dealId || '').trim();
+    if (dealId) {
+        const matches = rows.filter((row) => extractDealId(row) === dealId);
+        if (matches.length > 0) return { matches, matchedBy: 'dealId' };
+    }
+
+    const dealReference = String(params.dealReference || '').trim();
+    if (dealReference) {
+        const matches = rows.filter((row) => extractDealReference(row) === dealReference);
+        if (matches.length > 0) return { matches, matchedBy: 'dealReference' };
+    }
+
+    const epic = normalizeTicker(String(params.epic || ''));
+    if (epic) {
+        const matches = rows.filter((row) => String(row?.market?.epic || '').toUpperCase() === epic);
+        if (matches.length > 0) return { matches, matchedBy: 'epic' };
+    }
+
+    return { matches: [], matchedBy: null };
+}
+
 async function listOpenCapitalPositions(): Promise<CapitalPositionRow[]> {
     const payload = await capitalFetch('GET', '/api/v1/positions', {}, undefined, true);
     return extractPositionRows(payload);
@@ -1133,6 +1170,7 @@ export async function fetchCapitalOpenPositionSnapshots(): Promise<CapitalOpenPo
             return {
                 epic,
                 dealId: extractDealId(row),
+                dealReference: extractDealReference(row),
                 side: extractDirection(row),
                 entryPrice: extractEntryPrice(row),
                 leverage: extractLeverage(row),
@@ -1140,6 +1178,7 @@ export async function fetchCapitalOpenPositionSnapshots(): Promise<CapitalOpenPo
                 pnlPct: computeOpenPnlPctFromPositionRow(row),
                 bid: Number.isFinite(bid) ? bid : null,
                 offer: Number.isFinite(offer) ? offer : null,
+                createdAtMs: extractEntryTimestamp(row) ?? null,
                 updatedAtMs,
             } satisfies CapitalOpenPositionSnapshot;
         })
@@ -1365,8 +1404,10 @@ async function openCapitalPosition(params: {
     if (leverage) body.leverage = leverage;
 
     const payload = await capitalFetch('POST', '/api/v1/positions', {}, body, true);
-    const orderId = payload?.dealId ?? payload?.dealReference ?? payload?.positionDealId ?? payload?.id ?? null;
-    return { payload, orderId, size, epic: details.epic };
+    const dealId = payload?.dealId ?? payload?.positionDealId ?? null;
+    const dealReference = payload?.dealReference ?? clientOid;
+    const orderId = dealId ?? dealReference ?? payload?.id ?? null;
+    return { payload, orderId, dealId, dealReference, size, epic: details.epic };
 }
 
 export async function executeCapitalScalpEntry(params: {
@@ -1421,6 +1462,8 @@ export async function executeCapitalScalpEntry(params: {
         placed: true,
         dryRun: false,
         orderId: opened.orderId,
+        dealId: opened.dealId ?? null,
+        dealReference: opened.dealReference ?? clientOid,
         clientOid,
         symbol,
         direction: params.direction,
@@ -1469,6 +1512,59 @@ async function closeCapitalPosition(position: CapitalPositionRow, partialClosePc
             partial: partialClosePct !== null && partialClosePct < 100,
         };
     }
+}
+
+export async function closeCapitalPositionByOwnership(params: {
+    dealId?: string | null;
+    dealReference?: string | null;
+    epic?: string | null;
+    partialClosePct?: number | null;
+    clientOid?: string | null;
+}): Promise<{
+    closed: boolean;
+    orderId: string | null;
+    clientOid: string;
+    partial: boolean;
+    matchedOwnership: CapitalPositionOwnershipMatch;
+    note?: string;
+}> {
+    const clientOid = String(params.clientOid || `cap-close-${crypto.randomUUID()}`).slice(0, 64);
+    const rows = await listOpenCapitalPositions();
+    const ownership = filterOpenCapitalPositionsByOwnership(rows, {
+        dealId: params.dealId ?? null,
+        dealReference: params.dealReference ?? null,
+        epic: params.epic ?? null,
+    });
+    if (ownership.matches.length === 0) {
+        return {
+            closed: false,
+            orderId: null,
+            clientOid,
+            partial: false,
+            matchedOwnership: ownership.matchedBy,
+            note: 'no_matching_position',
+        };
+    }
+    if (ownership.matches.length > 1) {
+        return {
+            closed: false,
+            orderId: null,
+            clientOid,
+            partial: false,
+            matchedOwnership: ownership.matchedBy,
+            note: 'ambiguous_matching_positions',
+        };
+    }
+
+    const partialClosePct = normalizeClosePct(params.partialClosePct) ?? 100;
+    const closed = await closeCapitalPosition(ownership.matches[0], partialClosePct, clientOid);
+    return {
+        closed: true,
+        orderId: closed.orderId ?? null,
+        clientOid,
+        partial: closed.partial,
+        matchedOwnership: ownership.matchedBy,
+    };
 }
 
 export async function executeCapitalDecision(symbol: string, sideSizeUSDT: number, decision: TradeDecision, dryRun = true) {

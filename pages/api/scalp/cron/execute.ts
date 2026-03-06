@@ -4,6 +4,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
 import { getScalpStrategyConfig, normalizeScalpSymbol } from '../../../../lib/scalp/config';
+import { resolveScalpDeployment } from '../../../../lib/scalp/deployments';
 import { runScalpExecuteCycle } from '../../../../lib/scalp/engine';
 import { loadScalpStrategyRuntimeSnapshot } from '../../../../lib/scalp/store';
 
@@ -49,12 +50,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const symbol = firstQueryValue(req.query.symbol);
     const nowMs = parseNowMs(firstQueryValue(req.query.nowMs));
     const strategyId = firstQueryValue(req.query.strategyId);
+    const tuneId = firstQueryValue(req.query.tuneId);
+    const deploymentId = firstQueryValue(req.query.deploymentId);
 
     try {
         const cfg = getScalpStrategyConfig();
         const normalizedSymbol = normalizeScalpSymbol(symbol || cfg.defaultSymbol);
         const runtime = await loadScalpStrategyRuntimeSnapshot(cfg.enabled, strategyId);
         const strategy = runtime.strategy;
+        const deployment = resolveScalpDeployment({
+            symbol: normalizedSymbol,
+            strategyId: strategy.strategyId,
+            tuneId,
+            deploymentId,
+        });
         if (!strategy.enabled) {
             const reasonCodes = strategy.envEnabled
                 ? ['SCALP_ENGINE_DISABLED', 'SCALP_STRATEGY_DISABLED_BY_KV']
@@ -65,6 +74,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 symbol: normalizedSymbol,
                 dryRun,
                 strategyId: strategy.strategyId,
+                tuneId: deployment.tuneId,
+                deploymentId: deployment.deploymentId,
                 defaultStrategyId: runtime.defaultStrategyId,
                 strategy,
                 strategies: runtime.strategies,
@@ -76,6 +87,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             dryRun,
             nowMs,
             strategyId: strategy.strategyId,
+            tuneId: deployment.tuneId,
+            deploymentId: deployment.deploymentId,
         });
         return res.status(200).json({
             ok: true,

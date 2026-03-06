@@ -7,11 +7,15 @@ import test from 'node:test';
 import { defaultScalpReplayConfig, normalizeScalpReplayInput, runScalpReplay } from './harness';
 import { getDefaultScalpStrategy, listScalpStrategies } from '../strategies/registry';
 import {
+    FAILED_AUCTION_EXTREME_REVERSAL_M15_M1_STRATEGY_ID,
+} from '../strategies/failedAuctionExtremeReversalM15M1';
+import {
     REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID,
     applyBtcusdtGuardRiskDefaultsToReplayRuntime,
     resolveBtcusdtGuardBlockedBerlinHours,
     resolveBtcusdtGuardOptimizedRiskDefaults,
 } from '../strategies/regimePullbackM15M3BtcusdtGuarded';
+import { OPENING_RANGE_BREAKOUT_RETEST_M5_M1_STRATEGY_ID } from '../strategies/openingRangeBreakoutRetestM5M1';
 import {
     REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID,
     applyXauusdGuardRiskDefaultsToReplayRuntime,
@@ -79,6 +83,44 @@ test('scalp replay accepts a registered non-default strategy id', async () => {
     assert.ok(result.summary.runs > 0, 'expected replay runs > 0');
 });
 
+test('scalp replay applies preferred M5/M1 timeframes for opening-range strategy', async () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const fixturePath = path.resolve(here, '../../../data/scalp-replay/fixtures/eurusd.sample.json');
+    const raw = await readFile(fixturePath, 'utf8');
+    const input = normalizeScalpReplayInput(JSON.parse(raw) as ScalpReplayInputFile);
+    const config = defaultScalpReplayConfig(input.symbol);
+    config.strategyId = OPENING_RANGE_BREAKOUT_RETEST_M5_M1_STRATEGY_ID;
+
+    const result = await runScalpReplay({
+        candles: input.candles,
+        pipSize: input.pipSize,
+        config,
+    });
+
+    assert.equal(result.config.strategyId, OPENING_RANGE_BREAKOUT_RETEST_M5_M1_STRATEGY_ID);
+    assert.equal(result.config.strategy.asiaBaseTf, 'M5');
+    assert.equal(result.config.strategy.confirmTf, 'M1');
+});
+
+test('scalp replay applies preferred M15/M1 timeframes for failed-auction strategy', async () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const fixturePath = path.resolve(here, '../../../data/scalp-replay/fixtures/eurusd.sample.json');
+    const raw = await readFile(fixturePath, 'utf8');
+    const input = normalizeScalpReplayInput(JSON.parse(raw) as ScalpReplayInputFile);
+    const config = defaultScalpReplayConfig(input.symbol);
+    config.strategyId = FAILED_AUCTION_EXTREME_REVERSAL_M15_M1_STRATEGY_ID;
+
+    const result = await runScalpReplay({
+        candles: input.candles,
+        pipSize: input.pipSize,
+        config,
+    });
+
+    assert.equal(result.config.strategyId, FAILED_AUCTION_EXTREME_REVERSAL_M15_M1_STRATEGY_ID);
+    assert.equal(result.config.strategy.asiaBaseTf, 'M15');
+    assert.equal(result.config.strategy.confirmTf, 'M1');
+});
+
 test('default gold replay config does not auto-select XAUUSD guarded strategy', () => {
     const cfg = defaultScalpReplayConfig('XAUUSDT');
     assert.notEqual(cfg.strategyId, REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID);
@@ -143,6 +185,60 @@ test('btc replay config applies BTCUSDT guarded optimized risk defaults only whe
         if (prevTimeStop === undefined) delete process.env.SCALP_BTCUSDT_GUARD_TIME_STOP_BARS;
         else process.env.SCALP_BTCUSDT_GUARD_TIME_STOP_BARS = prevTimeStop;
     }
+});
+
+test('scalp replay preserves explicit BTC guarded risk overrides', async () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const fixturePath = path.resolve(here, '../../../data/scalp-replay/fixtures/eurusd.sample.json');
+    const raw = await readFile(fixturePath, 'utf8');
+    const input = normalizeScalpReplayInput(JSON.parse(raw) as ScalpReplayInputFile);
+    const optimized = resolveBtcusdtGuardOptimizedRiskDefaults();
+    const config = defaultScalpReplayConfig('BTCUSDT');
+    config.symbol = 'BTCUSDT';
+    config.strategyId = REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID;
+    config.tuneId = 'explicit_guard_override';
+    config.deploymentId = 'BTCUSDT~regime_pullback_m15_m3_btcusdt~explicit_guard_override';
+    config.tuneLabel = 'explicit_guard_override';
+    config.strategy.tp1ClosePct = optimized.tp1ClosePct + 5;
+    config.strategy.trailAtrMult = optimized.trailAtrMult + 0.25;
+    config.strategy.timeStopBars = optimized.timeStopBars + 3;
+
+    const result = await runScalpReplay({
+        candles: input.candles,
+        pipSize: input.pipSize,
+        config,
+    });
+
+    assert.equal(result.config.strategy.tp1ClosePct, optimized.tp1ClosePct + 5);
+    assert.equal(result.config.strategy.trailAtrMult, optimized.trailAtrMult + 0.25);
+    assert.equal(result.config.strategy.timeStopBars, optimized.timeStopBars + 3);
+});
+
+test('scalp replay preserves explicit XAU guarded risk overrides', async () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const fixturePath = path.resolve(here, '../../../data/scalp-replay/fixtures/eurusd.sample.json');
+    const raw = await readFile(fixturePath, 'utf8');
+    const input = normalizeScalpReplayInput(JSON.parse(raw) as ScalpReplayInputFile);
+    const optimized = resolveXauusdGuardOptimizedRiskDefaults();
+    const config = defaultScalpReplayConfig('XAUUSDT');
+    config.symbol = 'XAUUSDT';
+    config.strategyId = REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID;
+    config.tuneId = 'explicit_guard_override';
+    config.deploymentId = 'XAUUSDT~regime_pullback_m15_m3_xauusd~explicit_guard_override';
+    config.tuneLabel = 'explicit_guard_override';
+    config.strategy.tp1ClosePct = optimized.tp1ClosePct + 5;
+    config.strategy.trailAtrMult = optimized.trailAtrMult + 0.25;
+    config.strategy.timeStopBars = optimized.timeStopBars + 3;
+
+    const result = await runScalpReplay({
+        candles: input.candles,
+        pipSize: input.pipSize,
+        config,
+    });
+
+    assert.equal(result.config.strategy.tp1ClosePct, optimized.tp1ClosePct + 5);
+    assert.equal(result.config.strategy.trailAtrMult, optimized.trailAtrMult + 0.25);
+    assert.equal(result.config.strategy.timeStopBars, optimized.timeStopBars + 3);
 });
 
 test('xauusd blocked-hour variants are configurable and explicit hours override variant', () => {

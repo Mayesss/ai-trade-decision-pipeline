@@ -15,6 +15,14 @@ export type ScalpState =
     | 'DONE'
     | 'COOLDOWN';
 
+export interface ScalpDeploymentRef {
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    deploymentId: string;
+    tuneLabel: string;
+}
+
 export interface ScalpAsiaRangeSnapshot {
     timezone: 'Europe/London' | 'UTC';
     sourceTf: ScalpBaseTimeframe;
@@ -76,6 +84,7 @@ export interface ScalpTradeSnapshot {
     barsHeld?: number;
     openedAtMs: number;
     brokerOrderId: string | null;
+    brokerPositionId?: string | null;
     dryRun: boolean;
 }
 
@@ -104,8 +113,11 @@ export interface ScalpRunContext {
 }
 
 export interface ScalpSessionState {
-    version: 1;
+    version: 1 | 2;
     symbol: string;
+    strategyId: string;
+    tuneId: string;
+    deploymentId: string;
     dayKey: string;
     state: ScalpState;
     createdAtMs: number;
@@ -265,6 +277,8 @@ export interface ScalpExecuteCycleResult {
     generatedAtMs: number;
     symbol: string;
     strategyId: string;
+    tuneId: string;
+    deploymentId: string;
     dayKey: string;
     dryRun: boolean;
     runLockAcquired: boolean;

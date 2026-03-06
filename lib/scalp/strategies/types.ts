@@ -1,4 +1,11 @@
-import type { ScalpMarketSnapshot, ScalpSessionState, ScalpSessionWindows, ScalpStrategyConfig } from '../types';
+import type {
+    ScalpBaseTimeframe,
+    ScalpConfirmTimeframe,
+    ScalpMarketSnapshot,
+    ScalpSessionState,
+    ScalpSessionWindows,
+    ScalpStrategyConfig,
+} from '../types';
 
 export type ScalpStrategyEntryIntent = {
     model: 'ifvg_touch';
@@ -22,5 +29,7 @@ export interface ScalpStrategyDefinition {
     id: string;
     shortName: string;
     longName: string;
+    preferredBaseTf?: ScalpBaseTimeframe;
+    preferredConfirmTf?: ScalpConfirmTimeframe;
     applyPhaseDetectors(input: ScalpStrategyPhaseInput): ScalpStrategyPhaseOutput;
 }

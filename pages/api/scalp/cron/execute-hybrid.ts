@@ -3,6 +3,7 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
+import { resolveScalpDeployment } from '../../../../lib/scalp/deployments';
 import { getScalpCronSymbolConfigs } from '../../../../lib/symbolRegistry';
 import { getScalpStrategyConfig, normalizeScalpSymbol } from '../../../../lib/scalp/config';
 import { runScalpExecuteCycle } from '../../../../lib/scalp/engine';
@@ -50,13 +51,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const forceProfile = firstQueryValue(req.query.profile);
     const runAll = parseBoolParam(req.query.all, false);
     const strategyId = firstQueryValue(req.query.strategyId);
+    const tuneId = firstQueryValue(req.query.tuneId);
+    const deploymentId = firstQueryValue(req.query.deploymentId);
 
     try {
         const policy = getScalpHybridPolicy();
         const cronSymbolConfigs = getScalpCronSymbolConfigs();
-        const cronSymbolStrategyBySymbol = new Map(
-            cronSymbolConfigs.map((row) => [row.symbol.toUpperCase(), String(row.strategyId || '').trim()]),
-        );
+        const cronSymbolConfigBySymbol = new Map(cronSymbolConfigs.map((row) => [row.symbol.toUpperCase(), row]));
         const cfg = getScalpStrategyConfig();
         const runtime = await loadScalpStrategyRuntimeSnapshot(cfg.enabled, strategyId);
         const strategy = runtime.strategy;
@@ -89,9 +90,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             try {
                 const selection = resolveScalpHybridSelection(symbolValue, policy, forceProfile);
                 const normalizedSymbol = normalizeScalpSymbol(selection.symbol);
-                const cronStrategyId = cronSymbolStrategyBySymbol.get(normalizedSymbol) || '';
+                const cronSymbolConfig = cronSymbolConfigBySymbol.get(normalizedSymbol) || null;
+                const cronStrategyId = String(cronSymbolConfig?.strategyId || '').trim();
                 const effectiveStrategy =
                     runtime.strategies.find((row) => row.strategyId === cronStrategyId) || strategy;
+                const deployment = resolveScalpDeployment({
+                    symbol: normalizedSymbol,
+                    strategyId: effectiveStrategy.strategyId,
+                    tuneId: tuneId || cronSymbolConfig?.tuneId,
+                    deploymentId: deploymentId || cronSymbolConfig?.deploymentId,
+                });
                 selectedProfile = selection.profile;
                 if (!effectiveStrategy.enabled) {
                     const reasonCodes = effectiveStrategy.envEnabled
@@ -101,6 +109,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                         generatedAtMs: Date.now(),
                         symbol: normalizedSymbol,
                         strategyId: effectiveStrategy.strategyId,
+                        tuneId: deployment.tuneId,
+                        deploymentId: deployment.deploymentId,
                         dayKey: null,
                         dryRun,
                         runLockAcquired: false,
@@ -117,6 +127,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     nowMs,
                     configOverride: selection.configOverride,
                     strategyId: effectiveStrategy.strategyId,
+                    tuneId: deployment.tuneId,
+                    deploymentId: deployment.deploymentId,
                 });
                 results.push({
                     ...cycle,

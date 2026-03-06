@@ -1,4 +1,5 @@
 import { kvGetJson, kvListPushJson, kvListRangeJson, kvListTrim, kvSetJson } from '../kv';
+import { DEFAULT_SCALP_TUNE_ID, normalizeScalpTuneId, resolveScalpDeployment } from './deployments';
 import {
     getDefaultScalpStrategy,
     getScalpStrategyById,
@@ -7,8 +8,9 @@ import {
 } from './strategies/registry';
 import type { ScalpJournalEntry, ScalpSessionState } from './types';
 
-const SCALP_STATE_KEY_PREFIX = 'scalp:state:v1';
-const SCALP_RUN_LOCK_KEY_PREFIX = 'scalp:runlock:v1';
+const SCALP_STATE_KEY_PREFIX = 'scalp:state:v2';
+const SCALP_STATE_KEY_PREFIX_V1 = 'scalp:state:v1';
+const SCALP_RUN_LOCK_KEY_PREFIX = 'scalp:runlock:v2';
 const SCALP_JOURNAL_LIST_KEY = 'scalp:journal:list:v1';
 const SCALP_RUNTIME_SETTINGS_KEY = 'scalp:runtime:settings:v1';
 const SCALP_DEFAULT_STATE_TTL_SECONDS = 3 * 24 * 60 * 60;
@@ -57,16 +59,63 @@ function resolveStrategyId(value: unknown, fallback = defaultScalpStrategy.id): 
     return strategy?.id || fallback;
 }
 
-function stateKey(strategyId: string, symbol: string, dayKey: string): string {
-    return `${SCALP_STATE_KEY_PREFIX}:${strategyId}:${String(symbol || '').toUpperCase()}:${dayKey}`;
+type ScalpDeploymentKeyOptions = {
+    tuneId?: string;
+    deploymentId?: string;
+};
+
+function stateKey(deploymentId: string, dayKey: string): string {
+    return `${SCALP_STATE_KEY_PREFIX}:${deploymentId}:${dayKey}`;
+}
+
+function legacyStrategyStateKey(strategyId: string, symbol: string, dayKey: string): string {
+    return `${SCALP_STATE_KEY_PREFIX_V1}:${strategyId}:${String(symbol || '').toUpperCase()}:${dayKey}`;
 }
 
 function legacyStateKey(symbol: string, dayKey: string): string {
-    return `${SCALP_STATE_KEY_PREFIX}:${String(symbol || '').toUpperCase()}:${dayKey}`;
+    return `${SCALP_STATE_KEY_PREFIX_V1}:${String(symbol || '').toUpperCase()}:${dayKey}`;
 }
 
-function runLockKey(strategyId: string, symbol: string): string {
-    return `${SCALP_RUN_LOCK_KEY_PREFIX}:${strategyId}:${String(symbol || '').toUpperCase()}`;
+function runLockKey(deploymentId: string): string {
+    return `${SCALP_RUN_LOCK_KEY_PREFIX}:${deploymentId}`;
+}
+
+function resolveDeploymentKey(params: {
+    symbol: string;
+    strategyId?: string;
+    tuneId?: string;
+    deploymentId?: string;
+}) {
+    return resolveScalpDeployment({
+        symbol: params.symbol,
+        strategyId: params.strategyId,
+        tuneId: params.tuneId,
+        deploymentId: params.deploymentId,
+        fallbackStrategyId: defaultScalpStrategy.id,
+        fallbackTuneId: DEFAULT_SCALP_TUNE_ID,
+    });
+}
+
+function hydrateSessionStateDeployment(state: ScalpSessionState, params: {
+    symbol: string;
+    strategyId?: string;
+    tuneId?: string;
+    deploymentId?: string;
+}): ScalpSessionState {
+    const deployment = resolveDeploymentKey({
+        symbol: state.symbol || params.symbol,
+        strategyId: state.strategyId || params.strategyId,
+        tuneId: state.tuneId || params.tuneId,
+        deploymentId: state.deploymentId || params.deploymentId,
+    });
+    return {
+        ...state,
+        version: 2,
+        symbol: deployment.symbol,
+        strategyId: deployment.strategyId,
+        tuneId: deployment.tuneId,
+        deploymentId: deployment.deploymentId,
+    };
 }
 
 function safeRecord(value: unknown): Record<string, unknown> {
@@ -281,8 +330,11 @@ function parseSessionState(raw: unknown): ScalpSessionState | null {
     const lastProcessed = safeRecord(row.lastProcessed);
 
     return {
-        version: 1,
+        version: Number(row.version) === 2 ? 2 : 1,
         symbol,
+        strategyId: normalizeScalpStrategyId(row.strategyId) || '',
+        tuneId: normalizeScalpTuneId(row.tuneId, ''),
+        deploymentId: String(row.deploymentId || '').trim(),
         dayKey,
         state: state as ScalpSessionState['state'],
         createdAtMs: Number.isFinite(createdAtMs) && createdAtMs > 0 ? createdAtMs : Date.now(),
@@ -322,15 +374,32 @@ export async function loadScalpSessionState(
     symbol: string,
     dayKey: string,
     strategyId = defaultScalpStrategy.id,
+    opts: ScalpDeploymentKeyOptions = {},
 ): Promise<ScalpSessionState | null> {
-    const resolvedStrategyId = resolveStrategyId(strategyId, defaultScalpStrategy.id);
-    const raw = await kvGetJson<ScalpSessionState>(stateKey(resolvedStrategyId, symbol, dayKey));
+    const deployment = resolveDeploymentKey({
+        symbol,
+        strategyId,
+        tuneId: opts.tuneId,
+        deploymentId: opts.deploymentId,
+    });
+    const raw = await kvGetJson<ScalpSessionState>(stateKey(deployment.deploymentId, dayKey));
     const parsed = parseSessionState(raw);
-    if (parsed) return parsed;
+    if (parsed) return hydrateSessionStateDeployment(parsed, deployment);
 
-    if (resolvedStrategyId === defaultScalpStrategy.id) {
+    if (deployment.tuneId === DEFAULT_SCALP_TUNE_ID) {
+        const legacyStrategyRaw = await kvGetJson<ScalpSessionState>(
+            legacyStrategyStateKey(deployment.strategyId, deployment.symbol, dayKey),
+        );
+        const legacyStrategyParsed = parseSessionState(legacyStrategyRaw);
+        if (legacyStrategyParsed) {
+            return hydrateSessionStateDeployment(legacyStrategyParsed, deployment);
+        }
+    }
+
+    if (deployment.strategyId === defaultScalpStrategy.id && deployment.tuneId === DEFAULT_SCALP_TUNE_ID) {
         const legacyRaw = await kvGetJson<ScalpSessionState>(legacyStateKey(symbol, dayKey));
-        return parseSessionState(legacyRaw);
+        const legacyParsed = parseSessionState(legacyRaw);
+        return legacyParsed ? hydrateSessionStateDeployment(legacyParsed, deployment) : null;
     }
     return null;
 }
@@ -339,9 +408,16 @@ export async function saveScalpSessionState(
     state: ScalpSessionState,
     ttlSeconds = SCALP_DEFAULT_STATE_TTL_SECONDS,
     strategyId = defaultScalpStrategy.id,
+    opts: ScalpDeploymentKeyOptions = {},
 ): Promise<void> {
-    const resolvedStrategyId = resolveStrategyId(strategyId, defaultScalpStrategy.id);
-    await kvSetJson(stateKey(resolvedStrategyId, state.symbol, state.dayKey), state, Math.max(30, Math.floor(ttlSeconds)));
+    const deployment = resolveDeploymentKey({
+        symbol: state.symbol,
+        strategyId: state.strategyId || strategyId,
+        tuneId: opts.tuneId || state.tuneId,
+        deploymentId: opts.deploymentId || state.deploymentId,
+    });
+    const nextState = hydrateSessionStateDeployment(state, deployment);
+    await kvSetJson(stateKey(deployment.deploymentId, nextState.dayKey), nextState, Math.max(30, Math.floor(ttlSeconds)));
 }
 
 function sanitizeJournalEntry(entry: ScalpJournalEntry): ScalpJournalEntry {
@@ -397,19 +473,37 @@ export async function tryAcquireScalpRunLock(
     token: string,
     ttlSeconds: number,
     strategyId = defaultScalpStrategy.id,
+    opts: ScalpDeploymentKeyOptions = {},
 ): Promise<boolean> {
     if (!KV_REST_API_URL || !KV_REST_API_TOKEN) {
         return true;
     }
-    const key = runLockKey(resolveStrategyId(strategyId, defaultScalpStrategy.id), symbol);
+    const deployment = resolveDeploymentKey({
+        symbol,
+        strategyId,
+        tuneId: opts.tuneId,
+        deploymentId: opts.deploymentId,
+    });
+    const key = runLockKey(deployment.deploymentId);
     const ttl = Math.max(15, Math.floor(ttlSeconds));
     const result = await kvRawCommand('SET', key, token, 'NX', 'EX', ttl);
     return String(result || '').toUpperCase() === 'OK';
 }
 
-export async function releaseScalpRunLock(symbol: string, token: string, strategyId = defaultScalpStrategy.id): Promise<void> {
+export async function releaseScalpRunLock(
+    symbol: string,
+    token: string,
+    strategyId = defaultScalpStrategy.id,
+    opts: ScalpDeploymentKeyOptions = {},
+): Promise<void> {
     if (!KV_REST_API_URL || !KV_REST_API_TOKEN) return;
-    const key = runLockKey(resolveStrategyId(strategyId, defaultScalpStrategy.id), symbol);
+    const deployment = resolveDeploymentKey({
+        symbol,
+        strategyId,
+        tuneId: opts.tuneId,
+        deploymentId: opts.deploymentId,
+    });
+    const key = runLockKey(deployment.deploymentId);
     const current = await kvRawCommand('GET', key);
     if (String(current || '') !== token) return;
     await kvRawCommand('DEL', key);

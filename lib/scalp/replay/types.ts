@@ -27,6 +27,9 @@ export interface ScalpReplayCandle {
 export interface ScalpReplayRuntimeConfig {
     symbol: string;
     strategyId: string;
+    tuneId: string;
+    deploymentId: string;
+    tuneLabel: string;
     executeMinutes: number;
     defaultSpreadPips: number;
     spreadFactor: number;
@@ -114,6 +117,10 @@ export interface ScalpReplayTimelineEvent {
 
 export interface ScalpReplaySummary {
     symbol: string;
+    strategyId: string;
+    tuneId: string;
+    deploymentId: string;
+    tuneLabel: string;
     startTs: number | null;
     endTs: number | null;
     runs: number;
@@ -131,6 +138,21 @@ export interface ScalpReplaySummary {
     maxDrawdownR: number;
     avgHoldMinutes: number;
     exitsByReason: Record<string, number>;
+}
+
+export interface ScalpBacktestLeaderboardEntry {
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    deploymentId: string;
+    tuneLabel: string;
+    netR: number;
+    profitFactor: number | null;
+    maxDrawdownR: number;
+    trades: number;
+    winRatePct: number;
+    avgHoldMinutes: number;
+    expectancyR: number;
 }
 
 export interface ScalpReplayResult {

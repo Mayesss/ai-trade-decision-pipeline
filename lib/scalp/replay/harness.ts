@@ -1,9 +1,15 @@
-import { getDefaultScalpStrategy, getScalpStrategyById, resolveScalpStrategyIdForSymbol } from '../strategies/registry';
+import {
+    getDefaultScalpStrategy,
+    getScalpStrategyById,
+    getScalpStrategyPreferredTimeframes,
+    resolveScalpStrategyIdForSymbol,
+} from '../strategies/registry';
 import { applySymbolGuardRiskDefaultsToReplayRuntime } from '../strategies/guardDefaults';
 import { buildScalpEntryPlan, manageScalpOpenTrade, resolveLegacyIfvgEntryIntent } from '../execution';
 import { pipSizeForScalpSymbol, timeframeMinutes } from '../marketData';
 import { buildScalpSessionWindows } from '../sessions';
 import { getScalpStrategyConfig } from '../config';
+import { resolveScalpDeployment } from '../deployments';
 import { advanceScalpStateMachine, createInitialScalpSessionState, deriveScalpDayKey } from '../stateMachine';
 import type { ScalpCandle, ScalpMarketSnapshot, ScalpSessionState, ScalpStrategyConfig } from '../types';
 import type {
@@ -152,9 +158,18 @@ export function defaultScalpReplayConfig(symbol = 'EURUSD'): ScalpReplayRuntimeC
     const cfg = getScalpStrategyConfig();
     const defaultStrategy = getDefaultScalpStrategy();
     const normalizedSymbol = symbol.toUpperCase();
-    const base: ScalpReplayRuntimeConfig = {
+    const strategyId = resolveScalpStrategyIdForSymbol({ symbol: normalizedSymbol, fallbackStrategyId: defaultStrategy.id });
+    const preferredTimeframes = getScalpStrategyPreferredTimeframes(strategyId);
+    const deployment = resolveScalpDeployment({
         symbol: normalizedSymbol,
-        strategyId: resolveScalpStrategyIdForSymbol({ symbol: normalizedSymbol, fallbackStrategyId: defaultStrategy.id }),
+        strategyId,
+    });
+    const base: ScalpReplayRuntimeConfig = {
+        symbol: deployment.symbol,
+        strategyId: deployment.strategyId,
+        tuneId: deployment.tuneId,
+        deploymentId: deployment.deploymentId,
+        tuneLabel: deployment.tuneLabel,
         executeMinutes: cfg.cadence.executeMinutes,
         defaultSpreadPips: 1.1,
         spreadFactor: 1,
@@ -165,8 +180,8 @@ export function defaultScalpReplayConfig(symbol = 'EURUSD'): ScalpReplayRuntimeC
             sessionClockMode: cfg.sessions.clockMode,
             asiaWindowLocal: cfg.sessions.asiaWindowLocal,
             raidWindowLocal: cfg.sessions.raidWindowLocal,
-            asiaBaseTf: 'M15',
-            confirmTf: 'M3',
+            asiaBaseTf: preferredTimeframes?.asiaBaseTf ?? 'M15',
+            confirmTf: preferredTimeframes?.confirmTf ?? 'M3',
             maxTradesPerDay: cfg.risk.maxTradesPerSymbolPerDay,
             riskPerTradePct: cfg.risk.riskPerTradePct,
             referenceEquityUsd: cfg.risk.referenceEquityUsd,
@@ -396,7 +411,7 @@ function closePositionAsTrade(params: {
 }
 
 function summarize(params: {
-    symbol: string;
+    runtime: ScalpReplayRuntimeConfig;
     runs: number;
     trades: ScalpReplayTrade[];
     startTs: number | null;
@@ -426,7 +441,11 @@ function summarize(params: {
     }
 
     return {
-        symbol: params.symbol,
+        symbol: params.runtime.symbol,
+        strategyId: params.runtime.strategyId,
+        tuneId: params.runtime.tuneId,
+        deploymentId: params.runtime.deploymentId,
+        tuneLabel: params.runtime.tuneLabel,
         startTs: params.startTs,
         endTs: params.endTs,
         runs: params.runs,
@@ -457,10 +476,30 @@ export async function runScalpReplay(params: {
     const candles = params.candles.slice().sort((a, b) => a.ts - b.ts);
     if (!candles.length) throw new Error('Replay requires candles');
     const strategyDef = getScalpStrategyById(params.config.strategyId) || getDefaultScalpStrategy();
-    const runtime = applySymbolGuardRiskDefaultsToReplayRuntime({
-        ...params.config,
+    const deployment = resolveScalpDeployment({
+        symbol: params.config.symbol,
         strategyId: strategyDef.id,
+        tuneId: params.config.tuneId,
+        deploymentId: params.config.deploymentId,
     });
+    const preferredTimeframes = getScalpStrategyPreferredTimeframes(strategyDef.id);
+    const shouldApplyPreferredTimeframes =
+        Boolean(preferredTimeframes) &&
+        params.config.strategy.asiaBaseTf === 'M15' &&
+        params.config.strategy.confirmTf === 'M3';
+    const runtime = {
+        ...params.config,
+        symbol: deployment.symbol,
+        strategyId: deployment.strategyId,
+        tuneId: deployment.tuneId,
+        deploymentId: deployment.deploymentId,
+        tuneLabel: deployment.tuneLabel,
+        strategy: {
+            ...params.config.strategy,
+            asiaBaseTf: shouldApplyPreferredTimeframes ? preferredTimeframes!.asiaBaseTf : params.config.strategy.asiaBaseTf,
+            confirmTf: shouldApplyPreferredTimeframes ? preferredTimeframes!.confirmTf : params.config.strategy.confirmTf,
+        },
+    };
     const strategyCfg = buildStrategyConfig(runtime);
     const prepared = prepareReplaySeries({
         candles,
@@ -541,6 +580,9 @@ export async function runScalpReplay(params: {
             if (!state) {
                 state = createInitialScalpSessionState({
                     symbol: runtime.symbol,
+                    strategyId: runtime.strategyId,
+                    tuneId: runtime.tuneId,
+                    deploymentId: runtime.deploymentId,
                     dayKey,
                     nowMs,
                     killSwitchActive: false,
@@ -800,7 +842,7 @@ export async function runScalpReplay(params: {
     emitProgress(driverCandles[driverCandles.length - 1]!.ts, true);
 
     const summary = summarize({
-        symbol: runtime.symbol,
+        runtime,
         runs,
         trades,
         startTs: driverCandles[0]?.ts ?? null,

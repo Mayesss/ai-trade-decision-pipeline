@@ -1,4 +1,6 @@
 import type { ScalpClockMode, ScalpSessionState, ScalpStateMachineInput, ScalpStateMachineResult } from './types';
+import { DEFAULT_SCALP_TUNE_ID, buildScalpDeploymentId } from './deployments';
+import { getDefaultScalpStrategy } from './strategies/registry';
 
 function dayKeyInTimeZone(tsMs: number, timeZone: string): string {
     const fmt = new Intl.DateTimeFormat('en-CA', {
@@ -23,13 +25,25 @@ export function deriveScalpDayKey(nowMs: number, clockMode: ScalpClockMode): str
 
 export function createInitialScalpSessionState(params: {
     symbol: string;
+    strategyId?: string;
+    tuneId?: string;
+    deploymentId?: string;
     dayKey: string;
     nowMs: number;
     killSwitchActive?: boolean;
 }): ScalpSessionState {
+    const strategyId = String(params.strategyId || getDefaultScalpStrategy().id)
+        .trim()
+        .toLowerCase();
+    const tuneId = String(params.tuneId || DEFAULT_SCALP_TUNE_ID)
+        .trim()
+        .toLowerCase();
     return {
-        version: 1,
+        version: 2,
         symbol: params.symbol.toUpperCase(),
+        strategyId,
+        tuneId,
+        deploymentId: String(params.deploymentId || buildScalpDeploymentId({ symbol: params.symbol, strategyId, tuneId })),
         dayKey: params.dayKey,
         state: 'IDLE',
         createdAtMs: params.nowMs,
@@ -90,6 +104,9 @@ export function advanceScalpStateMachine(
     if (next.dayKey !== input.dayKey) {
         const reset = createInitialScalpSessionState({
             symbol: next.symbol,
+            strategyId: next.strategyId,
+            tuneId: next.tuneId,
+            deploymentId: next.deploymentId,
             dayKey: input.dayKey,
             nowMs: input.nowMs,
             killSwitchActive: next.killSwitchActive,

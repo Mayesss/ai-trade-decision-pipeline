@@ -125,6 +125,8 @@ type DashboardSummaryResponse = {
 type ScalpDashboardSymbol = {
   symbol: string;
   strategyId: string;
+  tuneId: string;
+  deploymentId: string;
   tune: string;
   cronSchedule?: string | null;
   cronRoute?: 'execute' | 'execute-hybrid' | string;
@@ -159,6 +161,7 @@ type ScalpSummaryResponse = {
   generatedAtMs?: number;
   dayKey?: string;
   clockMode?: 'LONDON_TZ' | 'UTC_FIXED' | string;
+  source?: 'deployment_registry' | 'cron_symbols' | string;
   strategyId?: string;
   defaultStrategyId?: string;
   strategy?: ScalpStrategyControl;
@@ -172,6 +175,7 @@ type ScalpSummaryResponse = {
     stateCounts?: Record<string, number>;
   };
   symbols?: ScalpDashboardSymbol[];
+  latestExecutionByDeploymentId?: Record<string, Record<string, any>>;
   latestExecutionBySymbol?: Record<string, Record<string, any>>;
   journal?: Array<{
     id?: string;
@@ -288,7 +292,7 @@ export default function Home() {
   const [dashboardRange, setDashboardRange] = useState<DashboardRangeKey>('7D');
   const [strategyMode, setStrategyMode] = useState<StrategyMode>('swing');
   const [scalpSummary, setScalpSummary] = useState<ScalpSummaryResponse | null>(null);
-  const [scalpActiveSymbol, setScalpActiveSymbol] = useState<string | null>(null);
+  const [scalpActiveDeploymentId, setScalpActiveDeploymentId] = useState<string | null>(null);
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
   const [livePriceConnected, setLivePriceConnected] = useState(false);
@@ -547,7 +551,7 @@ export default function Home() {
     const silent = opts.silent === true;
     if (!silent) setLoading(true);
     try {
-      const summaryRes = await fetch('/api/scalp/dashboard/summary', {
+      const summaryRes = await fetch('/api/scalp/dashboard/summary?useDeploymentRegistry=true', {
         headers: buildAdminHeaders(),
         cache: 'no-store',
       });
@@ -752,12 +756,12 @@ export default function Home() {
   useEffect(() => {
     const rows = Array.isArray(scalpSummary?.symbols) ? scalpSummary.symbols : [];
     if (!rows.length) {
-      setScalpActiveSymbol(null);
+      setScalpActiveDeploymentId(null);
       return;
     }
-    setScalpActiveSymbol((prev) => {
-      if (prev && rows.some((row) => row.symbol === prev)) return prev;
-      return rows[0]?.symbol || null;
+    setScalpActiveDeploymentId((prev) => {
+      if (prev && rows.some((row) => row.deploymentId === prev)) return prev;
+      return rows[0]?.deploymentId || null;
     });
   }, [scalpSummary]);
 
@@ -1134,21 +1138,31 @@ export default function Home() {
     : 'Loading selected symbol...';
   const scalpRows = Array.isArray(scalpSummary?.symbols) ? scalpSummary.symbols : [];
   const scalpActiveRow =
-    (scalpActiveSymbol ? scalpRows.find((row) => row.symbol === scalpActiveSymbol) : null) || scalpRows[0] || null;
+    (scalpActiveDeploymentId ? scalpRows.find((row) => row.deploymentId === scalpActiveDeploymentId) : null) || scalpRows[0] || null;
   const scalpActiveJournal = Array.isArray(scalpSummary?.journal)
     ? scalpSummary.journal.filter((entry) => {
         if (!scalpActiveRow) return true;
-        return String(entry.symbol || '')
-          .trim()
-          .toUpperCase() === scalpActiveRow.symbol.toUpperCase();
+        const payload = entry.payload && typeof entry.payload === 'object' ? entry.payload : {};
+        const deploymentId = String((payload as Record<string, unknown>).deploymentId || '').trim();
+        if (deploymentId) return deploymentId === scalpActiveRow.deploymentId;
+        const strategyId = String((payload as Record<string, unknown>).strategyId || '').trim().toLowerCase();
+        return (
+          String(entry.symbol || '').trim().toUpperCase() === scalpActiveRow.symbol.toUpperCase() &&
+          (!strategyId || strategyId === String(scalpActiveRow.strategyId || '').trim().toLowerCase())
+        );
       })
     : [];
+  const scalpLatestExecutionByDeploymentId =
+    scalpSummary?.latestExecutionByDeploymentId && typeof scalpSummary.latestExecutionByDeploymentId === 'object'
+      ? scalpSummary.latestExecutionByDeploymentId
+      : {};
   const scalpLatestExecutionBySymbol =
     scalpSummary?.latestExecutionBySymbol && typeof scalpSummary.latestExecutionBySymbol === 'object'
       ? scalpSummary.latestExecutionBySymbol
       : {};
   const scalpActiveExecution = scalpActiveRow
-    ? (scalpLatestExecutionBySymbol[scalpActiveRow.symbol] ??
+    ? (scalpLatestExecutionByDeploymentId[scalpActiveRow.deploymentId] ??
+        scalpLatestExecutionBySymbol[scalpActiveRow.symbol] ??
         scalpLatestExecutionBySymbol[scalpActiveRow.symbol.toUpperCase()] ??
         null)
     : null;
@@ -1557,7 +1571,7 @@ export default function Home() {
         {strategyMode === 'scalp' && !error && (
           <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">
             {scalpRows.map((row) => {
-              const isActive = scalpActiveRow?.symbol === row.symbol;
+              const isActive = scalpActiveRow?.deploymentId === row.deploymentId;
               const state = scalpStateMeta(row.state);
               const StateIcon = state.Icon;
               const mode = scalpModeMeta(row.dryRunLast);
@@ -1565,8 +1579,8 @@ export default function Home() {
                 row.tradeSide === 'BUY' ? ArrowUpRight : row.tradeSide === 'SELL' ? ArrowDownRight : Circle;
               return (
                 <button
-                  key={row.symbol}
-                  onClick={() => setScalpActiveSymbol(row.symbol)}
+                  key={row.deploymentId}
+                  onClick={() => setScalpActiveDeploymentId(row.deploymentId)}
                   className={`rounded-2xl border px-3 py-2 text-left transition ${
                     row.inTrade
                       ? 'border-emerald-200 bg-emerald-50/80 hover:border-emerald-300'
@@ -1593,6 +1607,9 @@ export default function Home() {
                     </span>
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
+                      tune {row.tune || 'default'}
+                    </span>
                     <span
                       className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${state.className}`}
                     >
@@ -1628,7 +1645,7 @@ export default function Home() {
               </div>
             ) : !scalpRows.length ? (
               <div className="flex items-center justify-center py-12 text-sm font-semibold text-slate-500">
-                No scalp data yet. Add scalp cron calls in `vercel.json`, run one cycle, then refresh.
+                No scalp deployments yet. Add enabled deployments to the registry, run one cycle, then refresh.
               </div>
             ) : (
               <div className="space-y-4">
@@ -1672,8 +1689,19 @@ export default function Home() {
                               <span className="max-w-[280px] truncate font-mono">{scalpActiveRow.strategyId || 'unknown'}</span>
                             </span>
                             <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white/80 px-2 py-0.5">
+                              <Layers3 className="h-3.5 w-3.5 text-slate-500" />
+                              tune {scalpActiveRow.tune || 'default'}
+                            </span>
+                            <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white/80 px-2 py-0.5">
                               <Activity className="h-3.5 w-3.5 text-slate-500" />
-                              {scalpActiveRow.cronSchedule || 'no schedule'}
+                              {scalpActiveRow.cronSchedule || scalpActiveRow.cronRoute || 'no schedule'}
+                            </span>
+                            <span
+                              className="inline-flex max-w-full items-center gap-1 rounded-full border border-slate-200 bg-white/80 px-2 py-0.5"
+                              title={scalpActiveRow.deploymentId}
+                            >
+                              <Database className="h-3.5 w-3.5 text-slate-500" />
+                              <span className="max-w-[280px] truncate font-mono">{scalpActiveRow.deploymentId}</span>
                             </span>
                           </div>
                         </div>
@@ -1706,7 +1734,7 @@ export default function Home() {
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
                       {[
                         {
                           label: 'Trades',
@@ -1721,10 +1749,16 @@ export default function Home() {
                           Icon: Star,
                         },
                         {
-                          label: 'Open',
+                          label: 'Open Deployments',
                           value: String(scalpSummaryOpenCount),
                           tone: 'text-emerald-700',
                           Icon: ArrowUpRight,
+                        },
+                        {
+                          label: 'Deployments',
+                          value: String(scalpRows.length),
+                          tone: 'text-sky-700',
+                          Icon: Layers3,
                         },
                         {
                           label: 'Cycles',

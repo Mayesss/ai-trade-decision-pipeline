@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "updatedAt": "2026-03-05T22:10:00.000Z",
+  "deployments": [
+    {
+      "symbol": "XAUUSDT",
+      "strategyId": "regime_pullback_m15_m3_xauusd",
+      "tuneId": "legacy_loose_tuned",
+      "deploymentId": "XAUUSDT~regime_pullback_m15_m3_xauusd~legacy_loose_tuned",
+      "enabled": true,
+      "source": "manual",
+      "notes": "Legacy execute-hybrid reproduction: XAUUSDT guarded regime-pullback strategy with the loose_tuned hybrid profile override.",
+      "configOverride": {
+        "risk": {
+          "maxTradesPerSymbolPerDay": 4,
+          "takeProfitR": 1
+        },
+        "sweep": {
+          "bufferPips": 0.05,
+          "rejectInsidePips": 0,
+          "rejectMaxBars": 8,
+          "minWickBodyRatio": 0.8
+        },
+        "confirm": {
+          "displacementBodyAtrMult": 0.05,
+          "displacementRangeAtrMult": 0.1,
+          "mssLookbackBars": 2,
+          "mssBreakBufferPips": 0,
+          "ttlMinutes": 30
+        },
+        "ifvg": {
+          "minAtrMult": 0,
+          "maxAtrMult": 3,
+          "entryMode": "first_touch",
+          "ttlMinutes": 45
+        }
+      },
+      "leaderboardEntry": null,
+      "createdAtMs": 1772746662000,
+      "updatedAtMs": 1772746662000,
+      "updatedBy": "codex"
+    }
+  ]
+}

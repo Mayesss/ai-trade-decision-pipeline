@@ -2,6 +2,7 @@ import crypto from 'crypto';
 
 import { applyScalpStrategyConfigOverride, getScalpStrategyConfig, normalizeScalpSymbol } from './config';
 import type { ScalpStrategyConfigOverride } from './config';
+import { resolveScalpDeployment } from './deployments';
 import {
     buildScalpEntryPlan,
     executeScalpEntryPlan,
@@ -11,7 +12,7 @@ import {
 } from './execution';
 import { loadScalpMarketSnapshot } from './marketData';
 import { buildScalpSessionWindows } from './sessions';
-import { getDefaultScalpStrategy, getScalpStrategyById } from './strategies/registry';
+import { getDefaultScalpStrategy, getScalpStrategyById, getScalpStrategyPreferredTimeframes } from './strategies/registry';
 import { applySymbolGuardRiskDefaultsToStrategyConfig } from './strategies/guardDefaults';
 import { advanceScalpStateMachine, createInitialScalpSessionState, deriveScalpDayKey } from './stateMachine';
 import {
@@ -84,6 +85,8 @@ export async function runScalpExecuteCycle(opts: {
     nowMs?: number;
     configOverride?: ScalpStrategyConfigOverride;
     strategyId?: string;
+    tuneId?: string;
+    deploymentId?: string;
 } = {}): Promise<ScalpExecuteCycleResult> {
     const baseCfg = getScalpStrategyConfig();
     let cfg = applyScalpStrategyConfigOverride(baseCfg, opts.configOverride);
@@ -95,11 +98,28 @@ export async function runScalpExecuteCycle(opts: {
     const runtime = await loadScalpStrategyRuntimeSnapshot(cfg.enabled, opts.strategyId);
     const strategyControl = runtime.strategy;
     const strategyId = strategyControl.strategyId;
+    const deployment = resolveScalpDeployment({
+        symbol,
+        strategyId,
+        tuneId: opts.tuneId,
+        deploymentId: opts.deploymentId,
+    });
     const strategyDef =
-        getScalpStrategyById(strategyId) ||
+        getScalpStrategyById(deployment.strategyId) ||
         getScalpStrategyById(runtime.defaultStrategyId) ||
         getDefaultScalpStrategy();
-    cfg = applySymbolGuardRiskDefaultsToStrategyConfig({ cfg, symbol, strategyId });
+    const preferredTimeframes = getScalpStrategyPreferredTimeframes(strategyDef.id);
+    cfg = applySymbolGuardRiskDefaultsToStrategyConfig({ cfg, symbol: deployment.symbol, strategyId: deployment.strategyId });
+    if (preferredTimeframes) {
+        cfg = {
+            ...cfg,
+            timeframes: {
+                ...cfg.timeframes,
+                asiaBase: preferredTimeframes.asiaBaseTf,
+                confirm: preferredTimeframes.confirmTf,
+            },
+        };
+    }
     if (opts.configOverride) {
         cfg = applyScalpStrategyConfigOverride(cfg, opts.configOverride);
     }
@@ -119,7 +139,9 @@ export async function runScalpExecuteCycle(opts: {
                     dryRun,
                     nowMs,
                     runId,
-                    strategyId,
+                    strategyId: deployment.strategyId,
+                    tuneId: deployment.tuneId,
+                    deploymentId: deployment.deploymentId,
                     strategyEnabled: strategyControl.enabled,
                     strategyEnvEnabled: strategyControl.envEnabled,
                     strategyKvEnabled: strategyControl.kvEnabled,
@@ -128,18 +150,23 @@ export async function runScalpExecuteCycle(opts: {
             cfg.storage.journalMax,
         );
         return {
-            generatedAtMs: nowMs,
-            symbol,
-            strategyId,
-            dayKey,
-            dryRun,
-            runLockAcquired: false,
+                generatedAtMs: nowMs,
+                symbol: deployment.symbol,
+                strategyId: deployment.strategyId,
+                tuneId: deployment.tuneId,
+                deploymentId: deployment.deploymentId,
+                dayKey,
+                dryRun,
+                runLockAcquired: false,
             state: 'IDLE',
             reasonCodes,
         };
     }
 
-    const runLockAcquired = await tryAcquireScalpRunLock(symbol, runId, cfg.idempotency.runLockSeconds, strategyId);
+    const runLockAcquired = await tryAcquireScalpRunLock(symbol, runId, cfg.idempotency.runLockSeconds, strategyId, {
+        tuneId: deployment.tuneId,
+        deploymentId: deployment.deploymentId,
+    });
 
     if (!runLockAcquired) {
         const reasonCodes = ['SCALP_RUN_LOCK_ACTIVE'];
@@ -150,14 +177,23 @@ export async function runScalpExecuteCycle(opts: {
                 dayKey,
                 level: 'warn',
                 reasonCodes,
-                payload: { dryRun, nowMs, runId, strategyId },
+                payload: {
+                    dryRun,
+                    nowMs,
+                    runId,
+                    strategyId: deployment.strategyId,
+                    tuneId: deployment.tuneId,
+                    deploymentId: deployment.deploymentId,
+                },
             }),
             cfg.storage.journalMax,
         );
         return {
             generatedAtMs: nowMs,
-            symbol,
-            strategyId,
+            symbol: deployment.symbol,
+            strategyId: deployment.strategyId,
+            tuneId: deployment.tuneId,
+            deploymentId: deployment.deploymentId,
             dayKey,
             dryRun,
             runLockAcquired: false,
@@ -167,11 +203,17 @@ export async function runScalpExecuteCycle(opts: {
     }
 
     try {
-        const loadedState = await loadScalpSessionState(symbol, dayKey, strategyId);
+        const loadedState = await loadScalpSessionState(symbol, dayKey, strategyId, {
+            tuneId: deployment.tuneId,
+            deploymentId: deployment.deploymentId,
+        });
         const currentState =
             loadedState ||
             createInitialScalpSessionState({
-                symbol,
+                symbol: deployment.symbol,
+                strategyId: deployment.strategyId,
+                tuneId: deployment.tuneId,
+                deploymentId: deployment.deploymentId,
                 dayKey,
                 nowMs,
                 killSwitchActive: cfg.risk.killSwitch,
@@ -278,7 +320,9 @@ export async function runScalpExecuteCycle(opts: {
                             dryRun,
                             nowMs,
                             runId,
-                            strategyId,
+                            strategyId: deployment.strategyId,
+                            tuneId: deployment.tuneId,
+                            deploymentId: deployment.deploymentId,
                             message: err?.message || String(err),
                         },
                     }),
@@ -298,18 +342,23 @@ export async function runScalpExecuteCycle(opts: {
             killSwitch: cfg.risk.killSwitch,
         });
 
-        await saveScalpSessionState(nextState, cfg.storage.sessionTtlSeconds, strategyId);
+        await saveScalpSessionState(nextState, cfg.storage.sessionTtlSeconds, strategyId, {
+            tuneId: deployment.tuneId,
+            deploymentId: deployment.deploymentId,
+        });
         await safeAppendJournal(
             journalEntry({
                 type: transition.transitioned ? 'state' : 'execution',
-                symbol,
+                symbol: deployment.symbol,
                 dayKey,
                 reasonCodes,
                 payload: {
                     dryRun,
                     nowMs,
                     runId,
-                    strategyId,
+                    strategyId: deployment.strategyId,
+                    tuneId: deployment.tuneId,
+                    deploymentId: deployment.deploymentId,
                     state: nextState.state,
                     transitioned: transition.transitioned,
                     maxTradesPerDay: cfg.risk.maxTradesPerSymbolPerDay,
@@ -341,8 +390,10 @@ export async function runScalpExecuteCycle(opts: {
 
         return {
             generatedAtMs: nowMs,
-            symbol,
-            strategyId,
+            symbol: deployment.symbol,
+            strategyId: deployment.strategyId,
+            tuneId: deployment.tuneId,
+            deploymentId: deployment.deploymentId,
             dayKey,
             dryRun,
             runLockAcquired: true,
@@ -361,7 +412,9 @@ export async function runScalpExecuteCycle(opts: {
                     dryRun,
                     nowMs,
                     runId,
-                    strategyId,
+                    strategyId: deployment.strategyId,
+                    tuneId: deployment.tuneId,
+                    deploymentId: deployment.deploymentId,
                     message: err?.message || String(err),
                 },
             }),
@@ -369,6 +422,9 @@ export async function runScalpExecuteCycle(opts: {
         );
         throw err;
     } finally {
-        await releaseScalpRunLock(symbol, runId, strategyId);
+        await releaseScalpRunLock(symbol, runId, strategyId, {
+            tuneId: deployment.tuneId,
+            deploymentId: deployment.deploymentId,
+        });
     }
 }
