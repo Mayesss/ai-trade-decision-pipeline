@@ -103,8 +103,34 @@ MARKETAUX_API_KEY=...
 # SCALP_BTCUSDT_GUARD_TP1_CLOSE_PCT=20
 # SCALP_BTCUSDT_GUARD_TRAIL_ATR_MULT=1.4
 # SCALP_BTCUSDT_GUARD_TIME_STOP_BARS=15
-# SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT=btcusdt_high_pf # btcusdt_return | btcusdt_low_dd | btcusdt_high_pf | off
+# SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_EXPERIMENT=false          # default off; set true to use experimental btcusdt_high_pf profile
+# SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT=btcusdt_high_pf   # btcusdt_return | btcusdt_low_dd | btcusdt_high_pf | off
 # SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_BERLIN=10,11            # explicit hour list override (wins over variant)
+# SCALP_REQUIRE_PROMOTION_ELIGIBLE=false                     # when true, execute-deployments runs only promotionGate.eligible entries
+# SCALP_DEPLOYMENT_FORWARD_GATE_MIN_ROLLS=8
+# SCALP_DEPLOYMENT_FORWARD_GATE_MIN_PROFITABLE_PCT=55
+# SCALP_DEPLOYMENT_FORWARD_GATE_MIN_MEAN_EXPECTANCY_R=0
+# SCALP_DEPLOYMENT_FORWARD_GATE_MIN_TRADES_PER_WINDOW=2
+# SCALP_DEPLOYMENT_FORWARD_GATE_MAX_DRAWDOWN_R=
+# SCALP_DEPLOYMENT_ALLOW_INELIGIBLE_ENABLE=false            # emergency override; avoid enabling unless needed
+# SCALP_SYMBOL_DISCOVERY_POLICY_PATH=data/scalp-symbol-discovery-policy.json
+# SCALP_SYMBOL_UNIVERSE_STORE=auto                           # auto | kv | file
+# SCALP_SYMBOL_UNIVERSE_PATH=data/scalp-symbol-universe.json # used when store=file
+# SCALP_RESEARCH_REPORT_STORE=auto                           # auto | kv | file
+# SCALP_RESEARCH_REPORT_PATH=data/scalp-research-report.json # used when store=file
+# SCALP_GUARDRAIL_AUTO_PAUSE=true
+# SCALP_GUARDRAIL_MIN_TRADES_30D=8
+# SCALP_GUARDRAIL_MIN_EXPECTANCY_R_30D=-0.15
+# SCALP_GUARDRAIL_MAX_DRAWDOWN_R_30D=
+# SCALP_GUARDRAIL_MAX_EXPECTANCY_DRIFT_R_30D=
+# SCALP_GUARDRAIL_MAX_TRADES_PER_DAY_30D=
+# SCALP_GUARDRAIL_MIN_FORWARD_PROFITABLE_PCT=
+# SCALP_HOUSEKEEPING_CYCLE_RETENTION_DAYS=14
+# SCALP_HOUSEKEEPING_LOCK_MAX_AGE_MINUTES=45
+# SCALP_HOUSEKEEPING_MAX_SCAN_KEYS=4000
+# SCALP_HOUSEKEEPING_REFRESH_REPORT=true
+# SCALP_HOUSEKEEPING_JOURNAL_MAX=500
+# SCALP_HOUSEKEEPING_TRADE_LEDGER_MAX=10000
 
 # KV (Upstash REST)
 KV_REST_API_URL=https://...
@@ -176,21 +202,48 @@ npm run start
   - Body: `{ "secret": "..." }` to validate admin access when `ADMIN_ACCESS_SECRET` is set.
 - Admin protection policy
   - All API routes except `/api/admin-auth` require `x-admin-access-secret: <ADMIN_ACCESS_SECRET>` (or `Authorization: Bearer <ADMIN_ACCESS_SECRET>`) when `ADMIN_ACCESS_SECRET` is set.
-  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/scalp/cron/execute`, `/api/scalp/cron/execute-hybrid`.
+  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/scalp/cron/execute-deployments`, `/api/scalp/cron/discover-symbols`, `/api/scalp/cron/research-cycle-start`, `/api/scalp/cron/research-cycle-worker`, `/api/scalp/cron/research-cycle-aggregate`, `/api/scalp/cron/research-cycle-sync-gates`, `/api/scalp/cron/research-report`, `/api/scalp/cron/live-guardrail-monitor`, `/api/scalp/cron/housekeeping`.
 - `GET /api/forex/*`
   - Forex mode routes are deprecated and currently return `410` with `error=forex_mode_deprecated`.
-- `GET /api/scalp/cron/execute?symbol=EURUSD&dryRun=true`
-  - Capital-oriented scalp strategy phase 3 loop: session windows, Asia range, sweep/rejection, displacement + MSS, iFVG retest, deterministic entry plan, broker reconciliation, and optional execution.
-  - Scalp timeframes are fixed to `M15` base (`asiaBase`) and `M3` confirmation (`confirm`).
-  - `dryRun=true` simulates entries and persists state/journal without placing orders.
-  - Live entries require both `dryRun=false` and `SCALP_LIVE_ENABLED=true` (fail-closed by default).
-  - Supports optional `nowMs` query for deterministic dry-run replays of cron ticks.
-  - Supports optional `strategyId=<id>` (for example `regime_pullback_m15_m3`); if omitted, runtime default strategy is used.
-- `GET /api/scalp/cron/execute-hybrid?symbol=EURUSD&dryRun=true`
-  - Runs the same scalp execute cycle with per-symbol profile overrides from `data/scalp-hybrid-policy.json`.
-  - Defaults to `baseline` profile and applies `loose` only for symbols configured in `symbolProfiles`.
-  - Optional query: `profile=baseline|loose|strict` to force a profile for the request.
-  - Optional query: `strategyId=<id>` to run the selected registered scalp strategy; this is how symbol-specific tuning is pinned from cron paths.
+- `GET /api/scalp/cron/execute-deployments?all=true&dryRun=true`
+  - Runs enabled deployments from `data/scalp-deployments.json` (or configured registry path).
+  - Use `all=true` for one cron pass across all enabled deployment rows, or `symbol=<SYMBOL>` to target one symbol.
+  - Optional query: `requirePromotionEligible=true` to execute only deployments with `promotionGate.eligible=true`.
+- `GET /api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true`
+  - Weekly symbol-discovery cron. Scores symbols using policy + history quality + optional live quote checks, then writes the selected universe snapshot.
+  - Policy file: `data/scalp-symbol-discovery-policy.json`.
+  - Optional query: `maxCandidates=<int>` to cap processed candidates for one run.
+- `GET /api/scalp/cron/research-cycle-start?dryRun=false`
+  - Starts a chunked offline research cycle over the active symbol universe (or explicit `symbols=...`) and persists task rows in KV.
+  - Optional query params: `symbols=BTCUSDT,XAUUSDT`, `lookbackDays`, `chunkDays`, `maxTasks`, `maxAttempts`, `minCandlesPerTask`, `force`.
+- `GET /api/scalp/cron/research-cycle-worker?maxRuns=2`
+  - Claims pending/stale research tasks, runs replay for each claimed task, and writes per-task metrics.
+  - Optional query params: `cycleId`, `workerId`, `aggregateAfter=true|false`, `finalizeWhenDone=true|false`, `syncPromotionGates=true|false`, `requireCompletedCycleForSync=true|false`.
+- `GET /api/scalp/cron/research-cycle-aggregate`
+  - Recomputes cycle totals + candidate aggregates from task rows and stores the latest summary.
+  - Optional query params: `cycleId`, `finalizeWhenDone=true|false`.
+- `GET /api/scalp/cron/research-cycle-sync-gates`
+  - Derives forward-validation metrics from research-cycle windows and updates deployment `promotionGate` eligibility.
+  - Defaults to matrix/backtest deployment sources and requires completed cycle status by default.
+  - Optional query params: `cycleId`, `sources=matrix,backtest`, `dryRun=true|false`, `requireCompletedCycle=true|false`.
+- `GET /api/scalp/cron/research-report`
+  - Builds a portfolio/operator report snapshot from deployment registry, promotion-gate state, recent trade ledger performance, and cross-deployment correlation.
+  - Optional query params: `dryRun=true|false`, `cycleId`, `tradeLimit`, `monthlyMonths`.
+- `GET /api/scalp/cron/live-guardrail-monitor`
+  - Evaluates enabled deployments against live guardrail thresholds (expectancy, drawdown, drift vs forward, churn proxy) and emits risk journal events.
+  - Can auto-pause breached deployments when `autoPause=true`.
+  - Optional query params: `dryRun=true|false`, `autoPause=true|false`, `tradeLimit`, `monthlyMonths`.
+- `GET /api/scalp/cron/housekeeping`
+  - Cleans stale/orphaned research artifacts and lock keys, compacts journal/trade-ledger lists, and optionally refreshes research report snapshot.
+  - Optional query params: `dryRun=true|false`, `cycleRetentionDays`, `lockMaxAgeMinutes`, `maxScanKeys`, `refreshReport=true|false`.
+- `GET /api/scalp/research/universe`
+  - Returns the latest persisted symbol-discovery snapshot (selected symbols, adds/removes, candidate diagnostics).
+- `GET /api/scalp/research/cycle`
+  - Returns one research cycle snapshot + latest aggregate summary.
+  - Optional query params: `cycleId`, `refreshSummary=true|false`, `includeTasks=true|false`, `taskLimit`.
+- `GET /api/scalp/research/report`
+  - Returns the latest stored operator report snapshot.
+  - Optional query params: `refresh=true|false`, `cycleId`, `tradeLimit`, `monthlyMonths`.
 - `GET /api/scalp/dashboard/summary`
   - Scalp dashboard payload for UI tab (policy metadata, per-symbol state snapshot, aggregated counters, and recent journal tail).
   - Optional query: `strategyId=<id>` to view state/journal for a specific strategy.
@@ -220,11 +273,6 @@ npm run start
   - In history-source mode with `M15/M3`, replay uses `15m` candles for base/chart and `1m` candles for confirmation/price (aggregated to `M3`) to mirror live logic and reduce runtime cost.
   - Auto-falls back source resolution (`1m -> 5m -> 15m -> 1h`) if `1m` prices are unavailable for the symbol/range.
   - Returns summary, trades, and chart payload (`candles`, `markers`, `tradeSegments`) for UI rendering.
-- `POST /api/scalp/hybrid/promote-backtest`
-  - Admin-only endpoint to promote a backtest result into hybrid live policy.
-  - Assigns `symbol -> profile` in `data/scalp-hybrid-policy.json`.
-  - Optional `applyProfileParams=true` applies profile overrides from backtest `effectiveConfig` (risk/sweep/confirm/ifvg).
-  - Updates `updatedAt`, increments `version`, and returns the resolved policy/profile summary.
 ## Dry-Run Safety
 `dryRun` defaults to `false` in the analysis routes. If you are testing and do not want real orders, pass `dryRun=true` explicitly.
 
@@ -385,8 +433,16 @@ node --import tsx scripts/scalp-replay-matrix.ts \
 - KV REST endpoint/token must be reachable from the runtime; Bitget/AI/News calls require outbound network access.
 - Current cron entries include:
   - `/api/swing/analyze?...&dryRun=false` hourly (live-trading mode).
-  - `/api/scalp/cron/execute-hybrid?symbol=...&dryRun=true` hourly per symbol (safe default for rollout).
-  - Symbol-specific scalp tuning can be pinned via query `strategyId=...` (for example `strategyId=regime_pullback_m15_m3_btcusdt` for BTCUSDT).
+  - `/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true` weekly (candidate-universe refresh).
+  - `/api/scalp/cron/research-cycle-start?dryRun=false&force=false` weekly after discovery (creates task graph).
+  - `/api/scalp/cron/research-cycle-worker?maxRuns=2&aggregateAfter=false&syncPromotionGates=false...` every 2 minutes (executes chunked replay tasks with lower per-task overhead).
+  - `/api/scalp/cron/research-cycle-aggregate?...` every 10 minutes (refreshes cycle summary/status).
+  - `/api/scalp/cron/research-cycle-sync-gates?...` every 20 minutes (reconciles deployment promotion gates from completed cycles).
+  - `/api/scalp/cron/research-report?dryRun=false` hourly (refreshes operator portfolio report snapshot).
+  - `/api/scalp/cron/live-guardrail-monitor?dryRun=false&autoPause=true` every 15 minutes (detects live drift and auto-pauses breached deployments).
+  - `/api/scalp/cron/housekeeping?dryRun=false&refreshReport=true` hourly (retention cleanup + lock cleanup + list compaction).
+  - `/api/scalp/cron/execute-deployments?all=true&dryRun=false` every minute across enabled deployments.
+  - Symbol-specific scalp tuning is pinned by deployment row (`strategyId` + `tuneId`) in `data/scalp-deployments.json`.
 - Cron-declared routes are intentionally allowed without admin secret; non-cron routes remain protected when `ADMIN_ACCESS_SECRET` is set.
 
 ## Troubleshooting

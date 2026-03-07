@@ -129,7 +129,7 @@ type ScalpDashboardSymbol = {
   deploymentId: string;
   tune: string;
   cronSchedule?: string | null;
-  cronRoute?: 'execute' | 'execute-hybrid' | string;
+  cronRoute?: 'execute-deployments' | string;
   cronPath?: string | null;
   dayKey: string;
   state: string | null;
@@ -192,6 +192,137 @@ type ScalpSummaryResponse = {
   }>;
 };
 
+type ScalpForwardValidation = {
+  rollCount?: number;
+  profitableWindowPct?: number;
+  meanExpectancyR?: number;
+  meanProfitFactor?: number | null;
+  maxDrawdownR?: number | null;
+  minTradesPerWindow?: number | null;
+  selectionWindowDays?: number | null;
+  forwardWindowDays?: number | null;
+};
+
+type ScalpResearchReportDeployment = {
+  deploymentId: string;
+  symbol: string;
+  strategyId: string;
+  tuneId: string;
+  source?: string;
+  enabled?: boolean;
+  promotionEligible?: boolean;
+  promotionReason?: string | null;
+  forwardValidation?: ScalpForwardValidation | null;
+  perf30d?: {
+    trades?: number;
+    wins?: number;
+    losses?: number;
+    netR?: number;
+    expectancyR?: number;
+    winRatePct?: number;
+    maxDrawdownR?: number;
+  };
+  perf90d?: {
+    trades?: number;
+    wins?: number;
+    losses?: number;
+    netR?: number;
+    expectancyR?: number;
+    winRatePct?: number;
+    maxDrawdownR?: number;
+  };
+};
+
+type ScalpResearchReportSnapshot = {
+  generatedAtMs?: number;
+  generatedAtIso?: string;
+  cycle?: {
+    cycleId?: string | null;
+    status?: string | null;
+    progressPct?: number | null;
+    tasks?: number | null;
+    completed?: number | null;
+    failed?: number | null;
+    candidateCount?: number | null;
+  };
+  summary?: {
+    deploymentsTotal?: number;
+    deploymentsEnabled?: number;
+    enabledPromotionEligible?: number;
+    enabledPromotionIneligible?: number;
+    enabledWithoutGate?: number;
+    enabledSymbols?: number;
+    avgAbsPairCorrelation?: number | null;
+  };
+  deployments?: ScalpResearchReportDeployment[];
+};
+
+type ScalpResearchReportResponse = {
+  ok?: boolean;
+  snapshot?: ScalpResearchReportSnapshot;
+};
+
+type ScalpResearchCycleResponse = {
+  ok?: boolean;
+  cycleId?: string;
+  cycle?: {
+    cycleId?: string;
+    status?: string;
+    createdAtMs?: number;
+    updatedAtMs?: number;
+  };
+  summary?: {
+    status?: string;
+    progressPct?: number;
+    generatedAtMs?: number;
+    totals?: {
+      tasks?: number;
+      pending?: number;
+      running?: number;
+      completed?: number;
+      failed?: number;
+    };
+  } | null;
+};
+
+type ScalpResearchUniverseResponse = {
+  ok?: boolean;
+  selectedCount?: number;
+  candidatesEvaluated?: number;
+  generatedAtIso?: string;
+  snapshot?: {
+    selectedSymbols?: string[];
+    candidatesEvaluated?: number;
+    generatedAtIso?: string;
+  };
+};
+
+type ScalpOpsDeploymentRow = {
+  deploymentId: string;
+  symbol: string;
+  strategyId: string;
+  tuneId: string;
+  source: string;
+  enabled: boolean;
+  promotionEligible: boolean;
+  promotionReason: string | null;
+  forwardValidation: ScalpForwardValidation | null;
+  perf30dTrades: number | null;
+  perf30dExpectancyR: number | null;
+  perf30dNetR: number | null;
+  perf30dMaxDrawdownR: number | null;
+  runtime: ScalpDashboardSymbol | null;
+};
+
+type ScalpOpsCronStatus = 'healthy' | 'lagging' | 'unknown';
+type ScalpOpsCronRow = {
+  id: string;
+  cadence: string;
+  role: string;
+  status: ScalpOpsCronStatus;
+  lastRunAtMs: number | null;
+};
+
 type DashboardDecisionResponse = {
   symbol: string;
   category?: string | null;
@@ -242,6 +373,7 @@ const WS_RECONNECT_MS = 1500;
 const WS_PING_MS = 25_000;
 const CAPITAL_LIVE_POLL_MS = 3000;
 const SCALP_LIVE_POLL_MS = 3000;
+const SCALP_RESEARCH_REFRESH_MS = 45_000;
 
 const ADMIN_SECRET_STORAGE_KEY = 'admin_access_secret';
 const ADMIN_AUTH_TIMEOUT_MS = 4000;
@@ -296,6 +428,9 @@ export default function Home() {
   const [dashboardRange, setDashboardRange] = useState<DashboardRangeKey>('7D');
   const [strategyMode, setStrategyMode] = useState<StrategyMode>('swing');
   const [scalpSummary, setScalpSummary] = useState<ScalpSummaryResponse | null>(null);
+  const [scalpResearchCycle, setScalpResearchCycle] = useState<ScalpResearchCycleResponse | null>(null);
+  const [scalpResearchReport, setScalpResearchReport] = useState<ScalpResearchReportSnapshot | null>(null);
+  const [scalpResearchUniverse, setScalpResearchUniverse] = useState<ScalpResearchUniverseResponse | null>(null);
   const [scalpActiveDeploymentId, setScalpActiveDeploymentId] = useState<string | null>(null);
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
@@ -303,6 +438,7 @@ export default function Home() {
   const [themePreference, setThemePreference] = useState<ThemePreference>('system');
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>('light');
   const evaluatePollTimersRef = useRef<Record<string, number>>({});
+  const scalpResearchFetchedAtMsRef = useRef<number>(0);
 
   const readStoredAdminSecret = () => {
     if (typeof window === 'undefined') return null;
@@ -572,6 +708,56 @@ export default function Home() {
       }
       const summaryJson: ScalpSummaryResponse = await summaryRes.json();
       setScalpSummary(summaryJson);
+      const nowMs = Date.now();
+      const shouldRefreshResearch =
+        !silent || nowMs - scalpResearchFetchedAtMsRef.current >= SCALP_RESEARCH_REFRESH_MS;
+      if (shouldRefreshResearch) {
+        const fetchScalpEndpoint = async (url: string): Promise<{ status: number; json: any | null }> => {
+          const res = await fetch(url, {
+            headers: buildAdminHeaders(),
+            cache: 'no-store',
+          });
+          if (res.status === 401) {
+            handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+            throw new Error('Unauthorized');
+          }
+          if (res.status === 404) {
+            return { status: 404, json: null };
+          }
+          if (!res.ok) {
+            return { status: res.status, json: null };
+          }
+          const json = await res.json().catch(() => null);
+          return { status: res.status, json };
+        };
+
+        const [cycleResult, reportResult, universeResult] = await Promise.all([
+          fetchScalpEndpoint('/api/scalp/research/cycle'),
+          fetchScalpEndpoint('/api/scalp/research/report'),
+          fetchScalpEndpoint('/api/scalp/research/universe'),
+        ]);
+
+        if (cycleResult.status === 200 && cycleResult.json) {
+          setScalpResearchCycle(cycleResult.json as ScalpResearchCycleResponse);
+        } else if (cycleResult.status === 404) {
+          setScalpResearchCycle(null);
+        }
+
+        if (reportResult.status === 200 && reportResult.json) {
+          const reportJson = reportResult.json as ScalpResearchReportResponse;
+          setScalpResearchReport(reportJson.snapshot || null);
+        } else if (reportResult.status === 404) {
+          setScalpResearchReport(null);
+        }
+
+        if (universeResult.status === 200 && universeResult.json) {
+          setScalpResearchUniverse(universeResult.json as ScalpResearchUniverseResponse);
+        } else if (universeResult.status === 404) {
+          setScalpResearchUniverse(null);
+        }
+
+        scalpResearchFetchedAtMsRef.current = nowMs;
+      }
       setError(null);
     } catch (err: any) {
       setError(err?.message || 'Failed to load scalp dashboard');
@@ -1205,6 +1391,213 @@ export default function Home() {
     scalpActiveRow && typeof scalpActiveRow.maxDrawdownR === 'number' && Number.isFinite(scalpActiveRow.maxDrawdownR)
       ? scalpActiveRow.maxDrawdownR
       : null;
+  const asFiniteNumber = (value: unknown): number | null => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+  const scalpReportDeployments = Array.isArray(scalpResearchReport?.deployments)
+    ? scalpResearchReport.deployments
+    : [];
+  const scalpRuntimeByDeploymentId = new Map<string, ScalpDashboardSymbol>(
+    scalpRows.map((row) => [row.deploymentId, row]),
+  );
+  const scalpOpsDeployments: ScalpOpsDeploymentRow[] =
+    scalpReportDeployments.length > 0
+      ? scalpReportDeployments.map((row) => {
+          const runtime = scalpRuntimeByDeploymentId.get(row.deploymentId) || null;
+          return {
+            deploymentId: row.deploymentId,
+            symbol: row.symbol,
+            strategyId: row.strategyId,
+            tuneId: String(row.tuneId || runtime?.tuneId || runtime?.tune || 'default'),
+            source: String(row.source || 'report'),
+            enabled: row.enabled !== false,
+            promotionEligible: Boolean(row.promotionEligible),
+            promotionReason: row.promotionReason || null,
+            forwardValidation: row.forwardValidation || null,
+            perf30dTrades: asFiniteNumber(row.perf30d?.trades),
+            perf30dExpectancyR: asFiniteNumber(row.perf30d?.expectancyR),
+            perf30dNetR: asFiniteNumber(row.perf30d?.netR),
+            perf30dMaxDrawdownR: asFiniteNumber(row.perf30d?.maxDrawdownR),
+            runtime,
+          };
+        })
+      : scalpRows.map((row) => ({
+          deploymentId: row.deploymentId,
+          symbol: row.symbol,
+          strategyId: row.strategyId,
+          tuneId: String(row.tuneId || row.tune || 'default'),
+          source: 'runtime',
+          enabled: true,
+          promotionEligible: false,
+          promotionReason: null,
+          forwardValidation: null,
+          perf30dTrades: asFiniteNumber(row.tradesPlaced),
+          perf30dExpectancyR:
+            row.tradesPlaced > 0 && typeof row.netR === 'number' && Number.isFinite(row.netR)
+              ? row.netR / row.tradesPlaced
+              : null,
+          perf30dNetR: asFiniteNumber(row.netR),
+          perf30dMaxDrawdownR: asFiniteNumber(row.maxDrawdownR),
+          runtime: row,
+        }));
+
+  const scalpActiveOpsRow =
+    (scalpActiveDeploymentId
+      ? scalpOpsDeployments.find((row) => row.deploymentId === scalpActiveDeploymentId)
+      : null) ||
+    scalpOpsDeployments[0] ||
+    null;
+  const scalpEnabledDeploymentCount = scalpOpsDeployments.filter((row) => row.enabled).length;
+  const scalpPromotionEligibleCount = scalpOpsDeployments.filter(
+    (row) => row.enabled && row.promotionEligible,
+  ).length;
+  const scalpForwardExpectancyRows = scalpOpsDeployments
+    .map((row) => asFiniteNumber(row.forwardValidation?.meanExpectancyR))
+    .filter((row): row is number => row !== null);
+  const scalpForwardProfitablePctRows = scalpOpsDeployments
+    .map((row) => asFiniteNumber(row.forwardValidation?.profitableWindowPct))
+    .filter((row): row is number => row !== null);
+  const scalpMeanForwardExpectancyR = scalpForwardExpectancyRows.length
+    ? scalpForwardExpectancyRows.reduce((acc, row) => acc + row, 0) / scalpForwardExpectancyRows.length
+    : null;
+  const scalpMeanForwardProfitablePct = scalpForwardProfitablePctRows.length
+    ? scalpForwardProfitablePctRows.reduce((acc, row) => acc + row, 0) / scalpForwardProfitablePctRows.length
+    : null;
+  const scalpAvgAbsPairCorrelation = asFiniteNumber(scalpResearchReport?.summary?.avgAbsPairCorrelation);
+  const scalpCycleProgressPct =
+    asFiniteNumber(scalpResearchCycle?.summary?.progressPct) ??
+    asFiniteNumber(scalpResearchReport?.cycle?.progressPct);
+  const scalpCycleTasks =
+    asFiniteNumber(scalpResearchCycle?.summary?.totals?.tasks) ??
+    asFiniteNumber(scalpResearchReport?.cycle?.tasks);
+  const scalpCycleCompleted =
+    asFiniteNumber(scalpResearchCycle?.summary?.totals?.completed) ??
+    asFiniteNumber(scalpResearchReport?.cycle?.completed);
+  const scalpCycleFailed =
+    asFiniteNumber(scalpResearchCycle?.summary?.totals?.failed) ??
+    asFiniteNumber(scalpResearchReport?.cycle?.failed);
+  const scalpUniverseSelectedCount =
+    asFiniteNumber(scalpResearchUniverse?.selectedCount) ??
+    asFiniteNumber(scalpResearchUniverse?.snapshot?.selectedSymbols?.length);
+  const scalpUniverseCandidatesEvaluated =
+    asFiniteNumber(scalpResearchUniverse?.candidatesEvaluated) ??
+    asFiniteNumber(scalpResearchUniverse?.snapshot?.candidatesEvaluated);
+
+  const scalpJournalRows = Array.isArray(scalpSummary?.journal) ? scalpSummary.journal : [];
+  const scalpLastExecuteRunAtMs = scalpRows.reduce<number | null>((acc, row) => {
+    if (typeof row.lastRunAtMs !== 'number' || !Number.isFinite(row.lastRunAtMs)) return acc;
+    if (acc === null) return row.lastRunAtMs;
+    return Math.max(acc, row.lastRunAtMs);
+  }, null);
+  const scalpLastGuardrailAtMs = scalpJournalRows.reduce<number | null>((acc, entry) => {
+    const timestampMs =
+      typeof entry.timestampMs === 'number' && Number.isFinite(entry.timestampMs)
+        ? entry.timestampMs
+        : null;
+    if (timestampMs === null) return acc;
+    const isGuardrail =
+      String(entry.type || '').trim().toUpperCase() === 'RISK' ||
+      (Array.isArray(entry.reasonCodes)
+        ? entry.reasonCodes.some((code) => String(code || '').trim().toUpperCase().includes('GUARDRAIL'))
+        : false);
+    if (!isGuardrail) return acc;
+    if (acc === null) return timestampMs;
+    return Math.max(acc, timestampMs);
+  }, null);
+  const scalpCycleUpdatedAtMs =
+    asFiniteNumber(scalpResearchCycle?.cycle?.updatedAtMs) ??
+    asFiniteNumber(scalpResearchCycle?.summary?.generatedAtMs) ??
+    asFiniteNumber(scalpResearchReport?.generatedAtMs);
+  const scalpReportGeneratedAtMs = asFiniteNumber(scalpResearchReport?.generatedAtMs);
+  const scalpDashboardGeneratedAtMs = asFiniteNumber(scalpSummary?.generatedAtMs);
+  const scalpStatusFromTs = (ts: number | null, staleMs: number): ScalpOpsCronStatus => {
+    if (typeof ts !== 'number' || !Number.isFinite(ts)) return 'unknown';
+    return Date.now() - ts <= staleMs ? 'healthy' : 'lagging';
+  };
+  const scalpCronRows: ScalpOpsCronRow[] = [
+    {
+      id: 'scalp_cycle_start',
+      cadence: 'Daily',
+      role: 'Freeze universe and emit task manifest',
+      status: scalpStatusFromTs(scalpCycleUpdatedAtMs, 36 * 60 * 60_000),
+      lastRunAtMs: scalpCycleUpdatedAtMs,
+    },
+    {
+      id: 'scalp_cycle_worker',
+      cadence: 'Every 1-2m',
+      role: 'Claim and execute replay chunks',
+      status: scalpStatusFromTs(scalpCycleUpdatedAtMs, 20 * 60_000),
+      lastRunAtMs: scalpCycleUpdatedAtMs,
+    },
+    {
+      id: 'scalp_cycle_aggregate',
+      cadence: 'Every 10m',
+      role: 'Compute candidate/forward summary',
+      status: scalpStatusFromTs(scalpCycleUpdatedAtMs, 45 * 60_000),
+      lastRunAtMs: scalpCycleUpdatedAtMs,
+    },
+    {
+      id: 'scalp_promotion_gate_apply',
+      cadence: 'Daily',
+      role: 'Apply forward validation gate',
+      status: scalpStatusFromTs(scalpReportGeneratedAtMs, 36 * 60 * 60_000),
+      lastRunAtMs: scalpReportGeneratedAtMs,
+    },
+    {
+      id: 'scalp_execute_deployments',
+      cadence: 'Every 1m',
+      role: 'Run enabled and gate-eligible deployments',
+      status: scalpStatusFromTs(scalpLastExecuteRunAtMs, 10 * 60_000),
+      lastRunAtMs: scalpLastExecuteRunAtMs,
+    },
+    {
+      id: 'scalp_live_guardrail_monitor',
+      cadence: 'Every 5-15m',
+      role: 'Pause hard-breach deployments',
+      status: scalpStatusFromTs(
+        scalpLastGuardrailAtMs ?? scalpReportGeneratedAtMs,
+        60 * 60_000,
+      ),
+      lastRunAtMs: scalpLastGuardrailAtMs ?? scalpReportGeneratedAtMs,
+    },
+    {
+      id: 'scalp_housekeeping',
+      cadence: 'Hourly',
+      role: 'Prune stale locks and compact retention',
+      status: scalpStatusFromTs(
+        scalpDashboardGeneratedAtMs ?? scalpReportGeneratedAtMs,
+        2 * 60 * 60_000,
+      ),
+      lastRunAtMs: scalpDashboardGeneratedAtMs ?? scalpReportGeneratedAtMs,
+    },
+  ];
+  const scalpActiveExecutionTs =
+    scalpActiveExecution && typeof scalpActiveExecution.timestampMs === 'number'
+      ? scalpActiveExecution.timestampMs
+      : null;
+  const scalpActiveRuntimeRow = scalpActiveRow || scalpActiveOpsRow?.runtime || null;
+  const scalpDarkMode = resolvedTheme === 'dark';
+  const scalpSectionShellClass = scalpDarkMode
+    ? 'rounded-3xl border border-zinc-700 bg-zinc-900 text-zinc-100'
+    : 'rounded-3xl border border-slate-200 bg-white text-slate-900';
+  const scalpCardClass = scalpDarkMode
+    ? 'rounded-2xl border border-zinc-700 bg-zinc-950/70 p-3'
+    : 'rounded-2xl border border-slate-200 bg-white p-3';
+  const scalpHeroClass = scalpDarkMode
+    ? 'relative overflow-hidden rounded-3xl border border-zinc-700 bg-gradient-to-br from-zinc-900 via-zinc-900 to-zinc-800 p-5 text-zinc-100'
+    : 'relative overflow-hidden rounded-3xl border border-slate-200 bg-gradient-to-br from-slate-100 via-white to-slate-50 p-5 text-slate-900';
+  const scalpHeroBadgeClass = scalpDarkMode
+    ? 'absolute right-5 top-5 rounded-full border border-zinc-500/70 bg-zinc-800 px-3 py-1 text-[11px] font-medium tracking-wider text-zinc-200'
+    : 'absolute right-5 top-5 rounded-full border border-slate-300 bg-white/90 px-3 py-1 text-[11px] font-medium tracking-wider text-slate-600';
+  const scalpTextPrimaryClass = scalpDarkMode ? 'text-zinc-100' : 'text-slate-900';
+  const scalpTextSecondaryClass = scalpDarkMode ? 'text-zinc-300' : 'text-slate-600';
+  const scalpTextMutedClass = scalpDarkMode ? 'text-zinc-400' : 'text-slate-500';
+  const scalpTableHeaderClass = scalpDarkMode ? 'text-zinc-400' : 'text-slate-500';
+  const scalpTableRowClass = scalpDarkMode ? 'bg-zinc-950/85 hover:bg-zinc-800/85' : 'bg-slate-50 hover:bg-slate-100';
+  const scalpTagNeutralClass = scalpDarkMode
+    ? 'rounded-full border border-zinc-600 bg-zinc-800 px-2 py-1 text-[11px] text-zinc-200'
+    : 'rounded-full border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-600';
 
   const formatScalpTime = (ts?: number | null) => {
     const raw = formatDecisionTime(ts);
@@ -1327,6 +1720,22 @@ export default function Home() {
       className: 'border-slate-200 bg-slate-100 text-slate-700',
       Icon: BookOpen,
     };
+  };
+
+  const scalpCronStatusMeta = (status: ScalpOpsCronStatus) => {
+    if (status === 'healthy') {
+      return resolvedTheme === 'dark'
+        ? 'border-emerald-300/50 bg-emerald-400/15 text-emerald-200'
+        : 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    }
+    if (status === 'lagging') {
+      return resolvedTheme === 'dark'
+        ? 'border-amber-300/50 bg-amber-400/15 text-amber-200'
+        : 'border-amber-200 bg-amber-50 text-amber-700';
+    }
+    return resolvedTheme === 'dark'
+      ? 'border-zinc-500/60 bg-zinc-500/15 text-zinc-200'
+      : 'border-slate-200 bg-slate-100 text-slate-600';
   };
 
   const renderDashboardSkeleton = () => (
@@ -1590,306 +1999,383 @@ export default function Home() {
           </div>
         )}
 
-        {strategyMode === 'scalp' && !error && (
-          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">
-            {scalpRows.map((row) => {
-              const isActive = scalpActiveRow?.deploymentId === row.deploymentId;
-              const state = scalpStateMeta(row.state);
-              const StateIcon = state.Icon;
-              const mode = scalpModeMeta(row.dryRunLast);
-              const SideIcon =
-                row.tradeSide === 'BUY' ? ArrowUpRight : row.tradeSide === 'SELL' ? ArrowDownRight : Circle;
-              return (
-                <button
-                  key={row.deploymentId}
-                  onClick={() => setScalpActiveDeploymentId(row.deploymentId)}
-                  className={`rounded-2xl border px-3 py-2 text-left transition ${
-                    row.inTrade
-                      ? 'border-emerald-200 bg-emerald-50/80 hover:border-emerald-300'
-                      : 'border-slate-200 bg-white hover:border-slate-300'
-                  } ${
-                    isActive
-                      ? 'shadow-md ring-2 ring-sky-400/70 outline outline-2 outline-offset-2 outline-sky-100'
-                      : ''
-                  }`}
-                >
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <div className="text-sm font-semibold text-slate-900">{row.symbol}</div>
-                      <div className="max-w-[180px] truncate font-mono text-[10px] text-slate-500" title={row.strategyId}>
-                        {row.strategyId || 'unknown'}
-                      </div>
-                    </div>
-                    <span
-                      className={`inline-flex h-7 w-7 items-center justify-center rounded-full ${
-                        row.inTrade ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'
-                      }`}
-                    >
-                      <SideIcon className="h-4 w-4" />
-                    </span>
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                    <span
-                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${state.className}`}
-                    >
-                      <StateIcon className="h-3 w-3" />
-                      {state.label}
-                    </span>
-                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${mode.className}`}>
-                      {mode.label}
-                    </span>
-                  </div>
-                </button>
-              );
-            })}
-            {loading &&
-              Array.from({ length: 4 }).map((_, idx) => (
-                <span
-                  key={`scalp-tab-skeleton-${idx}`}
-                  className="h-[82px] animate-pulse rounded-2xl border border-slate-200 bg-slate-100"
-                />
-              ))}
-          </div>
-        )}
-
         <div className="mt-4 pb-8">
           {strategyMode === 'scalp' ? (
             loading ? (
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className={`${scalpSectionShellClass} p-4 shadow-sm`}>
                 <div className="animate-pulse space-y-3">
-                  <div className="h-4 w-44 rounded-full bg-slate-200" />
-                  <div className="h-3 w-64 rounded-full bg-slate-200" />
-                  <div className="h-40 rounded-xl border border-slate-200 bg-slate-50" />
+                  <div className={`h-4 w-44 rounded-full ${scalpDarkMode ? 'bg-zinc-600' : 'bg-slate-200'}`} />
+                  <div className={`h-3 w-64 rounded-full ${scalpDarkMode ? 'bg-zinc-700' : 'bg-slate-200'}`} />
+                  <div className={`h-40 rounded-xl border ${scalpDarkMode ? 'border-zinc-700 bg-zinc-800' : 'border-slate-200 bg-slate-50'}`} />
                 </div>
               </div>
-            ) : !scalpRows.length ? (
+            ) : !scalpOpsDeployments.length ? (
               <div className="flex items-center justify-center py-12 text-sm font-semibold text-slate-500">
                 No scalp deployments yet. Add enabled deployments to the registry, run one cycle, then refresh.
               </div>
             ) : (
-              <div className="space-y-4">
-                {scalpActiveRow ? (
-                  <>
-                    <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-sky-50 via-cyan-50 to-emerald-50 p-4 shadow-sm">
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                          <div className="text-xs uppercase tracking-wide text-slate-600">Scalp Focus</div>
-                          <div className="mt-1 flex flex-wrap items-center gap-2">
-                            <span className="text-2xl font-semibold text-slate-900">{scalpActiveRow.symbol}</span>
-                            {(() => {
-                              const state = scalpStateMeta(scalpActiveRow.state);
-                              const StateIcon = state.Icon;
-                              return (
+              <div className="space-y-5">
+                <section className={scalpHeroClass}>
+                  <div className={scalpHeroBadgeClass}>
+                    {scalpResearchCycle?.cycleId || scalpResearchReport?.cycle?.cycleId || 'cycle_pending'}
+                  </div>
+                  <p className={`text-[11px] uppercase tracking-[0.24em] ${scalpTextMutedClass}`}>Scalp Ops Console</p>
+                  <h2 className={`mt-2 text-2xl font-semibold ${scalpTextPrimaryClass}`}>
+                    Deploy only what passes forward evidence.
+                  </h2>
+                  <p className={`mt-2 max-w-4xl text-sm ${scalpTextSecondaryClass}`}>
+                    Live view combines cycle progress, promotion gate outcomes, deployment-level forward validation, and
+                    runtime execution signals.
+                  </p>
+                  <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <article className={scalpCardClass}>
+                      <p className={`text-[11px] uppercase tracking-[0.16em] ${scalpTextMutedClass}`}>Cycle Progress</p>
+                      <p className={`mt-2 text-2xl font-semibold ${scalpTextPrimaryClass}`}>
+                        {scalpCycleProgressPct === null ? '—' : `${scalpCycleProgressPct.toFixed(0)}%`}
+                      </p>
+                      <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
+                        {scalpCycleCompleted !== null && scalpCycleTasks !== null
+                          ? `${Math.floor(scalpCycleCompleted)} / ${Math.floor(scalpCycleTasks)} tasks`
+                          : 'Awaiting cycle summary'}
+                      </p>
+                    </article>
+                    <article className={scalpCardClass}>
+                      <p className={`text-[11px] uppercase tracking-[0.16em] ${scalpTextMutedClass}`}>Forward Expectancy</p>
+                      <p className={`mt-2 text-2xl font-semibold ${scalpMeanForwardExpectancyR === null ? scalpTextPrimaryClass : scalpMeanForwardExpectancyR >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                        {scalpMeanForwardExpectancyR === null
+                          ? '—'
+                          : `${scalpMeanForwardExpectancyR >= 0 ? '+' : ''}${scalpMeanForwardExpectancyR.toFixed(2)}R`}
+                      </p>
+                      <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
+                        mean across {scalpForwardExpectancyRows.length} validated deployment(s)
+                      </p>
+                    </article>
+                    <article className={scalpCardClass}>
+                      <p className={`text-[11px] uppercase tracking-[0.16em] ${scalpTextMutedClass}`}>Promotion Eligible</p>
+                      <p className={`mt-2 text-2xl font-semibold ${scalpTextPrimaryClass}`}>
+                        {scalpPromotionEligibleCount} / {scalpEnabledDeploymentCount || scalpOpsDeployments.length}
+                      </p>
+                      <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
+                        enabled deployments passing forward gate
+                      </p>
+                    </article>
+                    <article className={scalpCardClass}>
+                      <p className={`text-[11px] uppercase tracking-[0.16em] ${scalpTextMutedClass}`}>Abs Correlation</p>
+                      <p className={`mt-2 text-2xl font-semibold ${scalpTextPrimaryClass}`}>
+                        {scalpAvgAbsPairCorrelation === null ? '—' : scalpAvgAbsPairCorrelation.toFixed(2)}
+                      </p>
+                      <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
+                        portfolio overlap from research report
+                      </p>
+                    </article>
+                  </div>
+                </section>
+
+                <section className="grid grid-cols-1 gap-5 2xl:grid-cols-[1.15fr_1fr]">
+                  <article className={`${scalpSectionShellClass} p-4`}>
+                    <div className="flex items-center justify-between">
+                      <h3 className={`text-lg font-semibold ${scalpTextPrimaryClass}`}>Cron Execution Pipeline</h3>
+                      <span className={scalpTagNeutralClass}>timeout-safe chunks</span>
+                    </div>
+                    <div className="mt-4 overflow-x-auto">
+                      <table className="w-full min-w-[760px] border-separate border-spacing-y-2 text-left text-sm">
+                        <thead className={`text-[11px] uppercase tracking-[0.16em] ${scalpTableHeaderClass}`}>
+                          <tr>
+                            <th className="px-3 py-1">Cron</th>
+                            <th className="px-3 py-1">Cadence</th>
+                            <th className="px-3 py-1">Role</th>
+                            <th className="px-3 py-1">Last</th>
+                            <th className="px-3 py-1">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {scalpCronRows.map((row) => (
+                            <tr key={row.id} className={scalpTableRowClass}>
+                              <td className={`rounded-l-xl px-3 py-3 font-medium ${scalpTextPrimaryClass}`}>{row.id}</td>
+                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{row.cadence}</td>
+                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{row.role}</td>
+                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{formatScalpTime(row.lastRunAtMs)}</td>
+                              <td className="rounded-r-xl px-3 py-3">
+                                <span className={`rounded-full border px-2 py-1 text-[11px] ${scalpCronStatusMeta(row.status)}`}>
+                                  {row.status}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </article>
+
+                  <article className={`${scalpSectionShellClass} p-4`}>
+                    <div className="flex items-center justify-between">
+                      <h3 className={`text-lg font-semibold ${scalpTextPrimaryClass}`}>Gate Health</h3>
+                      <span className={scalpTagNeutralClass}>strict mode</span>
+                    </div>
+                    <div className="mt-4 space-y-3">
+                      <div className={scalpCardClass}>
+                        <p className={`text-[11px] uppercase tracking-[0.16em] ${scalpTextMutedClass}`}>Forward Profitable Windows</p>
+                        <p className={`mt-2 text-2xl font-semibold ${scalpTextPrimaryClass}`}>
+                          {scalpMeanForwardProfitablePct === null
+                            ? '—'
+                            : `${scalpMeanForwardProfitablePct.toFixed(1)}%`}
+                        </p>
+                        <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
+                          average profitable-window percentage across validated deployments
+                        </p>
+                      </div>
+                      <div className={scalpCardClass}>
+                        <p className={`text-[11px] uppercase tracking-[0.16em] ${scalpTextMutedClass}`}>Cycle Status</p>
+                        <p className={`mt-2 text-xl font-semibold ${scalpTextPrimaryClass}`}>
+                          {String(
+                            scalpResearchCycle?.summary?.status ||
+                              scalpResearchCycle?.cycle?.status ||
+                              scalpResearchReport?.cycle?.status ||
+                              'unknown',
+                          )
+                            .replace(/_/g, ' ')
+                            .toUpperCase()}
+                        </p>
+                        <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
+                          {scalpCycleFailed === null ? 'no failure count reported' : `${Math.floor(scalpCycleFailed)} failed task(s)`}
+                        </p>
+                      </div>
+                      <div className={scalpCardClass}>
+                        <p className={`text-[11px] uppercase tracking-[0.16em] ${scalpTextMutedClass}`}>Universe Snapshot</p>
+                        <p className={`mt-2 text-xl font-semibold ${scalpTextPrimaryClass}`}>
+                          {scalpUniverseSelectedCount === null ? '—' : Math.floor(scalpUniverseSelectedCount)} selected
+                        </p>
+                        <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
+                          {scalpUniverseCandidatesEvaluated === null
+                            ? 'candidates evaluated unavailable'
+                            : `${Math.floor(scalpUniverseCandidatesEvaluated)} candidates evaluated`}
+                        </p>
+                      </div>
+                    </div>
+                  </article>
+                </section>
+
+                <section className={`${scalpSectionShellClass} p-4`}>
+                  <div className="flex items-center justify-between">
+                    <h3 className={`text-lg font-semibold ${scalpTextPrimaryClass}`}>Deployment Registry and Forward Validation</h3>
+                    <span className={scalpTagNeutralClass}>click row to focus</span>
+                  </div>
+                  <div className="mt-4 overflow-x-auto">
+                    <table className="w-full min-w-[980px] border-separate border-spacing-y-2 text-left text-sm">
+                      <thead className={`text-[11px] uppercase tracking-[0.16em] ${scalpTableHeaderClass}`}>
+                        <tr>
+                          <th className="px-3 py-1">Deployment</th>
+                          <th className="px-3 py-1">Symbol</th>
+                          <th className="px-3 py-1">Strategy</th>
+                          <th className="px-3 py-1">Tune</th>
+                          <th className="px-3 py-1">Forward Exp</th>
+                          <th className="px-3 py-1">Profitable %</th>
+                          <th className="px-3 py-1">Max DD</th>
+                          <th className="px-3 py-1">Guardrail</th>
+                          <th className="px-3 py-1">Promotion</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {scalpOpsDeployments.map((row) => {
+                          const isActive = scalpActiveOpsRow?.deploymentId === row.deploymentId;
+                          const forwardExp = asFiniteNumber(row.forwardValidation?.meanExpectancyR);
+                          const profitablePct = asFiniteNumber(row.forwardValidation?.profitableWindowPct);
+                          const maxDd =
+                            asFiniteNumber(row.forwardValidation?.maxDrawdownR) ?? row.perf30dMaxDrawdownR;
+                          const guardrail = row.promotionReason || 'none';
+                          return (
+                            <tr
+                              key={row.deploymentId}
+                              onClick={() => setScalpActiveDeploymentId(row.deploymentId)}
+                              className={`cursor-pointer transition ${scalpTableRowClass} ${
+                                isActive ? (scalpDarkMode ? 'ring-2 ring-zinc-500/70' : 'ring-2 ring-slate-300') : ''
+                              }`}
+                            >
+                              <td className={`rounded-l-xl px-3 py-3 font-medium ${scalpTextPrimaryClass}`}>{row.deploymentId}</td>
+                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{row.symbol}</td>
+                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{row.strategyId}</td>
+                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{row.tuneId}</td>
+                              <td className={`px-3 py-3 ${forwardExp === null ? scalpTextMutedClass : forwardExp >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                {forwardExp === null ? '—' : `${forwardExp >= 0 ? '+' : ''}${forwardExp.toFixed(2)}`}
+                              </td>
+                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>
+                                {profitablePct === null ? '—' : `${profitablePct.toFixed(1)}%`}
+                              </td>
+                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>
+                                {maxDd === null ? '—' : `${maxDd.toFixed(2)}R`}
+                              </td>
+                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{guardrail}</td>
+                              <td className="rounded-r-xl px-3 py-3">
                                 <span
-                                  className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${state.className}`}
+                                  className={`rounded-full border px-2 py-1 text-[11px] ${
+                                    row.promotionEligible
+                                      ? scalpDarkMode
+                                        ? 'border-emerald-300/40 bg-emerald-300/15 text-emerald-200'
+                                        : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                      : scalpDarkMode
+                                      ? 'border-rose-300/40 bg-rose-300/15 text-rose-200'
+                                      : 'border-rose-200 bg-rose-50 text-rose-700'
+                                  }`}
                                 >
+                                  {row.promotionEligible ? 'eligible' : 'blocked'}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                <section className="grid grid-cols-1 gap-5 2xl:grid-cols-[1.15fr_1fr]">
+                  <article className={`${scalpSectionShellClass} p-4`}>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className={`text-lg font-semibold ${scalpTextPrimaryClass}`}>Active Deployment Focus</h3>
+                      <span className={`text-xs ${scalpTextSecondaryClass}`}>
+                        {scalpActiveRuntimeRow ? scalpActiveRuntimeRow.symbol : scalpActiveOpsRow?.symbol || '—'}
+                      </span>
+                    </div>
+                    {scalpActiveRuntimeRow ? (
+                      <>
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          {(() => {
+                            const state = scalpStateMeta(scalpActiveRuntimeRow.state);
+                            const StateIcon = state.Icon;
+                            const mode = scalpModeMeta(scalpActiveRuntimeRow.dryRunLast);
+                            return (
+                              <>
+                                <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold ${state.className}`}>
                                   <StateIcon className="h-3.5 w-3.5" />
                                   {state.label}
                                 </span>
-                              );
-                            })()}
-                            {(() => {
-                              const mode = scalpModeMeta(scalpActiveRow.dryRunLast);
-                              return (
-                                <span
-                                  className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${mode.className}`}
-                                >
+                                <span className={`rounded-full border px-2 py-1 text-xs font-semibold ${mode.className}`}>
                                   {mode.label}
                                 </span>
-                              );
-                            })()}
-                          </div>
-                          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
-                            <span
-                              className="inline-flex max-w-full items-center gap-1 rounded-full border border-slate-200 bg-white/80 px-2 py-0.5"
-                              title={scalpActiveRow.strategyId}
-                            >
-                              <Repeat className="h-3.5 w-3.5 text-slate-500" />
-                              <span className="max-w-[280px] truncate font-mono">{scalpActiveRow.strategyId || 'unknown'}</span>
-                            </span>
-                            <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white/80 px-2 py-0.5">
-                              <Layers3 className="h-3.5 w-3.5 text-slate-500" />
-                              tune {scalpActiveRow.tune || 'default'}
-                            </span>
-                            <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white/80 px-2 py-0.5">
-                              <Activity className="h-3.5 w-3.5 text-slate-500" />
-                              {scalpActiveRow.cronSchedule || scalpActiveRow.cronRoute || 'no schedule'}
-                            </span>
-                            <span
-                              className="inline-flex max-w-full items-center gap-1 rounded-full border border-slate-200 bg-white/80 px-2 py-0.5"
-                              title={scalpActiveRow.deploymentId}
-                            >
-                              <Database className="h-3.5 w-3.5 text-slate-500" />
-                              <span className="max-w-[280px] truncate font-mono">{scalpActiveRow.deploymentId}</span>
-                            </span>
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2 text-xs">
-                          <span
-                            className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 font-semibold ${
-                              scalpActiveRow.inTrade
-                                ? 'border-emerald-200 bg-emerald-100 text-emerald-700'
-                                : 'border-slate-200 bg-white text-slate-600'
-                            }`}
-                          >
-                            {scalpActiveRow.tradeSide === 'BUY' ? (
-                              <ArrowUpRight className="h-3.5 w-3.5" />
-                            ) : scalpActiveRow.tradeSide === 'SELL' ? (
-                              <ArrowDownRight className="h-3.5 w-3.5" />
-                            ) : (
-                              <Circle className="h-3.5 w-3.5" />
-                            )}
-                            {scalpActiveRow.inTrade ? 'Open Trade' : 'Flat'}
-                          </span>
-                          <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 font-semibold text-slate-700">
-                            <Zap className="h-3.5 w-3.5 text-sky-600" />
-                            {formatScalpTime(
-                              typeof (scalpActiveExecution as any)?.timestampMs === 'number'
-                                ? (scalpActiveExecution as any).timestampMs
-                                : scalpActiveRow.lastRunAtMs,
-                            )}
+                              </>
+                            );
+                          })()}
+                          <span className={scalpTagNeutralClass}>
+                            {scalpActiveRuntimeRow.cronSchedule || scalpActiveRuntimeRow.cronRoute || 'no schedule'}
                           </span>
                         </div>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
-                      {[
-                        {
-                          label: 'Trades',
-                          value: String(scalpActiveRow.tradesPlaced),
-                          tone: 'text-sky-700',
-                          Icon: BarChart3,
-                        },
-                        {
-                          label: 'Win Rate',
-                          value: scalpActiveWinRatePct === null ? '—' : `${scalpActiveWinRatePct.toFixed(0)}%`,
-                          tone: 'text-emerald-700',
-                          Icon: Star,
-                        },
-                        {
-                          label: 'Net R',
-                          value: scalpActiveNetR === null ? '—' : formatSignedR(scalpActiveNetR),
-                          tone: scalpActiveNetR === null ? 'text-slate-700' : scalpActiveNetR >= 0 ? 'text-emerald-700' : 'text-rose-700',
-                          Icon: BarChart3,
-                        },
-                        {
-                          label: 'DD',
-                          value: scalpActiveMaxDdR === null ? '—' : formatSignedR(-Math.abs(scalpActiveMaxDdR)),
-                          tone: scalpActiveMaxDdR === null ? 'text-slate-700' : 'text-rose-700',
-                          Icon: ShieldPlus,
-                        },
-                      ].map((item) => {
-                        const Icon = item.Icon;
-                        return (
-                          <div
-                            key={item.label}
-                            className="rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm"
-                          >
-                            <div className="flex items-center justify-between">
-                              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                                {item.label}
-                              </span>
-                              <Icon className={`h-4 w-4 ${item.tone}`} />
+                        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+                          <div className={scalpCardClass}>
+                            <div className={`text-[11px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}>Trades</div>
+                            <div className={`mt-1 text-xl font-semibold ${scalpTextPrimaryClass}`}>{scalpActiveRuntimeRow.tradesPlaced}</div>
+                          </div>
+                          <div className={scalpCardClass}>
+                            <div className={`text-[11px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}>Win Rate</div>
+                            <div className="mt-1 text-xl font-semibold text-emerald-500">
+                              {scalpActiveWinRatePct === null ? '—' : `${scalpActiveWinRatePct.toFixed(0)}%`}
                             </div>
-                            <div className={`mt-1 text-xl font-semibold ${item.tone}`}>{item.value}</div>
                           </div>
-                        );
-                      })}
-                    </div>
-                  </>
-                ) : null}
+                          <div className={scalpCardClass}>
+                            <div className={`text-[11px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}>Net R</div>
+                            <div className={`mt-1 text-xl font-semibold ${scalpActiveNetR === null ? scalpTextPrimaryClass : scalpActiveNetR >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                              {scalpActiveNetR === null ? '—' : formatSignedR(scalpActiveNetR)}
+                            </div>
+                          </div>
+                          <div className={scalpCardClass}>
+                            <div className={`text-[11px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}>Last Run</div>
+                            <div className={`mt-1 text-xl font-semibold ${scalpTextPrimaryClass}`}>
+                              {formatScalpTime(scalpActiveExecutionTs ?? scalpActiveRuntimeRow.lastRunAtMs)}
+                            </div>
+                          </div>
+                        </div>
+                        <div className={`mt-3 text-xs ${scalpTextSecondaryClass}`}>
+                          Deployment ID: <span className="font-mono">{scalpActiveRuntimeRow.deploymentId}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className={`mt-4 text-sm ${scalpTextSecondaryClass}`}>No runtime state found for the selected deployment.</div>
+                    )}
+                  </article>
 
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
-                        <Zap className="h-3.5 w-3.5 text-sky-600" />
-                        Reason Snapshot{scalpActiveRow ? ` · ${scalpActiveRow.symbol}` : ''}
-                      </div>
-                      <div className="text-[11px] font-semibold text-slate-500">
-                        {scalpReasonSnapshotState === 'fresh'
-                          ? scalpActiveReasonCodes.length
+                  <article className="space-y-4">
+                    <div className={`${scalpSectionShellClass} p-4`}>
+                      <div className="flex items-center justify-between">
+                        <div className={`text-xs uppercase tracking-[0.16em] ${scalpTextMutedClass}`}>
+                          Reason Snapshot{scalpActiveRuntimeRow ? ` · ${scalpActiveRuntimeRow.symbol}` : ''}
+                        </div>
+                        <div className={`text-xs ${scalpTextMutedClass}`}>
+                          {scalpReasonSnapshotState === 'fresh'
                             ? `${Math.min(scalpActiveReasonCodes.length, 8)} shown`
-                            : 'none'
-                          : 'none'}
+                            : 'none'}
+                        </div>
                       </div>
+                      {scalpActiveReasonCodes.length ? (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {scalpActiveReasonCodes.slice(0, 8).map((code, idx) => {
+                            const meta = scalpReasonMeta(code);
+                            const Icon = meta.Icon;
+                            return (
+                              <span
+                                key={`${code}-${idx}`}
+                                className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold ${meta.className}`}
+                              >
+                                <Icon className="h-3.5 w-3.5" />
+                                {code.replace(/_/g, ' ')}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className={`mt-3 text-sm ${scalpTextSecondaryClass}`}>No reason codes recorded for this deployment.</div>
+                      )}
                     </div>
-                    {scalpActiveReasonCodes.length ? (
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {scalpActiveReasonCodes.slice(0, 8).map((code: string, idx: number) => {
-                          const meta = scalpReasonMeta(code);
-                          const Icon = meta.Icon;
-                          return (
-                            <span
-                              key={`${code}-${idx}`}
-                              className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${meta.className}`}
-                            >
-                              <Icon className="h-3.5 w-3.5" />
-                              {code.replace(/_/g, ' ')}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="mt-3 text-sm text-slate-500">
-                        No reason codes for the active deployment yet.
-                      </div>
-                    )}
-                  </div>
 
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
-                        <BookOpen className="h-3.5 w-3.5 text-indigo-600" />
-                        Journal Snapshot{scalpActiveRow ? ` · ${scalpActiveRow.symbol}` : ''}
+                    <div className={`${scalpSectionShellClass} p-4`}>
+                      <div className="flex items-center justify-between">
+                        <div className={`text-xs uppercase tracking-[0.16em] ${scalpTextMutedClass}`}>
+                          Journal Snapshot{scalpActiveRuntimeRow ? ` · ${scalpActiveRuntimeRow.symbol}` : ''}
+                        </div>
+                        <div className={`text-xs ${scalpTextMutedClass}`}>
+                          {scalpActiveJournal.length ? `${Math.min(scalpActiveJournal.length, 8)} events` : 'empty'}
+                        </div>
                       </div>
-                      <div className="text-[11px] font-semibold text-slate-500">
-                        {scalpActiveJournal.length ? `${Math.min(scalpActiveJournal.length, 8)} events` : 'empty'}
-                      </div>
-                    </div>
-                    {scalpActiveJournal.length ? (
-                      <div className="mt-3 space-y-2">
-                        {scalpActiveJournal.slice(0, 8).map((entry) => {
-                          const meta = scalpJournalMeta({
-                            type: String(entry.type || ''),
-                            level: String(entry.level || ''),
-                          });
-                          const Icon = meta.Icon;
-                          return (
-                            <div
-                              key={entry.id || `${entry.timestampMs}-${entry.symbol || 'na'}`}
-                              className={`rounded-xl border px-3 py-2 text-xs ${meta.className}`}
-                            >
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="inline-flex items-center gap-1.5 font-semibold">
-                                  <Icon className="h-3.5 w-3.5" />
-                                  {String(entry.type || 'event').toUpperCase()}
+                      {scalpActiveJournal.length ? (
+                        <div className="mt-3 space-y-2">
+                          {scalpActiveJournal.slice(0, 8).map((entry) => {
+                            const meta = scalpJournalMeta({
+                              type: String(entry.type || ''),
+                              level: String(entry.level || ''),
+                            });
+                            const Icon = meta.Icon;
+                            return (
+                              <div
+                                key={entry.id || `${entry.timestampMs}-${entry.symbol || 'na'}`}
+                                className={`rounded-xl border px-3 py-2 text-xs ${meta.className}`}
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <div className="inline-flex items-center gap-1.5 font-semibold">
+                                    <Icon className="h-3.5 w-3.5" />
+                                    {String(entry.type || 'event').toUpperCase()}
+                                  </div>
+                                  <div>{formatScalpTime(entry.timestampMs)}</div>
                                 </div>
-                                <div>{formatScalpTime(entry.timestampMs)}</div>
+                                {(entry.reasonCodes || []).length ? (
+                                  <div className="mt-1 flex flex-wrap gap-1">
+                                    {(entry.reasonCodes || []).slice(0, 3).map((code, idx) => (
+                                      <span
+                                        key={`${entry.id || entry.timestampMs || idx}-${code}-${idx}`}
+                                        className="rounded-full border border-current/30 bg-white/50 px-1.5 py-0.5 text-[10px] font-semibold"
+                                      >
+                                        {code.replace(/_/g, ' ')}
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : null}
                               </div>
-                              {(entry.reasonCodes || []).length ? (
-                                <div className="mt-1 flex flex-wrap gap-1">
-                                  {(entry.reasonCodes || []).slice(0, 3).map((code, idx) => (
-                                    <span
-                                      key={`${entry.id || entry.timestampMs || idx}-${code}-${idx}`}
-                                      className="rounded-full border border-current/30 bg-white/50 px-1.5 py-0.5 text-[10px] font-semibold"
-                                    >
-                                      {code.replace(/_/g, ' ')}
-                                    </span>
-                                  ))}
-                                </div>
-                              ) : null}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="mt-3 text-sm text-slate-500">No journal events for this symbol yet.</div>
-                    )}
-                  </div>
-                </div>
-
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className={`mt-3 text-sm ${scalpTextSecondaryClass}`}>No journal events for this deployment yet.</div>
+                      )}
+                    </div>
+                  </article>
+                </section>
               </div>
             )
           ) : isInitialLoading ? (

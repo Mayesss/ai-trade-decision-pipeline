@@ -47,6 +47,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const nowMs = parseNowMs(firstQueryValue(req.query.nowMs));
     const symbol = firstQueryValue(req.query.symbol);
     const all = parseBoolParam(req.query.all, false);
+    const requirePromotionEligible = parseBoolParam(
+        req.query.requirePromotionEligible,
+        parseBoolParam(process.env.SCALP_REQUIRE_PROMOTION_ELIGIBLE, false),
+    );
 
     try {
         if (!symbol && !all) {
@@ -59,6 +63,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const deployments = await listScalpDeploymentRegistryEntries({
             symbol,
             enabled: true,
+            promotionEligible: requirePromotionEligible ? 'true' : undefined,
         });
         if (!deployments.length) {
             return res.status(200).json({
@@ -66,7 +71,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 dryRun,
                 count: 0,
                 results: [],
-                message: 'No enabled deployments matched the request.',
+                message: requirePromotionEligible
+                    ? 'No enabled + promotion-eligible deployments matched the request.'
+                    : 'No enabled deployments matched the request.',
             });
         }
 
@@ -110,6 +117,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             debug,
             requestedSymbol: symbol || null,
             requestedAll: all,
+            requirePromotionEligible,
             count: deployments.length,
             results,
             errors,

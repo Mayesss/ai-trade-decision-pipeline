@@ -28,6 +28,8 @@ type RegistryBody = {
     configOverride?: unknown;
     effectiveConfig?: unknown;
     leaderboardEntry?: unknown;
+    forwardValidation?: unknown;
+    promotionGate?: unknown;
 };
 
 function parseBool(value: unknown, fallback: boolean): boolean {
@@ -63,6 +65,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             strategyId: firstQueryValue(req.query.strategyId),
             tuneId: firstQueryValue(req.query.tuneId),
             enabled: firstQueryValue(req.query.enabled),
+            promotionEligible: firstQueryValue(req.query.promotionEligible),
         });
         return res.status(200).json({
             ok: true,
@@ -114,6 +117,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             notes: body.notes,
             updatedBy: body.updatedBy,
             leaderboardEntry: body.leaderboardEntry,
+            forwardValidation: body.forwardValidation,
+            promotionGate: body.promotionGate,
             configOverride,
         });
         return res.status(200).json({

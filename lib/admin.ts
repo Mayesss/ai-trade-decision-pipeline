@@ -3,9 +3,15 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 export type AdminAccessResult = { ok: boolean; required: boolean };
 const UNAUTHENTICATED_CRON_ROUTES = new Set<string>([
   '/api/swing/analyze',
-  '/api/scalp/cron/execute',
-  '/api/scalp/cron/execute-hybrid',
   '/api/scalp/cron/execute-deployments',
+  '/api/scalp/cron/discover-symbols',
+  '/api/scalp/cron/research-cycle-start',
+  '/api/scalp/cron/research-cycle-worker',
+  '/api/scalp/cron/research-cycle-aggregate',
+  '/api/scalp/cron/research-cycle-sync-gates',
+  '/api/scalp/cron/research-report',
+  '/api/scalp/cron/live-guardrail-monitor',
+  '/api/scalp/cron/housekeeping',
 ]);
 
 function firstHeaderValue(value: string | string[] | undefined): string {

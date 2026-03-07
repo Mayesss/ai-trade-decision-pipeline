@@ -8,12 +8,43 @@ import type { ScalpDeploymentRef } from './types';
 
 export type ScalpDeploymentRegistrySource = 'manual' | 'backtest' | 'matrix';
 
+export interface ScalpForwardValidationMetrics {
+    rollCount: number;
+    profitableWindowPct: number;
+    meanExpectancyR: number;
+    meanProfitFactor: number | null;
+    maxDrawdownR: number | null;
+    minTradesPerWindow: number | null;
+    selectionWindowDays: number | null;
+    forwardWindowDays: number | null;
+}
+
+export interface ScalpDeploymentPromotionGateThresholds {
+    minRollCount: number;
+    minProfitableWindowPct: number;
+    minMeanExpectancyR: number;
+    minTradesPerWindow: number;
+    maxDrawdownR: number | null;
+}
+
+export type ScalpDeploymentPromotionGateSource = 'walk_forward' | 'manual' | 'none';
+
+export interface ScalpDeploymentPromotionGate {
+    eligible: boolean;
+    reason: string | null;
+    source: ScalpDeploymentPromotionGateSource;
+    evaluatedAtMs: number;
+    forwardValidation: ScalpForwardValidationMetrics | null;
+    thresholds: ScalpDeploymentPromotionGateThresholds | null;
+}
+
 export interface ScalpDeploymentRegistryEntry extends ScalpDeploymentRef {
     enabled: boolean;
     source: ScalpDeploymentRegistrySource;
     notes: string | null;
     configOverride: ScalpStrategyConfigOverride | null;
     leaderboardEntry: ScalpBacktestLeaderboardEntry | null;
+    promotionGate: ScalpDeploymentPromotionGate | null;
     createdAtMs: number;
     updatedAtMs: number;
     updatedBy: string | null;
@@ -35,11 +66,20 @@ type RegistryWriteParams = {
     notes?: unknown;
     configOverride?: unknown;
     leaderboardEntry?: unknown;
+    forwardValidation?: unknown;
+    promotionGate?: unknown;
     updatedBy?: unknown;
 };
 
 const DEFAULT_SCALP_DEPLOYMENT_REGISTRY_PATH = 'data/scalp-deployments.json';
 const REGISTRY_VERSION = 1 as const;
+const DEFAULT_FORWARD_GATE_THRESHOLDS: ScalpDeploymentPromotionGateThresholds = {
+    minRollCount: 8,
+    minProfitableWindowPct: 55,
+    minMeanExpectancyR: 0,
+    minTradesPerWindow: 2,
+    maxDrawdownR: null,
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -79,6 +119,12 @@ function normalizePositiveTime(value: unknown): number | null {
     return Math.floor(n);
 }
 
+function normalizeFiniteNumber(value: unknown): number | null {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    return n;
+}
+
 function normalizeConfigOverride(value: unknown): ScalpStrategyConfigOverride | null {
     if (!isRecord(value)) return null;
     return deepClone(value) as ScalpStrategyConfigOverride;
@@ -116,6 +162,151 @@ function normalizeLeaderboardEntry(value: unknown, deployment: ScalpDeploymentRe
     };
 }
 
+function normalizeForwardValidation(value: unknown): ScalpForwardValidationMetrics | null {
+    if (!isRecord(value)) return null;
+    const rollCount = Math.floor(Number(value.rollCount));
+    const profitableWindowPctRaw = normalizeFiniteNumber(value.profitableWindowPct);
+    const meanExpectancyR = normalizeFiniteNumber(value.meanExpectancyR);
+    if (!Number.isFinite(rollCount) || rollCount <= 0) return null;
+    if (profitableWindowPctRaw === null || meanExpectancyR === null) return null;
+
+    const meanProfitFactor = normalizeFiniteNumber(value.meanProfitFactor);
+    const maxDrawdownR = normalizeFiniteNumber(value.maxDrawdownR);
+    const minTradesPerWindowRaw = normalizeFiniteNumber(value.minTradesPerWindow);
+    const selectionWindowDaysRaw = normalizeFiniteNumber(value.selectionWindowDays);
+    const forwardWindowDaysRaw = normalizeFiniteNumber(value.forwardWindowDays);
+
+    return {
+        rollCount,
+        profitableWindowPct: Math.max(0, Math.min(100, profitableWindowPctRaw)),
+        meanExpectancyR,
+        meanProfitFactor: meanProfitFactor !== null ? meanProfitFactor : null,
+        maxDrawdownR: maxDrawdownR !== null && maxDrawdownR >= 0 ? maxDrawdownR : null,
+        minTradesPerWindow:
+            minTradesPerWindowRaw !== null && minTradesPerWindowRaw >= 0 ? Math.floor(minTradesPerWindowRaw) : null,
+        selectionWindowDays:
+            selectionWindowDaysRaw !== null && selectionWindowDaysRaw > 0 ? Math.floor(selectionWindowDaysRaw) : null,
+        forwardWindowDays:
+            forwardWindowDaysRaw !== null && forwardWindowDaysRaw > 0 ? Math.floor(forwardWindowDaysRaw) : null,
+    };
+}
+
+function normalizePromotionGateSource(value: unknown, fallback: ScalpDeploymentPromotionGateSource): ScalpDeploymentPromotionGateSource {
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase();
+    if (normalized === 'walk_forward' || normalized === 'manual' || normalized === 'none') return normalized;
+    return fallback;
+}
+
+function normalizeForwardGateThresholds(value: unknown): ScalpDeploymentPromotionGateThresholds | null {
+    if (!isRecord(value)) return null;
+    const minRollCount = Math.floor(Number(value.minRollCount));
+    const minProfitableWindowPct = normalizeFiniteNumber(value.minProfitableWindowPct);
+    const minMeanExpectancyR = normalizeFiniteNumber(value.minMeanExpectancyR);
+    const minTradesPerWindow = Math.floor(Number(value.minTradesPerWindow));
+    const maxDrawdownRRaw = normalizeFiniteNumber(value.maxDrawdownR);
+    if (!Number.isFinite(minRollCount) || minRollCount <= 0) return null;
+    if (minProfitableWindowPct === null || minMeanExpectancyR === null) return null;
+    if (!Number.isFinite(minTradesPerWindow) || minTradesPerWindow < 0) return null;
+    return {
+        minRollCount,
+        minProfitableWindowPct: Math.max(0, Math.min(100, minProfitableWindowPct)),
+        minMeanExpectancyR,
+        minTradesPerWindow,
+        maxDrawdownR: maxDrawdownRRaw !== null && maxDrawdownRRaw >= 0 ? maxDrawdownRRaw : null,
+    };
+}
+
+function normalizePromotionGate(value: unknown): ScalpDeploymentPromotionGate | null {
+    if (!isRecord(value)) return null;
+    const eligible = normalizeBool(value.eligible, false);
+    const evaluatedAtMs = normalizePositiveTime(value.evaluatedAtMs) || Date.now();
+    const reason = normalizeOptionalText(value.reason, 220);
+    return {
+        eligible,
+        reason,
+        source: normalizePromotionGateSource(value.source, 'manual'),
+        evaluatedAtMs,
+        forwardValidation: normalizeForwardValidation(value.forwardValidation),
+        thresholds: normalizeForwardGateThresholds(value.thresholds),
+    };
+}
+
+function resolveForwardGateThresholds(): ScalpDeploymentPromotionGateThresholds {
+    const minRollCount = Math.floor(Number(process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MIN_ROLLS));
+    const minProfitableWindowPct = normalizeFiniteNumber(process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MIN_PROFITABLE_PCT);
+    const minMeanExpectancyR = normalizeFiniteNumber(process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MIN_MEAN_EXPECTANCY_R);
+    const minTradesPerWindow = Math.floor(Number(process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MIN_TRADES_PER_WINDOW));
+    const maxDrawdownR = normalizeFiniteNumber(process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MAX_DRAWDOWN_R);
+    return {
+        minRollCount:
+            Number.isFinite(minRollCount) && minRollCount > 0 ? minRollCount : DEFAULT_FORWARD_GATE_THRESHOLDS.minRollCount,
+        minProfitableWindowPct:
+            minProfitableWindowPct !== null
+                ? Math.max(0, Math.min(100, minProfitableWindowPct))
+                : DEFAULT_FORWARD_GATE_THRESHOLDS.minProfitableWindowPct,
+        minMeanExpectancyR:
+            minMeanExpectancyR !== null ? minMeanExpectancyR : DEFAULT_FORWARD_GATE_THRESHOLDS.minMeanExpectancyR,
+        minTradesPerWindow:
+            Number.isFinite(minTradesPerWindow) && minTradesPerWindow >= 0
+                ? minTradesPerWindow
+                : DEFAULT_FORWARD_GATE_THRESHOLDS.minTradesPerWindow,
+        maxDrawdownR: maxDrawdownR !== null && maxDrawdownR >= 0 ? maxDrawdownR : null,
+    };
+}
+
+function evaluateForwardValidationAgainstThresholds(
+    validation: ScalpForwardValidationMetrics,
+    thresholds: ScalpDeploymentPromotionGateThresholds,
+): { eligible: boolean; reason: string | null } {
+    if (validation.rollCount < thresholds.minRollCount) {
+        return { eligible: false, reason: 'forward_roll_count_below_threshold' };
+    }
+    if (validation.profitableWindowPct < thresholds.minProfitableWindowPct) {
+        return { eligible: false, reason: 'forward_profitable_window_pct_below_threshold' };
+    }
+    if (validation.meanExpectancyR < thresholds.minMeanExpectancyR) {
+        return { eligible: false, reason: 'forward_mean_expectancy_below_threshold' };
+    }
+    if (thresholds.minTradesPerWindow > 0) {
+        const minTrades = validation.minTradesPerWindow;
+        if (minTrades === null || minTrades < thresholds.minTradesPerWindow) {
+            return { eligible: false, reason: 'forward_min_trades_per_window_below_threshold' };
+        }
+    }
+    if (thresholds.maxDrawdownR !== null) {
+        const maxDrawdownR = validation.maxDrawdownR;
+        if (maxDrawdownR === null || maxDrawdownR > thresholds.maxDrawdownR) {
+            return { eligible: false, reason: 'forward_max_drawdown_above_threshold' };
+        }
+    }
+    return { eligible: true, reason: null };
+}
+
+function requiresForwardGate(source: ScalpDeploymentRegistrySource): boolean {
+    return source === 'backtest' || source === 'matrix';
+}
+
+function allowIneligibleEnable(): boolean {
+    return normalizeBool(process.env.SCALP_DEPLOYMENT_ALLOW_INELIGIBLE_ENABLE, false);
+}
+
+function buildPendingForwardGate(nowMs: number, thresholds: ScalpDeploymentPromotionGateThresholds): ScalpDeploymentPromotionGate {
+    return {
+        eligible: false,
+        reason: 'missing_forward_validation',
+        source: 'none',
+        evaluatedAtMs: nowMs,
+        forwardValidation: null,
+        thresholds,
+    };
+}
+
+export function isScalpDeploymentPromotionEligible(entry: Pick<ScalpDeploymentRegistryEntry, 'promotionGate'>): boolean {
+    return Boolean(entry.promotionGate?.eligible);
+}
+
 function normalizeRegistryEntry(raw: unknown): ScalpDeploymentRegistryEntry | null {
     if (!isRecord(raw)) return null;
     const deployment = resolveScalpDeployment({
@@ -133,6 +324,7 @@ function normalizeRegistryEntry(raw: unknown): ScalpDeploymentRegistryEntry | nu
         notes: normalizeOptionalText(raw.notes, 400),
         configOverride: normalizeConfigOverride(raw.configOverride),
         leaderboardEntry: normalizeLeaderboardEntry(raw.leaderboardEntry, deployment),
+        promotionGate: normalizePromotionGate(raw.promotionGate),
         createdAtMs,
         updatedAtMs,
         updatedBy: normalizeOptionalText(raw.updatedBy, 120),
@@ -186,7 +378,7 @@ async function saveScalpDeploymentRegistry(snapshot: ScalpDeploymentRegistrySnap
 
 export function filterScalpDeploymentRegistry(
     snapshot: ScalpDeploymentRegistrySnapshot,
-    params: { symbol?: unknown; strategyId?: unknown; tuneId?: unknown; enabled?: unknown } = {},
+    params: { symbol?: unknown; strategyId?: unknown; tuneId?: unknown; enabled?: unknown; promotionEligible?: unknown } = {},
 ): ScalpDeploymentRegistryEntry[] {
     const symbol = String(params.symbol || '')
         .trim()
@@ -197,19 +389,21 @@ export function filterScalpDeploymentRegistry(
     const tuneId = String(params.tuneId || '')
         .trim()
         .toLowerCase();
-    const enabledFilter =
-        params.enabled === undefined ? null : normalizeBool(params.enabled, true);
+    const enabledFilter = params.enabled === undefined ? null : normalizeBool(params.enabled, true);
+    const promotionEligibleFilter =
+        params.promotionEligible === undefined ? null : normalizeBool(params.promotionEligible, true);
     return snapshot.deployments.filter((entry) => {
         if (symbol && entry.symbol !== symbol) return false;
         if (strategyId && entry.strategyId !== strategyId) return false;
         if (tuneId && entry.tuneId !== tuneId) return false;
         if (enabledFilter !== null && entry.enabled !== enabledFilter) return false;
+        if (promotionEligibleFilter !== null && isScalpDeploymentPromotionEligible(entry) !== promotionEligibleFilter) return false;
         return true;
     });
 }
 
 export async function listScalpDeploymentRegistryEntries(
-    params: { symbol?: unknown; strategyId?: unknown; tuneId?: unknown; enabled?: unknown } = {},
+    params: { symbol?: unknown; strategyId?: unknown; tuneId?: unknown; enabled?: unknown; promotionEligible?: unknown } = {},
 ): Promise<ScalpDeploymentRegistryEntry[]> {
     const snapshot = await loadScalpDeploymentRegistry();
     return filterScalpDeploymentRegistry(snapshot, params);
@@ -227,13 +421,40 @@ export async function upsertScalpDeploymentRegistryEntry(
     });
     const existing = snapshot.deployments.find((entry) => entry.deploymentId === deployment.deploymentId) || null;
     const nowMs = Date.now();
+    const source = normalizeSource(params.source, existing?.source ?? 'manual');
+    const thresholds = resolveForwardGateThresholds();
+    const explicitPromotionGate = normalizePromotionGate(params.promotionGate);
+    const forwardValidation = normalizeForwardValidation(params.forwardValidation);
+    let promotionGate: ScalpDeploymentPromotionGate | null = explicitPromotionGate ?? existing?.promotionGate ?? null;
+
+    if (forwardValidation) {
+        const evaluated = evaluateForwardValidationAgainstThresholds(forwardValidation, thresholds);
+        promotionGate = {
+            eligible: evaluated.eligible,
+            reason: evaluated.reason,
+            source: 'walk_forward',
+            evaluatedAtMs: nowMs,
+            forwardValidation,
+            thresholds,
+        };
+    } else if (!promotionGate && requiresForwardGate(source)) {
+        promotionGate = buildPendingForwardGate(nowMs, thresholds);
+    }
+
+    const requestedEnabled = normalizeBool(params.enabled, existing?.enabled ?? true);
+    const enabled =
+        requiresForwardGate(source) && !allowIneligibleEnable()
+            ? requestedEnabled && Boolean(promotionGate?.eligible)
+            : requestedEnabled;
+
     const entry: ScalpDeploymentRegistryEntry = {
         ...deployment,
-        enabled: normalizeBool(params.enabled, existing?.enabled ?? true),
-        source: normalizeSource(params.source, existing?.source ?? 'manual'),
+        enabled,
+        source,
         notes: normalizeOptionalText(params.notes, 400) ?? existing?.notes ?? null,
         configOverride: normalizeConfigOverride(params.configOverride) ?? existing?.configOverride ?? null,
         leaderboardEntry: normalizeLeaderboardEntry(params.leaderboardEntry, deployment) ?? existing?.leaderboardEntry ?? null,
+        promotionGate,
         createdAtMs: existing?.createdAtMs ?? nowMs,
         updatedAtMs: nowMs,
         updatedBy: normalizeOptionalText(params.updatedBy, 120) ?? existing?.updatedBy ?? null,

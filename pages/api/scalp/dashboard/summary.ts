@@ -26,7 +26,7 @@ type SymbolSnapshot = {
   deploymentId: string;
   tune: string;
   cronSchedule: string | null;
-  cronRoute: 'execute' | 'execute-hybrid' | 'execute-deployments';
+  cronRoute: 'execute-deployments';
   cronPath: string;
   dayKey: string;
   state: string | null;
@@ -171,6 +171,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const dayKey = deriveScalpDayKey(nowMs, cfg.sessions.clockMode);
     const cronSymbolConfigs = getScalpCronSymbolConfigs();
     const cronSymbolConfigBySymbol = new Map(cronSymbolConfigs.map((row) => [row.symbol.toUpperCase(), row]));
+    const cronAllConfig = cronSymbolConfigBySymbol.get('*') || null;
     const cronSymbols = useDeployments ? [] : cronSymbolConfigs;
     const deploymentRows = useDeployments ? await listScalpDeploymentRegistryEntries({ enabled: true }) : [];
 
@@ -181,7 +182,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const strategyControl =
           runtime.strategies.find((row) => row.strategyId === preferredStrategyId) || strategy;
         const effectiveStrategyId = strategyControl.strategyId;
-        const cronSymbol = cronSymbolConfigBySymbol.get(deploymentRow.symbol.toUpperCase()) || null;
+        const cronSymbol = cronSymbolConfigBySymbol.get(deploymentRow.symbol.toUpperCase()) || cronAllConfig;
         const deployment = resolveScalpDeployment({
           symbol: deploymentRow.symbol,
           strategyId: effectiveStrategyId,
@@ -204,7 +205,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           }),
           cronSchedule: cronSymbol?.schedule ?? null,
           cronRoute: 'execute-deployments',
-          cronPath: `/api/scalp/cron/execute-deployments?symbol=${deployment.symbol}`,
+          cronPath: cronSymbol?.path || '/api/scalp/cron/execute-deployments?all=true',
           dayKey,
           state: state?.state ?? null,
           updatedAtMs: state?.updatedAtMs ?? null,

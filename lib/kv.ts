@@ -9,15 +9,16 @@ function ensureKvConfig() {
 
 async function kvCommand(command: string, ...args: (string | number)[]) {
     ensureKvConfig();
-    const encodedArgs = args
-        .map((arg) => encodeURIComponent(typeof arg === 'string' ? arg : String(arg)))
-        .join('/');
-    const url = `${KV_REST_API_URL}/${command}${encodedArgs ? `/${encodedArgs}` : ''}`;
+    // Use JSON command bodies to avoid URL-size limits on larger payloads
+    // (for example candle-history snapshots stored in KV).
+    const url = KV_REST_API_URL;
     const res = await fetch(url, {
         method: 'POST',
         headers: {
             Authorization: `Bearer ${KV_REST_API_TOKEN}`,
+            'Content-Type': 'application/json',
         },
+        body: JSON.stringify([command, ...args]),
     });
 
     const rawText = await res.text();

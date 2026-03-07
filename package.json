@@ -28,7 +28,8 @@
     "replay:scalp": "node --import tsx scripts/scalp-replay.ts --input data/scalp-replay/fixtures/eurusd.sample.json --outDir /tmp/scalp-replay",
     "replay:scalp:matrix": "node --import tsx scripts/scalp-replay-matrix.ts --fixtures core --fixturesIndex data/scalp-replay/fixtures/index.json --outDir /tmp/scalp-replay-matrix",
     "backtest:scalp:profiles": "node --import tsx scripts/scalp-backtest-profiles.ts",
-    "backtest:scalp:deployments": "node --import tsx scripts/scalp-deployment-matrix.ts"
+    "backtest:scalp:deployments": "node --import tsx scripts/scalp-deployment-matrix.ts",
+    "scalp:sync-candles-kv": "node --import tsx scripts/scalp-sync-candles-kv.ts"
   },
   "devDependencies": {
     "baseline-browser-mapping": "^2.9.19",

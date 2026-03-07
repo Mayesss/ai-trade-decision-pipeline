@@ -275,9 +275,14 @@ test('xauusd blocked-hour variants are configurable and explicit hours override 
 test('btcusdt blocked-hour variants are configurable and explicit hours override variant', () => {
     const prevVariant = process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT;
     const prevHours = process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_BERLIN;
+    const prevExperiment = process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_EXPERIMENT;
     delete process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT;
     delete process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_BERLIN;
+    delete process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_EXPERIMENT;
     try {
+        assert.deepEqual(resolveBtcusdtGuardBlockedBerlinHours(), []);
+
+        process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_EXPERIMENT = 'true';
         assert.deepEqual(resolveBtcusdtGuardBlockedBerlinHours(), [10, 11]);
 
         process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT = 'btcusdt_low_dd';
@@ -300,5 +305,7 @@ test('btcusdt blocked-hour variants are configurable and explicit hours override
         else process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT = prevVariant;
         if (prevHours === undefined) delete process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_BERLIN;
         else process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_BERLIN = prevHours;
+        if (prevExperiment === undefined) delete process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_EXPERIMENT;
+        else process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_EXPERIMENT = prevExperiment;
     }
 });

@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "updatedAt": "2026-03-07T00:00:00.000Z",
+  "notes": "Weekly symbol discovery policy for scalp universe maintenance. Uses hard limits to avoid churn and overfitting.",
+  "limits": {
+    "maxUniverseSymbols": 16,
+    "minUniverseSymbols": 4,
+    "maxWeeklyAdds": 2,
+    "maxWeeklyRemoves": 2,
+    "maxCandidates": 40
+  },
+  "criteria": {
+    "minHistoryDays": 45,
+    "minHistoryCoveragePct": 80,
+    "minAvgBarsPerDay": 900,
+    "minRecentBars7d": 4000,
+    "minMedianRangePct": 0.025,
+    "maxSpreadPips": 35,
+    "requireTradableQuote": true
+  },
+  "sources": {
+    "includeCapitalTickerMap": true,
+    "includeDeploymentSymbols": true,
+    "includeHistorySymbols": true,
+    "explicitSymbols": [],
+    "excludedSymbols": []
+  },
+  "pinnedSymbols": [
+    "BTCUSDT",
+    "XAUUSDT"
+  ],
+  "strategyAllowlist": [
+    "compression_breakout_pullback_m15_m3",
+    "regime_pullback_m15_m3",
+    "regime_pullback_m15_m3_btcusdt",
+    "regime_pullback_m15_m3_xauusd",
+    "trend_day_reacceleration_m15_m3",
+    "pdh_pdl_reclaim_m15_m3"
+  ]
+}

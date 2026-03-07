@@ -17,7 +17,8 @@ const BTCUSDT_GUARD_BLOCKED_HOURS_VARIANTS: Record<string, number[]> = {
     btcusdt_high_pf: [10, 11],
     off: [],
 };
-const DEFAULT_BLOCKED_BERLIN_HOURS_VARIANT = 'btcusdt_high_pf';
+const DEFAULT_BLOCKED_BERLIN_HOURS_VARIANT = 'off';
+const EXPERIMENTAL_BLOCKED_BERLIN_HOURS_VARIANT = 'btcusdt_high_pf';
 const DEFAULT_BLOCKED_BERLIN_HOURS =
     BTCUSDT_GUARD_BLOCKED_HOURS_VARIANTS[DEFAULT_BLOCKED_BERLIN_HOURS_VARIANT] ?? [];
 const DEFAULT_OPTIMIZED_RISK: GuardRiskDefaults = {
@@ -49,6 +50,16 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
     return Math.max(1, Math.floor(parsePositiveNumber(value, fallback)));
 }
 
+function parseBoolFlag(value: string | undefined, fallback: boolean): boolean {
+    const normalized = String(value ?? '')
+        .trim()
+        .toLowerCase();
+    if (!normalized) return fallback;
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+    return fallback;
+}
+
 function parseBlockedBerlinHours(value: string | undefined, fallback: number[]): number[] {
     const raw = String(value ?? '').trim();
     if (!raw) return fallback.slice();
@@ -65,9 +76,13 @@ function resolveBlockedBerlinHoursFromVariant(value: string | undefined): number
     const normalized = String(value ?? '')
         .trim()
         .toLowerCase();
-    const variant = normalized || DEFAULT_BLOCKED_BERLIN_HOURS_VARIANT;
+    const experimentEnabled = parseBoolFlag(process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_EXPERIMENT, false);
+    const fallbackVariant = experimentEnabled ? EXPERIMENTAL_BLOCKED_BERLIN_HOURS_VARIANT : DEFAULT_BLOCKED_BERLIN_HOURS_VARIANT;
+    const variant = normalized || fallbackVariant;
     const selected = BTCUSDT_GUARD_BLOCKED_HOURS_VARIANTS[variant];
-    if (!Array.isArray(selected)) return DEFAULT_BLOCKED_BERLIN_HOURS.slice();
+    if (!Array.isArray(selected)) {
+        return (BTCUSDT_GUARD_BLOCKED_HOURS_VARIANTS[fallbackVariant] ?? DEFAULT_BLOCKED_BERLIN_HOURS).slice();
+    }
     return selected.slice();
 }
 

@@ -15,7 +15,7 @@ export type ScalpCronSymbolConfig = {
   deploymentId: string | null;
   schedule: string | null;
   path: string;
-  route: 'execute' | 'execute-hybrid' | 'execute-deployments';
+  route: 'execute-deployments';
 };
 
 export type CronSymbolConfig = {
@@ -88,14 +88,16 @@ function parseScalpCronPath(path: string, schedule: string | null): ScalpCronSym
   }
 
   const pathname = String(parsed.pathname || '').trim();
-  const isExecuteRoute = pathname === '/api/scalp/cron/execute';
-  const isExecuteHybridRoute = pathname === '/api/scalp/cron/execute-hybrid';
   const isExecuteDeploymentsRoute = pathname === '/api/scalp/cron/execute-deployments';
-  if (!isExecuteRoute && !isExecuteHybridRoute && !isExecuteDeploymentsRoute) return null;
+  if (!isExecuteDeploymentsRoute) return null;
 
-  const symbol = String(parsed.searchParams.get('symbol') || '')
+  const explicitSymbol = String(parsed.searchParams.get('symbol') || '')
     .trim()
     .toUpperCase();
+  const all = String(parsed.searchParams.get('all') || '')
+    .trim()
+    .toLowerCase();
+  const symbol = explicitSymbol || (['1', 'true', 'yes', 'on'].includes(all) ? '*' : '');
   if (!symbol) return null;
 
   return {
@@ -104,16 +106,16 @@ function parseScalpCronPath(path: string, schedule: string | null): ScalpCronSym
     tuneId: parsed.searchParams.get('tuneId') ? normalizeScalpTuneId(parsed.searchParams.get('tuneId')) : null,
     deploymentId:
       parsed.searchParams.get('deploymentId') ||
-      (symbol && parsed.searchParams.get('strategyId')
+      (explicitSymbol && parsed.searchParams.get('strategyId')
         ? buildScalpDeploymentId({
-            symbol,
+            symbol: explicitSymbol,
             strategyId: String(parsed.searchParams.get('strategyId') || ''),
             tuneId: parsed.searchParams.get('tuneId'),
           })
         : null),
     schedule,
     path: rawPath,
-    route: isExecuteHybridRoute ? 'execute-hybrid' : isExecuteDeploymentsRoute ? 'execute-deployments' : 'execute',
+    route: 'execute-deployments',
   };
 }
 

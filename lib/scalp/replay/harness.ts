@@ -354,7 +354,8 @@ function buildReplayMarketSnapshot(params: {
     };
 }
 
-function appendTimeline(timeline: ScalpReplayTimelineEvent[], event: ScalpReplayTimelineEvent) {
+function appendTimeline(timeline: ScalpReplayTimelineEvent[], event: ScalpReplayTimelineEvent, enabled = true) {
+    if (!enabled) return;
     timeline.push({
         ts: event.ts,
         type: event.type,
@@ -470,6 +471,7 @@ export async function runScalpReplay(params: {
     candles: ScalpReplayCandle[];
     pipSize: number;
     config: ScalpReplayRuntimeConfig;
+    captureTimeline?: boolean;
     progress?: ScalpReplayProgressOptions;
     marketData?: ScalpReplayMarketDataSources;
 }): Promise<ScalpReplayResult> {
@@ -515,6 +517,7 @@ export async function runScalpReplay(params: {
     const progressEveryRuns = Math.max(1, Math.floor(params.progress?.everyRuns ?? 2000));
     const progressMinIntervalMs = Math.max(0, Math.floor(params.progress?.minIntervalMs ?? 5000));
     const onProgress = params.progress?.onProgress;
+    const captureTimeline = params.captureTimeline ?? true;
     const replayStartedAtMs = Date.now();
     let lastProgressEmittedAtMs = replayStartedAtMs;
     let lastProgressRuns = 0;
@@ -664,7 +667,7 @@ export async function runScalpReplay(params: {
                         type: 'note',
                         state: state.state,
                         reasonCodes: significantManagedCodes,
-                    });
+                    }, captureTimeline);
                 }
 
                 if (!state.trade) {
@@ -686,7 +689,7 @@ export async function runScalpReplay(params: {
                         state: state.state,
                         reasonCodes: [...managedCodes, exitReason === 'TIME_STOP' ? 'EXIT_TIME_STOP' : 'EXIT_STOP'],
                         payload: { tradeId: trade.id, r: trade.rMultiple, pnlUsd: trade.pnlUsd },
-                    });
+                    }, captureTimeline);
                     position = null;
                 } else {
                     position.stopPrice = toFinite(state.trade.stopPrice, position.stopPrice);
@@ -722,7 +725,7 @@ export async function runScalpReplay(params: {
                               ifvgTouched: state.ifvg.touched,
                           }
                         : undefined,
-            });
+            }, captureTimeline);
 
             if (!hadOpenTradeAtStartOfManage && !position && !state.trade && entryIntent && state.state !== 'DONE' && state.state !== 'COOLDOWN') {
                 const planRes = buildScalpEntryPlan({
@@ -737,7 +740,7 @@ export async function runScalpReplay(params: {
                     type: 'note',
                     state: state.state,
                     reasonCodes: reasons,
-                });
+                }, captureTimeline);
                 if (planRes.plan && state.stats.tradesPlaced < strategyCfg.risk.maxTradesPerSymbolPerDay) {
                     const adverse = planRes.plan.side === 'BUY' ? slippageAbs : -slippageAbs;
                     const fillPrice = planRes.plan.entryReferencePrice + adverse;
@@ -799,7 +802,7 @@ export async function runScalpReplay(params: {
                                 tp: planRes.plan.takeProfitPrice,
                                 riskAbs,
                             },
-                        });
+                        }, captureTimeline);
                     }
                 }
             }
@@ -831,7 +834,7 @@ export async function runScalpReplay(params: {
             state: state?.state,
             reasonCodes: ['EXIT_FORCE_CLOSE'],
             payload: { tradeId: trade.id, r: trade.rMultiple, pnlUsd: trade.pnlUsd },
-        });
+        }, captureTimeline);
         if (state) {
             state.trade = null;
             state.state = 'DONE';

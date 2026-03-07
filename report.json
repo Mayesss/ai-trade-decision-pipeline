@@ -1,0 +1,4415 @@
+{
+  "generatedAtIso": "2026-03-07T13:05:12.427Z",
+  "symbol": "BTCUSDT",
+  "dataset": {
+    "yearFromTs": 1741302780000,
+    "yearToTs": 1772834400000,
+    "note": "Computed from full-year replays per scenario; rolling windows are sliced by entry timestamp."
+  },
+  "assumptions": {
+    "walkForwardSelectionDays": 90,
+    "walkForwardForward2wDays": 14,
+    "walkForwardForward4wDays": 28,
+    "walkForwardStepDays": 14,
+    "baselineDdGate": 8,
+    "selectionUniverseSize": 29,
+    "selectionUniverseNote": "In-scope deployed-neighborhood scenarios from Task A sweeps (CBP + guarded).",
+    "selectionRanking": "sort by netR desc, then profitFactor desc, then maxDrawdownR asc, then trades desc, then winRate desc; choose top eligible by DD gate, fallback to top overall"
+  },
+  "taskA": {
+    "cbp": {
+      "sweeps": {
+        "trailAtrMult": [
+          {
+            "scenarioId": "cbp_tr_1.3",
+            "value": "1.3",
+            "valueNum": 1.3,
+            "trades": 727,
+            "netPnlUsd": 1464.7226647021062,
+            "expectancyR": 0.08058996779653957,
+            "expectancyUsdPerTrade": 2.0147491949134886,
+            "profitFactor": 1.3977999504883645,
+            "maxDrawdownR": 31.241732878610122,
+            "winRatePct": 48.28060522696011,
+            "avgHoldMinutes": 31.10041265474553
+          },
+          {
+            "scenarioId": "cbp_tr_1.4",
+            "value": "1.4",
+            "valueNum": 1.4,
+            "trades": 727,
+            "netPnlUsd": 1455.2627439778355,
+            "expectancyR": 0.08006947697264581,
+            "expectancyUsdPerTrade": 2.0017369243161425,
+            "profitFactor": 1.3952307569567661,
+            "maxDrawdownR": 33.03054323847507,
+            "winRatePct": 48.28060522696011,
+            "avgHoldMinutes": 31.174690508940852
+          },
+          {
+            "scenarioId": "cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20",
+            "value": "1.5",
+            "valueNum": 1.5,
+            "trades": 727,
+            "netPnlUsd": 1567.6773386448133,
+            "expectancyR": 0.08625459910012734,
+            "expectancyUsdPerTrade": 2.156364977503182,
+            "profitFactor": 1.425757675732824,
+            "maxDrawdownR": 33.03054323847507,
+            "winRatePct": 48.28060522696011,
+            "avgHoldMinutes": 31.25171939477304
+          },
+          {
+            "scenarioId": "cbp_tr_1.6",
+            "value": "1.6",
+            "valueNum": 1.6,
+            "trades": 727,
+            "netPnlUsd": 1508.8178797455796,
+            "expectancyR": 0.0830161144289178,
+            "expectancyUsdPerTrade": 2.075402860722943,
+            "profitFactor": 1.4093122529197566,
+            "maxDrawdownR": 33.03054323847507,
+            "winRatePct": 48.28060522696011,
+            "avgHoldMinutes": 31.298486932599726
+          },
+          {
+            "scenarioId": "cbp_tr_1.7",
+            "value": "1.7",
+            "valueNum": 1.7,
+            "trades": 727,
+            "netPnlUsd": 1309.903381829961,
+            "expectancyR": 0.07207171289298284,
+            "expectancyUsdPerTrade": 1.8017928223245683,
+            "profitFactor": 1.3542019879596252,
+            "maxDrawdownR": 32.800092013175714,
+            "winRatePct": 48.143053645116915,
+            "avgHoldMinutes": 31.320495185694636
+          }
+        ],
+        "timeStopBars": [
+          {
+            "scenarioId": "cbp_ts_12",
+            "value": "12",
+            "valueNum": 12,
+            "trades": 727,
+            "netPnlUsd": 801.9854678947175,
+            "expectancyR": 0.04412574788966812,
+            "expectancyUsdPerTrade": 1.1031436972417024,
+            "profitFactor": 1.222793262156855,
+            "maxDrawdownR": 34.52086032990346,
+            "winRatePct": 48.4181568088033,
+            "avgHoldMinutes": 21.903713892709767
+          },
+          {
+            "scenarioId": "cbp_ts_15",
+            "value": "15",
+            "valueNum": 15,
+            "trades": 727,
+            "netPnlUsd": 1764.925130743193,
+            "expectancyR": 0.09710729742741085,
+            "expectancyUsdPerTrade": 2.427682435685272,
+            "profitFactor": 1.5015489363300736,
+            "maxDrawdownR": 30.814473964089952,
+            "winRatePct": 48.693259972489685,
+            "avgHoldMinutes": 27.31499312242091
+          },
+          {
+            "scenarioId": "cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20",
+            "value": "18",
+            "valueNum": 18,
+            "trades": 727,
+            "netPnlUsd": 1567.6773386448133,
+            "expectancyR": 0.08625459910012734,
+            "expectancyUsdPerTrade": 2.156364977503182,
+            "profitFactor": 1.425757675732824,
+            "maxDrawdownR": 33.03054323847507,
+            "winRatePct": 48.28060522696011,
+            "avgHoldMinutes": 31.25171939477304
+          },
+          {
+            "scenarioId": "cbp_ts_21",
+            "value": "21",
+            "valueNum": 21,
+            "trades": 727,
+            "netPnlUsd": 1233.5648391981467,
+            "expectancyR": 0.06787151797513889,
+            "expectancyUsdPerTrade": 1.6967879493784688,
+            "profitFactor": 1.303049868343075,
+            "maxDrawdownR": 46.17476029618347,
+            "winRatePct": 48.693259972489685,
+            "avgHoldMinutes": 36.18431911966988
+          }
+        ],
+        "sweepBufferPips": [
+          {
+            "scenarioId": "cbp_sw_0.10",
+            "value": "0.10",
+            "valueNum": 0.1,
+            "trades": 727,
+            "netPnlUsd": 1567.6773386448133,
+            "expectancyR": 0.08625459910012734,
+            "expectancyUsdPerTrade": 2.156364977503182,
+            "profitFactor": 1.425757675732824,
+            "maxDrawdownR": 33.03054323847507,
+            "winRatePct": 48.28060522696011,
+            "avgHoldMinutes": 31.25171939477304
+          },
+          {
+            "scenarioId": "cbp_sw_0.15",
+            "value": "0.15",
+            "valueNum": 0.15,
+            "trades": 727,
+            "netPnlUsd": 1567.6773386448133,
+            "expectancyR": 0.08625459910012734,
+            "expectancyUsdPerTrade": 2.156364977503182,
+            "profitFactor": 1.425757675732824,
+            "maxDrawdownR": 33.03054323847507,
+            "winRatePct": 48.28060522696011,
+            "avgHoldMinutes": 31.25171939477304
+          },
+          {
+            "scenarioId": "cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20",
+            "value": "0.20",
+            "valueNum": 0.2,
+            "trades": 727,
+            "netPnlUsd": 1567.6773386448133,
+            "expectancyR": 0.08625459910012734,
+            "expectancyUsdPerTrade": 2.156364977503182,
+            "profitFactor": 1.425757675732824,
+            "maxDrawdownR": 33.03054323847507,
+            "winRatePct": 48.28060522696011,
+            "avgHoldMinutes": 31.25171939477304
+          },
+          {
+            "scenarioId": "cbp_sw_0.25",
+            "value": "0.25",
+            "valueNum": 0.25,
+            "trades": 727,
+            "netPnlUsd": 1567.6773386448133,
+            "expectancyR": 0.08625459910012734,
+            "expectancyUsdPerTrade": 2.156364977503182,
+            "profitFactor": 1.425757675732824,
+            "maxDrawdownR": 33.03054323847507,
+            "winRatePct": 48.28060522696011,
+            "avgHoldMinutes": 31.25171939477304
+          },
+          {
+            "scenarioId": "cbp_sw_0.30",
+            "value": "0.30",
+            "valueNum": 0.3,
+            "trades": 727,
+            "netPnlUsd": 1567.6773386448133,
+            "expectancyR": 0.08625459910012734,
+            "expectancyUsdPerTrade": 2.156364977503182,
+            "profitFactor": 1.425757675732824,
+            "maxDrawdownR": 33.03054323847507,
+            "winRatePct": 48.28060522696011,
+            "avgHoldMinutes": 31.25171939477304
+          }
+        ],
+        "tp1ClosePct": [
+          {
+            "scenarioId": "cbp_tp1_0",
+            "value": "0",
+            "valueNum": 0,
+            "trades": 727,
+            "netPnlUsd": 1820.6469817411316,
+            "expectancyR": 0.1001731489266098,
+            "expectancyUsdPerTrade": 2.504328723165243,
+            "profitFactor": 1.492841103206684,
+            "maxDrawdownR": 32.86120115048826,
+            "winRatePct": 48.28060522696011,
+            "avgHoldMinutes": 31.25171939477304
+          },
+          {
+            "scenarioId": "cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20",
+            "value": "8",
+            "valueNum": 8,
+            "trades": 727,
+            "netPnlUsd": 1567.6773386448133,
+            "expectancyR": 0.08625459910012734,
+            "expectancyUsdPerTrade": 2.156364977503182,
+            "profitFactor": 1.425757675732824,
+            "maxDrawdownR": 33.03054323847507,
+            "winRatePct": 48.28060522696011,
+            "avgHoldMinutes": 31.25171939477304
+          },
+          {
+            "scenarioId": "cbp_tp1_15",
+            "value": "15",
+            "valueNum": 15,
+            "trades": 727,
+            "netPnlUsd": 1346.3289009355335,
+            "expectancyR": 0.07407586800195516,
+            "expectancyUsdPerTrade": 1.8518967000488769,
+            "profitFactor": 1.3666970119509136,
+            "maxDrawdownR": 33.1787175654635,
+            "winRatePct": 48.28060522696011,
+            "avgHoldMinutes": 31.25171939477304
+          },
+          {
+            "scenarioId": "cbp_tp1_20",
+            "value": "20",
+            "valueNum": 20,
+            "trades": 727,
+            "netPnlUsd": 1188.2228740003347,
+            "expectancyR": 0.06537677436040357,
+            "expectancyUsdPerTrade": 1.634419359010089,
+            "profitFactor": 1.3241819934579748,
+            "maxDrawdownR": 33.28455637045525,
+            "winRatePct": 48.4181568088033,
+            "avgHoldMinutes": 31.25171939477304
+          }
+        ]
+      },
+      "assessments": {
+        "trailAtrMult": {
+          "judgment": "stable plateau",
+          "deployedLocation": "near center of good region",
+          "deployedValue": "1.5",
+          "bestValue": "1.5"
+        },
+        "timeStopBars": {
+          "judgment": "narrow peak / likely overfit",
+          "deployedLocation": "near center of good region",
+          "deployedValue": "18",
+          "bestValue": "15"
+        },
+        "sweepBufferPips": {
+          "judgment": "stable plateau",
+          "deployedLocation": "near center of good region",
+          "deployedValue": "0.20",
+          "bestValue": "0.10"
+        },
+        "tp1ClosePct": {
+          "judgment": "narrow peak / likely overfit",
+          "deployedLocation": "near center of good region",
+          "deployedValue": "8",
+          "bestValue": "0"
+        }
+      }
+    },
+    "guarded": {
+      "sweeps": {
+        "blockedHours": [
+          {
+            "scenarioId": "guarded_blocked_none",
+            "value": "none",
+            "valueNum": null,
+            "trades": 389,
+            "netPnlUsd": 5625.0299047763865,
+            "expectancyR": 0.4131494605050599,
+            "expectancyUsdPerTrade": 14.460231117677086,
+            "profitFactor": 1.4480640586080968,
+            "maxDrawdownR": 108.5341582951925,
+            "winRatePct": 44.73007712082262,
+            "avgHoldMinutes": 30.26992287917738
+          },
+          {
+            "scenarioId": "guarded_high_pf_default",
+            "value": "[10,11]",
+            "valueNum": null,
+            "trades": 348,
+            "netPnlUsd": 6455.3836138415345,
+            "expectancyR": 0.5299986546667924,
+            "expectancyUsdPerTrade": 18.549952913337744,
+            "profitFactor": 1.6067162930802268,
+            "maxDrawdownR": 87.88289592326753,
+            "winRatePct": 43.96551724137931,
+            "avgHoldMinutes": 30.448275862068964
+          },
+          {
+            "scenarioId": "guarded_blocked_h9_10",
+            "value": "[9,10]",
+            "valueNum": null,
+            "trades": 357,
+            "netPnlUsd": 5266.532131663588,
+            "expectancyR": 0.42149116699988715,
+            "expectancyUsdPerTrade": 14.752190844996045,
+            "profitFactor": 1.4432219720633064,
+            "maxDrawdownR": 102.47595451049031,
+            "winRatePct": 44.25770308123249,
+            "avgHoldMinutes": 29.80672268907563
+          },
+          {
+            "scenarioId": "guarded_blocked_h11_12",
+            "value": "[11,12]",
+            "valueNum": null,
+            "trades": 369,
+            "netPnlUsd": 5782.3766536172425,
+            "expectancyR": 0.4477256410079166,
+            "expectancyUsdPerTrade": 15.67039743527708,
+            "profitFactor": 1.4800371271201664,
+            "maxDrawdownR": 110.52834387754561,
+            "winRatePct": 44.173441734417345,
+            "avgHoldMinutes": 30.317073170731707
+          },
+          {
+            "scenarioId": "guarded_blocked_h10",
+            "value": "[10]",
+            "valueNum": null,
+            "trades": 375,
+            "netPnlUsd": 6244.100644369863,
+            "expectancyR": 0.47574100147579923,
+            "expectancyUsdPerTrade": 16.65093505165297,
+            "profitFactor": 1.549694164381406,
+            "maxDrawdownR": 87.82860970145146,
+            "winRatePct": 44.800000000000004,
+            "avgHoldMinutes": 30.288
+          },
+          {
+            "scenarioId": "guarded_blocked_h11",
+            "value": "[11]",
+            "valueNum": null,
+            "trades": 369,
+            "netPnlUsd": 5782.3766536172425,
+            "expectancyR": 0.4477256410079166,
+            "expectancyUsdPerTrade": 15.67039743527708,
+            "profitFactor": 1.4800371271201664,
+            "maxDrawdownR": 110.52834387754561,
+            "winRatePct": 44.173441734417345,
+            "avgHoldMinutes": 30.317073170731707
+          }
+        ],
+        "trailAtrMult": [
+          {
+            "scenarioId": "guarded_tr_1.2",
+            "value": "1.2",
+            "valueNum": 1.2,
+            "trades": 349,
+            "netPnlUsd": 6275.315214237248,
+            "expectancyR": 0.5137384538876173,
+            "expectancyUsdPerTrade": 17.980845886066614,
+            "profitFactor": 1.5926722196807435,
+            "maxDrawdownR": 88.76333045214338,
+            "winRatePct": 44.126074498567334,
+            "avgHoldMinutes": 30.05157593123209
+          },
+          {
+            "scenarioId": "guarded_tr_1.3",
+            "value": "1.3",
+            "valueNum": 1.3,
+            "trades": 348,
+            "netPnlUsd": 6513.201083286283,
+            "expectancyR": 0.5347455733404174,
+            "expectancyUsdPerTrade": 18.71609506691461,
+            "profitFactor": 1.6170485647430979,
+            "maxDrawdownR": 88.97084688939722,
+            "winRatePct": 44.252873563218394,
+            "avgHoldMinutes": 30.232758620689655
+          },
+          {
+            "scenarioId": "guarded_high_pf_default",
+            "value": "1.4",
+            "valueNum": 1.4,
+            "trades": 348,
+            "netPnlUsd": 6455.3836138415345,
+            "expectancyR": 0.5299986546667924,
+            "expectancyUsdPerTrade": 18.549952913337744,
+            "profitFactor": 1.6067162930802268,
+            "maxDrawdownR": 87.88289592326753,
+            "winRatePct": 43.96551724137931,
+            "avgHoldMinutes": 30.448275862068964
+          },
+          {
+            "scenarioId": "guarded_tr_1.5",
+            "value": "1.5",
+            "valueNum": 1.5,
+            "trades": 348,
+            "netPnlUsd": 6360.978167677763,
+            "expectancyR": 0.5222477970178786,
+            "expectancyUsdPerTrade": 18.278672895625757,
+            "profitFactor": 1.597620043017533,
+            "maxDrawdownR": 88.12599696213681,
+            "winRatePct": 43.67816091954023,
+            "avgHoldMinutes": 30.67241379310345
+          },
+          {
+            "scenarioId": "guarded_tr_1.6",
+            "value": "1.6",
+            "valueNum": 1.6,
+            "trades": 348,
+            "netPnlUsd": 6305.454871061428,
+            "expectancyR": 0.5176892340772927,
+            "expectancyUsdPerTrade": 18.119123192705253,
+            "profitFactor": 1.5921354090798046,
+            "maxDrawdownR": 88.12599696213681,
+            "winRatePct": 43.39080459770115,
+            "avgHoldMinutes": 30.82758620689655
+          }
+        ],
+        "timeStopBars": [
+          {
+            "scenarioId": "guarded_ts_12",
+            "value": "12",
+            "valueNum": 12,
+            "trades": 351,
+            "netPnlUsd": 6994.273883830949,
+            "expectancyR": 0.5693344634783025,
+            "expectancyUsdPerTrade": 19.926706221740595,
+            "profitFactor": 1.6746217746385326,
+            "maxDrawdownR": 75.9466489801967,
+            "winRatePct": 44.15954415954416,
+            "avgHoldMinutes": 26.88888888888889
+          },
+          {
+            "scenarioId": "guarded_high_pf_default",
+            "value": "15",
+            "valueNum": 15,
+            "trades": 348,
+            "netPnlUsd": 6455.3836138415345,
+            "expectancyR": 0.5299986546667924,
+            "expectancyUsdPerTrade": 18.549952913337744,
+            "profitFactor": 1.6067162930802268,
+            "maxDrawdownR": 87.88289592326753,
+            "winRatePct": 43.96551724137931,
+            "avgHoldMinutes": 30.448275862068964
+          },
+          {
+            "scenarioId": "guarded_ts_18",
+            "value": "18",
+            "valueNum": 18,
+            "trades": 344,
+            "netPnlUsd": 6200.8766886013045,
+            "expectancyR": 0.5150229807808392,
+            "expectancyUsdPerTrade": 18.025804327329375,
+            "profitFactor": 1.5676988472671374,
+            "maxDrawdownR": 90.76125874798494,
+            "winRatePct": 44.76744186046512,
+            "avgHoldMinutes": 33.31395348837209
+          }
+        ],
+        "tp1ClosePct": [
+          {
+            "scenarioId": "guarded_tp1_10",
+            "value": "10",
+            "valueNum": 10,
+            "trades": 348,
+            "netPnlUsd": 7892.968476181559,
+            "expectancyR": 0.6480269684878129,
+            "expectancyUsdPerTrade": 22.680943897073444,
+            "profitFactor": 1.7312964849344246,
+            "maxDrawdownR": 88.01451755517641,
+            "winRatePct": 42.81609195402299,
+            "avgHoldMinutes": 30.448275862068964
+          },
+          {
+            "scenarioId": "guarded_high_pf_default",
+            "value": "20",
+            "valueNum": 20,
+            "trades": 348,
+            "netPnlUsd": 6455.3836138415345,
+            "expectancyR": 0.5299986546667924,
+            "expectancyUsdPerTrade": 18.549952913337744,
+            "profitFactor": 1.6067162930802268,
+            "maxDrawdownR": 87.88289592326753,
+            "winRatePct": 43.96551724137931,
+            "avgHoldMinutes": 30.448275862068964
+          },
+          {
+            "scenarioId": "guarded_tp1_30",
+            "value": "30",
+            "valueNum": 30,
+            "trades": 348,
+            "netPnlUsd": 5017.798751501509,
+            "expectancyR": 0.41197034084577266,
+            "expectancyUsdPerTrade": 14.418961929602037,
+            "profitFactor": 1.478067280549319,
+            "maxDrawdownR": 87.75127429135858,
+            "winRatePct": 44.252873563218394,
+            "avgHoldMinutes": 30.448275862068964
+          }
+        ]
+      },
+      "assessments": {
+        "blockedHours": {
+          "judgment": "narrow peak / likely overfit",
+          "deployedLocation": "single sharp optimum",
+          "deployedValue": "[10,11]",
+          "bestValue": "[10,11]"
+        },
+        "trailAtrMult": {
+          "judgment": "stable plateau",
+          "deployedLocation": "near center of good region",
+          "deployedValue": "1.4",
+          "bestValue": "1.3"
+        },
+        "timeStopBars": {
+          "judgment": "stable plateau",
+          "deployedLocation": "near center of good region",
+          "deployedValue": "15",
+          "bestValue": "12"
+        },
+        "tp1ClosePct": {
+          "judgment": "narrow peak / likely overfit",
+          "deployedLocation": "near center of good region",
+          "deployedValue": "20",
+          "bestValue": "10"
+        }
+      }
+    }
+  },
+  "taskB": {
+    "rolls": [
+      {
+        "rollIndex": 1,
+        "selection": {
+          "fromTs": 1741302780000,
+          "toTs": 1749078780000
+        },
+        "forward2w": {
+          "fromTs": 1749078780000,
+          "toTs": 1750288380000
+        },
+        "forward4w": {
+          "fromTs": 1749078780000,
+          "toTs": 1751497980000
+        }
+      },
+      {
+        "rollIndex": 2,
+        "selection": {
+          "fromTs": 1742512380000,
+          "toTs": 1750288380000
+        },
+        "forward2w": {
+          "fromTs": 1750288380000,
+          "toTs": 1751497980000
+        },
+        "forward4w": {
+          "fromTs": 1750288380000,
+          "toTs": 1752707580000
+        }
+      },
+      {
+        "rollIndex": 3,
+        "selection": {
+          "fromTs": 1743721980000,
+          "toTs": 1751497980000
+        },
+        "forward2w": {
+          "fromTs": 1751497980000,
+          "toTs": 1752707580000
+        },
+        "forward4w": {
+          "fromTs": 1751497980000,
+          "toTs": 1753917180000
+        }
+      },
+      {
+        "rollIndex": 4,
+        "selection": {
+          "fromTs": 1744931580000,
+          "toTs": 1752707580000
+        },
+        "forward2w": {
+          "fromTs": 1752707580000,
+          "toTs": 1753917180000
+        },
+        "forward4w": {
+          "fromTs": 1752707580000,
+          "toTs": 1755126780000
+        }
+      },
+      {
+        "rollIndex": 5,
+        "selection": {
+          "fromTs": 1746141180000,
+          "toTs": 1753917180000
+        },
+        "forward2w": {
+          "fromTs": 1753917180000,
+          "toTs": 1755126780000
+        },
+        "forward4w": {
+          "fromTs": 1753917180000,
+          "toTs": 1756336380000
+        }
+      },
+      {
+        "rollIndex": 6,
+        "selection": {
+          "fromTs": 1747350780000,
+          "toTs": 1755126780000
+        },
+        "forward2w": {
+          "fromTs": 1755126780000,
+          "toTs": 1756336380000
+        },
+        "forward4w": {
+          "fromTs": 1755126780000,
+          "toTs": 1757545980000
+        }
+      },
+      {
+        "rollIndex": 7,
+        "selection": {
+          "fromTs": 1748560380000,
+          "toTs": 1756336380000
+        },
+        "forward2w": {
+          "fromTs": 1756336380000,
+          "toTs": 1757545980000
+        },
+        "forward4w": {
+          "fromTs": 1756336380000,
+          "toTs": 1758755580000
+        }
+      },
+      {
+        "rollIndex": 8,
+        "selection": {
+          "fromTs": 1749769980000,
+          "toTs": 1757545980000
+        },
+        "forward2w": {
+          "fromTs": 1757545980000,
+          "toTs": 1758755580000
+        },
+        "forward4w": {
+          "fromTs": 1757545980000,
+          "toTs": 1759965180000
+        }
+      },
+      {
+        "rollIndex": 9,
+        "selection": {
+          "fromTs": 1750979580000,
+          "toTs": 1758755580000
+        },
+        "forward2w": {
+          "fromTs": 1758755580000,
+          "toTs": 1759965180000
+        },
+        "forward4w": {
+          "fromTs": 1758755580000,
+          "toTs": 1761174780000
+        }
+      },
+      {
+        "rollIndex": 10,
+        "selection": {
+          "fromTs": 1752189180000,
+          "toTs": 1759965180000
+        },
+        "forward2w": {
+          "fromTs": 1759965180000,
+          "toTs": 1761174780000
+        },
+        "forward4w": {
+          "fromTs": 1759965180000,
+          "toTs": 1762384380000
+        }
+      },
+      {
+        "rollIndex": 11,
+        "selection": {
+          "fromTs": 1753398780000,
+          "toTs": 1761174780000
+        },
+        "forward2w": {
+          "fromTs": 1761174780000,
+          "toTs": 1762384380000
+        },
+        "forward4w": {
+          "fromTs": 1761174780000,
+          "toTs": 1763593980000
+        }
+      },
+      {
+        "rollIndex": 12,
+        "selection": {
+          "fromTs": 1754608380000,
+          "toTs": 1762384380000
+        },
+        "forward2w": {
+          "fromTs": 1762384380000,
+          "toTs": 1763593980000
+        },
+        "forward4w": {
+          "fromTs": 1762384380000,
+          "toTs": 1764803580000
+        }
+      },
+      {
+        "rollIndex": 13,
+        "selection": {
+          "fromTs": 1755817980000,
+          "toTs": 1763593980000
+        },
+        "forward2w": {
+          "fromTs": 1763593980000,
+          "toTs": 1764803580000
+        },
+        "forward4w": {
+          "fromTs": 1763593980000,
+          "toTs": 1766013180000
+        }
+      },
+      {
+        "rollIndex": 14,
+        "selection": {
+          "fromTs": 1757027580000,
+          "toTs": 1764803580000
+        },
+        "forward2w": {
+          "fromTs": 1764803580000,
+          "toTs": 1766013180000
+        },
+        "forward4w": {
+          "fromTs": 1764803580000,
+          "toTs": 1767222780000
+        }
+      },
+      {
+        "rollIndex": 15,
+        "selection": {
+          "fromTs": 1758237180000,
+          "toTs": 1766013180000
+        },
+        "forward2w": {
+          "fromTs": 1766013180000,
+          "toTs": 1767222780000
+        },
+        "forward4w": {
+          "fromTs": 1766013180000,
+          "toTs": 1768432380000
+        }
+      },
+      {
+        "rollIndex": 16,
+        "selection": {
+          "fromTs": 1759446780000,
+          "toTs": 1767222780000
+        },
+        "forward2w": {
+          "fromTs": 1767222780000,
+          "toTs": 1768432380000
+        },
+        "forward4w": {
+          "fromTs": 1767222780000,
+          "toTs": 1769641980000
+        }
+      },
+      {
+        "rollIndex": 17,
+        "selection": {
+          "fromTs": 1760656380000,
+          "toTs": 1768432380000
+        },
+        "forward2w": {
+          "fromTs": 1768432380000,
+          "toTs": 1769641980000
+        },
+        "forward4w": {
+          "fromTs": 1768432380000,
+          "toTs": 1770851580000
+        }
+      },
+      {
+        "rollIndex": 18,
+        "selection": {
+          "fromTs": 1761865980000,
+          "toTs": 1769641980000
+        },
+        "forward2w": {
+          "fromTs": 1769641980000,
+          "toTs": 1770851580000
+        },
+        "forward4w": {
+          "fromTs": 1769641980000,
+          "toTs": 1772061180000
+        }
+      }
+    ],
+    "rows": [
+      {
+        "rollIndex": 1,
+        "gate": 8,
+        "selectedScenarioId": "cbp_ts_21",
+        "selectedFamily": "cbp",
+        "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+        "eligibleCandidates": 15,
+        "candidateCount": 29,
+        "selectionTrades": 178,
+        "selectionNetPnlUsd": 723.0670722149148,
+        "selectionExpectancyR": 0.1624869825202056,
+        "selectionProfitFactor": 2.443829556599237,
+        "selectionMaxDrawdownR": 5.083141066982698,
+        "fwd2wNetPnlUsd": -26.54427381706256,
+        "fwd2wExpectancyR": -0.03792039116723223,
+        "fwd2wProfitFactor": 0.7196372253447367,
+        "fwd2wMaxDrawdownR": 1.5775064412015016,
+        "fwd4wNetPnlUsd": -277.6987458089384,
+        "fwd4wExpectancyR": -0.1983562470063845,
+        "fwd4wProfitFactor": 0.5499456512449556,
+        "fwd4wMaxDrawdownR": 18.511308899251375
+      },
+      {
+        "rollIndex": 2,
+        "gate": 8,
+        "selectedScenarioId": "cbp_ts_15",
+        "selectedFamily": "cbp",
+        "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+        "eligibleCandidates": 15,
+        "candidateCount": 29,
+        "selectionTrades": 180,
+        "selectionNetPnlUsd": 623.4315778733436,
+        "selectionExpectancyR": 0.1385403506385208,
+        "selectionProfitFactor": 2.3187270355651033,
+        "selectionMaxDrawdownR": 4.800481168731359,
+        "fwd2wNetPnlUsd": -257.2998453022606,
+        "fwd2wExpectancyR": -0.36757120757465794,
+        "fwd2wProfitFactor": 0.5026438151317058,
+        "fwd2wMaxDrawdownR": 18.511308899251375,
+        "fwd4wNetPnlUsd": -31.338161373047903,
+        "fwd4wExpectancyR": -0.022384400980748464,
+        "fwd4wProfitFactor": 0.9459839418344298,
+        "fwd4wMaxDrawdownR": 18.511308899251375
+      },
+      {
+        "rollIndex": 3,
+        "gate": 8,
+        "selectedScenarioId": "cbp_ts_21",
+        "selectedFamily": "cbp",
+        "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+        "eligibleCandidates": 0,
+        "candidateCount": 29,
+        "selectionTrades": 180,
+        "selectionNetPnlUsd": 422.34143714180766,
+        "selectionExpectancyR": 0.09385365269817948,
+        "selectionProfitFactor": 1.4840835722393113,
+        "selectionMaxDrawdownR": 18.511308899251375,
+        "fwd2wNetPnlUsd": 162.5721603797311,
+        "fwd2wExpectancyR": 0.2322459433996158,
+        "fwd2wProfitFactor": 2.353965959155856,
+        "fwd2wMaxDrawdownR": 3.430808320875487,
+        "fwd4wNetPnlUsd": 555.826828247194,
+        "fwd4wExpectancyR": 0.39701916303370993,
+        "fwd4wProfitFactor": 3.191520351591021,
+        "fwd4wMaxDrawdownR": 5.59781643667605
+      },
+      {
+        "rollIndex": 4,
+        "gate": 8,
+        "selectedScenarioId": "cbp_ts_15",
+        "selectedFamily": "cbp",
+        "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+        "eligibleCandidates": 0,
+        "candidateCount": 29,
+        "selectionTrades": 180,
+        "selectionNetPnlUsd": 608.1491560542328,
+        "selectionExpectancyR": 0.13514425690094076,
+        "selectionProfitFactor": 1.6926444247690926,
+        "selectionMaxDrawdownR": 18.511308899251375,
+        "fwd2wNetPnlUsd": 392.8662442252106,
+        "fwd2wExpectancyR": 0.5612374917503006,
+        "fwd2wProfitFactor": 4.248792008352153,
+        "fwd2wMaxDrawdownR": 2.444982728542108,
+        "fwd4wNetPnlUsd": 253.51013413682566,
+        "fwd4wExpectancyR": 0.18437100664496406,
+        "fwd4wProfitFactor": 1.8027542838411708,
+        "fwd4wMaxDrawdownR": 8.049364116125233
+      },
+      {
+        "rollIndex": 5,
+        "gate": 8,
+        "selectedScenarioId": "cbp_tp1_0",
+        "selectedFamily": "cbp",
+        "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+        "eligibleCandidates": 0,
+        "candidateCount": 29,
+        "selectionTrades": 180,
+        "selectionNetPnlUsd": 929.483881378752,
+        "selectionExpectancyR": 0.20655197363972286,
+        "selectionProfitFactor": 1.8600306605489172,
+        "selectionMaxDrawdownR": 18.511308899251375,
+        "fwd2wNetPnlUsd": -140.9682030760377,
+        "fwd2wExpectancyR": -0.20884178233487063,
+        "fwd2wProfitFactor": 0.24635252418146833,
+        "fwd2wMaxDrawdownR": 5.990864071354539,
+        "fwd4wNetPnlUsd": -107.29680389817536,
+        "fwd4wExpectancyR": -0.078034039198673,
+        "fwd4wProfitFactor": 0.47820853196648505,
+        "fwd4wMaxDrawdownR": 5.990864071354539
+      },
+      {
+        "rollIndex": 6,
+        "gate": 8,
+        "selectedScenarioId": "cbp_tp1_0",
+        "selectedFamily": "cbp",
+        "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+        "eligibleCandidates": 0,
+        "candidateCount": 29,
+        "selectionTrades": 179,
+        "selectionNetPnlUsd": 875.4551801837405,
+        "selectionExpectancyR": 0.19563244249916004,
+        "selectionProfitFactor": 1.8184048112569178,
+        "selectionMaxDrawdownR": 18.511308899251375,
+        "fwd2wNetPnlUsd": 33.67139917786238,
+        "fwd2wExpectancyR": 0.04810199882551767,
+        "fwd2wProfitFactor": 2.811883360344924,
+        "fwd2wMaxDrawdownR": 0.3251639083274185,
+        "fwd4wNetPnlUsd": 436.37390025357126,
+        "fwd4wExpectancyR": 0.3116956430382652,
+        "fwd4wProfitFactor": 5.214142507691875,
+        "fwd4wMaxDrawdownR": 2.8923624043485634
+      },
+      {
+        "rollIndex": 7,
+        "gate": 8,
+        "selectedScenarioId": "guarded_blocked_h11_12",
+        "selectedFamily": "guarded",
+        "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+        "eligibleCandidates": 0,
+        "candidateCount": 29,
+        "selectionTrades": 89,
+        "selectionNetPnlUsd": 1265.8672886088145,
+        "selectionExpectancyR": 0.4063779417684798,
+        "selectionProfitFactor": 1.503188141759586,
+        "selectionMaxDrawdownR": 21.2727036737135,
+        "fwd2wNetPnlUsd": -355.29392702713994,
+        "fwd2wExpectancyR": -0.7808657736860223,
+        "fwd2wProfitFactor": 0.5888343107867043,
+        "fwd2wMaxDrawdownR": 21.834700314373084,
+        "fwd4wNetPnlUsd": -503.26792519374385,
+        "fwd4wExpectancyR": -0.7189541788482059,
+        "fwd4wProfitFactor": 0.5112124179633117,
+        "fwd4wMaxDrawdownR": 21.834700314373084
+      },
+      {
+        "rollIndex": 8,
+        "gate": 8,
+        "selectedScenarioId": "guarded_ts_12",
+        "selectedFamily": "guarded",
+        "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+        "eligibleCandidates": 0,
+        "candidateCount": 29,
+        "selectionTrades": 85,
+        "selectionNetPnlUsd": 1261.418046452393,
+        "selectionExpectancyR": 0.4240060660344176,
+        "selectionProfitFactor": 1.4384720433681943,
+        "selectionMaxDrawdownR": 22.82699649946842,
+        "fwd2wNetPnlUsd": -130.75946044753627,
+        "fwd2wExpectancyR": -0.533712083459332,
+        "fwd2wProfitFactor": 0.11985862703707942,
+        "fwd2wMaxDrawdownR": 4.1794538545606805,
+        "fwd4wNetPnlUsd": -1469.6444883654692,
+        "fwd4wExpectancyR": -2.209991711827773,
+        "fwd4wProfitFactor": 0.24992127915785484,
+        "fwd4wMaxDrawdownR": 47.505048041213136
+      },
+      {
+        "rollIndex": 9,
+        "gate": 8,
+        "selectedScenarioId": "guarded_ts_12",
+        "selectedFamily": "guarded",
+        "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+        "eligibleCandidates": 0,
+        "candidateCount": 29,
+        "selectionTrades": 77,
+        "selectionNetPnlUsd": 1348.3249075520212,
+        "selectionExpectancyR": 0.5003060881454623,
+        "selectionProfitFactor": 1.5168396010764116,
+        "selectionMaxDrawdownR": 22.826996499468418,
+        "fwd2wNetPnlUsd": -1338.885027917933,
+        "fwd2wExpectancyR": -3.1878214950426975,
+        "fwd2wProfitFactor": 0.26059249388438943,
+        "fwd2wMaxDrawdownR": 47.50504804121313,
+        "fwd4wNetPnlUsd": -1418.2278095998204,
+        "fwd4wExpectancyR": -1.4471712342855307,
+        "fwd4wProfitFactor": 0.320086245755841,
+        "fwd4wMaxDrawdownR": 48.6425823586041
+      },
+      {
+        "rollIndex": 10,
+        "gate": 8,
+        "selectedScenarioId": "cbp_ts_12",
+        "selectedFamily": "cbp",
+        "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+        "eligibleCandidates": 1,
+        "candidateCount": 29,
+        "selectionTrades": 179,
+        "selectionNetPnlUsd": 691.7939660272923,
+        "selectionExpectancyR": 0.15459083039716015,
+        "selectionProfitFactor": 1.9461463517428408,
+        "selectionMaxDrawdownR": 7.9393788719507015,
+        "fwd2wNetPnlUsd": -56.270930391372005,
+        "fwd2wExpectancyR": -0.08038704341624571,
+        "fwd2wProfitFactor": 0.5455233232177,
+        "fwd2wMaxDrawdownR": 4.71151267209153,
+        "fwd4wNetPnlUsd": -64.37205352553897,
+        "fwd4wExpectancyR": -0.045980038232527845,
+        "fwd4wProfitFactor": 0.6935961020050035,
+        "fwd4wMaxDrawdownR": 6.565874135014045
+      },
+      {
+        "rollIndex": 11,
+        "gate": 8,
+        "selectedScenarioId": "cbp_ts_12",
+        "selectedFamily": "cbp",
+        "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+        "eligibleCandidates": 1,
+        "candidateCount": 29,
+        "selectionTrades": 179,
+        "selectionNetPnlUsd": 207.1122264721254,
+        "selectionExpectancyR": 0.04628206178148059,
+        "selectionProfitFactor": 1.2656724740449492,
+        "selectionMaxDrawdownR": 7.939378871950696,
+        "fwd2wNetPnlUsd": -8.10112313416699,
+        "fwd2wExpectancyR": -0.011573033048809977,
+        "fwd2wProfitFactor": 0.9061001769403548,
+        "fwd2wMaxDrawdownR": 2.4647437937073144,
+        "fwd4wNetPnlUsd": -462.0683119594398,
+        "fwd4wExpectancyR": -0.33004879425674283,
+        "fwd4wProfitFactor": 0.2801864176452832,
+        "fwd4wMaxDrawdownR": 20.774246810225645
+      },
+      {
+        "rollIndex": 12,
+        "gate": 8,
+        "selectedScenarioId": "cbp_tp1_0",
+        "selectedFamily": "cbp",
+        "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+        "eligibleCandidates": 14,
+        "candidateCount": 29,
+        "selectionTrades": 179,
+        "selectionNetPnlUsd": 382.1996742301543,
+        "selectionExpectancyR": 0.08540774843131942,
+        "selectionProfitFactor": 1.5041419040499167,
+        "selectionMaxDrawdownR": 6.542504522441714,
+        "fwd2wNetPnlUsd": -443.1537572130362,
+        "fwd2wExpectancyR": -0.6330767960186231,
+        "fwd2wProfitFactor": 0.19807577438364812,
+        "fwd2wMaxDrawdownR": 20.324897561139657,
+        "fwd4wNetPnlUsd": -525.3545392126908,
+        "fwd4wExpectancyR": -0.37525324229477924,
+        "fwd4wProfitFactor": 0.3117576695960943,
+        "fwd4wMaxDrawdownR": 24.09791341304793
+      },
+      {
+        "rollIndex": 13,
+        "gate": 8,
+        "selectedScenarioId": "cbp_tp1_0",
+        "selectedFamily": "cbp",
+        "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+        "eligibleCandidates": 0,
+        "candidateCount": 29,
+        "selectionTrades": 180,
+        "selectionNetPnlUsd": 11.089133786226505,
+        "selectionExpectancyR": 0.002464251952494801,
+        "selectionProfitFactor": 1.0092682452926134,
+        "selectionMaxDrawdownR": 23.846837530560997,
+        "fwd2wNetPnlUsd": -82.20078199965462,
+        "fwd2wExpectancyR": -0.11742968857093516,
+        "fwd2wProfitFactor": 0.6098956290910904,
+        "fwd2wMaxDrawdownR": 4.088604946482407,
+        "fwd4wNetPnlUsd": -187.62432981368474,
+        "fwd4wExpectancyR": -0.13401737843834624,
+        "fwd4wProfitFactor": 0.5287731455697984,
+        "fwd4wMaxDrawdownR": 9.329952714501454
+      },
+      {
+        "rollIndex": 14,
+        "gate": 8,
+        "selectedScenarioId": "cbp_ts_15",
+        "selectedFamily": "cbp",
+        "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+        "eligibleCandidates": 0,
+        "candidateCount": 29,
+        "selectionTrades": 180,
+        "selectionNetPnlUsd": -82.6493936544734,
+        "selectionExpectancyR": -0.01836653192321614,
+        "selectionProfitFactor": 0.9369562388238483,
+        "selectionMaxDrawdownR": 25.833125961945395,
+        "fwd2wNetPnlUsd": -117.28697491353839,
+        "fwd2wExpectancyR": -0.16755282130505483,
+        "fwd2wProfitFactor": 0.40354921174837227,
+        "fwd2wMaxDrawdownR": 5.861604796597087,
+        "fwd4wNetPnlUsd": 746.7650294131295,
+        "fwd4wExpectancyR": 0.5334035924379497,
+        "fwd4wProfitFactor": 3.273372111397814,
+        "fwd4wMaxDrawdownR": 5.861604796597087
+      },
+      {
+        "rollIndex": 15,
+        "gate": 8,
+        "selectedScenarioId": "guarded_tp1_10",
+        "selectedFamily": "guarded",
+        "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+        "eligibleCandidates": 0,
+        "candidateCount": 29,
+        "selectionTrades": 78,
+        "selectionNetPnlUsd": 6955.4261423403095,
+        "selectionExpectancyR": 2.5477751437144,
+        "selectionProfitFactor": 2.7847436818484,
+        "selectionMaxDrawdownR": 76.41858656239425,
+        "fwd2wNetPnlUsd": -83.239705799618,
+        "fwd2wExpectancyR": -0.1981897757133763,
+        "fwd2wProfitFactor": 0.6173149468301976,
+        "fwd2wMaxDrawdownR": 3.406336947100004,
+        "fwd4wNetPnlUsd": -242.4719777433544,
+        "fwd4wExpectancyR": -0.230925693088909,
+        "fwd4wProfitFactor": 0.6801310244101476,
+        "fwd4wMaxDrawdownR": 14.204316292848823
+      },
+      {
+        "rollIndex": 16,
+        "gate": 8,
+        "selectedScenarioId": "guarded_tp1_10",
+        "selectedFamily": "guarded",
+        "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+        "eligibleCandidates": 0,
+        "candidateCount": 29,
+        "selectionTrades": 83,
+        "selectionNetPnlUsd": 6735.595943401294,
+        "selectionExpectancyR": 2.318621667263785,
+        "selectionProfitFactor": 2.7160726496555294,
+        "selectionMaxDrawdownR": 75.68387733700646,
+        "fwd2wNetPnlUsd": -159.23227194373635,
+        "fwd2wExpectancyR": -0.25274963800593075,
+        "fwd2wProfitFactor": 0.7054093186144746,
+        "fwd2wMaxDrawdownR": 14.204316292848823,
+        "fwd4wNetPnlUsd": 151.51911925938558,
+        "fwd4wExpectancyR": 0.13528492791016566,
+        "fwd4wProfitFactor": 1.1896889504009196,
+        "fwd4wMaxDrawdownR": 14.204316292848823
+      },
+      {
+        "rollIndex": 17,
+        "gate": 8,
+        "selectedScenarioId": "guarded_tp1_10",
+        "selectedFamily": "guarded",
+        "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+        "eligibleCandidates": 0,
+        "candidateCount": 29,
+        "selectionTrades": 87,
+        "selectionNetPnlUsd": 8189.495733416113,
+        "selectionExpectancyR": 2.6894895676243387,
+        "selectionProfitFactor": 4.0827548027064715,
+        "selectionMaxDrawdownR": 30.395851374153953,
+        "fwd2wNetPnlUsd": 310.75139120312184,
+        "fwd2wExpectancyR": 0.6341865126594325,
+        "fwd2wProfitFactor": 2.2032672685379358,
+        "fwd2wMaxDrawdownR": 4.159441665826792,
+        "fwd4wNetPnlUsd": 414.9706232733135,
+        "fwd4wExpectancyR": 0.43912235267017297,
+        "fwd4wProfitFactor": 1.958959407105202,
+        "fwd4wMaxDrawdownR": 4.159441665826792
+      },
+      {
+        "rollIndex": 18,
+        "gate": 8,
+        "selectedScenarioId": "guarded_tp1_10",
+        "selectedFamily": "guarded",
+        "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+        "eligibleCandidates": 0,
+        "candidateCount": 29,
+        "selectionTrades": 86,
+        "selectionNetPnlUsd": 9514.066540928574,
+        "selectionExpectancyR": 3.1608194488134793,
+        "selectionProfitFactor": 6.119495102789548,
+        "selectionMaxDrawdownR": 14.20431629284883,
+        "fwd2wNetPnlUsd": 104.21923207019145,
+        "fwd2wExpectancyR": 0.2290532572971244,
+        "fwd2wProfitFactor": 1.5973345956695875,
+        "fwd2wMaxDrawdownR": 2.9226683925182284,
+        "fwd4wNetPnlUsd": 349.9704820855401,
+        "fwd4wExpectancyR": 0.333305221033848,
+        "fwd4wProfitFactor": 2.009321528772594,
+        "fwd4wMaxDrawdownR": 2.9226683925182284
+      }
+    ],
+    "summary": {
+      "rolls": 18,
+      "profitable2wPct": 27.77777777777778,
+      "profitable4wPct": 38.88888888888889,
+      "meanForward2wExpectancyR": -0.27071479585621094,
+      "meanForward4wExpectancyR": -0.1920508362049748,
+      "medianForward2wExpectancyR": -0.142491254937995,
+      "medianForward4wExpectancyR": -0.06200703871560042,
+      "meanDegradation2w": -1.0068250149062292,
+      "meanDegradation4w": -0.928161055254993,
+      "churnTransitions": 10,
+      "repeatTransitions": 7,
+      "selectedFrequency": [
+        {
+          "scenarioId": "cbp_tp1_0",
+          "count": 4
+        },
+        {
+          "scenarioId": "guarded_tp1_10",
+          "count": 4
+        },
+        {
+          "scenarioId": "cbp_ts_15",
+          "count": 3
+        },
+        {
+          "scenarioId": "cbp_ts_21",
+          "count": 2
+        },
+        {
+          "scenarioId": "guarded_ts_12",
+          "count": 2
+        },
+        {
+          "scenarioId": "cbp_ts_12",
+          "count": 2
+        },
+        {
+          "scenarioId": "guarded_blocked_h11_12",
+          "count": 1
+        }
+      ]
+    }
+  },
+  "taskC": {
+    "aggregateRows": [
+      {
+        "scenarioId": "guarded_blocked_none",
+        "variant": "none",
+        "trades": 389,
+        "netPnlUsd": 5625.0299047763865,
+        "expectancyR": 0.4131494605050599,
+        "expectancyUsdPerTrade": 14.460231117677086,
+        "profitFactor": 1.4480640586080968,
+        "maxDrawdownR": 108.5341582951925,
+        "winRatePct": 44.73007712082262,
+        "avgHoldMinutes": 30.26992287917738
+      },
+      {
+        "scenarioId": "guarded_high_pf_default",
+        "variant": "[10,11]",
+        "trades": 348,
+        "netPnlUsd": 6455.3836138415345,
+        "expectancyR": 0.5299986546667924,
+        "expectancyUsdPerTrade": 18.549952913337744,
+        "profitFactor": 1.6067162930802268,
+        "maxDrawdownR": 87.88289592326753,
+        "winRatePct": 43.96551724137931,
+        "avgHoldMinutes": 30.448275862068964
+      },
+      {
+        "scenarioId": "guarded_blocked_h9_10",
+        "variant": "[9,10]",
+        "trades": 357,
+        "netPnlUsd": 5266.532131663588,
+        "expectancyR": 0.42149116699988715,
+        "expectancyUsdPerTrade": 14.752190844996045,
+        "profitFactor": 1.4432219720633064,
+        "maxDrawdownR": 102.47595451049031,
+        "winRatePct": 44.25770308123249,
+        "avgHoldMinutes": 29.80672268907563
+      },
+      {
+        "scenarioId": "guarded_blocked_h11_12",
+        "variant": "[11,12]",
+        "trades": 369,
+        "netPnlUsd": 5782.3766536172425,
+        "expectancyR": 0.4477256410079166,
+        "expectancyUsdPerTrade": 15.67039743527708,
+        "profitFactor": 1.4800371271201664,
+        "maxDrawdownR": 110.52834387754561,
+        "winRatePct": 44.173441734417345,
+        "avgHoldMinutes": 30.317073170731707
+      },
+      {
+        "scenarioId": "guarded_blocked_h10",
+        "variant": "[10]",
+        "trades": 375,
+        "netPnlUsd": 6244.100644369863,
+        "expectancyR": 0.47574100147579923,
+        "expectancyUsdPerTrade": 16.65093505165297,
+        "profitFactor": 1.549694164381406,
+        "maxDrawdownR": 87.82860970145146,
+        "winRatePct": 44.800000000000004,
+        "avgHoldMinutes": 30.288
+      },
+      {
+        "scenarioId": "guarded_blocked_h11",
+        "variant": "[11]",
+        "trades": 369,
+        "netPnlUsd": 5782.3766536172425,
+        "expectancyR": 0.4477256410079166,
+        "expectancyUsdPerTrade": 15.67039743527708,
+        "profitFactor": 1.4800371271201664,
+        "maxDrawdownR": 110.52834387754561,
+        "winRatePct": 44.173441734417345,
+        "avgHoldMinutes": 30.317073170731707
+      }
+    ],
+    "byHour": {
+      "none": [
+        {
+          "berlinHour": 8,
+          "trades": 46,
+          "netPnlUsd": 471.7373416340701,
+          "expectancyR": 0.29300456002116154,
+          "expectancyUsdPerTrade": 10.255159600740654
+        },
+        {
+          "berlinHour": 9,
+          "trades": 31,
+          "netPnlUsd": -209.55442754874045,
+          "expectancyR": -0.19313772124307865,
+          "expectancyUsdPerTrade": -6.759820243507757
+        },
+        {
+          "berlinHour": 10,
+          "trades": 33,
+          "netPnlUsd": -1019.0126686911368,
+          "expectancyR": -0.8822620508148374,
+          "expectancyUsdPerTrade": -30.879171778519297
+        },
+        {
+          "berlinHour": 11,
+          "trades": 30,
+          "netPnlUsd": -427.71341629435335,
+          "expectancyR": -0.40734611075652716,
+          "expectancyUsdPerTrade": -14.257113876478446
+        },
+        {
+          "berlinHour": 14,
+          "trades": 75,
+          "netPnlUsd": 7612.565374384557,
+          "expectancyR": 2.900024904527451,
+          "expectancyUsdPerTrade": 101.50087165846075
+        },
+        {
+          "berlinHour": 15,
+          "trades": 61,
+          "netPnlUsd": 567.0851198396681,
+          "expectancyR": 0.26561363926916554,
+          "expectancyUsdPerTrade": 9.296477374420789
+        },
+        {
+          "berlinHour": 16,
+          "trades": 68,
+          "netPnlUsd": -1106.3264387138775,
+          "expectancyR": -0.4648430414764193,
+          "expectancyUsdPerTrade": -16.26950645167467
+        },
+        {
+          "berlinHour": 17,
+          "trades": 45,
+          "netPnlUsd": -263.7509798338003,
+          "expectancyR": -0.1674609395770159,
+          "expectancyUsdPerTrade": -5.861132885195562
+        }
+      ],
+      "[10,11]": [
+        {
+          "berlinHour": 8,
+          "trades": 46,
+          "netPnlUsd": 471.7373416340701,
+          "expectancyR": 0.29300456002116154,
+          "expectancyUsdPerTrade": 10.255159600740654
+        },
+        {
+          "berlinHour": 9,
+          "trades": 31,
+          "netPnlUsd": -209.55442754874045,
+          "expectancyR": -0.19313772124307865,
+          "expectancyUsdPerTrade": -6.759820243507757
+        },
+        {
+          "berlinHour": 14,
+          "trades": 82,
+          "netPnlUsd": 7391.6097256773755,
+          "expectancyR": 2.575473772013023,
+          "expectancyUsdPerTrade": 90.1415820204558
+        },
+        {
+          "berlinHour": 15,
+          "trades": 68,
+          "netPnlUsd": 414.2851492763586,
+          "expectancyR": 0.17406939045225153,
+          "expectancyUsdPerTrade": 6.092428665828803
+        },
+        {
+          "berlinHour": 16,
+          "trades": 71,
+          "netPnlUsd": -1266.391657643523,
+          "expectancyR": -0.5096143491523234,
+          "expectancyUsdPerTrade": -17.83650222033131
+        },
+        {
+          "berlinHour": 17,
+          "trades": 50,
+          "netPnlUsd": -346.30251755400946,
+          "expectancyR": -0.1978871528880054,
+          "expectancyUsdPerTrade": -6.926050351080189
+        }
+      ],
+      "[9,10]": [
+        {
+          "berlinHour": 8,
+          "trades": 46,
+          "netPnlUsd": 471.7373416340701,
+          "expectancyR": 0.29300456002116154,
+          "expectancyUsdPerTrade": 10.255159600740654
+        },
+        {
+          "berlinHour": 11,
+          "trades": 39,
+          "netPnlUsd": -1337.5431704060613,
+          "expectancyR": -0.9798851065245867,
+          "expectancyUsdPerTrade": -34.295978728360545
+        },
+        {
+          "berlinHour": 14,
+          "trades": 82,
+          "netPnlUsd": 7500.532546760816,
+          "expectancyR": 2.6134259744811206,
+          "expectancyUsdPerTrade": 91.46990910683922
+        },
+        {
+          "berlinHour": 15,
+          "trades": 70,
+          "netPnlUsd": 359.6871804669242,
+          "expectancyR": 0.14681109406813236,
+          "expectancyUsdPerTrade": 5.138388292384631
+        },
+        {
+          "berlinHour": 16,
+          "trades": 71,
+          "netPnlUsd": -1350.4533390475945,
+          "expectancyR": -0.543441987544304,
+          "expectancyUsdPerTrade": -19.020469564050625
+        },
+        {
+          "berlinHour": 17,
+          "trades": 49,
+          "netPnlUsd": -377.4284277445657,
+          "expectancyR": -0.22007488498225408,
+          "expectancyUsdPerTrade": -7.702620974378892
+        }
+      ],
+      "[11,12]": [
+        {
+          "berlinHour": 8,
+          "trades": 46,
+          "netPnlUsd": 471.7373416340701,
+          "expectancyR": 0.29300456002116154,
+          "expectancyUsdPerTrade": 10.255159600740654
+        },
+        {
+          "berlinHour": 9,
+          "trades": 31,
+          "netPnlUsd": -209.55442754874045,
+          "expectancyR": -0.19313772124307865,
+          "expectancyUsdPerTrade": -6.759820243507757
+        },
+        {
+          "berlinHour": 10,
+          "trades": 33,
+          "netPnlUsd": -1019.0126686911368,
+          "expectancyR": -0.8822620508148374,
+          "expectancyUsdPerTrade": -30.879171778519297
+        },
+        {
+          "berlinHour": 14,
+          "trades": 78,
+          "netPnlUsd": 7527.12944677761,
+          "expectancyR": 2.757190273544912,
+          "expectancyUsdPerTrade": 96.50165957407192
+        },
+        {
+          "berlinHour": 15,
+          "trades": 63,
+          "netPnlUsd": 513.7130856126274,
+          "expectancyR": 0.23297645606014863,
+          "expectancyUsdPerTrade": 8.154175962105198
+        },
+        {
+          "berlinHour": 16,
+          "trades": 71,
+          "netPnlUsd": -1266.391657643523,
+          "expectancyR": -0.5096143491523234,
+          "expectancyUsdPerTrade": -17.83650222033131
+        },
+        {
+          "berlinHour": 17,
+          "trades": 47,
+          "netPnlUsd": -235.24446652366578,
+          "expectancyR": -0.1430057547256326,
+          "expectancyUsdPerTrade": -5.005201415397144
+        }
+      ],
+      "[10]": [
+        {
+          "berlinHour": 8,
+          "trades": 46,
+          "netPnlUsd": 471.7373416340701,
+          "expectancyR": 0.29300456002116154,
+          "expectancyUsdPerTrade": 10.255159600740654
+        },
+        {
+          "berlinHour": 9,
+          "trades": 31,
+          "netPnlUsd": -209.55442754874045,
+          "expectancyR": -0.19313772124307865,
+          "expectancyUsdPerTrade": -6.759820243507757
+        },
+        {
+          "berlinHour": 11,
+          "trades": 36,
+          "netPnlUsd": -463.558376602724,
+          "expectancyR": -0.36790347349422553,
+          "expectancyUsdPerTrade": -12.87662157229789
+        },
+        {
+          "berlinHour": 14,
+          "trades": 79,
+          "netPnlUsd": 7475.098223998436,
+          "expectancyR": 2.7034713287516956,
+          "expectancyUsdPerTrade": 94.62149650630931
+        },
+        {
+          "berlinHour": 15,
+          "trades": 67,
+          "netPnlUsd": 451.51335246684124,
+          "expectancyR": 0.1925430074485464,
+          "expectancyUsdPerTrade": 6.739005260699123
+        },
+        {
+          "berlinHour": 16,
+          "trades": 68,
+          "netPnlUsd": -1106.3264387138775,
+          "expectancyR": -0.4648430414764193,
+          "expectancyUsdPerTrade": -16.26950645167467
+        },
+        {
+          "berlinHour": 17,
+          "trades": 48,
+          "netPnlUsd": -374.80903086414395,
+          "expectancyR": -0.2231006136096095,
+          "expectancyUsdPerTrade": -7.808521476336332
+        }
+      ],
+      "[11]": [
+        {
+          "berlinHour": 8,
+          "trades": 46,
+          "netPnlUsd": 471.7373416340701,
+          "expectancyR": 0.29300456002116154,
+          "expectancyUsdPerTrade": 10.255159600740654
+        },
+        {
+          "berlinHour": 9,
+          "trades": 31,
+          "netPnlUsd": -209.55442754874045,
+          "expectancyR": -0.19313772124307865,
+          "expectancyUsdPerTrade": -6.759820243507757
+        },
+        {
+          "berlinHour": 10,
+          "trades": 33,
+          "netPnlUsd": -1019.0126686911368,
+          "expectancyR": -0.8822620508148374,
+          "expectancyUsdPerTrade": -30.879171778519297
+        },
+        {
+          "berlinHour": 14,
+          "trades": 78,
+          "netPnlUsd": 7527.12944677761,
+          "expectancyR": 2.757190273544912,
+          "expectancyUsdPerTrade": 96.50165957407192
+        },
+        {
+          "berlinHour": 15,
+          "trades": 63,
+          "netPnlUsd": 513.7130856126274,
+          "expectancyR": 0.23297645606014863,
+          "expectancyUsdPerTrade": 8.154175962105198
+        },
+        {
+          "berlinHour": 16,
+          "trades": 71,
+          "netPnlUsd": -1266.391657643523,
+          "expectancyR": -0.5096143491523234,
+          "expectancyUsdPerTrade": -17.83650222033131
+        },
+        {
+          "berlinHour": 17,
+          "trades": 47,
+          "netPnlUsd": -235.24446652366578,
+          "expectancyR": -0.1430057547256326,
+          "expectancyUsdPerTrade": -5.005201415397144
+        }
+      ]
+    },
+    "walkForward4wRows": [
+      {
+        "rollIndex": 1,
+        "variant": "none",
+        "netPnlUsd": 133.34431546987983,
+        "expectancyR": 0.10885250242439169,
+        "profitFactor": 1.1596025848705522,
+        "maxDrawdownR": 13.101607119615924
+      },
+      {
+        "rollIndex": 1,
+        "variant": "[10,11]",
+        "netPnlUsd": -425.5607385754814,
+        "expectancyR": -0.46764916326975986,
+        "profitFactor": 0.43053854766207716,
+        "maxDrawdownR": 16.061922476342776
+      },
+      {
+        "rollIndex": 1,
+        "variant": "[9,10]",
+        "netPnlUsd": -336.4087746146968,
+        "expectancyR": -0.3314372163691596,
+        "profitFactor": 0.5628127733046195,
+        "maxDrawdownR": 15.591390617651527
+      },
+      {
+        "rollIndex": 1,
+        "variant": "[11,12]",
+        "netPnlUsd": 165.62243732998388,
+        "expectancyR": 0.1526474076774045,
+        "profitFactor": 1.2181542552301932,
+        "maxDrawdownR": 9.736110357409709
+      },
+      {
+        "rollIndex": 1,
+        "variant": "[10]",
+        "netPnlUsd": -379.3680242656649,
+        "expectancyR": -0.3496479486319494,
+        "profitFactor": 0.5393683958678498,
+        "maxDrawdownR": 17.185395347979835
+      },
+      {
+        "rollIndex": 1,
+        "variant": "[11]",
+        "netPnlUsd": 165.62243732998388,
+        "expectancyR": 0.1526474076774045,
+        "profitFactor": 1.2181542552301932,
+        "maxDrawdownR": 9.736110357409709
+      },
+      {
+        "rollIndex": 2,
+        "variant": "none",
+        "netPnlUsd": -109.67029895417687,
+        "expectancyR": -0.11190846832058866,
+        "profitFactor": 0.8121166854508427,
+        "maxDrawdownR": 7.013389070783548
+      },
+      {
+        "rollIndex": 2,
+        "variant": "[10,11]",
+        "netPnlUsd": -274.70038413676883,
+        "expectancyR": -0.34124271321337746,
+        "profitFactor": 0.552119441293979,
+        "maxDrawdownR": 8.408939653947527
+      },
+      {
+        "rollIndex": 2,
+        "variant": "[9,10]",
+        "netPnlUsd": -129.14317061726723,
+        "expectancyR": -0.14759219499116255,
+        "profitFactor": 0.7748206129602394,
+        "maxDrawdownR": 6.673534998159516
+      },
+      {
+        "rollIndex": 2,
+        "variant": "[11,12]",
+        "netPnlUsd": -268.05842838420114,
+        "expectancyR": -0.30635248958194417,
+        "profitFactor": 0.5712635445253167,
+        "maxDrawdownR": 8.21916948958845
+      },
+      {
+        "rollIndex": 2,
+        "variant": "[10]",
+        "netPnlUsd": -116.31225470674457,
+        "expectancyR": -0.1278156645129061,
+        "profitFactor": 0.7965929074307503,
+        "maxDrawdownR": 6.673534998159516
+      },
+      {
+        "rollIndex": 2,
+        "variant": "[11]",
+        "netPnlUsd": -268.05842838420114,
+        "expectancyR": -0.30635248958194417,
+        "profitFactor": 0.5712635445253167,
+        "maxDrawdownR": 8.21916948958845
+      },
+      {
+        "rollIndex": 3,
+        "variant": "none",
+        "netPnlUsd": -290.2107255520683,
+        "expectancyR": -0.34548895899055765,
+        "profitFactor": 0.510396635067218,
+        "maxDrawdownR": 9.246636897699142
+      },
+      {
+        "rollIndex": 3,
+        "variant": "[10,11]",
+        "netPnlUsd": -309.8066878227904,
+        "expectancyR": -0.402346347821806,
+        "profitFactor": 0.42571887065477393,
+        "maxDrawdownR": 9.80652153400549
+      },
+      {
+        "rollIndex": 3,
+        "variant": "[9,10]",
+        "netPnlUsd": -290.2107255520683,
+        "expectancyR": -0.34548895899055765,
+        "profitFactor": 0.510396635067218,
+        "maxDrawdownR": 9.246636897699142
+      },
+      {
+        "rollIndex": 3,
+        "variant": "[11,12]",
+        "netPnlUsd": -309.8066878227904,
+        "expectancyR": -0.402346347821806,
+        "profitFactor": 0.42571887065477393,
+        "maxDrawdownR": 9.80652153400549
+      },
+      {
+        "rollIndex": 3,
+        "variant": "[10]",
+        "netPnlUsd": -290.2107255520683,
+        "expectancyR": -0.34548895899055765,
+        "profitFactor": 0.510396635067218,
+        "maxDrawdownR": 9.246636897699142
+      },
+      {
+        "rollIndex": 3,
+        "variant": "[11]",
+        "netPnlUsd": -309.8066878227904,
+        "expectancyR": -0.402346347821806,
+        "profitFactor": 0.42571887065477393,
+        "maxDrawdownR": 9.80652153400549
+      },
+      {
+        "rollIndex": 4,
+        "variant": "none",
+        "netPnlUsd": -254.18569646838336,
+        "expectancyR": -0.24208161568417472,
+        "profitFactor": 0.7632922991236373,
+        "maxDrawdownR": 13.406742580347657
+      },
+      {
+        "rollIndex": 4,
+        "variant": "[10,11]",
+        "netPnlUsd": -113.79748417145765,
+        "expectancyR": -0.12042061817085475,
+        "profitFactor": 0.8780893199630737,
+        "maxDrawdownR": 11.884516799142268
+      },
+      {
+        "rollIndex": 4,
+        "variant": "[9,10]",
+        "netPnlUsd": -91.9337296852678,
+        "expectancyR": -0.09057510313819496,
+        "profitFactor": 0.8991496818674207,
+        "maxDrawdownR": 13.27897697942328
+      },
+      {
+        "rollIndex": 4,
+        "variant": "[11,12]",
+        "netPnlUsd": -113.79748417145765,
+        "expectancyR": -0.12042061817085475,
+        "profitFactor": 0.8780893199630737,
+        "maxDrawdownR": 11.884516799142268
+      },
+      {
+        "rollIndex": 4,
+        "variant": "[10]",
+        "netPnlUsd": -254.18569646838336,
+        "expectancyR": -0.24208161568417472,
+        "profitFactor": 0.7632922991236373,
+        "maxDrawdownR": 13.406742580347657
+      },
+      {
+        "rollIndex": 4,
+        "variant": "[11]",
+        "netPnlUsd": -113.79748417145765,
+        "expectancyR": -0.12042061817085475,
+        "profitFactor": 0.8780893199630737,
+        "maxDrawdownR": 11.884516799142268
+      },
+      {
+        "rollIndex": 5,
+        "variant": "none",
+        "netPnlUsd": 1546.1950325625667,
+        "expectancyR": 1.4250645461406146,
+        "profitFactor": 2.5255045510190466,
+        "maxDrawdownR": 9.502548049345618
+      },
+      {
+        "rollIndex": 5,
+        "variant": "[10,11]",
+        "netPnlUsd": 1633.3053425173036,
+        "expectancyR": 1.6091678251402006,
+        "profitFactor": 2.7629667298642975,
+        "maxDrawdownR": 7.117642132536186
+      },
+      {
+        "rollIndex": 5,
+        "variant": "[9,10]",
+        "netPnlUsd": 1708.4469993456821,
+        "expectancyR": 1.6270923803292212,
+        "profitFactor": 3.006842210881855,
+        "maxDrawdownR": 7.538806784093162
+      },
+      {
+        "rollIndex": 5,
+        "variant": "[11,12]",
+        "netPnlUsd": 1633.3053425173036,
+        "expectancyR": 1.6091678251402006,
+        "profitFactor": 2.7629667298642975,
+        "maxDrawdownR": 7.117642132536186
+      },
+      {
+        "rollIndex": 5,
+        "variant": "[10]",
+        "netPnlUsd": 1546.1950325625667,
+        "expectancyR": 1.4250645461406146,
+        "profitFactor": 2.5255045510190466,
+        "maxDrawdownR": 9.502548049345618
+      },
+      {
+        "rollIndex": 5,
+        "variant": "[11]",
+        "netPnlUsd": 1633.3053425173036,
+        "expectancyR": 1.6091678251402006,
+        "profitFactor": 2.7629667298642975,
+        "maxDrawdownR": 7.117642132536186
+      },
+      {
+        "rollIndex": 6,
+        "variant": "none",
+        "netPnlUsd": 1281.2479406514888,
+        "expectancyR": 1.3073958578076414,
+        "profitFactor": 2.167001455372702,
+        "maxDrawdownR": 24.02761724075618
+      },
+      {
+        "rollIndex": 6,
+        "variant": "[10,11]",
+        "netPnlUsd": 1279.3479228879266,
+        "expectancyR": 1.3538073258073298,
+        "profitFactor": 2.1652708586435603,
+        "maxDrawdownR": 24.081903462572235
+      },
+      {
+        "rollIndex": 6,
+        "variant": "[9,10]",
+        "netPnlUsd": 1145.3822815073213,
+        "expectancyR": 1.1687574301095116,
+        "profitFactor": 1.9503380349474941,
+        "maxDrawdownR": 24.182564506570607
+      },
+      {
+        "rollIndex": 6,
+        "variant": "[11,12]",
+        "netPnlUsd": 1279.3479228879266,
+        "expectancyR": 1.3538073258073298,
+        "profitFactor": 2.1652708586435603,
+        "maxDrawdownR": 24.081903462572235
+      },
+      {
+        "rollIndex": 6,
+        "variant": "[10]",
+        "netPnlUsd": 1281.2479406514888,
+        "expectancyR": 1.3073958578076414,
+        "profitFactor": 2.167001455372702,
+        "maxDrawdownR": 24.02761724075618
+      },
+      {
+        "rollIndex": 6,
+        "variant": "[11]",
+        "netPnlUsd": 1279.3479228879266,
+        "expectancyR": 1.3538073258073298,
+        "profitFactor": 2.1652708586435603,
+        "maxDrawdownR": 24.081903462572235
+      },
+      {
+        "rollIndex": 7,
+        "variant": "none",
+        "netPnlUsd": -501.3679074301816,
+        "expectancyR": -0.6821332073880025,
+        "profitFactor": 0.5130577672136555,
+        "maxDrawdownR": 21.78041409255702
+      },
+      {
+        "rollIndex": 7,
+        "variant": "[10,11]",
+        "netPnlUsd": -503.26792519374385,
+        "expectancyR": -0.7189541788482059,
+        "profitFactor": 0.5112124179633117,
+        "maxDrawdownR": 21.834700314373084
+      },
+      {
+        "rollIndex": 7,
+        "variant": "[9,10]",
+        "netPnlUsd": -637.2335665743491,
+        "expectancyR": -0.8669844443188427,
+        "profitFactor": 0.43953069739077527,
+        "maxDrawdownR": 21.935361358371456
+      },
+      {
+        "rollIndex": 7,
+        "variant": "[11,12]",
+        "netPnlUsd": -503.26792519374385,
+        "expectancyR": -0.7189541788482059,
+        "profitFactor": 0.5112124179633117,
+        "maxDrawdownR": 21.834700314373084
+      },
+      {
+        "rollIndex": 7,
+        "variant": "[10]",
+        "netPnlUsd": -501.3679074301816,
+        "expectancyR": -0.6821332073880025,
+        "profitFactor": 0.5130577672136555,
+        "maxDrawdownR": 21.78041409255702
+      },
+      {
+        "rollIndex": 7,
+        "variant": "[11]",
+        "netPnlUsd": -503.26792519374385,
+        "expectancyR": -0.7189541788482059,
+        "profitFactor": 0.5112124179633117,
+        "maxDrawdownR": 21.834700314373084
+      },
+      {
+        "rollIndex": 8,
+        "variant": "none",
+        "netPnlUsd": -1626.2175080832412,
+        "expectancyR": -2.4454398617793105,
+        "profitFactor": 0.1829713899000928,
+        "maxDrawdownR": 48.0297239496394
+      },
+      {
+        "rollIndex": 8,
+        "variant": "[10,11]",
+        "netPnlUsd": -1585.818094662751,
+        "expectancyR": -2.517171578829764,
+        "profitFactor": 0.1867621166407403,
+        "maxDrawdownR": 47.70574768200221
+      },
+      {
+        "rollIndex": 8,
+        "variant": "[9,10]",
+        "netPnlUsd": -1585.818094662751,
+        "expectancyR": -2.517171578829764,
+        "profitFactor": 0.1867621166407403,
+        "maxDrawdownR": 47.70574768200221
+      },
+      {
+        "rollIndex": 8,
+        "variant": "[11,12]",
+        "netPnlUsd": -1626.2175080832412,
+        "expectancyR": -2.4454398617793105,
+        "profitFactor": 0.1829713899000928,
+        "maxDrawdownR": 48.0297239496394
+      },
+      {
+        "rollIndex": 8,
+        "variant": "[10]",
+        "netPnlUsd": -1585.818094662751,
+        "expectancyR": -2.517171578829764,
+        "profitFactor": 0.1867621166407403,
+        "maxDrawdownR": 47.70574768200221
+      },
+      {
+        "rollIndex": 8,
+        "variant": "[11]",
+        "netPnlUsd": -1626.2175080832412,
+        "expectancyR": -2.4454398617793105,
+        "profitFactor": 0.1829713899000928,
+        "maxDrawdownR": 48.0297239496394
+      },
+      {
+        "rollIndex": 9,
+        "variant": "none",
+        "netPnlUsd": -1585.5874468975874,
+        "expectancyR": -1.5100832827596073,
+        "profitFactor": 0.2724472509032166,
+        "maxDrawdownR": 50.220717764156134
+      },
+      {
+        "rollIndex": 9,
+        "variant": "[10,11]",
+        "netPnlUsd": -1544.0456010601595,
+        "expectancyR": -1.6339106889525499,
+        "profitFactor": 0.25613249280538825,
+        "maxDrawdownR": 49.67477469064025
+      },
+      {
+        "rollIndex": 9,
+        "variant": "[9,10]",
+        "netPnlUsd": -1508.4908934990715,
+        "expectancyR": -1.6576823005484305,
+        "profitFactor": 0.26059625183971674,
+        "maxDrawdownR": 48.658925903180595
+      },
+      {
+        "rollIndex": 9,
+        "variant": "[11,12]",
+        "netPnlUsd": -1585.5874468975874,
+        "expectancyR": -1.5100832827596073,
+        "profitFactor": 0.2724472509032166,
+        "maxDrawdownR": 50.220717764156134
+      },
+      {
+        "rollIndex": 9,
+        "variant": "[10]",
+        "netPnlUsd": -1544.0456010601595,
+        "expectancyR": -1.6339106889525499,
+        "profitFactor": 0.25613249280538825,
+        "maxDrawdownR": 49.67477469064025
+      },
+      {
+        "rollIndex": 9,
+        "variant": "[11]",
+        "netPnlUsd": -1585.5874468975874,
+        "expectancyR": -1.5100832827596073,
+        "profitFactor": 0.2724472509032166,
+        "maxDrawdownR": 50.220717764156134
+      },
+      {
+        "rollIndex": 10,
+        "variant": "none",
+        "netPnlUsd": -1034.5190575614388,
+        "expectancyR": -0.9852562452966086,
+        "profitFactor": 0.2503349871277255,
+        "maxDrawdownR": 33.24049656127665
+      },
+      {
+        "rollIndex": 10,
+        "variant": "[10,11]",
+        "netPnlUsd": -1033.376625144501,
+        "expectancyR": -1.0544659440250013,
+        "profitFactor": 0.21519513014630115,
+        "maxDrawdownR": 33.20785563507843
+      },
+      {
+        "rollIndex": 10,
+        "variant": "[9,10]",
+        "netPnlUsd": -997.8219175834132,
+        "expectancyR": -1.055896209082977,
+        "profitFactor": 0.22116714357324185,
+        "maxDrawdownR": 32.19200684761877
+      },
+      {
+        "rollIndex": 10,
+        "variant": "[11,12]",
+        "netPnlUsd": -1034.5190575614388,
+        "expectancyR": -0.9852562452966086,
+        "profitFactor": 0.2503349871277255,
+        "maxDrawdownR": 33.24049656127665
+      },
+      {
+        "rollIndex": 10,
+        "variant": "[10]",
+        "netPnlUsd": -1033.376625144501,
+        "expectancyR": -1.0544659440250013,
+        "profitFactor": 0.21519513014630115,
+        "maxDrawdownR": 33.20785563507843
+      },
+      {
+        "rollIndex": 10,
+        "variant": "[11]",
+        "netPnlUsd": -1034.5190575614388,
+        "expectancyR": -0.9852562452966086,
+        "profitFactor": 0.2503349871277255,
+        "maxDrawdownR": 33.24049656127665
+      },
+      {
+        "rollIndex": 11,
+        "variant": "none",
+        "netPnlUsd": -700.9979187503616,
+        "expectancyR": -0.7703273832421556,
+        "profitFactor": 0.4274920085493509,
+        "maxDrawdownR": 26.58128228205612
+      },
+      {
+        "rollIndex": 11,
+        "variant": "[10,11]",
+        "netPnlUsd": -774.626765030679,
+        "expectancyR": -0.9221747202746181,
+        "profitFactor": 0.3673590156127702,
+        "maxDrawdownR": 26.58128228205612
+      },
+      {
+        "rollIndex": 11,
+        "variant": "[9,10]",
+        "netPnlUsd": -723.5268326854,
+        "expectancyR": -0.8987910965036023,
+        "profitFactor": 0.3988723491860934,
+        "maxDrawdownR": 26.58128228205612
+      },
+      {
+        "rollIndex": 11,
+        "variant": "[11,12]",
+        "netPnlUsd": -700.9979187503616,
+        "expectancyR": -0.7703273832421556,
+        "profitFactor": 0.4274920085493509,
+        "maxDrawdownR": 26.58128228205612
+      },
+      {
+        "rollIndex": 11,
+        "variant": "[10]",
+        "netPnlUsd": -744.0413573515782,
+        "expectancyR": -0.850332979830375,
+        "profitFactor": 0.3923382485743692,
+        "maxDrawdownR": 26.58128228205612
+      },
+      {
+        "rollIndex": 11,
+        "variant": "[11]",
+        "netPnlUsd": -700.9979187503616,
+        "expectancyR": -0.7703273832421556,
+        "profitFactor": 0.4274920085493509,
+        "maxDrawdownR": 26.58128228205612
+      },
+      {
+        "rollIndex": 12,
+        "variant": "none",
+        "netPnlUsd": 462.8611858995478,
+        "expectancyR": 0.5086386658236792,
+        "profitFactor": 2.001755135668038,
+        "maxDrawdownR": 4.148455462110913
+      },
+      {
+        "rollIndex": 12,
+        "variant": "[10,11]",
+        "netPnlUsd": 392.6406405744681,
+        "expectancyR": 0.4877523485397121,
+        "profitFactor": 1.9649815373764612,
+        "maxDrawdownR": 4.148455462110913
+      },
+      {
+        "rollIndex": 12,
+        "variant": "[9,10]",
+        "netPnlUsd": 537.7353245246594,
+        "expectancyR": 0.6983575643177397,
+        "profitFactor": 2.563958296548324,
+        "maxDrawdownR": 2.9415381757488053
+      },
+      {
+        "rollIndex": 12,
+        "variant": "[11,12]",
+        "netPnlUsd": 394.96470828075155,
+        "expectancyR": 0.4340271519568701,
+        "profitFactor": 1.8259506851617575,
+        "maxDrawdownR": 4.148455462110913
+      },
+      {
+        "rollIndex": 12,
+        "variant": "[10]",
+        "netPnlUsd": 474.9786948358074,
+        "expectancyR": 0.5428327940980657,
+        "profitFactor": 2.167341390063754,
+        "maxDrawdownR": 4.148455462110913
+      },
+      {
+        "rollIndex": 12,
+        "variant": "[11]",
+        "netPnlUsd": 394.96470828075155,
+        "expectancyR": 0.4340271519568701,
+        "profitFactor": 1.8259506851617575,
+        "maxDrawdownR": 4.148455462110913
+      },
+      {
+        "rollIndex": 13,
+        "variant": "none",
+        "netPnlUsd": 7118.726737625112,
+        "expectancyR": 8.135687700142986,
+        "profitFactor": 5.2751411688869165,
+        "maxDrawdownR": 35.537622407949954
+      },
+      {
+        "rollIndex": 13,
+        "variant": "[10,11]",
+        "netPnlUsd": 8241.710481800688,
+        "expectancyR": 9.419097693486503,
+        "profitFactor": 16.524838379475213,
+        "maxDrawdownR": 4.148455462110914
+      },
+      {
+        "rollIndex": 13,
+        "variant": "[9,10]",
+        "netPnlUsd": 8292.053116441935,
+        "expectancyR": 9.4766321330765,
+        "profitFactor": 17.879502998130747,
+        "maxDrawdownR": 4.813399931275569
+      },
+      {
+        "rollIndex": 13,
+        "variant": "[11,12]",
+        "netPnlUsd": 7050.830260006315,
+        "expectancyR": 8.058091725721505,
+        "profitFactor": 5.193707394504696,
+        "maxDrawdownR": 35.537622407949954
+      },
+      {
+        "rollIndex": 13,
+        "variant": "[10]",
+        "netPnlUsd": 8293.463128382928,
+        "expectancyR": 9.113695745475745,
+        "profitFactor": 16.62232438989423,
+        "maxDrawdownR": 4.148455462110914
+      },
+      {
+        "rollIndex": 13,
+        "variant": "[11]",
+        "netPnlUsd": 7050.830260006315,
+        "expectancyR": 8.058091725721505,
+        "profitFactor": 5.193707394504696,
+        "maxDrawdownR": 35.537622407949954
+      },
+      {
+        "rollIndex": 14,
+        "variant": "none",
+        "netPnlUsd": 6755.2495773900355,
+        "expectancyR": 6.03147283695539,
+        "profitFactor": 4.799997606541734,
+        "maxDrawdownR": 32.83380857527234
+      },
+      {
+        "rollIndex": 14,
+        "variant": "[10,11]",
+        "netPnlUsd": 7915.964696442394,
+        "expectancyR": 8.69886230378285,
+        "profitFactor": 15.648159352446617,
+        "maxDrawdownR": 6.666956019756924
+      },
+      {
+        "rollIndex": 14,
+        "variant": "[9,10]",
+        "netPnlUsd": 7913.488872799121,
+        "expectancyR": 7.796540761378445,
+        "profitFactor": 14.113806553918709,
+        "maxDrawdownR": 7.496134511241365
+      },
+      {
+        "rollIndex": 14,
+        "variant": "[11,12]",
+        "netPnlUsd": 6714.982936163009,
+        "expectancyR": 6.61574673513597,
+        "profitFactor": 4.857612869096962,
+        "maxDrawdownR": 32.83380857527234
+      },
+      {
+        "rollIndex": 14,
+        "variant": "[10]",
+        "netPnlUsd": 7936.512733938117,
+        "expectancyR": 7.314758280127298,
+        "profitFactor": 13.638456834114079,
+        "maxDrawdownR": 6.838309907270059
+      },
+      {
+        "rollIndex": 14,
+        "variant": "[11]",
+        "netPnlUsd": 6714.982936163009,
+        "expectancyR": 6.61574673513597,
+        "profitFactor": 4.857612869096962,
+        "maxDrawdownR": 32.83380857527234
+      },
+      {
+        "rollIndex": 15,
+        "variant": "none",
+        "netPnlUsd": -234.53326843783051,
+        "expectancyR": -0.1811067709944638,
+        "profitFactor": 0.7280048481061888,
+        "maxDrawdownR": 12.350221863613937
+      },
+      {
+        "rollIndex": 15,
+        "variant": "[10,11]",
+        "netPnlUsd": -250.8350875447152,
+        "expectancyR": -0.23889055956639552,
+        "profitFactor": 0.6616780250051375,
+        "maxDrawdownR": 13.671206420725449
+      },
+      {
+        "rollIndex": 15,
+        "variant": "[9,10]",
+        "netPnlUsd": -405.7770051693948,
+        "expectancyR": -0.362300897472674,
+        "profitFactor": 0.49393657215375036,
+        "maxDrawdownR": 16.3242498497314
+      },
+      {
+        "rollIndex": 15,
+        "variant": "[11,12]",
+        "netPnlUsd": -321.0343691637595,
+        "expectancyR": -0.26977678080988204,
+        "profitFactor": 0.6278299204100692,
+        "maxDrawdownR": 13.67120642072545
+      },
+      {
+        "rollIndex": 15,
+        "variant": "[10]",
+        "netPnlUsd": -184.0525905500892,
+        "expectancyR": -0.15024701269395035,
+        "profitFactor": 0.7675069599481068,
+        "maxDrawdownR": 12.350221863613935
+      },
+      {
+        "rollIndex": 15,
+        "variant": "[11]",
+        "netPnlUsd": -321.0343691637595,
+        "expectancyR": -0.26977678080988204,
+        "profitFactor": 0.6278299204100692,
+        "maxDrawdownR": 13.67120642072545
+      },
+      {
+        "rollIndex": 16,
+        "variant": "none",
+        "netPnlUsd": 159.26981190861008,
+        "expectancyR": 0.14220518920411623,
+        "profitFactor": 1.2138335997293328,
+        "maxDrawdownR": 12.528663058826028
+      },
+      {
+        "rollIndex": 16,
+        "variant": "[10,11]",
+        "netPnlUsd": 101.82831696970706,
+        "expectancyR": 0.0909181401515242,
+        "profitFactor": 1.1301901325327435,
+        "maxDrawdownR": 13.849647615937542
+      },
+      {
+        "rollIndex": 16,
+        "variant": "[9,10]",
+        "netPnlUsd": -40.78195198105752,
+        "expectancyR": -0.03883995426767402,
+        "profitFactor": 0.9440302594741959,
+        "maxDrawdownR": 13.951845094474708
+      },
+      {
+        "rollIndex": 16,
+        "variant": "[11,12]",
+        "netPnlUsd": 113.03535240970714,
+        "expectancyR": 0.10092442179438142,
+        "profitFactor": 1.1445186167172245,
+        "maxDrawdownR": 13.849647615937542
+      },
+      {
+        "rollIndex": 16,
+        "variant": "[10]",
+        "netPnlUsd": 148.06277646861,
+        "expectancyR": 0.13219890756125902,
+        "profitFactor": 1.1987871781776798,
+        "maxDrawdownR": 12.528663058826028
+      },
+      {
+        "rollIndex": 16,
+        "variant": "[11]",
+        "netPnlUsd": 113.03535240970714,
+        "expectancyR": 0.10092442179438142,
+        "profitFactor": 1.1445186167172245,
+        "maxDrawdownR": 13.849647615937542
+      },
+      {
+        "rollIndex": 17,
+        "variant": "none",
+        "netPnlUsd": 235.15628322998163,
+        "expectancyR": 0.2399553910510018,
+        "profitFactor": 1.4493979344597487,
+        "maxDrawdownR": 4.206183300125092
+      },
+      {
+        "rollIndex": 17,
+        "variant": "[10,11]",
+        "netPnlUsd": 372.9692519107627,
+        "expectancyR": 0.39467645704842624,
+        "profitFactor": 1.8772618162169339,
+        "maxDrawdownR": 4.150433325645277
+      },
+      {
+        "rollIndex": 17,
+        "variant": "[9,10]",
+        "netPnlUsd": 264.42355083125653,
+        "expectancyR": 0.29057533058379864,
+        "profitFactor": 1.4897032389380318,
+        "maxDrawdownR": 6.405634093886509
+      },
+      {
+        "rollIndex": 17,
+        "variant": "[11,12]",
+        "netPnlUsd": 356.2293397996295,
+        "expectancyR": 0.3634993263261526,
+        "profitFactor": 1.8061466261865688,
+        "maxDrawdownR": 4.150433325645277
+      },
+      {
+        "rollIndex": 17,
+        "variant": "[10]",
+        "netPnlUsd": 158.1755054483319,
+        "expectancyR": 0.16140357698809396,
+        "profitFactor": 1.2635158725224236,
+        "maxDrawdownR": 6.405634093886512
+      },
+      {
+        "rollIndex": 17,
+        "variant": "[11]",
+        "netPnlUsd": 356.2293397996295,
+        "expectancyR": 0.3634993263261526,
+        "profitFactor": 1.8061466261865688,
+        "maxDrawdownR": 4.150433325645277
+      },
+      {
+        "rollIndex": 18,
+        "variant": "none",
+        "netPnlUsd": 122.04275796169797,
+        "expectancyR": 0.1056647255079636,
+        "profitFactor": 1.2386929647430749,
+        "maxDrawdownR": 5.954567770818506
+      },
+      {
+        "rollIndex": 18,
+        "variant": "[10,11]",
+        "netPnlUsd": 340.0428494018394,
+        "expectancyR": 0.3238503327636567,
+        "profitFactor": 2.0211777602926415,
+        "maxDrawdownR": 2.9226683925182284
+      },
+      {
+        "rollIndex": 18,
+        "variant": "[9,10]",
+        "netPnlUsd": 173.29632487988735,
+        "expectancyR": 0.17073529544816485,
+        "profitFactor": 1.3424781111814266,
+        "maxDrawdownR": 6.539157077561385
+      },
+      {
+        "rollIndex": 18,
+        "variant": "[11,12]",
+        "netPnlUsd": 267.2368325231218,
+        "expectancyR": 0.23137388097239991,
+        "profitFactor": 1.6585482909785625,
+        "maxDrawdownR": 4.460164123764701
+      },
+      {
+        "rollIndex": 18,
+        "variant": "[10]",
+        "netPnlUsd": 101.12808494763262,
+        "expectancyR": 0.09320560824666603,
+        "profitFactor": 1.190015139091494,
+        "maxDrawdownR": 7.094246693093898
+      },
+      {
+        "rollIndex": 18,
+        "variant": "[11]",
+        "netPnlUsd": 267.2368325231218,
+        "expectancyR": 0.23137388097239991,
+        "profitFactor": 1.6585482909785625,
+        "maxDrawdownR": 4.460164123764701
+      }
+    ],
+    "bestVariantWins": {
+      "byExpectancy": {
+        "[11,12]": 1,
+        "none": 8,
+        "[9,10]": 4,
+        "[10,11]": 4,
+        "[10]": 1
+      },
+      "byPnl": {
+        "[11,12]": 1,
+        "none": 6,
+        "[9,10]": 5,
+        "[10,11]": 3,
+        "[10]": 3
+      }
+    }
+  },
+  "taskD": {
+    "stressCases": [
+      {
+        "id": "baseline",
+        "spreadMult": 1,
+        "slippageMult": 1
+      },
+      {
+        "id": "slippage_x2",
+        "spreadMult": 1,
+        "slippageMult": 2
+      },
+      {
+        "id": "spread_1.25x",
+        "spreadMult": 1.25,
+        "slippageMult": 1
+      },
+      {
+        "id": "spread_1.50x",
+        "spreadMult": 1.5,
+        "slippageMult": 1
+      },
+      {
+        "id": "slippage_x2_spread_1.50x",
+        "spreadMult": 1.5,
+        "slippageMult": 2
+      }
+    ],
+    "targets": [
+      {
+        "scenarioId": "cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20",
+        "label": "cbp_deployed"
+      },
+      {
+        "scenarioId": "guarded_high_pf_default",
+        "label": "guarded_deployed"
+      },
+      {
+        "scenarioId": "cbp_tp1_0",
+        "label": "cbp_best_nearby"
+      },
+      {
+        "scenarioId": "guarded_tp1_10",
+        "label": "guarded_best_nearby"
+      }
+    ],
+    "rows": [
+      {
+        "strategyLabel": "cbp_deployed",
+        "scenarioId": "cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20",
+        "stressId": "baseline",
+        "netPnlUsd": 1567.6773386448133,
+        "expectancyR": 0.08625459910012734,
+        "profitFactor": 1.425757675732824,
+        "maxDrawdownR": 33.03054323847507,
+        "netPnlDeltaPctVsBaseline": 0,
+        "expectancyDeltaPctVsBaseline": 0
+      },
+      {
+        "strategyLabel": "cbp_deployed",
+        "scenarioId": "cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20",
+        "stressId": "slippage_x2",
+        "netPnlUsd": 1567.7279738204247,
+        "expectancyR": 0.08625738507952815,
+        "profitFactor": 1.4257777387556356,
+        "maxDrawdownR": 33.030580254266425,
+        "netPnlDeltaPctVsBaseline": 0.0032299488142888224,
+        "expectancyDeltaPctVsBaseline": 0.003229948814186169
+      },
+      {
+        "strategyLabel": "cbp_deployed",
+        "scenarioId": "cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20",
+        "stressId": "spread_1.25x",
+        "netPnlUsd": 1567.7795391748984,
+        "expectancyR": 0.0862602222379588,
+        "profitFactor": 1.4257979741049827,
+        "maxDrawdownR": 33.030588192225856,
+        "netPnlDeltaPctVsBaseline": 0.006519232469961186,
+        "expectancyDeltaPctVsBaseline": 0.006519232470070607
+      },
+      {
+        "strategyLabel": "cbp_deployed",
+        "scenarioId": "cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20",
+        "stressId": "spread_1.50x",
+        "netPnlUsd": 1567.8816795015036,
+        "expectancyR": 0.08626584206335634,
+        "profitFactor": 1.4258382515316097,
+        "maxDrawdownR": 33.03063314656082,
+        "netPnlDeltaPctVsBaseline": 0.013034624642019405,
+        "expectancyDeltaPctVsBaseline": 0.013034624641816334
+      },
+      {
+        "strategyLabel": "cbp_deployed",
+        "scenarioId": "cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20",
+        "stressId": "slippage_x2_spread_1.50x",
+        "netPnlUsd": 1567.9322510715967,
+        "expectancyR": 0.08626862454314162,
+        "profitFactor": 1.4258582922920826,
+        "maxDrawdownR": 33.03067016297549,
+        "netPnlDeltaPctVsBaseline": 0.016260516147015874,
+        "expectancyDeltaPctVsBaseline": 0.016260516147084122
+      },
+      {
+        "strategyLabel": "guarded_deployed",
+        "scenarioId": "guarded_high_pf_default",
+        "stressId": "baseline",
+        "netPnlUsd": 6455.3836138415345,
+        "expectancyR": 0.5299986546667924,
+        "profitFactor": 1.6067162930802268,
+        "maxDrawdownR": 87.88289592326753,
+        "netPnlDeltaPctVsBaseline": 0,
+        "expectancyDeltaPctVsBaseline": 0
+      },
+      {
+        "strategyLabel": "guarded_deployed",
+        "scenarioId": "guarded_high_pf_default",
+        "stressId": "slippage_x2",
+        "netPnlUsd": 6455.334941771691,
+        "expectancyR": 0.5299946586019454,
+        "profitFactor": 1.6067111629008457,
+        "maxDrawdownR": 87.88319279223896,
+        "netPnlDeltaPctVsBaseline": -0.0007539764134120708,
+        "expectancyDeltaPctVsBaseline": -0.0007539764133052485
+      },
+      {
+        "strategyLabel": "guarded_deployed",
+        "scenarioId": "guarded_high_pf_default",
+        "stressId": "spread_1.25x",
+        "netPnlUsd": 6455.297400706558,
+        "expectancyR": 0.5299915764126897,
+        "profitFactor": 1.6067072868391832,
+        "maxDrawdownR": 87.88341147094152,
+        "netPnlDeltaPctVsBaseline": -0.001335523032154603,
+        "expectancyDeltaPctVsBaseline": -0.00133552303206932
+      },
+      {
+        "strategyLabel": "guarded_deployed",
+        "scenarioId": "guarded_high_pf_default",
+        "stressId": "spread_1.50x",
+        "netPnlUsd": 6455.211188502372,
+        "expectancyR": 0.5299844982350058,
+        "profitFactor": 1.606698280688189,
+        "maxDrawdownR": 87.88392703067838,
+        "netPnlDeltaPctVsBaseline": -0.0026710316454692825,
+        "expectancyDeltaPctVsBaseline": -0.0026710316454470907
+      },
+      {
+        "strategyLabel": "guarded_deployed",
+        "scenarioId": "guarded_high_pf_default",
+        "stressId": "slippage_x2_spread_1.50x",
+        "netPnlUsd": 6455.162517446782,
+        "expectancyR": 0.5299805022534306,
+        "profitFactor": 1.6066931506092437,
+        "maxDrawdownR": 87.88422391292686,
+        "netPnlDeltaPctVsBaseline": -0.0034249923471422732,
+        "expectancyDeltaPctVsBaseline": -0.0034249923470456886
+      },
+      {
+        "strategyLabel": "cbp_best_nearby",
+        "scenarioId": "cbp_tp1_0",
+        "stressId": "baseline",
+        "netPnlUsd": 1820.6469817411316,
+        "expectancyR": 0.1001731489266098,
+        "profitFactor": 1.492841103206684,
+        "maxDrawdownR": 32.86120115048826,
+        "netPnlDeltaPctVsBaseline": 0,
+        "expectancyDeltaPctVsBaseline": 0
+      },
+      {
+        "strategyLabel": "cbp_best_nearby",
+        "scenarioId": "cbp_tp1_0",
+        "stressId": "slippage_x2",
+        "netPnlUsd": 1820.6972640814092,
+        "expectancyR": 0.10017591549278738,
+        "profitFactor": 1.4928619925363853,
+        "maxDrawdownR": 32.86123812321963,
+        "netPnlDeltaPctVsBaseline": 0.002761784177924705,
+        "expectancyDeltaPctVsBaseline": 0.002761784177918965
+      },
+      {
+        "strategyLabel": "cbp_best_nearby",
+        "scenarioId": "cbp_tp1_0",
+        "stressId": "spread_1.25x",
+        "netPnlUsd": 1820.7486125846854,
+        "expectancyR": 0.10017874071992777,
+        "profitFactor": 1.4928830816782979,
+        "maxDrawdownR": 32.861245904437595,
+        "netPnlDeltaPctVsBaseline": 0.005582127923367605,
+        "expectancyDeltaPctVsBaseline": 0.005582127923384782
+      },
+      {
+        "strategyLabel": "cbp_best_nearby",
+        "scenarioId": "cbp_tp1_0",
+        "stressId": "spread_1.50x",
+        "netPnlUsd": 1820.8501832282188,
+        "expectancyR": 0.10018432920100226,
+        "profitFactor": 1.4929250382777317,
+        "maxDrawdownR": 32.861290658970624,
+        "netPnlDeltaPctVsBaseline": 0.011160949328731051,
+        "expectancyDeltaPctVsBaseline": 0.01116094932849098
+      },
+      {
+        "strategyLabel": "cbp_best_nearby",
+        "scenarioId": "cbp_tp1_0",
+        "stressId": "slippage_x2_spread_1.50x",
+        "netPnlUsd": 1820.9004019666636,
+        "expectancyR": 0.10018709226776687,
+        "profitFactor": 1.4929459043600322,
+        "maxDrawdownR": 32.861327632324866,
+        "netPnlDeltaPctVsBaseline": 0.01391924014229282,
+        "expectancyDeltaPctVsBaseline": 0.013919240142164904
+      },
+      {
+        "strategyLabel": "guarded_best_nearby",
+        "scenarioId": "guarded_tp1_10",
+        "stressId": "baseline",
+        "netPnlUsd": 7892.968476181559,
+        "expectancyR": 0.6480269684878129,
+        "profitFactor": 1.7312964849344246,
+        "maxDrawdownR": 88.01451755517641,
+        "netPnlDeltaPctVsBaseline": 0,
+        "expectancyDeltaPctVsBaseline": 0
+      },
+      {
+        "strategyLabel": "guarded_best_nearby",
+        "scenarioId": "guarded_tp1_10",
+        "stressId": "slippage_x2",
+        "netPnlUsd": 7892.915078108629,
+        "expectancyR": 0.6480225844095758,
+        "profitFactor": 1.7312908853675442,
+        "maxDrawdownR": 88.01481231549923,
+        "netPnlDeltaPctVsBaseline": -0.0006765271277948907,
+        "expectancyDeltaPctVsBaseline": -0.000676527127773364
+      },
+      {
+        "strategyLabel": "guarded_best_nearby",
+        "scenarioId": "guarded_tp1_10",
+        "stressId": "spread_1.25x",
+        "netPnlUsd": 7892.873736981036,
+        "expectancyR": 0.6480191902283282,
+        "profitFactor": 1.7312866517822274,
+        "maxDrawdownR": 88.01502853457936,
+        "netPnlDeltaPctVsBaseline": -0.0012002987318228068,
+        "expectancyDeltaPctVsBaseline": -0.0012002987318376714
+      },
+      {
+        "strategyLabel": "guarded_best_nearby",
+        "scenarioId": "guarded_tp1_10",
+        "stressId": "spread_1.50x",
+        "netPnlUsd": 7892.778998879176,
+        "expectancyR": 0.6480114120590456,
+        "profitFactor": 1.7312768187312753,
+        "maxDrawdownR": 88.0155395260872,
+        "netPnlDeltaPctVsBaseline": -0.002400583544138307,
+        "expectancyDeltaPctVsBaseline": -0.002400583544182417
+      },
+      {
+        "strategyLabel": "guarded_best_nearby",
+        "scenarioId": "guarded_tp1_10",
+        "stressId": "slippage_x2_spread_1.50x",
+        "netPnlUsd": 7892.725602003993,
+        "expectancyR": 0.6480070280791457,
+        "profitFactor": 1.7312712192772675,
+        "maxDrawdownR": 88.01583429973134,
+        "netPnlDeltaPctVsBaseline": -0.0030770954970692956,
+        "expectancyDeltaPctVsBaseline": -0.0030770954970892966
+      }
+    ]
+  },
+  "taskE": {
+    "monthly": {
+      "cbp": [
+        {
+          "month": "2025-03",
+          "trades": 48,
+          "netPnlUsd": 98.51360972720117,
+          "expectancyR": 0.08209467477266769
+        },
+        {
+          "month": "2025-04",
+          "trades": 60,
+          "netPnlUsd": 14.882263040924745,
+          "expectancyR": 0.009921508693949855
+        },
+        {
+          "month": "2025-05",
+          "trades": 62,
+          "netPnlUsd": 514.2650050181088,
+          "expectancyR": 0.3317838742052316
+        },
+        {
+          "month": "2025-06",
+          "trades": 60,
+          "netPnlUsd": -310.01618852911986,
+          "expectancyR": -0.20667745901941326
+        },
+        {
+          "month": "2025-07",
+          "trades": 62,
+          "netPnlUsd": 619.1745304417227,
+          "expectancyR": 0.39946743899466003
+        },
+        {
+          "month": "2025-08",
+          "trades": 61,
+          "netPnlUsd": -113.6069331565623,
+          "expectancyR": -0.07449634961086052
+        },
+        {
+          "month": "2025-09",
+          "trades": 60,
+          "netPnlUsd": 503.0231630239127,
+          "expectancyR": 0.3353487753492754
+        },
+        {
+          "month": "2025-10",
+          "trades": 62,
+          "netPnlUsd": -100.62859744771004,
+          "expectancyR": -0.06492167577271615
+        },
+        {
+          "month": "2025-11",
+          "trades": 60,
+          "netPnlUsd": -467.33466755372456,
+          "expectancyR": -0.31155644503581637
+        },
+        {
+          "month": "2025-12",
+          "trades": 62,
+          "netPnlUsd": 704.9513692174505,
+          "expectancyR": 0.45480733497900033
+        },
+        {
+          "month": "2026-01",
+          "trades": 62,
+          "netPnlUsd": 0.22503285196883444,
+          "expectancyR": 0.00014518248514117294
+        },
+        {
+          "month": "2026-02",
+          "trades": 56,
+          "netPnlUsd": 160.26761504281086,
+          "expectancyR": 0.11447686788772213
+        },
+        {
+          "month": "2026-03",
+          "trades": 12,
+          "netPnlUsd": -56.03886303217089,
+          "expectancyR": -0.18679621010723627
+        }
+      ],
+      "guarded": [
+        {
+          "month": "2025-03",
+          "trades": 29,
+          "netPnlUsd": -242.21713533872222,
+          "expectancyR": -0.23863757176228784
+        },
+        {
+          "month": "2025-04",
+          "trades": 31,
+          "netPnlUsd": -124.02128652030953,
+          "expectancyR": -0.11430533319844198
+        },
+        {
+          "month": "2025-05",
+          "trades": 29,
+          "netPnlUsd": 3.012177995767914,
+          "expectancyR": 0.0029676630500176603
+        },
+        {
+          "month": "2025-06",
+          "trades": 25,
+          "netPnlUsd": -703.222586978972,
+          "expectancyR": -0.803682956547397
+        },
+        {
+          "month": "2025-07",
+          "trades": 27,
+          "netPnlUsd": -460.1393151733354,
+          "expectancyR": -0.4869199102363338
+        },
+        {
+          "month": "2025-08",
+          "trades": 32,
+          "netPnlUsd": 1864.5233472034652,
+          "expectancyR": 1.6647529885745225
+        },
+        {
+          "month": "2025-09",
+          "trades": 18,
+          "netPnlUsd": -581.0718779363216,
+          "expectancyR": -0.922336314184638
+        },
+        {
+          "month": "2025-10",
+          "trades": 32,
+          "netPnlUsd": -2373.925115333255,
+          "expectancyR": -2.1195759958332636
+        },
+        {
+          "month": "2025-11",
+          "trades": 26,
+          "netPnlUsd": 374.91738359036196,
+          "expectancyR": 0.4119971248245737
+        },
+        {
+          "month": "2025-12",
+          "trades": 28,
+          "netPnlUsd": 7912.827121815014,
+          "expectancyR": 8.074313389607157
+        },
+        {
+          "month": "2026-01",
+          "trades": 36,
+          "netPnlUsd": 294.9345650646495,
+          "expectancyR": 0.23407505163861078
+        },
+        {
+          "month": "2026-02",
+          "trades": 29,
+          "netPnlUsd": 185.65042245286082,
+          "expectancyR": 0.18290682015060183
+        },
+        {
+          "month": "2026-03",
+          "trades": 6,
+          "netPnlUsd": 304.11591300032956,
+          "expectancyR": 1.4481710142872837
+        }
+      ],
+      "combined": [
+        {
+          "month": "2025-03",
+          "trades": 77,
+          "netPnlUsd": -143.70352561152106,
+          "expectancyR": -0.038700586909328545
+        },
+        {
+          "month": "2025-04",
+          "trades": 91,
+          "netPnlUsd": -109.13902347938479,
+          "expectancyR": -0.03239752535730451
+        },
+        {
+          "month": "2025-05",
+          "trades": 91,
+          "netPnlUsd": 517.2771830138768,
+          "expectancyR": 0.22699629043049308
+        },
+        {
+          "month": "2025-06",
+          "trades": 85,
+          "netPnlUsd": -1013.2387755080919,
+          "expectancyR": -0.38226731123352614
+        },
+        {
+          "month": "2025-07",
+          "trades": 89,
+          "netPnlUsd": 159.03521526838733,
+          "expectancyR": 0.13056341169986413
+        },
+        {
+          "month": "2025-08",
+          "trades": 93,
+          "netPnlUsd": 1750.916414046903,
+          "expectancyR": 0.5239550355712067
+        },
+        {
+          "month": "2025-09",
+          "trades": 78,
+          "netPnlUsd": -78.04871491240891,
+          "expectancyR": 0.045113754687603064
+        },
+        {
+          "month": "2025-10",
+          "trades": 94,
+          "netPnlUsd": -2474.553712780965,
+          "expectancyR": -0.7643784655805621
+        },
+        {
+          "month": "2025-11",
+          "trades": 86,
+          "netPnlUsd": -92.41728396336259,
+          "expectancyR": -0.09280769135709378
+        },
+        {
+          "month": "2025-12",
+          "trades": 90,
+          "netPnlUsd": 8617.778491032464,
+          "expectancyR": 2.8253203297522047
+        },
+        {
+          "month": "2026-01",
+          "trades": 98,
+          "netPnlUsd": 295.15959791661834,
+          "expectancyR": 0.08607860380682388
+        },
+        {
+          "month": "2026-02",
+          "trades": 85,
+          "netPnlUsd": 345.9180374956717,
+          "expectancyR": 0.13782355748329284
+        },
+        {
+          "month": "2026-03",
+          "trades": 18,
+          "netPnlUsd": 248.07704996815866,
+          "expectancyR": 0.3581928646909371
+        }
+      ]
+    },
+    "returnCorrelationMonthlyPnl": 0.40643750767670817,
+    "overlap": {
+      "cbpActiveMinutes": 22720,
+      "guardedActiveMinutes": 10596,
+      "overlappedMinutes": 1152,
+      "overlapPctOfUnion": 3.5816440741201343
+    },
+    "portfolioComparison": {
+      "cbp": {
+        "netPnlUsd": 1567.6773386448133,
+        "maxDrawdownUsd": 825.7635809618776
+      },
+      "guarded": {
+        "netPnlUsd": 6455.3836138415345,
+        "maxDrawdownUsd": 3075.901357314362
+      },
+      "combined": {
+        "netPnlUsd": 8023.060952486348,
+        "maxDrawdownUsd": 3051.4729194081556
+      }
+    }
+  },
+  "taskF": {
+    "rowsByGate": {
+      "8": [
+        {
+          "rollIndex": 1,
+          "gate": 8,
+          "selectedScenarioId": "cbp_ts_21",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 15,
+          "candidateCount": 29,
+          "selectionTrades": 178,
+          "selectionNetPnlUsd": 723.0670722149148,
+          "selectionExpectancyR": 0.1624869825202056,
+          "selectionProfitFactor": 2.443829556599237,
+          "selectionMaxDrawdownR": 5.083141066982698,
+          "fwd2wNetPnlUsd": -26.54427381706256,
+          "fwd2wExpectancyR": -0.03792039116723223,
+          "fwd2wProfitFactor": 0.7196372253447367,
+          "fwd2wMaxDrawdownR": 1.5775064412015016,
+          "fwd4wNetPnlUsd": -277.6987458089384,
+          "fwd4wExpectancyR": -0.1983562470063845,
+          "fwd4wProfitFactor": 0.5499456512449556,
+          "fwd4wMaxDrawdownR": 18.511308899251375
+        },
+        {
+          "rollIndex": 2,
+          "gate": 8,
+          "selectedScenarioId": "cbp_ts_15",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 15,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": 623.4315778733436,
+          "selectionExpectancyR": 0.1385403506385208,
+          "selectionProfitFactor": 2.3187270355651033,
+          "selectionMaxDrawdownR": 4.800481168731359,
+          "fwd2wNetPnlUsd": -257.2998453022606,
+          "fwd2wExpectancyR": -0.36757120757465794,
+          "fwd2wProfitFactor": 0.5026438151317058,
+          "fwd2wMaxDrawdownR": 18.511308899251375,
+          "fwd4wNetPnlUsd": -31.338161373047903,
+          "fwd4wExpectancyR": -0.022384400980748464,
+          "fwd4wProfitFactor": 0.9459839418344298,
+          "fwd4wMaxDrawdownR": 18.511308899251375
+        },
+        {
+          "rollIndex": 3,
+          "gate": 8,
+          "selectedScenarioId": "cbp_ts_21",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": 422.34143714180766,
+          "selectionExpectancyR": 0.09385365269817948,
+          "selectionProfitFactor": 1.4840835722393113,
+          "selectionMaxDrawdownR": 18.511308899251375,
+          "fwd2wNetPnlUsd": 162.5721603797311,
+          "fwd2wExpectancyR": 0.2322459433996158,
+          "fwd2wProfitFactor": 2.353965959155856,
+          "fwd2wMaxDrawdownR": 3.430808320875487,
+          "fwd4wNetPnlUsd": 555.826828247194,
+          "fwd4wExpectancyR": 0.39701916303370993,
+          "fwd4wProfitFactor": 3.191520351591021,
+          "fwd4wMaxDrawdownR": 5.59781643667605
+        },
+        {
+          "rollIndex": 4,
+          "gate": 8,
+          "selectedScenarioId": "cbp_ts_15",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": 608.1491560542328,
+          "selectionExpectancyR": 0.13514425690094076,
+          "selectionProfitFactor": 1.6926444247690926,
+          "selectionMaxDrawdownR": 18.511308899251375,
+          "fwd2wNetPnlUsd": 392.8662442252106,
+          "fwd2wExpectancyR": 0.5612374917503006,
+          "fwd2wProfitFactor": 4.248792008352153,
+          "fwd2wMaxDrawdownR": 2.444982728542108,
+          "fwd4wNetPnlUsd": 253.51013413682566,
+          "fwd4wExpectancyR": 0.18437100664496406,
+          "fwd4wProfitFactor": 1.8027542838411708,
+          "fwd4wMaxDrawdownR": 8.049364116125233
+        },
+        {
+          "rollIndex": 5,
+          "gate": 8,
+          "selectedScenarioId": "cbp_tp1_0",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": 929.483881378752,
+          "selectionExpectancyR": 0.20655197363972286,
+          "selectionProfitFactor": 1.8600306605489172,
+          "selectionMaxDrawdownR": 18.511308899251375,
+          "fwd2wNetPnlUsd": -140.9682030760377,
+          "fwd2wExpectancyR": -0.20884178233487063,
+          "fwd2wProfitFactor": 0.24635252418146833,
+          "fwd2wMaxDrawdownR": 5.990864071354539,
+          "fwd4wNetPnlUsd": -107.29680389817536,
+          "fwd4wExpectancyR": -0.078034039198673,
+          "fwd4wProfitFactor": 0.47820853196648505,
+          "fwd4wMaxDrawdownR": 5.990864071354539
+        },
+        {
+          "rollIndex": 6,
+          "gate": 8,
+          "selectedScenarioId": "cbp_tp1_0",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 179,
+          "selectionNetPnlUsd": 875.4551801837405,
+          "selectionExpectancyR": 0.19563244249916004,
+          "selectionProfitFactor": 1.8184048112569178,
+          "selectionMaxDrawdownR": 18.511308899251375,
+          "fwd2wNetPnlUsd": 33.67139917786238,
+          "fwd2wExpectancyR": 0.04810199882551767,
+          "fwd2wProfitFactor": 2.811883360344924,
+          "fwd2wMaxDrawdownR": 0.3251639083274185,
+          "fwd4wNetPnlUsd": 436.37390025357126,
+          "fwd4wExpectancyR": 0.3116956430382652,
+          "fwd4wProfitFactor": 5.214142507691875,
+          "fwd4wMaxDrawdownR": 2.8923624043485634
+        },
+        {
+          "rollIndex": 7,
+          "gate": 8,
+          "selectedScenarioId": "guarded_blocked_h11_12",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 89,
+          "selectionNetPnlUsd": 1265.8672886088145,
+          "selectionExpectancyR": 0.4063779417684798,
+          "selectionProfitFactor": 1.503188141759586,
+          "selectionMaxDrawdownR": 21.2727036737135,
+          "fwd2wNetPnlUsd": -355.29392702713994,
+          "fwd2wExpectancyR": -0.7808657736860223,
+          "fwd2wProfitFactor": 0.5888343107867043,
+          "fwd2wMaxDrawdownR": 21.834700314373084,
+          "fwd4wNetPnlUsd": -503.26792519374385,
+          "fwd4wExpectancyR": -0.7189541788482059,
+          "fwd4wProfitFactor": 0.5112124179633117,
+          "fwd4wMaxDrawdownR": 21.834700314373084
+        },
+        {
+          "rollIndex": 8,
+          "gate": 8,
+          "selectedScenarioId": "guarded_ts_12",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 85,
+          "selectionNetPnlUsd": 1261.418046452393,
+          "selectionExpectancyR": 0.4240060660344176,
+          "selectionProfitFactor": 1.4384720433681943,
+          "selectionMaxDrawdownR": 22.82699649946842,
+          "fwd2wNetPnlUsd": -130.75946044753627,
+          "fwd2wExpectancyR": -0.533712083459332,
+          "fwd2wProfitFactor": 0.11985862703707942,
+          "fwd2wMaxDrawdownR": 4.1794538545606805,
+          "fwd4wNetPnlUsd": -1469.6444883654692,
+          "fwd4wExpectancyR": -2.209991711827773,
+          "fwd4wProfitFactor": 0.24992127915785484,
+          "fwd4wMaxDrawdownR": 47.505048041213136
+        },
+        {
+          "rollIndex": 9,
+          "gate": 8,
+          "selectedScenarioId": "guarded_ts_12",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 77,
+          "selectionNetPnlUsd": 1348.3249075520212,
+          "selectionExpectancyR": 0.5003060881454623,
+          "selectionProfitFactor": 1.5168396010764116,
+          "selectionMaxDrawdownR": 22.826996499468418,
+          "fwd2wNetPnlUsd": -1338.885027917933,
+          "fwd2wExpectancyR": -3.1878214950426975,
+          "fwd2wProfitFactor": 0.26059249388438943,
+          "fwd2wMaxDrawdownR": 47.50504804121313,
+          "fwd4wNetPnlUsd": -1418.2278095998204,
+          "fwd4wExpectancyR": -1.4471712342855307,
+          "fwd4wProfitFactor": 0.320086245755841,
+          "fwd4wMaxDrawdownR": 48.6425823586041
+        },
+        {
+          "rollIndex": 10,
+          "gate": 8,
+          "selectedScenarioId": "cbp_ts_12",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 1,
+          "candidateCount": 29,
+          "selectionTrades": 179,
+          "selectionNetPnlUsd": 691.7939660272923,
+          "selectionExpectancyR": 0.15459083039716015,
+          "selectionProfitFactor": 1.9461463517428408,
+          "selectionMaxDrawdownR": 7.9393788719507015,
+          "fwd2wNetPnlUsd": -56.270930391372005,
+          "fwd2wExpectancyR": -0.08038704341624571,
+          "fwd2wProfitFactor": 0.5455233232177,
+          "fwd2wMaxDrawdownR": 4.71151267209153,
+          "fwd4wNetPnlUsd": -64.37205352553897,
+          "fwd4wExpectancyR": -0.045980038232527845,
+          "fwd4wProfitFactor": 0.6935961020050035,
+          "fwd4wMaxDrawdownR": 6.565874135014045
+        },
+        {
+          "rollIndex": 11,
+          "gate": 8,
+          "selectedScenarioId": "cbp_ts_12",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 1,
+          "candidateCount": 29,
+          "selectionTrades": 179,
+          "selectionNetPnlUsd": 207.1122264721254,
+          "selectionExpectancyR": 0.04628206178148059,
+          "selectionProfitFactor": 1.2656724740449492,
+          "selectionMaxDrawdownR": 7.939378871950696,
+          "fwd2wNetPnlUsd": -8.10112313416699,
+          "fwd2wExpectancyR": -0.011573033048809977,
+          "fwd2wProfitFactor": 0.9061001769403548,
+          "fwd2wMaxDrawdownR": 2.4647437937073144,
+          "fwd4wNetPnlUsd": -462.0683119594398,
+          "fwd4wExpectancyR": -0.33004879425674283,
+          "fwd4wProfitFactor": 0.2801864176452832,
+          "fwd4wMaxDrawdownR": 20.774246810225645
+        },
+        {
+          "rollIndex": 12,
+          "gate": 8,
+          "selectedScenarioId": "cbp_tp1_0",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 14,
+          "candidateCount": 29,
+          "selectionTrades": 179,
+          "selectionNetPnlUsd": 382.1996742301543,
+          "selectionExpectancyR": 0.08540774843131942,
+          "selectionProfitFactor": 1.5041419040499167,
+          "selectionMaxDrawdownR": 6.542504522441714,
+          "fwd2wNetPnlUsd": -443.1537572130362,
+          "fwd2wExpectancyR": -0.6330767960186231,
+          "fwd2wProfitFactor": 0.19807577438364812,
+          "fwd2wMaxDrawdownR": 20.324897561139657,
+          "fwd4wNetPnlUsd": -525.3545392126908,
+          "fwd4wExpectancyR": -0.37525324229477924,
+          "fwd4wProfitFactor": 0.3117576695960943,
+          "fwd4wMaxDrawdownR": 24.09791341304793
+        },
+        {
+          "rollIndex": 13,
+          "gate": 8,
+          "selectedScenarioId": "cbp_tp1_0",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": 11.089133786226505,
+          "selectionExpectancyR": 0.002464251952494801,
+          "selectionProfitFactor": 1.0092682452926134,
+          "selectionMaxDrawdownR": 23.846837530560997,
+          "fwd2wNetPnlUsd": -82.20078199965462,
+          "fwd2wExpectancyR": -0.11742968857093516,
+          "fwd2wProfitFactor": 0.6098956290910904,
+          "fwd2wMaxDrawdownR": 4.088604946482407,
+          "fwd4wNetPnlUsd": -187.62432981368474,
+          "fwd4wExpectancyR": -0.13401737843834624,
+          "fwd4wProfitFactor": 0.5287731455697984,
+          "fwd4wMaxDrawdownR": 9.329952714501454
+        },
+        {
+          "rollIndex": 14,
+          "gate": 8,
+          "selectedScenarioId": "cbp_ts_15",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": -82.6493936544734,
+          "selectionExpectancyR": -0.01836653192321614,
+          "selectionProfitFactor": 0.9369562388238483,
+          "selectionMaxDrawdownR": 25.833125961945395,
+          "fwd2wNetPnlUsd": -117.28697491353839,
+          "fwd2wExpectancyR": -0.16755282130505483,
+          "fwd2wProfitFactor": 0.40354921174837227,
+          "fwd2wMaxDrawdownR": 5.861604796597087,
+          "fwd4wNetPnlUsd": 746.7650294131295,
+          "fwd4wExpectancyR": 0.5334035924379497,
+          "fwd4wProfitFactor": 3.273372111397814,
+          "fwd4wMaxDrawdownR": 5.861604796597087
+        },
+        {
+          "rollIndex": 15,
+          "gate": 8,
+          "selectedScenarioId": "guarded_tp1_10",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 78,
+          "selectionNetPnlUsd": 6955.4261423403095,
+          "selectionExpectancyR": 2.5477751437144,
+          "selectionProfitFactor": 2.7847436818484,
+          "selectionMaxDrawdownR": 76.41858656239425,
+          "fwd2wNetPnlUsd": -83.239705799618,
+          "fwd2wExpectancyR": -0.1981897757133763,
+          "fwd2wProfitFactor": 0.6173149468301976,
+          "fwd2wMaxDrawdownR": 3.406336947100004,
+          "fwd4wNetPnlUsd": -242.4719777433544,
+          "fwd4wExpectancyR": -0.230925693088909,
+          "fwd4wProfitFactor": 0.6801310244101476,
+          "fwd4wMaxDrawdownR": 14.204316292848823
+        },
+        {
+          "rollIndex": 16,
+          "gate": 8,
+          "selectedScenarioId": "guarded_tp1_10",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 83,
+          "selectionNetPnlUsd": 6735.595943401294,
+          "selectionExpectancyR": 2.318621667263785,
+          "selectionProfitFactor": 2.7160726496555294,
+          "selectionMaxDrawdownR": 75.68387733700646,
+          "fwd2wNetPnlUsd": -159.23227194373635,
+          "fwd2wExpectancyR": -0.25274963800593075,
+          "fwd2wProfitFactor": 0.7054093186144746,
+          "fwd2wMaxDrawdownR": 14.204316292848823,
+          "fwd4wNetPnlUsd": 151.51911925938558,
+          "fwd4wExpectancyR": 0.13528492791016566,
+          "fwd4wProfitFactor": 1.1896889504009196,
+          "fwd4wMaxDrawdownR": 14.204316292848823
+        },
+        {
+          "rollIndex": 17,
+          "gate": 8,
+          "selectedScenarioId": "guarded_tp1_10",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 87,
+          "selectionNetPnlUsd": 8189.495733416113,
+          "selectionExpectancyR": 2.6894895676243387,
+          "selectionProfitFactor": 4.0827548027064715,
+          "selectionMaxDrawdownR": 30.395851374153953,
+          "fwd2wNetPnlUsd": 310.75139120312184,
+          "fwd2wExpectancyR": 0.6341865126594325,
+          "fwd2wProfitFactor": 2.2032672685379358,
+          "fwd2wMaxDrawdownR": 4.159441665826792,
+          "fwd4wNetPnlUsd": 414.9706232733135,
+          "fwd4wExpectancyR": 0.43912235267017297,
+          "fwd4wProfitFactor": 1.958959407105202,
+          "fwd4wMaxDrawdownR": 4.159441665826792
+        },
+        {
+          "rollIndex": 18,
+          "gate": 8,
+          "selectedScenarioId": "guarded_tp1_10",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 86,
+          "selectionNetPnlUsd": 9514.066540928574,
+          "selectionExpectancyR": 3.1608194488134793,
+          "selectionProfitFactor": 6.119495102789548,
+          "selectionMaxDrawdownR": 14.20431629284883,
+          "fwd2wNetPnlUsd": 104.21923207019145,
+          "fwd2wExpectancyR": 0.2290532572971244,
+          "fwd2wProfitFactor": 1.5973345956695875,
+          "fwd2wMaxDrawdownR": 2.9226683925182284,
+          "fwd4wNetPnlUsd": 349.9704820855401,
+          "fwd4wExpectancyR": 0.333305221033848,
+          "fwd4wProfitFactor": 2.009321528772594,
+          "fwd4wMaxDrawdownR": 2.9226683925182284
+        }
+      ],
+      "10": [
+        {
+          "rollIndex": 1,
+          "gate": 10,
+          "selectedScenarioId": "cbp_ts_21",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 15,
+          "candidateCount": 29,
+          "selectionTrades": 178,
+          "selectionNetPnlUsd": 723.0670722149148,
+          "selectionExpectancyR": 0.1624869825202056,
+          "selectionProfitFactor": 2.443829556599237,
+          "selectionMaxDrawdownR": 5.083141066982698,
+          "fwd2wNetPnlUsd": -26.54427381706256,
+          "fwd2wExpectancyR": -0.03792039116723223,
+          "fwd2wProfitFactor": 0.7196372253447367,
+          "fwd2wMaxDrawdownR": 1.5775064412015016,
+          "fwd4wNetPnlUsd": -277.6987458089384,
+          "fwd4wExpectancyR": -0.1983562470063845,
+          "fwd4wProfitFactor": 0.5499456512449556,
+          "fwd4wMaxDrawdownR": 18.511308899251375
+        },
+        {
+          "rollIndex": 2,
+          "gate": 10,
+          "selectedScenarioId": "cbp_ts_15",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 15,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": 623.4315778733436,
+          "selectionExpectancyR": 0.1385403506385208,
+          "selectionProfitFactor": 2.3187270355651033,
+          "selectionMaxDrawdownR": 4.800481168731359,
+          "fwd2wNetPnlUsd": -257.2998453022606,
+          "fwd2wExpectancyR": -0.36757120757465794,
+          "fwd2wProfitFactor": 0.5026438151317058,
+          "fwd2wMaxDrawdownR": 18.511308899251375,
+          "fwd4wNetPnlUsd": -31.338161373047903,
+          "fwd4wExpectancyR": -0.022384400980748464,
+          "fwd4wProfitFactor": 0.9459839418344298,
+          "fwd4wMaxDrawdownR": 18.511308899251375
+        },
+        {
+          "rollIndex": 3,
+          "gate": 10,
+          "selectedScenarioId": "cbp_ts_21",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": 422.34143714180766,
+          "selectionExpectancyR": 0.09385365269817948,
+          "selectionProfitFactor": 1.4840835722393113,
+          "selectionMaxDrawdownR": 18.511308899251375,
+          "fwd2wNetPnlUsd": 162.5721603797311,
+          "fwd2wExpectancyR": 0.2322459433996158,
+          "fwd2wProfitFactor": 2.353965959155856,
+          "fwd2wMaxDrawdownR": 3.430808320875487,
+          "fwd4wNetPnlUsd": 555.826828247194,
+          "fwd4wExpectancyR": 0.39701916303370993,
+          "fwd4wProfitFactor": 3.191520351591021,
+          "fwd4wMaxDrawdownR": 5.59781643667605
+        },
+        {
+          "rollIndex": 4,
+          "gate": 10,
+          "selectedScenarioId": "cbp_ts_15",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": 608.1491560542328,
+          "selectionExpectancyR": 0.13514425690094076,
+          "selectionProfitFactor": 1.6926444247690926,
+          "selectionMaxDrawdownR": 18.511308899251375,
+          "fwd2wNetPnlUsd": 392.8662442252106,
+          "fwd2wExpectancyR": 0.5612374917503006,
+          "fwd2wProfitFactor": 4.248792008352153,
+          "fwd2wMaxDrawdownR": 2.444982728542108,
+          "fwd4wNetPnlUsd": 253.51013413682566,
+          "fwd4wExpectancyR": 0.18437100664496406,
+          "fwd4wProfitFactor": 1.8027542838411708,
+          "fwd4wMaxDrawdownR": 8.049364116125233
+        },
+        {
+          "rollIndex": 5,
+          "gate": 10,
+          "selectedScenarioId": "cbp_tp1_0",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": 929.483881378752,
+          "selectionExpectancyR": 0.20655197363972286,
+          "selectionProfitFactor": 1.8600306605489172,
+          "selectionMaxDrawdownR": 18.511308899251375,
+          "fwd2wNetPnlUsd": -140.9682030760377,
+          "fwd2wExpectancyR": -0.20884178233487063,
+          "fwd2wProfitFactor": 0.24635252418146833,
+          "fwd2wMaxDrawdownR": 5.990864071354539,
+          "fwd4wNetPnlUsd": -107.29680389817536,
+          "fwd4wExpectancyR": -0.078034039198673,
+          "fwd4wProfitFactor": 0.47820853196648505,
+          "fwd4wMaxDrawdownR": 5.990864071354539
+        },
+        {
+          "rollIndex": 6,
+          "gate": 10,
+          "selectedScenarioId": "cbp_tp1_0",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 179,
+          "selectionNetPnlUsd": 875.4551801837405,
+          "selectionExpectancyR": 0.19563244249916004,
+          "selectionProfitFactor": 1.8184048112569178,
+          "selectionMaxDrawdownR": 18.511308899251375,
+          "fwd2wNetPnlUsd": 33.67139917786238,
+          "fwd2wExpectancyR": 0.04810199882551767,
+          "fwd2wProfitFactor": 2.811883360344924,
+          "fwd2wMaxDrawdownR": 0.3251639083274185,
+          "fwd4wNetPnlUsd": 436.37390025357126,
+          "fwd4wExpectancyR": 0.3116956430382652,
+          "fwd4wProfitFactor": 5.214142507691875,
+          "fwd4wMaxDrawdownR": 2.8923624043485634
+        },
+        {
+          "rollIndex": 7,
+          "gate": 10,
+          "selectedScenarioId": "guarded_blocked_h11_12",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 89,
+          "selectionNetPnlUsd": 1265.8672886088145,
+          "selectionExpectancyR": 0.4063779417684798,
+          "selectionProfitFactor": 1.503188141759586,
+          "selectionMaxDrawdownR": 21.2727036737135,
+          "fwd2wNetPnlUsd": -355.29392702713994,
+          "fwd2wExpectancyR": -0.7808657736860223,
+          "fwd2wProfitFactor": 0.5888343107867043,
+          "fwd2wMaxDrawdownR": 21.834700314373084,
+          "fwd4wNetPnlUsd": -503.26792519374385,
+          "fwd4wExpectancyR": -0.7189541788482059,
+          "fwd4wProfitFactor": 0.5112124179633117,
+          "fwd4wMaxDrawdownR": 21.834700314373084
+        },
+        {
+          "rollIndex": 8,
+          "gate": 10,
+          "selectedScenarioId": "guarded_ts_12",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 85,
+          "selectionNetPnlUsd": 1261.418046452393,
+          "selectionExpectancyR": 0.4240060660344176,
+          "selectionProfitFactor": 1.4384720433681943,
+          "selectionMaxDrawdownR": 22.82699649946842,
+          "fwd2wNetPnlUsd": -130.75946044753627,
+          "fwd2wExpectancyR": -0.533712083459332,
+          "fwd2wProfitFactor": 0.11985862703707942,
+          "fwd2wMaxDrawdownR": 4.1794538545606805,
+          "fwd4wNetPnlUsd": -1469.6444883654692,
+          "fwd4wExpectancyR": -2.209991711827773,
+          "fwd4wProfitFactor": 0.24992127915785484,
+          "fwd4wMaxDrawdownR": 47.505048041213136
+        },
+        {
+          "rollIndex": 9,
+          "gate": 10,
+          "selectedScenarioId": "guarded_ts_12",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 77,
+          "selectionNetPnlUsd": 1348.3249075520212,
+          "selectionExpectancyR": 0.5003060881454623,
+          "selectionProfitFactor": 1.5168396010764116,
+          "selectionMaxDrawdownR": 22.826996499468418,
+          "fwd2wNetPnlUsd": -1338.885027917933,
+          "fwd2wExpectancyR": -3.1878214950426975,
+          "fwd2wProfitFactor": 0.26059249388438943,
+          "fwd2wMaxDrawdownR": 47.50504804121313,
+          "fwd4wNetPnlUsd": -1418.2278095998204,
+          "fwd4wExpectancyR": -1.4471712342855307,
+          "fwd4wProfitFactor": 0.320086245755841,
+          "fwd4wMaxDrawdownR": 48.6425823586041
+        },
+        {
+          "rollIndex": 10,
+          "gate": 10,
+          "selectedScenarioId": "cbp_tp1_0",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 15,
+          "candidateCount": 29,
+          "selectionTrades": 179,
+          "selectionNetPnlUsd": 759.2220437148933,
+          "selectionExpectancyR": 0.1696585572547248,
+          "selectionProfitFactor": 1.9659706756786952,
+          "selectionMaxDrawdownR": 8.21219512318613,
+          "fwd2wNetPnlUsd": -13.654322992103719,
+          "fwd2wExpectancyR": -0.01950617570300529,
+          "fwd2wProfitFactor": 0.9127883513728017,
+          "fwd2wMaxDrawdownR": 5.442523659353454,
+          "fwd4wNetPnlUsd": -30.197177215366867,
+          "fwd4wExpectancyR": -0.021569412296690606,
+          "fwd4wProfitFactor": 0.8749252767953574,
+          "fwd4wMaxDrawdownR": 6.542504522441711
+        },
+        {
+          "rollIndex": 11,
+          "gate": 10,
+          "selectedScenarioId": "cbp_tp1_0",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 15,
+          "candidateCount": 29,
+          "selectionTrades": 179,
+          "selectionNetPnlUsd": 330.4391005593235,
+          "selectionExpectancyR": 0.0738411397897929,
+          "selectionProfitFactor": 1.4052269090211729,
+          "selectionMaxDrawdownR": 8.212195123186133,
+          "fwd2wNetPnlUsd": -16.54285422326314,
+          "fwd2wExpectancyR": -0.023632648890375935,
+          "fwd2wProfitFactor": 0.8050748693856072,
+          "fwd2wMaxDrawdownR": 2.406759564253939,
+          "fwd4wNetPnlUsd": -459.69661143629935,
+          "fwd4wExpectancyR": -0.32835472245449954,
+          "fwd4wProfitFactor": 0.278885490987901,
+          "fwd4wMaxDrawdownR": 20.32489756113966
+        },
+        {
+          "rollIndex": 12,
+          "gate": 10,
+          "selectedScenarioId": "cbp_tp1_0",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 15,
+          "candidateCount": 29,
+          "selectionTrades": 179,
+          "selectionNetPnlUsd": 382.1996742301543,
+          "selectionExpectancyR": 0.08540774843131942,
+          "selectionProfitFactor": 1.5041419040499167,
+          "selectionMaxDrawdownR": 6.542504522441714,
+          "fwd2wNetPnlUsd": -443.1537572130362,
+          "fwd2wExpectancyR": -0.6330767960186231,
+          "fwd2wProfitFactor": 0.19807577438364812,
+          "fwd2wMaxDrawdownR": 20.324897561139657,
+          "fwd4wNetPnlUsd": -525.3545392126908,
+          "fwd4wExpectancyR": -0.37525324229477924,
+          "fwd4wProfitFactor": 0.3117576695960943,
+          "fwd4wMaxDrawdownR": 24.09791341304793
+        },
+        {
+          "rollIndex": 13,
+          "gate": 10,
+          "selectedScenarioId": "cbp_tp1_0",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": 11.089133786226505,
+          "selectionExpectancyR": 0.002464251952494801,
+          "selectionProfitFactor": 1.0092682452926134,
+          "selectionMaxDrawdownR": 23.846837530560997,
+          "fwd2wNetPnlUsd": -82.20078199965462,
+          "fwd2wExpectancyR": -0.11742968857093516,
+          "fwd2wProfitFactor": 0.6098956290910904,
+          "fwd2wMaxDrawdownR": 4.088604946482407,
+          "fwd4wNetPnlUsd": -187.62432981368474,
+          "fwd4wExpectancyR": -0.13401737843834624,
+          "fwd4wProfitFactor": 0.5287731455697984,
+          "fwd4wMaxDrawdownR": 9.329952714501454
+        },
+        {
+          "rollIndex": 14,
+          "gate": 10,
+          "selectedScenarioId": "cbp_ts_15",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": -82.6493936544734,
+          "selectionExpectancyR": -0.01836653192321614,
+          "selectionProfitFactor": 0.9369562388238483,
+          "selectionMaxDrawdownR": 25.833125961945395,
+          "fwd2wNetPnlUsd": -117.28697491353839,
+          "fwd2wExpectancyR": -0.16755282130505483,
+          "fwd2wProfitFactor": 0.40354921174837227,
+          "fwd2wMaxDrawdownR": 5.861604796597087,
+          "fwd4wNetPnlUsd": 746.7650294131295,
+          "fwd4wExpectancyR": 0.5334035924379497,
+          "fwd4wProfitFactor": 3.273372111397814,
+          "fwd4wMaxDrawdownR": 5.861604796597087
+        },
+        {
+          "rollIndex": 15,
+          "gate": 10,
+          "selectedScenarioId": "guarded_tp1_10",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 78,
+          "selectionNetPnlUsd": 6955.4261423403095,
+          "selectionExpectancyR": 2.5477751437144,
+          "selectionProfitFactor": 2.7847436818484,
+          "selectionMaxDrawdownR": 76.41858656239425,
+          "fwd2wNetPnlUsd": -83.239705799618,
+          "fwd2wExpectancyR": -0.1981897757133763,
+          "fwd2wProfitFactor": 0.6173149468301976,
+          "fwd2wMaxDrawdownR": 3.406336947100004,
+          "fwd4wNetPnlUsd": -242.4719777433544,
+          "fwd4wExpectancyR": -0.230925693088909,
+          "fwd4wProfitFactor": 0.6801310244101476,
+          "fwd4wMaxDrawdownR": 14.204316292848823
+        },
+        {
+          "rollIndex": 16,
+          "gate": 10,
+          "selectedScenarioId": "guarded_tp1_10",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 83,
+          "selectionNetPnlUsd": 6735.595943401294,
+          "selectionExpectancyR": 2.318621667263785,
+          "selectionProfitFactor": 2.7160726496555294,
+          "selectionMaxDrawdownR": 75.68387733700646,
+          "fwd2wNetPnlUsd": -159.23227194373635,
+          "fwd2wExpectancyR": -0.25274963800593075,
+          "fwd2wProfitFactor": 0.7054093186144746,
+          "fwd2wMaxDrawdownR": 14.204316292848823,
+          "fwd4wNetPnlUsd": 151.51911925938558,
+          "fwd4wExpectancyR": 0.13528492791016566,
+          "fwd4wProfitFactor": 1.1896889504009196,
+          "fwd4wMaxDrawdownR": 14.204316292848823
+        },
+        {
+          "rollIndex": 17,
+          "gate": 10,
+          "selectedScenarioId": "guarded_tp1_10",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 87,
+          "selectionNetPnlUsd": 8189.495733416113,
+          "selectionExpectancyR": 2.6894895676243387,
+          "selectionProfitFactor": 4.0827548027064715,
+          "selectionMaxDrawdownR": 30.395851374153953,
+          "fwd2wNetPnlUsd": 310.75139120312184,
+          "fwd2wExpectancyR": 0.6341865126594325,
+          "fwd2wProfitFactor": 2.2032672685379358,
+          "fwd2wMaxDrawdownR": 4.159441665826792,
+          "fwd4wNetPnlUsd": 414.9706232733135,
+          "fwd4wExpectancyR": 0.43912235267017297,
+          "fwd4wProfitFactor": 1.958959407105202,
+          "fwd4wMaxDrawdownR": 4.159441665826792
+        },
+        {
+          "rollIndex": 18,
+          "gate": 10,
+          "selectedScenarioId": "guarded_tr_1.3",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 1,
+          "candidateCount": 29,
+          "selectionTrades": 86,
+          "selectionNetPnlUsd": 8541.957471819984,
+          "selectionExpectancyR": 2.8378596251893633,
+          "selectionProfitFactor": 5.89856845747365,
+          "selectionMaxDrawdownR": 9.829627679559167,
+          "fwd2wNetPnlUsd": 105.95934772997845,
+          "fwd2wExpectancyR": 0.23287768731863404,
+          "fwd2wProfitFactor": 1.634885328528326,
+          "fwd2wMaxDrawdownR": 2.9226683925182284,
+          "fwd4wNetPnlUsd": 344.9014220832749,
+          "fwd4wExpectancyR": 0.32847754484121433,
+          "fwd4wProfitFactor": 2.0357684696040557,
+          "fwd4wMaxDrawdownR": 2.9226683925182284
+        }
+      ],
+      "12": [
+        {
+          "rollIndex": 1,
+          "gate": 12,
+          "selectedScenarioId": "cbp_ts_21",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 15,
+          "candidateCount": 29,
+          "selectionTrades": 178,
+          "selectionNetPnlUsd": 723.0670722149148,
+          "selectionExpectancyR": 0.1624869825202056,
+          "selectionProfitFactor": 2.443829556599237,
+          "selectionMaxDrawdownR": 5.083141066982698,
+          "fwd2wNetPnlUsd": -26.54427381706256,
+          "fwd2wExpectancyR": -0.03792039116723223,
+          "fwd2wProfitFactor": 0.7196372253447367,
+          "fwd2wMaxDrawdownR": 1.5775064412015016,
+          "fwd4wNetPnlUsd": -277.6987458089384,
+          "fwd4wExpectancyR": -0.1983562470063845,
+          "fwd4wProfitFactor": 0.5499456512449556,
+          "fwd4wMaxDrawdownR": 18.511308899251375
+        },
+        {
+          "rollIndex": 2,
+          "gate": 12,
+          "selectedScenarioId": "cbp_ts_15",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 15,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": 623.4315778733436,
+          "selectionExpectancyR": 0.1385403506385208,
+          "selectionProfitFactor": 2.3187270355651033,
+          "selectionMaxDrawdownR": 4.800481168731359,
+          "fwd2wNetPnlUsd": -257.2998453022606,
+          "fwd2wExpectancyR": -0.36757120757465794,
+          "fwd2wProfitFactor": 0.5026438151317058,
+          "fwd2wMaxDrawdownR": 18.511308899251375,
+          "fwd4wNetPnlUsd": -31.338161373047903,
+          "fwd4wExpectancyR": -0.022384400980748464,
+          "fwd4wProfitFactor": 0.9459839418344298,
+          "fwd4wMaxDrawdownR": 18.511308899251375
+        },
+        {
+          "rollIndex": 3,
+          "gate": 12,
+          "selectedScenarioId": "cbp_ts_21",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": 422.34143714180766,
+          "selectionExpectancyR": 0.09385365269817948,
+          "selectionProfitFactor": 1.4840835722393113,
+          "selectionMaxDrawdownR": 18.511308899251375,
+          "fwd2wNetPnlUsd": 162.5721603797311,
+          "fwd2wExpectancyR": 0.2322459433996158,
+          "fwd2wProfitFactor": 2.353965959155856,
+          "fwd2wMaxDrawdownR": 3.430808320875487,
+          "fwd4wNetPnlUsd": 555.826828247194,
+          "fwd4wExpectancyR": 0.39701916303370993,
+          "fwd4wProfitFactor": 3.191520351591021,
+          "fwd4wMaxDrawdownR": 5.59781643667605
+        },
+        {
+          "rollIndex": 4,
+          "gate": 12,
+          "selectedScenarioId": "cbp_ts_15",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": 608.1491560542328,
+          "selectionExpectancyR": 0.13514425690094076,
+          "selectionProfitFactor": 1.6926444247690926,
+          "selectionMaxDrawdownR": 18.511308899251375,
+          "fwd2wNetPnlUsd": 392.8662442252106,
+          "fwd2wExpectancyR": 0.5612374917503006,
+          "fwd2wProfitFactor": 4.248792008352153,
+          "fwd2wMaxDrawdownR": 2.444982728542108,
+          "fwd4wNetPnlUsd": 253.51013413682566,
+          "fwd4wExpectancyR": 0.18437100664496406,
+          "fwd4wProfitFactor": 1.8027542838411708,
+          "fwd4wMaxDrawdownR": 8.049364116125233
+        },
+        {
+          "rollIndex": 5,
+          "gate": 12,
+          "selectedScenarioId": "cbp_tp1_0",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": 929.483881378752,
+          "selectionExpectancyR": 0.20655197363972286,
+          "selectionProfitFactor": 1.8600306605489172,
+          "selectionMaxDrawdownR": 18.511308899251375,
+          "fwd2wNetPnlUsd": -140.9682030760377,
+          "fwd2wExpectancyR": -0.20884178233487063,
+          "fwd2wProfitFactor": 0.24635252418146833,
+          "fwd2wMaxDrawdownR": 5.990864071354539,
+          "fwd4wNetPnlUsd": -107.29680389817536,
+          "fwd4wExpectancyR": -0.078034039198673,
+          "fwd4wProfitFactor": 0.47820853196648505,
+          "fwd4wMaxDrawdownR": 5.990864071354539
+        },
+        {
+          "rollIndex": 6,
+          "gate": 12,
+          "selectedScenarioId": "cbp_tp1_0",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 179,
+          "selectionNetPnlUsd": 875.4551801837405,
+          "selectionExpectancyR": 0.19563244249916004,
+          "selectionProfitFactor": 1.8184048112569178,
+          "selectionMaxDrawdownR": 18.511308899251375,
+          "fwd2wNetPnlUsd": 33.67139917786238,
+          "fwd2wExpectancyR": 0.04810199882551767,
+          "fwd2wProfitFactor": 2.811883360344924,
+          "fwd2wMaxDrawdownR": 0.3251639083274185,
+          "fwd4wNetPnlUsd": 436.37390025357126,
+          "fwd4wExpectancyR": 0.3116956430382652,
+          "fwd4wProfitFactor": 5.214142507691875,
+          "fwd4wMaxDrawdownR": 2.8923624043485634
+        },
+        {
+          "rollIndex": 7,
+          "gate": 12,
+          "selectedScenarioId": "guarded_blocked_h11_12",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 89,
+          "selectionNetPnlUsd": 1265.8672886088145,
+          "selectionExpectancyR": 0.4063779417684798,
+          "selectionProfitFactor": 1.503188141759586,
+          "selectionMaxDrawdownR": 21.2727036737135,
+          "fwd2wNetPnlUsd": -355.29392702713994,
+          "fwd2wExpectancyR": -0.7808657736860223,
+          "fwd2wProfitFactor": 0.5888343107867043,
+          "fwd2wMaxDrawdownR": 21.834700314373084,
+          "fwd4wNetPnlUsd": -503.26792519374385,
+          "fwd4wExpectancyR": -0.7189541788482059,
+          "fwd4wProfitFactor": 0.5112124179633117,
+          "fwd4wMaxDrawdownR": 21.834700314373084
+        },
+        {
+          "rollIndex": 8,
+          "gate": 12,
+          "selectedScenarioId": "guarded_ts_12",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 85,
+          "selectionNetPnlUsd": 1261.418046452393,
+          "selectionExpectancyR": 0.4240060660344176,
+          "selectionProfitFactor": 1.4384720433681943,
+          "selectionMaxDrawdownR": 22.82699649946842,
+          "fwd2wNetPnlUsd": -130.75946044753627,
+          "fwd2wExpectancyR": -0.533712083459332,
+          "fwd2wProfitFactor": 0.11985862703707942,
+          "fwd2wMaxDrawdownR": 4.1794538545606805,
+          "fwd4wNetPnlUsd": -1469.6444883654692,
+          "fwd4wExpectancyR": -2.209991711827773,
+          "fwd4wProfitFactor": 0.24992127915785484,
+          "fwd4wMaxDrawdownR": 47.505048041213136
+        },
+        {
+          "rollIndex": 9,
+          "gate": 12,
+          "selectedScenarioId": "guarded_ts_12",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 77,
+          "selectionNetPnlUsd": 1348.3249075520212,
+          "selectionExpectancyR": 0.5003060881454623,
+          "selectionProfitFactor": 1.5168396010764116,
+          "selectionMaxDrawdownR": 22.826996499468418,
+          "fwd2wNetPnlUsd": -1338.885027917933,
+          "fwd2wExpectancyR": -3.1878214950426975,
+          "fwd2wProfitFactor": 0.26059249388438943,
+          "fwd2wMaxDrawdownR": 47.50504804121313,
+          "fwd4wNetPnlUsd": -1418.2278095998204,
+          "fwd4wExpectancyR": -1.4471712342855307,
+          "fwd4wProfitFactor": 0.320086245755841,
+          "fwd4wMaxDrawdownR": 48.6425823586041
+        },
+        {
+          "rollIndex": 10,
+          "gate": 12,
+          "selectedScenarioId": "cbp_tp1_0",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 15,
+          "candidateCount": 29,
+          "selectionTrades": 179,
+          "selectionNetPnlUsd": 759.2220437148933,
+          "selectionExpectancyR": 0.1696585572547248,
+          "selectionProfitFactor": 1.9659706756786952,
+          "selectionMaxDrawdownR": 8.21219512318613,
+          "fwd2wNetPnlUsd": -13.654322992103719,
+          "fwd2wExpectancyR": -0.01950617570300529,
+          "fwd2wProfitFactor": 0.9127883513728017,
+          "fwd2wMaxDrawdownR": 5.442523659353454,
+          "fwd4wNetPnlUsd": -30.197177215366867,
+          "fwd4wExpectancyR": -0.021569412296690606,
+          "fwd4wProfitFactor": 0.8749252767953574,
+          "fwd4wMaxDrawdownR": 6.542504522441711
+        },
+        {
+          "rollIndex": 11,
+          "gate": 12,
+          "selectedScenarioId": "cbp_tp1_0",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 15,
+          "candidateCount": 29,
+          "selectionTrades": 179,
+          "selectionNetPnlUsd": 330.4391005593235,
+          "selectionExpectancyR": 0.0738411397897929,
+          "selectionProfitFactor": 1.4052269090211729,
+          "selectionMaxDrawdownR": 8.212195123186133,
+          "fwd2wNetPnlUsd": -16.54285422326314,
+          "fwd2wExpectancyR": -0.023632648890375935,
+          "fwd2wProfitFactor": 0.8050748693856072,
+          "fwd2wMaxDrawdownR": 2.406759564253939,
+          "fwd4wNetPnlUsd": -459.69661143629935,
+          "fwd4wExpectancyR": -0.32835472245449954,
+          "fwd4wProfitFactor": 0.278885490987901,
+          "fwd4wMaxDrawdownR": 20.32489756113966
+        },
+        {
+          "rollIndex": 12,
+          "gate": 12,
+          "selectedScenarioId": "cbp_tp1_0",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 15,
+          "candidateCount": 29,
+          "selectionTrades": 179,
+          "selectionNetPnlUsd": 382.1996742301543,
+          "selectionExpectancyR": 0.08540774843131942,
+          "selectionProfitFactor": 1.5041419040499167,
+          "selectionMaxDrawdownR": 6.542504522441714,
+          "fwd2wNetPnlUsd": -443.1537572130362,
+          "fwd2wExpectancyR": -0.6330767960186231,
+          "fwd2wProfitFactor": 0.19807577438364812,
+          "fwd2wMaxDrawdownR": 20.324897561139657,
+          "fwd4wNetPnlUsd": -525.3545392126908,
+          "fwd4wExpectancyR": -0.37525324229477924,
+          "fwd4wProfitFactor": 0.3117576695960943,
+          "fwd4wMaxDrawdownR": 24.09791341304793
+        },
+        {
+          "rollIndex": 13,
+          "gate": 12,
+          "selectedScenarioId": "cbp_tp1_0",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": 11.089133786226505,
+          "selectionExpectancyR": 0.002464251952494801,
+          "selectionProfitFactor": 1.0092682452926134,
+          "selectionMaxDrawdownR": 23.846837530560997,
+          "fwd2wNetPnlUsd": -82.20078199965462,
+          "fwd2wExpectancyR": -0.11742968857093516,
+          "fwd2wProfitFactor": 0.6098956290910904,
+          "fwd2wMaxDrawdownR": 4.088604946482407,
+          "fwd4wNetPnlUsd": -187.62432981368474,
+          "fwd4wExpectancyR": -0.13401737843834624,
+          "fwd4wProfitFactor": 0.5287731455697984,
+          "fwd4wMaxDrawdownR": 9.329952714501454
+        },
+        {
+          "rollIndex": 14,
+          "gate": 12,
+          "selectedScenarioId": "cbp_ts_15",
+          "selectedFamily": "cbp",
+          "selectedStrategyId": "compression_breakout_pullback_m15_m3",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 180,
+          "selectionNetPnlUsd": -82.6493936544734,
+          "selectionExpectancyR": -0.01836653192321614,
+          "selectionProfitFactor": 0.9369562388238483,
+          "selectionMaxDrawdownR": 25.833125961945395,
+          "fwd2wNetPnlUsd": -117.28697491353839,
+          "fwd2wExpectancyR": -0.16755282130505483,
+          "fwd2wProfitFactor": 0.40354921174837227,
+          "fwd2wMaxDrawdownR": 5.861604796597087,
+          "fwd4wNetPnlUsd": 746.7650294131295,
+          "fwd4wExpectancyR": 0.5334035924379497,
+          "fwd4wProfitFactor": 3.273372111397814,
+          "fwd4wMaxDrawdownR": 5.861604796597087
+        },
+        {
+          "rollIndex": 15,
+          "gate": 12,
+          "selectedScenarioId": "guarded_tp1_10",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 78,
+          "selectionNetPnlUsd": 6955.4261423403095,
+          "selectionExpectancyR": 2.5477751437144,
+          "selectionProfitFactor": 2.7847436818484,
+          "selectionMaxDrawdownR": 76.41858656239425,
+          "fwd2wNetPnlUsd": -83.239705799618,
+          "fwd2wExpectancyR": -0.1981897757133763,
+          "fwd2wProfitFactor": 0.6173149468301976,
+          "fwd2wMaxDrawdownR": 3.406336947100004,
+          "fwd4wNetPnlUsd": -242.4719777433544,
+          "fwd4wExpectancyR": -0.230925693088909,
+          "fwd4wProfitFactor": 0.6801310244101476,
+          "fwd4wMaxDrawdownR": 14.204316292848823
+        },
+        {
+          "rollIndex": 16,
+          "gate": 12,
+          "selectedScenarioId": "guarded_tp1_10",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 83,
+          "selectionNetPnlUsd": 6735.595943401294,
+          "selectionExpectancyR": 2.318621667263785,
+          "selectionProfitFactor": 2.7160726496555294,
+          "selectionMaxDrawdownR": 75.68387733700646,
+          "fwd2wNetPnlUsd": -159.23227194373635,
+          "fwd2wExpectancyR": -0.25274963800593075,
+          "fwd2wProfitFactor": 0.7054093186144746,
+          "fwd2wMaxDrawdownR": 14.204316292848823,
+          "fwd4wNetPnlUsd": 151.51911925938558,
+          "fwd4wExpectancyR": 0.13528492791016566,
+          "fwd4wProfitFactor": 1.1896889504009196,
+          "fwd4wMaxDrawdownR": 14.204316292848823
+        },
+        {
+          "rollIndex": 17,
+          "gate": 12,
+          "selectedScenarioId": "guarded_tp1_10",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 0,
+          "candidateCount": 29,
+          "selectionTrades": 87,
+          "selectionNetPnlUsd": 8189.495733416113,
+          "selectionExpectancyR": 2.6894895676243387,
+          "selectionProfitFactor": 4.0827548027064715,
+          "selectionMaxDrawdownR": 30.395851374153953,
+          "fwd2wNetPnlUsd": 310.75139120312184,
+          "fwd2wExpectancyR": 0.6341865126594325,
+          "fwd2wProfitFactor": 2.2032672685379358,
+          "fwd2wMaxDrawdownR": 4.159441665826792,
+          "fwd4wNetPnlUsd": 414.9706232733135,
+          "fwd4wExpectancyR": 0.43912235267017297,
+          "fwd4wProfitFactor": 1.958959407105202,
+          "fwd4wMaxDrawdownR": 4.159441665826792
+        },
+        {
+          "rollIndex": 18,
+          "gate": 12,
+          "selectedScenarioId": "guarded_tr_1.3",
+          "selectedFamily": "guarded",
+          "selectedStrategyId": "regime_pullback_m15_m3_btcusdt",
+          "eligibleCandidates": 1,
+          "candidateCount": 29,
+          "selectionTrades": 86,
+          "selectionNetPnlUsd": 8541.957471819984,
+          "selectionExpectancyR": 2.8378596251893633,
+          "selectionProfitFactor": 5.89856845747365,
+          "selectionMaxDrawdownR": 9.829627679559167,
+          "fwd2wNetPnlUsd": 105.95934772997845,
+          "fwd2wExpectancyR": 0.23287768731863404,
+          "fwd2wProfitFactor": 1.634885328528326,
+          "fwd2wMaxDrawdownR": 2.9226683925182284,
+          "fwd4wNetPnlUsd": 344.9014220832749,
+          "fwd4wExpectancyR": 0.32847754484121433,
+          "fwd4wProfitFactor": 2.0357684696040557,
+          "fwd4wMaxDrawdownR": 2.9226683925182284
+        }
+      ]
+    },
+    "summaryByGate": {
+      "8": {
+        "rolls": 18,
+        "survivorCount": {
+          "mean": 2.5555555555555554,
+          "median": 0,
+          "min": 0,
+          "max": 15
+        },
+        "selectedScenarioFrequency": [
+          {
+            "scenarioId": "cbp_tp1_0",
+            "count": 4
+          },
+          {
+            "scenarioId": "guarded_tp1_10",
+            "count": 4
+          },
+          {
+            "scenarioId": "cbp_ts_15",
+            "count": 3
+          },
+          {
+            "scenarioId": "cbp_ts_21",
+            "count": 2
+          },
+          {
+            "scenarioId": "guarded_ts_12",
+            "count": 2
+          },
+          {
+            "scenarioId": "cbp_ts_12",
+            "count": 2
+          },
+          {
+            "scenarioId": "guarded_blocked_h11_12",
+            "count": 1
+          }
+        ],
+        "forward2w": {
+          "meanNetPnlUsd": -121.95310310705423,
+          "meanExpectancyR": -0.27071479585621094,
+          "profitablePct": 27.77777777777778
+        },
+        "forward4w": {
+          "meanNetPnlUsd": -132.2460572124969,
+          "meanExpectancyR": -0.1920508362049748,
+          "profitablePct": 38.88888888888889
+        }
+      },
+      "10": {
+        "rolls": 18,
+        "survivorCount": {
+          "mean": 4.222222222222222,
+          "median": 0,
+          "min": 0,
+          "max": 15
+        },
+        "selectedScenarioFrequency": [
+          {
+            "scenarioId": "cbp_tp1_0",
+            "count": 6
+          },
+          {
+            "scenarioId": "cbp_ts_15",
+            "count": 3
+          },
+          {
+            "scenarioId": "guarded_tp1_10",
+            "count": 3
+          },
+          {
+            "scenarioId": "cbp_ts_21",
+            "count": 2
+          },
+          {
+            "scenarioId": "guarded_ts_12",
+            "count": 2
+          },
+          {
+            "scenarioId": "guarded_blocked_h11_12",
+            "count": 1
+          },
+          {
+            "scenarioId": "guarded_tr_1.3",
+            "count": 1
+          }
+        ],
+        "forward2w": {
+          "meanNetPnlUsd": -119.95782577538982,
+          "meanExpectancyR": -0.2677900357510341,
+          "profitablePct": 27.77777777777778
+        },
+        "forward4w": {
+          "meanNetPnlUsd": -130.49730627743872,
+          "meanExpectancyR": -0.19086877945244995,
+          "profitablePct": 38.88888888888889
+        }
+      },
+      "12": {
+        "rolls": 18,
+        "survivorCount": {
+          "mean": 4.222222222222222,
+          "median": 0,
+          "min": 0,
+          "max": 15
+        },
+        "selectedScenarioFrequency": [
+          {
+            "scenarioId": "cbp_tp1_0",
+            "count": 6
+          },
+          {
+            "scenarioId": "cbp_ts_15",
+            "count": 3
+          },
+          {
+            "scenarioId": "guarded_tp1_10",
+            "count": 3
+          },
+          {
+            "scenarioId": "cbp_ts_21",
+            "count": 2
+          },
+          {
+            "scenarioId": "guarded_ts_12",
+            "count": 2
+          },
+          {
+            "scenarioId": "guarded_blocked_h11_12",
+            "count": 1
+          },
+          {
+            "scenarioId": "guarded_tr_1.3",
+            "count": 1
+          }
+        ],
+        "forward2w": {
+          "meanNetPnlUsd": -119.95782577538982,
+          "meanExpectancyR": -0.2677900357510341,
+          "profitablePct": 27.77777777777778
+        },
+        "forward4w": {
+          "meanNetPnlUsd": -130.49730627743872,
+          "meanExpectancyR": -0.19086877945244995,
+          "profitablePct": 38.88888888888889
+        }
+      }
+    }
+  },
+  "finalConclusions": {
+    "cbpVerdict": "likely overfit",
+    "guardedVerdict": "likely overfit",
+    "blockedHours1011Verdict": "unclear",
+    "selectionLogicVerdict": "mostly buys yesterday's luck",
+    "executionRobustnessVerdict": "survives stress",
+    "diversificationVerdict": "partial overlap"
+  }
+}

@@ -522,10 +522,10 @@ async function main() {
                     strategyId: winner.strategyId,
                     tuneId: winner.tuneId,
                     deploymentId: winner.deploymentId,
-                    enabled: true,
+                    enabled: false,
                     source: 'matrix',
                     updatedBy: 'scripts/scalp-deployment-matrix',
-                    notes: `days=${days} scenario=${winner.scenarioId}`,
+                    notes: `days=${days} scenario=${winner.scenarioId} pending_forward_gate`,
                     leaderboardEntry: {
                         symbol: winner.symbol,
                         strategyId: winner.strategyId,
