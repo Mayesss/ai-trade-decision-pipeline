@@ -5,7 +5,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { requireAdminAccess } from '../../../../lib/admin';
 import { getScalpCronSymbolConfigs } from '../../../../lib/symbolRegistry';
 import { getScalpStrategyConfig } from '../../../../lib/scalp/config';
-import { listScalpDeploymentRegistryEntries } from '../../../../lib/scalp/deploymentRegistry';
+import { listScalpDeploymentRegistryEntries, type ScalpForwardValidationMetrics } from '../../../../lib/scalp/deploymentRegistry';
 import { DEFAULT_SCALP_TUNE_ID, resolveScalpDeployment } from '../../../../lib/scalp/deployments';
 import { normalizeScalpStrategyId } from '../../../../lib/scalp/strategies/registry';
 import { deriveScalpDayKey } from '../../../../lib/scalp/stateMachine';
@@ -42,6 +42,9 @@ type SymbolSnapshot = {
   reasonCodes: string[];
   netR: number | null;
   maxDrawdownR: number | null;
+  promotionEligible: boolean | null;
+  promotionReason: string | null;
+  forwardValidation: ScalpForwardValidationMetrics | null;
 };
 
 function parseLimit(value: string | string[] | undefined, fallback: number): number {
@@ -220,6 +223,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           reasonCodes: Array.isArray(state?.run?.lastReasonCodes) ? state!.run.lastReasonCodes.slice(0, 8) : [],
           netR: null,
           maxDrawdownR: null,
+          promotionEligible: typeof deploymentRow.promotionGate?.eligible === 'boolean' ? deploymentRow.promotionGate.eligible : null,
+          promotionReason: deploymentRow.promotionGate?.reason || null,
+          forwardValidation: deploymentRow.promotionGate?.forwardValidation || null,
         });
       }
     } else {
@@ -265,6 +271,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           reasonCodes: Array.isArray(state?.run?.lastReasonCodes) ? state!.run.lastReasonCodes.slice(0, 8) : [],
           netR: null,
           maxDrawdownR: null,
+          promotionEligible: null,
+          promotionReason: null,
+          forwardValidation: null,
         });
       }
     }

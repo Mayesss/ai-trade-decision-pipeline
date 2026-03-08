@@ -145,6 +145,9 @@ type ScalpDashboardSymbol = {
   reasonCodes?: string[];
   netR?: number | null;
   maxDrawdownR?: number | null;
+  promotionEligible?: boolean;
+  promotionReason?: string | null;
+  forwardValidation?: ScalpForwardValidation | null;
 };
 
 type ScalpStrategyControl = {
@@ -1566,6 +1569,13 @@ export default function Home() {
     scalpReportDeployments.length > 0
       ? scalpReportDeployments.map((row) => {
           const runtime = scalpRuntimeByDeploymentId.get(row.deploymentId) || null;
+          const runtimePromotionEligible = typeof runtime?.promotionEligible === 'boolean' ? runtime.promotionEligible : null;
+          const mergedPromotionEligible =
+            typeof row.promotionEligible === 'boolean'
+              ? row.promotionEligible
+              : runtimePromotionEligible !== null
+                ? runtimePromotionEligible
+                : false;
           return {
             deploymentId: row.deploymentId,
             symbol: row.symbol,
@@ -1573,9 +1583,9 @@ export default function Home() {
             tuneId: String(row.tuneId || runtime?.tuneId || runtime?.tune || 'default'),
             source: String(row.source || 'report'),
             enabled: row.enabled !== false,
-            promotionEligible: Boolean(row.promotionEligible),
-            promotionReason: row.promotionReason || null,
-            forwardValidation: row.forwardValidation || null,
+            promotionEligible: mergedPromotionEligible,
+            promotionReason: row.promotionReason || runtime?.promotionReason || null,
+            forwardValidation: row.forwardValidation || runtime?.forwardValidation || null,
             perf30dTrades: asFiniteNumber(row.perf30d?.trades),
             perf30dExpectancyR: asFiniteNumber(row.perf30d?.expectancyR),
             perf30dNetR: asFiniteNumber(row.perf30d?.netR),
@@ -1590,9 +1600,9 @@ export default function Home() {
           tuneId: String(row.tuneId || row.tune || 'default'),
           source: 'runtime',
           enabled: true,
-          promotionEligible: false,
-          promotionReason: null,
-          forwardValidation: null,
+          promotionEligible: typeof row.promotionEligible === 'boolean' ? row.promotionEligible : false,
+          promotionReason: row.promotionReason || null,
+          forwardValidation: row.forwardValidation || null,
           perf30dTrades: asFiniteNumber(row.tradesPlaced),
           perf30dExpectancyR:
             row.tradesPlaced > 0 && typeof row.netR === 'number' && Number.isFinite(row.netR)
