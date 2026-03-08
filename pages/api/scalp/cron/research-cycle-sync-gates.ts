@@ -81,7 +81,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const materializeMissingCandidates = parseBoolParam(req.query.materializeMissingCandidates, true);
     const materializeTopKPerSymbol = parsePositiveInt(firstQueryValue(req.query.materializeTopKPerSymbol));
     const materializeSource = parseMaterializeSource(firstQueryValue(req.query.materializeSource));
-    const materializeEnabled = parseBoolParam(req.query.materializeEnabled, false);
+    const materializeEnabled = parseBoolParam(req.query.materializeEnabled, true);
 
     try {
         const out = await syncResearchCyclePromotionGates({

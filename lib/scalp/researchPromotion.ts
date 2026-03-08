@@ -585,7 +585,7 @@ export async function syncResearchCyclePromotionGates(
         envOrFallbackBool('SCALP_RESEARCH_MATERIALIZE_MISSING_CANDIDATES', true);
     const materializeEnabled =
         params.materializeEnabled ??
-        envOrFallbackBool('SCALP_RESEARCH_MATERIALIZE_ENABLED', false);
+        envOrFallbackBool('SCALP_RESEARCH_MATERIALIZE_ENABLED', true);
     const materializeTopKPerSymbol = toPositiveInt(
         params.materializeTopKPerSymbol ??
             envOrFallbackNumber('SCALP_RESEARCH_MATERIALIZE_TOPK_PER_SYMBOL', 2),
