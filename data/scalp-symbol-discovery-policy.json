@@ -3,11 +3,11 @@
   "updatedAt": "2026-03-07T00:00:00.000Z",
   "notes": "Weekly symbol discovery policy for scalp universe maintenance. Uses hard limits to avoid churn and overfitting.",
   "limits": {
-    "maxUniverseSymbols": 16,
+    "maxUniverseSymbols": 21,
     "minUniverseSymbols": 4,
     "maxWeeklyAdds": 2,
     "maxWeeklyRemoves": 2,
-    "maxCandidates": 40
+    "maxCandidates": 400
   },
   "criteria": {
     "minHistoryDays": 45,
@@ -19,9 +19,11 @@
     "requireTradableQuote": true
   },
   "sources": {
-    "includeCapitalTickerMap": true,
+    "includeCapitalMarketsApi": true,
+    "includeCapitalTickerMap": false,
     "includeDeploymentSymbols": true,
     "includeHistorySymbols": true,
+    "requireHistoryPresence": true,
     "explicitSymbols": [],
     "excludedSymbols": []
   },

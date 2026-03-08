@@ -192,6 +192,8 @@ type ScalpSummaryResponse = {
   }>;
 };
 
+type ScalpJournalRow = NonNullable<ScalpSummaryResponse['journal']>[number];
+
 type ScalpForwardValidation = {
   rollCount?: number;
   profitableWindowPct?: number;
@@ -285,6 +287,29 @@ type ScalpResearchCycleResponse = {
   } | null;
 };
 
+type ScalpResearchUniverseCandidateRow = {
+  symbol?: string;
+  eligible?: boolean;
+  score?: number;
+  reasons?: string[];
+  recommendedStrategyIds?: string[];
+};
+
+type ScalpResearchUniverseSeedResult = {
+  symbol?: string;
+  status?: 'seeded' | 'skipped' | 'failed' | string;
+  reason?: string;
+  addedCount?: number;
+};
+
+type ScalpResearchUniverseSeedSummary = {
+  processedSymbols?: number;
+  seededSymbols?: number;
+  skippedSymbols?: number;
+  failedSymbols?: number;
+  results?: ScalpResearchUniverseSeedResult[];
+};
+
 type ScalpResearchUniverseResponse = {
   ok?: boolean;
   selectedCount?: number;
@@ -294,6 +319,9 @@ type ScalpResearchUniverseResponse = {
     selectedSymbols?: string[];
     candidatesEvaluated?: number;
     generatedAtIso?: string;
+    selectedRows?: ScalpResearchUniverseCandidateRow[];
+    topRejectedRows?: ScalpResearchUniverseCandidateRow[];
+    seedSummary?: ScalpResearchUniverseSeedSummary | null;
   };
 };
 
@@ -315,12 +343,32 @@ type ScalpOpsDeploymentRow = {
 };
 
 type ScalpOpsCronStatus = 'healthy' | 'lagging' | 'unknown';
+type ScalpOpsCronDetailTone = 'neutral' | 'positive' | 'warning' | 'critical';
+type ScalpOpsCronDetail = {
+  label: string;
+  value: string;
+  tone?: ScalpOpsCronDetailTone;
+};
 type ScalpOpsCronRow = {
   id: string;
   cadence: string;
   role: string;
   status: ScalpOpsCronStatus;
   lastRunAtMs: number | null;
+  details: ScalpOpsCronDetail[];
+  resultPreview?: Record<string, unknown> | null;
+};
+
+type ScalpUniversePipelineRow = {
+  symbol: string;
+  discovered: boolean;
+  importStatus: 'seeded' | 'skipped' | 'failed' | 'not_run';
+  importReason: string | null;
+  importAddedCount: number | null;
+  evaluated: boolean;
+  eligible: boolean | null;
+  score: number | null;
+  reasons: string[];
 };
 
 type DashboardDecisionResponse = {
@@ -432,6 +480,7 @@ export default function Home() {
   const [scalpResearchReport, setScalpResearchReport] = useState<ScalpResearchReportSnapshot | null>(null);
   const [scalpResearchUniverse, setScalpResearchUniverse] = useState<ScalpResearchUniverseResponse | null>(null);
   const [scalpActiveDeploymentId, setScalpActiveDeploymentId] = useState<string | null>(null);
+  const [scalpExpandedCronId, setScalpExpandedCronId] = useState<string | null>(null);
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
   const [livePriceConnected, setLivePriceConnected] = useState(false);
@@ -1485,32 +1534,231 @@ export default function Home() {
     asFiniteNumber(scalpResearchUniverse?.snapshot?.candidatesEvaluated);
 
   const scalpJournalRows = Array.isArray(scalpSummary?.journal) ? scalpSummary.journal : [];
+  const formatScalpTime = (ts?: number | null) => {
+    const raw = formatDecisionTime(ts);
+    return raw ? raw.replace(/^–\s*/, '') : '—';
+  };
+  const formatScalpCount = (value: number | null): string =>
+    value === null ? '—' : `${Math.max(0, Math.floor(value))}`;
+  const formatScalpPct = (value: number | null, digits = 0): string =>
+    value === null ? '—' : `${value.toFixed(digits)}%`;
+  const formatScalpSignedR = (value: number | null): string =>
+    value === null ? '—' : `${value >= 0 ? '+' : ''}${value.toFixed(2)}R`;
+  const scalpCycleId = String(
+    scalpResearchCycle?.cycleId || scalpResearchCycle?.cycle?.cycleId || scalpResearchReport?.cycle?.cycleId || '',
+  ).trim();
+  const scalpCycleStatusRaw = String(
+    scalpResearchCycle?.summary?.status ||
+      scalpResearchCycle?.cycle?.status ||
+      scalpResearchReport?.cycle?.status ||
+      'unknown',
+  )
+    .trim()
+    .toUpperCase();
+  const scalpCycleStatusTone: ScalpOpsCronDetailTone = scalpCycleStatusRaw.includes('FAILED')
+    ? 'critical'
+    : scalpCycleStatusRaw.includes('RUNNING') || scalpCycleStatusRaw.includes('PENDING')
+      ? 'warning'
+      : scalpCycleStatusRaw.includes('COMPLETE')
+        ? 'positive'
+        : 'neutral';
+  const scalpCyclePending = asFiniteNumber(scalpResearchCycle?.summary?.totals?.pending);
+  const scalpCycleRunning = asFiniteNumber(scalpResearchCycle?.summary?.totals?.running);
+  const normalizeScalpUniverseSymbol = (value: unknown): string =>
+    String(value || '')
+      .trim()
+      .toUpperCase();
+  const scalpUniverseSymbols = Array.isArray(scalpResearchUniverse?.snapshot?.selectedSymbols)
+    ? scalpResearchUniverse.snapshot.selectedSymbols
+        .map((symbol) => normalizeScalpUniverseSymbol(symbol))
+        .filter(Boolean)
+    : [];
+  const scalpUniverseSelectedRows = Array.isArray(scalpResearchUniverse?.snapshot?.selectedRows)
+    ? scalpResearchUniverse.snapshot.selectedRows
+    : [];
+  const scalpUniverseRejectedRows = Array.isArray(scalpResearchUniverse?.snapshot?.topRejectedRows)
+    ? scalpResearchUniverse.snapshot.topRejectedRows
+    : [];
+  const scalpUniverseSeedSummary = scalpResearchUniverse?.snapshot?.seedSummary ?? null;
+  const scalpUniverseSeedResults = Array.isArray(scalpUniverseSeedSummary?.results)
+    ? scalpUniverseSeedSummary.results
+    : [];
+  const scalpUniverseSeededSymbols = scalpUniverseSeedResults
+    .filter((row) => String(row?.status || '').trim().toLowerCase() === 'seeded')
+    .map((row) => normalizeScalpUniverseSymbol(row?.symbol))
+    .filter(Boolean);
+  const scalpUniverseSeededCount =
+    asFiniteNumber(scalpUniverseSeedSummary?.seededSymbols) ?? scalpUniverseSeededSymbols.length;
+  const scalpUniverseSeedProcessedCount =
+    asFiniteNumber(scalpUniverseSeedSummary?.processedSymbols) ?? scalpUniverseSeedResults.length;
+  const scalpUniverseEvaluationMap = new Map<string, ScalpResearchUniverseCandidateRow>();
+  for (const row of scalpUniverseSelectedRows) {
+    const symbol = normalizeScalpUniverseSymbol(row?.symbol);
+    if (!symbol || scalpUniverseEvaluationMap.has(symbol)) continue;
+    scalpUniverseEvaluationMap.set(symbol, row);
+  }
+  for (const row of scalpUniverseRejectedRows) {
+    const symbol = normalizeScalpUniverseSymbol(row?.symbol);
+    if (!symbol || scalpUniverseEvaluationMap.has(symbol)) continue;
+    scalpUniverseEvaluationMap.set(symbol, row);
+  }
+  const scalpUniverseEvaluatedRows = Array.from(scalpUniverseEvaluationMap.entries()).map(([symbol, row]) => ({
+    symbol,
+    eligible: Boolean(row?.eligible),
+    score: asFiniteNumber(row?.score),
+    reasons: Array.isArray(row?.reasons) ? row.reasons.map((reason) => String(reason || '')).filter(Boolean) : [],
+    recommendedStrategyIds: Array.isArray(row?.recommendedStrategyIds)
+      ? row.recommendedStrategyIds.map((strategyId) => String(strategyId || '')).filter(Boolean)
+      : [],
+  }));
+  const scalpUniverseEvaluatedCount =
+    asFiniteNumber(scalpResearchUniverse?.candidatesEvaluated) ??
+    asFiniteNumber(scalpResearchUniverse?.snapshot?.candidatesEvaluated) ??
+    scalpUniverseEvaluatedRows.length;
+  const scalpUniverseEvaluatedSymbols = scalpUniverseEvaluatedRows
+    .map((row) => row.symbol)
+    .filter(Boolean);
+  const scalpUniverseEligibleEvaluatedCount = scalpUniverseEvaluatedRows.reduce(
+    (acc, row) => acc + (row.eligible ? 1 : 0),
+    0,
+  );
+  const scalpUniversePipelineMap = new Map<string, ScalpUniversePipelineRow>();
+  const ensurePipelineRow = (symbol: string): ScalpUniversePipelineRow => {
+    const existing = scalpUniversePipelineMap.get(symbol);
+    if (existing) return existing;
+    const created: ScalpUniversePipelineRow = {
+      symbol,
+      discovered: false,
+      importStatus: 'not_run',
+      importReason: null,
+      importAddedCount: null,
+      evaluated: false,
+      eligible: null,
+      score: null,
+      reasons: [],
+    };
+    scalpUniversePipelineMap.set(symbol, created);
+    return created;
+  };
+  for (const symbol of scalpUniverseSymbols) {
+    if (!symbol) continue;
+    const row = ensurePipelineRow(symbol);
+    row.discovered = true;
+  }
+  for (const result of scalpUniverseSeedResults) {
+    const symbol = normalizeScalpUniverseSymbol(result?.symbol);
+    if (!symbol) continue;
+    const row = ensurePipelineRow(symbol);
+    const status = String(result?.status || '')
+      .trim()
+      .toLowerCase();
+    if (status === 'seeded' || status === 'skipped' || status === 'failed') {
+      row.importStatus = status;
+    }
+    row.importReason = typeof result?.reason === 'string' && result.reason.trim() ? result.reason.trim() : null;
+    row.importAddedCount = asFiniteNumber(result?.addedCount);
+  }
+  for (const evaluation of scalpUniverseEvaluatedRows) {
+    if (!evaluation.symbol) continue;
+    const row = ensurePipelineRow(evaluation.symbol);
+    row.evaluated = true;
+    row.eligible = evaluation.eligible;
+    row.score = evaluation.score;
+    row.reasons = evaluation.reasons;
+  }
+  const scalpUniversePipelineRows = Array.from(scalpUniversePipelineMap.values()).sort((a, b) => {
+    if (a.discovered !== b.discovered) return a.discovered ? -1 : 1;
+    const importRank = (status: ScalpUniversePipelineRow['importStatus']): number => {
+      if (status === 'seeded') return 0;
+      if (status === 'skipped') return 1;
+      if (status === 'failed') return 2;
+      return 3;
+    };
+    const importDelta = importRank(a.importStatus) - importRank(b.importStatus);
+    if (importDelta !== 0) return importDelta;
+    if (a.evaluated !== b.evaluated) return a.evaluated ? -1 : 1;
+    return a.symbol.localeCompare(b.symbol);
+  });
+  const scalpUniverseDiscoveredPreview = scalpUniverseSymbols.slice(0, 8);
+  const scalpUniverseImportedPreview = scalpUniverseSeededSymbols.slice(0, 8);
+  const scalpUniverseEvaluatedPreview = scalpUniverseEvaluatedSymbols.slice(0, 8);
+  const isScalpGuardrailJournalEntry = (entry: ScalpJournalRow): boolean => {
+    const type = String(entry.type || '').trim().toUpperCase();
+    if (type === 'RISK') return true;
+    if (!Array.isArray(entry.reasonCodes)) return false;
+    return entry.reasonCodes.some((code) => {
+      const normalized = String(code || '').trim().toUpperCase();
+      return (
+        normalized.includes('GUARDRAIL') ||
+        normalized.includes('BREACH') ||
+        normalized.includes('PAUSE')
+      );
+    });
+  };
+  const isScalpExecutionJournalEntry = (entry: ScalpJournalRow): boolean => {
+    const type = String(entry.type || '').trim().toUpperCase();
+    if (type === 'EXECUTION') return true;
+    if (!Array.isArray(entry.reasonCodes)) return false;
+    return entry.reasonCodes.some((code) =>
+      String(code || '').trim().toUpperCase().includes('SCALP_PHASE3_EXECUTION'),
+    );
+  };
+  const scalpLatestJournalEntryBy = (
+    predicate: (entry: ScalpJournalRow) => boolean,
+  ): ScalpJournalRow | null =>
+    scalpJournalRows.reduce<ScalpJournalRow | null>((acc, entry) => {
+      if (!predicate(entry)) return acc;
+      const timestampMs =
+        typeof entry.timestampMs === 'number' && Number.isFinite(entry.timestampMs)
+          ? entry.timestampMs
+          : null;
+      if (timestampMs === null) return acc;
+      if (!acc) return entry;
+      const accTs =
+        typeof acc.timestampMs === 'number' && Number.isFinite(acc.timestampMs)
+          ? acc.timestampMs
+          : null;
+      if (accTs === null || timestampMs > accTs) return entry;
+      return acc;
+    }, null);
   const scalpLastExecuteRunAtMs = scalpRows.reduce<number | null>((acc, row) => {
     if (typeof row.lastRunAtMs !== 'number' || !Number.isFinite(row.lastRunAtMs)) return acc;
     if (acc === null) return row.lastRunAtMs;
     return Math.max(acc, row.lastRunAtMs);
   }, null);
-  const scalpLastGuardrailAtMs = scalpJournalRows.reduce<number | null>((acc, entry) => {
-    const timestampMs =
-      typeof entry.timestampMs === 'number' && Number.isFinite(entry.timestampMs)
-        ? entry.timestampMs
-        : null;
-    if (timestampMs === null) return acc;
-    const isGuardrail =
-      String(entry.type || '').trim().toUpperCase() === 'RISK' ||
-      (Array.isArray(entry.reasonCodes)
-        ? entry.reasonCodes.some((code) => String(code || '').trim().toUpperCase().includes('GUARDRAIL'))
-        : false);
-    if (!isGuardrail) return acc;
-    if (acc === null) return timestampMs;
-    return Math.max(acc, timestampMs);
-  }, null);
+  const scalpLatestExecutionJournalEntry = scalpLatestJournalEntryBy(isScalpExecutionJournalEntry);
+  const scalpLatestGuardrailEntry = scalpLatestJournalEntryBy(isScalpGuardrailJournalEntry);
+  const scalpLastGuardrailAtMs = asFiniteNumber(scalpLatestGuardrailEntry?.timestampMs);
   const scalpCycleUpdatedAtMs =
     asFiniteNumber(scalpResearchCycle?.cycle?.updatedAtMs) ??
     asFiniteNumber(scalpResearchCycle?.summary?.generatedAtMs) ??
     asFiniteNumber(scalpResearchReport?.generatedAtMs);
   const scalpReportGeneratedAtMs = asFiniteNumber(scalpResearchReport?.generatedAtMs);
   const scalpDashboardGeneratedAtMs = asFiniteNumber(scalpSummary?.generatedAtMs);
+  const scalpSummaryRunCount = asFiniteNumber(scalpSummary?.summary?.runCount);
+  const scalpSummaryDryRunCount = asFiniteNumber(scalpSummary?.summary?.dryRunCount);
+  const scalpSummaryOpenCount = asFiniteNumber(scalpSummary?.summary?.openCount);
+  const scalpSummaryTradesPlaced = asFiniteNumber(scalpSummary?.summary?.totalTradesPlaced);
+  const scalpLatestExecutionPayload =
+    scalpLatestExecutionJournalEntry?.payload &&
+    typeof scalpLatestExecutionJournalEntry.payload === 'object'
+      ? (scalpLatestExecutionJournalEntry.payload as Record<string, unknown>)
+      : null;
+  const scalpLatestGuardrailPayload =
+    scalpLatestGuardrailEntry?.payload && typeof scalpLatestGuardrailEntry.payload === 'object'
+      ? (scalpLatestGuardrailEntry.payload as Record<string, unknown>)
+      : null;
+  const scalpLatestExecutionDeploymentId = String(
+    scalpLatestExecutionPayload?.deploymentId || '',
+  ).trim();
+  const scalpLatestExecutionSymbol = String(scalpLatestExecutionPayload?.symbol || '').trim().toUpperCase();
+  const scalpLatestGuardrailDeploymentId = String(
+    scalpLatestGuardrailPayload?.deploymentId || '',
+  ).trim();
+  const scalpLatestGuardrailSymbol = String(scalpLatestGuardrailEntry?.symbol || '')
+    .trim()
+    .toUpperCase();
+  const scalpIneligibleCount = Math.max(0, scalpEnabledDeploymentCount - scalpPromotionEligibleCount);
   const scalpStatusFromTs = (ts: number | null, staleMs: number): ScalpOpsCronStatus => {
     if (typeof ts !== 'number' || !Number.isFinite(ts)) return 'unknown';
     return Date.now() - ts <= staleMs ? 'healthy' : 'lagging';
@@ -1522,6 +1770,34 @@ export default function Home() {
       role: 'Freeze universe and emit task manifest',
       status: scalpStatusFromTs(scalpCycleUpdatedAtMs, 36 * 60 * 60_000),
       lastRunAtMs: scalpCycleUpdatedAtMs,
+      details: [
+        { label: 'Cycle', value: scalpCycleId || 'pending', tone: scalpCycleId ? 'neutral' : 'warning' },
+        { label: 'Status', value: scalpCycleStatusRaw.replace(/_/g, ' '), tone: scalpCycleStatusTone },
+        { label: 'Discovered', value: formatScalpCount(scalpUniverseSelectedCount), tone: 'neutral' },
+        { label: 'Imported', value: formatScalpCount(scalpUniverseSeededCount), tone: 'neutral' },
+        { label: 'Evaluated', value: formatScalpCount(scalpUniverseEvaluatedCount), tone: 'neutral' },
+        { label: 'Eligible', value: formatScalpCount(scalpUniverseEligibleEvaluatedCount), tone: 'positive' },
+      ],
+      resultPreview: {
+        cycleId: scalpCycleId || null,
+        status: scalpCycleStatusRaw || null,
+        discoveredSymbolsPreview: scalpUniverseSymbols.slice(0, 10),
+        discoveredSymbolsRemaining: Math.max(0, scalpUniverseSymbols.length - 10),
+        importedSymbolsPreview: scalpUniverseSeededSymbols.slice(0, 10),
+        importedSymbolsRemaining: Math.max(0, scalpUniverseSeededSymbols.length - 10),
+        evaluatedSymbolsPreview: scalpUniverseEvaluatedSymbols.slice(0, 10),
+        evaluatedSymbolsRemaining: Math.max(0, scalpUniverseEvaluatedSymbols.length - 10),
+        candidatesEvaluated: scalpUniverseCandidatesEvaluated ?? scalpUniverseEvaluatedCount,
+        seedProcessedSymbols: scalpUniverseSeedProcessedCount,
+        seedSummary: scalpUniverseSeedSummary || null,
+        topEvaluationRows: scalpUniverseEvaluatedRows.slice(0, 8).map((row) => ({
+          symbol: row.symbol,
+          eligible: row.eligible,
+          score: row.score,
+          reasons: row.reasons,
+        })),
+        generatedAtIso: scalpResearchUniverse?.generatedAtIso || scalpResearchUniverse?.snapshot?.generatedAtIso || null,
+      },
     },
     {
       id: 'scalp_cycle_worker',
@@ -1529,6 +1805,19 @@ export default function Home() {
       role: 'Claim and execute replay chunks',
       status: scalpStatusFromTs(scalpCycleUpdatedAtMs, 20 * 60_000),
       lastRunAtMs: scalpCycleUpdatedAtMs,
+      details: [
+        { label: 'Progress', value: formatScalpPct(scalpCycleProgressPct), tone: 'neutral' },
+        { label: 'Tasks', value: formatScalpCount(scalpCycleTasks), tone: 'neutral' },
+        { label: 'Pending', value: formatScalpCount(scalpCyclePending), tone: 'warning' },
+        { label: 'Running', value: formatScalpCount(scalpCycleRunning), tone: 'warning' },
+        { label: 'Failed', value: formatScalpCount(scalpCycleFailed), tone: scalpCycleFailed ? 'critical' : 'positive' },
+      ],
+      resultPreview: {
+        cycleId: scalpCycleId || null,
+        status: scalpCycleStatusRaw || null,
+        progressPct: scalpCycleProgressPct,
+        totals: scalpResearchCycle?.summary?.totals || null,
+      },
     },
     {
       id: 'scalp_cycle_aggregate',
@@ -1536,6 +1825,33 @@ export default function Home() {
       role: 'Compute candidate/forward summary',
       status: scalpStatusFromTs(scalpCycleUpdatedAtMs, 45 * 60_000),
       lastRunAtMs: scalpCycleUpdatedAtMs,
+      details: [
+        {
+          label: 'Candidates',
+          value: formatScalpCount(asFiniteNumber(scalpResearchReport?.cycle?.candidateCount)),
+          tone: 'neutral',
+        },
+        {
+          label: 'Deployments',
+          value: formatScalpCount(asFiniteNumber(scalpResearchReport?.summary?.deploymentsTotal)),
+          tone: 'neutral',
+        },
+        {
+          label: 'Enabled',
+          value: formatScalpCount(asFiniteNumber(scalpResearchReport?.summary?.deploymentsEnabled)),
+          tone: 'neutral',
+        },
+        {
+          label: 'Abs Corr',
+          value: scalpAvgAbsPairCorrelation === null ? '—' : scalpAvgAbsPairCorrelation.toFixed(2),
+          tone: scalpAvgAbsPairCorrelation !== null && scalpAvgAbsPairCorrelation >= 0.7 ? 'warning' : 'neutral',
+        },
+      ],
+      resultPreview: {
+        cycle: scalpResearchReport?.cycle || null,
+        summary: scalpResearchReport?.summary || null,
+        generatedAtMs: scalpReportGeneratedAtMs,
+      },
     },
     {
       id: 'scalp_promotion_gate_apply',
@@ -1543,6 +1859,43 @@ export default function Home() {
       role: 'Apply forward validation gate',
       status: scalpStatusFromTs(scalpReportGeneratedAtMs, 36 * 60 * 60_000),
       lastRunAtMs: scalpReportGeneratedAtMs,
+      details: [
+        { label: 'Enabled', value: formatScalpCount(scalpEnabledDeploymentCount), tone: 'neutral' },
+        { label: 'Eligible', value: formatScalpCount(scalpPromotionEligibleCount), tone: 'positive' },
+        {
+          label: 'Blocked',
+          value: formatScalpCount(scalpIneligibleCount),
+          tone: scalpIneligibleCount > 0 ? 'warning' : 'positive',
+        },
+        {
+          label: 'Forward Exp',
+          value: formatScalpSignedR(scalpMeanForwardExpectancyR),
+          tone:
+            scalpMeanForwardExpectancyR === null
+              ? 'neutral'
+              : scalpMeanForwardExpectancyR >= 0
+                ? 'positive'
+                : 'critical',
+        },
+        {
+          label: 'Profitable',
+          value: formatScalpPct(scalpMeanForwardProfitablePct, 1),
+          tone:
+            scalpMeanForwardProfitablePct === null
+              ? 'neutral'
+              : scalpMeanForwardProfitablePct >= 50
+                ? 'positive'
+                : 'warning',
+        },
+      ],
+      resultPreview: {
+        enabledDeployments: scalpEnabledDeploymentCount,
+        promotionEligible: scalpPromotionEligibleCount,
+        ineligible: scalpIneligibleCount,
+        meanForwardExpectancyR: scalpMeanForwardExpectancyR,
+        meanForwardProfitableWindowPct: scalpMeanForwardProfitablePct,
+        reportGeneratedAtMs: scalpReportGeneratedAtMs,
+      },
     },
     {
       id: 'scalp_execute_deployments',
@@ -1550,6 +1903,29 @@ export default function Home() {
       role: 'Run enabled and gate-eligible deployments',
       status: scalpStatusFromTs(scalpLastExecuteRunAtMs, 10 * 60_000),
       lastRunAtMs: scalpLastExecuteRunAtMs,
+      details: [
+        { label: 'Run Count', value: formatScalpCount(scalpSummaryRunCount), tone: 'neutral' },
+        { label: 'Dry Runs', value: formatScalpCount(scalpSummaryDryRunCount), tone: 'neutral' },
+        { label: 'Open', value: formatScalpCount(scalpSummaryOpenCount), tone: 'neutral' },
+        { label: 'Trades', value: formatScalpCount(scalpSummaryTradesPlaced), tone: 'neutral' },
+        {
+          label: 'Last Deployment',
+          value: scalpLatestExecutionDeploymentId || '—',
+          tone: scalpLatestExecutionDeploymentId ? 'neutral' : 'warning',
+        },
+      ],
+      resultPreview: {
+        summary: scalpSummary?.summary || null,
+        latestExecution: {
+          atMs: scalpLatestExecutionJournalEntry?.timestampMs ?? null,
+          symbol: scalpLatestExecutionSymbol || null,
+          deploymentId: scalpLatestExecutionDeploymentId || null,
+          reasonCodes: Array.isArray(scalpLatestExecutionJournalEntry?.reasonCodes)
+            ? scalpLatestExecutionJournalEntry?.reasonCodes
+            : [],
+          payload: scalpLatestExecutionPayload || null,
+        },
+      },
     },
     {
       id: 'scalp_live_guardrail_monitor',
@@ -1560,6 +1936,45 @@ export default function Home() {
         60 * 60_000,
       ),
       lastRunAtMs: scalpLastGuardrailAtMs ?? scalpReportGeneratedAtMs,
+      details: [
+        {
+          label: 'Last Event',
+          value: formatScalpTime(scalpLastGuardrailAtMs ?? scalpReportGeneratedAtMs),
+          tone: scalpLastGuardrailAtMs ? 'warning' : 'neutral',
+        },
+        {
+          label: 'Symbol',
+          value: scalpLatestGuardrailSymbol || '—',
+          tone: scalpLatestGuardrailSymbol ? 'warning' : 'neutral',
+        },
+        {
+          label: 'Deployment',
+          value: scalpLatestGuardrailDeploymentId || '—',
+          tone: scalpLatestGuardrailDeploymentId ? 'warning' : 'neutral',
+        },
+        {
+          label: 'Reason',
+          value: Array.isArray(scalpLatestGuardrailEntry?.reasonCodes) && scalpLatestGuardrailEntry.reasonCodes.length
+            ? String(scalpLatestGuardrailEntry.reasonCodes[0] || '').replace(/_/g, ' ')
+            : 'none',
+          tone: scalpLatestGuardrailEntry ? 'warning' : 'neutral',
+        },
+      ],
+      resultPreview: scalpLatestGuardrailEntry
+        ? {
+            id: scalpLatestGuardrailEntry.id || null,
+            timestampMs: scalpLatestGuardrailEntry.timestampMs || null,
+            type: scalpLatestGuardrailEntry.type || null,
+            level: scalpLatestGuardrailEntry.level || null,
+            symbol: scalpLatestGuardrailSymbol || null,
+            deploymentId: scalpLatestGuardrailDeploymentId || null,
+            reasonCodes: scalpLatestGuardrailEntry.reasonCodes || [],
+            payload: scalpLatestGuardrailPayload || null,
+          }
+        : {
+            message: 'No guardrail event found in current journal window.',
+            journalWindowCount: scalpJournalRows.length,
+          },
     },
     {
       id: 'scalp_housekeeping',
@@ -1570,6 +1985,35 @@ export default function Home() {
         2 * 60 * 60_000,
       ),
       lastRunAtMs: scalpDashboardGeneratedAtMs ?? scalpReportGeneratedAtMs,
+      details: [
+        {
+          label: 'Dashboard Snapshot',
+          value: formatScalpTime(scalpDashboardGeneratedAtMs),
+          tone: scalpDashboardGeneratedAtMs ? 'neutral' : 'warning',
+        },
+        {
+          label: 'Report Snapshot',
+          value: formatScalpTime(scalpReportGeneratedAtMs),
+          tone: scalpReportGeneratedAtMs ? 'neutral' : 'warning',
+        },
+        {
+          label: 'Cycle Snapshot',
+          value: formatScalpTime(scalpCycleUpdatedAtMs),
+          tone: scalpCycleUpdatedAtMs ? 'neutral' : 'warning',
+        },
+        {
+          label: 'Journal Rows',
+          value: formatScalpCount(asFiniteNumber(scalpJournalRows.length)),
+          tone: 'neutral',
+        },
+      ],
+      resultPreview: {
+        source: scalpSummary?.source || null,
+        generatedAtMs: scalpDashboardGeneratedAtMs,
+        reportGeneratedAtMs: scalpReportGeneratedAtMs,
+        cycleUpdatedAtMs: scalpCycleUpdatedAtMs,
+        journalRowsLoaded: scalpJournalRows.length,
+      },
     },
   ];
   const scalpActiveExecutionTs =
@@ -1598,11 +2042,12 @@ export default function Home() {
   const scalpTagNeutralClass = scalpDarkMode
     ? 'rounded-full border border-zinc-600 bg-zinc-800 px-2 py-1 text-[11px] text-zinc-200'
     : 'rounded-full border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-600';
-
-  const formatScalpTime = (ts?: number | null) => {
-    const raw = formatDecisionTime(ts);
-    return raw ? raw.replace(/^–\s*/, '') : '—';
-  };
+  const scalpCronExpandedPanelClass = scalpDarkMode
+    ? 'mx-2 mb-2 rounded-2xl border border-zinc-700 bg-zinc-900/95 p-3'
+    : 'mx-2 mb-2 rounded-2xl border border-slate-200 bg-white p-3';
+  const scalpCronPreviewClass = scalpDarkMode
+    ? 'max-h-64 overflow-auto rounded-xl border border-zinc-700 bg-zinc-950/80 p-2 font-mono text-[11px] text-zinc-300'
+    : 'max-h-64 overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-2 font-mono text-[11px] text-slate-700';
 
   const scalpStateMeta = (state?: string | null) => {
     const normalized = String(state || 'MISSING').trim().toUpperCase();
@@ -1735,6 +2180,61 @@ export default function Home() {
     }
     return resolvedTheme === 'dark'
       ? 'border-zinc-500/60 bg-zinc-500/15 text-zinc-200'
+      : 'border-slate-200 bg-slate-100 text-slate-600';
+  };
+  const scalpCronDetailToneMeta = (tone?: ScalpOpsCronDetailTone) => {
+    if (tone === 'positive') {
+      return resolvedTheme === 'dark'
+        ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200'
+        : 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    }
+    if (tone === 'warning') {
+      return resolvedTheme === 'dark'
+        ? 'border-amber-400/40 bg-amber-500/10 text-amber-200'
+        : 'border-amber-200 bg-amber-50 text-amber-700';
+    }
+    if (tone === 'critical') {
+      return resolvedTheme === 'dark'
+        ? 'border-rose-400/40 bg-rose-500/10 text-rose-200'
+        : 'border-rose-200 bg-rose-50 text-rose-700';
+    }
+    return resolvedTheme === 'dark'
+      ? 'border-zinc-600 bg-zinc-800/70 text-zinc-200'
+      : 'border-slate-200 bg-slate-50 text-slate-700';
+  };
+  const scalpImportStatusMeta = (status: ScalpUniversePipelineRow['importStatus']) => {
+    if (status === 'seeded') {
+      return resolvedTheme === 'dark'
+        ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200'
+        : 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    }
+    if (status === 'failed') {
+      return resolvedTheme === 'dark'
+        ? 'border-rose-400/40 bg-rose-500/10 text-rose-200'
+        : 'border-rose-200 bg-rose-50 text-rose-700';
+    }
+    if (status === 'skipped') {
+      return resolvedTheme === 'dark'
+        ? 'border-amber-400/40 bg-amber-500/10 text-amber-200'
+        : 'border-amber-200 bg-amber-50 text-amber-700';
+    }
+    return resolvedTheme === 'dark'
+      ? 'border-zinc-600 bg-zinc-800/70 text-zinc-300'
+      : 'border-slate-200 bg-slate-100 text-slate-600';
+  };
+  const scalpEvaluationMeta = (eligible: boolean | null) => {
+    if (eligible === true) {
+      return resolvedTheme === 'dark'
+        ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200'
+        : 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    }
+    if (eligible === false) {
+      return resolvedTheme === 'dark'
+        ? 'border-rose-400/40 bg-rose-500/10 text-rose-200'
+        : 'border-rose-200 bg-rose-50 text-rose-700';
+    }
+    return resolvedTheme === 'dark'
+      ? 'border-zinc-600 bg-zinc-800/70 text-zinc-300'
       : 'border-slate-200 bg-slate-100 text-slate-600';
   };
 
@@ -2089,19 +2589,192 @@ export default function Home() {
                           </tr>
                         </thead>
                         <tbody>
-                          {scalpCronRows.map((row) => (
-                            <tr key={row.id} className={scalpTableRowClass}>
-                              <td className={`rounded-l-xl px-3 py-3 font-medium ${scalpTextPrimaryClass}`}>{row.id}</td>
-                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{row.cadence}</td>
-                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{row.role}</td>
-                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{formatScalpTime(row.lastRunAtMs)}</td>
-                              <td className="rounded-r-xl px-3 py-3">
-                                <span className={`rounded-full border px-2 py-1 text-[11px] ${scalpCronStatusMeta(row.status)}`}>
-                                  {row.status}
-                                </span>
-                              </td>
-                            </tr>
-                          ))}
+                          {scalpCronRows.map((row) => {
+                            const isExpanded = scalpExpandedCronId === row.id;
+                            return (
+                              <React.Fragment key={row.id}>
+                                <tr
+                                  onClick={() =>
+                                    setScalpExpandedCronId((prev) => (prev === row.id ? null : row.id))
+                                  }
+                                  className={`cursor-pointer transition ${scalpTableRowClass}`}
+                                >
+                                  <td className={`rounded-l-xl px-3 py-3 font-medium ${scalpTextPrimaryClass}`}>
+                                    <div className="flex items-center gap-2">
+                                      <span>{row.id}</span>
+                                      <span
+                                        className={`rounded-full border px-1.5 py-0.5 text-[10px] ${
+                                          scalpDarkMode
+                                            ? 'border-zinc-600 bg-zinc-800 text-zinc-300'
+                                            : 'border-slate-200 bg-white text-slate-500'
+                                        }`}
+                                      >
+                                        {isExpanded ? 'hide' : 'open'}
+                                      </span>
+                                    </div>
+                                  </td>
+                                  <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{row.cadence}</td>
+                                  <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{row.role}</td>
+                                  <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>
+                                    {formatScalpTime(row.lastRunAtMs)}
+                                  </td>
+                                  <td className="rounded-r-xl px-3 py-3">
+                                    <span
+                                      className={`rounded-full border px-2 py-1 text-[11px] ${scalpCronStatusMeta(
+                                        row.status,
+                                      )}`}
+                                    >
+                                      {row.status}
+                                    </span>
+                                  </td>
+                                </tr>
+                                {isExpanded ? (
+                                  <tr>
+                                    <td colSpan={5} className="px-0 pt-0">
+                                      <div className={scalpCronExpandedPanelClass}>
+                                        <div
+                                          className={`mb-2 text-[11px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
+                                        >
+                                          Last execution snapshot
+                                        </div>
+                                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-5">
+                                          {row.details.map((detail) => (
+                                            <div
+                                              key={`${row.id}-${detail.label}`}
+                                              className={`rounded-xl border px-2.5 py-2 ${scalpCronDetailToneMeta(
+                                                detail.tone,
+                                              )}`}
+                                            >
+                                              <div className="text-[10px] uppercase tracking-[0.14em]">
+                                                {detail.label}
+                                              </div>
+                                              <div className="mt-1 text-xs font-semibold">{detail.value}</div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                        {row.resultPreview ? (
+                                          <div className="mt-3">
+                                            <div
+                                              className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
+                                            >
+                                              Result payload
+                                            </div>
+                                            <pre className={scalpCronPreviewClass}>
+                                              {JSON.stringify(row.resultPreview, null, 2)}
+                                            </pre>
+                                          </div>
+                                        ) : null}
+                                        {row.id === 'scalp_cycle_start' ? (
+                                          <div className="mt-3">
+                                            <div
+                                              className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
+                                            >
+                                              Symbol discovery flow
+                                            </div>
+                                            <div className="overflow-x-auto">
+                                              <table className="w-full min-w-[860px] border-separate border-spacing-y-2 text-left text-sm">
+                                                <thead
+                                                  className={`text-[11px] uppercase tracking-[0.16em] ${scalpTableHeaderClass}`}
+                                                >
+                                                  <tr>
+                                                    <th className="px-3 py-1">Symbol</th>
+                                                    <th className="px-3 py-1">Discovered</th>
+                                                    <th className="px-3 py-1">Data Import</th>
+                                                    <th className="px-3 py-1">Evaluation</th>
+                                                    <th className="px-3 py-1">Notes</th>
+                                                  </tr>
+                                                </thead>
+                                                <tbody>
+                                                  {scalpUniversePipelineRows.length ? (
+                                                    scalpUniversePipelineRows.map((pipelineRow) => (
+                                                      <tr key={`universe-flow-${pipelineRow.symbol}`} className={scalpTableRowClass}>
+                                                        <td className={`rounded-l-xl px-3 py-3 font-medium ${scalpTextPrimaryClass}`}>
+                                                          {pipelineRow.symbol}
+                                                        </td>
+                                                        <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>
+                                                          <span
+                                                            className={`rounded-full border px-2 py-1 text-[11px] ${
+                                                              pipelineRow.discovered
+                                                                ? scalpDarkMode
+                                                                  ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200'
+                                                                  : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                                                : scalpDarkMode
+                                                                ? 'border-zinc-600 bg-zinc-800/70 text-zinc-300'
+                                                                : 'border-slate-200 bg-slate-100 text-slate-600'
+                                                            }`}
+                                                          >
+                                                            {pipelineRow.discovered ? 'selected' : 'not selected'}
+                                                          </span>
+                                                        </td>
+                                                        <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>
+                                                          <div className="flex flex-wrap items-center gap-2">
+                                                            <span
+                                                              className={`rounded-full border px-2 py-1 text-[11px] ${scalpImportStatusMeta(
+                                                                pipelineRow.importStatus,
+                                                              )}`}
+                                                            >
+                                                              {pipelineRow.importStatus}
+                                                            </span>
+                                                            {typeof pipelineRow.importAddedCount === 'number' &&
+                                                            pipelineRow.importAddedCount > 0 ? (
+                                                              <span className={scalpTagNeutralClass}>
+                                                                {`+${Math.floor(pipelineRow.importAddedCount)} bars`}
+                                                              </span>
+                                                            ) : null}
+                                                          </div>
+                                                        </td>
+                                                        <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>
+                                                          <div className="flex flex-wrap items-center gap-2">
+                                                            <span
+                                                              className={`rounded-full border px-2 py-1 text-[11px] ${scalpEvaluationMeta(
+                                                                pipelineRow.eligible,
+                                                              )}`}
+                                                            >
+                                                              {!pipelineRow.evaluated
+                                                                ? 'pending'
+                                                                : pipelineRow.eligible
+                                                                  ? 'eligible'
+                                                                  : 'ineligible'}
+                                                            </span>
+                                                            <span className={scalpTagNeutralClass}>
+                                                              {pipelineRow.score === null
+                                                                ? 'score —'
+                                                                : `score ${pipelineRow.score.toFixed(2)}`}
+                                                            </span>
+                                                          </div>
+                                                        </td>
+                                                        <td className={`rounded-r-xl px-3 py-3 text-xs ${scalpTextSecondaryClass}`}>
+                                                          {pipelineRow.reasons.length
+                                                            ? pipelineRow.reasons.slice(0, 3).join(', ')
+                                                            : pipelineRow.importReason ||
+                                                              (pipelineRow.evaluated
+                                                                ? 'passed filters'
+                                                                : 'awaiting evaluation')}
+                                                        </td>
+                                                      </tr>
+                                                    ))
+                                                  ) : (
+                                                    <tr className={scalpTableRowClass}>
+                                                      <td
+                                                        colSpan={5}
+                                                        className={`rounded-xl px-3 py-4 text-sm ${scalpTextSecondaryClass}`}
+                                                      >
+                                                        No symbol discovery snapshot loaded yet.
+                                                      </td>
+                                                    </tr>
+                                                  )}
+                                                </tbody>
+                                              </table>
+                                            </div>
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ) : null}
+                              </React.Fragment>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -2150,6 +2823,22 @@ export default function Home() {
                             ? 'candidates evaluated unavailable'
                             : `${Math.floor(scalpUniverseCandidatesEvaluated)} candidates evaluated`}
                         </p>
+                        <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
+                          {`${formatScalpCount(scalpUniverseSeededCount)} imported • ${formatScalpCount(
+                            scalpUniverseEvaluatedCount,
+                          )} evaluated`}
+                        </p>
+                        <div className="mt-2 space-y-1">
+                          <p className={`text-[10px] ${scalpTextMutedClass}`}>
+                            discovered: {scalpUniverseDiscoveredPreview.length ? scalpUniverseDiscoveredPreview.join(', ') : '—'}
+                          </p>
+                          <p className={`text-[10px] ${scalpTextMutedClass}`}>
+                            imported: {scalpUniverseImportedPreview.length ? scalpUniverseImportedPreview.join(', ') : '—'}
+                          </p>
+                          <p className={`text-[10px] ${scalpTextMutedClass}`}>
+                            evaluated: {scalpUniverseEvaluatedPreview.length ? scalpUniverseEvaluatedPreview.join(', ') : '—'}
+                          </p>
+                        </div>
                       </div>
                     </div>
                   </article>

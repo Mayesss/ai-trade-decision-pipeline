@@ -610,14 +610,367 @@ export function resolveCapitalEpic(symbol: string): ResolveEpicResult {
 type CapitalMarketSearchRow = {
     epic?: string;
     symbol?: string;
+    instrumentType?: string;
     marketName?: string;
     instrumentName?: string;
     displayName?: string;
     status?: string;
+    marketStatus?: string;
+    instrumentStatus?: string;
+    bid?: number | string;
+    offer?: number | string;
+    streamingPricesAvailable?: boolean;
+    marketModes?: string[] | null;
     snapshot?: {
         marketStatus?: string;
     };
 };
+
+export interface DiscoverCapitalMarketSymbolsParams {
+    searchTerms?: string[];
+    pageSize?: number;
+    maxSymbols?: number;
+    requireTradeable?: boolean;
+    preferFullScan?: boolean;
+}
+
+export interface DiscoverCapitalMarketSymbolsResult {
+    symbols: string[];
+    diagnostics: {
+        termsAttempted: number;
+        termsSucceeded: number;
+        rowsSeen: number;
+        rowsTradeable: number;
+        mappedSymbols: number;
+        errors: string[];
+    };
+}
+
+const DEFAULT_CAPITAL_MARKET_DISCOVERY_TERMS = [
+    'USDT',
+    'USD',
+    'EUR',
+    'GBP',
+    'JPY',
+    'AUD',
+    'CAD',
+    'CHF',
+    'NZD',
+    'XAU',
+    'BTC',
+    'ETH',
+    'SOL',
+    'SPX',
+    'QQQ',
+    'AAPL',
+    'TSLA',
+    'MSFT',
+    'NVDA',
+];
+
+function normalizeDiscoveryTerms(value: unknown): string[] {
+    const rows = Array.isArray(value) ? value : [];
+    const normalized = rows
+        .map((row) => normalizeTicker(String(row || '')))
+        .filter((row) => row.length > 0);
+    return Array.from(new Set(normalized));
+}
+
+function resolveCapitalDiscoveryTerms(override?: string[]): string[] {
+    const fromOverride = normalizeDiscoveryTerms(override);
+    if (fromOverride.length > 0) return fromOverride;
+
+    const fromEnv = String(process.env.CAPITAL_MARKET_DISCOVERY_TERMS || '')
+        .split(',')
+        .map((row) => normalizeTicker(row))
+        .filter((row) => row.length > 0);
+    if (fromEnv.length > 0) {
+        return Array.from(new Set(fromEnv));
+    }
+
+    return DEFAULT_CAPITAL_MARKET_DISCOVERY_TERMS.slice();
+}
+
+function isTradeableCapitalMarketRow(row: CapitalMarketSearchRow): boolean {
+    const statusHints = [
+        row?.status,
+        row?.marketStatus,
+        row?.instrumentStatus,
+        row?.snapshot?.marketStatus,
+    ]
+        .map((value) => normalizeTicker(String(value || '')))
+        .filter((value) => value.length > 0);
+
+    if (statusHints.some((value) => value === 'TRADEABLE')) return true;
+    if (statusHints.length > 0) return false;
+
+    const bid = Number(row?.bid);
+    const offer = Number(row?.offer);
+    if (row?.streamingPricesAvailable === true) return true;
+    if (Number.isFinite(bid) && Number.isFinite(offer) && offer >= bid && offer > 0) return true;
+
+    // Capital payloads can omit status hints; keep discovery permissive in that case.
+    return true;
+}
+
+function normalizeMarketSymbol(value: unknown): string {
+    return normalizeTicker(String(value || '')).replace(/[^A-Z0-9_-]/g, '');
+}
+
+const CRYPTO_BASES_FOR_USDT = new Set([
+    'BTC',
+    'ETH',
+    'SOL',
+    'XRP',
+    'ADA',
+    'DOGE',
+    'LTC',
+    'BCH',
+    'DOT',
+    'AVAX',
+    'TRX',
+    'LINK',
+    'ATOM',
+    'MATIC',
+]);
+
+const DISCOVERY_INSTRUMENT_TYPE_WEIGHTS: Record<string, number> = {
+    CURRENCIES: 34,
+    COMMODITIES: 28,
+    CRYPTOCURRENCIES: 26,
+    INDICES: 22,
+    SHARES: 8,
+};
+
+function symbolFromSlashPair(base: string, quote: string): string {
+    const b = normalizeTicker(base);
+    const q = normalizeTicker(quote);
+    if (!b || !q) return '';
+    if (q === 'USD' && CRYPTO_BASES_FOR_USDT.has(b)) return `${b}USDT`;
+    if (q === 'USD' && b === 'XAU') return 'XAUUSDT';
+    return `${b}${q}`;
+}
+
+function extractDiscoverableSymbolFromMarketRow(row: CapitalMarketSearchRow): string {
+    const rawSymbol = normalizeTicker(String(row?.symbol || ''));
+    if (rawSymbol) {
+        const slash = rawSymbol.match(/^([A-Z]{3,6})\/([A-Z]{3,4})$/);
+        if (slash?.[1] && slash?.[2]) {
+            const mapped = symbolFromSlashPair(slash[1], slash[2]);
+            if (mapped) return mapped;
+        }
+        const pair = rawSymbol.match(/^([A-Z]{3,6})(USD|EUR|GBP|JPY)$/);
+        if (pair?.[1] && pair?.[2]) {
+            const mapped = symbolFromSlashPair(pair[1], pair[2]);
+            if (mapped) return mapped;
+        }
+        const direct = normalizeMarketSymbol(rawSymbol);
+        if (direct) return direct;
+    }
+
+    const epic = normalizeTicker(row?.epic || '');
+    if (epic) {
+        const fx = epic.match(/\b([A-Z]{6})\b/);
+        if (fx?.[1]) return fx[1];
+
+        const pairUsd = epic.match(/\b([A-Z]{3,6})USD\b/);
+        if (pairUsd?.[1]) {
+            return symbolFromSlashPair(pairUsd[1], 'USD');
+        }
+    }
+
+    const name = normalizeTicker(
+        `${String(row?.instrumentName || '')} ${String(row?.marketName || '')} ${String(row?.displayName || '')}`,
+    );
+    const slash = name.match(/\b([A-Z]{3,6})\/([A-Z]{3,4})\b/);
+    if (slash?.[1] && slash?.[2]) {
+        return symbolFromSlashPair(slash[1], slash[2]);
+    }
+
+    return '';
+}
+
+function scoreDiscoverableMarketRow(params: {
+    row: CapitalMarketSearchRow;
+    symbol: string;
+    term: string;
+    tradeable: boolean;
+}): number {
+    const { row, symbol, term, tradeable } = params;
+    const normalizedSymbol = normalizeTicker(symbol);
+    const normalizedTerm = normalizeTicker(term);
+    const termCmp = normalizeComparable(normalizedTerm);
+    const epicCmp = normalizeComparable(String(row?.epic || ''));
+    const symbolCmp = normalizeComparable(String(row?.symbol || ''));
+    const discoveredCmp = normalizeComparable(normalizedSymbol);
+    const type = normalizeTicker(String(row?.instrumentType || ''));
+    const marketStatusHints = [
+        row?.status,
+        row?.marketStatus,
+        row?.instrumentStatus,
+        row?.snapshot?.marketStatus,
+    ]
+        .map((value) => normalizeTicker(String(value || '')))
+        .filter((value) => value.length > 0);
+    const bid = Number(row?.bid);
+    const offer = Number(row?.offer);
+
+    let score = 0;
+
+    if (tradeable) score += 120;
+    if (marketStatusHints.length > 0 && !marketStatusHints.includes('TRADEABLE')) score -= 30;
+    if (row?.streamingPricesAvailable === true) score += 20;
+    if (Number.isFinite(bid) && Number.isFinite(offer) && offer >= bid && offer > 0) {
+        score += 18;
+        const mid = (bid + offer) / 2;
+        if (mid > 0) {
+            const spreadPct = ((offer - bid) / mid) * 100;
+            if (Number.isFinite(spreadPct)) {
+                if (spreadPct <= 0.05) score += 15;
+                else if (spreadPct <= 0.2) score += 8;
+                else if (spreadPct <= 0.5) score += 4;
+            }
+        }
+    }
+
+    score += DISCOVERY_INSTRUMENT_TYPE_WEIGHTS[type] ?? 6;
+
+    if (/^[A-Z]{6}$/.test(normalizedSymbol)) score += 24;
+    if (normalizedSymbol.endsWith('USDT')) score += 22;
+    else if (normalizedSymbol.endsWith('USD')) score += 16;
+    else if (normalizedSymbol.endsWith('EUR') || normalizedSymbol.endsWith('GBP') || normalizedSymbol.endsWith('JPY')) score += 10;
+    if (normalizedSymbol.startsWith('XAU')) score += 18;
+
+    if (termCmp.length >= 2) {
+        if (discoveredCmp === termCmp) score += 28;
+        if (epicCmp === termCmp || symbolCmp === termCmp) score += 20;
+        if (discoveredCmp.startsWith(termCmp)) score += 14;
+        if (epicCmp.startsWith(termCmp) || symbolCmp.startsWith(termCmp)) score += 10;
+        if (discoveredCmp.includes(termCmp)) score += 6;
+    }
+
+    return score;
+}
+
+function isScalpDiscoverySymbolCandidate(symbolRaw: string): boolean {
+    const symbol = normalizeTicker(symbolRaw);
+    if (!symbol) return false;
+    if (/^[A-Z]{6}$/.test(symbol)) return true; // FX pairs like EURUSD
+    if (symbol.endsWith('USDT')) return true;
+    if (symbol.startsWith('XAU') || symbol.startsWith('XAG')) return true;
+    if (
+        symbol.endsWith('USD') ||
+        symbol.endsWith('EUR') ||
+        symbol.endsWith('GBP') ||
+        symbol.endsWith('JPY') ||
+        symbol.endsWith('AUD') ||
+        symbol.endsWith('CAD') ||
+        symbol.endsWith('CHF') ||
+        symbol.endsWith('NZD')
+    ) {
+        return symbol.length >= 6 && symbol.length <= 12;
+    }
+    return false;
+}
+
+export async function discoverCapitalMarketSymbols(
+    params: DiscoverCapitalMarketSymbolsParams = {},
+): Promise<DiscoverCapitalMarketSymbolsResult> {
+    const terms = resolveCapitalDiscoveryTerms(params.searchTerms);
+    const preferFullScan = params.preferFullScan !== false;
+    const diagnostics: DiscoverCapitalMarketSymbolsResult['diagnostics'] = {
+        termsAttempted: terms.length + (preferFullScan ? 1 : 0),
+        termsSucceeded: 0,
+        rowsSeen: 0,
+        rowsTradeable: 0,
+        mappedSymbols: 0,
+        errors: [],
+    };
+    if (!terms.length) {
+        return {
+            symbols: [],
+            diagnostics,
+        };
+    }
+
+    const pageSize = Math.max(10, Math.min(200, Math.floor(Number(params.pageSize) || 50)));
+    const maxSymbols = Math.max(1, Math.min(5000, Math.floor(Number(params.maxSymbols) || 500)));
+    const requireTradeable = params.requireTradeable !== false;
+    const scoreBySymbol = new Map<string, number>();
+    const firstSeenIndex = new Map<string, number>();
+    let seenCursor = 0;
+
+    const ingestRows = (rows: CapitalMarketSearchRow[], term: string) => {
+        for (const row of rows) {
+            const tradeable = isTradeableCapitalMarketRow(row);
+            if (tradeable) diagnostics.rowsTradeable += 1;
+            if (requireTradeable && !tradeable) continue;
+            const symbol = extractDiscoverableSymbolFromMarketRow(row);
+            if (!symbol) continue;
+            if (!isScalpDiscoverySymbolCandidate(symbol)) continue;
+            const score = scoreDiscoverableMarketRow({ row, symbol, term, tradeable });
+            const previous = scoreBySymbol.get(symbol);
+            if (previous === undefined) {
+                scoreBySymbol.set(symbol, score);
+                diagnostics.mappedSymbols += 1;
+                firstSeenIndex.set(symbol, seenCursor);
+                seenCursor += 1;
+            } else {
+                // Reward symbols that consistently match across discovery terms.
+                scoreBySymbol.set(symbol, Math.max(previous, score) + 2);
+            }
+        }
+    };
+
+    if (preferFullScan) {
+        let payload: any = null;
+        try {
+            payload = await capitalFetch('GET', '/api/v1/markets', undefined, undefined, true);
+            diagnostics.termsSucceeded += 1;
+        } catch (err: any) {
+            diagnostics.errors.push(`FULL_SCAN:${String(err?.message || err || 'fetch_failed').slice(0, 120)}`);
+        }
+
+        if (payload) {
+            const rows = extractRows<CapitalMarketSearchRow>(payload, ['markets', 'data']);
+            diagnostics.rowsSeen += rows.length;
+            ingestRows(rows, 'FULL_SCAN');
+        }
+    }
+
+    if (scoreBySymbol.size === 0) {
+        for (const term of terms) {
+            let payload: any = null;
+            try {
+                payload = await capitalFetch('GET', '/api/v1/markets', { searchTerm: term, pageSize }, undefined, true);
+                diagnostics.termsSucceeded += 1;
+            } catch (err: any) {
+                diagnostics.errors.push(`${term}:${String(err?.message || err || 'fetch_failed').slice(0, 120)}`);
+                continue;
+            }
+
+            const rows = extractRows<CapitalMarketSearchRow>(payload, ['markets', 'data']);
+            diagnostics.rowsSeen += rows.length;
+            ingestRows(rows, term);
+        }
+    }
+
+    const rankedSymbols = Array.from(scoreBySymbol.entries())
+        .sort((a, b) => {
+            if (b[1] !== a[1]) return b[1] - a[1];
+            const aSeen = firstSeenIndex.get(a[0]) ?? Number.MAX_SAFE_INTEGER;
+            const bSeen = firstSeenIndex.get(b[0]) ?? Number.MAX_SAFE_INTEGER;
+            if (aSeen !== bSeen) return aSeen - bSeen;
+            return a[0].localeCompare(b[0]);
+        })
+        .slice(0, maxSymbols)
+        .map(([symbol]) => symbol);
+
+    return {
+        symbols: rankedSymbols,
+        diagnostics,
+    };
+}
 
 function scoreMarketCandidate(row: CapitalMarketSearchRow, term: string, ticker: string, base: string): number {
     const epic = normalizeTicker(row?.epic || '');

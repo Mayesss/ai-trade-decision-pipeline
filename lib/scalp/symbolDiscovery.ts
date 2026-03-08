@@ -1,10 +1,10 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import defaultTickerEpicMap from '../../data/capitalTickerMap.json';
-import { fetchCapitalLivePrice } from '../capital';
+import { discoverCapitalMarketSymbols, fetchCapitalCandlesByEpicDateRange, fetchCapitalLivePrice, resolveCapitalEpicRuntime } from '../capital';
 import { kvGetJson, kvSetJson } from '../kv';
-import { loadScalpCandleHistory } from './candleHistory';
+import { listScalpCandleHistorySymbols, loadScalpCandleHistory, mergeScalpCandleHistory, normalizeHistoryTimeframe, saveScalpCandleHistory, timeframeToMs } from './candleHistory';
 import { loadScalpDeploymentRegistry } from './deploymentRegistry';
 import { pipSizeForScalpSymbol } from './marketData';
 import { listScalpStrategies } from './strategies/registry';
@@ -30,9 +30,11 @@ export interface ScalpSymbolDiscoveryPolicy {
         requireTradableQuote: boolean;
     };
     sources: {
+        includeCapitalMarketsApi: boolean;
         includeCapitalTickerMap: boolean;
         includeDeploymentSymbols: boolean;
         includeHistorySymbols: boolean;
+        requireHistoryPresence: boolean;
         explicitSymbols: string[];
         excludedSymbols: string[];
     };
@@ -75,6 +77,31 @@ export interface ScalpSymbolUniverseSnapshot {
     candidatesEvaluated: number;
     selectedRows: ScalpSymbolCandidateRow[];
     topRejectedRows: ScalpSymbolCandidateRow[];
+    diagnostics?: {
+        sourceEnabled: {
+            includeCapitalMarketsApi: boolean;
+            includeCapitalTickerMap: boolean;
+            includeDeploymentSymbols: boolean;
+            includeHistorySymbols: boolean;
+            requireHistoryPresence: boolean;
+            explicitSymbols: boolean;
+        };
+        sourceCounts: {
+            capitalMarketsApi: number;
+            capitalMarketsApiRows: number;
+            capitalMarketsApiRowsTradeable: number;
+            capitalTickerMap: number;
+            deploymentSymbols: number;
+            historySymbols: number;
+            explicitSymbols: number;
+            totalUnique: number;
+        };
+        capitalMarketsApiError: string | null;
+        includeLiveQuotes: boolean;
+        requireTradableQuote: boolean;
+        quoteGateApplied: boolean;
+    };
+    seedSummary?: ScalpSymbolDiscoverySeedSummary | null;
 }
 
 export interface ScalpSymbolDiscoveryRunParams {
@@ -82,11 +109,49 @@ export interface ScalpSymbolDiscoveryRunParams {
     includeLiveQuotes?: boolean;
     nowMs?: number;
     maxCandidatesOverride?: number;
+    seedTopSymbols?: number;
+    seedTargetHistoryDays?: number;
+    seedChunkDays?: number;
+    seedMaxRequestsPerSymbol?: number;
+    seedMaxSymbolsPerRun?: number;
+    seedTimeframe?: string;
+    seedOnDryRun?: boolean;
+}
+
+export interface ScalpSymbolDiscoverySeedSymbolResult {
+    symbol: string;
+    status: 'seeded' | 'skipped' | 'failed';
+    reason: string;
+    epic: string | null;
+    existingCount: number;
+    mergedCount: number;
+    fetchedCount: number;
+    addedCount: number;
+    beforeSpanDays: number;
+    afterSpanDays: number;
+}
+
+export interface ScalpSymbolDiscoverySeedSummary {
+    enabled: boolean;
+    dryRun: boolean;
+    timeframe: string;
+    requestedTopSymbols: number;
+    processedSymbols: number;
+    seededSymbols: number;
+    skippedSymbols: number;
+    failedSymbols: number;
+    targetHistoryDays: number;
+    chunkDays: number;
+    maxRequestsPerSymbol: number;
+    maxSymbolsPerRun: number;
+    candidateUniverseSize: number;
+    results: ScalpSymbolDiscoverySeedSymbolResult[];
 }
 
 const DEFAULT_POLICY_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-discovery-policy.json');
 const DEFAULT_UNIVERSE_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-universe.json');
 const UNIVERSE_KV_KEY = 'scalp:symbol-universe:v1';
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 const DEFAULT_POLICY: ScalpSymbolDiscoveryPolicy = {
     version: 1,
@@ -109,9 +174,11 @@ const DEFAULT_POLICY: ScalpSymbolDiscoveryPolicy = {
         requireTradableQuote: true,
     },
     sources: {
-        includeCapitalTickerMap: true,
+        includeCapitalMarketsApi: true,
+        includeCapitalTickerMap: false,
         includeDeploymentSymbols: true,
         includeHistorySymbols: true,
+        requireHistoryPresence: true,
         explicitSymbols: [],
         excludedSymbols: [],
     },
@@ -253,6 +320,10 @@ function normalizePolicy(raw: unknown): ScalpSymbolDiscoveryPolicy {
             requireTradableQuote: toBool((row.criteria as any)?.requireTradableQuote, DEFAULT_POLICY.criteria.requireTradableQuote),
         },
         sources: {
+            includeCapitalMarketsApi: toBool(
+                (row.sources as any)?.includeCapitalMarketsApi,
+                DEFAULT_POLICY.sources.includeCapitalMarketsApi,
+            ),
             includeCapitalTickerMap: toBool(
                 (row.sources as any)?.includeCapitalTickerMap,
                 DEFAULT_POLICY.sources.includeCapitalTickerMap,
@@ -262,6 +333,7 @@ function normalizePolicy(raw: unknown): ScalpSymbolDiscoveryPolicy {
                 DEFAULT_POLICY.sources.includeDeploymentSymbols,
             ),
             includeHistorySymbols: toBool((row.sources as any)?.includeHistorySymbols, DEFAULT_POLICY.sources.includeHistorySymbols),
+            requireHistoryPresence: toBool((row.sources as any)?.requireHistoryPresence, DEFAULT_POLICY.sources.requireHistoryPresence),
             explicitSymbols: normalizeStringArray((row.sources as any)?.explicitSymbols),
             excludedSymbols: normalizeStringArray((row.sources as any)?.excludedSymbols),
         },
@@ -304,20 +376,6 @@ async function saveScalpSymbolUniverseSnapshot(snapshot: ScalpSymbolUniverseSnap
     await writeFile(filePath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
 }
 
-async function listHistorySymbols(): Promise<string[]> {
-    const root = path.resolve(process.cwd(), String(process.env.CANDLE_HISTORY_DIR || 'data/candles-history'));
-    try {
-        const entries = await readdir(root, { withFileTypes: true });
-        const symbols = entries
-            .filter((entry) => entry.isDirectory())
-            .map((entry) => normalizeSymbol(entry.name))
-            .filter((row) => Boolean(row));
-        return Array.from(new Set(symbols));
-    } catch {
-        return [];
-    }
-}
-
 function median(values: number[]): number {
     if (!values.length) return 0;
     const sorted = values.slice().sort((a, b) => a - b);
@@ -328,6 +386,103 @@ function median(values: number[]): number {
 
 function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
+}
+
+function toOptionalPositiveInt(value: unknown, fallback: number): number {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return fallback;
+    return Math.max(1, Math.floor(n));
+}
+
+function historySpanDaysFromCandles(candles: Array<[number, number, number, number, number, number]>): number {
+    if (!candles.length) return 0;
+    const fromTs = Number(candles[0]?.[0]);
+    const toTs = Number(candles[candles.length - 1]?.[0]);
+    if (!Number.isFinite(fromTs) || !Number.isFinite(toTs) || toTs <= fromTs) return 0;
+    return (toTs - fromTs) / ONE_DAY_MS;
+}
+
+function normalizeFetchedCandles(rows: any[]): Array<[number, number, number, number, number, number]> {
+    return rows
+        .map((row) => {
+            const ts = Number(row?.[0]);
+            const open = Number(row?.[1]);
+            const high = Number(row?.[2]);
+            const low = Number(row?.[3]);
+            const close = Number(row?.[4]);
+            const volume = Number(row?.[5] ?? 0);
+            if (![ts, open, high, low, close].every((v) => Number.isFinite(v) && v > 0)) return null;
+            return [Math.floor(ts), open, high, low, close, Number.isFinite(volume) ? volume : 0] as [
+                number,
+                number,
+                number,
+                number,
+                number,
+                number,
+            ];
+        })
+        .filter((row): row is [number, number, number, number, number, number] => Boolean(row))
+        .sort((a, b) => a[0] - b[0]);
+}
+
+function resolveSeedConfig(params: ScalpSymbolDiscoveryRunParams): {
+    enabled: boolean;
+    timeframe: string;
+    requestedTopSymbols: number;
+    targetHistoryDays: number;
+    chunkDays: number;
+    maxRequestsPerSymbol: number;
+    maxSymbolsPerRun: number;
+    seedOnDryRun: boolean;
+} {
+    const requestedTopSymbols = toOptionalPositiveInt(
+        params.seedTopSymbols ?? process.env.SCALP_SYMBOL_DISCOVERY_SEED_TOP_SYMBOLS,
+        0,
+    );
+    const targetHistoryDays = Math.max(
+        7,
+        Math.min(365, toOptionalPositiveInt(params.seedTargetHistoryDays ?? process.env.SCALP_SYMBOL_DISCOVERY_SEED_TARGET_DAYS, 90)),
+    );
+    const chunkDays = Math.max(
+        1,
+        Math.min(60, toOptionalPositiveInt(params.seedChunkDays ?? process.env.SCALP_SYMBOL_DISCOVERY_SEED_CHUNK_DAYS, 10)),
+    );
+    const maxRequestsPerSymbol = Math.max(
+        5,
+        Math.min(
+            300,
+            toOptionalPositiveInt(params.seedMaxRequestsPerSymbol ?? process.env.SCALP_SYMBOL_DISCOVERY_SEED_MAX_REQUESTS_PER_SYMBOL, 40),
+        ),
+    );
+    const maxSymbolsPerRun = Math.max(
+        1,
+        Math.min(
+            500,
+            toOptionalPositiveInt(params.seedMaxSymbolsPerRun ?? process.env.SCALP_SYMBOL_DISCOVERY_SEED_MAX_SYMBOLS_PER_RUN, requestedTopSymbols || 1),
+        ),
+    );
+    const timeframe = normalizeHistoryTimeframe(String(params.seedTimeframe || process.env.SCALP_SYMBOL_DISCOVERY_SEED_TIMEFRAME || '1m'));
+    const seedOnDryRun = Boolean(params.seedOnDryRun);
+    return {
+        enabled: requestedTopSymbols > 0,
+        timeframe,
+        requestedTopSymbols,
+        targetHistoryDays,
+        chunkDays,
+        maxRequestsPerSymbol,
+        maxSymbolsPerRun,
+        seedOnDryRun,
+    };
+}
+
+function isBerlinWeekendMs(tsMs: number): boolean {
+    try {
+        const weekday = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Berlin', weekday: 'short' }).format(new Date(tsMs));
+        return weekday === 'Sat' || weekday === 'Sun';
+    } catch {
+        const day = new Date(tsMs).getUTCDay();
+        return day === 0 || day === 6;
+    }
 }
 
 export function resolveRecommendedStrategiesForSymbol(symbolRaw: string, allowlist: string[]): string[] {
@@ -361,43 +516,337 @@ export function resolveRecommendedStrategiesForSymbol(symbolRaw: string, allowli
     return Array.from(new Set(out));
 }
 
-async function buildCandidatePool(policy: ScalpSymbolDiscoveryPolicy): Promise<string[]> {
+async function runScalpSymbolHistorySeedStage(params: {
+    policy: ScalpSymbolDiscoveryPolicy;
+    nowMs: number;
+    dryRun: boolean;
+    knownStrategyIds: Set<string>;
+    config: ReturnType<typeof resolveSeedConfig>;
+}): Promise<ScalpSymbolDiscoverySeedSummary> {
+    const cfg = params.config;
+    const summary: ScalpSymbolDiscoverySeedSummary = {
+        enabled: cfg.enabled,
+        dryRun: params.dryRun,
+        timeframe: cfg.timeframe,
+        requestedTopSymbols: cfg.requestedTopSymbols,
+        processedSymbols: 0,
+        seededSymbols: 0,
+        skippedSymbols: 0,
+        failedSymbols: 0,
+        targetHistoryDays: cfg.targetHistoryDays,
+        chunkDays: cfg.chunkDays,
+        maxRequestsPerSymbol: cfg.maxRequestsPerSymbol,
+        maxSymbolsPerRun: cfg.maxSymbolsPerRun,
+        candidateUniverseSize: 0,
+        results: [],
+    };
+    if (!cfg.enabled) return summary;
+
+    const maxSymbols = Math.max(cfg.requestedTopSymbols * 6, 200);
+    let discovered: Awaited<ReturnType<typeof discoverCapitalMarketSymbols>> | null = null;
+    try {
+        discovered = await discoverCapitalMarketSymbols({
+            maxSymbols,
+            // Keep weekend/non-tradeable rows to build a broader seed queue.
+            requireTradeable: false,
+        });
+    } catch (err: any) {
+        summary.failedSymbols = 1;
+        summary.results.push({
+            symbol: 'DISCOVERY',
+            status: 'failed',
+            reason: String(err?.message || err || 'capital_discovery_failed').slice(0, 180),
+            epic: null,
+            existingCount: 0,
+            mergedCount: 0,
+            fetchedCount: 0,
+            addedCount: 0,
+            beforeSpanDays: 0,
+            afterSpanDays: 0,
+        });
+        return summary;
+    }
+
+    const candidateSymbols = discovered.symbols.filter((symbol) => {
+        const strategies = resolveRecommendedStrategiesForSymbol(symbol, params.policy.strategyAllowlist).filter((id) =>
+            params.knownStrategyIds.has(id),
+        );
+        return strategies.length > 0;
+    });
+
+    const historySymbols = new Set(
+        (await listScalpCandleHistorySymbols(cfg.timeframe)).map((row) => normalizeSymbol(row)).filter((row) => Boolean(row)),
+    );
+    const ordered = candidateSymbols.slice().sort((a, b) => {
+        const aKnown = historySymbols.has(normalizeSymbol(a)) ? 1 : 0;
+        const bKnown = historySymbols.has(normalizeSymbol(b)) ? 1 : 0;
+        if (aKnown !== bKnown) return aKnown - bKnown; // Missing history first.
+        return 0;
+    });
+
+    summary.candidateUniverseSize = ordered.length;
+    const targetCount = Math.min(ordered.length, cfg.requestedTopSymbols, cfg.maxSymbolsPerRun);
+    const targets = ordered.slice(0, targetCount);
+    const tfMs = timeframeToMs(cfg.timeframe);
+
+    for (const symbol of targets) {
+        summary.processedSymbols += 1;
+        try {
+            const history = await loadScalpCandleHistory(symbol, cfg.timeframe);
+            const existing = history.record?.candles || [];
+            const beforeSpanDays = Number(historySpanDaysFromCandles(existing).toFixed(4));
+            const earliestTs = existing[0]?.[0] ?? null;
+            const latestTs = existing[existing.length - 1]?.[0] ?? null;
+            const lagDays = latestTs ? (params.nowMs - Number(latestTs)) / ONE_DAY_MS : Number.POSITIVE_INFINITY;
+
+            let fetchFromMs = 0;
+            let fetchToMs = 0;
+            let windowReason = 'bootstrap';
+
+            if (existing.length === 0) {
+                fetchFromMs = Math.max(0, Math.floor(params.nowMs - cfg.chunkDays * ONE_DAY_MS));
+                fetchToMs = Math.max(fetchFromMs + tfMs, Math.floor(params.nowMs));
+            } else if (beforeSpanDays < cfg.targetHistoryDays) {
+                const anchor = Number(earliestTs);
+                fetchToMs = Math.max(0, Math.floor(anchor - tfMs));
+                fetchFromMs = Math.max(0, Math.floor(anchor - cfg.chunkDays * ONE_DAY_MS));
+                windowReason = 'backfill';
+            } else if (lagDays > 0.5) {
+                const anchor = Number(latestTs);
+                fetchFromMs = Math.max(0, Math.floor(anchor + tfMs));
+                fetchToMs = Math.max(fetchFromMs + tfMs, Math.floor(Math.min(params.nowMs, anchor + cfg.chunkDays * ONE_DAY_MS)));
+                windowReason = 'forward';
+            } else {
+                summary.skippedSymbols += 1;
+                summary.results.push({
+                    symbol,
+                    status: 'skipped',
+                    reason: 'already_seeded',
+                    epic: history.record?.epic || null,
+                    existingCount: existing.length,
+                    mergedCount: existing.length,
+                    fetchedCount: 0,
+                    addedCount: 0,
+                    beforeSpanDays,
+                    afterSpanDays: beforeSpanDays,
+                });
+                continue;
+            }
+
+            if (!(fetchToMs > fetchFromMs)) {
+                summary.skippedSymbols += 1;
+                summary.results.push({
+                    symbol,
+                    status: 'skipped',
+                    reason: 'no_fetch_window',
+                    epic: history.record?.epic || null,
+                    existingCount: existing.length,
+                    mergedCount: existing.length,
+                    fetchedCount: 0,
+                    addedCount: 0,
+                    beforeSpanDays,
+                    afterSpanDays: beforeSpanDays,
+                });
+                continue;
+            }
+
+            const epicResolved = await resolveCapitalEpicRuntime(symbol);
+            const fetchedRaw = await fetchCapitalCandlesByEpicDateRange(
+                epicResolved.epic,
+                cfg.timeframe,
+                fetchFromMs,
+                fetchToMs,
+                {
+                    maxPerRequest: 1000,
+                    maxRequests: cfg.maxRequestsPerSymbol,
+                    debug: false,
+                    debugLabel: `discovery-seed:${symbol}:${cfg.timeframe}:${windowReason}`,
+                },
+            );
+            const fetched = normalizeFetchedCandles(fetchedRaw);
+            const merged = mergeScalpCandleHistory(existing, fetched);
+            const addedCount = Math.max(0, merged.length - existing.length);
+            const afterSpanDays = Number(historySpanDaysFromCandles(merged).toFixed(4));
+
+            if (!params.dryRun) {
+                await saveScalpCandleHistory({
+                    symbol,
+                    timeframe: cfg.timeframe,
+                    epic: epicResolved.epic,
+                    source: 'capital',
+                    candles: merged,
+                });
+            }
+
+            if (addedCount > 0) {
+                summary.seededSymbols += 1;
+                summary.results.push({
+                    symbol,
+                    status: 'seeded',
+                    reason: windowReason,
+                    epic: epicResolved.epic,
+                    existingCount: existing.length,
+                    mergedCount: merged.length,
+                    fetchedCount: fetched.length,
+                    addedCount,
+                    beforeSpanDays,
+                    afterSpanDays,
+                });
+            } else {
+                summary.skippedSymbols += 1;
+                summary.results.push({
+                    symbol,
+                    status: 'skipped',
+                    reason: fetched.length > 0 ? 'no_new_candles' : 'no_candles_fetched',
+                    epic: epicResolved.epic,
+                    existingCount: existing.length,
+                    mergedCount: merged.length,
+                    fetchedCount: fetched.length,
+                    addedCount: 0,
+                    beforeSpanDays,
+                    afterSpanDays,
+                });
+            }
+        } catch (err: any) {
+            summary.failedSymbols += 1;
+            summary.results.push({
+                symbol,
+                status: 'failed',
+                reason: String(err?.message || err || 'seed_failed').slice(0, 180),
+                epic: null,
+                existingCount: 0,
+                mergedCount: 0,
+                fetchedCount: 0,
+                addedCount: 0,
+                beforeSpanDays: 0,
+                afterSpanDays: 0,
+            });
+        }
+    }
+
+    return summary;
+}
+
+async function buildCandidatePool(
+    policy: ScalpSymbolDiscoveryPolicy,
+    params: { includeLiveQuotes: boolean; nowMs: number },
+): Promise<{
+    symbols: string[];
+    diagnostics: NonNullable<ScalpSymbolUniverseSnapshot['diagnostics']>;
+}> {
     const pool = new Set<string>();
+    const diagnostics: NonNullable<ScalpSymbolUniverseSnapshot['diagnostics']> = {
+        sourceEnabled: {
+            includeCapitalMarketsApi: policy.sources.includeCapitalMarketsApi,
+            includeCapitalTickerMap: policy.sources.includeCapitalTickerMap,
+            includeDeploymentSymbols: policy.sources.includeDeploymentSymbols,
+            includeHistorySymbols: policy.sources.includeHistorySymbols,
+            requireHistoryPresence: policy.sources.requireHistoryPresence,
+            explicitSymbols: policy.sources.explicitSymbols.length > 0,
+        },
+        sourceCounts: {
+            capitalMarketsApi: 0,
+            capitalMarketsApiRows: 0,
+            capitalMarketsApiRowsTradeable: 0,
+            capitalTickerMap: 0,
+            deploymentSymbols: 0,
+            historySymbols: 0,
+            explicitSymbols: 0,
+            totalUnique: 0,
+        },
+        capitalMarketsApiError: null,
+        includeLiveQuotes: false,
+        requireTradableQuote: policy.criteria.requireTradableQuote,
+        quoteGateApplied: false,
+    };
+
+    const historySymbols =
+        policy.sources.includeHistorySymbols || policy.sources.requireHistoryPresence
+            ? await listScalpCandleHistorySymbols('1m')
+            : [];
+    const historySymbolSet = new Set(historySymbols.map((row) => normalizeSymbol(row)).filter((row) => Boolean(row)));
+
+    const addFromSource = (
+        source: keyof NonNullable<ScalpSymbolUniverseSnapshot['diagnostics']>['sourceCounts'],
+        rawSymbol: string,
+    ) => {
+        const normalized = normalizeSymbol(rawSymbol);
+        if (!normalized) return;
+        if (pool.has(normalized)) return;
+        pool.add(normalized);
+        diagnostics.sourceCounts[source] += 1;
+    };
+
+    const isBerlinWeekend = isBerlinWeekendMs(params.nowMs);
+    const requireTradeableForDiscovery = policy.criteria.requireTradableQuote && params.includeLiveQuotes && !isBerlinWeekend;
+
+    if (policy.sources.includeCapitalMarketsApi) {
+        const maxSymbols = Math.max(policy.limits.maxCandidates * 3, policy.limits.maxUniverseSymbols * 4, 200);
+        try {
+            const discoveredSymbols = await discoverCapitalMarketSymbols({
+                maxSymbols,
+                requireTradeable: requireTradeableForDiscovery,
+            });
+            diagnostics.sourceCounts.capitalMarketsApiRows = discoveredSymbols.diagnostics.rowsSeen;
+            diagnostics.sourceCounts.capitalMarketsApiRowsTradeable = discoveredSymbols.diagnostics.rowsTradeable;
+            if (
+                discoveredSymbols.diagnostics.termsSucceeded === 0 &&
+                discoveredSymbols.diagnostics.errors.length > 0
+            ) {
+                diagnostics.capitalMarketsApiError = discoveredSymbols.diagnostics.errors.slice(0, 3).join(' | ');
+            } else if (
+                discoveredSymbols.diagnostics.rowsSeen > 0 &&
+                discoveredSymbols.diagnostics.mappedSymbols === 0
+            ) {
+                diagnostics.capitalMarketsApiError = 'capital_markets_rows_unmapped';
+            }
+            if (policy.sources.requireHistoryPresence && historySymbolSet.size === 0) {
+                diagnostics.capitalMarketsApiError = diagnostics.capitalMarketsApiError
+                    ? `${diagnostics.capitalMarketsApiError} | history_presence_index_empty`
+                    : 'history_presence_index_empty';
+            }
+            for (const symbol of discoveredSymbols.symbols) {
+                if (policy.sources.requireHistoryPresence && !historySymbolSet.has(normalizeSymbol(symbol))) continue;
+                addFromSource('capitalMarketsApi', symbol);
+            }
+        } catch (err: any) {
+            diagnostics.capitalMarketsApiError = String(err?.message || err || 'capital_markets_api_discovery_failed').slice(0, 220);
+        }
+    }
 
     if (policy.sources.includeCapitalTickerMap) {
         for (const symbol of Object.keys(defaultTickerEpicMap as Record<string, string>)) {
-            const normalized = normalizeSymbol(symbol);
-            if (normalized) pool.add(normalized);
+            addFromSource('capitalTickerMap', symbol);
         }
     }
 
     if (policy.sources.includeDeploymentSymbols) {
         const deployments = await loadScalpDeploymentRegistry();
         for (const row of deployments.deployments) {
-            const normalized = normalizeSymbol(row.symbol);
-            if (normalized) pool.add(normalized);
+            addFromSource('deploymentSymbols', row.symbol);
         }
     }
 
     if (policy.sources.includeHistorySymbols) {
-        for (const symbol of await listHistorySymbols()) {
-            const normalized = normalizeSymbol(symbol);
-            if (normalized) pool.add(normalized);
+        for (const symbol of historySymbols) {
+            addFromSource('historySymbols', symbol);
         }
     }
 
     for (const symbol of policy.sources.explicitSymbols) {
-        const normalized = normalizeSymbol(symbol);
-        if (normalized) pool.add(normalized);
+        addFromSource('explicitSymbols', symbol);
     }
 
     for (const symbol of policy.sources.excludedSymbols) {
         pool.delete(normalizeSymbol(symbol));
     }
 
-    return Array.from(pool)
-        .filter((row) => Boolean(row))
-        .sort();
+    diagnostics.sourceCounts.totalUnique = pool.size;
+
+    return {
+        symbols: Array.from(pool).filter((row) => Boolean(row)),
+        diagnostics,
+    };
 }
 
 export async function evaluateScalpSymbolCandidate(params: {
@@ -463,10 +912,17 @@ export async function evaluateScalpSymbolCandidate(params: {
     if (recentBars7d < params.policy.criteria.minRecentBars7d) reasons.push('recent_bars_7d_below_min');
     if (medianRangePct < params.policy.criteria.minMedianRangePct) reasons.push('median_range_pct_below_min');
 
-    if (params.policy.criteria.requireTradableQuote) {
+    const isBerlinWeekend = isBerlinWeekendMs(params.nowMs);
+    const quoteGateApplied = params.policy.criteria.requireTradableQuote && params.includeLiveQuotes && !isBerlinWeekend;
+    if (quoteGateApplied) {
         if (livePrice === null || livePrice <= 0) reasons.push('live_quote_missing_or_invalid');
     }
-    if (params.policy.criteria.maxSpreadPips !== null && liveSpreadPips !== null && liveSpreadPips > params.policy.criteria.maxSpreadPips) {
+    if (
+        !isBerlinWeekend &&
+        params.policy.criteria.maxSpreadPips !== null &&
+        liveSpreadPips !== null &&
+        liveSpreadPips > params.policy.criteria.maxSpreadPips
+    ) {
         reasons.push('live_spread_above_max');
     }
 
@@ -607,8 +1063,37 @@ export async function runScalpSymbolDiscoveryCycle(
     const previous = await loadScalpSymbolUniverseSnapshot();
 
     const knownStrategies = new Set(listScalpStrategies().map((row) => row.id));
-    const candidatePool = await buildCandidatePool(policy);
-    const cappedPool = candidatePool.slice(0, Math.max(1, params.maxCandidatesOverride || policy.limits.maxCandidates));
+    const seedConfig = resolveSeedConfig(params);
+    const seedShouldRun = seedConfig.enabled && (!dryRun || seedConfig.seedOnDryRun);
+    const seedSummary = seedShouldRun
+        ? await runScalpSymbolHistorySeedStage({
+              policy,
+              nowMs,
+              dryRun,
+              knownStrategyIds: knownStrategies,
+              config: seedConfig,
+          })
+        : seedConfig.enabled
+          ? {
+                enabled: true,
+                dryRun,
+                timeframe: seedConfig.timeframe,
+                requestedTopSymbols: seedConfig.requestedTopSymbols,
+                processedSymbols: 0,
+                seededSymbols: 0,
+                skippedSymbols: 0,
+                failedSymbols: 0,
+                targetHistoryDays: seedConfig.targetHistoryDays,
+                chunkDays: seedConfig.chunkDays,
+                maxRequestsPerSymbol: seedConfig.maxRequestsPerSymbol,
+                maxSymbolsPerRun: seedConfig.maxSymbolsPerRun,
+                candidateUniverseSize: 0,
+                results: [],
+            }
+          : null;
+
+    const candidatePool = await buildCandidatePool(policy, { includeLiveQuotes, nowMs });
+    const cappedPool = candidatePool.symbols.slice(0, Math.max(1, params.maxCandidatesOverride || policy.limits.maxCandidates));
 
     const rows: ScalpSymbolCandidateRow[] = [];
     for (const symbol of cappedPool) {
@@ -648,6 +1133,13 @@ export async function runScalpSymbolDiscoveryCycle(
         candidatesEvaluated: sorted.length,
         selectedRows,
         topRejectedRows: rejectedRows.slice(0, Math.max(10, policy.limits.maxUniverseSymbols)),
+        diagnostics: {
+            ...candidatePool.diagnostics,
+            includeLiveQuotes,
+            requireTradableQuote: policy.criteria.requireTradableQuote,
+            quoteGateApplied: includeLiveQuotes && policy.criteria.requireTradableQuote && !isBerlinWeekendMs(nowMs),
+        },
+        seedSummary,
     };
 
     if (!dryRun) {

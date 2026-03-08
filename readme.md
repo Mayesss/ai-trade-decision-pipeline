@@ -113,6 +113,19 @@ MARKETAUX_API_KEY=...
 # SCALP_DEPLOYMENT_FORWARD_GATE_MIN_MEAN_EXPECTANCY_R=0
 # SCALP_DEPLOYMENT_FORWARD_GATE_MIN_TRADES_PER_WINDOW=2
 # SCALP_DEPLOYMENT_FORWARD_GATE_MAX_DRAWDOWN_R=
+# SCALP_DEPLOYMENT_FORWARD_GATE_MIN_WEEKLY_SLICES=
+# SCALP_DEPLOYMENT_FORWARD_GATE_MIN_WEEKLY_PROFITABLE_PCT=
+# SCALP_DEPLOYMENT_FORWARD_GATE_MIN_WEEKLY_MEDIAN_EXPECTANCY_R=
+# SCALP_DEPLOYMENT_FORWARD_GATE_MAX_WEEKLY_TOP_WEEK_PNL_CONCENTRATION_PCT=
+# SCALP_WEEKLY_ROBUSTNESS_ENABLED=true
+# SCALP_WEEKLY_ROBUSTNESS_TOPK_PER_SYMBOL=2
+# SCALP_WEEKLY_ROBUSTNESS_LOOKBACK_DAYS=90
+# SCALP_WEEKLY_ROBUSTNESS_MIN_CANDLES_PER_SLICE=180
+# SCALP_WEEKLY_ROBUSTNESS_REQUIRE_WINNER_SHORTLIST=true
+# SCALP_WEEKLY_ROBUSTNESS_MIN_SLICES=8
+# SCALP_WEEKLY_ROBUSTNESS_MIN_PROFITABLE_PCT=45
+# SCALP_WEEKLY_ROBUSTNESS_MIN_MEDIAN_EXPECTANCY_R=0
+# SCALP_WEEKLY_ROBUSTNESS_MAX_TOP_WEEK_PNL_CONCENTRATION_PCT=80
 # SCALP_DEPLOYMENT_ALLOW_INELIGIBLE_ENABLE=false            # emergency override; avoid enabling unless needed
 # SCALP_SYMBOL_DISCOVERY_POLICY_PATH=data/scalp-symbol-discovery-policy.json
 # SCALP_SYMBOL_UNIVERSE_STORE=auto                           # auto | kv | file
@@ -213,7 +226,23 @@ npm run start
 - `GET /api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true`
   - Weekly symbol-discovery cron. Scores symbols using policy + history quality + optional live quote checks, then writes the selected universe snapshot.
   - Policy file: `data/scalp-symbol-discovery-policy.json`.
+  - Candidate pool can be sourced directly from Capital market search (`sources.includeCapitalMarketsApi=true`).
+  - Capital discovery now uses a full `/markets` scan first (local ranking/filtering), then falls back to term search only if full scan fails.
+  - Optional env: `CAPITAL_MARKET_DISCOVERY_TERMS=USD,USDT,EUR,...` to control market-search terms.
+  - Response includes `diagnostics` with source counts and Capital-market discovery error (if any).
+  - Response includes `seedSummary` when pre-discovery history seeding is enabled.
+  - `requireTradableQuote` is only enforced when `includeLiveQuotes=true` (quote gate disabled for `includeLiveQuotes=false`).
+  - Weekend behavior (Berlin time): quote/tradability gates are relaxed on Saturday/Sunday so discovery still evaluates.
+  - `sources.requireHistoryPresence=true` keeps capital candidates limited to symbols with known candle-history presence.
   - Optional query: `maxCandidates=<int>` to cap processed candidates for one run.
+  - Optional pre-seed query params:
+    - `seedTopSymbols=<int>` enable seed stage for top ranked Capital symbols before discovery.
+    - `seedTargetHistoryDays=<int>` target historical span (default 90).
+    - `seedChunkDays=<int>` per-run incremental backfill/forward window (default 10).
+    - `seedMaxRequestsPerSymbol=<int>` Capital candle fetch cap per symbol (default 40).
+    - `seedMaxSymbolsPerRun=<int>` hard cap for seeded symbols in one run.
+    - `seedTimeframe=1m` timeframe for seed storage/checks.
+    - `seedOnDryRun=true` allow seeding during `dryRun=true` (for diagnostics only; no writes when dry run).
 - `GET /api/scalp/cron/research-cycle-start?dryRun=false`
   - Starts a chunked offline research cycle over the active symbol universe (or explicit `symbols=...`) and persists task rows in KV.
   - Optional query params: `symbols=BTCUSDT,XAUUSDT`, `lookbackDays`, `chunkDays`, `maxTasks`, `maxAttempts`, `minCandlesPerTask`, `force`.
@@ -225,8 +254,16 @@ npm run start
   - Optional query params: `cycleId`, `finalizeWhenDone=true|false`.
 - `GET /api/scalp/cron/research-cycle-sync-gates`
   - Derives forward-validation metrics from research-cycle windows and updates deployment `promotionGate` eligibility.
+  - Runs offline-only weekly robustness on 90d winner shortlists (no online paper-forward step):
+    - rank candidates per symbol on 90d results
+    - run weekly (7d) robustness slices only for top-K winners
+    - force ineligible for non-winner shortlist rows (when enabled), weekly-failing rows, or deployments missing in the completed cycle (`missing_cycle_candidate`)
   - Defaults to matrix/backtest deployment sources and requires completed cycle status by default.
-  - Optional query params: `cycleId`, `sources=matrix,backtest`, `dryRun=true|false`, `requireCompletedCycle=true|false`.
+  - Optional query params: `cycleId`, `sources=matrix,backtest`, `dryRun=true|false`, `requireCompletedCycle=true|false`,
+    `weeklyRobustnessEnabled=true|false`, `weeklyRobustnessTopKPerSymbol`, `weeklyRobustnessLookbackDays`,
+    `weeklyRobustnessMinCandlesPerSlice`, `weeklyRobustnessRequireWinnerShortlist=true|false`,
+    `weeklyRobustnessMinSlices`, `weeklyRobustnessMinProfitablePct`, `weeklyRobustnessMinMedianExpectancyR`,
+    `weeklyRobustnessMaxTopWeekPnlConcentrationPct`.
 - `GET /api/scalp/cron/research-report`
   - Builds a portfolio/operator report snapshot from deployment registry, promotion-gate state, recent trade ledger performance, and cross-deployment correlation.
   - Optional query params: `dryRun=true|false`, `cycleId`, `tradeLimit`, `monthlyMonths`.
@@ -437,7 +474,9 @@ node --import tsx scripts/scalp-replay-matrix.ts \
 - KV REST endpoint/token must be reachable from the runtime; Bitget/AI/News calls require outbound network access.
 - Current cron entries include:
   - `/api/swing/analyze?...&dryRun=false` hourly (live-trading mode).
-  - `/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true` weekly (candidate-universe refresh).
+  - `/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true&seedTopSymbols=12&seedChunkDays=10&seedTargetHistoryDays=90&seedMaxRequestsPerSymbol=40&seedMaxSymbolsPerRun=12` weekly Monday (deep seed + universe refresh).
+  - `/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true&seedTopSymbols=4&seedChunkDays=3&seedTargetHistoryDays=90&seedMaxRequestsPerSymbol=20&seedMaxSymbolsPerRun=4` daily Tuesday-Friday (light top-up seed + refresh).
+  - `/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=false&seedTopSymbols=4&seedChunkDays=3&seedTargetHistoryDays=90&seedMaxRequestsPerSymbol=20&seedMaxSymbolsPerRun=4` daily Saturday/Sunday (weekend top-up with quote gate relaxed).
   - `/api/scalp/cron/research-cycle-start?dryRun=false&force=false` weekly after discovery (creates task graph).
   - `/api/scalp/cron/research-cycle-worker?maxRuns=2&aggregateAfter=false&syncPromotionGates=false...` every 2 minutes (executes chunked replay tasks with lower per-task overhead).
   - `/api/scalp/cron/research-cycle-aggregate?...` every 10 minutes (refreshes cycle summary/status).

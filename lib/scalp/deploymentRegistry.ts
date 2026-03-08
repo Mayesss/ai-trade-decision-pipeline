@@ -28,6 +28,13 @@ export interface ScalpForwardValidationMetrics {
     minTradesPerWindow: number | null;
     selectionWindowDays: number | null;
     forwardWindowDays: number | null;
+    weeklySlices?: number | null;
+    weeklyProfitablePct?: number | null;
+    weeklyMeanExpectancyR?: number | null;
+    weeklyMedianExpectancyR?: number | null;
+    weeklyWorstNetR?: number | null;
+    weeklyTopWeekPnlConcentrationPct?: number | null;
+    weeklyEvaluatedAtMs?: number | null;
 }
 
 export interface ScalpDeploymentPromotionGateThresholds {
@@ -36,6 +43,10 @@ export interface ScalpDeploymentPromotionGateThresholds {
     minMeanExpectancyR: number;
     minTradesPerWindow: number;
     maxDrawdownR: number | null;
+    minWeeklySlices?: number | null;
+    minWeeklyProfitablePct?: number | null;
+    minWeeklyMedianExpectancyR?: number | null;
+    maxWeeklyTopWeekPnlConcentrationPct?: number | null;
 }
 
 export type ScalpDeploymentPromotionGateSource = 'walk_forward' | 'manual' | 'none';
@@ -106,6 +117,10 @@ const DEFAULT_FORWARD_GATE_THRESHOLDS: ScalpDeploymentPromotionGateThresholds = 
     minMeanExpectancyR: 0,
     minTradesPerWindow: 2,
     maxDrawdownR: null,
+    minWeeklySlices: null,
+    minWeeklyProfitablePct: null,
+    minWeeklyMedianExpectancyR: null,
+    maxWeeklyTopWeekPnlConcentrationPct: null,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -307,6 +322,13 @@ function normalizeForwardValidation(value: unknown): ScalpForwardValidationMetri
     const minTradesPerWindowRaw = normalizeFiniteNumber(value.minTradesPerWindow);
     const selectionWindowDaysRaw = normalizeFiniteNumber(value.selectionWindowDays);
     const forwardWindowDaysRaw = normalizeFiniteNumber(value.forwardWindowDays);
+    const weeklySlicesRaw = normalizeFiniteNumber(value.weeklySlices);
+    const weeklyProfitablePctRaw = normalizeFiniteNumber(value.weeklyProfitablePct);
+    const weeklyMeanExpectancyRRaw = normalizeFiniteNumber(value.weeklyMeanExpectancyR);
+    const weeklyMedianExpectancyRRaw = normalizeFiniteNumber(value.weeklyMedianExpectancyR);
+    const weeklyWorstNetRRaw = normalizeFiniteNumber(value.weeklyWorstNetR);
+    const weeklyTopWeekPnlConcentrationPctRaw = normalizeFiniteNumber(value.weeklyTopWeekPnlConcentrationPct);
+    const weeklyEvaluatedAtMsRaw = normalizeFiniteNumber(value.weeklyEvaluatedAtMs);
 
     return {
         rollCount,
@@ -320,6 +342,17 @@ function normalizeForwardValidation(value: unknown): ScalpForwardValidationMetri
             selectionWindowDaysRaw !== null && selectionWindowDaysRaw > 0 ? Math.floor(selectionWindowDaysRaw) : null,
         forwardWindowDays:
             forwardWindowDaysRaw !== null && forwardWindowDaysRaw > 0 ? Math.floor(forwardWindowDaysRaw) : null,
+        weeklySlices: weeklySlicesRaw !== null && weeklySlicesRaw > 0 ? Math.floor(weeklySlicesRaw) : null,
+        weeklyProfitablePct:
+            weeklyProfitablePctRaw !== null ? Math.max(0, Math.min(100, weeklyProfitablePctRaw)) : null,
+        weeklyMeanExpectancyR: weeklyMeanExpectancyRRaw !== null ? weeklyMeanExpectancyRRaw : null,
+        weeklyMedianExpectancyR: weeklyMedianExpectancyRRaw !== null ? weeklyMedianExpectancyRRaw : null,
+        weeklyWorstNetR: weeklyWorstNetRRaw !== null ? weeklyWorstNetRRaw : null,
+        weeklyTopWeekPnlConcentrationPct:
+            weeklyTopWeekPnlConcentrationPctRaw !== null
+                ? Math.max(0, Math.min(100, weeklyTopWeekPnlConcentrationPctRaw))
+                : null,
+        weeklyEvaluatedAtMs: weeklyEvaluatedAtMsRaw !== null && weeklyEvaluatedAtMsRaw > 0 ? Math.floor(weeklyEvaluatedAtMsRaw) : null,
     };
 }
 
@@ -338,6 +371,10 @@ function normalizeForwardGateThresholds(value: unknown): ScalpDeploymentPromotio
     const minMeanExpectancyR = normalizeFiniteNumber(value.minMeanExpectancyR);
     const minTradesPerWindow = Math.floor(Number(value.minTradesPerWindow));
     const maxDrawdownRRaw = normalizeFiniteNumber(value.maxDrawdownR);
+    const minWeeklySlicesRaw = normalizeFiniteNumber(value.minWeeklySlices);
+    const minWeeklyProfitablePctRaw = normalizeFiniteNumber(value.minWeeklyProfitablePct);
+    const minWeeklyMedianExpectancyRRaw = normalizeFiniteNumber(value.minWeeklyMedianExpectancyR);
+    const maxWeeklyTopWeekPnlConcentrationPctRaw = normalizeFiniteNumber(value.maxWeeklyTopWeekPnlConcentrationPct);
     if (!Number.isFinite(minRollCount) || minRollCount <= 0) return null;
     if (minProfitableWindowPct === null || minMeanExpectancyR === null) return null;
     if (!Number.isFinite(minTradesPerWindow) || minTradesPerWindow < 0) return null;
@@ -347,6 +384,14 @@ function normalizeForwardGateThresholds(value: unknown): ScalpDeploymentPromotio
         minMeanExpectancyR,
         minTradesPerWindow,
         maxDrawdownR: maxDrawdownRRaw !== null && maxDrawdownRRaw >= 0 ? maxDrawdownRRaw : null,
+        minWeeklySlices: minWeeklySlicesRaw !== null && minWeeklySlicesRaw > 0 ? Math.floor(minWeeklySlicesRaw) : null,
+        minWeeklyProfitablePct:
+            minWeeklyProfitablePctRaw !== null ? Math.max(0, Math.min(100, minWeeklyProfitablePctRaw)) : null,
+        minWeeklyMedianExpectancyR: minWeeklyMedianExpectancyRRaw !== null ? minWeeklyMedianExpectancyRRaw : null,
+        maxWeeklyTopWeekPnlConcentrationPct:
+            maxWeeklyTopWeekPnlConcentrationPctRaw !== null
+                ? Math.max(0, Math.min(100, maxWeeklyTopWeekPnlConcentrationPctRaw))
+                : null,
     };
 }
 
@@ -371,6 +416,14 @@ function resolveForwardGateThresholds(): ScalpDeploymentPromotionGateThresholds 
     const minMeanExpectancyR = normalizeFiniteNumber(process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MIN_MEAN_EXPECTANCY_R);
     const minTradesPerWindow = Math.floor(Number(process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MIN_TRADES_PER_WINDOW));
     const maxDrawdownR = normalizeFiniteNumber(process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MAX_DRAWDOWN_R);
+    const minWeeklySlices = normalizeFiniteNumber(process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MIN_WEEKLY_SLICES);
+    const minWeeklyProfitablePct = normalizeFiniteNumber(process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MIN_WEEKLY_PROFITABLE_PCT);
+    const minWeeklyMedianExpectancyR = normalizeFiniteNumber(
+        process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MIN_WEEKLY_MEDIAN_EXPECTANCY_R,
+    );
+    const maxWeeklyTopWeekPnlConcentrationPct = normalizeFiniteNumber(
+        process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MAX_WEEKLY_TOP_WEEK_PNL_CONCENTRATION_PCT,
+    );
     return {
         minRollCount:
             Number.isFinite(minRollCount) && minRollCount > 0 ? minRollCount : DEFAULT_FORWARD_GATE_THRESHOLDS.minRollCount,
@@ -385,6 +438,22 @@ function resolveForwardGateThresholds(): ScalpDeploymentPromotionGateThresholds 
                 ? minTradesPerWindow
                 : DEFAULT_FORWARD_GATE_THRESHOLDS.minTradesPerWindow,
         maxDrawdownR: maxDrawdownR !== null && maxDrawdownR >= 0 ? maxDrawdownR : null,
+        minWeeklySlices:
+            minWeeklySlices !== null && minWeeklySlices > 0
+                ? Math.floor(minWeeklySlices)
+                : DEFAULT_FORWARD_GATE_THRESHOLDS.minWeeklySlices,
+        minWeeklyProfitablePct:
+            minWeeklyProfitablePct !== null
+                ? Math.max(0, Math.min(100, minWeeklyProfitablePct))
+                : DEFAULT_FORWARD_GATE_THRESHOLDS.minWeeklyProfitablePct,
+        minWeeklyMedianExpectancyR:
+            minWeeklyMedianExpectancyR !== null
+                ? minWeeklyMedianExpectancyR
+                : DEFAULT_FORWARD_GATE_THRESHOLDS.minWeeklyMedianExpectancyR,
+        maxWeeklyTopWeekPnlConcentrationPct:
+            maxWeeklyTopWeekPnlConcentrationPct !== null
+                ? Math.max(0, Math.min(100, maxWeeklyTopWeekPnlConcentrationPct))
+                : DEFAULT_FORWARD_GATE_THRESHOLDS.maxWeeklyTopWeekPnlConcentrationPct,
     };
 }
 
@@ -411,6 +480,42 @@ function evaluateForwardValidationAgainstThresholds(
         const maxDrawdownR = validation.maxDrawdownR;
         if (maxDrawdownR === null || maxDrawdownR > thresholds.maxDrawdownR) {
             return { eligible: false, reason: 'forward_max_drawdown_above_threshold' };
+        }
+    }
+    if (typeof thresholds.minWeeklySlices === 'number') {
+        const weeklySlices = validation.weeklySlices;
+        if (weeklySlices === null || weeklySlices === undefined || weeklySlices < thresholds.minWeeklySlices) {
+            return { eligible: false, reason: 'weekly_slice_count_below_threshold' };
+        }
+    }
+    if (typeof thresholds.minWeeklyProfitablePct === 'number') {
+        const weeklyProfitablePct = validation.weeklyProfitablePct;
+        if (
+            weeklyProfitablePct === null ||
+            weeklyProfitablePct === undefined ||
+            weeklyProfitablePct < thresholds.minWeeklyProfitablePct
+        ) {
+            return { eligible: false, reason: 'weekly_profitable_pct_below_threshold' };
+        }
+    }
+    if (typeof thresholds.minWeeklyMedianExpectancyR === 'number') {
+        const weeklyMedianExpectancyR = validation.weeklyMedianExpectancyR;
+        if (
+            weeklyMedianExpectancyR === null ||
+            weeklyMedianExpectancyR === undefined ||
+            weeklyMedianExpectancyR < thresholds.minWeeklyMedianExpectancyR
+        ) {
+            return { eligible: false, reason: 'weekly_median_expectancy_below_threshold' };
+        }
+    }
+    if (typeof thresholds.maxWeeklyTopWeekPnlConcentrationPct === 'number') {
+        const concentration = validation.weeklyTopWeekPnlConcentrationPct;
+        if (
+            concentration === null ||
+            concentration === undefined ||
+            concentration > thresholds.maxWeeklyTopWeekPnlConcentrationPct
+        ) {
+            return { eligible: false, reason: 'weekly_top_week_concentration_above_threshold' };
         }
     }
     return { eligible: true, reason: null };

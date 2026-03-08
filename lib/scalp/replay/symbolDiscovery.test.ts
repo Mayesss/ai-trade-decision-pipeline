@@ -47,9 +47,11 @@ test('buildNextUniverseWithChurnCaps limits weekly adds/removes and preserves pi
             requireTradableQuote: false,
         },
         sources: {
+            includeCapitalMarketsApi: true,
             includeCapitalTickerMap: true,
             includeDeploymentSymbols: true,
             includeHistorySymbols: true,
+            requireHistoryPresence: true,
             explicitSymbols: [],
             excludedSymbols: [],
         },

@@ -50,6 +50,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const includeLiveQuotes = parseBoolParam(req.query.includeLiveQuotes, true);
     const nowMs = parseNowMs(firstQueryValue(req.query.nowMs));
     const maxCandidates = parsePositiveInt(firstQueryValue(req.query.maxCandidates));
+    const seedTopSymbols = parsePositiveInt(firstQueryValue(req.query.seedTopSymbols));
+    const seedTargetHistoryDays = parsePositiveInt(firstQueryValue(req.query.seedTargetHistoryDays));
+    const seedChunkDays = parsePositiveInt(firstQueryValue(req.query.seedChunkDays));
+    const seedMaxRequestsPerSymbol = parsePositiveInt(firstQueryValue(req.query.seedMaxRequestsPerSymbol));
+    const seedMaxSymbolsPerRun = parsePositiveInt(firstQueryValue(req.query.seedMaxSymbolsPerRun));
+    const seedTimeframe = firstQueryValue(req.query.seedTimeframe);
+    const seedOnDryRun = parseBoolParam(req.query.seedOnDryRun, false);
 
     try {
         const snapshot = await runScalpSymbolDiscoveryCycle({
@@ -57,6 +64,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             includeLiveQuotes,
             nowMs,
             maxCandidatesOverride: maxCandidates,
+            seedTopSymbols,
+            seedTargetHistoryDays,
+            seedChunkDays,
+            seedMaxRequestsPerSymbol,
+            seedMaxSymbolsPerRun,
+            seedTimeframe,
+            seedOnDryRun,
         });
 
         return res.status(200).json({
@@ -71,6 +85,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             removedSymbols: snapshot.removedSymbols,
             topSelectedRows: snapshot.selectedRows.slice(0, 10),
             topRejectedRows: snapshot.topRejectedRows.slice(0, 10),
+            diagnostics: snapshot.diagnostics || null,
+            seedSummary: snapshot.seedSummary || null,
             snapshot,
         });
     } catch (err: any) {

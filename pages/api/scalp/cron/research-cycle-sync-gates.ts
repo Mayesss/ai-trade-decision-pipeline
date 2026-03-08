@@ -30,6 +30,18 @@ function parseSourceList(value: string | undefined): Array<'manual' | 'backtest'
     return rows.length ? Array.from(new Set(rows)) : undefined;
 }
 
+function parsePositiveInt(value: string | undefined): number | undefined {
+    const n = Math.floor(Number(value));
+    if (!Number.isFinite(n) || n <= 0) return undefined;
+    return n;
+}
+
+function parseFiniteNumber(value: string | undefined): number | undefined {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return undefined;
+    return n;
+}
+
 function setNoStoreHeaders(res: NextApiResponse): void {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
@@ -47,6 +59,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const dryRun = parseBoolParam(req.query.dryRun, false);
     const requireCompletedCycle = parseBoolParam(req.query.requireCompletedCycle, true);
     const sources = parseSourceList(firstQueryValue(req.query.sources));
+    const weeklyRobustnessEnabled = parseBoolParam(req.query.weeklyRobustnessEnabled, true);
+    const weeklyRobustnessRequireWinnerShortlist = parseBoolParam(req.query.weeklyRobustnessRequireWinnerShortlist, true);
+    const weeklyRobustnessTopKPerSymbol = parsePositiveInt(firstQueryValue(req.query.weeklyRobustnessTopKPerSymbol));
+    const weeklyRobustnessLookbackDays = parsePositiveInt(firstQueryValue(req.query.weeklyRobustnessLookbackDays));
+    const weeklyRobustnessMinCandlesPerSlice = parsePositiveInt(firstQueryValue(req.query.weeklyRobustnessMinCandlesPerSlice));
+    const weeklyRobustnessMinSlices = parsePositiveInt(firstQueryValue(req.query.weeklyRobustnessMinSlices));
+    const weeklyRobustnessMinProfitablePct = parseFiniteNumber(firstQueryValue(req.query.weeklyRobustnessMinProfitablePct));
+    const weeklyRobustnessMinMedianExpectancyR = parseFiniteNumber(firstQueryValue(req.query.weeklyRobustnessMinMedianExpectancyR));
+    const weeklyRobustnessMaxTopWeekPnlConcentrationPct = parseFiniteNumber(
+        firstQueryValue(req.query.weeklyRobustnessMaxTopWeekPnlConcentrationPct),
+    );
 
     try {
         const out = await syncResearchCyclePromotionGates({
@@ -55,6 +78,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             requireCompletedCycle,
             sources,
             updatedBy: firstQueryValue(req.query.updatedBy) || 'cron:research-cycle-sync-gates',
+            weeklyRobustnessEnabled,
+            weeklyRobustnessRequireWinnerShortlist,
+            weeklyRobustnessTopKPerSymbol,
+            weeklyRobustnessLookbackDays,
+            weeklyRobustnessMinCandlesPerSlice,
+            weeklyRobustnessMinSlices,
+            weeklyRobustnessMinProfitablePct,
+            weeklyRobustnessMinMedianExpectancyR,
+            weeklyRobustnessMaxTopWeekPnlConcentrationPct,
         });
 
         return res.status(200).json({
@@ -64,6 +96,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             reason: out.reason,
             dryRun: out.dryRun,
             requireCompletedCycle: out.requireCompletedCycle,
+            weeklyPolicy: out.weeklyPolicy,
             deploymentsConsidered: out.deploymentsConsidered,
             deploymentsMatched: out.deploymentsMatched,
             deploymentsUpdated: out.deploymentsUpdated,

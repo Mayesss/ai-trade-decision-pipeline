@@ -77,6 +77,17 @@ async function kvLRange(key: string, start: number, stop: number) {
     return kvCommand('LRANGE', key, start, stop);
 }
 
+async function kvScan(cursor: string, match?: string, count?: number) {
+    const args: (string | number)[] = [cursor];
+    if (match) {
+        args.push('MATCH', match);
+    }
+    if (Number.isFinite(Number(count)) && Number(count) > 0) {
+        args.push('COUNT', Math.floor(Number(count)));
+    }
+    return kvCommand('SCAN', ...args);
+}
+
 export async function kvGetJson<T>(key: string): Promise<T | null> {
     try {
         const raw = await kvGet(key);
@@ -129,4 +140,50 @@ export async function kvListRangeJson<T>(key: string, start: number, stop: numbe
     } catch {
         return [];
     }
+}
+
+function parseKvScanResult(raw: unknown): { cursor: string; keys: string[] } {
+    if (Array.isArray(raw) && raw.length >= 2) {
+        const cursor = String(raw[0] ?? '0');
+        const keyRows = Array.isArray(raw[1]) ? raw[1] : [];
+        const keys = keyRows.map((row) => String(row || '').trim()).filter((row) => Boolean(row));
+        return { cursor, keys };
+    }
+
+    if (raw && typeof raw === 'object') {
+        const row = raw as Record<string, unknown>;
+        const cursor = String(row.cursor ?? row.nextCursor ?? '0');
+        const keyRows = Array.isArray(row.keys) ? row.keys : Array.isArray(row.result) ? row.result : [];
+        const keys = keyRows.map((item) => String(item || '').trim()).filter((item) => Boolean(item));
+        return { cursor, keys };
+    }
+
+    return { cursor: '0', keys: [] };
+}
+
+export async function kvCollectKeys(
+    match: string,
+    opts: { count?: number; maxIterations?: number; maxKeys?: number } = {},
+): Promise<string[]> {
+    const count = Math.max(10, Math.min(5000, Math.floor(Number(opts.count) || 250)));
+    const maxIterations = Math.max(1, Math.min(10_000, Math.floor(Number(opts.maxIterations) || 200)));
+    const maxKeys = Math.max(1, Math.min(200_000, Math.floor(Number(opts.maxKeys) || 50_000)));
+
+    const out = new Set<string>();
+    let cursor = '0';
+    let iteration = 0;
+
+    while (iteration < maxIterations && out.size < maxKeys) {
+        iteration += 1;
+        const raw = await kvScan(cursor, match, count);
+        const parsed = parseKvScanResult(raw);
+        for (const key of parsed.keys) {
+            out.add(key);
+            if (out.size >= maxKeys) break;
+        }
+        cursor = parsed.cursor || '0';
+        if (cursor === '0') break;
+    }
+
+    return Array.from(out);
 }
