@@ -8,6 +8,7 @@ const RESEARCH_ACTIVE_CYCLE_KEY = 'scalp:research:active-cycle:v1';
 const RESEARCH_CYCLE_KEY_PREFIX = 'scalp:research:cycle:v1';
 const RESEARCH_TASK_KEY_PREFIX = 'scalp:research:task:v1';
 const RESEARCH_AGG_KEY_PREFIX = 'scalp:research:aggregate:v1';
+const RESEARCH_CLAIM_CURSOR_KEY_PREFIX = 'scalp:research:claim-cursor:v1';
 const RESEARCH_LOCK_KEY_PREFIX = 'scalp:research:lock:v1';
 const RUN_LOCK_KEY_PREFIX = 'scalp:runlock:v2';
 const JOURNAL_LIST_KEY = 'scalp:journal:list:v1';
@@ -177,6 +178,7 @@ export interface RunScalpHousekeepingResult {
         cycleKeysDeleted: number;
         taskKeysDeleted: number;
         aggregateKeysDeleted: number;
+        claimCursorKeysDeleted: number;
         researchLocksDeleted: number;
         runLocksDeleted: number;
         listCompactions: number;
@@ -223,6 +225,7 @@ export async function runScalpHousekeeping(
     let cycleKeysDeleted = 0;
     let taskKeysDeleted = 0;
     let aggregateKeysDeleted = 0;
+    let claimCursorKeysDeleted = 0;
     let researchLocksDeleted = 0;
     let runLocksDeleted = 0;
     let listCompactions = 0;
@@ -259,6 +262,8 @@ export async function runScalpHousekeeping(
         if (await kvDel(cycleKey)) cycleKeysDeleted += 1;
         const aggKey = `${RESEARCH_AGG_KEY_PREFIX}:${cycleId}`;
         if (await kvDel(aggKey)) aggregateKeysDeleted += 1;
+        const claimCursorKey = `${RESEARCH_CLAIM_CURSOR_KEY_PREFIX}:${cycleId}`;
+        if (await kvDel(claimCursorKey)) claimCursorKeysDeleted += 1;
 
         for (const taskIdRaw of taskIds) {
             const taskId = String(taskIdRaw || '').trim();
@@ -322,6 +327,7 @@ export async function runScalpHousekeeping(
             cycleKeysDeleted,
             taskKeysDeleted,
             aggregateKeysDeleted,
+            claimCursorKeysDeleted,
             researchLocksDeleted,
             runLocksDeleted,
             listCompactions,

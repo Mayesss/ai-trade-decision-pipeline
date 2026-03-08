@@ -30,6 +30,14 @@ function parseSourceList(value: string | undefined): Array<'manual' | 'backtest'
     return rows.length ? Array.from(new Set(rows)) : undefined;
 }
 
+function parseMaterializeSource(value: string | undefined): 'matrix' | 'backtest' | undefined {
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase();
+    if (normalized === 'matrix' || normalized === 'backtest') return normalized;
+    return undefined;
+}
+
 function parsePositiveInt(value: string | undefined): number | undefined {
     const n = Math.floor(Number(value));
     if (!Number.isFinite(n) || n <= 0) return undefined;
@@ -70,6 +78,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const weeklyRobustnessMaxTopWeekPnlConcentrationPct = parseFiniteNumber(
         firstQueryValue(req.query.weeklyRobustnessMaxTopWeekPnlConcentrationPct),
     );
+    const materializeMissingCandidates = parseBoolParam(req.query.materializeMissingCandidates, true);
+    const materializeTopKPerSymbol = parsePositiveInt(firstQueryValue(req.query.materializeTopKPerSymbol));
+    const materializeSource = parseMaterializeSource(firstQueryValue(req.query.materializeSource));
+    const materializeEnabled = parseBoolParam(req.query.materializeEnabled, false);
 
     try {
         const out = await syncResearchCyclePromotionGates({
@@ -87,6 +99,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             weeklyRobustnessMinProfitablePct,
             weeklyRobustnessMinMedianExpectancyR,
             weeklyRobustnessMaxTopWeekPnlConcentrationPct,
+            materializeMissingCandidates,
+            materializeTopKPerSymbol,
+            materializeSource,
+            materializeEnabled,
         });
 
         return res.status(200).json({
@@ -100,6 +116,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             deploymentsConsidered: out.deploymentsConsidered,
             deploymentsMatched: out.deploymentsMatched,
             deploymentsUpdated: out.deploymentsUpdated,
+            materialization: out.materialization,
             candidates: out.candidates,
             rows: out.rows,
         });

@@ -67,6 +67,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             maxTasks: parsePositiveInt(firstQueryValue(req.query.maxTasks)),
             maxAttempts: parsePositiveInt(firstQueryValue(req.query.maxAttempts)),
             runningStaleAfterMs: parsePositiveInt(firstQueryValue(req.query.runningStaleAfterMs)),
+            tunerEnabled: req.query.tunerEnabled === undefined ? undefined : parseBoolParam(req.query.tunerEnabled, true),
+            maxTuneVariantsPerStrategy: parsePositiveInt(firstQueryValue(req.query.maxTuneVariantsPerStrategy)),
             startedBy: firstQueryValue(req.query.startedBy) || 'cron:research-cycle-start',
         });
 

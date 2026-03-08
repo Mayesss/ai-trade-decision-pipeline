@@ -72,6 +72,8 @@ test('buildResearchCycleTasks chunks lookback windows across allowed strategies'
         chunkDays: 14,
         maxTasks: 20,
         strategyAllowlist: ['compression_breakout_pullback_m15_m3', 'regime_pullback_m15_m3'],
+        tunerEnabled: false,
+        maxTuneVariantsPerStrategy: 1,
     });
 
     assert.equal(tasks.length, 4);
@@ -104,9 +106,32 @@ test('buildResearchCycleTasks enforces maxTasks cap', () => {
         chunkDays: 14,
         maxTasks: 3,
         strategyAllowlist: [],
+        tunerEnabled: false,
+        maxTuneVariantsPerStrategy: 1,
     });
 
     assert.equal(tasks.length, 3);
+});
+
+test('buildResearchCycleTasks expands symbol+strategy into capped tune variants when tuner is enabled', () => {
+    const nowMs = Date.UTC(2026, 2, 1);
+    const tasks = buildResearchCycleTasks({
+        cycleId: 'rc_tuned',
+        nowMs,
+        symbols: ['BTCUSDT'],
+        lookbackDays: 28,
+        chunkDays: 14,
+        maxTasks: 200,
+        strategyAllowlist: ['compression_breakout_pullback_m15_m3', 'regime_pullback_m15_m3'],
+        tunerEnabled: true,
+        maxTuneVariantsPerStrategy: 3,
+    });
+
+    assert.equal(tasks.length, 12);
+    const tuneIds = new Set(tasks.map((row) => row.tuneId));
+    assert.ok(tuneIds.has('default'));
+    assert.ok(Array.from(tuneIds).some((row) => row.startsWith('auto_')));
+    assert.ok(tasks.some((row) => row.configOverride && Object.keys(row.configOverride).length > 0));
 });
 
 test('summarizeResearchTasks aggregates candidate metrics and keeps running status with pending tasks', () => {
@@ -201,4 +226,55 @@ test('summarizeResearchTasks marks cycle failed when all tasks fail', () => {
     assert.equal(summary.totals.failed, 2);
     assert.equal(summary.totals.completed, 0);
     assert.equal(summary.progressPct, 100);
+});
+
+test('summarizeResearchTasks keeps tune variants as separate candidates', () => {
+    const cycle = makeCycle('rc_sum_tunes');
+    const taskA: ScalpResearchTask = {
+        ...makeTask({
+            cycleId: cycle.cycleId,
+            taskId: 't_a',
+            symbol: 'BTCUSDT',
+            strategyId: 'regime_pullback_m15_m3',
+            status: 'completed',
+            result: {
+                symbol: 'BTCUSDT',
+                strategyId: 'regime_pullback_m15_m3',
+                tuneId: 'default',
+                deploymentId: 'BTCUSDT~regime_pullback_m15_m3~default',
+                windowFromTs: 1,
+                windowToTs: 2,
+                trades: 8,
+                winRatePct: 50,
+                netR: 1,
+                expectancyR: 0.125,
+                profitFactor: 1.2,
+                maxDrawdownR: 1,
+                avgHoldMinutes: 20,
+                netPnlUsd: 10,
+                grossProfitR: 2,
+                grossLossR: -1,
+            },
+        }),
+        tuneId: 'default',
+        deploymentId: 'BTCUSDT~regime_pullback_m15_m3~default',
+    };
+    const taskB: ScalpResearchTask = {
+        ...taskA,
+        taskId: 't_b',
+        tuneId: 'auto_tp30',
+        deploymentId: 'BTCUSDT~regime_pullback_m15_m3~auto_tp30',
+        result: {
+            ...(taskA.result as NonNullable<ScalpResearchTask['result']>),
+            tuneId: 'auto_tp30',
+            deploymentId: 'BTCUSDT~regime_pullback_m15_m3~auto_tp30',
+            netR: 3,
+            expectancyR: 0.375,
+        },
+    };
+
+    const summary = summarizeResearchTasks(cycle, [taskA, taskB]);
+    assert.equal(summary.candidateAggregates.length, 2);
+    assert.ok(summary.candidateAggregates.some((row) => row.tuneId === 'default'));
+    assert.ok(summary.candidateAggregates.some((row) => row.tuneId === 'auto_tp30'));
 });

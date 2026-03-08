@@ -264,9 +264,35 @@ type ScalpResearchReportResponse = {
   snapshot?: ScalpResearchReportSnapshot;
 };
 
+type ScalpResearchCycleTaskResult = {
+  windowFromTs?: number;
+  windowToTs?: number;
+  tuneId?: string;
+  trades?: number;
+  netR?: number;
+  expectancyR?: number;
+  profitFactor?: number | null;
+  maxDrawdownR?: number;
+};
+
+type ScalpResearchCycleTask = {
+  taskId?: string;
+  symbol?: string;
+  strategyId?: string;
+  tuneId?: string;
+  windowFromTs?: number;
+  windowToTs?: number;
+  status?: 'pending' | 'running' | 'completed' | 'failed' | string;
+  result?: ScalpResearchCycleTaskResult | null;
+  configOverride?: Record<string, unknown> | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+};
+
 type ScalpResearchCycleResponse = {
   ok?: boolean;
   cycleId?: string;
+  cycleSource?: 'requested' | 'active' | 'latest_completed_fallback' | 'none' | string;
   cycle?: {
     cycleId?: string;
     status?: string;
@@ -285,6 +311,60 @@ type ScalpResearchCycleResponse = {
       failed?: number;
     };
   } | null;
+  tasks?: ScalpResearchCycleTask[];
+  taskCountReturned?: number;
+  taskLimit?: number;
+  includeTasks?: boolean;
+};
+
+type ScalpPromotionSyncMaterializationRow = {
+  deploymentId?: string;
+  symbol?: string;
+  strategyId?: string;
+  tuneId?: string;
+  source?: 'matrix' | 'backtest' | string;
+  exists?: boolean;
+  created?: boolean;
+};
+
+type ScalpPromotionSyncMaterialization = {
+  enabled?: boolean;
+  source?: 'matrix' | 'backtest' | string;
+  topKPerSymbol?: number;
+  shortlistedCandidates?: number;
+  missingCandidates?: number;
+  createdCandidates?: number;
+  rows?: ScalpPromotionSyncMaterializationRow[];
+};
+
+type ScalpPromotionSyncWeeklyPolicy = {
+  enabled?: boolean;
+  topKPerSymbol?: number;
+  lookbackDays?: number;
+  minCandlesPerSlice?: number;
+  requireWinnerShortlist?: boolean;
+  minSlices?: number;
+  minProfitablePct?: number;
+  minMedianExpectancyR?: number;
+  maxTopWeekPnlConcentrationPct?: number;
+};
+
+type ScalpPromotionSyncPreviewResponse = {
+  ok?: boolean;
+  cycleId?: string | null;
+  cycleStatus?: string | null;
+  reason?: string | null;
+  dryRun?: boolean;
+  requireCompletedCycle?: boolean;
+  weeklyPolicy?: ScalpPromotionSyncWeeklyPolicy | null;
+  deploymentsConsidered?: number;
+  deploymentsMatched?: number;
+  deploymentsUpdated?: number;
+  materialization?: ScalpPromotionSyncMaterialization | null;
+};
+
+type ScalpPromotionSyncSnapshot = ScalpPromotionSyncPreviewResponse & {
+  fetchedAtMs: number;
 };
 
 type ScalpResearchUniverseCandidateRow = {
@@ -349,6 +429,12 @@ type ScalpOpsCronDetail = {
   value: string;
   tone?: ScalpOpsCronDetailTone;
 };
+type ScalpOpsCronVisualMetric = {
+  label: string;
+  valueLabel: string;
+  pct: number | null;
+  tone?: ScalpOpsCronDetailTone;
+};
 type ScalpOpsCronRow = {
   id: string;
   cadence: string;
@@ -356,6 +442,7 @@ type ScalpOpsCronRow = {
   status: ScalpOpsCronStatus;
   lastRunAtMs: number | null;
   details: ScalpOpsCronDetail[];
+  visualMetrics?: ScalpOpsCronVisualMetric[];
   resultPreview?: Record<string, unknown> | null;
 };
 
@@ -422,6 +509,7 @@ const WS_PING_MS = 25_000;
 const CAPITAL_LIVE_POLL_MS = 3000;
 const SCALP_LIVE_POLL_MS = 3000;
 const SCALP_RESEARCH_REFRESH_MS = 45_000;
+const SCALP_PROMOTION_SYNC_REFRESH_MS = 5 * 60_000;
 
 const ADMIN_SECRET_STORAGE_KEY = 'admin_access_secret';
 const ADMIN_AUTH_TIMEOUT_MS = 4000;
@@ -479,6 +567,8 @@ export default function Home() {
   const [scalpResearchCycle, setScalpResearchCycle] = useState<ScalpResearchCycleResponse | null>(null);
   const [scalpResearchReport, setScalpResearchReport] = useState<ScalpResearchReportSnapshot | null>(null);
   const [scalpResearchUniverse, setScalpResearchUniverse] = useState<ScalpResearchUniverseResponse | null>(null);
+  const [scalpPromotionSyncSnapshot, setScalpPromotionSyncSnapshot] =
+    useState<ScalpPromotionSyncSnapshot | null>(null);
   const [scalpActiveDeploymentId, setScalpActiveDeploymentId] = useState<string | null>(null);
   const [scalpExpandedCronId, setScalpExpandedCronId] = useState<string | null>(null);
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
@@ -488,6 +578,7 @@ export default function Home() {
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>('light');
   const evaluatePollTimersRef = useRef<Record<string, number>>({});
   const scalpResearchFetchedAtMsRef = useRef<number>(0);
+  const scalpPromotionSyncFetchedAtMsRef = useRef<number>(0);
 
   const readStoredAdminSecret = () => {
     if (typeof window === 'undefined') return null;
@@ -780,10 +871,19 @@ export default function Home() {
           return { status: res.status, json };
         };
 
-        const [cycleResult, reportResult, universeResult] = await Promise.all([
-          fetchScalpEndpoint('/api/scalp/research/cycle'),
+        const shouldRefreshPromotionSync =
+          !silent ||
+          nowMs - scalpPromotionSyncFetchedAtMsRef.current >= SCALP_PROMOTION_SYNC_REFRESH_MS;
+
+        const [cycleResult, reportResult, universeResult, promotionSyncResult] = await Promise.all([
+          fetchScalpEndpoint('/api/scalp/research/cycle?includeTasks=true&taskLimit=500'),
           fetchScalpEndpoint('/api/scalp/research/report'),
           fetchScalpEndpoint('/api/scalp/research/universe'),
+          shouldRefreshPromotionSync
+            ? fetchScalpEndpoint(
+                '/api/scalp/cron/research-cycle-sync-gates?dryRun=true&weeklyRobustnessEnabled=false&requireCompletedCycle=true',
+              )
+            : Promise.resolve({ status: 0, json: null }),
         ]);
 
         if (cycleResult.status === 200 && cycleResult.json) {
@@ -803,6 +903,18 @@ export default function Home() {
           setScalpResearchUniverse(universeResult.json as ScalpResearchUniverseResponse);
         } else if (universeResult.status === 404) {
           setScalpResearchUniverse(null);
+        }
+
+        if (shouldRefreshPromotionSync) {
+          if (promotionSyncResult.status === 200 && promotionSyncResult.json) {
+            setScalpPromotionSyncSnapshot({
+              ...(promotionSyncResult.json as ScalpPromotionSyncPreviewResponse),
+              fetchedAtMs: nowMs,
+            });
+          } else if (promotionSyncResult.status === 404) {
+            setScalpPromotionSyncSnapshot(null);
+          }
+          scalpPromotionSyncFetchedAtMsRef.current = nowMs;
         }
 
         scalpResearchFetchedAtMsRef.current = nowMs;
@@ -1513,6 +1625,65 @@ export default function Home() {
   const scalpMeanForwardProfitablePct = scalpForwardProfitablePctRows.length
     ? scalpForwardProfitablePctRows.reduce((acc, row) => acc + row, 0) / scalpForwardProfitablePctRows.length
     : null;
+  const scalpPromotionSyncCycleId = String(scalpPromotionSyncSnapshot?.cycleId || '').trim() || null;
+  const scalpPromotionSyncStatusRaw = String(scalpPromotionSyncSnapshot?.cycleStatus || '').trim().toUpperCase();
+  const scalpPromotionSyncReason =
+    String(scalpPromotionSyncSnapshot?.reason || '').trim() || null;
+  const scalpPromotionSyncStatusTone: ScalpOpsCronDetailTone = scalpPromotionSyncReason
+    ? 'warning'
+    : scalpPromotionSyncStatusRaw.includes('FAILED')
+      ? 'critical'
+      : scalpPromotionSyncStatusRaw.includes('RUNNING') || scalpPromotionSyncStatusRaw.includes('PENDING')
+        ? 'warning'
+        : scalpPromotionSyncStatusRaw.includes('COMPLETE')
+          ? 'positive'
+          : scalpPromotionSyncStatusRaw
+            ? 'neutral'
+            : 'warning';
+  const scalpPromotionSyncFetchedAtMs = asFiniteNumber(scalpPromotionSyncSnapshot?.fetchedAtMs);
+  const scalpPromotionSyncConsidered = asFiniteNumber(
+    scalpPromotionSyncSnapshot?.deploymentsConsidered,
+  );
+  const scalpPromotionSyncMatched = asFiniteNumber(scalpPromotionSyncSnapshot?.deploymentsMatched);
+  const scalpPromotionSyncUpdated = asFiniteNumber(scalpPromotionSyncSnapshot?.deploymentsUpdated);
+  const scalpMaterializationShortlisted = asFiniteNumber(
+    scalpPromotionSyncSnapshot?.materialization?.shortlistedCandidates,
+  );
+  const scalpMaterializationMissing = asFiniteNumber(
+    scalpPromotionSyncSnapshot?.materialization?.missingCandidates,
+  );
+  const scalpMaterializationCreated = asFiniteNumber(
+    scalpPromotionSyncSnapshot?.materialization?.createdCandidates,
+  );
+  const scalpMaterializationSource =
+    String(scalpPromotionSyncSnapshot?.materialization?.source || '').trim() || null;
+  const scalpMaterializationTopKPerSymbol = asFiniteNumber(
+    scalpPromotionSyncSnapshot?.materialization?.topKPerSymbol,
+  );
+  const scalpMaterializationRows = Array.isArray(scalpPromotionSyncSnapshot?.materialization?.rows)
+    ? scalpPromotionSyncSnapshot.materialization.rows
+        .map((row) => ({
+          deploymentId: String(row?.deploymentId || '').trim(),
+          symbol: String(row?.symbol || '').trim().toUpperCase(),
+          strategyId: String(row?.strategyId || '').trim(),
+          tuneId: String(row?.tuneId || '').trim() || 'default',
+          source: String(row?.source || '').trim().toLowerCase() || null,
+          exists: Boolean(row?.exists),
+          created: Boolean(row?.created),
+        }))
+        .filter((row) => row.symbol && row.strategyId && row.deploymentId)
+        .sort((a, b) => {
+          if (a.exists !== b.exists) return a.exists ? -1 : 1;
+          if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
+          if (a.strategyId !== b.strategyId) return a.strategyId.localeCompare(b.strategyId);
+          return a.tuneId.localeCompare(b.tuneId);
+        })
+    : [];
+  const scalpMaterializationExistingCount = scalpMaterializationRows.reduce(
+    (acc, row) => acc + (row.exists ? 1 : 0),
+    0,
+  );
+  const scalpMaterializationPreviewRows = scalpMaterializationRows.slice(0, 40);
   const scalpAvgAbsPairCorrelation = asFiniteNumber(scalpResearchReport?.summary?.avgAbsPairCorrelation);
   const scalpCycleProgressPct =
     asFiniteNumber(scalpResearchCycle?.summary?.progressPct) ??
@@ -1564,6 +1735,53 @@ export default function Home() {
         : 'neutral';
   const scalpCyclePending = asFiniteNumber(scalpResearchCycle?.summary?.totals?.pending);
   const scalpCycleRunning = asFiniteNumber(scalpResearchCycle?.summary?.totals?.running);
+  const scalpWorkerTasks = Array.isArray(scalpResearchCycle?.tasks) ? scalpResearchCycle.tasks : [];
+  const scalpWorkerCycleSource = String(scalpResearchCycle?.cycleSource || '').trim() || 'none';
+  const scalpWorkerTaskRows = scalpWorkerTasks
+    .map((task) => {
+      const symbol = String(task?.symbol || '').trim().toUpperCase();
+      const strategyId = String(task?.strategyId || '').trim();
+      const tuneId = String(task?.tuneId || task?.result?.tuneId || 'default').trim();
+      const status = String(task?.status || 'pending')
+        .trim()
+        .toLowerCase();
+      const fromTs =
+        asFiniteNumber(task?.windowFromTs) ??
+        asFiniteNumber(task?.result?.windowFromTs);
+      const toTs =
+        asFiniteNumber(task?.windowToTs) ??
+        asFiniteNumber(task?.result?.windowToTs);
+      return {
+        taskId: String(task?.taskId || '').trim(),
+        symbol,
+        strategyId,
+        tuneId,
+        status,
+        windowFromTs: fromTs,
+        windowToTs: toTs,
+        trades: asFiniteNumber(task?.result?.trades),
+        netR: asFiniteNumber(task?.result?.netR),
+        expectancyR: asFiniteNumber(task?.result?.expectancyR),
+        profitFactor: asFiniteNumber(task?.result?.profitFactor),
+        maxDrawdownR: asFiniteNumber(task?.result?.maxDrawdownR),
+        errorCode: String(task?.errorCode || '').trim() || null,
+      };
+    })
+    .filter((row) => row.symbol && row.strategyId)
+    .sort((a, b) => {
+      const aTo = a.windowToTs ?? 0;
+      const bTo = b.windowToTs ?? 0;
+      if (bTo !== aTo) return bTo - aTo;
+      if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
+      if (a.strategyId !== b.strategyId) return a.strategyId.localeCompare(b.strategyId);
+      return a.tuneId.localeCompare(b.tuneId);
+    });
+  const formatScalpWindowIso = (fromTs: number | null, toTs: number | null): string => {
+    if (fromTs === null || toTs === null) return '—';
+    const fromIso = new Date(fromTs).toISOString().slice(0, 10);
+    const toIso = new Date(toTs).toISOString().slice(0, 10);
+    return `${fromIso} → ${toIso}`;
+  };
   const normalizeScalpUniverseSymbol = (value: unknown): string =>
     String(value || '')
       .trim()
@@ -1759,6 +1977,38 @@ export default function Home() {
     .trim()
     .toUpperCase();
   const scalpIneligibleCount = Math.max(0, scalpEnabledDeploymentCount - scalpPromotionEligibleCount);
+  const toScalpRatioPct = (numerator: number | null, denominator: number | null): number | null => {
+    if (numerator === null || denominator === null || denominator <= 0) return null;
+    const raw = (numerator / denominator) * 100;
+    if (!Number.isFinite(raw)) return null;
+    return Math.max(0, Math.min(100, raw));
+  };
+  const scalpDiscoverySelectionPct = toScalpRatioPct(
+    scalpUniverseSelectedCount,
+    scalpUniverseCandidatesEvaluated ?? scalpUniverseEvaluatedCount,
+  );
+  const scalpImportCoveragePct = toScalpRatioPct(scalpUniverseSeededCount, scalpUniverseSelectedCount);
+  const scalpEvaluationCoveragePct = toScalpRatioPct(
+    scalpUniverseEvaluatedCount,
+    scalpUniverseCandidatesEvaluated ?? scalpUniverseEvaluatedCount,
+  );
+  const scalpEligibleSharePct = toScalpRatioPct(scalpUniverseEligibleEvaluatedCount, scalpUniverseEvaluatedCount);
+  const scalpCycleCompletedPct = toScalpRatioPct(scalpCycleCompleted, scalpCycleTasks);
+  const scalpCycleFailedPct = toScalpRatioPct(scalpCycleFailed, scalpCycleTasks);
+  const scalpCycleQueuePct = toScalpRatioPct(
+    (scalpCyclePending ?? 0) + (scalpCycleRunning ?? 0),
+    scalpCycleTasks,
+  );
+  const scalpGateEligiblePct = toScalpRatioPct(scalpPromotionEligibleCount, scalpEnabledDeploymentCount);
+  const scalpGateBlockedPct = toScalpRatioPct(scalpIneligibleCount, scalpEnabledDeploymentCount);
+  const scalpMaterializationCoveragePct = toScalpRatioPct(
+    scalpMaterializationExistingCount,
+    scalpMaterializationShortlisted,
+  );
+  const scalpMaterializationCreatedFromMissingPct = toScalpRatioPct(
+    scalpMaterializationCreated,
+    scalpMaterializationMissing,
+  );
   const scalpStatusFromTs = (ts: number | null, staleMs: number): ScalpOpsCronStatus => {
     if (typeof ts !== 'number' || !Number.isFinite(ts)) return 'unknown';
     return Date.now() - ts <= staleMs ? 'healthy' : 'lagging';
@@ -1777,6 +2027,44 @@ export default function Home() {
         { label: 'Imported', value: formatScalpCount(scalpUniverseSeededCount), tone: 'neutral' },
         { label: 'Evaluated', value: formatScalpCount(scalpUniverseEvaluatedCount), tone: 'neutral' },
         { label: 'Eligible', value: formatScalpCount(scalpUniverseEligibleEvaluatedCount), tone: 'positive' },
+      ],
+      visualMetrics: [
+        {
+          label: 'Selection Rate',
+          valueLabel:
+            scalpDiscoverySelectionPct === null
+              ? '—'
+              : `${scalpDiscoverySelectionPct.toFixed(1)}%`,
+          pct: scalpDiscoverySelectionPct,
+          tone: 'neutral',
+        },
+        {
+          label: 'Import Coverage',
+          valueLabel:
+            scalpImportCoveragePct === null
+              ? '—'
+              : `${scalpImportCoveragePct.toFixed(1)}%`,
+          pct: scalpImportCoveragePct,
+          tone: scalpImportCoveragePct !== null && scalpImportCoveragePct >= 75 ? 'positive' : 'warning',
+        },
+        {
+          label: 'Evaluation Coverage',
+          valueLabel:
+            scalpEvaluationCoveragePct === null
+              ? '—'
+              : `${scalpEvaluationCoveragePct.toFixed(1)}%`,
+          pct: scalpEvaluationCoveragePct,
+          tone: scalpEvaluationCoveragePct !== null && scalpEvaluationCoveragePct >= 90 ? 'positive' : 'warning',
+        },
+        {
+          label: 'Eligible Share',
+          valueLabel:
+            scalpEligibleSharePct === null
+              ? '—'
+              : `${scalpEligibleSharePct.toFixed(1)}%`,
+          pct: scalpEligibleSharePct,
+          tone: scalpEligibleSharePct !== null && scalpEligibleSharePct >= 20 ? 'positive' : 'neutral',
+        },
       ],
       resultPreview: {
         cycleId: scalpCycleId || null,
@@ -1812,11 +2100,52 @@ export default function Home() {
         { label: 'Running', value: formatScalpCount(scalpCycleRunning), tone: 'warning' },
         { label: 'Failed', value: formatScalpCount(scalpCycleFailed), tone: scalpCycleFailed ? 'critical' : 'positive' },
       ],
+      visualMetrics: [
+        {
+          label: 'Progress',
+          valueLabel:
+            scalpCycleProgressPct === null
+              ? '—'
+              : `${scalpCycleProgressPct.toFixed(1)}%`,
+          pct: scalpCycleProgressPct,
+          tone: scalpCycleProgressPct !== null && scalpCycleProgressPct >= 99.9 ? 'positive' : 'neutral',
+        },
+        {
+          label: 'Completed Share',
+          valueLabel:
+            scalpCycleCompletedPct === null
+              ? '—'
+              : `${scalpCycleCompletedPct.toFixed(1)}%`,
+          pct: scalpCycleCompletedPct,
+          tone: scalpCycleCompletedPct !== null && scalpCycleCompletedPct >= 70 ? 'positive' : 'neutral',
+        },
+        {
+          label: 'Queue Share',
+          valueLabel:
+            scalpCycleQueuePct === null
+              ? '—'
+              : `${scalpCycleQueuePct.toFixed(1)}%`,
+          pct: scalpCycleQueuePct,
+          tone: scalpCycleQueuePct !== null && scalpCycleQueuePct > 30 ? 'warning' : 'neutral',
+        },
+        {
+          label: 'Failure Share',
+          valueLabel:
+            scalpCycleFailedPct === null
+              ? '—'
+              : `${scalpCycleFailedPct.toFixed(1)}%`,
+          pct: scalpCycleFailedPct,
+          tone: scalpCycleFailedPct !== null && scalpCycleFailedPct > 0 ? 'critical' : 'positive',
+        },
+      ],
       resultPreview: {
         cycleId: scalpCycleId || null,
         status: scalpCycleStatusRaw || null,
         progressPct: scalpCycleProgressPct,
         totals: scalpResearchCycle?.summary?.totals || null,
+        tasksLoaded: scalpWorkerTaskRows.length,
+        includeTasks: scalpResearchCycle?.includeTasks ?? null,
+        taskLimit: scalpResearchCycle?.taskLimit ?? null,
       },
     },
     {
@@ -1857,15 +2186,43 @@ export default function Home() {
       id: 'scalp_promotion_gate_apply',
       cadence: 'Daily',
       role: 'Apply forward validation gate',
-      status: scalpStatusFromTs(scalpReportGeneratedAtMs, 36 * 60 * 60_000),
-      lastRunAtMs: scalpReportGeneratedAtMs,
+      status: scalpStatusFromTs(
+        scalpPromotionSyncFetchedAtMs ?? scalpReportGeneratedAtMs,
+        36 * 60 * 60_000,
+      ),
+      lastRunAtMs: scalpPromotionSyncFetchedAtMs ?? scalpReportGeneratedAtMs,
       details: [
+        {
+          label: 'Cycle',
+          value: scalpPromotionSyncCycleId || scalpCycleId || 'pending',
+          tone: scalpPromotionSyncCycleId || scalpCycleId ? 'neutral' : 'warning',
+        },
+        {
+          label: 'Sync',
+          value: scalpPromotionSyncStatusRaw || 'unknown',
+          tone: scalpPromotionSyncStatusTone,
+        },
         { label: 'Enabled', value: formatScalpCount(scalpEnabledDeploymentCount), tone: 'neutral' },
         { label: 'Eligible', value: formatScalpCount(scalpPromotionEligibleCount), tone: 'positive' },
         {
           label: 'Blocked',
           value: formatScalpCount(scalpIneligibleCount),
           tone: scalpIneligibleCount > 0 ? 'warning' : 'positive',
+        },
+        {
+          label: 'Shortlisted',
+          value: formatScalpCount(scalpMaterializationShortlisted),
+          tone: 'neutral',
+        },
+        {
+          label: 'Missing',
+          value: formatScalpCount(scalpMaterializationMissing),
+          tone:
+            scalpMaterializationMissing === null
+              ? 'neutral'
+              : scalpMaterializationMissing > 0
+                ? 'warning'
+                : 'positive',
         },
         {
           label: 'Forward Exp',
@@ -1888,7 +2245,83 @@ export default function Home() {
                 : 'warning',
         },
       ],
+      visualMetrics: [
+        {
+          label: 'Eligible Share',
+          valueLabel: scalpGateEligiblePct === null ? '—' : `${scalpGateEligiblePct.toFixed(1)}%`,
+          pct: scalpGateEligiblePct,
+          tone: scalpGateEligiblePct !== null && scalpGateEligiblePct >= 60 ? 'positive' : 'warning',
+        },
+        {
+          label: 'Blocked Share',
+          valueLabel: scalpGateBlockedPct === null ? '—' : `${scalpGateBlockedPct.toFixed(1)}%`,
+          pct: scalpGateBlockedPct,
+          tone: scalpGateBlockedPct !== null && scalpGateBlockedPct > 40 ? 'warning' : 'neutral',
+        },
+        {
+          label: 'Profitable Forward',
+          valueLabel:
+            scalpMeanForwardProfitablePct === null
+              ? '—'
+              : `${scalpMeanForwardProfitablePct.toFixed(1)}%`,
+          pct: scalpMeanForwardProfitablePct,
+          tone:
+            scalpMeanForwardProfitablePct === null
+              ? 'neutral'
+              : scalpMeanForwardProfitablePct >= 50
+                ? 'positive'
+                : 'warning',
+        },
+        {
+          label: 'Shortlist Coverage',
+          valueLabel:
+            scalpMaterializationCoveragePct === null
+              ? '—'
+              : `${scalpMaterializationCoveragePct.toFixed(1)}%`,
+          pct: scalpMaterializationCoveragePct,
+          tone:
+            scalpMaterializationCoveragePct === null
+              ? 'neutral'
+              : scalpMaterializationCoveragePct >= 80
+                ? 'positive'
+                : 'warning',
+        },
+        {
+          label: 'Created from Missing',
+          valueLabel:
+            scalpMaterializationCreatedFromMissingPct === null
+              ? '—'
+              : `${scalpMaterializationCreatedFromMissingPct.toFixed(1)}%`,
+          pct: scalpMaterializationCreatedFromMissingPct,
+          tone:
+            scalpMaterializationCreatedFromMissingPct === null
+              ? 'neutral'
+              : scalpMaterializationCreatedFromMissingPct >= 80
+                ? 'positive'
+                : 'warning',
+        },
+      ],
       resultPreview: {
+        syncPreview: {
+          fetchedAtMs: scalpPromotionSyncFetchedAtMs,
+          cycleId: scalpPromotionSyncCycleId,
+          cycleStatus: scalpPromotionSyncStatusRaw || null,
+          reason: scalpPromotionSyncReason,
+          deploymentsConsidered: scalpPromotionSyncConsidered,
+          deploymentsMatched: scalpPromotionSyncMatched,
+          deploymentsUpdated: scalpPromotionSyncUpdated,
+          weeklyPolicy: scalpPromotionSyncSnapshot?.weeklyPolicy || null,
+        },
+        materialization: {
+          source: scalpMaterializationSource,
+          topKPerSymbol: scalpMaterializationTopKPerSymbol,
+          shortlistedCandidates: scalpMaterializationShortlisted,
+          existingCandidates: scalpMaterializationExistingCount,
+          missingCandidates: scalpMaterializationMissing,
+          createdCandidates: scalpMaterializationCreated,
+          rowsPreview: scalpMaterializationPreviewRows.slice(0, 12),
+          rowsRemaining: Math.max(0, scalpMaterializationRows.length - 12),
+        },
         enabledDeployments: scalpEnabledDeploymentCount,
         promotionEligible: scalpPromotionEligibleCount,
         ineligible: scalpIneligibleCount,
@@ -2202,6 +2635,34 @@ export default function Home() {
       ? 'border-zinc-600 bg-zinc-800/70 text-zinc-200'
       : 'border-slate-200 bg-slate-50 text-slate-700';
   };
+  const scalpWorkerTaskStatusMeta = (status: string) => {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'completed') {
+      return resolvedTheme === 'dark'
+        ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200'
+        : 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    }
+    if (normalized === 'failed') {
+      return resolvedTheme === 'dark'
+        ? 'border-rose-400/40 bg-rose-500/10 text-rose-200'
+        : 'border-rose-200 bg-rose-50 text-rose-700';
+    }
+    if (normalized === 'running') {
+      return resolvedTheme === 'dark'
+        ? 'border-amber-400/40 bg-amber-500/10 text-amber-200'
+        : 'border-amber-200 bg-amber-50 text-amber-700';
+    }
+    return resolvedTheme === 'dark'
+      ? 'border-zinc-600 bg-zinc-800/70 text-zinc-300'
+      : 'border-slate-200 bg-slate-100 text-slate-600';
+  };
+  const scalpVisualMetricFillMeta = (tone?: ScalpOpsCronDetailTone) => {
+    if (tone === 'positive') return resolvedTheme === 'dark' ? 'bg-emerald-400/80' : 'bg-emerald-500';
+    if (tone === 'warning') return resolvedTheme === 'dark' ? 'bg-amber-400/80' : 'bg-amber-500';
+    if (tone === 'critical') return resolvedTheme === 'dark' ? 'bg-rose-400/80' : 'bg-rose-500';
+    return resolvedTheme === 'dark' ? 'bg-zinc-400/80' : 'bg-slate-500';
+  };
+  const scalpVisualMetricTrackClass = resolvedTheme === 'dark' ? 'bg-zinc-800' : 'bg-slate-200';
   const scalpImportStatusMeta = (status: ScalpUniversePipelineRow['importStatus']) => {
     if (status === 'seeded') {
       return resolvedTheme === 'dark'
@@ -2652,6 +3113,224 @@ export default function Home() {
                                             </div>
                                           ))}
                                         </div>
+                                        {row.visualMetrics && row.visualMetrics.length ? (
+                                          <div className="mt-3">
+                                            <div
+                                              className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
+                                            >
+                                              Visual metrics
+                                            </div>
+                                            <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
+                                              {row.visualMetrics.map((metric) => {
+                                                const pct = metric.pct === null ? 0 : Math.max(0, Math.min(100, metric.pct));
+                                                return (
+                                                  <div
+                                                    key={`${row.id}-visual-${metric.label}`}
+                                                    className={`rounded-xl border px-2.5 py-2 ${scalpCronDetailToneMeta(metric.tone)}`}
+                                                  >
+                                                    <div className="flex items-center justify-between text-[11px]">
+                                                      <span className="uppercase tracking-[0.12em]">{metric.label}</span>
+                                                      <span className="font-semibold">{metric.valueLabel}</span>
+                                                    </div>
+                                                    <div className={`mt-2 h-1.5 overflow-hidden rounded-full ${scalpVisualMetricTrackClass}`}>
+                                                      <div
+                                                        className={`h-full rounded-full ${scalpVisualMetricFillMeta(metric.tone)}`}
+                                                        style={{ width: `${pct}%` }}
+                                                      />
+                                                    </div>
+                                                  </div>
+                                                );
+                                              })}
+                                            </div>
+                                          </div>
+                                        ) : null}
+                                        {row.id === 'scalp_cycle_worker' ? (
+                                          <div className="mt-3">
+                                            <div
+                                              className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
+                                            >
+                                              Task metrics by symbol, strategy, and window ({scalpWorkerTaskRows.length} shown)
+                                            </div>
+                                            <div className={`mb-2 text-[11px] ${scalpTextSecondaryClass}`}>
+                                              Source: {scalpWorkerCycleSource.replace(/_/g, ' ')}
+                                            </div>
+                                            <div
+                                              className={`max-h-80 overflow-auto rounded-xl border ${
+                                                scalpDarkMode ? 'border-zinc-700/40' : 'border-slate-200'
+                                              }`}
+                                            >
+                                              <table className="w-full min-w-[1080px] border-separate border-spacing-y-1.5 text-left text-sm">
+                                                <thead className={`text-[10px] uppercase tracking-[0.14em] ${scalpTableHeaderClass}`}>
+                                                  <tr>
+                                                    <th className="px-3 py-1">Symbol</th>
+                                                    <th className="px-3 py-1">Strategy</th>
+                                                    <th className="px-3 py-1">Tune</th>
+                                                    <th className="px-3 py-1">Window</th>
+                                                    <th className="px-3 py-1">Status</th>
+                                                    <th className="px-3 py-1">Trades</th>
+                                                    <th className="px-3 py-1">Net R</th>
+                                                    <th className="px-3 py-1">Expectancy</th>
+                                                    <th className="px-3 py-1">PF</th>
+                                                    <th className="px-3 py-1">Max DD</th>
+                                                  </tr>
+                                                </thead>
+                                                <tbody>
+                                                  {scalpWorkerTaskRows.length ? (
+                                                    scalpWorkerTaskRows.map((taskRow) => (
+                                                      <tr key={`worker-task-${taskRow.taskId}`} className={scalpTableRowClass}>
+                                                        <td className={`rounded-l-xl px-3 py-2.5 font-medium ${scalpTextPrimaryClass}`}>
+                                                          {taskRow.symbol}
+                                                        </td>
+                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                          {taskRow.strategyId}
+                                                        </td>
+                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                          {taskRow.tuneId}
+                                                        </td>
+                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                          {formatScalpWindowIso(taskRow.windowFromTs, taskRow.windowToTs)}
+                                                        </td>
+                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                          <span
+                                                            className={`rounded-full border px-2 py-1 text-[11px] ${scalpWorkerTaskStatusMeta(
+                                                              taskRow.status,
+                                                            )}`}
+                                                          >
+                                                            {taskRow.status || 'pending'}
+                                                          </span>
+                                                        </td>
+                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                          {taskRow.trades === null ? '—' : Math.floor(taskRow.trades)}
+                                                        </td>
+                                                        <td className={`px-3 py-2.5 ${taskRow.netR === null ? scalpTextMutedClass : taskRow.netR >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                                          {taskRow.netR === null ? '—' : `${taskRow.netR >= 0 ? '+' : ''}${taskRow.netR.toFixed(2)}`}
+                                                        </td>
+                                                        <td className={`px-3 py-2.5 ${taskRow.expectancyR === null ? scalpTextMutedClass : taskRow.expectancyR >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                                          {taskRow.expectancyR === null
+                                                            ? '—'
+                                                            : `${taskRow.expectancyR >= 0 ? '+' : ''}${taskRow.expectancyR.toFixed(3)}`}
+                                                        </td>
+                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                          {taskRow.profitFactor === null ? '—' : taskRow.profitFactor.toFixed(2)}
+                                                        </td>
+                                                        <td className={`rounded-r-xl px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                          {taskRow.maxDrawdownR === null ? '—' : `${taskRow.maxDrawdownR.toFixed(2)}R`}
+                                                        </td>
+                                                      </tr>
+                                                    ))
+                                                  ) : (
+                                                    <tr className={scalpTableRowClass}>
+                                                      <td colSpan={10} className={`rounded-xl px-3 py-4 text-sm ${scalpTextSecondaryClass}`}>
+                                                        {scalpResearchCycle
+                                                          ? 'Cycle loaded, but no tasks returned yet.'
+                                                          : 'No active or completed research cycle found yet. Run scalp_cycle_start first.'}
+                                                      </td>
+                                                    </tr>
+                                                  )}
+                                                </tbody>
+                                              </table>
+                                            </div>
+                                          </div>
+                                        ) : null}
+                                        {row.id === 'scalp_promotion_gate_apply' ? (
+                                          <div className="mt-3">
+                                            <div
+                                              className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
+                                            >
+                                              Materialization shortlist ({scalpMaterializationPreviewRows.length} shown)
+                                            </div>
+                                            <div className={`mb-2 text-[11px] ${scalpTextSecondaryClass}`}>
+                                              Source: {scalpMaterializationSource || '—'} • top K per symbol:{' '}
+                                              {scalpMaterializationTopKPerSymbol === null
+                                                ? '—'
+                                                : Math.max(1, Math.floor(scalpMaterializationTopKPerSymbol))}{' '}
+                                              • reason: {scalpPromotionSyncReason || 'none'}
+                                            </div>
+                                            <div
+                                              className={`max-h-80 overflow-auto rounded-xl border ${
+                                                scalpDarkMode ? 'border-zinc-700/40' : 'border-slate-200'
+                                              }`}
+                                            >
+                                              <table className="w-full min-w-[1100px] border-separate border-spacing-y-1.5 text-left text-sm">
+                                                <thead className={`text-[10px] uppercase tracking-[0.14em] ${scalpTableHeaderClass}`}>
+                                                  <tr>
+                                                    <th className="px-3 py-1">Symbol</th>
+                                                    <th className="px-3 py-1">Strategy</th>
+                                                    <th className="px-3 py-1">Tune</th>
+                                                    <th className="px-3 py-1">Deployment</th>
+                                                    <th className="px-3 py-1">In Registry</th>
+                                                    <th className="px-3 py-1">Created</th>
+                                                    <th className="px-3 py-1">Source</th>
+                                                  </tr>
+                                                </thead>
+                                                <tbody>
+                                                  {scalpMaterializationPreviewRows.length ? (
+                                                    scalpMaterializationPreviewRows.map((materializedRow) => (
+                                                      <tr
+                                                        key={`materialization-row-${materializedRow.deploymentId}`}
+                                                        className={scalpTableRowClass}
+                                                      >
+                                                        <td className={`rounded-l-xl px-3 py-2.5 font-medium ${scalpTextPrimaryClass}`}>
+                                                          {materializedRow.symbol}
+                                                        </td>
+                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                          {materializedRow.strategyId}
+                                                        </td>
+                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                          {materializedRow.tuneId}
+                                                        </td>
+                                                        <td className={`px-3 py-2.5 font-mono text-[11px] ${scalpTextSecondaryClass}`}>
+                                                          {materializedRow.deploymentId}
+                                                        </td>
+                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                          <span
+                                                            className={`rounded-full border px-2 py-1 text-[11px] ${
+                                                              materializedRow.exists
+                                                                ? scalpDarkMode
+                                                                  ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200'
+                                                                  : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                                                : scalpDarkMode
+                                                                  ? 'border-amber-400/40 bg-amber-500/10 text-amber-200'
+                                                                  : 'border-amber-200 bg-amber-50 text-amber-700'
+                                                            }`}
+                                                          >
+                                                            {materializedRow.exists ? 'yes' : 'missing'}
+                                                          </span>
+                                                        </td>
+                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                          <span
+                                                            className={`rounded-full border px-2 py-1 text-[11px] ${
+                                                              materializedRow.created
+                                                                ? scalpDarkMode
+                                                                  ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200'
+                                                                  : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                                                : scalpDarkMode
+                                                                  ? 'border-zinc-600 bg-zinc-800 text-zinc-300'
+                                                                  : 'border-slate-200 bg-slate-100 text-slate-600'
+                                                            }`}
+                                                          >
+                                                            {materializedRow.created ? 'yes' : 'no'}
+                                                          </span>
+                                                        </td>
+                                                        <td className={`rounded-r-xl px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                          {materializedRow.source || '—'}
+                                                        </td>
+                                                      </tr>
+                                                    ))
+                                                  ) : (
+                                                    <tr className={scalpTableRowClass}>
+                                                      <td colSpan={7} className={`rounded-xl px-3 py-4 text-sm ${scalpTextSecondaryClass}`}>
+                                                        {scalpPromotionSyncSnapshot
+                                                          ? 'No shortlist rows returned yet for the latest sync preview.'
+                                                          : 'No sync preview loaded yet. Wait for the next research refresh cycle.'}
+                                                      </td>
+                                                    </tr>
+                                                  )}
+                                                </tbody>
+                                              </table>
+                                            </div>
+                                          </div>
+                                        ) : null}
                                         {row.resultPreview ? (
                                           <div className="mt-3">
                                             <div

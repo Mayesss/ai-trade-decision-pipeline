@@ -1,4 +1,3 @@
-import { applyScalpStrategyConfigOverride, getScalpStrategyConfig, type ScalpStrategyConfigOverride } from './config';
 import {
     listScalpDeploymentRegistryEntries,
     upsertScalpDeploymentRegistryEntry,
@@ -9,7 +8,8 @@ import {
 } from './deploymentRegistry';
 import { loadScalpCandleHistory } from './candleHistory';
 import { pipSizeForScalpSymbol } from './marketData';
-import { defaultScalpReplayConfig, runScalpReplay } from './replay/harness';
+import { runScalpReplay } from './replay/harness';
+import { buildScalpReplayRuntimeFromDeployment } from './replay/runtimeConfig';
 import {
     listResearchCycleTasks,
     loadActiveResearchCycleId,
@@ -18,7 +18,6 @@ import {
     type ScalpResearchCycleSnapshot,
     type ScalpResearchTask,
 } from './researchCycle';
-import { getScalpStrategyPreferredTimeframes } from './strategies/registry';
 
 const DAY_MS = 24 * 60 * 60_000;
 const WEEK_MS = 7 * DAY_MS;
@@ -59,7 +58,11 @@ export interface SyncResearchWeeklyPolicy {
     maxTopWeekPnlConcentrationPct: number;
 }
 
-function keyOf(symbol: string, strategyId: string): string {
+function keyOf(symbol: string, strategyId: string, tuneId?: string): string {
+    return `${String(symbol || '').trim().toUpperCase()}::${String(strategyId || '').trim().toLowerCase()}::${String(tuneId || '').trim().toLowerCase()}`;
+}
+
+function strategyKeyOf(symbol: string, strategyId: string): string {
     return `${String(symbol || '').trim().toUpperCase()}::${String(strategyId || '').trim().toLowerCase()}`;
 }
 
@@ -136,13 +139,14 @@ function compareCandidates(a: ScalpResearchForwardValidationCandidate, b: ScalpR
     if (b.profitableWindowPct !== a.profitableWindowPct) return b.profitableWindowPct - a.profitableWindowPct;
     if (a.maxDrawdownR !== b.maxDrawdownR) return a.maxDrawdownR - b.maxDrawdownR;
     if (b.rollCount !== a.rollCount) return b.rollCount - a.rollCount;
-    return a.strategyId.localeCompare(b.strategyId);
+    if (a.strategyId !== b.strategyId) return a.strategyId.localeCompare(b.strategyId);
+    return a.tuneId.localeCompare(b.tuneId);
 }
 
-export function buildWinnerCandidateKeySet(
+export function buildCandidateMaterializationShortlist(
     candidates: ScalpResearchForwardValidationCandidate[],
     topKPerSymbol: number,
-): Set<string> {
+): ScalpResearchForwardValidationCandidate[] {
     const bySymbol = new Map<string, ScalpResearchForwardValidationCandidate[]>();
     for (const candidate of candidates) {
         if (!bySymbol.has(candidate.symbol)) {
@@ -151,13 +155,23 @@ export function buildWinnerCandidateKeySet(
         bySymbol.get(candidate.symbol)!.push(candidate);
     }
 
-    const winnerKeys = new Set<string>();
+    const shortlist: ScalpResearchForwardValidationCandidate[] = [];
     const topK = Math.max(1, Math.floor(topKPerSymbol));
-    for (const [symbol, rows] of bySymbol.entries()) {
+    for (const rows of bySymbol.values()) {
         rows.sort(compareCandidates);
-        for (let i = 0; i < Math.min(topK, rows.length); i += 1) {
-            winnerKeys.add(keyOf(symbol, rows[i]!.strategyId));
-        }
+        shortlist.push(...rows.slice(0, Math.min(topK, rows.length)));
+    }
+
+    return shortlist.sort(compareCandidates);
+}
+
+export function buildWinnerCandidateKeySet(
+    candidates: ScalpResearchForwardValidationCandidate[],
+    topKPerSymbol: number,
+): Set<string> {
+    const winnerKeys = new Set<string>();
+    for (const row of buildCandidateMaterializationShortlist(candidates, topKPerSymbol)) {
+        winnerKeys.add(keyOf(row.symbol, row.strategyId, row.tuneId));
     }
     return winnerKeys;
 }
@@ -235,71 +249,10 @@ function resolveWeeklyPolicy(
 }
 
 function buildReplayRuntimeForDeployment(entry: ScalpDeploymentRegistryEntry) {
-    const base = defaultScalpReplayConfig(entry.symbol);
-    const preferredTimeframes = getScalpStrategyPreferredTimeframes(entry.strategyId);
-    const cfg = applyScalpStrategyConfigOverride(
-        getScalpStrategyConfig(),
-        (entry.configOverride || undefined) as ScalpStrategyConfigOverride | undefined,
-    );
-
-    return {
-        ...base,
-        symbol: entry.symbol,
-        strategyId: entry.strategyId,
-        tuneId: entry.tuneId,
-        deploymentId: entry.deploymentId,
-        tuneLabel: entry.tuneLabel,
-        executeMinutes: cfg.cadence.executeMinutes,
-        strategy: {
-            ...base.strategy,
-            sessionClockMode: cfg.sessions.clockMode,
-            asiaWindowLocal: cfg.sessions.asiaWindowLocal,
-            raidWindowLocal: cfg.sessions.raidWindowLocal,
-            blockedBerlinEntryHours: cfg.sessions.blockedBerlinEntryHours,
-            asiaBaseTf: preferredTimeframes?.asiaBaseTf ?? cfg.timeframes.asiaBase,
-            confirmTf: preferredTimeframes?.confirmTf ?? cfg.timeframes.confirm,
-            maxTradesPerDay: cfg.risk.maxTradesPerSymbolPerDay,
-            riskPerTradePct: cfg.risk.riskPerTradePct,
-            referenceEquityUsd: cfg.risk.referenceEquityUsd,
-            minNotionalUsd: cfg.risk.minNotionalUsd,
-            maxNotionalUsd: cfg.risk.maxNotionalUsd,
-            takeProfitR: cfg.risk.takeProfitR,
-            stopBufferPips: cfg.risk.stopBufferPips,
-            stopBufferSpreadMult: cfg.risk.stopBufferSpreadMult,
-            breakEvenOffsetR: cfg.risk.breakEvenOffsetR,
-            tp1R: cfg.risk.tp1R,
-            tp1ClosePct: cfg.risk.tp1ClosePct,
-            trailStartR: cfg.risk.trailStartR,
-            trailAtrMult: cfg.risk.trailAtrMult,
-            timeStopBars: cfg.risk.timeStopBars,
-            dailyLossLimitR: cfg.risk.dailyLossLimitR,
-            consecutiveLossPauseThreshold: cfg.risk.consecutiveLossPauseThreshold,
-            consecutiveLossCooldownBars: cfg.risk.consecutiveLossCooldownBars,
-            minStopDistancePips: cfg.risk.minStopDistancePips,
-            sweepBufferPips: cfg.sweep.bufferPips,
-            sweepBufferAtrMult: cfg.sweep.bufferAtrMult,
-            sweepBufferSpreadMult: cfg.sweep.bufferSpreadMult,
-            sweepRejectInsidePips: cfg.sweep.rejectInsidePips,
-            sweepRejectMaxBars: cfg.sweep.rejectMaxBars,
-            sweepMinWickBodyRatio: cfg.sweep.minWickBodyRatio,
-            displacementBodyAtrMult: cfg.confirm.displacementBodyAtrMult,
-            displacementRangeAtrMult: cfg.confirm.displacementRangeAtrMult,
-            displacementCloseInExtremePct: cfg.confirm.closeInExtremePct,
-            mssLookbackBars: cfg.confirm.mssLookbackBars,
-            mssBreakBufferPips: cfg.confirm.mssBreakBufferPips,
-            mssBreakBufferAtrMult: cfg.confirm.mssBreakBufferAtrMult,
-            confirmTtlMinutes: cfg.confirm.ttlMinutes,
-            allowPullbackSwingBreakTrigger: cfg.confirm.allowPullbackSwingBreakTrigger,
-            ifvgMinAtrMult: cfg.ifvg.minAtrMult,
-            ifvgMaxAtrMult: cfg.ifvg.maxAtrMult,
-            ifvgTtlMinutes: cfg.ifvg.ttlMinutes,
-            ifvgEntryMode: cfg.ifvg.entryMode,
-            atrPeriod: cfg.data.atrPeriod,
-            minAsiaCandles: cfg.data.minAsiaCandles,
-            minBaseCandles: cfg.data.minBaseCandles,
-            minConfirmCandles: cfg.data.minConfirmCandles,
-        },
-    };
+    return buildScalpReplayRuntimeFromDeployment({
+        deployment: entry,
+        configOverride: entry.configOverride,
+    });
 }
 
 async function runWeeklyRobustnessForDeployment(params: {
@@ -370,6 +323,8 @@ async function runWeeklyRobustnessForDeployment(params: {
 export interface ScalpResearchForwardValidationCandidate {
     symbol: string;
     strategyId: string;
+    tuneId: string;
+    deploymentId: string;
     rollCount: number;
     profitableWindowPct: number;
     profitableWindows: number;
@@ -392,6 +347,8 @@ export function buildForwardValidationByCandidate(
         {
             symbol: string;
             strategyId: string;
+            tuneId: string;
+            deploymentId: string;
             rollCount: number;
             profitableWindows: number;
             expectancySum: number;
@@ -407,13 +364,17 @@ export function buildForwardValidationByCandidate(
         if (task.status !== 'completed' || !task.result) continue;
         const symbol = String(task.symbol || '').trim().toUpperCase();
         const strategyId = String(task.strategyId || '').trim().toLowerCase();
-        if (!symbol || !strategyId) continue;
+        const tuneId = String(task.tuneId || task.result.tuneId || '').trim().toLowerCase();
+        const deploymentId = String(task.deploymentId || task.result.deploymentId || '').trim();
+        if (!symbol || !strategyId || !tuneId || !deploymentId) continue;
 
-        const key = keyOf(symbol, strategyId);
+        const key = keyOf(symbol, strategyId, tuneId);
         if (!byCandidate.has(key)) {
             byCandidate.set(key, {
                 symbol,
                 strategyId,
+                tuneId,
+                deploymentId,
                 rollCount: 0,
                 profitableWindows: 0,
                 expectancySum: 0,
@@ -474,6 +435,8 @@ export function buildForwardValidationByCandidate(
             return {
                 symbol: row.symbol,
                 strategyId: row.strategyId,
+                tuneId: row.tuneId,
+                deploymentId: row.deploymentId,
                 rollCount: row.rollCount,
                 profitableWindowPct,
                 profitableWindows: row.profitableWindows,
@@ -506,6 +469,10 @@ export interface SyncResearchPromotionParams {
     weeklyRobustnessMinProfitablePct?: number;
     weeklyRobustnessMinMedianExpectancyR?: number;
     weeklyRobustnessMaxTopWeekPnlConcentrationPct?: number;
+    materializeMissingCandidates?: boolean;
+    materializeTopKPerSymbol?: number;
+    materializeSource?: 'matrix' | 'backtest';
+    materializeEnabled?: boolean;
 }
 
 export interface SyncResearchPromotionRow {
@@ -535,10 +502,38 @@ export interface SyncResearchPromotionResult {
     reason: string | null;
     weeklyPolicy: SyncResearchWeeklyPolicy;
     candidates: ScalpResearchForwardValidationCandidate[];
+    materialization: {
+        enabled: boolean;
+        source: 'matrix' | 'backtest';
+        topKPerSymbol: number;
+        shortlistedCandidates: number;
+        missingCandidates: number;
+        createdCandidates: number;
+        rows: Array<{
+            deploymentId: string;
+            symbol: string;
+            strategyId: string;
+            tuneId: string;
+            source: 'matrix' | 'backtest';
+            exists: boolean;
+            created: boolean;
+        }>;
+    };
     deploymentsConsidered: number;
     deploymentsMatched: number;
     deploymentsUpdated: number;
     rows: SyncResearchPromotionRow[];
+}
+
+function resolveMaterializeSource(
+    value: unknown,
+    fallback: 'matrix' | 'backtest',
+): 'matrix' | 'backtest' {
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase();
+    if (normalized === 'matrix' || normalized === 'backtest') return normalized;
+    return fallback;
 }
 
 function changedPromotionGate(
@@ -579,6 +574,40 @@ export async function syncResearchCyclePromotionGates(
             .map((row) => String(row || '').trim().toLowerCase())
             .filter((row): row is ScalpDeploymentRegistrySource => row === 'manual' || row === 'backtest' || row === 'matrix'),
     );
+    const defaultMaterializeSource: 'matrix' | 'backtest' = allowedSources.has('matrix')
+        ? 'matrix'
+        : allowedSources.has('backtest')
+          ? 'backtest'
+          : 'matrix';
+    const materializeSource = resolveMaterializeSource(params.materializeSource, defaultMaterializeSource);
+    const materializeMissingCandidates =
+        params.materializeMissingCandidates ??
+        envOrFallbackBool('SCALP_RESEARCH_MATERIALIZE_MISSING_CANDIDATES', true);
+    const materializeEnabled =
+        params.materializeEnabled ??
+        envOrFallbackBool('SCALP_RESEARCH_MATERIALIZE_ENABLED', false);
+    const materializeTopKPerSymbol = toPositiveInt(
+        params.materializeTopKPerSymbol ??
+            envOrFallbackNumber('SCALP_RESEARCH_MATERIALIZE_TOPK_PER_SYMBOL', 2),
+        2,
+    );
+    const emptyMaterialization = {
+        enabled: materializeMissingCandidates,
+        source: materializeSource,
+        topKPerSymbol: materializeTopKPerSymbol,
+        shortlistedCandidates: 0,
+        missingCandidates: 0,
+        createdCandidates: 0,
+        rows: [] as Array<{
+            deploymentId: string;
+            symbol: string;
+            strategyId: string;
+            tuneId: string;
+            source: 'matrix' | 'backtest';
+            exists: boolean;
+            created: boolean;
+        }>,
+    };
 
     const fallbackPolicy: SyncResearchWeeklyPolicy = {
         enabled: true,
@@ -602,6 +631,7 @@ export async function syncResearchCyclePromotionGates(
             reason: 'cycle_not_found',
             weeklyPolicy: fallbackPolicy,
             candidates: [],
+            materialization: emptyMaterialization,
             deploymentsConsidered: 0,
             deploymentsMatched: 0,
             deploymentsUpdated: 0,
@@ -620,6 +650,7 @@ export async function syncResearchCyclePromotionGates(
             reason: 'cycle_not_found',
             weeklyPolicy: fallbackPolicy,
             candidates: [],
+            materialization: emptyMaterialization,
             deploymentsConsidered: 0,
             deploymentsMatched: 0,
             deploymentsUpdated: 0,
@@ -637,6 +668,7 @@ export async function syncResearchCyclePromotionGates(
             reason: 'cycle_not_completed',
             weeklyPolicy: resolveWeeklyPolicy(params, cycle),
             candidates: [],
+            materialization: emptyMaterialization,
             deploymentsConsidered: 0,
             deploymentsMatched: 0,
             deploymentsUpdated: 0,
@@ -649,10 +681,80 @@ export async function syncResearchCyclePromotionGates(
 
     const tasks = await listResearchCycleTasks(cycleId, 10000);
     const candidates = buildForwardValidationByCandidate(cycle, tasks);
-    const candidateByKey = new Map(candidates.map((row) => [keyOf(row.symbol, row.strategyId), row]));
+    const candidateByKey = new Map(candidates.map((row) => [keyOf(row.symbol, row.strategyId, row.tuneId), row]));
+    const candidatesBySymbolStrategy = new Map<string, ScalpResearchForwardValidationCandidate[]>();
+    for (const row of candidates) {
+        const strategyKey = strategyKeyOf(row.symbol, row.strategyId);
+        if (!candidatesBySymbolStrategy.has(strategyKey)) {
+            candidatesBySymbolStrategy.set(strategyKey, []);
+        }
+        candidatesBySymbolStrategy.get(strategyKey)!.push(row);
+    }
+    for (const rows of candidatesBySymbolStrategy.values()) {
+        rows.sort(compareCandidates);
+    }
     const winnerCandidateKeys = buildWinnerCandidateKeySet(candidates, weeklyPolicy.topKPerSymbol);
+    const materializationShortlist = buildCandidateMaterializationShortlist(candidates, materializeTopKPerSymbol);
 
-    const deployments = await listScalpDeploymentRegistryEntries({});
+    let deployments = await listScalpDeploymentRegistryEntries({});
+    const deploymentIds = new Set(deployments.map((row) => row.deploymentId));
+    const materializationRows: Array<{
+        deploymentId: string;
+        symbol: string;
+        strategyId: string;
+        tuneId: string;
+        source: 'matrix' | 'backtest';
+        exists: boolean;
+        created: boolean;
+    }> = [];
+    let materializationMissing = 0;
+    let materializationCreated = 0;
+
+    for (const candidate of materializationShortlist) {
+        const exists = deploymentIds.has(candidate.deploymentId);
+        let created = false;
+        if (!exists) {
+            materializationMissing += 1;
+            if (materializeMissingCandidates && !dryRun) {
+                const upserted = await upsertScalpDeploymentRegistryEntry({
+                    deploymentId: candidate.deploymentId,
+                    symbol: candidate.symbol,
+                    strategyId: candidate.strategyId,
+                    tuneId: candidate.tuneId,
+                    source: materializeSource,
+                    enabled: materializeEnabled,
+                    forwardValidation: candidate.forwardValidation,
+                    notes: `auto_materialized_from_cycle:${cycleId}`,
+                    updatedBy: params.updatedBy || 'research-cycle-sync',
+                });
+                deployments = deployments
+                    .filter((row) => row.deploymentId !== upserted.entry.deploymentId)
+                    .concat(upserted.entry);
+                deploymentIds.add(upserted.entry.deploymentId);
+                created = true;
+                materializationCreated += 1;
+            }
+        }
+        materializationRows.push({
+            deploymentId: candidate.deploymentId,
+            symbol: candidate.symbol,
+            strategyId: candidate.strategyId,
+            tuneId: candidate.tuneId,
+            source: materializeSource,
+            exists,
+            created,
+        });
+    }
+    const materialization = {
+        enabled: materializeMissingCandidates,
+        source: materializeSource,
+        topKPerSymbol: materializeTopKPerSymbol,
+        shortlistedCandidates: materializationShortlist.length,
+        missingCandidates: materializationMissing,
+        createdCandidates: materializationCreated,
+        rows: materializationRows,
+    };
+
     const considered = deployments.filter((row) => allowedSources.has(row.source));
 
     const rows: SyncResearchPromotionRow[] = [];
@@ -662,8 +764,11 @@ export async function syncResearchCyclePromotionGates(
     const candlesBySymbol = new Map<string, CandleRow[]>();
 
     for (const deployment of considered) {
-        const candidateKey = keyOf(deployment.symbol, deployment.strategyId);
-        const candidate = candidateByKey.get(candidateKey);
+        const candidateKey = keyOf(deployment.symbol, deployment.strategyId, deployment.tuneId);
+        const candidate =
+            candidateByKey.get(candidateKey) ||
+            candidatesBySymbolStrategy.get(strategyKeyOf(deployment.symbol, deployment.strategyId))?.[0] ||
+            null;
         if (!candidate) {
             const weeklyGateReason = 'missing_cycle_candidate';
             if (dryRun) {
@@ -736,7 +841,7 @@ export async function syncResearchCyclePromotionGates(
             minTradesPerWindow: candidate.minTradesPerWindow,
         };
 
-        const inWinnerShortlist = winnerCandidateKeys.has(candidateKey);
+        const inWinnerShortlist = winnerCandidateKeys.has(keyOf(candidate.symbol, candidate.strategyId, candidate.tuneId));
         let weeklyRobustness: ScalpWeeklyRobustnessMetrics | null = null;
         let weeklyGateReason: string | null = null;
 
@@ -846,6 +951,7 @@ export async function syncResearchCyclePromotionGates(
         reason: null,
         weeklyPolicy,
         candidates,
+        materialization,
         deploymentsConsidered: considered.length,
         deploymentsMatched,
         deploymentsUpdated,

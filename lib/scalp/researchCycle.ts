@@ -1,10 +1,13 @@
 import crypto from 'node:crypto';
 
 import { kvGetJson, kvSetJson } from '../kv';
+import type { ScalpStrategyConfigOverride } from './config';
 import { loadScalpCandleHistory } from './candleHistory';
 import { resolveScalpDeployment } from './deployments';
 import { pipSizeForScalpSymbol } from './marketData';
 import { defaultScalpReplayConfig, runScalpReplay } from './replay/harness';
+import { buildScalpReplayRuntimeFromDeployment } from './replay/runtimeConfig';
+import { buildScalpResearchTuneVariants, resolveScalpResearchTunerPolicy } from './researchTuner';
 import { listScalpStrategies } from './strategies/registry';
 import {
     loadScalpSymbolDiscoveryPolicy,
@@ -17,6 +20,7 @@ const RESEARCH_ACTIVE_CYCLE_KEY = 'scalp:research:active-cycle:v1';
 const RESEARCH_CYCLE_KEY_PREFIX = 'scalp:research:cycle:v1';
 const RESEARCH_TASK_KEY_PREFIX = 'scalp:research:task:v1';
 const RESEARCH_AGG_KEY_PREFIX = 'scalp:research:aggregate:v1';
+const RESEARCH_CLAIM_CURSOR_KEY_PREFIX = 'scalp:research:claim-cursor:v1';
 const RESEARCH_LOCK_KEY_PREFIX = 'scalp:research:lock:v1';
 
 const DEFAULT_LOOKBACK_DAYS = 90;
@@ -41,6 +45,8 @@ export interface ScalpResearchCycleParams {
     maxTasks: number;
     maxAttempts: number;
     runningStaleAfterMs: number;
+    tunerEnabled?: boolean;
+    maxTuneVariantsPerStrategy?: number;
 }
 
 export interface ScalpResearchTask {
@@ -51,6 +57,7 @@ export interface ScalpResearchTask {
     strategyId: string;
     tuneId: string;
     deploymentId: string;
+    configOverride?: ScalpStrategyConfigOverride | null;
     windowFromTs: number;
     windowToTs: number;
     status: ScalpResearchTaskStatus;
@@ -89,6 +96,7 @@ export interface ScalpResearchCandidateAggregate {
     strategyId: string;
     tuneId: string;
     deploymentId: string;
+    configOverride?: ScalpStrategyConfigOverride | null;
     completedTasks: number;
     failedTasks: number;
     trades: number;
@@ -143,6 +151,8 @@ export interface StartResearchCycleParams {
     maxTasks?: number;
     maxAttempts?: number;
     runningStaleAfterMs?: number;
+    tunerEnabled?: boolean;
+    maxTuneVariantsPerStrategy?: number;
     startedBy?: string | null;
 }
 
@@ -158,15 +168,30 @@ export interface WorkerRunOutcome {
     attemptedRuns: number;
     completedRuns: number;
     failedRuns: number;
+    diagnostics: {
+        durationMs: number;
+        cycleTaskCount: number;
+        scanTasksVisited: number;
+        taskLockAttempts: number;
+        taskLockAcquired: number;
+        historyCacheHits: number;
+        historyCacheMisses: number;
+        historySymbolsLoaded: number;
+        historyCandlesLoaded: number;
+        windowCandlesProcessed: number;
+    };
     claimedTasks: Array<{
         taskId: string;
         symbol: string;
         strategyId: string;
+        tuneId: string;
         status: ScalpResearchTaskStatus;
         errorCode: string | null;
         errorMessage: string | null;
         trades: number | null;
         netR: number | null;
+        durationMs: number | null;
+        scanIndex: number | null;
     }>;
 }
 
@@ -218,6 +243,10 @@ function taskKey(cycleId: string, taskId: string): string {
 
 function aggregateKey(cycleId: string): string {
     return `${RESEARCH_AGG_KEY_PREFIX}:${cycleId}`;
+}
+
+function claimCursorKey(cycleId: string): string {
+    return `${RESEARCH_CLAIM_CURSOR_KEY_PREFIX}:${cycleId}`;
 }
 
 function lockKey(name: string): string {
@@ -333,57 +362,88 @@ export function buildResearchCycleTasks(params: {
     chunkDays: number;
     maxTasks: number;
     strategyAllowlist: string[];
+    tunerEnabled: boolean;
+    maxTuneVariantsPerStrategy: number;
 }): ScalpResearchTask[] {
     const symbols = dedupe(params.symbols.map((row) => normalizeSymbol(row)).filter((row) => Boolean(row)));
     const fromTs = params.nowMs - params.lookbackDays * 24 * 60 * 60_000;
     const chunkMs = Math.max(1, params.chunkDays) * 24 * 60 * 60_000;
     const knownStrategies = new Set(listScalpStrategies().map((row) => row.id));
     const tasks: ScalpResearchTask[] = [];
+    const usedTaskIds = new Set<string>();
+
+    const nextTaskId = (raw: string): string => {
+        let candidate = sanitizeTuneId(raw) || 'task';
+        if (!usedTaskIds.has(candidate)) {
+            usedTaskIds.add(candidate);
+            return candidate;
+        }
+        const hash = crypto
+            .createHash('sha1')
+            .update(raw)
+            .digest('hex')
+            .slice(0, 10);
+        candidate = sanitizeTuneId(`${candidate.slice(0, 64)}_${hash}`) || `task_${hash}`;
+        let attempt = 2;
+        while (usedTaskIds.has(candidate)) {
+            candidate = sanitizeTuneId(`${candidate.slice(0, 60)}_${attempt}`) || `task_${hash}_${attempt}`;
+            attempt += 1;
+        }
+        usedTaskIds.add(candidate);
+        return candidate;
+    };
 
     for (const symbol of symbols) {
         const strategyIds = resolveRecommendedStrategiesForSymbol(symbol, params.strategyAllowlist).filter((id) => knownStrategies.has(id));
         if (!strategyIds.length) continue;
         for (const strategyId of strategyIds) {
+            const tuneVariants = params.tunerEnabled
+                ? buildScalpResearchTuneVariants({
+                      symbol,
+                      strategyId,
+                      maxVariantsPerStrategy: params.maxTuneVariantsPerStrategy,
+                      includeBaseline: true,
+                  })
+                : [{ tuneId: 'default', configOverride: null }];
             let chunkFrom = fromTs;
             let chunkIdx = 0;
             while (chunkFrom < params.nowMs) {
                 const chunkTo = Math.min(params.nowMs, chunkFrom + chunkMs);
-                const tuneId = sanitizeTuneId(`research_${symbol}_${strategyId}_${chunkIdx + 1}`);
-                const deployment = resolveScalpDeployment({
-                    symbol,
-                    strategyId,
-                    tuneId,
-                });
-                const taskId = sanitizeTuneId(`${symbol}_${strategyId}_${chunkIdx + 1}`);
-                tasks.push({
-                    version: RESEARCH_CYCLE_VERSION,
-                    cycleId: params.cycleId,
-                    taskId,
-                    symbol,
-                    strategyId,
-                    tuneId: deployment.tuneId,
-                    deploymentId: deployment.deploymentId,
-                    windowFromTs: chunkFrom,
-                    windowToTs: chunkTo,
-                    status: 'pending',
-                    attempts: 0,
-                    createdAtMs: params.nowMs,
-                    updatedAtMs: params.nowMs,
-                    workerId: null,
-                    startedAtMs: null,
-                    finishedAtMs: null,
-                    errorCode: null,
-                    errorMessage: null,
-                    result: null,
-                });
+                for (const tune of tuneVariants) {
+                    const deployment = resolveScalpDeployment({
+                        symbol,
+                        strategyId,
+                        tuneId: tune.tuneId,
+                    });
+                    const taskId = nextTaskId(`${symbol}_${strategyId}_${deployment.tuneId}_${chunkIdx + 1}`);
+                    tasks.push({
+                        version: RESEARCH_CYCLE_VERSION,
+                        cycleId: params.cycleId,
+                        taskId,
+                        symbol,
+                        strategyId,
+                        tuneId: deployment.tuneId,
+                        deploymentId: deployment.deploymentId,
+                        configOverride: tune.configOverride || null,
+                        windowFromTs: chunkFrom,
+                        windowToTs: chunkTo,
+                        status: 'pending',
+                        attempts: 0,
+                        createdAtMs: params.nowMs,
+                        updatedAtMs: params.nowMs,
+                        workerId: null,
+                        startedAtMs: null,
+                        finishedAtMs: null,
+                        errorCode: null,
+                        errorMessage: null,
+                        result: null,
+                    });
+                    if (tasks.length >= params.maxTasks) {
+                        return tasks;
+                    }
+                }
                 chunkFrom = chunkTo;
                 chunkIdx += 1;
-                if (tasks.length >= params.maxTasks) {
-                    return tasks;
-                }
-            }
-            if (tasks.length >= params.maxTasks) {
-                return tasks;
             }
         }
     }
@@ -423,6 +483,19 @@ async function setActiveResearchCycleId(cycleId: string | null): Promise<void> {
     });
 }
 
+async function loadClaimCursorIndex(cycleId: string): Promise<number> {
+    const raw = await kvGetJson<{ nextIndex?: unknown }>(claimCursorKey(cycleId));
+    return toNonNegativeInt(raw?.nextIndex, 0);
+}
+
+async function saveClaimCursorIndex(cycleId: string, nextIndex: number): Promise<void> {
+    await kvSetJson(claimCursorKey(cycleId), {
+        cycleId,
+        nextIndex: toNonNegativeInt(nextIndex, 0),
+        updatedAtMs: Date.now(),
+    });
+}
+
 export async function startScalpResearchCycle(params: StartResearchCycleParams = {}): Promise<{
     started: boolean;
     cycle: ScalpResearchCycleSnapshot;
@@ -447,6 +520,7 @@ export async function startScalpResearchCycle(params: StartResearchCycleParams =
 
         const policy = await loadScalpSymbolDiscoveryPolicy();
         const universe = await loadScalpSymbolUniverseSnapshot();
+        const tunerPolicy = resolveScalpResearchTunerPolicy();
         const symbols = dedupe(
             (params.symbols?.length ? params.symbols : universe?.selectedSymbols || policy.pinnedSymbols)
                 .map((row) => normalizeSymbol(row))
@@ -462,6 +536,11 @@ export async function startScalpResearchCycle(params: StartResearchCycleParams =
             maxTasks: toPositiveInt(params.maxTasks, DEFAULT_MAX_TASKS),
             maxAttempts: toPositiveInt(params.maxAttempts, DEFAULT_MAX_ATTEMPTS),
             runningStaleAfterMs: toPositiveInt(params.runningStaleAfterMs, DEFAULT_RUNNING_STALE_AFTER_MS),
+            tunerEnabled: params.tunerEnabled ?? tunerPolicy.enabled,
+            maxTuneVariantsPerStrategy: toPositiveInt(
+                params.maxTuneVariantsPerStrategy,
+                tunerPolicy.maxVariantsPerStrategy,
+            ),
         };
 
         const tasks = buildResearchCycleTasks({
@@ -472,6 +551,8 @@ export async function startScalpResearchCycle(params: StartResearchCycleParams =
             chunkDays: cycleParams.chunkDays,
             maxTasks: cycleParams.maxTasks,
             strategyAllowlist: policy.strategyAllowlist,
+            tunerEnabled: cycleParams.tunerEnabled !== false,
+            maxTuneVariantsPerStrategy: Math.max(1, cycleParams.maxTuneVariantsPerStrategy || 1),
         });
 
         const cycle: ScalpResearchCycleSnapshot = {
@@ -494,6 +575,7 @@ export async function startScalpResearchCycle(params: StartResearchCycleParams =
             for (const task of tasks) {
                 await saveTask(task);
             }
+            await saveClaimCursorIndex(cycleId, 0);
             await setActiveResearchCycleId(cycleId);
         }
 
@@ -527,10 +609,57 @@ function toReplayCandles(rows: Array<[number, number, number, number, number, nu
     }));
 }
 
-async function runResearchTask(task: ScalpResearchTask, minCandlesPerTask: number): Promise<ScalpResearchTaskResult> {
-    const history = await loadScalpCandleHistory(task.symbol, '1m');
-    const all = (history.record?.candles || []) as Array<[number, number, number, number, number, number]>;
-    const rows = all.filter((row) => row[0] >= task.windowFromTs && row[0] < task.windowToTs);
+type HistoryRow = [number, number, number, number, number, number];
+
+type WorkerDiagnostics = WorkerRunOutcome['diagnostics'];
+
+function lowerBoundByTs(rows: HistoryRow[], targetTs: number): number {
+    let lo = 0;
+    let hi = rows.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (Number(rows[mid]?.[0] || 0) < targetTs) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+function sliceRowsByWindow(rows: HistoryRow[], fromTs: number, toTs: number): HistoryRow[] {
+    if (!rows.length || fromTs >= toTs) return [];
+    const start = lowerBoundByTs(rows, fromTs);
+    const end = lowerBoundByTs(rows, toTs);
+    if (start >= end) return [];
+    return rows.slice(start, end);
+}
+
+async function loadHistoryRowsForTask(
+    symbol: string,
+    historyCache: Map<string, HistoryRow[]>,
+    diagnostics: WorkerDiagnostics,
+): Promise<HistoryRow[]> {
+    const cached = historyCache.get(symbol);
+    if (cached) {
+        diagnostics.historyCacheHits += 1;
+        return cached;
+    }
+    diagnostics.historyCacheMisses += 1;
+    const history = await loadScalpCandleHistory(symbol, '1m');
+    const all = (history.record?.candles || []) as HistoryRow[];
+    historyCache.set(symbol, all);
+    diagnostics.historySymbolsLoaded += 1;
+    diagnostics.historyCandlesLoaded += all.length;
+    return all;
+}
+
+async function runResearchTask(
+    task: ScalpResearchTask,
+    minCandlesPerTask: number,
+    historyCache: Map<string, HistoryRow[]>,
+    diagnostics: WorkerDiagnostics,
+): Promise<ScalpResearchTaskResult> {
+    const all = await loadHistoryRowsForTask(task.symbol, historyCache, diagnostics);
+    const rows = sliceRowsByWindow(all, task.windowFromTs, task.windowToTs);
+    diagnostics.windowCandlesProcessed += rows.length;
     if (rows.length < minCandlesPerTask) {
         throw Object.assign(new Error(`insufficient_candles:${rows.length}`), { code: 'insufficient_candles' });
     }
@@ -542,14 +671,11 @@ async function runResearchTask(task: ScalpResearchTask, minCandlesPerTask: numbe
         tuneId: task.tuneId,
         deploymentId: task.deploymentId,
     });
-    const runtime = {
-        ...base,
-        symbol: deployment.symbol,
-        strategyId: deployment.strategyId,
-        tuneId: deployment.tuneId,
-        deploymentId: deployment.deploymentId,
-        tuneLabel: deployment.tuneLabel,
-    };
+    const runtime = buildScalpReplayRuntimeFromDeployment({
+        deployment,
+        configOverride: task.configOverride,
+        baseRuntime: base,
+    });
     const replay = await runScalpReplay({
         candles: toReplayCandles(rows, runtime.defaultSpreadPips),
         pipSize: pipSizeForScalpSymbol(task.symbol),
@@ -577,17 +703,32 @@ async function runResearchTask(task: ScalpResearchTask, minCandlesPerTask: numbe
     };
 }
 
-async function claimNextTask(cycle: ScalpResearchCycleSnapshot, workerId: string): Promise<{
+async function claimNextTask(cycle: ScalpResearchCycleSnapshot, workerId: string, startIndex = 0): Promise<{
     task: ScalpResearchTask;
     lockName: string;
     lockToken: string;
+    scanIndex: number;
+    scannedTasks: number;
+    lockAttempts: number;
+    locksAcquired: number;
 } | null> {
+    if (!cycle.taskIds.length) return null;
+    const taskCount = cycle.taskIds.length;
+    const firstIndex = Math.max(0, Math.min(taskCount - 1, Math.floor(startIndex) || 0));
     const nowMs = Date.now();
-    for (const taskId of cycle.taskIds) {
+    let scannedTasks = 0;
+    let lockAttempts = 0;
+    let locksAcquired = 0;
+    for (let offset = 0; offset < taskCount; offset += 1) {
+        const scanIndex = (firstIndex + offset) % taskCount;
+        const taskId = cycle.taskIds[scanIndex];
+        scannedTasks += 1;
         const lockName = `${cycle.cycleId}:${taskId}`;
         const lockToken = newToken(`claim:${workerId}`);
+        lockAttempts += 1;
         const gotTaskLock = await tryAcquireLock(lockName, lockToken, DEFAULT_LOCK_TTL_SECONDS);
         if (!gotTaskLock) continue;
+        locksAcquired += 1;
 
         const task = await loadResearchTask(cycle.cycleId, taskId);
         if (!task) {
@@ -624,12 +765,17 @@ async function claimNextTask(cycle: ScalpResearchCycleSnapshot, workerId: string
             task: nextTask,
             lockName,
             lockToken,
+            scanIndex,
+            scannedTasks,
+            lockAttempts,
+            locksAcquired,
         };
     }
     return null;
 }
 
 export async function runResearchWorker(params: WorkerRunParams = {}): Promise<WorkerRunOutcome> {
+    const startedAtMs = Date.now();
     const workerId = String(params.workerId || '').trim() || `worker_${crypto.randomUUID().slice(0, 8)}`;
     const cycleId = params.cycleId || (await loadActiveResearchCycleId());
     if (!cycleId) {
@@ -639,6 +785,18 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
             attemptedRuns: 0,
             completedRuns: 0,
             failedRuns: 0,
+            diagnostics: {
+                durationMs: Date.now() - startedAtMs,
+                cycleTaskCount: 0,
+                scanTasksVisited: 0,
+                taskLockAttempts: 0,
+                taskLockAcquired: 0,
+                historyCacheHits: 0,
+                historyCacheMisses: 0,
+                historySymbolsLoaded: 0,
+                historyCandlesLoaded: 0,
+                windowCandlesProcessed: 0,
+            },
             claimedTasks: [],
         };
     }
@@ -651,27 +809,81 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
             attemptedRuns: 0,
             completedRuns: 0,
             failedRuns: 0,
+            diagnostics: {
+                durationMs: Date.now() - startedAtMs,
+                cycleTaskCount: 0,
+                scanTasksVisited: 0,
+                taskLockAttempts: 0,
+                taskLockAcquired: 0,
+                historyCacheHits: 0,
+                historyCacheMisses: 0,
+                historySymbolsLoaded: 0,
+                historyCandlesLoaded: 0,
+                windowCandlesProcessed: 0,
+            },
+            claimedTasks: [],
+        };
+    }
+    if (cycle.status !== 'running') {
+        return {
+            cycleId,
+            workerId,
+            attemptedRuns: 0,
+            completedRuns: 0,
+            failedRuns: 0,
+            diagnostics: {
+                durationMs: Date.now() - startedAtMs,
+                cycleTaskCount: cycle.taskIds.length,
+                scanTasksVisited: 0,
+                taskLockAttempts: 0,
+                taskLockAcquired: 0,
+                historyCacheHits: 0,
+                historyCacheMisses: 0,
+                historySymbolsLoaded: 0,
+                historyCandlesLoaded: 0,
+                windowCandlesProcessed: 0,
+            },
             claimedTasks: [],
         };
     }
 
     const maxRuns = Math.max(1, Math.min(10, toPositiveInt(params.maxRuns, 1)));
+    const diagnostics: WorkerDiagnostics = {
+        durationMs: 0,
+        cycleTaskCount: cycle.taskIds.length,
+        scanTasksVisited: 0,
+        taskLockAttempts: 0,
+        taskLockAcquired: 0,
+        historyCacheHits: 0,
+        historyCacheMisses: 0,
+        historySymbolsLoaded: 0,
+        historyCandlesLoaded: 0,
+        windowCandlesProcessed: 0,
+    };
     const out: WorkerRunOutcome = {
         cycleId,
         workerId,
         attemptedRuns: 0,
         completedRuns: 0,
         failedRuns: 0,
+        diagnostics,
         claimedTasks: [],
     };
+    const historyCache = new Map<string, HistoryRow[]>();
+    let nextScanIndex = await loadClaimCursorIndex(cycleId);
 
     for (let i = 0; i < maxRuns; i += 1) {
-        const claim = await claimNextTask(cycle, workerId);
+        const taskStartedAtMs = Date.now();
+        const claim = await claimNextTask(cycle, workerId, nextScanIndex);
         if (!claim) break;
+        nextScanIndex = cycle.taskIds.length > 0 ? (claim.scanIndex + 1) % cycle.taskIds.length : 0;
+        diagnostics.scanTasksVisited += claim.scannedTasks;
+        diagnostics.taskLockAttempts += claim.lockAttempts;
+        diagnostics.taskLockAcquired += claim.locksAcquired;
         out.attemptedRuns += 1;
 
         try {
-            const result = await runResearchTask(claim.task, cycle.params.minCandlesPerTask);
+            const result = await runResearchTask(claim.task, cycle.params.minCandlesPerTask, historyCache, diagnostics);
             const completedTask: ScalpResearchTask = {
                 ...claim.task,
                 status: 'completed',
@@ -687,11 +899,14 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
                 taskId: completedTask.taskId,
                 symbol: completedTask.symbol,
                 strategyId: completedTask.strategyId,
+                tuneId: completedTask.tuneId,
                 status: completedTask.status,
                 errorCode: null,
                 errorMessage: null,
                 trades: result.trades,
                 netR: result.netR,
+                durationMs: Date.now() - taskStartedAtMs,
+                scanIndex: claim.scanIndex,
             });
         } catch (err: any) {
             const failedTask: ScalpResearchTask = {
@@ -708,17 +923,24 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
                 taskId: failedTask.taskId,
                 symbol: failedTask.symbol,
                 strategyId: failedTask.strategyId,
+                tuneId: failedTask.tuneId,
                 status: failedTask.status,
                 errorCode: failedTask.errorCode,
                 errorMessage: failedTask.errorMessage,
                 trades: failedTask.result?.trades || null,
                 netR: failedTask.result?.netR || null,
+                durationMs: Date.now() - taskStartedAtMs,
+                scanIndex: claim.scanIndex,
             });
         } finally {
             await releaseLock(claim.lockName, claim.lockToken);
         }
     }
 
+    if (out.attemptedRuns > 0) {
+        await saveClaimCursorIndex(cycleId, nextScanIndex);
+    }
+    out.diagnostics.durationMs = Date.now() - startedAtMs;
     return out;
 }
 
@@ -739,13 +961,14 @@ export function summarizeResearchTasks(cycle: ScalpResearchCycleSnapshot, tasks:
         else if (task.status === 'completed') totals.completed += 1;
         else if (task.status === 'failed') totals.failed += 1;
 
-        const key = `${task.symbol}::${task.strategyId}`;
+        const key = `${task.symbol}::${task.strategyId}::${task.tuneId}`;
         if (!byCandidate.has(key)) {
             byCandidate.set(key, {
                 symbol: task.symbol,
                 strategyId: task.strategyId,
                 tuneId: task.tuneId,
                 deploymentId: task.deploymentId,
+                configOverride: task.configOverride || null,
                 completedTasks: 0,
                 failedTasks: 0,
                 trades: 0,

@@ -7,6 +7,7 @@ import {
     aggregateScalpResearchCycle,
     listResearchCycleTasks,
     loadActiveResearchCycleId,
+    loadLatestCompletedResearchCycleId,
     loadResearchCycle,
     loadResearchCycleSummary,
 } from '../../../../lib/scalp/researchCycle';
@@ -49,14 +50,30 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const requestedCycleId = firstQueryValue(req.query.cycleId);
     const includeTasks = parseBoolParam(req.query.includeTasks, false);
     const refreshSummary = parseBoolParam(req.query.refreshSummary, false);
+    const allowLatestCompletedFallback = parseBoolParam(req.query.allowLatestCompletedFallback, true);
     const taskLimit = Math.max(1, Math.min(5000, parsePositiveInt(firstQueryValue(req.query.taskLimit)) || 250));
 
     try {
-        const cycleId = requestedCycleId || (await loadActiveResearchCycleId());
+        const activeCycleId = await loadActiveResearchCycleId();
+        const latestCompletedCycleId =
+            !requestedCycleId && !activeCycleId && allowLatestCompletedFallback
+                ? await loadLatestCompletedResearchCycleId()
+                : null;
+        const cycleId = requestedCycleId || activeCycleId || latestCompletedCycleId;
+        const cycleSource = requestedCycleId
+            ? 'requested'
+            : activeCycleId
+              ? 'active'
+              : latestCompletedCycleId
+                ? 'latest_completed_fallback'
+                : 'none';
         if (!cycleId) {
             return res.status(404).json({
                 error: 'research_cycle_not_found',
-                message: 'No active research cycle found and no cycleId was provided.',
+                message: 'No active or completed research cycle found and no cycleId was provided.',
+                cycleSource,
+                activeCycleId: activeCycleId || null,
+                latestCompletedCycleId: latestCompletedCycleId || null,
             });
         }
 
@@ -77,6 +94,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(200).json({
             ok: true,
             cycleId: cycle.cycleId,
+            cycleSource,
             cycle,
             summary,
             tasks: includeTasks ? tasks : undefined,
