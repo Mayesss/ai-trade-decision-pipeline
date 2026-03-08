@@ -1,4 +1,5 @@
 export type ScalpClockMode = 'LONDON_TZ' | 'UTC_FIXED';
+export type ScalpEntrySessionProfile = 'tokyo' | 'tokyo_london_overlap' | 'berlin' | 'newyork';
 export type ScalpBaseTimeframe = 'M1' | 'M3' | 'M5' | 'M15';
 export type ScalpConfirmTimeframe = 'M1' | 'M3';
 export type ScalpFvgEntryMode = 'first_touch' | 'midline_touch' | 'full_fill';
@@ -170,6 +171,7 @@ export interface ScalpStrategyConfig {
     };
     sessions: {
         clockMode: ScalpClockMode;
+        entrySessionProfile: ScalpEntrySessionProfile;
         asiaWindowLocal: [string, string];
         raidWindowLocal: [string, string];
         blockedBerlinEntryHours: number[];

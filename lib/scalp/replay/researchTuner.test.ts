@@ -15,14 +15,14 @@ test('buildScalpResearchTuneVariants includes baseline and respects max variant 
     assert.ok(variants.some((row) => row.tuneId.startsWith('auto_')));
 });
 
-test('buildScalpResearchTuneVariants emits blocked-hour and risk variants for regime pullback', () => {
+test('buildScalpResearchTuneVariants emits session-profile and risk variants for regime pullback', () => {
     const variants = buildScalpResearchTuneVariants({
         symbol: 'BTCUSDT',
         strategyId: 'regime_pullback_m15_m3',
-        maxVariantsPerStrategy: 6,
+        maxVariantsPerStrategy: 8,
     });
 
-    const hasBlockedHourVariant = variants.some((row) => row.configOverride?.sessions?.blockedBerlinEntryHours !== undefined);
+    const hasSessionProfileVariant = variants.some((row) => row.configOverride?.sessions?.entrySessionProfile !== undefined);
     const hasRiskVariant = variants.some(
         (row) =>
             row.configOverride?.risk?.trailAtrMult !== undefined ||
@@ -30,6 +30,6 @@ test('buildScalpResearchTuneVariants emits blocked-hour and risk variants for re
             row.configOverride?.risk?.tp1ClosePct !== undefined,
     );
 
-    assert.ok(hasBlockedHourVariant);
+    assert.ok(hasSessionProfileVariant);
     assert.ok(hasRiskVariant);
 });

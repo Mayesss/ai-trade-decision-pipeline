@@ -5,6 +5,7 @@ import type {
     ScalpFvgEntryMode,
     ScalpStrategyConfig,
 } from './types';
+import { normalizeScalpEntrySessionProfile } from './sessions';
 
 const DEFAULT_SCALP_SYMBOL = 'EURUSD';
 
@@ -77,6 +78,10 @@ function parseClockMode(value: string | undefined): ScalpClockMode {
     return normalized === 'UTC_FIXED' ? 'UTC_FIXED' : 'LONDON_TZ';
 }
 
+function parseEntrySessionProfile(value: string | undefined) {
+    return normalizeScalpEntrySessionProfile(value, 'berlin');
+}
+
 function normalizeClockLabel(value: string | undefined, fallback: string): string {
     const normalized = String(value || '')
         .trim()
@@ -128,6 +133,7 @@ export function getScalpStrategyConfig(): ScalpStrategyConfig {
         },
         sessions: {
             clockMode: parseClockMode(process.env.SCALP_SESSION_CLOCK_MODE),
+            entrySessionProfile: parseEntrySessionProfile(process.env.SCALP_ENTRY_SESSION_PROFILE),
             asiaWindowLocal: [
                 normalizeClockLabel(process.env.SCALP_ASIA_WINDOW_START_LOCAL, '00:00'),
                 normalizeClockLabel(process.env.SCALP_ASIA_WINDOW_END_LOCAL, '06:00'),

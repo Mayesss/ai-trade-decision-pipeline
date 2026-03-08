@@ -334,6 +334,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       generatedAtMs: nowMs,
       dayKey,
       clockMode: cfg.sessions.clockMode,
+      entrySessionProfile: cfg.sessions.entrySessionProfile,
       source: useDeployments ? 'deployment_registry' : 'cron_symbols',
       strategyId: strategy.strategyId,
       defaultStrategyId: runtime.defaultStrategyId,

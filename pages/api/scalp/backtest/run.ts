@@ -6,6 +6,7 @@ import { type CandleHistoryBackend, loadScalpCandleHistory, normalizeHistoryTime
 import { resolveScalpDeployment } from '../../../../lib/scalp/deployments';
 import { defaultScalpReplayConfig, normalizeScalpReplayInput, runScalpReplay } from '../../../../lib/scalp/replay/harness';
 import { toScalpBacktestLeaderboardEntry } from '../../../../lib/scalp/replay/results';
+import { normalizeScalpEntrySessionProfile } from '../../../../lib/scalp/sessions';
 import {
   getDefaultScalpStrategy,
   getScalpStrategyById,
@@ -170,6 +171,10 @@ function parseClockMode(value: unknown, fallback: ScalpReplayRuntimeConfig['stra
   if (normalized === 'UTC_FIXED') return 'UTC_FIXED';
   if (normalized === 'LONDON_TZ') return 'LONDON_TZ';
   return fallback;
+}
+
+function parseEntrySessionProfile(value: unknown, fallback: ScalpReplayRuntimeConfig['strategy']['entrySessionProfile']) {
+  return normalizeScalpEntrySessionProfile(value, fallback);
 }
 
 function parseIfvgEntryMode(value: unknown, fallback: ScalpReplayRuntimeConfig['strategy']['ifvgEntryMode']) {
@@ -423,6 +428,10 @@ function applyRuntimeOverrides(runtime: ScalpReplayRuntimeConfig, body: Backtest
   next.forceCloseAtEnd = toBool(body.forceCloseAtEnd, next.forceCloseAtEnd);
 
   next.strategy.sessionClockMode = parseClockMode(strategy.sessionClockMode, next.strategy.sessionClockMode);
+  next.strategy.entrySessionProfile = parseEntrySessionProfile(
+    strategy.entrySessionProfile,
+    next.strategy.entrySessionProfile,
+  );
   next.strategy.asiaBaseTf = preferredTimeframes?.asiaBaseTf ?? 'M15';
   next.strategy.confirmTf = preferredTimeframes?.confirmTf ?? 'M3';
   next.strategy.asiaBaseTf = parseBaseTf(strategy.asiaBaseTf, next.strategy.asiaBaseTf);

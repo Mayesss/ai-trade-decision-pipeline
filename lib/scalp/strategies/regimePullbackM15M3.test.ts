@@ -66,10 +66,10 @@ test('regime pullback strategy blocks configured Berlin hour from strategy confi
         ...cfg,
         sessions: {
             ...cfg.sessions,
-            blockedBerlinEntryHours: [15],
+            blockedBerlinEntryHours: [9],
         },
     };
-    const nowMs = Date.UTC(2026, 0, 5, 14, 0, 0, 0); // 15:00 Berlin (CET)
+    const nowMs = Date.UTC(2026, 0, 5, 8, 0, 0, 0); // 09:00 Berlin (CET)
     const dayKey = deriveScalpDayKey(nowMs, cfgWithBlockedHour.sessions.clockMode);
     const windows = buildScalpSessionWindows({
         dayKey,
@@ -117,5 +117,5 @@ test('regime pullback strategy blocks configured Berlin hour from strategy confi
     assert.equal(phase.state.state, 'IDLE');
     assert.equal(phase.entryIntent, null);
     assert.ok(phase.reasonCodes.includes('SESSION_FILTER_BLOCKED_BERLIN_HOUR'));
-    assert.ok(phase.reasonCodes.includes('SESSION_FILTER_BLOCKED_BERLIN_HOUR_15'));
+    assert.ok(phase.reasonCodes.includes('SESSION_FILTER_BLOCKED_BERLIN_HOUR_9'));
 });

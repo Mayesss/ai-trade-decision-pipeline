@@ -1,3 +1,5 @@
+import type { ScalpEntrySessionProfile } from '../types';
+
 export interface ScalpReplayInputCandle {
     ts: number | string;
     open: number;
@@ -38,6 +40,7 @@ export interface ScalpReplayRuntimeConfig {
     forceCloseAtEnd: boolean;
     strategy: {
         sessionClockMode: 'LONDON_TZ' | 'UTC_FIXED';
+        entrySessionProfile: ScalpEntrySessionProfile;
         asiaWindowLocal: [string, string];
         raidWindowLocal: [string, string];
         blockedBerlinEntryHours: number[];

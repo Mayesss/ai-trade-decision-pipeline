@@ -27,6 +27,7 @@ export function buildScalpReplayRuntimeFromDeployment(params: {
         strategy: {
             ...base.strategy,
             sessionClockMode: cfg.sessions.clockMode,
+            entrySessionProfile: cfg.sessions.entrySessionProfile,
             asiaWindowLocal: cfg.sessions.asiaWindowLocal,
             raidWindowLocal: cfg.sessions.raidWindowLocal,
             blockedBerlinEntryHours: cfg.sessions.blockedBerlinEntryHours,

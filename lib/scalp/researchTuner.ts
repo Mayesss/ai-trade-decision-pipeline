@@ -1,6 +1,12 @@
 import type { ScalpStrategyConfigOverride } from './config';
 import { resolveScalpDeployment, normalizeScalpTuneId } from './deployments';
 import { buildScalpReplayRuntimeFromDeployment } from './replay/runtimeConfig';
+import {
+    listScalpEntrySessionProfiles,
+    normalizeScalpEntrySessionProfile,
+    scalpEntrySessionProfileDistance,
+} from './sessions';
+import type { ScalpEntrySessionProfile } from './types';
 import { compactScalpStrategyConfigOverride } from './tuning';
 
 export interface ScalpResearchTuneVariant {
@@ -64,6 +70,10 @@ function hoursToken(value: number[]): string {
     return hours.join('-');
 }
 
+function sessionProfileToken(value: ScalpEntrySessionProfile): string {
+    return String(value).replace(/[^a-z0-9_]/g, '');
+}
+
 function pickNearestNumberAlternatives(values: number[], baseline: number, max = 2): number[] {
     const deduped = Array.from(new Set(values.filter((row) => Number.isFinite(row))));
     return deduped
@@ -96,6 +106,24 @@ function pickNearestHoursAlternatives(values: number[][], baseline: number[], ma
             return JSON.stringify(a).localeCompare(JSON.stringify(b));
         });
     return out.slice(0, Math.max(0, max));
+}
+
+function pickNearestSessionProfileAlternatives(
+    values: ScalpEntrySessionProfile[],
+    baseline: ScalpEntrySessionProfile,
+    max = 2,
+): ScalpEntrySessionProfile[] {
+    const baselineNormalized = normalizeScalpEntrySessionProfile(baseline, 'berlin');
+    const deduped = Array.from(new Set(values.map((row) => normalizeScalpEntrySessionProfile(row, 'berlin'))));
+    return deduped
+        .filter((row) => row !== baselineNormalized)
+        .sort((a, b) => {
+            const distA = scalpEntrySessionProfileDistance(a, baselineNormalized);
+            const distB = scalpEntrySessionProfileDistance(b, baselineNormalized);
+            if (distA !== distB) return distA - distB;
+            return a.localeCompare(b);
+        })
+        .slice(0, Math.max(0, max));
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -244,6 +272,20 @@ export function buildScalpResearchTuneVariants(params: {
             });
         }
     };
+
+    const addSessionProfiles = (values: ScalpEntrySessionProfile[]) => {
+        const baseline = normalizeScalpEntrySessionProfile(runtime.strategy.entrySessionProfile, 'berlin');
+        const alts = pickNearestSessionProfileAlternatives(values, baseline, 2);
+        for (const value of alts) {
+            pushVariant({
+                tuneId: `auto_sp${sessionProfileToken(value)}`,
+                configOverride: { sessions: { entrySessionProfile: value } },
+                score: scalpEntrySessionProfileDistance(value, baseline),
+            });
+        }
+    };
+
+    addSessionProfiles(listScalpEntrySessionProfiles());
 
     if (strategyId === 'compression_breakout_pullback_m15_m3') {
         addTrail([1.3, 1.4, 1.5, 1.6, 1.7]);

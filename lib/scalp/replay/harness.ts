@@ -84,6 +84,7 @@ function buildStrategyConfig(runtime: ScalpReplayRuntimeConfig): ScalpStrategyCo
         cadence: { executeMinutes: runtime.executeMinutes },
         sessions: {
             clockMode: runtime.strategy.sessionClockMode,
+            entrySessionProfile: runtime.strategy.entrySessionProfile || 'berlin',
             asiaWindowLocal: runtime.strategy.asiaWindowLocal,
             raidWindowLocal: runtime.strategy.raidWindowLocal,
             blockedBerlinEntryHours: runtime.strategy.blockedBerlinEntryHours,
@@ -180,6 +181,7 @@ export function defaultScalpReplayConfig(symbol = 'EURUSD'): ScalpReplayRuntimeC
         forceCloseAtEnd: true,
         strategy: {
             sessionClockMode: cfg.sessions.clockMode,
+            entrySessionProfile: cfg.sessions.entrySessionProfile,
             asiaWindowLocal: cfg.sessions.asiaWindowLocal,
             raidWindowLocal: cfg.sessions.raidWindowLocal,
             blockedBerlinEntryHours: cfg.sessions.blockedBerlinEntryHours,

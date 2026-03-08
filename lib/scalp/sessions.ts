@@ -1,4 +1,42 @@
-import type { ScalpClockMode, ScalpSessionWindows } from './types';
+import type { ScalpClockMode, ScalpEntrySessionProfile, ScalpSessionWindows } from './types';
+
+const SCALP_ENTRY_SESSION_PROFILE_ORDER: ScalpEntrySessionProfile[] = [
+    'tokyo',
+    'tokyo_london_overlap',
+    'berlin',
+    'newyork',
+];
+
+export const DEFAULT_SCALP_ENTRY_SESSION_PROFILE: ScalpEntrySessionProfile = 'berlin';
+
+type ScalpEntrySessionProfileDefinition = {
+    profile: ScalpEntrySessionProfile;
+    timeZone: string;
+    windowsLocal: Array<[string, string]>;
+};
+
+const SCALP_ENTRY_SESSION_PROFILES: Record<ScalpEntrySessionProfile, ScalpEntrySessionProfileDefinition> = {
+    tokyo: {
+        profile: 'tokyo',
+        timeZone: 'Asia/Tokyo',
+        windowsLocal: [['09:00', '13:00']],
+    },
+    tokyo_london_overlap: {
+        profile: 'tokyo_london_overlap',
+        timeZone: 'Europe/London',
+        windowsLocal: [['07:00', '11:00']],
+    },
+    berlin: {
+        profile: 'berlin',
+        timeZone: 'Europe/Berlin',
+        windowsLocal: [['08:00', '12:00']],
+    },
+    newyork: {
+        profile: 'newyork',
+        timeZone: 'America/New_York',
+        windowsLocal: [['08:00', '12:00']],
+    },
+};
 
 function parseDayKey(dayKey: string): { y: number; m: number; d: number } {
     const match = String(dayKey || '')
@@ -20,6 +58,25 @@ function parseClock(clock: string): { hh: number; mm: number } {
         .match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
     if (!match) throw new Error(`Invalid clock label: ${clock}`);
     return { hh: Number(match[1]), mm: Number(match[2]) };
+}
+
+function minuteOfDayForClock(clock: string): number {
+    const parsed = parseClock(clock);
+    return parsed.hh * 60 + parsed.mm;
+}
+
+function minutesInWindow(startClock: string, endClock: string): number {
+    const start = minuteOfDayForClock(startClock);
+    const end = minuteOfDayForClock(endClock);
+    if (end > start) return end - start;
+    return 24 * 60 - start + end;
+}
+
+function windowContainsMinute(minuteOfDay: number, startClock: string, endClock: string): boolean {
+    const start = minuteOfDayForClock(startClock);
+    const end = minuteOfDayForClock(endClock);
+    if (end > start) return minuteOfDay >= start && minuteOfDay < end;
+    return minuteOfDay >= start || minuteOfDay < end;
 }
 
 function partsForTimeZone(tsMs: number, timeZone: string): { y: number; m: number; d: number; hh: number; mm: number } {
@@ -46,6 +103,67 @@ function partsForTimeZone(tsMs: number, timeZone: string): { y: number; m: numbe
         mm: read('minute', 0),
     };
 }
+
+export function minuteOfDayInTimeZone(tsMs: number, timeZone: string): number {
+    const parts = partsForTimeZone(tsMs, timeZone);
+    const hh = Number(parts.hh);
+    const mm = Number(parts.mm);
+    if (!Number.isFinite(hh) || !Number.isFinite(mm)) return -1;
+    return hh * 60 + mm;
+}
+
+function getEntrySessionProfileDefinition(profile: ScalpEntrySessionProfile): ScalpEntrySessionProfileDefinition {
+    return SCALP_ENTRY_SESSION_PROFILES[profile];
+}
+
+export function normalizeScalpEntrySessionProfile(
+    value: unknown,
+    fallback: ScalpEntrySessionProfile = DEFAULT_SCALP_ENTRY_SESSION_PROFILE,
+): ScalpEntrySessionProfile {
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, '') as ScalpEntrySessionProfile;
+    if (normalized in SCALP_ENTRY_SESSION_PROFILES) {
+        return normalized;
+    }
+    return fallback;
+}
+
+export function listScalpEntrySessionProfiles(): ScalpEntrySessionProfile[] {
+    return SCALP_ENTRY_SESSION_PROFILE_ORDER.slice();
+}
+
+export function scalpEntrySessionProfileDistance(a: ScalpEntrySessionProfile, b: ScalpEntrySessionProfile): number {
+    const idxA = SCALP_ENTRY_SESSION_PROFILE_ORDER.indexOf(a);
+    const idxB = SCALP_ENTRY_SESSION_PROFILE_ORDER.indexOf(b);
+    if (idxA < 0 || idxB < 0) return Number.MAX_SAFE_INTEGER;
+    return Math.abs(idxA - idxB);
+}
+
+export function inScalpEntrySessionProfileWindow(nowMs: number, profile: ScalpEntrySessionProfile): boolean {
+    const definition = getEntrySessionProfileDefinition(profile);
+    const minuteOfDay = minuteOfDayInTimeZone(nowMs, definition.timeZone);
+    if (!(minuteOfDay >= 0)) return false;
+    return definition.windowsLocal.some(([startClock, endClock]) =>
+        windowContainsMinute(minuteOfDay, startClock, endClock),
+    );
+}
+
+function assertEqualDurationWindows(): void {
+    const expected = 4 * 60;
+    for (const profile of SCALP_ENTRY_SESSION_PROFILE_ORDER) {
+        const definition = getEntrySessionProfileDefinition(profile);
+        const total = definition.windowsLocal.reduce((sum, [startClock, endClock]) => {
+            return sum + minutesInWindow(startClock, endClock);
+        }, 0);
+        if (total !== expected) {
+            throw new Error(`Invalid session profile ${profile}: expected ${expected} minutes, got ${total}`);
+        }
+    }
+}
+
+assertEqualDurationWindows();
 
 function utcMsFromZoned(dayKey: string, clock: string, timeZone: string): number {
     const date = parseDayKey(dayKey);

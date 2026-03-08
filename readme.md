@@ -86,6 +86,7 @@ MARKETAUX_API_KEY=...
 # SCALP_LIVE_ENABLED=false              # keep false by default (fail-closed)
 # SCALP_DEFAULT_SYMBOL=EURUSD
 # SCALP_SESSION_CLOCK_MODE=LONDON_TZ    # or UTC_FIXED
+# SCALP_ENTRY_SESSION_PROFILE=berlin    # tokyo | tokyo_london_overlap | berlin | newyork (equal-duration session windows)
 # SCALP_ENTRY_ORDER_TYPE=MARKET         # or LIMIT
 # SCALP_RISK_PER_TRADE_PCT=0.35
 # SCALP_REFERENCE_EQUITY_USD=10000

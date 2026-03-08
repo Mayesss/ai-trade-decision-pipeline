@@ -1,4 +1,5 @@
 import type { ScalpCandle, ScalpDirectionalBias, ScalpSessionState } from '../types';
+import { inScalpEntrySessionProfileWindow, normalizeScalpEntrySessionProfile } from '../sessions';
 import type { ScalpStrategyDefinition, ScalpStrategyEntryIntent, ScalpStrategyPhaseInput, ScalpStrategyPhaseOutput } from './types';
 
 type TrendDayReaccelerationStrategyOptions = {
@@ -19,10 +20,6 @@ type TrendDaySetup = {
 };
 
 const STRATEGY_CONST = {
-    sessionsBerlinMinutes: [
-        [8 * 60, 12 * 60],
-        [14 * 60, 18 * 60],
-    ] as Array<[number, number]>,
     atrLen15: 14,
     impulseBreakLookback15: 5,
     impulseMinRangeAtrMult: 0.9,
@@ -130,26 +127,6 @@ function computeAtrSeries(candles: ScalpCandle[], period: number): number[] {
     }
     out[0] = out[1] ?? 0;
     return out;
-}
-
-function minuteOfDayInTimeZone(tsMs: number, timeZone: string): number {
-    const fmt = new Intl.DateTimeFormat('en-GB', {
-        timeZone,
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-    });
-    const parts = fmt.formatToParts(new Date(tsMs));
-    const hh = Number(parts.find((part) => part.type === 'hour')?.value || '0');
-    const mm = Number(parts.find((part) => part.type === 'minute')?.value || '0');
-    if (!Number.isFinite(hh) || !Number.isFinite(mm)) return -1;
-    return hh * 60 + mm;
-}
-
-function inBerlinSessionWindow(nowMs: number): boolean {
-    const minuteOfDay = minuteOfDayInTimeZone(nowMs, 'Europe/Berlin');
-    if (!(minuteOfDay >= 0)) return false;
-    return STRATEGY_CONST.sessionsBerlinMinutes.some(([startMin, endMin]) => minuteOfDay >= startMin && minuteOfDay < endMin);
 }
 
 function extreme(values: number[], mode: 'min' | 'max'): number | null {
@@ -312,15 +289,21 @@ function applyPhaseDetectorsWithOptions(
         });
     }
 
-    if (!inBerlinSessionWindow(input.nowMs)) {
+    const entrySessionProfile = normalizeScalpEntrySessionProfile(input.cfg.sessions.entrySessionProfile, 'berlin');
+    const sessionProfileReason = `SESSION_PROFILE_${entrySessionProfile.toUpperCase()}`;
+    if (!inScalpEntrySessionProfileWindow(input.nowMs, entrySessionProfile)) {
         next.state = 'IDLE';
         next.sweep = null;
         next.confirmation = null;
         next.ifvg = null;
+        reasonCodes.push('SESSION_FILTER_OUTSIDE_ENTRY_PROFILE');
+        reasonCodes.push(sessionProfileReason);
+        // Legacy alias for existing UI/reporting compatibility.
         reasonCodes.push('SESSION_FILTER_OUTSIDE_BERLIN_WINDOWS');
         return finalizePhase({ state: next, reasonCodes });
     }
     reasonCodes.push('SESSION_FILTER_PASSED');
+    reasonCodes.push(sessionProfileReason);
 
     const setup = detectTrendDaySetup({
         baseCandles: input.market.baseCandles,

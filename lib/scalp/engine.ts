@@ -509,6 +509,7 @@ export async function runScalpExecuteCycle(opts: {
                     maxTradesPerDay: cfg.risk.maxTradesPerSymbolPerDay,
                     cooldownAfterLossMinutes: cfg.risk.cooldownAfterLossMinutes,
                     sessionClockMode: cfg.sessions.clockMode,
+                    entrySessionProfile: cfg.sessions.entrySessionProfile,
                     asiaWindowLocal: cfg.sessions.asiaWindowLocal,
                     raidWindowLocal: cfg.sessions.raidWindowLocal,
                     asiaTf: cfg.timeframes.asiaBase,

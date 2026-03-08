@@ -1,4 +1,9 @@
 import type { ScalpCandle, ScalpDirectionalBias, ScalpSessionState } from '../types';
+import {
+    inScalpEntrySessionProfileWindow,
+    minuteOfDayInTimeZone,
+    normalizeScalpEntrySessionProfile,
+} from '../sessions';
 import type { ScalpStrategyDefinition, ScalpStrategyEntryIntent, ScalpStrategyPhaseInput, ScalpStrategyPhaseOutput } from './types';
 
 type RegimeScan = {
@@ -41,10 +46,6 @@ type RegimePullbackStrategyOptions = {
 };
 
 const STRATEGY_CONST = {
-    sessionsBerlinMinutes: [
-        [8 * 60, 12 * 60],
-        [14 * 60, 18 * 60],
-    ] as Array<[number, number]>,
     emaFast15: 50,
     emaSlow15: 200,
     adxLen15: 14,
@@ -249,20 +250,6 @@ function computeAdx(candles: ScalpCandle[], period: number): number {
     return dxValues.slice(-take).reduce((acc, value) => acc + value, 0) / take;
 }
 
-function minuteOfDayInTimeZone(tsMs: number, timeZone: string): number {
-    const fmt = new Intl.DateTimeFormat('en-GB', {
-        timeZone,
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-    });
-    const parts = fmt.formatToParts(new Date(tsMs));
-    const hh = Number(parts.find((part) => part.type === 'hour')?.value || '0');
-    const mm = Number(parts.find((part) => part.type === 'minute')?.value || '0');
-    if (!Number.isFinite(hh) || !Number.isFinite(mm)) return -1;
-    return hh * 60 + mm;
-}
-
 function normalizeBerlinEntryHours(values: number[] | undefined): number[] {
     if (!Array.isArray(values) || values.length === 0) return [];
     return Array.from(
@@ -272,12 +259,6 @@ function normalizeBerlinEntryHours(values: number[] | undefined): number[] {
                 .filter((value) => Number.isFinite(value) && value >= 0 && value <= 23),
         ),
     ).sort((a, b) => a - b);
-}
-
-function inBerlinSessionWindow(nowMs: number): boolean {
-    const minuteOfDay = minuteOfDayInTimeZone(nowMs, 'Europe/Berlin');
-    if (!(minuteOfDay >= 0)) return false;
-    return STRATEGY_CONST.sessionsBerlinMinutes.some(([startMin, endMin]) => minuteOfDay >= startMin && minuteOfDay < endMin);
 }
 
 function blockedBerlinEntryHour(nowMs: number, blockedHours: number[]): number | null {
@@ -606,15 +587,21 @@ function applyPhaseDetectorsWithOptions(
         });
     }
 
-    if (!inBerlinSessionWindow(input.nowMs)) {
+    const entrySessionProfile = normalizeScalpEntrySessionProfile(input.cfg.sessions.entrySessionProfile, 'berlin');
+    const sessionProfileReason = `SESSION_PROFILE_${entrySessionProfile.toUpperCase()}`;
+    if (!inScalpEntrySessionProfileWindow(input.nowMs, entrySessionProfile)) {
         next.state = 'IDLE';
         next.sweep = null;
         next.confirmation = null;
         next.ifvg = null;
+        reasonCodes.push('SESSION_FILTER_OUTSIDE_ENTRY_PROFILE');
+        reasonCodes.push(sessionProfileReason);
+        // Legacy alias for existing UI/reporting compatibility.
         reasonCodes.push('SESSION_FILTER_OUTSIDE_BERLIN_WINDOWS');
         return finalizePhase({ state: next, reasonCodes });
     }
     reasonCodes.push('SESSION_FILTER_PASSED');
+    reasonCodes.push(sessionProfileReason);
     const blockedHours = normalizeBerlinEntryHours(
         input.cfg.sessions.blockedBerlinEntryHours?.length ? input.cfg.sessions.blockedBerlinEntryHours : options.blockedBerlinEntryHours,
     );
