@@ -164,7 +164,7 @@ node --import tsx scripts/scalp-replay.ts \
 # matrix compare across strategies
 node --import tsx scripts/scalp-replay-matrix.ts \
   --fixtures core \
-  --strategyIds regime_pullback_m15_m3,regime_pullback_m15_m3_xauusd \
+  --strategyIds regime_pullback_m15_m3,compression_breakout_pullback_m15_m3 \
   --outDir /tmp/scalp-replay-matrix
 ```
 7. Validate runtime safely (`dryRun=true`):
@@ -181,16 +181,16 @@ curl "http://localhost:3000/api/scalp/dashboard/summary?strategyId=regime_pullba
    - Promote default only after evidence using `defaultStrategyId`.
    - Preserve rollback path by keeping previous strategy registered.
 
-## Symbol Guard Backtesting Workflow (Scalp)
-Use this playbook for symbol-specific tuning (for example XAUUSD) without forking core entry logic.
+## Symbol Tune Backtesting Workflow (Scalp)
+Use this playbook for symbol-specific tuning (for example XAUUSD) without forking strategy IDs.
 
-1. Keep base logic in shared strategy; put symbol deltas in a guard wrapper:
+1. Keep base logic in shared strategy and store symbol deltas as deployment `configOverride`:
    - Keep `lib/scalp/strategies/regimePullbackM15M3.ts` generic.
-   - Put symbol-only overrides in `lib/scalp/strategies/<strategyName><Symbol>Guarded.ts`.
-   - Restrict guard scope to risk/session filters first (for example `tp1ClosePct`, `trailAtrMult`, `timeStopBars`, blocked hours).
-2. Select guard by symbol at runtime via cron `strategyId`:
-   - Keep global default strategy unchanged.
-   - Pin symbol-specific guard in cron URL (for example XAU uses `strategyId=regime_pullback_m15_m3_xauusd`).
+   - Put symbol-only overrides in deployment registry rows (`configOverride.risk`, `configOverride.sessions`, `configOverride.confirm`).
+   - Restrict tune scope to risk/session filters first (for example `tp1ClosePct`, `trailAtrMult`, `timeStopBars`, blocked hours).
+2. Select tuned variants by symbol at runtime via deployment rows:
+   - Keep global root strategy IDs unchanged.
+   - Pin symbol-specific tune in deployment registry (`symbol + strategyId + tuneId`).
 3. Backtest with production-like data and cadence:
    - Use stored 15m + 1m candles for `M15/M3` strategy runs.
    - Use the same execution cadence as prod (currently 1 minute).

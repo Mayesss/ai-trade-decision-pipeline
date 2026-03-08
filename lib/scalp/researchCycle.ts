@@ -242,6 +242,55 @@ async function kvRawCommand(command: string, ...args: Array<string | number>): P
     return (data as any).result ?? null;
 }
 
+async function scanKeysByPrefix(prefix: string, maxKeys: number): Promise<string[]> {
+    if (!KV_REST_API_URL || !KV_REST_API_TOKEN) return [];
+    const hardCap = Math.max(1, Math.min(20_000, Math.floor(maxKeys)));
+    let cursor = '0';
+    const keys: string[] = [];
+
+    for (let i = 0; i < 200; i += 1) {
+        const res = await kvRawCommand('SCAN', cursor, 'MATCH', `${prefix}*`, 'COUNT', 250);
+        if (!Array.isArray(res) || res.length < 2) break;
+        const nextCursor = String(res[0] ?? '0');
+        const rows = Array.isArray(res[1]) ? res[1] : [];
+        for (const row of rows) {
+            const key = String(row || '').trim();
+            if (!key) continue;
+            keys.push(key);
+            if (keys.length >= hardCap) {
+                return Array.from(new Set(keys));
+            }
+        }
+        if (nextCursor === '0') break;
+        cursor = nextCursor;
+    }
+    return Array.from(new Set(keys));
+}
+
+export async function listResearchCycleIds(maxKeys = 200): Promise<string[]> {
+    const prefix = `${RESEARCH_CYCLE_KEY_PREFIX}:`;
+    const keys = await scanKeysByPrefix(prefix, maxKeys);
+    return keys
+        .map((key) => key.slice(prefix.length).trim())
+        .filter((cycleId) => Boolean(cycleId));
+}
+
+export async function loadLatestCompletedResearchCycleId(maxKeys = 200): Promise<string | null> {
+    const cycleIds = await listResearchCycleIds(maxKeys);
+    let best: { cycleId: string; updatedAtMs: number } | null = null;
+
+    for (const cycleId of cycleIds) {
+        const cycle = await loadResearchCycle(cycleId);
+        if (!cycle || cycle.status !== 'completed') continue;
+        const updatedAtMs = Math.max(0, Math.floor(Number(cycle.updatedAtMs) || Number(cycle.createdAtMs) || 0));
+        if (!best || updatedAtMs > best.updatedAtMs) {
+            best = { cycleId: cycle.cycleId, updatedAtMs };
+        }
+    }
+
+    return best?.cycleId || null;
+}
+
 async function tryAcquireLock(name: string, token: string, ttlSeconds: number): Promise<boolean> {
     if (!KV_REST_API_URL || !KV_REST_API_TOKEN) return true;
     const key = lockKey(name);

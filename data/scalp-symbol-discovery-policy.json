@@ -32,8 +32,6 @@
   "strategyAllowlist": [
     "compression_breakout_pullback_m15_m3",
     "regime_pullback_m15_m3",
-    "regime_pullback_m15_m3_btcusdt",
-    "regime_pullback_m15_m3_xauusd",
     "trend_day_reacceleration_m15_m3",
     "pdh_pdl_reclaim_m15_m3"
   ]

@@ -7,6 +7,9 @@ import {
     filterScalpDeploymentRegistry,
     loadScalpDeploymentRegistry,
     removeScalpDeploymentRegistryEntry,
+    scalpDeploymentRegistryKvKey,
+    scalpDeploymentRegistryPath,
+    scalpDeploymentRegistryStoreMode,
     upsertScalpDeploymentRegistryEntry,
 } from '../../../../lib/scalp/deploymentRegistry';
 import {
@@ -69,7 +72,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         });
         return res.status(200).json({
             ok: true,
-            registryPath: process.env.SCALP_DEPLOYMENTS_REGISTRY_PATH || 'data/scalp-deployments.json',
+            registryStore: scalpDeploymentRegistryStoreMode(),
+            registryPath: scalpDeploymentRegistryPath(),
+            registryKvKey: scalpDeploymentRegistryKvKey(),
             updatedAt: snapshot.updatedAt,
             count: deployments.length,
             deployments,

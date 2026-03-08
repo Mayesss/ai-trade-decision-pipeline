@@ -40,6 +40,7 @@ export interface ScalpReplayRuntimeConfig {
         sessionClockMode: 'LONDON_TZ' | 'UTC_FIXED';
         asiaWindowLocal: [string, string];
         raidWindowLocal: [string, string];
+        blockedBerlinEntryHours: number[];
         asiaBaseTf: 'M1' | 'M3' | 'M5' | 'M15';
         confirmTf: 'M1' | 'M3';
         maxTradesPerDay: number;
@@ -73,6 +74,7 @@ export interface ScalpReplayRuntimeConfig {
         mssBreakBufferPips: number;
         mssBreakBufferAtrMult: number;
         confirmTtlMinutes: number;
+        allowPullbackSwingBreakTrigger: boolean;
         ifvgMinAtrMult: number;
         ifvgMaxAtrMult: number;
         ifvgTtlMinutes: number;

@@ -19,6 +19,6 @@
     { "path": "/api/scalp/cron/research-report?dryRun=false", "schedule": "0 * * * *" },
     { "path": "/api/scalp/cron/live-guardrail-monitor?dryRun=false&autoPause=true", "schedule": "*/15 * * * *" },
     { "path": "/api/scalp/cron/housekeeping?dryRun=false&refreshReport=true", "schedule": "5 * * * *" },
-    { "path": "/api/scalp/cron/execute-deployments?all=true&dryRun=false", "schedule": "* * * * *" }
+    { "path": "/api/scalp/cron/execute-deployments?all=true&dryRun=false&requirePromotionEligible=true", "schedule": "* * * * *" }
   ]
 }

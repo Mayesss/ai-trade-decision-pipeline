@@ -9,6 +9,7 @@ import {
 } from './deploymentRegistry';
 import {
     loadActiveResearchCycleId,
+    loadLatestCompletedResearchCycleId,
     loadResearchCycle,
     loadResearchCycleSummary,
     type ScalpResearchCycleStatus,
@@ -402,7 +403,10 @@ export async function buildScalpResearchPortfolioReport(
     const nowMs = Number.isFinite(Number(params.nowMs)) ? Math.floor(Number(params.nowMs)) : Date.now();
     const tradeLimit = Math.max(500, Math.min(50_000, Math.floor(Number(params.tradeLimit) || 20_000)));
     const monthlyMonths = Math.max(3, Math.min(24, Math.floor(Number(params.monthlyMonths) || 12)));
-    const cycleId = String(params.cycleId || '').trim() || (await loadActiveResearchCycleId());
+    const cycleId =
+        String(params.cycleId || '').trim() ||
+        (await loadActiveResearchCycleId()) ||
+        (await loadLatestCompletedResearchCycleId());
 
     const [deployments, tradeLedger] = await Promise.all([
         listScalpDeploymentRegistryEntries({}),
@@ -422,8 +426,8 @@ export async function buildScalpResearchPortfolioReport(
 
     const enabledRows = deploymentRows.filter((row) => row.enabled);
     const eligibleEnabled = enabledRows.filter((row) => row.promotionEligible).length;
-    const ineligibleEnabled = enabledRows.filter((row) => !row.promotionEligible && row.promotionReason !== null).length;
-    const withoutGateEnabled = enabledRows.filter((row) => row.promotionReason === null).length;
+    const ineligibleEnabled = enabledRows.filter((row) => !row.promotionEligible && row.forwardValidation !== null).length;
+    const withoutGateEnabled = enabledRows.filter((row) => row.forwardValidation === null).length;
 
     const enabledPairs = correlationRowsForDeployments(enabledRows, monthKeys);
     const avgAbsPairCorrelation =

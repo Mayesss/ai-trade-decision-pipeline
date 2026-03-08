@@ -172,6 +172,7 @@ export interface ScalpStrategyConfig {
         clockMode: ScalpClockMode;
         asiaWindowLocal: [string, string];
         raidWindowLocal: [string, string];
+        blockedBerlinEntryHours: number[];
     };
     timeframes: {
         asiaBase: ScalpBaseTimeframe;
@@ -193,6 +194,7 @@ export interface ScalpStrategyConfig {
         mssBreakBufferPips: number;
         mssBreakBufferAtrMult: number;
         ttlMinutes: number;
+        allowPullbackSwingBreakTrigger: boolean;
     };
     ifvg: {
         minAtrMult: number;

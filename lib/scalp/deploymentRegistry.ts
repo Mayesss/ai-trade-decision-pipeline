@@ -1,9 +1,20 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { kvGetJson, kvSetJson } from '../kv';
 import type { ScalpStrategyConfigOverride } from './config';
 import { resolveScalpDeployment } from './deployments';
 import type { ScalpBacktestLeaderboardEntry } from './replay/types';
+import {
+    REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID,
+    resolveBtcusdtGuardBlockedBerlinHours,
+    resolveBtcusdtGuardOptimizedRiskDefaults,
+} from './strategies/regimePullbackM15M3BtcusdtGuarded';
+import {
+    REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID,
+    resolveXauusdGuardBlockedBerlinHours,
+    resolveXauusdGuardOptimizedRiskDefaults,
+} from './strategies/regimePullbackM15M3XauusdGuarded';
 import type { ScalpDeploymentRef } from './types';
 
 export type ScalpDeploymentRegistrySource = 'manual' | 'backtest' | 'matrix';
@@ -56,6 +67,21 @@ export interface ScalpDeploymentRegistrySnapshot {
     deployments: ScalpDeploymentRegistryEntry[];
 }
 
+export interface CanonicalizeScalpDeploymentRegistryResult {
+    dryRun: boolean;
+    storeMode: 'kv' | 'file';
+    registryPath: string;
+    registryKvKey: string;
+    beforeCount: number;
+    afterCount: number;
+    dedupedCount: number;
+    legacyStrategyRows: number;
+    legacyDeploymentIdRows: number;
+    wrote: boolean;
+    updatedAt: string;
+    snapshot: ScalpDeploymentRegistrySnapshot;
+}
+
 type RegistryWriteParams = {
     symbol?: unknown;
     strategyId?: unknown;
@@ -72,9 +98,10 @@ type RegistryWriteParams = {
 };
 
 const DEFAULT_SCALP_DEPLOYMENT_REGISTRY_PATH = 'data/scalp-deployments.json';
+const DEFAULT_SCALP_DEPLOYMENT_REGISTRY_KV_KEY = 'scalp:deployments:registry:v1';
 const REGISTRY_VERSION = 1 as const;
 const DEFAULT_FORWARD_GATE_THRESHOLDS: ScalpDeploymentPromotionGateThresholds = {
-    minRollCount: 8,
+    minRollCount: 6,
     minProfitableWindowPct: 55,
     minMeanExpectancyR: 0,
     minTradesPerWindow: 2,
@@ -128,6 +155,111 @@ function normalizeFiniteNumber(value: unknown): number | null {
 function normalizeConfigOverride(value: unknown): ScalpStrategyConfigOverride | null {
     if (!isRecord(value)) return null;
     return deepClone(value) as ScalpStrategyConfigOverride;
+}
+
+function isLegacyRegimeGuardStrategyId(value: unknown): boolean {
+    const strategyId = String(value || '')
+        .trim()
+        .toLowerCase();
+    return (
+        strategyId === REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID ||
+        strategyId === REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID
+    );
+}
+
+function hasLegacyRegimeGuardIdInDeployment(value: unknown): boolean {
+    const deploymentId = String(value || '')
+        .trim()
+        .toLowerCase();
+    if (!deploymentId) return false;
+    return deploymentId.includes(`~${REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID}~`) || deploymentId.includes(`~${REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID}~`);
+}
+
+function mergeConfigOverrides(
+    base: ScalpStrategyConfigOverride | null,
+    patch: ScalpStrategyConfigOverride | null,
+): ScalpStrategyConfigOverride | null {
+    if (!base && !patch) return null;
+    if (!base) return deepClone(patch) as ScalpStrategyConfigOverride;
+    if (!patch) return deepClone(base) as ScalpStrategyConfigOverride;
+    const out = deepClone(base) as Record<string, unknown>;
+    const apply = (target: Record<string, unknown>, source: Record<string, unknown>) => {
+        for (const [key, raw] of Object.entries(source)) {
+            if (raw === undefined) continue;
+            if (Array.isArray(raw)) {
+                target[key] = raw.slice();
+                continue;
+            }
+            if (isRecord(raw) && isRecord(target[key])) {
+                apply(target[key] as Record<string, unknown>, raw);
+                continue;
+            }
+            target[key] = isRecord(raw) ? deepClone(raw) : raw;
+        }
+    };
+    apply(out, patch as Record<string, unknown>);
+    return out as ScalpStrategyConfigOverride;
+}
+
+function normalizeTuneLabel(value: unknown): string {
+    return String(value || '')
+        .trim()
+        .toLowerCase();
+}
+
+function resolveLegacyBtcusdtBlockedHours(tuneId: unknown): number[] {
+    const tune = normalizeTuneLabel(tuneId);
+    if (tune.includes('high_pf')) return [10, 11];
+    if (tune.includes('low_dd')) return [10];
+    if (tune.includes('return')) return [];
+    return resolveBtcusdtGuardBlockedBerlinHours();
+}
+
+function resolveLegacyXauusdBlockedHours(tuneId: unknown): number[] {
+    const tune = normalizeTuneLabel(tuneId);
+    if (tune.includes('high_pf')) return [15, 17];
+    if (tune.includes('low_dd')) return [9, 15];
+    if (tune.includes('return')) return [15];
+    return resolveXauusdGuardBlockedBerlinHours();
+}
+
+function legacyRegimeGuardConfigOverride(rawStrategyId: unknown, rawTuneId: unknown): ScalpStrategyConfigOverride | null {
+    const strategyId = String(rawStrategyId || '')
+        .trim()
+        .toLowerCase();
+    if (strategyId === REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID) {
+        const risk = resolveBtcusdtGuardOptimizedRiskDefaults();
+        return {
+            risk: {
+                tp1ClosePct: risk.tp1ClosePct,
+                trailAtrMult: risk.trailAtrMult,
+                timeStopBars: risk.timeStopBars,
+            },
+            sessions: {
+                blockedBerlinEntryHours: resolveLegacyBtcusdtBlockedHours(rawTuneId),
+            },
+            confirm: {
+                allowPullbackSwingBreakTrigger: true,
+            },
+        };
+    }
+    if (strategyId === REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID) {
+        const risk = resolveXauusdGuardOptimizedRiskDefaults();
+        return {
+            risk: {
+                tp1ClosePct: risk.tp1ClosePct,
+                trailAtrMult: risk.trailAtrMult,
+                timeStopBars: risk.timeStopBars,
+            },
+            sessions: {
+                blockedBerlinEntryHours: resolveLegacyXauusdBlockedHours(rawTuneId),
+            },
+            confirm: {
+                allowPullbackSwingBreakTrigger: false,
+            },
+        };
+    }
+    return null;
 }
 
 function normalizeLeaderboardEntry(value: unknown, deployment: ScalpDeploymentRef): ScalpBacktestLeaderboardEntry | null {
@@ -309,6 +441,8 @@ export function isScalpDeploymentPromotionEligible(entry: Pick<ScalpDeploymentRe
 
 function normalizeRegistryEntry(raw: unknown): ScalpDeploymentRegistryEntry | null {
     if (!isRecord(raw)) return null;
+    const legacyOverride = legacyRegimeGuardConfigOverride(raw.strategyId, raw.tuneId);
+    const configOverride = mergeConfigOverrides(legacyOverride, normalizeConfigOverride(raw.configOverride));
     const deployment = resolveScalpDeployment({
         symbol: raw.symbol,
         strategyId: raw.strategyId,
@@ -322,7 +456,7 @@ function normalizeRegistryEntry(raw: unknown): ScalpDeploymentRegistryEntry | nu
         enabled: normalizeBool(raw.enabled, true),
         source: normalizeSource(raw.source, 'manual'),
         notes: normalizeOptionalText(raw.notes, 400),
-        configOverride: normalizeConfigOverride(raw.configOverride),
+        configOverride,
         leaderboardEntry: normalizeLeaderboardEntry(raw.leaderboardEntry, deployment),
         promotionGate: normalizePromotionGate(raw.promotionGate),
         createdAtMs,
@@ -340,9 +474,16 @@ function normalizeRegistrySnapshot(raw: unknown): ScalpDeploymentRegistrySnapsho
         };
     }
     const deploymentsRaw = Array.isArray(raw.deployments) ? raw.deployments : [];
-    const deployments = deploymentsRaw
+    const deduped = new Map<string, ScalpDeploymentRegistryEntry>();
+    for (const entry of deploymentsRaw
         .map((entry) => normalizeRegistryEntry(entry))
-        .filter((entry): entry is ScalpDeploymentRegistryEntry => Boolean(entry))
+        .filter((entry): entry is ScalpDeploymentRegistryEntry => Boolean(entry))) {
+        const prev = deduped.get(entry.deploymentId);
+        if (!prev || entry.updatedAtMs >= prev.updatedAtMs) {
+            deduped.set(entry.deploymentId, entry);
+        }
+    }
+    const deployments = Array.from(deduped.values())
         .sort((a, b) => {
             if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
             if (a.strategyId !== b.strategyId) return a.strategyId.localeCompare(b.strategyId);
@@ -360,7 +501,25 @@ export function scalpDeploymentRegistryPath(): string {
     return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
 }
 
-export async function loadScalpDeploymentRegistry(): Promise<ScalpDeploymentRegistrySnapshot> {
+export function scalpDeploymentRegistryKvKey(): string {
+    const configured = String(process.env.SCALP_DEPLOYMENTS_REGISTRY_KV_KEY || DEFAULT_SCALP_DEPLOYMENT_REGISTRY_KV_KEY).trim();
+    return configured || DEFAULT_SCALP_DEPLOYMENT_REGISTRY_KV_KEY;
+}
+
+function hasKvConfig(): boolean {
+    return Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
+}
+
+export function scalpDeploymentRegistryStoreMode(): 'kv' | 'file' {
+    const configured = String(process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE || 'auto')
+        .trim()
+        .toLowerCase();
+    if (configured === 'kv') return 'kv';
+    if (configured === 'file') return 'file';
+    return hasKvConfig() ? 'kv' : 'file';
+}
+
+async function loadScalpDeploymentRegistryFromFile(): Promise<ScalpDeploymentRegistrySnapshot> {
     const filePath = scalpDeploymentRegistryPath();
     try {
         const raw = await readFile(filePath, 'utf8');
@@ -370,10 +529,113 @@ export async function loadScalpDeploymentRegistry(): Promise<ScalpDeploymentRegi
     }
 }
 
-async function saveScalpDeploymentRegistry(snapshot: ScalpDeploymentRegistrySnapshot): Promise<void> {
+async function saveScalpDeploymentRegistryToFile(snapshot: ScalpDeploymentRegistrySnapshot): Promise<void> {
     const filePath = scalpDeploymentRegistryPath();
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
+}
+
+async function loadRawScalpDeploymentRegistryFromFile(): Promise<unknown> {
+    const filePath = scalpDeploymentRegistryPath();
+    try {
+        const raw = await readFile(filePath, 'utf8');
+        return JSON.parse(raw);
+    } catch {
+        return null;
+    }
+}
+
+function hasNonEmptyRegistrySnapshot(raw: unknown): boolean {
+    const snapshot = normalizeRegistrySnapshot(raw);
+    return snapshot.deployments.length > 0 || Boolean(snapshot.updatedAt);
+}
+
+export async function loadScalpDeploymentRegistry(): Promise<ScalpDeploymentRegistrySnapshot> {
+    const storeMode = scalpDeploymentRegistryStoreMode();
+    if (storeMode === 'kv') {
+        const kvSnapshot = normalizeRegistrySnapshot(await kvGetJson<unknown>(scalpDeploymentRegistryKvKey()));
+        if (kvSnapshot.deployments.length > 0 || kvSnapshot.updatedAt) {
+            return kvSnapshot;
+        }
+
+        // First KV bootstrapping pass: seed from the repo snapshot so updates persist after deployment.
+        const fileSnapshot = await loadScalpDeploymentRegistryFromFile();
+        if (fileSnapshot.deployments.length > 0 || fileSnapshot.updatedAt) {
+            await kvSetJson(scalpDeploymentRegistryKvKey(), fileSnapshot);
+            return fileSnapshot;
+        }
+        return kvSnapshot;
+    }
+    return loadScalpDeploymentRegistryFromFile();
+}
+
+async function saveScalpDeploymentRegistry(snapshot: ScalpDeploymentRegistrySnapshot): Promise<void> {
+    const storeMode = scalpDeploymentRegistryStoreMode();
+    if (storeMode === 'kv') {
+        await kvSetJson(scalpDeploymentRegistryKvKey(), snapshot);
+        return;
+    }
+    await saveScalpDeploymentRegistryToFile(snapshot);
+}
+
+export async function canonicalizeScalpDeploymentRegistry(params: {
+    dryRun?: boolean;
+} = {}): Promise<CanonicalizeScalpDeploymentRegistryResult> {
+    const dryRun = Boolean(params.dryRun);
+    const storeMode = scalpDeploymentRegistryStoreMode();
+    const registryPath = scalpDeploymentRegistryPath();
+    const registryKvKey = scalpDeploymentRegistryKvKey();
+    let raw: unknown = null;
+
+    if (storeMode === 'kv') {
+        const kvRaw = await kvGetJson<unknown>(registryKvKey);
+        if (hasNonEmptyRegistrySnapshot(kvRaw)) {
+            raw = kvRaw;
+        } else {
+            raw = await loadRawScalpDeploymentRegistryFromFile();
+        }
+    } else {
+        raw = await loadRawScalpDeploymentRegistryFromFile();
+    }
+
+    const rawRows = isRecord(raw) && Array.isArray(raw.deployments) ? raw.deployments : [];
+    const legacyStrategyRows = rawRows.filter((row) => isRecord(row) && isLegacyRegimeGuardStrategyId(row.strategyId)).length;
+    const legacyDeploymentIdRows = rawRows.filter((row) => {
+        if (!isRecord(row)) return false;
+        if (hasLegacyRegimeGuardIdInDeployment(row.deploymentId)) return true;
+        if (!isRecord(row.leaderboardEntry)) return false;
+        return hasLegacyRegimeGuardIdInDeployment(row.leaderboardEntry.deploymentId);
+    }).length;
+
+    const beforeCount = rawRows.length;
+    const normalized = normalizeRegistrySnapshot(raw);
+    const afterCount = normalized.deployments.length;
+    const dedupedCount = Math.max(0, beforeCount - afterCount);
+    const updatedAt = new Date().toISOString();
+    const snapshot: ScalpDeploymentRegistrySnapshot = {
+        version: REGISTRY_VERSION,
+        updatedAt,
+        deployments: normalized.deployments,
+    };
+
+    if (!dryRun) {
+        await saveScalpDeploymentRegistry(snapshot);
+    }
+
+    return {
+        dryRun,
+        storeMode,
+        registryPath,
+        registryKvKey,
+        beforeCount,
+        afterCount,
+        dedupedCount,
+        legacyStrategyRows,
+        legacyDeploymentIdRows,
+        wrote: !dryRun,
+        updatedAt,
+        snapshot,
+    };
 }
 
 export function filterScalpDeploymentRegistry(

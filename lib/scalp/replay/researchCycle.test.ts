@@ -71,7 +71,7 @@ test('buildResearchCycleTasks chunks lookback windows across allowed strategies'
         lookbackDays: 28,
         chunkDays: 14,
         maxTasks: 20,
-        strategyAllowlist: ['compression_breakout_pullback_m15_m3', 'regime_pullback_m15_m3_btcusdt'],
+        strategyAllowlist: ['compression_breakout_pullback_m15_m3', 'regime_pullback_m15_m3'],
     });
 
     assert.equal(tasks.length, 4);
@@ -80,7 +80,7 @@ test('buildResearchCycleTasks chunks lookback windows across allowed strategies'
     assert.equal(uniqueTaskIds.size, tasks.length);
 
     const strategyIds = Array.from(new Set(tasks.map((task) => task.strategyId))).sort();
-    assert.deepEqual(strategyIds, ['compression_breakout_pullback_m15_m3', 'regime_pullback_m15_m3_btcusdt']);
+    assert.deepEqual(strategyIds, ['compression_breakout_pullback_m15_m3', 'regime_pullback_m15_m3']);
 
     const byStrategy = new Map<string, number>();
     for (const task of tasks) {
@@ -91,7 +91,7 @@ test('buildResearchCycleTasks chunks lookback windows across allowed strategies'
         assert.ok(task.windowToTs - task.windowFromTs <= 14 * DAY_MS);
     }
     assert.equal(byStrategy.get('compression_breakout_pullback_m15_m3'), 2);
-    assert.equal(byStrategy.get('regime_pullback_m15_m3_btcusdt'), 2);
+    assert.equal(byStrategy.get('regime_pullback_m15_m3'), 2);
 });
 
 test('buildResearchCycleTasks enforces maxTasks cap', () => {
@@ -116,11 +116,11 @@ test('summarizeResearchTasks aggregates candidate metrics and keeps running stat
         cycleId: cycle.cycleId,
         taskId: 't1',
         symbol: 'BTCUSDT',
-        strategyId: 'regime_pullback_m15_m3_btcusdt',
+        strategyId: 'regime_pullback_m15_m3',
         status: 'completed',
         result: {
             symbol: 'BTCUSDT',
-            strategyId: 'regime_pullback_m15_m3_btcusdt',
+            strategyId: 'regime_pullback_m15_m3',
             tuneId: 'unit_tune',
             deploymentId: 'btcusdt_guarded',
             windowFromTs: 1,
@@ -142,7 +142,7 @@ test('summarizeResearchTasks aggregates candidate metrics and keeps running stat
         cycleId: cycle.cycleId,
         taskId: 't2',
         symbol: 'BTCUSDT',
-        strategyId: 'regime_pullback_m15_m3_btcusdt',
+        strategyId: 'regime_pullback_m15_m3',
         status: 'failed',
     });
 
@@ -165,7 +165,7 @@ test('summarizeResearchTasks aggregates candidate metrics and keeps running stat
     assert.equal(summary.progressPct, (2 / 3) * 100);
 
     const guarded = summary.candidateAggregates.find(
-        (row) => row.symbol === 'BTCUSDT' && row.strategyId === 'regime_pullback_m15_m3_btcusdt',
+        (row) => row.symbol === 'BTCUSDT' && row.strategyId === 'regime_pullback_m15_m3',
     );
     assert.ok(guarded);
     assert.equal(guarded.completedTasks, 1);
@@ -184,14 +184,14 @@ test('summarizeResearchTasks marks cycle failed when all tasks fail', () => {
         cycleId: cycle.cycleId,
         taskId: 't1',
         symbol: 'BTCUSDT',
-        strategyId: 'regime_pullback_m15_m3_btcusdt',
+        strategyId: 'regime_pullback_m15_m3',
         status: 'failed',
     });
     const failedB = makeTask({
         cycleId: cycle.cycleId,
         taskId: 't2',
         symbol: 'XAUUSDT',
-        strategyId: 'regime_pullback_m15_m3_xauusd',
+        strategyId: 'regime_pullback_m15_m3',
         status: 'failed',
     });
 

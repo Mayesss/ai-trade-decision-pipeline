@@ -119,8 +119,6 @@ const DEFAULT_POLICY: ScalpSymbolDiscoveryPolicy = {
     strategyAllowlist: [
         'compression_breakout_pullback_m15_m3',
         'regime_pullback_m15_m3',
-        'regime_pullback_m15_m3_btcusdt',
-        'regime_pullback_m15_m3_xauusd',
         'trend_day_reacceleration_m15_m3',
         'pdh_pdl_reclaim_m15_m3',
     ],
@@ -347,10 +345,10 @@ export function resolveRecommendedStrategiesForSymbol(symbolRaw: string, allowli
     const isFx = /^[A-Z]{6}$/.test(symbol) && !symbol.endsWith('USDT');
 
     if (isBtc) {
-        push('regime_pullback_m15_m3_btcusdt');
+        push('regime_pullback_m15_m3');
         push('compression_breakout_pullback_m15_m3');
     } else if (isXau) {
-        push('regime_pullback_m15_m3_xauusd');
+        push('regime_pullback_m15_m3');
         push('trend_day_reacceleration_m15_m3');
     } else if (isFx) {
         push('regime_pullback_m15_m3');

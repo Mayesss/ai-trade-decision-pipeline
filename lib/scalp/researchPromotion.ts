@@ -9,6 +9,7 @@ import {
 import {
     listResearchCycleTasks,
     loadActiveResearchCycleId,
+    loadLatestCompletedResearchCycleId,
     loadResearchCycle,
     type ScalpResearchCycleSnapshot,
     type ScalpResearchTask,
@@ -194,7 +195,11 @@ function changedPromotionGate(
 export async function syncResearchCyclePromotionGates(
     params: SyncResearchPromotionParams = {},
 ): Promise<SyncResearchPromotionResult> {
-    const cycleId = String(params.cycleId || '').trim() || (await loadActiveResearchCycleId());
+    const requestedCycleId = String(params.cycleId || '').trim();
+    let cycleId = requestedCycleId || (await loadActiveResearchCycleId());
+    if (!cycleId) {
+        cycleId = await loadLatestCompletedResearchCycleId();
+    }
     const dryRun = Boolean(params.dryRun);
     const requireCompletedCycle = params.requireCompletedCycle ?? true;
     const allowedSources = new Set<ScalpDeploymentRegistrySource>(

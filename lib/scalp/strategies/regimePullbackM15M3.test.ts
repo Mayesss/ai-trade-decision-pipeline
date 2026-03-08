@@ -5,7 +5,6 @@ import { getScalpStrategyConfig } from '../config';
 import { buildScalpSessionWindows } from '../sessions';
 import { createInitialScalpSessionState, deriveScalpDayKey } from '../stateMachine';
 import { regimePullbackM15M3Strategy } from './regimePullbackM15M3';
-import { regimePullbackM15M3XauusdGuardedStrategy } from './regimePullbackM15M3XauusdGuarded';
 
 test('regime pullback strategy returns deterministic idle output on insufficient history', () => {
     const cfg = getScalpStrategyConfig();
@@ -61,15 +60,22 @@ test('regime pullback strategy returns deterministic idle output on insufficient
     );
 });
 
-test('xauusd guarded strategy blocks configured Berlin hour', () => {
+test('regime pullback strategy blocks configured Berlin hour from strategy config', () => {
     const cfg = getScalpStrategyConfig();
+    const cfgWithBlockedHour = {
+        ...cfg,
+        sessions: {
+            ...cfg.sessions,
+            blockedBerlinEntryHours: [15],
+        },
+    };
     const nowMs = Date.UTC(2026, 0, 5, 14, 0, 0, 0); // 15:00 Berlin (CET)
-    const dayKey = deriveScalpDayKey(nowMs, cfg.sessions.clockMode);
+    const dayKey = deriveScalpDayKey(nowMs, cfgWithBlockedHour.sessions.clockMode);
     const windows = buildScalpSessionWindows({
         dayKey,
-        clockMode: cfg.sessions.clockMode,
-        asiaWindowLocal: cfg.sessions.asiaWindowLocal,
-        raidWindowLocal: cfg.sessions.raidWindowLocal,
+        clockMode: cfgWithBlockedHour.sessions.clockMode,
+        asiaWindowLocal: cfgWithBlockedHour.sessions.asiaWindowLocal,
+        raidWindowLocal: cfgWithBlockedHour.sessions.raidWindowLocal,
     });
     const state = createInitialScalpSessionState({
         symbol: 'XAUUSD',
@@ -78,7 +84,7 @@ test('xauusd guarded strategy blocks configured Berlin hour', () => {
         killSwitchActive: false,
     });
 
-    const phase = regimePullbackM15M3XauusdGuardedStrategy.applyPhaseDetectors({
+    const phase = regimePullbackM15M3Strategy.applyPhaseDetectors({
         state,
         market: {
             symbol: 'XAUUSD',
@@ -105,7 +111,7 @@ test('xauusd guarded strategy blocks configured Berlin hour', () => {
         },
         windows,
         nowMs,
-        cfg,
+        cfg: cfgWithBlockedHour,
     });
 
     assert.equal(phase.state.state, 'IDLE');

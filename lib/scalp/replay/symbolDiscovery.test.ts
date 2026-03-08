@@ -7,18 +7,16 @@ test('resolveRecommendedStrategiesForSymbol maps BTC/XAU/FX symbols to expected 
     const allowlist = [
         'compression_breakout_pullback_m15_m3',
         'regime_pullback_m15_m3',
-        'regime_pullback_m15_m3_btcusdt',
-        'regime_pullback_m15_m3_xauusd',
         'trend_day_reacceleration_m15_m3',
         'pdh_pdl_reclaim_m15_m3',
     ];
 
     assert.deepEqual(resolveRecommendedStrategiesForSymbol('BTCUSDT', allowlist), [
-        'regime_pullback_m15_m3_btcusdt',
+        'regime_pullback_m15_m3',
         'compression_breakout_pullback_m15_m3',
     ]);
     assert.deepEqual(resolveRecommendedStrategiesForSymbol('XAUUSDT', allowlist), [
-        'regime_pullback_m15_m3_xauusd',
+        'regime_pullback_m15_m3',
         'trend_day_reacceleration_m15_m3',
     ]);
     assert.deepEqual(resolveRecommendedStrategiesForSymbol('EURUSD', allowlist), [

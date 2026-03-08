@@ -130,7 +130,7 @@ const deploymentRows: DeploymentRow[] = [
   {
     deploymentId: 'btcusdt_guarded_pf',
     symbol: 'BTCUSDT',
-    strategy: 'regime_pullback_m15_m3_btcusdt',
+    strategy: 'regime_pullback_m15_m3',
     tune: 'guarded_high_pf_default',
     promotionEligible: false,
     forwardExp: -0.18,
@@ -152,7 +152,7 @@ const deploymentRows: DeploymentRow[] = [
   {
     deploymentId: 'xauusd_guarded_lowdd',
     symbol: 'XAUUSD',
-    strategy: 'regime_pullback_m15_m3_xauusd',
+    strategy: 'regime_pullback_m15_m3',
     tune: 'xauusd_low_dd',
     promotionEligible: true,
     forwardExp: 0.08,

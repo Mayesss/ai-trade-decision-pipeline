@@ -109,7 +109,7 @@ test('buildForwardValidationByCandidate computes roll-level gate metrics from co
             cycleId: cycle.cycleId,
             taskId: 't3',
             symbol: 'BTCUSDT',
-            strategyId: 'regime_pullback_m15_m3_btcusdt',
+            strategyId: 'regime_pullback_m15_m3',
             trades: 8,
             netR: 3,
             expectancyR: 0.375,
@@ -121,7 +121,7 @@ test('buildForwardValidationByCandidate computes roll-level gate metrics from co
                 cycleId: cycle.cycleId,
                 taskId: 't4',
                 symbol: 'BTCUSDT',
-                strategyId: 'regime_pullback_m15_m3_btcusdt',
+                strategyId: 'regime_pullback_m15_m3',
                 trades: 6,
                 netR: 1,
                 expectancyR: 0.16,
@@ -148,7 +148,7 @@ test('buildForwardValidationByCandidate computes roll-level gate metrics from co
     assert.equal(cbp.forwardValidation.selectionWindowDays, 90);
     assert.equal(cbp.forwardValidation.forwardWindowDays, 14);
 
-    const guarded = rows.find((row) => row.symbol === 'BTCUSDT' && row.strategyId === 'regime_pullback_m15_m3_btcusdt');
+    const guarded = rows.find((row) => row.symbol === 'BTCUSDT' && row.strategyId === 'regime_pullback_m15_m3');
     assert.ok(guarded);
     assert.equal(guarded.rollCount, 1);
     assert.equal(guarded.profitableWindowPct, 100);

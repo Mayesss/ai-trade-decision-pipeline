@@ -1,6 +1,5 @@
 import type { ScalpReplayRuntimeConfig } from '../replay/types';
 import type { ScalpStrategyConfig } from '../types';
-import { buildRegimePullbackM15M3Strategy } from './regimePullbackM15M3';
 
 export const REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID = 'regime_pullback_m15_m3_btcusdt';
 
@@ -170,11 +169,3 @@ export function applyBtcusdtGuardRiskDefaultsToStrategyConfig(params: {
         },
     };
 }
-
-export const regimePullbackM15M3BtcusdtGuardedStrategy = buildRegimePullbackM15M3Strategy({
-    id: REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID,
-    shortName: 'Regime Pullback BTCUSDT',
-    longName: 'Regime-Filtered Trend Pullback Continuation (M15/M3, BTCUSDT Guarded)',
-    allowPullbackSwingBreakTrigger: true,
-    blockedBerlinEntryHours: resolveBtcusdtGuardBlockedBerlinHours(),
-});

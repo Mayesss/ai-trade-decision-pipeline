@@ -1,6 +1,5 @@
 import type { ScalpReplayRuntimeConfig } from '../replay/types';
 import type { ScalpStrategyConfig } from '../types';
-import { buildRegimePullbackM15M3Strategy } from './regimePullbackM15M3';
 
 export const REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID = 'regime_pullback_m15_m3_xauusd';
 
@@ -154,11 +153,3 @@ export function applyXauusdGuardRiskDefaultsToStrategyConfig(params: {
         },
     };
 }
-
-export const regimePullbackM15M3XauusdGuardedStrategy = buildRegimePullbackM15M3Strategy({
-    id: REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID,
-    shortName: 'Regime Pullback XAUUSD',
-    longName: 'Regime-Filtered Trend Pullback Continuation (M15/M3, XAUUSD Guarded)',
-    allowPullbackSwingBreakTrigger: false,
-    blockedBerlinEntryHours: resolveXauusdGuardBlockedBerlinHours(),
-});

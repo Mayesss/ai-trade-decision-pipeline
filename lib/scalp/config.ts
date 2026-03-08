@@ -58,6 +58,18 @@ function toBool(value: string | undefined, fallback: boolean): boolean {
     return fallback;
 }
 
+function parseBerlinHoursCsv(value: string | undefined, fallback: number[] = []): number[] {
+    const raw = String(value || '').trim();
+    if (!raw) return fallback.slice();
+    const out: number[] = [];
+    for (const token of raw.split(',')) {
+        const hour = Math.floor(Number(token.trim()));
+        if (!Number.isFinite(hour) || hour < 0 || hour > 23) continue;
+        out.push(hour);
+    }
+    return Array.from(new Set(out)).sort((a, b) => a - b);
+}
+
 function parseClockMode(value: string | undefined): ScalpClockMode {
     const normalized = String(value || '')
         .trim()
@@ -124,6 +136,7 @@ export function getScalpStrategyConfig(): ScalpStrategyConfig {
                 normalizeClockLabel(process.env.SCALP_RAID_WINDOW_START_LOCAL, '07:00'),
                 normalizeClockLabel(process.env.SCALP_RAID_WINDOW_END_LOCAL, '10:00'),
             ],
+            blockedBerlinEntryHours: parseBerlinHoursCsv(process.env.SCALP_BLOCKED_BERLIN_ENTRY_HOURS, []),
         },
         timeframes: {
             asiaBase: parseAsiaTf(process.env.SCALP_ASIA_BASE_TF),
@@ -148,6 +161,7 @@ export function getScalpStrategyConfig(): ScalpStrategyConfig {
             mssBreakBufferPips: toNonNegativeNumber(process.env.SCALP_MSS_BREAK_BUFFER_PIPS, 0.3),
             mssBreakBufferAtrMult: toNonNegativeNumber(process.env.SCALP_MSS_BREAK_BUFFER_ATR_MULT, 0),
             ttlMinutes: toPositiveInt(process.env.SCALP_CONFIRM_TTL_MINUTES, 45),
+            allowPullbackSwingBreakTrigger: toBool(process.env.SCALP_ALLOW_PULLBACK_SWING_BREAK_TRIGGER, true),
         },
         ifvg: {
             minAtrMult: toNonNegativeNumber(process.env.SCALP_IFVG_MIN_ATR_MULT, 0.1),

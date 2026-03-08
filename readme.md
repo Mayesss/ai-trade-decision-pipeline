@@ -93,13 +93,12 @@ MARKETAUX_API_KEY=...
 # SCALP_MAX_OPEN_POSITIONS_PER_SYMBOL=1
 # CANDLE_HISTORY_STORE=auto             # auto | file | kv
 # CANDLE_HISTORY_DIR=data/candles-history
-# XAUUSD guard defaults for strategyId=regime_pullback_m15_m3_xauusd
+# Optional legacy guard-profile envs for root strategyId=regime_pullback_m15_m3 (prefer deployment configOverride)
 # SCALP_XAUUSD_GUARD_TP1_CLOSE_PCT=20
 # SCALP_XAUUSD_GUARD_TRAIL_ATR_MULT=1.6
 # SCALP_XAUUSD_GUARD_TIME_STOP_BARS=18
 # SCALP_XAUUSD_GUARD_BLOCKED_HOURS_VARIANT=xauusd_return   # xauusd_return | xauusd_low_dd | xauusd_high_pf | off
 # SCALP_XAUUSD_GUARD_BLOCKED_HOURS_BERLIN=15               # explicit hour list override (wins over variant)
-# BTCUSDT guard defaults for strategyId=regime_pullback_m15_m3_btcusdt
 # SCALP_BTCUSDT_GUARD_TP1_CLOSE_PCT=20
 # SCALP_BTCUSDT_GUARD_TRAIL_ATR_MULT=1.4
 # SCALP_BTCUSDT_GUARD_TIME_STOP_BARS=15
@@ -107,7 +106,9 @@ MARKETAUX_API_KEY=...
 # SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT=btcusdt_high_pf   # btcusdt_return | btcusdt_low_dd | btcusdt_high_pf | off
 # SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_BERLIN=10,11            # explicit hour list override (wins over variant)
 # SCALP_REQUIRE_PROMOTION_ELIGIBLE=false                     # when true, execute-deployments runs only promotionGate.eligible entries
-# SCALP_DEPLOYMENT_FORWARD_GATE_MIN_ROLLS=8
+# SCALP_DEPLOYMENTS_REGISTRY_STORE=auto                      # auto | kv | file
+# SCALP_DEPLOYMENTS_REGISTRY_KV_KEY=scalp:deployments:registry:v1
+# SCALP_DEPLOYMENT_FORWARD_GATE_MIN_ROLLS=6
 # SCALP_DEPLOYMENT_FORWARD_GATE_MIN_PROFITABLE_PCT=55
 # SCALP_DEPLOYMENT_FORWARD_GATE_MIN_MEAN_EXPECTANCY_R=0
 # SCALP_DEPLOYMENT_FORWARD_GATE_MIN_TRADES_PER_WINDOW=2
@@ -206,7 +207,7 @@ npm run start
 - `GET /api/forex/*`
   - Forex mode routes are deprecated and currently return `410` with `error=forex_mode_deprecated`.
 - `GET /api/scalp/cron/execute-deployments?all=true&dryRun=true`
-  - Runs enabled deployments from `data/scalp-deployments.json` (or configured registry path).
+  - Runs enabled deployments from the deployment registry (`kv` in `auto` mode when KV is configured, otherwise file).
   - Use `all=true` for one cron pass across all enabled deployment rows, or `symbol=<SYMBOL>` to target one symbol.
   - Optional query: `requirePromotionEligible=true` to execute only deployments with `promotionGate.eligible=true`.
 - `GET /api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true`
@@ -236,6 +237,9 @@ npm run start
 - `GET /api/scalp/cron/housekeeping`
   - Cleans stale/orphaned research artifacts and lock keys, compacts journal/trade-ledger lists, and optionally refreshes research report snapshot.
   - Optional query params: `dryRun=true|false`, `cycleRetentionDays`, `lockMaxAgeMinutes`, `maxScanKeys`, `refreshReport=true|false`.
+- `GET /api/scalp/cron/canonicalize-deployments`
+  - One-time/manual canonicalization pass for deployment registry storage (file/KV): rewrites legacy suffixed strategy IDs to root strategy IDs, applies legacy guard tune overrides, and dedupes collisions by latest `updatedAtMs`.
+  - Defaults to `dryRun=true`; use `dryRun=false` to persist the canonical snapshot.
 - `GET /api/scalp/research/universe`
   - Returns the latest persisted symbol-discovery snapshot (selected symbols, adds/removes, candidate diagnostics).
 - `GET /api/scalp/research/cycle`
@@ -379,7 +383,7 @@ npm run replay:scalp:matrix
 # matrix with parameter grid
 node --import tsx scripts/scalp-replay-matrix.ts \
   --fixtures core \
-  --strategyIds regime_pullback_m15_m3,regime_pullback_m15_m3_btcusdt,regime_pullback_m15_m3_xauusd \
+  --strategyIds regime_pullback_m15_m3,compression_breakout_pullback_m15_m3,trend_day_reacceleration_m15_m3 \
   --tpRs 1,1.5,2 \
   --riskPcts 0.2,0.35 \
   --sweepBufferPips 8,12 \
@@ -441,7 +445,7 @@ node --import tsx scripts/scalp-replay-matrix.ts \
   - `/api/scalp/cron/research-report?dryRun=false` hourly (refreshes operator portfolio report snapshot).
   - `/api/scalp/cron/live-guardrail-monitor?dryRun=false&autoPause=true` every 15 minutes (detects live drift and auto-pauses breached deployments).
   - `/api/scalp/cron/housekeeping?dryRun=false&refreshReport=true` hourly (retention cleanup + lock cleanup + list compaction).
-  - `/api/scalp/cron/execute-deployments?all=true&dryRun=false` every minute across enabled deployments.
+  - `/api/scalp/cron/execute-deployments?all=true&dryRun=false&requirePromotionEligible=true` every minute across promotion-eligible deployments.
   - Symbol-specific scalp tuning is pinned by deployment row (`strategyId` + `tuneId`) in `data/scalp-deployments.json`.
 - Cron-declared routes are intentionally allowed without admin secret; non-cron routes remain protected when `ADMIN_ACCESS_SECRET` is set.
 

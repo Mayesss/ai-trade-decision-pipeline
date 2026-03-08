@@ -79,18 +79,33 @@
     },
     {
       "symbol": "BTCUSDT",
-      "strategyId": "regime_pullback_m15_m3_btcusdt",
+      "strategyId": "regime_pullback_m15_m3",
       "tuneId": "guarded_high_pf_default",
-      "deploymentId": "BTCUSDT~regime_pullback_m15_m3_btcusdt~guarded_high_pf_default",
+      "deploymentId": "BTCUSDT~regime_pullback_m15_m3~guarded_high_pf_default",
       "enabled": true,
       "source": "backtest",
-      "notes": "Promoted from the BTC family confirmation pass on the local Dec 3, 2025 to Mar 3, 2026 window. Uses the BTCUSDT guarded regime-pullback strategy with its current guarded default risk and btcusdt_high_pf blocked-hour profile. Superseded by compression_breakout_pullback_m15_m3 tune cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20 on 2026-03-06T11:50:16.483Z",
-      "configOverride": null,
+      "notes": "Promoted from the BTC family confirmation pass on the local Dec 3, 2025 to Mar 3, 2026 window. Uses root regime_pullback_m15_m3 with BTCUSDT tuned overrides (high-pf blocked-hour profile). Superseded by compression_breakout_pullback_m15_m3 tune cbp_btc_dd8_e2_p8_tr1.5_ts18_sw0.20 on 2026-03-06T11:50:16.483Z",
+      "configOverride": {
+        "risk": {
+          "tp1ClosePct": 20,
+          "trailAtrMult": 1.4,
+          "timeStopBars": 15
+        },
+        "sessions": {
+          "blockedBerlinEntryHours": [
+            10,
+            11
+          ]
+        },
+        "confirm": {
+          "allowPullbackSwingBreakTrigger": true
+        }
+      },
       "leaderboardEntry": {
         "symbol": "BTCUSDT",
-        "strategyId": "regime_pullback_m15_m3_btcusdt",
+        "strategyId": "regime_pullback_m15_m3",
         "tuneId": "guarded_high_pf_default",
-        "deploymentId": "BTCUSDT~regime_pullback_m15_m3_btcusdt~guarded_high_pf_default",
+        "deploymentId": "BTCUSDT~regime_pullback_m15_m3~guarded_high_pf_default",
         "tuneLabel": "guarded high pf default",
         "netR": 41.92826010150645,
         "profitFactor": 2.088844694053849,
@@ -102,44 +117,6 @@
       },
       "createdAtMs": 1772756407000,
       "updatedAtMs": 1772797941836,
-      "updatedBy": "codex"
-    },
-    {
-      "symbol": "XAUUSDT",
-      "strategyId": "regime_pullback_m15_m3_xauusd",
-      "tuneId": "legacy_loose_tuned",
-      "deploymentId": "XAUUSDT~regime_pullback_m15_m3_xauusd~legacy_loose_tuned",
-      "enabled": true,
-      "source": "manual",
-      "notes": "Legacy execute-hybrid reproduction: XAUUSDT guarded regime-pullback strategy with the loose_tuned hybrid profile override.",
-      "configOverride": {
-        "risk": {
-          "maxTradesPerSymbolPerDay": 4,
-          "takeProfitR": 1
-        },
-        "sweep": {
-          "bufferPips": 0.05,
-          "rejectInsidePips": 0,
-          "rejectMaxBars": 8,
-          "minWickBodyRatio": 0.8
-        },
-        "confirm": {
-          "displacementBodyAtrMult": 0.05,
-          "displacementRangeAtrMult": 0.1,
-          "mssLookbackBars": 2,
-          "mssBreakBufferPips": 0,
-          "ttlMinutes": 30
-        },
-        "ifvg": {
-          "minAtrMult": 0,
-          "maxAtrMult": 3,
-          "entryMode": "first_touch",
-          "ttlMinutes": 45
-        }
-      },
-      "leaderboardEntry": null,
-      "createdAtMs": 1772746662000,
-      "updatedAtMs": 1772746662000,
       "updatedBy": "codex"
     },
     {

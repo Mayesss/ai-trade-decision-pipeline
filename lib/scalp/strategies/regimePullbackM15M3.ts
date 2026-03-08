@@ -615,7 +615,10 @@ function applyPhaseDetectorsWithOptions(
         return finalizePhase({ state: next, reasonCodes });
     }
     reasonCodes.push('SESSION_FILTER_PASSED');
-    const blockedHour = blockedBerlinEntryHour(input.nowMs, options.blockedBerlinEntryHours);
+    const blockedHours = normalizeBerlinEntryHours(
+        input.cfg.sessions.blockedBerlinEntryHours?.length ? input.cfg.sessions.blockedBerlinEntryHours : options.blockedBerlinEntryHours,
+    );
+    const blockedHour = blockedBerlinEntryHour(input.nowMs, blockedHours);
     if (blockedHour !== null) {
         next.state = 'IDLE';
         next.sweep = null;
@@ -685,7 +688,7 @@ function applyPhaseDetectorsWithOptions(
         ema20,
         ema50,
         atr,
-        allowPullbackSwingBreakTrigger: options.allowPullbackSwingBreakTrigger,
+        allowPullbackSwingBreakTrigger: input.cfg.confirm.allowPullbackSwingBreakTrigger ?? options.allowPullbackSwingBreakTrigger,
     });
     if (!setup?.found) {
         next.state = 'IDLE';

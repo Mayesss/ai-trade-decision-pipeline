@@ -1,8 +1,8 @@
 import { compressionBreakoutPullbackM15M3Strategy } from './compressionBreakoutPullbackM15M3';
 import { failedAuctionExtremeReversalM15M1Strategy } from './failedAuctionExtremeReversalM15M1';
 import { REGIME_PULLBACK_M15_M3_STRATEGY_ID, regimePullbackM15M3Strategy } from './regimePullbackM15M3';
-import { regimePullbackM15M3BtcusdtGuardedStrategy } from './regimePullbackM15M3BtcusdtGuarded';
-import { regimePullbackM15M3XauusdGuardedStrategy } from './regimePullbackM15M3XauusdGuarded';
+import { REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID } from './regimePullbackM15M3BtcusdtGuarded';
+import { REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID } from './regimePullbackM15M3XauusdGuarded';
 import { hssIctM15M3GuardedStrategy } from './hssIctM15M3Guarded';
 import { openingRangeBreakoutRetestM5M1Strategy } from './openingRangeBreakoutRetestM5M1';
 import { pdhPdlReclaimM15M3Strategy } from './pdhPdlReclaimM15M3';
@@ -13,8 +13,6 @@ export const DEFAULT_SCALP_STRATEGY_ID = REGIME_PULLBACK_M15_M3_STRATEGY_ID;
 
 const REGISTRY: Record<string, ScalpStrategyDefinition> = Object.freeze({
     [regimePullbackM15M3Strategy.id]: regimePullbackM15M3Strategy,
-    [regimePullbackM15M3BtcusdtGuardedStrategy.id]: regimePullbackM15M3BtcusdtGuardedStrategy,
-    [regimePullbackM15M3XauusdGuardedStrategy.id]: regimePullbackM15M3XauusdGuardedStrategy,
     [hssIctM15M3GuardedStrategy.id]: hssIctM15M3GuardedStrategy,
     [openingRangeBreakoutRetestM5M1Strategy.id]: openingRangeBreakoutRetestM5M1Strategy,
     [pdhPdlReclaimM15M3Strategy.id]: pdhPdlReclaimM15M3Strategy,
@@ -23,12 +21,23 @@ const REGISTRY: Record<string, ScalpStrategyDefinition> = Object.freeze({
     [trendDayReaccelerationM15M3Strategy.id]: trendDayReaccelerationM15M3Strategy,
 });
 
+const STRATEGY_ID_ALIASES: Record<string, string> = Object.freeze({
+    [REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID]: REGIME_PULLBACK_M15_M3_STRATEGY_ID,
+    [REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID]: REGIME_PULLBACK_M15_M3_STRATEGY_ID,
+});
+
+export function resolveScalpStrategyIdAlias(value: unknown): string {
+    const normalized = normalizeScalpStrategyId(value);
+    if (!normalized) return '';
+    return STRATEGY_ID_ALIASES[normalized] || normalized;
+}
+
 export function listScalpStrategies(): ScalpStrategyDefinition[] {
     return Object.values(REGISTRY);
 }
 
 export function getScalpStrategyById(id: string): ScalpStrategyDefinition | null {
-    const normalized = normalizeScalpStrategyId(id);
+    const normalized = resolveScalpStrategyIdAlias(id);
     if (!normalized) return null;
     return REGISTRY[normalized] || null;
 }

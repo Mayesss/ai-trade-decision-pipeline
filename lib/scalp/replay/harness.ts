@@ -86,6 +86,7 @@ function buildStrategyConfig(runtime: ScalpReplayRuntimeConfig): ScalpStrategyCo
             clockMode: runtime.strategy.sessionClockMode,
             asiaWindowLocal: runtime.strategy.asiaWindowLocal,
             raidWindowLocal: runtime.strategy.raidWindowLocal,
+            blockedBerlinEntryHours: runtime.strategy.blockedBerlinEntryHours,
         },
         timeframes: {
             asiaBase: runtime.strategy.asiaBaseTf,
@@ -107,6 +108,7 @@ function buildStrategyConfig(runtime: ScalpReplayRuntimeConfig): ScalpStrategyCo
             mssBreakBufferPips: runtime.strategy.mssBreakBufferPips,
             mssBreakBufferAtrMult: runtime.strategy.mssBreakBufferAtrMult,
             ttlMinutes: runtime.strategy.confirmTtlMinutes,
+            allowPullbackSwingBreakTrigger: runtime.strategy.allowPullbackSwingBreakTrigger,
         },
         ifvg: {
             minAtrMult: runtime.strategy.ifvgMinAtrMult,
@@ -180,6 +182,7 @@ export function defaultScalpReplayConfig(symbol = 'EURUSD'): ScalpReplayRuntimeC
             sessionClockMode: cfg.sessions.clockMode,
             asiaWindowLocal: cfg.sessions.asiaWindowLocal,
             raidWindowLocal: cfg.sessions.raidWindowLocal,
+            blockedBerlinEntryHours: cfg.sessions.blockedBerlinEntryHours,
             asiaBaseTf: preferredTimeframes?.asiaBaseTf ?? 'M15',
             confirmTf: preferredTimeframes?.confirmTf ?? 'M3',
             maxTradesPerDay: cfg.risk.maxTradesPerSymbolPerDay,
@@ -214,6 +217,7 @@ export function defaultScalpReplayConfig(symbol = 'EURUSD'): ScalpReplayRuntimeC
             mssBreakBufferPips: cfg.confirm.mssBreakBufferPips,
             mssBreakBufferAtrMult: cfg.confirm.mssBreakBufferAtrMult,
             confirmTtlMinutes: cfg.confirm.ttlMinutes,
+            allowPullbackSwingBreakTrigger: cfg.confirm.allowPullbackSwingBreakTrigger,
             ifvgMinAtrMult: 0,
             ifvgMaxAtrMult: Math.max(cfg.ifvg.maxAtrMult, 3),
             ifvgTtlMinutes: cfg.ifvg.ttlMinutes,

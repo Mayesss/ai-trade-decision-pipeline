@@ -15,6 +15,7 @@ import {
     getDefaultScalpStrategy,
     getScalpStrategyById,
     listScalpStrategies,
+    resolveScalpStrategyIdAlias,
     resolveScalpStrategyIdForSymbol,
 } from './registry';
 
@@ -27,11 +28,11 @@ test('default scalp strategy is registered and stable', () => {
 
 test('strategy registry exposes unique ids and supports lookup', () => {
     const all = listScalpStrategies();
-    assert.ok(all.length >= 9, 'expected at least nine registered strategies');
+    assert.ok(all.length >= 7, 'expected at least seven registered strategies');
     const ids = all.map((row) => row.id);
     assert.ok(ids.includes(REGIME_PULLBACK_M15_M3_STRATEGY_ID), 'expected default strategy in registry');
-    assert.ok(ids.includes(REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID), 'expected BTCUSDT guarded regime strategy in registry');
-    assert.ok(ids.includes(REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID), 'expected XAUUSD guarded regime strategy in registry');
+    assert.ok(!ids.includes(REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID), 'expected BTCUSDT guarded alias removed from registry');
+    assert.ok(!ids.includes(REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID), 'expected XAUUSD guarded alias removed from registry');
     assert.ok(ids.includes(HSS_ICT_M15_M3_GUARDED_STRATEGY_ID), 'expected guarded HSS-ICT strategy in registry');
     assert.ok(ids.includes(OPENING_RANGE_BREAKOUT_RETEST_M5_M1_STRATEGY_ID), 'expected opening range breakout strategy in registry');
     assert.ok(ids.includes(PDH_PDL_RECLAIM_M15_M3_STRATEGY_ID), 'expected PDH/PDL reclaim strategy in registry');
@@ -46,6 +47,10 @@ test('strategy registry exposes unique ids and supports lookup', () => {
         assert.equal(resolved!.id, id);
     }
     assert.equal(getScalpStrategyById('does_not_exist'), null);
+    assert.equal(resolveScalpStrategyIdAlias(REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID), REGIME_PULLBACK_M15_M3_STRATEGY_ID);
+    assert.equal(resolveScalpStrategyIdAlias(REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID), REGIME_PULLBACK_M15_M3_STRATEGY_ID);
+    assert.equal(getScalpStrategyById(REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID)?.id, REGIME_PULLBACK_M15_M3_STRATEGY_ID);
+    assert.equal(getScalpStrategyById(REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID)?.id, REGIME_PULLBACK_M15_M3_STRATEGY_ID);
 });
 
 test('symbol strategy resolution uses explicit fallback and defaults otherwise', () => {
@@ -54,14 +59,14 @@ test('symbol strategy resolution uses explicit fallback and defaults otherwise',
             symbol: 'XAUUSD',
             fallbackStrategyId: REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID,
         }),
-        REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID,
+        REGIME_PULLBACK_M15_M3_STRATEGY_ID,
     );
     assert.equal(
         resolveScalpStrategyIdForSymbol({
             symbol: 'BTCUSDT',
             fallbackStrategyId: REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID,
         }),
-        REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID,
+        REGIME_PULLBACK_M15_M3_STRATEGY_ID,
     );
     assert.equal(
         resolveScalpStrategyIdForSymbol({
