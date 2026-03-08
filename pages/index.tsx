@@ -364,6 +364,20 @@ type ScalpPromotionSyncPreviewResponse = {
   deploymentsMatched?: number;
   deploymentsUpdated?: number;
   materialization?: ScalpPromotionSyncMaterialization | null;
+  rows?: Array<{
+    symbol?: string;
+    strategyId?: string;
+    tuneId?: string;
+    weeklyGateReason?: string | null;
+    previousGate?: {
+      reason?: string | null;
+      eligible?: boolean;
+    } | null;
+    nextGate?: {
+      reason?: string | null;
+      eligible?: boolean;
+    } | null;
+  }>;
 };
 
 type ScalpPromotionSyncSnapshot = ScalpPromotionSyncPreviewResponse & {
@@ -447,6 +461,26 @@ type ScalpOpsCronRow = {
   details: ScalpOpsCronDetail[];
   visualMetrics?: ScalpOpsCronVisualMetric[];
   resultPreview?: Record<string, unknown> | null;
+};
+
+type ScalpWorkerSortKey =
+  | 'symbol'
+  | 'strategyId'
+  | 'tuneId'
+  | 'whyNotPromoted'
+  | 'windowToTs'
+  | 'status'
+  | 'trades'
+  | 'netR'
+  | 'expectancyR'
+  | 'profitFactor'
+  | 'maxDrawdownR';
+
+type ScalpWorkerSortDirection = 'asc' | 'desc';
+
+type ScalpWorkerSortState = {
+  key: ScalpWorkerSortKey;
+  direction: ScalpWorkerSortDirection;
 };
 
 type ScalpUniversePipelineRow = {
@@ -574,6 +608,10 @@ export default function Home() {
     useState<ScalpPromotionSyncSnapshot | null>(null);
   const [scalpActiveDeploymentId, setScalpActiveDeploymentId] = useState<string | null>(null);
   const [scalpExpandedCronId, setScalpExpandedCronId] = useState<string | null>(null);
+  const [scalpWorkerSort, setScalpWorkerSort] = useState<ScalpWorkerSortState>({
+    key: 'windowToTs',
+    direction: 'desc',
+  });
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
   const [livePriceConnected, setLivePriceConnected] = useState(false);
@@ -1694,6 +1732,34 @@ export default function Home() {
     0,
   );
   const scalpMaterializationPreviewRows = scalpMaterializationRows.slice(0, 40);
+  const scalpMaterializationKeySet = new Set<string>(
+    scalpMaterializationRows.map((row) => `${row.symbol}~${row.strategyId}~${row.tuneId}`),
+  );
+  const scalpPromotionSyncRowEntries: Array<[string, { syncReason: string | null; eligibleFromSync: boolean | null }]> = [];
+  for (const row of Array.isArray(scalpPromotionSyncSnapshot?.rows) ? scalpPromotionSyncSnapshot.rows : []) {
+    const symbol = String(row?.symbol || '').trim().toUpperCase();
+    const strategyId = String(row?.strategyId || '').trim();
+    const tuneId = String(row?.tuneId || '').trim() || 'default';
+    if (!symbol || !strategyId) continue;
+    const syncReason =
+      String(row?.weeklyGateReason || '').trim() ||
+      String(row?.nextGate?.reason || '').trim() ||
+      String(row?.previousGate?.reason || '').trim() ||
+      null;
+    const eligibleFromSync =
+      typeof row?.nextGate?.eligible === 'boolean'
+        ? row.nextGate.eligible
+        : typeof row?.previousGate?.eligible === 'boolean'
+          ? row.previousGate.eligible
+          : null;
+    scalpPromotionSyncRowEntries.push([`${symbol}~${strategyId}~${tuneId}`, { syncReason, eligibleFromSync }]);
+  }
+  const scalpPromotionSyncRowMap = new Map<string, { syncReason: string | null; eligibleFromSync: boolean | null }>(
+    scalpPromotionSyncRowEntries,
+  );
+  const scalpOpsByCandidateKey = new Map<string, ScalpOpsDeploymentRow>(
+    scalpOpsDeployments.map((row) => [`${row.symbol}~${row.strategyId}~${row.tuneId}`, row] as const),
+  );
   const scalpAvgAbsPairCorrelation = asFiniteNumber(scalpResearchReport?.summary?.avgAbsPairCorrelation);
   const scalpCycleProgressPct =
     asFiniteNumber(scalpResearchCycle?.summary?.progressPct) ??
@@ -1747,7 +1813,23 @@ export default function Home() {
   const scalpCycleRunning = asFiniteNumber(scalpResearchCycle?.summary?.totals?.running);
   const scalpWorkerTasks = Array.isArray(scalpResearchCycle?.tasks) ? scalpResearchCycle.tasks : [];
   const scalpWorkerCycleSource = String(scalpResearchCycle?.cycleSource || '').trim() || 'none';
-  const scalpWorkerTaskRows = scalpWorkerTasks
+  const compareScalpWorkerOptionalNumber = (
+    a: number | null | undefined,
+    b: number | null | undefined,
+  ): number => {
+    const av = typeof a === 'number' && Number.isFinite(a) ? a : null;
+    const bv = typeof b === 'number' && Number.isFinite(b) ? b : null;
+    if (av === null && bv === null) return 0;
+    if (av === null) return 1;
+    if (bv === null) return -1;
+    return av - bv;
+  };
+  const compareScalpWorkerText = (a: string, b: string): number =>
+    String(a || '').localeCompare(String(b || ''), undefined, {
+      numeric: true,
+      sensitivity: 'base',
+    });
+  const scalpWorkerTaskRowsRaw = scalpWorkerTasks
     .map((task) => {
       const symbol = String(task?.symbol || '').trim().toUpperCase();
       const strategyId = String(task?.strategyId || '').trim();
@@ -1761,11 +1843,20 @@ export default function Home() {
       const toTs =
         asFiniteNumber(task?.windowToTs) ??
         asFiniteNumber(task?.result?.windowToTs);
+      const candidateKey = `${symbol}~${strategyId}~${tuneId}`;
+      const deploymentRow = scalpOpsByCandidateKey.get(candidateKey) || null;
+      const syncRow = scalpPromotionSyncRowMap.get(candidateKey) || null;
+      const inShortlist = scalpMaterializationKeySet.has(candidateKey);
+      const whyNotPromoted =
+        deploymentRow?.promotionEligible
+          ? 'eligible'
+          : deploymentRow?.promotionReason || syncRow?.syncReason || (inShortlist ? 'shortlisted_pending_gate' : 'not_in_shortlist');
       return {
         taskId: String(task?.taskId || '').trim(),
         symbol,
         strategyId,
         tuneId,
+        whyNotPromoted,
         status,
         windowFromTs: fromTs,
         windowToTs: toTs,
@@ -1777,15 +1868,57 @@ export default function Home() {
         errorCode: String(task?.errorCode || '').trim() || null,
       };
     })
-    .filter((row) => row.symbol && row.strategyId)
-    .sort((a, b) => {
-      const aTo = a.windowToTs ?? 0;
-      const bTo = b.windowToTs ?? 0;
-      if (bTo !== aTo) return bTo - aTo;
-      if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
-      if (a.strategyId !== b.strategyId) return a.strategyId.localeCompare(b.strategyId);
-      return a.tuneId.localeCompare(b.tuneId);
-    });
+    .filter((row) => row.symbol && row.strategyId);
+  const scalpWorkerTaskRows = scalpWorkerTaskRowsRaw.slice().sort((a, b) => {
+    let cmp = 0;
+    switch (scalpWorkerSort.key) {
+      case 'symbol':
+        cmp = compareScalpWorkerText(a.symbol, b.symbol);
+        break;
+      case 'strategyId':
+        cmp = compareScalpWorkerText(a.strategyId, b.strategyId);
+        break;
+      case 'tuneId':
+        cmp = compareScalpWorkerText(a.tuneId, b.tuneId);
+        break;
+      case 'whyNotPromoted':
+        cmp = compareScalpWorkerText(a.whyNotPromoted, b.whyNotPromoted);
+        break;
+      case 'windowToTs':
+        cmp = compareScalpWorkerOptionalNumber(a.windowToTs, b.windowToTs);
+        break;
+      case 'status':
+        cmp = compareScalpWorkerText(a.status, b.status);
+        break;
+      case 'trades':
+        cmp = compareScalpWorkerOptionalNumber(a.trades, b.trades);
+        break;
+      case 'netR':
+        cmp = compareScalpWorkerOptionalNumber(a.netR, b.netR);
+        break;
+      case 'expectancyR':
+        cmp = compareScalpWorkerOptionalNumber(a.expectancyR, b.expectancyR);
+        break;
+      case 'profitFactor':
+        cmp = compareScalpWorkerOptionalNumber(a.profitFactor, b.profitFactor);
+        break;
+      case 'maxDrawdownR':
+        cmp = compareScalpWorkerOptionalNumber(a.maxDrawdownR, b.maxDrawdownR);
+        break;
+      default:
+        cmp = 0;
+        break;
+    }
+    if (cmp !== 0) {
+      return scalpWorkerSort.direction === 'asc' ? cmp : -cmp;
+    }
+    const aTo = a.windowToTs ?? 0;
+    const bTo = b.windowToTs ?? 0;
+    if (bTo !== aTo) return bTo - aTo;
+    if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
+    if (a.strategyId !== b.strategyId) return a.strategyId.localeCompare(b.strategyId);
+    return a.tuneId.localeCompare(b.tuneId);
+  });
   const formatScalpWindowIso = (fromTs: number | null, toTs: number | null): string => {
     if (fromTs === null || toTs === null) return '—';
     const fromIso = new Date(fromTs).toISOString().slice(0, 10);
@@ -2708,6 +2841,47 @@ export default function Home() {
       ? 'border-zinc-600 bg-zinc-800/70 text-zinc-300'
       : 'border-slate-200 bg-slate-100 text-slate-600';
   };
+  const scalpWorkerSortButtonClass = (active: boolean) =>
+    active
+      ? resolvedTheme === 'dark'
+        ? 'rounded border border-zinc-300 bg-zinc-100 px-1 text-[10px] leading-4 text-zinc-900'
+        : 'rounded border border-slate-500 bg-slate-700 px-1 text-[10px] leading-4 text-white'
+      : resolvedTheme === 'dark'
+        ? 'rounded border border-zinc-600 bg-zinc-800 px-1 text-[10px] leading-4 text-zinc-300 hover:border-zinc-400 hover:text-zinc-100'
+        : 'rounded border border-slate-300 bg-white px-1 text-[10px] leading-4 text-slate-500 hover:border-slate-500 hover:text-slate-700';
+  const setScalpWorkerSortColumn = (key: ScalpWorkerSortKey, direction: ScalpWorkerSortDirection) => {
+    setScalpWorkerSort((prev) => {
+      if (prev.key === key && prev.direction === direction) return prev;
+      return { key, direction };
+    });
+  };
+  const renderScalpWorkerSortableHeader = (label: string, key: ScalpWorkerSortKey) => {
+    const ascActive = scalpWorkerSort.key === key && scalpWorkerSort.direction === 'asc';
+    const descActive = scalpWorkerSort.key === key && scalpWorkerSort.direction === 'desc';
+    return (
+      <div className="inline-flex items-center gap-1">
+        <span>{label}</span>
+        <div className="inline-flex items-center gap-0.5">
+          <button
+            type="button"
+            aria-label={`Sort ${label} ascending`}
+            className={scalpWorkerSortButtonClass(ascActive)}
+            onClick={() => setScalpWorkerSortColumn(key, 'asc')}
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            aria-label={`Sort ${label} descending`}
+            className={scalpWorkerSortButtonClass(descActive)}
+            onClick={() => setScalpWorkerSortColumn(key, 'desc')}
+          >
+            ↓
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   const renderDashboardSkeleton = () => (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-stretch">
@@ -3169,19 +3343,20 @@ export default function Home() {
                                                 scalpDarkMode ? 'border-zinc-700/40' : 'border-slate-200'
                                               }`}
                                             >
-                                              <table className="w-full min-w-[1080px] border-separate border-spacing-y-1.5 text-left text-sm">
+                                              <table className="w-full min-w-[1260px] border-separate border-spacing-y-1.5 text-left text-sm">
                                                 <thead className={`text-[10px] uppercase tracking-[0.14em] ${scalpTableHeaderClass}`}>
                                                   <tr>
-                                                    <th className="px-3 py-1">Symbol</th>
-                                                    <th className="px-3 py-1">Strategy</th>
-                                                    <th className="px-3 py-1">Tune</th>
-                                                    <th className="px-3 py-1">Window</th>
-                                                    <th className="px-3 py-1">Status</th>
-                                                    <th className="px-3 py-1">Trades</th>
-                                                    <th className="px-3 py-1">Net R</th>
-                                                    <th className="px-3 py-1">Expectancy</th>
-                                                    <th className="px-3 py-1">PF</th>
-                                                    <th className="px-3 py-1">Max DD</th>
+                                                    <th className="px-3 py-1">{renderScalpWorkerSortableHeader('Symbol', 'symbol')}</th>
+                                                    <th className="px-3 py-1">{renderScalpWorkerSortableHeader('Strategy', 'strategyId')}</th>
+                                                    <th className="px-3 py-1">{renderScalpWorkerSortableHeader('Tune', 'tuneId')}</th>
+                                                    <th className="px-3 py-1">{renderScalpWorkerSortableHeader('Why not promoted', 'whyNotPromoted')}</th>
+                                                    <th className="px-3 py-1">{renderScalpWorkerSortableHeader('Window', 'windowToTs')}</th>
+                                                    <th className="px-3 py-1">{renderScalpWorkerSortableHeader('Status', 'status')}</th>
+                                                    <th className="px-3 py-1">{renderScalpWorkerSortableHeader('Trades', 'trades')}</th>
+                                                    <th className="px-3 py-1">{renderScalpWorkerSortableHeader('Net R', 'netR')}</th>
+                                                    <th className="px-3 py-1">{renderScalpWorkerSortableHeader('Expectancy', 'expectancyR')}</th>
+                                                    <th className="px-3 py-1">{renderScalpWorkerSortableHeader('PF', 'profitFactor')}</th>
+                                                    <th className="px-3 py-1">{renderScalpWorkerSortableHeader('Max DD', 'maxDrawdownR')}</th>
                                                   </tr>
                                                 </thead>
                                                 <tbody>
@@ -3196,6 +3371,9 @@ export default function Home() {
                                                         </td>
                                                         <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
                                                           {taskRow.tuneId}
+                                                        </td>
+                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                          {String(taskRow.whyNotPromoted || 'unknown').replace(/_/g, ' ')}
                                                         </td>
                                                         <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
                                                           {formatScalpWindowIso(taskRow.windowFromTs, taskRow.windowToTs)}
@@ -3230,7 +3408,7 @@ export default function Home() {
                                                     ))
                                                   ) : (
                                                     <tr className={scalpTableRowClass}>
-                                                      <td colSpan={10} className={`rounded-xl px-3 py-4 text-sm ${scalpTextSecondaryClass}`}>
+                                                      <td colSpan={11} className={`rounded-xl px-3 py-4 text-sm ${scalpTextSecondaryClass}`}>
                                                         {scalpResearchCycle
                                                           ? 'Cycle loaded, but no tasks returned yet.'
                                                           : 'No active or completed research cycle found yet. Run scalp_cycle_start first.'}
