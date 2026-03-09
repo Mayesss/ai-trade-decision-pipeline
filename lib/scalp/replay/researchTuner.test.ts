@@ -19,7 +19,7 @@ test('buildScalpResearchTuneVariants emits session-profile and risk variants for
     const variants = buildScalpResearchTuneVariants({
         symbol: 'BTCUSDT',
         strategyId: 'regime_pullback_m15_m3',
-        maxVariantsPerStrategy: 8,
+        maxVariantsPerStrategy: 24,
     });
 
     const hasSessionProfileVariant = variants.some((row) => row.configOverride?.sessions?.entrySessionProfile !== undefined);
@@ -32,4 +32,15 @@ test('buildScalpResearchTuneVariants emits session-profile and risk variants for
 
     assert.ok(hasSessionProfileVariant);
     assert.ok(hasRiskVariant);
+});
+
+test('buildScalpResearchTuneVariants can expand beyond legacy 20-variant cap', () => {
+    const variants = buildScalpResearchTuneVariants({
+        symbol: 'BTCUSDT',
+        strategyId: 'compression_breakout_pullback_m15_m3',
+        maxVariantsPerStrategy: 48,
+    });
+
+    assert.ok(variants.length > 20);
+    assert.ok(variants.length <= 48);
 });

@@ -20,6 +20,9 @@ export interface ScalpResearchTunerPolicy {
     includeBaseline: boolean;
 }
 
+const DEFAULT_MAX_VARIANTS_PER_STRATEGY = 64;
+const HARD_MAX_VARIANTS_PER_STRATEGY = 256;
+
 function toBool(value: unknown, fallback: boolean): boolean {
     if (typeof value === 'boolean') return value;
     const normalized = String(value || '')
@@ -74,8 +77,9 @@ function sessionProfileToken(value: ScalpEntrySessionProfile): string {
     return String(value).replace(/[^a-z0-9_]/g, '');
 }
 
-function pickNearestNumberAlternatives(values: number[], baseline: number, max = 2): number[] {
+function pickNearestNumberAlternatives(values: number[], baseline: number, max = Number.POSITIVE_INFINITY): number[] {
     const deduped = Array.from(new Set(values.filter((row) => Number.isFinite(row))));
+    const limit = Number.isFinite(max) ? Math.max(0, Math.floor(max)) : deduped.length;
     return deduped
         .filter((row) => Math.abs(row - baseline) > 1e-9)
         .sort((a, b) => {
@@ -84,10 +88,10 @@ function pickNearestNumberAlternatives(values: number[], baseline: number, max =
             if (distA !== distB) return distA - distB;
             return a - b;
         })
-        .slice(0, Math.max(0, max));
+        .slice(0, limit);
 }
 
-function pickNearestHoursAlternatives(values: number[][], baseline: number[], max = 2): number[][] {
+function pickNearestHoursAlternatives(values: number[][], baseline: number[], max = Number.POSITIVE_INFINITY): number[][] {
     const baselineNormalized = normalizeHours(baseline);
     const seen = new Set<string>([JSON.stringify(baselineNormalized)]);
     const out = values
@@ -105,16 +109,18 @@ function pickNearestHoursAlternatives(values: number[][], baseline: number[], ma
             if (a.length !== b.length) return a.length - b.length;
             return JSON.stringify(a).localeCompare(JSON.stringify(b));
         });
-    return out.slice(0, Math.max(0, max));
+    const limit = Number.isFinite(max) ? Math.max(0, Math.floor(max)) : out.length;
+    return out.slice(0, limit);
 }
 
 function pickNearestSessionProfileAlternatives(
     values: ScalpEntrySessionProfile[],
     baseline: ScalpEntrySessionProfile,
-    max = 2,
+    max = Number.POSITIVE_INFINITY,
 ): ScalpEntrySessionProfile[] {
     const baselineNormalized = normalizeScalpEntrySessionProfile(baseline, 'berlin');
     const deduped = Array.from(new Set(values.map((row) => normalizeScalpEntrySessionProfile(row, 'berlin'))));
+    const limit = Number.isFinite(max) ? Math.max(0, Math.floor(max)) : deduped.length;
     return deduped
         .filter((row) => row !== baselineNormalized)
         .sort((a, b) => {
@@ -123,7 +129,7 @@ function pickNearestSessionProfileAlternatives(
             if (distA !== distB) return distA - distB;
             return a.localeCompare(b);
         })
-        .slice(0, Math.max(0, max));
+        .slice(0, limit);
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -136,17 +142,22 @@ function round(value: number, digits = 2): number {
 }
 
 function dynamicTrailCandidates(base: number): number[] {
-    return [round(base * 0.85), round(base), round(base * 1.15)];
+    return [round(base * 0.7), round(base * 0.85), round(base), round(base * 1.15), round(base * 1.3)];
 }
 
 function dynamicTimeStopCandidates(base: number): number[] {
     const b = Math.max(1, Math.floor(base));
-    return [Math.max(4, b - 6), b, b + 6];
+    return [Math.max(4, b - 12), Math.max(4, b - 6), b, b + 6, b + 12];
 }
 
 function dynamicTp1Candidates(base: number): number[] {
     const b = clamp(round(base, 0), 0, 100);
-    return [clamp(b - 10, 0, 100), b, clamp(b + 10, 0, 100)];
+    return [clamp(b - 20, 0, 100), clamp(b - 10, 0, 100), b, clamp(b + 10, 0, 100), clamp(b + 20, 0, 100)];
+}
+
+function dynamicSweepBufferCandidates(base: number): number[] {
+    const b = Math.max(0.01, round(base, 2));
+    return [round(b * 0.5), round(b * 0.75), b, round(b * 1.25), round(b * 1.5)];
 }
 
 export function resolveScalpResearchTunerPolicy(): ScalpResearchTunerPolicy {
@@ -154,7 +165,13 @@ export function resolveScalpResearchTunerPolicy(): ScalpResearchTunerPolicy {
         enabled: toBool(process.env.SCALP_RESEARCH_TUNER_ENABLED, true),
         maxVariantsPerStrategy: Math.max(
             1,
-            Math.min(20, toPositiveInt(process.env.SCALP_RESEARCH_TUNER_MAX_VARIANTS_PER_STRATEGY, 5)),
+            Math.min(
+                HARD_MAX_VARIANTS_PER_STRATEGY,
+                toPositiveInt(
+                    process.env.SCALP_RESEARCH_TUNER_MAX_VARIANTS_PER_STRATEGY,
+                    DEFAULT_MAX_VARIANTS_PER_STRATEGY,
+                ),
+            ),
         ),
         includeBaseline: toBool(process.env.SCALP_RESEARCH_TUNER_INCLUDE_BASELINE, true),
     };
@@ -182,13 +199,25 @@ export function buildScalpResearchTuneVariants(params: {
         configOverride: null,
     });
 
-    const maxVariants = Math.max(1, Math.min(20, toPositiveInt(params.maxVariantsPerStrategy, 5)));
+    const maxVariants = Math.max(
+        1,
+        Math.min(
+            HARD_MAX_VARIANTS_PER_STRATEGY,
+            toPositiveInt(params.maxVariantsPerStrategy, DEFAULT_MAX_VARIANTS_PER_STRATEGY),
+        ),
+    );
     const includeBaseline = params.includeBaseline !== false;
     const strategyId = deployment.strategyId;
+    const baselineTrail = runtime.strategy.trailAtrMult;
+    const baselineTimeStop = runtime.strategy.timeStopBars;
+    const baselineTp1 = runtime.strategy.tp1ClosePct;
+    const baselineSweepBuffer = runtime.strategy.sweepBufferPips;
 
     const variants: InternalVariant[] = [];
     const seenTuneIds = new Set<string>();
     const seenOverrides = new Set<string>();
+    const combinationBudget = Math.max(0, Math.min(4_000, maxVariants * 8));
+    let combinationsAdded = 0;
 
     const pushVariant = (variant: InternalVariant) => {
         const compacted = compactScalpStrategyConfigOverride(variant.configOverride);
@@ -214,8 +243,8 @@ export function buildScalpResearchTuneVariants(params: {
     }
 
     const addTrail = (values: number[]) => {
-        const baseline = runtime.strategy.trailAtrMult;
-        const alts = pickNearestNumberAlternatives(values, baseline, 2);
+        const baseline = baselineTrail;
+        const alts = pickNearestNumberAlternatives(values, baseline);
         for (const value of alts) {
             pushVariant({
                 tuneId: `auto_tr${numberToken(value, 2)}`,
@@ -226,8 +255,8 @@ export function buildScalpResearchTuneVariants(params: {
     };
 
     const addTimeStop = (values: number[]) => {
-        const baseline = runtime.strategy.timeStopBars;
-        const alts = pickNearestNumberAlternatives(values, baseline, 2);
+        const baseline = baselineTimeStop;
+        const alts = pickNearestNumberAlternatives(values, baseline);
         for (const value of alts) {
             pushVariant({
                 tuneId: `auto_ts${Math.floor(value)}`,
@@ -238,8 +267,8 @@ export function buildScalpResearchTuneVariants(params: {
     };
 
     const addTp1 = (values: number[]) => {
-        const baseline = runtime.strategy.tp1ClosePct;
-        const alts = pickNearestNumberAlternatives(values, baseline, 2);
+        const baseline = baselineTp1;
+        const alts = pickNearestNumberAlternatives(values, baseline);
         for (const value of alts) {
             pushVariant({
                 tuneId: `auto_tp${Math.floor(value)}`,
@@ -250,8 +279,8 @@ export function buildScalpResearchTuneVariants(params: {
     };
 
     const addSweepBuffer = (values: number[]) => {
-        const baseline = runtime.strategy.sweepBufferPips;
-        const alts = pickNearestNumberAlternatives(values, baseline, 2);
+        const baseline = baselineSweepBuffer;
+        const alts = pickNearestNumberAlternatives(values, baseline);
         for (const value of alts) {
             pushVariant({
                 tuneId: `auto_sw${numberToken(value, 2)}`,
@@ -263,7 +292,7 @@ export function buildScalpResearchTuneVariants(params: {
 
     const addBlockedHours = (values: number[][]) => {
         const baseline = runtime.strategy.blockedBerlinEntryHours;
-        const alts = pickNearestHoursAlternatives(values, baseline, 2);
+        const alts = pickNearestHoursAlternatives(values, baseline);
         for (const value of alts) {
             pushVariant({
                 tuneId: `auto_bh${hoursToken(value)}`,
@@ -275,7 +304,7 @@ export function buildScalpResearchTuneVariants(params: {
 
     const addSessionProfiles = (values: ScalpEntrySessionProfile[]) => {
         const baseline = normalizeScalpEntrySessionProfile(runtime.strategy.entrySessionProfile, 'berlin');
-        const alts = pickNearestSessionProfileAlternatives(values, baseline, 2);
+        const alts = pickNearestSessionProfileAlternatives(values, baseline);
         for (const value of alts) {
             pushVariant({
                 tuneId: `auto_sp${sessionProfileToken(value)}`,
@@ -285,22 +314,122 @@ export function buildScalpResearchTuneVariants(params: {
         }
     };
 
+    const addRiskMixVariants = (params: {
+        trailValues: number[];
+        timeStopValues: number[];
+        tp1Values: number[];
+        sweepValues?: number[];
+    }) => {
+        const trailValues = Array.from(new Set([baselineTrail, ...params.trailValues]));
+        const timeStopValues = Array.from(new Set([baselineTimeStop, ...params.timeStopValues])).map((row) =>
+            Math.max(1, Math.floor(row)),
+        );
+        const tp1Values = Array.from(new Set([baselineTp1, ...params.tp1Values])).map((row) => clamp(row, 0, 100));
+        const sweepValues =
+            params.sweepValues && params.sweepValues.length > 0
+                ? Array.from(new Set([baselineSweepBuffer, ...params.sweepValues])).map((row) => Math.max(0, row))
+                : null;
+
+        for (const trailAtrMult of trailValues) {
+            for (const timeStopBars of timeStopValues) {
+                for (const tp1ClosePct of tp1Values) {
+                    const sweepLoop = sweepValues || [null];
+                    for (const sweepBufferPips of sweepLoop) {
+                        if (combinationsAdded >= combinationBudget) return;
+
+                        let changed = 0;
+                        if (Math.abs(trailAtrMult - baselineTrail) > 1e-9) changed += 1;
+                        if (Math.abs(timeStopBars - baselineTimeStop) > 1e-9) changed += 1;
+                        if (Math.abs(tp1ClosePct - baselineTp1) > 1e-9) changed += 1;
+                        if (
+                            sweepBufferPips !== null &&
+                            Math.abs(sweepBufferPips - baselineSweepBuffer) > 1e-9
+                        ) {
+                            changed += 1;
+                        }
+                        if (changed < 2) continue;
+
+                        const before = variants.length;
+                        const tuneIdParts = [
+                            `tr${numberToken(trailAtrMult, 2)}`,
+                            `ts${Math.floor(timeStopBars)}`,
+                            `tp${Math.floor(tp1ClosePct)}`,
+                        ];
+                        const configOverride: ScalpStrategyConfigOverride = {
+                            risk: {
+                                trailAtrMult,
+                                timeStopBars,
+                                tp1ClosePct,
+                            },
+                        };
+                        if (sweepBufferPips !== null) {
+                            tuneIdParts.push(`sw${numberToken(sweepBufferPips, 2)}`);
+                            configOverride.sweep = { bufferPips: sweepBufferPips };
+                        }
+                        pushVariant({
+                            tuneId: `auto_mix_${tuneIdParts.join('_')}`,
+                            configOverride,
+                            score:
+                                Math.abs(trailAtrMult - baselineTrail) +
+                                Math.abs(timeStopBars - baselineTimeStop) / 6 +
+                                Math.abs(tp1ClosePct - baselineTp1) / 10 +
+                                (sweepBufferPips === null
+                                    ? 0
+                                    : Math.abs(sweepBufferPips - baselineSweepBuffer) * 2) +
+                                0.75,
+                        });
+                        if (variants.length > before) combinationsAdded += 1;
+                    }
+                }
+            }
+        }
+    };
+
     addSessionProfiles(listScalpEntrySessionProfiles());
 
     if (strategyId === 'compression_breakout_pullback_m15_m3') {
-        addTrail([1.3, 1.4, 1.5, 1.6, 1.7]);
-        addTimeStop([12, 15, 18, 21]);
-        addSweepBuffer([0.1, 0.15, 0.2, 0.25, 0.3]);
-        addTp1([0, 8, 15, 20]);
+        const trailValues = [1.3, 1.4, 1.5, 1.6, 1.7];
+        const timeStopValues = [12, 15, 18, 21];
+        const sweepValues = [0.1, 0.15, 0.2, 0.25, 0.3];
+        const tp1Values = [0, 8, 15, 20];
+        addTrail(trailValues);
+        addTimeStop(timeStopValues);
+        addSweepBuffer(sweepValues);
+        addTp1(tp1Values);
+        addRiskMixVariants({
+            trailValues,
+            timeStopValues,
+            tp1Values,
+            sweepValues,
+        });
     } else if (strategyId === 'regime_pullback_m15_m3') {
+        const trailValues = [1.2, 1.3, 1.4, 1.5, 1.6];
+        const timeStopValues = [12, 15, 18];
+        const tp1Values = [10, 20, 30];
         addBlockedHours([[], [10, 11], [9, 10], [11, 12], [10], [11]]);
-        addTrail([1.2, 1.3, 1.4, 1.5, 1.6]);
-        addTimeStop([12, 15, 18]);
-        addTp1([10, 20, 30]);
+        addTrail(trailValues);
+        addTimeStop(timeStopValues);
+        addTp1(tp1Values);
+        addRiskMixVariants({
+            trailValues,
+            timeStopValues,
+            tp1Values,
+        });
     } else {
-        addTrail(dynamicTrailCandidates(runtime.strategy.trailAtrMult));
-        addTimeStop(dynamicTimeStopCandidates(runtime.strategy.timeStopBars));
-        addTp1(dynamicTp1Candidates(runtime.strategy.tp1ClosePct));
+        const trailValues = dynamicTrailCandidates(runtime.strategy.trailAtrMult);
+        const timeStopValues = dynamicTimeStopCandidates(runtime.strategy.timeStopBars);
+        const tp1Values = dynamicTp1Candidates(runtime.strategy.tp1ClosePct);
+        const sweepValues = dynamicSweepBufferCandidates(runtime.strategy.sweepBufferPips);
+        addTrail(trailValues);
+        addTimeStop(timeStopValues);
+        addTp1(tp1Values);
+        addSweepBuffer(sweepValues);
+        addRiskMixVariants({
+            trailValues,
+            timeStopValues,
+            tp1Values,
+            sweepValues,
+        });
     }
 
     return variants

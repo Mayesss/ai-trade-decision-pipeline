@@ -34,6 +34,8 @@
   "strategyAllowlist": [
     "compression_breakout_pullback_m15_m3",
     "regime_pullback_m15_m3",
+    "hss_ict_m15_m3_guarded",
+    "failed_auction_extreme_reversal_m15_m1",
     "trend_day_reacceleration_m15_m3",
     "pdh_pdl_reclaim_m15_m3"
   ]

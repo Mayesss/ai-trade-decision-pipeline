@@ -25,6 +25,34 @@ test('resolveRecommendedStrategiesForSymbol maps BTC/XAU/FX symbols to expected 
     ]);
 });
 
+test('resolveRecommendedStrategiesForSymbol supports broader asset classes when allowlist includes them', () => {
+    const allowlist = [
+        'compression_breakout_pullback_m15_m3',
+        'regime_pullback_m15_m3',
+        'hss_ict_m15_m3_guarded',
+        'failed_auction_extreme_reversal_m15_m1',
+        'trend_day_reacceleration_m15_m3',
+        'pdh_pdl_reclaim_m15_m3',
+    ];
+
+    assert.deepEqual(resolveRecommendedStrategiesForSymbol('ETHUSDT', allowlist), [
+        'regime_pullback_m15_m3',
+        'compression_breakout_pullback_m15_m3',
+        'failed_auction_extreme_reversal_m15_m1',
+        'hss_ict_m15_m3_guarded',
+    ]);
+    assert.deepEqual(resolveRecommendedStrategiesForSymbol('US500USD', allowlist), [
+        'trend_day_reacceleration_m15_m3',
+        'regime_pullback_m15_m3',
+        'failed_auction_extreme_reversal_m15_m1',
+    ]);
+    assert.deepEqual(resolveRecommendedStrategiesForSymbol('AAPL', allowlist), [
+        'trend_day_reacceleration_m15_m3',
+        'regime_pullback_m15_m3',
+        'pdh_pdl_reclaim_m15_m3',
+    ]);
+});
+
 test('buildNextUniverseWithChurnCaps limits weekly adds/removes and preserves pinned symbols', () => {
     const policy = {
         version: 1 as const,

@@ -186,6 +186,8 @@ const DEFAULT_POLICY: ScalpSymbolDiscoveryPolicy = {
     strategyAllowlist: [
         'compression_breakout_pullback_m15_m3',
         'regime_pullback_m15_m3',
+        'hss_ict_m15_m3_guarded',
+        'failed_auction_extreme_reversal_m15_m1',
         'trend_day_reacceleration_m15_m3',
         'pdh_pdl_reclaim_m15_m3',
     ],
@@ -495,22 +497,162 @@ export function resolveRecommendedStrategiesForSymbol(symbolRaw: string, allowli
         out.push(id);
     };
 
+    const fxCcy = new Set([
+        'USD',
+        'EUR',
+        'GBP',
+        'JPY',
+        'AUD',
+        'CAD',
+        'CHF',
+        'NZD',
+        'SEK',
+        'NOK',
+        'DKK',
+        'CNH',
+        'HKD',
+        'SGD',
+        'ZAR',
+        'TRY',
+        'MXN',
+        'PLN',
+        'HUF',
+        'CZK',
+    ]);
+    const quoteSuffixes = ['USDT', 'USD', 'EUR', 'GBP', 'JPY'];
+    const cryptoBases = new Set([
+        'BTC',
+        'ETH',
+        'SOL',
+        'BNB',
+        'XRP',
+        'ADA',
+        'DOGE',
+        'LTC',
+        'DOT',
+        'AVAX',
+        'MATIC',
+        'LINK',
+        'ATOM',
+        'BCH',
+        'TRX',
+        'ETC',
+        'UNI',
+        'APT',
+        'SUI',
+        'NEAR',
+        'ARB',
+        'OP',
+        'FIL',
+        'AAVE',
+        'ICP',
+        'XLM',
+        'EOS',
+        'XTZ',
+        'SHIB',
+    ]);
+    const indexTokens = [
+        'US500',
+        'SPX500',
+        'US30',
+        'DJ30',
+        'NAS100',
+        'USTEC',
+        'GER40',
+        'DE40',
+        'FRA40',
+        'EU50',
+        'UK100',
+        'AUS200',
+        'JPN225',
+        'JP225',
+        'HK50',
+        'CHINA50',
+        'CN50',
+        'ES35',
+        'IT40',
+        'SWI20',
+        'SA40',
+    ];
+    const energyTokens = ['BRENT', 'WTI', 'USOIL', 'UKOIL', 'NATGAS', 'NGAS', 'CL', 'OIL'];
+
+    const stripQuoteSuffix = (value: string): string => {
+        for (const suffix of quoteSuffixes) {
+            if (value.endsWith(suffix) && value.length > suffix.length) {
+                return value.slice(0, value.length - suffix.length);
+            }
+        }
+        return value;
+    };
+
+    const isFx =
+        symbol.length === 6 &&
+        fxCcy.has(symbol.slice(0, 3)) &&
+        fxCcy.has(symbol.slice(3, 6)) &&
+        !symbol.endsWith('USDT');
     const isBtc = symbol === 'BTCUSDT' || symbol === 'BTCUSD';
     const isXau = symbol === 'XAUUSDT' || symbol === 'XAUUSD' || symbol === 'GOLD';
-    const isFx = /^[A-Z]{6}$/.test(symbol) && !symbol.endsWith('USDT');
+    const isMetals =
+        isXau ||
+        symbol === 'XAGUSDT' ||
+        symbol === 'XAGUSD' ||
+        symbol === 'SILVER' ||
+        symbol.startsWith('XPT') ||
+        symbol.startsWith('XPD');
+    const isCrypto =
+        !isMetals &&
+        (symbol.endsWith('USDT') ||
+            (symbol.endsWith('USD') && cryptoBases.has(stripQuoteSuffix(symbol))) ||
+            cryptoBases.has(symbol));
+    const isIndex = indexTokens.some((token) => symbol.startsWith(token) || symbol.includes(token));
+    const isEnergy = energyTokens.some((token) => symbol.startsWith(token) || symbol.includes(token));
+    const strippedSymbol = stripQuoteSuffix(symbol);
+    const isEquityLike =
+        !isFx &&
+        !isCrypto &&
+        !isMetals &&
+        !isIndex &&
+        !isEnergy &&
+        /^[A-Z]{1,6}$/.test(strippedSymbol) &&
+        !fxCcy.has(strippedSymbol);
 
     if (isBtc) {
         push('regime_pullback_m15_m3');
         push('compression_breakout_pullback_m15_m3');
+        push('failed_auction_extreme_reversal_m15_m1');
+    } else if (isCrypto) {
+        push('regime_pullback_m15_m3');
+        push('compression_breakout_pullback_m15_m3');
+        push('failed_auction_extreme_reversal_m15_m1');
+        push('hss_ict_m15_m3_guarded');
     } else if (isXau) {
         push('regime_pullback_m15_m3');
         push('trend_day_reacceleration_m15_m3');
+        push('failed_auction_extreme_reversal_m15_m1');
+    } else if (isMetals) {
+        push('trend_day_reacceleration_m15_m3');
+        push('regime_pullback_m15_m3');
+        push('failed_auction_extreme_reversal_m15_m1');
+    } else if (isIndex) {
+        push('trend_day_reacceleration_m15_m3');
+        push('regime_pullback_m15_m3');
+        push('failed_auction_extreme_reversal_m15_m1');
+    } else if (isEnergy) {
+        push('trend_day_reacceleration_m15_m3');
+        push('failed_auction_extreme_reversal_m15_m1');
+        push('regime_pullback_m15_m3');
+    } else if (isEquityLike) {
+        push('trend_day_reacceleration_m15_m3');
+        push('regime_pullback_m15_m3');
+        push('pdh_pdl_reclaim_m15_m3');
     } else if (isFx) {
         push('regime_pullback_m15_m3');
         push('pdh_pdl_reclaim_m15_m3');
+        push('hss_ict_m15_m3_guarded');
     } else {
         push('regime_pullback_m15_m3');
         push('trend_day_reacceleration_m15_m3');
+        push('failed_auction_extreme_reversal_m15_m1');
     }
 
     return Array.from(new Set(out));
