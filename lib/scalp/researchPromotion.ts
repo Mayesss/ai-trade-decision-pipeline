@@ -1,11 +1,13 @@
 import {
-    listScalpDeploymentRegistryEntries,
-    upsertScalpDeploymentRegistryEntry,
+    loadScalpDeploymentRegistry,
+    upsertScalpDeploymentRegistryEntriesBulk,
     type ScalpDeploymentPromotionGate,
     type ScalpDeploymentRegistryEntry,
     type ScalpDeploymentRegistrySource,
+    type ScalpDeploymentRegistryWriteParams,
     type ScalpForwardValidationMetrics,
 } from './deploymentRegistry';
+import { kvGetJson, kvSetJson } from '../kv';
 import { loadScalpCandleHistory } from './candleHistory';
 import { pipSizeForScalpSymbol } from './marketData';
 import { runScalpReplay } from './replay/harness';
@@ -21,6 +23,7 @@ import {
 
 const DAY_MS = 24 * 60 * 60_000;
 const WEEK_MS = 7 * DAY_MS;
+const PROMOTION_SYNC_STATE_KEY = 'scalp:research:promotion-sync:last:v1';
 
 type CandleRow = [number, number, number, number, number, number];
 
@@ -559,6 +562,54 @@ function buildForcedIneligibleGate(params: {
     };
 }
 
+type PromotionSyncStateSnapshot = {
+    version: 1;
+    signature: string;
+    cycleId: string;
+    syncedAtMs: number;
+    deploymentsConsidered: number;
+    deploymentsMatched: number;
+    deploymentsUpdated: number;
+    materializationCreated: number;
+};
+
+function buildPromotionSyncSignature(params: {
+    cycle: ScalpResearchCycleSnapshot;
+    allowedSources: Set<ScalpDeploymentRegistrySource>;
+    weeklyPolicy: SyncResearchWeeklyPolicy;
+    materializeMissingCandidates: boolean;
+    materializeTopKPerSymbol: number;
+    materializeSource: 'matrix' | 'backtest';
+    materializeEnabled: boolean;
+    deployments: ScalpDeploymentRegistryEntry[];
+}): string {
+    const allowedSources = Array.from(params.allowedSources).sort();
+    const deploymentStamp = params.deployments
+        .map((row) =>
+            [
+                row.deploymentId,
+                row.source,
+                row.enabled ? '1' : '0',
+                row.promotionGate?.eligible ? '1' : '0',
+                row.promotionGate?.reason || '',
+                Number.isFinite(Number(row.updatedAtMs)) ? String(Math.floor(Number(row.updatedAtMs))) : '0',
+            ].join(':'),
+        )
+        .sort();
+    return JSON.stringify({
+        cycleId: params.cycle.cycleId,
+        cycleStatus: params.cycle.status,
+        cycleUpdatedAtMs: params.cycle.updatedAtMs,
+        allowedSources,
+        weeklyPolicy: params.weeklyPolicy,
+        materializeMissingCandidates: params.materializeMissingCandidates,
+        materializeTopKPerSymbol: params.materializeTopKPerSymbol,
+        materializeSource: params.materializeSource,
+        materializeEnabled: params.materializeEnabled,
+        deploymentStamp,
+    });
+}
+
 export async function syncResearchCyclePromotionGates(
     params: SyncResearchPromotionParams = {},
 ): Promise<SyncResearchPromotionResult> {
@@ -679,6 +730,47 @@ export async function syncResearchCyclePromotionGates(
     const nowMs = Number.isFinite(Number(params.nowMs)) ? Math.floor(Number(params.nowMs)) : Date.now();
     const weeklyPolicy = resolveWeeklyPolicy(params, cycle);
 
+    const deploymentSnapshot = await loadScalpDeploymentRegistry();
+    let deployments = deploymentSnapshot.deployments.slice();
+    const preSyncSignature = buildPromotionSyncSignature({
+        cycle,
+        allowedSources,
+        weeklyPolicy,
+        materializeMissingCandidates,
+        materializeTopKPerSymbol,
+        materializeSource,
+        materializeEnabled,
+        deployments,
+    });
+    const preSyncConsidered = deployments.filter((row) => allowedSources.has(row.source)).length;
+
+    if (!dryRun) {
+        const lastSync = await kvGetJson<PromotionSyncStateSnapshot>(PROMOTION_SYNC_STATE_KEY);
+        if (lastSync?.signature === preSyncSignature) {
+            return {
+                ok: true,
+                cycleId,
+                cycleStatus: cycle.status,
+                dryRun,
+                requireCompletedCycle,
+                reason: 'sync_already_current',
+                weeklyPolicy,
+                candidates: [],
+                materialization: emptyMaterialization,
+                deploymentsConsidered: Number.isFinite(Number(lastSync.deploymentsConsidered))
+                    ? Number(lastSync.deploymentsConsidered)
+                    : preSyncConsidered,
+                deploymentsMatched: Number.isFinite(Number(lastSync.deploymentsMatched))
+                    ? Number(lastSync.deploymentsMatched)
+                    : 0,
+                deploymentsUpdated: Number.isFinite(Number(lastSync.deploymentsUpdated))
+                    ? Number(lastSync.deploymentsUpdated)
+                    : 0,
+                rows: [],
+            };
+        }
+    }
+
     const tasks = await listResearchCycleTasks(cycleId, 10000);
     const candidates = buildForwardValidationByCandidate(cycle, tasks);
     const candidateByKey = new Map(candidates.map((row) => [keyOf(row.symbol, row.strategyId, row.tuneId), row]));
@@ -696,27 +788,24 @@ export async function syncResearchCyclePromotionGates(
     const winnerCandidateKeys = buildWinnerCandidateKeySet(candidates, weeklyPolicy.topKPerSymbol);
     const materializationShortlist = buildCandidateMaterializationShortlist(candidates, materializeTopKPerSymbol);
 
-    let deployments = await listScalpDeploymentRegistryEntries({});
     const deploymentIds = new Set(deployments.map((row) => row.deploymentId));
-    const materializationRows: Array<{
+    const materializationRowDrafts: Array<{
         deploymentId: string;
         symbol: string;
         strategyId: string;
         tuneId: string;
         source: 'matrix' | 'backtest';
         exists: boolean;
-        created: boolean;
     }> = [];
+    const materializationUpserts: ScalpDeploymentRegistryWriteParams[] = [];
     let materializationMissing = 0;
-    let materializationCreated = 0;
 
     for (const candidate of materializationShortlist) {
         const exists = deploymentIds.has(candidate.deploymentId);
-        let created = false;
         if (!exists) {
             materializationMissing += 1;
             if (materializeMissingCandidates && !dryRun) {
-                const upserted = await upsertScalpDeploymentRegistryEntry({
+                materializationUpserts.push({
                     deploymentId: candidate.deploymentId,
                     symbol: candidate.symbol,
                     strategyId: candidate.strategyId,
@@ -727,31 +816,38 @@ export async function syncResearchCyclePromotionGates(
                     notes: `auto_materialized_from_cycle:${cycleId}`,
                     updatedBy: params.updatedBy || 'research-cycle-sync',
                 });
-                deployments = deployments
-                    .filter((row) => row.deploymentId !== upserted.entry.deploymentId)
-                    .concat(upserted.entry);
-                deploymentIds.add(upserted.entry.deploymentId);
-                created = true;
-                materializationCreated += 1;
             }
         }
-        materializationRows.push({
+        materializationRowDrafts.push({
             deploymentId: candidate.deploymentId,
             symbol: candidate.symbol,
             strategyId: candidate.strategyId,
             tuneId: candidate.tuneId,
             source: materializeSource,
             exists,
-            created,
         });
     }
+
+    const materializedDeploymentIds = new Set<string>();
+    if (materializationUpserts.length > 0) {
+        const upserted = await upsertScalpDeploymentRegistryEntriesBulk(materializationUpserts);
+        deployments = upserted.snapshot.deployments.slice();
+        for (const row of upserted.entries) {
+            materializedDeploymentIds.add(row.deploymentId);
+        }
+    }
+
+    const materializationRows = materializationRowDrafts.map((row) => ({
+        ...row,
+        created: materializedDeploymentIds.has(row.deploymentId),
+    }));
     const materialization = {
         enabled: materializeMissingCandidates,
         source: materializeSource,
         topKPerSymbol: materializeTopKPerSymbol,
         shortlistedCandidates: materializationShortlist.length,
         missingCandidates: materializationMissing,
-        createdCandidates: materializationCreated,
+        createdCandidates: materializedDeploymentIds.size,
         rows: materializationRows,
     };
 
@@ -762,6 +858,18 @@ export async function syncResearchCyclePromotionGates(
     let deploymentsUpdated = 0;
 
     const candlesBySymbol = new Map<string, CandleRow[]>();
+    const rowDrafts: Array<Omit<SyncResearchPromotionRow, 'nextGate' | 'changed'>> = [];
+    const baselineUpserts: ScalpDeploymentRegistryWriteParams[] = [];
+    const forcedUpserts: ScalpDeploymentRegistryWriteParams[] = [];
+    const forcedFromBaseline = new Map<
+        string,
+        {
+            source: ScalpDeploymentRegistrySource;
+            enabled: boolean;
+            reason: string;
+            forwardValidation: ScalpForwardValidationMetrics;
+        }
+    >();
 
     for (const deployment of considered) {
         const candidateKey = keyOf(deployment.symbol, deployment.strategyId, deployment.tuneId);
@@ -771,18 +879,22 @@ export async function syncResearchCyclePromotionGates(
             null;
         if (!candidate) {
             const weeklyGateReason = 'missing_cycle_candidate';
+            const draft: Omit<SyncResearchPromotionRow, 'nextGate' | 'changed'> = {
+                deploymentId: deployment.deploymentId,
+                symbol: deployment.symbol,
+                strategyId: deployment.strategyId,
+                tuneId: deployment.tuneId,
+                source: deployment.source,
+                inWinnerShortlist: false,
+                weeklyRobustness: null,
+                weeklyGateReason,
+                matchedCandidate: null,
+                previousGate: deployment.promotionGate,
+            };
+
             if (dryRun) {
                 rows.push({
-                    deploymentId: deployment.deploymentId,
-                    symbol: deployment.symbol,
-                    strategyId: deployment.strategyId,
-                    tuneId: deployment.tuneId,
-                    source: deployment.source,
-                    inWinnerShortlist: false,
-                    weeklyRobustness: null,
-                    weeklyGateReason,
-                    matchedCandidate: null,
-                    previousGate: deployment.promotionGate,
+                    ...draft,
                     nextGate: null,
                     changed: false,
                 });
@@ -804,30 +916,14 @@ export async function syncResearchCyclePromotionGates(
                 },
                 nowMs,
             });
-            const updated = await upsertScalpDeploymentRegistryEntry({
+            forcedUpserts.push({
                 deploymentId: deployment.deploymentId,
                 source: deployment.source,
                 enabled: deployment.enabled,
                 promotionGate: forcedGate,
                 updatedBy: params.updatedBy || 'research-cycle-sync',
             });
-            const changed = changedPromotionGate(deployment.promotionGate, updated.entry.promotionGate);
-            if (changed) deploymentsUpdated += 1;
-
-            rows.push({
-                deploymentId: deployment.deploymentId,
-                symbol: deployment.symbol,
-                strategyId: deployment.strategyId,
-                tuneId: deployment.tuneId,
-                source: deployment.source,
-                inWinnerShortlist: false,
-                weeklyRobustness: null,
-                weeklyGateReason,
-                matchedCandidate: null,
-                previousGate: deployment.promotionGate,
-                nextGate: updated.entry.promotionGate,
-                changed,
-            });
+            rowDrafts.push(draft);
             continue;
         }
         deploymentsMatched += 1;
@@ -879,54 +975,7 @@ export async function syncResearchCyclePromotionGates(
             weeklyEvaluatedAtMs: weeklyRobustness?.evaluatedAtMs ?? null,
         };
 
-        if (dryRun) {
-            rows.push({
-                deploymentId: deployment.deploymentId,
-                symbol: deployment.symbol,
-                strategyId: deployment.strategyId,
-                tuneId: deployment.tuneId,
-                source: deployment.source,
-                inWinnerShortlist,
-                weeklyRobustness,
-                weeklyGateReason,
-                matchedCandidate,
-                previousGate: deployment.promotionGate,
-                nextGate: null,
-                changed: false,
-            });
-            continue;
-        }
-
-        const baseline = await upsertScalpDeploymentRegistryEntry({
-            deploymentId: deployment.deploymentId,
-            source: deployment.source,
-            enabled: deployment.enabled,
-            forwardValidation,
-            updatedBy: params.updatedBy || 'research-cycle-sync',
-        });
-
-        let nextGate = baseline.entry.promotionGate;
-        if (weeklyGateReason) {
-            const forcedGate = buildForcedIneligibleGate({
-                baseGate: baseline.entry.promotionGate,
-                reason: weeklyGateReason,
-                forwardValidation,
-                nowMs,
-            });
-            const forced = await upsertScalpDeploymentRegistryEntry({
-                deploymentId: deployment.deploymentId,
-                source: deployment.source,
-                enabled: deployment.enabled,
-                promotionGate: forcedGate,
-                updatedBy: params.updatedBy || 'research-cycle-sync',
-            });
-            nextGate = forced.entry.promotionGate;
-        }
-
-        const changed = changedPromotionGate(deployment.promotionGate, nextGate);
-        if (changed) deploymentsUpdated += 1;
-
-        rows.push({
+        const draft: Omit<SyncResearchPromotionRow, 'nextGate' | 'changed'> = {
             deploymentId: deployment.deploymentId,
             symbol: deployment.symbol,
             strategyId: deployment.strategyId,
@@ -937,9 +986,100 @@ export async function syncResearchCyclePromotionGates(
             weeklyGateReason,
             matchedCandidate,
             previousGate: deployment.promotionGate,
-            nextGate,
-            changed,
+        };
+
+        if (dryRun) {
+            rows.push({
+                ...draft,
+                nextGate: null,
+                changed: false,
+            });
+            continue;
+        }
+
+        baselineUpserts.push({
+            deploymentId: deployment.deploymentId,
+            source: deployment.source,
+            enabled: deployment.enabled,
+            forwardValidation,
+            updatedBy: params.updatedBy || 'research-cycle-sync',
         });
+        if (weeklyGateReason) {
+            forcedFromBaseline.set(deployment.deploymentId, {
+                source: deployment.source,
+                enabled: deployment.enabled,
+                reason: weeklyGateReason,
+                forwardValidation,
+            });
+        }
+        rowDrafts.push(draft);
+    }
+
+    if (!dryRun) {
+        if (baselineUpserts.length > 0) {
+            const baselineOut = await upsertScalpDeploymentRegistryEntriesBulk(baselineUpserts);
+            deployments = baselineOut.snapshot.deployments.slice();
+        }
+
+        if (forcedFromBaseline.size > 0) {
+            const deploymentById = new Map(deployments.map((row) => [row.deploymentId, row] as const));
+            for (const [deploymentId, row] of forcedFromBaseline.entries()) {
+                const baseGate = deploymentById.get(deploymentId)?.promotionGate || null;
+                const forcedGate = buildForcedIneligibleGate({
+                    baseGate,
+                    reason: row.reason,
+                    forwardValidation: row.forwardValidation,
+                    nowMs,
+                });
+                forcedUpserts.push({
+                    deploymentId,
+                    source: row.source,
+                    enabled: row.enabled,
+                    promotionGate: forcedGate,
+                    updatedBy: params.updatedBy || 'research-cycle-sync',
+                });
+            }
+        }
+
+        if (forcedUpserts.length > 0) {
+            const forcedOut = await upsertScalpDeploymentRegistryEntriesBulk(forcedUpserts);
+            deployments = forcedOut.snapshot.deployments.slice();
+        }
+
+        const nextByDeploymentId = new Map(deployments.map((row) => [row.deploymentId, row] as const));
+        for (const row of rowDrafts) {
+            const nextGate = nextByDeploymentId.get(row.deploymentId)?.promotionGate || null;
+            const changed = changedPromotionGate(row.previousGate, nextGate);
+            if (changed) deploymentsUpdated += 1;
+            rows.push({
+                ...row,
+                nextGate,
+                changed,
+            });
+        }
+    }
+
+    if (!dryRun) {
+        const finalSignature = buildPromotionSyncSignature({
+            cycle,
+            allowedSources,
+            weeklyPolicy,
+            materializeMissingCandidates,
+            materializeTopKPerSymbol,
+            materializeSource,
+            materializeEnabled,
+            deployments,
+        });
+        await kvSetJson(PROMOTION_SYNC_STATE_KEY, {
+            version: 1,
+            signature: finalSignature,
+            cycleId,
+            syncedAtMs: nowMs,
+            deploymentsConsidered: considered.length,
+            deploymentsMatched,
+            deploymentsUpdated,
+            materializationCreated: materialization.createdCandidates,
+        } as PromotionSyncStateSnapshot);
     }
 
     return {

@@ -22,6 +22,7 @@ const JOURNAL_LIST_KEY = 'scalp:journal:list:v1';
 const TRADE_LEDGER_LIST_KEY = 'scalp:trade-ledger:list:v1';
 const UNIVERSE_KV_KEY = 'scalp:symbol-universe:v1';
 const REPORT_KV_KEY = 'scalp:research:portfolio-report:v1';
+const PROMOTION_SYNC_STATE_KEY = 'scalp:research:promotion-sync:last:v1';
 
 const DEFAULT_UNIVERSE_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-universe.json');
 const DEFAULT_REPORT_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-research-report.json');
@@ -185,6 +186,7 @@ export async function runScalpFullReset(
         TRADE_LEDGER_LIST_KEY,
         UNIVERSE_KV_KEY,
         REPORT_KV_KEY,
+        PROMOTION_SYNC_STATE_KEY,
     ];
     if (includeRuntimeSettings) {
         exactKeys.push(RUNTIME_SETTINGS_KEY);

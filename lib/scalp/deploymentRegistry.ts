@@ -93,7 +93,7 @@ export interface CanonicalizeScalpDeploymentRegistryResult {
     snapshot: ScalpDeploymentRegistrySnapshot;
 }
 
-type RegistryWriteParams = {
+export type ScalpDeploymentRegistryWriteParams = {
     symbol?: unknown;
     strategyId?: unknown;
     tuneId?: unknown;
@@ -107,6 +107,8 @@ type RegistryWriteParams = {
     promotionGate?: unknown;
     updatedBy?: unknown;
 };
+
+type RegistryWriteParams = ScalpDeploymentRegistryWriteParams;
 
 const DEFAULT_SCALP_DEPLOYMENT_REGISTRY_PATH = 'data/scalp-deployments.json';
 const DEFAULT_SCALP_DEPLOYMENT_REGISTRY_KV_KEY = 'scalp:deployments:registry:v1';
@@ -800,10 +802,10 @@ export async function listScalpDeploymentRegistryEntries(
     return filterScalpDeploymentRegistry(snapshot, params);
 }
 
-export async function upsertScalpDeploymentRegistryEntry(
+function applyUpsertScalpDeploymentRegistryEntry(
+    snapshot: ScalpDeploymentRegistrySnapshot,
     params: RegistryWriteParams,
-): Promise<{ snapshot: ScalpDeploymentRegistrySnapshot; entry: ScalpDeploymentRegistryEntry }> {
-    const snapshot = await loadScalpDeploymentRegistry();
+): { snapshot: ScalpDeploymentRegistrySnapshot; entry: ScalpDeploymentRegistryEntry } {
     const deployment = resolveScalpDeployment({
         symbol: params.symbol,
         strategyId: params.strategyId,
@@ -863,8 +865,40 @@ export async function upsertScalpDeploymentRegistryEntry(
         updatedAt: new Date(nowMs).toISOString(),
         deployments,
     };
-    await saveScalpDeploymentRegistry(next);
     return { snapshot: next, entry };
+}
+
+export async function upsertScalpDeploymentRegistryEntriesBulk(
+    paramsList: ScalpDeploymentRegistryWriteParams[],
+): Promise<{ snapshot: ScalpDeploymentRegistrySnapshot; entries: ScalpDeploymentRegistryEntry[] }> {
+    const rows = Array.isArray(paramsList) ? paramsList : [];
+    let snapshot = await loadScalpDeploymentRegistry();
+    const entries: ScalpDeploymentRegistryEntry[] = [];
+
+    for (const params of rows) {
+        const applied = applyUpsertScalpDeploymentRegistryEntry(snapshot, params);
+        snapshot = applied.snapshot;
+        entries.push(applied.entry);
+    }
+
+    if (entries.length > 0) {
+        await saveScalpDeploymentRegistry(snapshot);
+    }
+    return { snapshot, entries };
+}
+
+export async function upsertScalpDeploymentRegistryEntry(
+    params: ScalpDeploymentRegistryWriteParams,
+): Promise<{ snapshot: ScalpDeploymentRegistrySnapshot; entry: ScalpDeploymentRegistryEntry }> {
+    const out = await upsertScalpDeploymentRegistryEntriesBulk([params]);
+    const entry = out.entries[0];
+    if (!entry) {
+        throw new Error('scalp_deployment_registry_bulk_upsert_missing_entry');
+    }
+    return {
+        snapshot: out.snapshot,
+        entry,
+    };
 }
 
 export async function removeScalpDeploymentRegistryEntry(

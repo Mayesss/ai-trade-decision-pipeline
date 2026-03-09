@@ -100,6 +100,43 @@ export async function kvGetJson<T>(key: string): Promise<T | null> {
     }
 }
 
+export async function kvMGetJson<T>(keys: string[]): Promise<Array<T | null>> {
+    const safeKeys = keys
+        .map((key) => String(key || '').trim())
+        .filter((key) => Boolean(key));
+    if (!safeKeys.length) return [];
+
+    try {
+        const raw = await kvCommand('MGET', ...safeKeys);
+        const rows = Array.isArray(raw) ? raw : [];
+        const out: Array<T | null> = [];
+        for (let i = 0; i < safeKeys.length; i += 1) {
+            const item = rows[i];
+            if (item === null || item === undefined) {
+                out.push(null);
+                continue;
+            }
+            if (typeof item !== 'string') {
+                out.push(item as T);
+                continue;
+            }
+            const trimmed = item.trim();
+            if (!trimmed) {
+                out.push(null);
+                continue;
+            }
+            try {
+                out.push(JSON.parse(trimmed) as T);
+            } catch {
+                out.push(null);
+            }
+        }
+        return out;
+    } catch {
+        return safeKeys.map(() => null);
+    }
+}
+
 export async function kvSetJson<T>(key: string, value: T, ttlSeconds?: number) {
     const payload = JSON.stringify(value);
     if (ttlSeconds && ttlSeconds > 0) {

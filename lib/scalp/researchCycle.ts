@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 
-import { kvGetJson, kvSetJson } from '../kv';
+import { kvGetJson, kvMGetJson, kvSetJson } from '../kv';
 import type { ScalpStrategyConfigOverride } from './config';
 import { loadScalpCandleHistory } from './candleHistory';
 import { resolveScalpDeployment } from './deployments';
@@ -478,6 +478,18 @@ async function saveTask(task: ScalpResearchTask): Promise<void> {
     await kvSetJson(taskKey(task.cycleId, task.taskId), task);
 }
 
+async function loadResearchTasksBatch(cycleId: string, taskIds: string[]): Promise<ScalpResearchTask[]> {
+    if (!taskIds.length) return [];
+    const keys = taskIds.map((taskId) => taskKey(cycleId, taskId));
+    const rows = await kvMGetJson<unknown>(keys);
+    const out: ScalpResearchTask[] = [];
+    for (const row of rows) {
+        if (!isRecord(row)) continue;
+        out.push(row as unknown as ScalpResearchTask);
+    }
+    return out;
+}
+
 export async function loadResearchCycle(cycleId: string): Promise<ScalpResearchCycleSnapshot | null> {
     const raw = await kvGetJson<unknown>(cycleKey(cycleId));
     if (!isRecord(raw)) return null;
@@ -609,12 +621,7 @@ export async function startScalpResearchCycle(params: StartResearchCycleParams =
 }
 
 async function loadAllTasks(cycle: ScalpResearchCycleSnapshot): Promise<ScalpResearchTask[]> {
-    const tasks: ScalpResearchTask[] = [];
-    for (const taskId of cycle.taskIds) {
-        const task = await loadResearchTask(cycle.cycleId, taskId);
-        if (task) tasks.push(task);
-    }
-    return tasks;
+    return loadResearchTasksBatch(cycle.cycleId, cycle.taskIds);
 }
 
 function toReplayCandles(rows: Array<[number, number, number, number, number, number]>, spreadPips: number) {
@@ -1289,10 +1296,5 @@ export async function listResearchCycleTasks(cycleId: string, limit = 1000): Pro
     const cycle = await loadResearchCycle(cycleId);
     if (!cycle) return [];
     const max = Math.max(1, Math.min(5000, Math.floor(limit)));
-    const out: ScalpResearchTask[] = [];
-    for (const taskId of cycle.taskIds.slice(0, max)) {
-        const task = await loadResearchTask(cycle.cycleId, taskId);
-        if (task) out.push(task);
-    }
-    return out;
+    return loadResearchTasksBatch(cycle.cycleId, cycle.taskIds.slice(0, max));
 }

@@ -9,6 +9,7 @@ import {
     filterScalpDeploymentRegistry,
     loadScalpDeploymentRegistry,
     removeScalpDeploymentRegistryEntry,
+    upsertScalpDeploymentRegistryEntriesBulk,
     upsertScalpDeploymentRegistryEntry,
 } from '../deploymentRegistry';
 
@@ -230,5 +231,70 @@ test('canonicalizeScalpDeploymentRegistry rewrites legacy guarded strategy rows 
         else process.env.SCALP_BTCUSDT_GUARD_TRAIL_ATR_MULT = prevTrail;
         if (prevTimeStop === undefined) delete process.env.SCALP_BTCUSDT_GUARD_TIME_STOP_BARS;
         else process.env.SCALP_BTCUSDT_GUARD_TIME_STOP_BARS = prevTimeStop;
+    }
+});
+
+test('deployment registry bulk upsert applies multiple rows and resolves duplicate deployment ids by last write', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'scalp-deployments-bulk-'));
+    const prevPath = process.env.SCALP_DEPLOYMENTS_REGISTRY_PATH;
+    const prevStore = process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE;
+    process.env.SCALP_DEPLOYMENTS_REGISTRY_PATH = path.join(dir, 'registry.json');
+    process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE = 'file';
+
+    try {
+        const out = await upsertScalpDeploymentRegistryEntriesBulk([
+            {
+                symbol: 'eurusd',
+                strategyId: 'regime_pullback_m15_m3',
+                tuneId: 'return_a',
+                source: 'matrix',
+                updatedBy: 'test-bulk',
+            },
+            {
+                symbol: 'eurusd',
+                strategyId: 'regime_pullback_m15_m3',
+                tuneId: 'return_b',
+                source: 'matrix',
+                updatedBy: 'test-bulk',
+            },
+            {
+                deploymentId: 'EURUSD~regime_pullback_m15_m3~return_a',
+                source: 'matrix',
+                enabled: true,
+                updatedBy: 'test-bulk',
+                forwardValidation: {
+                    rollCount: 12,
+                    profitableWindowPct: 58,
+                    meanExpectancyR: 0.04,
+                    meanProfitFactor: 1.06,
+                    maxDrawdownR: 4.2,
+                    minTradesPerWindow: 2,
+                    selectionWindowDays: 90,
+                    forwardWindowDays: 28,
+                },
+            },
+        ]);
+
+        assert.equal(out.entries.length, 3);
+        const loaded = await loadScalpDeploymentRegistry();
+        assert.equal(loaded.deployments.length, 2);
+
+        const returnA = loaded.deployments.find(
+            (row) => row.deploymentId === 'EURUSD~regime_pullback_m15_m3~return_a',
+        );
+        assert.ok(returnA);
+        assert.equal(returnA.enabled, true);
+        assert.equal(returnA.promotionGate?.eligible, true);
+    } finally {
+        if (prevPath === undefined) {
+            delete process.env.SCALP_DEPLOYMENTS_REGISTRY_PATH;
+        } else {
+            process.env.SCALP_DEPLOYMENTS_REGISTRY_PATH = prevPath;
+        }
+        if (prevStore === undefined) {
+            delete process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE;
+        } else {
+            process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE = prevStore;
+        }
     }
 });
