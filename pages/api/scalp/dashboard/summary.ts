@@ -18,6 +18,13 @@ const SUMMARY_RANGE_LOOKBACK_MS: Record<SummaryRangeKey, number> = {
   '30D': 30 * 24 * 60 * 60 * 1000,
   '6M': 183 * 24 * 60 * 60 * 1000,
 };
+const SUMMARY_CACHE_TTL_MS = (() => {
+  const value = Number(process.env.SCALP_DASHBOARD_SUMMARY_CACHE_TTL_MS ?? 12_000);
+  if (!Number.isFinite(value)) return 12_000;
+  return Math.max(0, Math.floor(value));
+})();
+const SUMMARY_CACHE_MAX_ENTRIES = 32;
+const summaryResponseCache = new Map<string, { expiresAtMs: number; payload: Record<string, unknown> }>();
 
 type SymbolSnapshot = {
   symbol: string;
@@ -98,6 +105,40 @@ function journalDeploymentId(entry: ScalpJournalEntry): string | null {
 }
 
 function compactJournalEntry(entry: ScalpJournalEntry): Record<string, unknown> {
+  const compactPayload = (value: unknown, depth = 0): unknown => {
+    if (value === null || value === undefined) return null;
+    if (depth >= 3) return '[truncated]';
+    const t = typeof value;
+    if (t === 'string') {
+      const text = String(value);
+      return text.length > 400 ? `${text.slice(0, 397)}...` : text;
+    }
+    if (t === 'number') {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    }
+    if (t === 'boolean') return value;
+    if (t === 'bigint') {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : String(value);
+    }
+    if (Array.isArray(value)) {
+      return value.slice(0, 20).map((row) => compactPayload(row, depth + 1));
+    }
+    if (value && typeof value === 'object') {
+      const row = value as Record<string, unknown>;
+      const out: Record<string, unknown> = {};
+      let count = 0;
+      for (const [key, raw] of Object.entries(row)) {
+        out[key] = compactPayload(raw, depth + 1);
+        count += 1;
+        if (count >= 24) break;
+      }
+      return out;
+    }
+    return String(value);
+  };
+
   return {
     id: entry.id,
     timestampMs: entry.timestampMs,
@@ -106,7 +147,7 @@ function compactJournalEntry(entry: ScalpJournalEntry): Record<string, unknown> 
     symbol: entry.symbol,
     dayKey: entry.dayKey,
     reasonCodes: Array.isArray(entry.reasonCodes) ? entry.reasonCodes.slice(0, 8) : [],
-    payload: entry.payload ?? {},
+    payload: compactPayload(entry.payload ?? {}),
   };
 }
 
@@ -152,6 +193,35 @@ function setNoStoreHeaders(res: NextApiResponse): void {
   res.setHeader('Expires', '0');
 }
 
+function makeSummaryCacheKey(input: {
+  useDeployments: boolean;
+  requestedStrategyId?: string;
+  range: SummaryRangeKey;
+  journalLimit: number;
+  tradeLimit: number;
+}): string {
+  return JSON.stringify({
+    useDeployments: input.useDeployments,
+    strategyId: input.requestedStrategyId || null,
+    range: input.range,
+    journalLimit: input.journalLimit,
+    tradeLimit: input.tradeLimit,
+  });
+}
+
+function pruneSummaryCache(nowMs: number): void {
+  for (const [key, row] of summaryResponseCache.entries()) {
+    if (row.expiresAtMs <= nowMs) summaryResponseCache.delete(key);
+  }
+  if (summaryResponseCache.size <= SUMMARY_CACHE_MAX_ENTRIES) return;
+  const keys = Array.from(summaryResponseCache.keys());
+  while (summaryResponseCache.size > SUMMARY_CACHE_MAX_ENTRIES && keys.length > 0) {
+    const key = keys.shift();
+    if (!key) break;
+    summaryResponseCache.delete(key);
+  }
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
@@ -159,8 +229,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
 
+  const startedAtMs = Date.now();
+  const requestId = `scalp_summary_${startedAtMs}_${Math.floor(Math.random() * 1e6)}`;
+  const debugLogsEnabled = parseBool(req.query.debug, false) || process.env.SCALP_DEBUG_SUMMARY === '1';
+  const rowErrors: Array<Record<string, unknown>> = [];
+  let stage = 'init';
+  const logDebug = (event: string, payload: Record<string, unknown> = {}) => {
+    if (!debugLogsEnabled) return;
+    try {
+      console.info(
+        `[scalp-summary][${requestId}] ${JSON.stringify({
+          event,
+          ...payload,
+        })}`,
+      );
+    } catch {
+      console.info(`[scalp-summary][${requestId}]`, event, payload);
+    }
+  };
+
   try {
     const nowMs = Date.now();
+    stage = 'parse_query';
     const journalLimit = parseLimit(req.query.journalLimit, 80);
     const tradeLimit = parseTradeLimit(req.query.tradeLimit, 5000);
     const rangeParam = Array.isArray(req.query.range) ? req.query.range[0] : req.query.range;
@@ -168,116 +258,209 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const rangeStartMs = nowMs - SUMMARY_RANGE_LOOKBACK_MS[range];
     const requestedStrategyId = firstQueryValue(req.query.strategyId);
     const useDeployments = parseBool(req.query.useDeploymentRegistry, false);
+    const bypassCache = parseBool(req.query.fresh, false);
+    const useResponseCache = !debugLogsEnabled && !bypassCache && SUMMARY_CACHE_TTL_MS > 0;
+    const cacheKey = makeSummaryCacheKey({
+      useDeployments,
+      requestedStrategyId,
+      range,
+      journalLimit,
+      tradeLimit,
+    });
+    if (useResponseCache) {
+      const cached = summaryResponseCache.get(cacheKey);
+      if (cached && cached.expiresAtMs > nowMs) {
+        logDebug('cache_hit', {
+          cacheKey,
+          ttlMsRemaining: cached.expiresAtMs - nowMs,
+        });
+        res.setHeader('x-scalp-summary-cache', 'hit');
+        return res.status(200).json(cached.payload);
+      }
+      if (cached) {
+        summaryResponseCache.delete(cacheKey);
+      }
+    }
+    logDebug('request_parsed', {
+      method: req.method,
+      url: req.url || null,
+      requestedStrategyId: requestedStrategyId || null,
+      useDeployments,
+      bypassCache,
+      useResponseCache,
+      range,
+      journalLimit,
+      tradeLimit,
+    });
+
+    stage = 'load_runtime';
     const cfg = getScalpStrategyConfig();
     const runtime = await loadScalpStrategyRuntimeSnapshot(cfg.enabled, requestedStrategyId);
-    const strategy = runtime.strategy;
+    const runtimeStrategies = Array.isArray(runtime.strategies) ? runtime.strategies : [];
+    const strategy =
+      runtime.strategy ||
+      runtimeStrategies.find((row) => row.strategyId === runtime.strategyId) ||
+      runtimeStrategies[0] ||
+      {
+        strategyId: runtime.defaultStrategyId,
+        shortName: runtime.defaultStrategyId,
+        longName: runtime.defaultStrategyId,
+        enabled: cfg.enabled,
+        envEnabled: cfg.enabled,
+        kvEnabled: null,
+        updatedAtMs: null,
+        updatedBy: null,
+      };
     const dayKey = deriveScalpDayKey(nowMs, cfg.sessions.clockMode);
     const cronSymbolConfigs = getScalpCronSymbolConfigs();
     const cronSymbolConfigBySymbol = new Map(cronSymbolConfigs.map((row) => [row.symbol.toUpperCase(), row]));
     const cronAllConfig = cronSymbolConfigBySymbol.get('*') || null;
     const cronSymbols = useDeployments ? [] : cronSymbolConfigs;
+    stage = 'load_deployments';
     const deploymentRows = useDeployments ? await listScalpDeploymentRegistryEntries({ enabled: true }) : [];
+    logDebug('runtime_loaded', {
+      defaultStrategyId: runtime.defaultStrategyId,
+      runtimeStrategyCount: runtimeStrategies.length,
+      cronSymbolCount: cronSymbolConfigs.length,
+      deploymentRowCount: deploymentRows.length,
+      dayKey,
+      clockMode: cfg.sessions.clockMode,
+      entrySessionProfile: cfg.sessions.entrySessionProfile,
+    });
 
+    stage = 'build_rows';
     const rows: SymbolSnapshot[] = [];
     if (useDeployments) {
-      for (const deploymentRow of deploymentRows) {
-        const preferredStrategyId = normalizeScalpStrategyId(deploymentRow.strategyId);
-        const strategyControl =
-          runtime.strategies.find((row) => row.strategyId === preferredStrategyId) || strategy;
-        const effectiveStrategyId = strategyControl.strategyId;
-        const cronSymbol = cronSymbolConfigBySymbol.get(deploymentRow.symbol.toUpperCase()) || cronAllConfig;
-        const deployment = resolveScalpDeployment({
-          symbol: deploymentRow.symbol,
-          strategyId: effectiveStrategyId,
-          tuneId: deploymentRow.tuneId,
-          deploymentId: deploymentRow.deploymentId,
-        });
-        const state = await loadScalpSessionState(deployment.symbol, dayKey, effectiveStrategyId, {
-          tuneId: deployment.tuneId,
-          deploymentId: deployment.deploymentId,
-        });
-        rows.push({
-          symbol: deployment.symbol,
-          strategyId: effectiveStrategyId,
-          tuneId: deployment.tuneId,
-          deploymentId: deployment.deploymentId,
-          tune: deriveTuneLabel({
+      for (let idx = 0; idx < deploymentRows.length; idx += 1) {
+        const deploymentRow = deploymentRows[idx]!;
+        try {
+          const preferredStrategyId = normalizeScalpStrategyId(deploymentRow.strategyId);
+          const strategyControl =
+            runtimeStrategies.find((row) => row.strategyId === preferredStrategyId) || strategy;
+          const effectiveStrategyId = strategyControl.strategyId;
+          const cronSymbol = cronSymbolConfigBySymbol.get(String(deploymentRow.symbol || '').toUpperCase()) || cronAllConfig;
+          const deployment = resolveScalpDeployment({
+            symbol: deploymentRow.symbol,
             strategyId: effectiveStrategyId,
-            defaultStrategyId: runtime.defaultStrategyId,
+            tuneId: deploymentRow.tuneId,
+            deploymentId: deploymentRow.deploymentId,
+          });
+          const state = await loadScalpSessionState(deployment.symbol, dayKey, effectiveStrategyId, {
             tuneId: deployment.tuneId,
-          }),
-          cronSchedule: cronSymbol?.schedule ?? null,
-          cronRoute: 'execute-deployments',
-          cronPath: cronSymbol?.path || '/api/scalp/cron/execute-deployments?all=true',
-          dayKey,
-          state: state?.state ?? null,
-          updatedAtMs: state?.updatedAtMs ?? null,
-          lastRunAtMs: state?.run?.lastRunAtMs ?? null,
-          dryRunLast: typeof state?.run?.dryRunLast === 'boolean' ? state.run.dryRunLast : null,
-          tradesPlaced: state?.stats?.tradesPlaced ?? 0,
-          wins: state?.stats?.wins ?? 0,
-          losses: state?.stats?.losses ?? 0,
-          inTrade: state?.state === 'IN_TRADE' || Boolean(state?.trade),
-          tradeSide: state?.trade?.side ?? null,
-          dealReference: state?.trade?.dealReference ?? null,
-          reasonCodes: Array.isArray(state?.run?.lastReasonCodes) ? state!.run.lastReasonCodes.slice(0, 8) : [],
-          netR: null,
-          maxDrawdownR: null,
-          promotionEligible: typeof deploymentRow.promotionGate?.eligible === 'boolean' ? deploymentRow.promotionGate.eligible : null,
-          promotionReason: deploymentRow.promotionGate?.reason || null,
-          forwardValidation: deploymentRow.promotionGate?.forwardValidation || null,
-        });
+            deploymentId: deployment.deploymentId,
+          });
+          rows.push({
+            symbol: deployment.symbol,
+            strategyId: effectiveStrategyId,
+            tuneId: deployment.tuneId,
+            deploymentId: deployment.deploymentId,
+            tune: deriveTuneLabel({
+              strategyId: effectiveStrategyId,
+              defaultStrategyId: runtime.defaultStrategyId,
+              tuneId: deployment.tuneId,
+            }),
+            cronSchedule: cronSymbol?.schedule ?? null,
+            cronRoute: 'execute-deployments',
+            cronPath: cronSymbol?.path || '/api/scalp/cron/execute-deployments?all=true',
+            dayKey,
+            state: state?.state ?? null,
+            updatedAtMs: state?.updatedAtMs ?? null,
+            lastRunAtMs: state?.run?.lastRunAtMs ?? null,
+            dryRunLast: typeof state?.run?.dryRunLast === 'boolean' ? state.run.dryRunLast : null,
+            tradesPlaced: state?.stats?.tradesPlaced ?? 0,
+            wins: state?.stats?.wins ?? 0,
+            losses: state?.stats?.losses ?? 0,
+            inTrade: state?.state === 'IN_TRADE' || Boolean(state?.trade),
+            tradeSide: state?.trade?.side ?? null,
+            dealReference: state?.trade?.dealReference ?? null,
+            reasonCodes: Array.isArray(state?.run?.lastReasonCodes) ? state!.run.lastReasonCodes.slice(0, 8) : [],
+            netR: null,
+            maxDrawdownR: null,
+            promotionEligible: typeof deploymentRow.promotionGate?.eligible === 'boolean' ? deploymentRow.promotionGate.eligible : null,
+            promotionReason: deploymentRow.promotionGate?.reason || null,
+            forwardValidation: deploymentRow.promotionGate?.forwardValidation || null,
+          });
+        } catch (err: any) {
+          const rowError = {
+            kind: 'deployment_row',
+            index: idx,
+            symbol: String((deploymentRow as any)?.symbol || ''),
+            strategyId: String((deploymentRow as any)?.strategyId || ''),
+            tuneId: String((deploymentRow as any)?.tuneId || ''),
+            deploymentId: String((deploymentRow as any)?.deploymentId || ''),
+            message: err?.message || String(err),
+          };
+          rowErrors.push(rowError);
+          console.error(`[scalp-summary][${requestId}] deployment_row_error`, rowError, err?.stack || '');
+        }
       }
     } else {
-      for (const cronSymbol of cronSymbols) {
-        const preferredStrategyId = normalizeScalpStrategyId(cronSymbol.strategyId);
-        const strategyControl =
-          runtime.strategies.find((row) => row.strategyId === preferredStrategyId) || strategy;
-        const effectiveStrategyId = strategyControl.strategyId;
-        const deployment = resolveScalpDeployment({
-          symbol: cronSymbol.symbol,
-          strategyId: effectiveStrategyId,
-          tuneId: cronSymbol.tuneId,
-          deploymentId: cronSymbol.deploymentId,
-        });
-        const state = await loadScalpSessionState(deployment.symbol, dayKey, effectiveStrategyId, {
-          tuneId: deployment.tuneId,
-          deploymentId: deployment.deploymentId,
-        });
-        rows.push({
-          symbol: deployment.symbol,
-          strategyId: effectiveStrategyId,
-          tuneId: deployment.tuneId,
-          deploymentId: deployment.deploymentId,
-          tune: deriveTuneLabel({
+      for (let idx = 0; idx < cronSymbols.length; idx += 1) {
+        const cronSymbol = cronSymbols[idx]!;
+        try {
+          const preferredStrategyId = normalizeScalpStrategyId(cronSymbol.strategyId);
+          const strategyControl =
+            runtimeStrategies.find((row) => row.strategyId === preferredStrategyId) || strategy;
+          const effectiveStrategyId = strategyControl.strategyId;
+          const deployment = resolveScalpDeployment({
+            symbol: cronSymbol.symbol,
             strategyId: effectiveStrategyId,
-            defaultStrategyId: runtime.defaultStrategyId,
+            tuneId: cronSymbol.tuneId,
+            deploymentId: cronSymbol.deploymentId,
+          });
+          const state = await loadScalpSessionState(deployment.symbol, dayKey, effectiveStrategyId, {
             tuneId: deployment.tuneId,
-          }),
-          cronSchedule: cronSymbol.schedule,
-          cronRoute: cronSymbol.route,
-          cronPath: cronSymbol.path,
-          dayKey,
-          state: state?.state ?? null,
-          updatedAtMs: state?.updatedAtMs ?? null,
-          lastRunAtMs: state?.run?.lastRunAtMs ?? null,
-          dryRunLast: typeof state?.run?.dryRunLast === 'boolean' ? state.run.dryRunLast : null,
-          tradesPlaced: state?.stats?.tradesPlaced ?? 0,
-          wins: state?.stats?.wins ?? 0,
-          losses: state?.stats?.losses ?? 0,
-          inTrade: state?.state === 'IN_TRADE' || Boolean(state?.trade),
-          tradeSide: state?.trade?.side ?? null,
-          dealReference: state?.trade?.dealReference ?? null,
-          reasonCodes: Array.isArray(state?.run?.lastReasonCodes) ? state!.run.lastReasonCodes.slice(0, 8) : [],
-          netR: null,
-          maxDrawdownR: null,
-          promotionEligible: null,
-          promotionReason: null,
-          forwardValidation: null,
-        });
+            deploymentId: deployment.deploymentId,
+          });
+          rows.push({
+            symbol: deployment.symbol,
+            strategyId: effectiveStrategyId,
+            tuneId: deployment.tuneId,
+            deploymentId: deployment.deploymentId,
+            tune: deriveTuneLabel({
+              strategyId: effectiveStrategyId,
+              defaultStrategyId: runtime.defaultStrategyId,
+              tuneId: deployment.tuneId,
+            }),
+            cronSchedule: cronSymbol.schedule,
+            cronRoute: cronSymbol.route,
+            cronPath: cronSymbol.path,
+            dayKey,
+            state: state?.state ?? null,
+            updatedAtMs: state?.updatedAtMs ?? null,
+            lastRunAtMs: state?.run?.lastRunAtMs ?? null,
+            dryRunLast: typeof state?.run?.dryRunLast === 'boolean' ? state.run.dryRunLast : null,
+            tradesPlaced: state?.stats?.tradesPlaced ?? 0,
+            wins: state?.stats?.wins ?? 0,
+            losses: state?.stats?.losses ?? 0,
+            inTrade: state?.state === 'IN_TRADE' || Boolean(state?.trade),
+            tradeSide: state?.trade?.side ?? null,
+            dealReference: state?.trade?.dealReference ?? null,
+            reasonCodes: Array.isArray(state?.run?.lastReasonCodes) ? state!.run.lastReasonCodes.slice(0, 8) : [],
+            netR: null,
+            maxDrawdownR: null,
+            promotionEligible: null,
+            promotionReason: null,
+            forwardValidation: null,
+          });
+        } catch (err: any) {
+          const rowError = {
+            kind: 'cron_row',
+            index: idx,
+            symbol: String((cronSymbol as any)?.symbol || ''),
+            strategyId: String((cronSymbol as any)?.strategyId || ''),
+            tuneId: String((cronSymbol as any)?.tuneId || ''),
+            deploymentId: String((cronSymbol as any)?.deploymentId || ''),
+            message: err?.message || String(err),
+          };
+          rowErrors.push(rowError);
+          console.error(`[scalp-summary][${requestId}] cron_row_error`, rowError, err?.stack || '');
+        }
       }
     }
+    logDebug('rows_built', { rows: rows.length, rowErrors: rowErrors.length });
 
+    stage = 'compute_trade_perf';
     const tradeLedger = await loadScalpTradeLedger(tradeLimit);
     const tradesByDeploymentId = new Map<string, ScalpTradeLedgerEntry[]>();
     for (const trade of tradeLedger) {
@@ -311,25 +494,54 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const allowedDeploymentIds = new Set(rows.map((row) => row.deploymentId));
     const latestExecutionBySymbol: Record<string, Record<string, unknown>> = {};
     const latestExecutionByDeploymentId: Record<string, Record<string, unknown>> = {};
-    for (const entry of journal) {
-      const entryStrategy = journalStrategyId(entry);
-      const entryDeploymentId = journalDeploymentId(entry);
-      const symbol = String(entry.symbol || '').toUpperCase();
-      if (!symbol) continue;
-      const expectedStrategyId = strategyBySymbol.get(symbol) || strategy.strategyId;
-      if (entryStrategy && entryStrategy !== expectedStrategyId) continue;
-      if (!entryStrategy && expectedStrategyId !== runtime.defaultStrategyId) continue;
-      if (entry.type !== 'execution' && entry.type !== 'state' && entry.type !== 'error') continue;
-      const compacted = compactJournalEntry(entry);
-      if (!latestExecutionBySymbol[symbol]) {
-        latestExecutionBySymbol[symbol] = compacted;
-      }
-      if (entryDeploymentId && allowedDeploymentIds.has(entryDeploymentId) && !latestExecutionByDeploymentId[entryDeploymentId]) {
-        latestExecutionByDeploymentId[entryDeploymentId] = compacted;
+    for (let idx = 0; idx < journal.length; idx += 1) {
+      const entry = journal[idx]!;
+      try {
+        const entryStrategy = journalStrategyId(entry);
+        const entryDeploymentId = journalDeploymentId(entry);
+        const symbol = String(entry.symbol || '').toUpperCase();
+        if (!symbol) continue;
+        const expectedStrategyId = strategyBySymbol.get(symbol) || strategy.strategyId;
+        if (entryStrategy && entryStrategy !== expectedStrategyId) continue;
+        if (!entryStrategy && expectedStrategyId !== runtime.defaultStrategyId) continue;
+        if (entry.type !== 'execution' && entry.type !== 'state' && entry.type !== 'error') continue;
+        const compacted = compactJournalEntry(entry);
+        if (!latestExecutionBySymbol[symbol]) {
+          latestExecutionBySymbol[symbol] = compacted;
+        }
+        if (entryDeploymentId && allowedDeploymentIds.has(entryDeploymentId) && !latestExecutionByDeploymentId[entryDeploymentId]) {
+          latestExecutionByDeploymentId[entryDeploymentId] = compacted;
+        }
+      } catch (err: any) {
+        const rowError = {
+          kind: 'journal_row',
+          index: idx,
+          symbol: String((entry as any)?.symbol || ''),
+          type: String((entry as any)?.type || ''),
+          message: err?.message || String(err),
+        };
+        rowErrors.push(rowError);
+        console.error(`[scalp-summary][${requestId}] journal_row_error`, rowError, err?.stack || '');
       }
     }
+    logDebug('journal_compacted', {
+      journalRows: journal.length,
+      latestExecutionBySymbol: Object.keys(latestExecutionBySymbol).length,
+      latestExecutionByDeploymentId: Object.keys(latestExecutionByDeploymentId).length,
+      rowErrors: rowErrors.length,
+    });
 
-    return res.status(200).json({
+    stage = 'respond';
+    const durationMs = Date.now() - startedAtMs;
+    if (rowErrors.length > 0) {
+      console.warn(`[scalp-summary][${requestId}] completed_with_row_errors`, {
+        rowErrors: rowErrors.length,
+        durationMs,
+        useDeployments,
+      });
+    }
+    logDebug('success', { durationMs, rowErrors: rowErrors.length });
+    const responsePayload: Record<string, unknown> = {
       mode: 'scalp',
       generatedAtMs: nowMs,
       dayKey,
@@ -339,7 +551,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       strategyId: strategy.strategyId,
       defaultStrategyId: runtime.defaultStrategyId,
       strategy,
-      strategies: runtime.strategies,
+      strategies: runtimeStrategies,
       summary: {
         symbols: rows.length,
         openCount,
@@ -360,8 +572,38 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           return true;
         })
         .map(compactJournalEntry),
-    });
+      ...(debugLogsEnabled
+        ? {
+            debug: {
+              requestId,
+              durationMs,
+              stage,
+              rowErrors,
+            },
+          }
+        : {}),
+    };
+    if (useResponseCache) {
+      pruneSummaryCache(nowMs);
+      summaryResponseCache.set(cacheKey, {
+        expiresAtMs: nowMs + SUMMARY_CACHE_TTL_MS,
+        payload: responsePayload,
+      });
+      res.setHeader('x-scalp-summary-cache', 'miss');
+    } else {
+      res.setHeader('x-scalp-summary-cache', bypassCache ? 'bypass' : 'off');
+    }
+    return res.status(200).json(responsePayload);
   } catch (err: any) {
+    console.error(`[scalp-summary][${requestId}] fatal_error`, {
+      stage,
+      message: err?.message || String(err),
+      stack: err?.stack || '',
+      url: req.url || '',
+      method: req.method || '',
+      query: req.query || {},
+      durationMs: Date.now() - startedAtMs,
+    });
     return res.status(500).json({
       error: 'scalp_dashboard_summary_failed',
       message: err?.message || String(err),

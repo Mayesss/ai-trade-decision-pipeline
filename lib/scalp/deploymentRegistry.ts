@@ -615,6 +615,14 @@ function hasKvConfig(): boolean {
     return Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
 }
 
+let kvBootstrapWriteBlocked = false;
+
+function isKvQuotaExceededError(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err || '');
+    const normalized = message.toLowerCase();
+    return normalized.includes('max requests limit exceeded') || normalized.includes('usage:');
+}
+
 export function scalpDeploymentRegistryStoreMode(): 'kv' | 'file' {
     const configured = String(process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE || 'auto')
         .trim()
@@ -666,7 +674,23 @@ export async function loadScalpDeploymentRegistry(): Promise<ScalpDeploymentRegi
         // First KV bootstrapping pass: seed from the repo snapshot so updates persist after deployment.
         const fileSnapshot = await loadScalpDeploymentRegistryFromFile();
         if (fileSnapshot.deployments.length > 0 || fileSnapshot.updatedAt) {
-            await kvSetJson(scalpDeploymentRegistryKvKey(), fileSnapshot);
+            if (!kvBootstrapWriteBlocked) {
+                try {
+                    await kvSetJson(scalpDeploymentRegistryKvKey(), fileSnapshot);
+                } catch (err) {
+                    if (isKvQuotaExceededError(err)) {
+                        kvBootstrapWriteBlocked = true;
+                        console.warn(
+                            'KV quota exceeded while bootstrapping scalp deployment registry; using file snapshot fallback for reads.',
+                        );
+                    } else {
+                        console.warn(
+                            'Failed to bootstrap scalp deployment registry into KV; using file snapshot fallback for reads.',
+                            err,
+                        );
+                    }
+                }
+            }
             return fileSnapshot;
         }
         return kvSnapshot;

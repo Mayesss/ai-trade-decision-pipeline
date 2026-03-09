@@ -544,7 +544,10 @@ const BITGET_PUBLIC_WS_URL = 'wss://ws.bitget.com/v2/ws/public';
 const WS_RECONNECT_MS = 1500;
 const WS_PING_MS = 25_000;
 const CAPITAL_LIVE_POLL_MS = 3000;
-const SCALP_LIVE_POLL_MS = 3000;
+const SCALP_LIVE_POLL_VISIBLE_MS = 15_000;
+const SCALP_LIVE_POLL_HIDDEN_MS = 60_000;
+const SCALP_LIVE_POLL_ERROR_BACKOFF_MS = 120_000;
+const SCALP_MIN_REFRESH_GAP_MS = 8_000;
 const SCALP_RESEARCH_REFRESH_MS = 45_000;
 const SCALP_PROMOTION_SYNC_REFRESH_MS = 5 * 60_000;
 
@@ -620,6 +623,8 @@ export default function Home() {
   const evaluatePollTimersRef = useRef<Record<string, number>>({});
   const scalpResearchFetchedAtMsRef = useRef<number>(0);
   const scalpPromotionSyncFetchedAtMsRef = useRef<number>(0);
+  const scalpSummaryFetchedAtMsRef = useRef<number>(0);
+  const scalpSummaryErrorCountRef = useRef<number>(0);
 
   const readStoredAdminSecret = () => {
     if (typeof window === 'undefined') return null;
@@ -868,14 +873,22 @@ export default function Home() {
     }
   };
 
-  const loadScalpDashboard = async (opts: { silent?: boolean } = {}) => {
+  const loadScalpDashboard = async (opts: { silent?: boolean; force?: boolean } = {}) => {
     const silent = opts.silent === true;
+    const force = opts.force === true;
+    const nowMs = Date.now();
+    if (!force && silent && nowMs - scalpSummaryFetchedAtMsRef.current < SCALP_MIN_REFRESH_GAP_MS) {
+      return;
+    }
     if (!silent) setLoading(true);
     try {
       const params = new URLSearchParams({
         useDeploymentRegistry: 'true',
         range: dashboardRange,
       });
+      if (!silent || force) {
+        params.set('fresh', 'true');
+      }
       const summaryRes = await fetch(`/api/scalp/dashboard/summary?${params.toString()}`, {
         headers: buildAdminHeaders(),
         cache: 'no-store',
@@ -889,7 +902,8 @@ export default function Home() {
       }
       const summaryJson: ScalpSummaryResponse = await summaryRes.json();
       setScalpSummary(summaryJson);
-      const nowMs = Date.now();
+      scalpSummaryFetchedAtMsRef.current = nowMs;
+      scalpSummaryErrorCountRef.current = 0;
       const shouldRefreshResearch =
         !silent || nowMs - scalpResearchFetchedAtMsRef.current >= SCALP_RESEARCH_REFRESH_MS;
       if (shouldRefreshResearch) {
@@ -962,6 +976,7 @@ export default function Home() {
       }
       setError(null);
     } catch (err: any) {
+      scalpSummaryErrorCountRef.current += 1;
       setError(err?.message || 'Failed to load scalp dashboard');
     } finally {
       if (!silent) setLoading(false);
@@ -1143,11 +1158,30 @@ export default function Home() {
 
   useEffect(() => {
     if (!adminGranted || strategyMode !== 'scalp') return;
-    const timerId = window.setInterval(() => {
-      void loadScalpDashboard({ silent: true });
-    }, SCALP_LIVE_POLL_MS);
-    return () => window.clearInterval(timerId);
-  }, [adminGranted, strategyMode, adminSecret]);
+    let cancelled = false;
+    let timerId: number | null = null;
+
+    const scheduleNextPoll = () => {
+      if (cancelled) return;
+      const hidden = typeof document !== 'undefined' && document.visibilityState !== 'visible';
+      const hadRecentErrors = scalpSummaryErrorCountRef.current > 0;
+      const intervalMs = hadRecentErrors
+        ? SCALP_LIVE_POLL_ERROR_BACKOFF_MS
+        : hidden
+        ? SCALP_LIVE_POLL_HIDDEN_MS
+        : SCALP_LIVE_POLL_VISIBLE_MS;
+      timerId = window.setTimeout(async () => {
+        await loadScalpDashboard({ silent: true });
+        scheduleNextPoll();
+      }, intervalMs);
+    };
+
+    scheduleNextPoll();
+    return () => {
+      cancelled = true;
+      if (timerId) window.clearTimeout(timerId);
+    };
+  }, [adminGranted, strategyMode, adminSecret, dashboardRange]);
 
   useEffect(() => {
     const rows = Array.isArray(scalpSummary?.symbols) ? scalpSummary.symbols : [];
