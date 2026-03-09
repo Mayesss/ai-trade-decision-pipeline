@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Head from 'next/head';
 import dynamic from 'next/dynamic';
+import vercelConfig from '../vercel.json';
 import {
   Activity,
   BarChart3,
@@ -455,6 +456,9 @@ type ScalpOpsCronVisualMetric = {
 type ScalpOpsCronRow = {
   id: string;
   cadence: string;
+  cronExpression: string | null;
+  nextRunAtMs: number | null;
+  invokePath: string | null;
   role: string;
   status: ScalpOpsCronStatus;
   lastRunAtMs: number | null;
@@ -555,6 +559,281 @@ const ADMIN_SECRET_STORAGE_KEY = 'admin_access_secret';
 const ADMIN_AUTH_TIMEOUT_MS = 4000;
 const STRATEGY_MODE_STORAGE_KEY = 'strategy_mode';
 
+type VercelCronEntry = {
+  path?: string;
+  schedule?: string;
+};
+
+type ScalpCronPipelineDefinition = {
+  primaryPathname: string;
+  matchPathnames: string[];
+  fallbackInvokePath: string;
+};
+
+type ScalpCronRuntimeMeta = {
+  expressions: string[];
+  expressionLabel: string | null;
+  nextRunAtMs: number | null;
+  invokePath: string | null;
+};
+
+const SCALP_CRON_PIPELINE_DEFINITIONS: Record<string, ScalpCronPipelineDefinition> = {
+  scalp_cycle_start: {
+    primaryPathname: '/api/scalp/cron/research-cycle-start',
+    matchPathnames: ['/api/scalp/cron/research-cycle-start'],
+    fallbackInvokePath: '/api/scalp/cron/research-cycle-start?dryRun=false&force=false',
+  },
+  scalp_cycle_worker: {
+    primaryPathname: '/api/scalp/cron/research-cycle-worker',
+    matchPathnames: ['/api/scalp/cron/research-cycle-worker'],
+    fallbackInvokePath:
+      '/api/scalp/cron/research-cycle-worker?maxRuns=2&aggregateAfter=false&finalizeWhenDone=true&syncPromotionGates=false&requireCompletedCycleForSync=false',
+  },
+  scalp_cycle_aggregate: {
+    primaryPathname: '/api/scalp/cron/research-cycle-aggregate',
+    matchPathnames: ['/api/scalp/cron/research-cycle-aggregate'],
+    fallbackInvokePath: '/api/scalp/cron/research-cycle-aggregate?finalizeWhenDone=true',
+  },
+  scalp_promotion_gate_apply: {
+    primaryPathname: '/api/scalp/cron/research-cycle-sync-gates',
+    matchPathnames: ['/api/scalp/cron/research-cycle-sync-gates'],
+    fallbackInvokePath:
+      '/api/scalp/cron/research-cycle-sync-gates?dryRun=false&requireCompletedCycle=true&materializeEnabled=true',
+  },
+  scalp_execute_deployments: {
+    primaryPathname: '/api/scalp/cron/execute-deployments',
+    matchPathnames: ['/api/scalp/cron/execute-deployments'],
+    fallbackInvokePath: '/api/scalp/cron/execute-deployments?all=true&dryRun=false&requirePromotionEligible=true',
+  },
+  scalp_live_guardrail_monitor: {
+    primaryPathname: '/api/scalp/cron/live-guardrail-monitor',
+    matchPathnames: ['/api/scalp/cron/live-guardrail-monitor'],
+    fallbackInvokePath: '/api/scalp/cron/live-guardrail-monitor?dryRun=false&autoPause=true',
+  },
+  scalp_housekeeping: {
+    primaryPathname: '/api/scalp/cron/housekeeping',
+    matchPathnames: ['/api/scalp/cron/housekeeping'],
+    fallbackInvokePath: '/api/scalp/cron/housekeeping?dryRun=false&refreshReport=true',
+  },
+};
+
+const scalpParsedCronCache = new Map<string, ParsedCronSchedule | null>();
+
+function parseCronPathname(rawPath: unknown): string | null {
+  const value = String(rawPath || '').trim();
+  if (!value) return null;
+  try {
+    return new URL(value, 'http://localhost').pathname;
+  } catch {
+    return null;
+  }
+}
+
+function dedupeStrings(rows: string[]): string[] {
+  return Array.from(new Set(rows.map((row) => String(row || '').trim()).filter((row) => row.length > 0)));
+}
+
+type ParsedCronSchedule = {
+  minute: Set<number>;
+  hour: Set<number>;
+  dayOfMonth: Set<number>;
+  month: Set<number>;
+  dayOfWeek: Set<number>;
+  dayOfMonthWildcard: boolean;
+  dayOfWeekWildcard: boolean;
+};
+
+function normalizeCronNumberForDayOfWeek(value: number): number {
+  if (value === 7) return 0;
+  return value;
+}
+
+function parseCronFieldSegment(
+  segmentRaw: string,
+  min: number,
+  max: number,
+  normalizer?: (value: number) => number,
+): number[] | null {
+  const segment = segmentRaw.trim();
+  if (!segment) return null;
+
+  const [baseRaw, stepRaw] = segment.split('/');
+  const base = (baseRaw || '').trim();
+  const step = stepRaw === undefined ? 1 : Math.floor(Number(stepRaw));
+  if (!Number.isFinite(step) || step <= 0) return null;
+
+  const parseNumber = (value: string): number | null => {
+    const n = Math.floor(Number(value));
+    if (!Number.isFinite(n)) return null;
+    const normalized = normalizer ? normalizer(n) : n;
+    if (normalized < min || normalized > max) return null;
+    return normalized;
+  };
+
+  let start = min;
+  let end = max;
+  if (base !== '*' && base.length > 0) {
+    if (base.includes('-')) {
+      const [startRaw, endRaw] = base.split('-');
+      const parsedStart = parseNumber(startRaw || '');
+      const parsedEnd = parseNumber(endRaw || '');
+      if (parsedStart === null || parsedEnd === null || parsedEnd < parsedStart) return null;
+      start = parsedStart;
+      end = parsedEnd;
+    } else {
+      const parsed = parseNumber(base);
+      if (parsed === null) return null;
+      start = parsed;
+      end = parsed;
+    }
+  }
+
+  const out: number[] = [];
+  for (let v = start; v <= end; v += step) {
+    out.push(v);
+  }
+  return out;
+}
+
+function parseCronField(
+  fieldRaw: string,
+  min: number,
+  max: number,
+  normalizer?: (value: number) => number,
+): { values: Set<number>; wildcard: boolean } | null {
+  const field = fieldRaw.trim();
+  if (!field) return null;
+  const wildcard = field === '*';
+  const out = new Set<number>();
+  const segments = field.split(',');
+  for (const segmentRaw of segments) {
+    const values = parseCronFieldSegment(segmentRaw, min, max, normalizer);
+    if (!values) return null;
+    for (const value of values) out.add(value);
+  }
+  return { values: out, wildcard };
+}
+
+function parseCronSchedule(expressionRaw: string): ParsedCronSchedule | null {
+  const expression = String(expressionRaw || '').trim();
+  if (!expression) return null;
+  if (scalpParsedCronCache.has(expression)) {
+    return scalpParsedCronCache.get(expression) || null;
+  }
+
+  const parts = expression.split(/\s+/).filter((part) => part.length > 0);
+  if (parts.length !== 5) {
+    scalpParsedCronCache.set(expression, null);
+    return null;
+  }
+
+  const minute = parseCronField(parts[0] || '', 0, 59);
+  const hour = parseCronField(parts[1] || '', 0, 23);
+  const dayOfMonth = parseCronField(parts[2] || '', 1, 31);
+  const month = parseCronField(parts[3] || '', 1, 12);
+  const dayOfWeek = parseCronField(parts[4] || '', 0, 6, normalizeCronNumberForDayOfWeek);
+  if (!minute || !hour || !dayOfMonth || !month || !dayOfWeek) {
+    scalpParsedCronCache.set(expression, null);
+    return null;
+  }
+
+  const parsed: ParsedCronSchedule = {
+    minute: minute.values,
+    hour: hour.values,
+    dayOfMonth: dayOfMonth.values,
+    month: month.values,
+    dayOfWeek: dayOfWeek.values,
+    dayOfMonthWildcard: dayOfMonth.wildcard,
+    dayOfWeekWildcard: dayOfWeek.wildcard,
+  };
+  scalpParsedCronCache.set(expression, parsed);
+  return parsed;
+}
+
+function cronMatchesUtcMinute(tsMs: number, parsed: ParsedCronSchedule): boolean {
+  const date = new Date(tsMs);
+  const minute = date.getUTCMinutes();
+  const hour = date.getUTCHours();
+  const dayOfMonth = date.getUTCDate();
+  const month = date.getUTCMonth() + 1;
+  const dayOfWeek = date.getUTCDay();
+
+  if (!parsed.minute.has(minute)) return false;
+  if (!parsed.hour.has(hour)) return false;
+  if (!parsed.month.has(month)) return false;
+
+  const domMatch = parsed.dayOfMonth.has(dayOfMonth);
+  const dowMatch = parsed.dayOfWeek.has(dayOfWeek);
+  if (parsed.dayOfMonthWildcard && parsed.dayOfWeekWildcard) return true;
+  if (parsed.dayOfMonthWildcard) return dowMatch;
+  if (parsed.dayOfWeekWildcard) return domMatch;
+  return domMatch || dowMatch;
+}
+
+function nextCronRunAtMs(expressionRaw: string, nowMs: number): number | null {
+  const parsed = parseCronSchedule(expressionRaw);
+  if (!parsed) return null;
+  const minuteMs = 60_000;
+  const firstTs = Math.floor(nowMs / minuteMs) * minuteMs + minuteMs;
+  const maxLookAheadMinutes = 370 * 24 * 60;
+  for (let step = 0; step <= maxLookAheadMinutes; step += 1) {
+    const candidate = firstTs + step * minuteMs;
+    if (cronMatchesUtcMinute(candidate, parsed)) return candidate;
+  }
+  return null;
+}
+
+function formatScalpNextRunIn(nextRunAtMs: number | null, nowMs: number): string {
+  if (nextRunAtMs === null) return '—';
+  const diffMs = nextRunAtMs - nowMs;
+  if (!Number.isFinite(diffMs)) return '—';
+  if (diffMs <= 0) return 'now';
+  if (diffMs < 60_000) return `in ${Math.max(1, Math.ceil(diffMs / 1_000))}s`;
+  const totalMinutes = Math.max(1, Math.ceil(diffMs / 60_000));
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `in ${days}d ${hours}h`;
+  if (hours > 0) return `in ${hours}h ${minutes}m`;
+  return `in ${minutes}m`;
+}
+
+function buildScalpCronRuntimeMap(nowMs: number): Record<string, ScalpCronRuntimeMeta> {
+  const crons: VercelCronEntry[] = Array.isArray((vercelConfig as any)?.crons) ? (vercelConfig as any).crons : [];
+  const out: Record<string, ScalpCronRuntimeMeta> = {};
+
+  for (const [id, def] of Object.entries(SCALP_CRON_PIPELINE_DEFINITIONS)) {
+    const rows = crons
+      .map((row) => {
+        const path = String(row?.path || '').trim();
+        const schedule = String(row?.schedule || '').trim();
+        const pathname = parseCronPathname(path);
+        return { path, schedule, pathname };
+      })
+      .filter((row) => row.pathname !== null && def.matchPathnames.includes(row.pathname));
+
+    const expressions = dedupeStrings(rows.map((row) => row.schedule));
+    const nextRunCandidates = expressions
+      .map((expression) => nextCronRunAtMs(expression, nowMs))
+      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+    const nextRunAtMs = nextRunCandidates.length ? Math.min(...nextRunCandidates) : null;
+    const invokePath =
+      rows.find((row) => row.pathname === def.primaryPathname)?.path ||
+      rows[0]?.path ||
+      def.fallbackInvokePath ||
+      null;
+
+    out[id] = {
+      expressions,
+      expressionLabel: expressions.length ? expressions.join(' | ') : null,
+      nextRunAtMs,
+      invokePath,
+    };
+  }
+
+  return out;
+}
+
 const ChartPanel = dynamic(() => import('../components/ChartPanel'), {
   ssr: false,
   loading: () => (
@@ -615,6 +894,19 @@ export default function Home() {
     key: 'windowToTs',
     direction: 'desc',
   });
+  const [scalpCronNowMs, setScalpCronNowMs] = useState<number>(() => Date.now());
+  const [scalpCronInvokeStateById, setScalpCronInvokeStateById] = useState<
+    Record<
+      string,
+      {
+        running: boolean;
+        atMs: number | null;
+        ok: boolean | null;
+        status: number | null;
+        message: string | null;
+      }
+    >
+  >({});
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
   const [livePriceConnected, setLivePriceConnected] = useState(false);
@@ -643,6 +935,13 @@ export default function Home() {
     const secret = resolveAdminSecret();
     return secret ? { 'x-admin-access-secret': secret } : undefined;
   };
+
+  useEffect(() => {
+    const timerId = window.setInterval(() => {
+      setScalpCronNowMs(Date.now());
+    }, 1_000);
+    return () => window.clearInterval(timerId);
+  }, []);
 
   const resolveSystemTheme = (): ResolvedTheme => {
     if (typeof window === 'undefined') return 'light';
@@ -980,6 +1279,83 @@ export default function Home() {
       setError(err?.message || 'Failed to load scalp dashboard');
     } finally {
       if (!silent) setLoading(false);
+    }
+  };
+
+  const invokeScalpCronNow = async (row: ScalpOpsCronRow) => {
+    const invokePath = String(row.invokePath || '').trim();
+    if (!invokePath) {
+      setScalpCronInvokeStateById((prev) => ({
+        ...prev,
+        [row.id]: {
+          running: false,
+          atMs: Date.now(),
+          ok: false,
+          status: null,
+          message: 'No invoke path configured',
+        },
+      }));
+      return;
+    }
+
+    setScalpCronInvokeStateById((prev) => ({
+      ...prev,
+      [row.id]: {
+        ...(prev[row.id] || { atMs: null, ok: null, status: null, message: null }),
+        running: true,
+        message: null,
+      },
+    }));
+
+    try {
+      const res = await fetch(invokePath, {
+        headers: buildAdminHeaders(),
+        cache: 'no-store',
+      });
+      const payload = await res.json().catch(() => null);
+      if (res.status === 401) {
+        handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+        throw new Error('Unauthorized');
+      }
+      if (!res.ok) {
+        const msg = String(payload?.message || payload?.error || '').trim() || `Invoke failed (${res.status})`;
+        setScalpCronInvokeStateById((prev) => ({
+          ...prev,
+          [row.id]: {
+            running: false,
+            atMs: Date.now(),
+            ok: false,
+            status: res.status,
+            message: msg,
+          },
+        }));
+        return;
+      }
+
+      const okMsg = String(payload?.message || '').trim() || 'Invoked';
+      setScalpCronInvokeStateById((prev) => ({
+        ...prev,
+        [row.id]: {
+          running: false,
+          atMs: Date.now(),
+          ok: true,
+          status: res.status,
+          message: okMsg,
+        },
+      }));
+      await loadScalpDashboard({ silent: true, force: true });
+    } catch (err: any) {
+      const msg = String(err?.message || 'Invoke failed').trim() || 'Invoke failed';
+      setScalpCronInvokeStateById((prev) => ({
+        ...prev,
+        [row.id]: {
+          running: false,
+          atMs: Date.now(),
+          ok: false,
+          status: prev[row.id]?.status ?? null,
+          message: msg,
+        },
+      }));
     }
   };
 
@@ -1795,18 +2171,44 @@ export default function Home() {
     scalpOpsDeployments.map((row) => [`${row.symbol}~${row.strategyId}~${row.tuneId}`, row] as const),
   );
   const scalpAvgAbsPairCorrelation = asFiniteNumber(scalpResearchReport?.summary?.avgAbsPairCorrelation);
+  const scalpWorkerTasks = Array.isArray(scalpResearchCycle?.tasks) ? scalpResearchCycle.tasks : [];
+  const scalpWorkerTaskStatusTotals = scalpWorkerTasks.reduce(
+    (acc, task) => {
+      const status = String(task?.status || 'pending')
+        .trim()
+        .toLowerCase();
+      acc.tasks += 1;
+      if (status === 'completed') acc.completed += 1;
+      else if (status === 'failed') acc.failed += 1;
+      else if (status === 'running') acc.running += 1;
+      else acc.pending += 1;
+      return acc;
+    },
+    { tasks: 0, pending: 0, running: 0, completed: 0, failed: 0 },
+  );
+  const scalpWorkerTaskTotalsAvailable = scalpWorkerTaskStatusTotals.tasks > 0;
   const scalpCycleProgressPct =
     asFiniteNumber(scalpResearchCycle?.summary?.progressPct) ??
-    asFiniteNumber(scalpResearchReport?.cycle?.progressPct);
+    (scalpWorkerTaskTotalsAvailable
+      ? ((scalpWorkerTaskStatusTotals.completed + scalpWorkerTaskStatusTotals.failed) /
+          scalpWorkerTaskStatusTotals.tasks) *
+        100
+      : asFiniteNumber(scalpResearchReport?.cycle?.progressPct));
   const scalpCycleTasks =
     asFiniteNumber(scalpResearchCycle?.summary?.totals?.tasks) ??
-    asFiniteNumber(scalpResearchReport?.cycle?.tasks);
+    (scalpWorkerTaskTotalsAvailable
+      ? scalpWorkerTaskStatusTotals.tasks
+      : asFiniteNumber(scalpResearchReport?.cycle?.tasks));
   const scalpCycleCompleted =
     asFiniteNumber(scalpResearchCycle?.summary?.totals?.completed) ??
-    asFiniteNumber(scalpResearchReport?.cycle?.completed);
+    (scalpWorkerTaskTotalsAvailable
+      ? scalpWorkerTaskStatusTotals.completed
+      : asFiniteNumber(scalpResearchReport?.cycle?.completed));
   const scalpCycleFailed =
     asFiniteNumber(scalpResearchCycle?.summary?.totals?.failed) ??
-    asFiniteNumber(scalpResearchReport?.cycle?.failed);
+    (scalpWorkerTaskTotalsAvailable
+      ? scalpWorkerTaskStatusTotals.failed
+      : asFiniteNumber(scalpResearchReport?.cycle?.failed));
   const scalpUniverseSelectedCount =
     asFiniteNumber(scalpResearchUniverse?.selectedCount) ??
     asFiniteNumber(scalpResearchUniverse?.snapshot?.selectedSymbols?.length);
@@ -1843,9 +2245,12 @@ export default function Home() {
       : scalpCycleStatusRaw.includes('COMPLETE')
         ? 'positive'
         : 'neutral';
-  const scalpCyclePending = asFiniteNumber(scalpResearchCycle?.summary?.totals?.pending);
-  const scalpCycleRunning = asFiniteNumber(scalpResearchCycle?.summary?.totals?.running);
-  const scalpWorkerTasks = Array.isArray(scalpResearchCycle?.tasks) ? scalpResearchCycle.tasks : [];
+  const scalpCyclePending =
+    asFiniteNumber(scalpResearchCycle?.summary?.totals?.pending) ??
+    (scalpWorkerTaskTotalsAvailable ? scalpWorkerTaskStatusTotals.pending : null);
+  const scalpCycleRunning =
+    asFiniteNumber(scalpResearchCycle?.summary?.totals?.running) ??
+    (scalpWorkerTaskTotalsAvailable ? scalpWorkerTaskStatusTotals.running : null);
   const scalpWorkerCycleSource = String(scalpResearchCycle?.cycleSource || '').trim() || 'none';
   const compareScalpWorkerOptionalNumber = (
     a: number | null | undefined,
@@ -2190,14 +2595,35 @@ export default function Home() {
     if (typeof ts !== 'number' || !Number.isFinite(ts)) return 'unknown';
     return Date.now() - ts <= staleMs ? 'healthy' : 'lagging';
   };
+  const scalpCronRuntimeById = buildScalpCronRuntimeMap(scalpCronNowMs);
+  const scalpCronRuntimeMeta = (id: string): ScalpCronRuntimeMeta =>
+    scalpCronRuntimeById[id] || {
+      expressions: [],
+      expressionLabel: null,
+      nextRunAtMs: null,
+      invokePath: null,
+    };
   const scalpCronRows: ScalpOpsCronRow[] = [
     {
       id: 'scalp_cycle_start',
       cadence: 'Daily',
+      cronExpression: scalpCronRuntimeMeta('scalp_cycle_start').expressionLabel,
+      nextRunAtMs: scalpCronRuntimeMeta('scalp_cycle_start').nextRunAtMs,
+      invokePath: scalpCronRuntimeMeta('scalp_cycle_start').invokePath,
       role: 'Freeze universe and emit task manifest',
       status: scalpStatusFromTs(scalpCycleUpdatedAtMs, 36 * 60 * 60_000),
       lastRunAtMs: scalpCycleUpdatedAtMs,
       details: [
+        {
+          label: 'Cron',
+          value: scalpCronRuntimeMeta('scalp_cycle_start').expressionLabel || 'not configured',
+          tone: scalpCronRuntimeMeta('scalp_cycle_start').expressionLabel ? 'neutral' : 'warning',
+        },
+        {
+          label: 'Next Run',
+          value: formatScalpNextRunIn(scalpCronRuntimeMeta('scalp_cycle_start').nextRunAtMs, scalpCronNowMs),
+          tone: 'neutral',
+        },
         { label: 'Cycle', value: scalpCycleId || 'pending', tone: scalpCycleId ? 'neutral' : 'warning' },
         { label: 'Status', value: scalpCycleStatusRaw.replace(/_/g, ' '), tone: scalpCycleStatusTone },
         { label: 'Discovered', value: formatScalpCount(scalpUniverseSelectedCount), tone: 'neutral' },
@@ -2267,10 +2693,23 @@ export default function Home() {
     {
       id: 'scalp_cycle_worker',
       cadence: 'Every 1-2m',
+      cronExpression: scalpCronRuntimeMeta('scalp_cycle_worker').expressionLabel,
+      nextRunAtMs: scalpCronRuntimeMeta('scalp_cycle_worker').nextRunAtMs,
+      invokePath: scalpCronRuntimeMeta('scalp_cycle_worker').invokePath,
       role: 'Claim and execute replay chunks',
       status: scalpStatusFromTs(scalpCycleUpdatedAtMs, 20 * 60_000),
       lastRunAtMs: scalpCycleUpdatedAtMs,
       details: [
+        {
+          label: 'Cron',
+          value: scalpCronRuntimeMeta('scalp_cycle_worker').expressionLabel || 'not configured',
+          tone: scalpCronRuntimeMeta('scalp_cycle_worker').expressionLabel ? 'neutral' : 'warning',
+        },
+        {
+          label: 'Next Run',
+          value: formatScalpNextRunIn(scalpCronRuntimeMeta('scalp_cycle_worker').nextRunAtMs, scalpCronNowMs),
+          tone: 'neutral',
+        },
         { label: 'Progress', value: formatScalpPct(scalpCycleProgressPct), tone: 'neutral' },
         { label: 'Tasks', value: formatScalpCount(scalpCycleTasks), tone: 'neutral' },
         { label: 'Pending', value: formatScalpCount(scalpCyclePending), tone: 'warning' },
@@ -2328,10 +2767,23 @@ export default function Home() {
     {
       id: 'scalp_cycle_aggregate',
       cadence: 'Every 10m',
+      cronExpression: scalpCronRuntimeMeta('scalp_cycle_aggregate').expressionLabel,
+      nextRunAtMs: scalpCronRuntimeMeta('scalp_cycle_aggregate').nextRunAtMs,
+      invokePath: scalpCronRuntimeMeta('scalp_cycle_aggregate').invokePath,
       role: 'Compute candidate/forward summary',
       status: scalpStatusFromTs(scalpCycleUpdatedAtMs, 45 * 60_000),
       lastRunAtMs: scalpCycleUpdatedAtMs,
       details: [
+        {
+          label: 'Cron',
+          value: scalpCronRuntimeMeta('scalp_cycle_aggregate').expressionLabel || 'not configured',
+          tone: scalpCronRuntimeMeta('scalp_cycle_aggregate').expressionLabel ? 'neutral' : 'warning',
+        },
+        {
+          label: 'Next Run',
+          value: formatScalpNextRunIn(scalpCronRuntimeMeta('scalp_cycle_aggregate').nextRunAtMs, scalpCronNowMs),
+          tone: 'neutral',
+        },
         {
           label: 'Candidates',
           value: formatScalpCount(asFiniteNumber(scalpResearchReport?.cycle?.candidateCount)),
@@ -2362,6 +2814,9 @@ export default function Home() {
     {
       id: 'scalp_promotion_gate_apply',
       cadence: 'Daily',
+      cronExpression: scalpCronRuntimeMeta('scalp_promotion_gate_apply').expressionLabel,
+      nextRunAtMs: scalpCronRuntimeMeta('scalp_promotion_gate_apply').nextRunAtMs,
+      invokePath: scalpCronRuntimeMeta('scalp_promotion_gate_apply').invokePath,
       role: 'Apply forward validation gate',
       status: scalpStatusFromTs(
         scalpPromotionSyncFetchedAtMs ?? scalpReportGeneratedAtMs,
@@ -2369,6 +2824,19 @@ export default function Home() {
       ),
       lastRunAtMs: scalpPromotionSyncFetchedAtMs ?? scalpReportGeneratedAtMs,
       details: [
+        {
+          label: 'Cron',
+          value: scalpCronRuntimeMeta('scalp_promotion_gate_apply').expressionLabel || 'not configured',
+          tone: scalpCronRuntimeMeta('scalp_promotion_gate_apply').expressionLabel ? 'neutral' : 'warning',
+        },
+        {
+          label: 'Next Run',
+          value: formatScalpNextRunIn(
+            scalpCronRuntimeMeta('scalp_promotion_gate_apply').nextRunAtMs,
+            scalpCronNowMs,
+          ),
+          tone: 'neutral',
+        },
         {
           label: 'Cycle',
           value: scalpPromotionSyncCycleId || scalpCycleId || 'pending',
@@ -2510,10 +2978,26 @@ export default function Home() {
     {
       id: 'scalp_execute_deployments',
       cadence: 'Every 1m',
+      cronExpression: scalpCronRuntimeMeta('scalp_execute_deployments').expressionLabel,
+      nextRunAtMs: scalpCronRuntimeMeta('scalp_execute_deployments').nextRunAtMs,
+      invokePath: scalpCronRuntimeMeta('scalp_execute_deployments').invokePath,
       role: 'Run enabled and gate-eligible deployments',
       status: scalpStatusFromTs(scalpLastExecuteRunAtMs, 10 * 60_000),
       lastRunAtMs: scalpLastExecuteRunAtMs,
       details: [
+        {
+          label: 'Cron',
+          value: scalpCronRuntimeMeta('scalp_execute_deployments').expressionLabel || 'not configured',
+          tone: scalpCronRuntimeMeta('scalp_execute_deployments').expressionLabel ? 'neutral' : 'warning',
+        },
+        {
+          label: 'Next Run',
+          value: formatScalpNextRunIn(
+            scalpCronRuntimeMeta('scalp_execute_deployments').nextRunAtMs,
+            scalpCronNowMs,
+          ),
+          tone: 'neutral',
+        },
         { label: 'Run Count', value: formatScalpCount(scalpSummaryRunCount), tone: 'neutral' },
         { label: 'Dry Runs', value: formatScalpCount(scalpSummaryDryRunCount), tone: 'neutral' },
         { label: 'Open', value: formatScalpCount(scalpSummaryOpenCount), tone: 'neutral' },
@@ -2540,6 +3024,9 @@ export default function Home() {
     {
       id: 'scalp_live_guardrail_monitor',
       cadence: 'Every 5-15m',
+      cronExpression: scalpCronRuntimeMeta('scalp_live_guardrail_monitor').expressionLabel,
+      nextRunAtMs: scalpCronRuntimeMeta('scalp_live_guardrail_monitor').nextRunAtMs,
+      invokePath: scalpCronRuntimeMeta('scalp_live_guardrail_monitor').invokePath,
       role: 'Pause hard-breach deployments',
       status: scalpStatusFromTs(
         scalpLastGuardrailAtMs ?? scalpReportGeneratedAtMs,
@@ -2547,6 +3034,19 @@ export default function Home() {
       ),
       lastRunAtMs: scalpLastGuardrailAtMs ?? scalpReportGeneratedAtMs,
       details: [
+        {
+          label: 'Cron',
+          value: scalpCronRuntimeMeta('scalp_live_guardrail_monitor').expressionLabel || 'not configured',
+          tone: scalpCronRuntimeMeta('scalp_live_guardrail_monitor').expressionLabel ? 'neutral' : 'warning',
+        },
+        {
+          label: 'Next Run',
+          value: formatScalpNextRunIn(
+            scalpCronRuntimeMeta('scalp_live_guardrail_monitor').nextRunAtMs,
+            scalpCronNowMs,
+          ),
+          tone: 'neutral',
+        },
         {
           label: 'Last Event',
           value: formatScalpTime(scalpLastGuardrailAtMs ?? scalpReportGeneratedAtMs),
@@ -2589,6 +3089,9 @@ export default function Home() {
     {
       id: 'scalp_housekeeping',
       cadence: 'Hourly',
+      cronExpression: scalpCronRuntimeMeta('scalp_housekeeping').expressionLabel,
+      nextRunAtMs: scalpCronRuntimeMeta('scalp_housekeeping').nextRunAtMs,
+      invokePath: scalpCronRuntimeMeta('scalp_housekeeping').invokePath,
       role: 'Prune stale locks and compact retention',
       status: scalpStatusFromTs(
         scalpDashboardGeneratedAtMs ?? scalpReportGeneratedAtMs,
@@ -2596,6 +3099,16 @@ export default function Home() {
       ),
       lastRunAtMs: scalpDashboardGeneratedAtMs ?? scalpReportGeneratedAtMs,
       details: [
+        {
+          label: 'Cron',
+          value: scalpCronRuntimeMeta('scalp_housekeeping').expressionLabel || 'not configured',
+          tone: scalpCronRuntimeMeta('scalp_housekeeping').expressionLabel ? 'neutral' : 'warning',
+        },
+        {
+          label: 'Next Run',
+          value: formatScalpNextRunIn(scalpCronRuntimeMeta('scalp_housekeeping').nextRunAtMs, scalpCronNowMs),
+          tone: 'neutral',
+        },
         {
           label: 'Dashboard Snapshot',
           value: formatScalpTime(scalpDashboardGeneratedAtMs),
@@ -3257,19 +3770,23 @@ export default function Home() {
                       <span className={scalpTagNeutralClass}>timeout-safe chunks</span>
                     </div>
                     <div className="mt-4 overflow-x-auto">
-                      <table className="w-full min-w-[760px] border-separate border-spacing-y-2 text-left text-sm">
+                      <table className="w-full min-w-[1040px] border-separate border-spacing-y-2 text-left text-sm">
                         <thead className={`text-[11px] uppercase tracking-[0.16em] ${scalpTableHeaderClass}`}>
                           <tr>
                             <th className="px-3 py-1">Cron</th>
-                            <th className="px-3 py-1">Cadence</th>
+                            <th className="px-3 py-1">Expression</th>
+                            <th className="px-3 py-1">Next Run</th>
                             <th className="px-3 py-1">Role</th>
                             <th className="px-3 py-1">Last</th>
                             <th className="px-3 py-1">Status</th>
+                            <th className="px-3 py-1">Action</th>
                           </tr>
                         </thead>
                         <tbody>
                           {scalpCronRows.map((row) => {
                             const isExpanded = scalpExpandedCronId === row.id;
+                            const invokeState = scalpCronInvokeStateById[row.id] || null;
+                            const invokeButtonDisabled = !row.invokePath || Boolean(invokeState?.running);
                             return (
                               <React.Fragment key={row.id}>
                                 <tr
@@ -3292,12 +3809,19 @@ export default function Home() {
                                       </span>
                                     </div>
                                   </td>
-                                  <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{row.cadence}</td>
+                                  <td className={`px-3 py-3 font-mono text-xs ${scalpTextSecondaryClass}`}>
+                                    {row.cronExpression || row.cadence}
+                                  </td>
+                                  <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>
+                                    <span title={formatScalpTime(row.nextRunAtMs)}>
+                                      {formatScalpNextRunIn(row.nextRunAtMs, scalpCronNowMs)}
+                                    </span>
+                                  </td>
                                   <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{row.role}</td>
                                   <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>
                                     {formatScalpTime(row.lastRunAtMs)}
                                   </td>
-                                  <td className="rounded-r-xl px-3 py-3">
+                                  <td className="px-3 py-3">
                                     <span
                                       className={`rounded-full border px-2 py-1 text-[11px] ${scalpCronStatusMeta(
                                         row.status,
@@ -3306,16 +3830,54 @@ export default function Home() {
                                       {row.status}
                                     </span>
                                   </td>
+                                  <td className="rounded-r-xl px-3 py-3">
+                                    <button
+                                      type="button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        void invokeScalpCronNow(row);
+                                      }}
+                                      disabled={invokeButtonDisabled}
+                                      className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
+                                        scalpDarkMode
+                                          ? 'border-zinc-600 bg-zinc-800 text-zinc-200 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50'
+                                          : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50'
+                                      }`}
+                                      title={row.invokePath || 'No invoke path configured'}
+                                    >
+                                      {invokeState?.running ? 'invoking...' : 'Invoke now()'}
+                                    </button>
+                                  </td>
                                 </tr>
                                 {isExpanded ? (
                                   <tr>
-                                    <td colSpan={5} className="px-0 pt-0">
+                                    <td colSpan={7} className="px-0 pt-0">
                                       <div className={scalpCronExpandedPanelClass}>
                                         <div
                                           className={`mb-2 text-[11px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
                                         >
                                           Last execution snapshot
                                         </div>
+                                        {invokeState ? (
+                                          <div
+                                            className={`mb-3 rounded-xl border px-2.5 py-2 text-xs ${
+                                              invokeState.ok === true
+                                                ? scalpCronDetailToneMeta('positive')
+                                                : invokeState.ok === false
+                                                  ? scalpCronDetailToneMeta('critical')
+                                                  : scalpCronDetailToneMeta('neutral')
+                                            }`}
+                                          >
+                                            <span className="font-semibold">Manual invoke:</span>{' '}
+                                            {invokeState.ok === null
+                                              ? 'not run'
+                                              : invokeState.ok
+                                                ? `ok (${invokeState.status || '200'})`
+                                                : `failed (${invokeState.status || 'n/a'})`}
+                                            {invokeState.message ? ` · ${invokeState.message}` : ''}
+                                            {invokeState.atMs ? ` · ${formatScalpTime(invokeState.atMs)}` : ''}
+                                          </div>
+                                        ) : null}
                                         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-5">
                                           {row.details.map((detail) => (
                                             <div
