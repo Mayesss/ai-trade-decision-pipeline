@@ -166,9 +166,11 @@ export interface WorkerRunParams {
 export interface WorkerRunOutcome {
     cycleId: string | null;
     workerId: string;
+    maxRuns: number;
     attemptedRuns: number;
     completedRuns: number;
     failedRuns: number;
+    noClaimScanSummary: WorkerNoClaimScanSummary | null;
     diagnostics: {
         durationMs: number;
         cycleTaskCount: number;
@@ -196,7 +198,7 @@ export interface WorkerRunOutcome {
     }>;
 }
 
-type ClaimScanSummary = {
+export type WorkerNoClaimScanSummary = {
     scannedTasks: number;
     lockAttempts: number;
     locksAcquired: number;
@@ -210,6 +212,8 @@ type ClaimScanSummary = {
     failedMaxed: number;
     completed: number;
 };
+
+type ClaimScanSummary = WorkerNoClaimScanSummary;
 
 export interface AggregateResearchCycleParams {
     cycleId?: string;
@@ -846,6 +850,7 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
     const startedAtMs = Date.now();
     const workerId = String(params.workerId || '').trim() || `worker_${crypto.randomUUID().slice(0, 8)}`;
     const debug = params.debug === true;
+    const maxRuns = Math.max(1, Math.min(10, toPositiveInt(params.maxRuns, 1)));
     const emitWorkerLog = (
         event: string,
         payload: Record<string, unknown>,
@@ -873,9 +878,11 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         return {
             cycleId: null,
             workerId,
+            maxRuns,
             attemptedRuns: 0,
             completedRuns: 0,
             failedRuns: 0,
+            noClaimScanSummary: null,
             diagnostics: {
                 durationMs: Date.now() - startedAtMs,
                 cycleTaskCount: 0,
@@ -905,9 +912,11 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         return {
             cycleId,
             workerId,
+            maxRuns,
             attemptedRuns: 0,
             completedRuns: 0,
             failedRuns: 0,
+            noClaimScanSummary: null,
             diagnostics: {
                 durationMs: Date.now() - startedAtMs,
                 cycleTaskCount: 0,
@@ -937,9 +946,11 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         return {
             cycleId,
             workerId,
+            maxRuns,
             attemptedRuns: 0,
             completedRuns: 0,
             failedRuns: 0,
+            noClaimScanSummary: null,
             diagnostics: {
                 durationMs: Date.now() - startedAtMs,
                 cycleTaskCount: cycle.taskIds.length,
@@ -955,8 +966,6 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
             claimedTasks: [],
         };
     }
-
-    const maxRuns = Math.max(1, Math.min(10, toPositiveInt(params.maxRuns, 1)));
     const diagnostics: WorkerDiagnostics = {
         durationMs: 0,
         cycleTaskCount: cycle.taskIds.length,
@@ -972,9 +981,11 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
     const out: WorkerRunOutcome = {
         cycleId,
         workerId,
+        maxRuns,
         attemptedRuns: 0,
         completedRuns: 0,
         failedRuns: 0,
+        noClaimScanSummary: null,
         diagnostics,
         claimedTasks: [],
     };
@@ -990,6 +1001,7 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         diagnostics.taskLockAcquired += claimOutcome.scanSummary.locksAcquired;
         if (!claimOutcome.claim) {
             lastNoClaimScanSummary = claimOutcome.scanSummary;
+            out.noClaimScanSummary = claimOutcome.scanSummary;
             const shouldWarnNoClaim =
                 claimOutcome.scanSummary.pending > 0 ||
                 claimOutcome.scanSummary.runningStale > 0 ||
@@ -1055,6 +1067,24 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
             };
             await saveTask(failedTask);
             out.failedRuns += 1;
+            emitWorkerLog(
+                'task_failed',
+                {
+                    cycleId,
+                    workerId,
+                    taskId: failedTask.taskId,
+                    symbol: failedTask.symbol,
+                    strategyId: failedTask.strategyId,
+                    tuneId: failedTask.tuneId,
+                    attempts: failedTask.attempts,
+                    maxAttemptsCfg: cycle.params.maxAttempts,
+                    errorCode: failedTask.errorCode,
+                    errorMessage: failedTask.errorMessage,
+                    scanIndex: claim.scanIndex,
+                },
+                'warn',
+                true,
+            );
             out.claimedTasks.push({
                 taskId: failedTask.taskId,
                 symbol: failedTask.symbol,
@@ -1077,6 +1107,16 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         await saveClaimCursorIndex(cycleId, nextScanIndex);
     }
     out.diagnostics.durationMs = Date.now() - startedAtMs;
+    const shouldWarnCompletion =
+        out.failedRuns > 0 ||
+        (out.attemptedRuns === 0 &&
+            lastNoClaimScanSummary !== null &&
+            (lastNoClaimScanSummary.pending > 0 ||
+                lastNoClaimScanSummary.runningFresh > 0 ||
+                lastNoClaimScanSummary.runningStale > 0 ||
+                lastNoClaimScanSummary.runningMissingStartedAt > 0 ||
+                lastNoClaimScanSummary.failedRetryable > 0 ||
+                lastNoClaimScanSummary.lockMisses > 0));
     emitWorkerLog(
         'run_completed',
         {
@@ -1091,7 +1131,8 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
             lastNoClaimScanSummary,
             claimedTaskIds: out.claimedTasks.slice(0, 10).map((row) => row.taskId),
         },
-        'info',
+        shouldWarnCompletion ? 'warn' : 'info',
+        shouldWarnCompletion,
     );
     return out;
 }

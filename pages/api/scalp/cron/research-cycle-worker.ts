@@ -52,6 +52,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     try {
         const worker = await runResearchWorker({ cycleId, workerId, maxRuns, debug });
+        const noClaim = worker.noClaimScanSummary;
+        const shouldWarnNoProgress =
+            worker.attemptedRuns === 0 &&
+            !!noClaim &&
+            (noClaim.pending > 0 ||
+                noClaim.runningFresh > 0 ||
+                noClaim.runningStale > 0 ||
+                noClaim.runningMissingStartedAt > 0 ||
+                noClaim.failedRetryable > 0 ||
+                noClaim.lockMisses > 0);
+        const workerMessage =
+            worker.attemptedRuns > 0
+                ? `worker processed ${worker.attemptedRuns} tasks (completed=${worker.completedRuns}, failed=${worker.failedRuns})`
+                : noClaim
+                  ? `no claimable tasks (pending=${noClaim.pending}, runningFresh=${noClaim.runningFresh}, runningStale=${noClaim.runningStale}, runningMissingStartedAt=${noClaim.runningMissingStartedAt}, failedRetryable=${noClaim.failedRetryable}, lockMisses=${noClaim.lockMisses})`
+                  : 'worker did not claim any tasks';
         const aggregate =
             aggregateAfter && worker.cycleId
                 ? await aggregateScalpResearchCycle({
@@ -71,9 +87,39 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                       updatedBy: 'cron:research-cycle-worker',
                   })
                 : null;
+        if (worker.failedRuns > 0 || shouldWarnNoProgress) {
+            console.warn(
+                JSON.stringify({
+                    scope: 'scalp_research_worker_api',
+                    event: 'worker_attention',
+                    cycleId: worker.cycleId,
+                    workerId: worker.workerId,
+                    maxRuns: worker.maxRuns,
+                    attemptedRuns: worker.attemptedRuns,
+                    completedRuns: worker.completedRuns,
+                    failedRuns: worker.failedRuns,
+                    noClaimScanSummary: worker.noClaimScanSummary,
+                    aggregateStatus: aggregate?.summary?.status || null,
+                }),
+            );
+        } else if (debug) {
+            console.info(
+                JSON.stringify({
+                    scope: 'scalp_research_worker_api',
+                    event: 'worker_ok',
+                    cycleId: worker.cycleId,
+                    workerId: worker.workerId,
+                    maxRuns: worker.maxRuns,
+                    attemptedRuns: worker.attemptedRuns,
+                    completedRuns: worker.completedRuns,
+                    failedRuns: worker.failedRuns,
+                }),
+            );
+        }
 
         return res.status(200).json({
             ok: true,
+            message: workerMessage,
             requestedCycleId: cycleId || null,
             worker,
             aggregate: aggregate
@@ -89,6 +135,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             promotionSync,
         });
     } catch (err: any) {
+        console.error(
+            JSON.stringify({
+                scope: 'scalp_research_worker_api',
+                event: 'handler_failed',
+                cycleId: cycleId || null,
+                workerId: workerId || null,
+                maxRuns: maxRuns ?? null,
+                debug,
+                error: err?.message || String(err),
+                stack: err?.stack || null,
+            }),
+        );
         return res.status(500).json({
             error: 'research_cycle_worker_failed',
             message: err?.message || String(err),

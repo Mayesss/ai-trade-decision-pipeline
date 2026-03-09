@@ -305,6 +305,9 @@ type ScalpResearchCycleResponse = {
     status?: string;
     createdAtMs?: number;
     updatedAtMs?: number;
+    params?: {
+      runningStaleAfterMs?: number;
+    };
   };
   summary?: {
     status?: string;
@@ -2238,6 +2241,9 @@ export default function Home() {
   );
   const scalpAvgAbsPairCorrelation = asFiniteNumber(scalpResearchReport?.summary?.avgAbsPairCorrelation);
   const scalpWorkerTasks = Array.isArray(scalpResearchCycle?.tasks) ? scalpResearchCycle.tasks : [];
+  const scalpWorkerRunningStaleAfterMs =
+    asFiniteNumber(scalpResearchCycle?.cycle?.params?.runningStaleAfterMs) ?? 20 * 60_000;
+  const scalpWorkerNowMs = Date.now();
   const scalpWorkerTaskStatusTotals = scalpWorkerTasks.reduce(
     (acc, task) => {
       const status = String(task?.status || 'pending')
@@ -2246,35 +2252,87 @@ export default function Home() {
       acc.tasks += 1;
       if (status === 'completed') acc.completed += 1;
       else if (status === 'failed') acc.failed += 1;
-      else if (status === 'running') acc.running += 1;
-      else acc.pending += 1;
+      else if (status === 'running') {
+        const startedAtMs = asFiniteNumber(task?.startedAtMs);
+        const staleRunning =
+          startedAtMs === null || scalpWorkerNowMs - startedAtMs >= scalpWorkerRunningStaleAfterMs;
+        if (staleRunning) {
+          acc.pending += 1;
+          if (startedAtMs === null) acc.runningMissingStartedAt += 1;
+          else acc.runningStale += 1;
+        } else {
+          acc.running += 1;
+        }
+      } else acc.pending += 1;
       return acc;
     },
-    { tasks: 0, pending: 0, running: 0, completed: 0, failed: 0 },
+    { tasks: 0, pending: 0, running: 0, completed: 0, failed: 0, runningStale: 0, runningMissingStartedAt: 0 },
   );
   const scalpWorkerTaskTotalsAvailable = scalpWorkerTaskStatusTotals.tasks > 0;
-  const scalpCycleProgressPct =
-    asFiniteNumber(scalpResearchCycle?.summary?.progressPct) ??
-    (scalpWorkerTaskTotalsAvailable
-      ? ((scalpWorkerTaskStatusTotals.completed + scalpWorkerTaskStatusTotals.failed) /
-          scalpWorkerTaskStatusTotals.tasks) *
-        100
-      : asFiniteNumber(scalpResearchReport?.cycle?.progressPct));
-  const scalpCycleTasks =
-    asFiniteNumber(scalpResearchCycle?.summary?.totals?.tasks) ??
-    (scalpWorkerTaskTotalsAvailable
-      ? scalpWorkerTaskStatusTotals.tasks
-      : asFiniteNumber(scalpResearchReport?.cycle?.tasks));
-  const scalpCycleCompleted =
-    asFiniteNumber(scalpResearchCycle?.summary?.totals?.completed) ??
-    (scalpWorkerTaskTotalsAvailable
-      ? scalpWorkerTaskStatusTotals.completed
-      : asFiniteNumber(scalpResearchReport?.cycle?.completed));
-  const scalpCycleFailed =
-    asFiniteNumber(scalpResearchCycle?.summary?.totals?.failed) ??
-    (scalpWorkerTaskTotalsAvailable
-      ? scalpWorkerTaskStatusTotals.failed
-      : asFiniteNumber(scalpResearchReport?.cycle?.failed));
+  const scalpSummaryTaskTotals = scalpResearchCycle?.summary?.totals || null;
+  const scalpSummaryTaskCount = asFiniteNumber(scalpSummaryTaskTotals?.tasks);
+  const scalpWorkerTaskCountReturned = asFiniteNumber(scalpResearchCycle?.taskCountReturned);
+  const scalpWorkerTasksCoverAll =
+    Boolean(scalpResearchCycle?.includeTasks) &&
+    scalpWorkerTaskTotalsAvailable &&
+    scalpWorkerTaskCountReturned !== null &&
+    (scalpSummaryTaskCount !== null
+      ? scalpWorkerTaskCountReturned >= scalpSummaryTaskCount
+      : scalpWorkerTaskCountReturned >= scalpWorkerTaskStatusTotals.tasks);
+  const scalpCycleTotalsSource: 'task_list_full' | 'summary_cache' | 'task_list_partial' | 'report_fallback' =
+    scalpWorkerTasksCoverAll
+      ? 'task_list_full'
+      : scalpSummaryTaskCount !== null
+        ? 'summary_cache'
+        : scalpWorkerTaskTotalsAvailable
+          ? 'task_list_partial'
+          : 'report_fallback';
+  const scalpCycleTasks = scalpWorkerTasksCoverAll
+    ? scalpWorkerTaskStatusTotals.tasks
+    : scalpSummaryTaskCount ??
+      (scalpWorkerTaskTotalsAvailable
+        ? scalpWorkerTaskStatusTotals.tasks
+        : asFiniteNumber(scalpResearchReport?.cycle?.tasks));
+  const scalpCyclePending = scalpWorkerTasksCoverAll
+    ? scalpWorkerTaskStatusTotals.pending
+    : asFiniteNumber(scalpSummaryTaskTotals?.pending) ??
+      (scalpWorkerTaskTotalsAvailable ? scalpWorkerTaskStatusTotals.pending : null);
+  const scalpCycleRunning = scalpWorkerTasksCoverAll
+    ? scalpWorkerTaskStatusTotals.running
+    : asFiniteNumber(scalpSummaryTaskTotals?.running) ??
+      (scalpWorkerTaskTotalsAvailable ? scalpWorkerTaskStatusTotals.running : null);
+  const scalpCycleCompleted = scalpWorkerTasksCoverAll
+    ? scalpWorkerTaskStatusTotals.completed
+    : asFiniteNumber(scalpSummaryTaskTotals?.completed) ??
+      (scalpWorkerTaskTotalsAvailable
+        ? scalpWorkerTaskStatusTotals.completed
+        : asFiniteNumber(scalpResearchReport?.cycle?.completed));
+  const scalpCycleFailed = scalpWorkerTasksCoverAll
+    ? scalpWorkerTaskStatusTotals.failed
+    : asFiniteNumber(scalpSummaryTaskTotals?.failed) ??
+      (scalpWorkerTaskTotalsAvailable
+        ? scalpWorkerTaskStatusTotals.failed
+        : asFiniteNumber(scalpResearchReport?.cycle?.failed));
+  const scalpCycleRunningStaleAsPending = scalpWorkerTasksCoverAll
+    ? scalpWorkerTaskStatusTotals.runningStale + scalpWorkerTaskStatusTotals.runningMissingStartedAt
+    : null;
+  const scalpCycleProgressFromChosenTotals =
+    scalpCycleTasks !== null &&
+    scalpCycleTasks > 0 &&
+    scalpCycleCompleted !== null &&
+    scalpCycleFailed !== null
+      ? ((scalpCycleCompleted + scalpCycleFailed) / scalpCycleTasks) * 100
+      : null;
+  const scalpCycleProgressPct = scalpWorkerTasksCoverAll
+    ? scalpCycleProgressFromChosenTotals ??
+      asFiniteNumber(scalpResearchCycle?.summary?.progressPct) ??
+      asFiniteNumber(scalpResearchReport?.cycle?.progressPct)
+    : asFiniteNumber(scalpResearchCycle?.summary?.progressPct) ??
+      (scalpWorkerTaskTotalsAvailable
+        ? ((scalpWorkerTaskStatusTotals.completed + scalpWorkerTaskStatusTotals.failed) /
+            scalpWorkerTaskStatusTotals.tasks) *
+          100
+        : asFiniteNumber(scalpResearchReport?.cycle?.progressPct));
   const scalpUniverseSelectedCount =
     asFiniteNumber(scalpResearchUniverse?.selectedCount) ??
     asFiniteNumber(scalpResearchUniverse?.snapshot?.selectedSymbols?.length);
@@ -2319,12 +2377,6 @@ export default function Home() {
       : scalpCycleStatusRaw.includes('COMPLETE')
         ? 'positive'
         : 'neutral';
-  const scalpCyclePending =
-    asFiniteNumber(scalpResearchCycle?.summary?.totals?.pending) ??
-    (scalpWorkerTaskTotalsAvailable ? scalpWorkerTaskStatusTotals.pending : null);
-  const scalpCycleRunning =
-    asFiniteNumber(scalpResearchCycle?.summary?.totals?.running) ??
-    (scalpWorkerTaskTotalsAvailable ? scalpWorkerTaskStatusTotals.running : null);
   const scalpWorkerCycleSource = String(scalpResearchCycle?.cycleSource || '').trim() || 'none';
   const compareScalpWorkerOptionalNumber = (
     a: number | null | undefined,
@@ -2817,6 +2869,11 @@ export default function Home() {
         { label: 'Tasks', value: formatScalpCount(scalpCycleTasks), tone: 'neutral' },
         { label: 'Pending', value: formatScalpCount(scalpCyclePending), tone: 'warning' },
         { label: 'Running', value: formatScalpCount(scalpCycleRunning), tone: 'warning' },
+        {
+          label: 'Stale→Pending',
+          value: formatScalpCount(scalpCycleRunningStaleAsPending),
+          tone: scalpCycleRunningStaleAsPending ? 'warning' : 'neutral',
+        },
         { label: 'Failed', value: formatScalpCount(scalpCycleFailed), tone: scalpCycleFailed ? 'critical' : 'positive' },
       ],
       visualMetrics: [
@@ -2861,7 +2918,14 @@ export default function Home() {
         cycleId: scalpCycleId || null,
         status: scalpCycleStatusRaw || null,
         progressPct: scalpCycleProgressPct,
-        totals: scalpResearchCycle?.summary?.totals || null,
+        totals: {
+          tasks: scalpCycleTasks,
+          pending: scalpCyclePending,
+          running: scalpCycleRunning,
+          completed: scalpCycleCompleted,
+          failed: scalpCycleFailed,
+        },
+        totalsSource: scalpCycleTotalsSource,
         tasksLoaded: scalpWorkerTaskRows.length,
         includeTasks: scalpResearchCycle?.includeTasks ?? null,
         taskLimit: scalpResearchCycle?.taskLimit ?? null,
@@ -4056,7 +4120,8 @@ export default function Home() {
                                               Task metrics by symbol, strategy, and window ({scalpWorkerTaskRows.length} shown)
                                             </div>
                                             <div className={`mb-2 text-[11px] ${scalpTextSecondaryClass}`}>
-                                              Source: {scalpWorkerCycleSource.replace(/_/g, ' ')}
+                                              Source: {scalpWorkerCycleSource.replace(/_/g, ' ')} • totals:{' '}
+                                              {scalpCycleTotalsSource.replace(/_/g, ' ')}
                                               {scalpWorkerTasksLoadingFull
                                                 ? ' • loading full task list...'
                                                 : scalpResearchCycleNeedsFullTasks(scalpResearchCycle)
