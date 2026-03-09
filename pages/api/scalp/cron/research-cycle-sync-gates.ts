@@ -56,6 +56,24 @@ function setNoStoreHeaders(res: NextApiResponse): void {
     res.setHeader('Expires', '0');
 }
 
+function logSyncGates(
+    event: string,
+    payload: Record<string, unknown>,
+    level: 'info' | 'warn' | 'error' = 'info',
+    force = false,
+    debug = false,
+): void {
+    if (!force && !debug) return;
+    const line = JSON.stringify({
+        scope: 'scalp_research_cycle_sync_gates_api',
+        event,
+        ...payload,
+    });
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    else console.info(line);
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (req.method !== 'GET') {
         return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
@@ -82,6 +100,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const materializeTopKPerSymbol = parsePositiveInt(firstQueryValue(req.query.materializeTopKPerSymbol));
     const materializeSource = parseMaterializeSource(firstQueryValue(req.query.materializeSource));
     const materializeEnabled = parseBoolParam(req.query.materializeEnabled, true);
+    const debug = parseBoolParam(req.query.debug, false);
+    const startedAtMs = Date.now();
 
     try {
         const out = await syncResearchCyclePromotionGates({
@@ -104,9 +124,39 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             materializeSource,
             materializeEnabled,
         });
+        const message =
+            out.ok === false
+                ? `promotion gate sync skipped (${out.reason || 'unknown_reason'})`
+                : out.reason
+                  ? `promotion gate sync no-op (${out.reason})`
+                  : `promotion gate sync completed (updated=${out.deploymentsUpdated}, matched=${out.deploymentsMatched}, considered=${out.deploymentsConsidered})`;
+        const shouldWarn = out.ok === false && out.reason !== 'cycle_not_completed' && out.reason !== 'sync_already_current';
+        logSyncGates(
+            'sync_completed',
+            {
+                requestedCycleId: cycleId || null,
+                cycleId: out.cycleId,
+                cycleStatus: out.cycleStatus,
+                dryRun,
+                requireCompletedCycle,
+                reason: out.reason,
+                ok: out.ok,
+                deploymentsConsidered: out.deploymentsConsidered,
+                deploymentsMatched: out.deploymentsMatched,
+                deploymentsUpdated: out.deploymentsUpdated,
+                candidatesCount: out.candidates.length,
+                rowsCount: out.rows.length,
+                materialization: out.materialization,
+                durationMs: Date.now() - startedAtMs,
+            },
+            shouldWarn ? 'warn' : 'info',
+            shouldWarn,
+            debug,
+        );
 
         return res.status(200).json({
             ok: out.ok,
+            message,
             cycleId: out.cycleId,
             cycleStatus: out.cycleStatus,
             reason: out.reason,
@@ -121,6 +171,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             rows: out.rows,
         });
     } catch (err: any) {
+        logSyncGates(
+            'sync_failed',
+            {
+                requestedCycleId: cycleId || null,
+                dryRun,
+                requireCompletedCycle,
+                error: err?.message || String(err),
+                stack: err?.stack || null,
+                durationMs: Date.now() - startedAtMs,
+            },
+            'error',
+            true,
+            debug,
+        );
         return res.status(500).json({
             error: 'research_cycle_sync_gates_failed',
             message: err?.message || String(err),

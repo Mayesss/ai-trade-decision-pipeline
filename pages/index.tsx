@@ -2953,6 +2953,16 @@ export default function Home() {
           tone: 'neutral',
         },
         {
+          label: 'Completed',
+          value: formatScalpCount(scalpCycleCompleted),
+          tone: 'positive',
+        },
+        {
+          label: 'Pending',
+          value: formatScalpCount(scalpCyclePending),
+          tone: (scalpCyclePending ?? 0) > 0 ? 'warning' : 'neutral',
+        },
+        {
           label: 'Candidates',
           value: formatScalpCount(asFiniteNumber(scalpResearchReport?.cycle?.candidateCount)),
           tone: 'neutral',

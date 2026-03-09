@@ -27,6 +27,24 @@ function setNoStoreHeaders(res: NextApiResponse): void {
     res.setHeader('Expires', '0');
 }
 
+function logAggregate(
+    event: string,
+    payload: Record<string, unknown>,
+    level: 'info' | 'warn' | 'error' = 'info',
+    force = false,
+    debug = false,
+): void {
+    if (!force && !debug) return;
+    const line = JSON.stringify({
+        scope: 'scalp_research_cycle_aggregate_api',
+        event,
+        ...payload,
+    });
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    else console.info(line);
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (req.method !== 'GET') {
         return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
@@ -36,21 +54,52 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const cycleId = firstQueryValue(req.query.cycleId);
     const finalizeWhenDone = parseBoolParam(req.query.finalizeWhenDone, true);
+    const debug = parseBoolParam(req.query.debug, false);
+    const startedAtMs = Date.now();
 
     try {
         const aggregate = await aggregateScalpResearchCycle({ cycleId, finalizeWhenDone });
         if (!aggregate) {
+            const message = 'No active or requested research cycle found.';
+            logAggregate(
+                'no_cycle',
+                {
+                    requestedCycleId: cycleId || null,
+                    finalizeWhenDone,
+                    durationMs: Date.now() - startedAtMs,
+                },
+                'info',
+                false,
+                debug,
+            );
             return res.status(200).json({
                 ok: true,
                 found: false,
                 requestedCycleId: cycleId || null,
-                message: 'No active or requested research cycle found.',
+                message,
             });
         }
 
+        const message = `aggregate refreshed cycle ${aggregate.cycle.cycleId} (${aggregate.summary.totals.completed}/${aggregate.summary.totals.tasks} completed)`;
+        logAggregate(
+            'aggregate_completed',
+            {
+                requestedCycleId: cycleId || null,
+                cycleId: aggregate.cycle.cycleId,
+                cycleStatus: aggregate.cycle.status,
+                finalizeWhenDone,
+                totals: aggregate.summary.totals,
+                progressPct: aggregate.summary.progressPct,
+                durationMs: Date.now() - startedAtMs,
+            },
+            'info',
+            false,
+            debug,
+        );
         return res.status(200).json({
             ok: true,
             found: true,
+            message,
             requestedCycleId: cycleId || null,
             cycle: {
                 cycleId: aggregate.cycle.cycleId,
@@ -66,6 +115,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             },
         });
     } catch (err: any) {
+        logAggregate(
+            'aggregate_failed',
+            {
+                requestedCycleId: cycleId || null,
+                finalizeWhenDone,
+                error: err?.message || String(err),
+                stack: err?.stack || null,
+                durationMs: Date.now() - startedAtMs,
+            },
+            'error',
+            true,
+            debug,
+        );
         return res.status(500).json({
             error: 'research_cycle_aggregate_failed',
             message: err?.message || String(err),
