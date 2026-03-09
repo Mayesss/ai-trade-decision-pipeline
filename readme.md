@@ -247,7 +247,7 @@ npm run start
 - `GET /api/scalp/cron/research-cycle-start?dryRun=false`
   - Starts a chunked offline research cycle over the active symbol universe (or explicit `symbols=...`) and persists task rows in KV.
   - Optional query params: `symbols=BTCUSDT,XAUUSDT`, `lookbackDays`, `chunkDays`, `maxTasks`, `maxAttempts`, `minCandlesPerTask`, `force`.
-- `GET /api/scalp/cron/research-cycle-worker?maxRuns=20`
+- `GET /api/scalp/cron/research-cycle-worker?maxRuns=10`
   - Claims pending/stale research tasks, runs replay for each claimed task, and writes per-task metrics.
   - Optional query params: `cycleId`, `workerId`, `aggregateAfter=true|false`, `finalizeWhenDone=true|false`, `syncPromotionGates=true|false`, `requireCompletedCycleForSync=true|false`.
 - `GET /api/scalp/cron/research-cycle-aggregate`
@@ -479,7 +479,7 @@ node --import tsx scripts/scalp-replay-matrix.ts \
   - `/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true&seedTopSymbols=4&seedChunkDays=3&seedTargetHistoryDays=90&seedMaxRequestsPerSymbol=20&seedMaxSymbolsPerRun=4` daily Tuesday-Friday (light top-up seed + refresh).
   - `/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=false&seedTopSymbols=4&seedChunkDays=3&seedTargetHistoryDays=90&seedMaxRequestsPerSymbol=20&seedMaxSymbolsPerRun=4` daily Saturday/Sunday (weekend top-up with quote gate relaxed).
   - `/api/scalp/cron/research-cycle-start?dryRun=false&force=false` weekly after discovery (creates task graph).
-  - `/api/scalp/cron/research-cycle-worker?maxRuns=20&aggregateAfter=false&syncPromotionGates=false...` every 2 minutes (executes chunked replay tasks with lower per-task overhead).
+  - `/api/scalp/cron/research-cycle-worker?maxRuns=10&aggregateAfter=false&syncPromotionGates=false...` every 2 minutes (executes chunked replay tasks with lower per-task overhead).
   - `/api/scalp/cron/research-cycle-aggregate?...` every 10 minutes (refreshes cycle summary/status).
   - `/api/scalp/cron/research-cycle-sync-gates?...` every 20 minutes (reconciles deployment promotion gates from completed cycles).
   - `/api/scalp/cron/research-report?dryRun=false` hourly (refreshes operator portfolio report snapshot).

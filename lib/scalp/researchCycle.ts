@@ -160,6 +160,7 @@ export interface WorkerRunParams {
     cycleId?: string;
     workerId?: string;
     maxRuns?: number;
+    debug?: boolean;
 }
 
 export interface WorkerRunOutcome {
@@ -194,6 +195,21 @@ export interface WorkerRunOutcome {
         scanIndex: number | null;
     }>;
 }
+
+type ClaimScanSummary = {
+    scannedTasks: number;
+    lockAttempts: number;
+    locksAcquired: number;
+    lockMisses: number;
+    missingTask: number;
+    pending: number;
+    runningFresh: number;
+    runningStale: number;
+    runningMissingStartedAt: number;
+    failedRetryable: number;
+    failedMaxed: number;
+    completed: number;
+};
 
 export interface AggregateResearchCycleParams {
     cycleId?: string;
@@ -703,46 +719,98 @@ async function runResearchTask(
     };
 }
 
-async function claimNextTask(cycle: ScalpResearchCycleSnapshot, workerId: string, startIndex = 0): Promise<{
-    task: ScalpResearchTask;
-    lockName: string;
-    lockToken: string;
-    scanIndex: number;
-    scannedTasks: number;
-    lockAttempts: number;
-    locksAcquired: number;
-} | null> {
-    if (!cycle.taskIds.length) return null;
+async function claimNextTask(
+    cycle: ScalpResearchCycleSnapshot,
+    workerId: string,
+    startIndex = 0,
+): Promise<{
+    claim: {
+        task: ScalpResearchTask;
+        lockName: string;
+        lockToken: string;
+        scanIndex: number;
+    } | null;
+    scanSummary: ClaimScanSummary;
+}> {
+    if (!cycle.taskIds.length) {
+        return {
+            claim: null,
+            scanSummary: {
+                scannedTasks: 0,
+                lockAttempts: 0,
+                locksAcquired: 0,
+                lockMisses: 0,
+                missingTask: 0,
+                pending: 0,
+                runningFresh: 0,
+                runningStale: 0,
+                runningMissingStartedAt: 0,
+                failedRetryable: 0,
+                failedMaxed: 0,
+                completed: 0,
+            },
+        };
+    }
     const taskCount = cycle.taskIds.length;
     const firstIndex = Math.max(0, Math.min(taskCount - 1, Math.floor(startIndex) || 0));
     const nowMs = Date.now();
-    let scannedTasks = 0;
-    let lockAttempts = 0;
-    let locksAcquired = 0;
+    const scanSummary: ClaimScanSummary = {
+        scannedTasks: 0,
+        lockAttempts: 0,
+        locksAcquired: 0,
+        lockMisses: 0,
+        missingTask: 0,
+        pending: 0,
+        runningFresh: 0,
+        runningStale: 0,
+        runningMissingStartedAt: 0,
+        failedRetryable: 0,
+        failedMaxed: 0,
+        completed: 0,
+    };
     for (let offset = 0; offset < taskCount; offset += 1) {
         const scanIndex = (firstIndex + offset) % taskCount;
         const taskId = cycle.taskIds[scanIndex];
-        scannedTasks += 1;
+        scanSummary.scannedTasks += 1;
         const lockName = `${cycle.cycleId}:${taskId}`;
         const lockToken = newToken(`claim:${workerId}`);
-        lockAttempts += 1;
+        scanSummary.lockAttempts += 1;
         const gotTaskLock = await tryAcquireLock(lockName, lockToken, DEFAULT_LOCK_TTL_SECONDS);
-        if (!gotTaskLock) continue;
-        locksAcquired += 1;
+        if (!gotTaskLock) {
+            scanSummary.lockMisses += 1;
+            continue;
+        }
+        scanSummary.locksAcquired += 1;
 
         const task = await loadResearchTask(cycle.cycleId, taskId);
         if (!task) {
+            scanSummary.missingTask += 1;
             await releaseLock(lockName, lockToken);
             continue;
         }
 
+        if (task.status === 'pending') scanSummary.pending += 1;
+        if (task.status === 'completed') scanSummary.completed += 1;
+
+        const runningMissingStartedAt =
+            task.status === 'running' &&
+            (!Number.isFinite(Number(task.startedAtMs)) || task.startedAtMs === null);
         const staleRunning =
             task.status === 'running' &&
             task.startedAtMs !== null &&
             nowMs - task.startedAtMs >= cycle.params.runningStaleAfterMs;
+        if (task.status === 'running') {
+            if (runningMissingStartedAt) scanSummary.runningMissingStartedAt += 1;
+            else if (staleRunning) scanSummary.runningStale += 1;
+            else scanSummary.runningFresh += 1;
+        }
 
         const retryableFailed = task.status === 'failed' && task.attempts < cycle.params.maxAttempts;
-        const claimable = task.status === 'pending' || staleRunning || retryableFailed;
+        if (task.status === 'failed') {
+            if (retryableFailed) scanSummary.failedRetryable += 1;
+            else scanSummary.failedMaxed += 1;
+        }
+        const claimable = task.status === 'pending' || staleRunning || runningMissingStartedAt || retryableFailed;
 
         if (!claimable) {
             await releaseLock(lockName, lockToken);
@@ -762,23 +830,46 @@ async function claimNextTask(cycle: ScalpResearchCycleSnapshot, workerId: string
         };
         await saveTask(nextTask);
         return {
-            task: nextTask,
-            lockName,
-            lockToken,
-            scanIndex,
-            scannedTasks,
-            lockAttempts,
-            locksAcquired,
+            claim: {
+                task: nextTask,
+                lockName,
+                lockToken,
+                scanIndex,
+            },
+            scanSummary,
         };
     }
-    return null;
+    return { claim: null, scanSummary };
 }
 
 export async function runResearchWorker(params: WorkerRunParams = {}): Promise<WorkerRunOutcome> {
     const startedAtMs = Date.now();
     const workerId = String(params.workerId || '').trim() || `worker_${crypto.randomUUID().slice(0, 8)}`;
+    const debug = params.debug === true;
+    const emitWorkerLog = (
+        event: string,
+        payload: Record<string, unknown>,
+        level: 'info' | 'warn' = 'info',
+        force = false,
+    ): void => {
+        if (!force && !debug) return;
+        const line = JSON.stringify({
+            scope: 'scalp_research_worker',
+            event,
+            ...payload,
+        });
+        if (level === 'warn') console.warn(line);
+        else console.info(line);
+    };
     const cycleId = params.cycleId || (await loadActiveResearchCycleId());
     if (!cycleId) {
+        emitWorkerLog(
+            'early_exit_no_cycle',
+            {
+                workerId,
+            },
+            'info',
+        );
         return {
             cycleId: null,
             workerId,
@@ -803,6 +894,14 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
 
     const cycle = await loadResearchCycle(cycleId);
     if (!cycle) {
+        emitWorkerLog(
+            'early_exit_cycle_not_found',
+            {
+                cycleId,
+                workerId,
+            },
+            'warn',
+        );
         return {
             cycleId,
             workerId,
@@ -825,6 +924,16 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         };
     }
     if (cycle.status !== 'running') {
+        emitWorkerLog(
+            'early_exit_cycle_not_running',
+            {
+                cycleId,
+                workerId,
+                cycleStatus: cycle.status,
+                cycleTaskCount: cycle.taskIds.length,
+            },
+            'warn',
+        );
         return {
             cycleId,
             workerId,
@@ -847,7 +956,7 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         };
     }
 
-    const maxRuns = Math.max(1, Math.min(20, toPositiveInt(params.maxRuns, 1)));
+    const maxRuns = Math.max(1, Math.min(10, toPositiveInt(params.maxRuns, 1)));
     const diagnostics: WorkerDiagnostics = {
         durationMs: 0,
         cycleTaskCount: cycle.taskIds.length,
@@ -871,15 +980,42 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
     };
     const historyCache = new Map<string, HistoryRow[]>();
     let nextScanIndex = await loadClaimCursorIndex(cycleId);
+    let lastNoClaimScanSummary: ClaimScanSummary | null = null;
 
     for (let i = 0; i < maxRuns; i += 1) {
         const taskStartedAtMs = Date.now();
-        const claim = await claimNextTask(cycle, workerId, nextScanIndex);
-        if (!claim) break;
+        const claimOutcome = await claimNextTask(cycle, workerId, nextScanIndex);
+        diagnostics.scanTasksVisited += claimOutcome.scanSummary.scannedTasks;
+        diagnostics.taskLockAttempts += claimOutcome.scanSummary.lockAttempts;
+        diagnostics.taskLockAcquired += claimOutcome.scanSummary.locksAcquired;
+        if (!claimOutcome.claim) {
+            lastNoClaimScanSummary = claimOutcome.scanSummary;
+            const shouldWarnNoClaim =
+                claimOutcome.scanSummary.pending > 0 ||
+                claimOutcome.scanSummary.runningStale > 0 ||
+                claimOutcome.scanSummary.runningMissingStartedAt > 0 ||
+                claimOutcome.scanSummary.failedRetryable > 0 ||
+                claimOutcome.scanSummary.lockMisses > 0;
+            emitWorkerLog(
+                'no_claimable_tasks',
+                {
+                    cycleId,
+                    workerId,
+                    iteration: i + 1,
+                    maxRuns,
+                    nextScanIndex,
+                    cycleTaskCount: cycle.taskIds.length,
+                    runningStaleAfterMs: cycle.params.runningStaleAfterMs,
+                    maxAttemptsCfg: cycle.params.maxAttempts,
+                    scanSummary: claimOutcome.scanSummary,
+                },
+                shouldWarnNoClaim ? 'warn' : 'info',
+                shouldWarnNoClaim,
+            );
+            break;
+        }
+        const claim = claimOutcome.claim;
         nextScanIndex = cycle.taskIds.length > 0 ? (claim.scanIndex + 1) % cycle.taskIds.length : 0;
-        diagnostics.scanTasksVisited += claim.scannedTasks;
-        diagnostics.taskLockAttempts += claim.lockAttempts;
-        diagnostics.taskLockAcquired += claim.locksAcquired;
         out.attemptedRuns += 1;
 
         try {
@@ -941,6 +1077,22 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         await saveClaimCursorIndex(cycleId, nextScanIndex);
     }
     out.diagnostics.durationMs = Date.now() - startedAtMs;
+    emitWorkerLog(
+        'run_completed',
+        {
+            cycleId,
+            workerId,
+            maxRuns,
+            attemptedRuns: out.attemptedRuns,
+            completedRuns: out.completedRuns,
+            failedRuns: out.failedRuns,
+            nextScanIndex,
+            diagnostics: out.diagnostics,
+            lastNoClaimScanSummary,
+            claimedTaskIds: out.claimedTasks.slice(0, 10).map((row) => row.taskId),
+        },
+        'info',
+    );
     return out;
 }
 

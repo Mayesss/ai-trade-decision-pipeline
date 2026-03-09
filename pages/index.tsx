@@ -558,6 +558,8 @@ const SCALP_LIVE_POLL_ERROR_BACKOFF_MS = 120_000;
 const SCALP_MIN_REFRESH_GAP_MS = 8_000;
 const SCALP_RESEARCH_REFRESH_MS = 45_000;
 const SCALP_PROMOTION_SYNC_REFRESH_MS = 5 * 60_000;
+const SCALP_WORKER_TASK_LIMIT_PREVIEW = 100;
+const SCALP_WORKER_TASK_LIMIT_FULL = 5_000;
 
 const ADMIN_SECRET_STORAGE_KEY = 'admin_access_secret';
 const ADMIN_AUTH_TIMEOUT_MS = 4000;
@@ -591,7 +593,7 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<string, ScalpCronPipelineDefinitio
     primaryPathname: '/api/scalp/cron/research-cycle-worker',
     matchPathnames: ['/api/scalp/cron/research-cycle-worker'],
     fallbackInvokePath:
-      '/api/scalp/cron/research-cycle-worker?maxRuns=20&aggregateAfter=false&finalizeWhenDone=true&syncPromotionGates=false&requireCompletedCycleForSync=false',
+      '/api/scalp/cron/research-cycle-worker?maxRuns=10&aggregateAfter=false&finalizeWhenDone=true&syncPromotionGates=false&requireCompletedCycleForSync=false',
   },
   scalp_cycle_aggregate: {
     primaryPathname: '/api/scalp/cron/research-cycle-aggregate',
@@ -894,6 +896,7 @@ export default function Home() {
     useState<ScalpPromotionSyncSnapshot | null>(null);
   const [scalpActiveDeploymentId, setScalpActiveDeploymentId] = useState<string | null>(null);
   const [scalpExpandedCronId, setScalpExpandedCronId] = useState<string | null>(null);
+  const [scalpWorkerTasksLoadingFull, setScalpWorkerTasksLoadingFull] = useState(false);
   const [scalpWorkerSort, setScalpWorkerSort] = useState<ScalpWorkerSortState>({
     key: 'windowToTs',
     direction: 'desc',
@@ -1235,7 +1238,9 @@ export default function Home() {
           nowMs - scalpPromotionSyncFetchedAtMsRef.current >= SCALP_PROMOTION_SYNC_REFRESH_MS;
 
         const [cycleResult, reportResult, universeResult, promotionSyncResult] = await Promise.all([
-          fetchScalpEndpoint('/api/scalp/research/cycle?includeTasks=true&taskLimit=500'),
+          fetchScalpEndpoint(
+            `/api/scalp/research/cycle?includeTasks=true&taskLimit=${SCALP_WORKER_TASK_LIMIT_PREVIEW}`,
+          ),
           fetchScalpEndpoint('/api/scalp/research/report'),
           fetchScalpEndpoint('/api/scalp/research/universe'),
           shouldRefreshPromotionSync
@@ -1284,6 +1289,54 @@ export default function Home() {
       setError(err?.message || 'Failed to load scalp dashboard');
     } finally {
       if (!silent) setLoading(false);
+    }
+  };
+
+  const scalpResearchCycleNeedsFullTasks = (cycle: ScalpResearchCycleResponse | null): boolean => {
+    if (!cycle) return false;
+    const taskLimit = Number(cycle.taskLimit);
+    const taskCountReturned = Number(cycle.taskCountReturned);
+    const totalTasks = Number(cycle.summary?.totals?.tasks);
+    const safeTaskLimit = Number.isFinite(taskLimit) && taskLimit > 0 ? Math.floor(taskLimit) : null;
+    const safeTaskCountReturned =
+      Number.isFinite(taskCountReturned) && taskCountReturned >= 0 ? Math.floor(taskCountReturned) : null;
+    const safeTotalTasks = Number.isFinite(totalTasks) && totalTasks >= 0 ? Math.floor(totalTasks) : null;
+    if (safeTaskLimit !== null && safeTaskLimit >= SCALP_WORKER_TASK_LIMIT_FULL) return false;
+    if (safeTotalTasks !== null && safeTaskCountReturned !== null) return safeTotalTasks > safeTaskCountReturned;
+    if (safeTaskCountReturned !== null && safeTaskLimit !== null) return safeTaskCountReturned >= safeTaskLimit;
+    return false;
+  };
+
+  const loadScalpWorkerTasksFull = async () => {
+    if (scalpWorkerTasksLoadingFull) return;
+    if (!scalpResearchCycleNeedsFullTasks(scalpResearchCycle)) return;
+
+    setScalpWorkerTasksLoadingFull(true);
+    try {
+      const res = await fetch(
+        `/api/scalp/research/cycle?includeTasks=true&taskLimit=${SCALP_WORKER_TASK_LIMIT_FULL}`,
+        {
+          headers: buildAdminHeaders(),
+          cache: 'no-store',
+        },
+      );
+      if (res.status === 401) {
+        handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+        return;
+      }
+      if (res.status === 404) {
+        setScalpResearchCycle(null);
+        return;
+      }
+      if (!res.ok) return;
+      const json = await res.json().catch(() => null);
+      if (json) {
+        setScalpResearchCycle(json as ScalpResearchCycleResponse);
+      }
+    } catch (err) {
+      console.warn('Failed to lazy-load full scalp worker tasks:', err);
+    } finally {
+      setScalpWorkerTasksLoadingFull(false);
     }
   };
 
@@ -3851,9 +3904,13 @@ export default function Home() {
                             return (
                               <React.Fragment key={row.id}>
                                 <tr
-                                  onClick={() =>
-                                    setScalpExpandedCronId((prev) => (prev === row.id ? null : row.id))
-                                  }
+                                  onClick={() => {
+                                    const nextExpandedId = scalpExpandedCronId === row.id ? null : row.id;
+                                    setScalpExpandedCronId(nextExpandedId);
+                                    if (nextExpandedId === 'scalp_cycle_worker') {
+                                      void loadScalpWorkerTasksFull();
+                                    }
+                                  }}
                                   className={`cursor-pointer transition ${scalpTableRowClass}`}
                                 >
                                   <td className={`rounded-l-xl px-3 py-3 font-medium ${scalpTextPrimaryClass}`}>
@@ -4000,6 +4057,11 @@ export default function Home() {
                                             </div>
                                             <div className={`mb-2 text-[11px] ${scalpTextSecondaryClass}`}>
                                               Source: {scalpWorkerCycleSource.replace(/_/g, ' ')}
+                                              {scalpWorkerTasksLoadingFull
+                                                ? ' • loading full task list...'
+                                                : scalpResearchCycleNeedsFullTasks(scalpResearchCycle)
+                                                  ? ` • preview capped at ${SCALP_WORKER_TASK_LIMIT_PREVIEW}`
+                                                  : ''}
                                             </div>
                                             <div
                                               className={`max-h-80 overflow-auto rounded-xl border ${

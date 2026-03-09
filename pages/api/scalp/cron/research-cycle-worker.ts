@@ -44,13 +44,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const cycleId = firstQueryValue(req.query.cycleId);
     const workerId = firstQueryValue(req.query.workerId);
     const maxRuns = parsePositiveInt(firstQueryValue(req.query.maxRuns));
+    const debug = parseBoolParam(req.query.debug, false);
     const aggregateAfter = parseBoolParam(req.query.aggregateAfter, true);
     const finalizeWhenDone = parseBoolParam(req.query.finalizeWhenDone, true);
     const syncPromotionGates = parseBoolParam(req.query.syncPromotionGates, true);
     const requireCompletedCycleForSync = parseBoolParam(req.query.requireCompletedCycleForSync, true);
 
     try {
-        const worker = await runResearchWorker({ cycleId, workerId, maxRuns });
+        const worker = await runResearchWorker({ cycleId, workerId, maxRuns, debug });
         const aggregate =
             aggregateAfter && worker.cycleId
                 ? await aggregateScalpResearchCycle({

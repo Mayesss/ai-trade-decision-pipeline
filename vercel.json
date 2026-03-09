@@ -15,7 +15,7 @@
     { "path": "/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true&seedTopSymbols=4&seedChunkDays=3&seedTargetHistoryDays=90&seedMaxRequestsPerSymbol=20&seedMaxSymbolsPerRun=4", "schedule": "10 1 * * 2-5" },
     { "path": "/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=false&seedTopSymbols=4&seedChunkDays=3&seedTargetHistoryDays=90&seedMaxRequestsPerSymbol=20&seedMaxSymbolsPerRun=4", "schedule": "10 1 * * 0,6" },
     { "path": "/api/scalp/cron/research-cycle-start?dryRun=false&force=false", "schedule": "45 2 * * 1" },
-    { "path": "/api/scalp/cron/research-cycle-worker?maxRuns=20&aggregateAfter=false&finalizeWhenDone=true&syncPromotionGates=false&requireCompletedCycleForSync=false", "schedule": "*/2 * * * *" },
+    { "path": "/api/scalp/cron/research-cycle-worker?maxRuns=10&aggregateAfter=false&finalizeWhenDone=true&syncPromotionGates=false&requireCompletedCycleForSync=false", "schedule": "*/2 * * * *" },
     { "path": "/api/scalp/cron/research-cycle-aggregate?finalizeWhenDone=true", "schedule": "*/10 * * * *" },
     { "path": "/api/scalp/cron/research-cycle-sync-gates?dryRun=false&requireCompletedCycle=true&materializeEnabled=true", "schedule": "*/20 * * * *" },
     { "path": "/api/scalp/cron/research-report?dryRun=false", "schedule": "0 * * * *" },
