@@ -1,4 +1,4 @@
-import { kvGetJson, kvListPushJson, kvListRangeJson, kvListTrim, kvSetJson } from '../kv';
+import { kvGetJson, kvListPushJson, kvListRangeJson, kvSetJson } from '../kv';
 import { DEFAULT_SCALP_TUNE_ID, normalizeScalpTuneId, resolveScalpDeployment } from './deployments';
 import {
     getDefaultScalpStrategy,
@@ -435,11 +435,9 @@ function sanitizeJournalEntry(entry: ScalpJournalEntry): ScalpJournalEntry {
     };
 }
 
-export async function appendScalpJournal(entry: ScalpJournalEntry, maxRows = SCALP_DEFAULT_JOURNAL_MAX): Promise<void> {
+export async function appendScalpJournal(entry: ScalpJournalEntry, _maxRows = SCALP_DEFAULT_JOURNAL_MAX): Promise<void> {
     const sanitized = sanitizeJournalEntry(entry);
-    const max = Math.max(10, Math.min(2_000, Math.floor(maxRows)));
     await kvListPushJson(SCALP_JOURNAL_LIST_KEY, sanitized);
-    await kvListTrim(SCALP_JOURNAL_LIST_KEY, 0, max - 1);
 }
 
 export async function loadScalpJournal(limit = 200): Promise<ScalpJournalEntry[]> {
@@ -482,12 +480,10 @@ function sanitizeTradeLedgerEntry(entry: ScalpTradeLedgerEntry): ScalpTradeLedge
 
 export async function appendScalpTradeLedgerEntry(
     entry: ScalpTradeLedgerEntry,
-    maxRows = SCALP_DEFAULT_TRADE_LEDGER_MAX,
+    _maxRows = SCALP_DEFAULT_TRADE_LEDGER_MAX,
 ): Promise<void> {
     const sanitized = sanitizeTradeLedgerEntry(entry);
-    const max = Math.max(200, Math.min(50_000, Math.floor(maxRows)));
     await kvListPushJson(SCALP_TRADE_LEDGER_LIST_KEY, sanitized);
-    await kvListTrim(SCALP_TRADE_LEDGER_LIST_KEY, 0, max - 1);
 }
 
 export async function loadScalpTradeLedger(limit = 2_000): Promise<ScalpTradeLedgerEntry[]> {

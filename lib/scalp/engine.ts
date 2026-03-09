@@ -25,6 +25,7 @@ import {
     saveScalpSessionState,
     tryAcquireScalpRunLock,
 } from './store';
+import type { ScalpStrategyRuntimeSnapshot } from './store';
 import type {
     ScalpExecuteCycleResult,
     ScalpJournalEntry,
@@ -91,6 +92,11 @@ function dedupeReasonCodes(codes: string[]): string[] {
 }
 
 const SCALP_ENFORCED_RISK_PCT_OF_EQUITY = 5;
+const SCALP_IDLE_HEARTBEAT_PERSIST_MS = (() => {
+    const n = Number(process.env.SCALP_IDLE_HEARTBEAT_PERSIST_MS ?? 5 * 60_000);
+    if (!Number.isFinite(n) || n <= 0) return 5 * 60_000;
+    return Math.max(60_000, Math.min(30 * 60_000, Math.floor(n)));
+})();
 
 export async function runScalpExecuteCycle(opts: {
     symbol?: string;
@@ -102,6 +108,7 @@ export async function runScalpExecuteCycle(opts: {
     deploymentId?: string;
     debug?: boolean;
     marketSnapshotCache?: Map<string, ScalpMarketSnapshot>;
+    runtimeSnapshot?: ScalpStrategyRuntimeSnapshot;
 } = {}): Promise<ScalpExecuteCycleResult> {
     const baseCfg = getScalpStrategyConfig();
     let cfg = applyScalpStrategyConfigOverride(baseCfg, opts.configOverride);
@@ -111,8 +118,25 @@ export async function runScalpExecuteCycle(opts: {
     const dayKey = deriveScalpDayKey(nowMs, cfg.sessions.clockMode);
     const runId = crypto.randomUUID();
     const debug = Boolean(opts.debug);
-    const runtime = await loadScalpStrategyRuntimeSnapshot(cfg.enabled, opts.strategyId);
-    const strategyControl = runtime.strategy;
+    const runtime = opts.runtimeSnapshot || (await loadScalpStrategyRuntimeSnapshot(cfg.enabled, opts.strategyId));
+    const requestedStrategyId = String(opts.strategyId || '')
+        .trim()
+        .toLowerCase();
+    const strategyControl =
+        runtime.strategies.find((row) => row.strategyId === requestedStrategyId) ||
+        runtime.strategy ||
+        runtime.strategies.find((row) => row.strategyId === runtime.defaultStrategyId) ||
+        runtime.strategies[0] ||
+        {
+            strategyId: runtime.defaultStrategyId,
+            shortName: runtime.defaultStrategyId,
+            longName: runtime.defaultStrategyId,
+            enabled: cfg.enabled,
+            envEnabled: cfg.enabled,
+            kvEnabled: null,
+            updatedAtMs: null,
+            updatedBy: null,
+        };
     const strategyId = strategyControl.strategyId;
     const deployment = resolveScalpDeployment({
         symbol,
@@ -244,6 +268,8 @@ export async function runScalpExecuteCycle(opts: {
             raidWindowLocal: cfg.sessions.raidWindowLocal,
         });
 
+        const startedWithTrade = Boolean(currentState.trade);
+        let tradeEventOccurred = false;
         let nextState = transition.nextState;
         let market: ScalpMarketSnapshot | null = null;
         const phaseReasonCodes: string[] = [];
@@ -364,6 +390,7 @@ export async function runScalpExecuteCycle(opts: {
                 nextState = managed.state;
                 phaseReasonCodes.push(...managed.reasonCodes);
                 if (hadOpenTradeAtStartOfManage && tradeBeforeManage && !nextState.trade) {
+                    tradeEventOccurred = true;
                     const nextRealizedR = Number.isFinite(Number(nextState.stats.realizedR)) ? Number(nextState.stats.realizedR) : priorRealizedR;
                     const totalTradeR = nextRealizedR - priorRealizedR;
                     await safeAppendTradeLedgerEntry({
@@ -452,6 +479,9 @@ export async function runScalpExecuteCycle(opts: {
                         }
                     }
                 }
+                if (startedWithTrade !== Boolean(nextState.trade)) {
+                    tradeEventOccurred = true;
+                }
             } catch (err: any) {
                 phaseReasonCodes.push('MARKET_DATA_UNAVAILABLE');
                 await safeAppendJournal(
@@ -479,6 +509,11 @@ export async function runScalpExecuteCycle(opts: {
         }
 
         const reasonCodes = dedupeReasonCodes(['SCALP_PHASE3_EXECUTION', ...transition.reasonCodes, ...phaseReasonCodes]);
+        const previousReasonCodes = dedupeReasonCodes(currentState.run?.lastReasonCodes || []);
+        const sameReasonSignature =
+            previousReasonCodes.length === reasonCodes.length &&
+            previousReasonCodes.every((code, idx) => code === reasonCodes[idx]);
+        const stateChanged = transition.transitioned || currentState.state !== nextState.state;
         nextState = withRunContext(nextState, {
             nowMs,
             runId,
@@ -487,52 +522,69 @@ export async function runScalpExecuteCycle(opts: {
             killSwitch: cfg.risk.killSwitch,
         });
 
-        await saveScalpSessionState(nextState, cfg.storage.sessionTtlSeconds, strategyId, {
-            tuneId: deployment.tuneId,
-            deploymentId: deployment.deploymentId,
-        });
-        await safeAppendJournal(
-            journalEntry({
-                type: transition.transitioned ? 'state' : 'execution',
-                symbol: deployment.symbol,
-                dayKey,
-                reasonCodes,
-                payload: {
-                    dryRun,
-                    nowMs,
-                    runId,
-                    strategyId: deployment.strategyId,
-                    tuneId: deployment.tuneId,
-                    deploymentId: deployment.deploymentId,
-                    state: nextState.state,
-                    transitioned: transition.transitioned,
-                    maxTradesPerDay: cfg.risk.maxTradesPerSymbolPerDay,
-                    cooldownAfterLossMinutes: cfg.risk.cooldownAfterLossMinutes,
-                    sessionClockMode: cfg.sessions.clockMode,
-                    entrySessionProfile: cfg.sessions.entrySessionProfile,
-                    asiaWindowLocal: cfg.sessions.asiaWindowLocal,
-                    raidWindowLocal: cfg.sessions.raidWindowLocal,
-                    asiaTf: cfg.timeframes.asiaBase,
-                    confirmTf: cfg.timeframes.confirm,
-                    windows,
-                    marketSummary: market
-                        ? {
-                              epic: market.epic,
-                              baseCandleCount: market.baseCandles.length,
-                              confirmCandleCount: market.confirmCandles.length,
-                              spreadPips: market.quote.spreadPips,
-                          }
-                        : null,
-                    hasAsiaRange: Boolean(nextState.asiaRange),
-                    hasSweep: Boolean(nextState.sweep),
-                    hasConfirmation: Boolean(nextState.confirmation),
-                    hasIfvg: Boolean(nextState.ifvg),
-                    hasTrade: Boolean(nextState.trade),
-                    tradeDryRun: nextState.trade?.dryRun ?? null,
-                },
-            }),
-            cfg.storage.journalMax,
-        );
+        const persistableNoop = !stateChanged && !tradeEventOccurred && sameReasonSignature;
+        const lastPersistAtMs = Number.isFinite(Number(currentState.run?.lastRunAtMs))
+            ? Number(currentState.run?.lastRunAtMs)
+            : Number.isFinite(Number(currentState.updatedAtMs))
+            ? Number(currentState.updatedAtMs)
+            : 0;
+        const heartbeatPersistDue = lastPersistAtMs <= 0 || nowMs - lastPersistAtMs >= SCALP_IDLE_HEARTBEAT_PERSIST_MS;
+        const shouldPersistState = !persistableNoop || heartbeatPersistDue;
+        const shouldPersistJournal = !persistableNoop;
+
+        if (shouldPersistState) {
+            await saveScalpSessionState(nextState, cfg.storage.sessionTtlSeconds, strategyId, {
+                tuneId: deployment.tuneId,
+                deploymentId: deployment.deploymentId,
+            });
+        }
+
+        if (shouldPersistJournal) {
+            await safeAppendJournal(
+                journalEntry({
+                    type: transition.transitioned ? 'state' : 'execution',
+                    symbol: deployment.symbol,
+                    dayKey,
+                    reasonCodes,
+                    payload: {
+                        dryRun,
+                        nowMs,
+                        runId,
+                        strategyId: deployment.strategyId,
+                        tuneId: deployment.tuneId,
+                        deploymentId: deployment.deploymentId,
+                        state: nextState.state,
+                        transitioned: transition.transitioned,
+                        stateChanged,
+                        tradeEventOccurred,
+                        maxTradesPerDay: cfg.risk.maxTradesPerSymbolPerDay,
+                        cooldownAfterLossMinutes: cfg.risk.cooldownAfterLossMinutes,
+                        sessionClockMode: cfg.sessions.clockMode,
+                        entrySessionProfile: cfg.sessions.entrySessionProfile,
+                        asiaWindowLocal: cfg.sessions.asiaWindowLocal,
+                        raidWindowLocal: cfg.sessions.raidWindowLocal,
+                        asiaTf: cfg.timeframes.asiaBase,
+                        confirmTf: cfg.timeframes.confirm,
+                        windows,
+                        marketSummary: market
+                            ? {
+                                  epic: market.epic,
+                                  baseCandleCount: market.baseCandles.length,
+                                  confirmCandleCount: market.confirmCandles.length,
+                                  spreadPips: market.quote.spreadPips,
+                              }
+                            : null,
+                        hasAsiaRange: Boolean(nextState.asiaRange),
+                        hasSweep: Boolean(nextState.sweep),
+                        hasConfirmation: Boolean(nextState.confirmation),
+                        hasIfvg: Boolean(nextState.ifvg),
+                        hasTrade: Boolean(nextState.trade),
+                        tradeDryRun: nextState.trade?.dryRun ?? null,
+                    },
+                }),
+                cfg.storage.journalMax,
+            );
+        }
 
         return {
             generatedAtMs: nowMs,

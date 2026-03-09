@@ -3,8 +3,10 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
+import { getScalpStrategyConfig } from '../../../../lib/scalp/config';
 import { listScalpDeploymentRegistryEntries } from '../../../../lib/scalp/deploymentRegistry';
 import { runScalpExecuteCycle } from '../../../../lib/scalp/engine';
+import { loadScalpStrategyRuntimeSnapshot } from '../../../../lib/scalp/store';
 import type { ScalpMarketSnapshot } from '../../../../lib/scalp/types';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean): boolean {
@@ -80,6 +82,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const results: Array<Record<string, unknown>> = [];
         const errors: Array<Record<string, unknown>> = [];
         const marketSnapshotCache = new Map<string, ScalpMarketSnapshot>();
+        const cfg = getScalpStrategyConfig();
+        const runtimeSnapshot = await loadScalpStrategyRuntimeSnapshot(cfg.enabled);
         const effectiveNowMs = nowMs ?? Date.now();
         for (const deployment of deployments) {
             try {
@@ -93,6 +97,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     deploymentId: deployment.deploymentId,
                     configOverride: deployment.configOverride || undefined,
                     marketSnapshotCache,
+                    runtimeSnapshot,
                 });
                 results.push({
                     ...cycle,
