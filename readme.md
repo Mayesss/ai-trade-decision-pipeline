@@ -20,7 +20,7 @@ Next.js app that runs an AI-driven trading loop for multiple platforms (Bitget +
 - CoinDesk API key (required for `newsSource=coindesk`)
 - Marketaux API key (required for `newsSource=marketaux`)
 - ForexFactory public calendar feed (used for forex event-gate routes; no API key required)
-- Upstash/Redis REST endpoint + token for KV (`KV_REST_API_URL`, `KV_REST_API_TOKEN`)
+- Upstash/Redis REST endpoint + token for KV (`upstash_payasyougo_KV_REST_API_URL`, `upstash_payasyougo_KV_REST_API_TOKEN`)
 - Optional admin secret for protected routes (`ADMIN_ACCESS_SECRET`)
 
 ## Setup
@@ -148,8 +148,8 @@ MARKETAUX_API_KEY=...
 # SCALP_HOUSEKEEPING_TRADE_LEDGER_MAX=10000
 
 # KV (Upstash REST)
-KV_REST_API_URL=https://...
-KV_REST_API_TOKEN=...
+upstash_payasyougo_KV_REST_API_URL=https://...
+upstash_payasyougo_KV_REST_API_TOKEN=...
 
 # Optional
 TAKER_FEE_RATE=0.0006          # used in prompts/edge checks
@@ -492,6 +492,6 @@ node --import tsx scripts/scalp-replay-matrix.ts \
 ## Troubleshooting
 - `GET /api/debug-env-values` to confirm env vars are detected.
 - `GET /api/swing/bitget-ping` to verify Bitget credentials/connectivity.
-- Watch server logs for KV errors (missing `KV_REST_API_URL`/`KV_REST_API_TOKEN`) or provider failures (`COINDESK_API_KEY`, `MARKETAUX_API_KEY`, ForexFactory feed reachability, Capital credentials).
+- Watch server logs for KV errors (missing `upstash_payasyougo_KV_REST_API_URL`/`upstash_payasyougo_KV_REST_API_TOKEN`) or provider failures (`COINDESK_API_KEY`, `MARKETAUX_API_KEY`, ForexFactory feed reachability, Capital credentials).
 - UI backtest lab: open `/scalp-backtest` after signing in with `ADMIN_ACCESS_SECRET`.
   - Includes local preset save/load/delete and multi-run comparison overlays on one chart.

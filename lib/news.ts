@@ -7,19 +7,19 @@ import type { AnalysisPlatform, NewsSource } from './platform';
 // KV cache (1h TTL)
 // ------------------------------
 
-const KV_REST_API_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
-const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN || '';
+const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
+const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
 const NEWS_CACHE_TTL_SECONDS = 60 * 60; // 1 hour
 
 function ensureKvConfig() {
-    return KV_REST_API_URL && KV_REST_API_TOKEN;
+    return upstash_payasyougo_KV_REST_API_URL && upstash_payasyougo_KV_REST_API_TOKEN;
 }
 
 async function kvGet(key: string): Promise<string | null> {
     if (!ensureKvConfig()) return null;
-    const res = await fetch(`${KV_REST_API_URL}/GET/${encodeURIComponent(key)}`, {
+    const res = await fetch(`${upstash_payasyougo_KV_REST_API_URL}/GET/${encodeURIComponent(key)}`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${KV_REST_API_TOKEN}` },
+        headers: { Authorization: `Bearer ${upstash_payasyougo_KV_REST_API_TOKEN}` },
     });
     const data = await res.json();
     if (!res.ok || data.error) return null;
@@ -28,9 +28,9 @@ async function kvGet(key: string): Promise<string | null> {
 
 async function kvSetEx(key: string, ttlSeconds: number, value: string) {
     if (!ensureKvConfig()) return;
-    await fetch(`${KV_REST_API_URL}/SETEX/${encodeURIComponent(key)}/${ttlSeconds}/${encodeURIComponent(value)}`, {
+    await fetch(`${upstash_payasyougo_KV_REST_API_URL}/SETEX/${encodeURIComponent(key)}/${ttlSeconds}/${encodeURIComponent(value)}`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${KV_REST_API_TOKEN}` },
+        headers: { Authorization: `Bearer ${upstash_payasyougo_KV_REST_API_TOKEN}` },
     });
 }
 

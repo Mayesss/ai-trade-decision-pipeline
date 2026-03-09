@@ -31,8 +31,8 @@ const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_RUNNING_STALE_AFTER_MS = 20 * 60 * 1000;
 const DEFAULT_LOCK_TTL_SECONDS = 120;
 
-const KV_REST_API_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
-const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN || '';
+const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
+const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
 
 export type ScalpResearchCycleStatus = 'running' | 'completed' | 'failed' | 'stalled';
 export type ScalpResearchTaskStatus = 'pending' | 'running' | 'completed' | 'failed';
@@ -254,15 +254,15 @@ function lockKey(name: string): string {
 }
 
 async function kvRawCommand(command: string, ...args: Array<string | number>): Promise<unknown> {
-    if (!KV_REST_API_URL || !KV_REST_API_TOKEN) return null;
+    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) return null;
     const encodedArgs = args
         .map((arg) => encodeURIComponent(typeof arg === 'string' ? arg : String(arg)))
         .join('/');
-    const url = `${KV_REST_API_URL}/${command}${encodedArgs ? `/${encodedArgs}` : ''}`;
+    const url = `${upstash_payasyougo_KV_REST_API_URL}/${command}${encodedArgs ? `/${encodedArgs}` : ''}`;
     const res = await fetch(url, {
         method: 'POST',
         headers: {
-            Authorization: `Bearer ${KV_REST_API_TOKEN}`,
+            Authorization: `Bearer ${upstash_payasyougo_KV_REST_API_TOKEN}`,
         },
     });
     if (!res.ok) return null;
@@ -272,7 +272,7 @@ async function kvRawCommand(command: string, ...args: Array<string | number>): P
 }
 
 async function scanKeysByPrefix(prefix: string, maxKeys: number): Promise<string[]> {
-    if (!KV_REST_API_URL || !KV_REST_API_TOKEN) return [];
+    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) return [];
     const hardCap = Math.max(1, Math.min(20_000, Math.floor(maxKeys)));
     let cursor = '0';
     const keys: string[] = [];
@@ -321,7 +321,7 @@ export async function loadLatestCompletedResearchCycleId(maxKeys = 200): Promise
 }
 
 async function tryAcquireLock(name: string, token: string, ttlSeconds: number): Promise<boolean> {
-    if (!KV_REST_API_URL || !KV_REST_API_TOKEN) return true;
+    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) return true;
     const key = lockKey(name);
     const ttl = Math.max(10, Math.floor(ttlSeconds));
     const out = await kvRawCommand('SET', key, token, 'NX', 'EX', ttl);
@@ -329,7 +329,7 @@ async function tryAcquireLock(name: string, token: string, ttlSeconds: number): 
 }
 
 async function releaseLock(name: string, token: string): Promise<void> {
-    if (!KV_REST_API_URL || !KV_REST_API_TOKEN) return;
+    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) return;
     const key = lockKey(name);
     const current = await kvRawCommand('GET', key);
     if (String(current || '') !== token) return;

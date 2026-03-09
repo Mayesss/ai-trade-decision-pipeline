@@ -120,7 +120,7 @@ function resolveReportStoreMode(): 'kv' | 'file' {
         .toLowerCase();
     if (configured === 'kv') return 'kv';
     if (configured === 'file') return 'file';
-    return process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN ? 'kv' : 'file';
+    return process.env.upstash_payasyougo_KV_REST_API_URL && process.env.upstash_payasyougo_KV_REST_API_TOKEN ? 'kv' : 'file';
 }
 
 function resolveReportFilePath(): string {

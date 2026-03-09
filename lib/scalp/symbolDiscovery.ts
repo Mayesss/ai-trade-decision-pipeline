@@ -270,7 +270,7 @@ function resolveUniverseStoreMode(): 'kv' | 'file' {
         .toLowerCase();
     if (mode === 'kv') return 'kv';
     if (mode === 'file') return 'file';
-    const hasKv = Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
+    const hasKv = Boolean(process.env.upstash_payasyougo_KV_REST_API_URL && process.env.upstash_payasyougo_KV_REST_API_TOKEN);
     return hasKv ? 'kv' : 'file';
 }
 

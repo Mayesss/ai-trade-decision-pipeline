@@ -612,7 +612,7 @@ export function scalpDeploymentRegistryKvKey(): string {
 }
 
 function hasKvConfig(): boolean {
-    return Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
+    return Boolean(process.env.upstash_payasyougo_KV_REST_API_URL && process.env.upstash_payasyougo_KV_REST_API_TOKEN);
 }
 
 let kvBootstrapWriteBlocked = false;

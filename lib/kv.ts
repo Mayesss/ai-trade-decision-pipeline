@@ -1,9 +1,9 @@
-const KV_REST_API_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
-const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN || '';
+const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
+const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
 
 function ensureKvConfig() {
-    if (!KV_REST_API_URL || !KV_REST_API_TOKEN) {
-        throw new Error('Missing KV_REST_API_URL or KV_REST_API_TOKEN');
+    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) {
+        throw new Error('Missing upstash_payasyougo_KV_REST_API_URL or upstash_payasyougo_KV_REST_API_TOKEN');
     }
 }
 
@@ -11,11 +11,11 @@ async function kvCommand(command: string, ...args: (string | number)[]) {
     ensureKvConfig();
     // Use JSON command bodies to avoid URL-size limits on larger payloads
     // (for example candle-history snapshots stored in KV).
-    const url = KV_REST_API_URL;
+    const url = upstash_payasyougo_KV_REST_API_URL;
     const res = await fetch(url, {
         method: 'POST',
         headers: {
-            Authorization: `Bearer ${KV_REST_API_TOKEN}`,
+            Authorization: `Bearer ${upstash_payasyougo_KV_REST_API_TOKEN}`,
             'Content-Type': 'application/json',
         },
         body: JSON.stringify([command, ...args]),

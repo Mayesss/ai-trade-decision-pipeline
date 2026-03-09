@@ -1,8 +1,8 @@
 import { getScalpStrategyConfig } from './config';
 import { refreshScalpResearchPortfolioReport } from './researchReporting';
 
-const KV_REST_API_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
-const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN || '';
+const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
+const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
 
 const RESEARCH_ACTIVE_CYCLE_KEY = 'scalp:research:active-cycle:v1';
 const RESEARCH_CYCLE_KEY_PREFIX = 'scalp:research:cycle:v1';
@@ -42,15 +42,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 async function kvRawCommand(command: string, ...args: Array<string | number>): Promise<unknown> {
-    if (!KV_REST_API_URL || !KV_REST_API_TOKEN) return null;
+    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) return null;
     const encodedArgs = args
         .map((arg) => encodeURIComponent(typeof arg === 'string' ? arg : String(arg)))
         .join('/');
-    const url = `${KV_REST_API_URL}/${command}${encodedArgs ? `/${encodedArgs}` : ''}`;
+    const url = `${upstash_payasyougo_KV_REST_API_URL}/${command}${encodedArgs ? `/${encodedArgs}` : ''}`;
     const res = await fetch(url, {
         method: 'POST',
         headers: {
-            Authorization: `Bearer ${KV_REST_API_TOKEN}`,
+            Authorization: `Bearer ${upstash_payasyougo_KV_REST_API_TOKEN}`,
         },
     });
     if (!res.ok) return null;
@@ -89,7 +89,7 @@ async function kvLTrim(key: string, start: number, stop: number): Promise<void> 
 }
 
 async function scanKeysByPrefix(prefix: string, maxKeys: number): Promise<string[]> {
-    if (!KV_REST_API_URL || !KV_REST_API_TOKEN) return [];
+    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) return [];
     const out: string[] = [];
     let cursor = '0';
     const hardCap = Math.max(1, Math.min(20_000, Math.floor(maxKeys)));

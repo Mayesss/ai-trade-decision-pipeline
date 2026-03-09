@@ -1,15 +1,15 @@
 import { PositionContext, MomentumSignals } from './ai';
 import { TradeDecision } from './trading';
 
-const KV_REST_API_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
-const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN || '';
+const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
+const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
 const HISTORY_INDEX_KEY = 'decision:index';
 const HISTORY_KEY_PREFIX = 'decision';
 const HISTORY_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
 function ensureKvConfig() {
-    if (!KV_REST_API_URL || !KV_REST_API_TOKEN) {
-        throw new Error('Missing KV_REST_API_URL or KV_REST_API_TOKEN');
+    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) {
+        throw new Error('Missing upstash_payasyougo_KV_REST_API_URL or upstash_payasyougo_KV_REST_API_TOKEN');
     }
 }
 
@@ -18,11 +18,11 @@ async function kvCommand(command: string, ...args: (string | number)[]) {
     const encodedArgs = args
         .map((arg) => encodeURIComponent(typeof arg === 'string' ? arg : String(arg)))
         .join('/');
-    const url = `${KV_REST_API_URL}/${command}${encodedArgs ? `/${encodedArgs}` : ''}`;
+    const url = `${upstash_payasyougo_KV_REST_API_URL}/${command}${encodedArgs ? `/${encodedArgs}` : ''}`;
     const res = await fetch(url, {
         method: 'POST',
         headers: {
-            Authorization: `Bearer ${KV_REST_API_TOKEN}`,
+            Authorization: `Bearer ${upstash_payasyougo_KV_REST_API_TOKEN}`,
         },
     });
     const data = await res.json();
@@ -66,10 +66,10 @@ async function kvZRevRange(key: string, start: number, stop: number): Promise<st
 async function kvMGet(keys: string[]): Promise<(string | null)[]> {
     if (!keys.length) return [];
     const encoded = keys.map((k) => encodeURIComponent(k)).join('/');
-    const url = `${KV_REST_API_URL}/MGET/${encoded}`;
+    const url = `${upstash_payasyougo_KV_REST_API_URL}/MGET/${encoded}`;
     const res = await fetch(url, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${KV_REST_API_TOKEN}` },
+        headers: { Authorization: `Bearer ${upstash_payasyougo_KV_REST_API_TOKEN}` },
     });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || 'MGET failed');

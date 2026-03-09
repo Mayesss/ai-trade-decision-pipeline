@@ -51,8 +51,8 @@ export interface ScalpStrategyRuntimeSnapshot {
     strategies: ScalpStrategyControlSnapshot[];
 }
 
-const KV_REST_API_URL = (process.env.KV_REST_API_URL || '').replace(/\/$/, '');
-const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN || '';
+const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
+const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
 
 function resolveStrategyId(value: unknown, fallback = defaultScalpStrategy.id): string {
     const normalized = normalizeScalpStrategyId(value);
@@ -497,15 +497,15 @@ export async function loadScalpTradeLedger(limit = 2_000): Promise<ScalpTradeLed
 }
 
 async function kvRawCommand(command: string, ...args: Array<string | number>): Promise<unknown> {
-    if (!KV_REST_API_URL || !KV_REST_API_TOKEN) return null;
+    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) return null;
     const encodedArgs = args
         .map((arg) => encodeURIComponent(typeof arg === 'string' ? arg : String(arg)))
         .join('/');
-    const url = `${KV_REST_API_URL}/${command}${encodedArgs ? `/${encodedArgs}` : ''}`;
+    const url = `${upstash_payasyougo_KV_REST_API_URL}/${command}${encodedArgs ? `/${encodedArgs}` : ''}`;
     const res = await fetch(url, {
         method: 'POST',
         headers: {
-            Authorization: `Bearer ${KV_REST_API_TOKEN}`,
+            Authorization: `Bearer ${upstash_payasyougo_KV_REST_API_TOKEN}`,
         },
     });
     if (!res.ok) return null;
@@ -521,7 +521,7 @@ export async function tryAcquireScalpRunLock(
     strategyId = defaultScalpStrategy.id,
     opts: ScalpDeploymentKeyOptions = {},
 ): Promise<boolean> {
-    if (!KV_REST_API_URL || !KV_REST_API_TOKEN) {
+    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) {
         return true;
     }
     const deployment = resolveDeploymentKey({
@@ -542,7 +542,7 @@ export async function releaseScalpRunLock(
     strategyId = defaultScalpStrategy.id,
     opts: ScalpDeploymentKeyOptions = {},
 ): Promise<void> {
-    if (!KV_REST_API_URL || !KV_REST_API_TOKEN) return;
+    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) return;
     const deployment = resolveDeploymentKey({
         symbol,
         strategyId,
