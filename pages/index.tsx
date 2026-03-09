@@ -284,8 +284,11 @@ type ScalpResearchCycleTask = {
   symbol?: string;
   strategyId?: string;
   tuneId?: string;
+  workerId?: string | null;
   windowFromTs?: number;
   windowToTs?: number;
+  startedAtMs?: number | null;
+  finishedAtMs?: number | null;
   status?: 'pending' | 'running' | 'completed' | 'failed' | string;
   result?: ScalpResearchCycleTaskResult | null;
   configOverride?: Record<string, unknown> | null;
@@ -462,6 +465,7 @@ type ScalpOpsCronRow = {
   role: string;
   status: ScalpOpsCronStatus;
   lastRunAtMs: number | null;
+  lastDurationMs: number | null;
   details: ScalpOpsCronDetail[];
   visualMetrics?: ScalpOpsCronVisualMetric[];
   resultPreview?: Record<string, unknown> | null;
@@ -587,7 +591,7 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<string, ScalpCronPipelineDefinitio
     primaryPathname: '/api/scalp/cron/research-cycle-worker',
     matchPathnames: ['/api/scalp/cron/research-cycle-worker'],
     fallbackInvokePath:
-      '/api/scalp/cron/research-cycle-worker?maxRuns=2&aggregateAfter=false&finalizeWhenDone=true&syncPromotionGates=false&requireCompletedCycleForSync=false',
+      '/api/scalp/cron/research-cycle-worker?maxRuns=20&aggregateAfter=false&finalizeWhenDone=true&syncPromotionGates=false&requireCompletedCycleForSync=false',
   },
   scalp_cycle_aggregate: {
     primaryPathname: '/api/scalp/cron/research-cycle-aggregate',
@@ -903,6 +907,7 @@ export default function Home() {
         atMs: number | null;
         ok: boolean | null;
         status: number | null;
+        durationMs: number | null;
         message: string | null;
       }
     >
@@ -1292,16 +1297,18 @@ export default function Home() {
           atMs: Date.now(),
           ok: false,
           status: null,
+          durationMs: null,
           message: 'No invoke path configured',
         },
       }));
       return;
     }
 
+    const invokeStartedAtMs = Date.now();
     setScalpCronInvokeStateById((prev) => ({
       ...prev,
       [row.id]: {
-        ...(prev[row.id] || { atMs: null, ok: null, status: null, message: null }),
+        ...(prev[row.id] || { atMs: null, ok: null, status: null, durationMs: null, message: null }),
         running: true,
         message: null,
       },
@@ -1326,6 +1333,7 @@ export default function Home() {
             atMs: Date.now(),
             ok: false,
             status: res.status,
+            durationMs: Math.max(0, Date.now() - invokeStartedAtMs),
             message: msg,
           },
         }));
@@ -1333,6 +1341,9 @@ export default function Home() {
       }
 
       const okMsg = String(payload?.message || '').trim() || 'Invoked';
+      const workerDurationMs = asFiniteNumber(payload?.worker?.diagnostics?.durationMs);
+      const durationMs =
+        workerDurationMs !== null ? Math.max(0, Math.floor(workerDurationMs)) : Math.max(0, Date.now() - invokeStartedAtMs);
       setScalpCronInvokeStateById((prev) => ({
         ...prev,
         [row.id]: {
@@ -1340,6 +1351,7 @@ export default function Home() {
           atMs: Date.now(),
           ok: true,
           status: res.status,
+          durationMs,
           message: okMsg,
         },
       }));
@@ -1353,6 +1365,7 @@ export default function Home() {
           atMs: Date.now(),
           ok: false,
           status: prev[row.id]?.status ?? null,
+          durationMs: Math.max(0, Date.now() - invokeStartedAtMs),
           message: msg,
         },
       }));
@@ -2221,6 +2234,14 @@ export default function Home() {
     const raw = formatDecisionTime(ts);
     return raw ? raw.replace(/^–\s*/, '') : '—';
   };
+  const formatScalpDuration = (durationMs?: number | null): string => {
+    const ms = typeof durationMs === 'number' && Number.isFinite(durationMs) ? Math.max(0, Math.floor(durationMs)) : null;
+    if (ms === null) return '—';
+    if (ms < 1000) return `${ms}ms`;
+    if (ms < 60_000) return `${(ms / 1000).toFixed(ms >= 10_000 ? 1 : 2)}s`;
+    if (ms < 3_600_000) return `${(ms / 60_000).toFixed(ms >= 600_000 ? 1 : 2)}m`;
+    return `${(ms / 3_600_000).toFixed(2)}h`;
+  };
   const formatScalpCount = (value: number | null): string =>
     value === null ? '—' : `${Math.max(0, Math.floor(value))}`;
   const formatScalpPct = (value: number | null, digits = 0): string =>
@@ -2358,6 +2379,33 @@ export default function Home() {
     if (a.strategyId !== b.strategyId) return a.strategyId.localeCompare(b.strategyId);
     return a.tuneId.localeCompare(b.tuneId);
   });
+  const scalpWorkerLastDurationMs = (() => {
+    const completedTaskRuns = scalpWorkerTasks
+      .map((task) => {
+        const workerId = String(task?.workerId || '').trim();
+        const startedAtMs = asFiniteNumber(task?.startedAtMs);
+        const finishedAtMs = asFiniteNumber(task?.finishedAtMs);
+        if (!workerId || startedAtMs === null || finishedAtMs === null || finishedAtMs < startedAtMs) {
+          return null;
+        }
+        return { workerId, startedAtMs, finishedAtMs };
+      })
+      .filter((row): row is { workerId: string; startedAtMs: number; finishedAtMs: number } => row !== null);
+    if (!completedTaskRuns.length) return null;
+
+    const latestTask = completedTaskRuns.slice().sort((a, b) => b.finishedAtMs - a.finishedAtMs)[0] || null;
+    if (!latestTask) return null;
+
+    const sameRunTasks = completedTaskRuns.filter((row) => row.workerId === latestTask.workerId);
+    if (!sameRunTasks.length) return null;
+
+    const runStartedAtMs = Math.min(...sameRunTasks.map((row) => row.startedAtMs));
+    const runFinishedAtMs = Math.max(...sameRunTasks.map((row) => row.finishedAtMs));
+    if (!Number.isFinite(runStartedAtMs) || !Number.isFinite(runFinishedAtMs) || runFinishedAtMs < runStartedAtMs) {
+      return null;
+    }
+    return runFinishedAtMs - runStartedAtMs;
+  })();
   const formatScalpWindowIso = (fromTs: number | null, toTs: number | null): string => {
     if (fromTs === null || toTs === null) return '—';
     const fromIso = new Date(fromTs).toISOString().slice(0, 10);
@@ -2613,6 +2661,7 @@ export default function Home() {
       role: 'Freeze universe and emit task manifest',
       status: scalpStatusFromTs(scalpCycleUpdatedAtMs, 36 * 60 * 60_000),
       lastRunAtMs: scalpCycleUpdatedAtMs,
+      lastDurationMs: null,
       details: [
         {
           label: 'Cron',
@@ -2699,6 +2748,7 @@ export default function Home() {
       role: 'Claim and execute replay chunks',
       status: scalpStatusFromTs(scalpCycleUpdatedAtMs, 20 * 60_000),
       lastRunAtMs: scalpCycleUpdatedAtMs,
+      lastDurationMs: scalpWorkerLastDurationMs,
       details: [
         {
           label: 'Cron',
@@ -2773,6 +2823,7 @@ export default function Home() {
       role: 'Compute candidate/forward summary',
       status: scalpStatusFromTs(scalpCycleUpdatedAtMs, 45 * 60_000),
       lastRunAtMs: scalpCycleUpdatedAtMs,
+      lastDurationMs: null,
       details: [
         {
           label: 'Cron',
@@ -2823,6 +2874,7 @@ export default function Home() {
         36 * 60 * 60_000,
       ),
       lastRunAtMs: scalpPromotionSyncFetchedAtMs ?? scalpReportGeneratedAtMs,
+      lastDurationMs: null,
       details: [
         {
           label: 'Cron',
@@ -2984,6 +3036,7 @@ export default function Home() {
       role: 'Run enabled and gate-eligible deployments',
       status: scalpStatusFromTs(scalpLastExecuteRunAtMs, 10 * 60_000),
       lastRunAtMs: scalpLastExecuteRunAtMs,
+      lastDurationMs: null,
       details: [
         {
           label: 'Cron',
@@ -3033,6 +3086,7 @@ export default function Home() {
         60 * 60_000,
       ),
       lastRunAtMs: scalpLastGuardrailAtMs ?? scalpReportGeneratedAtMs,
+      lastDurationMs: null,
       details: [
         {
           label: 'Cron',
@@ -3098,6 +3152,7 @@ export default function Home() {
         2 * 60 * 60_000,
       ),
       lastRunAtMs: scalpDashboardGeneratedAtMs ?? scalpReportGeneratedAtMs,
+      lastDurationMs: null,
       details: [
         {
           label: 'Cron',
@@ -3770,7 +3825,7 @@ export default function Home() {
                       <span className={scalpTagNeutralClass}>timeout-safe chunks</span>
                     </div>
                     <div className="mt-4 overflow-x-auto">
-                      <table className="w-full min-w-[1040px] border-separate border-spacing-y-2 text-left text-sm">
+                      <table className="w-full min-w-[1140px] border-separate border-spacing-y-2 text-left text-sm">
                         <thead className={`text-[11px] uppercase tracking-[0.16em] ${scalpTableHeaderClass}`}>
                           <tr>
                             <th className="px-3 py-1">Cron</th>
@@ -3778,6 +3833,7 @@ export default function Home() {
                             <th className="px-3 py-1">Next Run</th>
                             <th className="px-3 py-1">Role</th>
                             <th className="px-3 py-1">Last</th>
+                            <th className="px-3 py-1">Last Duration</th>
                             <th className="px-3 py-1">Status</th>
                             <th className="px-3 py-1">Action</th>
                           </tr>
@@ -3787,6 +3843,11 @@ export default function Home() {
                             const isExpanded = scalpExpandedCronId === row.id;
                             const invokeState = scalpCronInvokeStateById[row.id] || null;
                             const invokeButtonDisabled = !row.invokePath || Boolean(invokeState?.running);
+                            const rowLastDurationMs =
+                              (typeof invokeState?.durationMs === 'number' && Number.isFinite(invokeState.durationMs)
+                                ? invokeState.durationMs
+                                : null) ??
+                              row.lastDurationMs;
                             return (
                               <React.Fragment key={row.id}>
                                 <tr
@@ -3821,6 +3882,9 @@ export default function Home() {
                                   <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>
                                     {formatScalpTime(row.lastRunAtMs)}
                                   </td>
+                                  <td className={`px-3 py-3 font-mono text-xs ${scalpTextSecondaryClass}`}>
+                                    {formatScalpDuration(rowLastDurationMs)}
+                                  </td>
                                   <td className="px-3 py-3">
                                     <span
                                       className={`rounded-full border px-2 py-1 text-[11px] ${scalpCronStatusMeta(
@@ -3851,7 +3915,7 @@ export default function Home() {
                                 </tr>
                                 {isExpanded ? (
                                   <tr>
-                                    <td colSpan={7} className="px-0 pt-0">
+                                    <td colSpan={8} className="px-0 pt-0">
                                       <div className={scalpCronExpandedPanelClass}>
                                         <div
                                           className={`mb-2 text-[11px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
@@ -3874,6 +3938,9 @@ export default function Home() {
                                               : invokeState.ok
                                                 ? `ok (${invokeState.status || '200'})`
                                                 : `failed (${invokeState.status || 'n/a'})`}
+                                            {invokeState.durationMs !== null
+                                              ? ` · ${formatScalpDuration(invokeState.durationMs)}`
+                                              : ''}
                                             {invokeState.message ? ` · ${invokeState.message}` : ''}
                                             {invokeState.atMs ? ` · ${formatScalpTime(invokeState.atMs)}` : ''}
                                           </div>

@@ -847,7 +847,7 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         };
     }
 
-    const maxRuns = Math.max(1, Math.min(10, toPositiveInt(params.maxRuns, 1)));
+    const maxRuns = Math.max(1, Math.min(20, toPositiveInt(params.maxRuns, 1)));
     const diagnostics: WorkerDiagnostics = {
         durationMs: 0,
         cycleTaskCount: cycle.taskIds.length,
