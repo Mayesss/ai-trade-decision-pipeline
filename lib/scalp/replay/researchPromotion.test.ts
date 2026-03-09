@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildCandidateMaterializationShortlist, buildForwardValidationByCandidate } from '../researchPromotion';
+import {
+    buildCandidateMaterializationShortlist,
+    buildForwardValidationByCandidate,
+    filterMaterializationCandidatesByQuality,
+} from '../researchPromotion';
 import type { ScalpResearchCycleSnapshot, ScalpResearchTask } from '../researchCycle';
 
 function makeCycle(cycleId = 'rc_promote'): ScalpResearchCycleSnapshot {
@@ -243,4 +247,95 @@ test('buildCandidateMaterializationShortlist returns top-k per symbol across tun
     assert.equal(shortlist.length, 2);
     assert.ok(shortlist.some((row) => row.symbol === 'BTCUSDT' && row.tuneId === 'auto_tp15'));
     assert.ok(shortlist.some((row) => row.symbol === 'XAUUSDT' && row.tuneId === 'default'));
+});
+
+test('filterMaterializationCandidatesByQuality keeps only candidates with sufficient trades and expectancy', () => {
+    const rows = [
+        {
+            symbol: 'BTCUSDT',
+            strategyId: 'regime_pullback_m15_m3',
+            tuneId: 'a',
+            deploymentId: 'BTCUSDT~regime_pullback_m15_m3~a',
+            rollCount: 7,
+            profitableWindowPct: 70,
+            profitableWindows: 5,
+            meanExpectancyR: 0.12,
+            meanProfitFactor: 1.3,
+            maxDrawdownR: 2.5,
+            minTradesPerWindow: 3,
+            totalTrades: 80,
+            selectionWindowDays: 90,
+            forwardWindowDays: 14,
+            forwardValidation: {
+                rollCount: 7,
+                profitableWindowPct: 70,
+                meanExpectancyR: 0.12,
+                meanProfitFactor: 1.3,
+                maxDrawdownR: 2.5,
+                minTradesPerWindow: 3,
+                selectionWindowDays: 90,
+                forwardWindowDays: 14,
+            },
+        },
+        {
+            symbol: 'BTCUSDT',
+            strategyId: 'regime_pullback_m15_m3',
+            tuneId: 'b',
+            deploymentId: 'BTCUSDT~regime_pullback_m15_m3~b',
+            rollCount: 7,
+            profitableWindowPct: 60,
+            profitableWindows: 4,
+            meanExpectancyR: 0.2,
+            meanProfitFactor: 1.2,
+            maxDrawdownR: 3,
+            minTradesPerWindow: 0,
+            totalTrades: 40,
+            selectionWindowDays: 90,
+            forwardWindowDays: 14,
+            forwardValidation: {
+                rollCount: 7,
+                profitableWindowPct: 60,
+                meanExpectancyR: 0.2,
+                meanProfitFactor: 1.2,
+                maxDrawdownR: 3,
+                minTradesPerWindow: 0,
+                selectionWindowDays: 90,
+                forwardWindowDays: 14,
+            },
+        },
+        {
+            symbol: 'XAUUSDT',
+            strategyId: 'trend_day_reacceleration_m15_m3',
+            tuneId: 'c',
+            deploymentId: 'XAUUSDT~trend_day_reacceleration_m15_m3~c',
+            rollCount: 7,
+            profitableWindowPct: 55,
+            profitableWindows: 4,
+            meanExpectancyR: -0.02,
+            meanProfitFactor: 0.95,
+            maxDrawdownR: 4,
+            minTradesPerWindow: 8,
+            totalTrades: 120,
+            selectionWindowDays: 90,
+            forwardWindowDays: 14,
+            forwardValidation: {
+                rollCount: 7,
+                profitableWindowPct: 55,
+                meanExpectancyR: -0.02,
+                meanProfitFactor: 0.95,
+                maxDrawdownR: 4,
+                minTradesPerWindow: 8,
+                selectionWindowDays: 90,
+                forwardWindowDays: 14,
+            },
+        },
+    ];
+
+    const filtered = filterMaterializationCandidatesByQuality(rows, {
+        minTradesPerWindow: 2,
+        minMeanExpectancyR: 0,
+    });
+
+    assert.equal(filtered.length, 1);
+    assert.equal(filtered[0]?.deploymentId, 'BTCUSDT~regime_pullback_m15_m3~a');
 });

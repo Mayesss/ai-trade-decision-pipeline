@@ -44,6 +44,12 @@ function parsePositiveInt(value: string | undefined): number | undefined {
     return n;
 }
 
+function parseNonNegativeInt(value: string | undefined): number | undefined {
+    const n = Math.floor(Number(value));
+    if (!Number.isFinite(n) || n < 0) return undefined;
+    return n;
+}
+
 function parseFiniteNumber(value: string | undefined): number | undefined {
     const n = Number(value);
     if (!Number.isFinite(n)) return undefined;
@@ -100,6 +106,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const materializeTopKPerSymbol = parsePositiveInt(firstQueryValue(req.query.materializeTopKPerSymbol));
     const materializeSource = parseMaterializeSource(firstQueryValue(req.query.materializeSource));
     const materializeEnabled = parseBoolParam(req.query.materializeEnabled, true);
+    const materializeMinTradesPerWindow = parseNonNegativeInt(firstQueryValue(req.query.materializeMinTradesPerWindow));
+    const materializeMinMeanExpectancyR = parseFiniteNumber(firstQueryValue(req.query.materializeMinMeanExpectancyR));
     const debug = parseBoolParam(req.query.debug, false);
     const startedAtMs = Date.now();
 
@@ -123,6 +131,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             materializeTopKPerSymbol,
             materializeSource,
             materializeEnabled,
+            materializeMinTradesPerWindow,
+            materializeMinMeanExpectancyR,
         });
         const message =
             out.ok === false

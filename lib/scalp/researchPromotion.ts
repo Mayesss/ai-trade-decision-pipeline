@@ -476,6 +476,28 @@ export interface SyncResearchPromotionParams {
     materializeTopKPerSymbol?: number;
     materializeSource?: 'matrix' | 'backtest';
     materializeEnabled?: boolean;
+    materializeMinTradesPerWindow?: number;
+    materializeMinMeanExpectancyR?: number;
+}
+
+export interface SyncResearchMaterializationQualityPolicy {
+    minTradesPerWindow: number;
+    minMeanExpectancyR: number;
+}
+
+export function filterMaterializationCandidatesByQuality(
+    candidates: ScalpResearchForwardValidationCandidate[],
+    policy: SyncResearchMaterializationQualityPolicy,
+): ScalpResearchForwardValidationCandidate[] {
+    return candidates.filter((candidate) => {
+        const minTradesPerWindow = Number.isFinite(Number(candidate.minTradesPerWindow))
+            ? Number(candidate.minTradesPerWindow)
+            : 0;
+        return (
+            minTradesPerWindow >= policy.minTradesPerWindow &&
+            Number(candidate.meanExpectancyR) >= policy.minMeanExpectancyR
+        );
+    });
 }
 
 export interface SyncResearchPromotionRow {
@@ -509,6 +531,9 @@ export interface SyncResearchPromotionResult {
         enabled: boolean;
         source: 'matrix' | 'backtest';
         topKPerSymbol: number;
+        qualityPolicy: SyncResearchMaterializationQualityPolicy;
+        qualityEligibleCandidates: number;
+        qualityRejectedCandidates: number;
         shortlistedCandidates: number;
         missingCandidates: number;
         createdCandidates: number;
@@ -579,6 +604,7 @@ function buildPromotionSyncSignature(params: {
     weeklyPolicy: SyncResearchWeeklyPolicy;
     materializeMissingCandidates: boolean;
     materializeTopKPerSymbol: number;
+    materializationQualityPolicy: SyncResearchMaterializationQualityPolicy;
     materializeSource: 'matrix' | 'backtest';
     materializeEnabled: boolean;
     deployments: ScalpDeploymentRegistryEntry[];
@@ -604,6 +630,7 @@ function buildPromotionSyncSignature(params: {
         weeklyPolicy: params.weeklyPolicy,
         materializeMissingCandidates: params.materializeMissingCandidates,
         materializeTopKPerSymbol: params.materializeTopKPerSymbol,
+        materializationQualityPolicy: params.materializationQualityPolicy,
         materializeSource: params.materializeSource,
         materializeEnabled: params.materializeEnabled,
         deploymentStamp,
@@ -642,10 +669,25 @@ export async function syncResearchCyclePromotionGates(
             envOrFallbackNumber('SCALP_RESEARCH_MATERIALIZE_TOPK_PER_SYMBOL', 2),
         2,
     );
+    const materializationQualityPolicy: SyncResearchMaterializationQualityPolicy = {
+        minTradesPerWindow: toNonNegativeInt(
+            params.materializeMinTradesPerWindow ??
+                envOrFallbackNumber('SCALP_RESEARCH_MATERIALIZE_MIN_TRADES_PER_WINDOW', 2),
+            2,
+        ),
+        minMeanExpectancyR: toFinite(
+            params.materializeMinMeanExpectancyR ??
+                envOrFallbackNumber('SCALP_RESEARCH_MATERIALIZE_MIN_MEAN_EXPECTANCY_R', 0),
+            0,
+        ),
+    };
     const emptyMaterialization = {
         enabled: materializeMissingCandidates,
         source: materializeSource,
         topKPerSymbol: materializeTopKPerSymbol,
+        qualityPolicy: materializationQualityPolicy,
+        qualityEligibleCandidates: 0,
+        qualityRejectedCandidates: 0,
         shortlistedCandidates: 0,
         missingCandidates: 0,
         createdCandidates: 0,
@@ -738,6 +780,7 @@ export async function syncResearchCyclePromotionGates(
         weeklyPolicy,
         materializeMissingCandidates,
         materializeTopKPerSymbol,
+        materializationQualityPolicy,
         materializeSource,
         materializeEnabled,
         deployments,
@@ -773,6 +816,11 @@ export async function syncResearchCyclePromotionGates(
 
     const tasks = await listResearchCycleTasks(cycleId, 10000);
     const candidates = buildForwardValidationByCandidate(cycle, tasks);
+    const materializationCandidatePool = filterMaterializationCandidatesByQuality(
+        candidates,
+        materializationQualityPolicy,
+    );
+    const materializationRejectedByQuality = Math.max(0, candidates.length - materializationCandidatePool.length);
     const candidateByKey = new Map(candidates.map((row) => [keyOf(row.symbol, row.strategyId, row.tuneId), row]));
     const candidatesBySymbolStrategy = new Map<string, ScalpResearchForwardValidationCandidate[]>();
     for (const row of candidates) {
@@ -786,7 +834,10 @@ export async function syncResearchCyclePromotionGates(
         rows.sort(compareCandidates);
     }
     const winnerCandidateKeys = buildWinnerCandidateKeySet(candidates, weeklyPolicy.topKPerSymbol);
-    const materializationShortlist = buildCandidateMaterializationShortlist(candidates, materializeTopKPerSymbol);
+    const materializationShortlist = buildCandidateMaterializationShortlist(
+        materializationCandidatePool,
+        materializeTopKPerSymbol,
+    );
 
     const deploymentIds = new Set(deployments.map((row) => row.deploymentId));
     const materializationRowDrafts: Array<{
@@ -845,6 +896,9 @@ export async function syncResearchCyclePromotionGates(
         enabled: materializeMissingCandidates,
         source: materializeSource,
         topKPerSymbol: materializeTopKPerSymbol,
+        qualityPolicy: materializationQualityPolicy,
+        qualityEligibleCandidates: materializationCandidatePool.length,
+        qualityRejectedCandidates: materializationRejectedByQuality,
         shortlistedCandidates: materializationShortlist.length,
         missingCandidates: materializationMissing,
         createdCandidates: materializedDeploymentIds.size,
@@ -1066,6 +1120,7 @@ export async function syncResearchCyclePromotionGates(
             weeklyPolicy,
             materializeMissingCandidates,
             materializeTopKPerSymbol,
+            materializationQualityPolicy,
             materializeSource,
             materializeEnabled,
             deployments,

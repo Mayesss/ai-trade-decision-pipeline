@@ -20,7 +20,7 @@ export interface ScalpResearchTunerPolicy {
     includeBaseline: boolean;
 }
 
-const DEFAULT_MAX_VARIANTS_PER_STRATEGY = 64;
+const DEFAULT_MAX_VARIANTS_PER_STRATEGY = 16;
 const HARD_MAX_VARIANTS_PER_STRATEGY = 256;
 
 function toBool(value: unknown, fallback: boolean): boolean {

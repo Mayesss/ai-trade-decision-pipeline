@@ -151,6 +151,43 @@ type ScalpDashboardSymbol = {
   forwardValidation?: ScalpForwardValidation | null;
 };
 
+type ScalpHistoryDiscoveryRow = {
+  symbol?: string;
+  candles?: number | null;
+  depthDays?: number | null;
+  barsPerDay?: number | null;
+  coveragePct?: number | null;
+  fromTsMs?: number | null;
+  toTsMs?: number | null;
+  updatedAtMs?: number | null;
+};
+
+type ScalpHistoryDiscoverySnapshot = {
+  timeframe?: string | null;
+  backend?: 'file' | 'kv' | 'unknown' | string;
+  generatedAtMs?: number | null;
+  symbolCount?: number | null;
+  scannedCount?: number | null;
+  scannedLimit?: number | null;
+  previewLimit?: number | null;
+  previewCount?: number | null;
+  truncated?: boolean;
+  nonEmptyCount?: number | null;
+  emptyCount?: number | null;
+  totalCandles?: number | null;
+  avgCandles?: number | null;
+  medianCandles?: number | null;
+  minCandles?: number | null;
+  maxCandles?: number | null;
+  avgDepthDays?: number | null;
+  medianDepthDays?: number | null;
+  minDepthDays?: number | null;
+  maxDepthDays?: number | null;
+  oldestCandleAtMs?: number | null;
+  newestCandleAtMs?: number | null;
+  rows?: ScalpHistoryDiscoveryRow[];
+};
+
 type ScalpStrategyControl = {
   strategyId?: string;
   shortName?: string;
@@ -182,6 +219,7 @@ type ScalpSummaryResponse = {
     stateCounts?: Record<string, number>;
   };
   symbols?: ScalpDashboardSymbol[];
+  history?: ScalpHistoryDiscoverySnapshot;
   latestExecutionByDeploymentId?: Record<string, Record<string, any>>;
   latestExecutionBySymbol?: Record<string, Record<string, any>>;
   journal?: Array<{
@@ -587,6 +625,12 @@ type ScalpCronRuntimeMeta = {
 };
 
 const SCALP_CRON_PIPELINE_DEFINITIONS: Record<string, ScalpCronPipelineDefinition> = {
+  scalp_discover_symbols: {
+    primaryPathname: '/api/scalp/cron/discover-symbols',
+    matchPathnames: ['/api/scalp/cron/discover-symbols'],
+    fallbackInvokePath:
+      '/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true&seedTopSymbols=10&seedChunkDays=5&seedTargetHistoryDays=120&seedMaxRequestsPerSymbol=30&seedMaxSymbolsPerRun=10',
+  },
   scalp_cycle_start: {
     primaryPathname: '/api/scalp/cron/research-cycle-start',
     matchPathnames: ['/api/scalp/cron/research-cycle-start'],
@@ -2544,6 +2588,14 @@ export default function Home() {
     asFiniteNumber(scalpUniverseSeedSummary?.seededSymbols) ?? scalpUniverseSeededSymbols.length;
   const scalpUniverseSeedProcessedCount =
     asFiniteNumber(scalpUniverseSeedSummary?.processedSymbols) ?? scalpUniverseSeedResults.length;
+  const scalpUniverseGeneratedAtMs = (() => {
+    const iso = String(
+      scalpResearchUniverse?.generatedAtIso || scalpResearchUniverse?.snapshot?.generatedAtIso || '',
+    ).trim();
+    if (!iso) return null;
+    const parsed = Date.parse(iso);
+    return Number.isFinite(parsed) ? parsed : null;
+  })();
   const scalpUniverseEvaluationMap = new Map<string, ScalpResearchUniverseCandidateRow>();
   for (const row of scalpUniverseSelectedRows) {
     const symbol = normalizeScalpUniverseSymbol(row?.symbol);
@@ -2635,6 +2687,47 @@ export default function Home() {
   const scalpUniverseDiscoveredPreview = scalpUniverseSymbols.slice(0, 8);
   const scalpUniverseImportedPreview = scalpUniverseSeededSymbols.slice(0, 8);
   const scalpUniverseEvaluatedPreview = scalpUniverseEvaluatedSymbols.slice(0, 8);
+  const scalpHistorySnapshot = scalpSummary?.history || null;
+  const scalpHistoryTimeframe = String(scalpHistorySnapshot?.timeframe || '').trim() || '1m';
+  const scalpHistoryBackend = String(scalpHistorySnapshot?.backend || '').trim() || 'unknown';
+  const scalpHistorySymbolCount = asFiniteNumber(scalpHistorySnapshot?.symbolCount);
+  const scalpHistoryScannedCount = asFiniteNumber(scalpHistorySnapshot?.scannedCount);
+  const scalpHistoryScannedLimit = asFiniteNumber(scalpHistorySnapshot?.scannedLimit);
+  const scalpHistoryNonEmptyCount = asFiniteNumber(scalpHistorySnapshot?.nonEmptyCount);
+  const scalpHistoryTotalCandles = asFiniteNumber(scalpHistorySnapshot?.totalCandles);
+  const scalpHistoryMedianCandles = asFiniteNumber(scalpHistorySnapshot?.medianCandles);
+  const scalpHistoryAvgCandles = asFiniteNumber(scalpHistorySnapshot?.avgCandles);
+  const scalpHistoryMedianDepthDays = asFiniteNumber(scalpHistorySnapshot?.medianDepthDays);
+  const scalpHistoryAvgDepthDays = asFiniteNumber(scalpHistorySnapshot?.avgDepthDays);
+  const scalpHistoryNewestCandleAtMs = asFiniteNumber(scalpHistorySnapshot?.newestCandleAtMs);
+  const scalpHistoryOldestCandleAtMs = asFiniteNumber(scalpHistorySnapshot?.oldestCandleAtMs);
+  const scalpHistoryTruncated = Boolean(scalpHistorySnapshot?.truncated);
+  const scalpHistoryRows = (Array.isArray(scalpHistorySnapshot?.rows) ? scalpHistorySnapshot.rows : [])
+    .map((row) => {
+      const symbol = String(row?.symbol || '')
+        .trim()
+        .toUpperCase();
+      const candlesRaw = asFiniteNumber(row?.candles);
+      const candles = candlesRaw === null ? null : Math.max(0, Math.floor(candlesRaw));
+      const depthDays = asFiniteNumber(row?.depthDays);
+      const barsPerDay = asFiniteNumber(row?.barsPerDay);
+      const coveragePct = asFiniteNumber(row?.coveragePct);
+      const fromTsMs = asFiniteNumber(row?.fromTsMs);
+      const toTsMs = asFiniteNumber(row?.toTsMs);
+      const updatedAtMs = asFiniteNumber(row?.updatedAtMs);
+      return {
+        symbol,
+        candles,
+        depthDays,
+        barsPerDay,
+        coveragePct,
+        fromTsMs,
+        toTsMs,
+        updatedAtMs,
+      };
+    })
+    .filter((row) => Boolean(row.symbol));
+  const scalpHistoryPreviewRows = scalpHistoryRows.slice(0, 12);
   const isScalpGuardrailJournalEntry = (entry: ScalpJournalRow): boolean => {
     const type = String(entry.type || '').trim().toUpperCase();
     if (type === 'RISK') return true;
@@ -2728,6 +2821,10 @@ export default function Home() {
     scalpUniverseCandidatesEvaluated ?? scalpUniverseEvaluatedCount,
   );
   const scalpEligibleSharePct = toScalpRatioPct(scalpUniverseEligibleEvaluatedCount, scalpUniverseEvaluatedCount);
+  const scalpHistoryCoveragePct = toScalpRatioPct(
+    scalpHistoryNonEmptyCount,
+    scalpHistoryScannedCount ?? scalpHistorySymbolCount,
+  );
   const scalpCycleCompletedPct = toScalpRatioPct(scalpCycleCompleted, scalpCycleTasks);
   const scalpCycleFailedPct = toScalpRatioPct(scalpCycleFailed, scalpCycleTasks);
   const scalpCycleQueuePct = toScalpRatioPct(
@@ -2758,8 +2855,106 @@ export default function Home() {
     };
   const scalpCronRows: ScalpOpsCronRow[] = [
     {
+      id: 'scalp_discover_symbols',
+      cadence: 'Daily + intraweek',
+      cronExpression: scalpCronRuntimeMeta('scalp_discover_symbols').expressionLabel,
+      nextRunAtMs: scalpCronRuntimeMeta('scalp_discover_symbols').nextRunAtMs,
+      invokePath: scalpCronRuntimeMeta('scalp_discover_symbols').invokePath,
+      role: 'Discover symbols and seed candle history',
+      status: scalpStatusFromTs(scalpUniverseGeneratedAtMs, 36 * 60 * 60_000),
+      lastRunAtMs: scalpUniverseGeneratedAtMs,
+      lastDurationMs: null,
+      details: [
+        {
+          label: 'Cron',
+          value: scalpCronRuntimeMeta('scalp_discover_symbols').expressionLabel || 'not configured',
+          tone: scalpCronRuntimeMeta('scalp_discover_symbols').expressionLabel ? 'neutral' : 'warning',
+        },
+        {
+          label: 'Next Run',
+          value: formatScalpNextRunIn(scalpCronRuntimeMeta('scalp_discover_symbols').nextRunAtMs, scalpCronNowMs),
+          tone: 'neutral',
+        },
+        {
+          label: 'Snapshot',
+          value: formatScalpTime(scalpUniverseGeneratedAtMs),
+          tone: scalpUniverseGeneratedAtMs ? 'neutral' : 'warning',
+        },
+        { label: 'Selected', value: formatScalpCount(scalpUniverseSelectedCount), tone: 'neutral' },
+        { label: 'Candidates', value: formatScalpCount(scalpUniverseCandidatesEvaluated), tone: 'neutral' },
+        { label: 'Imported', value: formatScalpCount(scalpUniverseSeededCount), tone: 'neutral' },
+        {
+          label: 'History',
+          value: `${formatScalpCount(scalpHistoryNonEmptyCount)} / ${formatScalpCount(
+            scalpHistoryScannedCount ?? scalpHistorySymbolCount,
+          )}`,
+          tone: scalpHistoryCoveragePct !== null && scalpHistoryCoveragePct >= 80 ? 'positive' : 'warning',
+        },
+        {
+          label: 'Median Depth',
+          value: scalpHistoryMedianDepthDays === null ? '—' : `${scalpHistoryMedianDepthDays.toFixed(1)}d`,
+          tone:
+            scalpHistoryMedianDepthDays === null
+              ? 'neutral'
+              : scalpHistoryMedianDepthDays >= 90
+                ? 'positive'
+                : 'warning',
+        },
+      ],
+      visualMetrics: [
+        {
+          label: 'Selection Rate',
+          valueLabel:
+            scalpDiscoverySelectionPct === null
+              ? '—'
+              : `${scalpDiscoverySelectionPct.toFixed(1)}%`,
+          pct: scalpDiscoverySelectionPct,
+          tone: 'neutral',
+        },
+        {
+          label: 'Import Coverage',
+          valueLabel:
+            scalpImportCoveragePct === null
+              ? '—'
+              : `${scalpImportCoveragePct.toFixed(1)}%`,
+          pct: scalpImportCoveragePct,
+          tone: scalpImportCoveragePct !== null && scalpImportCoveragePct >= 75 ? 'positive' : 'warning',
+        },
+        {
+          label: 'History Coverage',
+          valueLabel:
+            scalpHistoryCoveragePct === null
+              ? '—'
+              : `${scalpHistoryCoveragePct.toFixed(1)}%`,
+          pct: scalpHistoryCoveragePct,
+          tone: scalpHistoryCoveragePct !== null && scalpHistoryCoveragePct >= 80 ? 'positive' : 'warning',
+        },
+      ],
+      resultPreview: {
+        generatedAtIso: scalpResearchUniverse?.generatedAtIso || scalpResearchUniverse?.snapshot?.generatedAtIso || null,
+        selectedSymbolsPreview: scalpUniverseSymbols.slice(0, 10),
+        selectedSymbolsRemaining: Math.max(0, scalpUniverseSymbols.length - 10),
+        candidatesEvaluated: scalpUniverseCandidatesEvaluated ?? scalpUniverseEvaluatedCount,
+        seedSummary: scalpUniverseSeedSummary || null,
+        history: {
+          timeframe: scalpHistoryTimeframe,
+          backend: scalpHistoryBackend,
+          symbolCount: scalpHistorySymbolCount,
+          scannedCount: scalpHistoryScannedCount,
+          nonEmptyCount: scalpHistoryNonEmptyCount,
+          totalCandles: scalpHistoryTotalCandles,
+          medianCandles: scalpHistoryMedianCandles,
+          medianDepthDays: scalpHistoryMedianDepthDays,
+          oldestCandleAtMs: scalpHistoryOldestCandleAtMs,
+          newestCandleAtMs: scalpHistoryNewestCandleAtMs,
+          rowsPreview: scalpHistoryPreviewRows,
+          rowsRemaining: Math.max(0, scalpHistoryRows.length - scalpHistoryPreviewRows.length),
+        },
+      },
+    },
+    {
       id: 'scalp_cycle_start',
-      cadence: 'Daily',
+      cadence: 'Twice daily',
       cronExpression: scalpCronRuntimeMeta('scalp_cycle_start').expressionLabel,
       nextRunAtMs: scalpCronRuntimeMeta('scalp_cycle_start').nextRunAtMs,
       invokePath: scalpCronRuntimeMeta('scalp_cycle_start').invokePath,
@@ -4331,7 +4526,7 @@ export default function Home() {
                                             </pre>
                                           </div>
                                         ) : null}
-                                        {row.id === 'scalp_cycle_start' ? (
+                                        {row.id === 'scalp_discover_symbols' ? (
                                           <div className="mt-3">
                                             <div
                                               className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
@@ -4433,6 +4628,90 @@ export default function Home() {
                                                 </tbody>
                                               </table>
                                             </div>
+                                            <div className="mt-3">
+                                              <div
+                                                className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
+                                              >
+                                                History Rows ({scalpHistoryPreviewRows.length})
+                                              </div>
+                                              <div className={`mb-2 text-[11px] ${scalpTextSecondaryClass}`}>
+                                                oldest: {formatScalpTime(scalpHistoryOldestCandleAtMs)} • newest:{' '}
+                                                {formatScalpTime(scalpHistoryNewestCandleAtMs)}
+                                                {scalpHistoryAvgCandles === null || scalpHistoryAvgDepthDays === null
+                                                  ? ''
+                                                  : ` • avg ${scalpHistoryAvgCandles.toFixed(0)} bars / ${scalpHistoryAvgDepthDays.toFixed(1)}d`}
+                                                {scalpHistoryTruncated
+                                                  ? ` • scanned first ${formatScalpCount(
+                                                      scalpHistoryScannedLimit,
+                                                    )} symbols from history store`
+                                                  : ''}
+                                              </div>
+                                              <div className="overflow-x-auto">
+                                                <table className="w-full min-w-[760px] border-separate border-spacing-y-1 text-left text-xs">
+                                                  <thead
+                                                    className={`text-[10px] uppercase tracking-[0.14em] ${scalpTableHeaderClass}`}
+                                                  >
+                                                    <tr>
+                                                      <th className="px-2 py-1">Symbol</th>
+                                                      <th className="px-2 py-1">Candles</th>
+                                                      <th className="px-2 py-1">Depth</th>
+                                                      <th className="px-2 py-1">Density</th>
+                                                      <th className="px-2 py-1">Coverage</th>
+                                                      <th className="px-2 py-1">Last Candle</th>
+                                                      <th className="px-2 py-1">Updated</th>
+                                                    </tr>
+                                                  </thead>
+                                                  <tbody>
+                                                    {scalpHistoryPreviewRows.length ? (
+                                                      scalpHistoryPreviewRows.map((historyRow) => (
+                                                        <tr
+                                                          key={`history-row-${historyRow.symbol}`}
+                                                          className={scalpTableRowClass}
+                                                        >
+                                                          <td className={`rounded-l-xl px-2 py-2 font-medium ${scalpTextPrimaryClass}`}>
+                                                            {historyRow.symbol}
+                                                          </td>
+                                                          <td className={`px-2 py-2 ${scalpTextSecondaryClass}`}>
+                                                            {formatScalpCount(historyRow.candles)}
+                                                          </td>
+                                                          <td className={`px-2 py-2 ${scalpTextSecondaryClass}`}>
+                                                            {historyRow.depthDays === null ? '—' : `${historyRow.depthDays.toFixed(1)}d`}
+                                                          </td>
+                                                          <td className={`px-2 py-2 ${scalpTextSecondaryClass}`}>
+                                                            {historyRow.barsPerDay === null ? '—' : `${historyRow.barsPerDay.toFixed(0)}/d`}
+                                                          </td>
+                                                          <td
+                                                            className={`px-2 py-2 ${
+                                                              historyRow.coveragePct === null
+                                                                ? scalpTextMutedClass
+                                                                : historyRow.coveragePct >= 95
+                                                                  ? 'text-emerald-500'
+                                                                  : historyRow.coveragePct >= 80
+                                                                    ? 'text-amber-500'
+                                                                    : 'text-rose-500'
+                                                            }`}
+                                                          >
+                                                            {formatScalpPct(historyRow.coveragePct, 1)}
+                                                          </td>
+                                                          <td className={`px-2 py-2 ${scalpTextSecondaryClass}`}>
+                                                            {formatScalpTime(historyRow.toTsMs)}
+                                                          </td>
+                                                          <td className={`rounded-r-xl px-2 py-2 ${scalpTextSecondaryClass}`}>
+                                                            {formatScalpTime(historyRow.updatedAtMs)}
+                                                          </td>
+                                                        </tr>
+                                                      ))
+                                                    ) : (
+                                                      <tr className={scalpTableRowClass}>
+                                                        <td colSpan={7} className={`rounded-xl px-2 py-3 ${scalpTextSecondaryClass}`}>
+                                                          No candle-history rows found yet for the selected timeframe.
+                                                        </td>
+                                                      </tr>
+                                                    )}
+                                                  </tbody>
+                                                </table>
+                                              </div>
+                                            </div>
                                           </div>
                                         ) : null}
                                       </div>
@@ -4506,6 +4785,28 @@ export default function Home() {
                             evaluated: {scalpUniverseEvaluatedPreview.length ? scalpUniverseEvaluatedPreview.join(', ') : '—'}
                           </p>
                         </div>
+                      </div>
+                      <div className={scalpCardClass}>
+                        <p className={`text-[11px] uppercase tracking-[0.16em] ${scalpTextMutedClass}`}>History Discovery</p>
+                        <p className={`mt-2 text-xl font-semibold ${scalpTextPrimaryClass}`}>
+                          {formatScalpCount(scalpHistoryNonEmptyCount)} /{' '}
+                          {formatScalpCount(scalpHistoryScannedCount ?? scalpHistorySymbolCount)} symbols
+                        </p>
+                        <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
+                          {`${formatScalpCount(scalpHistoryTotalCandles)} candles • median ${formatScalpCount(
+                            scalpHistoryMedianCandles,
+                          )} • tf ${scalpHistoryTimeframe} • ${scalpHistoryBackend}`}
+                        </p>
+                        <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
+                          {`median depth ${
+                            scalpHistoryMedianDepthDays === null ? '—' : `${scalpHistoryMedianDepthDays.toFixed(1)}d`
+                          } • coverage ${formatScalpPct(scalpHistoryCoveragePct, 1)}`}
+                        </p>
+                        {scalpHistoryTruncated ? (
+                          <p className={`mt-1 text-[10px] ${scalpTextMutedClass}`}>
+                            scanned first {formatScalpCount(scalpHistoryScannedLimit)} symbols from history store
+                          </p>
+                        ) : null}
                       </div>
                     </div>
                   </article>

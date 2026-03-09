@@ -4,6 +4,13 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
 import { getScalpCronSymbolConfigs } from '../../../../lib/symbolRegistry';
+import {
+  listScalpCandleHistorySymbols,
+  loadScalpCandleHistory,
+  normalizeHistoryTimeframe,
+  timeframeToMs,
+  type CandleHistoryBackend,
+} from '../../../../lib/scalp/candleHistory';
 import { getScalpStrategyConfig } from '../../../../lib/scalp/config';
 import { listScalpDeploymentRegistryEntries, type ScalpForwardValidationMetrics } from '../../../../lib/scalp/deploymentRegistry';
 import { DEFAULT_SCALP_TUNE_ID, resolveScalpDeployment } from '../../../../lib/scalp/deployments';
@@ -25,6 +32,28 @@ const SUMMARY_CACHE_TTL_MS = (() => {
 })();
 const SUMMARY_CACHE_MAX_ENTRIES = 32;
 const summaryResponseCache = new Map<string, { expiresAtMs: number; payload: Record<string, unknown> }>();
+const HISTORY_DISCOVERY_CACHE_TTL_MS = (() => {
+  const value = Number(process.env.SCALP_DASHBOARD_HISTORY_CACHE_TTL_MS ?? 300_000);
+  if (!Number.isFinite(value)) return 300_000;
+  return Math.max(0, Math.floor(value));
+})();
+const HISTORY_DISCOVERY_CACHE_MAX_ENTRIES = 8;
+const HISTORY_DISCOVERY_SCAN_LIMIT = (() => {
+  const value = Number(process.env.SCALP_DASHBOARD_HISTORY_SCAN_LIMIT ?? 120);
+  if (!Number.isFinite(value)) return 120;
+  return Math.max(10, Math.min(1_000, Math.floor(value)));
+})();
+const HISTORY_DISCOVERY_PREVIEW_LIMIT = (() => {
+  const value = Number(process.env.SCALP_DASHBOARD_HISTORY_PREVIEW_LIMIT ?? 20);
+  if (!Number.isFinite(value)) return 20;
+  return Math.max(1, Math.min(500, Math.floor(value)));
+})();
+const HISTORY_DISCOVERY_BATCH_SIZE = (() => {
+  const value = Number(process.env.SCALP_DASHBOARD_HISTORY_BATCH_SIZE ?? 10);
+  if (!Number.isFinite(value)) return 10;
+  return Math.max(1, Math.min(100, Math.floor(value)));
+})();
+const historyDiscoveryCache = new Map<string, { expiresAtMs: number; payload: HistoryDiscoverySnapshot }>();
 
 type SymbolSnapshot = {
   symbol: string;
@@ -52,6 +81,43 @@ type SymbolSnapshot = {
   promotionEligible: boolean | null;
   promotionReason: string | null;
   forwardValidation: ScalpForwardValidationMetrics | null;
+};
+
+type HistoryDiscoveryRow = {
+  symbol: string;
+  candles: number;
+  depthDays: number | null;
+  barsPerDay: number | null;
+  coveragePct: number | null;
+  fromTsMs: number | null;
+  toTsMs: number | null;
+  updatedAtMs: number | null;
+};
+
+type HistoryDiscoverySnapshot = {
+  timeframe: string;
+  backend: CandleHistoryBackend | 'unknown';
+  generatedAtMs: number;
+  symbolCount: number;
+  scannedCount: number;
+  scannedLimit: number;
+  previewLimit: number;
+  previewCount: number;
+  truncated: boolean;
+  nonEmptyCount: number;
+  emptyCount: number;
+  totalCandles: number;
+  avgCandles: number | null;
+  medianCandles: number | null;
+  minCandles: number | null;
+  maxCandles: number | null;
+  avgDepthDays: number | null;
+  medianDepthDays: number | null;
+  minDepthDays: number | null;
+  maxDepthDays: number | null;
+  oldestCandleAtMs: number | null;
+  newestCandleAtMs: number | null;
+  rows: HistoryDiscoveryRow[];
 };
 
 function parseLimit(value: string | string[] | undefined, fallback: number): number {
@@ -220,6 +286,205 @@ function pruneSummaryCache(nowMs: number): void {
     if (!key) break;
     summaryResponseCache.delete(key);
   }
+}
+
+function makeHistoryDiscoveryCacheKey(input: { timeframe: string; scanLimit: number; previewLimit: number }): string {
+  return JSON.stringify({
+    timeframe: input.timeframe,
+    scanLimit: input.scanLimit,
+    previewLimit: input.previewLimit,
+  });
+}
+
+function pruneHistoryDiscoveryCache(nowMs: number): void {
+  for (const [key, row] of historyDiscoveryCache.entries()) {
+    if (row.expiresAtMs <= nowMs) historyDiscoveryCache.delete(key);
+  }
+  if (historyDiscoveryCache.size <= HISTORY_DISCOVERY_CACHE_MAX_ENTRIES) return;
+  const keys = Array.from(historyDiscoveryCache.keys());
+  while (historyDiscoveryCache.size > HISTORY_DISCOVERY_CACHE_MAX_ENTRIES && keys.length > 0) {
+    const key = keys.shift();
+    if (!key) break;
+    historyDiscoveryCache.delete(key);
+  }
+}
+
+function roundMetric(value: number | null, digits = 2): number | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  const factor = 10 ** Math.max(0, Math.floor(digits));
+  return Math.round(value * factor) / factor;
+}
+
+function meanValue(values: number[]): number | null {
+  if (!values.length) return null;
+  const total = values.reduce((acc, row) => acc + row, 0);
+  return total / values.length;
+}
+
+function medianValue(values: number[]): number | null {
+  if (!values.length) return null;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[mid] ?? null;
+  const left = sorted[mid - 1];
+  const right = sorted[mid];
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return null;
+  return (left + right) / 2;
+}
+
+async function loadHistoryDiscoverySnapshot(params: {
+  nowMs: number;
+  debugLogsEnabled: boolean;
+  rowErrors: Array<Record<string, unknown>>;
+  requestId: string;
+  logDebug: (event: string, payload?: Record<string, unknown>) => void;
+}): Promise<HistoryDiscoverySnapshot> {
+  const timeframe = normalizeHistoryTimeframe(String(process.env.SCALP_DASHBOARD_HISTORY_TIMEFRAME || '1m'));
+  const scanLimit = HISTORY_DISCOVERY_SCAN_LIMIT;
+  const previewLimit = HISTORY_DISCOVERY_PREVIEW_LIMIT;
+  const timeframeMs = Math.max(60_000, timeframeToMs(timeframe));
+  const useCache = !params.debugLogsEnabled && HISTORY_DISCOVERY_CACHE_TTL_MS > 0;
+  const cacheKey = makeHistoryDiscoveryCacheKey({ timeframe, scanLimit, previewLimit });
+  if (useCache) {
+    const cached = historyDiscoveryCache.get(cacheKey);
+    if (cached && cached.expiresAtMs > params.nowMs) {
+      params.logDebug('history_cache_hit', {
+        cacheKey,
+        ttlMsRemaining: cached.expiresAtMs - params.nowMs,
+      });
+      return cached.payload;
+    }
+    if (cached) historyDiscoveryCache.delete(cacheKey);
+  }
+
+  const symbols = await listScalpCandleHistorySymbols(timeframe);
+  const scannedSymbols = symbols.slice(0, scanLimit);
+  const rows: HistoryDiscoveryRow[] = [];
+  let backend: CandleHistoryBackend | 'unknown' = 'unknown';
+  const dayMs = 24 * 60 * 60 * 1000;
+  for (let i = 0; i < scannedSymbols.length; i += HISTORY_DISCOVERY_BATCH_SIZE) {
+    const batch = scannedSymbols.slice(i, i + HISTORY_DISCOVERY_BATCH_SIZE);
+    const batchRows = await Promise.all(
+      batch.map(async (symbol) => {
+        try {
+          const loaded = await loadScalpCandleHistory(symbol, timeframe);
+          if (backend === 'unknown') backend = loaded.backend;
+          const record = loaded.record;
+          const candles = Array.isArray(record?.candles) ? record.candles : [];
+          const candleCount = candles.length;
+          const firstTsRaw = candleCount > 0 ? Number(candles[0]?.[0]) : NaN;
+          const lastTsRaw = candleCount > 0 ? Number(candles[candleCount - 1]?.[0]) : NaN;
+          const fromTsMs = Number.isFinite(firstTsRaw) && firstTsRaw > 0 ? Math.floor(firstTsRaw) : null;
+          const toTsMs = Number.isFinite(lastTsRaw) && lastTsRaw > 0 ? Math.floor(lastTsRaw) : null;
+          const updatedAtMsRaw = Number(record?.updatedAtMs);
+          const updatedAtMs = Number.isFinite(updatedAtMsRaw) && updatedAtMsRaw > 0 ? Math.floor(updatedAtMsRaw) : null;
+          const spanMs =
+            fromTsMs !== null && toTsMs !== null && toTsMs >= fromTsMs ? Math.max(0, toTsMs - fromTsMs) : null;
+          const depthDays = spanMs === null ? null : spanMs / dayMs;
+          const expectedCandles =
+            spanMs === null
+              ? null
+              : Math.max(1, Math.floor(spanMs / timeframeMs) + 1);
+          const coveragePct =
+            expectedCandles && expectedCandles > 0
+              ? Math.max(0, Math.min(100, (candleCount / expectedCandles) * 100))
+              : null;
+          const barsPerDay = depthDays !== null && depthDays > 0 ? candleCount / depthDays : null;
+          return {
+            symbol,
+            candles: Math.max(0, Math.floor(candleCount)),
+            depthDays: roundMetric(depthDays),
+            barsPerDay: roundMetric(barsPerDay),
+            coveragePct: roundMetric(coveragePct),
+            fromTsMs,
+            toTsMs,
+            updatedAtMs,
+          } satisfies HistoryDiscoveryRow;
+        } catch (err: any) {
+          const rowError = {
+            kind: 'history_row',
+            symbol,
+            timeframe,
+            message: err?.message || String(err),
+          };
+          params.rowErrors.push(rowError);
+          console.error(`[scalp-summary][${params.requestId}] history_row_error`, rowError, err?.stack || '');
+          return null;
+        }
+      }),
+    );
+    for (const row of batchRows) {
+      if (row) rows.push(row);
+    }
+  }
+
+  rows.sort((a, b) => {
+    if (a.candles !== b.candles) return b.candles - a.candles;
+    const aDepth = a.depthDays ?? -1;
+    const bDepth = b.depthDays ?? -1;
+    if (aDepth !== bDepth) return bDepth - aDepth;
+    return a.symbol.localeCompare(b.symbol);
+  });
+
+  const nonEmptyRows = rows.filter((row) => row.candles > 0);
+  const candleCounts = nonEmptyRows.map((row) => row.candles);
+  const depthValues = nonEmptyRows
+    .map((row) => row.depthDays)
+    .filter((row): row is number => row !== null && Number.isFinite(row) && row >= 0);
+  const totalCandles = candleCounts.reduce((acc, row) => acc + row, 0);
+  const oldestCandleAtMs = nonEmptyRows.reduce<number | null>((acc, row) => {
+    if (row.fromTsMs === null) return acc;
+    if (acc === null) return row.fromTsMs;
+    return Math.min(acc, row.fromTsMs);
+  }, null);
+  const newestCandleAtMs = nonEmptyRows.reduce<number | null>((acc, row) => {
+    if (row.toTsMs === null) return acc;
+    if (acc === null) return row.toTsMs;
+    return Math.max(acc, row.toTsMs);
+  }, null);
+
+  const snapshot: HistoryDiscoverySnapshot = {
+    timeframe,
+    backend,
+    generatedAtMs: params.nowMs,
+    symbolCount: symbols.length,
+    scannedCount: scannedSymbols.length,
+    scannedLimit: scanLimit,
+    previewLimit,
+    previewCount: Math.min(rows.length, previewLimit),
+    truncated: symbols.length > scannedSymbols.length,
+    nonEmptyCount: nonEmptyRows.length,
+    emptyCount: Math.max(0, rows.length - nonEmptyRows.length),
+    totalCandles,
+    avgCandles: roundMetric(meanValue(candleCounts)),
+    medianCandles: roundMetric(medianValue(candleCounts)),
+    minCandles: candleCounts.length ? Math.min(...candleCounts) : null,
+    maxCandles: candleCounts.length ? Math.max(...candleCounts) : null,
+    avgDepthDays: roundMetric(meanValue(depthValues)),
+    medianDepthDays: roundMetric(medianValue(depthValues)),
+    minDepthDays: depthValues.length ? roundMetric(Math.min(...depthValues)) : null,
+    maxDepthDays: depthValues.length ? roundMetric(Math.max(...depthValues)) : null,
+    oldestCandleAtMs,
+    newestCandleAtMs,
+    rows: rows.slice(0, previewLimit),
+  };
+  params.logDebug('history_snapshot', {
+    timeframe,
+    backend,
+    symbolCount: snapshot.symbolCount,
+    scannedCount: snapshot.scannedCount,
+    previewCount: snapshot.previewCount,
+    truncated: snapshot.truncated,
+    nonEmptyCount: snapshot.nonEmptyCount,
+  });
+  if (useCache) {
+    pruneHistoryDiscoveryCache(params.nowMs);
+    historyDiscoveryCache.set(cacheKey, {
+      expiresAtMs: params.nowMs + HISTORY_DISCOVERY_CACHE_TTL_MS,
+      payload: snapshot,
+    });
+  }
+  return snapshot;
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -477,6 +742,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       row.netR = perf?.netR ?? null;
       row.maxDrawdownR = perf?.maxDrawdownR ?? null;
     }
+    stage = 'load_history_discovery';
+    const history = await loadHistoryDiscoverySnapshot({
+      nowMs,
+      debugLogsEnabled,
+      rowErrors,
+      requestId,
+      logDebug,
+    });
 
     const stateCounts = rows.reduce<Record<string, number>>((acc, row) => {
       const key = row.state || 'MISSING';
@@ -562,6 +835,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       },
       range,
       symbols: rows,
+      history,
       latestExecutionByDeploymentId,
       latestExecutionBySymbol,
       journal: journal
