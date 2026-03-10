@@ -1,5 +1,9 @@
 const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
 const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
+const KV_HTTP_TIMEOUT_MS = Math.max(1000, Math.min(60_000, Math.floor(Number(process.env.KV_HTTP_TIMEOUT_MS) || 10_000)));
+const KV_MAX_RETRIES = Math.max(0, Math.min(8, Math.floor(Number(process.env.KV_MAX_RETRIES) || 3)));
+const KV_RETRY_BASE_MS = Math.max(25, Math.min(5_000, Math.floor(Number(process.env.KV_RETRY_BASE_MS) || 200)));
+const KV_RETRY_MAX_DELAY_MS = Math.max(50, Math.min(15_000, Math.floor(Number(process.env.KV_RETRY_MAX_DELAY_MS) || 2_000)));
 
 function ensureKvConfig() {
     if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) {
@@ -7,48 +11,113 @@ function ensureKvConfig() {
     }
 }
 
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+        setTimeout(resolve, Math.max(0, Math.floor(ms)));
+    });
+}
+
+function retryDelayMs(attempt: number): number {
+    const exp = Math.min(8, Math.max(0, attempt));
+    const base = Math.min(KV_RETRY_MAX_DELAY_MS, KV_RETRY_BASE_MS * 2 ** exp);
+    const jitter = Math.floor(Math.random() * Math.max(1, Math.floor(base / 4)));
+    return Math.min(KV_RETRY_MAX_DELAY_MS, base + jitter);
+}
+
+function isRetryableHttpStatus(status: number): boolean {
+    return status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599);
+}
+
+function isRetryableError(err: unknown): boolean {
+    const text = String((err as any)?.message || err || '')
+        .trim()
+        .toLowerCase();
+    const name = String((err as any)?.name || '')
+        .trim()
+        .toLowerCase();
+    if (!text && !name) return false;
+    if (name === 'aborterror') return true;
+    return (
+        text.includes('fetch failed') ||
+        text.includes('network') ||
+        text.includes('timeout') ||
+        text.includes('timed out') ||
+        text.includes('econnreset') ||
+        text.includes('enotfound') ||
+        text.includes('eai_again') ||
+        text.includes('socket') ||
+        text.includes('tls')
+    );
+}
+
 async function kvCommand(command: string, ...args: (string | number)[]) {
     ensureKvConfig();
     // Use JSON command bodies to avoid URL-size limits on larger payloads
     // (for example candle-history snapshots stored in KV).
     const url = upstash_payasyougo_KV_REST_API_URL;
-    const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${upstash_payasyougo_KV_REST_API_TOKEN}`,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify([command, ...args]),
-    });
-
-    const rawText = await res.text();
-    let data: any = null;
-    if (rawText) {
+    for (let attempt = 0; attempt <= KV_MAX_RETRIES; attempt += 1) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), KV_HTTP_TIMEOUT_MS);
         try {
-            data = JSON.parse(rawText);
-        } catch (err: any) {
-            if (!res.ok) {
-                throw new Error(`KV command failed (${command}) HTTP ${res.status}: ${rawText.slice(0, 240)}`);
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${upstash_payasyougo_KV_REST_API_TOKEN}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify([command, ...args]),
+                signal: controller.signal,
+            });
+
+            const rawText = await res.text();
+            if (!res.ok && attempt < KV_MAX_RETRIES && isRetryableHttpStatus(res.status)) {
+                await sleep(retryDelayMs(attempt));
+                continue;
             }
-            console.warn(`KV ${command} response parse warning: ${err?.message || String(err)}`);
+
+            let data: any = null;
+            if (rawText) {
+                try {
+                    data = JSON.parse(rawText);
+                } catch (err: any) {
+                    if (!res.ok) {
+                        throw new Error(`KV command failed (${command}) HTTP ${res.status}: ${rawText.slice(0, 240)}`);
+                    }
+                    console.warn(`KV ${command} response parse warning: ${err?.message || String(err)}`);
+                    return null;
+                }
+            }
+
+            if (!res.ok) {
+                const message =
+                    (data && typeof data === 'object' && (data.error || data.message)) ||
+                    rawText ||
+                    `KV command failed: ${command}`;
+                throw new Error(String(message));
+            }
+
+            if (data && typeof data === 'object' && data.error) {
+                const errText = String(data.error || data.message || `KV command failed: ${command}`);
+                if (attempt < KV_MAX_RETRIES && errText.toLowerCase().includes('rate limit')) {
+                    await sleep(retryDelayMs(attempt));
+                    continue;
+                }
+                throw new Error(errText);
+            }
+
+            if (data && typeof data === 'object' && 'result' in data) {
+                return data.result;
+            }
             return null;
+        } catch (err) {
+            if (attempt < KV_MAX_RETRIES && isRetryableError(err)) {
+                await sleep(retryDelayMs(attempt));
+                continue;
+            }
+            throw err;
+        } finally {
+            clearTimeout(timeoutId);
         }
-    }
-
-    if (!res.ok) {
-        const message =
-            (data && typeof data === 'object' && (data.error || data.message)) ||
-            rawText ||
-            `KV command failed: ${command}`;
-        throw new Error(String(message));
-    }
-
-    if (data && typeof data === 'object' && data.error) {
-        throw new Error(String(data.error || data.message || `KV command failed: ${command}`));
-    }
-
-    if (data && typeof data === 'object' && 'result' in data) {
-        return data.result;
     }
     return null;
 }

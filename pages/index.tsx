@@ -629,7 +629,7 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<string, ScalpCronPipelineDefinitio
     primaryPathname: '/api/scalp/cron/discover-symbols',
     matchPathnames: ['/api/scalp/cron/discover-symbols'],
     fallbackInvokePath:
-      '/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true&seedTopSymbols=10&seedChunkDays=5&seedTargetHistoryDays=120&seedMaxRequestsPerSymbol=30&seedMaxSymbolsPerRun=10',
+      '/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true&seedTopSymbols=10&seedChunkDays=5&seedTargetHistoryDays=90&seedMaxHistoryDays=95&seedMaxRequestsPerSymbol=30&seedMaxSymbolsPerRun=10',
   },
   scalp_cycle_start: {
     primaryPathname: '/api/scalp/cron/research-cycle-start',
@@ -640,7 +640,7 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<string, ScalpCronPipelineDefinitio
     primaryPathname: '/api/scalp/cron/research-cycle-worker',
     matchPathnames: ['/api/scalp/cron/research-cycle-worker'],
     fallbackInvokePath:
-      '/api/scalp/cron/research-cycle-worker?maxRuns=10&aggregateAfter=false&finalizeWhenDone=true&syncPromotionGates=false&requireCompletedCycleForSync=false',
+      '/api/scalp/cron/research-cycle-worker?maxRuns=1&aggregateAfter=false&finalizeWhenDone=true&syncPromotionGates=false&requireCompletedCycleForSync=false',
   },
   scalp_cycle_aggregate: {
     primaryPathname: '/api/scalp/cron/research-cycle-aggregate',

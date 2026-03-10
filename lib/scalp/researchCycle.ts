@@ -30,6 +30,22 @@ const DEFAULT_MAX_TASKS = 4_000;
 const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_RUNNING_STALE_AFTER_MS = 20 * 60 * 1000;
 const DEFAULT_LOCK_TTL_SECONDS = 120;
+const RESEARCH_KV_HTTP_TIMEOUT_MS = Math.max(
+    1000,
+    Math.min(60_000, Math.floor(Number(process.env.SCALP_RESEARCH_KV_HTTP_TIMEOUT_MS) || 10_000)),
+);
+const RESEARCH_KV_MAX_RETRIES = Math.max(
+    0,
+    Math.min(8, Math.floor(Number(process.env.SCALP_RESEARCH_KV_MAX_RETRIES) || 3)),
+);
+const RESEARCH_KV_RETRY_BASE_MS = Math.max(
+    25,
+    Math.min(5_000, Math.floor(Number(process.env.SCALP_RESEARCH_KV_RETRY_BASE_MS) || 200)),
+);
+const RESEARCH_KV_RETRY_MAX_DELAY_MS = Math.max(
+    50,
+    Math.min(15_000, Math.floor(Number(process.env.SCALP_RESEARCH_KV_RETRY_MAX_DELAY_MS) || 2_000)),
+);
 
 const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
 const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
@@ -273,22 +289,83 @@ function lockKey(name: string): string {
     return `${RESEARCH_LOCK_KEY_PREFIX}:${name}`;
 }
 
+function sleepMs(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+        setTimeout(resolve, Math.max(0, Math.floor(ms)));
+    });
+}
+
+function retryDelayMs(attempt: number): number {
+    const exp = Math.min(8, Math.max(0, attempt));
+    const base = Math.min(RESEARCH_KV_RETRY_MAX_DELAY_MS, RESEARCH_KV_RETRY_BASE_MS * 2 ** exp);
+    const jitter = Math.floor(Math.random() * Math.max(1, Math.floor(base / 4)));
+    return Math.min(RESEARCH_KV_RETRY_MAX_DELAY_MS, base + jitter);
+}
+
+function isRetryableHttpStatus(status: number): boolean {
+    return status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599);
+}
+
+function isRetryableNetworkError(err: unknown): boolean {
+    const text = String((err as any)?.message || err || '')
+        .trim()
+        .toLowerCase();
+    const name = String((err as any)?.name || '')
+        .trim()
+        .toLowerCase();
+    if (!text && !name) return false;
+    if (name === 'aborterror') return true;
+    return (
+        text.includes('fetch failed') ||
+        text.includes('network') ||
+        text.includes('timeout') ||
+        text.includes('timed out') ||
+        text.includes('econnreset') ||
+        text.includes('enotfound') ||
+        text.includes('eai_again') ||
+        text.includes('socket') ||
+        text.includes('tls')
+    );
+}
+
 async function kvRawCommand(command: string, ...args: Array<string | number>): Promise<unknown> {
     if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) return null;
     const encodedArgs = args
         .map((arg) => encodeURIComponent(typeof arg === 'string' ? arg : String(arg)))
         .join('/');
     const url = `${upstash_payasyougo_KV_REST_API_URL}/${command}${encodedArgs ? `/${encodedArgs}` : ''}`;
-    const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${upstash_payasyougo_KV_REST_API_TOKEN}`,
-        },
-    });
-    if (!res.ok) return null;
-    const data = await res.json().catch(() => null);
-    if (!data || typeof data !== 'object') return null;
-    return (data as any).result ?? null;
+    for (let attempt = 0; attempt <= RESEARCH_KV_MAX_RETRIES; attempt += 1) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), RESEARCH_KV_HTTP_TIMEOUT_MS);
+        try {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${upstash_payasyougo_KV_REST_API_TOKEN}`,
+                },
+                signal: controller.signal,
+            });
+            if (!res.ok) {
+                if (attempt < RESEARCH_KV_MAX_RETRIES && isRetryableHttpStatus(res.status)) {
+                    await sleepMs(retryDelayMs(attempt));
+                    continue;
+                }
+                return null;
+            }
+            const data = await res.json().catch(() => null);
+            if (!data || typeof data !== 'object') return null;
+            return (data as any).result ?? null;
+        } catch (err) {
+            if (attempt < RESEARCH_KV_MAX_RETRIES && isRetryableNetworkError(err)) {
+                await sleepMs(retryDelayMs(attempt));
+                continue;
+            }
+            throw err;
+        } finally {
+            clearTimeout(timeoutId);
+        }
+    }
+    return null;
 }
 
 async function scanKeysByPrefix(prefix: string, maxKeys: number): Promise<string[]> {

@@ -114,6 +114,7 @@ export interface ScalpSymbolDiscoveryRunParams {
     seedChunkDays?: number;
     seedMaxRequestsPerSymbol?: number;
     seedMaxSymbolsPerRun?: number;
+    seedMaxHistoryDays?: number;
     seedTimeframe?: string;
     seedOnDryRun?: boolean;
 }
@@ -127,6 +128,7 @@ export interface ScalpSymbolDiscoverySeedSymbolResult {
     mergedCount: number;
     fetchedCount: number;
     addedCount: number;
+    trimmedCount: number;
     beforeSpanDays: number;
     afterSpanDays: number;
 }
@@ -141,6 +143,7 @@ export interface ScalpSymbolDiscoverySeedSummary {
     skippedSymbols: number;
     failedSymbols: number;
     targetHistoryDays: number;
+    maxHistoryDays: number;
     chunkDays: number;
     maxRequestsPerSymbol: number;
     maxSymbolsPerRun: number;
@@ -404,6 +407,37 @@ function historySpanDaysFromCandles(candles: Array<[number, number, number, numb
     return (toTs - fromTs) / ONE_DAY_MS;
 }
 
+function trimHistoryToMaxDays(
+    candles: Array<[number, number, number, number, number, number]>,
+    maxHistoryDays: number,
+): Array<[number, number, number, number, number, number]> {
+    if (!candles.length) return candles;
+    const normalizedMaxDays = Math.max(1, maxHistoryDays);
+    const latestTs = Number(candles[candles.length - 1]?.[0] ?? 0);
+    if (!Number.isFinite(latestTs) || latestTs <= 0) return candles;
+    const cutoffTs = latestTs - normalizedMaxDays * ONE_DAY_MS;
+    if (!Number.isFinite(cutoffTs) || cutoffTs <= 0) return candles;
+    let firstKeepIdx = 0;
+    while (firstKeepIdx < candles.length && Number(candles[firstKeepIdx]?.[0] ?? 0) < cutoffTs) {
+        firstKeepIdx += 1;
+    }
+    if (firstKeepIdx <= 0 || firstKeepIdx >= candles.length) return candles;
+    return candles.slice(firstKeepIdx);
+}
+
+function historyChanged(
+    existing: Array<[number, number, number, number, number, number]>,
+    next: Array<[number, number, number, number, number, number]>,
+): boolean {
+    if (existing.length !== next.length) return true;
+    if (!existing.length && !next.length) return false;
+    const existingFirst = Number(existing[0]?.[0] ?? 0);
+    const nextFirst = Number(next[0]?.[0] ?? 0);
+    const existingLast = Number(existing[existing.length - 1]?.[0] ?? 0);
+    const nextLast = Number(next[next.length - 1]?.[0] ?? 0);
+    return existingFirst !== nextFirst || existingLast !== nextLast;
+}
+
 function normalizeFetchedCandles(rows: any[]): Array<[number, number, number, number, number, number]> {
     return rows
         .map((row) => {
@@ -432,6 +466,7 @@ function resolveSeedConfig(params: ScalpSymbolDiscoveryRunParams): {
     timeframe: string;
     requestedTopSymbols: number;
     targetHistoryDays: number;
+    maxHistoryDays: number;
     chunkDays: number;
     maxRequestsPerSymbol: number;
     maxSymbolsPerRun: number;
@@ -444,6 +479,16 @@ function resolveSeedConfig(params: ScalpSymbolDiscoveryRunParams): {
     const targetHistoryDays = Math.max(
         7,
         Math.min(365, toOptionalPositiveInt(params.seedTargetHistoryDays ?? process.env.SCALP_SYMBOL_DISCOVERY_SEED_TARGET_DAYS, 90)),
+    );
+    const maxHistoryDays = Math.max(
+        targetHistoryDays,
+        Math.min(
+            365,
+            toOptionalPositiveInt(
+                params.seedMaxHistoryDays ?? process.env.SCALP_SYMBOL_DISCOVERY_SEED_MAX_HISTORY_DAYS,
+                targetHistoryDays + 5,
+            ),
+        ),
     );
     const chunkDays = Math.max(
         1,
@@ -470,6 +515,7 @@ function resolveSeedConfig(params: ScalpSymbolDiscoveryRunParams): {
         timeframe,
         requestedTopSymbols,
         targetHistoryDays,
+        maxHistoryDays,
         chunkDays,
         maxRequestsPerSymbol,
         maxSymbolsPerRun,
@@ -676,6 +722,7 @@ async function runScalpSymbolHistorySeedStage(params: {
         skippedSymbols: 0,
         failedSymbols: 0,
         targetHistoryDays: cfg.targetHistoryDays,
+        maxHistoryDays: cfg.maxHistoryDays,
         chunkDays: cfg.chunkDays,
         maxRequestsPerSymbol: cfg.maxRequestsPerSymbol,
         maxSymbolsPerRun: cfg.maxSymbolsPerRun,
@@ -703,6 +750,7 @@ async function runScalpSymbolHistorySeedStage(params: {
             mergedCount: 0,
             fetchedCount: 0,
             addedCount: 0,
+            trimmedCount: 0,
             beforeSpanDays: 0,
             afterSpanDays: 0,
         });
@@ -759,18 +807,31 @@ async function runScalpSymbolHistorySeedStage(params: {
                 fetchToMs = Math.max(fetchFromMs + tfMs, Math.floor(Math.min(params.nowMs, anchor + cfg.chunkDays * ONE_DAY_MS)));
                 windowReason = 'forward';
             } else {
+                const trimmed = trimHistoryToMaxDays(existing, cfg.maxHistoryDays);
+                const trimmedCount = Math.max(0, existing.length - trimmed.length);
+                const afterSpanDays = Number(historySpanDaysFromCandles(trimmed).toFixed(4));
+                if (!params.dryRun && trimmedCount > 0) {
+                    await saveScalpCandleHistory({
+                        symbol,
+                        timeframe: cfg.timeframe,
+                        epic: history.record?.epic || null,
+                        source: 'capital',
+                        candles: trimmed,
+                    });
+                }
                 summary.skippedSymbols += 1;
                 summary.results.push({
                     symbol,
                     status: 'skipped',
-                    reason: 'already_seeded',
+                    reason: trimmedCount > 0 ? 'history_pruned' : 'already_seeded',
                     epic: history.record?.epic || null,
                     existingCount: existing.length,
-                    mergedCount: existing.length,
+                    mergedCount: trimmed.length,
                     fetchedCount: 0,
                     addedCount: 0,
+                    trimmedCount,
                     beforeSpanDays,
-                    afterSpanDays: beforeSpanDays,
+                    afterSpanDays: trimmedCount > 0 ? afterSpanDays : beforeSpanDays,
                 });
                 continue;
             }
@@ -786,6 +847,7 @@ async function runScalpSymbolHistorySeedStage(params: {
                     mergedCount: existing.length,
                     fetchedCount: 0,
                     addedCount: 0,
+                    trimmedCount: 0,
                     beforeSpanDays,
                     afterSpanDays: beforeSpanDays,
                 });
@@ -807,16 +869,19 @@ async function runScalpSymbolHistorySeedStage(params: {
             );
             const fetched = normalizeFetchedCandles(fetchedRaw);
             const merged = mergeScalpCandleHistory(existing, fetched);
+            const trimmed = trimHistoryToMaxDays(merged, cfg.maxHistoryDays);
             const addedCount = Math.max(0, merged.length - existing.length);
-            const afterSpanDays = Number(historySpanDaysFromCandles(merged).toFixed(4));
+            const trimmedCount = Math.max(0, merged.length - trimmed.length);
+            const afterSpanDays = Number(historySpanDaysFromCandles(trimmed).toFixed(4));
+            const changed = historyChanged(existing, trimmed);
 
-            if (!params.dryRun) {
+            if (!params.dryRun && changed) {
                 await saveScalpCandleHistory({
                     symbol,
                     timeframe: cfg.timeframe,
                     epic: epicResolved.epic,
                     source: 'capital',
-                    candles: merged,
+                    candles: trimmed,
                 });
             }
 
@@ -828,9 +893,10 @@ async function runScalpSymbolHistorySeedStage(params: {
                     reason: windowReason,
                     epic: epicResolved.epic,
                     existingCount: existing.length,
-                    mergedCount: merged.length,
+                    mergedCount: trimmed.length,
                     fetchedCount: fetched.length,
                     addedCount,
+                    trimmedCount,
                     beforeSpanDays,
                     afterSpanDays,
                 });
@@ -839,12 +905,18 @@ async function runScalpSymbolHistorySeedStage(params: {
                 summary.results.push({
                     symbol,
                     status: 'skipped',
-                    reason: fetched.length > 0 ? 'no_new_candles' : 'no_candles_fetched',
+                    reason:
+                        trimmedCount > 0
+                            ? 'history_pruned'
+                            : fetched.length > 0
+                              ? 'no_new_candles'
+                              : 'no_candles_fetched',
                     epic: epicResolved.epic,
                     existingCount: existing.length,
-                    mergedCount: merged.length,
+                    mergedCount: trimmed.length,
                     fetchedCount: fetched.length,
                     addedCount: 0,
+                    trimmedCount,
                     beforeSpanDays,
                     afterSpanDays,
                 });
@@ -860,6 +932,7 @@ async function runScalpSymbolHistorySeedStage(params: {
                 mergedCount: 0,
                 fetchedCount: 0,
                 addedCount: 0,
+                trimmedCount: 0,
                 beforeSpanDays: 0,
                 afterSpanDays: 0,
             });
@@ -1226,6 +1299,7 @@ export async function runScalpSymbolDiscoveryCycle(
                 skippedSymbols: 0,
                 failedSymbols: 0,
                 targetHistoryDays: seedConfig.targetHistoryDays,
+                maxHistoryDays: seedConfig.maxHistoryDays,
                 chunkDays: seedConfig.chunkDays,
                 maxRequestsPerSymbol: seedConfig.maxRequestsPerSymbol,
                 maxSymbolsPerRun: seedConfig.maxSymbolsPerRun,

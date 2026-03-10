@@ -52,6 +52,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const maxCandidates = parsePositiveInt(firstQueryValue(req.query.maxCandidates));
     const seedTopSymbols = parsePositiveInt(firstQueryValue(req.query.seedTopSymbols));
     const seedTargetHistoryDays = parsePositiveInt(firstQueryValue(req.query.seedTargetHistoryDays));
+    const seedMaxHistoryDays = parsePositiveInt(firstQueryValue(req.query.seedMaxHistoryDays));
     const seedChunkDays = parsePositiveInt(firstQueryValue(req.query.seedChunkDays));
     const seedMaxRequestsPerSymbol = parsePositiveInt(firstQueryValue(req.query.seedMaxRequestsPerSymbol));
     const seedMaxSymbolsPerRun = parsePositiveInt(firstQueryValue(req.query.seedMaxSymbolsPerRun));
@@ -66,6 +67,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             maxCandidatesOverride: maxCandidates,
             seedTopSymbols,
             seedTargetHistoryDays,
+            seedMaxHistoryDays,
             seedChunkDays,
             seedMaxRequestsPerSymbol,
             seedMaxSymbolsPerRun,
