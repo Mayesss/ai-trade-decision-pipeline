@@ -2171,13 +2171,20 @@ export default function Home() {
     ? `Loading ${activeSymbol}...`
     : 'Loading selected symbol...';
   const scalpRows = Array.isArray(scalpSummary?.symbols) ? scalpSummary.symbols : [];
-  const scalpActiveRow =
-    (scalpActiveDeploymentId ? scalpRows.find((row) => row.deploymentId === scalpActiveDeploymentId) : null) || scalpRows[0] || null;
+  const scalpSelectedDeploymentId = String(scalpActiveDeploymentId || '').trim() || null;
+  const scalpActiveRow = scalpSelectedDeploymentId
+    ? scalpRows.find((row) => row.deploymentId === scalpSelectedDeploymentId) || null
+    : scalpRows[0] || null;
   const scalpActiveJournal = Array.isArray(scalpSummary?.journal)
     ? scalpSummary.journal.filter((entry) => {
-        if (!scalpActiveRow) return true;
         const payload = entry.payload && typeof entry.payload === 'object' ? entry.payload : {};
         const deploymentId = String((payload as Record<string, unknown>).deploymentId || '').trim();
+        if (scalpSelectedDeploymentId) {
+          if (deploymentId) return deploymentId === scalpSelectedDeploymentId;
+          if (!scalpActiveRow) return false;
+        } else if (!scalpActiveRow) {
+          return true;
+        }
         if (deploymentId) return deploymentId === scalpActiveRow.deploymentId;
         const strategyId = String((payload as Record<string, unknown>).strategyId || '').trim().toLowerCase();
         return (
