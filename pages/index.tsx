@@ -640,7 +640,7 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<string, ScalpCronPipelineDefinitio
     primaryPathname: '/api/scalp/cron/research-cycle-worker',
     matchPathnames: ['/api/scalp/cron/research-cycle-worker'],
     fallbackInvokePath:
-      '/api/scalp/cron/research-cycle-worker?maxRuns=10&aggregateAfter=false&finalizeWhenDone=true&syncPromotionGates=false&requireCompletedCycleForSync=false',
+      '/api/scalp/cron/research-cycle-worker?maxRuns=40&concurrency=4&aggregateAfter=false&finalizeWhenDone=true&syncPromotionGates=false&requireCompletedCycleForSync=false',
   },
   scalp_cycle_aggregate: {
     primaryPathname: '/api/scalp/cron/research-cycle-aggregate',

@@ -44,6 +44,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const cycleId = firstQueryValue(req.query.cycleId);
     const workerId = firstQueryValue(req.query.workerId);
     const maxRuns = parsePositiveInt(firstQueryValue(req.query.maxRuns));
+    const concurrency = parsePositiveInt(firstQueryValue(req.query.concurrency));
     const debug = parseBoolParam(req.query.debug, false);
     const aggregateAfter = parseBoolParam(req.query.aggregateAfter, true);
     const finalizeWhenDone = parseBoolParam(req.query.finalizeWhenDone, true);
@@ -51,7 +52,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const requireCompletedCycleForSync = parseBoolParam(req.query.requireCompletedCycleForSync, true);
 
     try {
-        const worker = await runResearchWorker({ cycleId, workerId, maxRuns, debug });
+        const worker = await runResearchWorker({ cycleId, workerId, maxRuns, concurrency, debug });
         const noClaim = worker.noClaimScanSummary;
         const shouldWarnNoProgress =
             worker.attemptedRuns === 0 &&
@@ -64,9 +65,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 noClaim.lockMisses > 0);
         const workerMessage =
             worker.attemptedRuns > 0
-                ? `worker processed ${worker.attemptedRuns} tasks (completed=${worker.completedRuns}, failed=${worker.failedRuns})`
+                ? `worker processed ${worker.attemptedRuns} tasks (completed=${worker.completedRuns}, failed=${worker.failedRuns}, concurrency=${worker.concurrency})`
                 : noClaim
-                  ? `no claimable tasks (pending=${noClaim.pending}, runningFresh=${noClaim.runningFresh}, runningStale=${noClaim.runningStale}, runningMissingStartedAt=${noClaim.runningMissingStartedAt}, failedPendingManualRetry=${noClaim.failedRetryable}, failedMaxed=${noClaim.failedMaxed}, lockMisses=${noClaim.lockMisses})`
+                  ? `no claimable tasks (pending=${noClaim.pending}, runningFresh=${noClaim.runningFresh}, runningStale=${noClaim.runningStale}, runningMissingStartedAt=${noClaim.runningMissingStartedAt}, failedPendingManualRetry=${noClaim.failedRetryable}, failedMaxed=${noClaim.failedMaxed}, symbolCooldownBlocked=${noClaim.symbolCooldownBlocked}, lockMisses=${noClaim.lockMisses})`
                   : 'worker did not claim any tasks';
         const aggregate =
             aggregateAfter && worker.cycleId

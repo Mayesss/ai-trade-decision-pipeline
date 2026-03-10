@@ -2,7 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { ScalpResearchCycleSnapshot, ScalpResearchTask } from '../researchCycle';
-import { buildResearchCycleTasks, summarizeResearchTasks } from '../researchCycle';
+import {
+    buildResearchCycleTasks,
+    createEmptyResearchSymbolCooldownSnapshot,
+    evaluateResearchTaskClaimability,
+    isResearchSymbolCooldownActive,
+    isResearchTaskFailureEligibleForSymbolCooldown,
+    registerResearchSymbolFailure,
+    resolveResearchWorkerRuntimeConfig,
+    summarizeResearchTasks,
+} from '../researchCycle';
 
 const DAY_MS = 24 * 60 * 60_000;
 
@@ -277,4 +286,124 @@ test('summarizeResearchTasks keeps tune variants as separate candidates', () => 
     assert.equal(summary.candidateAggregates.length, 2);
     assert.ok(summary.candidateAggregates.some((row) => row.tuneId === 'default'));
     assert.ok(summary.candidateAggregates.some((row) => row.tuneId === 'auto_tp30'));
+});
+
+test('evaluateResearchTaskClaimability blocks stale running reclaim when max attempts are exhausted', () => {
+    const nowMs = Date.UTC(2026, 2, 10, 8, 0, 0);
+    const startedAtMs = nowMs - 30 * 60 * 1000;
+    const out = evaluateResearchTaskClaimability({
+        status: 'running',
+        attempts: 2,
+        maxAttempts: 2,
+        startedAtMs,
+        runningStaleAfterMs: 20 * 60 * 1000,
+        nowMs,
+    });
+
+    assert.equal(out.runningStale, true);
+    assert.equal(out.maxAttemptsReached, true);
+    assert.equal(out.claimable, false);
+    assert.equal(out.shouldMarkFailedForAttempts, true);
+});
+
+test('evaluateResearchTaskClaimability allows reclaim for stale running with attempts remaining', () => {
+    const nowMs = Date.UTC(2026, 2, 10, 8, 0, 0);
+    const startedAtMs = nowMs - 30 * 60 * 1000;
+    const out = evaluateResearchTaskClaimability({
+        status: 'running',
+        attempts: 1,
+        maxAttempts: 2,
+        startedAtMs,
+        runningStaleAfterMs: 20 * 60 * 1000,
+        nowMs,
+    });
+
+    assert.equal(out.runningStale, true);
+    assert.equal(out.maxAttemptsReached, false);
+    assert.equal(out.claimable, true);
+    assert.equal(out.shouldMarkFailedForAttempts, false);
+});
+
+test('symbol cooldown activates after repeated eligible failures in window', () => {
+    const nowMs = Date.UTC(2026, 2, 10, 8, 0, 0);
+    const snapshot = createEmptyResearchSymbolCooldownSnapshot(nowMs);
+    const cfg = {
+        enabled: true,
+        failureThreshold: 3,
+        failureWindowMs: 30 * 60 * 1000,
+        cooldownMs: 2 * 60 * 60 * 1000,
+        maxTrackedSymbols: 50,
+    };
+
+    const a = registerResearchSymbolFailure(snapshot, {
+        symbol: 'EURUSD',
+        errorCode: 'task_failed',
+        errorMessage: 'fetch failed',
+        nowMs: nowMs + 1_000,
+        config: cfg,
+    });
+    const b = registerResearchSymbolFailure(snapshot, {
+        symbol: 'EURUSD',
+        errorCode: 'task_failed',
+        errorMessage: 'fetch failed',
+        nowMs: nowMs + 2_000,
+        config: cfg,
+    });
+    const c = registerResearchSymbolFailure(snapshot, {
+        symbol: 'EURUSD',
+        errorCode: 'task_failed',
+        errorMessage: 'fetch failed',
+        nowMs: nowMs + 3_000,
+        config: cfg,
+    });
+
+    assert.equal(a.blockedNow, false);
+    assert.equal(b.blockedNow, false);
+    assert.equal(c.blockedNow, true);
+    assert.ok(c.blockedUntilMs > nowMs);
+    assert.equal(isResearchSymbolCooldownActive(snapshot, 'EURUSD', nowMs + 10_000), true);
+    assert.equal(isResearchSymbolCooldownActive(snapshot, 'EURUSD', c.blockedUntilMs + 1), false);
+});
+
+test('failure classifier only tracks hard/network-like task failures', () => {
+    assert.equal(isResearchTaskFailureEligibleForSymbolCooldown('task_timeout', 'task_timeout:60000'), true);
+    assert.equal(isResearchTaskFailureEligibleForSymbolCooldown('insufficient_candles', 'insufficient_candles:12'), true);
+    assert.equal(isResearchTaskFailureEligibleForSymbolCooldown('task_failed', 'fetch failed'), true);
+    assert.equal(isResearchTaskFailureEligibleForSymbolCooldown('task_failed', 'random_logic_error'), false);
+    assert.equal(isResearchTaskFailureEligibleForSymbolCooldown('validation_error', 'bad payload'), false);
+});
+
+test('resolveResearchWorkerRuntimeConfig clamps requested maxRuns and concurrency to env caps', () => {
+    const out = resolveResearchWorkerRuntimeConfig(
+        {
+            maxRuns: 300,
+            concurrency: 64,
+        },
+        {
+            SCALP_RESEARCH_WORKER_MAX_RUNS_CAP: '50',
+            SCALP_RESEARCH_WORKER_MAX_CONCURRENCY: '8',
+            SCALP_RESEARCH_WORKER_CONCURRENCY: '4',
+        },
+    );
+
+    assert.equal(out.maxRunsCap, 50);
+    assert.equal(out.maxConcurrency, 8);
+    assert.equal(out.maxRuns, 50);
+    assert.equal(out.concurrency, 8);
+});
+
+test('resolveResearchWorkerRuntimeConfig uses default concurrency but does not exceed maxRuns', () => {
+    const out = resolveResearchWorkerRuntimeConfig(
+        {
+            maxRuns: 3,
+        },
+        {
+            SCALP_RESEARCH_WORKER_MAX_RUNS_CAP: '200',
+            SCALP_RESEARCH_WORKER_MAX_CONCURRENCY: '16',
+            SCALP_RESEARCH_WORKER_CONCURRENCY: '10',
+        },
+    );
+
+    assert.equal(out.maxRuns, 3);
+    assert.equal(out.concurrency, 3);
 });

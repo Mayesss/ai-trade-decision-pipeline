@@ -58,6 +58,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const seedMaxSymbolsPerRun = parsePositiveInt(firstQueryValue(req.query.seedMaxSymbolsPerRun));
     const seedTimeframe = firstQueryValue(req.query.seedTimeframe);
     const seedOnDryRun = parseBoolParam(req.query.seedOnDryRun, false);
+    const seedAllowBootstrapSymbols = parseBoolParam(req.query.seedAllowBootstrapSymbols, false);
 
     try {
         const snapshot = await runScalpSymbolDiscoveryCycle({
@@ -73,6 +74,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             seedMaxSymbolsPerRun,
             seedTimeframe,
             seedOnDryRun,
+            seedAllowBootstrapSymbols,
         });
 
         return res.status(200).json({

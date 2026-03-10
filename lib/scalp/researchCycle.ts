@@ -22,6 +22,7 @@ const RESEARCH_TASK_KEY_PREFIX = 'scalp:research:task:v1';
 const RESEARCH_AGG_KEY_PREFIX = 'scalp:research:aggregate:v1';
 const RESEARCH_CLAIM_CURSOR_KEY_PREFIX = 'scalp:research:claim-cursor:v1';
 const RESEARCH_LOCK_KEY_PREFIX = 'scalp:research:lock:v1';
+const RESEARCH_SYMBOL_COOLDOWN_KEY = 'scalp:research:symbol-cooldown:v1';
 
 const DEFAULT_LOOKBACK_DAYS = 90;
 const DEFAULT_CHUNK_DAYS = 14;
@@ -29,6 +30,14 @@ const DEFAULT_MIN_CANDLES_PER_TASK = 180;
 const DEFAULT_MAX_TASKS = 4_000;
 const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_RUNNING_STALE_AFTER_MS = 20 * 60 * 1000;
+const DEFAULT_SYMBOL_COOLDOWN_FAILURE_THRESHOLD = 3;
+const DEFAULT_SYMBOL_COOLDOWN_WINDOW_MS = 30 * 60 * 1000;
+const DEFAULT_SYMBOL_COOLDOWN_DURATION_MS = 3 * 60 * 60 * 1000;
+const DEFAULT_SYMBOL_COOLDOWN_MAX_TRACKED_SYMBOLS = 400;
+const DEFAULT_WORKER_MAX_RUNS = 40;
+const DEFAULT_WORKER_MAX_RUNS_CAP = 200;
+const DEFAULT_WORKER_CONCURRENCY = 4;
+const DEFAULT_WORKER_MAX_CONCURRENCY = 16;
 const DEFAULT_LOCK_TTL_SECONDS = 120;
 const DEFAULT_TASK_TIMEOUT_MS = 60_000;
 const RESEARCH_TASK_TIMEOUT_MS = Math.max(
@@ -181,6 +190,7 @@ export interface WorkerRunParams {
     cycleId?: string;
     workerId?: string;
     maxRuns?: number;
+    concurrency?: number;
     debug?: boolean;
 }
 
@@ -188,6 +198,7 @@ export interface WorkerRunOutcome {
     cycleId: string | null;
     workerId: string;
     maxRuns: number;
+    concurrency: number;
     attemptedRuns: number;
     completedRuns: number;
     failedRuns: number;
@@ -232,6 +243,7 @@ export type WorkerNoClaimScanSummary = {
     failedRetryable: number;
     failedMaxed: number;
     completed: number;
+    symbolCooldownBlocked: number;
 };
 
 type ClaimScanSummary = WorkerNoClaimScanSummary;
@@ -239,6 +251,45 @@ type ClaimScanSummary = WorkerNoClaimScanSummary;
 export interface AggregateResearchCycleParams {
     cycleId?: string;
     finalizeWhenDone?: boolean;
+}
+
+export interface ResearchWorkerRuntimeConfig {
+    maxRuns: number;
+    concurrency: number;
+    maxRunsCap: number;
+    maxConcurrency: number;
+}
+
+export interface ResearchSymbolCooldownEntry {
+    failureCount: number;
+    windowStartedAtMs: number;
+    blockedUntilMs: number;
+    lastFailureCode: string | null;
+    lastFailureMessage: string | null;
+    updatedAtMs: number;
+    cycleId: string | null;
+}
+
+export interface ResearchSymbolCooldownSnapshot {
+    version: 1;
+    updatedAtMs: number;
+    symbols: Record<string, ResearchSymbolCooldownEntry>;
+}
+
+export interface ResearchSymbolCooldownConfig {
+    enabled: boolean;
+    failureThreshold: number;
+    failureWindowMs: number;
+    cooldownMs: number;
+    maxTrackedSymbols: number;
+}
+
+export interface ResearchTaskClaimability {
+    claimable: boolean;
+    runningStale: boolean;
+    runningMissingStartedAt: boolean;
+    maxAttemptsReached: boolean;
+    shouldMarkFailedForAttempts: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -270,8 +321,308 @@ function toFinite(value: unknown, fallback = 0): number {
     return n;
 }
 
+function toBool(value: unknown, fallback: boolean): boolean {
+    if (typeof value === 'boolean') return value;
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase();
+    if (!normalized) return fallback;
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+    return fallback;
+}
+
+function toOptionalText(value: unknown, max = 200): string | null {
+    const normalized = String(value || '').trim();
+    if (!normalized) return null;
+    return normalized.slice(0, Math.max(1, Math.floor(max)));
+}
+
 function dedupe<T>(rows: T[]): T[] {
     return Array.from(new Set(rows));
+}
+
+export function resolveResearchSymbolCooldownConfig(): ResearchSymbolCooldownConfig {
+    return {
+        enabled: toBool(process.env.SCALP_RESEARCH_SYMBOL_COOLDOWN_ENABLED, true),
+        failureThreshold: Math.max(
+            1,
+            toPositiveInt(process.env.SCALP_RESEARCH_SYMBOL_COOLDOWN_FAILURE_THRESHOLD, DEFAULT_SYMBOL_COOLDOWN_FAILURE_THRESHOLD),
+        ),
+        failureWindowMs: Math.max(
+            60_000,
+            toPositiveInt(process.env.SCALP_RESEARCH_SYMBOL_COOLDOWN_WINDOW_MS, DEFAULT_SYMBOL_COOLDOWN_WINDOW_MS),
+        ),
+        cooldownMs: Math.max(
+            60_000,
+            toPositiveInt(process.env.SCALP_RESEARCH_SYMBOL_COOLDOWN_DURATION_MS, DEFAULT_SYMBOL_COOLDOWN_DURATION_MS),
+        ),
+        maxTrackedSymbols: Math.max(
+            10,
+            Math.min(
+                5000,
+                toPositiveInt(
+                    process.env.SCALP_RESEARCH_SYMBOL_COOLDOWN_MAX_TRACKED_SYMBOLS,
+                    DEFAULT_SYMBOL_COOLDOWN_MAX_TRACKED_SYMBOLS,
+                ),
+            ),
+        ),
+    };
+}
+
+export function resolveResearchWorkerRuntimeConfig(
+    params: { maxRuns?: number; concurrency?: number } = {},
+    env: NodeJS.ProcessEnv = process.env,
+): ResearchWorkerRuntimeConfig {
+    const maxRunsCap = Math.max(
+        1,
+        Math.min(2_000, toPositiveInt(env.SCALP_RESEARCH_WORKER_MAX_RUNS_CAP, DEFAULT_WORKER_MAX_RUNS_CAP)),
+    );
+    const maxConcurrency = Math.max(
+        1,
+        Math.min(128, toPositiveInt(env.SCALP_RESEARCH_WORKER_MAX_CONCURRENCY, DEFAULT_WORKER_MAX_CONCURRENCY)),
+    );
+    const requestedMaxRuns = toPositiveInt(params.maxRuns, DEFAULT_WORKER_MAX_RUNS);
+    const maxRuns = Math.max(1, Math.min(maxRunsCap, requestedMaxRuns));
+    const defaultConcurrency = Math.max(
+        1,
+        Math.min(maxConcurrency, toPositiveInt(env.SCALP_RESEARCH_WORKER_CONCURRENCY, DEFAULT_WORKER_CONCURRENCY)),
+    );
+    const requestedConcurrency = toPositiveInt(params.concurrency, defaultConcurrency);
+    const concurrency = Math.max(1, Math.min(maxRuns, maxConcurrency, requestedConcurrency));
+    return {
+        maxRuns,
+        concurrency,
+        maxRunsCap,
+        maxConcurrency,
+    };
+}
+
+function normalizeResearchSymbolCooldownEntry(raw: unknown): ResearchSymbolCooldownEntry {
+    if (!isRecord(raw)) {
+        return {
+            failureCount: 0,
+            windowStartedAtMs: 0,
+            blockedUntilMs: 0,
+            lastFailureCode: null,
+            lastFailureMessage: null,
+            updatedAtMs: 0,
+            cycleId: null,
+        };
+    }
+    return {
+        failureCount: toNonNegativeInt(raw.failureCount, 0),
+        windowStartedAtMs: toNonNegativeInt(raw.windowStartedAtMs, 0),
+        blockedUntilMs: toNonNegativeInt(raw.blockedUntilMs, 0),
+        lastFailureCode: toOptionalText(raw.lastFailureCode, 80),
+        lastFailureMessage: toOptionalText(raw.lastFailureMessage, 220),
+        updatedAtMs: toNonNegativeInt(raw.updatedAtMs, 0),
+        cycleId: toOptionalText(raw.cycleId, 120),
+    };
+}
+
+function normalizeResearchSymbolCooldownSnapshot(raw: unknown): ResearchSymbolCooldownSnapshot {
+    const out: ResearchSymbolCooldownSnapshot = {
+        version: 1,
+        updatedAtMs: Date.now(),
+        symbols: {},
+    };
+    if (!isRecord(raw)) return out;
+    out.updatedAtMs = toNonNegativeInt(raw.updatedAtMs, Date.now());
+    const symbolsRaw = isRecord(raw.symbols) ? raw.symbols : {};
+    for (const [rawSymbol, rawEntry] of Object.entries(symbolsRaw)) {
+        const symbol = normalizeSymbol(rawSymbol);
+        if (!symbol) continue;
+        out.symbols[symbol] = normalizeResearchSymbolCooldownEntry(rawEntry);
+    }
+    return out;
+}
+
+export function createEmptyResearchSymbolCooldownSnapshot(nowMs = Date.now()): ResearchSymbolCooldownSnapshot {
+    return {
+        version: 1,
+        updatedAtMs: Math.max(0, Math.floor(nowMs)),
+        symbols: {},
+    };
+}
+
+export function isResearchTaskFailureEligibleForSymbolCooldown(errorCode: unknown, errorMessage: unknown): boolean {
+    const code = String(errorCode || '')
+        .trim()
+        .toLowerCase();
+    if (!code) return false;
+    if (code === 'insufficient_candles' || code === 'task_timeout') return true;
+    const msg = String(errorMessage || '')
+        .trim()
+        .toLowerCase();
+    if (code === 'task_failed') {
+        if (!msg) return false;
+        return (
+            msg.includes('fetch failed') ||
+            msg.includes('network') ||
+            msg.includes('timeout') ||
+            msg.includes('timed out') ||
+            msg.includes('econnreset') ||
+            msg.includes('enotfound') ||
+            msg.includes('eai_again') ||
+            msg.includes('socket') ||
+            msg.includes('tls')
+        );
+    }
+    return false;
+}
+
+export function evaluateResearchTaskClaimability(params: {
+    status: ScalpResearchTaskStatus;
+    attempts: number;
+    maxAttempts: number;
+    startedAtMs: number | null;
+    runningStaleAfterMs: number;
+    nowMs: number;
+}): ResearchTaskClaimability {
+    const maxAttempts = Math.max(1, Math.floor(Number(params.maxAttempts) || DEFAULT_MAX_ATTEMPTS));
+    const attempts = Math.max(0, Math.floor(Number(params.attempts) || 0));
+    const startedAtMs = Number(params.startedAtMs);
+    const runningMissingStartedAt =
+        params.status === 'running' && (!Number.isFinite(startedAtMs) || startedAtMs <= 0 || params.startedAtMs === null);
+    const runningStale =
+        params.status === 'running' &&
+        !runningMissingStartedAt &&
+        Number.isFinite(startedAtMs) &&
+        Math.max(0, Math.floor(Number(params.nowMs) || 0)) - startedAtMs >= Math.max(1, params.runningStaleAfterMs);
+    const maxAttemptsReached = attempts >= maxAttempts;
+    const shouldMarkFailedForAttempts =
+        (params.status === 'pending' || params.status === 'running') &&
+        maxAttemptsReached &&
+        (params.status === 'pending' || runningStale || runningMissingStartedAt);
+    const claimable =
+        !maxAttemptsReached &&
+        (params.status === 'pending' || (params.status === 'running' && (runningStale || runningMissingStartedAt)));
+    return {
+        claimable,
+        runningStale,
+        runningMissingStartedAt,
+        maxAttemptsReached,
+        shouldMarkFailedForAttempts,
+    };
+}
+
+export function isResearchSymbolCooldownActive(
+    snapshot: ResearchSymbolCooldownSnapshot,
+    symbolRaw: string,
+    nowMs = Date.now(),
+): boolean {
+    const symbol = normalizeSymbol(symbolRaw);
+    if (!symbol) return false;
+    const row = snapshot.symbols[symbol];
+    if (!row) return false;
+    return toNonNegativeInt(row.blockedUntilMs, 0) > Math.max(0, Math.floor(nowMs));
+}
+
+export function registerResearchSymbolFailure(
+    snapshot: ResearchSymbolCooldownSnapshot,
+    params: {
+        symbol: string;
+        errorCode: string | null;
+        errorMessage: string | null;
+        cycleId?: string | null;
+        nowMs?: number;
+        config?: ResearchSymbolCooldownConfig;
+    },
+): { changed: boolean; blockedNow: boolean; blockedUntilMs: number } {
+    const symbol = normalizeSymbol(params.symbol);
+    if (!symbol) return { changed: false, blockedNow: false, blockedUntilMs: 0 };
+    const nowMs = Math.max(0, Math.floor(Number(params.nowMs) || Date.now()));
+    const cfg = params.config || resolveResearchSymbolCooldownConfig();
+    if (!cfg.enabled) return { changed: false, blockedNow: false, blockedUntilMs: 0 };
+
+    const existing = normalizeResearchSymbolCooldownEntry(snapshot.symbols[symbol]);
+    let next = { ...existing };
+    const windowStart = toNonNegativeInt(next.windowStartedAtMs, 0);
+    if (!windowStart || nowMs - windowStart > cfg.failureWindowMs) {
+        next.windowStartedAtMs = nowMs;
+        next.failureCount = 0;
+    }
+    next.failureCount += 1;
+    next.lastFailureCode = toOptionalText(params.errorCode, 80);
+    next.lastFailureMessage = toOptionalText(params.errorMessage, 220);
+    next.updatedAtMs = nowMs;
+    next.cycleId = toOptionalText(params.cycleId, 120);
+
+    let blockedNow = false;
+    if (next.failureCount >= cfg.failureThreshold) {
+        const newBlockedUntilMs = nowMs + cfg.cooldownMs;
+        blockedNow = toNonNegativeInt(next.blockedUntilMs, 0) <= nowMs;
+        next.blockedUntilMs = Math.max(toNonNegativeInt(next.blockedUntilMs, 0), newBlockedUntilMs);
+        next.failureCount = 0;
+        next.windowStartedAtMs = nowMs;
+    }
+
+    snapshot.symbols[symbol] = next;
+    snapshot.updatedAtMs = nowMs;
+
+    const symbols = Object.entries(snapshot.symbols)
+        .map(([rowSymbol, row]) => ({
+            symbol: rowSymbol,
+            updatedAtMs: toNonNegativeInt(row.updatedAtMs, 0),
+            blockedUntilMs: toNonNegativeInt(row.blockedUntilMs, 0),
+            failureCount: toNonNegativeInt(row.failureCount, 0),
+        }))
+        .sort((a, b) => {
+            const aPriority = a.blockedUntilMs > nowMs || a.failureCount > 0 ? 1 : 0;
+            const bPriority = b.blockedUntilMs > nowMs || b.failureCount > 0 ? 1 : 0;
+            if (aPriority !== bPriority) return bPriority - aPriority;
+            return b.updatedAtMs - a.updatedAtMs;
+        });
+    for (const row of symbols.slice(cfg.maxTrackedSymbols)) {
+        delete snapshot.symbols[row.symbol];
+    }
+
+    return { changed: true, blockedNow, blockedUntilMs: toNonNegativeInt(next.blockedUntilMs, 0) };
+}
+
+function clearResearchSymbolFailureCounters(snapshot: ResearchSymbolCooldownSnapshot, symbolRaw: string, nowMs = Date.now()): boolean {
+    const symbol = normalizeSymbol(symbolRaw);
+    if (!symbol) return false;
+    const row = snapshot.symbols[symbol];
+    if (!row) return false;
+    const blockedUntilMs = toNonNegativeInt(row.blockedUntilMs, 0);
+    if (blockedUntilMs > nowMs) return false;
+    if (toNonNegativeInt(row.failureCount, 0) === 0 && toNonNegativeInt(row.windowStartedAtMs, 0) === 0) return false;
+    snapshot.symbols[symbol] = {
+        ...row,
+        failureCount: 0,
+        windowStartedAtMs: 0,
+        updatedAtMs: Math.max(0, Math.floor(nowMs)),
+    };
+    snapshot.updatedAtMs = Math.max(0, Math.floor(nowMs));
+    return true;
+}
+
+function compactResearchSymbolCooldownSnapshot(snapshot: ResearchSymbolCooldownSnapshot, nowMs = Date.now()): void {
+    const now = Math.max(0, Math.floor(nowMs));
+    for (const [symbol, row] of Object.entries(snapshot.symbols)) {
+        const blockedUntilMs = toNonNegativeInt(row.blockedUntilMs, 0);
+        const failureCount = toNonNegativeInt(row.failureCount, 0);
+        const updatedAtMs = toNonNegativeInt(row.updatedAtMs, 0);
+        if (blockedUntilMs > now) continue;
+        if (failureCount > 0) continue;
+        if (now - updatedAtMs <= DEFAULT_SYMBOL_COOLDOWN_WINDOW_MS) continue;
+        delete snapshot.symbols[symbol];
+    }
+}
+
+async function loadResearchSymbolCooldownSnapshot(): Promise<ResearchSymbolCooldownSnapshot> {
+    const raw = await kvGetJson<unknown>(RESEARCH_SYMBOL_COOLDOWN_KEY);
+    return normalizeResearchSymbolCooldownSnapshot(raw);
+}
+
+async function saveResearchSymbolCooldownSnapshot(snapshot: ResearchSymbolCooldownSnapshot): Promise<void> {
+    const nowMs = Date.now();
+    const normalized = normalizeResearchSymbolCooldownSnapshot(snapshot);
+    normalized.updatedAtMs = nowMs;
+    compactResearchSymbolCooldownSnapshot(normalized, nowMs);
+    await kvSetJson(RESEARCH_SYMBOL_COOLDOWN_KEY, normalized);
 }
 
 function cycleKey(cycleId: string): string {
@@ -922,10 +1273,16 @@ async function runResearchTaskWithTimeout(
     });
 }
 
+type ClaimNextTaskOptions = {
+    symbolCooldowns: ResearchSymbolCooldownSnapshot;
+    symbolCooldownConfig: ResearchSymbolCooldownConfig;
+};
+
 async function claimNextTask(
     cycle: ScalpResearchCycleSnapshot,
     workerId: string,
     startIndex = 0,
+    opts: ClaimNextTaskOptions,
 ): Promise<{
     claim: {
         task: ScalpResearchTask;
@@ -951,6 +1308,7 @@ async function claimNextTask(
                 failedRetryable: 0,
                 failedMaxed: 0,
                 completed: 0,
+                symbolCooldownBlocked: 0,
             },
         };
     }
@@ -970,6 +1328,7 @@ async function claimNextTask(
         failedRetryable: 0,
         failedMaxed: 0,
         completed: 0,
+        symbolCooldownBlocked: 0,
     };
     for (let offset = 0; offset < taskCount; offset += 1) {
         const scanIndex = (firstIndex + offset) % taskCount;
@@ -995,13 +1354,16 @@ async function claimNextTask(
         if (task.status === 'pending') scanSummary.pending += 1;
         if (task.status === 'completed') scanSummary.completed += 1;
 
-        const runningMissingStartedAt =
-            task.status === 'running' &&
-            (!Number.isFinite(Number(task.startedAtMs)) || task.startedAtMs === null);
-        const staleRunning =
-            task.status === 'running' &&
-            task.startedAtMs !== null &&
-            nowMs - task.startedAtMs >= cycle.params.runningStaleAfterMs;
+        const claimability = evaluateResearchTaskClaimability({
+            status: task.status,
+            attempts: task.attempts,
+            maxAttempts: cycle.params.maxAttempts,
+            startedAtMs: task.startedAtMs,
+            runningStaleAfterMs: cycle.params.runningStaleAfterMs,
+            nowMs,
+        });
+        const runningMissingStartedAt = claimability.runningMissingStartedAt;
+        const staleRunning = claimability.runningStale;
         if (task.status === 'running') {
             if (runningMissingStartedAt) scanSummary.runningMissingStartedAt += 1;
             else if (staleRunning) scanSummary.runningStale += 1;
@@ -1013,7 +1375,44 @@ async function claimNextTask(
             if (retryableFailed) scanSummary.failedRetryable += 1;
             else scanSummary.failedMaxed += 1;
         }
-        const claimable = task.status === 'pending' || staleRunning || runningMissingStartedAt;
+
+        const symbolCooldownActive = opts.symbolCooldownConfig.enabled
+            ? isResearchSymbolCooldownActive(opts.symbolCooldowns, task.symbol, nowMs)
+            : false;
+        if (symbolCooldownActive && (task.status === 'pending' || task.status === 'running')) {
+            const blockedUntilMs = toNonNegativeInt(opts.symbolCooldowns.symbols[normalizeSymbol(task.symbol)]?.blockedUntilMs, 0);
+            const blockedTask: ScalpResearchTask = {
+                ...task,
+                status: 'failed',
+                attempts: Math.max(task.attempts, cycle.params.maxAttempts),
+                updatedAtMs: nowMs,
+                finishedAtMs: nowMs,
+                errorCode: 'symbol_cooldown_active',
+                errorMessage: `symbol_cooldown_active_until:${new Date(blockedUntilMs).toISOString()}`.slice(0, 300),
+            };
+            await saveTask(blockedTask);
+            scanSummary.symbolCooldownBlocked += 1;
+            scanSummary.failedMaxed += 1;
+            await releaseLock(lockName, lockToken);
+            continue;
+        }
+
+        if (claimability.shouldMarkFailedForAttempts) {
+            const maxedTask: ScalpResearchTask = {
+                ...task,
+                status: 'failed',
+                attempts: Math.max(task.attempts, cycle.params.maxAttempts),
+                updatedAtMs: nowMs,
+                finishedAtMs: nowMs,
+                errorCode: 'max_attempts_exhausted',
+                errorMessage: `max_attempts_exhausted:${task.status}:${task.attempts}/${cycle.params.maxAttempts}`.slice(0, 300),
+            };
+            await saveTask(maxedTask);
+            scanSummary.failedMaxed += 1;
+            await releaseLock(lockName, lockToken);
+            continue;
+        }
+        const claimable = claimability.claimable;
 
         if (!claimable) {
             await releaseLock(lockName, lockToken);
@@ -1049,7 +1448,12 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
     const startedAtMs = Date.now();
     const workerId = String(params.workerId || '').trim() || `worker_${crypto.randomUUID().slice(0, 8)}`;
     const debug = params.debug === true;
-    const maxRuns = Math.max(1, Math.min(10, toPositiveInt(params.maxRuns, 1)));
+    const workerRuntime = resolveResearchWorkerRuntimeConfig({
+        maxRuns: params.maxRuns,
+        concurrency: params.concurrency,
+    });
+    const maxRuns = workerRuntime.maxRuns;
+    const concurrency = workerRuntime.concurrency;
     const emitWorkerLog = (
         event: string,
         payload: Record<string, unknown>,
@@ -1078,6 +1482,7 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
             cycleId: null,
             workerId,
             maxRuns,
+            concurrency,
             attemptedRuns: 0,
             completedRuns: 0,
             failedRuns: 0,
@@ -1112,6 +1517,7 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
             cycleId,
             workerId,
             maxRuns,
+            concurrency,
             attemptedRuns: 0,
             completedRuns: 0,
             failedRuns: 0,
@@ -1146,6 +1552,7 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
             cycleId,
             workerId,
             maxRuns,
+            concurrency,
             attemptedRuns: 0,
             completedRuns: 0,
             failedRuns: 0,
@@ -1181,6 +1588,7 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         cycleId,
         workerId,
         maxRuns,
+        concurrency,
         attemptedRuns: 0,
         completedRuns: 0,
         failedRuns: 0,
@@ -1188,47 +1596,35 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         diagnostics,
         claimedTasks: [],
     };
+    const symbolCooldownConfig = resolveResearchSymbolCooldownConfig();
+    const symbolCooldowns = await loadResearchSymbolCooldownSnapshot();
+    let symbolCooldownsDirty = false;
     const historyCache = new Map<string, HistoryRow[]>();
     let nextScanIndex = await loadClaimCursorIndex(cycleId);
     let lastNoClaimScanSummary: ClaimScanSummary | null = null;
-
-    for (let i = 0; i < maxRuns; i += 1) {
-        const taskStartedAtMs = Date.now();
-        const claimOutcome = await claimNextTask(cycle, workerId, nextScanIndex);
-        diagnostics.scanTasksVisited += claimOutcome.scanSummary.scannedTasks;
-        diagnostics.taskLockAttempts += claimOutcome.scanSummary.lockAttempts;
-        diagnostics.taskLockAcquired += claimOutcome.scanSummary.locksAcquired;
-        if (!claimOutcome.claim) {
-            lastNoClaimScanSummary = claimOutcome.scanSummary;
-            out.noClaimScanSummary = claimOutcome.scanSummary;
-            const shouldWarnNoClaim =
-                claimOutcome.scanSummary.pending > 0 ||
-                claimOutcome.scanSummary.runningStale > 0 ||
-                claimOutcome.scanSummary.runningMissingStartedAt > 0 ||
-                claimOutcome.scanSummary.failedRetryable > 0 ||
-                claimOutcome.scanSummary.lockMisses > 0;
-            emitWorkerLog(
-                'no_claimable_tasks',
-                {
-                    cycleId,
-                    workerId,
-                    iteration: i + 1,
-                    maxRuns,
-                    nextScanIndex,
-                    cycleTaskCount: cycle.taskIds.length,
-                    runningStaleAfterMs: cycle.params.runningStaleAfterMs,
-                    maxAttemptsCfg: cycle.params.maxAttempts,
-                    scanSummary: claimOutcome.scanSummary,
-                },
-                shouldWarnNoClaim ? 'warn' : 'info',
-                shouldWarnNoClaim,
-            );
-            break;
-        }
-        const claim = claimOutcome.claim;
-        nextScanIndex = cycle.taskIds.length > 0 ? (claim.scanIndex + 1) % cycle.taskIds.length : 0;
-        out.attemptedRuns += 1;
-
+    let stopAfterCurrentBatch = false;
+    let claimIterations = 0;
+    const shouldWarnNoClaim = (scanSummary: ClaimScanSummary): boolean =>
+        scanSummary.pending > 0 ||
+        scanSummary.runningStale > 0 ||
+        scanSummary.runningMissingStartedAt > 0 ||
+        scanSummary.failedRetryable > 0 ||
+        scanSummary.lockMisses > 0;
+    type ClaimedTaskRunOutcome = {
+        ok: boolean;
+        symbolCooldownsDirty: boolean;
+        row: WorkerRunOutcome['claimedTasks'][number];
+    };
+    const runClaimedTask = async (params: {
+        claim: {
+            task: ScalpResearchTask;
+            lockName: string;
+            lockToken: string;
+            scanIndex: number;
+        };
+        taskStartedAtMs: number;
+    }): Promise<ClaimedTaskRunOutcome> => {
+        const { claim, taskStartedAtMs } = params;
         try {
             const result = await runResearchTaskWithTimeout(
                 claim.task,
@@ -1247,20 +1643,28 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
                 errorMessage: null,
             };
             await saveTask(completedTask);
-            out.completedRuns += 1;
-            out.claimedTasks.push({
-                taskId: completedTask.taskId,
-                symbol: completedTask.symbol,
-                strategyId: completedTask.strategyId,
-                tuneId: completedTask.tuneId,
-                status: completedTask.status,
-                errorCode: null,
-                errorMessage: null,
-                trades: result.trades,
-                netR: result.netR,
-                durationMs: Date.now() - taskStartedAtMs,
-                scanIndex: claim.scanIndex,
-            });
+            let cooldownChanged = false;
+            if (symbolCooldownConfig.enabled) {
+                const cleared = clearResearchSymbolFailureCounters(symbolCooldowns, completedTask.symbol, Date.now());
+                if (cleared) cooldownChanged = true;
+            }
+            return {
+                ok: true,
+                symbolCooldownsDirty: cooldownChanged,
+                row: {
+                    taskId: completedTask.taskId,
+                    symbol: completedTask.symbol,
+                    strategyId: completedTask.strategyId,
+                    tuneId: completedTask.tuneId,
+                    status: completedTask.status,
+                    errorCode: null,
+                    errorMessage: null,
+                    trades: result.trades,
+                    netR: result.netR,
+                    durationMs: Date.now() - taskStartedAtMs,
+                    scanIndex: claim.scanIndex,
+                },
+            };
         } catch (err: any) {
             const failedTask: ScalpResearchTask = {
                 ...claim.task,
@@ -1271,7 +1675,40 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
                 errorMessage: String(err?.message || err || 'task_failed').slice(0, 300),
             };
             await saveTask(failedTask);
-            out.failedRuns += 1;
+            let cooldownChanged = false;
+            if (
+                symbolCooldownConfig.enabled &&
+                isResearchTaskFailureEligibleForSymbolCooldown(failedTask.errorCode, failedTask.errorMessage)
+            ) {
+                const failureUpdate = registerResearchSymbolFailure(symbolCooldowns, {
+                    symbol: failedTask.symbol,
+                    errorCode: failedTask.errorCode,
+                    errorMessage: failedTask.errorMessage,
+                    cycleId,
+                    nowMs: Date.now(),
+                    config: symbolCooldownConfig,
+                });
+                if (failureUpdate.changed) cooldownChanged = true;
+                if (failureUpdate.blockedNow) {
+                    emitWorkerLog(
+                        'symbol_cooldown_activated',
+                        {
+                            cycleId,
+                            workerId,
+                            symbol: failedTask.symbol,
+                            blockedUntilMs: failureUpdate.blockedUntilMs,
+                            blockedUntilIso: new Date(failureUpdate.blockedUntilMs).toISOString(),
+                            errorCode: failedTask.errorCode,
+                            errorMessage: failedTask.errorMessage,
+                            failureThreshold: symbolCooldownConfig.failureThreshold,
+                            failureWindowMs: symbolCooldownConfig.failureWindowMs,
+                            cooldownMs: symbolCooldownConfig.cooldownMs,
+                        },
+                        'warn',
+                        true,
+                    );
+                }
+            }
             emitWorkerLog(
                 'task_failed',
                 {
@@ -1290,26 +1727,118 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
                 'warn',
                 true,
             );
-            out.claimedTasks.push({
-                taskId: failedTask.taskId,
-                symbol: failedTask.symbol,
-                strategyId: failedTask.strategyId,
-                tuneId: failedTask.tuneId,
-                status: failedTask.status,
-                errorCode: failedTask.errorCode,
-                errorMessage: failedTask.errorMessage,
-                trades: failedTask.result?.trades || null,
-                netR: failedTask.result?.netR || null,
-                durationMs: Date.now() - taskStartedAtMs,
-                scanIndex: claim.scanIndex,
-            });
+            return {
+                ok: false,
+                symbolCooldownsDirty: cooldownChanged,
+                row: {
+                    taskId: failedTask.taskId,
+                    symbol: failedTask.symbol,
+                    strategyId: failedTask.strategyId,
+                    tuneId: failedTask.tuneId,
+                    status: failedTask.status,
+                    errorCode: failedTask.errorCode,
+                    errorMessage: failedTask.errorMessage,
+                    trades: failedTask.result?.trades || null,
+                    netR: failedTask.result?.netR || null,
+                    durationMs: Date.now() - taskStartedAtMs,
+                    scanIndex: claim.scanIndex,
+                },
+            };
         } finally {
             await releaseLock(claim.lockName, claim.lockToken);
+        }
+    };
+
+    while (out.attemptedRuns < maxRuns) {
+        const remainingRuns = maxRuns - out.attemptedRuns;
+        const batchSize = Math.max(1, Math.min(concurrency, remainingRuns));
+        const batchClaims: Array<{
+            claim: {
+                task: ScalpResearchTask;
+                lockName: string;
+                lockToken: string;
+                scanIndex: number;
+            };
+            taskStartedAtMs: number;
+        }> = [];
+
+        for (let i = 0; i < batchSize; i += 1) {
+            claimIterations += 1;
+            const claimOutcome = await claimNextTask(cycle, workerId, nextScanIndex, {
+                symbolCooldowns,
+                symbolCooldownConfig,
+            });
+            diagnostics.scanTasksVisited += claimOutcome.scanSummary.scannedTasks;
+            diagnostics.taskLockAttempts += claimOutcome.scanSummary.lockAttempts;
+            diagnostics.taskLockAcquired += claimOutcome.scanSummary.locksAcquired;
+            if (!claimOutcome.claim) {
+                lastNoClaimScanSummary = claimOutcome.scanSummary;
+                out.noClaimScanSummary = claimOutcome.scanSummary;
+                const warnNoClaim = shouldWarnNoClaim(claimOutcome.scanSummary);
+                emitWorkerLog(
+                    'no_claimable_tasks',
+                    {
+                        cycleId,
+                        workerId,
+                        iteration: claimIterations,
+                        maxRuns,
+                        concurrency,
+                        nextScanIndex,
+                        cycleTaskCount: cycle.taskIds.length,
+                        runningStaleAfterMs: cycle.params.runningStaleAfterMs,
+                        maxAttemptsCfg: cycle.params.maxAttempts,
+                        plannedBatchSize: batchSize,
+                        claimedInBatch: batchClaims.length,
+                        scanSummary: claimOutcome.scanSummary,
+                    },
+                    warnNoClaim ? 'warn' : 'info',
+                    warnNoClaim,
+                );
+                stopAfterCurrentBatch = true;
+                break;
+            }
+            const claim = claimOutcome.claim;
+            nextScanIndex = cycle.taskIds.length > 0 ? (claim.scanIndex + 1) % cycle.taskIds.length : 0;
+            out.attemptedRuns += 1;
+            batchClaims.push({
+                claim,
+                taskStartedAtMs: Date.now(),
+            });
+        }
+
+        if (batchClaims.length > 0) {
+            const batchResults = await Promise.all(batchClaims.map((row) => runClaimedTask(row)));
+            for (const result of batchResults) {
+                if (result.ok) out.completedRuns += 1;
+                else out.failedRuns += 1;
+                if (result.symbolCooldownsDirty) symbolCooldownsDirty = true;
+                out.claimedTasks.push(result.row);
+            }
+        }
+
+        if (stopAfterCurrentBatch || batchClaims.length === 0) {
+            break;
         }
     }
 
     if (out.attemptedRuns > 0) {
         await saveClaimCursorIndex(cycleId, nextScanIndex);
+    }
+    if (symbolCooldownsDirty) {
+        try {
+            await saveResearchSymbolCooldownSnapshot(symbolCooldowns);
+        } catch (err: any) {
+            emitWorkerLog(
+                'symbol_cooldown_save_failed',
+                {
+                    cycleId,
+                    workerId,
+                    error: String(err?.message || err),
+                },
+                'warn',
+                true,
+            );
+        }
     }
     out.diagnostics.durationMs = Date.now() - startedAtMs;
     const shouldWarnCompletion =
@@ -1328,10 +1857,12 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
             cycleId,
             workerId,
             maxRuns,
+            concurrency,
             attemptedRuns: out.attemptedRuns,
             completedRuns: out.completedRuns,
             failedRuns: out.failedRuns,
             nextScanIndex,
+            claimIterations,
             diagnostics: out.diagnostics,
             lastNoClaimScanSummary,
             claimedTaskIds: out.claimedTasks.slice(0, 10).map((row) => row.taskId),

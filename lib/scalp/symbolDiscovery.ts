@@ -117,6 +117,7 @@ export interface ScalpSymbolDiscoveryRunParams {
     seedMaxHistoryDays?: number;
     seedTimeframe?: string;
     seedOnDryRun?: boolean;
+    seedAllowBootstrapSymbols?: boolean;
 }
 
 export interface ScalpSymbolDiscoverySeedSymbolResult {
@@ -157,6 +158,7 @@ const DEFAULT_POLICY_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-disco
 const DEFAULT_UNIVERSE_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-universe.json');
 const UNIVERSE_KV_KEY = 'scalp:symbol-universe:v1';
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const SEED_FRESHNESS_MAX_LAG_MS = 12 * 60 * 60 * 1000;
 
 const DEFAULT_POLICY: ScalpSymbolDiscoveryPolicy = {
     version: 1,
@@ -409,6 +411,120 @@ function historySpanDaysFromCandles(candles: Array<[number, number, number, numb
     return (toTs - fromTs) / ONE_DAY_MS;
 }
 
+export interface SeedHistoryQuality {
+    fromTs: number | null;
+    toTs: number | null;
+    spanDays: number;
+    lagHours: number;
+    avgBarsPerDay: number;
+    recentBars7d: number;
+}
+
+export function summarizeSeedHistoryQuality(
+    candles: Array<[number, number, number, number, number, number]>,
+    nowMs: number,
+): SeedHistoryQuality {
+    const fromTs = candles.length ? Number(candles[0]?.[0]) : null;
+    const toTs = candles.length ? Number(candles[candles.length - 1]?.[0]) : null;
+    const spanMs = fromTs !== null && toTs !== null && toTs >= fromTs ? toTs - fromTs : 0;
+    const spanDays = spanMs > 0 ? spanMs / ONE_DAY_MS : 0;
+    const avgBarsPerDay = spanDays > 0 ? candles.length / spanDays : 0;
+    const recentStartTs = nowMs - 7 * ONE_DAY_MS;
+    const recentBars7d = candles.filter((row) => Number(row[0]) >= recentStartTs).length;
+    const lagHours = toTs !== null ? Math.max(0, (nowMs - toTs) / (60 * 60 * 1000)) : Number.POSITIVE_INFINITY;
+    return {
+        fromTs,
+        toTs,
+        spanDays: Number(spanDays.toFixed(4)),
+        lagHours: Number.isFinite(lagHours) ? Number(lagHours.toFixed(4)) : Number.POSITIVE_INFINITY,
+        avgBarsPerDay: Number(avgBarsPerDay.toFixed(4)),
+        recentBars7d,
+    };
+}
+
+export function resolveSeedSymbolEligibility(params: {
+    policy: ScalpSymbolDiscoveryPolicy;
+    nowMs: number;
+    candles: Array<[number, number, number, number, number, number]>;
+    hasStrategyFit: boolean;
+    allowBootstrapSymbols: boolean;
+}): { eligible: boolean; reason: string | null; quality: SeedHistoryQuality } {
+    const quality = summarizeSeedHistoryQuality(params.candles, params.nowMs);
+    if (!params.hasStrategyFit) {
+        return { eligible: false, reason: 'seed_no_strategy_fit', quality };
+    }
+    if (quality.toTs === null && !params.allowBootstrapSymbols) {
+        return { eligible: false, reason: 'seed_bootstrap_disabled', quality };
+    }
+    if (quality.toTs !== null && quality.avgBarsPerDay < params.policy.criteria.minAvgBarsPerDay) {
+        return { eligible: false, reason: 'seed_avg_bars_per_day_below_min', quality };
+    }
+    if (quality.toTs !== null && quality.recentBars7d < params.policy.criteria.minRecentBars7d) {
+        return { eligible: false, reason: 'seed_recent_bars_7d_below_min', quality };
+    }
+    return { eligible: true, reason: null, quality };
+}
+
+function estimateSeedWindowRequestBudget(params: { fromMs: number; toMs: number; timeframeMs: number; maxPerRequest: number }): number {
+    const fromMs = Math.floor(Math.min(params.fromMs, params.toMs));
+    const toMs = Math.floor(Math.max(params.fromMs, params.toMs));
+    const timeframeMs = Math.max(60_000, Math.floor(params.timeframeMs));
+    const maxPerRequest = Math.max(20, Math.min(1000, Math.floor(params.maxPerRequest)));
+    if (!(Number.isFinite(fromMs) && Number.isFinite(toMs) && toMs > fromMs)) return 1;
+    const bars = Math.max(1, Math.floor((toMs - fromMs) / timeframeMs) + 1);
+    const chunkBars = Math.max(20, maxPerRequest - 10);
+    return Math.max(1, Math.ceil(bars / chunkBars));
+}
+
+function resolveNextSeedFetchWindow(params: {
+    candles: Array<[number, number, number, number, number, number]>;
+    nowMs: number;
+    timeframeMs: number;
+    targetHistoryDays: number;
+    chunkDays: number;
+}): { fromMs: number; toMs: number; reason: 'bootstrap' | 'backfill' | 'forward' } | null {
+    const quality = summarizeSeedHistoryQuality(params.candles, params.nowMs);
+    const tfMs = Math.max(60_000, Math.floor(params.timeframeMs));
+    const chunkSpanMs = Math.max(tfMs, Math.floor(Math.max(1, params.chunkDays) * ONE_DAY_MS));
+
+    if (quality.toTs === null || quality.fromTs === null) {
+        const toMs = Math.max(tfMs, Math.floor(params.nowMs));
+        const bootstrapDays = Math.max(1, Math.min(params.targetHistoryDays, params.chunkDays));
+        const fromMs = Math.max(0, Math.floor(toMs - bootstrapDays * ONE_DAY_MS));
+        if (toMs <= fromMs) return null;
+        return {
+            fromMs,
+            toMs,
+            reason: 'bootstrap',
+        };
+    }
+
+    if (quality.spanDays + 1e-6 < params.targetHistoryDays) {
+        const toMs = Math.max(0, Math.floor(quality.fromTs - tfMs));
+        const fromMs = Math.max(0, Math.floor(toMs - chunkSpanMs));
+        if (toMs <= fromMs) return null;
+        return {
+            fromMs,
+            toMs,
+            reason: 'backfill',
+        };
+    }
+
+    const lagMs = Math.max(0, Math.floor(params.nowMs - quality.toTs));
+    if (lagMs > SEED_FRESHNESS_MAX_LAG_MS) {
+        const fromMs = Math.max(0, Math.floor(quality.toTs + tfMs));
+        const toMs = Math.max(fromMs + tfMs, Math.floor(Math.min(params.nowMs, fromMs + chunkSpanMs)));
+        if (toMs <= fromMs) return null;
+        return {
+            fromMs,
+            toMs,
+            reason: 'forward',
+        };
+    }
+
+    return null;
+}
+
 function trimHistoryToMaxDays(
     candles: Array<[number, number, number, number, number, number]>,
     maxHistoryDays: number,
@@ -473,6 +589,7 @@ function resolveSeedConfig(params: ScalpSymbolDiscoveryRunParams): {
     maxRequestsPerSymbol: number;
     maxSymbolsPerRun: number;
     seedOnDryRun: boolean;
+    allowBootstrapSymbols: boolean;
 } {
     const requestedTopSymbols = toOptionalPositiveInt(
         params.seedTopSymbols ?? process.env.SCALP_SYMBOL_DISCOVERY_SEED_TOP_SYMBOLS,
@@ -512,6 +629,10 @@ function resolveSeedConfig(params: ScalpSymbolDiscoveryRunParams): {
     );
     const timeframe = normalizeHistoryTimeframe(String(params.seedTimeframe || process.env.SCALP_SYMBOL_DISCOVERY_SEED_TIMEFRAME || '1m'));
     const seedOnDryRun = Boolean(params.seedOnDryRun);
+    const allowBootstrapSymbols = toBool(
+        params.seedAllowBootstrapSymbols ?? process.env.SCALP_SYMBOL_DISCOVERY_SEED_ALLOW_BOOTSTRAP_SYMBOLS,
+        false,
+    );
     return {
         enabled: requestedTopSymbols > 0,
         timeframe,
@@ -522,6 +643,7 @@ function resolveSeedConfig(params: ScalpSymbolDiscoveryRunParams): {
         maxRequestsPerSymbol,
         maxSymbolsPerRun,
         seedOnDryRun,
+        allowBootstrapSymbols,
     };
 }
 
@@ -782,123 +904,160 @@ async function runScalpSymbolHistorySeedStage(params: {
         return summary;
     }
 
-    const candidateSymbols = discovered.symbols.filter((symbol) => {
-        const strategies = resolveRecommendedStrategiesForSymbol(symbol, params.policy.strategyAllowlist).filter((id) =>
-            params.knownStrategyIds.has(id),
-        );
-        return strategies.length > 0;
-    });
-
-    const historySymbols = new Set(
-        (await listScalpCandleHistorySymbols(cfg.timeframe)).map((row) => normalizeSymbol(row)).filter((row) => Boolean(row)),
+    const candidateSymbols = Array.from(
+        new Set(
+            discovered.symbols
+                .map((row) => normalizeSymbol(row))
+                .filter((row) => Boolean(row))
+                .filter((symbol) => {
+                    const strategies = resolveRecommendedStrategiesForSymbol(symbol, params.policy.strategyAllowlist).filter((id) =>
+                        params.knownStrategyIds.has(id),
+                    );
+                    return strategies.length > 0;
+                }),
+        ),
     );
-    const ordered = candidateSymbols.slice().sort((a, b) => {
-        const aKnown = historySymbols.has(normalizeSymbol(a)) ? 1 : 0;
-        const bKnown = historySymbols.has(normalizeSymbol(b)) ? 1 : 0;
-        if (aKnown !== bKnown) return aKnown - bKnown; // Missing history first.
-        return 0;
-    });
+    summary.candidateUniverseSize = candidateSymbols.length;
 
-    summary.candidateUniverseSize = ordered.length;
-    const targetCount = Math.min(ordered.length, cfg.requestedTopSymbols, cfg.maxSymbolsPerRun);
-    const targets = ordered.slice(0, targetCount);
+    const targetCount = Math.min(candidateSymbols.length, cfg.requestedTopSymbols, cfg.maxSymbolsPerRun);
+    const seedEvaluationCap = Math.min(candidateSymbols.length, Math.max(targetCount * 5, targetCount));
     const tfMs = timeframeToMs(cfg.timeframe);
+    const maxFetchPassesPerSymbol = Math.max(
+        1,
+        Math.min(128, Math.ceil(cfg.targetHistoryDays / Math.max(1, cfg.chunkDays)) + 4),
+    );
+    const eligibleTargets: Array<{
+        symbol: string;
+        existing: Array<[number, number, number, number, number, number]>;
+        beforeQuality: SeedHistoryQuality;
+        epicHint: string | null;
+    }> = [];
 
-    for (const symbol of targets) {
-        summary.processedSymbols += 1;
+    for (const symbol of candidateSymbols.slice(0, seedEvaluationCap)) {
+        if (eligibleTargets.length >= targetCount) break;
         try {
             const history = await loadScalpCandleHistory(symbol, cfg.timeframe);
             const existing = history.record?.candles || [];
-            const beforeSpanDays = Number(historySpanDaysFromCandles(existing).toFixed(4));
-            const earliestTs = existing[0]?.[0] ?? null;
-            const latestTs = existing[existing.length - 1]?.[0] ?? null;
-            const lagDays = latestTs ? (params.nowMs - Number(latestTs)) / ONE_DAY_MS : Number.POSITIVE_INFINITY;
+            const strategies = resolveRecommendedStrategiesForSymbol(symbol, params.policy.strategyAllowlist).filter((id) =>
+                params.knownStrategyIds.has(id),
+            );
+            const eligibility = resolveSeedSymbolEligibility({
+                policy: params.policy,
+                nowMs: params.nowMs,
+                candles: existing,
+                hasStrategyFit: strategies.length > 0,
+                allowBootstrapSymbols: cfg.allowBootstrapSymbols,
+            });
+            summary.processedSymbols += 1;
 
-            let fetchFromMs = 0;
-            let fetchToMs = 0;
-            let windowReason = 'bootstrap';
-
-            if (existing.length === 0) {
-                fetchFromMs = Math.max(0, Math.floor(params.nowMs - cfg.chunkDays * ONE_DAY_MS));
-                fetchToMs = Math.max(fetchFromMs + tfMs, Math.floor(params.nowMs));
-            } else if (beforeSpanDays < cfg.targetHistoryDays) {
-                const anchor = Number(earliestTs);
-                fetchToMs = Math.max(0, Math.floor(anchor - tfMs));
-                fetchFromMs = Math.max(0, Math.floor(anchor - cfg.chunkDays * ONE_DAY_MS));
-                windowReason = 'backfill';
-            } else if (lagDays > 0.5) {
-                const anchor = Number(latestTs);
-                fetchFromMs = Math.max(0, Math.floor(anchor + tfMs));
-                fetchToMs = Math.max(fetchFromMs + tfMs, Math.floor(Math.min(params.nowMs, anchor + cfg.chunkDays * ONE_DAY_MS)));
-                windowReason = 'forward';
-            } else {
-                const trimmed = trimHistoryToMaxDays(existing, cfg.maxHistoryDays);
-                const trimmedCount = Math.max(0, existing.length - trimmed.length);
-                const afterSpanDays = Number(historySpanDaysFromCandles(trimmed).toFixed(4));
-                if (!params.dryRun && trimmedCount > 0) {
-                    await saveScalpCandleHistory({
-                        symbol,
-                        timeframe: cfg.timeframe,
-                        epic: history.record?.epic || null,
-                        source: 'capital',
-                        candles: trimmed,
-                    });
-                }
+            if (!eligibility.eligible) {
                 summary.skippedSymbols += 1;
                 summary.results.push({
                     symbol,
                     status: 'skipped',
-                    reason: trimmedCount > 0 ? 'history_pruned' : 'already_seeded',
-                    epic: history.record?.epic || null,
-                    existingCount: existing.length,
-                    mergedCount: trimmed.length,
-                    fetchedCount: 0,
-                    addedCount: 0,
-                    trimmedCount,
-                    beforeSpanDays,
-                    afterSpanDays: trimmedCount > 0 ? afterSpanDays : beforeSpanDays,
-                });
-                continue;
-            }
-
-            if (!(fetchToMs > fetchFromMs)) {
-                summary.skippedSymbols += 1;
-                summary.results.push({
-                    symbol,
-                    status: 'skipped',
-                    reason: 'no_fetch_window',
+                    reason: String(eligibility.reason || 'seed_ineligible').slice(0, 180),
                     epic: history.record?.epic || null,
                     existingCount: existing.length,
                     mergedCount: existing.length,
                     fetchedCount: 0,
                     addedCount: 0,
                     trimmedCount: 0,
-                    beforeSpanDays,
-                    afterSpanDays: beforeSpanDays,
+                    beforeSpanDays: eligibility.quality.spanDays,
+                    afterSpanDays: eligibility.quality.spanDays,
                 });
                 continue;
             }
 
+            eligibleTargets.push({
+                symbol,
+                existing,
+                beforeQuality: eligibility.quality,
+                epicHint: history.record?.epic || null,
+            });
+        } catch (err: any) {
+            summary.failedSymbols += 1;
+            summary.results.push({
+                symbol,
+                status: 'failed',
+                reason: String(err?.message || err || 'seed_eligibility_check_failed').slice(0, 180),
+                epic: null,
+                existingCount: 0,
+                mergedCount: 0,
+                fetchedCount: 0,
+                addedCount: 0,
+                trimmedCount: 0,
+                beforeSpanDays: 0,
+                afterSpanDays: 0,
+            });
+        }
+    }
+
+    for (const target of eligibleTargets) {
+        const symbol = target.symbol;
+        try {
+            const existing = target.existing;
+            const beforeSpanDays = target.beforeQuality.spanDays;
             const epicResolved = await resolveCapitalEpicRuntime(symbol);
-            const fetchedRaw = await fetchCapitalCandlesByEpicDateRange(
-                epicResolved.epic,
-                cfg.timeframe,
-                fetchFromMs,
-                fetchToMs,
-                {
+
+            let working = trimHistoryToMaxDays(existing.slice(), cfg.maxHistoryDays);
+            let totalFetchedCount = 0;
+            let totalAddedCount = 0;
+            let totalTrimmedCount = Math.max(0, existing.length - working.length);
+            let requestBudget = Math.max(1, cfg.maxRequestsPerSymbol);
+            let fetchPasses = 0;
+            let lastWindowReason: 'bootstrap' | 'backfill' | 'forward' | 'already_seeded' = 'already_seeded';
+
+            while (fetchPasses < maxFetchPassesPerSymbol && requestBudget > 0) {
+                const window = resolveNextSeedFetchWindow({
+                    candles: working,
+                    nowMs: params.nowMs,
+                    timeframeMs: tfMs,
+                    targetHistoryDays: cfg.targetHistoryDays,
+                    chunkDays: cfg.chunkDays,
+                });
+                if (!window) break;
+                lastWindowReason = window.reason;
+
+                const estimatedRequests = estimateSeedWindowRequestBudget({
+                    fromMs: window.fromMs,
+                    toMs: window.toMs,
+                    timeframeMs: tfMs,
                     maxPerRequest: 1000,
-                    maxRequests: cfg.maxRequestsPerSymbol,
-                    debug: false,
-                    debugLabel: `discovery-seed:${symbol}:${cfg.timeframe}:${windowReason}`,
-                },
-            );
-            const fetched = normalizeFetchedCandles(fetchedRaw);
-            const merged = mergeScalpCandleHistory(existing, fetched);
-            const trimmed = trimHistoryToMaxDays(merged, cfg.maxHistoryDays);
-            const addedCount = Math.max(0, merged.length - existing.length);
-            const trimmedCount = Math.max(0, merged.length - trimmed.length);
-            const afterSpanDays = Number(historySpanDaysFromCandles(trimmed).toFixed(4));
-            const changed = historyChanged(existing, trimmed);
+                });
+                const requestAllowance = Math.max(1, Math.min(requestBudget, estimatedRequests + 1));
+                const fetchedRaw = await fetchCapitalCandlesByEpicDateRange(
+                    epicResolved.epic,
+                    cfg.timeframe,
+                    window.fromMs,
+                    window.toMs,
+                    {
+                        maxPerRequest: 1000,
+                        maxRequests: requestAllowance,
+                        debug: false,
+                        debugLabel: `discovery-seed:${symbol}:${cfg.timeframe}:${window.reason}`,
+                    },
+                );
+                requestBudget -= requestAllowance;
+                fetchPasses += 1;
+
+                const fetched = normalizeFetchedCandles(fetchedRaw);
+                totalFetchedCount += fetched.length;
+                const merged = mergeScalpCandleHistory(working, fetched);
+                totalAddedCount += Math.max(0, merged.length - working.length);
+                const trimmed = trimHistoryToMaxDays(merged, cfg.maxHistoryDays);
+                totalTrimmedCount += Math.max(0, merged.length - trimmed.length);
+                const changed = historyChanged(working, trimmed);
+                working = trimmed;
+
+                if (!changed && fetched.length === 0) {
+                    break;
+                }
+            }
+
+            const afterQuality = summarizeSeedHistoryQuality(working, params.nowMs);
+            const lagMs = afterQuality.toTs !== null ? Math.max(0, params.nowMs - afterQuality.toTs) : Number.POSITIVE_INFINITY;
+            const targetMet = afterQuality.spanDays + 1e-6 >= cfg.targetHistoryDays && lagMs <= SEED_FRESHNESS_MAX_LAG_MS;
+            const changed = historyChanged(existing, working);
 
             if (!params.dryRun && changed) {
                 await saveScalpCandleHistory({
@@ -906,44 +1065,69 @@ async function runScalpSymbolHistorySeedStage(params: {
                     timeframe: cfg.timeframe,
                     epic: epicResolved.epic,
                     source: 'capital',
-                    candles: trimmed,
+                    candles: working,
                 });
             }
 
-            if (addedCount > 0) {
+            if (!targetMet) {
+                summary.failedSymbols += 1;
+                summary.results.push({
+                    symbol,
+                    status: 'failed',
+                    reason: `seed_target_unmet:spanDays=${afterQuality.spanDays}:lagHours=${afterQuality.lagHours}`.slice(0, 180),
+                    epic: epicResolved.epic,
+                    existingCount: existing.length,
+                    mergedCount: working.length,
+                    fetchedCount: totalFetchedCount,
+                    addedCount: totalAddedCount,
+                    trimmedCount: totalTrimmedCount,
+                    beforeSpanDays,
+                    afterSpanDays: afterQuality.spanDays,
+                });
+            } else if (changed && (totalAddedCount > 0 || totalFetchedCount > 0)) {
                 summary.seededSymbols += 1;
                 summary.results.push({
                     symbol,
                     status: 'seeded',
-                    reason: windowReason,
+                    reason: lastWindowReason,
                     epic: epicResolved.epic,
                     existingCount: existing.length,
-                    mergedCount: trimmed.length,
-                    fetchedCount: fetched.length,
-                    addedCount,
-                    trimmedCount,
+                    mergedCount: working.length,
+                    fetchedCount: totalFetchedCount,
+                    addedCount: totalAddedCount,
+                    trimmedCount: totalTrimmedCount,
                     beforeSpanDays,
-                    afterSpanDays,
+                    afterSpanDays: afterQuality.spanDays,
+                });
+            } else if (changed) {
+                summary.skippedSymbols += 1;
+                summary.results.push({
+                    symbol,
+                    status: 'skipped',
+                    reason: 'history_pruned',
+                    epic: target.epicHint || epicResolved.epic,
+                    existingCount: existing.length,
+                    mergedCount: working.length,
+                    fetchedCount: totalFetchedCount,
+                    addedCount: 0,
+                    trimmedCount: totalTrimmedCount,
+                    beforeSpanDays,
+                    afterSpanDays: afterQuality.spanDays,
                 });
             } else {
                 summary.skippedSymbols += 1;
                 summary.results.push({
                     symbol,
                     status: 'skipped',
-                    reason:
-                        trimmedCount > 0
-                            ? 'history_pruned'
-                            : fetched.length > 0
-                              ? 'no_new_candles'
-                              : 'no_candles_fetched',
-                    epic: epicResolved.epic,
+                    reason: 'already_seeded',
+                    epic: target.epicHint || epicResolved.epic,
                     existingCount: existing.length,
-                    mergedCount: trimmed.length,
-                    fetchedCount: fetched.length,
+                    mergedCount: working.length,
+                    fetchedCount: totalFetchedCount,
                     addedCount: 0,
-                    trimmedCount,
+                    trimmedCount: totalTrimmedCount,
                     beforeSpanDays,
-                    afterSpanDays,
+                    afterSpanDays: afterQuality.spanDays,
                 });
             }
         } catch (err: any) {

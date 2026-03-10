@@ -133,6 +133,15 @@ MARKETAUX_API_KEY=...
 # SCALP_SYMBOL_UNIVERSE_PATH=data/scalp-symbol-universe.json # used when store=file
 # SCALP_RESEARCH_REPORT_STORE=auto                           # auto | kv | file
 # SCALP_RESEARCH_REPORT_PATH=data/scalp-research-report.json # used when store=file
+# SCALP_RESEARCH_SYMBOL_COOLDOWN_ENABLED=true
+# SCALP_RESEARCH_SYMBOL_COOLDOWN_FAILURE_THRESHOLD=3
+# SCALP_RESEARCH_SYMBOL_COOLDOWN_WINDOW_MS=1800000
+# SCALP_RESEARCH_SYMBOL_COOLDOWN_DURATION_MS=10800000
+# SCALP_RESEARCH_SYMBOL_COOLDOWN_MAX_TRACKED_SYMBOLS=400
+# SCALP_RESEARCH_WORKER_CONCURRENCY=4
+# SCALP_RESEARCH_WORKER_MAX_CONCURRENCY=16
+# SCALP_RESEARCH_WORKER_MAX_RUNS_CAP=200
+# SCALP_SYMBOL_DISCOVERY_SEED_ALLOW_BOOTSTRAP_SYMBOLS=false
 # SCALP_GUARDRAIL_AUTO_PAUSE=true
 # SCALP_GUARDRAIL_MIN_TRADES_30D=8
 # SCALP_GUARDRAIL_MIN_EXPECTANCY_R_30D=-0.15
@@ -244,12 +253,17 @@ npm run start
     - `seedMaxSymbolsPerRun=<int>` hard cap for seeded symbols in one run.
     - `seedTimeframe=1m` timeframe for seed storage/checks.
     - `seedOnDryRun=true` allow seeding during `dryRun=true` (for diagnostics only; no writes when dry run).
+    - `seedAllowBootstrapSymbols=true|false` allow/disallow seeding symbols without existing candle history (`false` default).
+    - Seed stage now keeps fetching backfill/forward windows until both target span and freshness are met (90d + <=12h lag), or reports `seed_target_unmet`.
 - `GET /api/scalp/cron/research-cycle-start?dryRun=false`
   - Starts a chunked offline research cycle over the active symbol universe (or explicit `symbols=...`) and persists task rows in KV.
   - Optional query params: `symbols=BTCUSDT,XAUUSDT`, `lookbackDays`, `chunkDays`, `maxTasks`, `maxAttempts`, `minCandlesPerTask`, `force`.
-- `GET /api/scalp/cron/research-cycle-worker?maxRuns=10`
+- `GET /api/scalp/cron/research-cycle-worker?maxRuns=40&concurrency=4`
   - Claims pending/stale research tasks, runs replay for each claimed task, and writes per-task metrics.
-  - Optional query params: `cycleId`, `workerId`, `aggregateAfter=true|false`, `finalizeWhenDone=true|false`, `syncPromotionGates=true|false`, `requireCompletedCycleForSync=true|false`.
+  - Supports bounded parallel execution with `concurrency` (default env `SCALP_RESEARCH_WORKER_CONCURRENCY`).
+  - Stale/missing `running` tasks are only reclaimed when `attempts < maxAttempts`; exhausted rows are auto-marked `max_attempts_exhausted`.
+  - Optional symbol cooldown quarantine marks pending/running rows as `symbol_cooldown_active` after repeated hard failures within a window.
+  - Optional query params: `cycleId`, `workerId`, `concurrency`, `aggregateAfter=true|false`, `finalizeWhenDone=true|false`, `syncPromotionGates=true|false`, `requireCompletedCycleForSync=true|false`.
 - `GET /api/scalp/cron/research-cycle-aggregate`
   - Recomputes cycle totals + candidate aggregates from task rows and stores the latest summary.
   - Optional query params: `cycleId`, `finalizeWhenDone=true|false`.
@@ -479,7 +493,7 @@ node --import tsx scripts/scalp-replay-matrix.ts \
   - `/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true&seedTopSymbols=4&seedChunkDays=3&seedTargetHistoryDays=90&seedMaxRequestsPerSymbol=20&seedMaxSymbolsPerRun=4` daily Tuesday-Friday (light top-up seed + refresh).
   - `/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=false&seedTopSymbols=4&seedChunkDays=3&seedTargetHistoryDays=90&seedMaxRequestsPerSymbol=20&seedMaxSymbolsPerRun=4` daily Saturday/Sunday (weekend top-up with quote gate relaxed).
   - `/api/scalp/cron/research-cycle-start?dryRun=false&force=false` weekly after discovery (creates task graph).
-  - `/api/scalp/cron/research-cycle-worker?maxRuns=10&aggregateAfter=false&syncPromotionGates=false...` every 2 minutes (executes chunked replay tasks with lower per-task overhead).
+  - `/api/scalp/cron/research-cycle-worker?maxRuns=40&concurrency=4&aggregateAfter=false&syncPromotionGates=false...` every 2 minutes (executes chunked replay tasks with bounded parallelism).
   - `/api/scalp/cron/research-cycle-aggregate?...` every 10 minutes (refreshes cycle summary/status).
   - `/api/scalp/cron/research-cycle-sync-gates?...` every 20 minutes (reconciles deployment promotion gates from completed cycles).
   - `/api/scalp/cron/research-report?dryRun=false` hourly (refreshes operator portfolio report snapshot).
