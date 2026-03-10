@@ -277,11 +277,15 @@ export async function reconcileScalpBrokerPosition(params: {
     dryRun: boolean;
     maxOpenPositionsPerSymbol: number;
     snapshots?: Awaited<ReturnType<typeof fetchCapitalOpenPositionSnapshots>>;
+    skipSnapshotFetch?: boolean;
 }): Promise<{ state: ScalpSessionState; reasonCodes: string[] }> {
     if (params.dryRun) return { state: params.state, reasonCodes: ['BROKER_RECONCILE_SKIPPED_DRY_RUN'] };
 
     let snapshots = params.snapshots ?? [];
     if (!params.snapshots) {
+        if (params.skipSnapshotFetch) {
+            return { state: params.state, reasonCodes: ['BROKER_RECONCILE_UNAVAILABLE'] };
+        }
         try {
             snapshots = await fetchCapitalOpenPositionSnapshots();
         } catch {

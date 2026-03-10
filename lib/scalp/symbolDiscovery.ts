@@ -151,6 +151,8 @@ export interface ScalpSymbolDiscoverySeedSummary {
     results: ScalpSymbolDiscoverySeedSymbolResult[];
 }
 
+type CapitalDiscoveryResult = Awaited<ReturnType<typeof discoverCapitalMarketSymbols>>;
+
 const DEFAULT_POLICY_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-discovery-policy.json');
 const DEFAULT_UNIVERSE_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-universe.json');
 const UNIVERSE_KV_KEY = 'scalp:symbol-universe:v1';
@@ -710,6 +712,8 @@ async function runScalpSymbolHistorySeedStage(params: {
     dryRun: boolean;
     knownStrategyIds: Set<string>;
     config: ReturnType<typeof resolveSeedConfig>;
+    preloadedDiscovery?: CapitalDiscoveryResult | null;
+    preloadedDiscoveryError?: string | null;
 }): Promise<ScalpSymbolDiscoverySeedSummary> {
     const cfg = params.config;
     const summary: ScalpSymbolDiscoverySeedSummary = {
@@ -731,20 +735,41 @@ async function runScalpSymbolHistorySeedStage(params: {
     };
     if (!cfg.enabled) return summary;
 
-    const maxSymbols = Math.max(cfg.requestedTopSymbols * 6, 200);
-    let discovered: Awaited<ReturnType<typeof discoverCapitalMarketSymbols>> | null = null;
-    try {
-        discovered = await discoverCapitalMarketSymbols({
-            maxSymbols,
-            // Keep weekend/non-tradeable rows to build a broader seed queue.
-            requireTradeable: false,
-        });
-    } catch (err: any) {
+    const hasPreloadedDiscovery = params.preloadedDiscovery !== undefined;
+    let discovered: CapitalDiscoveryResult | null = params.preloadedDiscovery ?? null;
+    if (!discovered && !hasPreloadedDiscovery) {
+        const maxSymbols = Math.max(cfg.requestedTopSymbols * 6, 200);
+        try {
+            discovered = await discoverCapitalMarketSymbols({
+                maxSymbols,
+                // Keep weekend/non-tradeable rows to build a broader seed queue.
+                requireTradeable: false,
+            });
+        } catch (err: any) {
+            summary.failedSymbols = 1;
+            summary.results.push({
+                symbol: 'DISCOVERY',
+                status: 'failed',
+                reason: String(err?.message || err || 'capital_discovery_failed').slice(0, 180),
+                epic: null,
+                existingCount: 0,
+                mergedCount: 0,
+                fetchedCount: 0,
+                addedCount: 0,
+                trimmedCount: 0,
+                beforeSpanDays: 0,
+                afterSpanDays: 0,
+            });
+            return summary;
+        }
+    }
+    if (!discovered) {
+        const errorMessage = String(params.preloadedDiscoveryError || 'capital_discovery_failed').slice(0, 180);
         summary.failedSymbols = 1;
         summary.results.push({
             symbol: 'DISCOVERY',
             status: 'failed',
-            reason: String(err?.message || err || 'capital_discovery_failed').slice(0, 180),
+            reason: errorMessage,
             epic: null,
             existingCount: 0,
             mergedCount: 0,
@@ -944,7 +969,12 @@ async function runScalpSymbolHistorySeedStage(params: {
 
 async function buildCandidatePool(
     policy: ScalpSymbolDiscoveryPolicy,
-    params: { includeLiveQuotes: boolean; nowMs: number },
+    params: {
+        includeLiveQuotes: boolean;
+        nowMs: number;
+        discoveredSymbols?: CapitalDiscoveryResult | null;
+        discoveryError?: string | null;
+    },
 ): Promise<{
     symbols: string[];
     diagnostics: NonNullable<ScalpSymbolUniverseSnapshot['diagnostics']>;
@@ -997,21 +1027,30 @@ async function buildCandidatePool(
 
     if (policy.sources.includeCapitalMarketsApi) {
         const maxSymbols = Math.max(policy.limits.maxCandidates * 3, policy.limits.maxUniverseSymbols * 4, 200);
+        const hasPreloadedDiscovery = params.discoveredSymbols !== undefined;
         try {
-            const discoveredSymbols = await discoverCapitalMarketSymbols({
-                maxSymbols,
-                requireTradeable: requireTradeableForDiscovery,
-            });
-            diagnostics.sourceCounts.capitalMarketsApiRows = discoveredSymbols.diagnostics.rowsSeen;
-            diagnostics.sourceCounts.capitalMarketsApiRowsTradeable = discoveredSymbols.diagnostics.rowsTradeable;
+            const discoveredSymbols =
+                hasPreloadedDiscovery
+                    ? params.discoveredSymbols
+                    : await discoverCapitalMarketSymbols({
+                          maxSymbols,
+                          requireTradeable: requireTradeableForDiscovery,
+                      });
+            diagnostics.sourceCounts.capitalMarketsApiRows = discoveredSymbols?.diagnostics.rowsSeen || 0;
+            diagnostics.sourceCounts.capitalMarketsApiRowsTradeable = discoveredSymbols?.diagnostics.rowsTradeable || 0;
+            if (!discoveredSymbols) {
+                diagnostics.capitalMarketsApiError = String(
+                    params.discoveryError || 'capital_markets_api_discovery_failed',
+                ).slice(0, 220);
+            }
             if (
-                discoveredSymbols.diagnostics.termsSucceeded === 0 &&
-                discoveredSymbols.diagnostics.errors.length > 0
+                (discoveredSymbols?.diagnostics.termsSucceeded || 0) === 0 &&
+                (discoveredSymbols?.diagnostics.errors.length || 0) > 0
             ) {
-                diagnostics.capitalMarketsApiError = discoveredSymbols.diagnostics.errors.slice(0, 3).join(' | ');
+                diagnostics.capitalMarketsApiError = (discoveredSymbols?.diagnostics.errors || []).slice(0, 3).join(' | ');
             } else if (
-                discoveredSymbols.diagnostics.rowsSeen > 0 &&
-                discoveredSymbols.diagnostics.mappedSymbols === 0
+                (discoveredSymbols?.diagnostics.rowsSeen || 0) > 0 &&
+                (discoveredSymbols?.diagnostics.mappedSymbols || 0) === 0
             ) {
                 diagnostics.capitalMarketsApiError = 'capital_markets_rows_unmapped';
             }
@@ -1020,12 +1059,16 @@ async function buildCandidatePool(
                     ? `${diagnostics.capitalMarketsApiError} | history_presence_index_empty`
                     : 'history_presence_index_empty';
             }
-            for (const symbol of discoveredSymbols.symbols) {
+            for (const symbol of discoveredSymbols?.symbols || []) {
                 if (policy.sources.requireHistoryPresence && !historySymbolSet.has(normalizeSymbol(symbol))) continue;
                 addFromSource('capitalMarketsApi', symbol);
             }
         } catch (err: any) {
-            diagnostics.capitalMarketsApiError = String(err?.message || err || 'capital_markets_api_discovery_failed').slice(0, 220);
+            const fallback =
+                hasPreloadedDiscovery && params.discoveryError
+                    ? params.discoveryError
+                    : String(err?.message || err || 'capital_markets_api_discovery_failed');
+            diagnostics.capitalMarketsApiError = String(fallback).slice(0, 220);
         }
     }
 
@@ -1280,6 +1323,27 @@ export async function runScalpSymbolDiscoveryCycle(
     const knownStrategies = new Set(listScalpStrategies().map((row) => row.id));
     const seedConfig = resolveSeedConfig(params);
     const seedShouldRun = seedConfig.enabled && (!dryRun || seedConfig.seedOnDryRun);
+    const shouldLoadCapitalDiscovery = seedShouldRun || policy.sources.includeCapitalMarketsApi;
+    let preloadedDiscovery: CapitalDiscoveryResult | null | undefined = undefined;
+    let preloadedDiscoveryError: string | null = null;
+    if (shouldLoadCapitalDiscovery) {
+        const maxSymbols = Math.max(
+            seedConfig.requestedTopSymbols * 6,
+            policy.limits.maxCandidates * 3,
+            policy.limits.maxUniverseSymbols * 4,
+            200,
+        );
+        try {
+            preloadedDiscovery = await discoverCapitalMarketSymbols({
+                maxSymbols,
+                // Use a broad snapshot once and reuse it in both seed + candidate stages.
+                requireTradeable: false,
+            });
+        } catch (err: any) {
+            preloadedDiscovery = null;
+            preloadedDiscoveryError = String(err?.message || err || 'capital_markets_api_discovery_failed').slice(0, 220);
+        }
+    }
     const seedSummary = seedShouldRun
         ? await runScalpSymbolHistorySeedStage({
               policy,
@@ -1287,6 +1351,8 @@ export async function runScalpSymbolDiscoveryCycle(
               dryRun,
               knownStrategyIds: knownStrategies,
               config: seedConfig,
+              preloadedDiscovery,
+              preloadedDiscoveryError,
           })
         : seedConfig.enabled
           ? {
@@ -1308,7 +1374,12 @@ export async function runScalpSymbolDiscoveryCycle(
             }
           : null;
 
-    const candidatePool = await buildCandidatePool(policy, { includeLiveQuotes, nowMs });
+    const candidatePool = await buildCandidatePool(policy, {
+        includeLiveQuotes,
+        nowMs,
+        discoveredSymbols: preloadedDiscovery,
+        discoveryError: preloadedDiscoveryError,
+    });
     const cappedPool = candidatePool.symbols.slice(0, Math.max(1, params.maxCandidatesOverride || policy.limits.maxCandidates));
 
     const rows: ScalpSymbolCandidateRow[] = [];

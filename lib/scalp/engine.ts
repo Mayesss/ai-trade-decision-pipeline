@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 
 import { fetchCapitalAccountEquityUsd } from '../capital';
+import type { CapitalOpenPositionSnapshot } from '../capital';
 import { applyScalpStrategyConfigOverride, getScalpStrategyConfig, normalizeScalpSymbol } from './config';
 import type { ScalpStrategyConfigOverride } from './config';
 import { resolveScalpDeployment } from './deployments';
@@ -109,6 +110,8 @@ export async function runScalpExecuteCycle(opts: {
     debug?: boolean;
     marketSnapshotCache?: Map<string, ScalpMarketSnapshot>;
     runtimeSnapshot?: ScalpStrategyRuntimeSnapshot;
+    brokerPositionSnapshots?: CapitalOpenPositionSnapshot[];
+    skipBrokerSnapshotFetch?: boolean;
 } = {}): Promise<ScalpExecuteCycleResult> {
     const baseCfg = getScalpStrategyConfig();
     let cfg = applyScalpStrategyConfigOverride(baseCfg, opts.configOverride);
@@ -373,6 +376,8 @@ export async function runScalpExecuteCycle(opts: {
                     market,
                     dryRun,
                     maxOpenPositionsPerSymbol: cfg.risk.maxOpenPositionsPerSymbol,
+                    snapshots: opts.brokerPositionSnapshots,
+                    skipSnapshotFetch: opts.skipBrokerSnapshotFetch,
                 });
                 nextState = reconciled.state;
                 phaseReasonCodes.push(...reconciled.reasonCodes);

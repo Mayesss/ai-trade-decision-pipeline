@@ -3,6 +3,8 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
+import { fetchCapitalOpenPositionSnapshots } from '../../../../lib/capital';
+import type { CapitalOpenPositionSnapshot } from '../../../../lib/capital';
 import { getScalpStrategyConfig } from '../../../../lib/scalp/config';
 import { listScalpDeploymentRegistryEntries } from '../../../../lib/scalp/deploymentRegistry';
 import { runScalpExecuteCycle } from '../../../../lib/scalp/engine';
@@ -84,6 +86,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const marketSnapshotCache = new Map<string, ScalpMarketSnapshot>();
         const cfg = getScalpStrategyConfig();
         const runtimeSnapshot = await loadScalpStrategyRuntimeSnapshot(cfg.enabled);
+        let brokerPositionSnapshots: CapitalOpenPositionSnapshot[] | undefined;
+        let skipBrokerSnapshotFetch = false;
+        let brokerSnapshotsPrefetched = false;
+        if (!dryRun) {
+            try {
+                brokerPositionSnapshots = await fetchCapitalOpenPositionSnapshots();
+                brokerSnapshotsPrefetched = true;
+            } catch {
+                skipBrokerSnapshotFetch = true;
+            }
+        }
         const effectiveNowMs = nowMs ?? Date.now();
         for (const deployment of deployments) {
             try {
@@ -98,6 +111,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     configOverride: deployment.configOverride || undefined,
                     marketSnapshotCache,
                     runtimeSnapshot,
+                    brokerPositionSnapshots,
+                    skipBrokerSnapshotFetch,
                 });
                 results.push({
                     ...cycle,
@@ -124,6 +139,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             requestedAll: all,
             requirePromotionEligible,
             count: deployments.length,
+            brokerSnapshotsPrefetched,
+            skipBrokerSnapshotFetch,
             results,
             errors,
         });
