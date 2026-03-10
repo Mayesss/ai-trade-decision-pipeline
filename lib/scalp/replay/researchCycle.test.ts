@@ -378,11 +378,14 @@ test('resolveResearchWorkerRuntimeConfig clamps requested maxRuns and concurrenc
         {
             maxRuns: 300,
             concurrency: 64,
+            maxDurationMs: 250_000,
         },
         {
             SCALP_RESEARCH_WORKER_MAX_RUNS_CAP: '50',
             SCALP_RESEARCH_WORKER_MAX_CONCURRENCY: '8',
             SCALP_RESEARCH_WORKER_CONCURRENCY: '4',
+            SCALP_RESEARCH_WORKER_MAX_DURATION_MS: '200000',
+            SCALP_RESEARCH_WORKER_MAX_DURATION_CAP_MS: '90000',
         },
     );
 
@@ -390,6 +393,8 @@ test('resolveResearchWorkerRuntimeConfig clamps requested maxRuns and concurrenc
     assert.equal(out.maxConcurrency, 8);
     assert.equal(out.maxRuns, 50);
     assert.equal(out.concurrency, 8);
+    assert.equal(out.maxDurationCapMs, 90_000);
+    assert.equal(out.maxDurationMs, 90_000);
 });
 
 test('resolveResearchWorkerRuntimeConfig uses default concurrency but does not exceed maxRuns', () => {
@@ -401,9 +406,12 @@ test('resolveResearchWorkerRuntimeConfig uses default concurrency but does not e
             SCALP_RESEARCH_WORKER_MAX_RUNS_CAP: '200',
             SCALP_RESEARCH_WORKER_MAX_CONCURRENCY: '16',
             SCALP_RESEARCH_WORKER_CONCURRENCY: '10',
+            SCALP_RESEARCH_WORKER_MAX_DURATION_MS: '45000',
+            SCALP_RESEARCH_WORKER_MAX_DURATION_CAP_MS: '200000',
         },
     );
 
     assert.equal(out.maxRuns, 3);
     assert.equal(out.concurrency, 3);
+    assert.equal(out.maxDurationMs, 45_000);
 });

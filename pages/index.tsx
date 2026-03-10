@@ -359,6 +359,21 @@ type ScalpResearchCycleResponse = {
       failed?: number;
     };
   } | null;
+  workerHeartbeat?: {
+    status?: 'started' | 'completed' | 'failed' | 'no_cycle' | 'cycle_not_found' | 'cycle_not_running' | string;
+    workerId?: string;
+    updatedAtMs?: number;
+    startedAtMs?: number | null;
+    finishedAtMs?: number | null;
+    durationMs?: number | null;
+    maxRuns?: number;
+    concurrency?: number;
+    maxDurationMs?: number;
+    attemptedRuns?: number;
+    completedRuns?: number;
+    failedRuns?: number;
+    stoppedByDurationBudget?: boolean;
+  } | null;
   tasks?: ScalpResearchCycleTask[];
   taskCountReturned?: number;
   taskLimit?: number;
@@ -2632,7 +2647,7 @@ export default function Home() {
     if (a.strategyId !== b.strategyId) return a.strategyId.localeCompare(b.strategyId);
     return a.tuneId.localeCompare(b.tuneId);
   });
-  const scalpWorkerLastDurationMs = (() => {
+  const scalpWorkerLastDurationFromTasksMs = (() => {
     const completedTaskRuns = scalpWorkerTasks
       .map((task) => {
         const workerId = String(task?.workerId || '').trim();
@@ -2879,10 +2894,17 @@ export default function Home() {
   const scalpLatestExecutionJournalEntry = scalpLatestJournalEntryBy(isScalpExecutionJournalEntry);
   const scalpLatestGuardrailEntry = scalpLatestJournalEntryBy(isScalpGuardrailJournalEntry);
   const scalpLastGuardrailAtMs = asFiniteNumber(scalpLatestGuardrailEntry?.timestampMs);
+  const scalpWorkerHeartbeatUpdatedAtMs =
+    asFiniteNumber(scalpResearchCycle?.workerHeartbeat?.updatedAtMs) ??
+    asFiniteNumber(scalpResearchCycle?.workerHeartbeat?.finishedAtMs) ??
+    asFiniteNumber(scalpResearchCycle?.workerHeartbeat?.startedAtMs);
+  const scalpWorkerHeartbeatDurationMs = asFiniteNumber(scalpResearchCycle?.workerHeartbeat?.durationMs);
+  const scalpWorkerLastDurationMs = scalpWorkerHeartbeatDurationMs ?? scalpWorkerLastDurationFromTasksMs;
   const scalpCycleUpdatedAtMs =
     asFiniteNumber(scalpResearchCycle?.cycle?.updatedAtMs) ??
     asFiniteNumber(scalpResearchCycle?.summary?.generatedAtMs) ??
     asFiniteNumber(scalpResearchReport?.generatedAtMs);
+  const scalpWorkerLastRunAtMs = scalpWorkerHeartbeatUpdatedAtMs ?? scalpCycleUpdatedAtMs;
   const scalpReportGeneratedAtMs = asFiniteNumber(scalpResearchReport?.generatedAtMs);
   const scalpDashboardGeneratedAtMs = asFiniteNumber(scalpSummary?.generatedAtMs);
   const scalpSummaryRunCount = asFiniteNumber(scalpSummary?.summary?.runCount);
@@ -3150,8 +3172,8 @@ export default function Home() {
       nextRunAtMs: scalpCronRuntimeMeta('scalp_cycle_worker').nextRunAtMs,
       invokePath: scalpCronRuntimeMeta('scalp_cycle_worker').invokePath,
       role: 'Claim and execute replay chunks',
-      status: scalpStatusFromTs(scalpCycleUpdatedAtMs, 20 * 60_000),
-      lastRunAtMs: scalpCycleUpdatedAtMs,
+      status: scalpStatusFromTs(scalpWorkerLastRunAtMs, 20 * 60_000),
+      lastRunAtMs: scalpWorkerLastRunAtMs,
       lastDurationMs: scalpWorkerLastDurationMs,
       details: [
         {
@@ -3163,6 +3185,21 @@ export default function Home() {
           label: 'Next Run',
           value: formatScalpNextRunIn(scalpCronRuntimeMeta('scalp_cycle_worker').nextRunAtMs, scalpCronNowMs),
           tone: 'neutral',
+        },
+        {
+          label: 'Worker Status',
+          value: String(scalpResearchCycle?.workerHeartbeat?.status || 'n/a').trim() || 'n/a',
+          tone:
+            scalpResearchCycle?.workerHeartbeat?.status === 'failed'
+              ? 'critical'
+              : scalpResearchCycle?.workerHeartbeat?.status
+                ? 'neutral'
+                : 'warning',
+        },
+        {
+          label: 'Budget Stop',
+          value: scalpResearchCycle?.workerHeartbeat?.stoppedByDurationBudget ? 'yes' : 'no',
+          tone: scalpResearchCycle?.workerHeartbeat?.stoppedByDurationBudget ? 'warning' : 'neutral',
         },
         { label: 'Progress', value: formatScalpPct(scalpCycleProgressPct), tone: 'neutral' },
         { label: 'Tasks', value: formatScalpCount(scalpCycleTasks), tone: 'neutral' },

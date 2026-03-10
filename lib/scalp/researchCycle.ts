@@ -22,6 +22,7 @@ const RESEARCH_TASK_KEY_PREFIX = 'scalp:research:task:v1';
 const RESEARCH_AGG_KEY_PREFIX = 'scalp:research:aggregate:v1';
 const RESEARCH_CLAIM_CURSOR_KEY_PREFIX = 'scalp:research:claim-cursor:v1';
 const RESEARCH_LOCK_KEY_PREFIX = 'scalp:research:lock:v1';
+const RESEARCH_WORKER_HEARTBEAT_KEY = 'scalp:research:worker-heartbeat:v1';
 const RESEARCH_SYMBOL_COOLDOWN_KEY = 'scalp:research:symbol-cooldown:v1';
 
 const DEFAULT_LOOKBACK_DAYS = 90;
@@ -38,6 +39,9 @@ const DEFAULT_WORKER_MAX_RUNS = 40;
 const DEFAULT_WORKER_MAX_RUNS_CAP = 200;
 const DEFAULT_WORKER_CONCURRENCY = 4;
 const DEFAULT_WORKER_MAX_CONCURRENCY = 16;
+const DEFAULT_WORKER_MAX_DURATION_MS = 105_000;
+const DEFAULT_WORKER_MAX_DURATION_CAP_MS = 15 * 60_000;
+const DEFAULT_CLAIM_SCAN_BATCH_SIZE = 64;
 const DEFAULT_LOCK_TTL_SECONDS = 120;
 const DEFAULT_TASK_TIMEOUT_MS = 60_000;
 const RESEARCH_TASK_TIMEOUT_MS = Math.max(
@@ -59,6 +63,10 @@ const RESEARCH_KV_RETRY_BASE_MS = Math.max(
 const RESEARCH_KV_RETRY_MAX_DELAY_MS = Math.max(
     50,
     Math.min(15_000, Math.floor(Number(process.env.SCALP_RESEARCH_KV_RETRY_MAX_DELAY_MS) || 2_000)),
+);
+const RESEARCH_CLAIM_SCAN_BATCH_SIZE = Math.max(
+    8,
+    Math.min(512, Math.floor(Number(process.env.SCALP_RESEARCH_CLAIM_SCAN_BATCH_SIZE) || DEFAULT_CLAIM_SCAN_BATCH_SIZE)),
 );
 
 const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
@@ -191,7 +199,36 @@ export interface WorkerRunParams {
     workerId?: string;
     maxRuns?: number;
     concurrency?: number;
+    maxDurationMs?: number;
     debug?: boolean;
+}
+
+export type ResearchWorkerHeartbeatStatus =
+    | 'started'
+    | 'completed'
+    | 'failed'
+    | 'no_cycle'
+    | 'cycle_not_found'
+    | 'cycle_not_running';
+
+export interface ScalpResearchWorkerHeartbeatSnapshot {
+    version: 1;
+    updatedAtMs: number;
+    status: ResearchWorkerHeartbeatStatus;
+    cycleId: string | null;
+    workerId: string;
+    maxRuns: number;
+    concurrency: number;
+    maxDurationMs: number;
+    startedAtMs: number;
+    finishedAtMs: number | null;
+    durationMs: number | null;
+    attemptedRuns: number;
+    completedRuns: number;
+    failedRuns: number;
+    stoppedByDurationBudget: boolean;
+    noClaimScanSummary: WorkerNoClaimScanSummary | null;
+    error: string | null;
 }
 
 export interface WorkerRunOutcome {
@@ -199,9 +236,11 @@ export interface WorkerRunOutcome {
     workerId: string;
     maxRuns: number;
     concurrency: number;
+    maxDurationMs: number;
     attemptedRuns: number;
     completedRuns: number;
     failedRuns: number;
+    stoppedByDurationBudget: boolean;
     noClaimScanSummary: WorkerNoClaimScanSummary | null;
     diagnostics: {
         durationMs: number;
@@ -256,8 +295,10 @@ export interface AggregateResearchCycleParams {
 export interface ResearchWorkerRuntimeConfig {
     maxRuns: number;
     concurrency: number;
+    maxDurationMs: number;
     maxRunsCap: number;
     maxConcurrency: number;
+    maxDurationCapMs: number;
 }
 
 export interface ResearchSymbolCooldownEntry {
@@ -371,7 +412,7 @@ export function resolveResearchSymbolCooldownConfig(): ResearchSymbolCooldownCon
 }
 
 export function resolveResearchWorkerRuntimeConfig(
-    params: { maxRuns?: number; concurrency?: number } = {},
+    params: { maxRuns?: number; concurrency?: number; maxDurationMs?: number } = {},
     env: NodeJS.ProcessEnv = process.env,
 ): ResearchWorkerRuntimeConfig {
     const maxRunsCap = Math.max(
@@ -390,11 +431,88 @@ export function resolveResearchWorkerRuntimeConfig(
     );
     const requestedConcurrency = toPositiveInt(params.concurrency, defaultConcurrency);
     const concurrency = Math.max(1, Math.min(maxRuns, maxConcurrency, requestedConcurrency));
+    const maxDurationCapMs = Math.max(
+        10_000,
+        Math.min(
+            30 * 60_000,
+            toPositiveInt(env.SCALP_RESEARCH_WORKER_MAX_DURATION_CAP_MS, DEFAULT_WORKER_MAX_DURATION_CAP_MS),
+        ),
+    );
+    const defaultMaxDurationMs = Math.max(
+        5_000,
+        Math.min(
+            maxDurationCapMs,
+            toPositiveInt(env.SCALP_RESEARCH_WORKER_MAX_DURATION_MS, DEFAULT_WORKER_MAX_DURATION_MS),
+        ),
+    );
+    const requestedMaxDurationMs = toPositiveInt(params.maxDurationMs, defaultMaxDurationMs);
+    const maxDurationMs = Math.max(5_000, Math.min(maxDurationCapMs, requestedMaxDurationMs));
     return {
         maxRuns,
         concurrency,
+        maxDurationMs,
         maxRunsCap,
         maxConcurrency,
+        maxDurationCapMs,
+    };
+}
+
+function normalizeResearchWorkerHeartbeatStatus(value: unknown): ResearchWorkerHeartbeatStatus {
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase();
+    if (
+        normalized === 'started' ||
+        normalized === 'completed' ||
+        normalized === 'failed' ||
+        normalized === 'no_cycle' ||
+        normalized === 'cycle_not_found' ||
+        normalized === 'cycle_not_running'
+    ) {
+        return normalized;
+    }
+    return 'failed';
+}
+
+function normalizeWorkerNoClaimScanSummary(raw: unknown): WorkerNoClaimScanSummary | null {
+    if (!isRecord(raw)) return null;
+    return {
+        scannedTasks: toNonNegativeInt(raw.scannedTasks, 0),
+        lockAttempts: toNonNegativeInt(raw.lockAttempts, 0),
+        locksAcquired: toNonNegativeInt(raw.locksAcquired, 0),
+        lockMisses: toNonNegativeInt(raw.lockMisses, 0),
+        missingTask: toNonNegativeInt(raw.missingTask, 0),
+        pending: toNonNegativeInt(raw.pending, 0),
+        runningFresh: toNonNegativeInt(raw.runningFresh, 0),
+        runningStale: toNonNegativeInt(raw.runningStale, 0),
+        runningMissingStartedAt: toNonNegativeInt(raw.runningMissingStartedAt, 0),
+        failedRetryable: toNonNegativeInt(raw.failedRetryable, 0),
+        failedMaxed: toNonNegativeInt(raw.failedMaxed, 0),
+        completed: toNonNegativeInt(raw.completed, 0),
+        symbolCooldownBlocked: toNonNegativeInt(raw.symbolCooldownBlocked, 0),
+    };
+}
+
+function normalizeResearchWorkerHeartbeat(raw: unknown): ScalpResearchWorkerHeartbeatSnapshot | null {
+    if (!isRecord(raw)) return null;
+    return {
+        version: 1,
+        updatedAtMs: toNonNegativeInt(raw.updatedAtMs, Date.now()),
+        status: normalizeResearchWorkerHeartbeatStatus(raw.status),
+        cycleId: toOptionalText(raw.cycleId, 140),
+        workerId: toOptionalText(raw.workerId, 140) || 'worker_unknown',
+        maxRuns: Math.max(1, toPositiveInt(raw.maxRuns, DEFAULT_WORKER_MAX_RUNS)),
+        concurrency: Math.max(1, toPositiveInt(raw.concurrency, DEFAULT_WORKER_CONCURRENCY)),
+        maxDurationMs: Math.max(1_000, toPositiveInt(raw.maxDurationMs, DEFAULT_WORKER_MAX_DURATION_MS)),
+        startedAtMs: toNonNegativeInt(raw.startedAtMs, 0),
+        finishedAtMs: Number.isFinite(Number(raw.finishedAtMs)) ? toNonNegativeInt(raw.finishedAtMs, 0) : null,
+        durationMs: Number.isFinite(Number(raw.durationMs)) ? toNonNegativeInt(raw.durationMs, 0) : null,
+        attemptedRuns: toNonNegativeInt(raw.attemptedRuns, 0),
+        completedRuns: toNonNegativeInt(raw.completedRuns, 0),
+        failedRuns: toNonNegativeInt(raw.failedRuns, 0),
+        stoppedByDurationBudget: toBool(raw.stoppedByDurationBudget, false),
+        noClaimScanSummary: normalizeWorkerNoClaimScanSummary(raw.noClaimScanSummary),
+        error: toOptionalText(raw.error, 300),
     };
 }
 
@@ -911,6 +1029,10 @@ async function saveTask(task: ScalpResearchTask): Promise<void> {
     await kvSetJson(taskKey(task.cycleId, task.taskId), task);
 }
 
+async function saveResearchWorkerHeartbeat(snapshot: ScalpResearchWorkerHeartbeatSnapshot): Promise<void> {
+    await kvSetJson(RESEARCH_WORKER_HEARTBEAT_KEY, snapshot);
+}
+
 async function loadResearchTasksBatch(cycleId: string, taskIds: string[]): Promise<ScalpResearchTask[]> {
     if (!taskIds.length) return [];
     const keys = taskIds.map((taskId) => taskKey(cycleId, taskId));
@@ -919,6 +1041,18 @@ async function loadResearchTasksBatch(cycleId: string, taskIds: string[]): Promi
     for (const row of rows) {
         if (!isRecord(row)) continue;
         out.push(row as unknown as ScalpResearchTask);
+    }
+    return out;
+}
+
+async function loadResearchTasksBatchWithNulls(cycleId: string, taskIds: string[]): Promise<Array<ScalpResearchTask | null>> {
+    if (!taskIds.length) return [];
+    const keys = taskIds.map((taskId) => taskKey(cycleId, taskId));
+    const rows = await kvMGetJson<unknown>(keys);
+    const out: Array<ScalpResearchTask | null> = [];
+    for (let i = 0; i < taskIds.length; i += 1) {
+        const row = rows[i];
+        out.push(isRecord(row) ? (row as unknown as ScalpResearchTask) : null);
     }
     return out;
 }
@@ -1012,6 +1146,11 @@ export async function loadActiveResearchCycleId(): Promise<string | null> {
     const raw = await kvGetJson<{ cycleId?: string }>(RESEARCH_ACTIVE_CYCLE_KEY);
     const cycleId = String(raw?.cycleId || '').trim();
     return cycleId || null;
+}
+
+export async function loadResearchWorkerHeartbeat(): Promise<ScalpResearchWorkerHeartbeatSnapshot | null> {
+    const raw = await kvGetJson<unknown>(RESEARCH_WORKER_HEARTBEAT_KEY);
+    return normalizeResearchWorkerHeartbeat(raw);
 }
 
 async function setActiveResearchCycleId(cycleId: string | null): Promise<void> {
@@ -1292,30 +1431,7 @@ async function claimNextTask(
     } | null;
     scanSummary: ClaimScanSummary;
 }> {
-    if (!cycle.taskIds.length) {
-        return {
-            claim: null,
-            scanSummary: {
-                scannedTasks: 0,
-                lockAttempts: 0,
-                locksAcquired: 0,
-                lockMisses: 0,
-                missingTask: 0,
-                pending: 0,
-                runningFresh: 0,
-                runningStale: 0,
-                runningMissingStartedAt: 0,
-                failedRetryable: 0,
-                failedMaxed: 0,
-                completed: 0,
-                symbolCooldownBlocked: 0,
-            },
-        };
-    }
-    const taskCount = cycle.taskIds.length;
-    const firstIndex = Math.max(0, Math.min(taskCount - 1, Math.floor(startIndex) || 0));
-    const nowMs = Date.now();
-    const scanSummary: ClaimScanSummary = {
+    const newScanSummary = (): ClaimScanSummary => ({
         scannedTasks: 0,
         lockAttempts: 0,
         locksAcquired: 0,
@@ -1329,117 +1445,168 @@ async function claimNextTask(
         failedMaxed: 0,
         completed: 0,
         symbolCooldownBlocked: 0,
-    };
-    for (let offset = 0; offset < taskCount; offset += 1) {
-        const scanIndex = (firstIndex + offset) % taskCount;
-        const taskId = cycle.taskIds[scanIndex];
-        scanSummary.scannedTasks += 1;
-        const lockName = `${cycle.cycleId}:${taskId}`;
-        const lockToken = newToken(`claim:${workerId}`);
-        scanSummary.lockAttempts += 1;
-        const gotTaskLock = await tryAcquireLock(lockName, lockToken, DEFAULT_LOCK_TTL_SECONDS);
-        if (!gotTaskLock) {
-            scanSummary.lockMisses += 1;
-            continue;
-        }
-        scanSummary.locksAcquired += 1;
-
-        const task = await loadResearchTask(cycle.cycleId, taskId);
-        if (!task) {
-            scanSummary.missingTask += 1;
-            await releaseLock(lockName, lockToken);
-            continue;
-        }
-
-        if (task.status === 'pending') scanSummary.pending += 1;
-        if (task.status === 'completed') scanSummary.completed += 1;
-
-        const claimability = evaluateResearchTaskClaimability({
-            status: task.status,
-            attempts: task.attempts,
-            maxAttempts: cycle.params.maxAttempts,
-            startedAtMs: task.startedAtMs,
-            runningStaleAfterMs: cycle.params.runningStaleAfterMs,
-            nowMs,
-        });
-        const runningMissingStartedAt = claimability.runningMissingStartedAt;
-        const staleRunning = claimability.runningStale;
-        if (task.status === 'running') {
-            if (runningMissingStartedAt) scanSummary.runningMissingStartedAt += 1;
-            else if (staleRunning) scanSummary.runningStale += 1;
-            else scanSummary.runningFresh += 1;
-        }
-
-        const retryableFailed = task.status === 'failed' && task.attempts < cycle.params.maxAttempts;
-        if (task.status === 'failed') {
-            if (retryableFailed) scanSummary.failedRetryable += 1;
-            else scanSummary.failedMaxed += 1;
-        }
-
-        const symbolCooldownActive = opts.symbolCooldownConfig.enabled
-            ? isResearchSymbolCooldownActive(opts.symbolCooldowns, task.symbol, nowMs)
-            : false;
-        if (symbolCooldownActive && (task.status === 'pending' || task.status === 'running')) {
-            const blockedUntilMs = toNonNegativeInt(opts.symbolCooldowns.symbols[normalizeSymbol(task.symbol)]?.blockedUntilMs, 0);
-            const blockedTask: ScalpResearchTask = {
-                ...task,
-                status: 'failed',
-                attempts: Math.max(task.attempts, cycle.params.maxAttempts),
-                updatedAtMs: nowMs,
-                finishedAtMs: nowMs,
-                errorCode: 'symbol_cooldown_active',
-                errorMessage: `symbol_cooldown_active_until:${new Date(blockedUntilMs).toISOString()}`.slice(0, 300),
-            };
-            await saveTask(blockedTask);
-            scanSummary.symbolCooldownBlocked += 1;
-            scanSummary.failedMaxed += 1;
-            await releaseLock(lockName, lockToken);
-            continue;
-        }
-
-        if (claimability.shouldMarkFailedForAttempts) {
-            const maxedTask: ScalpResearchTask = {
-                ...task,
-                status: 'failed',
-                attempts: Math.max(task.attempts, cycle.params.maxAttempts),
-                updatedAtMs: nowMs,
-                finishedAtMs: nowMs,
-                errorCode: 'max_attempts_exhausted',
-                errorMessage: `max_attempts_exhausted:${task.status}:${task.attempts}/${cycle.params.maxAttempts}`.slice(0, 300),
-            };
-            await saveTask(maxedTask);
-            scanSummary.failedMaxed += 1;
-            await releaseLock(lockName, lockToken);
-            continue;
-        }
-        const claimable = claimability.claimable;
-
-        if (!claimable) {
-            await releaseLock(lockName, lockToken);
-            continue;
-        }
-
-        const nextTask: ScalpResearchTask = {
-            ...task,
-            status: 'running',
-            attempts: task.attempts + 1,
-            workerId,
-            startedAtMs: nowMs,
-            updatedAtMs: nowMs,
-            finishedAtMs: null,
-            errorCode: null,
-            errorMessage: null,
-        };
-        await saveTask(nextTask);
+    });
+    if (!cycle.taskIds.length) {
         return {
-            claim: {
-                task: nextTask,
-                lockName,
-                lockToken,
-                scanIndex,
-            },
-            scanSummary,
+            claim: null,
+            scanSummary: newScanSummary(),
         };
+    }
+    const taskCount = cycle.taskIds.length;
+    const firstIndex = Math.max(0, Math.min(taskCount - 1, Math.floor(startIndex) || 0));
+    const scanSummary: ClaimScanSummary = newScanSummary();
+    let visited = 0;
+    while (visited < taskCount) {
+        const remaining = taskCount - visited;
+        const batchSize = Math.max(1, Math.min(RESEARCH_CLAIM_SCAN_BATCH_SIZE, remaining));
+        const batchRows: Array<{ scanIndex: number; taskId: string }> = [];
+        for (let i = 0; i < batchSize; i += 1) {
+            const scanIndex = (firstIndex + visited + i) % taskCount;
+            const taskId = cycle.taskIds[scanIndex];
+            batchRows.push({ scanIndex, taskId });
+        }
+        visited += batchSize;
+        const batchTasks = await loadResearchTasksBatchWithNulls(
+            cycle.cycleId,
+            batchRows.map((row) => row.taskId),
+        );
+
+        for (let i = 0; i < batchRows.length; i += 1) {
+            const row = batchRows[i];
+            const task = batchTasks[i];
+            scanSummary.scannedTasks += 1;
+            if (!task) {
+                scanSummary.missingTask += 1;
+                continue;
+            }
+
+            const nowMs = Date.now();
+            if (task.status === 'pending') scanSummary.pending += 1;
+            if (task.status === 'completed') scanSummary.completed += 1;
+
+            const claimability = evaluateResearchTaskClaimability({
+                status: task.status,
+                attempts: task.attempts,
+                maxAttempts: cycle.params.maxAttempts,
+                startedAtMs: task.startedAtMs,
+                runningStaleAfterMs: cycle.params.runningStaleAfterMs,
+                nowMs,
+            });
+            if (task.status === 'running') {
+                if (claimability.runningMissingStartedAt) scanSummary.runningMissingStartedAt += 1;
+                else if (claimability.runningStale) scanSummary.runningStale += 1;
+                else scanSummary.runningFresh += 1;
+            }
+
+            const retryableFailed = task.status === 'failed' && task.attempts < cycle.params.maxAttempts;
+            if (task.status === 'failed') {
+                if (retryableFailed) scanSummary.failedRetryable += 1;
+                else scanSummary.failedMaxed += 1;
+            }
+
+            const symbolCooldownActive = opts.symbolCooldownConfig.enabled
+                ? isResearchSymbolCooldownActive(opts.symbolCooldowns, task.symbol, nowMs)
+                : false;
+            const statusCanTransition = task.status === 'pending' || task.status === 'running';
+            const shouldTryClaimLock =
+                statusCanTransition &&
+                (symbolCooldownActive || claimability.shouldMarkFailedForAttempts || claimability.claimable);
+            if (!shouldTryClaimLock) continue;
+
+            const lockName = `${cycle.cycleId}:${row.taskId}`;
+            const lockToken = newToken(`claim:${workerId}`);
+            scanSummary.lockAttempts += 1;
+            const gotTaskLock = await tryAcquireLock(lockName, lockToken, DEFAULT_LOCK_TTL_SECONDS);
+            if (!gotTaskLock) {
+                scanSummary.lockMisses += 1;
+                continue;
+            }
+            scanSummary.locksAcquired += 1;
+
+            const latestTask = await loadResearchTask(cycle.cycleId, row.taskId);
+            if (!latestTask) {
+                scanSummary.missingTask += 1;
+                await releaseLock(lockName, lockToken);
+                continue;
+            }
+            const latestNowMs = Date.now();
+            const latestClaimability = evaluateResearchTaskClaimability({
+                status: latestTask.status,
+                attempts: latestTask.attempts,
+                maxAttempts: cycle.params.maxAttempts,
+                startedAtMs: latestTask.startedAtMs,
+                runningStaleAfterMs: cycle.params.runningStaleAfterMs,
+                nowMs: latestNowMs,
+            });
+            const latestSymbolCooldownActive = opts.symbolCooldownConfig.enabled
+                ? isResearchSymbolCooldownActive(opts.symbolCooldowns, latestTask.symbol, latestNowMs)
+                : false;
+            if (latestSymbolCooldownActive && (latestTask.status === 'pending' || latestTask.status === 'running')) {
+                const blockedUntilMs = toNonNegativeInt(
+                    opts.symbolCooldowns.symbols[normalizeSymbol(latestTask.symbol)]?.blockedUntilMs,
+                    0,
+                );
+                const blockedTask: ScalpResearchTask = {
+                    ...latestTask,
+                    status: 'failed',
+                    attempts: Math.max(latestTask.attempts, cycle.params.maxAttempts),
+                    updatedAtMs: latestNowMs,
+                    finishedAtMs: latestNowMs,
+                    errorCode: 'symbol_cooldown_active',
+                    errorMessage: `symbol_cooldown_active_until:${new Date(blockedUntilMs).toISOString()}`.slice(0, 300),
+                };
+                await saveTask(blockedTask);
+                scanSummary.symbolCooldownBlocked += 1;
+                scanSummary.failedMaxed += 1;
+                await releaseLock(lockName, lockToken);
+                continue;
+            }
+
+            if (latestClaimability.shouldMarkFailedForAttempts) {
+                const maxedTask: ScalpResearchTask = {
+                    ...latestTask,
+                    status: 'failed',
+                    attempts: Math.max(latestTask.attempts, cycle.params.maxAttempts),
+                    updatedAtMs: latestNowMs,
+                    finishedAtMs: latestNowMs,
+                    errorCode: 'max_attempts_exhausted',
+                    errorMessage: `max_attempts_exhausted:${latestTask.status}:${latestTask.attempts}/${cycle.params.maxAttempts}`.slice(
+                        0,
+                        300,
+                    ),
+                };
+                await saveTask(maxedTask);
+                scanSummary.failedMaxed += 1;
+                await releaseLock(lockName, lockToken);
+                continue;
+            }
+            if (!latestClaimability.claimable) {
+                await releaseLock(lockName, lockToken);
+                continue;
+            }
+
+            const nextTask: ScalpResearchTask = {
+                ...latestTask,
+                status: 'running',
+                attempts: latestTask.attempts + 1,
+                workerId,
+                startedAtMs: latestNowMs,
+                updatedAtMs: latestNowMs,
+                finishedAtMs: null,
+                errorCode: null,
+                errorMessage: null,
+            };
+            await saveTask(nextTask);
+            return {
+                claim: {
+                    task: nextTask,
+                    lockName,
+                    lockToken,
+                    scanIndex: row.scanIndex,
+                },
+                scanSummary,
+            };
+        }
     }
     return { claim: null, scanSummary };
 }
@@ -1451,9 +1618,37 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
     const workerRuntime = resolveResearchWorkerRuntimeConfig({
         maxRuns: params.maxRuns,
         concurrency: params.concurrency,
+        maxDurationMs: params.maxDurationMs,
     });
     const maxRuns = workerRuntime.maxRuns;
     const concurrency = workerRuntime.concurrency;
+    const maxDurationMs = workerRuntime.maxDurationMs;
+    const buildDiagnostics = (cycleTaskCount = 0): WorkerRunOutcome['diagnostics'] => ({
+        durationMs: Date.now() - startedAtMs,
+        cycleTaskCount,
+        scanTasksVisited: 0,
+        taskLockAttempts: 0,
+        taskLockAcquired: 0,
+        historyCacheHits: 0,
+        historyCacheMisses: 0,
+        historySymbolsLoaded: 0,
+        historyCandlesLoaded: 0,
+        windowCandlesProcessed: 0,
+    });
+    const buildEarlyOutcome = (cycleId: string | null, cycleTaskCount = 0): WorkerRunOutcome => ({
+        cycleId,
+        workerId,
+        maxRuns,
+        concurrency,
+        maxDurationMs,
+        attemptedRuns: 0,
+        completedRuns: 0,
+        failedRuns: 0,
+        stoppedByDurationBudget: false,
+        noClaimScanSummary: null,
+        diagnostics: buildDiagnostics(cycleTaskCount),
+        claimedTasks: [],
+    });
     const emitWorkerLog = (
         event: string,
         payload: Record<string, unknown>,
@@ -1469,290 +1664,188 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         if (level === 'warn') console.warn(line);
         else console.info(line);
     };
-    const cycleId = params.cycleId || (await loadActiveResearchCycleId());
-    if (!cycleId) {
-        emitWorkerLog(
-            'early_exit_no_cycle',
-            {
-                workerId,
-            },
-            'info',
-        );
-        return {
-            cycleId: null,
-            workerId,
-            maxRuns,
-            concurrency,
-            attemptedRuns: 0,
-            completedRuns: 0,
-            failedRuns: 0,
-            noClaimScanSummary: null,
-            diagnostics: {
-                durationMs: Date.now() - startedAtMs,
-                cycleTaskCount: 0,
-                scanTasksVisited: 0,
-                taskLockAttempts: 0,
-                taskLockAcquired: 0,
-                historyCacheHits: 0,
-                historyCacheMisses: 0,
-                historySymbolsLoaded: 0,
-                historyCandlesLoaded: 0,
-                windowCandlesProcessed: 0,
-            },
-            claimedTasks: [],
-        };
-    }
-
-    const cycle = await loadResearchCycle(cycleId);
-    if (!cycle) {
-        emitWorkerLog(
-            'early_exit_cycle_not_found',
-            {
-                cycleId,
-                workerId,
-            },
-            'warn',
-        );
-        return {
-            cycleId,
-            workerId,
-            maxRuns,
-            concurrency,
-            attemptedRuns: 0,
-            completedRuns: 0,
-            failedRuns: 0,
-            noClaimScanSummary: null,
-            diagnostics: {
-                durationMs: Date.now() - startedAtMs,
-                cycleTaskCount: 0,
-                scanTasksVisited: 0,
-                taskLockAttempts: 0,
-                taskLockAcquired: 0,
-                historyCacheHits: 0,
-                historyCacheMisses: 0,
-                historySymbolsLoaded: 0,
-                historyCandlesLoaded: 0,
-                windowCandlesProcessed: 0,
-            },
-            claimedTasks: [],
-        };
-    }
-    if (cycle.status !== 'running') {
-        emitWorkerLog(
-            'early_exit_cycle_not_running',
-            {
-                cycleId,
-                workerId,
-                cycleStatus: cycle.status,
-                cycleTaskCount: cycle.taskIds.length,
-            },
-            'warn',
-        );
-        return {
-            cycleId,
-            workerId,
-            maxRuns,
-            concurrency,
-            attemptedRuns: 0,
-            completedRuns: 0,
-            failedRuns: 0,
-            noClaimScanSummary: null,
-            diagnostics: {
-                durationMs: Date.now() - startedAtMs,
-                cycleTaskCount: cycle.taskIds.length,
-                scanTasksVisited: 0,
-                taskLockAttempts: 0,
-                taskLockAcquired: 0,
-                historyCacheHits: 0,
-                historyCacheMisses: 0,
-                historySymbolsLoaded: 0,
-                historyCandlesLoaded: 0,
-                windowCandlesProcessed: 0,
-            },
-            claimedTasks: [],
-        };
-    }
-    const diagnostics: WorkerDiagnostics = {
-        durationMs: 0,
-        cycleTaskCount: cycle.taskIds.length,
-        scanTasksVisited: 0,
-        taskLockAttempts: 0,
-        taskLockAcquired: 0,
-        historyCacheHits: 0,
-        historyCacheMisses: 0,
-        historySymbolsLoaded: 0,
-        historyCandlesLoaded: 0,
-        windowCandlesProcessed: 0,
-    };
-    const out: WorkerRunOutcome = {
-        cycleId,
-        workerId,
-        maxRuns,
-        concurrency,
-        attemptedRuns: 0,
-        completedRuns: 0,
-        failedRuns: 0,
-        noClaimScanSummary: null,
-        diagnostics,
-        claimedTasks: [],
-    };
-    const symbolCooldownConfig = resolveResearchSymbolCooldownConfig();
-    const symbolCooldowns = await loadResearchSymbolCooldownSnapshot();
-    let symbolCooldownsDirty = false;
-    const historyCache = new Map<string, HistoryRow[]>();
-    let nextScanIndex = await loadClaimCursorIndex(cycleId);
-    let lastNoClaimScanSummary: ClaimScanSummary | null = null;
-    let stopAfterCurrentBatch = false;
-    let claimIterations = 0;
-    const shouldWarnNoClaim = (scanSummary: ClaimScanSummary): boolean =>
-        scanSummary.pending > 0 ||
-        scanSummary.runningStale > 0 ||
-        scanSummary.runningMissingStartedAt > 0 ||
-        scanSummary.failedRetryable > 0 ||
-        scanSummary.lockMisses > 0;
-    type ClaimedTaskRunOutcome = {
-        ok: boolean;
-        symbolCooldownsDirty: boolean;
-        row: WorkerRunOutcome['claimedTasks'][number];
-    };
-    const runClaimedTask = async (params: {
-        claim: {
-            task: ScalpResearchTask;
-            lockName: string;
-            lockToken: string;
-            scanIndex: number;
-        };
-        taskStartedAtMs: number;
-    }): Promise<ClaimedTaskRunOutcome> => {
-        const { claim, taskStartedAtMs } = params;
+    const persistHeartbeat = async (params: {
+        status: ResearchWorkerHeartbeatStatus;
+        cycleId: string | null;
+        attemptedRuns?: number;
+        completedRuns?: number;
+        failedRuns?: number;
+        stoppedByDurationBudget?: boolean;
+        noClaimScanSummary?: WorkerNoClaimScanSummary | null;
+        finishedAtMs?: number | null;
+        durationMs?: number | null;
+        error?: string | null;
+    }): Promise<void> => {
+        const nowMs = Date.now();
         try {
-            const result = await runResearchTaskWithTimeout(
-                claim.task,
-                cycle.params.minCandlesPerTask,
-                historyCache,
-                diagnostics,
-                RESEARCH_TASK_TIMEOUT_MS,
-            );
-            const completedTask: ScalpResearchTask = {
-                ...claim.task,
-                status: 'completed',
-                result,
-                updatedAtMs: Date.now(),
-                finishedAtMs: Date.now(),
-                errorCode: null,
-                errorMessage: null,
-            };
-            await saveTask(completedTask);
-            let cooldownChanged = false;
-            if (symbolCooldownConfig.enabled) {
-                const cleared = clearResearchSymbolFailureCounters(symbolCooldowns, completedTask.symbol, Date.now());
-                if (cleared) cooldownChanged = true;
-            }
-            return {
-                ok: true,
-                symbolCooldownsDirty: cooldownChanged,
-                row: {
-                    taskId: completedTask.taskId,
-                    symbol: completedTask.symbol,
-                    strategyId: completedTask.strategyId,
-                    tuneId: completedTask.tuneId,
-                    status: completedTask.status,
-                    errorCode: null,
-                    errorMessage: null,
-                    trades: result.trades,
-                    netR: result.netR,
-                    durationMs: Date.now() - taskStartedAtMs,
-                    scanIndex: claim.scanIndex,
-                },
-            };
+            await saveResearchWorkerHeartbeat({
+                version: 1,
+                updatedAtMs: nowMs,
+                status: params.status,
+                cycleId: params.cycleId,
+                workerId,
+                maxRuns,
+                concurrency,
+                maxDurationMs,
+                startedAtMs,
+                finishedAtMs:
+                    params.finishedAtMs === undefined
+                        ? params.status === 'started'
+                            ? null
+                            : nowMs
+                        : params.finishedAtMs,
+                durationMs: params.durationMs === undefined ? (params.status === 'started' ? null : nowMs - startedAtMs) : params.durationMs,
+                attemptedRuns: toNonNegativeInt(params.attemptedRuns, 0),
+                completedRuns: toNonNegativeInt(params.completedRuns, 0),
+                failedRuns: toNonNegativeInt(params.failedRuns, 0),
+                stoppedByDurationBudget: params.stoppedByDurationBudget === true,
+                noClaimScanSummary: params.noClaimScanSummary || null,
+                error: toOptionalText(params.error, 300),
+            });
         } catch (err: any) {
-            const failedTask: ScalpResearchTask = {
-                ...claim.task,
-                status: 'failed',
-                updatedAtMs: Date.now(),
-                finishedAtMs: Date.now(),
-                errorCode: String(err?.code || 'task_failed'),
-                errorMessage: String(err?.message || err || 'task_failed').slice(0, 300),
-            };
-            await saveTask(failedTask);
-            let cooldownChanged = false;
-            if (
-                symbolCooldownConfig.enabled &&
-                isResearchTaskFailureEligibleForSymbolCooldown(failedTask.errorCode, failedTask.errorMessage)
-            ) {
-                const failureUpdate = registerResearchSymbolFailure(symbolCooldowns, {
-                    symbol: failedTask.symbol,
-                    errorCode: failedTask.errorCode,
-                    errorMessage: failedTask.errorMessage,
-                    cycleId,
-                    nowMs: Date.now(),
-                    config: symbolCooldownConfig,
-                });
-                if (failureUpdate.changed) cooldownChanged = true;
-                if (failureUpdate.blockedNow) {
-                    emitWorkerLog(
-                        'symbol_cooldown_activated',
-                        {
-                            cycleId,
-                            workerId,
-                            symbol: failedTask.symbol,
-                            blockedUntilMs: failureUpdate.blockedUntilMs,
-                            blockedUntilIso: new Date(failureUpdate.blockedUntilMs).toISOString(),
-                            errorCode: failedTask.errorCode,
-                            errorMessage: failedTask.errorMessage,
-                            failureThreshold: symbolCooldownConfig.failureThreshold,
-                            failureWindowMs: symbolCooldownConfig.failureWindowMs,
-                            cooldownMs: symbolCooldownConfig.cooldownMs,
-                        },
-                        'warn',
-                        true,
-                    );
-                }
-            }
             emitWorkerLog(
-                'task_failed',
+                'worker_heartbeat_save_failed',
                 {
-                    cycleId,
                     workerId,
-                    taskId: failedTask.taskId,
-                    symbol: failedTask.symbol,
-                    strategyId: failedTask.strategyId,
-                    tuneId: failedTask.tuneId,
-                    attempts: failedTask.attempts,
-                    maxAttemptsCfg: cycle.params.maxAttempts,
-                    errorCode: failedTask.errorCode,
-                    errorMessage: failedTask.errorMessage,
-                    scanIndex: claim.scanIndex,
+                    cycleId: params.cycleId,
+                    status: params.status,
+                    error: String(err?.message || err),
                 },
                 'warn',
                 true,
             );
-            return {
-                ok: false,
-                symbolCooldownsDirty: cooldownChanged,
-                row: {
-                    taskId: failedTask.taskId,
-                    symbol: failedTask.symbol,
-                    strategyId: failedTask.strategyId,
-                    tuneId: failedTask.tuneId,
-                    status: failedTask.status,
-                    errorCode: failedTask.errorCode,
-                    errorMessage: failedTask.errorMessage,
-                    trades: failedTask.result?.trades || null,
-                    netR: failedTask.result?.netR || null,
-                    durationMs: Date.now() - taskStartedAtMs,
-                    scanIndex: claim.scanIndex,
-                },
-            };
-        } finally {
-            await releaseLock(claim.lockName, claim.lockToken);
         }
     };
 
-    while (out.attemptedRuns < maxRuns) {
-        const remainingRuns = maxRuns - out.attemptedRuns;
-        const batchSize = Math.max(1, Math.min(concurrency, remainingRuns));
-        const batchClaims: Array<{
+    let heartbeatCycleId: string | null = String(params.cycleId || '').trim() || null;
+    try {
+        await persistHeartbeat({
+            status: 'started',
+            cycleId: heartbeatCycleId,
+            finishedAtMs: null,
+            durationMs: null,
+        });
+
+        const cycleId = params.cycleId || (await loadActiveResearchCycleId());
+        heartbeatCycleId = cycleId || null;
+        if (!cycleId) {
+            emitWorkerLog(
+                'early_exit_no_cycle',
+                {
+                    workerId,
+                },
+                'info',
+            );
+            const out = buildEarlyOutcome(null, 0);
+            await persistHeartbeat({
+                status: 'no_cycle',
+                cycleId: null,
+                attemptedRuns: out.attemptedRuns,
+                completedRuns: out.completedRuns,
+                failedRuns: out.failedRuns,
+                stoppedByDurationBudget: out.stoppedByDurationBudget,
+                noClaimScanSummary: out.noClaimScanSummary,
+                finishedAtMs: Date.now(),
+                durationMs: out.diagnostics.durationMs,
+            });
+            return out;
+        }
+
+        const cycle = await loadResearchCycle(cycleId);
+        if (!cycle) {
+            emitWorkerLog(
+                'early_exit_cycle_not_found',
+                {
+                    cycleId,
+                    workerId,
+                },
+                'warn',
+            );
+            const out = buildEarlyOutcome(cycleId, 0);
+            await persistHeartbeat({
+                status: 'cycle_not_found',
+                cycleId,
+                attemptedRuns: out.attemptedRuns,
+                completedRuns: out.completedRuns,
+                failedRuns: out.failedRuns,
+                stoppedByDurationBudget: out.stoppedByDurationBudget,
+                noClaimScanSummary: out.noClaimScanSummary,
+                finishedAtMs: Date.now(),
+                durationMs: out.diagnostics.durationMs,
+            });
+            return out;
+        }
+        if (cycle.status !== 'running') {
+            emitWorkerLog(
+                'early_exit_cycle_not_running',
+                {
+                    cycleId,
+                    workerId,
+                    cycleStatus: cycle.status,
+                    cycleTaskCount: cycle.taskIds.length,
+                },
+                'warn',
+            );
+            const out = buildEarlyOutcome(cycleId, cycle.taskIds.length);
+            await persistHeartbeat({
+                status: 'cycle_not_running',
+                cycleId,
+                attemptedRuns: out.attemptedRuns,
+                completedRuns: out.completedRuns,
+                failedRuns: out.failedRuns,
+                stoppedByDurationBudget: out.stoppedByDurationBudget,
+                noClaimScanSummary: out.noClaimScanSummary,
+                finishedAtMs: Date.now(),
+                durationMs: out.diagnostics.durationMs,
+            });
+            return out;
+        }
+        const diagnostics: WorkerDiagnostics = {
+            durationMs: 0,
+            cycleTaskCount: cycle.taskIds.length,
+            scanTasksVisited: 0,
+            taskLockAttempts: 0,
+            taskLockAcquired: 0,
+            historyCacheHits: 0,
+            historyCacheMisses: 0,
+            historySymbolsLoaded: 0,
+            historyCandlesLoaded: 0,
+            windowCandlesProcessed: 0,
+        };
+        const out: WorkerRunOutcome = {
+            cycleId,
+            workerId,
+            maxRuns,
+            concurrency,
+            maxDurationMs,
+            attemptedRuns: 0,
+            completedRuns: 0,
+            failedRuns: 0,
+            stoppedByDurationBudget: false,
+            noClaimScanSummary: null,
+            diagnostics,
+            claimedTasks: [],
+        };
+        const symbolCooldownConfig = resolveResearchSymbolCooldownConfig();
+        const symbolCooldowns = await loadResearchSymbolCooldownSnapshot();
+        let symbolCooldownsDirty = false;
+        const historyCache = new Map<string, HistoryRow[]>();
+        let nextScanIndex = await loadClaimCursorIndex(cycleId);
+        let lastNoClaimScanSummary: ClaimScanSummary | null = null;
+        let stopAfterCurrentBatch = false;
+        let claimIterations = 0;
+        const shouldWarnNoClaim = (scanSummary: ClaimScanSummary): boolean =>
+            scanSummary.pending > 0 ||
+            scanSummary.runningStale > 0 ||
+            scanSummary.runningMissingStartedAt > 0 ||
+            scanSummary.failedRetryable > 0 ||
+            scanSummary.lockMisses > 0;
+        type ClaimedTaskRunOutcome = {
+            ok: boolean;
+            symbolCooldownsDirty: boolean;
+            row: WorkerRunOutcome['claimedTasks'][number];
+        };
+        const runClaimedTask = async (params: {
             claim: {
                 task: ScalpResearchTask;
                 lockName: string;
@@ -1760,117 +1853,291 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
                 scanIndex: number;
             };
             taskStartedAtMs: number;
-        }> = [];
-
-        for (let i = 0; i < batchSize; i += 1) {
-            claimIterations += 1;
-            const claimOutcome = await claimNextTask(cycle, workerId, nextScanIndex, {
-                symbolCooldowns,
-                symbolCooldownConfig,
-            });
-            diagnostics.scanTasksVisited += claimOutcome.scanSummary.scannedTasks;
-            diagnostics.taskLockAttempts += claimOutcome.scanSummary.lockAttempts;
-            diagnostics.taskLockAcquired += claimOutcome.scanSummary.locksAcquired;
-            if (!claimOutcome.claim) {
-                lastNoClaimScanSummary = claimOutcome.scanSummary;
-                out.noClaimScanSummary = claimOutcome.scanSummary;
-                const warnNoClaim = shouldWarnNoClaim(claimOutcome.scanSummary);
+        }): Promise<ClaimedTaskRunOutcome> => {
+            const { claim, taskStartedAtMs } = params;
+            try {
+                const result = await runResearchTaskWithTimeout(
+                    claim.task,
+                    cycle.params.minCandlesPerTask,
+                    historyCache,
+                    diagnostics,
+                    RESEARCH_TASK_TIMEOUT_MS,
+                );
+                const completedTask: ScalpResearchTask = {
+                    ...claim.task,
+                    status: 'completed',
+                    result,
+                    updatedAtMs: Date.now(),
+                    finishedAtMs: Date.now(),
+                    errorCode: null,
+                    errorMessage: null,
+                };
+                await saveTask(completedTask);
+                let cooldownChanged = false;
+                if (symbolCooldownConfig.enabled) {
+                    const cleared = clearResearchSymbolFailureCounters(symbolCooldowns, completedTask.symbol, Date.now());
+                    if (cleared) cooldownChanged = true;
+                }
+                return {
+                    ok: true,
+                    symbolCooldownsDirty: cooldownChanged,
+                    row: {
+                        taskId: completedTask.taskId,
+                        symbol: completedTask.symbol,
+                        strategyId: completedTask.strategyId,
+                        tuneId: completedTask.tuneId,
+                        status: completedTask.status,
+                        errorCode: null,
+                        errorMessage: null,
+                        trades: result.trades,
+                        netR: result.netR,
+                        durationMs: Date.now() - taskStartedAtMs,
+                        scanIndex: claim.scanIndex,
+                    },
+                };
+            } catch (err: any) {
+                const failedTask: ScalpResearchTask = {
+                    ...claim.task,
+                    status: 'failed',
+                    updatedAtMs: Date.now(),
+                    finishedAtMs: Date.now(),
+                    errorCode: String(err?.code || 'task_failed'),
+                    errorMessage: String(err?.message || err || 'task_failed').slice(0, 300),
+                };
+                await saveTask(failedTask);
+                let cooldownChanged = false;
+                if (
+                    symbolCooldownConfig.enabled &&
+                    isResearchTaskFailureEligibleForSymbolCooldown(failedTask.errorCode, failedTask.errorMessage)
+                ) {
+                    const failureUpdate = registerResearchSymbolFailure(symbolCooldowns, {
+                        symbol: failedTask.symbol,
+                        errorCode: failedTask.errorCode,
+                        errorMessage: failedTask.errorMessage,
+                        cycleId,
+                        nowMs: Date.now(),
+                        config: symbolCooldownConfig,
+                    });
+                    if (failureUpdate.changed) cooldownChanged = true;
+                    if (failureUpdate.blockedNow) {
+                        emitWorkerLog(
+                            'symbol_cooldown_activated',
+                            {
+                                cycleId,
+                                workerId,
+                                symbol: failedTask.symbol,
+                                blockedUntilMs: failureUpdate.blockedUntilMs,
+                                blockedUntilIso: new Date(failureUpdate.blockedUntilMs).toISOString(),
+                                errorCode: failedTask.errorCode,
+                                errorMessage: failedTask.errorMessage,
+                                failureThreshold: symbolCooldownConfig.failureThreshold,
+                                failureWindowMs: symbolCooldownConfig.failureWindowMs,
+                                cooldownMs: symbolCooldownConfig.cooldownMs,
+                            },
+                            'warn',
+                            true,
+                        );
+                    }
+                }
                 emitWorkerLog(
-                    'no_claimable_tasks',
+                    'task_failed',
                     {
                         cycleId,
                         workerId,
-                        iteration: claimIterations,
-                        maxRuns,
-                        concurrency,
-                        nextScanIndex,
-                        cycleTaskCount: cycle.taskIds.length,
-                        runningStaleAfterMs: cycle.params.runningStaleAfterMs,
+                        taskId: failedTask.taskId,
+                        symbol: failedTask.symbol,
+                        strategyId: failedTask.strategyId,
+                        tuneId: failedTask.tuneId,
+                        attempts: failedTask.attempts,
                         maxAttemptsCfg: cycle.params.maxAttempts,
-                        plannedBatchSize: batchSize,
-                        claimedInBatch: batchClaims.length,
-                        scanSummary: claimOutcome.scanSummary,
+                        errorCode: failedTask.errorCode,
+                        errorMessage: failedTask.errorMessage,
+                        scanIndex: claim.scanIndex,
                     },
-                    warnNoClaim ? 'warn' : 'info',
-                    warnNoClaim,
+                    'warn',
+                    true,
                 );
-                stopAfterCurrentBatch = true;
+                return {
+                    ok: false,
+                    symbolCooldownsDirty: cooldownChanged,
+                    row: {
+                        taskId: failedTask.taskId,
+                        symbol: failedTask.symbol,
+                        strategyId: failedTask.strategyId,
+                        tuneId: failedTask.tuneId,
+                        status: failedTask.status,
+                        errorCode: failedTask.errorCode,
+                        errorMessage: failedTask.errorMessage,
+                        trades: failedTask.result?.trades || null,
+                        netR: failedTask.result?.netR || null,
+                        durationMs: Date.now() - taskStartedAtMs,
+                        scanIndex: claim.scanIndex,
+                    },
+                };
+            } finally {
+                await releaseLock(claim.lockName, claim.lockToken);
+            }
+        };
+
+        while (out.attemptedRuns < maxRuns) {
+            if (Date.now() - startedAtMs >= maxDurationMs) {
+                out.stoppedByDurationBudget = true;
                 break;
             }
-            const claim = claimOutcome.claim;
-            nextScanIndex = cycle.taskIds.length > 0 ? (claim.scanIndex + 1) % cycle.taskIds.length : 0;
-            out.attemptedRuns += 1;
-            batchClaims.push({
-                claim,
-                taskStartedAtMs: Date.now(),
-            });
-        }
+            const remainingRuns = maxRuns - out.attemptedRuns;
+            const batchSize = Math.max(1, Math.min(concurrency, remainingRuns));
+            const batchClaims: Array<{
+                claim: {
+                    task: ScalpResearchTask;
+                    lockName: string;
+                    lockToken: string;
+                    scanIndex: number;
+                };
+                taskStartedAtMs: number;
+            }> = [];
 
-        if (batchClaims.length > 0) {
-            const batchResults = await Promise.all(batchClaims.map((row) => runClaimedTask(row)));
-            for (const result of batchResults) {
-                if (result.ok) out.completedRuns += 1;
-                else out.failedRuns += 1;
-                if (result.symbolCooldownsDirty) symbolCooldownsDirty = true;
-                out.claimedTasks.push(result.row);
+            for (let i = 0; i < batchSize; i += 1) {
+                if (Date.now() - startedAtMs >= maxDurationMs) {
+                    out.stoppedByDurationBudget = true;
+                    stopAfterCurrentBatch = true;
+                    break;
+                }
+                claimIterations += 1;
+                const claimOutcome = await claimNextTask(cycle, workerId, nextScanIndex, {
+                    symbolCooldowns,
+                    symbolCooldownConfig,
+                });
+                diagnostics.scanTasksVisited += claimOutcome.scanSummary.scannedTasks;
+                diagnostics.taskLockAttempts += claimOutcome.scanSummary.lockAttempts;
+                diagnostics.taskLockAcquired += claimOutcome.scanSummary.locksAcquired;
+                if (!claimOutcome.claim) {
+                    lastNoClaimScanSummary = claimOutcome.scanSummary;
+                    out.noClaimScanSummary = claimOutcome.scanSummary;
+                    const warnNoClaim = shouldWarnNoClaim(claimOutcome.scanSummary);
+                    emitWorkerLog(
+                        'no_claimable_tasks',
+                        {
+                            cycleId,
+                            workerId,
+                            iteration: claimIterations,
+                            maxRuns,
+                            concurrency,
+                            maxDurationMs,
+                            nextScanIndex,
+                            cycleTaskCount: cycle.taskIds.length,
+                            runningStaleAfterMs: cycle.params.runningStaleAfterMs,
+                            maxAttemptsCfg: cycle.params.maxAttempts,
+                            plannedBatchSize: batchSize,
+                            claimedInBatch: batchClaims.length,
+                            scanSummary: claimOutcome.scanSummary,
+                        },
+                        warnNoClaim ? 'warn' : 'info',
+                        warnNoClaim,
+                    );
+                    stopAfterCurrentBatch = true;
+                    break;
+                }
+                const claim = claimOutcome.claim;
+                nextScanIndex = cycle.taskIds.length > 0 ? (claim.scanIndex + 1) % cycle.taskIds.length : 0;
+                out.attemptedRuns += 1;
+                batchClaims.push({
+                    claim,
+                    taskStartedAtMs: Date.now(),
+                });
+            }
+
+            if (batchClaims.length > 0) {
+                const batchResults = await Promise.all(batchClaims.map((row) => runClaimedTask(row)));
+                for (const result of batchResults) {
+                    if (result.ok) out.completedRuns += 1;
+                    else out.failedRuns += 1;
+                    if (result.symbolCooldownsDirty) symbolCooldownsDirty = true;
+                    out.claimedTasks.push(result.row);
+                }
+            }
+
+            if (Date.now() - startedAtMs >= maxDurationMs) {
+                out.stoppedByDurationBudget = true;
+            }
+            if (stopAfterCurrentBatch || batchClaims.length === 0 || out.stoppedByDurationBudget) {
+                break;
             }
         }
 
-        if (stopAfterCurrentBatch || batchClaims.length === 0) {
-            break;
+        if (out.attemptedRuns > 0) {
+            await saveClaimCursorIndex(cycleId, nextScanIndex);
         }
-    }
-
-    if (out.attemptedRuns > 0) {
-        await saveClaimCursorIndex(cycleId, nextScanIndex);
-    }
-    if (symbolCooldownsDirty) {
-        try {
-            await saveResearchSymbolCooldownSnapshot(symbolCooldowns);
-        } catch (err: any) {
-            emitWorkerLog(
-                'symbol_cooldown_save_failed',
-                {
-                    cycleId,
-                    workerId,
-                    error: String(err?.message || err),
-                },
-                'warn',
-                true,
-            );
+        if (symbolCooldownsDirty) {
+            try {
+                await saveResearchSymbolCooldownSnapshot(symbolCooldowns);
+            } catch (err: any) {
+                emitWorkerLog(
+                    'symbol_cooldown_save_failed',
+                    {
+                        cycleId,
+                        workerId,
+                        error: String(err?.message || err),
+                    },
+                    'warn',
+                    true,
+                );
+            }
         }
-    }
-    out.diagnostics.durationMs = Date.now() - startedAtMs;
-    const shouldWarnCompletion =
-        out.failedRuns > 0 ||
-        (out.attemptedRuns === 0 &&
-            lastNoClaimScanSummary !== null &&
-            (lastNoClaimScanSummary.pending > 0 ||
-                lastNoClaimScanSummary.runningFresh > 0 ||
-                lastNoClaimScanSummary.runningStale > 0 ||
-                lastNoClaimScanSummary.runningMissingStartedAt > 0 ||
-                lastNoClaimScanSummary.failedRetryable > 0 ||
-                lastNoClaimScanSummary.lockMisses > 0));
-    emitWorkerLog(
-        'run_completed',
-        {
+        out.diagnostics.durationMs = Date.now() - startedAtMs;
+        const shouldWarnCompletion =
+            out.failedRuns > 0 ||
+            (out.attemptedRuns === 0 &&
+                lastNoClaimScanSummary !== null &&
+                (lastNoClaimScanSummary.pending > 0 ||
+                    lastNoClaimScanSummary.runningFresh > 0 ||
+                    lastNoClaimScanSummary.runningStale > 0 ||
+                    lastNoClaimScanSummary.runningMissingStartedAt > 0 ||
+                    lastNoClaimScanSummary.failedRetryable > 0 ||
+                    lastNoClaimScanSummary.lockMisses > 0));
+        emitWorkerLog(
+            'run_completed',
+            {
+                cycleId,
+                workerId,
+                maxRuns,
+                concurrency,
+                maxDurationMs,
+                stoppedByDurationBudget: out.stoppedByDurationBudget,
+                attemptedRuns: out.attemptedRuns,
+                completedRuns: out.completedRuns,
+                failedRuns: out.failedRuns,
+                nextScanIndex,
+                claimIterations,
+                diagnostics: out.diagnostics,
+                lastNoClaimScanSummary,
+                claimedTaskIds: out.claimedTasks.slice(0, 10).map((row) => row.taskId),
+            },
+            shouldWarnCompletion ? 'warn' : 'info',
+            shouldWarnCompletion,
+        );
+        await persistHeartbeat({
+            status: 'completed',
             cycleId,
-            workerId,
-            maxRuns,
-            concurrency,
             attemptedRuns: out.attemptedRuns,
             completedRuns: out.completedRuns,
             failedRuns: out.failedRuns,
-            nextScanIndex,
-            claimIterations,
-            diagnostics: out.diagnostics,
-            lastNoClaimScanSummary,
-            claimedTaskIds: out.claimedTasks.slice(0, 10).map((row) => row.taskId),
-        },
-        shouldWarnCompletion ? 'warn' : 'info',
-        shouldWarnCompletion,
-    );
-    return out;
+            stoppedByDurationBudget: out.stoppedByDurationBudget,
+            noClaimScanSummary: out.noClaimScanSummary,
+            finishedAtMs: Date.now(),
+            durationMs: out.diagnostics.durationMs,
+            error: null,
+        });
+        return out;
+    } catch (err: any) {
+        await persistHeartbeat({
+            status: 'failed',
+            cycleId: heartbeatCycleId,
+            finishedAtMs: Date.now(),
+            durationMs: Date.now() - startedAtMs,
+            error: String(err?.message || err || 'worker_failed').slice(0, 300),
+        });
+        throw err;
+    }
 }
 
 export function summarizeResearchTasks(cycle: ScalpResearchCycleSnapshot, tasks: ScalpResearchTask[]): ScalpResearchCycleSummary {

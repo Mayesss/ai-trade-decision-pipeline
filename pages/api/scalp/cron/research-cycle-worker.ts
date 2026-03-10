@@ -45,6 +45,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const workerId = firstQueryValue(req.query.workerId);
     const maxRuns = parsePositiveInt(firstQueryValue(req.query.maxRuns));
     const concurrency = parsePositiveInt(firstQueryValue(req.query.concurrency));
+    const maxDurationMs = parsePositiveInt(firstQueryValue(req.query.maxDurationMs));
     const debug = parseBoolParam(req.query.debug, false);
     const aggregateAfter = parseBoolParam(req.query.aggregateAfter, true);
     const finalizeWhenDone = parseBoolParam(req.query.finalizeWhenDone, true);
@@ -52,7 +53,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const requireCompletedCycleForSync = parseBoolParam(req.query.requireCompletedCycleForSync, true);
 
     try {
-        const worker = await runResearchWorker({ cycleId, workerId, maxRuns, concurrency, debug });
+        const worker = await runResearchWorker({ cycleId, workerId, maxRuns, concurrency, maxDurationMs, debug });
         const noClaim = worker.noClaimScanSummary;
         const shouldWarnNoProgress =
             worker.attemptedRuns === 0 &&
@@ -65,7 +66,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 noClaim.lockMisses > 0);
         const workerMessage =
             worker.attemptedRuns > 0
-                ? `worker processed ${worker.attemptedRuns} tasks (completed=${worker.completedRuns}, failed=${worker.failedRuns}, concurrency=${worker.concurrency})`
+                ? `worker processed ${worker.attemptedRuns} tasks (completed=${worker.completedRuns}, failed=${worker.failedRuns}, concurrency=${worker.concurrency}${worker.stoppedByDurationBudget ? ', stoppedByDurationBudget=true' : ''})`
                 : noClaim
                   ? `no claimable tasks (pending=${noClaim.pending}, runningFresh=${noClaim.runningFresh}, runningStale=${noClaim.runningStale}, runningMissingStartedAt=${noClaim.runningMissingStartedAt}, failedPendingManualRetry=${noClaim.failedRetryable}, failedMaxed=${noClaim.failedMaxed}, symbolCooldownBlocked=${noClaim.symbolCooldownBlocked}, lockMisses=${noClaim.lockMisses})`
                   : 'worker did not claim any tasks';
@@ -96,9 +97,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     cycleId: worker.cycleId,
                     workerId: worker.workerId,
                     maxRuns: worker.maxRuns,
+                    maxDurationMs: worker.maxDurationMs,
                     attemptedRuns: worker.attemptedRuns,
                     completedRuns: worker.completedRuns,
                     failedRuns: worker.failedRuns,
+                    stoppedByDurationBudget: worker.stoppedByDurationBudget,
                     noClaimScanSummary: worker.noClaimScanSummary,
                     aggregateStatus: aggregate?.summary?.status || null,
                 }),
@@ -111,9 +114,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     cycleId: worker.cycleId,
                     workerId: worker.workerId,
                     maxRuns: worker.maxRuns,
+                    maxDurationMs: worker.maxDurationMs,
                     attemptedRuns: worker.attemptedRuns,
                     completedRuns: worker.completedRuns,
                     failedRuns: worker.failedRuns,
+                    stoppedByDurationBudget: worker.stoppedByDurationBudget,
                 }),
             );
         }
@@ -143,6 +148,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 cycleId: cycleId || null,
                 workerId: workerId || null,
                 maxRuns: maxRuns ?? null,
+                maxDurationMs: maxDurationMs ?? null,
                 debug,
                 error: err?.message || String(err),
                 stack: err?.stack || null,
