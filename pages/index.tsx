@@ -5031,6 +5031,7 @@ export default function Home() {
                           <th className="px-3 py-1">Profitable %</th>
                           <th className="px-3 py-1">Max DD</th>
                           <th className="px-3 py-1">Guardrail</th>
+                          <th className="px-3 py-1">Enabled</th>
                           <th className="px-3 py-1">Promotion</th>
                         </tr>
                       </thead>
@@ -5064,6 +5065,21 @@ export default function Home() {
                                 {maxDd === null ? '—' : `${maxDd.toFixed(2)}R`}
                               </td>
                               <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{guardrail}</td>
+                              <td className="px-3 py-3">
+                                <span
+                                  className={`rounded-full border px-2 py-1 text-[11px] ${
+                                    row.enabled
+                                      ? scalpDarkMode
+                                        ? 'border-sky-300/40 bg-sky-300/15 text-sky-200'
+                                        : 'border-sky-200 bg-sky-50 text-sky-700'
+                                      : scalpDarkMode
+                                      ? 'border-zinc-300/40 bg-zinc-300/15 text-zinc-200'
+                                      : 'border-zinc-200 bg-zinc-100 text-zinc-700'
+                                  }`}
+                                >
+                                  {row.enabled ? 'enabled' : 'disabled'}
+                                </span>
+                              </td>
                               <td className="rounded-r-xl px-3 py-3">
                                 <span
                                   className={`rounded-full border px-2 py-1 text-[11px] ${
