@@ -30,6 +30,11 @@ const DEFAULT_MAX_TASKS = 4_000;
 const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_RUNNING_STALE_AFTER_MS = 20 * 60 * 1000;
 const DEFAULT_LOCK_TTL_SECONDS = 120;
+const DEFAULT_TASK_TIMEOUT_MS = 60_000;
+const RESEARCH_TASK_TIMEOUT_MS = Math.max(
+    1_000,
+    Math.min(10 * 60_000, Math.floor(Number(process.env.SCALP_RESEARCH_TASK_TIMEOUT_MS) || DEFAULT_TASK_TIMEOUT_MS)),
+);
 const RESEARCH_KV_HTTP_TIMEOUT_MS = Math.max(
     1000,
     Math.min(60_000, Math.floor(Number(process.env.SCALP_RESEARCH_KV_HTTP_TIMEOUT_MS) || 10_000)),
@@ -579,6 +584,79 @@ export async function loadResearchTask(cycleId: string, taskId: string): Promise
     return raw as unknown as ScalpResearchTask;
 }
 
+export async function retryResearchTask(params: {
+    cycleId?: string;
+    taskId: string;
+    resetAttempts?: boolean;
+}): Promise<{
+    cycle: ScalpResearchCycleSnapshot;
+    task: ScalpResearchTask;
+}> {
+    const requestedCycleId = String(params.cycleId || '').trim();
+    const taskId = String(params.taskId || '').trim();
+    if (!taskId) {
+        throw Object.assign(new Error('task_id_required'), { code: 'task_id_required' });
+    }
+
+    const activeCycleId = await loadActiveResearchCycleId();
+    const cycleId = requestedCycleId || activeCycleId || '';
+    if (!cycleId) {
+        throw Object.assign(new Error('research_cycle_not_found'), { code: 'research_cycle_not_found' });
+    }
+    if (activeCycleId && cycleId !== activeCycleId) {
+        throw Object.assign(new Error('research_cycle_not_active'), { code: 'research_cycle_not_active' });
+    }
+
+    const cycle = await loadResearchCycle(cycleId);
+    if (!cycle) {
+        throw Object.assign(new Error('research_cycle_not_found'), { code: 'research_cycle_not_found' });
+    }
+    if (cycle.status !== 'running') {
+        throw Object.assign(new Error('research_cycle_not_running'), { code: 'research_cycle_not_running' });
+    }
+    if (!cycle.taskIds.includes(taskId)) {
+        throw Object.assign(new Error('task_not_found'), { code: 'task_not_found' });
+    }
+
+    const lockName = `${cycleId}:${taskId}`;
+    const lockToken = newToken('retry');
+    const gotTaskLock = await tryAcquireLock(lockName, lockToken, DEFAULT_LOCK_TTL_SECONDS);
+    if (!gotTaskLock) {
+        throw Object.assign(new Error('task_locked'), { code: 'task_locked' });
+    }
+
+    try {
+        const task = await loadResearchTask(cycleId, taskId);
+        if (!task) {
+            throw Object.assign(new Error('task_not_found'), { code: 'task_not_found' });
+        }
+        if (task.status !== 'failed') {
+            throw Object.assign(new Error('task_not_failed'), { code: 'task_not_failed' });
+        }
+
+        const nowMs = Date.now();
+        const nextTask: ScalpResearchTask = {
+            ...task,
+            status: 'pending',
+            attempts: params.resetAttempts === false ? task.attempts : 0,
+            updatedAtMs: nowMs,
+            workerId: null,
+            startedAtMs: null,
+            finishedAtMs: null,
+            errorCode: null,
+            errorMessage: null,
+            result: null,
+        };
+        await saveTask(nextTask);
+        return {
+            cycle,
+            task: nextTask,
+        };
+    } finally {
+        await releaseLock(lockName, lockToken);
+    }
+}
+
 export async function loadActiveResearchCycleId(): Promise<string | null> {
     const raw = await kvGetJson<{ cycleId?: string }>(RESEARCH_ACTIVE_CYCLE_KEY);
     const cycleId = String(raw?.cycleId || '').trim();
@@ -807,6 +885,43 @@ async function runResearchTask(
     };
 }
 
+async function runResearchTaskWithTimeout(
+    task: ScalpResearchTask,
+    minCandlesPerTask: number,
+    historyCache: Map<string, HistoryRow[]>,
+    diagnostics: WorkerDiagnostics,
+    timeoutMs: number,
+): Promise<ScalpResearchTaskResult> {
+    const safeTimeoutMs = Math.max(1_000, Math.floor(timeoutMs));
+    return await new Promise<ScalpResearchTaskResult>((resolve, reject) => {
+        let settled = false;
+        const timeoutId = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            reject(
+                Object.assign(new Error(`task_timeout:${safeTimeoutMs}`), {
+                    code: 'task_timeout',
+                    timeoutMs: safeTimeoutMs,
+                }),
+            );
+        }, safeTimeoutMs);
+
+        runResearchTask(task, minCandlesPerTask, historyCache, diagnostics)
+            .then((result) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeoutId);
+                resolve(result);
+            })
+            .catch((err) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeoutId);
+                reject(err);
+            });
+    });
+}
+
 async function claimNextTask(
     cycle: ScalpResearchCycleSnapshot,
     workerId: string,
@@ -898,7 +1013,7 @@ async function claimNextTask(
             if (retryableFailed) scanSummary.failedRetryable += 1;
             else scanSummary.failedMaxed += 1;
         }
-        const claimable = task.status === 'pending' || staleRunning || runningMissingStartedAt || retryableFailed;
+        const claimable = task.status === 'pending' || staleRunning || runningMissingStartedAt;
 
         if (!claimable) {
             await releaseLock(lockName, lockToken);
@@ -1115,7 +1230,13 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         out.attemptedRuns += 1;
 
         try {
-            const result = await runResearchTask(claim.task, cycle.params.minCandlesPerTask, historyCache, diagnostics);
+            const result = await runResearchTaskWithTimeout(
+                claim.task,
+                cycle.params.minCandlesPerTask,
+                historyCache,
+                diagnostics,
+                RESEARCH_TASK_TIMEOUT_MS,
+            );
             const completedTask: ScalpResearchTask = {
                 ...claim.task,
                 status: 'completed',

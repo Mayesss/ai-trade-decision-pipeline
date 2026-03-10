@@ -66,7 +66,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             worker.attemptedRuns > 0
                 ? `worker processed ${worker.attemptedRuns} tasks (completed=${worker.completedRuns}, failed=${worker.failedRuns})`
                 : noClaim
-                  ? `no claimable tasks (pending=${noClaim.pending}, runningFresh=${noClaim.runningFresh}, runningStale=${noClaim.runningStale}, runningMissingStartedAt=${noClaim.runningMissingStartedAt}, failedRetryable=${noClaim.failedRetryable}, lockMisses=${noClaim.lockMisses})`
+                  ? `no claimable tasks (pending=${noClaim.pending}, runningFresh=${noClaim.runningFresh}, runningStale=${noClaim.runningStale}, runningMissingStartedAt=${noClaim.runningMissingStartedAt}, failedPendingManualRetry=${noClaim.failedRetryable}, failedMaxed=${noClaim.failedMaxed}, lockMisses=${noClaim.lockMisses})`
                   : 'worker did not claim any tasks';
         const aggregate =
             aggregateAfter && worker.cycleId

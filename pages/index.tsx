@@ -640,7 +640,7 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<string, ScalpCronPipelineDefinitio
     primaryPathname: '/api/scalp/cron/research-cycle-worker',
     matchPathnames: ['/api/scalp/cron/research-cycle-worker'],
     fallbackInvokePath:
-      '/api/scalp/cron/research-cycle-worker?maxRuns=1&aggregateAfter=false&finalizeWhenDone=true&syncPromotionGates=false&requireCompletedCycleForSync=false',
+      '/api/scalp/cron/research-cycle-worker?maxRuns=10&aggregateAfter=false&finalizeWhenDone=true&syncPromotionGates=false&requireCompletedCycleForSync=false',
   },
   scalp_cycle_aggregate: {
     primaryPathname: '/api/scalp/cron/research-cycle-aggregate',
@@ -958,6 +958,17 @@ export default function Home() {
         ok: boolean | null;
         status: number | null;
         durationMs: number | null;
+        message: string | null;
+      }
+    >
+  >({});
+  const [scalpWorkerRetryStateByTaskId, setScalpWorkerRetryStateByTaskId] = useState<
+    Record<
+      string,
+      {
+        running: boolean;
+        atMs: number | null;
+        ok: boolean | null;
         message: string | null;
       }
     >
@@ -1466,6 +1477,95 @@ export default function Home() {
           ok: false,
           status: prev[row.id]?.status ?? null,
           durationMs: Math.max(0, Date.now() - invokeStartedAtMs),
+          message: msg,
+        },
+      }));
+    }
+  };
+
+  const retryScalpWorkerTask = async (taskIdRaw: string) => {
+    const taskId = String(taskIdRaw || '').trim();
+    const cycleId = String(scalpResearchCycle?.cycleId || scalpResearchCycle?.cycle?.cycleId || '').trim();
+    const cycleStatus = String(
+      scalpResearchCycle?.cycle?.status || scalpResearchCycle?.summary?.status || '',
+    )
+      .trim()
+      .toLowerCase();
+    if (!taskId || !cycleId || cycleStatus !== 'running') {
+      setScalpWorkerRetryStateByTaskId((prev) => ({
+        ...prev,
+        [taskId || 'unknown']: {
+          running: false,
+          atMs: Date.now(),
+          ok: false,
+          message: 'Retry unavailable unless cycle is active and running.',
+        },
+      }));
+      return;
+    }
+
+    setScalpWorkerRetryStateByTaskId((prev) => ({
+      ...prev,
+      [taskId]: {
+        running: true,
+        atMs: null,
+        ok: null,
+        message: null,
+      },
+    }));
+
+    try {
+      const res = await fetch('/api/scalp/research/cycle', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(buildAdminHeaders() || {}),
+        },
+        cache: 'no-store',
+        body: JSON.stringify({
+          action: 'retryTask',
+          cycleId,
+          taskId,
+        }),
+      });
+      const payload = await res.json().catch(() => null);
+      if (res.status === 401) {
+        handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+        throw new Error('Unauthorized');
+      }
+      if (!res.ok) {
+        const msg =
+          String(payload?.message || payload?.error || '').trim() || `Retry failed (${res.status})`;
+        setScalpWorkerRetryStateByTaskId((prev) => ({
+          ...prev,
+          [taskId]: {
+            running: false,
+            atMs: Date.now(),
+            ok: false,
+            message: msg,
+          },
+        }));
+        return;
+      }
+
+      setScalpWorkerRetryStateByTaskId((prev) => ({
+        ...prev,
+        [taskId]: {
+          running: false,
+          atMs: Date.now(),
+          ok: true,
+          message: 'Requeued',
+        },
+      }));
+      await loadScalpDashboard({ silent: true, force: true });
+    } catch (err: any) {
+      const msg = String(err?.message || 'Retry failed').trim() || 'Retry failed';
+      setScalpWorkerRetryStateByTaskId((prev) => ({
+        ...prev,
+        [taskId]: {
+          running: false,
+          atMs: Date.now(),
+          ok: false,
           message: msg,
         },
       }));
@@ -2422,6 +2522,10 @@ export default function Home() {
         ? 'positive'
         : 'neutral';
   const scalpWorkerCycleSource = String(scalpResearchCycle?.cycleSource || '').trim() || 'none';
+  const scalpWorkerRetryCycleReady =
+    Boolean(scalpCycleId) &&
+    scalpCycleStatusRaw.includes('RUNNING') &&
+    (scalpWorkerCycleSource === 'active' || scalpWorkerCycleSource === 'requested');
   const compareScalpWorkerOptionalNumber = (
     a: number | null | undefined,
     b: number | null | undefined,
@@ -4338,7 +4442,7 @@ export default function Home() {
                                                 scalpDarkMode ? 'border-zinc-700/40' : 'border-slate-200'
                                               }`}
                                             >
-                                              <table className="w-full min-w-[1260px] border-separate border-spacing-y-1.5 text-left text-sm">
+                                              <table className="w-full min-w-[1380px] border-separate border-spacing-y-1.5 text-left text-sm">
                                                 <thead className={`text-[10px] uppercase tracking-[0.14em] ${scalpTableHeaderClass}`}>
                                                   <tr>
                                                     <th className="px-3 py-1">{renderScalpWorkerSortableHeader('Symbol', 'symbol')}</th>
@@ -4352,58 +4456,119 @@ export default function Home() {
                                                     <th className="px-3 py-1">{renderScalpWorkerSortableHeader('Expectancy', 'expectancyR')}</th>
                                                     <th className="px-3 py-1">{renderScalpWorkerSortableHeader('PF', 'profitFactor')}</th>
                                                     <th className="px-3 py-1">{renderScalpWorkerSortableHeader('Max DD', 'maxDrawdownR')}</th>
+                                                    <th className="px-3 py-1">Action</th>
                                                   </tr>
                                                 </thead>
                                                 <tbody>
                                                   {scalpWorkerTaskRows.length ? (
-                                                    scalpWorkerTaskRows.map((taskRow) => (
-                                                      <tr key={`worker-task-${taskRow.taskId}`} className={scalpTableRowClass}>
-                                                        <td className={`rounded-l-xl px-3 py-2.5 font-medium ${scalpTextPrimaryClass}`}>
-                                                          {taskRow.symbol}
-                                                        </td>
-                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
-                                                          {taskRow.strategyId}
-                                                        </td>
-                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
-                                                          {taskRow.tuneId}
-                                                        </td>
-                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
-                                                          {String(taskRow.whyNotPromoted || 'unknown').replace(/_/g, ' ')}
-                                                        </td>
-                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
-                                                          {formatScalpWindowIso(taskRow.windowFromTs, taskRow.windowToTs)}
-                                                        </td>
-                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
-                                                          <span
-                                                            className={`rounded-full border px-2 py-1 text-[11px] ${scalpWorkerTaskStatusMeta(
-                                                              taskRow.status,
-                                                            )}`}
+                                                    scalpWorkerTaskRows.map((taskRow) => {
+                                                      const retryState =
+                                                        scalpWorkerRetryStateByTaskId[taskRow.taskId] || null;
+                                                      const canRetryTask =
+                                                        taskRow.status === 'failed' &&
+                                                        Boolean(taskRow.taskId) &&
+                                                        scalpWorkerRetryCycleReady;
+                                                      return (
+                                                        <tr key={`worker-task-${taskRow.taskId}`} className={scalpTableRowClass}>
+                                                          <td className={`rounded-l-xl px-3 py-2.5 font-medium ${scalpTextPrimaryClass}`}>
+                                                            {taskRow.symbol}
+                                                          </td>
+                                                          <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                            {taskRow.strategyId}
+                                                          </td>
+                                                          <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                            {taskRow.tuneId}
+                                                          </td>
+                                                          <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                            {String(taskRow.whyNotPromoted || 'unknown').replace(/_/g, ' ')}
+                                                          </td>
+                                                          <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                            {formatScalpWindowIso(taskRow.windowFromTs, taskRow.windowToTs)}
+                                                          </td>
+                                                          <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                            <span
+                                                              className={`rounded-full border px-2 py-1 text-[11px] ${scalpWorkerTaskStatusMeta(
+                                                                taskRow.status,
+                                                              )}`}
+                                                            >
+                                                              {taskRow.status || 'pending'}
+                                                            </span>
+                                                          </td>
+                                                          <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                            {taskRow.trades === null ? '—' : Math.floor(taskRow.trades)}
+                                                          </td>
+                                                          <td
+                                                            className={`px-3 py-2.5 ${
+                                                              taskRow.netR === null
+                                                                ? scalpTextMutedClass
+                                                                : taskRow.netR >= 0
+                                                                  ? 'text-emerald-500'
+                                                                  : 'text-rose-500'
+                                                            }`}
                                                           >
-                                                            {taskRow.status || 'pending'}
-                                                          </span>
-                                                        </td>
-                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
-                                                          {taskRow.trades === null ? '—' : Math.floor(taskRow.trades)}
-                                                        </td>
-                                                        <td className={`px-3 py-2.5 ${taskRow.netR === null ? scalpTextMutedClass : taskRow.netR >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                                                          {taskRow.netR === null ? '—' : `${taskRow.netR >= 0 ? '+' : ''}${taskRow.netR.toFixed(2)}`}
-                                                        </td>
-                                                        <td className={`px-3 py-2.5 ${taskRow.expectancyR === null ? scalpTextMutedClass : taskRow.expectancyR >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                                                          {taskRow.expectancyR === null
-                                                            ? '—'
-                                                            : `${taskRow.expectancyR >= 0 ? '+' : ''}${taskRow.expectancyR.toFixed(3)}`}
-                                                        </td>
-                                                        <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
-                                                          {taskRow.profitFactor === null ? '—' : taskRow.profitFactor.toFixed(2)}
-                                                        </td>
-                                                        <td className={`rounded-r-xl px-3 py-2.5 ${scalpTextSecondaryClass}`}>
-                                                          {taskRow.maxDrawdownR === null ? '—' : `${taskRow.maxDrawdownR.toFixed(2)}R`}
-                                                        </td>
-                                                      </tr>
-                                                    ))
+                                                            {taskRow.netR === null
+                                                              ? '—'
+                                                              : `${taskRow.netR >= 0 ? '+' : ''}${taskRow.netR.toFixed(2)}`}
+                                                          </td>
+                                                          <td
+                                                            className={`px-3 py-2.5 ${
+                                                              taskRow.expectancyR === null
+                                                                ? scalpTextMutedClass
+                                                                : taskRow.expectancyR >= 0
+                                                                  ? 'text-emerald-500'
+                                                                  : 'text-rose-500'
+                                                            }`}
+                                                          >
+                                                            {taskRow.expectancyR === null
+                                                              ? '—'
+                                                              : `${taskRow.expectancyR >= 0 ? '+' : ''}${taskRow.expectancyR.toFixed(3)}`}
+                                                          </td>
+                                                          <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                            {taskRow.profitFactor === null ? '—' : taskRow.profitFactor.toFixed(2)}
+                                                          </td>
+                                                          <td className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                            {taskRow.maxDrawdownR === null ? '—' : `${taskRow.maxDrawdownR.toFixed(2)}R`}
+                                                          </td>
+                                                          <td className={`rounded-r-xl px-3 py-2.5 ${scalpTextSecondaryClass}`}>
+                                                            {taskRow.status === 'failed' ? (
+                                                              <div className="flex items-center gap-2">
+                                                                <button
+                                                                  type="button"
+                                                                  onClick={() => retryScalpWorkerTask(taskRow.taskId)}
+                                                                  disabled={!canRetryTask || retryState?.running === true}
+                                                                  className={`rounded-md border px-2 py-1 text-[11px] font-medium transition ${
+                                                                    !canRetryTask || retryState?.running === true
+                                                                      ? scalpDarkMode
+                                                                        ? 'cursor-not-allowed border-zinc-700 text-zinc-500'
+                                                                        : 'cursor-not-allowed border-slate-200 text-slate-400'
+                                                                      : scalpDarkMode
+                                                                        ? 'border-amber-500/50 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'
+                                                                        : 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                                                                  }`}
+                                                                >
+                                                                  {retryState?.running ? 'Retrying...' : 'Retry'}
+                                                                </button>
+                                                                {retryState?.ok === false && retryState?.message ? (
+                                                                  <span className="max-w-[160px] truncate text-[10px] text-rose-500">
+                                                                    {retryState.message}
+                                                                  </span>
+                                                                ) : null}
+                                                                {retryState?.ok === true && retryState?.message ? (
+                                                                  <span className="text-[10px] text-emerald-500">
+                                                                    {retryState.message}
+                                                                  </span>
+                                                                ) : null}
+                                                              </div>
+                                                            ) : (
+                                                              '—'
+                                                            )}
+                                                          </td>
+                                                        </tr>
+                                                      );
+                                                    })
                                                   ) : (
                                                     <tr className={scalpTableRowClass}>
-                                                      <td colSpan={11} className={`rounded-xl px-3 py-4 text-sm ${scalpTextSecondaryClass}`}>
+                                                      <td colSpan={12} className={`rounded-xl px-3 py-4 text-sm ${scalpTextSecondaryClass}`}>
                                                         {scalpResearchCycle
                                                           ? 'Cycle loaded, but no tasks returned yet.'
                                                           : 'No active or completed research cycle found yet. Run scalp_cycle_start first.'}
