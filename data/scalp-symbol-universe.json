@@ -1,0 +1,1035 @@
+{
+  "version": 1,
+  "generatedAtIso": "2026-03-11T11:00:36.271Z",
+  "policy": {
+    "version": 1,
+    "updatedAt": "2026-03-07T00:00:00.000Z",
+    "notes": "Weekly symbol discovery policy for scalp universe maintenance. Uses hard limits to avoid churn and overfitting.",
+    "limits": {
+      "maxUniverseSymbols": 21,
+      "minUniverseSymbols": 4,
+      "maxWeeklyAdds": 2,
+      "maxWeeklyRemoves": 2,
+      "maxCandidates": 400
+    },
+    "criteria": {
+      "minHistoryDays": 45,
+      "minHistoryCoveragePct": 80,
+      "minAvgBarsPerDay": 900,
+      "minRecentBars7d": 4000,
+      "minMedianRangePct": 0.025,
+      "maxSpreadPips": 35,
+      "requireTradableQuote": true
+    },
+    "sources": {
+      "includeCapitalMarketsApi": true,
+      "includeCapitalTickerMap": false,
+      "includeDeploymentSymbols": true,
+      "includeHistorySymbols": true,
+      "requireHistoryPresence": true,
+      "explicitSymbols": [],
+      "excludedSymbols": []
+    },
+    "pinnedSymbols": [
+      "BTCUSDT",
+      "XAUUSDT"
+    ],
+    "strategyAllowlist": [
+      "compression_breakout_pullback_m15_m3",
+      "regime_pullback_m15_m3",
+      "hss_ict_m15_m3_guarded",
+      "failed_auction_extreme_reversal_m15_m1",
+      "trend_day_reacceleration_m15_m3",
+      "pdh_pdl_reclaim_m15_m3"
+    ]
+  },
+  "source": "weekly_discovery_v1",
+  "dryRun": false,
+  "previousSymbols": [],
+  "selectedSymbols": [
+    "BTCUSDT",
+    "XAUUSDT"
+  ],
+  "addedSymbols": [
+    "BTCUSDT",
+    "XAUUSDT"
+  ],
+  "removedSymbols": [],
+  "candidatesEvaluated": 25,
+  "selectedRows": [
+    {
+      "symbol": "BTCUSDT",
+      "eligible": false,
+      "score": 71.2265,
+      "reasons": [
+        "history_days_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "compression_breakout_pullback_m15_m3",
+        "failed_auction_extreme_reversal_m15_m1"
+      ],
+      "metrics": {
+        "historyBars1m": 4245,
+        "historyFromTs": 1772967600000,
+        "historyToTs": 1773223140000,
+        "historySpanDays": 2.9576,
+        "historyCoveragePct": 99.6479,
+        "avgBarsPerDay": 1435.2665,
+        "recentBars7d": 4245,
+        "medianRangePct": 0.067685,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "XAUUSDT",
+      "eligible": false,
+      "score": 0,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "avg_bars_per_day_below_min",
+        "recent_bars_7d_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "trend_day_reacceleration_m15_m3",
+        "failed_auction_extreme_reversal_m15_m1"
+      ],
+      "metrics": {
+        "historyBars1m": 0,
+        "historyFromTs": null,
+        "historyToTs": null,
+        "historySpanDays": 0,
+        "historyCoveragePct": 0,
+        "avgBarsPerDay": 0,
+        "recentBars7d": 0,
+        "medianRangePct": 0,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    }
+  ],
+  "topRejectedRows": [
+    {
+      "symbol": "ZARJPY",
+      "eligible": false,
+      "score": 67.0614,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 9023,
+        "historyFromTs": 1772481420000,
+        "historyToTs": 1773223140000,
+        "historySpanDays": 8.5847,
+        "historyCoveragePct": 72.9839,
+        "avgBarsPerDay": 1051.0532,
+        "recentBars7d": 6735,
+        "medianRangePct": 0.031076,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "NOKJPY",
+      "eligible": false,
+      "score": 66.7427,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 8969,
+        "historyFromTs": 1772484120000,
+        "historyToTs": 1773223140000,
+        "historySpanDays": 8.5535,
+        "historyCoveragePct": 72.8121,
+        "avgBarsPerDay": 1048.58,
+        "recentBars7d": 6761,
+        "medianRangePct": 0.024345,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "MXNJPY",
+      "eligible": false,
+      "score": 66.4269,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 9252,
+        "historyFromTs": 1772481600000,
+        "historyToTs": 1773223140000,
+        "historySpanDays": 8.5826,
+        "historyCoveragePct": 74.8544,
+        "avgBarsPerDay": 1077.9901,
+        "recentBars7d": 6931,
+        "medianRangePct": 0.022247,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "CADSEK",
+      "eligible": false,
+      "score": 65.0129,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 9322,
+        "historyFromTs": 1772481420000,
+        "historyToTs": 1773223140000,
+        "historySpanDays": 8.5847,
+        "historyCoveragePct": 75.4024,
+        "avgBarsPerDay": 1085.8825,
+        "recentBars7d": 6989,
+        "medianRangePct": 0.018367,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "SEKJPY",
+      "eligible": false,
+      "score": 64.6177,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 9312,
+        "historyFromTs": 1772481420000,
+        "historyToTs": 1773223080000,
+        "historySpanDays": 8.584,
+        "historyCoveragePct": 75.3276,
+        "avgBarsPerDay": 1084.8054,
+        "recentBars7d": 6981,
+        "medianRangePct": 0.017427,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "PLNJPY",
+      "eligible": false,
+      "score": 64.1686,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 9322,
+        "historyFromTs": 1772481360000,
+        "historyToTs": 1773223140000,
+        "historySpanDays": 8.5854,
+        "historyCoveragePct": 75.3963,
+        "avgBarsPerDay": 1085.7947,
+        "recentBars7d": 6990,
+        "medianRangePct": 0.01626,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "AUDJPY",
+      "eligible": false,
+      "score": 63.6289,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "avg_bars_per_day_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 8605,
+        "historyFromTs": 1772175180000,
+        "historyToTs": 1773035580000,
+        "historySpanDays": 9.9583,
+        "historyCoveragePct": 60.0028,
+        "avgBarsPerDay": 864.1004,
+        "recentBars7d": 4056,
+        "medianRangePct": 0.026559,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "NZDUSD",
+      "eligible": false,
+      "score": 63.609,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "avg_bars_per_day_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 8600,
+        "historyFromTs": 1772175180000,
+        "historyToTs": 1773035580000,
+        "historySpanDays": 9.9583,
+        "historyCoveragePct": 59.9679,
+        "avgBarsPerDay": 863.5983,
+        "recentBars7d": 4052,
+        "medianRangePct": 0.026318,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "AUDUSD",
+      "eligible": false,
+      "score": 63.5971,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "avg_bars_per_day_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 8597,
+        "historyFromTs": 1772175180000,
+        "historyToTs": 1773035580000,
+        "historySpanDays": 9.9583,
+        "historyCoveragePct": 59.947,
+        "avgBarsPerDay": 863.2971,
+        "recentBars7d": 4049,
+        "medianRangePct": 0.0286,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "NZDJPY",
+      "eligible": false,
+      "score": 63.1266,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "avg_bars_per_day_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 8609,
+        "historyFromTs": 1772175180000,
+        "historyToTs": 1773035580000,
+        "historySpanDays": 9.9583,
+        "historyCoveragePct": 60.0307,
+        "avgBarsPerDay": 864.5021,
+        "recentBars7d": 4061,
+        "medianRangePct": 0.023705,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "CHFCNH",
+      "eligible": false,
+      "score": 63.0558,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 9285,
+        "historyFromTs": 1772481420000,
+        "historyToTs": 1773223200000,
+        "historySpanDays": 8.5854,
+        "historyCoveragePct": 75.0971,
+        "avgBarsPerDay": 1081.4851,
+        "recentBars7d": 6980,
+        "medianRangePct": 0.013665,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "CADSGD",
+      "eligible": false,
+      "score": 61.7079,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 9317,
+        "historyFromTs": 1772481480000,
+        "historyToTs": 1773223200000,
+        "historySpanDays": 8.5847,
+        "historyCoveragePct": 75.362,
+        "avgBarsPerDay": 1085.3001,
+        "recentBars7d": 6986,
+        "medianRangePct": 0.01013,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "GBPUSD",
+      "eligible": false,
+      "score": 61.1494,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "avg_bars_per_day_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 8606,
+        "historyFromTs": 1772175180000,
+        "historyToTs": 1773035580000,
+        "historySpanDays": 9.9583,
+        "historyCoveragePct": 60.0098,
+        "avgBarsPerDay": 864.2008,
+        "recentBars7d": 4056,
+        "medianRangePct": 0.018791,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "GBPJPY",
+      "eligible": false,
+      "score": 60.3746,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "avg_bars_per_day_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 8611,
+        "historyFromTs": 1772175180000,
+        "historyToTs": 1773035580000,
+        "historySpanDays": 9.9583,
+        "historyCoveragePct": 60.0446,
+        "avgBarsPerDay": 864.7029,
+        "recentBars7d": 4060,
+        "medianRangePct": 0.016805,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "CADJPY",
+      "eligible": false,
+      "score": 59.7008,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "avg_bars_per_day_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 8610,
+        "historyFromTs": 1772175180000,
+        "historyToTs": 1773035580000,
+        "historySpanDays": 9.9583,
+        "historyCoveragePct": 60.0377,
+        "avgBarsPerDay": 864.6025,
+        "recentBars7d": 4057,
+        "medianRangePct": 0.01513,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "EURJPY",
+      "eligible": false,
+      "score": 59.5845,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "avg_bars_per_day_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 8619,
+        "historyFromTs": 1772175180000,
+        "historyToTs": 1773035580000,
+        "historySpanDays": 9.9583,
+        "historyCoveragePct": 60.1004,
+        "avgBarsPerDay": 865.5063,
+        "recentBars7d": 4063,
+        "medianRangePct": 0.01475,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "USDJPY",
+      "eligible": false,
+      "score": 59.4181,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "avg_bars_per_day_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 8602,
+        "historyFromTs": 1772175180000,
+        "historyToTs": 1773035580000,
+        "historySpanDays": 9.9583,
+        "historyCoveragePct": 59.9819,
+        "avgBarsPerDay": 863.7992,
+        "recentBars7d": 4052,
+        "medianRangePct": 0.014503,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "CHFJPY",
+      "eligible": false,
+      "score": 59.397,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "avg_bars_per_day_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 8596,
+        "historyFromTs": 1772175180000,
+        "historyToTs": 1773035580000,
+        "historySpanDays": 9.9583,
+        "historyCoveragePct": 59.94,
+        "avgBarsPerDay": 863.1967,
+        "recentBars7d": 4051,
+        "medianRangePct": 0.01451,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "DKKJPY",
+      "eligible": false,
+      "score": 59.3183,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "avg_bars_per_day_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 8595,
+        "historyFromTs": 1772175180000,
+        "historyToTs": 1773035580000,
+        "historySpanDays": 9.9583,
+        "historyCoveragePct": 59.9331,
+        "avgBarsPerDay": 863.0962,
+        "recentBars7d": 4041,
+        "medianRangePct": 0.014323,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "SGDJPY",
+      "eligible": false,
+      "score": 59.1336,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "avg_bars_per_day_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 8600,
+        "historyFromTs": 1772175180000,
+        "historyToTs": 1773035580000,
+        "historySpanDays": 9.9583,
+        "historyCoveragePct": 59.9679,
+        "avgBarsPerDay": 863.5983,
+        "recentBars7d": 4050,
+        "medianRangePct": 0.013812,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    },
+    {
+      "symbol": "CNHJPY",
+      "eligible": false,
+      "score": 58.3909,
+      "reasons": [
+        "history_days_below_min",
+        "history_coverage_below_min",
+        "avg_bars_per_day_below_min",
+        "recent_bars_7d_below_min",
+        "median_range_pct_below_min"
+      ],
+      "recommendedStrategyIds": [
+        "regime_pullback_m15_m3",
+        "pdh_pdl_reclaim_m15_m3",
+        "hss_ict_m15_m3_guarded"
+      ],
+      "metrics": {
+        "historyBars1m": 8487,
+        "historyFromTs": 1772175180000,
+        "historyToTs": 1773035580000,
+        "historySpanDays": 9.9583,
+        "historyCoveragePct": 59.18,
+        "avgBarsPerDay": 852.251,
+        "recentBars7d": 3991,
+        "medianRangePct": 0.013162,
+        "livePrice": null,
+        "liveSpreadPips": null
+      }
+    }
+  ],
+  "diagnostics": {
+    "sourceEnabled": {
+      "includeCapitalMarketsApi": true,
+      "includeCapitalTickerMap": false,
+      "includeDeploymentSymbols": true,
+      "includeHistorySymbols": true,
+      "requireHistoryPresence": true,
+      "explicitSymbols": false
+    },
+    "sourceCounts": {
+      "capitalMarketsApi": 24,
+      "capitalMarketsApiRows": 6540,
+      "capitalMarketsApiRowsTradeable": 2698,
+      "capitalTickerMap": 0,
+      "deploymentSymbols": 1,
+      "historySymbols": 0,
+      "explicitSymbols": 0,
+      "totalUnique": 25
+    },
+    "capitalMarketsApiError": null,
+    "includeLiveQuotes": false,
+    "requireTradableQuote": true,
+    "quoteGateApplied": false
+  },
+  "seedSummary": {
+    "enabled": true,
+    "dryRun": false,
+    "timeframe": "1m",
+    "requestedTopSymbols": 8,
+    "processedSymbols": 23,
+    "seededSymbols": 2,
+    "skippedSymbols": 21,
+    "failedSymbols": 0,
+    "targetHistoryDays": 7,
+    "maxHistoryDays": 12,
+    "chunkDays": 2,
+    "maxRequestsPerSymbol": 40,
+    "maxSymbolsPerRun": 8,
+    "candidateUniverseSize": 801,
+    "results": [
+      {
+        "symbol": "EURUSD",
+        "status": "skipped",
+        "reason": "seed_recent_bars_7d_below_min",
+        "epic": null,
+        "existingCount": 4320,
+        "mergedCount": 4320,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 2.9993,
+        "afterSpanDays": 2.9993
+      },
+      {
+        "symbol": "GBPUSD",
+        "status": "skipped",
+        "reason": "seed_avg_bars_per_day_below_min",
+        "epic": "GBPUSD",
+        "existingCount": 8606,
+        "mergedCount": 8606,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 9.9583,
+        "afterSpanDays": 9.9583
+      },
+      {
+        "symbol": "NZDUSD",
+        "status": "skipped",
+        "reason": "seed_avg_bars_per_day_below_min",
+        "epic": "NZDUSD",
+        "existingCount": 8600,
+        "mergedCount": 8600,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 9.9583,
+        "afterSpanDays": 9.9583
+      },
+      {
+        "symbol": "AUDUSD",
+        "status": "skipped",
+        "reason": "seed_avg_bars_per_day_below_min",
+        "epic": "AUDUSD",
+        "existingCount": 8597,
+        "mergedCount": 8597,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 9.9583,
+        "afterSpanDays": 9.9583
+      },
+      {
+        "symbol": "CADJPY",
+        "status": "skipped",
+        "reason": "seed_avg_bars_per_day_below_min",
+        "epic": "CADJPY",
+        "existingCount": 8610,
+        "mergedCount": 8610,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 9.9583,
+        "afterSpanDays": 9.9583
+      },
+      {
+        "symbol": "SGDJPY",
+        "status": "skipped",
+        "reason": "seed_avg_bars_per_day_below_min",
+        "epic": "SGDJPY",
+        "existingCount": 8600,
+        "mergedCount": 8600,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 9.9583,
+        "afterSpanDays": 9.9583
+      },
+      {
+        "symbol": "CHFJPY",
+        "status": "skipped",
+        "reason": "seed_avg_bars_per_day_below_min",
+        "epic": "CHFJPY",
+        "existingCount": 8596,
+        "mergedCount": 8596,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 9.9583,
+        "afterSpanDays": 9.9583
+      },
+      {
+        "symbol": "CNHJPY",
+        "status": "skipped",
+        "reason": "seed_avg_bars_per_day_below_min",
+        "epic": "CNHJPY",
+        "existingCount": 8487,
+        "mergedCount": 8487,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 9.9583,
+        "afterSpanDays": 9.9583
+      },
+      {
+        "symbol": "EURGBP",
+        "status": "skipped",
+        "reason": "seed_avg_bars_per_day_below_min",
+        "epic": "EURGBP",
+        "existingCount": 8610,
+        "mergedCount": 8610,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 9.9583,
+        "afterSpanDays": 9.9583
+      },
+      {
+        "symbol": "AUDJPY",
+        "status": "skipped",
+        "reason": "seed_avg_bars_per_day_below_min",
+        "epic": "AUDJPY",
+        "existingCount": 8605,
+        "mergedCount": 8605,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 9.9583,
+        "afterSpanDays": 9.9583
+      },
+      {
+        "symbol": "NZDJPY",
+        "status": "skipped",
+        "reason": "seed_avg_bars_per_day_below_min",
+        "epic": "NZDJPY",
+        "existingCount": 8609,
+        "mergedCount": 8609,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 9.9583,
+        "afterSpanDays": 9.9583
+      },
+      {
+        "symbol": "GBPJPY",
+        "status": "skipped",
+        "reason": "seed_avg_bars_per_day_below_min",
+        "epic": "GBPJPY",
+        "existingCount": 8611,
+        "mergedCount": 8611,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 9.9583,
+        "afterSpanDays": 9.9583
+      },
+      {
+        "symbol": "DKKJPY",
+        "status": "skipped",
+        "reason": "seed_avg_bars_per_day_below_min",
+        "epic": "DKKJPY",
+        "existingCount": 8595,
+        "mergedCount": 8595,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 9.9583,
+        "afterSpanDays": 9.9583
+      },
+      {
+        "symbol": "USDJPY",
+        "status": "skipped",
+        "reason": "seed_avg_bars_per_day_below_min",
+        "epic": "USDJPY",
+        "existingCount": 8602,
+        "mergedCount": 8602,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 9.9583,
+        "afterSpanDays": 9.9583
+      },
+      {
+        "symbol": "EURJPY",
+        "status": "skipped",
+        "reason": "seed_avg_bars_per_day_below_min",
+        "epic": "EURJPY",
+        "existingCount": 8619,
+        "mergedCount": 8619,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 9.9583,
+        "afterSpanDays": 9.9583
+      },
+      {
+        "symbol": "PLNJPY",
+        "status": "skipped",
+        "reason": "already_seeded",
+        "epic": "PLNJPY",
+        "existingCount": 9322,
+        "mergedCount": 9322,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 8.5854,
+        "afterSpanDays": 8.5854
+      },
+      {
+        "symbol": "ZARJPY",
+        "status": "skipped",
+        "reason": "already_seeded",
+        "epic": "ZARJPY",
+        "existingCount": 9023,
+        "mergedCount": 9023,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 8.5847,
+        "afterSpanDays": 8.5847
+      },
+      {
+        "symbol": "SEKJPY",
+        "status": "skipped",
+        "reason": "already_seeded",
+        "epic": "SEKJPY",
+        "existingCount": 9312,
+        "mergedCount": 9312,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 8.584,
+        "afterSpanDays": 8.584
+      },
+      {
+        "symbol": "NOKJPY",
+        "status": "skipped",
+        "reason": "already_seeded",
+        "epic": "NOKJPY",
+        "existingCount": 8969,
+        "mergedCount": 8969,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 8.5535,
+        "afterSpanDays": 8.5535
+      },
+      {
+        "symbol": "MXNJPY",
+        "status": "skipped",
+        "reason": "already_seeded",
+        "epic": "MXNJPY",
+        "existingCount": 9252,
+        "mergedCount": 9252,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 8.5826,
+        "afterSpanDays": 8.5826
+      },
+      {
+        "symbol": "CADSEK",
+        "status": "skipped",
+        "reason": "already_seeded",
+        "epic": "CADSEK",
+        "existingCount": 9322,
+        "mergedCount": 9322,
+        "fetchedCount": 0,
+        "addedCount": 0,
+        "trimmedCount": 0,
+        "beforeSpanDays": 8.5847,
+        "afterSpanDays": 8.5847
+      },
+      {
+        "symbol": "CADSGD",
+        "status": "seeded",
+        "reason": "backfill",
+        "epic": "CADSGD",
+        "existingCount": 0,
+        "mergedCount": 9317,
+        "fetchedCount": 9317,
+        "addedCount": 9317,
+        "trimmedCount": 0,
+        "beforeSpanDays": 0,
+        "afterSpanDays": 8.5847
+      },
+      {
+        "symbol": "CHFCNH",
+        "status": "seeded",
+        "reason": "backfill",
+        "epic": "CHFCNH",
+        "existingCount": 0,
+        "mergedCount": 9285,
+        "fetchedCount": 9285,
+        "addedCount": 9285,
+        "trimmedCount": 0,
+        "beforeSpanDays": 0,
+        "afterSpanDays": 8.5854
+      }
+    ]
+  }
+}

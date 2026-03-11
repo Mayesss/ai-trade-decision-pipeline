@@ -55,6 +55,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     try {
         const worker = await runResearchWorker({ cycleId, workerId, maxRuns, concurrency, maxDurationMs, debug });
         const noClaim = worker.noClaimScanSummary;
+        const preflightBlocked = worker.orchestration.gate === 'blocked';
         const shouldWarnNoProgress =
             worker.attemptedRuns === 0 &&
             !!noClaim &&
@@ -65,19 +66,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 noClaim.failedRetryable > 0 ||
                 noClaim.lockMisses > 0);
         const workerMessage =
-            worker.attemptedRuns > 0
-                ? `worker processed ${worker.attemptedRuns} tasks (completed=${worker.completedRuns}, failed=${worker.failedRuns}, concurrency=${worker.concurrency}${worker.stoppedByDurationBudget ? ', stoppedByDurationBudget=true' : ''})`
-                : noClaim
-                  ? `no claimable tasks (pending=${noClaim.pending}, runningFresh=${noClaim.runningFresh}, runningStale=${noClaim.runningStale}, runningMissingStartedAt=${noClaim.runningMissingStartedAt}, failedPendingManualRetry=${noClaim.failedRetryable}, failedMaxed=${noClaim.failedMaxed}, symbolCooldownBlocked=${noClaim.symbolCooldownBlocked}, lockMisses=${noClaim.lockMisses})`
-                  : 'worker did not claim any tasks';
+            preflightBlocked
+                ? `worker blocked by preflight (${worker.orchestration.reasonCodes.join(',') || 'unknown'})`
+                : worker.attemptedRuns > 0
+                  ? `worker processed ${worker.attemptedRuns} tasks (completed=${worker.completedRuns}, failed=${worker.failedRuns}, concurrency=${worker.concurrency}${worker.stoppedByDurationBudget ? ', stoppedByDurationBudget=true' : ''})`
+                  : noClaim
+                    ? `no claimable tasks (pending=${noClaim.pending}, runningFresh=${noClaim.runningFresh}, runningStale=${noClaim.runningStale}, runningMissingStartedAt=${noClaim.runningMissingStartedAt}, failedPendingManualRetry=${noClaim.failedRetryable}, failedMaxed=${noClaim.failedMaxed}, symbolCooldownBlocked=${noClaim.symbolCooldownBlocked}, lockMisses=${noClaim.lockMisses})`
+                    : 'worker did not claim any tasks';
         const aggregate =
-            aggregateAfter && worker.cycleId
+            !preflightBlocked && aggregateAfter && worker.cycleId
                 ? await aggregateScalpResearchCycle({
                       cycleId: worker.cycleId,
                       finalizeWhenDone,
                   })
                 : null;
         const promotionSync =
+            !preflightBlocked &&
             syncPromotionGates &&
             worker.cycleId &&
             aggregate &&
@@ -89,7 +93,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                       updatedBy: 'cron:research-cycle-worker',
                   })
                 : null;
-        if (worker.failedRuns > 0 || shouldWarnNoProgress) {
+        if (worker.failedRuns > 0 || shouldWarnNoProgress || preflightBlocked) {
             console.warn(
                 JSON.stringify({
                     scope: 'scalp_research_worker_api',
@@ -103,6 +107,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     failedRuns: worker.failedRuns,
                     stoppedByDurationBudget: worker.stoppedByDurationBudget,
                     noClaimScanSummary: worker.noClaimScanSummary,
+                    orchestration: worker.orchestration,
                     aggregateStatus: aggregate?.summary?.status || null,
                 }),
             );
@@ -128,6 +133,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             message: workerMessage,
             requestedCycleId: cycleId || null,
             worker,
+            orchestration: worker.orchestration,
             aggregate: aggregate
                 ? {
                       cycleId: aggregate.cycle.cycleId,

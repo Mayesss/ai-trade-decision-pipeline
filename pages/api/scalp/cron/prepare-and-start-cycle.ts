@@ -3,7 +3,7 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
-import { startScalpResearchCycle } from '../../../../lib/scalp/researchCycle';
+import { prepareAndStartScalpResearchCycle } from '../../../../lib/scalp/prepareAndStartCycle';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean): boolean {
     if (value === undefined) return fallback;
@@ -53,14 +53,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!requireAdminAccess(req, res)) return;
     setNoStoreHeaders(res);
 
-    const dryRun = parseBoolParam(req.query.dryRun, false);
-    const force = parseBoolParam(req.query.force, false);
-
     try {
-        const out = await startScalpResearchCycle({
-            dryRun,
-            force,
+        const out = await prepareAndStartScalpResearchCycle({
+            dryRun: parseBoolParam(req.query.dryRun, false),
+            force: parseBoolParam(req.query.force, true),
+            includeLiveQuotes: parseBoolParam(req.query.includeLiveQuotes, false),
+            runDiscovery: parseBoolParam(req.query.runDiscovery, true),
+            finalizeBatch: parseBoolParam(req.query.finalizeBatch, false),
             symbols: parseSymbolsCsv(firstQueryValue(req.query.symbols)),
+            batchCursor: parsePositiveInt(firstQueryValue(req.query.batchCursor)),
+            maxSymbolsPerRun: parsePositiveInt(firstQueryValue(req.query.maxSymbolsPerRun)),
             lookbackDays: parsePositiveInt(firstQueryValue(req.query.lookbackDays)),
             chunkDays: parsePositiveInt(firstQueryValue(req.query.chunkDays)),
             minCandlesPerTask: parsePositiveInt(firstQueryValue(req.query.minCandlesPerTask)),
@@ -69,35 +71,38 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             runningStaleAfterMs: parsePositiveInt(firstQueryValue(req.query.runningStaleAfterMs)),
             tunerEnabled: req.query.tunerEnabled === undefined ? undefined : parseBoolParam(req.query.tunerEnabled, true),
             maxTuneVariantsPerStrategy: parsePositiveInt(firstQueryValue(req.query.maxTuneVariantsPerStrategy)),
-            startedBy: firstQueryValue(req.query.startedBy) || 'cron:research-cycle-start',
+            maxRequestsPerSymbol: parsePositiveInt(firstQueryValue(req.query.maxRequestsPerSymbol)),
+            seedTimeframe: firstQueryValue(req.query.seedTimeframe),
+            startedBy: firstQueryValue(req.query.startedBy) || 'cron:prepare-and-start-cycle',
         });
 
-        return res.status(200).json({
-            ok: true,
+        return res.status(out.ok ? 200 : 409).json({
+            ok: out.ok,
             started: out.started,
-            dryRun,
-            force,
-            cycle: {
-                cycleId: out.cycle.cycleId,
-                status: out.cycle.status,
-                symbols: out.cycle.symbols,
-                taskCount: out.cycle.taskIds.length,
-                params: out.cycle.params,
-                createdAtMs: out.cycle.createdAtMs,
-                sourceUniverseGeneratedAt: out.cycle.sourceUniverseGeneratedAt,
-            },
+            dryRun: out.dryRun,
+            nowMs: out.nowMs,
+            nowIso: out.nowIso,
+            symbols: out.symbols,
+            batch: out.batch,
+            lookbackDays: out.lookbackDays,
+            maxRequestsPerSymbol: out.maxRequestsPerSymbol,
+            steps: out.steps,
+            cycle: out.cycle
+                ? {
+                      cycleId: out.cycle.cycleId,
+                      status: out.cycle.status,
+                      taskCount: out.cycle.taskIds.length,
+                      symbols: out.cycle.symbols,
+                      params: out.cycle.params,
+                      createdAtMs: out.cycle.createdAtMs,
+                      sourceUniverseGeneratedAt: out.cycle.sourceUniverseGeneratedAt,
+                  }
+                : null,
             snapshot: out.cycle,
         });
     } catch (err: any) {
-        if (String(err?.code || '') === 'research_cycle_preflight_failed' && err?.preflight) {
-            return res.status(409).json({
-                error: 'research_cycle_preflight_failed',
-                message: 'Research cycle preflight failed. Run /api/scalp/cron/research-preflight for details.',
-                preflight: err.preflight,
-            });
-        }
         return res.status(500).json({
-            error: 'research_cycle_start_failed',
+            error: 'prepare_and_start_cycle_failed',
             message: err?.message || String(err),
         });
     }

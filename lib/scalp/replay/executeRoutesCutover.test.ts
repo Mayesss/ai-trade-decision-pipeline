@@ -56,9 +56,11 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 test('execute deployment routes enforce strict PG requirement in cutover mode', async () => {
     const originalBackend = process.env.SCALP_BACKEND;
+    const originalConnectionString = process.env.PRISMA_CONNECTION_STRING;
     const originalPgUrl = process.env.PRISMA_PG_POSTGRES_URL;
     try {
         process.env.SCALP_BACKEND = 'pg';
+        delete process.env.PRISMA_CONNECTION_STRING;
         delete process.env.PRISMA_PG_POSTGRES_URL;
 
         const baseQuery = {
@@ -103,6 +105,8 @@ test('execute deployment routes enforce strict PG requirement in cutover mode', 
     } finally {
         if (originalBackend === undefined) delete process.env.SCALP_BACKEND;
         else process.env.SCALP_BACKEND = originalBackend;
+        if (originalConnectionString === undefined) delete process.env.PRISMA_CONNECTION_STRING;
+        else process.env.PRISMA_CONNECTION_STRING = originalConnectionString;
         if (originalPgUrl === undefined) delete process.env.PRISMA_PG_POSTGRES_URL;
         else process.env.PRISMA_PG_POSTGRES_URL = originalPgUrl;
     }

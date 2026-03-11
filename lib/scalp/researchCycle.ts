@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 
 import { Prisma } from '@prisma/client';
 
@@ -43,6 +45,8 @@ const DEFAULT_WORKER_MAX_DURATION_CAP_MS = 15 * 60_000;
 const DEFAULT_CLAIM_SCAN_BATCH_SIZE = 64;
 const DEFAULT_LOCK_TTL_SECONDS = 120;
 const DEFAULT_TASK_TIMEOUT_MS = 60_000;
+const DEFAULT_RESEARCH_REPORT_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-research-report.json');
+const DEFAULT_PREFLIGHT_MAX_CANDLE_CHECKS = 64;
 const RESEARCH_TASK_TIMEOUT_MS = Math.max(
     1_000,
     Math.min(10 * 60_000, Math.floor(Number(process.env.SCALP_RESEARCH_TASK_TIMEOUT_MS) || DEFAULT_TASK_TIMEOUT_MS)),
@@ -175,6 +179,44 @@ export interface StartResearchCycleParams {
     startedBy?: string | null;
 }
 
+export type ResearchCyclePreflightFailureCode =
+    | 'missing_universe_snapshot'
+    | 'missing_research_report_snapshot'
+    | 'no_symbols_resolved'
+    | 'insufficient_candles';
+
+export interface ResearchCyclePreflightFailure {
+    code: ResearchCyclePreflightFailureCode;
+    message: string;
+    details?: Record<string, unknown>;
+}
+
+export interface ResearchCyclePreflightCandleCheck {
+    symbol: string;
+    availableCandles: number;
+    requiredCandles: number;
+    ok: boolean;
+}
+
+export interface ResearchCyclePreflightResult {
+    ready: boolean;
+    checkedAtMs: number;
+    checkedAtIso: string;
+    universeGeneratedAtIso: string | null;
+    reportGeneratedAtIso: string | null;
+    resolvedSymbols: string[];
+    strategyAllowlist: string[];
+    requiredMinCandlesPerTask: number;
+    candleChecks: ResearchCyclePreflightCandleCheck[];
+    failures: ResearchCyclePreflightFailure[];
+}
+
+export interface EvaluateResearchCyclePreflightParams extends StartResearchCycleParams {
+    requireUniverseSnapshot?: boolean;
+    requireReportSnapshot?: boolean;
+    maxCandleChecks?: number;
+}
+
 export interface WorkerRunParams {
     cycleId?: string;
     workerId?: string;
@@ -190,7 +232,8 @@ export type ResearchWorkerHeartbeatStatus =
     | 'failed'
     | 'no_cycle'
     | 'cycle_not_found'
-    | 'cycle_not_running';
+    | 'cycle_not_running'
+    | 'preflight_failed';
 
 export interface ScalpResearchWorkerHeartbeatSnapshot {
     version: 1;
@@ -223,6 +266,12 @@ export interface WorkerRunOutcome {
     failedRuns: number;
     stoppedByDurationBudget: boolean;
     noClaimScanSummary: WorkerNoClaimScanSummary | null;
+    orchestration: {
+        checkedAtMs: number;
+        gate: 'pass' | 'blocked';
+        reasonCodes: string[];
+        preflight: ResearchCyclePreflightResult | null;
+    };
     diagnostics: {
         durationMs: number;
         cycleTaskCount: number;
@@ -365,6 +414,117 @@ function dedupe<T>(rows: T[]): T[] {
     return Array.from(new Set(rows));
 }
 
+function resolveResearchReportFilePath(): string {
+    const configured = String(process.env.SCALP_RESEARCH_REPORT_PATH || '').trim();
+    if (!configured) return DEFAULT_RESEARCH_REPORT_FILE_PATH;
+    return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
+}
+
+async function loadResearchReportGeneratedAtIso(): Promise<string | null> {
+    try {
+        const raw = await readFile(resolveResearchReportFilePath(), 'utf8');
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        const generatedAtIso = String(parsed.generatedAtIso || '').trim();
+        return generatedAtIso || null;
+    } catch {
+        return null;
+    }
+}
+
+export async function evaluateResearchCyclePreflight(
+    params: EvaluateResearchCyclePreflightParams = {},
+): Promise<ResearchCyclePreflightResult> {
+    const nowMs = Date.now();
+    const requireUniverseSnapshot = params.requireUniverseSnapshot !== false;
+    const requireReportSnapshot = params.requireReportSnapshot !== false;
+    const requiredMinCandlesPerTask = toPositiveInt(params.minCandlesPerTask, DEFAULT_MIN_CANDLES_PER_TASK);
+    const maxCandleChecks = Math.max(
+        1,
+        Math.min(
+            500,
+            toPositiveInt(
+                params.maxCandleChecks,
+                toPositiveInt(process.env.SCALP_RESEARCH_PREFLIGHT_MAX_CANDLE_CHECKS, DEFAULT_PREFLIGHT_MAX_CANDLE_CHECKS),
+            ),
+        ),
+    );
+
+    const [policy, universe, reportGeneratedAtIso] = await Promise.all([
+        loadScalpSymbolDiscoveryPolicy(),
+        loadScalpSymbolUniverseSnapshot(),
+        loadResearchReportGeneratedAtIso(),
+    ]);
+
+    const failures: ResearchCyclePreflightFailure[] = [];
+    if (requireUniverseSnapshot && !universe) {
+        failures.push({
+            code: 'missing_universe_snapshot',
+            message: 'Symbol universe snapshot is missing. Run /api/scalp/cron/discover-symbols first.',
+        });
+    }
+    if (requireReportSnapshot && !reportGeneratedAtIso) {
+        failures.push({
+            code: 'missing_research_report_snapshot',
+            message: 'Research report snapshot is missing. Run /api/scalp/cron/research-report first.',
+        });
+    }
+
+    const resolvedSymbols = dedupe(
+        (params.symbols?.length ? params.symbols : universe?.selectedSymbols || policy.pinnedSymbols)
+            .map((row) => normalizeSymbol(row))
+            .filter((row) => Boolean(row)),
+    );
+
+    if (!resolvedSymbols.length) {
+        failures.push({
+            code: 'no_symbols_resolved',
+            message: 'No symbols were resolved for the research cycle.',
+        });
+    }
+
+    const candleChecks: ResearchCyclePreflightCandleCheck[] = [];
+    const symbolsToCheck = resolvedSymbols.slice(0, maxCandleChecks);
+    for (const symbol of symbolsToCheck) {
+        const history = await loadScalpCandleHistory(symbol, '1m');
+        const availableCandles = Math.max(0, history.record?.candles?.length || 0);
+        candleChecks.push({
+            symbol,
+            availableCandles,
+            requiredCandles: requiredMinCandlesPerTask,
+            ok: availableCandles >= requiredMinCandlesPerTask,
+        });
+    }
+
+    const insufficientRows = candleChecks.filter((row) => !row.ok);
+    if (insufficientRows.length > 0) {
+        failures.push({
+            code: 'insufficient_candles',
+            message: `${insufficientRows.length} symbol(s) are below required 1m candle history.`,
+            details: {
+                requiredCandles: requiredMinCandlesPerTask,
+                checkedSymbols: symbolsToCheck.length,
+                failingSymbols: insufficientRows.slice(0, 20).map((row) => ({
+                    symbol: row.symbol,
+                    availableCandles: row.availableCandles,
+                })),
+            },
+        });
+    }
+
+    return {
+        ready: failures.length === 0,
+        checkedAtMs: nowMs,
+        checkedAtIso: new Date(nowMs).toISOString(),
+        universeGeneratedAtIso: universe?.generatedAtIso || null,
+        reportGeneratedAtIso,
+        resolvedSymbols,
+        strategyAllowlist: policy.strategyAllowlist,
+        requiredMinCandlesPerTask,
+        candleChecks,
+        failures,
+    };
+}
+
 function normalizeResearchCycleParams(raw: unknown): ScalpResearchCycleParams {
     const row = isRecord(raw) ? raw : {};
     return {
@@ -473,7 +633,8 @@ function normalizeResearchWorkerHeartbeatStatus(value: unknown): ResearchWorkerH
         normalized === 'failed' ||
         normalized === 'no_cycle' ||
         normalized === 'cycle_not_found' ||
-        normalized === 'cycle_not_running'
+        normalized === 'cycle_not_running' ||
+        normalized === 'preflight_failed'
     ) {
         return normalized;
     }
@@ -1422,14 +1583,16 @@ export async function startScalpResearchCycle(params: StartResearchCycleParams =
             }
         }
 
-        const policy = await loadScalpSymbolDiscoveryPolicy();
-        const universe = await loadScalpSymbolUniverseSnapshot();
+        const preflight = await evaluateResearchCyclePreflight(params);
+        if (!preflight.ready) {
+            throw Object.assign(new Error('research_cycle_preflight_failed'), {
+                code: 'research_cycle_preflight_failed',
+                preflight,
+            });
+        }
+
         const tunerPolicy = resolveScalpResearchTunerPolicy();
-        const symbols = dedupe(
-            (params.symbols?.length ? params.symbols : universe?.selectedSymbols || policy.pinnedSymbols)
-                .map((row) => normalizeSymbol(row))
-                .filter((row) => Boolean(row)),
-        );
+        const symbols = preflight.resolvedSymbols;
 
         const cycleId = buildResearchCycleId(nowMs);
         const cycleParams: ScalpResearchCycleParams = {
@@ -1454,7 +1617,7 @@ export async function startScalpResearchCycle(params: StartResearchCycleParams =
             lookbackDays: cycleParams.lookbackDays,
             chunkDays: cycleParams.chunkDays,
             maxTasks: cycleParams.maxTasks,
-            strategyAllowlist: policy.strategyAllowlist,
+            strategyAllowlist: preflight.strategyAllowlist,
             tunerEnabled: cycleParams.tunerEnabled !== false,
             maxTuneVariantsPerStrategy: Math.max(1, cycleParams.maxTuneVariantsPerStrategy || 1),
         });
@@ -1467,7 +1630,7 @@ export async function startScalpResearchCycle(params: StartResearchCycleParams =
             updatedAtMs: nowMs,
             startedBy: params.startedBy || null,
             dryRun,
-            sourceUniverseGeneratedAt: universe?.generatedAtIso || null,
+            sourceUniverseGeneratedAt: preflight.universeGeneratedAtIso,
             params: cycleParams,
             symbols,
             taskIds: tasks.map((row) => row.taskId),
@@ -1904,6 +2067,12 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         failedRuns: 0,
         stoppedByDurationBudget: false,
         noClaimScanSummary: null,
+        orchestration: {
+            checkedAtMs: Date.now(),
+            gate: 'pass',
+            reasonCodes: [],
+            preflight: null,
+        },
         diagnostics: buildDiagnostics(cycleTaskCount),
         claimedTasks: [],
     });
@@ -2081,9 +2250,55 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
             failedRuns: 0,
             stoppedByDurationBudget: false,
             noClaimScanSummary: null,
+            orchestration: {
+                checkedAtMs: Date.now(),
+                gate: 'pass',
+                reasonCodes: [],
+                preflight: null,
+            },
             diagnostics,
             claimedTasks: [],
         };
+        const preflight = await evaluateResearchCyclePreflight({
+            symbols: cycle.symbols,
+            minCandlesPerTask: cycle.params.minCandlesPerTask,
+            requireUniverseSnapshot: true,
+            requireReportSnapshot: true,
+            maxCandleChecks: Math.max(1, cycle.symbols.length || 1),
+        });
+        out.orchestration = {
+            checkedAtMs: preflight.checkedAtMs,
+            gate: preflight.ready ? 'pass' : 'blocked',
+            reasonCodes: preflight.failures.map((row) => row.code),
+            preflight,
+        };
+        if (!preflight.ready) {
+            emitWorkerLog(
+                'early_exit_preflight_failed',
+                {
+                    cycleId,
+                    workerId,
+                    failureCodes: preflight.failures.map((row) => row.code),
+                    checkedAtIso: preflight.checkedAtIso,
+                },
+                'warn',
+                true,
+            );
+            await persistHeartbeat({
+                status: 'preflight_failed',
+                cycleId,
+                attemptedRuns: out.attemptedRuns,
+                completedRuns: out.completedRuns,
+                failedRuns: out.failedRuns,
+                stoppedByDurationBudget: out.stoppedByDurationBudget,
+                noClaimScanSummary: out.noClaimScanSummary,
+                finishedAtMs: Date.now(),
+                durationMs: Date.now() - startedAtMs,
+                error: `preflight_failed:${out.orchestration.reasonCodes.join(',')}`,
+            });
+            out.diagnostics.durationMs = Date.now() - startedAtMs;
+            return out;
+        }
         const symbolCooldownConfig = resolveResearchSymbolCooldownConfig();
         const symbolCooldowns = await loadResearchSymbolCooldownSnapshot();
         let symbolCooldownsDirty = false;

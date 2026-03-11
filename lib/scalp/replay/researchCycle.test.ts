@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
+import os from 'node:os';
+import path from 'node:path';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import type { ScalpResearchCycleSnapshot, ScalpResearchTask } from '../researchCycle';
 import {
     buildResearchCycleTasks,
     createEmptyResearchSymbolCooldownSnapshot,
+    evaluateResearchCyclePreflight,
     evaluateResearchTaskClaimability,
     isResearchSymbolCooldownActive,
     isResearchTaskFailureEligibleForSymbolCooldown,
@@ -12,6 +16,7 @@ import {
     resolveResearchWorkerRuntimeConfig,
     summarizeResearchTasks,
 } from '../researchCycle';
+import { saveScalpCandleHistory } from '../candleHistory';
 
 const DAY_MS = 24 * 60 * 60_000;
 
@@ -454,4 +459,84 @@ test('resolveResearchWorkerRuntimeConfig uses default concurrency but does not e
     assert.equal(out.maxRuns, 3);
     assert.equal(out.concurrency, 3);
     assert.equal(out.maxDurationMs, 45_000);
+});
+
+test('evaluateResearchCyclePreflight enforces candle readiness before allowing cycle start', async () => {
+    const tmpRoot = await mkdtemp(path.join(os.tmpdir(), 'scalp-preflight-'));
+    const prevEnv = {
+        CANDLE_HISTORY_DIR: process.env.CANDLE_HISTORY_DIR,
+        SCALP_SYMBOL_UNIVERSE_PATH: process.env.SCALP_SYMBOL_UNIVERSE_PATH,
+        SCALP_RESEARCH_REPORT_PATH: process.env.SCALP_RESEARCH_REPORT_PATH,
+    };
+
+    try {
+        process.env.CANDLE_HISTORY_DIR = path.join(tmpRoot, 'candles');
+        process.env.SCALP_SYMBOL_UNIVERSE_PATH = path.join(tmpRoot, 'universe.json');
+        process.env.SCALP_RESEARCH_REPORT_PATH = path.join(tmpRoot, 'report.json');
+
+        await writeFile(
+            process.env.SCALP_SYMBOL_UNIVERSE_PATH,
+            JSON.stringify({
+                version: 1,
+                generatedAtIso: '2026-03-11T00:00:00.000Z',
+                policy: {},
+                source: 'weekly_discovery_v1',
+                dryRun: false,
+                previousSymbols: [],
+                selectedSymbols: ['EURUSD'],
+                addedSymbols: ['EURUSD'],
+                removedSymbols: [],
+                candidatesEvaluated: 1,
+                selectedRows: [],
+                topRejectedRows: [],
+            }),
+            'utf8',
+        );
+        await writeFile(
+            process.env.SCALP_RESEARCH_REPORT_PATH,
+            JSON.stringify({
+                generatedAtIso: '2026-03-11T00:05:00.000Z',
+            }),
+            'utf8',
+        );
+
+        const baseTs = Date.UTC(2026, 2, 1, 0, 0, 0);
+        const makeCandles = (count: number) =>
+            Array.from({ length: count }, (_, idx) => {
+                const ts = baseTs + idx * 60_000;
+                return [ts, 1.1, 1.11, 1.09, 1.105, 10] as [number, number, number, number, number, number];
+            });
+
+        await saveScalpCandleHistory({
+            symbol: 'EURUSD',
+            timeframe: '1m',
+            epic: 'CS.D.EURUSD.TODAY.IP',
+            source: 'capital',
+            candles: makeCandles(10),
+        });
+
+        const failing = await evaluateResearchCyclePreflight({ minCandlesPerTask: 20 });
+        assert.equal(failing.ready, false);
+        assert.ok(failing.failures.some((row) => row.code === 'insufficient_candles'));
+
+        await saveScalpCandleHistory({
+            symbol: 'EURUSD',
+            timeframe: '1m',
+            epic: 'CS.D.EURUSD.TODAY.IP',
+            source: 'capital',
+            candles: makeCandles(25),
+        });
+
+        const passing = await evaluateResearchCyclePreflight({ minCandlesPerTask: 20 });
+        assert.equal(passing.ready, true);
+        assert.equal(passing.failures.length, 0);
+    } finally {
+        if (prevEnv.CANDLE_HISTORY_DIR === undefined) delete process.env.CANDLE_HISTORY_DIR;
+        else process.env.CANDLE_HISTORY_DIR = prevEnv.CANDLE_HISTORY_DIR;
+        if (prevEnv.SCALP_SYMBOL_UNIVERSE_PATH === undefined) delete process.env.SCALP_SYMBOL_UNIVERSE_PATH;
+        else process.env.SCALP_SYMBOL_UNIVERSE_PATH = prevEnv.SCALP_SYMBOL_UNIVERSE_PATH;
+        if (prevEnv.SCALP_RESEARCH_REPORT_PATH === undefined) delete process.env.SCALP_RESEARCH_REPORT_PATH;
+        else process.env.SCALP_RESEARCH_REPORT_PATH = prevEnv.SCALP_RESEARCH_REPORT_PATH;
+        await rm(tmpRoot, { recursive: true, force: true });
+    }
 });

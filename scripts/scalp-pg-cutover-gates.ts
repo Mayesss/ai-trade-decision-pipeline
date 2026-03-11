@@ -826,7 +826,7 @@ async function gate4PromotionParityConsecutiveCycles(
 async function main() {
     const options = parseArgs(process.argv);
     if (!isScalpPgConfigured()) {
-        throw new Error('Missing PRISMA_PG_POSTGRES_URL for cutover gate checks');
+        throw new Error('Missing PRISMA_CONNECTION_STRING for cutover gate checks');
     }
 
     const nowMs = Date.now();

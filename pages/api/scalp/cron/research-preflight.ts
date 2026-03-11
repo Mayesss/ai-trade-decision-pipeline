@@ -3,7 +3,7 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
-import { startScalpResearchCycle } from '../../../../lib/scalp/researchCycle';
+import { evaluateResearchCyclePreflight } from '../../../../lib/scalp/researchCycle';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean): boolean {
     if (value === undefined) return fallback;
@@ -53,51 +53,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!requireAdminAccess(req, res)) return;
     setNoStoreHeaders(res);
 
-    const dryRun = parseBoolParam(req.query.dryRun, false);
-    const force = parseBoolParam(req.query.force, false);
-
     try {
-        const out = await startScalpResearchCycle({
-            dryRun,
-            force,
+        const preflight = await evaluateResearchCyclePreflight({
             symbols: parseSymbolsCsv(firstQueryValue(req.query.symbols)),
-            lookbackDays: parsePositiveInt(firstQueryValue(req.query.lookbackDays)),
-            chunkDays: parsePositiveInt(firstQueryValue(req.query.chunkDays)),
             minCandlesPerTask: parsePositiveInt(firstQueryValue(req.query.minCandlesPerTask)),
-            maxTasks: parsePositiveInt(firstQueryValue(req.query.maxTasks)),
-            maxAttempts: parsePositiveInt(firstQueryValue(req.query.maxAttempts)),
-            runningStaleAfterMs: parsePositiveInt(firstQueryValue(req.query.runningStaleAfterMs)),
-            tunerEnabled: req.query.tunerEnabled === undefined ? undefined : parseBoolParam(req.query.tunerEnabled, true),
-            maxTuneVariantsPerStrategy: parsePositiveInt(firstQueryValue(req.query.maxTuneVariantsPerStrategy)),
-            startedBy: firstQueryValue(req.query.startedBy) || 'cron:research-cycle-start',
+            requireUniverseSnapshot: req.query.requireUniverseSnapshot === undefined
+                ? undefined
+                : parseBoolParam(req.query.requireUniverseSnapshot, true),
+            requireReportSnapshot: req.query.requireReportSnapshot === undefined
+                ? undefined
+                : parseBoolParam(req.query.requireReportSnapshot, true),
+            maxCandleChecks: parsePositiveInt(firstQueryValue(req.query.maxCandleChecks)),
         });
 
-        return res.status(200).json({
-            ok: true,
-            started: out.started,
-            dryRun,
-            force,
-            cycle: {
-                cycleId: out.cycle.cycleId,
-                status: out.cycle.status,
-                symbols: out.cycle.symbols,
-                taskCount: out.cycle.taskIds.length,
-                params: out.cycle.params,
-                createdAtMs: out.cycle.createdAtMs,
-                sourceUniverseGeneratedAt: out.cycle.sourceUniverseGeneratedAt,
-            },
-            snapshot: out.cycle,
+        const status = preflight.ready ? 200 : 409;
+        return res.status(status).json({
+            ok: preflight.ready,
+            preflight,
         });
     } catch (err: any) {
-        if (String(err?.code || '') === 'research_cycle_preflight_failed' && err?.preflight) {
-            return res.status(409).json({
-                error: 'research_cycle_preflight_failed',
-                message: 'Research cycle preflight failed. Run /api/scalp/cron/research-preflight for details.',
-                preflight: err.preflight,
-            });
-        }
         return res.status(500).json({
-            error: 'research_cycle_start_failed',
+            error: 'research_preflight_failed',
             message: err?.message || String(err),
         });
     }

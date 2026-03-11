@@ -5,6 +5,7 @@ const UNAUTHENTICATED_CRON_ROUTES = new Set<string>([
   '/api/swing/analyze',
   '/api/scalp/cron/execute-deployments',
   '/api/scalp/cron/discover-symbols',
+  '/api/scalp/cron/prepare-and-start-cycle',
   '/api/scalp/cron/research-cycle-start',
   '/api/scalp/cron/research-cycle-worker',
   '/api/scalp/cron/research-cycle-aggregate',
