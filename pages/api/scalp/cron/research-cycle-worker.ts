@@ -3,6 +3,7 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
+import { invokeCronEndpoint } from '../../../../lib/scalp/cronChaining';
 import { loadScalpPanicStopState } from '../../../../lib/scalp/panicStop';
 import { aggregateScalpResearchCycle, runResearchWorker } from '../../../../lib/scalp/researchCycle';
 import { syncResearchCyclePromotionGates } from '../../../../lib/scalp/researchPromotion';
@@ -48,10 +49,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const concurrency = parsePositiveInt(firstQueryValue(req.query.concurrency));
     const maxDurationMs = parsePositiveInt(firstQueryValue(req.query.maxDurationMs));
     const debug = parseBoolParam(req.query.debug, false);
+    const autoContinue = parseBoolParam(req.query.autoContinue, true);
+    const continueHop = Math.max(0, Math.floor(Number(firstQueryValue(req.query.continueHop)) || 0));
+    const autoContinueMaxHops = Math.max(
+        0,
+        Math.min(
+            10,
+            Math.floor(
+                Number(firstQueryValue(req.query.autoContinueMaxHops)) ||
+                    Number(process.env.SCALP_RESEARCH_WORKER_AUTO_CONTINUE_MAX_HOPS) ||
+                    2,
+            ),
+        ),
+    );
     const aggregateAfter = parseBoolParam(req.query.aggregateAfter, true);
     const finalizeWhenDone = parseBoolParam(req.query.finalizeWhenDone, true);
     const syncPromotionGates = parseBoolParam(req.query.syncPromotionGates, true);
     const requireCompletedCycleForSync = parseBoolParam(req.query.requireCompletedCycleForSync, true);
+    const autoSuccessor = parseBoolParam(req.query.autoSuccessor, true);
+    const successorPath = firstQueryValue(req.query.successorPath) || '/api/scalp/cron/research-cycle-sync-gates';
 
     try {
         const panicStop = await loadScalpPanicStopState();
@@ -103,6 +119,48 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                       updatedBy: 'cron:research-cycle-worker',
                   })
                 : null;
+        const shouldAutoContinue =
+            autoContinue &&
+            !preflightBlocked &&
+            continueHop < autoContinueMaxHops &&
+            Boolean(worker.cycleId) &&
+            Boolean(aggregate) &&
+            aggregate!.summary.status === 'running' &&
+            (aggregate!.summary.totals.pending > 0 || aggregate!.summary.totals.running > 0) &&
+            (worker.stoppedByDurationBudget || worker.attemptedRuns >= worker.maxRuns);
+        const continuation = shouldAutoContinue
+            ? await invokeCronEndpoint(req, '/api/scalp/cron/research-cycle-worker', {
+                  cycleId: worker.cycleId!,
+                  maxRuns: worker.maxRuns,
+                  concurrency: worker.concurrency,
+                  maxDurationMs: worker.maxDurationMs,
+                  debug,
+                  autoContinue: 1,
+                  continueHop: continueHop + 1,
+                  autoContinueMaxHops,
+                  aggregateAfter,
+                  finalizeWhenDone,
+                  syncPromotionGates,
+                  requireCompletedCycleForSync,
+                  autoSuccessor,
+                  successorPath,
+              })
+            : null;
+        const shouldCallSuccessor =
+            autoSuccessor &&
+            !shouldAutoContinue &&
+            Boolean(worker.cycleId) &&
+            Boolean(aggregate) &&
+            aggregate!.summary.status === 'completed' &&
+            !promotionSync;
+        const successor = shouldCallSuccessor
+            ? await invokeCronEndpoint(req, successorPath, {
+                  cycleId: worker.cycleId!,
+                  dryRun: 0,
+                  requireCompletedCycle: requireCompletedCycleForSync,
+                  updatedBy: 'cron:research-cycle-worker:successor',
+              })
+            : null;
         if (worker.failedRuns > 0 || shouldWarnNoProgress || preflightBlocked) {
             console.warn(
                 JSON.stringify({
@@ -141,6 +199,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         return res.status(200).json({
             ok: true,
             message: workerMessage,
+            autoContinue: {
+                enabled: autoContinue,
+                continueHop,
+                maxHops: autoContinueMaxHops,
+                requested: shouldAutoContinue,
+                continuation,
+            },
+            autoSuccessor: {
+                enabled: autoSuccessor,
+                successorPath,
+                requested: shouldCallSuccessor,
+                successor,
+            },
             requestedCycleId: cycleId || null,
             worker,
             orchestration: worker.orchestration,

@@ -226,39 +226,46 @@ async function loadFromPg(symbol: string, timeframe: string): Promise<ScalpCandl
 async function loadFromPgBulk(symbols: string[], timeframe: string): Promise<ScalpCandleHistoryLoadResult[]> {
     if (!symbols.length) return [];
     const db = scalpPrisma();
-    const rows = await db.$queryRaw<
-        Array<{
-            symbol: string;
-            epic: string | null;
-            source: string | null;
-            updatedAtMs: bigint | number | null;
-            candles: unknown;
-        }>
-    >(Prisma.sql`
-        SELECT
-            symbol,
-            epic,
-            source,
-            (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint AS "updatedAtMs",
-            candles_json AS candles
-        FROM scalp_candle_history_weeks
-        WHERE timeframe = ${timeframe}
-          AND symbol IN (${Prisma.join(symbols)})
-        ORDER BY symbol ASC, week_start ASC;
-    `);
-
+    const chunkSize = Math.max(
+        1,
+        Math.min(50, Math.floor(Number(process.env.SCALP_CANDLE_HISTORY_BULK_QUERY_SYMBOL_CHUNK) || 8)),
+    );
     const grouped = new Map<string, Array<{ epic: string | null; source: string | null; updatedAtMs: number | null; candles: unknown }>>();
-    for (const row of rows) {
-        const symbol = normalizeSymbol(row.symbol);
-        if (!symbol) continue;
-        const bucket = grouped.get(symbol) || [];
-        bucket.push({
-            epic: row.epic,
-            source: row.source,
-            updatedAtMs: Number(row.updatedAtMs || 0),
-            candles: row.candles,
-        });
-        grouped.set(symbol, bucket);
+    for (let offset = 0; offset < symbols.length; offset += chunkSize) {
+        const slice = symbols.slice(offset, offset + chunkSize);
+        if (!slice.length) continue;
+        const rows = await db.$queryRaw<
+            Array<{
+                symbol: string;
+                epic: string | null;
+                source: string | null;
+                updatedAtMs: bigint | number | null;
+                candles: unknown;
+            }>
+        >(Prisma.sql`
+            SELECT
+                symbol,
+                epic,
+                source,
+                (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint AS "updatedAtMs",
+                candles_json AS candles
+            FROM scalp_candle_history_weeks
+            WHERE timeframe = ${timeframe}
+              AND symbol IN (${Prisma.join(slice)})
+            ORDER BY symbol ASC, week_start ASC;
+        `);
+        for (const row of rows) {
+            const symbol = normalizeSymbol(row.symbol);
+            if (!symbol) continue;
+            const bucket = grouped.get(symbol) || [];
+            bucket.push({
+                epic: row.epic,
+                source: row.source,
+                updatedAtMs: Number(row.updatedAtMs || 0),
+                candles: row.candles,
+            });
+            grouped.set(symbol, bucket);
+        }
     }
 
     return symbols.map((symbol) => {

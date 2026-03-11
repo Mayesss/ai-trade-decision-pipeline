@@ -3,6 +3,7 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
+import { invokeCronEndpoint } from '../../../../lib/scalp/cronChaining';
 import { aggregateScalpResearchCycle } from '../../../../lib/scalp/researchCycle';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean): boolean {
@@ -55,6 +56,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const cycleId = firstQueryValue(req.query.cycleId);
     const finalizeWhenDone = parseBoolParam(req.query.finalizeWhenDone, true);
     const debug = parseBoolParam(req.query.debug, false);
+    const autoSuccessor = parseBoolParam(req.query.autoSuccessor, true);
+    const continueHop = Math.max(0, Math.floor(Number(firstQueryValue(req.query.continueHop)) || 0));
+    const autoContinueMaxHops = Math.max(
+        0,
+        Math.min(10, Math.floor(Number(firstQueryValue(req.query.autoContinueMaxHops)) || 3)),
+    );
+    const pendingSuccessorPath = firstQueryValue(req.query.pendingSuccessorPath) || '/api/scalp/cron/research-cycle-worker';
+    const doneSuccessorPath = firstQueryValue(req.query.doneSuccessorPath) || '/api/scalp/cron/research-cycle-sync-gates';
     const startedAtMs = Date.now();
 
     try {
@@ -96,6 +105,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             false,
             debug,
         );
+        const shouldCallPendingSuccessor =
+            autoSuccessor &&
+            continueHop < autoContinueMaxHops &&
+            aggregate.summary.status === 'running' &&
+            (aggregate.summary.totals.pending > 0 || aggregate.summary.totals.running > 0);
+        const shouldCallDoneSuccessor = autoSuccessor && aggregate.summary.status === 'completed';
+        const successor = shouldCallPendingSuccessor
+            ? await invokeCronEndpoint(req, pendingSuccessorPath, {
+                  cycleId: aggregate.cycle.cycleId,
+                  autoContinue: 1,
+                  continueHop: continueHop + 1,
+                  autoContinueMaxHops,
+                  autoSuccessor: 1,
+                  startedBy: 'cron:research-cycle-aggregate:pending-successor',
+              })
+            : shouldCallDoneSuccessor
+              ? await invokeCronEndpoint(req, doneSuccessorPath, {
+                    cycleId: aggregate.cycle.cycleId,
+                    dryRun: 0,
+                    requireCompletedCycle: 1,
+                    updatedBy: 'cron:research-cycle-aggregate:done-successor',
+                })
+              : null;
         return res.status(200).json({
             ok: true,
             found: true,
@@ -112,6 +144,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             summary: {
                 ...aggregate.summary,
                 topCandidates: aggregate.summary.candidateAggregates.slice(0, 20),
+            },
+            chaining: {
+                autoSuccessor,
+                continueHop,
+                maxHops: autoContinueMaxHops,
+                pendingSuccessorPath,
+                doneSuccessorPath,
+                requestedPendingSuccessor: shouldCallPendingSuccessor,
+                requestedDoneSuccessor: shouldCallDoneSuccessor,
+                successor,
             },
         });
     } catch (err: any) {

@@ -485,6 +485,133 @@ function median(values: number[]): number {
     return ((sorted[mid - 1] || 0) + (sorted[mid] || 0)) / 2;
 }
 
+function startOfUtcDay(tsMs: number): number {
+    const date = new Date(tsMs);
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
+interface SymbolHistoryStats {
+    bars1m: number;
+    fromTs: number | null;
+    toTs: number | null;
+    recentBars7d: number;
+    medianRangePct: number;
+}
+
+async function loadSymbolHistoryStats(symbol: string, nowMs: number): Promise<SymbolHistoryStats> {
+    const normalized = normalizeSymbol(symbol);
+    if (!normalized) {
+        return {
+            bars1m: 0,
+            fromTs: null,
+            toTs: null,
+            recentBars7d: 0,
+            medianRangePct: 0,
+        };
+    }
+
+    if (isScalpPgConfigured()) {
+        const db = scalpPrisma();
+        const recentStartTs = startOfUtcDay(nowMs - 7 * 24 * 60 * 60_000);
+        const medianWindowStartTs = startOfUtcDay(nowMs - 21 * 24 * 60 * 60_000);
+        const rows = await db.$queryRaw<
+            Array<{
+                totalBars: bigint | number | null;
+                minWeekStartMs: bigint | number | null;
+                maxWeekStartMs: bigint | number | null;
+                recentBars7d: bigint | number | null;
+                medianRangePct: number | null;
+            }>
+        >(Prisma.sql`
+            WITH agg AS (
+                SELECT
+                    COALESCE(SUM(jsonb_array_length(candles_json)), 0)::bigint AS "totalBars",
+                    MIN((EXTRACT(EPOCH FROM week_start) * 1000)::bigint) AS "minWeekStartMs",
+                    MAX((EXTRACT(EPOCH FROM week_start) * 1000)::bigint) AS "maxWeekStartMs",
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN week_start >= to_timestamp(${recentStartTs} / 1000.0)
+                                THEN jsonb_array_length(candles_json)
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    )::bigint AS "recentBars7d"
+                FROM scalp_candle_history_weeks
+                WHERE symbol = ${normalized}
+                  AND timeframe = '1m'
+            ),
+            sample AS (
+                SELECT
+                    (elem->>0)::bigint AS ts,
+                    ((elem->>2)::double precision - (elem->>3)::double precision)
+                        / NULLIF((elem->>4)::double precision, 0) * 100.0 AS range_pct
+                FROM scalp_candle_history_weeks w
+                CROSS JOIN LATERAL jsonb_array_elements(w.candles_json) elem
+                WHERE w.symbol = ${normalized}
+                  AND w.timeframe = '1m'
+                  AND w.week_start >= to_timestamp(${medianWindowStartTs} / 1000.0)
+            ),
+            sample_limited AS (
+                SELECT range_pct
+                FROM sample
+                WHERE range_pct IS NOT NULL
+                  AND range_pct >= 0
+                ORDER BY ts DESC
+                LIMIT 2000
+            )
+            SELECT
+                a."totalBars",
+                a."minWeekStartMs",
+                a."maxWeekStartMs",
+                a."recentBars7d",
+                (
+                    SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY range_pct)
+                    FROM sample_limited
+                ) AS "medianRangePct"
+            FROM agg a;
+        `);
+        const row = rows[0];
+        const bars1m = Math.max(0, Math.floor(Number(row?.totalBars || 0)));
+        const minWeekStartMs = Math.floor(Number(row?.minWeekStartMs || 0));
+        const maxWeekStartMs = Math.floor(Number(row?.maxWeekStartMs || 0));
+        return {
+            bars1m,
+            fromTs: Number.isFinite(minWeekStartMs) && minWeekStartMs > 0 ? minWeekStartMs : null,
+            toTs: Number.isFinite(maxWeekStartMs) && maxWeekStartMs > 0 ? maxWeekStartMs + 7 * 24 * 60 * 60_000 - 1 : null,
+            recentBars7d: Math.max(0, Math.floor(Number(row?.recentBars7d || 0))),
+            medianRangePct: Number.isFinite(Number(row?.medianRangePct)) ? Number(row?.medianRangePct) : 0,
+        };
+    }
+
+    const history = await loadScalpCandleHistory(normalized, '1m');
+    const candles = history.record?.candles || [];
+    const fromTs = candles.length ? Number(candles[0]?.[0]) : null;
+    const toTs = candles.length ? Number(candles[candles.length - 1]?.[0]) : null;
+    const recentStartTs = nowMs - 7 * 24 * 60 * 60_000;
+    const recentBars7d = candles.filter((row) => Number(row[0]) >= recentStartTs).length;
+    const medianRangePct = median(
+        candles
+            .slice(-Math.min(candles.length, 2000))
+            .map((row) => {
+                const high = Number(row[2]);
+                const low = Number(row[3]);
+                const close = Number(row[4]);
+                if (!Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close) || close <= 0) return 0;
+                return ((high - low) / close) * 100;
+            })
+            .filter((row) => Number.isFinite(row) && row >= 0),
+    );
+    return {
+        bars1m: candles.length,
+        fromTs,
+        toTs,
+        recentBars7d,
+        medianRangePct,
+    };
+}
+
 function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
 }
@@ -1391,30 +1518,16 @@ export async function evaluateScalpSymbolCandidate(params: {
     knownStrategyIds: Set<string>;
 }): Promise<ScalpSymbolCandidateRow> {
     const symbol = normalizeSymbol(params.symbol);
-    const history = await loadScalpCandleHistory(symbol, '1m');
-    const candles = history.record?.candles || [];
-
-    const fromTs = candles.length ? Number(candles[0]?.[0]) : null;
-    const toTs = candles.length ? Number(candles[candles.length - 1]?.[0]) : null;
+    const historyStats = await loadSymbolHistoryStats(symbol, params.nowMs);
+    const fromTs = historyStats.fromTs;
+    const toTs = historyStats.toTs;
     const spanMs = fromTs !== null && toTs !== null && toTs >= fromTs ? toTs - fromTs : 0;
     const spanDays = spanMs > 0 ? spanMs / (24 * 60 * 60_000) : 0;
     const expectedBars = spanMs > 0 ? Math.max(1, Math.floor(spanMs / 60_000) + 1) : 0;
-    const coveragePct = expectedBars > 0 ? clamp((candles.length / expectedBars) * 100, 0, 100) : 0;
-    const avgBarsPerDay = spanDays > 0 ? candles.length / spanDays : 0;
-    const recentStartTs = params.nowMs - 7 * 24 * 60 * 60_000;
-    const recentBars7d = candles.filter((row) => Number(row[0]) >= recentStartTs).length;
-    const medianRangePct = median(
-        candles
-            .slice(-Math.min(candles.length, 2000))
-            .map((row) => {
-                const high = Number(row[2]);
-                const low = Number(row[3]);
-                const close = Number(row[4]);
-                if (!Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close) || close <= 0) return 0;
-                return ((high - low) / close) * 100;
-            })
-            .filter((row) => Number.isFinite(row) && row >= 0),
-    );
+    const coveragePct = expectedBars > 0 ? clamp((historyStats.bars1m / expectedBars) * 100, 0, 100) : 0;
+    const avgBarsPerDay = spanDays > 0 ? historyStats.bars1m / spanDays : 0;
+    const recentBars7d = historyStats.recentBars7d;
+    const medianRangePct = historyStats.medianRangePct;
 
     let livePrice: number | null = null;
     let liveSpreadPips: number | null = null;
@@ -1487,7 +1600,7 @@ export async function evaluateScalpSymbolCandidate(params: {
         reasons,
         recommendedStrategyIds: strategies,
         metrics: {
-            historyBars1m: candles.length,
+            historyBars1m: historyStats.bars1m,
             historyFromTs: fromTs,
             historyToTs: toTs,
             historySpanDays: Number(spanDays.toFixed(4)),

@@ -3,6 +3,7 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
+import { invokeCronEndpoint } from '../../../../lib/scalp/cronChaining';
 import { syncResearchCyclePromotionGates } from '../../../../lib/scalp/researchPromotion';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean): boolean {
@@ -109,6 +110,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const materializeMinTradesPerWindow = parseNonNegativeInt(firstQueryValue(req.query.materializeMinTradesPerWindow));
     const materializeMinMeanExpectancyR = parseFiniteNumber(firstQueryValue(req.query.materializeMinMeanExpectancyR));
     const debug = parseBoolParam(req.query.debug, false);
+    const autoSuccessor = parseBoolParam(req.query.autoSuccessor, true);
+    const successorPath = firstQueryValue(req.query.successorPath) || '/api/scalp/cron/orchestrate-pipeline';
     const startedAtMs = Date.now();
 
     try {
@@ -163,6 +166,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             shouldWarn,
             debug,
         );
+        const shouldCallSuccessor = autoSuccessor && !dryRun && out.ok !== false && out.reason !== 'cycle_not_completed';
+        const successor = shouldCallSuccessor
+            ? await invokeCronEndpoint(req, successorPath, {
+                  continue: 1,
+                  debug,
+              })
+            : null;
 
         return res.status(200).json({
             ok: out.ok,
@@ -179,6 +189,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             materialization: out.materialization,
             candidates: out.candidates,
             rows: out.rows,
+            chaining: {
+                autoSuccessor,
+                successorPath,
+                requested: shouldCallSuccessor,
+                successor,
+            },
         });
     } catch (err: any) {
         logSyncGates(

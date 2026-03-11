@@ -3,6 +3,7 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
+import { invokeCronEndpoint } from '../../../../lib/scalp/cronChaining';
 import { startScalpResearchCycle } from '../../../../lib/scalp/researchCycle';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean): boolean {
@@ -55,6 +56,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const dryRun = parseBoolParam(req.query.dryRun, false);
     const force = parseBoolParam(req.query.force, false);
+    const autoSuccessor = parseBoolParam(req.query.autoSuccessor, true);
+    const successorPath = firstQueryValue(req.query.successorPath) || '/api/scalp/cron/research-cycle-worker';
 
     try {
         const out = await startScalpResearchCycle({
@@ -71,6 +74,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             maxTuneVariantsPerStrategy: parsePositiveInt(firstQueryValue(req.query.maxTuneVariantsPerStrategy)),
             startedBy: firstQueryValue(req.query.startedBy) || 'cron:research-cycle-start',
         });
+        const shouldCallSuccessor = autoSuccessor && !dryRun && out.started && Boolean(out.cycle?.cycleId);
+        const successor = shouldCallSuccessor
+            ? await invokeCronEndpoint(req, successorPath, {
+                  cycleId: out.cycle?.cycleId,
+                  autoContinue: 1,
+                  continueHop: 0,
+                  startedBy: 'cron:research-cycle-start:successor',
+              })
+            : null;
 
         return res.status(200).json({
             ok: true,
@@ -85,6 +97,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 params: out.cycle.params,
                 createdAtMs: out.cycle.createdAtMs,
                 sourceUniverseGeneratedAt: out.cycle.sourceUniverseGeneratedAt,
+            },
+            chaining: {
+                autoSuccessor: {
+                    enabled: autoSuccessor,
+                    successorPath,
+                    requested: shouldCallSuccessor,
+                    successor,
+                },
             },
             snapshot: out.cycle,
         });

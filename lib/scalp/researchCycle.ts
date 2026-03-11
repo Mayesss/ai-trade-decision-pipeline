@@ -499,6 +499,13 @@ function startOfUtcDay(tsMs: number): number {
     return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
 }
 
+function weekStartMondayUtcMs(tsMs: number): number {
+    const dayStartMs = startOfUtcDay(tsMs);
+    const dayOfWeek = new Date(dayStartMs).getUTCDay();
+    const daysSinceMonday = (dayOfWeek + 6) % 7;
+    return dayStartMs - daysSinceMonday * ONE_DAY_MS;
+}
+
 function resolveLastCompletedWeekAnchorUtc(nowMs: number): { startCurrentWeekMondayMs: number; lastSundayEndMs: number } {
     const dayStartMs = startOfUtcDay(nowMs);
     const dayOfWeek = new Date(dayStartMs).getUTCDay(); // 0=Sunday ... 6=Saturday
@@ -537,6 +544,115 @@ function evaluateSuccessiveCompletedWeeksFromCandles(
         missingWeeks,
         latestCandleAtMs,
     };
+}
+
+type PreflightHistoryStats = {
+    availableCandles: number;
+    requiredWeekStartsMs: number[];
+    latestCandleAtMs: number | null;
+};
+
+async function loadResearchPreflightHistoryStatsBySymbol(params: {
+    symbols: string[];
+    timeframe: string;
+    requiredSuccessiveWeeks: number;
+    nowMs: number;
+}): Promise<Map<string, PreflightHistoryStats>> {
+    const symbols = dedupe(
+        (params.symbols || [])
+            .map((row) => normalizeSymbol(row))
+            .filter((row) => Boolean(row)),
+    );
+    const out = new Map<string, PreflightHistoryStats>();
+    if (!symbols.length) return out;
+
+    const requiredWeeks = Math.max(0, Math.floor(Number(params.requiredSuccessiveWeeks) || 0));
+    const anchor = resolveLastCompletedWeekAnchorUtc(params.nowMs);
+    const lastCompletedWeekMondayStartMs = anchor.startCurrentWeekMondayMs - ONE_WEEK_MS;
+    const firstRequiredWeekStartMs =
+        requiredWeeks > 0
+            ? lastCompletedWeekMondayStartMs - (requiredWeeks - 1) * ONE_WEEK_MS
+            : lastCompletedWeekMondayStartMs;
+
+    if (isScalpPgConfigured()) {
+        const db = scalpPrisma();
+        const requiredWeekFilterSql =
+            requiredWeeks > 0
+                ? Prisma.sql`
+                    week_start >= to_timestamp(${firstRequiredWeekStartMs} / 1000.0)
+                    AND week_start <= to_timestamp(${anchor.lastSundayEndMs} / 1000.0)
+                `
+                : Prisma.sql`FALSE`;
+        const rows = await db.$queryRaw<
+            Array<{
+                symbol: string;
+                totalCandles: bigint | number | null;
+                latestWeekStartMs: bigint | number | null;
+                requiredWeekStartsMs: Array<bigint | number> | null;
+            }>
+        >(Prisma.sql`
+            SELECT
+                symbol,
+                COALESCE(SUM(jsonb_array_length(candles_json)), 0)::bigint AS "totalCandles",
+                MAX((EXTRACT(EPOCH FROM week_start) * 1000)::bigint) AS "latestWeekStartMs",
+                ARRAY_AGG((EXTRACT(EPOCH FROM week_start) * 1000)::bigint ORDER BY week_start)
+                    FILTER (WHERE ${requiredWeekFilterSql}) AS "requiredWeekStartsMs"
+            FROM scalp_candle_history_weeks
+            WHERE timeframe = ${params.timeframe}
+              AND symbol IN (${Prisma.join(symbols)})
+            GROUP BY symbol;
+        `);
+
+        for (const row of rows) {
+            const symbol = normalizeSymbol(row.symbol);
+            if (!symbol) continue;
+            const totalCandles = Math.max(0, Math.floor(Number(row.totalCandles || 0)));
+            const latestWeekStartMs = Number(row.latestWeekStartMs || 0);
+            const requiredWeekStartsMs = Array.isArray(row.requiredWeekStartsMs)
+                ? row.requiredWeekStartsMs
+                      .map((value) => Math.floor(Number(value || 0)))
+                      .filter((value) => Number.isFinite(value) && value > 0)
+                : [];
+            out.set(symbol, {
+                availableCandles: totalCandles,
+                requiredWeekStartsMs,
+                latestCandleAtMs:
+                    Number.isFinite(latestWeekStartMs) && latestWeekStartMs > 0 ? latestWeekStartMs + ONE_WEEK_MS - 1 : null,
+            });
+        }
+        return out;
+    }
+
+    const histories = await loadScalpCandleHistoryBulk(symbols, params.timeframe);
+    for (let i = 0; i < symbols.length; i += 1) {
+        const symbol = symbols[i]!;
+        const history = histories[i];
+        const candles = history?.record?.candles || [];
+        const availableCandles = Math.max(0, candles.length);
+        const requiredWeekStartsMs: number[] = [];
+        let latestCandleAtMs: number | null = null;
+        if (requiredWeeks > 0) {
+            const presentWeekStarts = new Set<number>();
+            for (const candle of candles) {
+                const ts = Number(candle?.[0] || 0);
+                if (!Number.isFinite(ts) || ts <= 0) continue;
+                if (latestCandleAtMs === null || ts > latestCandleAtMs) latestCandleAtMs = ts;
+                const weekStartMs = weekStartMondayUtcMs(ts);
+                if (weekStartMs >= firstRequiredWeekStartMs && weekStartMs <= lastCompletedWeekMondayStartMs) {
+                    presentWeekStarts.add(weekStartMs);
+                }
+            }
+            requiredWeekStartsMs.push(...Array.from(presentWeekStarts));
+        } else if (availableCandles > 0) {
+            latestCandleAtMs = Number(candles[availableCandles - 1]?.[0] || 0) || null;
+        }
+        out.set(symbol, {
+            availableCandles,
+            requiredWeekStartsMs,
+            latestCandleAtMs,
+        });
+    }
+    return out;
 }
 
 export async function evaluateResearchCyclePreflight(
@@ -613,11 +729,20 @@ export async function evaluateResearchCyclePreflight(
     const symbolsToCheck = new Set(resolvedSymbolsRaw.slice(0, maxCandleChecks));
     const weeklyExcludedSymbols: NonNullable<ResearchCyclePreflightResult['weeklySuccessiveRequirement']>['excludedSymbols'] = [];
     const resolvedSymbols: string[] = [];
-    const histories = await loadScalpCandleHistoryBulk(resolvedSymbolsRaw, '1m');
+    const historyStatsBySymbol = await loadResearchPreflightHistoryStatsBySymbol({
+        symbols: resolvedSymbolsRaw,
+        timeframe: '1m',
+        requiredSuccessiveWeeks,
+        nowMs,
+    });
     for (let i = 0; i < resolvedSymbolsRaw.length; i += 1) {
         const symbol = resolvedSymbolsRaw[i]!;
-        const history = histories[i] || (await loadScalpCandleHistory(symbol, '1m'));
-        const availableCandles = Math.max(0, history.record?.candles?.length || 0);
+        const historyStats = historyStatsBySymbol.get(symbol) || {
+            availableCandles: 0,
+            requiredWeekStartsMs: [],
+            latestCandleAtMs: null,
+        };
+        const availableCandles = Math.max(0, historyStats.availableCandles);
         const candleReady = availableCandles >= requiredMinCandlesPerTask;
         if (symbolsToCheck.has(symbol)) {
             candleChecks.push({
@@ -636,11 +761,18 @@ export async function evaluateResearchCyclePreflight(
             continue;
         }
         if (requiredSuccessiveWeeks > 0) {
-            const weekly = evaluateSuccessiveCompletedWeeksFromCandles(
-                history.record?.candles || [],
-                nowMs,
-                requiredSuccessiveWeeks,
-            );
+            const presentWeeks = new Set<number>(
+                historyStats.requiredWeekStartsMs
+                    .map((weekStartMs) => weekStartMondayUtcMs(weekStartMs))
+                    .filter((weekStartMs) => Number.isFinite(weekStartMs) && weekStartMs > 0),
+            ).size;
+            const missingWeeks = Math.max(0, requiredSuccessiveWeeks - presentWeeks);
+            const weekly = {
+                ok: missingWeeks === 0,
+                presentWeeks,
+                missingWeeks,
+                latestCandleAtMs: historyStats.latestCandleAtMs,
+            };
             if (!weekly.ok) {
                 weeklyExcludedSymbols.push({
                     symbol,
@@ -1975,21 +2107,59 @@ function sliceRowsByWindow(rows: HistoryRow[], fromTs: number, toTs: number): Hi
 
 async function loadHistoryRowsForTask(
     symbol: string,
+    fromTs: number,
+    toTs: number,
     historyCache: Map<string, HistoryRow[]>,
     diagnostics: WorkerDiagnostics,
 ): Promise<HistoryRow[]> {
-    const cached = historyCache.get(symbol);
+    const windowFromTs = Math.max(0, Math.floor(Number(fromTs) || 0));
+    const windowToTs = Math.max(windowFromTs + 1, Math.floor(Number(toTs) || 0));
+    const weekFromTs = weekStartMondayUtcMs(windowFromTs);
+    const weekToTs = weekStartMondayUtcMs(Math.max(windowFromTs, windowToTs - 1));
+    const cacheKey = `${symbol}:${weekFromTs}:${weekToTs}`;
+    const cached = historyCache.get(cacheKey);
     if (cached) {
         diagnostics.historyCacheHits += 1;
         return cached;
     }
     diagnostics.historyCacheMisses += 1;
-    const history = await loadScalpCandleHistory(symbol, '1m');
-    const all = (history.record?.candles || []) as HistoryRow[];
-    historyCache.set(symbol, all);
+    let rows: HistoryRow[] = [];
+    if (isScalpPgConfigured()) {
+        const db = scalpPrisma();
+        const historyRows = await db.$queryRaw<Array<{ candles: unknown }>>(Prisma.sql`
+            SELECT candles_json AS candles
+            FROM scalp_candle_history_weeks
+            WHERE symbol = ${symbol}
+              AND timeframe = '1m'
+              AND week_start >= to_timestamp(${weekFromTs} / 1000.0)
+              AND week_start <= to_timestamp(${weekToTs} / 1000.0)
+            ORDER BY week_start ASC;
+        `);
+        const byTs = new Map<number, HistoryRow>();
+        for (const row of historyRows) {
+            const candles = Array.isArray(row.candles) ? row.candles : [];
+            for (const candle of candles) {
+                const c = candle as unknown[];
+                if (!Array.isArray(c)) continue;
+                const ts = Number(c[0]);
+                const open = Number(c[1]);
+                const high = Number(c[2]);
+                const low = Number(c[3]);
+                const close = Number(c[4]);
+                const volume = Number(c[5] ?? 0);
+                if (![ts, open, high, low, close].every((n) => Number.isFinite(n) && n > 0)) continue;
+                byTs.set(Math.floor(ts), [Math.floor(ts), open, high, low, close, Number.isFinite(volume) ? volume : 0]);
+            }
+        }
+        rows = Array.from(byTs.values()).sort((a, b) => a[0] - b[0]);
+    } else {
+        const history = await loadScalpCandleHistory(symbol, '1m');
+        rows = (history.record?.candles || []) as HistoryRow[];
+    }
+    historyCache.set(cacheKey, rows);
     diagnostics.historySymbolsLoaded += 1;
-    diagnostics.historyCandlesLoaded += all.length;
-    return all;
+    diagnostics.historyCandlesLoaded += rows.length;
+    return rows;
 }
 
 async function runResearchTask(
@@ -1998,7 +2168,7 @@ async function runResearchTask(
     historyCache: Map<string, HistoryRow[]>,
     diagnostics: WorkerDiagnostics,
 ): Promise<ScalpResearchTaskResult> {
-    const all = await loadHistoryRowsForTask(task.symbol, historyCache, diagnostics);
+    const all = await loadHistoryRowsForTask(task.symbol, task.windowFromTs, task.windowToTs, historyCache, diagnostics);
     const rows = sliceRowsByWindow(all, task.windowFromTs, task.windowToTs);
     diagnostics.windowCandlesProcessed += rows.length;
     if (rows.length < minCandlesPerTask) {
@@ -2729,6 +2899,20 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         while (out.attemptedRuns < maxRuns) {
             if (Date.now() - startedAtMs >= maxDurationMs) {
                 out.stoppedByDurationBudget = true;
+                emitWorkerLog(
+                    'duration_budget_reached',
+                    {
+                        cycleId,
+                        workerId,
+                        attemptedRuns: out.attemptedRuns,
+                        completedRuns: out.completedRuns,
+                        failedRuns: out.failedRuns,
+                        elapsedMs: Date.now() - startedAtMs,
+                        maxDurationMs,
+                    },
+                    'warn',
+                    true,
+                );
                 break;
             }
             const remainingRuns = maxRuns - out.attemptedRuns;
@@ -2747,6 +2931,22 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
                 if (Date.now() - startedAtMs >= maxDurationMs) {
                     out.stoppedByDurationBudget = true;
                     stopAfterCurrentBatch = true;
+                    emitWorkerLog(
+                        'duration_budget_reached_during_batch_fill',
+                        {
+                            cycleId,
+                            workerId,
+                            attemptedRuns: out.attemptedRuns,
+                            completedRuns: out.completedRuns,
+                            failedRuns: out.failedRuns,
+                            elapsedMs: Date.now() - startedAtMs,
+                            maxDurationMs,
+                            plannedBatchSize: batchSize,
+                            claimedInBatch: batchClaims.length,
+                        },
+                        'warn',
+                        true,
+                    );
                     break;
                 }
                 claimIterations += 1;
@@ -2801,12 +3001,43 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
                     if (result.symbolCooldownsDirty) symbolCooldownsDirty = true;
                     out.claimedTasks.push(result.row);
                 }
+                emitWorkerLog('batch_processed', {
+                    cycleId,
+                    workerId,
+                    batchSizeRequested: batchSize,
+                    batchClaims: batchClaims.length,
+                    attemptedRuns: out.attemptedRuns,
+                    completedRuns: out.completedRuns,
+                    failedRuns: out.failedRuns,
+                    elapsedMs: Date.now() - startedAtMs,
+                    maxRuns,
+                    maxDurationMs,
+                    nextScanIndex,
+                });
             }
 
             if (Date.now() - startedAtMs >= maxDurationMs) {
                 out.stoppedByDurationBudget = true;
             }
             if (stopAfterCurrentBatch || batchClaims.length === 0 || out.stoppedByDurationBudget) {
+                emitWorkerLog('loop_break', {
+                    cycleId,
+                    workerId,
+                    reason: stopAfterCurrentBatch
+                        ? 'stop_after_current_batch'
+                        : batchClaims.length === 0
+                          ? 'no_batch_claims'
+                          : 'stopped_by_duration_budget',
+                    attemptedRuns: out.attemptedRuns,
+                    completedRuns: out.completedRuns,
+                    failedRuns: out.failedRuns,
+                    elapsedMs: Date.now() - startedAtMs,
+                    maxRuns,
+                    maxDurationMs,
+                    nextScanIndex,
+                    stopAfterCurrentBatch,
+                    stoppedByDurationBudget: out.stoppedByDurationBudget,
+                });
                 break;
             }
         }

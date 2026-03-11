@@ -3,6 +3,7 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
+import { invokeCronEndpoint } from '../../../../lib/scalp/cronChaining';
 import { runScalpSymbolDiscoveryCycle } from '../../../../lib/scalp/symbolDiscovery';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean): boolean {
@@ -59,6 +60,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const seedTimeframe = firstQueryValue(req.query.seedTimeframe);
     const seedOnDryRun = parseBoolParam(req.query.seedOnDryRun, false);
     const seedAllowBootstrapSymbols = parseBoolParam(req.query.seedAllowBootstrapSymbols, false);
+    const autoSuccessor = parseBoolParam(req.query.autoSuccessor, true);
+    const successorPath = firstQueryValue(req.query.successorPath) || '/api/scalp/cron/prepare-and-start-cycle';
 
     try {
         const snapshot = await runScalpSymbolDiscoveryCycle({
@@ -76,6 +79,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             seedOnDryRun,
             seedAllowBootstrapSymbols,
         });
+        const shouldCallSuccessor = autoSuccessor;
+        const successor = shouldCallSuccessor
+            ? await invokeCronEndpoint(
+                  req,
+                  successorPath,
+                  {
+                      dryRun,
+                      includeLiveQuotes,
+                      runDiscovery: false,
+                      seedOnDryRun,
+                      seedAllowBootstrapSymbols,
+                      seedTimeframe: seedTimeframe || undefined,
+                      startedBy: 'cron:discover-symbols',
+                  },
+                  4_000,
+              )
+            : null;
 
         return res.status(200).json({
             ok: true,
@@ -91,6 +111,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             topRejectedRows: snapshot.topRejectedRows.slice(0, 10),
             diagnostics: snapshot.diagnostics || null,
             seedSummary: snapshot.seedSummary || null,
+            chaining: {
+                autoSuccessor,
+                successorPath,
+                requestedSuccessor: shouldCallSuccessor,
+                successor,
+            },
             snapshot,
         });
     } catch (err: any) {
