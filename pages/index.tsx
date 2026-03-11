@@ -2245,56 +2245,42 @@ export default function Home() {
   const scalpReportDeployments = Array.isArray(scalpResearchReport?.deployments)
     ? scalpResearchReport.deployments
     : [];
-  const scalpRuntimeByDeploymentId = new Map<string, ScalpDashboardSymbol>(
-    scalpRows.map((row) => [row.deploymentId, row]),
+  const scalpReportByDeploymentId = new Map(
+    scalpReportDeployments
+      .map((row) => {
+        const deploymentId = String(row?.deploymentId || '').trim();
+        return deploymentId ? [deploymentId, row] : null;
+      })
+      .filter((entry): entry is [string, ScalpResearchReportDeployment] => Boolean(entry)),
   );
-  const scalpOpsDeployments: ScalpOpsDeploymentRow[] =
-    scalpReportDeployments.length > 0
-      ? scalpReportDeployments.map((row) => {
-          const runtime = scalpRuntimeByDeploymentId.get(row.deploymentId) || null;
-          const runtimePromotionEligible = typeof runtime?.promotionEligible === 'boolean' ? runtime.promotionEligible : null;
-          const mergedPromotionEligible =
-            typeof row.promotionEligible === 'boolean'
-              ? row.promotionEligible
-              : runtimePromotionEligible !== null
-                ? runtimePromotionEligible
-                : false;
-          return {
-            deploymentId: row.deploymentId,
-            symbol: row.symbol,
-            strategyId: row.strategyId,
-            tuneId: String(row.tuneId || runtime?.tuneId || runtime?.tune || 'default'),
-            source: String(row.source || 'report'),
-            enabled: row.enabled !== false,
-            promotionEligible: mergedPromotionEligible,
-            promotionReason: row.promotionReason || runtime?.promotionReason || null,
-            forwardValidation: row.forwardValidation || runtime?.forwardValidation || null,
-            perf30dTrades: asFiniteNumber(row.perf30d?.trades),
-            perf30dExpectancyR: asFiniteNumber(row.perf30d?.expectancyR),
-            perf30dNetR: asFiniteNumber(row.perf30d?.netR),
-            perf30dMaxDrawdownR: asFiniteNumber(row.perf30d?.maxDrawdownR),
-            runtime,
-          };
-        })
-      : scalpRows.map((row) => ({
-          deploymentId: row.deploymentId,
-          symbol: row.symbol,
-          strategyId: row.strategyId,
-          tuneId: String(row.tuneId || row.tune || 'default'),
-          source: 'runtime',
-          enabled: true,
-          promotionEligible: typeof row.promotionEligible === 'boolean' ? row.promotionEligible : false,
-          promotionReason: row.promotionReason || null,
-          forwardValidation: row.forwardValidation || null,
-          perf30dTrades: asFiniteNumber(row.tradesPlaced),
-          perf30dExpectancyR:
-            row.tradesPlaced > 0 && typeof row.netR === 'number' && Number.isFinite(row.netR)
-              ? row.netR / row.tradesPlaced
-              : null,
-          perf30dNetR: asFiniteNumber(row.netR),
-          perf30dMaxDrawdownR: asFiniteNumber(row.maxDrawdownR),
-          runtime: row,
-        }));
+  const scalpOpsDeployments: ScalpOpsDeploymentRow[] = scalpRows.map((row) => {
+    const report = scalpReportByDeploymentId.get(row.deploymentId) || null;
+    const reportPerf30dTrades = asFiniteNumber(report?.perf30d?.trades);
+    const reportPerf30dExpectancyR = asFiniteNumber(report?.perf30d?.expectancyR);
+    const reportPerf30dNetR = asFiniteNumber(report?.perf30d?.netR);
+    const reportPerf30dMaxDrawdownR = asFiniteNumber(report?.perf30d?.maxDrawdownR);
+    const runtimePerf30dExpectancyR =
+      row.tradesPlaced > 0 && typeof row.netR === 'number' && Number.isFinite(row.netR)
+        ? row.netR / row.tradesPlaced
+        : null;
+
+    return {
+      deploymentId: row.deploymentId,
+      symbol: row.symbol,
+      strategyId: row.strategyId,
+      tuneId: String(row.tuneId || row.tune || report?.tuneId || 'default'),
+      source: report ? `runtime+${String(report.source || 'report')}` : 'runtime',
+      enabled: true,
+      promotionEligible: typeof row.promotionEligible === 'boolean' ? row.promotionEligible : Boolean(report?.promotionEligible),
+      promotionReason: row.promotionReason || report?.promotionReason || null,
+      forwardValidation: row.forwardValidation || report?.forwardValidation || null,
+      perf30dTrades: reportPerf30dTrades ?? asFiniteNumber(row.tradesPlaced),
+      perf30dExpectancyR: reportPerf30dExpectancyR ?? runtimePerf30dExpectancyR,
+      perf30dNetR: reportPerf30dNetR ?? asFiniteNumber(row.netR),
+      perf30dMaxDrawdownR: reportPerf30dMaxDrawdownR ?? asFiniteNumber(row.maxDrawdownR),
+      runtime: row,
+    };
+  });
 
   const scalpActiveOpsRow =
     (scalpActiveDeploymentId
