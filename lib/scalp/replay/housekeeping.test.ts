@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { shouldPruneResearchCycle } from '../housekeeping';
+import { pruneScalpCandlesToRollingWeeks, shouldPruneResearchCycle } from '../housekeeping';
 
 test('shouldPruneResearchCycle keeps active or fresh cycles', () => {
     const nowMs = Date.UTC(2026, 2, 7, 12, 0, 0, 0);
@@ -73,4 +73,29 @@ test('shouldPruneResearchCycle prunes stale non-active running cycles only after
         }),
         true,
     );
+});
+
+test('pruneScalpCandlesToRollingWeeks keeps only 12 Monday-Sunday weeks when new week starts', () => {
+    const oneWeekMs = 7 * 24 * 60 * 60 * 1000;
+    const nowMs = Date.UTC(2026, 2, 16, 0, 0, 0, 0); // Monday
+    const newestWeekStart = Date.UTC(2026, 2, 16, 0, 0, 0, 0);
+    const oldestKeptWeekStart = newestWeekStart - 11 * oneWeekMs;
+    const droppedWeekStart = oldestKeptWeekStart - oneWeekMs;
+
+    const candles = [
+        [droppedWeekStart + 12 * 60 * 60 * 1000, 1, 2, 0.5, 1.5, 10],
+        [oldestKeptWeekStart + 12 * 60 * 60 * 1000, 1, 2, 0.5, 1.5, 10],
+        [newestWeekStart + 12 * 60 * 60 * 1000, 1, 2, 0.5, 1.5, 10],
+    ] as const;
+
+    const out = pruneScalpCandlesToRollingWeeks({
+        candles: candles.map((row) => [...row] as [number, number, number, number, number, number]),
+        nowMs,
+        keepWeeks: 12,
+    });
+
+    assert.equal(out.removedCount, 1);
+    assert.equal(out.candles.length, 2);
+    assert.equal(out.candles[0][0], oldestKeptWeekStart + 12 * 60 * 60 * 1000);
+    assert.equal(out.cutoffWeekStartMs, oldestKeptWeekStart);
 });

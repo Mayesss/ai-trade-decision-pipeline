@@ -47,6 +47,9 @@ const DEFAULT_LOCK_TTL_SECONDS = 120;
 const DEFAULT_TASK_TIMEOUT_MS = 60_000;
 const DEFAULT_RESEARCH_REPORT_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-research-report.json');
 const DEFAULT_PREFLIGHT_MAX_CANDLE_CHECKS = 64;
+const DEFAULT_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS = 12;
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 const RESEARCH_TASK_TIMEOUT_MS = Math.max(
     1_000,
     Math.min(10 * 60_000, Math.floor(Number(process.env.SCALP_RESEARCH_TASK_TIMEOUT_MS) || DEFAULT_TASK_TIMEOUT_MS)),
@@ -209,12 +212,25 @@ export interface ResearchCyclePreflightResult {
     requiredMinCandlesPerTask: number;
     candleChecks: ResearchCyclePreflightCandleCheck[];
     failures: ResearchCyclePreflightFailure[];
+    weeklySuccessiveRequirement?: {
+        requiredWeeks: number;
+        anchorWeekEndIso: string | null;
+        eligibleSymbols: string[];
+        excludedSymbols: Array<{
+            symbol: string;
+            availableCandles: number;
+            presentWeeks: number;
+            missingWeeks: number;
+            latestCandleAtMs: number | null;
+        }>;
+    };
 }
 
 export interface EvaluateResearchCyclePreflightParams extends StartResearchCycleParams {
     requireUniverseSnapshot?: boolean;
     requireReportSnapshot?: boolean;
     maxCandleChecks?: number;
+    nowMs?: number;
 }
 
 export interface WorkerRunParams {
@@ -430,10 +446,55 @@ async function loadResearchReportGeneratedAtIso(): Promise<string | null> {
     }
 }
 
+function startOfUtcDay(tsMs: number): number {
+    const date = new Date(tsMs);
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
+function resolveLastCompletedWeekAnchorUtc(nowMs: number): { startCurrentWeekMondayMs: number; lastSundayEndMs: number } {
+    const dayStartMs = startOfUtcDay(nowMs);
+    const dayOfWeek = new Date(dayStartMs).getUTCDay(); // 0=Sunday ... 6=Saturday
+    const daysSinceMonday = (dayOfWeek + 6) % 7;
+    const startCurrentWeekMondayMs = dayStartMs - daysSinceMonday * ONE_DAY_MS;
+    const lastSundayEndMs = startCurrentWeekMondayMs - 1;
+    return { startCurrentWeekMondayMs, lastSundayEndMs };
+}
+
+function evaluateSuccessiveCompletedWeeksFromCandles(
+    candles: Array<[number, number, number, number, number, number]>,
+    nowMs: number,
+    requiredWeeks: number,
+): { ok: boolean; presentWeeks: number; missingWeeks: number; latestCandleAtMs: number | null } {
+    if (requiredWeeks <= 0) {
+        const latestCandleAtMs = candles.length ? Number(candles[candles.length - 1]?.[0] || 0) || null : null;
+        return { ok: true, presentWeeks: 0, missingWeeks: 0, latestCandleAtMs };
+    }
+    const { startCurrentWeekMondayMs, lastSundayEndMs } = resolveLastCompletedWeekAnchorUtc(nowMs);
+    const firstRequiredWeekStartMs = startCurrentWeekMondayMs - requiredWeeks * ONE_WEEK_MS;
+    const presentWeekIndexes = new Set<number>();
+    let latestCandleAtMs: number | null = null;
+    for (const candle of candles) {
+        const ts = Number(candle?.[0] || 0);
+        if (!Number.isFinite(ts) || ts <= 0) continue;
+        if (latestCandleAtMs === null || ts > latestCandleAtMs) latestCandleAtMs = ts;
+        if (ts < firstRequiredWeekStartMs || ts > lastSundayEndMs) continue;
+        const index = Math.floor((ts - firstRequiredWeekStartMs) / ONE_WEEK_MS);
+        if (index >= 0 && index < requiredWeeks) presentWeekIndexes.add(index);
+    }
+    const presentWeeks = presentWeekIndexes.size;
+    const missingWeeks = Math.max(0, requiredWeeks - presentWeeks);
+    return {
+        ok: missingWeeks === 0,
+        presentWeeks,
+        missingWeeks,
+        latestCandleAtMs,
+    };
+}
+
 export async function evaluateResearchCyclePreflight(
     params: EvaluateResearchCyclePreflightParams = {},
 ): Promise<ResearchCyclePreflightResult> {
-    const nowMs = Date.now();
+    const nowMs = Number.isFinite(Number(params.nowMs)) ? Math.floor(Number(params.nowMs)) : Date.now();
     const requireUniverseSnapshot = params.requireUniverseSnapshot !== false;
     const requireReportSnapshot = params.requireReportSnapshot !== false;
     const requiredMinCandlesPerTask = toPositiveInt(params.minCandlesPerTask, DEFAULT_MIN_CANDLES_PER_TASK);
@@ -444,6 +505,16 @@ export async function evaluateResearchCyclePreflight(
             toPositiveInt(
                 params.maxCandleChecks,
                 toPositiveInt(process.env.SCALP_RESEARCH_PREFLIGHT_MAX_CANDLE_CHECKS, DEFAULT_PREFLIGHT_MAX_CANDLE_CHECKS),
+            ),
+        ),
+    );
+    const requiredSuccessiveWeeks = Math.max(
+        0,
+        Math.min(
+            52,
+            toPositiveInt(
+                process.env.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS,
+                DEFAULT_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS,
             ),
         ),
     );
@@ -468,13 +539,13 @@ export async function evaluateResearchCyclePreflight(
         });
     }
 
-    const resolvedSymbols = dedupe(
+    const resolvedSymbolsRaw = dedupe(
         (params.symbols?.length ? params.symbols : universe?.selectedSymbols || policy.pinnedSymbols)
             .map((row) => normalizeSymbol(row))
             .filter((row) => Boolean(row)),
     );
 
-    if (!resolvedSymbols.length) {
+    if (!resolvedSymbolsRaw.length) {
         failures.push({
             code: 'no_symbols_resolved',
             message: 'No symbols were resolved for the research cycle.',
@@ -482,16 +553,38 @@ export async function evaluateResearchCyclePreflight(
     }
 
     const candleChecks: ResearchCyclePreflightCandleCheck[] = [];
-    const symbolsToCheck = resolvedSymbols.slice(0, maxCandleChecks);
-    for (const symbol of symbolsToCheck) {
+    const symbolsToCheck = new Set(resolvedSymbolsRaw.slice(0, maxCandleChecks));
+    const weeklyExcludedSymbols: NonNullable<ResearchCyclePreflightResult['weeklySuccessiveRequirement']>['excludedSymbols'] = [];
+    const resolvedSymbols: string[] = [];
+    for (const symbol of resolvedSymbolsRaw) {
         const history = await loadScalpCandleHistory(symbol, '1m');
         const availableCandles = Math.max(0, history.record?.candles?.length || 0);
-        candleChecks.push({
-            symbol,
-            availableCandles,
-            requiredCandles: requiredMinCandlesPerTask,
-            ok: availableCandles >= requiredMinCandlesPerTask,
-        });
+        if (symbolsToCheck.has(symbol)) {
+            candleChecks.push({
+                symbol,
+                availableCandles,
+                requiredCandles: requiredMinCandlesPerTask,
+                ok: availableCandles >= requiredMinCandlesPerTask,
+            });
+        }
+        if (requiredSuccessiveWeeks > 0) {
+            const weekly = evaluateSuccessiveCompletedWeeksFromCandles(
+                history.record?.candles || [],
+                nowMs,
+                requiredSuccessiveWeeks,
+            );
+            if (!weekly.ok) {
+                weeklyExcludedSymbols.push({
+                    symbol,
+                    availableCandles,
+                    presentWeeks: weekly.presentWeeks,
+                    missingWeeks: weekly.missingWeeks,
+                    latestCandleAtMs: weekly.latestCandleAtMs,
+                });
+                continue;
+            }
+        }
+        resolvedSymbols.push(symbol);
     }
 
     const insufficientRows = candleChecks.filter((row) => !row.ok);
@@ -501,12 +594,21 @@ export async function evaluateResearchCyclePreflight(
             message: `${insufficientRows.length} symbol(s) are below required 1m candle history.`,
             details: {
                 requiredCandles: requiredMinCandlesPerTask,
-                checkedSymbols: symbolsToCheck.length,
+                checkedSymbols: symbolsToCheck.size,
                 failingSymbols: insufficientRows.slice(0, 20).map((row) => ({
                     symbol: row.symbol,
                     availableCandles: row.availableCandles,
                 })),
             },
+        });
+    }
+    if (!resolvedSymbols.length) {
+        failures.push({
+            code: 'no_symbols_resolved',
+            message:
+                requiredSuccessiveWeeks > 0
+                    ? `No symbols satisfied readiness checks (requires ${requiredSuccessiveWeeks} successive completed Monday-Sunday weeks).`
+                    : 'No symbols were resolved for the research cycle.',
         });
     }
 
@@ -521,6 +623,15 @@ export async function evaluateResearchCyclePreflight(
         requiredMinCandlesPerTask,
         candleChecks,
         failures,
+        weeklySuccessiveRequirement:
+            requiredSuccessiveWeeks > 0
+                ? {
+                      requiredWeeks: requiredSuccessiveWeeks,
+                      anchorWeekEndIso: new Date(resolveLastCompletedWeekAnchorUtc(nowMs).lastSundayEndMs).toISOString(),
+                      eligibleSymbols: resolvedSymbols,
+                      excludedSymbols: weeklyExcludedSymbols,
+                  }
+                : undefined,
     };
 }
 

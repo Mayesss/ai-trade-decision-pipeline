@@ -117,6 +117,23 @@ function envOrFallbackBool(envKey: string, fallback: boolean): boolean {
     return toBool(raw, fallback);
 }
 
+function startOfUtcDay(tsMs: number): number {
+    const d = new Date(tsMs);
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+
+function startOfWeekMondayUtc(tsMs: number): number {
+    const dayStartMs = startOfUtcDay(tsMs);
+    const dayOfWeek = new Date(dayStartMs).getUTCDay(); // 0=Sunday ... 6=Saturday
+    const daysSinceMonday = (dayOfWeek + 6) % 7;
+    return dayStartMs - daysSinceMonday * DAY_MS;
+}
+
+function nextWeekMondayUtc(tsMs: number): number {
+    const weekStart = startOfWeekMondayUtc(tsMs);
+    return tsMs === weekStart ? weekStart : weekStart + WEEK_MS;
+}
+
 function toReplayCandles(rows: CandleRow[], spreadPips: number) {
     return rows.map((row) => ({
         ts: Number(row[0]),
@@ -267,15 +284,17 @@ async function runWeeklyRobustnessForDeployment(params: {
     lookbackDays: number;
     minCandlesPerSlice: number;
 }): Promise<ScalpWeeklyRobustnessMetrics | null> {
-    const fromTs = params.nowMs - Math.max(1, Math.floor(params.lookbackDays)) * DAY_MS;
-    const windowRows = params.candles.filter((row) => row[0] >= fromTs && row[0] < params.nowMs);
+    const currentWeekStart = startOfWeekMondayUtc(params.nowMs);
+    const lookbackStartTs = params.nowMs - Math.max(1, Math.floor(params.lookbackDays)) * DAY_MS;
+    const firstSliceFrom = nextWeekMondayUtc(lookbackStartTs);
+    const windowRows = params.candles.filter((row) => row[0] >= lookbackStartTs && row[0] < currentWeekStart);
     if (windowRows.length < params.minCandlesPerSlice) return null;
 
     const runtime = buildReplayRuntimeForDeployment(params.deployment);
     const slices: WeeklySliceMetric[] = [];
 
-    for (let sliceFrom = fromTs; sliceFrom < params.nowMs; sliceFrom += WEEK_MS) {
-        const sliceTo = Math.min(params.nowMs, sliceFrom + WEEK_MS);
+    for (let sliceFrom = firstSliceFrom; sliceFrom + WEEK_MS <= currentWeekStart; sliceFrom += WEEK_MS) {
+        const sliceTo = sliceFrom + WEEK_MS;
         const rows = windowRows.filter((row) => row[0] >= sliceFrom && row[0] < sliceTo);
         if (rows.length < params.minCandlesPerSlice) continue;
 

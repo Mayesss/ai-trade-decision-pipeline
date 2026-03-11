@@ -500,22 +500,34 @@ test('evaluateResearchCyclePreflight enforces candle readiness before allowing c
             'utf8',
         );
 
-        const baseTs = Date.UTC(2026, 2, 1, 0, 0, 0);
-        const makeCandles = (count: number) =>
-            Array.from({ length: count }, (_, idx) => {
-                const ts = baseTs + idx * 60_000;
-                return [ts, 1.1, 1.11, 1.09, 1.105, 10] as [number, number, number, number, number, number];
-            });
+        const preflightNowMs = Date.UTC(2026, 2, 11, 12, 0, 0); // Wednesday
+        const oneDayMs = 24 * 60 * 60 * 1000;
+        const oneWeekMs = 7 * oneDayMs;
+        const dayOfWeek = new Date(Date.UTC(2026, 2, 11, 0, 0, 0)).getUTCDay(); // 0=Sun..6=Sat
+        const daysSinceMonday = (dayOfWeek + 6) % 7;
+        const startCurrentWeekMondayMs = Date.UTC(2026, 2, 11, 0, 0, 0) - daysSinceMonday * oneDayMs;
+        const firstRequiredWeekStartMs = startCurrentWeekMondayMs - 12 * oneWeekMs;
+        const makeWeeklyCandles = (weeks: number, perWeek: number) => {
+            const out: Array<[number, number, number, number, number, number]> = [];
+            for (let week = 0; week < weeks; week += 1) {
+                const weekStart = firstRequiredWeekStartMs + week * oneWeekMs;
+                for (let slot = 0; slot < perWeek; slot += 1) {
+                    const ts = weekStart + (slot + 1) * 12 * 60 * 60 * 1000;
+                    out.push([ts, 1.1, 1.11, 1.09, 1.105, 10]);
+                }
+            }
+            return out;
+        };
 
         await saveScalpCandleHistory({
             symbol: 'EURUSD',
             timeframe: '1m',
             epic: 'CS.D.EURUSD.TODAY.IP',
             source: 'capital',
-            candles: makeCandles(10),
+            candles: makeWeeklyCandles(5, 2),
         });
 
-        const failing = await evaluateResearchCyclePreflight({ minCandlesPerTask: 20 });
+        const failing = await evaluateResearchCyclePreflight({ minCandlesPerTask: 20, nowMs: preflightNowMs });
         assert.equal(failing.ready, false);
         assert.ok(failing.failures.some((row) => row.code === 'insufficient_candles'));
 
@@ -524,10 +536,10 @@ test('evaluateResearchCyclePreflight enforces candle readiness before allowing c
             timeframe: '1m',
             epic: 'CS.D.EURUSD.TODAY.IP',
             source: 'capital',
-            candles: makeCandles(25),
+            candles: makeWeeklyCandles(12, 2),
         });
 
-        const passing = await evaluateResearchCyclePreflight({ minCandlesPerTask: 20 });
+        const passing = await evaluateResearchCyclePreflight({ minCandlesPerTask: 20, nowMs: preflightNowMs });
         assert.equal(passing.ready, true);
         assert.equal(passing.failures.length, 0);
     } finally {
@@ -537,6 +549,99 @@ test('evaluateResearchCyclePreflight enforces candle readiness before allowing c
         else process.env.SCALP_SYMBOL_UNIVERSE_PATH = prevEnv.SCALP_SYMBOL_UNIVERSE_PATH;
         if (prevEnv.SCALP_RESEARCH_REPORT_PATH === undefined) delete process.env.SCALP_RESEARCH_REPORT_PATH;
         else process.env.SCALP_RESEARCH_REPORT_PATH = prevEnv.SCALP_RESEARCH_REPORT_PATH;
+        await rm(tmpRoot, { recursive: true, force: true });
+    }
+});
+
+test('evaluateResearchCyclePreflight filters symbols missing 12 successive completed weeks', async () => {
+    const tmpRoot = await mkdtemp(path.join(os.tmpdir(), 'scalp-preflight-weeks-'));
+    const prevEnv = {
+        CANDLE_HISTORY_DIR: process.env.CANDLE_HISTORY_DIR,
+        SCALP_SYMBOL_UNIVERSE_PATH: process.env.SCALP_SYMBOL_UNIVERSE_PATH,
+        SCALP_RESEARCH_REPORT_PATH: process.env.SCALP_RESEARCH_REPORT_PATH,
+        SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS: process.env.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS,
+    };
+
+    try {
+        process.env.CANDLE_HISTORY_DIR = path.join(tmpRoot, 'candles');
+        process.env.SCALP_SYMBOL_UNIVERSE_PATH = path.join(tmpRoot, 'universe.json');
+        process.env.SCALP_RESEARCH_REPORT_PATH = path.join(tmpRoot, 'report.json');
+        process.env.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS = '12';
+
+        await writeFile(
+            process.env.SCALP_SYMBOL_UNIVERSE_PATH,
+            JSON.stringify({
+                version: 1,
+                generatedAtIso: '2026-03-11T00:00:00.000Z',
+                policy: {},
+                source: 'weekly_discovery_v1',
+                dryRun: false,
+                previousSymbols: [],
+                selectedSymbols: ['EURUSD', 'GBPUSD'],
+                addedSymbols: ['EURUSD', 'GBPUSD'],
+                removedSymbols: [],
+                candidatesEvaluated: 2,
+                selectedRows: [],
+                topRejectedRows: [],
+            }),
+            'utf8',
+        );
+        await writeFile(
+            process.env.SCALP_RESEARCH_REPORT_PATH,
+            JSON.stringify({
+                generatedAtIso: '2026-03-11T00:05:00.000Z',
+            }),
+            'utf8',
+        );
+
+        const preflightNowMs = Date.UTC(2026, 2, 11, 12, 0, 0);
+        const oneDayMs = 24 * 60 * 60 * 1000;
+        const oneWeekMs = 7 * oneDayMs;
+        const dayStartMs = Date.UTC(2026, 2, 11, 0, 0, 0);
+        const dayOfWeek = new Date(dayStartMs).getUTCDay();
+        const daysSinceMonday = (dayOfWeek + 6) % 7;
+        const startCurrentWeekMondayMs = dayStartMs - daysSinceMonday * oneDayMs;
+        const firstRequiredWeekStartMs = startCurrentWeekMondayMs - 12 * oneWeekMs;
+        const makeWeeklyCandles = (weekIndexes: number[]) =>
+            weekIndexes.map((week) => {
+                const ts = firstRequiredWeekStartMs + week * oneWeekMs + 12 * 60 * 60 * 1000;
+                return [ts, 1.1, 1.11, 1.09, 1.105, 10] as [number, number, number, number, number, number];
+            });
+
+        await saveScalpCandleHistory({
+            symbol: 'EURUSD',
+            timeframe: '1m',
+            epic: 'CS.D.EURUSD.TODAY.IP',
+            source: 'capital',
+            candles: makeWeeklyCandles(Array.from({ length: 12 }, (_, idx) => idx)),
+        });
+        await saveScalpCandleHistory({
+            symbol: 'GBPUSD',
+            timeframe: '1m',
+            epic: 'CS.D.GBPUSD.TODAY.IP',
+            source: 'capital',
+            candles: makeWeeklyCandles([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11]), // missing week 10
+        });
+
+        const out = await evaluateResearchCyclePreflight({ minCandlesPerTask: 1, nowMs: preflightNowMs });
+        assert.equal(out.ready, true);
+        assert.deepEqual(out.resolvedSymbols, ['EURUSD']);
+        assert.equal(out.weeklySuccessiveRequirement?.requiredWeeks, 12);
+        assert.ok(
+            (out.weeklySuccessiveRequirement?.excludedSymbols || []).some((row) => row.symbol === 'GBPUSD' && row.missingWeeks === 1),
+        );
+    } finally {
+        if (prevEnv.CANDLE_HISTORY_DIR === undefined) delete process.env.CANDLE_HISTORY_DIR;
+        else process.env.CANDLE_HISTORY_DIR = prevEnv.CANDLE_HISTORY_DIR;
+        if (prevEnv.SCALP_SYMBOL_UNIVERSE_PATH === undefined) delete process.env.SCALP_SYMBOL_UNIVERSE_PATH;
+        else process.env.SCALP_SYMBOL_UNIVERSE_PATH = prevEnv.SCALP_SYMBOL_UNIVERSE_PATH;
+        if (prevEnv.SCALP_RESEARCH_REPORT_PATH === undefined) delete process.env.SCALP_RESEARCH_REPORT_PATH;
+        else process.env.SCALP_RESEARCH_REPORT_PATH = prevEnv.SCALP_RESEARCH_REPORT_PATH;
+        if (prevEnv.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS === undefined)
+            delete process.env.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS;
+        else
+            process.env.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS =
+                prevEnv.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS;
         await rm(tmpRoot, { recursive: true, force: true });
     }
 });

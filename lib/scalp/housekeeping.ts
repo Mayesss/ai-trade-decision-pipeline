@@ -1,8 +1,10 @@
 import { Prisma } from '@prisma/client';
 
+import { listScalpCandleHistorySymbols, loadScalpCandleHistory, saveScalpCandleHistory, type ScalpCandleHistoryRecord } from './candleHistory';
 import { getScalpStrategyConfig } from './config';
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 import { refreshScalpResearchPortfolioReport } from './researchReporting';
+import type { ScalpCandle } from './types';
 
 function toPositiveInt(value: unknown, fallback: number): number {
     const n = Math.floor(Number(value));
@@ -29,6 +31,33 @@ function toFinite(value: unknown, fallback = 0): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+const ONE_DAY_MS = 24 * 60 * 60_000;
+const ONE_WEEK_MS = 7 * ONE_DAY_MS;
+
+function startOfWeekMondayUtc(tsMs: number): number {
+    const dayStartMs = Math.floor(tsMs / ONE_DAY_MS) * ONE_DAY_MS;
+    const dayOfWeek = new Date(dayStartMs).getUTCDay(); // 0=Sunday ... 6=Saturday
+    const daysSinceMonday = (dayOfWeek + 6) % 7;
+    return dayStartMs - daysSinceMonday * ONE_DAY_MS;
+}
+
+export function pruneScalpCandlesToRollingWeeks(params: {
+    candles: ScalpCandle[];
+    nowMs: number;
+    keepWeeks: number;
+}): { candles: ScalpCandle[]; removedCount: number; cutoffWeekStartMs: number } {
+    const keepWeeks = Math.max(1, Math.floor(Number(params.keepWeeks) || 1));
+    const currentWeekStartMs = startOfWeekMondayUtc(params.nowMs);
+    const cutoffWeekStartMs = currentWeekStartMs - (keepWeeks - 1) * ONE_WEEK_MS;
+    const rows = Array.isArray(params.candles) ? params.candles : [];
+    const kept = rows.filter((row) => Number(row?.[0]) >= cutoffWeekStartMs);
+    return {
+        candles: kept,
+        removedCount: Math.max(0, rows.length - kept.length),
+        cutoffWeekStartMs,
+    };
 }
 
 export function shouldPruneResearchCycle(params: {
@@ -66,6 +95,8 @@ export interface RunScalpHousekeepingParams {
     lockMaxAgeMinutes?: number;
     maxScanKeys?: number;
     refreshReport?: boolean;
+    candleHistoryKeepWeeks?: number;
+    candleHistoryTimeframe?: string;
 }
 
 export interface RunScalpHousekeepingResult {
@@ -80,6 +111,8 @@ export interface RunScalpHousekeepingResult {
         refreshReport: boolean;
         journalMax: number;
         tradeLedgerMax: number;
+        candleHistoryKeepWeeks: number;
+        candleHistoryTimeframe: string;
     };
     summary: {
         cyclesPruned: number;
@@ -90,12 +123,78 @@ export interface RunScalpHousekeepingResult {
         researchLocksDeleted: number;
         runLocksDeleted: number;
         listCompactions: number;
+        candleHistorySymbolsScanned: number;
+        candleHistorySymbolsPruned: number;
+        candleHistoryCandlesDeleted: number;
         reportRefreshed: boolean;
     };
     details: {
         prunedCycleIds: string[];
         deletedResearchLockKeys: string[];
         deletedRunLockKeys: string[];
+    };
+}
+
+interface CandleRetentionResult {
+    symbolsScanned: number;
+    symbolsPruned: number;
+    candlesDeleted: number;
+}
+
+function toRecordSummary(record: ScalpCandleHistoryRecord | null): { epic: string | null; source: 'capital' } {
+    return {
+        epic: record?.epic ?? null,
+        source: 'capital',
+    };
+}
+
+async function pruneCandleHistoryRollingWeeks(params: {
+    nowMs: number;
+    dryRun: boolean;
+    keepWeeks: number;
+    timeframe: string;
+}): Promise<CandleRetentionResult> {
+    const symbols = await listScalpCandleHistorySymbols(params.timeframe);
+    if (!symbols.length) {
+        return {
+            symbolsScanned: 0,
+            symbolsPruned: 0,
+            candlesDeleted: 0,
+        };
+    }
+
+    let symbolsPruned = 0;
+    let candlesDeleted = 0;
+    for (const symbol of symbols) {
+        const loaded = await loadScalpCandleHistory(symbol, params.timeframe);
+        const record = loaded.record;
+        if (!record || !record.candles.length) continue;
+
+        const pruned = pruneScalpCandlesToRollingWeeks({
+            candles: record.candles,
+            nowMs: params.nowMs,
+            keepWeeks: params.keepWeeks,
+        });
+        if (pruned.removedCount <= 0) continue;
+
+        symbolsPruned += 1;
+        candlesDeleted += pruned.removedCount;
+        if (!params.dryRun) {
+            const recordSummary = toRecordSummary(record);
+            await saveScalpCandleHistory({
+                symbol: record.symbol,
+                timeframe: record.timeframe,
+                epic: recordSummary.epic,
+                source: recordSummary.source,
+                candles: pruned.candles,
+            });
+        }
+    }
+
+    return {
+        symbolsScanned: symbols.length,
+        symbolsPruned,
+        candlesDeleted,
     };
 }
 
@@ -216,6 +315,21 @@ export async function runScalpHousekeeping(
     );
     const maxScanKeys = toPositiveInt(params.maxScanKeys ?? process.env.SCALP_HOUSEKEEPING_MAX_SCAN_KEYS, 4000);
     const refreshReport = toBool(params.refreshReport ?? process.env.SCALP_HOUSEKEEPING_REFRESH_REPORT, true);
+    const candleHistoryKeepWeeks = Math.max(
+        1,
+        Math.min(
+            52,
+            toPositiveInt(
+                params.candleHistoryKeepWeeks ?? process.env.SCALP_HOUSEKEEPING_CANDLE_HISTORY_KEEP_WEEKS,
+                12,
+            ),
+        ),
+    );
+    const candleHistoryTimeframe = String(
+        params.candleHistoryTimeframe ?? process.env.SCALP_HOUSEKEEPING_CANDLE_HISTORY_TIMEFRAME ?? '1m',
+    )
+        .trim()
+        .toLowerCase();
 
     const cfg = getScalpStrategyConfig();
     const journalMax = Math.max(
@@ -240,6 +354,12 @@ export async function runScalpHousekeeping(
         journalMax,
         tradeLedgerMax,
     });
+    const candleRetention = await pruneCandleHistoryRollingWeeks({
+        nowMs,
+        dryRun,
+        keepWeeks: candleHistoryKeepWeeks,
+        timeframe: candleHistoryTimeframe,
+    });
 
     let reportRefreshed = false;
     if (refreshReport) {
@@ -259,6 +379,8 @@ export async function runScalpHousekeeping(
             refreshReport,
             journalMax,
             tradeLedgerMax,
+            candleHistoryKeepWeeks,
+            candleHistoryTimeframe,
         },
         summary: {
             cyclesPruned: cyclePrune.prunedCycleIds.length,
@@ -269,6 +391,9 @@ export async function runScalpHousekeeping(
             researchLocksDeleted: 0,
             runLocksDeleted: 0,
             listCompactions,
+            candleHistorySymbolsScanned: candleRetention.symbolsScanned,
+            candleHistorySymbolsPruned: candleRetention.symbolsPruned,
+            candleHistoryCandlesDeleted: candleRetention.candlesDeleted,
             reportRefreshed,
         },
         details: {
