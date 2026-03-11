@@ -1,5 +1,10 @@
 import { fetchCapitalCandlesByEpicDateRange, resolveCapitalEpicRuntime } from '../capital';
-import { loadScalpCandleHistory, mergeScalpCandleHistory, normalizeHistoryTimeframe, saveScalpCandleHistory } from './candleHistory';
+import {
+    loadScalpCandleHistoryBulk,
+    mergeScalpCandleHistory,
+    normalizeHistoryTimeframe,
+    saveScalpCandleHistoryBulk,
+} from './candleHistory';
 import { evaluateResearchCyclePreflight, startScalpResearchCycle, type StartResearchCycleParams } from './researchCycle';
 import { refreshScalpResearchPortfolioReport } from './researchReporting';
 import { loadScalpSymbolUniverseSnapshot, runScalpSymbolDiscoveryCycle } from './symbolDiscovery';
@@ -149,13 +154,27 @@ export async function prepareAndStartScalpResearchCycle(
     const fetchFromMs = nowMs - lookbackDays * ONE_DAY_MS;
     const fetchToMs = nowMs;
     const processedSymbols: string[] = [];
+    const existingBySymbol = new Map<string, ScalpCandle[]>();
+    if (batchSymbols.length > 0) {
+        const existingBatch = await loadScalpCandleHistoryBulk(batchSymbols, seedTimeframe);
+        for (let i = 0; i < batchSymbols.length; i += 1) {
+            const symbol = batchSymbols[i]!;
+            existingBySymbol.set(symbol, existingBatch[i]?.record?.candles || []);
+        }
+    }
+    const pendingSaves: Array<{
+        symbol: string;
+        timeframe: string;
+        epic: string | null;
+        source: 'capital';
+        candles: ScalpCandle[];
+    }> = [];
     for (const symbol of batchSymbols) {
         if (Date.now() - invokeStartedAtMs >= maxDurationMs) {
             break;
         }
         try {
-            const history = await loadScalpCandleHistory(symbol, seedTimeframe);
-            const existing = history.record?.candles || [];
+            const existing = existingBySymbol.get(symbol) || [];
             const epicResolved = await resolveCapitalEpicRuntime(symbol);
             const fetchedRaw = await fetchCapitalCandlesByEpicDateRange(epicResolved.epic, seedTimeframe, fetchFromMs, fetchToMs, {
                 maxPerRequest: 1000,
@@ -168,16 +187,13 @@ export async function prepareAndStartScalpResearchCycle(
             const addedCount = Math.max(0, merged.length - existing.length);
             let saved = false;
             if (!dryRun) {
-                await saveScalpCandleHistory(
-                    {
-                        symbol,
-                        timeframe: seedTimeframe,
-                        epic: epicResolved.epic,
-                        source: 'capital',
-                        candles: merged,
-                    },
-                    {},
-                );
+                pendingSaves.push({
+                    symbol,
+                    timeframe: seedTimeframe,
+                    epic: epicResolved.epic,
+                    source: 'capital',
+                    candles: merged,
+                });
                 saved = true;
             }
             fillRows.push({
@@ -210,6 +226,9 @@ export async function prepareAndStartScalpResearchCycle(
             });
             processedSymbols.push(symbol);
         }
+    }
+    if (!dryRun && pendingSaves.length > 0) {
+        await saveScalpCandleHistoryBulk(pendingSaves, {});
     }
 
     effectiveBatchEnd = batchStart + processedSymbols.length;

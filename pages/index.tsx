@@ -219,6 +219,12 @@ type ScalpSummaryResponse = {
     stateCounts?: Record<string, number>;
   };
   pipeline?: {
+    panicStop?: {
+      enabled?: boolean;
+      reason?: string | null;
+      updatedAtMs?: number | null;
+      updatedBy?: string | null;
+    } | null;
     orchestrator?: {
       runId?: string | null;
       stage?: string | null;
@@ -1013,6 +1019,7 @@ export default function Home() {
       }
     >
   >({});
+  const [scalpPanicStopUpdating, setScalpPanicStopUpdating] = useState(false);
   const [scalpWorkerRetryStateByTaskId, setScalpWorkerRetryStateByTaskId] = useState<
     Record<
       string,
@@ -1490,6 +1497,37 @@ export default function Home() {
           message: msg,
         },
       }));
+    }
+  };
+
+  const setScalpPanicStop = async (enabled: boolean) => {
+    if (scalpPanicStopUpdating) return;
+    setScalpPanicStopUpdating(true);
+    try {
+      const reason = enabled ? 'manual_panic_stop_from_ui' : 'manual_panic_stop_release_from_ui';
+      const updatedBy = 'ui:panic-stop';
+      const params = new URLSearchParams({
+        enabled: enabled ? 'true' : 'false',
+        reason,
+        updatedBy,
+      });
+      const res = await fetch(`/api/scalp/ops/panic-stop?${params.toString()}`, {
+        method: 'POST',
+        headers: buildAdminHeaders(),
+        cache: 'no-store',
+      });
+      if (res.status === 401) {
+        handleAuthExpired('Admin session expired. Re-enter ADMIN_ACCESS_SECRET.');
+        return;
+      }
+      if (!res.ok) {
+        throw new Error(`panic_stop_update_failed (${res.status})`);
+      }
+      await loadScalpDashboard({ silent: true, force: true });
+    } catch (err: any) {
+      setError(err?.message || 'Failed to update panic stop');
+    } finally {
+      setScalpPanicStopUpdating(false);
     }
   };
 
@@ -2387,6 +2425,10 @@ export default function Home() {
     scalpOpsDeployments.map((row) => [`${row.symbol}~${row.strategyId}~${row.tuneId}`, row] as const),
   );
   const scalpAvgAbsPairCorrelation = asFiniteNumber(scalpResearchReport?.summary?.avgAbsPairCorrelation);
+  const scalpPanicStop = scalpSummary?.pipeline?.panicStop || null;
+  const scalpPanicStopEnabled = scalpPanicStop?.enabled === true;
+  const scalpPanicStopReason = String(scalpPanicStop?.reason || '').trim() || null;
+  const scalpPanicStopUpdatedAtMs = asFiniteNumber(scalpPanicStop?.updatedAtMs);
   const scalpPipelineCycle = scalpSummary?.pipeline?.cycle || null;
   const scalpPipelineOrchestrator = scalpSummary?.pipeline?.orchestrator || null;
   const scalpWorkerTasks = Array.isArray(scalpResearchCycle?.tasks) ? scalpResearchCycle.tasks : [];
@@ -4426,6 +4468,33 @@ export default function Home() {
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <h3 className={`text-lg font-semibold ${scalpTextPrimaryClass}`}>Cron Execution Pipeline</h3>
                       <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void setScalpPanicStop(!scalpPanicStopEnabled);
+                          }}
+                          disabled={scalpPanicStopUpdating}
+                          className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
+                            scalpPanicStopEnabled
+                              ? scalpDarkMode
+                                ? 'border-rose-500/70 bg-rose-500/15 text-rose-200 hover:bg-rose-500/25'
+                                : 'border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100'
+                              : scalpDarkMode
+                                ? 'border-emerald-500/60 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
+                                : 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                          } ${scalpPanicStopUpdating ? 'cursor-not-allowed opacity-60' : ''}`}
+                          title={
+                            scalpPanicStopEnabled
+                              ? 'Disable panic stop and allow cron pipeline execution'
+                              : 'Enable panic stop to block orchestrator/worker runs'
+                          }
+                        >
+                          {scalpPanicStopUpdating
+                            ? 'updating...'
+                            : scalpPanicStopEnabled
+                              ? 'Panic Stop: ON'
+                              : 'Panic Stop: OFF'}
+                        </button>
                         <span className={scalpTagNeutralClass}>timeout-safe chunks</span>
                         <span
                           className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${
@@ -4441,6 +4510,17 @@ export default function Home() {
                           )}
                           {`In progress: ${scalpInProgressCronLabel}`}
                         </span>
+                        {scalpPanicStopEnabled ? (
+                          <span
+                            className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${scalpCronDetailToneMeta(
+                              'critical',
+                            )}`}
+                            title={scalpPanicStopReason || undefined}
+                          >
+                            blocked by panic stop
+                            {scalpPanicStopUpdatedAtMs ? ` · ${formatScalpTime(scalpPanicStopUpdatedAtMs)}` : ''}
+                          </span>
+                        ) : null}
                       </div>
                     </div>
                     <div className="mt-4 overflow-x-auto">

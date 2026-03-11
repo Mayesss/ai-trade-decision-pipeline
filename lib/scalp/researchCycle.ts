@@ -5,7 +5,7 @@ import path from 'node:path';
 import { Prisma } from '@prisma/client';
 
 import type { ScalpStrategyConfigOverride } from './config';
-import { loadScalpCandleHistory } from './candleHistory';
+import { loadScalpCandleHistory, loadScalpCandleHistoryBulk } from './candleHistory';
 import { resolveScalpDeployment } from './deployments';
 import { pipSizeForScalpSymbol } from './marketData';
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
@@ -563,8 +563,10 @@ export async function evaluateResearchCyclePreflight(
     const symbolsToCheck = new Set(resolvedSymbolsRaw.slice(0, maxCandleChecks));
     const weeklyExcludedSymbols: NonNullable<ResearchCyclePreflightResult['weeklySuccessiveRequirement']>['excludedSymbols'] = [];
     const resolvedSymbols: string[] = [];
-    for (const symbol of resolvedSymbolsRaw) {
-        const history = await loadScalpCandleHistory(symbol, '1m');
+    const histories = await loadScalpCandleHistoryBulk(resolvedSymbolsRaw, '1m');
+    for (let i = 0; i < resolvedSymbolsRaw.length; i += 1) {
+        const symbol = resolvedSymbolsRaw[i]!;
+        const history = histories[i] || (await loadScalpCandleHistory(symbol, '1m'));
         const availableCandles = Math.max(0, history.record?.candles?.length || 0);
         const candleReady = availableCandles >= requiredMinCandlesPerTask;
         if (symbolsToCheck.has(symbol)) {

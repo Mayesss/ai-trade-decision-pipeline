@@ -8,6 +8,7 @@ import { getScalpCronSymbolConfigs } from '../../../../lib/symbolRegistry';
 import {
   listScalpCandleHistorySymbols,
   loadScalpCandleHistory,
+  loadScalpCandleHistoryBulk,
   normalizeHistoryTimeframe,
   timeframeToMs,
   type CandleHistoryBackend,
@@ -123,6 +124,12 @@ type HistoryDiscoverySnapshot = {
 };
 
 type ScalpPipelineSnapshot = {
+  panicStop: {
+    enabled: boolean;
+    reason: string | null;
+    updatedAtMs: number | null;
+    updatedBy: string | null;
+  };
   orchestrator: {
     runId: string | null;
     stage: string | null;
@@ -163,6 +170,26 @@ function asTsMs(value: unknown): number | null {
   return Math.floor(n);
 }
 
+function parseUnknownBool(value: unknown): boolean {
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(normalized);
+}
+
+function normalizeReason(value: unknown): string | null {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  return text.slice(0, 240);
+}
+
+function normalizeUpdatedBy(value: unknown): string | null {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  return text.slice(0, 120);
+}
+
 function pipelineStageMeta(stageRaw: unknown): { progressPct: number | null; progressLabel: string | null } {
   const stage = String(stageRaw || '')
     .trim()
@@ -187,6 +214,8 @@ async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSn
   const rows = await db.$queryRaw<
     Array<{
       orchestratorPayload: unknown;
+      panicStopPayload: unknown;
+      panicStopUpdatedAtMs: bigint | number | null;
       cycleId: string | null;
       cycleStatus: string | null;
       cycleCreatedAtMs: bigint | number | null;
@@ -200,6 +229,15 @@ async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSn
       FROM scalp_jobs
       WHERE kind = 'execute_cycle'::scalp_job_kind
         AND dedupe_key = 'scalp_pipeline_orchestrator_state_v1'
+      LIMIT 1
+    ),
+    panic_stop_state AS (
+      SELECT
+        payload,
+        (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint AS updated_at_ms
+      FROM scalp_jobs
+      WHERE kind = 'execute_cycle'::scalp_job_kind
+        AND dedupe_key = 'scalp_panic_stop_v1'
       LIMIT 1
     ),
     selected_cycle AS (
@@ -221,6 +259,8 @@ async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSn
     )
     SELECT
       (SELECT payload FROM orchestrator_state) AS "orchestratorPayload",
+      (SELECT payload FROM panic_stop_state) AS "panicStopPayload",
+      (SELECT updated_at_ms FROM panic_stop_state) AS "panicStopUpdatedAtMs",
       sc.cycle_id AS "cycleId",
       sc.status AS "cycleStatus",
       sc.created_at_ms AS "cycleCreatedAtMs",
@@ -231,6 +271,8 @@ async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSn
     UNION ALL
     SELECT
       (SELECT payload FROM orchestrator_state) AS "orchestratorPayload",
+      (SELECT payload FROM panic_stop_state) AS "panicStopPayload",
+      (SELECT updated_at_ms FROM panic_stop_state) AS "panicStopUpdatedAtMs",
       NULL::text AS "cycleId",
       NULL::text AS "cycleStatus",
       NULL::bigint AS "cycleCreatedAtMs",
@@ -243,6 +285,7 @@ async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSn
   if (!row) return null;
 
   const orchestratorPayload = asRecord(row.orchestratorPayload);
+  const panicStopPayload = asRecord(row.panicStopPayload);
   const orchestratorStage = String(orchestratorPayload.stage || '').trim() || null;
   const orchestratorStartedAtMs = asTsMs(orchestratorPayload.startedAtMs);
   const orchestratorCompletedAtMs = asTsMs(orchestratorPayload.completedAtMs);
@@ -258,6 +301,12 @@ async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSn
   const totals = asRecord(summary.totals);
   const cycleProgressPct = Number(summary.progressPct);
   return {
+    panicStop: {
+      enabled: parseUnknownBool(panicStopPayload.enabled),
+      reason: normalizeReason(panicStopPayload.reason),
+      updatedAtMs: asTsMs(row.panicStopUpdatedAtMs),
+      updatedBy: normalizeUpdatedBy(panicStopPayload.updatedBy),
+    },
     orchestrator: orchestratorStage
       ? {
           runId: String(orchestratorPayload.runId || '').trim() || null,
@@ -543,10 +592,11 @@ async function loadHistoryDiscoverySnapshot(params: {
   const dayMs = 24 * 60 * 60 * 1000;
   for (let i = 0; i < scannedSymbols.length; i += HISTORY_DISCOVERY_BATCH_SIZE) {
     const batch = scannedSymbols.slice(i, i + HISTORY_DISCOVERY_BATCH_SIZE);
+    const loadedBatch = await loadScalpCandleHistoryBulk(batch, timeframe);
     const batchRows = await Promise.all(
-      batch.map(async (symbol) => {
+      batch.map(async (symbol, index) => {
         try {
-          const loaded = await loadScalpCandleHistory(symbol, timeframe);
+          const loaded = loadedBatch[index] || (await loadScalpCandleHistory(symbol, timeframe));
           if (backend === 'unknown') backend = loaded.backend;
           const record = loaded.record;
           const candles = Array.isArray(record?.candles) ? record.candles : [];

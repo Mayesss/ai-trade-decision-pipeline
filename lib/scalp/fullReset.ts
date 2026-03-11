@@ -6,7 +6,6 @@ import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 
 const DEFAULT_UNIVERSE_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-universe.json');
 const DEFAULT_REPORT_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-research-report.json');
-const DEFAULT_CANDLE_HISTORY_DIR = path.resolve(process.cwd(), 'data/candles-history');
 const EMPTY_DEPLOYMENTS_SNAPSHOT = {
     version: 1,
     updatedAt: null,
@@ -24,6 +23,7 @@ const BASE_RESET_TABLES = [
     'scalp_sessions',
     'scalp_journal',
     'scalp_trade_ledger',
+    'scalp_candle_history_weeks',
     'scalp_deployments',
 ] as const;
 
@@ -108,14 +108,13 @@ export interface RunScalpFullResetResult {
     };
 }
 
-function tableList(includeRuntimeSettings: boolean): string[] {
-    return includeRuntimeSettings
-        ? [...BASE_RESET_TABLES, ...RUNTIME_RESET_TABLES]
-        : [...BASE_RESET_TABLES];
+function tableList(includeRuntimeSettings: boolean, includeCandleHistory: boolean): string[] {
+    const core = includeCandleHistory ? [...BASE_RESET_TABLES, 'scalp_candle_history'] : [...BASE_RESET_TABLES];
+    return includeRuntimeSettings ? [...core, ...RUNTIME_RESET_TABLES] : core;
 }
 
 function assertResetTableName(tableName: string): void {
-    const allowed = new Set([...BASE_RESET_TABLES, ...RUNTIME_RESET_TABLES]);
+    const allowed = new Set([...BASE_RESET_TABLES, ...RUNTIME_RESET_TABLES, 'scalp_candle_history']);
     if (!allowed.has(tableName as any)) {
         throw new Error(`Invalid reset table: ${tableName}`);
     }
@@ -153,7 +152,7 @@ export async function runScalpFullReset(
     const fileRows: ScalpFullResetFileRow[] = [];
     let errors = 0;
 
-    const tables = tableList(includeRuntimeSettings);
+    const tables = tableList(includeRuntimeSettings, includeCandleHistory);
     if (pgEnabled) {
         for (const tableName of tables) {
             try {
@@ -202,7 +201,6 @@ export async function runScalpFullReset(
     const deploymentRegistryFile = scalpDeploymentRegistryPath();
     const universeFile = resolvePath('SCALP_SYMBOL_UNIVERSE_PATH', DEFAULT_UNIVERSE_FILE_PATH);
     const reportFile = resolvePath('SCALP_RESEARCH_REPORT_PATH', DEFAULT_REPORT_FILE_PATH);
-    const candleHistoryDir = resolvePath('CANDLE_HISTORY_DIR', DEFAULT_CANDLE_HISTORY_DIR);
 
     {
         const existed = await pathExists(deploymentRegistryFile);
@@ -243,28 +241,6 @@ export async function runScalpFullReset(
         fileRows.push({
             path: targetFile,
             action: 'delete-file',
-            existed,
-            changed,
-            error,
-        });
-    }
-
-    if (includeCandleHistory) {
-        const existed = await pathExists(candleHistoryDir);
-        let changed = false;
-        let error: string | null = null;
-        if (!dryRun && existed) {
-            try {
-                await rm(candleHistoryDir, { recursive: true, force: true });
-                changed = true;
-            } catch (err: any) {
-                error = err?.message || String(err);
-                errors += 1;
-            }
-        }
-        fileRows.push({
-            path: candleHistoryDir,
-            action: 'delete-directory',
             existed,
             changed,
             error,

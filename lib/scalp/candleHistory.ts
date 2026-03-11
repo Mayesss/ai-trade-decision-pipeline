@@ -1,9 +1,9 @@
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import path from 'node:path';
+import { Prisma } from '@prisma/client';
 
+import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 import type { ScalpCandle } from './types';
 
-export type CandleHistoryBackend = 'file' | 'kv';
+export type CandleHistoryBackend = 'pg';
 
 export interface ScalpCandleHistoryRecord {
     version: 1;
@@ -27,8 +27,15 @@ export interface ScalpCandleHistorySaveResult {
     saved: boolean;
 }
 
+export interface ScalpCandleHistoryBulkSaveResult {
+    backend: CandleHistoryBackend;
+    saved: number;
+    storageRef: string;
+}
+
 const CANDLE_HISTORY_VERSION = 1 as const;
-const DEFAULT_CANDLE_HISTORY_DIR = 'data/candles-history';
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 
 function normalizeSymbol(value: string): string {
     return String(value || '')
@@ -94,70 +101,288 @@ function normalizeRecord(
     };
 }
 
-function getLocalHistoryRoot(): string {
-    const defaultDir =
-        process.env.VERCEL === '1' ? '/tmp/scalp-candles-history' : DEFAULT_CANDLE_HISTORY_DIR;
-    const configured = String(process.env.CANDLE_HISTORY_DIR || defaultDir).trim();
-    const root = path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
-    return root;
-}
-
 function resolveBackend(preferred?: CandleHistoryBackend): CandleHistoryBackend {
-    if (preferred === 'file') return 'file';
-    if (preferred === 'kv') return 'file';
+    if (preferred === 'pg') return 'pg';
     const mode = String(process.env.CANDLE_HISTORY_STORE || 'auto')
         .trim()
         .toLowerCase();
-    if (mode === 'file') return 'file';
-    return 'file';
+    if (mode === 'pg') return 'pg';
+    if (isScalpPgConfigured()) return 'pg';
+    return 'pg';
 }
 
-function historyFilePath(symbol: string, timeframe: string): string {
-    return path.join(getLocalHistoryRoot(), symbol, `${timeframe}.json`);
+function startOfUtcDay(tsMs: number): number {
+    const date = new Date(tsMs);
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
 }
 
-async function listHistorySymbolsFromFile(): Promise<string[]> {
-    const root = getLocalHistoryRoot();
-    try {
-        const entries = await readdir(root, { withFileTypes: true });
-        const symbols = entries
-            .filter((entry) => entry.isDirectory())
-            .map((entry) => normalizeSymbol(entry.name))
-            .filter((row) => Boolean(row));
-        return Array.from(new Set(symbols)).sort();
-    } catch {
-        return [];
+function weekStartMondayUtcMs(tsMs: number): number {
+    const dayStartMs = startOfUtcDay(tsMs);
+    const dayOfWeek = new Date(dayStartMs).getUTCDay();
+    const daysSinceMonday = (dayOfWeek + 6) % 7;
+    return dayStartMs - daysSinceMonday * ONE_DAY_MS;
+}
+
+function candlesToWeeklyRows(record: ScalpCandleHistoryRecord): Array<{
+    symbol: string;
+    timeframe: string;
+    weekStartMs: number;
+    epic: string | null;
+    source: 'capital';
+    candles: ScalpCandle[];
+}> {
+    const byWeek = new Map<number, ScalpCandle[]>();
+    for (const candle of record.candles) {
+        const ts = Number(candle?.[0] || 0);
+        if (!Number.isFinite(ts) || ts <= 0) continue;
+        const weekStartMs = weekStartMondayUtcMs(Math.floor(ts));
+        const bucket = byWeek.get(weekStartMs) || [];
+        bucket.push(candle);
+        byWeek.set(weekStartMs, bucket);
     }
+    return Array.from(byWeek.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([weekStartMs, candles]) => ({
+            symbol: record.symbol,
+            timeframe: record.timeframe,
+            weekStartMs,
+            epic: record.epic,
+            source: record.source,
+            candles: dedupeSortCandles(candles),
+        }));
 }
 
-async function loadFromFile(symbol: string, timeframe: string): Promise<ScalpCandleHistoryLoadResult> {
-    const filePath = historyFilePath(symbol, timeframe);
-    try {
-        const raw = await readFile(filePath, 'utf8');
-        const parsed = JSON.parse(raw);
-        return {
-            backend: 'file',
-            storageRef: filePath,
-            record: normalizeRecord(parsed, { symbol, timeframe, epic: null }),
-        };
-    } catch {
-        return {
-            backend: 'file',
-            storageRef: filePath,
-            record: null,
-        };
+function rowsToRecord(params: {
+    symbol: string;
+    timeframe: string;
+    rows: Array<{ epic: string | null; source: string | null; updatedAtMs: number | null; candles: unknown }>;
+}): ScalpCandleHistoryRecord | null {
+    if (!params.rows.length) return null;
+    let latestUpdatedAtMs = 0;
+    let epic: string | null = null;
+    const merged: ScalpCandle[] = [];
+    for (const row of params.rows) {
+        const candles = Array.isArray(row.candles) ? row.candles : [];
+        for (const candle of candles) {
+            const normalized = normalizeCandleRow(candle);
+            if (normalized) merged.push(normalized);
+        }
+        if (row.epic && !epic) {
+            epic = String(row.epic).trim().toUpperCase();
+        }
+        const updatedAtMs = Number(row.updatedAtMs || 0);
+        if (Number.isFinite(updatedAtMs) && updatedAtMs > latestUpdatedAtMs) {
+            latestUpdatedAtMs = Math.floor(updatedAtMs);
+        }
     }
-}
-
-async function saveToFile(record: ScalpCandleHistoryRecord): Promise<ScalpCandleHistorySaveResult> {
-    const filePath = historyFilePath(record.symbol, record.timeframe);
-    await mkdir(path.dirname(filePath), { recursive: true });
-    await writeFile(filePath, JSON.stringify(record, null, 2), 'utf8');
     return {
-        backend: 'file',
-        storageRef: filePath,
+        version: CANDLE_HISTORY_VERSION,
+        symbol: params.symbol,
+        timeframe: params.timeframe,
+        epic,
+        source: 'capital',
+        updatedAtMs: latestUpdatedAtMs > 0 ? latestUpdatedAtMs : Date.now(),
+        candles: dedupeSortCandles(merged),
+    };
+}
+
+async function loadFromPg(symbol: string, timeframe: string): Promise<ScalpCandleHistoryLoadResult> {
+    const db = scalpPrisma();
+    const rows = await db.$queryRaw<
+        Array<{
+            epic: string | null;
+            source: string | null;
+            updatedAtMs: bigint | number | null;
+            candles: unknown;
+        }>
+    >(Prisma.sql`
+        SELECT
+            epic,
+            source,
+            (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint AS "updatedAtMs",
+            candles_json AS candles
+        FROM scalp_candle_history_weeks
+        WHERE symbol = ${symbol}
+          AND timeframe = ${timeframe}
+        ORDER BY week_start ASC;
+    `);
+    const record = rowsToRecord({
+        symbol,
+        timeframe,
+        rows: rows.map((row) => ({
+            epic: row.epic,
+            source: row.source,
+            updatedAtMs: Number(row.updatedAtMs || 0),
+            candles: row.candles,
+        })),
+    });
+    return {
+        backend: 'pg',
+        storageRef: `scalp_candle_history_weeks:${symbol}:${timeframe}`,
+        record,
+    };
+}
+
+async function loadFromPgBulk(symbols: string[], timeframe: string): Promise<ScalpCandleHistoryLoadResult[]> {
+    if (!symbols.length) return [];
+    const db = scalpPrisma();
+    const rows = await db.$queryRaw<
+        Array<{
+            symbol: string;
+            epic: string | null;
+            source: string | null;
+            updatedAtMs: bigint | number | null;
+            candles: unknown;
+        }>
+    >(Prisma.sql`
+        SELECT
+            symbol,
+            epic,
+            source,
+            (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint AS "updatedAtMs",
+            candles_json AS candles
+        FROM scalp_candle_history_weeks
+        WHERE timeframe = ${timeframe}
+          AND symbol IN (${Prisma.join(symbols)})
+        ORDER BY symbol ASC, week_start ASC;
+    `);
+
+    const grouped = new Map<string, Array<{ epic: string | null; source: string | null; updatedAtMs: number | null; candles: unknown }>>();
+    for (const row of rows) {
+        const symbol = normalizeSymbol(row.symbol);
+        if (!symbol) continue;
+        const bucket = grouped.get(symbol) || [];
+        bucket.push({
+            epic: row.epic,
+            source: row.source,
+            updatedAtMs: Number(row.updatedAtMs || 0),
+            candles: row.candles,
+        });
+        grouped.set(symbol, bucket);
+    }
+
+    return symbols.map((symbol) => {
+        const record = rowsToRecord({
+            symbol,
+            timeframe,
+            rows: grouped.get(symbol) || [],
+        });
+        return {
+            backend: 'pg' as const,
+            storageRef: `scalp_candle_history_weeks:${symbol}:${timeframe}`,
+            record,
+        };
+    });
+}
+
+async function saveToPg(record: ScalpCandleHistoryRecord): Promise<ScalpCandleHistorySaveResult> {
+    await saveToPgBulk([record]);
+    return {
+        backend: 'pg',
+        storageRef: `scalp_candle_history_weeks:${record.symbol}:${record.timeframe}`,
         saved: true,
     };
+}
+
+async function saveToPgBulk(records: ScalpCandleHistoryRecord[]): Promise<ScalpCandleHistoryBulkSaveResult> {
+    if (!records.length) {
+        return { backend: 'pg', saved: 0, storageRef: 'scalp_candle_history_weeks:bulk' };
+    }
+    const weekRows = records.flatMap((record) => candlesToWeeklyRows(record));
+    const pairRows = records.map((record) => ({ symbol: record.symbol, timeframe: record.timeframe }));
+    const db = scalpPrisma();
+    const pairJson = JSON.stringify(pairRows);
+    const weekJson = JSON.stringify(
+        weekRows.map((row) => ({
+            symbol: row.symbol,
+            timeframe: row.timeframe,
+            week_start_ms: row.weekStartMs,
+            epic: row.epic,
+            source: row.source,
+            candles: row.candles,
+        })),
+    );
+
+    await db.$executeRaw(
+        Prisma.sql`
+            WITH pairs AS (
+                SELECT DISTINCT
+                    UPPER(TRIM(x.symbol)) AS symbol,
+                    LOWER(TRIM(x.timeframe)) AS timeframe
+                FROM jsonb_to_recordset(${pairJson}::jsonb) AS x(symbol text, timeframe text)
+            ),
+            input AS (
+                SELECT
+                    UPPER(TRIM(x.symbol)) AS symbol,
+                    LOWER(TRIM(x.timeframe)) AS timeframe,
+                    x.week_start_ms::bigint AS week_start_ms,
+                    NULLIF(UPPER(TRIM(COALESCE(x.epic, ''))), '') AS epic,
+                    COALESCE(NULLIF(TRIM(x.source), ''), 'capital') AS source,
+                    COALESCE(x.candles, '[]'::jsonb) AS candles
+                FROM jsonb_to_recordset(${weekJson}::jsonb) AS x(
+                    symbol text,
+                    timeframe text,
+                    week_start_ms bigint,
+                    epic text,
+                    source text,
+                    candles jsonb
+                )
+            ),
+            upserted AS (
+                INSERT INTO scalp_candle_history_weeks(symbol, timeframe, week_start, epic, source, candles_json, updated_at)
+                SELECT
+                    i.symbol,
+                    i.timeframe,
+                    to_timestamp(i.week_start_ms / 1000.0),
+                    i.epic,
+                    i.source,
+                    i.candles,
+                    NOW()
+                FROM input i
+                ON CONFLICT(symbol, timeframe, week_start)
+                DO UPDATE SET
+                    epic = EXCLUDED.epic,
+                    source = EXCLUDED.source,
+                    candles_json = EXCLUDED.candles_json,
+                    updated_at = NOW()
+                RETURNING 1
+            )
+            DELETE FROM scalp_candle_history_weeks w
+            USING pairs p
+            WHERE w.symbol = p.symbol
+              AND w.timeframe = p.timeframe
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM input i
+                  WHERE i.symbol = w.symbol
+                    AND i.timeframe = w.timeframe
+                    AND i.week_start_ms = (EXTRACT(EPOCH FROM w.week_start) * 1000)::bigint
+              );
+        `,
+    );
+
+    return {
+        backend: 'pg',
+        saved: records.length,
+        storageRef: 'scalp_candle_history_weeks:bulk',
+    };
+}
+
+async function listHistorySymbolsFromPg(timeframe: string): Promise<string[]> {
+    const db = scalpPrisma();
+    const rows = await db.$queryRaw<Array<{ symbol: string }>>(Prisma.sql`
+        SELECT DISTINCT symbol
+        FROM scalp_candle_history_weeks
+        WHERE timeframe = ${timeframe}
+        ORDER BY symbol ASC;
+    `);
+    return Array.from(
+        new Set(
+            rows
+                .map((row) => normalizeSymbol(row.symbol))
+                .filter((row) => Boolean(row)),
+        ),
+    ).sort();
 }
 
 export async function loadScalpCandleHistory(
@@ -170,8 +395,12 @@ export async function loadScalpCandleHistory(
     if (!symbol) {
         throw new Error('Invalid candle-history symbol');
     }
-    resolveBackend(opts.backend);
-    return loadFromFile(symbol, timeframe);
+    const backend = resolveBackend(opts.backend);
+    if (!isScalpPgConfigured()) {
+        throw new Error('scalp_pg_not_configured_for_candle_history');
+    }
+    void backend;
+    return loadFromPg(symbol, timeframe);
 }
 
 export async function saveScalpCandleHistory(
@@ -194,17 +423,82 @@ export async function saveScalpCandleHistory(
         updatedAtMs: Date.now(),
         candles: dedupeSortCandles(recordRaw.candles || []),
     };
-    resolveBackend(opts.backend);
-    return saveToFile(record);
+    const backend = resolveBackend(opts.backend);
+    if (!isScalpPgConfigured()) {
+        throw new Error('scalp_pg_not_configured_for_candle_history');
+    }
+    void backend;
+    return saveToPg(record);
+}
+
+export async function loadScalpCandleHistoryBulk(
+    symbolsRaw: string[],
+    timeframeRaw: string,
+    opts: { backend?: CandleHistoryBackend } = {},
+): Promise<ScalpCandleHistoryLoadResult[]> {
+    const symbols = Array.from(
+        new Set(
+            (symbolsRaw || [])
+                .map((symbol) => normalizeSymbol(symbol))
+                .filter((symbol) => Boolean(symbol)),
+        ),
+    );
+    const timeframe = normalizeTimeframe(timeframeRaw);
+    const backend = resolveBackend(opts.backend);
+    if (!isScalpPgConfigured()) {
+        throw new Error('scalp_pg_not_configured_for_candle_history');
+    }
+    void backend;
+    return loadFromPgBulk(symbols, timeframe);
+}
+
+export async function saveScalpCandleHistoryBulk(
+    recordsRaw: Array<
+        Omit<ScalpCandleHistoryRecord, 'version' | 'updatedAtMs' | 'candles'> & {
+            candles: ScalpCandle[];
+        }
+    >,
+    opts: { backend?: CandleHistoryBackend } = {},
+): Promise<ScalpCandleHistoryBulkSaveResult> {
+    const records = (recordsRaw || [])
+        .map((recordRaw) => {
+            const symbol = normalizeSymbol(recordRaw.symbol);
+            const timeframe = normalizeTimeframe(recordRaw.timeframe);
+            if (!symbol) return null;
+            const normalized = normalizeRecord(
+                {
+                    symbol,
+                    timeframe,
+                    epic: recordRaw.epic,
+                    source: 'capital',
+                    updatedAtMs: Date.now(),
+                    candles: recordRaw.candles || [],
+                },
+                { symbol, timeframe, epic: null },
+            );
+            return normalized;
+        })
+        .filter((row): row is ScalpCandleHistoryRecord => Boolean(row));
+
+    const backend = resolveBackend(opts.backend);
+    if (!isScalpPgConfigured()) {
+        throw new Error('scalp_pg_not_configured_for_candle_history');
+    }
+    void backend;
+    return saveToPgBulk(records);
 }
 
 export async function listScalpCandleHistorySymbols(
     timeframeRaw = '1m',
     opts: { backend?: CandleHistoryBackend } = {},
 ): Promise<string[]> {
-    normalizeTimeframe(timeframeRaw);
-    resolveBackend(opts.backend);
-    return listHistorySymbolsFromFile();
+    const timeframe = normalizeTimeframe(timeframeRaw);
+    const backend = resolveBackend(opts.backend);
+    if (!isScalpPgConfigured()) {
+        throw new Error('scalp_pg_not_configured_for_candle_history');
+    }
+    void backend;
+    return listHistorySymbolsFromPg(timeframe);
 }
 
 export function mergeScalpCandleHistory(existing: ScalpCandle[], incoming: ScalpCandle[]): ScalpCandle[] {
@@ -221,7 +515,7 @@ export function timeframeToMs(timeframeRaw: string): number {
     if (unit === 'm') return amount * 60_000;
     if (unit === 'h') return amount * 60 * 60_000;
     if (unit === 'd') return amount * 24 * 60 * 60_000;
-    return amount * 7 * 24 * 60 * 60_000;
+    return amount * ONE_WEEK_MS;
 }
 
 export function normalizeHistoryTimeframe(value: string): string {

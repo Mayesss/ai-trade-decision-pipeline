@@ -91,7 +91,7 @@ async function main(): Promise<void> {
     const rows: Array<Record<string, unknown>> = [];
     for (const symbol of args.symbols) {
         for (const timeframe of args.timeframes) {
-            const source = await loadScalpCandleHistory(symbol, timeframe, { backend: 'file' });
+            const source = await loadScalpCandleHistory(symbol, timeframe, { backend: 'pg' });
             const sourceCandles = source.record?.candles || [];
             const filteredCandles =
                 minTs === null ? sourceCandles : sourceCandles.filter((row) => Number(row[0]) >= Number(minTs));
@@ -116,11 +116,11 @@ async function main(): Promise<void> {
                         source: 'capital',
                         candles: filteredCandles,
                     },
-                    { backend: 'kv' },
+                    { backend: 'pg' },
                 );
             }
 
-            const target = args.dryRun ? null : await loadScalpCandleHistory(symbol, timeframe, { backend: 'kv' });
+            const target = args.dryRun ? null : await loadScalpCandleHistory(symbol, timeframe, { backend: 'pg' });
             const targetCount = target?.record?.candles?.length ?? null;
             rows.push({
                 symbol,

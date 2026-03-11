@@ -191,8 +191,8 @@ async function main() {
         const startedSymbolMs = Date.now();
         try {
             const [hist15m, hist1m] = await Promise.all([
-                loadScalpCandleHistory(symbol, '15m', { backend: 'file' }),
-                loadScalpCandleHistory(symbol, '1m', { backend: 'file' }),
+                loadScalpCandleHistory(symbol, '15m', { backend: 'pg' }),
+                loadScalpCandleHistory(symbol, '1m', { backend: 'pg' }),
             ]);
             const rows15m = (hist15m.record?.candles || [])
                 .filter((row) => row[0] >= fromMs && row[0] <= nowMs) as Array<[number, number, number, number, number, number]>;

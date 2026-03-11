@@ -3,6 +3,7 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
+import { loadScalpPanicStopState } from '../../../../lib/scalp/panicStop';
 import { aggregateScalpResearchCycle, runResearchWorker } from '../../../../lib/scalp/researchCycle';
 import { syncResearchCyclePromotionGates } from '../../../../lib/scalp/researchPromotion';
 
@@ -53,6 +54,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const requireCompletedCycleForSync = parseBoolParam(req.query.requireCompletedCycleForSync, true);
 
     try {
+        const panicStop = await loadScalpPanicStopState();
+        if (panicStop.enabled) {
+            return res.status(409).json({
+                ok: false,
+                error: 'panic_stop_enabled',
+                message: `panic_stop_enabled${panicStop.reason ? `:${panicStop.reason}` : ''}`,
+                panicStop,
+            });
+        }
         const worker = await runResearchWorker({ cycleId, workerId, maxRuns, concurrency, maxDurationMs, debug });
         const noClaim = worker.noClaimScanSummary;
         const preflightBlocked = worker.orchestration.gate === 'blocked';

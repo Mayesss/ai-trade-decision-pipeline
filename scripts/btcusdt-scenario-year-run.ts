@@ -89,8 +89,8 @@ async function main() {
     const { applySymbolGuardRiskDefaultsToReplayRuntime } = guardDefaults;
 
     const [h15, h1] = await Promise.all([
-        loadScalpCandleHistory(symbol, '15m', { backend: 'file' }),
-        loadScalpCandleHistory(symbol, '1m', { backend: 'file' }),
+        loadScalpCandleHistory(symbol, '15m', { backend: 'pg' }),
+        loadScalpCandleHistory(symbol, '1m', { backend: 'pg' }),
     ]);
     const rows15 = (h15.record?.candles || []) as CandleRow[];
     const rows1 = (h1.record?.candles || []) as CandleRow[];

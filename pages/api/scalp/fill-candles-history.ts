@@ -58,8 +58,7 @@ function parseBackend(value: string | undefined): CandleHistoryBackend | undefin
     const normalized = String(value || '')
         .trim()
         .toLowerCase();
-    if (normalized === 'file') return 'file';
-    if (normalized === 'kv') return 'kv';
+    if (normalized === 'pg' || normalized === 'file' || normalized === 'kv') return 'pg';
     return undefined;
 }
 

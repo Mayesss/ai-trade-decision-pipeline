@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
+import { loadScalpPanicStopState } from './panicStop';
 import { prepareAndStartScalpResearchCycle } from './prepareAndStartCycle';
 import { aggregateScalpResearchCycle, loadActiveResearchCycleId, loadResearchCycle, runResearchWorker } from './researchCycle';
 import { syncResearchCyclePromotionGates } from './researchPromotion';
@@ -304,6 +305,33 @@ export async function runScalpPipelineOrchestrator(
     let continuation: { invoked: boolean; status: number | null; error: string | null } | null = null;
     let state: OrchestratorState | null = null;
     try {
+        const panicStop = await loadScalpPanicStopState();
+        if (panicStop.enabled) {
+            return {
+                ok: false,
+                status: 'blocked',
+                message: `panic_stop_enabled${panicStop.reason ? `:${panicStop.reason}` : ''}`,
+                runId: null,
+                stage: null,
+                state: null,
+                diagnostics: {
+                    startedAtMs,
+                    finishedAtMs: nowMs(),
+                    durationMs: nowMs() - startedAtMs,
+                    maxDurationMs,
+                    continuationRequested: false,
+                    continuation: null,
+                    stageEvents: [
+                        {
+                            stage: 'init',
+                            blockedBy: 'panic_stop',
+                            reason: panicStop.reason || null,
+                            updatedAtMs: panicStop.updatedAtMs,
+                        },
+                    ],
+                },
+            };
+        }
         state = (await loadOrchestratorState()) || newState(startedAtMs);
         const shouldStartNew = state.stage === 'done' && !params.continueRun;
         if (shouldStartNew) {

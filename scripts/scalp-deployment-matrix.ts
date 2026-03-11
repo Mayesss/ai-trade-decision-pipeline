@@ -64,7 +64,7 @@ function usage() {
         'Options:',
         '  --symbols <csv>                Symbols to test. Default: symbols available in data/candles-history',
         '  --days <int>                   Lookback window in days (default: 30)',
-        '  --historyBackend <file|kv>     Candle history backend (default: file)',
+        '  --historyBackend <pg>          Candle history backend (default: pg)',
         `  --strategyIds <csv>            Strategy ids (default: ${listScalpStrategies().map((row) => row.id).join(',')})`,
         '  --scenarioFile <path>          Optional scenario JSON with explicit tune definitions',
         '  --executeMinutes <int>         Execute cadence for generated scenarios (default: runtime default)',
@@ -171,7 +171,8 @@ function parseHistoryBackend(value: unknown): CandleHistoryBackend {
     const normalized = String(value || '')
         .trim()
         .toLowerCase();
-    return normalized === 'kv' ? 'kv' : 'file';
+    if (normalized === 'pg' || normalized === 'kv' || normalized === 'file') return 'pg';
+    return 'pg';
 }
 
 function normalizeSymbol(value: unknown): string {

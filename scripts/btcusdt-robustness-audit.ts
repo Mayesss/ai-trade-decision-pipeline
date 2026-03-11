@@ -587,8 +587,8 @@ async function main() {
     await mkdir(outputRoot, { recursive: true });
 
     const [hist15m, hist1m] = await Promise.all([
-        loadScalpCandleHistory(BTC_SYMBOL, '15m', { backend: 'file' }),
-        loadScalpCandleHistory(BTC_SYMBOL, '1m', { backend: 'file' }),
+        loadScalpCandleHistory(BTC_SYMBOL, '15m', { backend: 'pg' }),
+        loadScalpCandleHistory(BTC_SYMBOL, '1m', { backend: 'pg' }),
     ]);
 
     const rows15m = (hist15m.record?.candles || []) as CandleRow[];
