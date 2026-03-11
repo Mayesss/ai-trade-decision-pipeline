@@ -1,9 +1,16 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { kvGetJson, kvSetJson } from '../kv';
 import type { ScalpStrategyConfigOverride } from './config';
 import { resolveScalpDeployment } from './deployments';
+import {
+    deleteDeploymentsByIdFromPg,
+    listDeploymentsFromPg,
+    upsertDeploymentsBulkToPg,
+    type PgDeploymentRegistryRow,
+    type PgUpsertDeploymentInput,
+} from './pg/deployments';
+import { isScalpPgConfigured } from './pg/client';
 import type { ScalpBacktestLeaderboardEntry } from './replay/types';
 import {
     REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID,
@@ -80,7 +87,7 @@ export interface ScalpDeploymentRegistrySnapshot {
 
 export interface CanonicalizeScalpDeploymentRegistryResult {
     dryRun: boolean;
-    storeMode: 'kv' | 'file';
+    storeMode: 'pg' | 'file';
     registryPath: string;
     registryKvKey: string;
     beforeCount: number;
@@ -124,6 +131,7 @@ const DEFAULT_FORWARD_GATE_THRESHOLDS: ScalpDeploymentPromotionGateThresholds = 
     minWeeklyMedianExpectancyR: null,
     maxWeeklyTopWeekPnlConcentrationPct: null,
 };
+const SCALP_PG_PERSIST_ACTOR = 'phase_g_pg_primary';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -613,25 +621,13 @@ export function scalpDeploymentRegistryKvKey(): string {
     return configured || DEFAULT_SCALP_DEPLOYMENT_REGISTRY_KV_KEY;
 }
 
-function hasKvConfig(): boolean {
-    return Boolean(process.env.upstash_payasyougo_KV_REST_API_URL && process.env.upstash_payasyougo_KV_REST_API_TOKEN);
-}
-
-let kvBootstrapWriteBlocked = false;
-
-function isKvQuotaExceededError(err: unknown): boolean {
-    const message = err instanceof Error ? err.message : String(err || '');
-    const normalized = message.toLowerCase();
-    return normalized.includes('max requests limit exceeded') || normalized.includes('usage:');
-}
-
-export function scalpDeploymentRegistryStoreMode(): 'kv' | 'file' {
+export function scalpDeploymentRegistryStoreMode(): 'pg' | 'file' {
     const configured = String(process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE || 'auto')
         .trim()
         .toLowerCase();
-    if (configured === 'kv') return 'kv';
+    if (configured === 'pg') return 'pg';
     if (configured === 'file') return 'file';
-    return hasKvConfig() ? 'kv' : 'file';
+    return isScalpPgConfigured() ? 'pg' : 'file';
 }
 
 async function loadScalpDeploymentRegistryFromFile(): Promise<ScalpDeploymentRegistrySnapshot> {
@@ -667,43 +663,28 @@ function hasNonEmptyRegistrySnapshot(raw: unknown): boolean {
 
 export async function loadScalpDeploymentRegistry(): Promise<ScalpDeploymentRegistrySnapshot> {
     const storeMode = scalpDeploymentRegistryStoreMode();
-    if (storeMode === 'kv') {
-        const kvSnapshot = normalizeRegistrySnapshot(await kvGetJson<unknown>(scalpDeploymentRegistryKvKey()));
-        if (kvSnapshot.deployments.length > 0 || kvSnapshot.updatedAt) {
-            return kvSnapshot;
-        }
-
-        // First KV bootstrapping pass: seed from the repo snapshot so updates persist after deployment.
-        const fileSnapshot = await loadScalpDeploymentRegistryFromFile();
-        if (fileSnapshot.deployments.length > 0 || fileSnapshot.updatedAt) {
-            if (!kvBootstrapWriteBlocked) {
-                try {
-                    await kvSetJson(scalpDeploymentRegistryKvKey(), fileSnapshot);
-                } catch (err) {
-                    if (isKvQuotaExceededError(err)) {
-                        kvBootstrapWriteBlocked = true;
-                        console.warn(
-                            'KV quota exceeded while bootstrapping scalp deployment registry; using file snapshot fallback for reads.',
-                        );
-                    } else {
-                        console.warn(
-                            'Failed to bootstrap scalp deployment registry into KV; using file snapshot fallback for reads.',
-                            err,
-                        );
-                    }
-                }
-            }
-            return fileSnapshot;
-        }
-        return kvSnapshot;
+    if (storeMode === 'pg') {
+        const rows = await listDeploymentsFromPg({ limit: 5000 });
+        return normalizeRegistrySnapshot({
+            version: REGISTRY_VERSION,
+            updatedAt:
+                rows.length > 0
+                    ? new Date(
+                          Math.max(
+                              ...rows.map((row) => Math.max(0, Math.floor(Number(row.updatedAtMs) || 0))),
+                          ),
+                      ).toISOString()
+                    : null,
+            deployments: rows.map((row) => mapPgDeploymentRowToRegistryEntry(row)),
+        });
     }
     return loadScalpDeploymentRegistryFromFile();
 }
 
 async function saveScalpDeploymentRegistry(snapshot: ScalpDeploymentRegistrySnapshot): Promise<void> {
     const storeMode = scalpDeploymentRegistryStoreMode();
-    if (storeMode === 'kv') {
-        await kvSetJson(scalpDeploymentRegistryKvKey(), snapshot);
+    if (storeMode === 'pg') {
+        await upsertDeploymentsBulkToPg(snapshot.deployments.map((entry) => toPgDeploymentUpsert(entry)));
         return;
     }
     await saveScalpDeploymentRegistryToFile(snapshot);
@@ -718,13 +699,8 @@ export async function canonicalizeScalpDeploymentRegistry(params: {
     const registryKvKey = scalpDeploymentRegistryKvKey();
     let raw: unknown = null;
 
-    if (storeMode === 'kv') {
-        const kvRaw = await kvGetJson<unknown>(registryKvKey);
-        if (hasNonEmptyRegistrySnapshot(kvRaw)) {
-            raw = kvRaw;
-        } else {
-            raw = await loadRawScalpDeploymentRegistryFromFile();
-        }
+    if (storeMode === 'pg') {
+        raw = await loadScalpDeploymentRegistry();
     } else {
         raw = await loadRawScalpDeploymentRegistryFromFile();
     }
@@ -800,6 +776,58 @@ export async function listScalpDeploymentRegistryEntries(
 ): Promise<ScalpDeploymentRegistryEntry[]> {
     const snapshot = await loadScalpDeploymentRegistry();
     return filterScalpDeploymentRegistry(snapshot, params);
+}
+
+function mapPgDeploymentRowToRegistryEntry(row: PgDeploymentRegistryRow): ScalpDeploymentRegistryEntry {
+    const deployment = resolveScalpDeployment({
+        symbol: row.symbol,
+        strategyId: row.strategyId,
+        tuneId: row.tuneId,
+        deploymentId: row.deploymentId,
+    });
+    const promotionGateRaw = isRecord(row.promotionGate) ? deepClone(row.promotionGate) : null;
+    const notes = normalizeOptionalText(isRecord(promotionGateRaw) ? promotionGateRaw.__notes : null, 400);
+    const leaderboardEntry = normalizeLeaderboardEntry(
+        isRecord(promotionGateRaw) ? promotionGateRaw.__leaderboardEntry : null,
+        deployment,
+    );
+    const promotionGate = normalizePromotionGate(promotionGateRaw);
+    return {
+        ...deployment,
+        enabled: Boolean(row.enabled),
+        source: normalizeSource(row.source, 'manual'),
+        notes: notes ?? null,
+        configOverride: normalizeConfigOverride(row.configOverride) ?? null,
+        leaderboardEntry: leaderboardEntry ?? null,
+        promotionGate,
+        createdAtMs: Math.max(0, Math.floor(Number(row.createdAtMs) || Number(row.updatedAtMs) || Date.now())),
+        updatedAtMs: Math.max(0, Math.floor(Number(row.updatedAtMs) || Date.now())),
+        updatedBy: normalizeOptionalText(row.updatedBy, 120) ?? null,
+    };
+}
+
+function toPgDeploymentUpsert(entry: ScalpDeploymentRegistryEntry): PgUpsertDeploymentInput {
+    const metadata: Record<string, unknown> = {};
+    if (entry.notes) metadata.__notes = entry.notes;
+    if (entry.leaderboardEntry) metadata.__leaderboardEntry = deepClone(entry.leaderboardEntry);
+    const promotionGatePayload: Record<string, unknown> | null =
+        entry.promotionGate || Object.keys(metadata).length > 0
+            ? ({
+                  ...(entry.promotionGate ? (deepClone(entry.promotionGate) as unknown as Record<string, unknown>) : {}),
+                  ...metadata,
+              } as Record<string, unknown>)
+            : null;
+    return {
+        deploymentId: entry.deploymentId,
+        symbol: entry.symbol,
+        strategyId: entry.strategyId,
+        tuneId: entry.tuneId,
+        source: entry.source,
+        enabled: entry.enabled,
+        configOverride: (entry.configOverride || {}) as Record<string, unknown>,
+        promotionGate: promotionGatePayload,
+        updatedBy: entry.updatedBy || SCALP_PG_PERSIST_ACTOR,
+    };
 }
 
 function applyUpsertScalpDeploymentRegistryEntry(
@@ -920,6 +948,9 @@ export async function removeScalpDeploymentRegistryEntry(
     };
     if (removed) {
         await saveScalpDeploymentRegistry(next);
+        if (scalpDeploymentRegistryStoreMode() === 'pg') {
+            await deleteDeploymentsByIdFromPg([deployment.deploymentId]);
+        }
     }
     return { snapshot: next, removed, deploymentId: deployment.deploymentId };
 }

@@ -1,7 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { kvGetJson, kvSetJson } from '../kv';
 import {
     listScalpDeploymentRegistryEntries,
     type ScalpDeploymentRegistryEntry,
@@ -17,7 +16,6 @@ import {
 import { loadScalpTradeLedger } from './store';
 import type { ScalpTradeLedgerEntry } from './types';
 
-const REPORT_KV_KEY = 'scalp:research:portfolio-report:v1';
 const DEFAULT_REPORT_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-research-report.json');
 
 export interface ScalpTradeWindowPerformance {
@@ -112,15 +110,6 @@ function toFinite(value: unknown, fallback = 0): number {
     const n = Number(value);
     if (!Number.isFinite(n)) return fallback;
     return n;
-}
-
-function resolveReportStoreMode(): 'kv' | 'file' {
-    const configured = String(process.env.SCALP_RESEARCH_REPORT_STORE || 'auto')
-        .trim()
-        .toLowerCase();
-    if (configured === 'kv') return 'kv';
-    if (configured === 'file') return 'file';
-    return process.env.upstash_payasyougo_KV_REST_API_URL && process.env.upstash_payasyougo_KV_REST_API_TOKEN ? 'kv' : 'file';
 }
 
 function resolveReportFilePath(): string {
@@ -483,10 +472,6 @@ export async function buildScalpResearchPortfolioReport(
 }
 
 export async function loadScalpResearchPortfolioReportSnapshot(): Promise<ScalpResearchPortfolioReportSnapshot | null> {
-    const mode = resolveReportStoreMode();
-    if (mode === 'kv') {
-        return kvGetJson<ScalpResearchPortfolioReportSnapshot>(REPORT_KV_KEY);
-    }
     try {
         const raw = await readFile(resolveReportFilePath(), 'utf8');
         return JSON.parse(raw) as ScalpResearchPortfolioReportSnapshot;
@@ -496,11 +481,6 @@ export async function loadScalpResearchPortfolioReportSnapshot(): Promise<ScalpR
 }
 
 export async function saveScalpResearchPortfolioReportSnapshot(snapshot: ScalpResearchPortfolioReportSnapshot): Promise<void> {
-    const mode = resolveReportStoreMode();
-    if (mode === 'kv') {
-        await kvSetJson(REPORT_KV_KEY, snapshot);
-        return;
-    }
     const filePath = resolveReportFilePath();
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');

@@ -3,7 +3,6 @@ import path from 'node:path';
 
 import defaultTickerEpicMap from '../../data/capitalTickerMap.json';
 import { discoverCapitalMarketSymbols, fetchCapitalCandlesByEpicDateRange, fetchCapitalLivePrice, resolveCapitalEpicRuntime } from '../capital';
-import { kvGetJson, kvSetJson } from '../kv';
 import { listScalpCandleHistorySymbols, loadScalpCandleHistory, mergeScalpCandleHistory, normalizeHistoryTimeframe, saveScalpCandleHistory, timeframeToMs } from './candleHistory';
 import { loadScalpDeploymentRegistry } from './deploymentRegistry';
 import { pipSizeForScalpSymbol } from './marketData';
@@ -156,7 +155,6 @@ type CapitalDiscoveryResult = Awaited<ReturnType<typeof discoverCapitalMarketSym
 
 const DEFAULT_POLICY_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-discovery-policy.json');
 const DEFAULT_UNIVERSE_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-universe.json');
-const UNIVERSE_KV_KEY = 'scalp:symbol-universe:v1';
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const SEED_FRESHNESS_MAX_LAG_MS = 12 * 60 * 60 * 1000;
 
@@ -273,16 +271,6 @@ function resolveUniverseFilePath(): string {
     return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
 }
 
-function resolveUniverseStoreMode(): 'kv' | 'file' {
-    const mode = String(process.env.SCALP_SYMBOL_UNIVERSE_STORE || 'auto')
-        .trim()
-        .toLowerCase();
-    if (mode === 'kv') return 'kv';
-    if (mode === 'file') return 'file';
-    const hasKv = Boolean(process.env.upstash_payasyougo_KV_REST_API_URL && process.env.upstash_payasyougo_KV_REST_API_TOKEN);
-    return hasKv ? 'kv' : 'file';
-}
-
 function normalizePolicy(raw: unknown): ScalpSymbolDiscoveryPolicy {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ...DEFAULT_POLICY };
     const row = raw as Record<string, unknown>;
@@ -362,10 +350,6 @@ export async function loadScalpSymbolDiscoveryPolicy(): Promise<ScalpSymbolDisco
 }
 
 export async function loadScalpSymbolUniverseSnapshot(): Promise<ScalpSymbolUniverseSnapshot | null> {
-    const storeMode = resolveUniverseStoreMode();
-    if (storeMode === 'kv') {
-        return kvGetJson<ScalpSymbolUniverseSnapshot>(UNIVERSE_KV_KEY);
-    }
     try {
         const raw = await readFile(resolveUniverseFilePath(), 'utf8');
         return JSON.parse(raw) as ScalpSymbolUniverseSnapshot;
@@ -375,11 +359,6 @@ export async function loadScalpSymbolUniverseSnapshot(): Promise<ScalpSymbolUniv
 }
 
 async function saveScalpSymbolUniverseSnapshot(snapshot: ScalpSymbolUniverseSnapshot): Promise<void> {
-    const storeMode = resolveUniverseStoreMode();
-    if (storeMode === 'kv') {
-        await kvSetJson(UNIVERSE_KV_KEY, snapshot);
-        return;
-    }
     const filePath = resolveUniverseFilePath();
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');

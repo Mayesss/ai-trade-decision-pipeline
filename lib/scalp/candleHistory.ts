@@ -1,7 +1,6 @@
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { kvCollectKeys, kvGetJson, kvSetJson } from '../kv';
 import type { ScalpCandle } from './types';
 
 export type CandleHistoryBackend = 'file' | 'kv';
@@ -29,7 +28,6 @@ export interface ScalpCandleHistorySaveResult {
 }
 
 const CANDLE_HISTORY_VERSION = 1 as const;
-const CANDLE_HISTORY_KEY_PREFIX = 'scalp:candles-history:v1';
 const DEFAULT_CANDLE_HISTORY_DIR = 'data/candles-history';
 
 function normalizeSymbol(value: string): string {
@@ -103,34 +101,17 @@ function getLocalHistoryRoot(): string {
 }
 
 function resolveBackend(preferred?: CandleHistoryBackend): CandleHistoryBackend {
-    if (preferred) return preferred;
+    if (preferred === 'file') return 'file';
+    if (preferred === 'kv') return 'file';
     const mode = String(process.env.CANDLE_HISTORY_STORE || 'auto')
         .trim()
         .toLowerCase();
-    if (mode === 'kv') return 'kv';
     if (mode === 'file') return 'file';
-    const hasKv = Boolean(process.env.upstash_payasyougo_KV_REST_API_URL && process.env.upstash_payasyougo_KV_REST_API_TOKEN);
-    return hasKv ? 'kv' : 'file';
-}
-
-function historyKvKey(symbol: string, timeframe: string): string {
-    return `${CANDLE_HISTORY_KEY_PREFIX}:${symbol}:${timeframe}`;
+    return 'file';
 }
 
 function historyFilePath(symbol: string, timeframe: string): string {
     return path.join(getLocalHistoryRoot(), symbol, `${timeframe}.json`);
-}
-
-function parseHistoryKeySymbol(key: string, timeframe: string): string | null {
-    const normalizedKey = String(key || '').trim();
-    const prefix = `${CANDLE_HISTORY_KEY_PREFIX}:`;
-    if (!normalizedKey.startsWith(prefix)) return null;
-    const remainder = normalizedKey.slice(prefix.length);
-    const marker = `:${timeframe}`;
-    if (!remainder.endsWith(marker)) return null;
-    const symbol = remainder.slice(0, remainder.length - marker.length);
-    const normalized = normalizeSymbol(symbol);
-    return normalized || null;
 }
 
 async function listHistorySymbolsFromFile(): Promise<string[]> {
@@ -141,25 +122,6 @@ async function listHistorySymbolsFromFile(): Promise<string[]> {
             .filter((entry) => entry.isDirectory())
             .map((entry) => normalizeSymbol(entry.name))
             .filter((row) => Boolean(row));
-        return Array.from(new Set(symbols)).sort();
-    } catch {
-        return [];
-    }
-}
-
-async function listHistorySymbolsFromKv(timeframe: string): Promise<string[]> {
-    const maxKeys = Math.max(100, Math.min(200_000, Math.floor(Number(process.env.SCALP_HISTORY_SCAN_MAX_KEYS) || 50_000)));
-    const maxIterations = Math.max(
-        1,
-        Math.min(20_000, Math.floor(Number(process.env.SCALP_HISTORY_SCAN_MAX_ITERATIONS) || 500)),
-    );
-    const count = Math.max(10, Math.min(5000, Math.floor(Number(process.env.SCALP_HISTORY_SCAN_COUNT) || 250)));
-    const pattern = `${CANDLE_HISTORY_KEY_PREFIX}:*:${timeframe}`;
-    try {
-        const keys = await kvCollectKeys(pattern, { maxKeys, maxIterations, count });
-        const symbols = keys
-            .map((key) => parseHistoryKeySymbol(key, timeframe))
-            .filter((row): row is string => Boolean(row));
         return Array.from(new Set(symbols)).sort();
     } catch {
         return [];
@@ -196,26 +158,6 @@ async function saveToFile(record: ScalpCandleHistoryRecord): Promise<ScalpCandle
     };
 }
 
-async function loadFromKv(symbol: string, timeframe: string): Promise<ScalpCandleHistoryLoadResult> {
-    const key = historyKvKey(symbol, timeframe);
-    const raw = await kvGetJson<unknown>(key);
-    return {
-        backend: 'kv',
-        storageRef: key,
-        record: normalizeRecord(raw, { symbol, timeframe, epic: null }),
-    };
-}
-
-async function saveToKv(record: ScalpCandleHistoryRecord): Promise<ScalpCandleHistorySaveResult> {
-    const key = historyKvKey(record.symbol, record.timeframe);
-    await kvSetJson(key, record);
-    return {
-        backend: 'kv',
-        storageRef: key,
-        saved: true,
-    };
-}
-
 export async function loadScalpCandleHistory(
     symbolRaw: string,
     timeframeRaw: string,
@@ -226,8 +168,7 @@ export async function loadScalpCandleHistory(
     if (!symbol) {
         throw new Error('Invalid candle-history symbol');
     }
-    const backend = resolveBackend(opts.backend);
-    if (backend === 'kv') return loadFromKv(symbol, timeframe);
+    resolveBackend(opts.backend);
     return loadFromFile(symbol, timeframe);
 }
 
@@ -251,8 +192,7 @@ export async function saveScalpCandleHistory(
         updatedAtMs: Date.now(),
         candles: dedupeSortCandles(recordRaw.candles || []),
     };
-    const backend = resolveBackend(opts.backend);
-    if (backend === 'kv') return saveToKv(record);
+    resolveBackend(opts.backend);
     return saveToFile(record);
 }
 
@@ -260,13 +200,8 @@ export async function listScalpCandleHistorySymbols(
     timeframeRaw = '1m',
     opts: { backend?: CandleHistoryBackend } = {},
 ): Promise<string[]> {
-    const timeframe = normalizeTimeframe(timeframeRaw);
-    const backend = resolveBackend(opts.backend);
-    if (backend === 'kv') {
-        const kvSymbols = await listHistorySymbolsFromKv(timeframe);
-        if (kvSymbols.length > 0) return kvSymbols;
-        return listHistorySymbolsFromFile();
-    }
+    normalizeTimeframe(timeframeRaw);
+    resolveBackend(opts.backend);
     return listHistorySymbolsFromFile();
 }
 

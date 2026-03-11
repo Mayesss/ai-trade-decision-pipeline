@@ -324,6 +324,46 @@ test('evaluateResearchTaskClaimability allows reclaim for stale running with att
     assert.equal(out.shouldMarkFailedForAttempts, false);
 });
 
+test('evaluateResearchTaskClaimability treats retry_wait as claimable when attempts remain', () => {
+    const nowMs = Date.UTC(2026, 2, 10, 8, 0, 0);
+    const out = evaluateResearchTaskClaimability({
+        status: 'retry_wait',
+        attempts: 1,
+        maxAttempts: 2,
+        startedAtMs: null,
+        runningStaleAfterMs: 20 * 60 * 1000,
+        nowMs,
+    });
+
+    assert.equal(out.maxAttemptsReached, false);
+    assert.equal(out.claimable, true);
+    assert.equal(out.shouldMarkFailedForAttempts, false);
+});
+
+test('summarizeResearchTasks treats cooldown-deferred retry_wait tasks as pending (not failed)', () => {
+    const cycle = makeCycle('rc_sum_retry_wait');
+
+    const deferred: ScalpResearchTask = {
+        ...makeTask({
+            cycleId: cycle.cycleId,
+            taskId: 't_retry_wait',
+            symbol: 'EURUSD',
+            strategyId: 'regime_pullback_m15_m3',
+            status: 'retry_wait',
+        }),
+        attempts: 0,
+        errorCode: 'symbol_cooldown_active',
+        errorMessage: 'symbol_cooldown_active_until:2026-03-10T10:00:00.000Z',
+    };
+
+    const summary = summarizeResearchTasks(cycle, [deferred]);
+
+    assert.equal(summary.status, 'running');
+    assert.equal(summary.totals.pending, 1);
+    assert.equal(summary.totals.failed, 0);
+    assert.equal(summary.progressPct, 0);
+});
+
 test('symbol cooldown activates after repeated eligible failures in window', () => {
     const nowMs = Date.UTC(2026, 2, 10, 8, 0, 0);
     const snapshot = createEmptyResearchSymbolCooldownSnapshot(nowMs);

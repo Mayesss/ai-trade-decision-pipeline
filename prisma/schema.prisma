@@ -1,0 +1,294 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("PRISMA_PG_POSTGRES_URL")
+}
+
+enum ScalpJobKind {
+  EXECUTE_CYCLE    @map("execute_cycle")
+  RESEARCH_TASK    @map("research_task")
+  RESEARCH_AGGREGATE @map("research_aggregate")
+  PROMOTION_SYNC   @map("promotion_sync")
+  GUARDRAIL_CHECK  @map("guardrail_check")
+  HOUSEKEEPING     @map("housekeeping")
+
+  @@map("scalp_job_kind")
+}
+
+enum ScalpJobStatus {
+  PENDING          @map("pending")
+  RUNNING          @map("running")
+  RETRY_WAIT       @map("retry_wait")
+  SUCCEEDED        @map("succeeded")
+  FAILED_PERMANENT @map("failed_permanent")
+  CANCELLED        @map("cancelled")
+
+  @@map("scalp_job_status")
+}
+
+enum ScalpShadowJobOutcome {
+  PROCESSED @map("processed")
+  SKIPPED   @map("skipped")
+
+  @@map("scalp_shadow_job_outcome")
+}
+
+enum ScalpResearchTaskStatus {
+  PENDING          @map("pending")
+  RUNNING          @map("running")
+  RETRY_WAIT       @map("retry_wait")
+  COMPLETED        @map("completed")
+  FAILED_PERMANENT @map("failed_permanent")
+  CANCELLED        @map("cancelled")
+
+  @@map("scalp_research_task_status")
+}
+
+enum ScalpCycleStatus {
+  RUNNING   @map("running")
+  COMPLETED @map("completed")
+  FAILED    @map("failed")
+  STALLED   @map("stalled")
+
+  @@map("scalp_cycle_status")
+}
+
+model ScalpDeployment {
+  deploymentId  String   @id @map("deployment_id")
+  symbol        String
+  strategyId    String   @map("strategy_id")
+  tuneId        String   @map("tune_id")
+  source        String
+  enabled       Boolean  @default(false)
+  configOverride Json    @default(dbgenerated("'{}'::jsonb")) @map("config_override") @db.JsonB
+  promotionGate Json?    @map("promotion_gate") @db.JsonB
+  updatedBy     String?  @map("updated_by")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  sessions       ScalpSession[]
+  executionRuns  ScalpExecutionRun[]
+  tradeLedgerRows ScalpTradeLedger[]
+  researchTasks  ScalpResearchTask[]
+
+  @@unique([symbol, strategyId, tuneId], map: "scalp_deployments_unique_triplet")
+  @@index([enabled], map: "scalp_deployments_enabled_idx")
+  @@map("scalp_deployments")
+}
+
+model ScalpRuntimeSetting {
+  singleton         Boolean  @id @default(true)
+  defaultStrategyId String   @map("default_strategy_id")
+  envEnabled        Boolean  @default(true) @map("env_enabled")
+  updatedBy         String?  @map("updated_by")
+  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@map("scalp_runtime_settings")
+}
+
+model ScalpStrategyOverride {
+  strategyId String   @id @map("strategy_id")
+  kvEnabled  Boolean? @map("kv_enabled")
+  updatedBy  String?  @map("updated_by")
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@map("scalp_strategy_overrides")
+}
+
+model ScalpSession {
+  deploymentId    String   @map("deployment_id")
+  dayKey          DateTime @map("day_key") @db.Date
+  stateJson       Json     @map("state_json") @db.JsonB
+  lastReasonCodes String[] @default([]) @map("last_reason_codes")
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  deployment ScalpDeployment @relation(fields: [deploymentId], references: [deploymentId], onDelete: Cascade)
+
+  @@id([deploymentId, dayKey])
+  @@index([updatedAt], map: "scalp_sessions_updated_at_idx")
+  @@map("scalp_sessions")
+}
+
+model ScalpExecutionRun {
+  id              BigInt   @id @default(autoincrement())
+  deploymentId    String   @map("deployment_id")
+  scheduledMinute DateTime @map("scheduled_minute") @db.Timestamptz(3)
+  status          String
+  reasonCodes     String[] @default([]) @map("reason_codes")
+  errorCode       String?  @map("error_code")
+  errorMessage    String?  @map("error_message")
+  startedAt       DateTime @default(now()) @map("started_at") @db.Timestamptz(3)
+  finishedAt      DateTime? @map("finished_at") @db.Timestamptz(3)
+
+  deployment ScalpDeployment @relation(fields: [deploymentId], references: [deploymentId], onDelete: Cascade)
+
+  @@unique([deploymentId, scheduledMinute], map: "scalp_execution_runs_unique_deployment_minute")
+  @@index([scheduledMinute], map: "scalp_execution_runs_scheduled_idx")
+  @@map("scalp_execution_runs")
+}
+
+model ScalpJournal {
+  id          String   @id @db.Uuid
+  ts          DateTime @db.Timestamptz(3)
+  deploymentId String? @map("deployment_id")
+  symbol      String?
+  dayKey      DateTime? @map("day_key") @db.Date
+  level       String
+  type        String
+  reasonCodes String[] @default([]) @map("reason_codes")
+  payload     Json     @default(dbgenerated("'{}'::jsonb")) @db.JsonB
+
+  @@index([ts(sort: Desc)], map: "scalp_journal_ts_idx")
+  @@index([deploymentId, ts(sort: Desc)], map: "scalp_journal_deployment_idx")
+  @@map("scalp_journal")
+}
+
+model ScalpTradeLedger {
+  id           String   @id @db.Uuid
+  exitAt       DateTime @map("exit_at") @db.Timestamptz(3)
+  deploymentId String   @map("deployment_id")
+  symbol       String
+  strategyId   String   @map("strategy_id")
+  tuneId       String   @map("tune_id")
+  side         String?
+  dryRun       Boolean  @default(false) @map("dry_run")
+  rMultiple    Decimal  @map("r_multiple") @db.Decimal(20, 8)
+  reasonCodes  String[] @default([]) @map("reason_codes")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  deployment ScalpDeployment @relation(fields: [deploymentId], references: [deploymentId])
+
+  @@index([exitAt(sort: Desc)], map: "scalp_trade_ledger_exit_idx")
+  @@index([deploymentId, exitAt(sort: Desc)], map: "scalp_trade_ledger_deployment_idx")
+  @@map("scalp_trade_ledger")
+}
+
+model ScalpResearchCycle {
+  cycleId          String   @id @map("cycle_id")
+  status           ScalpCycleStatus
+  paramsJson       Json     @map("params_json") @db.JsonB
+  latestSummaryJson Json?   @map("latest_summary_json") @db.JsonB
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+  completedAt      DateTime? @map("completed_at") @db.Timestamptz(3)
+
+  tasks ScalpResearchTask[]
+
+  @@index([status, updatedAt(sort: Desc)], map: "scalp_research_cycles_status_updated_idx")
+  @@map("scalp_research_cycles")
+}
+
+model ScalpResearchTask {
+  taskId         String                  @id @map("task_id")
+  cycleId        String                  @map("cycle_id")
+  deploymentId   String                  @map("deployment_id")
+  symbol         String
+  strategyId     String                  @map("strategy_id")
+  tuneId         String                  @map("tune_id")
+  windowFrom     DateTime                @map("window_from") @db.Timestamptz(3)
+  windowTo       DateTime                @map("window_to") @db.Timestamptz(3)
+  status         ScalpResearchTaskStatus @default(PENDING)
+  attempts       Int                     @default(0)
+  maxAttempts    Int                     @default(2) @map("max_attempts")
+  nextEligibleAt DateTime                @default(now()) @map("next_eligible_at") @db.Timestamptz(3)
+  workerId       String?                 @map("worker_id")
+  startedAt      DateTime?               @map("started_at") @db.Timestamptz(3)
+  finishedAt     DateTime?               @map("finished_at") @db.Timestamptz(3)
+  errorCode      String?                 @map("error_code")
+  errorMessage   String?                 @map("error_message")
+  resultJson     Json?                   @map("result_json") @db.JsonB
+  priority       Int                     @default(100)
+  createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime                @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  cycle      ScalpResearchCycle @relation(fields: [cycleId], references: [cycleId], onDelete: Cascade)
+  deployment ScalpDeployment    @relation(fields: [deploymentId], references: [deploymentId])
+  attemptsRows ScalpResearchAttempt[]
+
+  @@unique([cycleId, deploymentId, windowFrom, windowTo], map: "scalp_research_tasks_unique_window")
+  @@index([status, nextEligibleAt, priority, createdAt], map: "scalp_research_tasks_claim_idx")
+  @@index([cycleId, status], map: "scalp_research_tasks_cycle_status_idx")
+  @@map("scalp_research_tasks")
+}
+
+model ScalpResearchAttempt {
+  id          BigInt   @id @default(autoincrement())
+  taskId      String   @map("task_id")
+  attemptNo   Int      @map("attempt_no")
+  status      String
+  errorCode   String?  @map("error_code")
+  errorMessage String? @map("error_message")
+  metricsJson Json?    @map("metrics_json") @db.JsonB
+  startedAt   DateTime @default(now()) @map("started_at") @db.Timestamptz(3)
+  finishedAt  DateTime? @map("finished_at") @db.Timestamptz(3)
+
+  task ScalpResearchTask @relation(fields: [taskId], references: [taskId], onDelete: Cascade)
+
+  @@unique([taskId, attemptNo], map: "scalp_research_attempts_unique_task_attempt")
+  @@index([taskId, startedAt(sort: Desc)], map: "scalp_research_attempts_task_started_idx")
+  @@map("scalp_research_attempts")
+}
+
+model ScalpSymbolCooldown {
+  symbol           String   @id
+  failureCount     Int      @default(0) @map("failure_count")
+  windowStartedAt  DateTime? @map("window_started_at") @db.Timestamptz(3)
+  blockedUntil     DateTime? @map("blocked_until") @db.Timestamptz(3)
+  lastErrorCode    String?  @map("last_error_code")
+  lastErrorMessage String?  @map("last_error_message")
+  cycleId          String?  @map("cycle_id")
+  updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@index([blockedUntil], map: "scalp_symbol_cooldowns_blocked_idx")
+  @@map("scalp_symbol_cooldowns")
+}
+
+model ScalpJob {
+  id           BigInt         @id @default(autoincrement())
+  kind         ScalpJobKind
+  dedupeKey    String         @map("dedupe_key")
+  payload      Json           @default(dbgenerated("'{}'::jsonb")) @db.JsonB
+  status       ScalpJobStatus @default(PENDING)
+  attempts     Int            @default(0)
+  maxAttempts  Int            @default(5) @map("max_attempts")
+  scheduledFor DateTime       @default(now()) @map("scheduled_for") @db.Timestamptz(3)
+  nextRunAt    DateTime       @default(now()) @map("next_run_at") @db.Timestamptz(3)
+  lockedBy     String?        @map("locked_by")
+  lockedAt     DateTime?      @map("locked_at") @db.Timestamptz(3)
+  lastError    String?        @map("last_error")
+  createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime       @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([kind, dedupeKey], map: "scalp_jobs_unique_kind_dedupe")
+  @@index([status, nextRunAt, scheduledFor], map: "scalp_jobs_claim_idx")
+  @@map("scalp_jobs")
+}
+
+model ScalpShadowJobRun {
+  id                BigInt                @id @default(autoincrement())
+  jobId             BigInt                @map("job_id")
+  kind              ScalpJobKind
+  dedupeKey         String                @map("dedupe_key")
+  workerId          String                @map("worker_id")
+  attemptNo         Int                   @map("attempt_no")
+  outcome           ScalpShadowJobOutcome
+  success           Boolean
+  completionApplied Boolean               @default(true) @map("completion_applied")
+  errorCode         String?               @map("error_code")
+  errorMessage      String?               @map("error_message")
+  claimedAt         DateTime              @map("claimed_at") @db.Timestamptz(3)
+  finishedAt        DateTime              @map("finished_at") @db.Timestamptz(3)
+  durationMs        Int                   @map("duration_ms")
+  createdAt         DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([jobId, attemptNo], map: "scalp_shadow_job_runs_unique_job_attempt")
+  @@index([jobId, createdAt(sort: Desc)], map: "scalp_shadow_job_runs_job_created_idx")
+  @@index([kind, createdAt(sort: Desc)], map: "scalp_shadow_job_runs_kind_created_idx")
+  @@index([success, createdAt(sort: Desc)], map: "scalp_shadow_job_runs_success_created_idx")
+  @@index([workerId, createdAt(sort: Desc)], map: "scalp_shadow_job_runs_worker_created_idx")
+  @@index([createdAt(sort: Desc)], map: "scalp_shadow_job_runs_created_idx")
+  @@map("scalp_shadow_job_runs")
+}

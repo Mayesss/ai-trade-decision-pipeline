@@ -1,3 +1,5 @@
+import { Prisma } from '@prisma/client';
+
 import {
     loadScalpDeploymentRegistry,
     upsertScalpDeploymentRegistryEntriesBulk,
@@ -7,9 +9,9 @@ import {
     type ScalpDeploymentRegistryWriteParams,
     type ScalpForwardValidationMetrics,
 } from './deploymentRegistry';
-import { kvGetJson, kvSetJson } from '../kv';
 import { loadScalpCandleHistory } from './candleHistory';
 import { pipSizeForScalpSymbol } from './marketData';
+import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 import { runScalpReplay } from './replay/harness';
 import { buildScalpReplayRuntimeFromDeployment } from './replay/runtimeConfig';
 import {
@@ -23,7 +25,7 @@ import {
 
 const DAY_MS = 24 * 60 * 60_000;
 const WEEK_MS = 7 * DAY_MS;
-const PROMOTION_SYNC_STATE_KEY = 'scalp:research:promotion-sync:last:v1';
+const PROMOTION_SYNC_STATE_DEDUPE_KEY = 'state:latest:v1';
 
 type CandleRow = [number, number, number, number, number, number];
 
@@ -598,6 +600,89 @@ type PromotionSyncStateSnapshot = {
     materializationCreated: number;
 };
 
+function asRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return value as Record<string, unknown>;
+}
+
+function normalizePromotionSyncState(raw: unknown): PromotionSyncStateSnapshot | null {
+    const row = asRecord(raw);
+    const signature = String(row.signature || '').trim();
+    const cycleId = String(row.cycleId || '').trim();
+    const syncedAtMs = Number(row.syncedAtMs);
+    if (!signature || !cycleId || !Number.isFinite(syncedAtMs) || syncedAtMs <= 0) return null;
+    return {
+        version: 1,
+        signature,
+        cycleId,
+        syncedAtMs: Math.floor(syncedAtMs),
+        deploymentsConsidered: Math.max(0, Math.floor(Number(row.deploymentsConsidered) || 0)),
+        deploymentsMatched: Math.max(0, Math.floor(Number(row.deploymentsMatched) || 0)),
+        deploymentsUpdated: Math.max(0, Math.floor(Number(row.deploymentsUpdated) || 0)),
+        materializationCreated: Math.max(0, Math.floor(Number(row.materializationCreated) || 0)),
+    };
+}
+
+async function loadPromotionSyncStateFromPg(): Promise<PromotionSyncStateSnapshot | null> {
+    if (!isScalpPgConfigured()) return null;
+    try {
+        const db = scalpPrisma();
+        const rows = await db.$queryRaw<Array<{ payload: unknown }>>(Prisma.sql`
+            SELECT payload
+            FROM scalp_jobs
+            WHERE kind = 'promotion_sync'::scalp_job_kind
+              AND dedupe_key = ${PROMOTION_SYNC_STATE_DEDUPE_KEY}
+            LIMIT 1;
+        `);
+        return normalizePromotionSyncState(rows[0]?.payload);
+    } catch {
+        return null;
+    }
+}
+
+async function savePromotionSyncStateToPg(snapshot: PromotionSyncStateSnapshot): Promise<void> {
+    if (!isScalpPgConfigured()) return;
+    const db = scalpPrisma();
+    await db.$executeRaw(
+        Prisma.sql`
+            INSERT INTO scalp_jobs(
+                kind,
+                dedupe_key,
+                payload,
+                status,
+                attempts,
+                max_attempts,
+                scheduled_for,
+                next_run_at,
+                last_error
+            )
+            VALUES(
+                'promotion_sync'::scalp_job_kind,
+                ${PROMOTION_SYNC_STATE_DEDUPE_KEY},
+                ${JSON.stringify(snapshot)}::jsonb,
+                'succeeded'::scalp_job_status,
+                1,
+                1,
+                NOW(),
+                NOW(),
+                NULL
+            )
+            ON CONFLICT(kind, dedupe_key)
+            DO UPDATE SET
+                payload = EXCLUDED.payload,
+                status = EXCLUDED.status,
+                attempts = EXCLUDED.attempts,
+                max_attempts = EXCLUDED.max_attempts,
+                scheduled_for = EXCLUDED.scheduled_for,
+                next_run_at = EXCLUDED.next_run_at,
+                locked_by = NULL,
+                locked_at = NULL,
+                last_error = NULL,
+                updated_at = NOW();
+        `,
+    );
+}
+
 function buildPromotionSyncSignature(params: {
     cycle: ScalpResearchCycleSnapshot;
     allowedSources: Set<ScalpDeploymentRegistrySource>;
@@ -788,7 +873,7 @@ export async function syncResearchCyclePromotionGates(
     const preSyncConsidered = deployments.filter((row) => allowedSources.has(row.source)).length;
 
     if (!dryRun) {
-        const lastSync = await kvGetJson<PromotionSyncStateSnapshot>(PROMOTION_SYNC_STATE_KEY);
+        const lastSync = await loadPromotionSyncStateFromPg();
         if (lastSync?.signature === preSyncSignature) {
             return {
                 ok: true,
@@ -1125,7 +1210,7 @@ export async function syncResearchCyclePromotionGates(
             materializeEnabled,
             deployments,
         });
-        await kvSetJson(PROMOTION_SYNC_STATE_KEY, {
+        await savePromotionSyncStateToPg({
             version: 1,
             signature: finalSignature,
             cycleId,

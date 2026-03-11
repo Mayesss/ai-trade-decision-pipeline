@@ -1,10 +1,17 @@
 import crypto from 'node:crypto';
 
-import { kvGetJson, kvMGetJson, kvSetJson } from '../kv';
+import { Prisma } from '@prisma/client';
+
 import type { ScalpStrategyConfigOverride } from './config';
 import { loadScalpCandleHistory } from './candleHistory';
 import { resolveScalpDeployment } from './deployments';
 import { pipSizeForScalpSymbol } from './marketData';
+import { isScalpPgConfigured, scalpPrisma } from './pg/client';
+import {
+    upsertResearchCycleToPg,
+    upsertResearchTasksBulkToPg,
+    upsertSymbolCooldownSnapshotToPg,
+} from './pg/researchMirror';
 import { defaultScalpReplayConfig, runScalpReplay } from './replay/harness';
 import { buildScalpReplayRuntimeFromDeployment } from './replay/runtimeConfig';
 import { buildScalpResearchTuneVariants, resolveScalpResearchTunerPolicy } from './researchTuner';
@@ -16,14 +23,6 @@ import {
 } from './symbolDiscovery';
 
 const RESEARCH_CYCLE_VERSION = 1 as const;
-const RESEARCH_ACTIVE_CYCLE_KEY = 'scalp:research:active-cycle:v1';
-const RESEARCH_CYCLE_KEY_PREFIX = 'scalp:research:cycle:v1';
-const RESEARCH_TASK_KEY_PREFIX = 'scalp:research:task:v1';
-const RESEARCH_AGG_KEY_PREFIX = 'scalp:research:aggregate:v1';
-const RESEARCH_CLAIM_CURSOR_KEY_PREFIX = 'scalp:research:claim-cursor:v1';
-const RESEARCH_LOCK_KEY_PREFIX = 'scalp:research:lock:v1';
-const RESEARCH_WORKER_HEARTBEAT_KEY = 'scalp:research:worker-heartbeat:v1';
-const RESEARCH_SYMBOL_COOLDOWN_KEY = 'scalp:research:symbol-cooldown:v1';
 
 const DEFAULT_LOOKBACK_DAYS = 90;
 const DEFAULT_CHUNK_DAYS = 14;
@@ -48,32 +47,14 @@ const RESEARCH_TASK_TIMEOUT_MS = Math.max(
     1_000,
     Math.min(10 * 60_000, Math.floor(Number(process.env.SCALP_RESEARCH_TASK_TIMEOUT_MS) || DEFAULT_TASK_TIMEOUT_MS)),
 );
-const RESEARCH_KV_HTTP_TIMEOUT_MS = Math.max(
-    1000,
-    Math.min(60_000, Math.floor(Number(process.env.SCALP_RESEARCH_KV_HTTP_TIMEOUT_MS) || 10_000)),
-);
-const RESEARCH_KV_MAX_RETRIES = Math.max(
-    0,
-    Math.min(8, Math.floor(Number(process.env.SCALP_RESEARCH_KV_MAX_RETRIES) || 3)),
-);
-const RESEARCH_KV_RETRY_BASE_MS = Math.max(
-    25,
-    Math.min(5_000, Math.floor(Number(process.env.SCALP_RESEARCH_KV_RETRY_BASE_MS) || 200)),
-);
-const RESEARCH_KV_RETRY_MAX_DELAY_MS = Math.max(
-    50,
-    Math.min(15_000, Math.floor(Number(process.env.SCALP_RESEARCH_KV_RETRY_MAX_DELAY_MS) || 2_000)),
-);
 const RESEARCH_CLAIM_SCAN_BATCH_SIZE = Math.max(
     8,
     Math.min(512, Math.floor(Number(process.env.SCALP_RESEARCH_CLAIM_SCAN_BATCH_SIZE) || DEFAULT_CLAIM_SCAN_BATCH_SIZE)),
 );
 
-const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
-const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
-
+let pgWorkerHeartbeatSnapshot: ScalpResearchWorkerHeartbeatSnapshot | null = null;
 export type ScalpResearchCycleStatus = 'running' | 'completed' | 'failed' | 'stalled';
-export type ScalpResearchTaskStatus = 'pending' | 'running' | 'completed' | 'failed';
+export type ScalpResearchTaskStatus = 'pending' | 'retry_wait' | 'running' | 'completed' | 'failed';
 
 export interface ScalpResearchCycleParams {
     symbols: string[];
@@ -276,6 +257,7 @@ export type WorkerNoClaimScanSummary = {
     lockMisses: number;
     missingTask: number;
     pending: number;
+    retryWait: number;
     runningFresh: number;
     runningStale: number;
     runningMissingStartedAt: number;
@@ -383,6 +365,30 @@ function dedupe<T>(rows: T[]): T[] {
     return Array.from(new Set(rows));
 }
 
+function normalizeResearchCycleParams(raw: unknown): ScalpResearchCycleParams {
+    const row = isRecord(raw) ? raw : {};
+    return {
+        symbols: Array.isArray(row.symbols)
+            ? dedupe(
+                  row.symbols
+                      .map((item) => normalizeSymbol(item))
+                      .filter((item) => Boolean(item)),
+              )
+            : [],
+        lookbackDays: toPositiveInt(row.lookbackDays, DEFAULT_LOOKBACK_DAYS),
+        chunkDays: toPositiveInt(row.chunkDays, DEFAULT_CHUNK_DAYS),
+        minCandlesPerTask: toPositiveInt(row.minCandlesPerTask, DEFAULT_MIN_CANDLES_PER_TASK),
+        maxTasks: toPositiveInt(row.maxTasks, DEFAULT_MAX_TASKS),
+        maxAttempts: toPositiveInt(row.maxAttempts, DEFAULT_MAX_ATTEMPTS),
+        runningStaleAfterMs: toPositiveInt(row.runningStaleAfterMs, DEFAULT_RUNNING_STALE_AFTER_MS),
+        tunerEnabled: row.tunerEnabled === undefined ? undefined : toBool(row.tunerEnabled, true),
+        maxTuneVariantsPerStrategy:
+            row.maxTuneVariantsPerStrategy === undefined
+                ? undefined
+                : toPositiveInt(row.maxTuneVariantsPerStrategy, resolveScalpResearchTunerPolicy().maxVariantsPerStrategy),
+    };
+}
+
 export function resolveResearchSymbolCooldownConfig(): ResearchSymbolCooldownConfig {
     return {
         enabled: toBool(process.env.SCALP_RESEARCH_SYMBOL_COOLDOWN_ENABLED, true),
@@ -483,6 +489,7 @@ function normalizeWorkerNoClaimScanSummary(raw: unknown): WorkerNoClaimScanSumma
         lockMisses: toNonNegativeInt(raw.lockMisses, 0),
         missingTask: toNonNegativeInt(raw.missingTask, 0),
         pending: toNonNegativeInt(raw.pending, 0),
+        retryWait: toNonNegativeInt(raw.retryWait, 0),
         runningFresh: toNonNegativeInt(raw.runningFresh, 0),
         runningStale: toNonNegativeInt(raw.runningStale, 0),
         runningMissingStartedAt: toNonNegativeInt(raw.runningMissingStartedAt, 0),
@@ -610,12 +617,14 @@ export function evaluateResearchTaskClaimability(params: {
         Math.max(0, Math.floor(Number(params.nowMs) || 0)) - startedAtMs >= Math.max(1, params.runningStaleAfterMs);
     const maxAttemptsReached = attempts >= maxAttempts;
     const shouldMarkFailedForAttempts =
-        (params.status === 'pending' || params.status === 'running') &&
+        (params.status === 'pending' || params.status === 'retry_wait' || params.status === 'running') &&
         maxAttemptsReached &&
-        (params.status === 'pending' || runningStale || runningMissingStartedAt);
+        (params.status === 'pending' || params.status === 'retry_wait' || runningStale || runningMissingStartedAt);
     const claimable =
         !maxAttemptsReached &&
-        (params.status === 'pending' || (params.status === 'running' && (runningStale || runningMissingStartedAt)));
+        (params.status === 'pending' ||
+            params.status === 'retry_wait' ||
+            (params.status === 'running' && (runningStale || runningMissingStartedAt)));
     return {
         claimable,
         runningStale,
@@ -731,151 +740,105 @@ function compactResearchSymbolCooldownSnapshot(snapshot: ResearchSymbolCooldownS
 }
 
 async function loadResearchSymbolCooldownSnapshot(): Promise<ResearchSymbolCooldownSnapshot> {
-    const raw = await kvGetJson<unknown>(RESEARCH_SYMBOL_COOLDOWN_KEY);
-    return normalizeResearchSymbolCooldownSnapshot(raw);
+    if (!isScalpPgConfigured()) {
+        return normalizeResearchSymbolCooldownSnapshot(null);
+    }
+    try {
+        const db = scalpPrisma();
+        const rows = await db.$queryRaw<
+            Array<{
+                symbol: string;
+                failureCount: number;
+                windowStartedAt: Date | null;
+                blockedUntil: Date | null;
+                lastFailureCode: string | null;
+                lastFailureMessage: string | null;
+                cycleId: string | null;
+                updatedAt: Date;
+            }>
+        >(Prisma.sql`
+            SELECT
+                symbol,
+                failure_count AS "failureCount",
+                window_started_at AS "windowStartedAt",
+                blocked_until AS "blockedUntil",
+                last_error_code AS "lastFailureCode",
+                last_error_message AS "lastFailureMessage",
+                cycle_id AS "cycleId",
+                updated_at AS "updatedAt"
+            FROM scalp_symbol_cooldowns;
+        `);
+        const symbols: Record<string, ResearchSymbolCooldownEntry> = {};
+        let updatedAtMs = 0;
+        for (const row of rows) {
+            symbols[row.symbol] = {
+                failureCount: toNonNegativeInt(row.failureCount, 0),
+                windowStartedAtMs: toNonNegativeInt(row.windowStartedAt instanceof Date ? row.windowStartedAt.getTime() : 0, 0),
+                blockedUntilMs: toNonNegativeInt(row.blockedUntil instanceof Date ? row.blockedUntil.getTime() : 0, 0),
+                lastFailureCode: toOptionalText(row.lastFailureCode, 80),
+                lastFailureMessage: toOptionalText(row.lastFailureMessage, 300),
+                cycleId: toOptionalText(row.cycleId, 120),
+                updatedAtMs: toNonNegativeInt(row.updatedAt instanceof Date ? row.updatedAt.getTime() : 0, 0),
+            };
+            updatedAtMs = Math.max(updatedAtMs, symbols[row.symbol].updatedAtMs);
+        }
+        return normalizeResearchSymbolCooldownSnapshot({
+            version: 1,
+            updatedAtMs,
+            symbols,
+        });
+    } catch {
+        return normalizeResearchSymbolCooldownSnapshot(null);
+    }
 }
 
 async function saveResearchSymbolCooldownSnapshot(snapshot: ResearchSymbolCooldownSnapshot): Promise<void> {
+    if (!isScalpPgConfigured()) return;
     const nowMs = Date.now();
     const normalized = normalizeResearchSymbolCooldownSnapshot(snapshot);
     normalized.updatedAtMs = nowMs;
     compactResearchSymbolCooldownSnapshot(normalized, nowMs);
-    await kvSetJson(RESEARCH_SYMBOL_COOLDOWN_KEY, normalized);
-}
-
-function cycleKey(cycleId: string): string {
-    return `${RESEARCH_CYCLE_KEY_PREFIX}:${cycleId}`;
-}
-
-function taskKey(cycleId: string, taskId: string): string {
-    return `${RESEARCH_TASK_KEY_PREFIX}:${cycleId}:${taskId}`;
-}
-
-function aggregateKey(cycleId: string): string {
-    return `${RESEARCH_AGG_KEY_PREFIX}:${cycleId}`;
-}
-
-function claimCursorKey(cycleId: string): string {
-    return `${RESEARCH_CLAIM_CURSOR_KEY_PREFIX}:${cycleId}`;
-}
-
-function lockKey(name: string): string {
-    return `${RESEARCH_LOCK_KEY_PREFIX}:${name}`;
-}
-
-function sleepMs(ms: number): Promise<void> {
-    return new Promise((resolve) => {
-        setTimeout(resolve, Math.max(0, Math.floor(ms)));
-    });
-}
-
-function retryDelayMs(attempt: number): number {
-    const exp = Math.min(8, Math.max(0, attempt));
-    const base = Math.min(RESEARCH_KV_RETRY_MAX_DELAY_MS, RESEARCH_KV_RETRY_BASE_MS * 2 ** exp);
-    const jitter = Math.floor(Math.random() * Math.max(1, Math.floor(base / 4)));
-    return Math.min(RESEARCH_KV_RETRY_MAX_DELAY_MS, base + jitter);
-}
-
-function isRetryableHttpStatus(status: number): boolean {
-    return status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599);
-}
-
-function isRetryableNetworkError(err: unknown): boolean {
-    const text = String((err as any)?.message || err || '')
-        .trim()
-        .toLowerCase();
-    const name = String((err as any)?.name || '')
-        .trim()
-        .toLowerCase();
-    if (!text && !name) return false;
-    if (name === 'aborterror') return true;
-    return (
-        text.includes('fetch failed') ||
-        text.includes('network') ||
-        text.includes('timeout') ||
-        text.includes('timed out') ||
-        text.includes('econnreset') ||
-        text.includes('enotfound') ||
-        text.includes('eai_again') ||
-        text.includes('socket') ||
-        text.includes('tls')
-    );
-}
-
-async function kvRawCommand(command: string, ...args: Array<string | number>): Promise<unknown> {
-    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) return null;
-    const encodedArgs = args
-        .map((arg) => encodeURIComponent(typeof arg === 'string' ? arg : String(arg)))
-        .join('/');
-    const url = `${upstash_payasyougo_KV_REST_API_URL}/${command}${encodedArgs ? `/${encodedArgs}` : ''}`;
-    for (let attempt = 0; attempt <= RESEARCH_KV_MAX_RETRIES; attempt += 1) {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), RESEARCH_KV_HTTP_TIMEOUT_MS);
-        try {
-            const res = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    Authorization: `Bearer ${upstash_payasyougo_KV_REST_API_TOKEN}`,
-                },
-                signal: controller.signal,
-            });
-            if (!res.ok) {
-                if (attempt < RESEARCH_KV_MAX_RETRIES && isRetryableHttpStatus(res.status)) {
-                    await sleepMs(retryDelayMs(attempt));
-                    continue;
-                }
-                return null;
-            }
-            const data = await res.json().catch(() => null);
-            if (!data || typeof data !== 'object') return null;
-            return (data as any).result ?? null;
-        } catch (err) {
-            if (attempt < RESEARCH_KV_MAX_RETRIES && isRetryableNetworkError(err)) {
-                await sleepMs(retryDelayMs(attempt));
-                continue;
-            }
-            throw err;
-        } finally {
-            clearTimeout(timeoutId);
-        }
-    }
-    return null;
-}
-
-async function scanKeysByPrefix(prefix: string, maxKeys: number): Promise<string[]> {
-    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) return [];
-    const hardCap = Math.max(1, Math.min(20_000, Math.floor(maxKeys)));
-    let cursor = '0';
-    const keys: string[] = [];
-
-    for (let i = 0; i < 200; i += 1) {
-        const res = await kvRawCommand('SCAN', cursor, 'MATCH', `${prefix}*`, 'COUNT', 250);
-        if (!Array.isArray(res) || res.length < 2) break;
-        const nextCursor = String(res[0] ?? '0');
-        const rows = Array.isArray(res[1]) ? res[1] : [];
-        for (const row of rows) {
-            const key = String(row || '').trim();
-            if (!key) continue;
-            keys.push(key);
-            if (keys.length >= hardCap) {
-                return Array.from(new Set(keys));
-            }
-        }
-        if (nextCursor === '0') break;
-        cursor = nextCursor;
-    }
-    return Array.from(new Set(keys));
+    const rows = Object.entries(normalized.symbols).map(([symbol, row]) => ({
+        symbol,
+        failureCount: toNonNegativeInt(row.failureCount, 0),
+        windowStartedAtMs: toNonNegativeInt(row.windowStartedAtMs, 0),
+        blockedUntilMs: toNonNegativeInt(row.blockedUntilMs, 0),
+        lastFailureCode: toOptionalText(row.lastFailureCode, 80),
+        lastFailureMessage: toOptionalText(row.lastFailureMessage, 300),
+        cycleId: toOptionalText(row.cycleId, 120),
+        updatedAtMs: toNonNegativeInt(row.updatedAtMs, normalized.updatedAtMs),
+    }));
+    if (!rows.length) return;
+    await upsertSymbolCooldownSnapshotToPg(rows);
 }
 
 export async function listResearchCycleIds(maxKeys = 200): Promise<string[]> {
-    const prefix = `${RESEARCH_CYCLE_KEY_PREFIX}:`;
-    const keys = await scanKeysByPrefix(prefix, maxKeys);
-    return keys
-        .map((key) => key.slice(prefix.length).trim())
-        .filter((cycleId) => Boolean(cycleId));
+    if (!isScalpPgConfigured()) return [];
+    const db = scalpPrisma();
+    const limit = Math.max(1, Math.min(5000, Math.floor(Number(maxKeys) || 200)));
+    const rows = await db.$queryRaw<Array<{ cycleId: string }>>(Prisma.sql`
+        SELECT cycle_id AS "cycleId"
+        FROM scalp_research_cycles
+        ORDER BY created_at DESC
+        LIMIT ${limit};
+    `);
+    return rows.map((row) => String(row.cycleId || '').trim()).filter((row) => Boolean(row));
 }
 
 export async function loadLatestCompletedResearchCycleId(maxKeys = 200): Promise<string | null> {
+    if (isScalpPgConfigured()) {
+        const db = scalpPrisma();
+        const rows = await db.$queryRaw<Array<{ cycleId: string }>>(Prisma.sql`
+            SELECT cycle_id AS "cycleId"
+            FROM scalp_research_cycles
+            WHERE status = 'completed'
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT 1;
+        `);
+        const cycleId = String(rows[0]?.cycleId || '').trim();
+        if (cycleId) return cycleId;
+    }
+    if (!isScalpPgConfigured()) return null;
     const cycleIds = await listResearchCycleIds(maxKeys);
     let best: { cycleId: string; updatedAtMs: number } | null = null;
 
@@ -892,19 +855,15 @@ export async function loadLatestCompletedResearchCycleId(maxKeys = 200): Promise
 }
 
 async function tryAcquireLock(name: string, token: string, ttlSeconds: number): Promise<boolean> {
-    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) return true;
-    const key = lockKey(name);
-    const ttl = Math.max(10, Math.floor(ttlSeconds));
-    const out = await kvRawCommand('SET', key, token, 'NX', 'EX', ttl);
-    return String(out || '').toUpperCase() === 'OK';
+    void name;
+    void token;
+    void ttlSeconds;
+    return true;
 }
 
 async function releaseLock(name: string, token: string): Promise<void> {
-    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) return;
-    const key = lockKey(name);
-    const current = await kvRawCommand('GET', key);
-    if (String(current || '') !== token) return;
-    await kvRawCommand('DEL', key);
+    void name;
+    void token;
 }
 
 function newToken(prefix: string): string {
@@ -1022,51 +981,316 @@ export function buildResearchCycleTasks(params: {
 }
 
 async function saveCycle(cycle: ScalpResearchCycleSnapshot): Promise<void> {
-    await kvSetJson(cycleKey(cycle.cycleId), cycle);
+    if (!isScalpPgConfigured()) return;
+    await upsertResearchCycleToPg({
+        cycleId: cycle.cycleId,
+        status: cycle.status,
+        paramsJson: {
+            ...((cycle.params as unknown as Record<string, unknown>) || {}),
+            symbols: cycle.symbols,
+            startedBy: cycle.startedBy,
+            dryRun: cycle.dryRun,
+            sourceUniverseGeneratedAt: cycle.sourceUniverseGeneratedAt,
+        },
+        latestSummaryJson: cycle.latestSummary as unknown as Record<string, unknown> | null,
+        createdAtMs: cycle.createdAtMs,
+        updatedAtMs: cycle.updatedAtMs,
+    });
 }
 
-async function saveTask(task: ScalpResearchTask): Promise<void> {
-    await kvSetJson(taskKey(task.cycleId, task.taskId), task);
+function toPgTaskResultPayload(task: ScalpResearchTask): Record<string, unknown> | null {
+    const payload: Record<string, unknown> = {};
+    if (task.configOverride && isRecord(task.configOverride)) {
+        payload.configOverride = task.configOverride;
+    }
+    if (task.result && isRecord(task.result)) {
+        payload.metrics = task.result;
+    }
+    return Object.keys(payload).length > 0 ? payload : null;
+}
+
+function toPgResearchTaskRow(task: ScalpResearchTask, maxAttempts: number) {
+    return {
+        taskId: task.taskId,
+        cycleId: task.cycleId,
+        deploymentId: task.deploymentId,
+        symbol: task.symbol,
+        strategyId: task.strategyId,
+        tuneId: task.tuneId,
+        windowFromTs: task.windowFromTs,
+        windowToTs: task.windowToTs,
+        status: task.status,
+        attempts: task.attempts,
+        maxAttempts: Math.max(1, Math.floor(Number(maxAttempts) || DEFAULT_MAX_ATTEMPTS)),
+        workerId: task.workerId,
+        startedAtMs: task.startedAtMs,
+        finishedAtMs: task.finishedAtMs,
+        errorCode: task.errorCode,
+        errorMessage: task.errorMessage,
+        result: toPgTaskResultPayload(task),
+        createdAtMs: task.createdAtMs,
+        updatedAtMs: task.updatedAtMs,
+    };
+}
+
+async function saveTask(
+    task: ScalpResearchTask,
+    opts: {
+        skipPgMirror?: boolean;
+        maxAttempts?: number;
+    } = {},
+): Promise<void> {
+    if (!isScalpPgConfigured()) return;
+    if (opts.skipPgMirror) return;
+    await upsertResearchTasksBulkToPg([toPgResearchTaskRow(task, Number(opts.maxAttempts) || DEFAULT_MAX_ATTEMPTS)]);
 }
 
 async function saveResearchWorkerHeartbeat(snapshot: ScalpResearchWorkerHeartbeatSnapshot): Promise<void> {
-    await kvSetJson(RESEARCH_WORKER_HEARTBEAT_KEY, snapshot);
+    pgWorkerHeartbeatSnapshot = snapshot;
+}
+
+type PgResearchTaskQueryRow = {
+    taskId: string;
+    cycleId: string;
+    deploymentId: string;
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    windowFrom: Date;
+    windowTo: Date;
+    status: string;
+    attempts: number;
+    maxAttempts: number;
+    workerId: string | null;
+    startedAt: Date | null;
+    finishedAt: Date | null;
+    errorCode: string | null;
+    errorMessage: string | null;
+    resultJson: unknown;
+    priority: number;
+    createdAt: Date;
+    updatedAt: Date;
+};
+
+function mapPgResearchTaskStatusToLocal(status: unknown, errorCode: unknown): ScalpResearchTaskStatus {
+    const normalized = String(status || '')
+        .trim()
+        .toLowerCase();
+    if (normalized === 'pending') return 'pending';
+    if (normalized === 'running') return 'running';
+    if (normalized === 'completed') return 'completed';
+    if (normalized === 'retry_wait') {
+        const code = String(errorCode || '')
+            .trim()
+            .toLowerCase();
+        return code && code !== 'symbol_cooldown_active' ? 'failed' : 'retry_wait';
+    }
+    if (normalized === 'failed_permanent' || normalized === 'cancelled') return 'failed';
+    return 'failed';
+}
+
+function parsePgTaskPayload(
+    raw: unknown,
+): { configOverride: ScalpStrategyConfigOverride | null; result: ScalpResearchTaskResult | null } {
+    if (!isRecord(raw)) return { configOverride: null, result: null };
+    const wrappedMetrics = isRecord(raw.metrics) ? (raw.metrics as unknown as ScalpResearchTaskResult) : null;
+    const wrappedConfig = isRecord(raw.configOverride)
+        ? (raw.configOverride as unknown as ScalpStrategyConfigOverride)
+        : null;
+    if (wrappedMetrics || wrappedConfig) {
+        return {
+            configOverride: wrappedConfig,
+            result: wrappedMetrics,
+        };
+    }
+    // Legacy rows may store the result object directly.
+    return {
+        configOverride: null,
+        result: raw as unknown as ScalpResearchTaskResult,
+    };
+}
+
+function mapPgRowToResearchTask(row: PgResearchTaskQueryRow): ScalpResearchTask {
+    const payload = parsePgTaskPayload(row.resultJson);
+    return {
+        version: RESEARCH_CYCLE_VERSION,
+        cycleId: row.cycleId,
+        taskId: row.taskId,
+        symbol: row.symbol,
+        strategyId: row.strategyId,
+        tuneId: row.tuneId,
+        deploymentId: row.deploymentId,
+        configOverride: payload.configOverride,
+        windowFromTs: row.windowFrom instanceof Date ? row.windowFrom.getTime() : 0,
+        windowToTs: row.windowTo instanceof Date ? row.windowTo.getTime() : 0,
+        status: mapPgResearchTaskStatusToLocal(row.status, row.errorCode),
+        attempts: Math.max(0, Math.floor(Number(row.attempts) || 0)),
+        createdAtMs: row.createdAt instanceof Date ? row.createdAt.getTime() : 0,
+        updatedAtMs: row.updatedAt instanceof Date ? row.updatedAt.getTime() : 0,
+        workerId: row.workerId || null,
+        startedAtMs: row.startedAt instanceof Date ? row.startedAt.getTime() : null,
+        finishedAtMs: row.finishedAt instanceof Date ? row.finishedAt.getTime() : null,
+        errorCode: row.errorCode || null,
+        errorMessage: row.errorMessage || null,
+        result: payload.result,
+    };
 }
 
 async function loadResearchTasksBatch(cycleId: string, taskIds: string[]): Promise<ScalpResearchTask[]> {
     if (!taskIds.length) return [];
-    const keys = taskIds.map((taskId) => taskKey(cycleId, taskId));
-    const rows = await kvMGetJson<unknown>(keys);
+    if (!isScalpPgConfigured()) return [];
+    const ids = Array.from(
+        new Set(
+            taskIds.map((row) => String(row || '').trim()).filter((row) => Boolean(row)),
+        ),
+    );
+    if (!ids.length) return [];
+    const db = scalpPrisma();
+    const rows = await db.$queryRaw<PgResearchTaskQueryRow[]>(Prisma.sql`
+        SELECT
+            task_id AS "taskId",
+            cycle_id AS "cycleId",
+            deployment_id AS "deploymentId",
+            symbol,
+            strategy_id AS "strategyId",
+            tune_id AS "tuneId",
+            window_from AS "windowFrom",
+            window_to AS "windowTo",
+            status::text AS status,
+            attempts,
+            max_attempts AS "maxAttempts",
+            worker_id AS "workerId",
+            started_at AS "startedAt",
+            finished_at AS "finishedAt",
+            error_code AS "errorCode",
+            error_message AS "errorMessage",
+            result_json AS "resultJson",
+            priority,
+            created_at AS "createdAt",
+            updated_at AS "updatedAt"
+        FROM scalp_research_tasks
+        WHERE cycle_id = ${cycleId}
+          AND task_id IN (${Prisma.join(ids)});
+    `);
+    const byId = new Map(rows.map((row) => [row.taskId, mapPgRowToResearchTask(row)]));
     const out: ScalpResearchTask[] = [];
-    for (const row of rows) {
-        if (!isRecord(row)) continue;
-        out.push(row as unknown as ScalpResearchTask);
+    for (const taskId of taskIds) {
+        const hit = byId.get(taskId);
+        if (hit) out.push(hit);
     }
     return out;
 }
 
 async function loadResearchTasksBatchWithNulls(cycleId: string, taskIds: string[]): Promise<Array<ScalpResearchTask | null>> {
     if (!taskIds.length) return [];
-    const keys = taskIds.map((taskId) => taskKey(cycleId, taskId));
-    const rows = await kvMGetJson<unknown>(keys);
-    const out: Array<ScalpResearchTask | null> = [];
-    for (let i = 0; i < taskIds.length; i += 1) {
-        const row = rows[i];
-        out.push(isRecord(row) ? (row as unknown as ScalpResearchTask) : null);
-    }
-    return out;
+    if (!isScalpPgConfigured()) return taskIds.map(() => null);
+    const ids = Array.from(
+        new Set(
+            taskIds.map((row) => String(row || '').trim()).filter((row) => Boolean(row)),
+        ),
+    );
+    if (!ids.length) return taskIds.map(() => null);
+    const db = scalpPrisma();
+    const rows = await db.$queryRaw<PgResearchTaskQueryRow[]>(Prisma.sql`
+        SELECT
+            task_id AS "taskId",
+            cycle_id AS "cycleId",
+            deployment_id AS "deploymentId",
+            symbol,
+            strategy_id AS "strategyId",
+            tune_id AS "tuneId",
+            window_from AS "windowFrom",
+            window_to AS "windowTo",
+            status::text AS status,
+            attempts,
+            max_attempts AS "maxAttempts",
+            worker_id AS "workerId",
+            started_at AS "startedAt",
+            finished_at AS "finishedAt",
+            error_code AS "errorCode",
+            error_message AS "errorMessage",
+            result_json AS "resultJson",
+            priority,
+            created_at AS "createdAt",
+            updated_at AS "updatedAt"
+        FROM scalp_research_tasks
+        WHERE cycle_id = ${cycleId}
+          AND task_id IN (${Prisma.join(ids)});
+    `);
+    const byId = new Map(rows.map((row) => [row.taskId, mapPgRowToResearchTask(row)]));
+    return taskIds.map((taskId) => byId.get(taskId) || null);
 }
 
 export async function loadResearchCycle(cycleId: string): Promise<ScalpResearchCycleSnapshot | null> {
-    const raw = await kvGetJson<unknown>(cycleKey(cycleId));
-    if (!isRecord(raw)) return null;
-    return raw as unknown as ScalpResearchCycleSnapshot;
+    if (!isScalpPgConfigured()) return null;
+    const db = scalpPrisma();
+    const rows = await db.$queryRaw<
+        Array<{
+            cycleId: string;
+            status: string;
+            paramsJson: unknown;
+            latestSummaryJson: unknown;
+            createdAt: Date;
+            updatedAt: Date;
+        }>
+    >(Prisma.sql`
+        SELECT
+            cycle_id AS "cycleId",
+            status::text AS status,
+            params_json AS "paramsJson",
+            latest_summary_json AS "latestSummaryJson",
+            created_at AS "createdAt",
+            updated_at AS "updatedAt"
+        FROM scalp_research_cycles
+        WHERE cycle_id = ${cycleId}
+        LIMIT 1;
+    `);
+    const row = rows[0];
+    if (!row) return null;
+    const paramsJson = isRecord(row.paramsJson) ? row.paramsJson : {};
+    const latestSummary = isRecord(row.latestSummaryJson)
+        ? (row.latestSummaryJson as unknown as ScalpResearchCycleSummary)
+        : null;
+    const tasks = await loadResearchTasksBatch(
+        row.cycleId,
+        (
+            await db.$queryRaw<Array<{ taskId: string }>>(Prisma.sql`
+                SELECT task_id AS "taskId"
+                FROM scalp_research_tasks
+                WHERE cycle_id = ${row.cycleId}
+                ORDER BY created_at ASC, task_id ASC;
+            `)
+        ).map((taskRow) => taskRow.taskId),
+    );
+    return {
+        version: RESEARCH_CYCLE_VERSION,
+        cycleId: row.cycleId,
+        status: String(row.status || 'running') as ScalpResearchCycleStatus,
+        createdAtMs: row.createdAt instanceof Date ? row.createdAt.getTime() : Date.now(),
+        updatedAtMs: row.updatedAt instanceof Date ? row.updatedAt.getTime() : Date.now(),
+        startedBy: toOptionalText(isRecord(paramsJson) ? paramsJson.startedBy : null, 120),
+        dryRun: Boolean(isRecord(paramsJson) ? paramsJson.dryRun : false),
+        sourceUniverseGeneratedAt: toOptionalText(
+            isRecord(paramsJson) ? paramsJson.sourceUniverseGeneratedAt : null,
+            120,
+        ),
+        params: normalizeResearchCycleParams(paramsJson),
+        symbols: Array.isArray(isRecord(paramsJson) ? paramsJson.symbols : [])
+            ? dedupe(
+                  (paramsJson.symbols as unknown[])
+                      .map((row) => normalizeSymbol(row))
+                      .filter((row) => Boolean(row)),
+              )
+            : [],
+        taskIds: tasks.map((task) => task.taskId),
+        latestSummary,
+    };
 }
 
 export async function loadResearchTask(cycleId: string, taskId: string): Promise<ScalpResearchTask | null> {
-    const raw = await kvGetJson<unknown>(taskKey(cycleId, taskId));
-    if (!isRecord(raw)) return null;
-    return raw as unknown as ScalpResearchTask;
+    if (!isScalpPgConfigured()) return null;
+    const rows = await loadResearchTasksBatch(cycleId, [taskId]);
+    return rows[0] || null;
 }
 
 export async function retryResearchTask(params: {
@@ -1115,7 +1339,7 @@ export async function retryResearchTask(params: {
         if (!task) {
             throw Object.assign(new Error('task_not_found'), { code: 'task_not_found' });
         }
-        if (task.status !== 'failed') {
+        if (task.status !== 'failed' && task.status !== 'retry_wait') {
             throw Object.assign(new Error('task_not_failed'), { code: 'task_not_failed' });
         }
 
@@ -1132,7 +1356,9 @@ export async function retryResearchTask(params: {
             errorMessage: null,
             result: null,
         };
-        await saveTask(nextTask);
+        await saveTask(nextTask, {
+            maxAttempts: cycle.params.maxAttempts,
+        });
         return {
             cycle,
             task: nextTask,
@@ -1143,34 +1369,35 @@ export async function retryResearchTask(params: {
 }
 
 export async function loadActiveResearchCycleId(): Promise<string | null> {
-    const raw = await kvGetJson<{ cycleId?: string }>(RESEARCH_ACTIVE_CYCLE_KEY);
-    const cycleId = String(raw?.cycleId || '').trim();
+    if (!isScalpPgConfigured()) return null;
+    const db = scalpPrisma();
+    const rows = await db.$queryRaw<Array<{ cycleId: string }>>(Prisma.sql`
+        SELECT cycle_id AS "cycleId"
+        FROM scalp_research_cycles
+        WHERE status = 'running'
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 1;
+    `);
+    const cycleId = String(rows[0]?.cycleId || '').trim();
     return cycleId || null;
 }
 
 export async function loadResearchWorkerHeartbeat(): Promise<ScalpResearchWorkerHeartbeatSnapshot | null> {
-    const raw = await kvGetJson<unknown>(RESEARCH_WORKER_HEARTBEAT_KEY);
-    return normalizeResearchWorkerHeartbeat(raw);
+    return normalizeResearchWorkerHeartbeat(pgWorkerHeartbeatSnapshot);
 }
 
 async function setActiveResearchCycleId(cycleId: string | null): Promise<void> {
-    await kvSetJson(RESEARCH_ACTIVE_CYCLE_KEY, {
-        cycleId: cycleId || null,
-        updatedAtMs: Date.now(),
-    });
+    void cycleId;
 }
 
 async function loadClaimCursorIndex(cycleId: string): Promise<number> {
-    const raw = await kvGetJson<{ nextIndex?: unknown }>(claimCursorKey(cycleId));
-    return toNonNegativeInt(raw?.nextIndex, 0);
+    void cycleId;
+    return 0;
 }
 
 async function saveClaimCursorIndex(cycleId: string, nextIndex: number): Promise<void> {
-    await kvSetJson(claimCursorKey(cycleId), {
-        cycleId,
-        nextIndex: toNonNegativeInt(nextIndex, 0),
-        updatedAtMs: Date.now(),
-    });
+    void cycleId;
+    void nextIndex;
 }
 
 export async function startScalpResearchCycle(params: StartResearchCycleParams = {}): Promise<{
@@ -1249,8 +1476,17 @@ export async function startScalpResearchCycle(params: StartResearchCycleParams =
 
         if (!dryRun) {
             await saveCycle(cycle);
-            for (const task of tasks) {
-                await saveTask(task);
+            if (isScalpPgConfigured()) {
+                if (tasks.length > 0) {
+                    await upsertResearchTasksBulkToPg(tasks.map((task) => toPgResearchTaskRow(task, cycleParams.maxAttempts)));
+                }
+            } else {
+                for (const task of tasks) {
+                    await saveTask(task, {
+                        skipPgMirror: true,
+                        maxAttempts: cycleParams.maxAttempts,
+                    });
+                }
             }
             await saveClaimCursorIndex(cycleId, 0);
             await setActiveResearchCycleId(cycleId);
@@ -1438,6 +1674,7 @@ async function claimNextTask(
         lockMisses: 0,
         missingTask: 0,
         pending: 0,
+        retryWait: 0,
         runningFresh: 0,
         runningStale: 0,
         runningMissingStartedAt: 0,
@@ -1482,6 +1719,7 @@ async function claimNextTask(
 
             const nowMs = Date.now();
             if (task.status === 'pending') scanSummary.pending += 1;
+            if (task.status === 'retry_wait') scanSummary.retryWait += 1;
             if (task.status === 'completed') scanSummary.completed += 1;
 
             const claimability = evaluateResearchTaskClaimability({
@@ -1507,7 +1745,17 @@ async function claimNextTask(
             const symbolCooldownActive = opts.symbolCooldownConfig.enabled
                 ? isResearchSymbolCooldownActive(opts.symbolCooldowns, task.symbol, nowMs)
                 : false;
-            const statusCanTransition = task.status === 'pending' || task.status === 'running';
+            const statusCanTransition = task.status === 'pending' || task.status === 'retry_wait' || task.status === 'running';
+            const alreadyCooldownDeferred =
+                task.status === 'retry_wait' &&
+                String(task.errorCode || '')
+                    .trim()
+                    .toLowerCase() ===
+                    'symbol_cooldown_active';
+            if (symbolCooldownActive && alreadyCooldownDeferred) {
+                scanSummary.symbolCooldownBlocked += 1;
+                continue;
+            }
             const shouldTryClaimLock =
                 statusCanTransition &&
                 (symbolCooldownActive || claimability.shouldMarkFailedForAttempts || claimability.claimable);
@@ -1541,23 +1789,29 @@ async function claimNextTask(
             const latestSymbolCooldownActive = opts.symbolCooldownConfig.enabled
                 ? isResearchSymbolCooldownActive(opts.symbolCooldowns, latestTask.symbol, latestNowMs)
                 : false;
-            if (latestSymbolCooldownActive && (latestTask.status === 'pending' || latestTask.status === 'running')) {
+            if (
+                latestSymbolCooldownActive &&
+                (latestTask.status === 'pending' || latestTask.status === 'retry_wait' || latestTask.status === 'running')
+            ) {
                 const blockedUntilMs = toNonNegativeInt(
                     opts.symbolCooldowns.symbols[normalizeSymbol(latestTask.symbol)]?.blockedUntilMs,
                     0,
                 );
                 const blockedTask: ScalpResearchTask = {
                     ...latestTask,
-                    status: 'failed',
-                    attempts: Math.max(latestTask.attempts, cycle.params.maxAttempts),
+                    status: 'retry_wait',
+                    attempts: Math.max(0, latestTask.attempts),
+                    workerId: null,
+                    startedAtMs: null,
                     updatedAtMs: latestNowMs,
                     finishedAtMs: latestNowMs,
                     errorCode: 'symbol_cooldown_active',
                     errorMessage: `symbol_cooldown_active_until:${new Date(blockedUntilMs).toISOString()}`.slice(0, 300),
                 };
-                await saveTask(blockedTask);
+                await saveTask(blockedTask, {
+                    maxAttempts: cycle.params.maxAttempts,
+                });
                 scanSummary.symbolCooldownBlocked += 1;
-                scanSummary.failedMaxed += 1;
                 await releaseLock(lockName, lockToken);
                 continue;
             }
@@ -1575,7 +1829,9 @@ async function claimNextTask(
                         300,
                     ),
                 };
-                await saveTask(maxedTask);
+                await saveTask(maxedTask, {
+                    maxAttempts: cycle.params.maxAttempts,
+                });
                 scanSummary.failedMaxed += 1;
                 await releaseLock(lockName, lockToken);
                 continue;
@@ -1596,7 +1852,9 @@ async function claimNextTask(
                 errorCode: null,
                 errorMessage: null,
             };
-            await saveTask(nextTask);
+            await saveTask(nextTask, {
+                maxAttempts: cycle.params.maxAttempts,
+            });
             return {
                 claim: {
                     task: nextTask,
@@ -1836,6 +2094,7 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         let claimIterations = 0;
         const shouldWarnNoClaim = (scanSummary: ClaimScanSummary): boolean =>
             scanSummary.pending > 0 ||
+            scanSummary.retryWait > 0 ||
             scanSummary.runningStale > 0 ||
             scanSummary.runningMissingStartedAt > 0 ||
             scanSummary.failedRetryable > 0 ||
@@ -1872,7 +2131,9 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
                     errorCode: null,
                     errorMessage: null,
                 };
-                await saveTask(completedTask);
+                await saveTask(completedTask, {
+                    maxAttempts: cycle.params.maxAttempts,
+                });
                 let cooldownChanged = false;
                 if (symbolCooldownConfig.enabled) {
                     const cleared = clearResearchSymbolFailureCounters(symbolCooldowns, completedTask.symbol, Date.now());
@@ -1904,7 +2165,9 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
                     errorCode: String(err?.code || 'task_failed'),
                     errorMessage: String(err?.message || err || 'task_failed').slice(0, 300),
                 };
-                await saveTask(failedTask);
+                await saveTask(failedTask, {
+                    maxAttempts: cycle.params.maxAttempts,
+                });
                 let cooldownChanged = false;
                 if (
                     symbolCooldownConfig.enabled &&
@@ -2086,12 +2349,13 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         out.diagnostics.durationMs = Date.now() - startedAtMs;
         const shouldWarnCompletion =
             out.failedRuns > 0 ||
-            (out.attemptedRuns === 0 &&
-                lastNoClaimScanSummary !== null &&
-                (lastNoClaimScanSummary.pending > 0 ||
-                    lastNoClaimScanSummary.runningFresh > 0 ||
-                    lastNoClaimScanSummary.runningStale > 0 ||
-                    lastNoClaimScanSummary.runningMissingStartedAt > 0 ||
+                (out.attemptedRuns === 0 &&
+                    lastNoClaimScanSummary !== null &&
+                    (lastNoClaimScanSummary.pending > 0 ||
+                        lastNoClaimScanSummary.retryWait > 0 ||
+                        lastNoClaimScanSummary.runningFresh > 0 ||
+                        lastNoClaimScanSummary.runningStale > 0 ||
+                        lastNoClaimScanSummary.runningMissingStartedAt > 0 ||
                     lastNoClaimScanSummary.failedRetryable > 0 ||
                     lastNoClaimScanSummary.lockMisses > 0));
         emitWorkerLog(
@@ -2153,6 +2417,7 @@ export function summarizeResearchTasks(cycle: ScalpResearchCycleSnapshot, tasks:
 
     for (const task of tasks) {
         if (task.status === 'pending') totals.pending += 1;
+        else if (task.status === 'retry_wait') totals.pending += 1;
         else if (task.status === 'running') totals.running += 1;
         else if (task.status === 'completed') totals.completed += 1;
         else if (task.status === 'failed') totals.failed += 1;
@@ -2269,7 +2534,6 @@ export async function aggregateScalpResearchCycle(
             latestSummary: summary,
         };
         await saveCycle(nextCycle);
-        await kvSetJson(aggregateKey(cycleId), summary);
 
         if (params.finalizeWhenDone !== false && summary.status === 'completed') {
             const activeCycleId = await loadActiveResearchCycleId();
@@ -2285,7 +2549,8 @@ export async function aggregateScalpResearchCycle(
 }
 
 export async function loadResearchCycleSummary(cycleId: string): Promise<ScalpResearchCycleSummary | null> {
-    return kvGetJson<ScalpResearchCycleSummary>(aggregateKey(cycleId));
+    const cycle = await loadResearchCycle(cycleId);
+    return cycle?.latestSummary || null;
 }
 
 export async function listResearchCycleTasks(cycleId: string, limit = 1000): Promise<ScalpResearchTask[]> {

@@ -1,5 +1,14 @@
-import { kvGetJson, kvListPushJson, kvListRangeJson, kvSetJson } from '../kv';
+import { Prisma } from '@prisma/client';
+
 import { DEFAULT_SCALP_TUNE_ID, normalizeScalpTuneId, resolveScalpDeployment } from './deployments';
+import { isScalpPgConfigured, scalpPrisma } from './pg/client';
+import {
+    insertJournalEntryToPg,
+    insertTradeLedgerEntryToPg,
+    upsertRuntimeDefaultToPg,
+    upsertSessionStateToPg,
+    upsertStrategyOverrideToPg,
+} from './pg/storeMirror';
 import {
     getDefaultScalpStrategy,
     getScalpStrategyById,
@@ -8,19 +17,31 @@ import {
 } from './strategies/registry';
 import type { ScalpJournalEntry, ScalpSessionState, ScalpTradeLedgerEntry } from './types';
 
-const SCALP_STATE_KEY_PREFIX = 'scalp:state:v2';
-const SCALP_STATE_KEY_PREFIX_V1 = 'scalp:state:v1';
-const SCALP_RUN_LOCK_KEY_PREFIX = 'scalp:runlock:v2';
-const SCALP_JOURNAL_LIST_KEY = 'scalp:journal:list:v1';
-const SCALP_TRADE_LEDGER_LIST_KEY = 'scalp:trade-ledger:list:v1';
-const SCALP_RUNTIME_SETTINGS_KEY = 'scalp:runtime:settings:v1';
 const SCALP_DEFAULT_STATE_TTL_SECONDS = 3 * 24 * 60 * 60;
 const SCALP_DEFAULT_JOURNAL_MAX = 500;
 const SCALP_DEFAULT_TRADE_LEDGER_MAX = 10_000;
+const SCALP_PERSIST_ACTOR = 'phase_g_pg_primary';
 
 const defaultScalpStrategy = getDefaultScalpStrategy();
 export const SCALP_STRATEGY_SHORT_NAME = defaultScalpStrategy.shortName;
 export const SCALP_STRATEGY_LONG_NAME = defaultScalpStrategy.longName;
+
+const pgStoreWarnings = new Set<string>();
+
+function warnPgStoreOnce(key: string, message: string, err?: unknown): void {
+    if (pgStoreWarnings.has(key)) return;
+    pgStoreWarnings.add(key);
+    if (process.env.NODE_ENV === 'test') return;
+    if (err) {
+        console.warn(message, err);
+        return;
+    }
+    console.warn(message);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
 
 interface ScalpRuntimeStrategySettings {
     enabled: boolean | null;
@@ -51,35 +72,16 @@ export interface ScalpStrategyRuntimeSnapshot {
     strategies: ScalpStrategyControlSnapshot[];
 }
 
-const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
-const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
+type ScalpDeploymentKeyOptions = {
+    tuneId?: string;
+    deploymentId?: string;
+};
 
 function resolveStrategyId(value: unknown, fallback = defaultScalpStrategy.id): string {
     const normalized = normalizeScalpStrategyId(value);
     if (!normalized) return fallback;
     const strategy = getScalpStrategyById(normalized);
     return strategy?.id || fallback;
-}
-
-type ScalpDeploymentKeyOptions = {
-    tuneId?: string;
-    deploymentId?: string;
-};
-
-function stateKey(deploymentId: string, dayKey: string): string {
-    return `${SCALP_STATE_KEY_PREFIX}:${deploymentId}:${dayKey}`;
-}
-
-function legacyStrategyStateKey(strategyId: string, symbol: string, dayKey: string): string {
-    return `${SCALP_STATE_KEY_PREFIX_V1}:${strategyId}:${String(symbol || '').toUpperCase()}:${dayKey}`;
-}
-
-function legacyStateKey(symbol: string, dayKey: string): string {
-    return `${SCALP_STATE_KEY_PREFIX_V1}:${String(symbol || '').toUpperCase()}:${dayKey}`;
-}
-
-function runLockKey(deploymentId: string): string {
-    return `${SCALP_RUN_LOCK_KEY_PREFIX}:${deploymentId}`;
 }
 
 function resolveDeploymentKey(params: {
@@ -98,12 +100,15 @@ function resolveDeploymentKey(params: {
     });
 }
 
-function hydrateSessionStateDeployment(state: ScalpSessionState, params: {
-    symbol: string;
-    strategyId?: string;
-    tuneId?: string;
-    deploymentId?: string;
-}): ScalpSessionState {
+function hydrateSessionStateDeployment(
+    state: ScalpSessionState,
+    params: {
+        symbol: string;
+        strategyId?: string;
+        tuneId?: string;
+        deploymentId?: string;
+    },
+): ScalpSessionState {
     const deployment = resolveDeploymentKey({
         symbol: state.symbol || params.symbol,
         strategyId: state.strategyId || params.strategyId,
@@ -242,15 +247,78 @@ function serializeScalpRuntimeSettings(settings: ScalpRuntimeSettings): Record<s
     };
 }
 
+function toMs(value: unknown): number | null {
+    if (value instanceof Date) return value.getTime();
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return Math.floor(n);
+}
+
+async function loadRuntimeSettingsFromPg(): Promise<ScalpRuntimeSettings> {
+    const fallback: ScalpRuntimeSettings = parseScalpRuntimeSettings({
+        defaultStrategyId: defaultScalpStrategy.id,
+        strategies: {},
+    });
+    if (!isScalpPgConfigured()) return fallback;
+
+    try {
+        const db = scalpPrisma();
+        const [runtimeRows, overrideRows] = await Promise.all([
+            db.$queryRaw<Array<{ defaultStrategyId: string | null }>>(Prisma.sql`
+                SELECT default_strategy_id AS "defaultStrategyId"
+                FROM scalp_runtime_settings
+                WHERE singleton = TRUE
+                LIMIT 1;
+            `),
+            db.$queryRaw<
+                Array<{
+                    strategyId: string;
+                    kvEnabled: boolean | null;
+                    updatedAt: Date | null;
+                    updatedBy: string | null;
+                }>
+            >(Prisma.sql`
+                SELECT
+                    strategy_id AS "strategyId",
+                    kv_enabled AS "kvEnabled",
+                    updated_at AS "updatedAt",
+                    updated_by AS "updatedBy"
+                FROM scalp_strategy_overrides;
+            `),
+        ]);
+
+        const runtimeRow = runtimeRows[0];
+        const parsed = parseScalpRuntimeSettings({
+            defaultStrategyId: runtimeRow?.defaultStrategyId || defaultScalpStrategy.id,
+            strategies: Object.fromEntries(
+                overrideRows.map((row) => [
+                    row.strategyId,
+                    {
+                        enabled: typeof row.kvEnabled === 'boolean' ? row.kvEnabled : null,
+                        updatedAtMs: toMs(row.updatedAt),
+                        updatedBy: row.updatedBy || null,
+                    },
+                ]),
+            ),
+        });
+        return parsed;
+    } catch (err) {
+        warnPgStoreOnce('load_runtime_settings_failed', 'Failed to load scalp runtime settings from PG.', err);
+        return fallback;
+    }
+}
+
 export async function loadScalpStrategyRuntimeSnapshot(
     envEnabled: boolean,
     preferredStrategyId?: string,
 ): Promise<ScalpStrategyRuntimeSnapshot> {
-    const settings = parseScalpRuntimeSettings(await kvGetJson<ScalpRuntimeSettings>(SCALP_RUNTIME_SETTINGS_KEY));
+    const settings = await loadRuntimeSettingsFromPg();
     const defaultStrategyId = resolveStrategyId(settings.defaultStrategyId, defaultScalpStrategy.id);
     const selectedStrategyId = resolveStrategyId(preferredStrategyId, defaultStrategyId);
     const strategies = listScalpStrategies().map((strategy) => toControlSnapshot(settings, strategy.id, envEnabled));
-    const strategy = strategies.find((row) => row.strategyId === selectedStrategyId) || toControlSnapshot(settings, defaultStrategyId, envEnabled);
+    const strategy =
+        strategies.find((row) => row.strategyId === selectedStrategyId) ||
+        toControlSnapshot(settings, defaultStrategyId, envEnabled);
 
     return {
         defaultStrategyId,
@@ -274,7 +342,7 @@ export async function setScalpStrategyKvEnabled(params: {
     envEnabled: boolean;
     updatedBy?: string | null;
 }): Promise<ScalpStrategyRuntimeSnapshot> {
-    const current = parseScalpRuntimeSettings(await kvGetJson<ScalpRuntimeSettings>(SCALP_RUNTIME_SETTINGS_KEY));
+    const current = await loadRuntimeSettingsFromPg();
     const strategyId = resolveStrategyId(params.strategyId, current.defaultStrategyId);
     const nextSettings: ScalpRuntimeSettings = {
         defaultStrategyId: current.defaultStrategyId,
@@ -285,7 +353,31 @@ export async function setScalpStrategyKvEnabled(params: {
         updatedAtMs: Date.now(),
         updatedBy: parseUpdatedBy(params.updatedBy),
     };
-    await kvSetJson(SCALP_RUNTIME_SETTINGS_KEY, serializeScalpRuntimeSettings(nextSettings));
+
+    if (!isScalpPgConfigured()) {
+        warnPgStoreOnce(
+            'set_strategy_enabled_missing_pg',
+            'Scalp strategy toggle skipped because PRISMA_PG_POSTGRES_URL is not configured.',
+        );
+        return loadScalpStrategyRuntimeSnapshot(params.envEnabled, strategyId);
+    }
+
+    try {
+        await upsertRuntimeDefaultToPg({
+            defaultStrategyId: nextSettings.defaultStrategyId,
+            envEnabled: params.envEnabled,
+            updatedBy: parseUpdatedBy(params.updatedBy) || SCALP_PERSIST_ACTOR,
+        });
+        await upsertStrategyOverrideToPg({
+            strategyId,
+            kvEnabled: nextSettings.strategies[strategyId]?.enabled ?? null,
+            updatedAtMs: nextSettings.strategies[strategyId]?.updatedAtMs ?? Date.now(),
+            updatedBy: nextSettings.strategies[strategyId]?.updatedBy || SCALP_PERSIST_ACTOR,
+        });
+    } catch (err) {
+        warnPgStoreOnce('set_strategy_enabled_failed', 'Failed to persist scalp strategy toggle to PG.', err);
+    }
+
     return loadScalpStrategyRuntimeSnapshot(params.envEnabled, strategyId);
 }
 
@@ -293,13 +385,24 @@ export async function setScalpDefaultStrategy(params: {
     strategyId: string;
     envEnabled: boolean;
 }): Promise<ScalpStrategyRuntimeSnapshot> {
-    const current = parseScalpRuntimeSettings(await kvGetJson<ScalpRuntimeSettings>(SCALP_RUNTIME_SETTINGS_KEY));
+    const current = await loadRuntimeSettingsFromPg();
     const strategyId = resolveStrategyId(params.strategyId, current.defaultStrategyId);
-    const nextSettings: ScalpRuntimeSettings = {
-        defaultStrategyId: strategyId,
-        strategies: { ...current.strategies },
-    };
-    await kvSetJson(SCALP_RUNTIME_SETTINGS_KEY, serializeScalpRuntimeSettings(nextSettings));
+    if (isScalpPgConfigured()) {
+        try {
+            await upsertRuntimeDefaultToPg({
+                defaultStrategyId: strategyId,
+                envEnabled: params.envEnabled,
+                updatedBy: SCALP_PERSIST_ACTOR,
+            });
+        } catch (err) {
+            warnPgStoreOnce('set_default_strategy_failed', 'Failed to persist scalp default strategy to PG.', err);
+        }
+    } else {
+        warnPgStoreOnce(
+            'set_default_strategy_missing_pg',
+            'Scalp default strategy update skipped because PRISMA_PG_POSTGRES_URL is not configured.',
+        );
+    }
     return loadScalpStrategyRuntimeSnapshot(params.envEnabled, strategyId);
 }
 
@@ -378,40 +481,37 @@ export async function loadScalpSessionState(
     strategyId = defaultScalpStrategy.id,
     opts: ScalpDeploymentKeyOptions = {},
 ): Promise<ScalpSessionState | null> {
+    if (!isScalpPgConfigured()) return null;
     const deployment = resolveDeploymentKey({
         symbol,
         strategyId,
         tuneId: opts.tuneId,
         deploymentId: opts.deploymentId,
     });
-    const raw = await kvGetJson<ScalpSessionState>(stateKey(deployment.deploymentId, dayKey));
-    const parsed = parseSessionState(raw);
-    if (parsed) return hydrateSessionStateDeployment(parsed, deployment);
-
-    if (deployment.tuneId === DEFAULT_SCALP_TUNE_ID) {
-        const legacyStrategyRaw = await kvGetJson<ScalpSessionState>(
-            legacyStrategyStateKey(deployment.strategyId, deployment.symbol, dayKey),
-        );
-        const legacyStrategyParsed = parseSessionState(legacyStrategyRaw);
-        if (legacyStrategyParsed) {
-            return hydrateSessionStateDeployment(legacyStrategyParsed, deployment);
-        }
+    try {
+        const db = scalpPrisma();
+        const rows = await db.$queryRaw<Array<{ stateJson: unknown }>>(Prisma.sql`
+            SELECT state_json AS "stateJson"
+            FROM scalp_sessions
+            WHERE deployment_id = ${deployment.deploymentId}
+              AND day_key = ${dayKey}::date
+            LIMIT 1;
+        `);
+        const parsed = parseSessionState(rows[0]?.stateJson);
+        return parsed ? hydrateSessionStateDeployment(parsed, deployment) : null;
+    } catch (err) {
+        warnPgStoreOnce('load_session_state_failed', 'Failed to load scalp session state from PG.', err);
+        return null;
     }
-
-    if (deployment.strategyId === defaultScalpStrategy.id && deployment.tuneId === DEFAULT_SCALP_TUNE_ID) {
-        const legacyRaw = await kvGetJson<ScalpSessionState>(legacyStateKey(symbol, dayKey));
-        const legacyParsed = parseSessionState(legacyRaw);
-        return legacyParsed ? hydrateSessionStateDeployment(legacyParsed, deployment) : null;
-    }
-    return null;
 }
 
 export async function saveScalpSessionState(
     state: ScalpSessionState,
-    ttlSeconds = SCALP_DEFAULT_STATE_TTL_SECONDS,
+    _ttlSeconds = SCALP_DEFAULT_STATE_TTL_SECONDS,
     strategyId = defaultScalpStrategy.id,
     opts: ScalpDeploymentKeyOptions = {},
 ): Promise<void> {
+    if (!isScalpPgConfigured()) return;
     const deployment = resolveDeploymentKey({
         symbol: state.symbol,
         strategyId: state.strategyId || strategyId,
@@ -419,7 +519,11 @@ export async function saveScalpSessionState(
         deploymentId: opts.deploymentId || state.deploymentId,
     });
     const nextState = hydrateSessionStateDeployment(state, deployment);
-    await kvSetJson(stateKey(deployment.deploymentId, nextState.dayKey), nextState, Math.max(30, Math.floor(ttlSeconds)));
+    try {
+        await upsertSessionStateToPg(nextState);
+    } catch (err) {
+        warnPgStoreOnce('save_session_state_failed', 'Failed to persist scalp session state to PG.', err);
+    }
 }
 
 function sanitizeJournalEntry(entry: ScalpJournalEntry): ScalpJournalEntry {
@@ -435,19 +539,70 @@ function sanitizeJournalEntry(entry: ScalpJournalEntry): ScalpJournalEntry {
     };
 }
 
+function normalizeJournalType(value: unknown): ScalpJournalEntry['type'] {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'state') return 'state';
+    if (normalized === 'risk') return 'risk';
+    if (normalized === 'error') return 'error';
+    return 'execution';
+}
+
 export async function appendScalpJournal(entry: ScalpJournalEntry, _maxRows = SCALP_DEFAULT_JOURNAL_MAX): Promise<void> {
+    if (!isScalpPgConfigured()) return;
     const sanitized = sanitizeJournalEntry(entry);
-    await kvListPushJson(SCALP_JOURNAL_LIST_KEY, sanitized);
+    try {
+        await insertJournalEntryToPg(sanitized);
+    } catch (err) {
+        warnPgStoreOnce('append_journal_failed', 'Failed to append scalp journal entry in PG.', err);
+    }
 }
 
 export async function loadScalpJournal(limit = 200): Promise<ScalpJournalEntry[]> {
-  const safeLimit = Math.max(1, Math.min(1_000, Math.floor(limit)));
-  const rows = await kvListRangeJson<ScalpJournalEntry>(SCALP_JOURNAL_LIST_KEY, 0, safeLimit - 1);
-    const out: ScalpJournalEntry[] = [];
-    for (const row of rows) {
-        out.push(sanitizeJournalEntry(row));
+    if (!isScalpPgConfigured()) return [];
+    const safeLimit = Math.max(1, Math.min(1_000, Math.floor(limit)));
+    try {
+        const db = scalpPrisma();
+        const rows = await db.$queryRaw<
+            Array<{
+                id: string;
+                timestampMs: bigint | number | string;
+                type: string;
+                symbol: string | null;
+                dayKey: string | null;
+                level: string;
+                reasonCodes: string[];
+                payload: unknown;
+            }>
+        >(Prisma.sql`
+            SELECT
+                id::text AS id,
+                (EXTRACT(EPOCH FROM ts) * 1000.0)::bigint AS "timestampMs",
+                type,
+                symbol,
+                TO_CHAR(day_key, 'YYYY-MM-DD') AS "dayKey",
+                level,
+                reason_codes AS "reasonCodes",
+                payload
+            FROM scalp_journal
+            ORDER BY ts DESC
+            LIMIT ${safeLimit};
+        `);
+        return rows.map((row) =>
+            sanitizeJournalEntry({
+                id: row.id,
+                timestampMs: Number(row.timestampMs),
+                type: normalizeJournalType(row.type),
+                symbol: row.symbol,
+                dayKey: row.dayKey,
+                level: row.level === 'warn' || row.level === 'error' ? row.level : 'info',
+                reasonCodes: Array.isArray(row.reasonCodes) ? row.reasonCodes : [],
+                payload: isRecord(row.payload) ? row.payload : {},
+            }),
+        );
+    } catch (err) {
+        warnPgStoreOnce('load_journal_failed', 'Failed to load scalp journal entries from PG.', err);
+        return [];
     }
-  return out;
 }
 
 function sanitizeTradeLedgerEntry(entry: ScalpTradeLedgerEntry): ScalpTradeLedgerEntry {
@@ -478,79 +633,116 @@ function sanitizeTradeLedgerEntry(entry: ScalpTradeLedgerEntry): ScalpTradeLedge
     };
 }
 
+function normalizeTradeSide(value: unknown): 'BUY' | 'SELL' | null {
+    const sideRaw = String(value || '')
+        .trim()
+        .toUpperCase();
+    return sideRaw === 'BUY' || sideRaw === 'SELL' ? sideRaw : null;
+}
+
 export async function appendScalpTradeLedgerEntry(
     entry: ScalpTradeLedgerEntry,
     _maxRows = SCALP_DEFAULT_TRADE_LEDGER_MAX,
 ): Promise<void> {
+    if (!isScalpPgConfigured()) return;
     const sanitized = sanitizeTradeLedgerEntry(entry);
-    await kvListPushJson(SCALP_TRADE_LEDGER_LIST_KEY, sanitized);
+    try {
+        await insertTradeLedgerEntryToPg(sanitized);
+    } catch (err) {
+        warnPgStoreOnce('append_trade_ledger_failed', 'Failed to append scalp trade ledger row in PG.', err);
+    }
 }
 
 export async function loadScalpTradeLedger(limit = 2_000): Promise<ScalpTradeLedgerEntry[]> {
+    if (!isScalpPgConfigured()) return [];
     const safeLimit = Math.max(1, Math.min(50_000, Math.floor(limit)));
-    const rows = await kvListRangeJson<ScalpTradeLedgerEntry>(SCALP_TRADE_LEDGER_LIST_KEY, 0, safeLimit - 1);
-    const out: ScalpTradeLedgerEntry[] = [];
-    for (const row of rows) {
-        out.push(sanitizeTradeLedgerEntry(row));
+    try {
+        const db = scalpPrisma();
+        const rows = await db.$queryRaw<
+            Array<{
+                id: string;
+                timestampMs: bigint | number | string;
+                exitAtMs: bigint | number | string;
+                symbol: string;
+                strategyId: string;
+                tuneId: string;
+                deploymentId: string;
+                side: string | null;
+                dryRun: boolean;
+                rMultiple: number | string;
+                reasonCodes: string[];
+            }>
+        >(Prisma.sql`
+            SELECT
+                id::text AS id,
+                (EXTRACT(EPOCH FROM created_at) * 1000.0)::bigint AS "timestampMs",
+                (EXTRACT(EPOCH FROM exit_at) * 1000.0)::bigint AS "exitAtMs",
+                symbol,
+                strategy_id AS "strategyId",
+                tune_id AS "tuneId",
+                deployment_id AS "deploymentId",
+                side,
+                dry_run AS "dryRun",
+                r_multiple::double precision AS "rMultiple",
+                reason_codes AS "reasonCodes"
+            FROM scalp_trade_ledger
+            ORDER BY exit_at DESC
+            LIMIT ${safeLimit};
+        `);
+        return rows.map((row) =>
+            sanitizeTradeLedgerEntry({
+                id: row.id,
+                timestampMs: Number(row.timestampMs),
+                exitAtMs: Number(row.exitAtMs),
+                symbol: row.symbol,
+                strategyId: row.strategyId,
+                tuneId: row.tuneId,
+                deploymentId: row.deploymentId,
+                side: normalizeTradeSide(row.side),
+                dryRun: Boolean(row.dryRun),
+                rMultiple: Number(row.rMultiple),
+                reasonCodes: Array.isArray(row.reasonCodes) ? row.reasonCodes : [],
+            }),
+        );
+    } catch (err) {
+        warnPgStoreOnce('load_trade_ledger_failed', 'Failed to load scalp trade ledger rows from PG.', err);
+        return [];
     }
-    return out;
-}
-
-async function kvRawCommand(command: string, ...args: Array<string | number>): Promise<unknown> {
-    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) return null;
-    const encodedArgs = args
-        .map((arg) => encodeURIComponent(typeof arg === 'string' ? arg : String(arg)))
-        .join('/');
-    const url = `${upstash_payasyougo_KV_REST_API_URL}/${command}${encodedArgs ? `/${encodedArgs}` : ''}`;
-    const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${upstash_payasyougo_KV_REST_API_TOKEN}`,
-        },
-    });
-    if (!res.ok) return null;
-    const data = await res.json().catch(() => null);
-    if (!data || typeof data !== 'object') return null;
-    return (data as any).result ?? null;
 }
 
 export async function tryAcquireScalpRunLock(
-    symbol: string,
-    token: string,
-    ttlSeconds: number,
-    strategyId = defaultScalpStrategy.id,
-    opts: ScalpDeploymentKeyOptions = {},
+    _symbol: string,
+    _token: string,
+    _ttlSeconds: number,
+    _strategyId = defaultScalpStrategy.id,
+    _opts: ScalpDeploymentKeyOptions = {},
 ): Promise<boolean> {
-    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) {
-        return true;
-    }
-    const deployment = resolveDeploymentKey({
-        symbol,
-        strategyId,
-        tuneId: opts.tuneId,
-        deploymentId: opts.deploymentId,
-    });
-    const key = runLockKey(deployment.deploymentId);
-    const ttl = Math.max(15, Math.floor(ttlSeconds));
-    const result = await kvRawCommand('SET', key, token, 'NX', 'EX', ttl);
-    return String(result || '').toUpperCase() === 'OK';
+    return true;
 }
 
 export async function releaseScalpRunLock(
-    symbol: string,
-    token: string,
-    strategyId = defaultScalpStrategy.id,
-    opts: ScalpDeploymentKeyOptions = {},
+    _symbol: string,
+    _token: string,
+    _strategyId = defaultScalpStrategy.id,
+    _opts: ScalpDeploymentKeyOptions = {},
 ): Promise<void> {
-    if (!upstash_payasyougo_KV_REST_API_URL || !upstash_payasyougo_KV_REST_API_TOKEN) return;
-    const deployment = resolveDeploymentKey({
-        symbol,
-        strategyId,
-        tuneId: opts.tuneId,
-        deploymentId: opts.deploymentId,
-    });
-    const key = runLockKey(deployment.deploymentId);
-    const current = await kvRawCommand('GET', key);
-    if (String(current || '') !== token) return;
-    await kvRawCommand('DEL', key);
+}
+
+export function serializeScalpRuntimeSnapshotForDebug(
+    snapshot: ScalpStrategyRuntimeSnapshot,
+): Record<string, unknown> {
+    const settings: ScalpRuntimeSettings = {
+        defaultStrategyId: snapshot.defaultStrategyId,
+        strategies: Object.fromEntries(
+            snapshot.strategies.map((row) => [
+                row.strategyId,
+                {
+                    enabled: row.kvEnabled,
+                    updatedAtMs: row.updatedAtMs,
+                    updatedBy: row.updatedBy,
+                },
+            ]),
+        ),
+    };
+    return serializeScalpRuntimeSettings(settings);
 }

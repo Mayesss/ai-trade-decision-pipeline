@@ -1,28 +1,8 @@
 import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { scalpDeploymentRegistryKvKey, scalpDeploymentRegistryPath } from './deploymentRegistry';
-
-const upstash_payasyougo_KV_REST_API_URL = (process.env.upstash_payasyougo_KV_REST_API_URL || '').replace(/\/$/, '');
-const upstash_payasyougo_KV_REST_API_TOKEN = process.env.upstash_payasyougo_KV_REST_API_TOKEN || '';
-
-const STATE_V2_KEY_PREFIX = 'scalp:state:v2';
-const STATE_V1_KEY_PREFIX = 'scalp:state:v1';
-const RUN_LOCK_KEY_PREFIX = 'scalp:runlock:v2';
-const RESEARCH_CYCLE_KEY_PREFIX = 'scalp:research:cycle:v1';
-const RESEARCH_TASK_KEY_PREFIX = 'scalp:research:task:v1';
-const RESEARCH_AGG_KEY_PREFIX = 'scalp:research:aggregate:v1';
-const RESEARCH_CLAIM_CURSOR_KEY_PREFIX = 'scalp:research:claim-cursor:v1';
-const RESEARCH_LOCK_KEY_PREFIX = 'scalp:research:lock:v1';
-const CANDLE_HISTORY_KEY_PREFIX = 'scalp:candles-history:v1';
-
-const RUNTIME_SETTINGS_KEY = 'scalp:runtime:settings:v1';
-const RESEARCH_ACTIVE_CYCLE_KEY = 'scalp:research:active-cycle:v1';
-const JOURNAL_LIST_KEY = 'scalp:journal:list:v1';
-const TRADE_LEDGER_LIST_KEY = 'scalp:trade-ledger:list:v1';
-const UNIVERSE_KV_KEY = 'scalp:symbol-universe:v1';
-const REPORT_KV_KEY = 'scalp:research:portfolio-report:v1';
-const PROMOTION_SYNC_STATE_KEY = 'scalp:research:promotion-sync:last:v1';
+import { scalpDeploymentRegistryPath } from './deploymentRegistry';
+import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 
 const DEFAULT_UNIVERSE_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-universe.json');
 const DEFAULT_REPORT_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-research-report.json');
@@ -33,9 +13,21 @@ const EMPTY_DEPLOYMENTS_SNAPSHOT = {
     deployments: [],
 };
 
-function hasKvConfig(): boolean {
-    return Boolean(upstash_payasyougo_KV_REST_API_URL && upstash_payasyougo_KV_REST_API_TOKEN);
-}
+const BASE_RESET_TABLES = [
+    'scalp_shadow_job_runs',
+    'scalp_jobs',
+    'scalp_symbol_cooldowns',
+    'scalp_research_attempts',
+    'scalp_research_tasks',
+    'scalp_research_cycles',
+    'scalp_execution_runs',
+    'scalp_sessions',
+    'scalp_journal',
+    'scalp_trade_ledger',
+    'scalp_deployments',
+] as const;
+
+const RUNTIME_RESET_TABLES = ['scalp_strategy_overrides', 'scalp_runtime_settings'] as const;
 
 function toPositiveInt(value: unknown, fallback: number): number {
     const n = Math.floor(Number(value));
@@ -56,60 +48,6 @@ async function pathExists(targetPath: string): Promise<boolean> {
     } catch {
         return false;
     }
-}
-
-async function kvRawCommand(command: string, ...args: Array<string | number>): Promise<unknown> {
-    if (!hasKvConfig()) return null;
-    const encodedArgs = args
-        .map((arg) => encodeURIComponent(typeof arg === 'string' ? arg : String(arg)))
-        .join('/');
-    const url = `${upstash_payasyougo_KV_REST_API_URL}/${command}${encodedArgs ? `/${encodedArgs}` : ''}`;
-    const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${upstash_payasyougo_KV_REST_API_TOKEN}`,
-        },
-    });
-    const text = await res.text();
-    const data = (() => {
-        try {
-            return text ? JSON.parse(text) : null;
-        } catch {
-            return null;
-        }
-    })();
-    if (!res.ok) {
-        const message =
-            (data && typeof data === 'object' && (data.error || data.message)) ||
-            text ||
-            `KV command failed (${command}) HTTP ${res.status}`;
-        throw new Error(String(message));
-    }
-    if (data && typeof data === 'object' && data.error) {
-        throw new Error(String(data.error || data.message || `KV command failed: ${command}`));
-    }
-    return data && typeof data === 'object' ? data.result : null;
-}
-
-async function scanKeysByPrefix(prefix: string, maxKeys: number): Promise<string[]> {
-    if (!hasKvConfig()) return [];
-    let cursor = '0';
-    const out = new Set<string>();
-    const hardCap = Math.max(1, Math.min(200_000, Math.floor(maxKeys)));
-    for (let i = 0; i < 400; i += 1) {
-        const raw = await kvRawCommand('SCAN', cursor, 'MATCH', `${prefix}*`, 'COUNT', 500);
-        if (!Array.isArray(raw) || raw.length < 2) break;
-        cursor = String(raw[0] || '0');
-        const keysRaw = Array.isArray(raw[1]) ? raw[1] : [];
-        for (const row of keysRaw) {
-            const key = String(row || '').trim();
-            if (!key) continue;
-            out.add(key);
-            if (out.size >= hardCap) return Array.from(out);
-        }
-        if (cursor === '0') break;
-    }
-    return Array.from(out);
 }
 
 export interface ScalpFullResetPrefixRow {
@@ -151,6 +89,7 @@ export interface RunScalpFullResetResult {
         includeRuntimeSettings: boolean;
         maxScanKeys: number;
         kvEnabled: boolean;
+        pgEnabled: boolean;
     };
     summary: {
         exactKeysTargeted: number;
@@ -169,6 +108,36 @@ export interface RunScalpFullResetResult {
     };
 }
 
+function tableList(includeRuntimeSettings: boolean): string[] {
+    return includeRuntimeSettings
+        ? [...BASE_RESET_TABLES, ...RUNTIME_RESET_TABLES]
+        : [...BASE_RESET_TABLES];
+}
+
+function assertResetTableName(tableName: string): void {
+    const allowed = new Set([...BASE_RESET_TABLES, ...RUNTIME_RESET_TABLES]);
+    if (!allowed.has(tableName as any)) {
+        throw new Error(`Invalid reset table: ${tableName}`);
+    }
+}
+
+async function countTableRows(tableName: string): Promise<number> {
+    assertResetTableName(tableName);
+    const db = scalpPrisma();
+    const rows = await db.$queryRawUnsafe<Array<{ count: bigint | number }>>(
+        `SELECT COUNT(*)::bigint AS count FROM ${tableName};`,
+    );
+    return Number(rows[0]?.count || 0);
+}
+
+async function truncateTables(tables: string[]): Promise<void> {
+    for (const tableName of tables) {
+        assertResetTableName(tableName);
+    }
+    const db = scalpPrisma();
+    await db.$executeRawUnsafe(`TRUNCATE TABLE ${tables.join(', ')} RESTART IDENTITY CASCADE;`);
+}
+
 export async function runScalpFullReset(
     params: RunScalpFullResetParams = {},
 ): Promise<RunScalpFullResetResult> {
@@ -177,104 +146,55 @@ export async function runScalpFullReset(
     const includeCandleHistory = Boolean(params.includeCandleHistory);
     const includeRuntimeSettings = params.includeRuntimeSettings !== false;
     const maxScanKeys = toPositiveInt(params.maxScanKeys, 20_000);
-    const kvEnabled = hasKvConfig();
-
-    const exactKeys: string[] = [
-        scalpDeploymentRegistryKvKey(),
-        RESEARCH_ACTIVE_CYCLE_KEY,
-        JOURNAL_LIST_KEY,
-        TRADE_LEDGER_LIST_KEY,
-        UNIVERSE_KV_KEY,
-        REPORT_KV_KEY,
-        PROMOTION_SYNC_STATE_KEY,
-    ];
-    if (includeRuntimeSettings) {
-        exactKeys.push(RUNTIME_SETTINGS_KEY);
-    }
-
-    const prefixes: string[] = [
-        `${STATE_V2_KEY_PREFIX}:`,
-        `${STATE_V1_KEY_PREFIX}:`,
-        `${RUN_LOCK_KEY_PREFIX}:`,
-        `${RESEARCH_CYCLE_KEY_PREFIX}:`,
-        `${RESEARCH_TASK_KEY_PREFIX}:`,
-        `${RESEARCH_AGG_KEY_PREFIX}:`,
-        `${RESEARCH_CLAIM_CURSOR_KEY_PREFIX}:`,
-        `${RESEARCH_LOCK_KEY_PREFIX}:`,
-    ];
-    if (includeCandleHistory) {
-        prefixes.push(`${CANDLE_HISTORY_KEY_PREFIX}:`);
-    }
+    const pgEnabled = isScalpPgConfigured();
 
     const exactKeyRows: ScalpFullResetExactKeyRow[] = [];
     const prefixRows: ScalpFullResetPrefixRow[] = [];
     const fileRows: ScalpFullResetFileRow[] = [];
     let errors = 0;
 
-    if (kvEnabled) {
-        for (const key of exactKeys) {
-            let existed: boolean | null = null;
-            let deleted = false;
-            let error: string | null = null;
+    const tables = tableList(includeRuntimeSettings);
+    if (pgEnabled) {
+        for (const tableName of tables) {
             try {
-                if (dryRun) {
-                    const existsRaw = await kvRawCommand('EXISTS', key);
-                    existed = Number(existsRaw || 0) > 0;
-                } else {
-                    const delRaw = await kvRawCommand('DEL', key);
-                    deleted = Number(delRaw || 0) > 0;
-                }
+                const count = await countTableRows(tableName);
+                prefixRows.push({
+                    prefix: `pg:${tableName}`,
+                    matchedKeys: count,
+                    deletedKeys: dryRun ? 0 : count,
+                    error: null,
+                });
             } catch (err: any) {
-                error = err?.message || String(err);
                 errors += 1;
+                prefixRows.push({
+                    prefix: `pg:${tableName}`,
+                    matchedKeys: 0,
+                    deletedKeys: 0,
+                    error: String(err?.message || err || 'count_failed'),
+                });
             }
-            exactKeyRows.push({
-                key,
-                existed,
-                deleted,
-                error,
-            });
         }
 
-        for (const prefix of prefixes) {
-            let matchedKeys = 0;
-            let deletedKeys = 0;
-            let error: string | null = null;
+        if (!dryRun) {
             try {
-                const keys = await scanKeysByPrefix(prefix, maxScanKeys);
-                matchedKeys = keys.length;
-                if (!dryRun) {
-                    for (const key of keys) {
-                        const delRaw = await kvRawCommand('DEL', key);
-                        if (Number(delRaw || 0) > 0) deletedKeys += 1;
-                    }
-                }
+                await truncateTables(tables);
             } catch (err: any) {
-                error = err?.message || String(err);
                 errors += 1;
+                prefixRows.push({
+                    prefix: 'pg:truncate',
+                    matchedKeys: 0,
+                    deletedKeys: 0,
+                    error: String(err?.message || err || 'truncate_failed'),
+                });
             }
-            prefixRows.push({
-                prefix,
-                matchedKeys,
-                deletedKeys,
-                error,
-            });
         }
     } else {
-        for (const key of exactKeys) {
-            exactKeyRows.push({
-                key,
-                existed: null,
-                deleted: false,
-                error: 'kv_not_configured',
-            });
-        }
-        for (const prefix of prefixes) {
+        for (const tableName of tables) {
             prefixRows.push({
-                prefix,
+                prefix: `pg:${tableName}`,
                 matchedKeys: 0,
                 deletedKeys: 0,
-                error: 'kv_not_configured',
+                error: 'pg_not_configured',
             });
         }
     }
@@ -365,7 +285,8 @@ export async function runScalpFullReset(
             includeCandleHistory,
             includeRuntimeSettings,
             maxScanKeys,
-            kvEnabled,
+            kvEnabled: false,
+            pgEnabled,
         },
         summary: {
             exactKeysTargeted: exactKeyRows.length,
