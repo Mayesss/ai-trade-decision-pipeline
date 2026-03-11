@@ -197,6 +197,7 @@ function pipelineStageMeta(stageRaw: unknown): { progressPct: number | null; pro
   if (!stage) return { progressPct: null, progressLabel: null };
   const map: Record<string, { pct: number; label: string }> = {
     discover: { pct: 10, label: 'discovering symbols' },
+    load_candles: { pct: 24, label: 'loading candle history' },
     prepare: { pct: 35, label: 'preparing/backfilling history' },
     worker: { pct: 70, label: 'running cycle worker' },
     aggregate: { pct: 88, label: 'aggregating cycle results' },
@@ -286,15 +287,17 @@ async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSn
 
   const orchestratorPayload = asRecord(row.orchestratorPayload);
   const panicStopPayload = asRecord(row.panicStopPayload);
+  const panicStopEnabled = parseUnknownBool(panicStopPayload.enabled);
   const orchestratorStage = String(orchestratorPayload.stage || '').trim() || null;
   const orchestratorStartedAtMs = asTsMs(orchestratorPayload.startedAtMs);
   const orchestratorCompletedAtMs = asTsMs(orchestratorPayload.completedAtMs);
   const orchestratorUpdatedAtMs = asTsMs(orchestratorPayload.updatedAtMs);
-  const orchestratorRunning =
+  const orchestratorRunningRaw =
     Boolean(orchestratorStage) &&
     orchestratorStage !== 'done' &&
     orchestratorStartedAtMs !== null &&
     (orchestratorCompletedAtMs === null || orchestratorCompletedAtMs < orchestratorStartedAtMs);
+  const orchestratorRunning = panicStopEnabled ? false : orchestratorRunningRaw;
   const stageMeta = pipelineStageMeta(orchestratorStage);
 
   const summary = asRecord(row.cycleSummary);
@@ -302,7 +305,7 @@ async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSn
   const cycleProgressPct = Number(summary.progressPct);
   return {
     panicStop: {
-      enabled: parseUnknownBool(panicStopPayload.enabled),
+      enabled: panicStopEnabled,
       reason: normalizeReason(panicStopPayload.reason),
       updatedAtMs: asTsMs(row.panicStopUpdatedAtMs),
       updatedBy: normalizeUpdatedBy(panicStopPayload.updatedBy),

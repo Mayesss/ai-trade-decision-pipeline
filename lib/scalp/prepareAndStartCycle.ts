@@ -22,6 +22,8 @@ export interface PrepareAndStartCycleParams extends StartResearchCycleParams {
     finalizeBatch?: boolean;
     maxDurationMs?: number;
     nowMs?: number;
+    fillOnly?: boolean;
+    skipFill?: boolean;
 }
 
 export interface PrepareAndStartCycleResult {
@@ -118,6 +120,8 @@ export async function prepareAndStartScalpResearchCycle(
     const maxRequestsPerSymbol = parsePositiveInt(params.maxRequestsPerSymbol, defaultMaxRequests);
     const maxSymbolsPerRun = Math.max(1, parsePositiveInt(params.maxSymbolsPerRun, 1000));
     const maxDurationMs = Math.max(30_000, Math.min(10 * 60_000, parsePositiveInt(params.maxDurationMs, 4 * 60_000)));
+    const fillOnly = params.fillOnly === true;
+    const skipFill = params.skipFill === true;
     const batchCursor = Math.max(0, parsePositiveInt(params.batchCursor, 0) - 1 + 1);
     const runDiscovery = params.runDiscovery !== false;
 
@@ -142,20 +146,20 @@ export async function prepareAndStartScalpResearchCycle(
             .map((row) => normalizeSymbol(row))
             .filter((row) => Boolean(row)),
     );
-    const batchStart = Math.min(symbols.length, Math.max(0, batchCursor));
-    const batchEnd = Math.min(symbols.length, batchStart + maxSymbolsPerRun);
-    const batchSymbols = symbols.slice(batchStart, batchEnd);
+    const batchStart = skipFill ? 0 : Math.min(symbols.length, Math.max(0, batchCursor));
+    const batchEnd = skipFill ? symbols.length : Math.min(symbols.length, batchStart + maxSymbolsPerRun);
+    const batchSymbols = skipFill ? [] : symbols.slice(batchStart, batchEnd);
     let effectiveBatchEnd = batchEnd;
-    const hasMore = batchEnd < symbols.length;
+    const hasMore = skipFill ? false : batchEnd < symbols.length;
     let nextCursor = hasMore ? batchEnd : null;
-    let finalized = params.finalizeBatch === true || !hasMore;
+    let finalized = skipFill ? true : params.finalizeBatch === true || !hasMore;
 
     const fillRows: PrepareAndStartCycleResult['steps']['fill'] = [];
     const fetchFromMs = nowMs - lookbackDays * ONE_DAY_MS;
     const fetchToMs = nowMs;
     const processedSymbols: string[] = [];
     const existingBySymbol = new Map<string, ScalpCandle[]>();
-    if (batchSymbols.length > 0) {
+    if (!skipFill && batchSymbols.length > 0) {
         const existingBatch = await loadScalpCandleHistoryBulk(batchSymbols, seedTimeframe);
         for (let i = 0; i < batchSymbols.length; i += 1) {
             const symbol = batchSymbols[i]!;
@@ -169,71 +173,73 @@ export async function prepareAndStartScalpResearchCycle(
         source: 'capital';
         candles: ScalpCandle[];
     }> = [];
-    for (const symbol of batchSymbols) {
-        if (Date.now() - invokeStartedAtMs >= maxDurationMs) {
-            break;
-        }
-        try {
-            const existing = existingBySymbol.get(symbol) || [];
-            const epicResolved = await resolveCapitalEpicRuntime(symbol);
-            const fetchedRaw = await fetchCapitalCandlesByEpicDateRange(epicResolved.epic, seedTimeframe, fetchFromMs, fetchToMs, {
-                maxPerRequest: 1000,
-                maxRequests: maxRequestsPerSymbol,
-                debug: false,
-                debugLabel: `prepare-cycle:${symbol}:${seedTimeframe}`,
-            });
-            const fetched = normalizeFetchedCandles(fetchedRaw);
-            const merged = mergeScalpCandleHistory(existing, fetched);
-            const addedCount = Math.max(0, merged.length - existing.length);
-            let saved = false;
-            if (!dryRun) {
-                pendingSaves.push({
+    if (!skipFill) {
+        for (const symbol of batchSymbols) {
+            if (Date.now() - invokeStartedAtMs >= maxDurationMs) {
+                break;
+            }
+            try {
+                const existing = existingBySymbol.get(symbol) || [];
+                const epicResolved = await resolveCapitalEpicRuntime(symbol);
+                const fetchedRaw = await fetchCapitalCandlesByEpicDateRange(epicResolved.epic, seedTimeframe, fetchFromMs, fetchToMs, {
+                    maxPerRequest: 1000,
+                    maxRequests: maxRequestsPerSymbol,
+                    debug: false,
+                    debugLabel: `prepare-cycle:${symbol}:${seedTimeframe}`,
+                });
+                const fetched = normalizeFetchedCandles(fetchedRaw);
+                const merged = mergeScalpCandleHistory(existing, fetched);
+                const addedCount = Math.max(0, merged.length - existing.length);
+                let saved = false;
+                if (!dryRun) {
+                    pendingSaves.push({
+                        symbol,
+                        timeframe: seedTimeframe,
+                        epic: epicResolved.epic,
+                        source: 'capital',
+                        candles: merged,
+                    });
+                    saved = true;
+                }
+                fillRows.push({
                     symbol,
                     timeframe: seedTimeframe,
                     epic: epicResolved.epic,
-                    source: 'capital',
-                    candles: merged,
+                    existingCount: existing.length,
+                    fetchedCount: fetched.length,
+                    mergedCount: merged.length,
+                    addedCount,
+                    saved,
+                    fetchFromMs,
+                    fetchToMs,
+                    error: null,
                 });
-                saved = true;
+                processedSymbols.push(symbol);
+            } catch (err: any) {
+                fillRows.push({
+                    symbol,
+                    timeframe: seedTimeframe,
+                    epic: null,
+                    existingCount: 0,
+                    fetchedCount: 0,
+                    mergedCount: 0,
+                    addedCount: 0,
+                    saved: false,
+                    fetchFromMs,
+                    fetchToMs,
+                    error: String(err?.message || err || 'fill_failed'),
+                });
+                processedSymbols.push(symbol);
             }
-            fillRows.push({
-                symbol,
-                timeframe: seedTimeframe,
-                epic: epicResolved.epic,
-                existingCount: existing.length,
-                fetchedCount: fetched.length,
-                mergedCount: merged.length,
-                addedCount,
-                saved,
-                fetchFromMs,
-                fetchToMs,
-                error: null,
-            });
-            processedSymbols.push(symbol);
-        } catch (err: any) {
-            fillRows.push({
-                symbol,
-                timeframe: seedTimeframe,
-                epic: null,
-                existingCount: 0,
-                fetchedCount: 0,
-                mergedCount: 0,
-                addedCount: 0,
-                saved: false,
-                fetchFromMs,
-                fetchToMs,
-                error: String(err?.message || err || 'fill_failed'),
-            });
-            processedSymbols.push(symbol);
         }
-    }
-    if (!dryRun && pendingSaves.length > 0) {
-        await saveScalpCandleHistoryBulk(pendingSaves, {});
-    }
+        if (!dryRun && pendingSaves.length > 0) {
+            await saveScalpCandleHistoryBulk(pendingSaves, {});
+        }
 
-    effectiveBatchEnd = batchStart + processedSymbols.length;
-    nextCursor = effectiveBatchEnd < symbols.length ? effectiveBatchEnd : null;
-    finalized = params.finalizeBatch === true || nextCursor === null;
+        effectiveBatchEnd = batchStart + processedSymbols.length;
+        nextCursor = effectiveBatchEnd < symbols.length ? effectiveBatchEnd : null;
+        finalized = params.finalizeBatch === true || nextCursor === null;
+    }
 
     const report = finalized ? await refreshScalpResearchPortfolioReport({ nowMs, persist: false }) : null;
     const preflight = finalized
@@ -263,6 +269,42 @@ export async function prepareAndStartScalpResearchCycle(
                 nextCursor,
                 hasMore: nextCursor !== null,
                 finalized: false,
+            },
+            lookbackDays,
+            maxRequestsPerSymbol,
+            steps: {
+                discovery: {
+                    generatedAtIso: discovery?.generatedAtIso || null,
+                    selectedSymbols: discovery?.selectedSymbols || symbols,
+                    candidatesEvaluated: Number(discovery?.candidatesEvaluated || 0),
+                },
+                fill: fillRows,
+                report: {
+                    generatedAtIso: null,
+                    cycleId: null,
+                },
+                preflight: null,
+            },
+            cycle: null,
+        };
+    }
+
+    if (fillOnly) {
+        return {
+            ok: true,
+            started: false,
+            dryRun,
+            nowMs,
+            nowIso: new Date(nowMs).toISOString(),
+            symbols,
+            batch: {
+                totalSymbols: symbols.length,
+                processedSymbols,
+                batchCursor: batchStart,
+                maxSymbolsPerRun,
+                nextCursor,
+                hasMore: nextCursor !== null,
+                finalized: true,
             },
             lookbackDays,
             maxRequestsPerSymbol,

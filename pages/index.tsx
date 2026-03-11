@@ -23,6 +23,8 @@ import {
   Star,
   ArrowUpRight,
   ArrowDownRight,
+  CheckCircle2,
+  XCircle,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -3815,13 +3817,14 @@ export default function Home() {
     scalpPipelineOrchestratorStartedAtMs !== null &&
     Date.now() - scalpPipelineOrchestratorStartedAtMs <= 12 * 60 * 60_000;
   const scalpWorkerIsInProgress =
+    !scalpPanicStopEnabled &&
     scalpWorkerHeartbeatStatus === 'started' &&
     scalpWorkerHeartbeatStartedAtMs !== null &&
     (scalpWorkerHeartbeatFinishedAtMs === null || scalpWorkerHeartbeatFinishedAtMs < scalpWorkerHeartbeatStartedAtMs) &&
     Date.now() - scalpWorkerHeartbeatStartedAtMs <=
       Math.max(60_000, (scalpWorkerHeartbeatBudgetMs || 120_000) * 3);
   const scalpOrchestratorIsInProgress =
-    scalpPipelineOrchestratorFresh || scalpCycleStatusRaw === 'running' || scalpWorkerIsInProgress;
+    !scalpPanicStopEnabled && (scalpPipelineOrchestratorFresh || scalpWorkerIsInProgress);
   const scalpIsCronRowInProgress = (rowId: string): boolean => {
     const invokeRunning = Boolean(scalpCronInvokeStateById[rowId]?.running);
     if (invokeRunning) return true;
@@ -3834,6 +3837,35 @@ export default function Home() {
     scalpInProgressCronRows.length > 0
       ? scalpInProgressCronRows.map((row) => row.id).join(', ')
       : 'none';
+  const scalpOrchestratorStageRaw = String(scalpPipelineOrchestrator?.stage || '')
+    .trim()
+    .toLowerCase();
+  const scalpOrchestratorStageOrder = ['discover', 'load_candles', 'prepare', 'worker', 'aggregate', 'promotion', 'done'] as const;
+  const scalpOrchestratorStageIndex = scalpOrchestratorStageOrder.indexOf(
+    scalpOrchestratorStageRaw as (typeof scalpOrchestratorStageOrder)[number],
+  );
+  const scalpOrchestratorLastError = String(scalpPipelineOrchestrator?.lastError || '').trim();
+  const scalpOrchestratorHasFailure =
+    (!scalpPanicStopEnabled && Boolean(scalpOrchestratorLastError)) || scalpCycleStatusRaw === 'FAILED';
+  const scalpOrchestratorChecklist = [
+    { id: 'scalp_discover_symbols', stage: 'discover', label: 'Discover symbols' },
+    { id: 'scalp_load_candles', stage: 'load_candles', label: 'Load candles' },
+    { id: 'scalp_prepare_and_start_cycle', stage: 'prepare', label: 'Prepare + start cycle' },
+    { id: 'scalp_cycle_worker', stage: 'worker', label: 'Run cycle worker' },
+    { id: 'scalp_cycle_aggregate', stage: 'aggregate', label: 'Aggregate cycle results' },
+    { id: 'scalp_promotion_gate_apply', stage: 'promotion', label: 'Apply promotion gate' },
+  ] as const;
+  const scalpOrchestratorSubtaskState = (stage: string): 'pending' | 'running' | 'success' | 'failed' => {
+    if (scalpPanicStopEnabled) return 'pending';
+    if (scalpOrchestratorStageRaw === 'done' && !scalpOrchestratorHasFailure) return 'success';
+    const idx = scalpOrchestratorChecklist.findIndex((row) => row.stage === stage);
+    if (idx < 0 || scalpOrchestratorStageIndex < 0) return 'pending';
+    if (idx < scalpOrchestratorStageIndex) return 'success';
+    if (idx > scalpOrchestratorStageIndex) return 'pending';
+    if (scalpOrchestratorHasFailure) return 'failed';
+    if (scalpOrchestratorIsInProgress) return 'running';
+    return 'pending';
+  };
   const scalpActiveExecutionTs =
     scalpActiveExecution && typeof scalpActiveExecution.timestampMs === 'number'
       ? scalpActiveExecution.timestampMs
@@ -4676,22 +4708,86 @@ export default function Home() {
                                             {invokeState.atMs ? ` · ${formatScalpTime(invokeState.atMs)}` : ''}
                                           </div>
                                         ) : null}
-                                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-5">
-                                          {row.details.map((detail) => (
-                                            <div
-                                              key={`${row.id}-${detail.label}`}
-                                              className={`rounded-xl border px-2.5 py-2 ${scalpCronDetailToneMeta(
-                                                detail.tone,
-                                              )}`}
-                                            >
-                                              <div className="text-[10px] uppercase tracking-[0.14em]">
-                                                {detail.label}
-                                              </div>
-                                              <div className="mt-1 text-xs font-semibold">{detail.value}</div>
+                                        {row.id === 'scalp_orchestrator' ? (
+                                          <div
+                                            className={`rounded-xl border px-3 py-3 ${
+                                              scalpDarkMode ? 'border-zinc-700 bg-zinc-950/50' : 'border-slate-200 bg-slate-50'
+                                            }`}
+                                          >
+                                            <div className={`mb-2 text-xs font-semibold ${scalpTextPrimaryClass}`}>
+                                              Pipeline subtask checklist
                                             </div>
-                                          ))}
-                                        </div>
-                                        {row.visualMetrics && row.visualMetrics.length ? (
+                                            <div className="space-y-2">
+                                              {scalpOrchestratorChecklist.map((subtask, index) => {
+                                                const state = scalpOrchestratorSubtaskState(subtask.stage);
+                                                const icon =
+                                                  state === 'running' ? (
+                                                    <Repeat className="h-4 w-4 animate-spin text-amber-500" />
+                                                  ) : state === 'success' ? (
+                                                    <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                                                  ) : state === 'failed' ? (
+                                                    <XCircle className="h-4 w-4 text-rose-500" />
+                                                  ) : (
+                                                    <Circle className={`h-4 w-4 ${scalpTextMutedClass}`} />
+                                                  );
+                                                return (
+                                                  <div
+                                                    key={`orchestrator-subtask-${subtask.id}`}
+                                                    className={`flex items-center justify-between gap-3 rounded-lg border px-2.5 py-2 ${
+                                                      scalpDarkMode ? 'border-zinc-700/80 bg-zinc-900/70' : 'border-slate-200 bg-white'
+                                                    }`}
+                                                  >
+                                                    <div className="flex items-center gap-2">
+                                                      <span className={`text-[11px] ${scalpTextMutedClass}`}>{index + 1}.</span>
+                                                      {icon}
+                                                      <span className={`text-sm font-medium ${scalpTextPrimaryClass}`}>{subtask.label}</span>
+                                                    </div>
+                                                    <span
+                                                      className={`rounded-full border px-2 py-0.5 text-[11px] ${
+                                                        state === 'running'
+                                                          ? scalpCronDetailToneMeta('warning')
+                                                          : state === 'success'
+                                                            ? scalpCronDetailToneMeta('positive')
+                                                            : state === 'failed'
+                                                              ? scalpCronDetailToneMeta('critical')
+                                                              : scalpCronDetailToneMeta('neutral')
+                                                      }`}
+                                                    >
+                                                      {state}
+                                                    </span>
+                                                  </div>
+                                                );
+                                              })}
+                                            </div>
+                                            {scalpPanicStopEnabled ? (
+                                              <div className={`mt-2 text-xs ${scalpTextSecondaryClass}`}>
+                                                blocked by panic stop
+                                              </div>
+                                            ) : null}
+                                            {scalpOrchestratorHasFailure ? (
+                                              <div className="mt-2 text-xs text-rose-500">
+                                                {scalpOrchestratorLastError || 'pipeline failed'}
+                                              </div>
+                                            ) : null}
+                                          </div>
+                                        ) : (
+                                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-5">
+                                            {row.details.map((detail) => (
+                                              <div
+                                                key={`${row.id}-${detail.label}`}
+                                                className={`rounded-xl border px-2.5 py-2 ${scalpCronDetailToneMeta(
+                                                  detail.tone,
+                                                )}`}
+                                              >
+                                                <div className="text-[10px] uppercase tracking-[0.14em]">
+                                                  {detail.label}
+                                                </div>
+                                                <div className="mt-1 text-xs font-semibold">{detail.value}</div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+                                        {row.id !== 'scalp_orchestrator' && row.visualMetrics && row.visualMetrics.length ? (
                                           <div className="mt-3">
                                             <div
                                               className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
@@ -4722,7 +4818,7 @@ export default function Home() {
                                             </div>
                                           </div>
                                         ) : null}
-                                        {row.id === 'scalp_cycle_worker' ? (
+                                        {row.id !== 'scalp_orchestrator' && row.id === 'scalp_cycle_worker' ? (
                                           <div className="mt-3">
                                             <div
                                               className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
@@ -4881,7 +4977,7 @@ export default function Home() {
                                             </div>
                                           </div>
                                         ) : null}
-                                        {row.id === 'scalp_promotion_gate_apply' ? (
+                                        {row.id !== 'scalp_orchestrator' && row.id === 'scalp_promotion_gate_apply' ? (
                                           <div className="mt-3">
                                             <div
                                               className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
@@ -4980,7 +5076,7 @@ export default function Home() {
                                             </div>
                                           </div>
                                         ) : null}
-                                        {row.resultPreview ? (
+                                        {row.id !== 'scalp_orchestrator' && row.resultPreview ? (
                                           <div className="mt-3">
                                             <div
                                               className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
@@ -4992,7 +5088,7 @@ export default function Home() {
                                             </pre>
                                           </div>
                                         ) : null}
-                                        {row.id === 'scalp_discover_symbols' ? (
+                                        {row.id !== 'scalp_orchestrator' && row.id === 'scalp_discover_symbols' ? (
                                           <div className="mt-3">
                                             <div
                                               className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
@@ -5096,7 +5192,7 @@ export default function Home() {
                                             </div>
                                           </div>
                                         ) : null}
-                                        {row.id === 'scalp_prepare_and_start_cycle' ? (
+                                        {row.id !== 'scalp_orchestrator' && row.id === 'scalp_prepare_and_start_cycle' ? (
                                           <div className="mt-3">
                                             <div
                                               className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}

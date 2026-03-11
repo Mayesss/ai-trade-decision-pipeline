@@ -7,15 +7,19 @@ import { aggregateScalpResearchCycle, loadActiveResearchCycleId, loadResearchCyc
 import { syncResearchCyclePromotionGates } from './researchPromotion';
 import { runScalpSymbolDiscoveryCycle } from './symbolDiscovery';
 
-type OrchestratorStage = 'discover' | 'prepare' | 'worker' | 'aggregate' | 'promotion' | 'done';
+type OrchestratorStage = 'discover' | 'load_candles' | 'prepare' | 'worker' | 'aggregate' | 'promotion' | 'done';
 
 interface OrchestratorState {
     version: 1;
     runId: string;
     stage: OrchestratorStage;
+    loadCursor: number;
     prepareCursor: number;
     selectedSymbols: string[];
     cycleId: string | null;
+    loadPassAddedCandles: number;
+    loadPassErrors: number;
+    loadPasses: number;
     preparePassAddedCandles: number;
     preparePassErrors: number;
     preparePasses: number;
@@ -45,11 +49,12 @@ function asState(value: unknown): OrchestratorState | null {
     if (Number(row.version) !== 1) return null;
     const runId = String(row.runId || '').trim();
     const stage = String(row.stage || '').trim() as OrchestratorStage;
-    if (!runId || !['discover', 'prepare', 'worker', 'aggregate', 'promotion', 'done'].includes(stage)) return null;
+    if (!runId || !['discover', 'load_candles', 'prepare', 'worker', 'aggregate', 'promotion', 'done'].includes(stage)) return null;
     return {
         version: 1,
         runId,
         stage,
+        loadCursor: Math.max(0, Math.floor(Number(row.loadCursor) || 0)),
         prepareCursor: Math.max(0, Math.floor(Number(row.prepareCursor) || 0)),
         selectedSymbols: Array.isArray(row.selectedSymbols)
             ? row.selectedSymbols
@@ -57,6 +62,9 @@ function asState(value: unknown): OrchestratorState | null {
                   .filter((v) => Boolean(v))
             : [],
         cycleId: String(row.cycleId || '').trim() || null,
+        loadPassAddedCandles: Math.max(0, Math.floor(Number(row.loadPassAddedCandles) || 0)),
+        loadPassErrors: Math.max(0, Math.floor(Number(row.loadPassErrors) || 0)),
+        loadPasses: Math.max(0, Math.floor(Number(row.loadPasses) || 0)),
         preparePassAddedCandles: Math.max(0, Math.floor(Number(row.preparePassAddedCandles) || 0)),
         preparePassErrors: Math.max(0, Math.floor(Number(row.preparePassErrors) || 0)),
         preparePasses: Math.max(0, Math.floor(Number(row.preparePasses) || 0)),
@@ -81,9 +89,13 @@ function newState(tsMs: number): OrchestratorState {
         version: 1,
         runId: newRunId(tsMs),
         stage: 'discover',
+        loadCursor: 0,
         prepareCursor: 0,
         selectedSymbols: [],
         cycleId: null,
+        loadPassAddedCandles: 0,
+        loadPassErrors: 0,
+        loadPasses: 0,
         preparePassAddedCandles: 0,
         preparePassErrors: 0,
         preparePasses: 0,
@@ -219,6 +231,13 @@ function toPositiveInt(value: unknown, fallback: number): number {
     return n;
 }
 
+function estimateMaxRequestsPerSymbol(lookbackDays: number): number {
+    const minutes = Math.max(1, lookbackDays) * 24 * 60;
+    // Capital candle fetch uses maxPerRequest=1000; keep safety headroom for gaps/retries.
+    const requests = Math.ceil(minutes / 1000) + 12;
+    return Math.max(40, Math.min(400, requests));
+}
+
 function isTerminalCycleStatus(status: string | null | undefined): boolean {
     const normalized = String(status || '')
         .trim()
@@ -350,7 +369,11 @@ export async function runScalpPipelineOrchestrator(
                     dryRun: false,
                     includeLiveQuotes: true,
                 });
-                state.stage = 'prepare';
+                state.stage = 'load_candles';
+                state.loadCursor = 0;
+                state.loadPassAddedCandles = 0;
+                state.loadPassErrors = 0;
+                state.loadPasses = 0;
                 state.prepareCursor = 0;
                 state.preparePassAddedCandles = 0;
                 state.preparePassErrors = 0;
@@ -367,20 +390,74 @@ export async function runScalpPipelineOrchestrator(
                 continue;
             }
 
+            if (state.stage === 'load_candles') {
+                const remainingMs = Math.max(10_000, deadlineMs - nowMs());
+                const lookbackDays = 90;
+                const load = await prepareAndStartScalpResearchCycle({
+                    dryRun: false,
+                    force: false,
+                    runDiscovery: false,
+                    finalizeBatch: false,
+                    fillOnly: true,
+                    symbols: state.selectedSymbols,
+                    batchCursor: state.loadCursor,
+                    maxDurationMs: Math.max(30_000, Math.min(remainingMs - 5_000, 4 * 60_000)),
+                    lookbackDays,
+                    chunkDays: 14,
+                    minCandlesPerTask: 180,
+                    maxSymbolsPerRun: 12,
+                    maxRequestsPerSymbol: estimateMaxRequestsPerSymbol(lookbackDays),
+                    startedBy: 'cron:scalp-orchestrator',
+                });
+                const addedCandlesThisBatch = load.steps.fill.reduce(
+                    (sum, row) => sum + Math.max(0, Math.floor(Number(row.addedCount) || 0)),
+                    0,
+                );
+                const errorsThisBatch = load.steps.fill.reduce((sum, row) => sum + (row.error ? 1 : 0), 0);
+                state.loadPassAddedCandles += addedCandlesThisBatch;
+                state.loadPassErrors += errorsThisBatch;
+                stageEvents.push({
+                    stage: 'load_candles',
+                    ok: load.ok,
+                    nextCursor: load.batch.nextCursor,
+                    hasMore: load.batch.hasMore,
+                    addedCandlesThisBatch,
+                    errorsThisBatch,
+                    passAddedCandles: state.loadPassAddedCandles,
+                    passErrors: state.loadPassErrors,
+                    passNumber: state.loadPasses + 1,
+                    processedSymbols: load.batch.processedSymbols.length,
+                });
+                state.loadCursor = load.batch.nextCursor || 0;
+                if (load.batch.hasMore && load.batch.nextCursor !== null) {
+                    state.updatedAtMs = nowMs();
+                    await saveOrchestratorState(state);
+                    if (nowMs() >= deadlineMs) break;
+                    continue;
+                }
+
+                state.loadPasses += 1;
+                state.stage = 'prepare';
+                state.updatedAtMs = nowMs();
+                await saveOrchestratorState(state);
+                continue;
+            }
+
             if (state.stage === 'prepare') {
                 const remainingMs = Math.max(10_000, deadlineMs - nowMs());
                 const prep = await prepareAndStartScalpResearchCycle({
                     dryRun: false,
                     force: false,
                     runDiscovery: false,
-                    finalizeBatch: false,
+                    finalizeBatch: true,
+                    skipFill: true,
                     symbols: state.selectedSymbols,
-                    batchCursor: state.prepareCursor,
+                    batchCursor: 0,
                     maxDurationMs: Math.max(30_000, Math.min(remainingMs - 5_000, 4 * 60_000)),
                     lookbackDays: 90,
                     chunkDays: 14,
                     minCandlesPerTask: 180,
-                    maxSymbolsPerRun: 12,
+                    maxSymbolsPerRun: Math.max(1, state.selectedSymbols.length || 1),
                     maxRequestsPerSymbol: 24,
                     startedBy: 'cron:scalp-orchestrator',
                 });

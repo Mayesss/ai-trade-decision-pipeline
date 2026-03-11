@@ -4,6 +4,7 @@ import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 
 const PANIC_STOP_KIND = 'execute_cycle';
 const PANIC_STOP_DEDUPE_KEY = 'scalp_panic_stop_v1';
+const ORCHESTRATOR_STATE_DEDUPE_KEY = 'scalp_pipeline_orchestrator_state_v1';
 
 export interface ScalpPanicStopState {
     enabled: boolean;
@@ -129,6 +130,65 @@ export async function setScalpPanicStopState(params: {
                 updated_at = NOW();
         `,
     );
+    if (payload.enabled) {
+        const orchestratorRows = await db.$queryRaw<Array<{ payload: unknown }>>(Prisma.sql`
+            SELECT payload
+            FROM scalp_jobs
+            WHERE kind = ${PANIC_STOP_KIND}::scalp_job_kind
+              AND dedupe_key = ${ORCHESTRATOR_STATE_DEDUPE_KEY}
+            LIMIT 1;
+        `);
+        const current = asRecord(orchestratorRows[0]?.payload);
+        if (Object.keys(current).length > 0) {
+            const nextPayload = {
+                ...current,
+                stage: 'done',
+                completedAtMs: nowMs,
+                updatedAtMs: nowMs,
+                lockOwner: null,
+                lockUntilMs: 0,
+                lastError: 'panic_stop_enabled',
+            };
+            await db.$executeRaw(
+                Prisma.sql`
+                    INSERT INTO scalp_jobs(
+                        kind,
+                        dedupe_key,
+                        payload,
+                        status,
+                        attempts,
+                        max_attempts,
+                        scheduled_for,
+                        next_run_at,
+                        last_error
+                    )
+                    VALUES(
+                        ${PANIC_STOP_KIND}::scalp_job_kind,
+                        ${ORCHESTRATOR_STATE_DEDUPE_KEY},
+                        ${JSON.stringify(nextPayload)}::jsonb,
+                        'succeeded'::scalp_job_status,
+                        1,
+                        1,
+                        NOW(),
+                        NOW(),
+                        NULL
+                    )
+                    ON CONFLICT(kind, dedupe_key)
+                    DO UPDATE SET
+                        payload = EXCLUDED.payload,
+                        status = EXCLUDED.status,
+                        attempts = EXCLUDED.attempts,
+                        max_attempts = EXCLUDED.max_attempts,
+                        scheduled_for = EXCLUDED.scheduled_for,
+                        next_run_at = EXCLUDED.next_run_at,
+                        locked_by = NULL,
+                        locked_at = NULL,
+                        last_error = NULL,
+                        updated_at = NOW();
+                `,
+            );
+        }
+    }
     return {
         enabled: payload.enabled,
         reason: payload.reason,
