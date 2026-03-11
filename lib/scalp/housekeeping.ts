@@ -363,7 +363,7 @@ export async function runScalpHousekeeping(
 
     let reportRefreshed = false;
     if (refreshReport) {
-        await refreshScalpResearchPortfolioReport({ nowMs, persist: !dryRun });
+        await refreshScalpResearchPortfolioReport({ nowMs, persist: false });
         reportRefreshed = true;
     }
 

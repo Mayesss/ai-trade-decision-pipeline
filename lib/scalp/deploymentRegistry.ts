@@ -625,9 +625,13 @@ export function scalpDeploymentRegistryStoreMode(): 'pg' | 'file' {
     const configured = String(process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE || 'auto')
         .trim()
         .toLowerCase();
-    if (configured === 'pg') return 'pg';
-    if (configured === 'file') return 'file';
-    return isScalpPgConfigured() ? 'pg' : 'file';
+    const allowFileBackend = configured === 'file' && process.env.ALLOW_SCALP_FILE_BACKEND === '1';
+
+    if (allowFileBackend) return 'file';
+    if (!isScalpPgConfigured()) {
+        throw new Error('scalp_deployments_pg_required');
+    }
+    return 'pg';
 }
 
 async function loadScalpDeploymentRegistryFromFile(): Promise<ScalpDeploymentRegistrySnapshot> {

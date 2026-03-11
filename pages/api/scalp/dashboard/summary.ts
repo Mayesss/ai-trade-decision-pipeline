@@ -1,6 +1,7 @@
 export const config = { runtime: 'nodejs' };
 
 import type { NextApiRequest, NextApiResponse } from 'next';
+import { Prisma } from '@prisma/client';
 
 import { requireAdminAccess } from '../../../../lib/admin';
 import { getScalpCronSymbolConfigs } from '../../../../lib/symbolRegistry';
@@ -14,6 +15,7 @@ import {
 import { getScalpStrategyConfig } from '../../../../lib/scalp/config';
 import { listScalpDeploymentRegistryEntries, type ScalpForwardValidationMetrics } from '../../../../lib/scalp/deploymentRegistry';
 import { DEFAULT_SCALP_TUNE_ID, resolveScalpDeployment } from '../../../../lib/scalp/deployments';
+import { isScalpPgConfigured, scalpPrisma } from '../../../../lib/scalp/pg/client';
 import { normalizeScalpStrategyId } from '../../../../lib/scalp/strategies/registry';
 import { deriveScalpDayKey } from '../../../../lib/scalp/stateMachine';
 import { loadScalpJournal, loadScalpSessionState, loadScalpStrategyRuntimeSnapshot, loadScalpTradeLedger } from '../../../../lib/scalp/store';
@@ -119,6 +121,183 @@ type HistoryDiscoverySnapshot = {
   newestCandleAtMs: number | null;
   rows: HistoryDiscoveryRow[];
 };
+
+type ScalpPipelineSnapshot = {
+  orchestrator: {
+    runId: string | null;
+    stage: string | null;
+    startedAtMs: number | null;
+    updatedAtMs: number | null;
+    completedAtMs: number | null;
+    runningSinceMs: number | null;
+    isRunning: boolean;
+    progressPct: number | null;
+    progressLabel: string | null;
+    lastError: string | null;
+  } | null;
+  cycle: {
+    cycleId: string | null;
+    status: string | null;
+    createdAtMs: number | null;
+    updatedAtMs: number | null;
+    completedAtMs: number | null;
+    progressPct: number | null;
+    totals: {
+      tasks: number | null;
+      pending: number | null;
+      running: number | null;
+      completed: number | null;
+      failed: number | null;
+    } | null;
+  } | null;
+};
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+function asTsMs(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.floor(n);
+}
+
+function pipelineStageMeta(stageRaw: unknown): { progressPct: number | null; progressLabel: string | null } {
+  const stage = String(stageRaw || '')
+    .trim()
+    .toLowerCase();
+  if (!stage) return { progressPct: null, progressLabel: null };
+  const map: Record<string, { pct: number; label: string }> = {
+    discover: { pct: 10, label: 'discovering symbols' },
+    prepare: { pct: 35, label: 'preparing/backfilling history' },
+    worker: { pct: 70, label: 'running cycle worker' },
+    aggregate: { pct: 88, label: 'aggregating cycle results' },
+    promotion: { pct: 96, label: 'applying promotion gate' },
+    done: { pct: 100, label: 'completed' },
+  };
+  const hit = map[stage];
+  if (!hit) return { progressPct: null, progressLabel: stage.replace(/_/g, ' ') };
+  return { progressPct: hit.pct, progressLabel: hit.label };
+}
+
+async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSnapshot | null> {
+  if (!isScalpPgConfigured()) return null;
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<
+    Array<{
+      orchestratorPayload: unknown;
+      cycleId: string | null;
+      cycleStatus: string | null;
+      cycleCreatedAtMs: bigint | number | null;
+      cycleUpdatedAtMs: bigint | number | null;
+      cycleCompletedAtMs: bigint | number | null;
+      cycleSummary: unknown;
+    }>
+  >(Prisma.sql`
+    WITH orchestrator_state AS (
+      SELECT payload
+      FROM scalp_jobs
+      WHERE kind = 'execute_cycle'::scalp_job_kind
+        AND dedupe_key = 'scalp_pipeline_orchestrator_state_v1'
+      LIMIT 1
+    ),
+    selected_cycle AS (
+      SELECT
+        cycle_id,
+        status::text AS status,
+        latest_summary_json,
+        (EXTRACT(EPOCH FROM created_at) * 1000)::bigint AS created_at_ms,
+        (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint AS updated_at_ms,
+        CASE
+          WHEN completed_at IS NULL THEN NULL
+          ELSE (EXTRACT(EPOCH FROM completed_at) * 1000)::bigint
+        END AS completed_at_ms
+      FROM scalp_research_cycles
+      ORDER BY
+        CASE WHEN status = 'running'::scalp_cycle_status THEN 0 ELSE 1 END,
+        updated_at DESC
+      LIMIT 1
+    )
+    SELECT
+      (SELECT payload FROM orchestrator_state) AS "orchestratorPayload",
+      sc.cycle_id AS "cycleId",
+      sc.status AS "cycleStatus",
+      sc.created_at_ms AS "cycleCreatedAtMs",
+      sc.updated_at_ms AS "cycleUpdatedAtMs",
+      sc.completed_at_ms AS "cycleCompletedAtMs",
+      sc.latest_summary_json AS "cycleSummary"
+    FROM selected_cycle sc
+    UNION ALL
+    SELECT
+      (SELECT payload FROM orchestrator_state) AS "orchestratorPayload",
+      NULL::text AS "cycleId",
+      NULL::text AS "cycleStatus",
+      NULL::bigint AS "cycleCreatedAtMs",
+      NULL::bigint AS "cycleUpdatedAtMs",
+      NULL::bigint AS "cycleCompletedAtMs",
+      NULL::jsonb AS "cycleSummary"
+    WHERE NOT EXISTS (SELECT 1 FROM selected_cycle);
+  `);
+  const row = rows[0];
+  if (!row) return null;
+
+  const orchestratorPayload = asRecord(row.orchestratorPayload);
+  const orchestratorStage = String(orchestratorPayload.stage || '').trim() || null;
+  const orchestratorStartedAtMs = asTsMs(orchestratorPayload.startedAtMs);
+  const orchestratorCompletedAtMs = asTsMs(orchestratorPayload.completedAtMs);
+  const orchestratorUpdatedAtMs = asTsMs(orchestratorPayload.updatedAtMs);
+  const orchestratorRunning =
+    Boolean(orchestratorStage) &&
+    orchestratorStage !== 'done' &&
+    orchestratorStartedAtMs !== null &&
+    (orchestratorCompletedAtMs === null || orchestratorCompletedAtMs < orchestratorStartedAtMs);
+  const stageMeta = pipelineStageMeta(orchestratorStage);
+
+  const summary = asRecord(row.cycleSummary);
+  const totals = asRecord(summary.totals);
+  const cycleProgressPct = Number(summary.progressPct);
+  return {
+    orchestrator: orchestratorStage
+      ? {
+          runId: String(orchestratorPayload.runId || '').trim() || null,
+          stage: orchestratorStage,
+          startedAtMs: orchestratorStartedAtMs,
+          updatedAtMs: orchestratorUpdatedAtMs,
+          completedAtMs: orchestratorCompletedAtMs,
+          runningSinceMs: orchestratorRunning ? orchestratorStartedAtMs : null,
+          isRunning: orchestratorRunning,
+          progressPct:
+            Number.isFinite(cycleProgressPct) && cycleProgressPct >= 0
+              ? Math.max(stageMeta.progressPct ?? 0, Math.min(100, cycleProgressPct))
+              : stageMeta.progressPct,
+          progressLabel: stageMeta.progressLabel,
+          lastError: String(orchestratorPayload.lastError || '').trim() || null,
+        }
+      : null,
+    cycle: row.cycleId
+      ? {
+          cycleId: row.cycleId,
+          status: row.cycleStatus,
+          createdAtMs: asTsMs(row.cycleCreatedAtMs),
+          updatedAtMs: asTsMs(row.cycleUpdatedAtMs),
+          completedAtMs: asTsMs(row.cycleCompletedAtMs),
+          progressPct: Number.isFinite(cycleProgressPct) ? Math.max(0, Math.min(100, cycleProgressPct)) : null,
+          totals: Object.keys(totals).length
+            ? {
+                tasks: Number.isFinite(Number(totals.tasks)) ? Math.max(0, Math.floor(Number(totals.tasks))) : null,
+                pending: Number.isFinite(Number(totals.pending)) ? Math.max(0, Math.floor(Number(totals.pending))) : null,
+                running: Number.isFinite(Number(totals.running)) ? Math.max(0, Math.floor(Number(totals.running))) : null,
+                completed: Number.isFinite(Number(totals.completed))
+                  ? Math.max(0, Math.floor(Number(totals.completed)))
+                  : null,
+                failed: Number.isFinite(Number(totals.failed)) ? Math.max(0, Math.floor(Number(totals.failed))) : null,
+              }
+            : null,
+        }
+      : null,
+  };
+}
 
 function parseLimit(value: string | string[] | undefined, fallback: number): number {
   const first = Array.isArray(value) ? value[0] : value;
@@ -581,6 +760,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const cronSymbolConfigBySymbol = new Map(cronSymbolConfigs.map((row) => [row.symbol.toUpperCase(), row]));
     const cronAllConfig = cronSymbolConfigBySymbol.get('*') || null;
     const cronSymbols = useDeployments ? [] : cronSymbolConfigs;
+    stage = 'load_pipeline_state';
+    const pipeline = await loadScalpPipelineSnapshot(nowMs);
     stage = 'load_deployments';
     const deploymentRows = useDeployments ? await listScalpDeploymentRegistryEntries({ enabled: true }) : [];
     logDebug('runtime_loaded', {
@@ -835,6 +1016,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       },
       range,
       symbols: rows,
+      pipeline,
       history,
       latestExecutionByDeploymentId,
       latestExecutionBySymbol,

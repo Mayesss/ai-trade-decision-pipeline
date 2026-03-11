@@ -15,6 +15,7 @@ export interface PrepareAndStartCycleParams extends StartResearchCycleParams {
     batchCursor?: number;
     runDiscovery?: boolean;
     finalizeBatch?: boolean;
+    maxDurationMs?: number;
     nowMs?: number;
 }
 
@@ -101,7 +102,8 @@ function normalizeFetchedCandles(rows: unknown[]): ScalpCandle[] {
 export async function prepareAndStartScalpResearchCycle(
     params: PrepareAndStartCycleParams = {},
 ): Promise<PrepareAndStartCycleResult> {
-    const nowMs = Number.isFinite(Number(params.nowMs)) ? Math.floor(Number(params.nowMs)) : Date.now();
+    const invokeStartedAtMs = Date.now();
+    const nowMs = Number.isFinite(Number(params.nowMs)) ? Math.floor(Number(params.nowMs)) : invokeStartedAtMs;
     const dryRun = Boolean(params.dryRun);
     const lookbackDays = parsePositiveInt(params.lookbackDays, 90);
     const minCandlesPerTask = parsePositiveInt(params.minCandlesPerTask, 180);
@@ -110,6 +112,7 @@ export async function prepareAndStartScalpResearchCycle(
     const defaultMaxRequests = Math.max(20, Math.min(800, Math.ceil((lookbackDays * 24 * 60) / 900) + 10));
     const maxRequestsPerSymbol = parsePositiveInt(params.maxRequestsPerSymbol, defaultMaxRequests);
     const maxSymbolsPerRun = Math.max(1, parsePositiveInt(params.maxSymbolsPerRun, 1000));
+    const maxDurationMs = Math.max(30_000, Math.min(10 * 60_000, parsePositiveInt(params.maxDurationMs, 4 * 60_000)));
     const batchCursor = Math.max(0, parsePositiveInt(params.batchCursor, 0) - 1 + 1);
     const runDiscovery = params.runDiscovery !== false;
 
@@ -137,14 +140,19 @@ export async function prepareAndStartScalpResearchCycle(
     const batchStart = Math.min(symbols.length, Math.max(0, batchCursor));
     const batchEnd = Math.min(symbols.length, batchStart + maxSymbolsPerRun);
     const batchSymbols = symbols.slice(batchStart, batchEnd);
+    let effectiveBatchEnd = batchEnd;
     const hasMore = batchEnd < symbols.length;
-    const nextCursor = hasMore ? batchEnd : null;
-    const finalized = params.finalizeBatch === true || !hasMore;
+    let nextCursor = hasMore ? batchEnd : null;
+    let finalized = params.finalizeBatch === true || !hasMore;
 
     const fillRows: PrepareAndStartCycleResult['steps']['fill'] = [];
     const fetchFromMs = nowMs - lookbackDays * ONE_DAY_MS;
     const fetchToMs = nowMs;
+    const processedSymbols: string[] = [];
     for (const symbol of batchSymbols) {
+        if (Date.now() - invokeStartedAtMs >= maxDurationMs) {
+            break;
+        }
         try {
             const history = await loadScalpCandleHistory(symbol, seedTimeframe);
             const existing = history.record?.candles || [];
@@ -185,6 +193,7 @@ export async function prepareAndStartScalpResearchCycle(
                 fetchToMs,
                 error: null,
             });
+            processedSymbols.push(symbol);
         } catch (err: any) {
             fillRows.push({
                 symbol,
@@ -199,17 +208,22 @@ export async function prepareAndStartScalpResearchCycle(
                 fetchToMs,
                 error: String(err?.message || err || 'fill_failed'),
             });
+            processedSymbols.push(symbol);
         }
     }
 
-    const report = finalized ? await refreshScalpResearchPortfolioReport({ nowMs, persist: !dryRun }) : null;
+    effectiveBatchEnd = batchStart + processedSymbols.length;
+    nextCursor = effectiveBatchEnd < symbols.length ? effectiveBatchEnd : null;
+    finalized = params.finalizeBatch === true || nextCursor === null;
+
+    const report = finalized ? await refreshScalpResearchPortfolioReport({ nowMs, persist: false }) : null;
     const preflight = finalized
         ? await evaluateResearchCyclePreflight({
               symbols,
               lookbackDays,
               minCandlesPerTask,
-              requireUniverseSnapshot: true,
-              requireReportSnapshot: true,
+              requireUniverseSnapshot: false,
+              requireReportSnapshot: false,
               maxCandleChecks: Math.max(1, symbols.length),
           })
         : null;
@@ -224,11 +238,11 @@ export async function prepareAndStartScalpResearchCycle(
             symbols,
             batch: {
                 totalSymbols: symbols.length,
-                processedSymbols: batchSymbols,
+                processedSymbols,
                 batchCursor: batchStart,
                 maxSymbolsPerRun,
                 nextCursor,
-                hasMore,
+                hasMore: nextCursor !== null,
                 finalized: false,
             },
             lookbackDays,
@@ -260,11 +274,11 @@ export async function prepareAndStartScalpResearchCycle(
             symbols,
             batch: {
                 totalSymbols: symbols.length,
-                processedSymbols: batchSymbols,
+                processedSymbols,
                 batchCursor: batchStart,
                 maxSymbolsPerRun,
                 nextCursor,
-                hasMore,
+                hasMore: nextCursor !== null,
                 finalized: true,
             },
             lookbackDays,
@@ -292,6 +306,8 @@ export async function prepareAndStartScalpResearchCycle(
         symbols,
         lookbackDays,
         minCandlesPerTask,
+        requireUniverseSnapshot: false,
+        requireReportSnapshot: false,
         startedBy: params.startedBy || 'cron:prepare-and-start-cycle',
     });
 
@@ -304,11 +320,11 @@ export async function prepareAndStartScalpResearchCycle(
         symbols,
         batch: {
             totalSymbols: symbols.length,
-            processedSymbols: batchSymbols,
+            processedSymbols,
             batchCursor: batchStart,
             maxSymbolsPerRun,
             nextCursor,
-            hasMore,
+            hasMore: nextCursor !== null,
             finalized: true,
         },
         lookbackDays,

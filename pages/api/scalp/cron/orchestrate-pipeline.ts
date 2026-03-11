@@ -1,15 +1,9 @@
-export const config = { runtime: 'nodejs' };
+export const config = { runtime: 'nodejs', maxDuration: 600 };
 
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
-import { refreshScalpResearchPortfolioReport } from '../../../../lib/scalp/researchReporting';
-
-function firstQueryValue(value: string | string[] | undefined): string | undefined {
-    if (typeof value === 'string') return value.trim() || undefined;
-    if (Array.isArray(value) && value.length > 0) return String(value[0] || '').trim() || undefined;
-    return undefined;
-}
+import { runScalpPipelineOrchestrator } from '../../../../lib/scalp/orchestrator';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean): boolean {
     if (value === undefined) return fallback;
@@ -19,6 +13,12 @@ function parseBoolParam(value: string | string[] | undefined, fallback: boolean)
     if (['false', '0', 'no', 'off'].includes(normalized)) return false;
     if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
     return fallback;
+}
+
+function firstQueryValue(value: string | string[] | undefined): string | undefined {
+    if (typeof value === 'string') return value.trim() || undefined;
+    if (Array.isArray(value) && value.length > 0) return String(value[0] || '').trim() || undefined;
+    return undefined;
 }
 
 function parsePositiveInt(value: string | undefined): number | undefined {
@@ -40,33 +40,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!requireAdminAccess(req, res)) return;
     setNoStoreHeaders(res);
 
-    const dryRun = parseBoolParam(req.query.dryRun, false);
-    const cycleId = firstQueryValue(req.query.cycleId);
-    const tradeLimit = parsePositiveInt(firstQueryValue(req.query.tradeLimit));
-    const monthlyMonths = parsePositiveInt(firstQueryValue(req.query.monthlyMonths));
-
     try {
-        const snapshot = await refreshScalpResearchPortfolioReport({
-            cycleId,
-            tradeLimit,
-            monthlyMonths,
-            persist: false,
+        const out = await runScalpPipelineOrchestrator({
+            maxDurationMs: parsePositiveInt(firstQueryValue(req.query.maxDurationMs)),
+            selfInvokeOnContinue: parseBoolParam(req.query.selfInvokeOnContinue, true),
+            continueRun: parseBoolParam(req.query.continue, false),
+            debug: parseBoolParam(req.query.debug, false),
         });
-
-        return res.status(200).json({
-            ok: true,
-            dryRun,
-            generatedAtMs: snapshot.generatedAtMs,
-            generatedAtIso: snapshot.generatedAtIso,
-            cycle: snapshot.cycle,
-            summary: snapshot.summary,
-            monthlyPortfolio: snapshot.monthlyPortfolio,
-            topCorrelations: snapshot.correlationPairs.slice(0, 12),
-        });
+        const statusCode = out.status === 'blocked' ? 409 : out.status === 'error' ? 500 : 200;
+        return res.status(statusCode).json(out);
     } catch (err: any) {
         return res.status(500).json({
-            error: 'research_report_refresh_failed',
+            error: 'scalp_orchestrator_failed',
             message: err?.message || String(err),
         });
     }
 }
+

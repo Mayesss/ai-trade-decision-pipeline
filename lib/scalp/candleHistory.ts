@@ -95,7 +95,9 @@ function normalizeRecord(
 }
 
 function getLocalHistoryRoot(): string {
-    const configured = String(process.env.CANDLE_HISTORY_DIR || DEFAULT_CANDLE_HISTORY_DIR).trim();
+    const defaultDir =
+        process.env.VERCEL === '1' ? '/tmp/scalp-candles-history' : DEFAULT_CANDLE_HISTORY_DIR;
+    const configured = String(process.env.CANDLE_HISTORY_DIR || defaultDir).trim();
     const root = path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
     return root;
 }

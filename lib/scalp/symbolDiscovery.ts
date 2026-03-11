@@ -156,6 +156,7 @@ type CapitalDiscoveryResult = Awaited<ReturnType<typeof discoverCapitalMarketSym
 const DEFAULT_POLICY_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-discovery-policy.json');
 const DEFAULT_UNIVERSE_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-universe.json');
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+let latestUniverseSnapshot: ScalpSymbolUniverseSnapshot | null = null;
 const SEED_FRESHNESS_MAX_LAG_MS = 12 * 60 * 60 * 1000;
 
 const DEFAULT_POLICY: ScalpSymbolDiscoveryPolicy = {
@@ -350,15 +351,21 @@ export async function loadScalpSymbolDiscoveryPolicy(): Promise<ScalpSymbolDisco
 }
 
 export async function loadScalpSymbolUniverseSnapshot(): Promise<ScalpSymbolUniverseSnapshot | null> {
+    if (latestUniverseSnapshot) return latestUniverseSnapshot;
+    if (process.env.ALLOW_SCALP_FILE_BACKEND !== '1') return null;
     try {
         const raw = await readFile(resolveUniverseFilePath(), 'utf8');
-        return JSON.parse(raw) as ScalpSymbolUniverseSnapshot;
+        const parsed = JSON.parse(raw) as ScalpSymbolUniverseSnapshot;
+        latestUniverseSnapshot = parsed;
+        return parsed;
     } catch {
         return null;
     }
 }
 
 async function saveScalpSymbolUniverseSnapshot(snapshot: ScalpSymbolUniverseSnapshot): Promise<void> {
+    latestUniverseSnapshot = snapshot;
+    if (process.env.ALLOW_SCALP_FILE_BACKEND !== '1') return;
     const filePath = resolveUniverseFilePath();
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');

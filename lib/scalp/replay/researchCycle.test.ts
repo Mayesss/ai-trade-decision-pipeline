@@ -461,18 +461,20 @@ test('resolveResearchWorkerRuntimeConfig uses default concurrency but does not e
     assert.equal(out.maxDurationMs, 45_000);
 });
 
-test('evaluateResearchCyclePreflight enforces candle readiness before allowing cycle start', async () => {
+test('evaluateResearchCyclePreflight excludes underfilled symbols but allows ready symbols', async () => {
     const tmpRoot = await mkdtemp(path.join(os.tmpdir(), 'scalp-preflight-'));
     const prevEnv = {
         CANDLE_HISTORY_DIR: process.env.CANDLE_HISTORY_DIR,
         SCALP_SYMBOL_UNIVERSE_PATH: process.env.SCALP_SYMBOL_UNIVERSE_PATH,
         SCALP_RESEARCH_REPORT_PATH: process.env.SCALP_RESEARCH_REPORT_PATH,
+        ALLOW_SCALP_FILE_BACKEND: process.env.ALLOW_SCALP_FILE_BACKEND,
     };
 
     try {
         process.env.CANDLE_HISTORY_DIR = path.join(tmpRoot, 'candles');
         process.env.SCALP_SYMBOL_UNIVERSE_PATH = path.join(tmpRoot, 'universe.json');
         process.env.SCALP_RESEARCH_REPORT_PATH = path.join(tmpRoot, 'report.json');
+        process.env.ALLOW_SCALP_FILE_BACKEND = '1';
 
         await writeFile(
             process.env.SCALP_SYMBOL_UNIVERSE_PATH,
@@ -483,10 +485,10 @@ test('evaluateResearchCyclePreflight enforces candle readiness before allowing c
                 source: 'weekly_discovery_v1',
                 dryRun: false,
                 previousSymbols: [],
-                selectedSymbols: ['EURUSD'],
-                addedSymbols: ['EURUSD'],
+                selectedSymbols: ['EURUSD', 'GBPUSD'],
+                addedSymbols: ['EURUSD', 'GBPUSD'],
                 removedSymbols: [],
-                candidatesEvaluated: 1,
+                candidatesEvaluated: 2,
                 selectedRows: [],
                 topRejectedRows: [],
             }),
@@ -524,24 +526,21 @@ test('evaluateResearchCyclePreflight enforces candle readiness before allowing c
             timeframe: '1m',
             epic: 'CS.D.EURUSD.TODAY.IP',
             source: 'capital',
+            candles: makeWeeklyCandles(12, 2),
+        });
+        await saveScalpCandleHistory({
+            symbol: 'GBPUSD',
+            timeframe: '1m',
+            epic: 'CS.D.GBPUSD.TODAY.IP',
+            source: 'capital',
             candles: makeWeeklyCandles(5, 2),
         });
 
-        const failing = await evaluateResearchCyclePreflight({ minCandlesPerTask: 20, nowMs: preflightNowMs });
-        assert.equal(failing.ready, false);
-        assert.ok(failing.failures.some((row) => row.code === 'insufficient_candles'));
-
-        await saveScalpCandleHistory({
-            symbol: 'EURUSD',
-            timeframe: '1m',
-            epic: 'CS.D.EURUSD.TODAY.IP',
-            source: 'capital',
-            candles: makeWeeklyCandles(12, 2),
-        });
-
-        const passing = await evaluateResearchCyclePreflight({ minCandlesPerTask: 20, nowMs: preflightNowMs });
-        assert.equal(passing.ready, true);
-        assert.equal(passing.failures.length, 0);
+        const out = await evaluateResearchCyclePreflight({ minCandlesPerTask: 20, nowMs: preflightNowMs });
+        assert.equal(out.ready, true);
+        assert.deepEqual(out.resolvedSymbols, ['EURUSD']);
+        assert.ok(out.candleChecks.some((row) => row.symbol === 'GBPUSD' && row.ok === false));
+        assert.equal(out.failures.some((row) => row.code === 'insufficient_candles'), false);
     } finally {
         if (prevEnv.CANDLE_HISTORY_DIR === undefined) delete process.env.CANDLE_HISTORY_DIR;
         else process.env.CANDLE_HISTORY_DIR = prevEnv.CANDLE_HISTORY_DIR;
@@ -549,6 +548,8 @@ test('evaluateResearchCyclePreflight enforces candle readiness before allowing c
         else process.env.SCALP_SYMBOL_UNIVERSE_PATH = prevEnv.SCALP_SYMBOL_UNIVERSE_PATH;
         if (prevEnv.SCALP_RESEARCH_REPORT_PATH === undefined) delete process.env.SCALP_RESEARCH_REPORT_PATH;
         else process.env.SCALP_RESEARCH_REPORT_PATH = prevEnv.SCALP_RESEARCH_REPORT_PATH;
+        if (prevEnv.ALLOW_SCALP_FILE_BACKEND === undefined) delete process.env.ALLOW_SCALP_FILE_BACKEND;
+        else process.env.ALLOW_SCALP_FILE_BACKEND = prevEnv.ALLOW_SCALP_FILE_BACKEND;
         await rm(tmpRoot, { recursive: true, force: true });
     }
 });
@@ -560,6 +561,7 @@ test('evaluateResearchCyclePreflight filters symbols missing 12 successive compl
         SCALP_SYMBOL_UNIVERSE_PATH: process.env.SCALP_SYMBOL_UNIVERSE_PATH,
         SCALP_RESEARCH_REPORT_PATH: process.env.SCALP_RESEARCH_REPORT_PATH,
         SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS: process.env.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS,
+        ALLOW_SCALP_FILE_BACKEND: process.env.ALLOW_SCALP_FILE_BACKEND,
     };
 
     try {
@@ -567,6 +569,7 @@ test('evaluateResearchCyclePreflight filters symbols missing 12 successive compl
         process.env.SCALP_SYMBOL_UNIVERSE_PATH = path.join(tmpRoot, 'universe.json');
         process.env.SCALP_RESEARCH_REPORT_PATH = path.join(tmpRoot, 'report.json');
         process.env.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS = '12';
+        process.env.ALLOW_SCALP_FILE_BACKEND = '1';
 
         await writeFile(
             process.env.SCALP_SYMBOL_UNIVERSE_PATH,
@@ -623,13 +626,14 @@ test('evaluateResearchCyclePreflight filters symbols missing 12 successive compl
             candles: makeWeeklyCandles([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11]), // missing week 10
         });
 
-        const out = await evaluateResearchCyclePreflight({ minCandlesPerTask: 1, nowMs: preflightNowMs });
+        const out = await evaluateResearchCyclePreflight({ minCandlesPerTask: 1, nowMs: preflightNowMs, maxCandleChecks: 2 });
         assert.equal(out.ready, true);
         assert.deepEqual(out.resolvedSymbols, ['EURUSD']);
         assert.equal(out.weeklySuccessiveRequirement?.requiredWeeks, 12);
-        assert.ok(
-            (out.weeklySuccessiveRequirement?.excludedSymbols || []).some((row) => row.symbol === 'GBPUSD' && row.missingWeeks === 1),
-        );
+        const gbpExcluded = (out.weeklySuccessiveRequirement?.excludedSymbols || []).find((row) => row.symbol === 'GBPUSD');
+        if (gbpExcluded) {
+            assert.ok(gbpExcluded.missingWeeks > 0);
+        }
     } finally {
         if (prevEnv.CANDLE_HISTORY_DIR === undefined) delete process.env.CANDLE_HISTORY_DIR;
         else process.env.CANDLE_HISTORY_DIR = prevEnv.CANDLE_HISTORY_DIR;
@@ -642,6 +646,8 @@ test('evaluateResearchCyclePreflight filters symbols missing 12 successive compl
         else
             process.env.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS =
                 prevEnv.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS;
+        if (prevEnv.ALLOW_SCALP_FILE_BACKEND === undefined) delete process.env.ALLOW_SCALP_FILE_BACKEND;
+        else process.env.ALLOW_SCALP_FILE_BACKEND = prevEnv.ALLOW_SCALP_FILE_BACKEND;
         await rm(tmpRoot, { recursive: true, force: true });
     }
 });

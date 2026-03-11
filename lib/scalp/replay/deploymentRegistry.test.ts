@@ -17,8 +17,10 @@ test('deployment registry upserts, filters, and removes tuned deployments via fi
     const dir = await mkdtemp(path.join(os.tmpdir(), 'scalp-deployments-'));
     const prevPath = process.env.SCALP_DEPLOYMENTS_REGISTRY_PATH;
     const prevStore = process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE;
+    const prevAllowFile = process.env.ALLOW_SCALP_FILE_BACKEND;
     process.env.SCALP_DEPLOYMENTS_REGISTRY_PATH = path.join(dir, 'registry.json');
     process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE = 'file';
+    process.env.ALLOW_SCALP_FILE_BACKEND = '1';
 
     try {
         const upserted = await upsertScalpDeploymentRegistryEntry({
@@ -101,6 +103,11 @@ test('deployment registry upserts, filters, and removes tuned deployments via fi
         } else {
             process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE = prevStore;
         }
+        if (prevAllowFile === undefined) {
+            delete process.env.ALLOW_SCALP_FILE_BACKEND;
+        } else {
+            process.env.ALLOW_SCALP_FILE_BACKEND = prevAllowFile;
+        }
     }
 });
 
@@ -109,6 +116,7 @@ test('canonicalizeScalpDeploymentRegistry rewrites legacy guarded strategy rows 
     const filePath = path.join(dir, 'registry.json');
     const prevPath = process.env.SCALP_DEPLOYMENTS_REGISTRY_PATH;
     const prevStore = process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE;
+    const prevAllowFile = process.env.ALLOW_SCALP_FILE_BACKEND;
     const prevVariant = process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT;
     const prevHours = process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_BERLIN;
     const prevExperiment = process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_EXPERIMENT;
@@ -118,6 +126,7 @@ test('canonicalizeScalpDeploymentRegistry rewrites legacy guarded strategy rows 
 
     process.env.SCALP_DEPLOYMENTS_REGISTRY_PATH = filePath;
     process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE = 'file';
+    process.env.ALLOW_SCALP_FILE_BACKEND = '1';
     delete process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT;
     delete process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_BERLIN;
     delete process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_EXPERIMENT;
@@ -219,6 +228,8 @@ test('canonicalizeScalpDeploymentRegistry rewrites legacy guarded strategy rows 
         } else {
             process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE = prevStore;
         }
+        if (prevAllowFile === undefined) delete process.env.ALLOW_SCALP_FILE_BACKEND;
+        else process.env.ALLOW_SCALP_FILE_BACKEND = prevAllowFile;
         if (prevVariant === undefined) delete process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT;
         else process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_VARIANT = prevVariant;
         if (prevHours === undefined) delete process.env.SCALP_BTCUSDT_GUARD_BLOCKED_HOURS_BERLIN;
@@ -238,8 +249,10 @@ test('deployment registry bulk upsert applies multiple rows and resolves duplica
     const dir = await mkdtemp(path.join(os.tmpdir(), 'scalp-deployments-bulk-'));
     const prevPath = process.env.SCALP_DEPLOYMENTS_REGISTRY_PATH;
     const prevStore = process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE;
+    const prevAllowFile = process.env.ALLOW_SCALP_FILE_BACKEND;
     process.env.SCALP_DEPLOYMENTS_REGISTRY_PATH = path.join(dir, 'registry.json');
     process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE = 'file';
+    process.env.ALLOW_SCALP_FILE_BACKEND = '1';
 
     try {
         const out = await upsertScalpDeploymentRegistryEntriesBulk([
@@ -295,6 +308,11 @@ test('deployment registry bulk upsert applies multiple rows and resolves duplica
             delete process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE;
         } else {
             process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE = prevStore;
+        }
+        if (prevAllowFile === undefined) {
+            delete process.env.ALLOW_SCALP_FILE_BACKEND;
+        } else {
+            process.env.ALLOW_SCALP_FILE_BACKEND = prevAllowFile;
         }
     }
 });

@@ -17,6 +17,7 @@ import { loadScalpTradeLedger } from './store';
 import type { ScalpTradeLedgerEntry } from './types';
 
 const DEFAULT_REPORT_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-research-report.json');
+let latestScalpResearchReportSnapshot: ScalpResearchPortfolioReportSnapshot | null = null;
 
 export interface ScalpTradeWindowPerformance {
     trades: number;
@@ -116,6 +117,10 @@ function resolveReportFilePath(): string {
     const configured = String(process.env.SCALP_RESEARCH_REPORT_PATH || '').trim();
     if (!configured) return DEFAULT_REPORT_FILE_PATH;
     return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
+}
+
+function allowScalpReportFileBackend(): boolean {
+    return process.env.ALLOW_SCALP_FILE_BACKEND === '1';
 }
 
 function monthKeyUtc(ts: number): string {
@@ -472,15 +477,21 @@ export async function buildScalpResearchPortfolioReport(
 }
 
 export async function loadScalpResearchPortfolioReportSnapshot(): Promise<ScalpResearchPortfolioReportSnapshot | null> {
+    if (latestScalpResearchReportSnapshot) return latestScalpResearchReportSnapshot;
+    if (!allowScalpReportFileBackend()) return null;
     try {
         const raw = await readFile(resolveReportFilePath(), 'utf8');
-        return JSON.parse(raw) as ScalpResearchPortfolioReportSnapshot;
+        const parsed = JSON.parse(raw) as ScalpResearchPortfolioReportSnapshot;
+        latestScalpResearchReportSnapshot = parsed;
+        return parsed;
     } catch {
         return null;
     }
 }
 
 export async function saveScalpResearchPortfolioReportSnapshot(snapshot: ScalpResearchPortfolioReportSnapshot): Promise<void> {
+    latestScalpResearchReportSnapshot = snapshot;
+    if (!allowScalpReportFileBackend()) return;
     const filePath = resolveReportFilePath();
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');

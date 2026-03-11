@@ -179,6 +179,8 @@ export interface StartResearchCycleParams {
     runningStaleAfterMs?: number;
     tunerEnabled?: boolean;
     maxTuneVariantsPerStrategy?: number;
+    requireUniverseSnapshot?: boolean;
+    requireReportSnapshot?: boolean;
     startedBy?: string | null;
 }
 
@@ -553,19 +555,33 @@ export async function evaluateResearchCyclePreflight(
     }
 
     const candleChecks: ResearchCyclePreflightCandleCheck[] = [];
+    const insufficientRows: Array<{
+        symbol: string;
+        availableCandles: number;
+        requiredCandles: number;
+    }> = [];
     const symbolsToCheck = new Set(resolvedSymbolsRaw.slice(0, maxCandleChecks));
     const weeklyExcludedSymbols: NonNullable<ResearchCyclePreflightResult['weeklySuccessiveRequirement']>['excludedSymbols'] = [];
     const resolvedSymbols: string[] = [];
     for (const symbol of resolvedSymbolsRaw) {
         const history = await loadScalpCandleHistory(symbol, '1m');
         const availableCandles = Math.max(0, history.record?.candles?.length || 0);
+        const candleReady = availableCandles >= requiredMinCandlesPerTask;
         if (symbolsToCheck.has(symbol)) {
             candleChecks.push({
                 symbol,
                 availableCandles,
                 requiredCandles: requiredMinCandlesPerTask,
-                ok: availableCandles >= requiredMinCandlesPerTask,
+                ok: candleReady,
             });
+        }
+        if (!candleReady) {
+            insufficientRows.push({
+                symbol,
+                availableCandles,
+                requiredCandles: requiredMinCandlesPerTask,
+            });
+            continue;
         }
         if (requiredSuccessiveWeeks > 0) {
             const weekly = evaluateSuccessiveCompletedWeeksFromCandles(
@@ -587,11 +603,10 @@ export async function evaluateResearchCyclePreflight(
         resolvedSymbols.push(symbol);
     }
 
-    const insufficientRows = candleChecks.filter((row) => !row.ok);
-    if (insufficientRows.length > 0) {
+    if (insufficientRows.length > 0 && resolvedSymbols.length === 0) {
         failures.push({
             code: 'insufficient_candles',
-            message: `${insufficientRows.length} symbol(s) are below required 1m candle history.`,
+            message: `${insufficientRows.length} symbol(s) are below required 1m candle history and no symbols are currently eligible.`,
             details: {
                 requiredCandles: requiredMinCandlesPerTask,
                 checkedSymbols: symbolsToCheck.size,
@@ -609,6 +624,13 @@ export async function evaluateResearchCyclePreflight(
                 requiredSuccessiveWeeks > 0
                     ? `No symbols satisfied readiness checks (requires ${requiredSuccessiveWeeks} successive completed Monday-Sunday weeks).`
                     : 'No symbols were resolved for the research cycle.',
+            details: {
+                totalSymbolsConsidered: resolvedSymbolsRaw.length,
+                symbolsBelowMinCandles: insufficientRows.length,
+                symbolsMissingWeeks: weeklyExcludedSymbols.length,
+                requiredCandles: requiredMinCandlesPerTask,
+                requiredWeeks: requiredSuccessiveWeeks,
+            },
         });
     }
 

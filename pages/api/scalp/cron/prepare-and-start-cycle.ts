@@ -1,4 +1,4 @@
-export const config = { runtime: 'nodejs' };
+export const config = { runtime: 'nodejs', maxDuration: 600 };
 
 import type { NextApiRequest, NextApiResponse } from 'next';
 
@@ -72,13 +72,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             tunerEnabled: req.query.tunerEnabled === undefined ? undefined : parseBoolParam(req.query.tunerEnabled, true),
             maxTuneVariantsPerStrategy: parsePositiveInt(firstQueryValue(req.query.maxTuneVariantsPerStrategy)),
             maxRequestsPerSymbol: parsePositiveInt(firstQueryValue(req.query.maxRequestsPerSymbol)),
+            maxDurationMs: parsePositiveInt(firstQueryValue(req.query.maxDurationMs)),
             seedTimeframe: firstQueryValue(req.query.seedTimeframe),
             startedBy: firstQueryValue(req.query.startedBy) || 'cron:prepare-and-start-cycle',
         });
 
-        return res.status(out.ok ? 200 : 409).json({
+        const notReadyReasons = (out.steps.preflight?.failures || []).map((row) =>
+            String(row?.code || '')
+                .trim()
+                .toLowerCase(),
+        );
+        const message = out.ok
+            ? out.started
+                ? 'Cycle prepared and started.'
+                : 'Cycle preparation completed (no start needed yet).'
+            : `Cycle preparation completed but preflight is not ready: ${notReadyReasons.join(', ') || 'unknown_reason'}.`;
+
+        const statusCode = out.ok ? 200 : 409;
+        return res.status(statusCode).json({
             ok: out.ok,
             started: out.started,
+            message,
+            status: out.ok ? (out.started ? 'started' : 'prepared') : 'preflight_blocked',
             dryRun: out.dryRun,
             nowMs: out.nowMs,
             nowIso: out.nowIso,
