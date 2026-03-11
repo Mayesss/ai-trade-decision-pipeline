@@ -4239,12 +4239,17 @@ export default function Home() {
                   <div className={`h-40 rounded-xl border ${scalpDarkMode ? 'border-zinc-700 bg-zinc-800' : 'border-slate-200 bg-slate-50'}`} />
                 </div>
               </div>
-            ) : !scalpOpsDeployments.length ? (
-              <div className="flex items-center justify-center py-12 text-sm font-semibold text-slate-500">
-                No scalp deployments yet. Add enabled deployments to the registry, run one cycle, then refresh.
-              </div>
             ) : (
               <div className="space-y-5">
+                {!scalpOpsDeployments.length ? (
+                  <div className={`rounded-xl border px-4 py-3 text-sm ${
+                    scalpDarkMode
+                      ? 'border-zinc-700 bg-zinc-900/60 text-zinc-300'
+                      : 'border-slate-200 bg-slate-50 text-slate-600'
+                  }`}>
+                    No enabled scalp deployments right now. Research/cycle/cron telemetry is still available below.
+                  </div>
+                ) : null}
                 <section className={scalpHeroClass}>
                   <div className={scalpHeroBadgeClass}>
                     {scalpResearchCycle?.cycleId || scalpResearchReport?.cycle?.cycleId || 'cycle_pending'}
