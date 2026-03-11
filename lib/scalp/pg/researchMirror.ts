@@ -4,8 +4,8 @@ import { normalizeScalpTuneId } from '../deployments';
 import { scalpPrisma } from './client';
 
 type ScalpCycleStatus = 'running' | 'completed' | 'failed' | 'stalled';
-type ScalpResearchTaskStatusKv = 'pending' | 'retry_wait' | 'running' | 'completed' | 'failed';
-type ScalpResearchTaskStatusPg = 'pending' | 'running' | 'retry_wait' | 'completed' | 'failed_permanent';
+type ScalpResearchTaskStatusKv = 'pending' | 'running' | 'completed' | 'failed';
+type ScalpResearchTaskStatusPg = 'pending' | 'running' | 'completed' | 'failed_permanent';
 
 export interface PgResearchCycleRow {
     cycleId: string;
@@ -75,7 +75,6 @@ function mapTaskStatusToPg(
     errorMessage: string | null,
 ): ScalpResearchTaskStatusPg {
     if (status === 'pending') return 'pending';
-    if (status === 'retry_wait') return 'retry_wait';
     if (status === 'running') return 'running';
     if (status === 'completed') return 'completed';
     const normalizedCode = String(errorCode || '')
@@ -85,12 +84,12 @@ function mapTaskStatusToPg(
         .trim()
         .toLowerCase();
     if (normalizedCode === 'symbol_cooldown_active' || normalizedMessage.includes('symbol_cooldown_active_until')) {
-        return 'retry_wait';
+        return 'pending';
     }
     if (Math.max(0, Math.floor(attempts)) >= Math.max(1, Math.floor(maxAttempts || 1))) {
         return 'failed_permanent';
     }
-    return 'retry_wait';
+    return 'pending';
 }
 
 export async function upsertResearchCycleToPg(row: PgResearchCycleRow): Promise<number> {

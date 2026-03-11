@@ -58,7 +58,7 @@ const RESEARCH_CLAIM_SCAN_BATCH_SIZE = Math.max(
 
 let pgWorkerHeartbeatSnapshot: ScalpResearchWorkerHeartbeatSnapshot | null = null;
 export type ScalpResearchCycleStatus = 'running' | 'completed' | 'failed' | 'stalled';
-export type ScalpResearchTaskStatus = 'pending' | 'retry_wait' | 'running' | 'completed' | 'failed';
+export type ScalpResearchTaskStatus = 'pending' | 'running' | 'completed' | 'failed';
 
 export interface ScalpResearchCycleParams {
     symbols: string[];
@@ -306,7 +306,6 @@ export type WorkerNoClaimScanSummary = {
     lockMisses: number;
     missingTask: number;
     pending: number;
-    retryWait: number;
     runningFresh: number;
     runningStale: number;
     runningMissingStartedAt: number;
@@ -643,14 +642,15 @@ function normalizeResearchWorkerHeartbeatStatus(value: unknown): ResearchWorkerH
 
 function normalizeWorkerNoClaimScanSummary(raw: unknown): WorkerNoClaimScanSummary | null {
     if (!isRecord(raw)) return null;
+    const pending = toNonNegativeInt(raw.pending, 0);
+    const legacyRetryWait = toNonNegativeInt(raw.retryWait, 0);
     return {
         scannedTasks: toNonNegativeInt(raw.scannedTasks, 0),
         lockAttempts: toNonNegativeInt(raw.lockAttempts, 0),
         locksAcquired: toNonNegativeInt(raw.locksAcquired, 0),
         lockMisses: toNonNegativeInt(raw.lockMisses, 0),
         missingTask: toNonNegativeInt(raw.missingTask, 0),
-        pending: toNonNegativeInt(raw.pending, 0),
-        retryWait: toNonNegativeInt(raw.retryWait, 0),
+        pending: pending + legacyRetryWait,
         runningFresh: toNonNegativeInt(raw.runningFresh, 0),
         runningStale: toNonNegativeInt(raw.runningStale, 0),
         runningMissingStartedAt: toNonNegativeInt(raw.runningMissingStartedAt, 0),
@@ -778,14 +778,12 @@ export function evaluateResearchTaskClaimability(params: {
         Math.max(0, Math.floor(Number(params.nowMs) || 0)) - startedAtMs >= Math.max(1, params.runningStaleAfterMs);
     const maxAttemptsReached = attempts >= maxAttempts;
     const shouldMarkFailedForAttempts =
-        (params.status === 'pending' || params.status === 'retry_wait' || params.status === 'running') &&
+        (params.status === 'pending' || params.status === 'running') &&
         maxAttemptsReached &&
-        (params.status === 'pending' || params.status === 'retry_wait' || runningStale || runningMissingStartedAt);
+        (params.status === 'pending' || runningStale || runningMissingStartedAt);
     const claimable =
         !maxAttemptsReached &&
-        (params.status === 'pending' ||
-            params.status === 'retry_wait' ||
-            (params.status === 'running' && (runningStale || runningMissingStartedAt)));
+        (params.status === 'pending' || (params.status === 'running' && (runningStale || runningMissingStartedAt)));
     return {
         claimable,
         runningStale,
@@ -1240,12 +1238,7 @@ function mapPgResearchTaskStatusToLocal(status: unknown, errorCode: unknown): Sc
     if (normalized === 'pending') return 'pending';
     if (normalized === 'running') return 'running';
     if (normalized === 'completed') return 'completed';
-    if (normalized === 'retry_wait') {
-        const code = String(errorCode || '')
-            .trim()
-            .toLowerCase();
-        return code && code !== 'symbol_cooldown_active' ? 'failed' : 'retry_wait';
-    }
+    if (normalized === 'retry_wait') return 'pending';
     if (normalized === 'failed_permanent' || normalized === 'cancelled') return 'failed';
     return 'failed';
 }
@@ -1500,7 +1493,7 @@ export async function retryResearchTask(params: {
         if (!task) {
             throw Object.assign(new Error('task_not_found'), { code: 'task_not_found' });
         }
-        if (task.status !== 'failed' && task.status !== 'retry_wait') {
+        if (task.status !== 'failed') {
             throw Object.assign(new Error('task_not_failed'), { code: 'task_not_failed' });
         }
 
@@ -1837,7 +1830,6 @@ async function claimNextTask(
         lockMisses: 0,
         missingTask: 0,
         pending: 0,
-        retryWait: 0,
         runningFresh: 0,
         runningStale: 0,
         runningMissingStartedAt: 0,
@@ -1882,7 +1874,6 @@ async function claimNextTask(
 
             const nowMs = Date.now();
             if (task.status === 'pending') scanSummary.pending += 1;
-            if (task.status === 'retry_wait') scanSummary.retryWait += 1;
             if (task.status === 'completed') scanSummary.completed += 1;
 
             const claimability = evaluateResearchTaskClaimability({
@@ -1908,9 +1899,9 @@ async function claimNextTask(
             const symbolCooldownActive = opts.symbolCooldownConfig.enabled
                 ? isResearchSymbolCooldownActive(opts.symbolCooldowns, task.symbol, nowMs)
                 : false;
-            const statusCanTransition = task.status === 'pending' || task.status === 'retry_wait' || task.status === 'running';
+            const statusCanTransition = task.status === 'pending' || task.status === 'running';
             const alreadyCooldownDeferred =
-                task.status === 'retry_wait' &&
+                task.status === 'pending' &&
                 String(task.errorCode || '')
                     .trim()
                     .toLowerCase() ===
@@ -1954,7 +1945,7 @@ async function claimNextTask(
                 : false;
             if (
                 latestSymbolCooldownActive &&
-                (latestTask.status === 'pending' || latestTask.status === 'retry_wait' || latestTask.status === 'running')
+                (latestTask.status === 'pending' || latestTask.status === 'running')
             ) {
                 const blockedUntilMs = toNonNegativeInt(
                     opts.symbolCooldowns.symbols[normalizeSymbol(latestTask.symbol)]?.blockedUntilMs,
@@ -1962,7 +1953,7 @@ async function claimNextTask(
                 );
                 const blockedTask: ScalpResearchTask = {
                     ...latestTask,
-                    status: 'retry_wait',
+                    status: 'pending',
                     attempts: Math.max(0, latestTask.attempts),
                     workerId: null,
                     startedAtMs: null,
@@ -2309,7 +2300,6 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
         let claimIterations = 0;
         const shouldWarnNoClaim = (scanSummary: ClaimScanSummary): boolean =>
             scanSummary.pending > 0 ||
-            scanSummary.retryWait > 0 ||
             scanSummary.runningStale > 0 ||
             scanSummary.runningMissingStartedAt > 0 ||
             scanSummary.failedRetryable > 0 ||
@@ -2567,7 +2557,6 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
                 (out.attemptedRuns === 0 &&
                     lastNoClaimScanSummary !== null &&
                     (lastNoClaimScanSummary.pending > 0 ||
-                        lastNoClaimScanSummary.retryWait > 0 ||
                         lastNoClaimScanSummary.runningFresh > 0 ||
                         lastNoClaimScanSummary.runningStale > 0 ||
                         lastNoClaimScanSummary.runningMissingStartedAt > 0 ||
@@ -2632,7 +2621,6 @@ export function summarizeResearchTasks(cycle: ScalpResearchCycleSnapshot, tasks:
 
     for (const task of tasks) {
         if (task.status === 'pending') totals.pending += 1;
-        else if (task.status === 'retry_wait') totals.pending += 1;
         else if (task.status === 'running') totals.running += 1;
         else if (task.status === 'completed') totals.completed += 1;
         else if (task.status === 'failed') totals.failed += 1;

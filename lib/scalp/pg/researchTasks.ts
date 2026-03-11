@@ -55,7 +55,7 @@ export async function claimResearchTasksFromPg(params: {
             LEFT JOIN scalp_symbol_cooldowns c
               ON c.symbol = t.symbol
             WHERE t.cycle_id = ${cycleId}
-              AND t.status IN ('pending', 'retry_wait')
+              AND t.status = 'pending'
               AND t.next_eligible_at <= ${now}
               AND t.attempts < t.max_attempts
               AND (c.blocked_until IS NULL OR c.blocked_until <= ${now})
@@ -144,7 +144,7 @@ export async function deferResearchTaskInPg(params: {
     if (!taskId) return 0;
 
     const nextEligibleAt = toDate(params.nextEligibleAtMs);
-    const errorCode = String(params.errorCode || '').trim().slice(0, 80) || 'task_retry_wait';
+    const errorCode = String(params.errorCode || '').trim().slice(0, 80) || 'task_deferred';
     const errorMessage = String(params.errorMessage || '').trim().slice(0, 300) || null;
 
     const db = scalpPrisma();
@@ -152,7 +152,7 @@ export async function deferResearchTaskInPg(params: {
         Prisma.sql`
         UPDATE scalp_research_tasks
         SET
-            status = 'retry_wait',
+            status = 'pending',
             next_eligible_at = ${nextEligibleAt},
             finished_at = NOW(),
             error_code = ${errorCode},
@@ -188,7 +188,7 @@ export async function failResearchTaskPermanentInPg(params: {
             error_message = ${errorMessage},
             updated_at = NOW()
         WHERE task_id = ${taskId}
-          AND status IN ('running', 'pending', 'retry_wait');
+          AND status IN ('running', 'pending');
         `,
     );
 

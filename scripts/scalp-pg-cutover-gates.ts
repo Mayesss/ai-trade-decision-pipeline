@@ -513,7 +513,7 @@ async function gate2ResearchQueueLagP95(
         SELECT COUNT(*)::bigint AS "dueCount"
         FROM scalp_jobs
         WHERE kind = 'research_task'
-          AND status IN ('pending', 'retry_wait')
+          AND status = 'pending'
           AND next_run_at <= NOW();
     `);
 
