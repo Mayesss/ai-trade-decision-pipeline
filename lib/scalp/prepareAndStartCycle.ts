@@ -4,6 +4,7 @@ import {
     mergeScalpCandleHistory,
     normalizeHistoryTimeframe,
     saveScalpCandleHistoryBulk,
+    timeframeToMs,
 } from './candleHistory';
 import { evaluateResearchCyclePreflight, startScalpResearchCycle, type StartResearchCycleParams } from './researchCycle';
 import { refreshScalpResearchPortfolioReport } from './researchReporting';
@@ -11,6 +12,8 @@ import { loadScalpSymbolUniverseSnapshot, runScalpSymbolDiscoveryCycle } from '.
 import type { ScalpCandle } from './types';
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const ONE_WEEK_MS = 7 * ONE_DAY_MS;
+const DEFAULT_REQUIRED_SUCCESSIVE_WEEKS = 12;
 
 export interface PrepareAndStartCycleParams extends StartResearchCycleParams {
     includeLiveQuotes?: boolean;
@@ -87,6 +90,46 @@ function parsePositiveInt(value: unknown, fallback: number): number {
 
 function dedupe<T>(rows: T[]): T[] {
     return Array.from(new Set(rows));
+}
+
+function startOfUtcDay(tsMs: number): number {
+    const d = new Date(tsMs);
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+
+function resolveLastCompletedWeekAnchorUtc(nowMs: number): { startCurrentWeekMondayMs: number; lastSundayEndMs: number } {
+    const dayStartMs = startOfUtcDay(nowMs);
+    const dayOfWeek = new Date(dayStartMs).getUTCDay(); // 0=Sunday ... 6=Saturday
+    const daysSinceMonday = (dayOfWeek + 6) % 7;
+    const startCurrentWeekMondayMs = dayStartMs - daysSinceMonday * ONE_DAY_MS;
+    const lastSundayEndMs = startCurrentWeekMondayMs - 1;
+    return { startCurrentWeekMondayMs, lastSundayEndMs };
+}
+
+function findEarliestMissingCompletedWeekStartMs(
+    candles: ScalpCandle[],
+    nowMs: number,
+    requiredWeeks: number,
+): number | null {
+    if (requiredWeeks <= 0) return null;
+    const { startCurrentWeekMondayMs, lastSundayEndMs } = resolveLastCompletedWeekAnchorUtc(nowMs);
+    const firstRequiredWeekStartMs = startCurrentWeekMondayMs - requiredWeeks * ONE_WEEK_MS;
+    const presentWeekIndexes = new Set<number>();
+    for (const candle of candles) {
+        const ts = Number(candle?.[0] || 0);
+        if (!Number.isFinite(ts) || ts <= 0) continue;
+        if (ts < firstRequiredWeekStartMs || ts > lastSundayEndMs) continue;
+        const index = Math.floor((ts - firstRequiredWeekStartMs) / ONE_WEEK_MS);
+        if (index >= 0 && index < requiredWeeks) {
+            presentWeekIndexes.add(index);
+        }
+    }
+    for (let i = 0; i < requiredWeeks; i += 1) {
+        if (!presentWeekIndexes.has(i)) {
+            return firstRequiredWeekStartMs + i * ONE_WEEK_MS;
+        }
+    }
+    return null;
 }
 
 function normalizeFetchedCandles(rows: unknown[]): ScalpCandle[] {
@@ -173,6 +216,12 @@ export async function prepareAndStartScalpResearchCycle(
         source: 'capital';
         candles: ScalpCandle[];
     }> = [];
+    const seedTfMs = Math.max(60_000, timeframeToMs(seedTimeframe));
+    const targetLatestClosedCandleMs = fetchToMs - seedTfMs;
+    const requiredSuccessiveWeeks = Math.max(
+        1,
+        Math.min(52, parsePositiveInt(process.env.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS, DEFAULT_REQUIRED_SUCCESSIVE_WEEKS)),
+    );
     if (!skipFill) {
         for (const symbol of batchSymbols) {
             if (Date.now() - invokeStartedAtMs >= maxDurationMs) {
@@ -180,13 +229,55 @@ export async function prepareAndStartScalpResearchCycle(
             }
             try {
                 const existing = existingBySymbol.get(symbol) || [];
+                const oldestExistingTs = existing.length ? Number(existing[0]?.[0] || 0) : 0;
+                const latestExistingTs = existing.length ? Number(existing[existing.length - 1]?.[0] || 0) : 0;
+                const earliestMissingWeekStartMs = findEarliestMissingCompletedWeekStartMs(existing, nowMs, requiredSuccessiveWeeks);
+                const hasCoverageForWindow =
+                    existing.length > 0 &&
+                    Number.isFinite(oldestExistingTs) &&
+                    Number.isFinite(latestExistingTs) &&
+                    oldestExistingTs <= fetchFromMs &&
+                    latestExistingTs >= targetLatestClosedCandleMs &&
+                    earliestMissingWeekStartMs === null;
+                if (hasCoverageForWindow) {
+                    fillRows.push({
+                        symbol,
+                        timeframe: seedTimeframe,
+                        epic: null,
+                        existingCount: existing.length,
+                        fetchedCount: 0,
+                        mergedCount: existing.length,
+                        addedCount: 0,
+                        saved: false,
+                        fetchFromMs,
+                        fetchToMs,
+                        error: null,
+                    });
+                    processedSymbols.push(symbol);
+                    continue;
+                }
+                const incrementalFetchFromMs = (() => {
+                    if (earliestMissingWeekStartMs !== null) {
+                        return Math.max(earliestMissingWeekStartMs, fetchFromMs);
+                    }
+                    if (existing.length > 0 && Number.isFinite(latestExistingTs) && latestExistingTs > 0) {
+                        return Math.max(fetchFromMs, Math.floor(latestExistingTs - seedTfMs * 2));
+                    }
+                    return fetchFromMs;
+                })();
                 const epicResolved = await resolveCapitalEpicRuntime(symbol);
-                const fetchedRaw = await fetchCapitalCandlesByEpicDateRange(epicResolved.epic, seedTimeframe, fetchFromMs, fetchToMs, {
-                    maxPerRequest: 1000,
-                    maxRequests: maxRequestsPerSymbol,
-                    debug: false,
-                    debugLabel: `prepare-cycle:${symbol}:${seedTimeframe}`,
-                });
+                const fetchedRaw = await fetchCapitalCandlesByEpicDateRange(
+                    epicResolved.epic,
+                    seedTimeframe,
+                    incrementalFetchFromMs,
+                    fetchToMs,
+                    {
+                        maxPerRequest: 1000,
+                        maxRequests: maxRequestsPerSymbol,
+                        debug: false,
+                        debugLabel: `prepare-cycle:${symbol}:${seedTimeframe}`,
+                    },
+                );
                 const fetched = normalizeFetchedCandles(fetchedRaw);
                 const merged = mergeScalpCandleHistory(existing, fetched);
                 const addedCount = Math.max(0, merged.length - existing.length);
@@ -210,7 +301,7 @@ export async function prepareAndStartScalpResearchCycle(
                     mergedCount: merged.length,
                     addedCount,
                     saved,
-                    fetchFromMs,
+                    fetchFromMs: incrementalFetchFromMs,
                     fetchToMs,
                     error: null,
                 });
@@ -241,7 +332,7 @@ export async function prepareAndStartScalpResearchCycle(
         finalized = params.finalizeBatch === true || nextCursor === null;
     }
 
-    const report = finalized ? await refreshScalpResearchPortfolioReport({ nowMs, persist: false }) : null;
+    const report = finalized ? await refreshScalpResearchPortfolioReport({ nowMs, persist: !dryRun }) : null;
     const preflight = finalized
         ? await evaluateResearchCyclePreflight({
               symbols,

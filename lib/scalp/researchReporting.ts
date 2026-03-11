@@ -1,11 +1,14 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { Prisma } from '@prisma/client';
+
 import {
     listScalpDeploymentRegistryEntries,
     type ScalpDeploymentRegistryEntry,
     type ScalpForwardValidationMetrics,
 } from './deploymentRegistry';
+import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 import {
     loadActiveResearchCycleId,
     loadLatestCompletedResearchCycleId,
@@ -17,6 +20,8 @@ import { loadScalpTradeLedger } from './store';
 import type { ScalpTradeLedgerEntry } from './types';
 
 const DEFAULT_REPORT_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-research-report.json');
+const REPORT_SNAPSHOT_KEY = 'latest:v1';
+const REPORT_SNAPSHOT_JOBS_DEDUPE_KEY = 'state:research_report_snapshot:v1';
 let latestScalpResearchReportSnapshot: ScalpResearchPortfolioReportSnapshot | null = null;
 
 export interface ScalpTradeWindowPerformance {
@@ -105,6 +110,18 @@ export interface BuildScalpResearchReportParams {
     monthlyMonths?: number;
     cycleId?: string;
     persist?: boolean;
+}
+
+function asReportSnapshot(value: unknown): ScalpResearchPortfolioReportSnapshot | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const row = value as Record<string, unknown>;
+    const version = Number(row.version);
+    const generatedAtMs = Number(row.generatedAtMs);
+    const generatedAtIso = String(row.generatedAtIso || '').trim();
+    if (version !== 1) return null;
+    if (!Number.isFinite(generatedAtMs) || generatedAtMs <= 0) return null;
+    if (!generatedAtIso) return null;
+    return row as unknown as ScalpResearchPortfolioReportSnapshot;
 }
 
 function toFinite(value: unknown, fallback = 0): number {
@@ -478,10 +495,46 @@ export async function buildScalpResearchPortfolioReport(
 
 export async function loadScalpResearchPortfolioReportSnapshot(): Promise<ScalpResearchPortfolioReportSnapshot | null> {
     if (latestScalpResearchReportSnapshot) return latestScalpResearchReportSnapshot;
+    if (isScalpPgConfigured()) {
+        try {
+            const db = scalpPrisma();
+            const rows = await db.$queryRaw<Array<{ payload: unknown }>>(Prisma.sql`
+                SELECT payload_json AS payload
+                FROM scalp_research_report_snapshots
+                WHERE report_key = ${REPORT_SNAPSHOT_KEY}
+                LIMIT 1;
+            `);
+            const parsed = asReportSnapshot(rows[0]?.payload);
+            if (parsed) {
+                latestScalpResearchReportSnapshot = parsed;
+                return parsed;
+            }
+        } catch {
+            // best effort fallback to jobs snapshot below
+        }
+        try {
+            const db = scalpPrisma();
+            const rows = await db.$queryRaw<Array<{ payload: unknown }>>(Prisma.sql`
+                SELECT payload
+                FROM scalp_jobs
+                WHERE kind = 'guardrail_check'::scalp_job_kind
+                  AND dedupe_key = ${REPORT_SNAPSHOT_JOBS_DEDUPE_KEY}
+                LIMIT 1;
+            `);
+            const parsed = asReportSnapshot(rows[0]?.payload);
+            if (parsed) {
+                latestScalpResearchReportSnapshot = parsed;
+                return parsed;
+            }
+        } catch {
+            // best effort fallback to file backend below
+        }
+    }
     if (!allowScalpReportFileBackend()) return null;
     try {
         const raw = await readFile(resolveReportFilePath(), 'utf8');
-        const parsed = JSON.parse(raw) as ScalpResearchPortfolioReportSnapshot;
+        const parsed = asReportSnapshot(JSON.parse(raw));
+        if (!parsed) return null;
         latestScalpResearchReportSnapshot = parsed;
         return parsed;
     } catch {
@@ -491,6 +544,73 @@ export async function loadScalpResearchPortfolioReportSnapshot(): Promise<ScalpR
 
 export async function saveScalpResearchPortfolioReportSnapshot(snapshot: ScalpResearchPortfolioReportSnapshot): Promise<void> {
     latestScalpResearchReportSnapshot = snapshot;
+    if (isScalpPgConfigured()) {
+        const db = scalpPrisma();
+        try {
+            await db.$executeRaw(
+                Prisma.sql`
+                    INSERT INTO scalp_research_report_snapshots(
+                        report_key,
+                        payload_json,
+                        generated_at,
+                        updated_at
+                    )
+                    VALUES(
+                        ${REPORT_SNAPSHOT_KEY},
+                        ${JSON.stringify(snapshot)}::jsonb,
+                        to_timestamp(${Math.floor(snapshot.generatedAtMs)} / 1000.0),
+                        NOW()
+                    )
+                    ON CONFLICT(report_key)
+                    DO UPDATE SET
+                        payload_json = EXCLUDED.payload_json,
+                        generated_at = EXCLUDED.generated_at,
+                        updated_at = NOW();
+                `,
+            );
+        } catch {
+            // Fallback for environments where the dedicated snapshot table is not yet migrated.
+            await db.$executeRaw(
+                Prisma.sql`
+                    INSERT INTO scalp_jobs(
+                        kind,
+                        dedupe_key,
+                        payload,
+                        status,
+                        attempts,
+                        max_attempts,
+                        scheduled_for,
+                        next_run_at,
+                        last_error
+                    )
+                    VALUES(
+                        'guardrail_check'::scalp_job_kind,
+                        ${REPORT_SNAPSHOT_JOBS_DEDUPE_KEY},
+                        ${JSON.stringify(snapshot)}::jsonb,
+                        'succeeded'::scalp_job_status,
+                        1,
+                        1,
+                        NOW(),
+                        NOW(),
+                        NULL
+                    )
+                    ON CONFLICT(kind, dedupe_key)
+                    DO UPDATE SET
+                        payload = EXCLUDED.payload,
+                        status = EXCLUDED.status,
+                        attempts = EXCLUDED.attempts,
+                        max_attempts = EXCLUDED.max_attempts,
+                        scheduled_for = EXCLUDED.scheduled_for,
+                        next_run_at = EXCLUDED.next_run_at,
+                        locked_by = NULL,
+                        locked_at = NULL,
+                        last_error = NULL,
+                        updated_at = NOW();
+                `,
+            );
+        }
+        return;
+    }
     if (!allowScalpReportFileBackend()) return;
     const filePath = resolveReportFilePath();
     await mkdir(path.dirname(filePath), { recursive: true });

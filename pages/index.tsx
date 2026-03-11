@@ -3816,6 +3816,11 @@ export default function Home() {
     scalpPipelineOrchestratorRunning &&
     scalpPipelineOrchestratorStartedAtMs !== null &&
     Date.now() - scalpPipelineOrchestratorStartedAtMs <= 12 * 60 * 60_000;
+  const scalpPipelineOrchestratorLastErrorRaw = String(scalpPipelineOrchestrator?.lastError || '').trim();
+  const scalpOrchestratorInvokeFailed = scalpCronInvokeStateById['scalp_orchestrator']?.ok === false;
+  const scalpOrchestratorFailureHint =
+    !scalpPanicStopEnabled &&
+    (Boolean(scalpPipelineOrchestratorLastErrorRaw) || scalpCycleStatusRaw === 'FAILED' || scalpOrchestratorInvokeFailed);
   const scalpWorkerIsInProgress =
     !scalpPanicStopEnabled &&
     scalpWorkerHeartbeatStatus === 'started' &&
@@ -3824,7 +3829,7 @@ export default function Home() {
     Date.now() - scalpWorkerHeartbeatStartedAtMs <=
       Math.max(60_000, (scalpWorkerHeartbeatBudgetMs || 120_000) * 3);
   const scalpOrchestratorIsInProgress =
-    !scalpPanicStopEnabled && (scalpPipelineOrchestratorFresh || scalpWorkerIsInProgress);
+    !scalpPanicStopEnabled && !scalpOrchestratorFailureHint && (scalpPipelineOrchestratorFresh || scalpWorkerIsInProgress);
   const scalpIsCronRowInProgress = (rowId: string): boolean => {
     const invokeRunning = Boolean(scalpCronInvokeStateById[rowId]?.running);
     if (invokeRunning) return true;
@@ -3844,9 +3849,9 @@ export default function Home() {
   const scalpOrchestratorStageIndex = scalpOrchestratorStageOrder.indexOf(
     scalpOrchestratorStageRaw as (typeof scalpOrchestratorStageOrder)[number],
   );
-  const scalpOrchestratorLastError = String(scalpPipelineOrchestrator?.lastError || '').trim();
+  const scalpOrchestratorLastError = scalpPipelineOrchestratorLastErrorRaw;
   const scalpOrchestratorHasFailure =
-    (!scalpPanicStopEnabled && Boolean(scalpOrchestratorLastError)) || scalpCycleStatusRaw === 'FAILED';
+    scalpOrchestratorFailureHint;
   const scalpOrchestratorChecklist = [
     { id: 'scalp_discover_symbols', stage: 'discover', label: 'Discover symbols' },
     { id: 'scalp_load_candles', stage: 'load_candles', label: 'Load candles' },

@@ -1,11 +1,14 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { Prisma } from '@prisma/client';
+
 import defaultTickerEpicMap from '../../data/capitalTickerMap.json';
 import { discoverCapitalMarketSymbols, fetchCapitalCandlesByEpicDateRange, fetchCapitalLivePrice, resolveCapitalEpicRuntime } from '../capital';
 import { listScalpCandleHistorySymbols, loadScalpCandleHistory, mergeScalpCandleHistory, normalizeHistoryTimeframe, saveScalpCandleHistory, timeframeToMs } from './candleHistory';
 import { loadScalpDeploymentRegistry } from './deploymentRegistry';
 import { pipSizeForScalpSymbol } from './marketData';
+import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 import { listScalpStrategies } from './strategies/registry';
 
 export interface ScalpSymbolDiscoveryPolicy {
@@ -155,6 +158,8 @@ type CapitalDiscoveryResult = Awaited<ReturnType<typeof discoverCapitalMarketSym
 
 const DEFAULT_POLICY_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-discovery-policy.json');
 const DEFAULT_UNIVERSE_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-universe.json');
+const UNIVERSE_SNAPSHOT_KEY = 'latest:v1';
+const UNIVERSE_SNAPSHOT_JOBS_KEY = 'state:symbol_universe_snapshot:v1';
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 let latestUniverseSnapshot: ScalpSymbolUniverseSnapshot | null = null;
 const SEED_FRESHNESS_MAX_LAG_MS = 12 * 60 * 60 * 1000;
@@ -352,6 +357,41 @@ export async function loadScalpSymbolDiscoveryPolicy(): Promise<ScalpSymbolDisco
 
 export async function loadScalpSymbolUniverseSnapshot(): Promise<ScalpSymbolUniverseSnapshot | null> {
     if (latestUniverseSnapshot) return latestUniverseSnapshot;
+    if (isScalpPgConfigured()) {
+        try {
+            const db = scalpPrisma();
+            const rows = await db.$queryRaw<Array<{ payload: unknown }>>(Prisma.sql`
+                SELECT payload_json AS payload
+                FROM scalp_symbol_universe_snapshots
+                WHERE snapshot_key = ${UNIVERSE_SNAPSHOT_KEY}
+                LIMIT 1;
+            `);
+            const parsed = rows[0]?.payload;
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                latestUniverseSnapshot = parsed as ScalpSymbolUniverseSnapshot;
+                return latestUniverseSnapshot;
+            }
+        } catch {
+            // best effort fallback to jobs/file
+        }
+        try {
+            const db = scalpPrisma();
+            const rows = await db.$queryRaw<Array<{ payload: unknown }>>(Prisma.sql`
+                SELECT payload
+                FROM scalp_jobs
+                WHERE kind = 'guardrail_check'::scalp_job_kind
+                  AND dedupe_key = ${UNIVERSE_SNAPSHOT_JOBS_KEY}
+                LIMIT 1;
+            `);
+            const parsed = rows[0]?.payload;
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                latestUniverseSnapshot = parsed as ScalpSymbolUniverseSnapshot;
+                return latestUniverseSnapshot;
+            }
+        } catch {
+            // best effort fallback to file backend below
+        }
+    }
     if (process.env.ALLOW_SCALP_FILE_BACKEND !== '1') return null;
     try {
         const raw = await readFile(resolveUniverseFilePath(), 'utf8');
@@ -365,6 +405,72 @@ export async function loadScalpSymbolUniverseSnapshot(): Promise<ScalpSymbolUniv
 
 async function saveScalpSymbolUniverseSnapshot(snapshot: ScalpSymbolUniverseSnapshot): Promise<void> {
     latestUniverseSnapshot = snapshot;
+    if (isScalpPgConfigured()) {
+        const db = scalpPrisma();
+        try {
+            await db.$executeRaw(
+                Prisma.sql`
+                    INSERT INTO scalp_symbol_universe_snapshots(
+                        snapshot_key,
+                        payload_json,
+                        generated_at,
+                        updated_at
+                    )
+                    VALUES(
+                        ${UNIVERSE_SNAPSHOT_KEY},
+                        ${JSON.stringify(snapshot)}::jsonb,
+                        to_timestamp(${Math.floor(new Date(snapshot.generatedAtIso).getTime())} / 1000.0),
+                        NOW()
+                    )
+                    ON CONFLICT(snapshot_key)
+                    DO UPDATE SET
+                        payload_json = EXCLUDED.payload_json,
+                        generated_at = EXCLUDED.generated_at,
+                        updated_at = NOW();
+                `,
+            );
+        } catch {
+            await db.$executeRaw(
+                Prisma.sql`
+                    INSERT INTO scalp_jobs(
+                        kind,
+                        dedupe_key,
+                        payload,
+                        status,
+                        attempts,
+                        max_attempts,
+                        scheduled_for,
+                        next_run_at,
+                        last_error
+                    )
+                    VALUES(
+                        'guardrail_check'::scalp_job_kind,
+                        ${UNIVERSE_SNAPSHOT_JOBS_KEY},
+                        ${JSON.stringify(snapshot)}::jsonb,
+                        'succeeded'::scalp_job_status,
+                        1,
+                        1,
+                        NOW(),
+                        NOW(),
+                        NULL
+                    )
+                    ON CONFLICT(kind, dedupe_key)
+                    DO UPDATE SET
+                        payload = EXCLUDED.payload,
+                        status = EXCLUDED.status,
+                        attempts = EXCLUDED.attempts,
+                        max_attempts = EXCLUDED.max_attempts,
+                        scheduled_for = EXCLUDED.scheduled_for,
+                        next_run_at = EXCLUDED.next_run_at,
+                        locked_by = NULL,
+                        locked_at = NULL,
+                        last_error = NULL,
+                        updated_at = NOW();
+                `,
+            );
+        }
+        return;
+    }
     if (process.env.ALLOW_SCALP_FILE_BACKEND !== '1') return;
     const filePath = resolveUniverseFilePath();
     await mkdir(path.dirname(filePath), { recursive: true });

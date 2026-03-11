@@ -46,10 +46,14 @@ const DEFAULT_CLAIM_SCAN_BATCH_SIZE = 64;
 const DEFAULT_LOCK_TTL_SECONDS = 120;
 const DEFAULT_TASK_TIMEOUT_MS = 60_000;
 const DEFAULT_RESEARCH_REPORT_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-research-report.json');
+const RESEARCH_REPORT_SNAPSHOT_KEY = 'latest:v1';
+const RESEARCH_REPORT_SNAPSHOT_JOBS_KEY = 'state:research_report_snapshot:v1';
 const DEFAULT_PREFLIGHT_MAX_CANDLE_CHECKS = 64;
 const DEFAULT_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS = 12;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
+const DEFAULT_INCREMENTAL_SNAPSHOT_LOOKBACK_MS = 7 * ONE_DAY_MS;
+const DEFAULT_MAX_NEW_SYMBOLS_PER_CYCLE = 5;
 const RESEARCH_TASK_TIMEOUT_MS = Math.max(
     1_000,
     Math.min(10 * 60_000, Math.floor(Number(process.env.SCALP_RESEARCH_TASK_TIMEOUT_MS) || DEFAULT_TASK_TIMEOUT_MS)),
@@ -188,6 +192,7 @@ export type ResearchCyclePreflightFailureCode =
     | 'missing_universe_snapshot'
     | 'missing_research_report_snapshot'
     | 'no_symbols_resolved'
+    | 'no_symbols_eligible'
     | 'insufficient_candles';
 
 export interface ResearchCyclePreflightFailure {
@@ -233,6 +238,7 @@ export interface EvaluateResearchCyclePreflightParams extends StartResearchCycle
     requireReportSnapshot?: boolean;
     maxCandleChecks?: number;
     nowMs?: number;
+    requiredSuccessiveWeeks?: number;
 }
 
 export interface WorkerRunParams {
@@ -438,6 +444,46 @@ function resolveResearchReportFilePath(): string {
 }
 
 async function loadResearchReportGeneratedAtIso(): Promise<string | null> {
+    if (isScalpPgConfigured()) {
+        try {
+            const db = scalpPrisma();
+            const rows = await db.$queryRaw<Array<{ generatedAtIso: string | null; generatedAt: Date | null }>>(Prisma.sql`
+                SELECT
+                    NULLIF(TRIM(payload_json->>'generatedAtIso'), '') AS "generatedAtIso",
+                    generated_at AS "generatedAt"
+                FROM scalp_research_report_snapshots
+                WHERE report_key = ${RESEARCH_REPORT_SNAPSHOT_KEY}
+                LIMIT 1;
+            `);
+            const row = rows[0];
+            const fromPayload = String(row?.generatedAtIso || '').trim();
+            if (fromPayload) return fromPayload;
+            if (row?.generatedAt instanceof Date && Number.isFinite(row.generatedAt.getTime())) {
+                return row.generatedAt.toISOString();
+            }
+        } catch {
+            // best effort fallback to jobs/file backends below
+        }
+        try {
+            const db = scalpPrisma();
+            const rows = await db.$queryRaw<Array<{ payload: unknown }>>(Prisma.sql`
+                SELECT payload
+                FROM scalp_jobs
+                WHERE kind = 'guardrail_check'::scalp_job_kind
+                  AND dedupe_key = ${RESEARCH_REPORT_SNAPSHOT_JOBS_KEY}
+                LIMIT 1;
+            `);
+            const payload = rows[0]?.payload as Record<string, unknown> | undefined;
+            const generatedAtIso = String(payload?.generatedAtIso || '').trim();
+            if (generatedAtIso) return generatedAtIso;
+            const generatedAtMs = Number(payload?.generatedAtMs || 0);
+            if (Number.isFinite(generatedAtMs) && generatedAtMs > 0) {
+                return new Date(Math.floor(generatedAtMs)).toISOString();
+            }
+        } catch {
+            // best effort fallback to file backend below
+        }
+    }
     try {
         const raw = await readFile(resolveResearchReportFilePath(), 'utf8');
         const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -510,7 +556,7 @@ export async function evaluateResearchCyclePreflight(
             ),
         ),
     );
-    const requiredSuccessiveWeeks = Math.max(
+    const requiredSuccessiveWeeksConfigured = Math.max(
         0,
         Math.min(
             52,
@@ -520,6 +566,10 @@ export async function evaluateResearchCyclePreflight(
             ),
         ),
     );
+    const requiredSuccessiveWeeks =
+        params.requiredSuccessiveWeeks === undefined
+            ? requiredSuccessiveWeeksConfigured
+            : Math.max(0, Math.min(52, Math.floor(Number(params.requiredSuccessiveWeeks) || 0)));
 
     const [policy, universe, reportGeneratedAtIso] = await Promise.all([
         loadScalpSymbolDiscoveryPolicy(),
@@ -621,7 +671,7 @@ export async function evaluateResearchCyclePreflight(
     }
     if (!resolvedSymbols.length) {
         failures.push({
-            code: 'no_symbols_resolved',
+            code: 'no_symbols_eligible',
             message:
                 requiredSuccessiveWeeks > 0
                     ? `No symbols satisfied readiness checks (requires ${requiredSuccessiveWeeks} successive completed Monday-Sunday weeks).`
@@ -1274,6 +1324,61 @@ export function buildResearchCycleTasks(params: {
     return tasks;
 }
 
+function researchTaskComboKey(task: Pick<ScalpResearchTask, 'symbol' | 'strategyId' | 'tuneId'>): string {
+    return `${normalizeSymbol(task.symbol)}::${String(task.strategyId || '').trim().toLowerCase()}::${sanitizeTuneId(task.tuneId)}`;
+}
+
+function researchTaskSymbolKey(task: Pick<ScalpResearchTask, 'symbol'>): string {
+    return normalizeSymbol(task.symbol);
+}
+
+export function applyResearchCycleIncrementalSymbolPolicy(params: {
+    plannedTasks: ScalpResearchTask[];
+    processedTasksLastSnapshot: ScalpResearchTask[];
+    maxNewSymbolsPerCycle: number;
+}): ScalpResearchTask[] {
+    const plannedTasks = Array.isArray(params.plannedTasks) ? params.plannedTasks : [];
+    const processedTasks = Array.isArray(params.processedTasksLastSnapshot) ? params.processedTasksLastSnapshot : [];
+    const maxNewSymbolsPerCycle = Math.max(0, Math.floor(Number(params.maxNewSymbolsPerCycle) || 0));
+    if (!plannedTasks.length || !processedTasks.length) return plannedTasks;
+
+    const processedComboKeys = new Set<string>();
+    const processedSymbols = new Set<string>();
+    for (const task of processedTasks) {
+        const status = String(task.status || '').trim().toLowerCase();
+        if (status !== 'completed' && status !== 'failed') continue;
+        const symbolKey = researchTaskSymbolKey(task);
+        if (!symbolKey) continue;
+        processedSymbols.add(symbolKey);
+        processedComboKeys.add(researchTaskComboKey(task));
+    }
+    if (!processedSymbols.size) return plannedTasks;
+
+    const allowedComboKeys = new Set<string>();
+    const admittedNewSymbols = new Set<string>();
+    for (const task of plannedTasks) {
+        const symbolKey = researchTaskSymbolKey(task);
+        if (!symbolKey) continue;
+        const comboKey = researchTaskComboKey(task);
+        if (processedSymbols.has(symbolKey)) {
+            if (!processedComboKeys.has(comboKey)) {
+                allowedComboKeys.add(comboKey);
+            }
+            continue;
+        }
+        if (admittedNewSymbols.has(symbolKey)) {
+            allowedComboKeys.add(comboKey);
+            continue;
+        }
+        if (admittedNewSymbols.size < maxNewSymbolsPerCycle) {
+            admittedNewSymbols.add(symbolKey);
+            allowedComboKeys.add(comboKey);
+        }
+    }
+
+    return plannedTasks.filter((task) => allowedComboKeys.has(researchTaskComboKey(task)));
+}
+
 async function saveCycle(cycle: ScalpResearchCycleSnapshot): Promise<void> {
     if (!isScalpPgConfigured()) return;
     await upsertResearchCycleToPg({
@@ -1738,7 +1843,7 @@ export async function startScalpResearchCycle(params: StartResearchCycleParams =
             ),
         };
 
-        const tasks = buildResearchCycleTasks({
+        const plannedTasks = buildResearchCycleTasks({
             cycleId,
             nowMs,
             symbols,
@@ -1749,6 +1854,43 @@ export async function startScalpResearchCycle(params: StartResearchCycleParams =
             tunerEnabled: cycleParams.tunerEnabled !== false,
             maxTuneVariantsPerStrategy: Math.max(1, cycleParams.maxTuneVariantsPerStrategy || 1),
         });
+        const previousCycleLookbackMs = Math.max(
+            ONE_DAY_MS,
+            Math.min(
+                28 * ONE_DAY_MS,
+                toPositiveInt(
+                    process.env.SCALP_RESEARCH_INCREMENTAL_PREVIOUS_SNAPSHOT_LOOKBACK_MS,
+                    DEFAULT_INCREMENTAL_SNAPSHOT_LOOKBACK_MS,
+                ),
+            ),
+        );
+        const maxNewSymbolsPerCycle = Math.max(
+            0,
+            Math.min(
+                200,
+                toNonNegativeInt(
+                    process.env.SCALP_RESEARCH_INCREMENTAL_MAX_NEW_SYMBOLS_PER_CYCLE,
+                    DEFAULT_MAX_NEW_SYMBOLS_PER_CYCLE,
+                ),
+            ),
+        );
+        let tasks = plannedTasks;
+        const previousCycleId = await loadLatestCompletedResearchCycleId();
+        if (previousCycleId) {
+            const previousCycle = await loadResearchCycle(previousCycleId);
+            const previousUpdatedAtMs = Math.max(
+                0,
+                Math.floor(Number(previousCycle?.updatedAtMs) || Number(previousCycle?.createdAtMs) || 0),
+            );
+            if (previousCycle && nowMs - previousUpdatedAtMs <= previousCycleLookbackMs) {
+                const previousTasks = await listResearchCycleTasks(previousCycle.cycleId, 5000);
+                tasks = applyResearchCycleIncrementalSymbolPolicy({
+                    plannedTasks,
+                    processedTasksLastSnapshot: previousTasks,
+                    maxNewSymbolsPerCycle,
+                });
+            }
+        }
 
         const cycle: ScalpResearchCycleSnapshot = {
             version: RESEARCH_CYCLE_VERSION,
@@ -2390,6 +2532,8 @@ export async function runResearchWorker(params: WorkerRunParams = {}): Promise<W
             minCandlesPerTask: cycle.params.minCandlesPerTask,
             requireUniverseSnapshot: true,
             requireReportSnapshot: true,
+            // Worker should not re-gate active cycles on weekly window coverage.
+            requiredSuccessiveWeeks: 0,
             maxCandleChecks: Math.max(1, cycle.symbols.length || 1),
         });
         out.orchestration = {

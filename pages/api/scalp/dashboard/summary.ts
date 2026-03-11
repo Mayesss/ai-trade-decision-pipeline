@@ -292,11 +292,17 @@ async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSn
   const orchestratorStartedAtMs = asTsMs(orchestratorPayload.startedAtMs);
   const orchestratorCompletedAtMs = asTsMs(orchestratorPayload.completedAtMs);
   const orchestratorUpdatedAtMs = asTsMs(orchestratorPayload.updatedAtMs);
+  const orchestratorLastError = String(orchestratorPayload.lastError || '').trim() || null;
+  const orchestratorRunningStaleAfterMs = 20 * 60_000;
+  const orchestratorFreshByUpdate =
+    orchestratorUpdatedAtMs !== null && Date.now() - orchestratorUpdatedAtMs <= orchestratorRunningStaleAfterMs;
   const orchestratorRunningRaw =
     Boolean(orchestratorStage) &&
     orchestratorStage !== 'done' &&
     orchestratorStartedAtMs !== null &&
-    (orchestratorCompletedAtMs === null || orchestratorCompletedAtMs < orchestratorStartedAtMs);
+    (orchestratorCompletedAtMs === null || orchestratorCompletedAtMs < orchestratorStartedAtMs) &&
+    !orchestratorLastError &&
+    orchestratorFreshByUpdate;
   const orchestratorRunning = panicStopEnabled ? false : orchestratorRunningRaw;
   const stageMeta = pipelineStageMeta(orchestratorStage);
 
@@ -324,7 +330,7 @@ async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSn
               ? Math.max(stageMeta.progressPct ?? 0, Math.min(100, cycleProgressPct))
               : stageMeta.progressPct,
           progressLabel: stageMeta.progressLabel,
-          lastError: String(orchestratorPayload.lastError || '').trim() || null,
+          lastError: orchestratorLastError,
         }
       : null,
     cycle: row.cycleId

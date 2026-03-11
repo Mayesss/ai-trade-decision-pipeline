@@ -50,7 +50,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             cycleId,
             tradeLimit,
             monthlyMonths,
-            persist: false,
+            persist: !dryRun,
         });
 
         return res.status(200).json({

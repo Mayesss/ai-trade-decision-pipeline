@@ -110,7 +110,9 @@ function newState(tsMs: number): OrchestratorState {
 
 function isRecoverablePrepareFailureCodes(codes: string[]): boolean {
     if (!codes.length) return false;
-    return codes.every((code) => code === 'insufficient_candles' || code === 'no_symbols_resolved');
+    return codes.every(
+        (code) => code === 'insufficient_candles' || code === 'no_symbols_resolved' || code === 'no_symbols_eligible',
+    );
 }
 
 async function acquireAdvisoryLock(): Promise<boolean> {
@@ -489,17 +491,24 @@ export async function runScalpPipelineOrchestrator(
                     const failureCodeText = failureCodes.join(',');
                     const recoverable = isRecoverablePrepareFailureCodes(failureCodes);
                     if (recoverable && prep.batch.finalized) {
-                        state.preparePasses += 1;
-                        if (state.preparePassAddedCandles > 0) {
+                        const canRestartBackfillPass =
+                            state.loadPasses < 2 && (state.loadPassAddedCandles > 0 || state.loadPassErrors > 0);
+                        if (canRestartBackfillPass) {
                             stageEvents.push({
                                 stage: 'prepare',
                                 action: 'restart_backfill_pass',
                                 reason: failureCodeText || 'recoverable_preflight_block',
-                                passAddedCandles: state.preparePassAddedCandles,
-                                passErrors: state.preparePassErrors,
-                                nextPass: state.preparePasses + 1,
+                                loadPassesCompleted: state.loadPasses,
+                                loadPassAddedCandles: state.loadPassAddedCandles,
+                                loadPassErrors: state.loadPassErrors,
+                                nextLoadPass: state.loadPasses + 1,
                             });
+                            state.preparePasses += 1;
+                            state.stage = 'load_candles';
+                            state.loadCursor = 0;
                             state.prepareCursor = 0;
+                            state.loadPassAddedCandles = 0;
+                            state.loadPassErrors = 0;
                             state.preparePassAddedCandles = 0;
                             state.preparePassErrors = 0;
                             state.updatedAtMs = nowMs();

@@ -131,8 +131,7 @@ MARKETAUX_API_KEY=...
 # SCALP_SYMBOL_DISCOVERY_POLICY_PATH=data/scalp-symbol-discovery-policy.json
 # SCALP_SYMBOL_UNIVERSE_STORE=auto                           # auto | kv | file
 # SCALP_SYMBOL_UNIVERSE_PATH=data/scalp-symbol-universe.json # used when store=file
-# SCALP_RESEARCH_REPORT_STORE=auto                           # auto | kv | file
-# SCALP_RESEARCH_REPORT_PATH=data/scalp-research-report.json # used when store=file
+# SCALP_RESEARCH_REPORT_PATH=data/scalp-research-report.json # optional file fallback when ALLOW_SCALP_FILE_BACKEND=1
 # SCALP_RESEARCH_SYMBOL_COOLDOWN_ENABLED=true
 # SCALP_RESEARCH_SYMBOL_COOLDOWN_FAILURE_THRESHOLD=3
 # SCALP_RESEARCH_SYMBOL_COOLDOWN_WINDOW_MS=1800000
@@ -281,6 +280,7 @@ npm run start
     `weeklyRobustnessMaxTopWeekPnlConcentrationPct`.
 - `GET /api/scalp/cron/research-report`
   - Builds a portfolio/operator report snapshot from deployment registry, promotion-gate state, recent trade ledger performance, and cross-deployment correlation.
+  - Persists snapshot to Postgres when `dryRun=false` (used by research worker preflight gating).
   - Optional query params: `dryRun=true|false`, `cycleId`, `tradeLimit`, `monthlyMonths`.
 - `GET /api/scalp/cron/live-guardrail-monitor`
   - Evaluates enabled deployments against live guardrail thresholds (expectancy, drawdown, drift vs forward, churn proxy) and emits risk journal events.

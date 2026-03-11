@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import type { ScalpResearchCycleSnapshot, ScalpResearchTask } from '../researchCycle';
 import {
+    applyResearchCycleIncrementalSymbolPolicy,
     buildResearchCycleTasks,
     createEmptyResearchSymbolCooldownSnapshot,
     evaluateResearchCyclePreflight,
@@ -146,6 +147,95 @@ test('buildResearchCycleTasks expands symbol+strategy into capped tune variants 
     assert.ok(tuneIds.has('default'));
     assert.ok(Array.from(tuneIds).some((row) => row.startsWith('auto_')));
     assert.ok(tasks.some((row) => row.configOverride && Object.keys(row.configOverride).length > 0));
+});
+
+test('applyResearchCycleIncrementalSymbolPolicy keeps unseen combos and caps new symbols per cycle', () => {
+    const prevCycleId = 'rc_prev';
+    const nowCycleId = 'rc_now';
+    const previousTasks: ScalpResearchTask[] = [
+        {
+            ...makeTask({
+                cycleId: prevCycleId,
+                taskId: 'prev_eur_reg_default',
+                symbol: 'EURUSD',
+                strategyId: 'regime_pullback_m15_m3',
+                status: 'completed',
+            }),
+            tuneId: 'default',
+        },
+    ];
+    const plannedTasks: ScalpResearchTask[] = [
+        {
+            ...makeTask({
+                cycleId: nowCycleId,
+                taskId: 'now_eur_reg_default',
+                symbol: 'EURUSD',
+                strategyId: 'regime_pullback_m15_m3',
+                status: 'pending',
+            }),
+            tuneId: 'default',
+        },
+        {
+            ...makeTask({
+                cycleId: nowCycleId,
+                taskId: 'now_eur_reg_auto',
+                symbol: 'EURUSD',
+                strategyId: 'regime_pullback_m15_m3',
+                status: 'pending',
+            }),
+            tuneId: 'auto_risk',
+        },
+        makeTask({
+            cycleId: nowCycleId,
+            taskId: 'now_eur_compression',
+            symbol: 'EURUSD',
+            strategyId: 'compression_breakout_pullback_m15_m3',
+            status: 'pending',
+        }),
+        makeTask({
+            cycleId: nowCycleId,
+            taskId: 'now_btc_reg',
+            symbol: 'BTCUSDT',
+            strategyId: 'regime_pullback_m15_m3',
+            status: 'pending',
+        }),
+        makeTask({
+            cycleId: nowCycleId,
+            taskId: 'now_btc_comp',
+            symbol: 'BTCUSDT',
+            strategyId: 'compression_breakout_pullback_m15_m3',
+            status: 'pending',
+        }),
+        makeTask({
+            cycleId: nowCycleId,
+            taskId: 'now_xau_reg',
+            symbol: 'XAUUSDT',
+            strategyId: 'regime_pullback_m15_m3',
+            status: 'pending',
+        }),
+        makeTask({
+            cycleId: nowCycleId,
+            taskId: 'now_nas_reg',
+            symbol: 'NAS100',
+            strategyId: 'regime_pullback_m15_m3',
+            status: 'pending',
+        }),
+    ];
+
+    const filtered = applyResearchCycleIncrementalSymbolPolicy({
+        plannedTasks,
+        processedTasksLastSnapshot: previousTasks,
+        maxNewSymbolsPerCycle: 2,
+    });
+
+    const keptTaskIds = new Set(filtered.map((row) => row.taskId));
+    assert.equal(keptTaskIds.has('now_eur_reg_default'), false);
+    assert.equal(keptTaskIds.has('now_eur_reg_auto'), true);
+    assert.equal(keptTaskIds.has('now_eur_compression'), true);
+    assert.equal(keptTaskIds.has('now_btc_reg'), true);
+    assert.equal(keptTaskIds.has('now_btc_comp'), true);
+    assert.equal(keptTaskIds.has('now_xau_reg'), true);
+    assert.equal(keptTaskIds.has('now_nas_reg'), false);
 });
 
 test('summarizeResearchTasks aggregates candidate metrics and keeps running status with pending tasks', () => {

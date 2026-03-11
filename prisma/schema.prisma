@@ -246,6 +246,28 @@ model ScalpSymbolCooldown {
   @@map("scalp_symbol_cooldowns")
 }
 
+model ScalpResearchReportSnapshot {
+  reportKey   String   @id @map("report_key")
+  payloadJson Json     @default(dbgenerated("'{}'::jsonb")) @map("payload_json") @db.JsonB
+  generatedAt DateTime @default(now()) @map("generated_at") @db.Timestamptz(3)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@index([updatedAt(sort: Desc)], map: "scalp_research_report_snapshots_updated_idx")
+  @@map("scalp_research_report_snapshots")
+}
+
+model ScalpSymbolUniverseSnapshot {
+  snapshotKey String   @id @map("snapshot_key")
+  payloadJson Json     @default(dbgenerated("'{}'::jsonb")) @map("payload_json") @db.JsonB
+  generatedAt DateTime @default(now()) @map("generated_at") @db.Timestamptz(3)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@index([updatedAt(sort: Desc)], map: "scalp_symbol_universe_snapshots_updated_idx")
+  @@map("scalp_symbol_universe_snapshots")
+}
+
 model ScalpJob {
   id           BigInt         @id @default(autoincrement())
   kind         ScalpJobKind
