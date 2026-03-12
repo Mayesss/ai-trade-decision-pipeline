@@ -794,6 +794,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const useDeploymentRegistryRequested = parseBool(req.query.useDeploymentRegistry, false);
     const pgConfigured = isScalpPgConfigured();
     const useDeployments = useDeploymentRegistryRequested && pgConfigured;
+    let useDeploymentsEffective = useDeployments;
     const bypassCache = parseBool(req.query.fresh, false);
     const useResponseCache = !debugLogsEnabled && !bypassCache && SUMMARY_CACHE_TTL_MS > 0;
     const cacheKey = makeSummaryCacheKey({
@@ -860,16 +861,41 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const cronSymbolConfigs = getScalpCronSymbolConfigs();
     const cronSymbolConfigBySymbol = new Map(cronSymbolConfigs.map((row) => [row.symbol.toUpperCase(), row]));
     const cronAllConfig = cronSymbolConfigBySymbol.get('*') || null;
-    const cronSymbols = useDeployments ? [] : cronSymbolConfigs;
     stage = 'load_pipeline_state';
-    const pipeline = await loadScalpPipelineSnapshot(nowMs);
+    let pipeline: ScalpPipelineSnapshot | null = null;
+    try {
+      pipeline = await loadScalpPipelineSnapshot(nowMs);
+    } catch (err: any) {
+      const rowError = {
+        kind: 'pipeline_state',
+        message: err?.message || String(err),
+      };
+      rowErrors.push(rowError);
+      console.error(`[scalp-summary][${requestId}] pipeline_state_error`, rowError, err?.stack || '');
+    }
     stage = 'load_deployments';
-    const deploymentRows = useDeployments ? await listScalpDeploymentRegistryEntries({ enabled: true }) : [];
+    let deploymentRows: Awaited<ReturnType<typeof listScalpDeploymentRegistryEntries>> = [];
+    if (useDeployments) {
+      try {
+        deploymentRows = await listScalpDeploymentRegistryEntries({ enabled: true });
+      } catch (err: any) {
+        const rowError = {
+          kind: 'deployment_registry',
+          message: err?.message || String(err),
+          fallbackSource: 'cron_symbols',
+        };
+        rowErrors.push(rowError);
+        console.error(`[scalp-summary][${requestId}] deployment_registry_error`, rowError, err?.stack || '');
+        useDeploymentsEffective = false;
+      }
+    }
+    const cronSymbols = useDeploymentsEffective ? [] : cronSymbolConfigs;
     logDebug('runtime_loaded', {
       defaultStrategyId: runtime.defaultStrategyId,
       runtimeStrategyCount: runtimeStrategies.length,
       cronSymbolCount: cronSymbolConfigs.length,
       deploymentRowCount: deploymentRows.length,
+      useDeploymentsEffective,
       dayKey,
       clockMode: cfg.sessions.clockMode,
       entrySessionProfile: cfg.sessions.entrySessionProfile,
@@ -877,7 +903,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     stage = 'build_rows';
     const rows: SymbolSnapshot[] = [];
-    if (useDeployments) {
+    if (useDeploymentsEffective) {
       for (let idx = 0; idx < deploymentRows.length; idx += 1) {
         const deploymentRow = deploymentRows[idx]!;
         try {
@@ -1093,6 +1119,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         rowErrors: rowErrors.length,
         durationMs,
         useDeployments,
+        useDeploymentsEffective,
       });
     }
     logDebug('success', { durationMs, rowErrors: rowErrors.length });
@@ -1102,7 +1129,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       dayKey,
       clockMode: cfg.sessions.clockMode,
       entrySessionProfile: cfg.sessions.entrySessionProfile,
-      source: useDeployments ? 'deployment_registry' : 'cron_symbols',
+      source: useDeploymentsEffective ? 'deployment_registry' : 'cron_symbols',
       strategyId: strategy.strategyId,
       defaultStrategyId: runtime.defaultStrategyId,
       strategy,
