@@ -574,6 +574,40 @@ async function loadHistoryDiscoverySnapshot(params: {
   const scanLimit = HISTORY_DISCOVERY_SCAN_LIMIT;
   const previewLimit = HISTORY_DISCOVERY_PREVIEW_LIMIT;
   const timeframeMs = Math.max(60_000, timeframeToMs(timeframe));
+  const emptySnapshot = (backend: CandleHistoryBackend | 'unknown' = 'unknown'): HistoryDiscoverySnapshot => ({
+    timeframe,
+    backend,
+    generatedAtMs: params.nowMs,
+    symbolCount: 0,
+    scannedCount: 0,
+    scannedLimit: scanLimit,
+    previewLimit,
+    previewCount: 0,
+    truncated: false,
+    nonEmptyCount: 0,
+    emptyCount: 0,
+    totalCandles: 0,
+    avgCandles: null,
+    medianCandles: null,
+    minCandles: null,
+    maxCandles: null,
+    avgDepthDays: null,
+    medianDepthDays: null,
+    minDepthDays: null,
+    maxDepthDays: null,
+    oldestCandleAtMs: null,
+    newestCandleAtMs: null,
+    rows: [],
+  });
+
+  if (!isScalpPgConfigured()) {
+    params.logDebug('history_snapshot_skipped', {
+      reason: 'pg_not_configured',
+      timeframe,
+    });
+    return emptySnapshot();
+  }
+
   const useCache = !params.debugLogsEnabled && HISTORY_DISCOVERY_CACHE_TTL_MS > 0;
   const cacheKey = makeHistoryDiscoveryCacheKey({ timeframe, scanLimit, previewLimit });
   if (useCache) {
@@ -588,9 +622,24 @@ async function loadHistoryDiscoverySnapshot(params: {
     if (cached) historyDiscoveryCache.delete(cacheKey);
   }
 
-  const symbols = await listScalpCandleHistorySymbols(timeframe);
+  let symbols: string[] = [];
+  let loadedStats: Awaited<ReturnType<typeof loadScalpCandleHistoryStatsBulk>> = [];
+  try {
+    symbols = await listScalpCandleHistorySymbols(timeframe);
+    const scannedSymbols = symbols.slice(0, scanLimit);
+    loadedStats = await loadScalpCandleHistoryStatsBulk(scannedSymbols, timeframe);
+  } catch (err: any) {
+    const rowError = {
+      kind: 'history_snapshot',
+      timeframe,
+      message: err?.message || String(err),
+    };
+    params.rowErrors.push(rowError);
+    console.error(`[scalp-summary][${params.requestId}] history_snapshot_error`, rowError, err?.stack || '');
+    params.logDebug('history_snapshot_error', rowError);
+    return emptySnapshot();
+  }
   const scannedSymbols = symbols.slice(0, scanLimit);
-  const loadedStats = await loadScalpCandleHistoryStatsBulk(scannedSymbols, timeframe);
   const rows: HistoryDiscoveryRow[] = [];
   let backend: CandleHistoryBackend | 'unknown' = 'unknown';
   const dayMs = 24 * 60 * 60 * 1000;
@@ -742,7 +791,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const range = resolveSummaryRange(rangeParam);
     const rangeStartMs = nowMs - SUMMARY_RANGE_LOOKBACK_MS[range];
     const requestedStrategyId = firstQueryValue(req.query.strategyId);
-    const useDeployments = parseBool(req.query.useDeploymentRegistry, false);
+    const useDeploymentRegistryRequested = parseBool(req.query.useDeploymentRegistry, false);
+    const pgConfigured = isScalpPgConfigured();
+    const useDeployments = useDeploymentRegistryRequested && pgConfigured;
     const bypassCache = parseBool(req.query.fresh, false);
     const useResponseCache = !debugLogsEnabled && !bypassCache && SUMMARY_CACHE_TTL_MS > 0;
     const cacheKey = makeSummaryCacheKey({
@@ -771,12 +822,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       url: req.url || null,
       requestedStrategyId: requestedStrategyId || null,
       useDeployments,
+      useDeploymentRegistryRequested,
+      pgConfigured,
       bypassCache,
       useResponseCache,
       range,
       journalLimit,
       tradeLimit,
     });
+    if (useDeploymentRegistryRequested && !pgConfigured) {
+      console.warn(`[scalp-summary][${requestId}] deployment_registry_fallback`, {
+        reason: 'pg_not_configured',
+        requested: true,
+        fallbackSource: 'cron_symbols',
+      });
+    }
 
     stage = 'load_runtime';
     const cfg = getScalpStrategyConfig();
