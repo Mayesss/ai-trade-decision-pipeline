@@ -237,7 +237,7 @@ export default function ScalpUiRedesignPage() {
             </div>
           </div>
 
-          <section className="mt-5 grid grid-cols-1 gap-5 2xl:grid-cols-[1.15fr_1fr]">
+          <section className="mt-5">
             <article className="rounded-3xl border border-slate-700/70 bg-[#0d1a26] p-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
@@ -279,49 +279,6 @@ export default function ScalpUiRedesignPage() {
               </div>
             </article>
 
-            <article className="rounded-3xl border border-slate-700/70 bg-[#0d1a26] p-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
-                  Gate Health
-                </h2>
-                <span className="rounded-full border border-rose-300/40 bg-rose-200/10 px-2 py-1 text-xs text-rose-100">strict mode</span>
-              </div>
-              <div className="mt-4 space-y-3">
-                <div className="rounded-2xl border border-slate-600/60 bg-slate-900/70 p-3">
-                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-                    Selection - Forward Degradation
-                  </p>
-                  <p className="mt-2 text-2xl font-semibold text-rose-100" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
-                    -0.93 R/trade
-                  </p>
-                  <p className="mt-1 text-xs text-slate-300">Selection +0.736 {'>'} Forward (2W) -0.271</p>
-                </div>
-                <div className="rounded-2xl border border-slate-600/60 bg-slate-900/70 p-3">
-                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-                    Profitable Forward Windows
-                  </p>
-                  <div className="mt-2 grid grid-cols-2 gap-3">
-                    <div className="rounded-xl border border-slate-600/60 bg-slate-950/60 p-3">
-                      <p className="text-xs text-slate-400">2W</p>
-                      <p className="text-xl text-rose-100">5 / 18</p>
-                    </div>
-                    <div className="rounded-xl border border-slate-600/60 bg-slate-950/60 p-3">
-                      <p className="text-xs text-slate-400">4W</p>
-                      <p className="text-xl text-amber-100">7 / 18</p>
-                    </div>
-                  </div>
-                </div>
-                <div className="rounded-2xl border border-slate-600/60 bg-slate-900/70 p-3">
-                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-                    Current Verdict
-                  </p>
-                  <p className="mt-2 text-sm text-slate-100">
-                    3-month rank logic is <span className="font-semibold text-rose-200">mostly buying yesterday’s luck</span>. Promotion gate keeps
-                    non-validated variants disabled.
-                  </p>
-                </div>
-              </div>
-            </article>
           </section>
 
           <section className="mt-5 rounded-3xl border border-slate-700/70 bg-[#0d1a26] p-4">

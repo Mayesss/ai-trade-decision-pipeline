@@ -34,7 +34,7 @@ function makeCycle(cycleId = 'rc_test'): ScalpResearchCycleSnapshot {
         params: {
             symbols: ['BTCUSDT'],
             lookbackDays: 90,
-            chunkDays: 14,
+            chunkDays: 7,
             minCandlesPerTask: 180,
             maxTasks: 120,
             maxAttempts: 2,
@@ -91,7 +91,7 @@ test('buildResearchCycleTasks chunks lookback windows across allowed strategies'
         maxTuneVariantsPerStrategy: 1,
     });
 
-    assert.equal(tasks.length, 4);
+    assert.equal(tasks.length, 8);
 
     const uniqueTaskIds = new Set(tasks.map((task) => task.taskId));
     assert.equal(uniqueTaskIds.size, tasks.length);
@@ -105,10 +105,12 @@ test('buildResearchCycleTasks chunks lookback windows across allowed strategies'
         assert.equal(task.status, 'pending');
         assert.equal(task.attempts, 0);
         assert.ok(task.windowFromTs < task.windowToTs);
-        assert.ok(task.windowToTs - task.windowFromTs <= 14 * DAY_MS);
+        assert.equal(task.windowToTs - task.windowFromTs, 7 * DAY_MS);
+        assert.equal(new Date(task.windowFromTs).getUTCDay(), 1);
+        assert.equal(new Date(task.windowToTs).getUTCDay(), 1);
     }
-    assert.equal(byStrategy.get('compression_breakout_pullback_m15_m3'), 2);
-    assert.equal(byStrategy.get('regime_pullback_m15_m3'), 2);
+    assert.equal(byStrategy.get('compression_breakout_pullback_m15_m3'), 4);
+    assert.equal(byStrategy.get('regime_pullback_m15_m3'), 4);
 });
 
 test('buildResearchCycleTasks enforces maxTasks cap', () => {
@@ -142,7 +144,7 @@ test('buildResearchCycleTasks expands symbol+strategy into capped tune variants 
         maxTuneVariantsPerStrategy: 3,
     });
 
-    assert.equal(tasks.length, 12);
+    assert.equal(tasks.length, 24);
     const tuneIds = new Set(tasks.map((row) => row.tuneId));
     assert.ok(tuneIds.has('default'));
     assert.ok(Array.from(tuneIds).some((row) => row.startsWith('auto_')));

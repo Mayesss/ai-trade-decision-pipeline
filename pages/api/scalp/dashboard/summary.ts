@@ -7,8 +7,7 @@ import { requireAdminAccess } from '../../../../lib/admin';
 import { getScalpCronSymbolConfigs } from '../../../../lib/symbolRegistry';
 import {
   listScalpCandleHistorySymbols,
-  loadScalpCandleHistory,
-  loadScalpCandleHistoryBulk,
+  loadScalpCandleHistoryStatsBulk,
   normalizeHistoryTimeframe,
   timeframeToMs,
   type CandleHistoryBackend,
@@ -50,11 +49,6 @@ const HISTORY_DISCOVERY_PREVIEW_LIMIT = (() => {
   const value = Number(process.env.SCALP_DASHBOARD_HISTORY_PREVIEW_LIMIT ?? 20);
   if (!Number.isFinite(value)) return 20;
   return Math.max(1, Math.min(500, Math.floor(value)));
-})();
-const HISTORY_DISCOVERY_BATCH_SIZE = (() => {
-  const value = Number(process.env.SCALP_DASHBOARD_HISTORY_BATCH_SIZE ?? 10);
-  if (!Number.isFinite(value)) return 10;
-  return Math.max(1, Math.min(100, Math.floor(value)));
 })();
 const historyDiscoveryCache = new Map<string, { expiresAtMs: number; payload: HistoryDiscoverySnapshot }>();
 
@@ -596,63 +590,51 @@ async function loadHistoryDiscoverySnapshot(params: {
 
   const symbols = await listScalpCandleHistorySymbols(timeframe);
   const scannedSymbols = symbols.slice(0, scanLimit);
+  const loadedStats = await loadScalpCandleHistoryStatsBulk(scannedSymbols, timeframe);
   const rows: HistoryDiscoveryRow[] = [];
   let backend: CandleHistoryBackend | 'unknown' = 'unknown';
   const dayMs = 24 * 60 * 60 * 1000;
-  for (let i = 0; i < scannedSymbols.length; i += HISTORY_DISCOVERY_BATCH_SIZE) {
-    const batch = scannedSymbols.slice(i, i + HISTORY_DISCOVERY_BATCH_SIZE);
-    const loadedBatch = await loadScalpCandleHistoryBulk(batch, timeframe);
-    const batchRows = await Promise.all(
-      batch.map(async (symbol, index) => {
-        try {
-          const loaded = loadedBatch[index] || (await loadScalpCandleHistory(symbol, timeframe));
-          if (backend === 'unknown') backend = loaded.backend;
-          const record = loaded.record;
-          const candles = Array.isArray(record?.candles) ? record.candles : [];
-          const candleCount = candles.length;
-          const firstTsRaw = candleCount > 0 ? Number(candles[0]?.[0]) : NaN;
-          const lastTsRaw = candleCount > 0 ? Number(candles[candleCount - 1]?.[0]) : NaN;
-          const fromTsMs = Number.isFinite(firstTsRaw) && firstTsRaw > 0 ? Math.floor(firstTsRaw) : null;
-          const toTsMs = Number.isFinite(lastTsRaw) && lastTsRaw > 0 ? Math.floor(lastTsRaw) : null;
-          const updatedAtMsRaw = Number(record?.updatedAtMs);
-          const updatedAtMs = Number.isFinite(updatedAtMsRaw) && updatedAtMsRaw > 0 ? Math.floor(updatedAtMsRaw) : null;
-          const spanMs =
-            fromTsMs !== null && toTsMs !== null && toTsMs >= fromTsMs ? Math.max(0, toTsMs - fromTsMs) : null;
-          const depthDays = spanMs === null ? null : spanMs / dayMs;
-          const expectedCandles =
-            spanMs === null
-              ? null
-              : Math.max(1, Math.floor(spanMs / timeframeMs) + 1);
-          const coveragePct =
-            expectedCandles && expectedCandles > 0
-              ? Math.max(0, Math.min(100, (candleCount / expectedCandles) * 100))
-              : null;
-          const barsPerDay = depthDays !== null && depthDays > 0 ? candleCount / depthDays : null;
-          return {
-            symbol,
-            candles: Math.max(0, Math.floor(candleCount)),
-            depthDays: roundMetric(depthDays),
-            barsPerDay: roundMetric(barsPerDay),
-            coveragePct: roundMetric(coveragePct),
-            fromTsMs,
-            toTsMs,
-            updatedAtMs,
-          } satisfies HistoryDiscoveryRow;
-        } catch (err: any) {
-          const rowError = {
-            kind: 'history_row',
-            symbol,
-            timeframe,
-            message: err?.message || String(err),
-          };
-          params.rowErrors.push(rowError);
-          console.error(`[scalp-summary][${params.requestId}] history_row_error`, rowError, err?.stack || '');
-          return null;
-        }
-      }),
-    );
-    for (const row of batchRows) {
-      if (row) rows.push(row);
+  for (const row of loadedStats) {
+    try {
+      if (backend === 'unknown') backend = row.backend;
+      const candleCount = Math.max(0, Math.floor(Number(row.candleCount) || 0));
+      const fromTsMsRaw = Number(row.fromTsMs);
+      const toTsMsRaw = Number(row.toTsMs);
+      const fromTsMs = Number.isFinite(fromTsMsRaw) && fromTsMsRaw > 0 ? Math.floor(fromTsMsRaw) : null;
+      const toTsMs = Number.isFinite(toTsMsRaw) && toTsMsRaw > 0 ? Math.floor(toTsMsRaw) : null;
+      const updatedAtMsRaw = Number(row.updatedAtMs);
+      const updatedAtMs = Number.isFinite(updatedAtMsRaw) && updatedAtMsRaw > 0 ? Math.floor(updatedAtMsRaw) : null;
+      const spanMs =
+        fromTsMs !== null && toTsMs !== null && toTsMs >= fromTsMs ? Math.max(0, toTsMs - fromTsMs) : null;
+      const depthDays = spanMs === null ? null : spanMs / dayMs;
+      const expectedCandles =
+        spanMs === null
+          ? null
+          : Math.max(1, Math.floor(spanMs / timeframeMs) + 1);
+      const coveragePct =
+        expectedCandles && expectedCandles > 0
+          ? Math.max(0, Math.min(100, (candleCount / expectedCandles) * 100))
+          : null;
+      const barsPerDay = depthDays !== null && depthDays > 0 ? candleCount / depthDays : null;
+      rows.push({
+        symbol: row.symbol,
+        candles: candleCount,
+        depthDays: roundMetric(depthDays),
+        barsPerDay: roundMetric(barsPerDay),
+        coveragePct: roundMetric(coveragePct),
+        fromTsMs,
+        toTsMs,
+        updatedAtMs,
+      } satisfies HistoryDiscoveryRow);
+    } catch (err: any) {
+      const rowError = {
+        kind: 'history_row',
+        symbol: row.symbol,
+        timeframe,
+        message: err?.message || String(err),
+      };
+      params.rowErrors.push(rowError);
+      console.error(`[scalp-summary][${params.requestId}] history_row_error`, rowError, err?.stack || '');
     }
   }
 

@@ -33,6 +33,18 @@ export interface ScalpCandleHistoryBulkSaveResult {
     storageRef: string;
 }
 
+export interface ScalpCandleHistoryStatsLoadResult {
+    backend: CandleHistoryBackend;
+    storageRef: string;
+    symbol: string;
+    timeframe: string;
+    epic: string | null;
+    updatedAtMs: number | null;
+    candleCount: number;
+    fromTsMs: number | null;
+    toTsMs: number | null;
+}
+
 const CANDLE_HISTORY_VERSION = 1 as const;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
@@ -282,6 +294,92 @@ async function loadFromPgBulk(symbols: string[], timeframe: string): Promise<Sca
     });
 }
 
+async function loadFromPgStatsBulk(symbols: string[], timeframe: string): Promise<ScalpCandleHistoryStatsLoadResult[]> {
+    if (!symbols.length) return [];
+    const db = scalpPrisma();
+    const chunkSize = Math.max(
+        1,
+        Math.min(400, Math.floor(Number(process.env.SCALP_CANDLE_HISTORY_STATS_BULK_QUERY_SYMBOL_CHUNK) || 200)),
+    );
+    const grouped = new Map<
+        string,
+        {
+            epic: string | null;
+            updatedAtMs: number | null;
+            candleCount: number;
+            fromTsMs: number | null;
+            toTsMs: number | null;
+        }
+    >();
+
+    for (let offset = 0; offset < symbols.length; offset += chunkSize) {
+        const slice = symbols.slice(offset, offset + chunkSize);
+        if (!slice.length) continue;
+        const rows = await db.$queryRaw<
+            Array<{
+                symbol: string;
+                epic: string | null;
+                updatedAtMs: bigint | number | null;
+                candleCount: bigint | number | null;
+                fromTsMs: bigint | number | null;
+                toTsMs: bigint | number | null;
+            }>
+        >(Prisma.sql`
+            SELECT
+                symbol,
+                NULLIF(MAX(TRIM(COALESCE(epic, ''))), '') AS epic,
+                MAX((EXTRACT(EPOCH FROM updated_at) * 1000)::bigint) AS "updatedAtMs",
+                COALESCE(SUM(jsonb_array_length(candles_json)), 0)::bigint AS "candleCount",
+                MIN(
+                    CASE
+                        WHEN jsonb_array_length(candles_json) > 0
+                             AND (candles_json -> 0 ->> 0) ~ '^[0-9]+$'
+                        THEN (candles_json -> 0 ->> 0)::bigint
+                        ELSE NULL
+                    END
+                ) AS "fromTsMs",
+                MAX(
+                    CASE
+                        WHEN jsonb_array_length(candles_json) > 0
+                             AND (candles_json -> (jsonb_array_length(candles_json) - 1) ->> 0) ~ '^[0-9]+$'
+                        THEN (candles_json -> (jsonb_array_length(candles_json) - 1) ->> 0)::bigint
+                        ELSE NULL
+                    END
+                ) AS "toTsMs"
+            FROM scalp_candle_history_weeks
+            WHERE timeframe = ${timeframe}
+              AND symbol IN (${Prisma.join(slice)})
+            GROUP BY symbol;
+        `);
+        for (const row of rows) {
+            const symbol = normalizeSymbol(row.symbol);
+            if (!symbol) continue;
+            grouped.set(symbol, {
+                epic: row.epic ? String(row.epic).trim().toUpperCase() : null,
+                updatedAtMs: Number.isFinite(Number(row.updatedAtMs)) ? Math.floor(Number(row.updatedAtMs)) : null,
+                candleCount: Number.isFinite(Number(row.candleCount)) ? Math.max(0, Math.floor(Number(row.candleCount))) : 0,
+                fromTsMs: Number.isFinite(Number(row.fromTsMs)) ? Math.floor(Number(row.fromTsMs)) : null,
+                toTsMs: Number.isFinite(Number(row.toTsMs)) ? Math.floor(Number(row.toTsMs)) : null,
+            });
+        }
+    }
+
+    return symbols.map((symbol) => {
+        const stats = grouped.get(symbol);
+        return {
+            backend: 'pg' as const,
+            storageRef: `scalp_candle_history_weeks:stats:${symbol}:${timeframe}`,
+            symbol,
+            timeframe,
+            epic: stats?.epic || null,
+            updatedAtMs: stats?.updatedAtMs ?? null,
+            candleCount: stats?.candleCount ?? 0,
+            fromTsMs: stats?.fromTsMs ?? null,
+            toTsMs: stats?.toTsMs ?? null,
+        };
+    });
+}
+
 async function saveToPg(record: ScalpCandleHistoryRecord): Promise<ScalpCandleHistorySaveResult> {
     await saveToPgBulk([record]);
     return {
@@ -457,6 +555,27 @@ export async function loadScalpCandleHistoryBulk(
     }
     void backend;
     return loadFromPgBulk(symbols, timeframe);
+}
+
+export async function loadScalpCandleHistoryStatsBulk(
+    symbolsRaw: string[],
+    timeframeRaw: string,
+    opts: { backend?: CandleHistoryBackend } = {},
+): Promise<ScalpCandleHistoryStatsLoadResult[]> {
+    const symbols = Array.from(
+        new Set(
+            (symbolsRaw || [])
+                .map((symbol) => normalizeSymbol(symbol))
+                .filter((symbol) => Boolean(symbol)),
+        ),
+    );
+    const timeframe = normalizeTimeframe(timeframeRaw);
+    const backend = resolveBackend(opts.backend);
+    if (!isScalpPgConfigured()) {
+        throw new Error('scalp_pg_not_configured_for_candle_history');
+    }
+    void backend;
+    return loadFromPgStatsBulk(symbols, timeframe);
 }
 
 export async function saveScalpCandleHistoryBulk(

@@ -8,6 +8,8 @@
     "@types/node": "^24.10.0",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
+    "ag-grid-community": "^35.1.0",
+    "ag-grid-react": "^35.1.0",
     "lightweight-charts": "^5.0.9",
     "lucide-react": "^0.561.0",
     "next": "^16.0.7",

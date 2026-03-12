@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Head from 'next/head';
 import dynamic from 'next/dynamic';
+import { AllCommunityModule, ModuleRegistry, type ColDef } from 'ag-grid-community';
 import vercelConfig from '../vercel.json';
 import {
   Activity,
@@ -359,6 +360,7 @@ type ScalpResearchCycleTask = {
   symbol?: string;
   strategyId?: string;
   tuneId?: string;
+  deploymentId?: string | null;
   workerId?: string | null;
   windowFromTs?: number;
   windowToTs?: number;
@@ -367,6 +369,10 @@ type ScalpResearchCycleTask = {
   status?: 'pending' | 'running' | 'completed' | 'failed' | string;
   result?: ScalpResearchCycleTaskResult | null;
   configOverride?: Record<string, unknown> | null;
+  deployed?: boolean | null;
+  deploymentEnabled?: boolean | null;
+  promotionEligible?: boolean | null;
+  promotionReason?: string | null;
   errorCode?: string | null;
   errorMessage?: string | null;
 };
@@ -414,7 +420,11 @@ type ScalpResearchCycleResponse = {
   tasks?: ScalpResearchCycleTask[];
   taskCountReturned?: number;
   taskLimit?: number;
+  taskOffset?: number;
   includeTasks?: boolean;
+  tasksMode?: 'all' | 'cycle' | string;
+  tasksTotal?: number;
+  tasksHasMore?: boolean;
 };
 
 type ScalpPromotionSyncMaterializationRow = {
@@ -584,6 +594,30 @@ type ScalpWorkerSortState = {
   direction: ScalpWorkerSortDirection;
 };
 
+type ScalpWorkerJobGridRow = {
+  rowId: string;
+  deploymentId: string | null;
+  symbol: string;
+  strategyId: string;
+  tuneId: string;
+  deployed: boolean;
+  deploymentEnabled: boolean | null;
+  promotionEligible: boolean | null;
+  reason: string;
+  status: string;
+  windowCount: number;
+  windowsResults: string;
+  windowNetRs: Array<{ value: number | null; display: string; tooltip: string }>;
+  trades: number | null;
+  netR: number | null;
+  totalNetR: number | null;
+  expectancyR: number | null;
+  profitFactor: number | null;
+  maxDrawdownR: number | null;
+  totalMaxDrawdownR: number | null;
+  errorCodes: string | null;
+};
+
 type ScalpUniversePipelineRow = {
   symbol: string;
   discovered: boolean;
@@ -693,7 +727,7 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<string, ScalpCronPipelineDefinitio
     primaryPathname: '/api/scalp/cron/prepare-and-start-cycle',
     matchPathnames: ['/api/scalp/cron/prepare-and-start-cycle', '/api/scalp/cron/research-cycle-start'],
     fallbackInvokePath:
-      '/api/scalp/cron/prepare-and-start-cycle?dryRun=false&force=false&runDiscovery=false&lookbackDays=90&chunkDays=14&minCandlesPerTask=180&maxSymbolsPerRun=12&maxRequestsPerSymbol=24&maxDurationMs=240000',
+      '/api/scalp/cron/prepare-and-start-cycle?dryRun=false&force=false&runDiscovery=false&lookbackDays=90&chunkDays=7&minCandlesPerTask=180&maxSymbolsPerRun=12&maxRequestsPerSymbol=24&maxDurationMs=240000',
   },
   scalp_cycle_worker: {
     primaryPathname: '/api/scalp/cron/research-cycle-worker',
@@ -946,6 +980,16 @@ function buildScalpCronRuntimeMap(nowMs: number): Record<string, ScalpCronRuntim
   return out;
 }
 
+ModuleRegistry.registerModules([AllCommunityModule]);
+
+const AgGridReact = dynamic(
+  () =>
+    import('ag-grid-react').then(
+      (mod) => mod.AgGridReact as React.ComponentType<Record<string, unknown>>,
+    ),
+  { ssr: false },
+);
+
 const ChartPanel = dynamic(() => import('../components/ChartPanel'), {
   ssr: false,
   loading: () => (
@@ -1042,6 +1086,7 @@ export default function Home() {
   const scalpResearchFetchedAtMsRef = useRef<number>(0);
   const scalpPromotionSyncFetchedAtMsRef = useRef<number>(0);
   const scalpSummaryFetchedAtMsRef = useRef<number>(0);
+  const scalpWorkerTasksLoadedOnceRef = useRef<boolean>(false);
   const scalpSummaryErrorCountRef = useRef<number>(0);
 
   const readStoredAdminSecret = () => {
@@ -1371,6 +1416,20 @@ export default function Home() {
 
   const scalpResearchCycleNeedsFullTasks = (cycle: ScalpResearchCycleResponse | null): boolean => {
     if (!cycle) return false;
+    const tasksMode = String(cycle.tasksMode || '').trim().toLowerCase();
+    if (Boolean(cycle.includeTasks) && tasksMode === 'all') {
+      if (typeof cycle.tasksHasMore === 'boolean') return cycle.tasksHasMore;
+      const tasksTotal = Number(cycle.tasksTotal);
+      const taskCountReturned = Number(cycle.taskCountReturned);
+      if (
+        Number.isFinite(tasksTotal) &&
+        tasksTotal >= 0 &&
+        Number.isFinite(taskCountReturned) &&
+        taskCountReturned >= 0
+      ) {
+        return Math.floor(taskCountReturned) < Math.floor(tasksTotal);
+      }
+    }
     const taskLimit = Number(cycle.taskLimit);
     const taskCountReturned = Number(cycle.taskCountReturned);
     const totalTasks = Number(cycle.summary?.totals?.tasks);
@@ -1384,14 +1443,16 @@ export default function Home() {
     return false;
   };
 
-  const loadScalpWorkerTasksFull = async () => {
+  const loadScalpWorkerTasksFull = async (opts: { force?: boolean } = {}) => {
+    const force = opts.force === true;
     if (scalpWorkerTasksLoadingFull) return;
-    if (!scalpResearchCycleNeedsFullTasks(scalpResearchCycle)) return;
+    if (!force && scalpWorkerTasksLoadedOnceRef.current) return;
+    if (!force && scalpResearchCycle && !scalpResearchCycleNeedsFullTasks(scalpResearchCycle)) return;
 
     setScalpWorkerTasksLoadingFull(true);
     try {
       const res = await fetch(
-        `/api/scalp/research/cycle?includeTasks=true&taskLimit=${SCALP_WORKER_TASK_LIMIT_FULL}`,
+        `/api/scalp/research/cycle?includeTasks=true&tasksMode=all&fallbackToRecentTasks=true&taskLimit=${SCALP_WORKER_TASK_LIMIT_FULL}&taskOffset=0`,
         {
           headers: buildAdminHeaders(),
           cache: 'no-store',
@@ -1403,13 +1464,33 @@ export default function Home() {
       }
       if (res.status === 404) {
         setScalpResearchCycle(null);
+        scalpWorkerTasksLoadedOnceRef.current = true;
         return;
       }
       if (!res.ok) return;
-      const json = await res.json().catch(() => null);
-      if (json) {
-        setScalpResearchCycle(json as ScalpResearchCycleResponse);
-      }
+
+      const json = (await res.json().catch(() => null)) as ScalpResearchCycleResponse | null;
+      if (!json) return;
+
+      const tasks = Array.isArray(json.tasks) ? json.tasks : [];
+      const totalRaw = Number(json.tasksTotal);
+      const inferredTotal =
+        Number.isFinite(totalRaw) && totalRaw >= 0
+          ? Math.max(Math.floor(totalRaw), tasks.length)
+          : tasks.length;
+
+      setScalpResearchCycle({
+        ...json,
+        includeTasks: true,
+        tasksMode: 'all',
+        tasks,
+        taskCountReturned: tasks.length,
+        taskOffset: 0,
+        taskLimit: SCALP_WORKER_TASK_LIMIT_FULL,
+        tasksTotal: inferredTotal,
+        tasksHasMore: Boolean(json.tasksHasMore),
+      });
+      scalpWorkerTasksLoadedOnceRef.current = true;
     } catch (err) {
       console.warn('Failed to lazy-load full scalp worker tasks:', err);
     } finally {
@@ -1821,6 +1902,16 @@ export default function Home() {
       if (timerId) window.clearTimeout(timerId);
     };
   }, [adminGranted, strategyMode, adminSecret, dashboardRange]);
+
+  useEffect(() => {
+    if (!adminGranted || strategyMode !== 'scalp') {
+      scalpWorkerTasksLoadedOnceRef.current = false;
+      return;
+    }
+    if (scalpWorkerTasksLoadedOnceRef.current) return;
+    scalpWorkerTasksLoadedOnceRef.current = true;
+    void loadScalpWorkerTasksFull({ force: true });
+  }, [adminGranted, strategyMode]);
 
   useEffect(() => {
     const rows = Array.isArray(scalpSummary?.symbols) ? scalpSummary.symbols : [];
@@ -2374,57 +2465,69 @@ export default function Home() {
   const scalpMaterializationTopKPerSymbol = asFiniteNumber(
     scalpPromotionSyncSnapshot?.materialization?.topKPerSymbol,
   );
-  const scalpMaterializationRows = Array.isArray(scalpPromotionSyncSnapshot?.materialization?.rows)
-    ? scalpPromotionSyncSnapshot.materialization.rows
-        .map((row) => ({
-          deploymentId: String(row?.deploymentId || '').trim(),
-          symbol: String(row?.symbol || '').trim().toUpperCase(),
-          strategyId: String(row?.strategyId || '').trim(),
-          tuneId: String(row?.tuneId || '').trim() || 'default',
-          source: String(row?.source || '').trim().toLowerCase() || null,
-          exists: Boolean(row?.exists),
-          created: Boolean(row?.created),
-        }))
-        .filter((row) => row.symbol && row.strategyId && row.deploymentId)
-        .sort((a, b) => {
-          if (a.exists !== b.exists) return a.exists ? -1 : 1;
-          if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
-          if (a.strategyId !== b.strategyId) return a.strategyId.localeCompare(b.strategyId);
-          return a.tuneId.localeCompare(b.tuneId);
-        })
-    : [];
+  const scalpMaterializationRows = useMemo(
+    () =>
+      Array.isArray(scalpPromotionSyncSnapshot?.materialization?.rows)
+        ? scalpPromotionSyncSnapshot.materialization.rows
+            .map((row) => ({
+              deploymentId: String(row?.deploymentId || '').trim(),
+              symbol: String(row?.symbol || '').trim().toUpperCase(),
+              strategyId: String(row?.strategyId || '').trim(),
+              tuneId: String(row?.tuneId || '').trim() || 'default',
+              source: String(row?.source || '').trim().toLowerCase() || null,
+              exists: Boolean(row?.exists),
+              created: Boolean(row?.created),
+            }))
+            .filter((row) => row.symbol && row.strategyId && row.deploymentId)
+            .sort((a, b) => {
+              if (a.exists !== b.exists) return a.exists ? -1 : 1;
+              if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
+              if (a.strategyId !== b.strategyId) return a.strategyId.localeCompare(b.strategyId);
+              return a.tuneId.localeCompare(b.tuneId);
+            })
+        : [],
+    [scalpPromotionSyncSnapshot?.materialization?.rows],
+  );
   const scalpMaterializationExistingCount = scalpMaterializationRows.reduce(
     (acc, row) => acc + (row.exists ? 1 : 0),
     0,
   );
-  const scalpMaterializationPreviewRows = scalpMaterializationRows.slice(0, 40);
-  const scalpMaterializationKeySet = new Set<string>(
-    scalpMaterializationRows.map((row) => `${row.symbol}~${row.strategyId}~${row.tuneId}`),
+  const scalpMaterializationPreviewRows = useMemo(
+    () => scalpMaterializationRows.slice(0, 40),
+    [scalpMaterializationRows],
   );
-  const scalpPromotionSyncRowEntries: Array<[string, { syncReason: string | null; eligibleFromSync: boolean | null }]> = [];
-  for (const row of Array.isArray(scalpPromotionSyncSnapshot?.rows) ? scalpPromotionSyncSnapshot.rows : []) {
-    const symbol = String(row?.symbol || '').trim().toUpperCase();
-    const strategyId = String(row?.strategyId || '').trim();
-    const tuneId = String(row?.tuneId || '').trim() || 'default';
-    if (!symbol || !strategyId) continue;
-    const syncReason =
-      String(row?.weeklyGateReason || '').trim() ||
-      String(row?.nextGate?.reason || '').trim() ||
-      String(row?.previousGate?.reason || '').trim() ||
-      null;
-    const eligibleFromSync =
-      typeof row?.nextGate?.eligible === 'boolean'
-        ? row.nextGate.eligible
-        : typeof row?.previousGate?.eligible === 'boolean'
-          ? row.previousGate.eligible
-          : null;
-    scalpPromotionSyncRowEntries.push([`${symbol}~${strategyId}~${tuneId}`, { syncReason, eligibleFromSync }]);
-  }
-  const scalpPromotionSyncRowMap = new Map<string, { syncReason: string | null; eligibleFromSync: boolean | null }>(
-    scalpPromotionSyncRowEntries,
+  const scalpMaterializationKeySet = useMemo(
+    () => new Set<string>(scalpMaterializationRows.map((row) => `${row.symbol}~${row.strategyId}~${row.tuneId}`)),
+    [scalpMaterializationRows],
   );
-  const scalpOpsByCandidateKey = new Map<string, ScalpOpsDeploymentRow>(
-    scalpOpsDeployments.map((row) => [`${row.symbol}~${row.strategyId}~${row.tuneId}`, row] as const),
+  const scalpPromotionSyncRowMap = useMemo(() => {
+    const entries: Array<[string, { syncReason: string | null; eligibleFromSync: boolean | null }]> = [];
+    for (const row of Array.isArray(scalpPromotionSyncSnapshot?.rows) ? scalpPromotionSyncSnapshot.rows : []) {
+      const symbol = String(row?.symbol || '').trim().toUpperCase();
+      const strategyId = String(row?.strategyId || '').trim();
+      const tuneId = String(row?.tuneId || '').trim() || 'default';
+      if (!symbol || !strategyId) continue;
+      const syncReason =
+        String(row?.weeklyGateReason || '').trim() ||
+        String(row?.nextGate?.reason || '').trim() ||
+        String(row?.previousGate?.reason || '').trim() ||
+        null;
+      const eligibleFromSync =
+        typeof row?.nextGate?.eligible === 'boolean'
+          ? row.nextGate.eligible
+          : typeof row?.previousGate?.eligible === 'boolean'
+            ? row.previousGate.eligible
+            : null;
+      entries.push([`${symbol}~${strategyId}~${tuneId}`, { syncReason, eligibleFromSync }]);
+    }
+    return new Map<string, { syncReason: string | null; eligibleFromSync: boolean | null }>(entries);
+  }, [scalpPromotionSyncSnapshot?.rows]);
+  const scalpOpsByCandidateKey = useMemo(
+    () =>
+      new Map<string, ScalpOpsDeploymentRow>(
+        scalpOpsDeployments.map((row) => [`${row.symbol}~${row.strategyId}~${row.tuneId}`, row] as const),
+      ),
+    [scalpOpsDeployments],
   );
   const scalpAvgAbsPairCorrelation = asFiniteNumber(scalpResearchReport?.summary?.avgAbsPairCorrelation);
   const scalpPanicStop = scalpSummary?.pipeline?.panicStop || null;
@@ -2601,96 +2704,121 @@ export default function Home() {
       numeric: true,
       sensitivity: 'base',
     });
-  const scalpWorkerTaskRowsRaw = scalpWorkerTasks
-    .map((task) => {
-      const symbol = String(task?.symbol || '').trim().toUpperCase();
-      const strategyId = String(task?.strategyId || '').trim();
-      const tuneId = String(task?.tuneId || task?.result?.tuneId || 'default').trim();
-      const status = String(task?.status || 'pending')
-        .trim()
-        .toLowerCase();
-      const fromTs =
-        asFiniteNumber(task?.windowFromTs) ??
-        asFiniteNumber(task?.result?.windowFromTs);
-      const toTs =
-        asFiniteNumber(task?.windowToTs) ??
-        asFiniteNumber(task?.result?.windowToTs);
-      const candidateKey = `${symbol}~${strategyId}~${tuneId}`;
-      const deploymentRow = scalpOpsByCandidateKey.get(candidateKey) || null;
-      const syncRow = scalpPromotionSyncRowMap.get(candidateKey) || null;
-      const inShortlist = scalpMaterializationKeySet.has(candidateKey);
-      const whyNotPromoted =
-        deploymentRow?.promotionEligible
-          ? 'eligible'
-          : deploymentRow?.promotionReason || syncRow?.syncReason || (inShortlist ? 'shortlisted_pending_gate' : 'not_in_shortlist');
-      return {
-        taskId: String(task?.taskId || '').trim(),
-        symbol,
-        strategyId,
-        tuneId,
-        whyNotPromoted,
-        status,
-        windowFromTs: fromTs,
-        windowToTs: toTs,
-        trades: asFiniteNumber(task?.result?.trades),
-        netR: asFiniteNumber(task?.result?.netR),
-        expectancyR: asFiniteNumber(task?.result?.expectancyR),
-        profitFactor: asFiniteNumber(task?.result?.profitFactor),
-        maxDrawdownR: asFiniteNumber(task?.result?.maxDrawdownR),
-        errorCode: String(task?.errorCode || '').trim() || null,
-      };
-    })
-    .filter((row) => row.symbol && row.strategyId);
-  const scalpWorkerTaskRows = scalpWorkerTaskRowsRaw.slice().sort((a, b) => {
-    let cmp = 0;
-    switch (scalpWorkerSort.key) {
-      case 'symbol':
-        cmp = compareScalpWorkerText(a.symbol, b.symbol);
-        break;
-      case 'strategyId':
-        cmp = compareScalpWorkerText(a.strategyId, b.strategyId);
-        break;
-      case 'tuneId':
-        cmp = compareScalpWorkerText(a.tuneId, b.tuneId);
-        break;
-      case 'whyNotPromoted':
-        cmp = compareScalpWorkerText(a.whyNotPromoted, b.whyNotPromoted);
-        break;
-      case 'windowToTs':
-        cmp = compareScalpWorkerOptionalNumber(a.windowToTs, b.windowToTs);
-        break;
-      case 'status':
-        cmp = compareScalpWorkerText(a.status, b.status);
-        break;
-      case 'trades':
-        cmp = compareScalpWorkerOptionalNumber(a.trades, b.trades);
-        break;
-      case 'netR':
-        cmp = compareScalpWorkerOptionalNumber(a.netR, b.netR);
-        break;
-      case 'expectancyR':
-        cmp = compareScalpWorkerOptionalNumber(a.expectancyR, b.expectancyR);
-        break;
-      case 'profitFactor':
-        cmp = compareScalpWorkerOptionalNumber(a.profitFactor, b.profitFactor);
-        break;
-      case 'maxDrawdownR':
-        cmp = compareScalpWorkerOptionalNumber(a.maxDrawdownR, b.maxDrawdownR);
-        break;
-      default:
-        cmp = 0;
-        break;
-    }
-    if (cmp !== 0) {
-      return scalpWorkerSort.direction === 'asc' ? cmp : -cmp;
-    }
-    const aTo = a.windowToTs ?? 0;
-    const bTo = b.windowToTs ?? 0;
-    if (bTo !== aTo) return bTo - aTo;
-    if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
-    if (a.strategyId !== b.strategyId) return a.strategyId.localeCompare(b.strategyId);
-    return a.tuneId.localeCompare(b.tuneId);
-  });
+  const scalpWorkerTaskRows = useMemo(() => {
+    const rows = scalpWorkerTasks
+      .map((task) => {
+        const symbol = String(task?.symbol || '').trim().toUpperCase();
+        const strategyId = String(task?.strategyId || '').trim();
+        const tuneId = String(task?.tuneId || task?.result?.tuneId || 'default').trim();
+        const taskDeploymentId = String(task?.deploymentId || '').trim() || null;
+        const taskDeployed = typeof task?.deployed === 'boolean' ? task.deployed : null;
+        const taskDeploymentEnabled = typeof task?.deploymentEnabled === 'boolean' ? task.deploymentEnabled : null;
+        const taskPromotionEligible = typeof task?.promotionEligible === 'boolean' ? task.promotionEligible : null;
+        const taskPromotionReason = String(task?.promotionReason || '').trim() || null;
+        const status = String(task?.status || 'pending')
+          .trim()
+          .toLowerCase();
+        const fromTs = asFiniteNumber(task?.windowFromTs) ?? asFiniteNumber(task?.result?.windowFromTs);
+        const toTs = asFiniteNumber(task?.windowToTs) ?? asFiniteNumber(task?.result?.windowToTs);
+        const candidateKey = `${symbol}~${strategyId}~${tuneId}`;
+        const deploymentRow = scalpOpsByCandidateKey.get(candidateKey) || null;
+        const syncRow = scalpPromotionSyncRowMap.get(candidateKey) || null;
+        const inShortlist = scalpMaterializationKeySet.has(candidateKey);
+        const deploymentId = taskDeploymentId || deploymentRow?.deploymentId || null;
+        const deployed = taskDeployed ?? Boolean(deploymentId);
+        const deploymentEnabled = taskDeploymentEnabled ?? (deploymentRow ? Boolean(deploymentRow.enabled) : null);
+        const promotionEligible =
+          taskPromotionEligible ??
+          deploymentRow?.promotionEligible ??
+          (typeof syncRow?.eligibleFromSync === 'boolean' ? syncRow.eligibleFromSync : null);
+        const whyNotPromoted =
+          promotionEligible === true
+            ? 'eligible'
+            : taskPromotionReason ||
+              deploymentRow?.promotionReason ||
+              syncRow?.syncReason ||
+              (inShortlist ? 'shortlisted_pending_gate' : deployed ? 'promotion_unknown' : 'not_deployed');
+        return {
+          taskId: String(task?.taskId || '').trim(),
+          symbol,
+          strategyId,
+          tuneId,
+          deploymentId,
+          deployed,
+          deploymentEnabled,
+          promotionEligible,
+          whyNotPromoted,
+          status,
+          windowFromTs: fromTs,
+          windowToTs: toTs,
+          trades: asFiniteNumber(task?.result?.trades),
+          netR: asFiniteNumber(task?.result?.netR),
+          expectancyR: asFiniteNumber(task?.result?.expectancyR),
+          profitFactor: asFiniteNumber(task?.result?.profitFactor),
+          maxDrawdownR: asFiniteNumber(task?.result?.maxDrawdownR),
+          errorCode: String(task?.errorCode || '').trim() || null,
+          errorMessage: String(task?.errorMessage || '').trim() || null,
+        };
+      })
+      .filter((row) => row.symbol && row.strategyId);
+    return rows.slice().sort((a, b) => {
+      let cmp = 0;
+      switch (scalpWorkerSort.key) {
+        case 'symbol':
+          cmp = compareScalpWorkerText(a.symbol, b.symbol);
+          break;
+        case 'strategyId':
+          cmp = compareScalpWorkerText(a.strategyId, b.strategyId);
+          break;
+        case 'tuneId':
+          cmp = compareScalpWorkerText(a.tuneId, b.tuneId);
+          break;
+        case 'whyNotPromoted':
+          cmp = compareScalpWorkerText(a.whyNotPromoted, b.whyNotPromoted);
+          break;
+        case 'windowToTs':
+          cmp = compareScalpWorkerOptionalNumber(a.windowToTs, b.windowToTs);
+          break;
+        case 'status':
+          cmp = compareScalpWorkerText(a.status, b.status);
+          break;
+        case 'trades':
+          cmp = compareScalpWorkerOptionalNumber(a.trades, b.trades);
+          break;
+        case 'netR':
+          cmp = compareScalpWorkerOptionalNumber(a.netR, b.netR);
+          break;
+        case 'expectancyR':
+          cmp = compareScalpWorkerOptionalNumber(a.expectancyR, b.expectancyR);
+          break;
+        case 'profitFactor':
+          cmp = compareScalpWorkerOptionalNumber(a.profitFactor, b.profitFactor);
+          break;
+        case 'maxDrawdownR':
+          cmp = compareScalpWorkerOptionalNumber(a.maxDrawdownR, b.maxDrawdownR);
+          break;
+        default:
+          cmp = 0;
+          break;
+      }
+      if (cmp !== 0) {
+        return scalpWorkerSort.direction === 'asc' ? cmp : -cmp;
+      }
+      const aTo = a.windowToTs ?? 0;
+      const bTo = b.windowToTs ?? 0;
+      if (bTo !== aTo) return bTo - aTo;
+      if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
+      if (a.strategyId !== b.strategyId) return a.strategyId.localeCompare(b.strategyId);
+      return a.tuneId.localeCompare(b.tuneId);
+    });
+  }, [
+    scalpWorkerTasks,
+    scalpOpsByCandidateKey,
+    scalpPromotionSyncRowMap,
+    scalpMaterializationKeySet,
+    scalpWorkerSort.key,
+    scalpWorkerSort.direction,
+  ]);
   const scalpWorkerLastDurationFromTasksMs = (() => {
     const completedTaskRuns = scalpWorkerTasks
       .map((task) => {
@@ -3903,6 +4031,333 @@ export default function Home() {
   const scalpCronPreviewClass = scalpDarkMode
     ? 'max-h-64 overflow-auto rounded-xl border border-zinc-700 bg-zinc-950/80 p-2 font-mono text-[11px] text-zinc-300'
     : 'max-h-64 overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-2 font-mono text-[11px] text-slate-700';
+  const scalpWorkerJobsGridThemeClass = scalpDarkMode ? 'ag-theme-quartz-dark' : 'ag-theme-quartz';
+  const scalpWorkerJobsGridRows = useMemo<ScalpWorkerJobGridRow[]>(
+    () => {
+      type MutableGridRow = ScalpWorkerJobGridRow & {
+        statusCounts: { completed: number; failed: number; running: number; pending: number };
+        windows: Array<{ sortTs: number; netRValue: number | null; netRDisplay: string; tooltipText: string }>;
+        expectancyWeightedSum: number;
+        expectancyWeightedTrades: number;
+        expectancySum: number;
+        expectancyCount: number;
+        profitFactorSum: number;
+        profitFactorCount: number;
+        errorCodeSet: Set<string>;
+      };
+
+      const byKey = new Map<string, MutableGridRow>();
+      for (const row of scalpWorkerTaskRows) {
+        const candidateKey = `${row.symbol}~${row.strategyId}~${row.tuneId}`;
+        const key = row.deploymentId || candidateKey;
+        const windowLabel =
+          row.windowFromTs === null || row.windowToTs === null
+            ? '—'
+            : `${new Date(row.windowFromTs).toISOString().slice(0, 10)} → ${new Date(
+                Math.max(row.windowFromTs, row.windowToTs - 1),
+              )
+                .toISOString()
+                .slice(0, 10)}`;
+        const weekValue =
+          row.trades !== null && row.expectancyR !== null
+            ? row.trades * row.expectancyR
+            : null;
+        const netRValue = row.netR;
+        const netRDisplay =
+          netRValue === null ? '—' : `${netRValue >= 0 ? '+' : ''}${netRValue.toFixed(2)}R`;
+        const tooltipText = [
+          `Window:${windowLabel}`,
+          row.trades !== null ? `T:${Math.max(0, Math.floor(row.trades))}` : null,
+          row.netR !== null ? `Net:${row.netR >= 0 ? '+' : ''}${row.netR.toFixed(2)}R` : null,
+          row.expectancyR !== null ? `Exp:${row.expectancyR >= 0 ? '+' : ''}${row.expectancyR.toFixed(3)}R` : null,
+          row.profitFactor !== null ? `PF:${row.profitFactor.toFixed(2)}` : null,
+          row.maxDrawdownR !== null ? `DD:${row.maxDrawdownR.toFixed(2)}R` : null,
+          row.errorCode ? `ERR:${row.errorCode}` : null,
+        ]
+          .filter((part): part is string => Boolean(part))
+          .join(' | ');
+
+        const current = byKey.get(key);
+        if (!current) {
+          const status = String(row.status || 'pending').trim().toLowerCase();
+          const statusCounts = {
+            completed: status === 'completed' ? 1 : 0,
+            failed: status === 'failed' ? 1 : 0,
+            running: status === 'running' ? 1 : 0,
+            pending: status !== 'completed' && status !== 'failed' && status !== 'running' ? 1 : 0,
+          };
+          const errorCodeSet = new Set<string>();
+          if (row.errorCode) errorCodeSet.add(row.errorCode);
+          byKey.set(key, {
+            rowId: key,
+            deploymentId: row.deploymentId || null,
+            symbol: row.symbol,
+            strategyId: row.strategyId,
+            tuneId: row.tuneId,
+            deployed: row.deployed,
+            deploymentEnabled: row.deploymentEnabled,
+            promotionEligible: row.promotionEligible,
+            reason: row.whyNotPromoted,
+            status: '',
+            windowCount: 1,
+            windowsResults: '',
+            windowNetRs: [],
+            trades: row.trades,
+            netR: row.netR,
+            totalNetR: row.netR,
+            expectancyR: row.expectancyR,
+            profitFactor: row.profitFactor,
+            maxDrawdownR: row.maxDrawdownR,
+            totalMaxDrawdownR: row.maxDrawdownR,
+            errorCodes: null,
+            statusCounts,
+            windows: [{ sortTs: row.windowFromTs ?? row.windowToTs ?? 0, netRValue, netRDisplay, tooltipText }],
+            expectancyWeightedSum:
+              row.expectancyR !== null && row.trades !== null && row.trades > 0 ? row.expectancyR * row.trades : 0,
+            expectancyWeightedTrades: row.trades !== null && row.trades > 0 ? row.trades : 0,
+            expectancySum: row.expectancyR ?? 0,
+            expectancyCount: row.expectancyR !== null ? 1 : 0,
+            profitFactorSum: row.profitFactor ?? 0,
+            profitFactorCount: row.profitFactor !== null ? 1 : 0,
+            errorCodeSet,
+          });
+          continue;
+        }
+
+        current.deployed = current.deployed || row.deployed;
+        if (!current.deploymentId && row.deploymentId) current.deploymentId = row.deploymentId;
+        if (current.deploymentEnabled === null && row.deploymentEnabled !== null) current.deploymentEnabled = row.deploymentEnabled;
+        if (current.promotionEligible === null && row.promotionEligible !== null) current.promotionEligible = row.promotionEligible;
+        if (current.reason === 'eligible' && row.whyNotPromoted !== 'eligible') current.reason = row.whyNotPromoted;
+
+        const status = String(row.status || 'pending').trim().toLowerCase();
+        if (status === 'completed') current.statusCounts.completed += 1;
+        else if (status === 'failed') current.statusCounts.failed += 1;
+        else if (status === 'running') current.statusCounts.running += 1;
+        else current.statusCounts.pending += 1;
+
+        current.windowCount += 1;
+        current.windows.push({ sortTs: row.windowFromTs ?? row.windowToTs ?? 0, netRValue, netRDisplay, tooltipText });
+        if (row.trades !== null) current.trades = (current.trades ?? 0) + row.trades;
+        if (row.netR !== null) current.netR = (current.netR ?? 0) + row.netR;
+        if (row.expectancyR !== null) {
+          current.expectancySum += row.expectancyR;
+          current.expectancyCount += 1;
+          if (row.trades !== null && row.trades > 0) {
+            current.expectancyWeightedSum += row.expectancyR * row.trades;
+            current.expectancyWeightedTrades += row.trades;
+          }
+        }
+        if (row.profitFactor !== null) {
+          current.profitFactorSum += row.profitFactor;
+          current.profitFactorCount += 1;
+        }
+        if (row.maxDrawdownR !== null) {
+          current.maxDrawdownR = current.maxDrawdownR === null ? row.maxDrawdownR : Math.max(current.maxDrawdownR, row.maxDrawdownR);
+        }
+        if (row.errorCode) current.errorCodeSet.add(row.errorCode);
+      }
+
+      const out: ScalpWorkerJobGridRow[] = [];
+      for (const row of byKey.values()) {
+        const sortedWindows = row.windows
+          .slice()
+          .sort((a, b) => a.sortTs - b.sortTs);
+        const windowRows = sortedWindows.map((entry) => entry.netRDisplay);
+        const expectation =
+          row.expectancyWeightedTrades > 0
+            ? row.expectancyWeightedSum / row.expectancyWeightedTrades
+            : row.expectancyCount > 0
+              ? row.expectancySum / row.expectancyCount
+              : null;
+        out.push({
+          rowId: row.rowId,
+          deploymentId: row.deploymentId,
+          symbol: row.symbol,
+          strategyId: row.strategyId,
+          tuneId: row.tuneId,
+          deployed: row.deployed,
+          deploymentEnabled: row.deploymentEnabled,
+          promotionEligible: row.promotionEligible,
+          reason: row.reason,
+          status: `C:${row.statusCounts.completed} F:${row.statusCounts.failed} R:${row.statusCounts.running} P:${row.statusCounts.pending}`,
+          windowCount: row.windowCount,
+          windowsResults: windowRows.join(' | '),
+          windowNetRs: sortedWindows.map((entry) => ({
+            value: entry.netRValue,
+            display: entry.netRDisplay,
+            tooltip: entry.tooltipText,
+          })),
+          trades: row.trades,
+          netR: row.netR,
+          totalNetR: row.netR,
+          expectancyR: expectation,
+          profitFactor: row.profitFactorCount > 0 ? row.profitFactorSum / row.profitFactorCount : null,
+          maxDrawdownR: row.maxDrawdownR,
+          totalMaxDrawdownR: row.maxDrawdownR,
+          errorCodes: row.errorCodeSet.size ? Array.from(row.errorCodeSet).join(', ') : null,
+        });
+      }
+      return out.sort((a, b) => {
+        if (a.deployed !== b.deployed) return a.deployed ? -1 : 1;
+        if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
+        if (a.strategyId !== b.strategyId) return a.strategyId.localeCompare(b.strategyId);
+        if (a.tuneId !== b.tuneId) return a.tuneId.localeCompare(b.tuneId);
+        return String(a.deploymentId || '').localeCompare(String(b.deploymentId || ''));
+      });
+    },
+    [scalpWorkerTaskRows],
+  );
+  const scalpWorkerJobsGridDefaultColDef = useMemo<ColDef<ScalpWorkerJobGridRow>>(
+    () => ({
+      sortable: true,
+      filter: true,
+      resizable: true,
+      minWidth: 120,
+    }),
+    [],
+  );
+  const scalpWorkerJobsGridColumnDefs = useMemo<ColDef<ScalpWorkerJobGridRow>[]>(
+    () => [
+      {
+        headerName: 'Deployment',
+        field: 'deploymentId',
+        pinned: 'left',
+        minWidth: 220,
+        valueFormatter: (params) => String(params.value || '—'),
+      },
+      {
+        headerName: 'Symbol',
+        field: 'symbol',
+        minWidth: 110,
+      },
+      {
+        headerName: 'Strategy',
+        field: 'strategyId',
+        minWidth: 220,
+      },
+      {
+        headerName: 'Tune',
+        field: 'tuneId',
+        minWidth: 150,
+      },
+      {
+        headerName: 'Windows Results',
+        field: 'windowsResults',
+        minWidth: 560,
+        cellRenderer: (params: any) => {
+          const entries = Array.isArray(params?.data?.windowNetRs) ? params.data.windowNetRs : [];
+          if (!entries.length) return '—';
+          return (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              {entries.map((entry: { value: number | null; display: string; tooltip: string }, idx: number) => {
+                const toneClass =
+                  entry.value === null || entry.value === 0
+                    ? ''
+                    : entry.value > 0
+                      ? 'text-emerald-500'
+                      : 'text-rose-500';
+                const suffix = idx < entries.length - 1 ? ' |' : '';
+                return (
+                  <span key={`win-netr-${idx}`} className={toneClass} title={entry.tooltip}>
+                    {entry.display}
+                    {suffix}
+                  </span>
+                );
+              })}
+            </div>
+          );
+        },
+      },
+      {
+        headerName: 'Enabled',
+        field: 'deploymentEnabled',
+        minWidth: 120,
+        valueFormatter: (params) =>
+          params.value === null || typeof params.value === 'undefined'
+            ? '—'
+            : params.value
+              ? 'yes'
+              : 'no',
+      },
+      {
+        headerName: 'Promotion',
+        field: 'promotionEligible',
+        minWidth: 130,
+        valueFormatter: (params) =>
+          params.value === null || typeof params.value === 'undefined'
+            ? 'unknown'
+            : params.value
+              ? 'eligible'
+              : 'blocked',
+      },
+      {
+        headerName: 'Deployed',
+        field: 'deployed',
+        minWidth: 120,
+        valueFormatter: (params) => (params.value ? 'yes' : 'no'),
+      },
+      {
+        headerName: 'Reason',
+        field: 'reason',
+        minWidth: 250,
+        valueFormatter: (params) => String(params.value || 'unknown').replace(/_/g, ' '),
+      },
+      {
+        headerName: 'Windows',
+        field: 'windowCount',
+        minWidth: 110,
+      },
+      {
+        headerName: 'Trades',
+        field: 'trades',
+        minWidth: 110,
+        valueFormatter: (params) =>
+          typeof params.value === 'number' && Number.isFinite(params.value)
+            ? Math.floor(params.value).toString()
+            : '—',
+      },
+      {
+        headerName: 'Total Net R',
+        field: 'totalNetR',
+        minWidth: 120,
+        valueFormatter: (params) =>
+          typeof params.value === 'number' && Number.isFinite(params.value)
+            ? `${params.value >= 0 ? '+' : ''}${params.value.toFixed(2)}`
+            : '—',
+      },
+      {
+        headerName: 'Expectancy',
+        field: 'expectancyR',
+        minWidth: 130,
+        valueFormatter: (params) =>
+          typeof params.value === 'number' && Number.isFinite(params.value)
+            ? `${params.value >= 0 ? '+' : ''}${params.value.toFixed(3)}`
+            : '—',
+      },
+      {
+        headerName: 'PF',
+        field: 'profitFactor',
+        minWidth: 100,
+        valueFormatter: (params) =>
+          typeof params.value === 'number' && Number.isFinite(params.value) ? params.value.toFixed(2) : '—',
+      },
+      {
+        headerName: 'Total Max DD',
+        field: 'totalMaxDrawdownR',
+        minWidth: 120,
+        valueFormatter: (params) =>
+          typeof params.value === 'number' && Number.isFinite(params.value) ? `${params.value.toFixed(2)}R` : '—',
+      },
+      {
+        headerName: 'Errors',
+        field: 'errorCodes',
+        minWidth: 220,
+        valueFormatter: (params) => String(params.value || '—'),
+      },
+    ],
+    [],
+  );
 
   const scalpStateMeta = (state?: string | null) => {
     const normalized = String(state || 'MISSING').trim().toUpperCase();
@@ -4500,7 +4955,7 @@ export default function Home() {
                   </div>
                 </section>
 
-                <section className="grid grid-cols-1 gap-5 2xl:grid-cols-[1.15fr_1fr]">
+                <section className="grid grid-cols-1 gap-5">
                   <article className={`${scalpSectionShellClass} p-4`}>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <h3 className={`text-lg font-semibold ${scalpTextPrimaryClass}`}>Cron Execution Pipeline</h3>
@@ -5292,179 +5747,51 @@ export default function Home() {
                     </div>
                   </article>
 
-                  <article className={`${scalpSectionShellClass} p-4`}>
-                    <div className="flex items-center justify-between">
-                      <h3 className={`text-lg font-semibold ${scalpTextPrimaryClass}`}>Gate Health</h3>
-                      <span className={scalpTagNeutralClass}>strict mode</span>
-                    </div>
-                    <div className="mt-4 space-y-3">
-                      <div className={scalpCardClass}>
-                        <p className={`text-[11px] uppercase tracking-[0.16em] ${scalpTextMutedClass}`}>Forward Profitable Windows</p>
-                        <p className={`mt-2 text-2xl font-semibold ${scalpTextPrimaryClass}`}>
-                          {scalpMeanForwardProfitablePct === null
-                            ? '—'
-                            : `${scalpMeanForwardProfitablePct.toFixed(1)}%`}
-                        </p>
-                        <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
-                          average profitable-window percentage across validated deployments
-                        </p>
-                      </div>
-                      <div className={scalpCardClass}>
-                        <p className={`text-[11px] uppercase tracking-[0.16em] ${scalpTextMutedClass}`}>Cycle Status</p>
-                        <p className={`mt-2 text-xl font-semibold ${scalpTextPrimaryClass}`}>
-                          {String(
-                            scalpResearchCycle?.summary?.status ||
-                              scalpResearchCycle?.cycle?.status ||
-                              scalpResearchReport?.cycle?.status ||
-                              'unknown',
-                          )
-                            .replace(/_/g, ' ')
-                            .toUpperCase()}
-                        </p>
-                        <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
-                          {scalpCycleFailed === null ? 'no failure count reported' : `${Math.floor(scalpCycleFailed)} failed task(s)`}
-                        </p>
-                      </div>
-                      <div className={scalpCardClass}>
-                        <p className={`text-[11px] uppercase tracking-[0.16em] ${scalpTextMutedClass}`}>Universe Snapshot</p>
-                        <p className={`mt-2 text-xl font-semibold ${scalpTextPrimaryClass}`}>
-                          {scalpUniverseSelectedCount === null ? '—' : Math.floor(scalpUniverseSelectedCount)} selected
-                        </p>
-                        <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
-                          {scalpUniverseCandidatesEvaluated === null
-                            ? 'candidates evaluated unavailable'
-                            : `${Math.floor(scalpUniverseCandidatesEvaluated)} candidates evaluated`}
-                        </p>
-                        <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
-                          {`${formatScalpCount(scalpUniverseSeededCount)} imported • ${formatScalpCount(
-                            scalpUniverseEvaluatedCount,
-                          )} evaluated`}
-                        </p>
-                        <div className="mt-2 space-y-1">
-                          <p className={`text-[10px] ${scalpTextMutedClass}`}>
-                            discovered: {scalpUniverseDiscoveredPreview.length ? scalpUniverseDiscoveredPreview.join(', ') : '—'}
-                          </p>
-                          <p className={`text-[10px] ${scalpTextMutedClass}`}>
-                            imported: {scalpUniverseImportedPreview.length ? scalpUniverseImportedPreview.join(', ') : '—'}
-                          </p>
-                          <p className={`text-[10px] ${scalpTextMutedClass}`}>
-                            evaluated: {scalpUniverseEvaluatedPreview.length ? scalpUniverseEvaluatedPreview.join(', ') : '—'}
-                          </p>
-                        </div>
-                      </div>
-                      <div className={scalpCardClass}>
-                        <p className={`text-[11px] uppercase tracking-[0.16em] ${scalpTextMutedClass}`}>History Discovery</p>
-                        <p className={`mt-2 text-xl font-semibold ${scalpTextPrimaryClass}`}>
-                          {formatScalpCount(scalpHistoryNonEmptyCount)} /{' '}
-                          {formatScalpCount(scalpHistoryScannedCount ?? scalpHistorySymbolCount)} symbols
-                        </p>
-                        <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
-                          {`${formatScalpCount(scalpHistoryTotalCandles)} candles • median ${formatScalpCount(
-                            scalpHistoryMedianCandles,
-                          )} • tf ${scalpHistoryTimeframe} • ${scalpHistoryBackend}`}
-                        </p>
-                        <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
-                          {`median depth ${
-                            scalpHistoryMedianDepthDays === null ? '—' : `${scalpHistoryMedianDepthDays.toFixed(1)}d`
-                          } • coverage ${formatScalpPct(scalpHistoryCoveragePct, 1)}`}
-                        </p>
-                        {scalpHistoryTruncated ? (
-                          <p className={`mt-1 text-[10px] ${scalpTextMutedClass}`}>
-                            scanned first {formatScalpCount(scalpHistoryScannedLimit)} symbols from history store
-                          </p>
-                        ) : null}
-                      </div>
-                    </div>
-                  </article>
                 </section>
 
                 <section className={`${scalpSectionShellClass} p-4`}>
                   <div className="flex items-center justify-between">
-                    <h3 className={`text-lg font-semibold ${scalpTextPrimaryClass}`}>Deployment Registry and Forward Validation</h3>
-                    <span className={scalpTagNeutralClass}>click row to focus</span>
+                    <h3 className={`text-lg font-semibold ${scalpTextPrimaryClass}`}>Cycle Worker Jobs</h3>
+                    <span className={scalpTagNeutralClass}>{`${scalpWorkerJobsGridRows.length} deployments`}</span>
                   </div>
-                  <div className="mt-4 overflow-x-auto">
-                    <table className="w-full min-w-[980px] border-separate border-spacing-y-2 text-left text-sm">
-                      <thead className={`text-[11px] uppercase tracking-[0.16em] ${scalpTableHeaderClass}`}>
-                        <tr>
-                          <th className="px-3 py-1">Deployment</th>
-                          <th className="px-3 py-1">Symbol</th>
-                          <th className="px-3 py-1">Strategy</th>
-                          <th className="px-3 py-1">Tune</th>
-                          <th className="px-3 py-1">Forward Exp</th>
-                          <th className="px-3 py-1">Profitable %</th>
-                          <th className="px-3 py-1">Max DD</th>
-                          <th className="px-3 py-1">Guardrail</th>
-                          <th className="px-3 py-1">Enabled</th>
-                          <th className="px-3 py-1">Promotion</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {scalpOpsDeployments.map((row) => {
-                          const isActive = scalpActiveOpsRow?.deploymentId === row.deploymentId;
-                          const forwardExp = asFiniteNumber(row.forwardValidation?.meanExpectancyR);
-                          const profitablePct = asFiniteNumber(row.forwardValidation?.profitableWindowPct);
-                          const maxDd =
-                            asFiniteNumber(row.forwardValidation?.maxDrawdownR) ?? row.perf30dMaxDrawdownR;
-                          const guardrail = row.promotionReason || 'none';
-                          return (
-                            <tr
-                              key={row.deploymentId}
-                              onClick={() => setScalpActiveDeploymentId(row.deploymentId)}
-                              className={`cursor-pointer transition ${scalpTableRowClass} ${
-                                isActive ? (scalpDarkMode ? 'ring-2 ring-zinc-500/70' : 'ring-2 ring-slate-300') : ''
-                              }`}
-                            >
-                              <td className={`rounded-l-xl px-3 py-3 font-medium ${scalpTextPrimaryClass}`}>{row.deploymentId}</td>
-                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{row.symbol}</td>
-                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{row.strategyId}</td>
-                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{row.tuneId}</td>
-                              <td className={`px-3 py-3 ${forwardExp === null ? scalpTextMutedClass : forwardExp >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                                {forwardExp === null ? '—' : `${forwardExp >= 0 ? '+' : ''}${forwardExp.toFixed(2)}`}
-                              </td>
-                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>
-                                {profitablePct === null ? '—' : `${profitablePct.toFixed(1)}%`}
-                              </td>
-                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>
-                                {maxDd === null ? '—' : `${maxDd.toFixed(2)}R`}
-                              </td>
-                              <td className={`px-3 py-3 ${scalpTextSecondaryClass}`}>{guardrail}</td>
-                              <td className="px-3 py-3">
-                                <span
-                                  className={`rounded-full border px-2 py-1 text-[11px] ${
-                                    row.enabled
-                                      ? scalpDarkMode
-                                        ? 'border-sky-300/40 bg-sky-300/15 text-sky-200'
-                                        : 'border-sky-200 bg-sky-50 text-sky-700'
-                                      : scalpDarkMode
-                                      ? 'border-zinc-300/40 bg-zinc-300/15 text-zinc-200'
-                                      : 'border-zinc-200 bg-zinc-100 text-zinc-700'
-                                  }`}
-                                >
-                                  {row.enabled ? 'enabled' : 'disabled'}
-                                </span>
-                              </td>
-                              <td className="rounded-r-xl px-3 py-3">
-                                <span
-                                  className={`rounded-full border px-2 py-1 text-[11px] ${
-                                    row.promotionEligible
-                                      ? scalpDarkMode
-                                        ? 'border-emerald-300/40 bg-emerald-300/15 text-emerald-200'
-                                        : 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                                      : scalpDarkMode
-                                      ? 'border-rose-300/40 bg-rose-300/15 text-rose-200'
-                                      : 'border-rose-200 bg-rose-50 text-rose-700'
-                                  }`}
-                                >
-                                  {row.promotionEligible ? 'eligible' : 'blocked'}
-                                </span>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                  <div className={`mt-2 text-xs ${scalpTextSecondaryClass}`}>
+                    One row per deployment, with all window-level outcomes consolidated in the windows results column.
                   </div>
+                  {scalpWorkerJobsGridRows.length ? (
+                    <div
+                      className={`mt-4 h-[560px] w-full overflow-hidden rounded-xl border ${
+                        scalpDarkMode ? 'border-zinc-700/60' : 'border-slate-200'
+                      } ${scalpWorkerJobsGridThemeClass}`}
+                    >
+                      <AgGridReact
+                        theme="legacy"
+                        rowData={scalpWorkerJobsGridRows}
+                        columnDefs={scalpWorkerJobsGridColumnDefs}
+                        defaultColDef={scalpWorkerJobsGridDefaultColDef}
+                        immutableData
+                        suppressScrollOnNewData
+                        getRowId={(params: any) => String(params?.data?.rowId || '')}
+                        animateRows
+                        pagination
+                        paginationPageSize={50}
+                        paginationPageSizeSelector={[25, 50, 100, 200]}
+                        onRowClicked={(event: any) => {
+                          const deploymentId = String(event?.data?.deploymentId || '').trim();
+                          if (deploymentId) {
+                            setScalpActiveDeploymentId(deploymentId);
+                          }
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <div
+                      className={`mt-4 rounded-xl border px-3 py-4 text-sm ${
+                        scalpDarkMode ? 'border-zinc-700/60 text-zinc-300' : 'border-slate-200 text-slate-600'
+                      }`}
+                    >
+                      No cycle-worker jobs available yet. Run `scalp_prepare_and_start_cycle` then refresh this view.
+                    </div>
+                  )}
                 </section>
 
                 <section className="grid grid-cols-1 gap-5 2xl:grid-cols-[1.15fr_1fr]">

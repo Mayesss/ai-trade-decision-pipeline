@@ -27,7 +27,7 @@ import {
 const RESEARCH_CYCLE_VERSION = 1 as const;
 
 const DEFAULT_LOOKBACK_DAYS = 90;
-const DEFAULT_CHUNK_DAYS = 14;
+const DEFAULT_CHUNK_DAYS = 7;
 const DEFAULT_MIN_CANDLES_PER_TASK = 180;
 const DEFAULT_MAX_TASKS = 4_000;
 const DEFAULT_MAX_ATTEMPTS = 2;
@@ -100,6 +100,10 @@ export interface ScalpResearchTask {
     errorCode: string | null;
     errorMessage: string | null;
     result: ScalpResearchTaskResult | null;
+    deployed?: boolean;
+    deploymentEnabled?: boolean | null;
+    promotionEligible?: boolean | null;
+    promotionReason?: string | null;
 }
 
 export interface ScalpResearchTaskResult {
@@ -1372,8 +1376,12 @@ export function buildResearchCycleTasks(params: {
     maxTuneVariantsPerStrategy: number;
 }): ScalpResearchTask[] {
     const symbols = dedupe(params.symbols.map((row) => normalizeSymbol(row)).filter((row) => Boolean(row)));
-    const fromTs = params.nowMs - params.lookbackDays * 24 * 60 * 60_000;
-    const chunkMs = Math.max(1, params.chunkDays) * 24 * 60 * 60_000;
+    // Enforce full ISO-like trading weeks: Monday 00:00 UTC -> next Monday 00:00 UTC.
+    // `chunkDays` is intentionally ignored so all task windows stay weekly.
+    const completedWeekEndTs = weekStartMondayUtcMs(params.nowMs);
+    const lookbackWeeks = Math.max(1, Math.floor(Math.max(1, params.lookbackDays) / 7));
+    const fromTs = Math.max(0, completedWeekEndTs - lookbackWeeks * ONE_WEEK_MS);
+    const chunkMs = ONE_WEEK_MS;
     const knownStrategies = new Set(listScalpStrategies().map((row) => row.id));
     const tasks: ScalpResearchTask[] = [];
     const usedTaskIds = new Set<string>();
@@ -1413,8 +1421,8 @@ export function buildResearchCycleTasks(params: {
                 : [{ tuneId: 'default', configOverride: null }];
             let chunkFrom = fromTs;
             let chunkIdx = 0;
-            while (chunkFrom < params.nowMs) {
-                const chunkTo = Math.min(params.nowMs, chunkFrom + chunkMs);
+            while (chunkFrom < completedWeekEndTs) {
+                const chunkTo = Math.min(completedWeekEndTs, chunkFrom + chunkMs);
                 for (const tune of tuneVariants) {
                     const deployment = resolveScalpDeployment({
                         symbol,
@@ -1601,6 +1609,11 @@ type PgResearchTaskQueryRow = {
     priority: number;
     createdAt: Date;
     updatedAt: Date;
+    deployed?: boolean | null;
+    deploymentEnabled?: boolean | null;
+    promotionEligible?: boolean | null;
+    promotionReason?: string | null;
+    totalCount?: bigint | number;
 };
 
 function mapPgResearchTaskStatusToLocal(status: unknown, errorCode: unknown): ScalpResearchTaskStatus {
@@ -1659,6 +1672,10 @@ function mapPgRowToResearchTask(row: PgResearchTaskQueryRow): ScalpResearchTask 
         errorCode: row.errorCode || null,
         errorMessage: row.errorMessage || null,
         result: payload.result,
+        deployed: typeof row.deployed === 'boolean' ? row.deployed : undefined,
+        deploymentEnabled: typeof row.deploymentEnabled === 'boolean' ? row.deploymentEnabled : null,
+        promotionEligible: typeof row.promotionEligible === 'boolean' ? row.promotionEligible : null,
+        promotionReason: row.promotionReason ? String(row.promotionReason) : null,
     };
 }
 
@@ -1963,7 +1980,8 @@ export async function startScalpResearchCycle(params: StartResearchCycleParams =
         const cycleParams: ScalpResearchCycleParams = {
             symbols,
             lookbackDays: toPositiveInt(params.lookbackDays, DEFAULT_LOOKBACK_DAYS),
-            chunkDays: toPositiveInt(params.chunkDays, DEFAULT_CHUNK_DAYS),
+            // Cycle windows are fixed weekly slices (Monday -> Sunday), regardless of requested chunkDays.
+            chunkDays: DEFAULT_CHUNK_DAYS,
             minCandlesPerTask: toPositiveInt(params.minCandlesPerTask, DEFAULT_MIN_CANDLES_PER_TASK),
             maxTasks: toPositiveInt(params.maxTasks, DEFAULT_MAX_TASKS),
             maxAttempts: toPositiveInt(params.maxAttempts, DEFAULT_MAX_ATTEMPTS),
@@ -3271,4 +3289,97 @@ export async function listResearchCycleTasks(cycleId: string, limit = 1000): Pro
     if (!cycle) return [];
     const max = Math.max(1, Math.min(5000, Math.floor(limit)));
     return loadResearchTasksBatch(cycle.cycleId, cycle.taskIds.slice(0, max));
+}
+
+export async function listResearchTasksPage(params: {
+    limit?: number;
+    offset?: number;
+    cycleId?: string | null;
+}): Promise<{
+    tasks: ScalpResearchTask[];
+    total: number;
+    limit: number;
+    offset: number;
+    hasMore: boolean;
+}> {
+    if (!isScalpPgConfigured()) {
+        return {
+            tasks: [],
+            total: 0,
+            limit: 0,
+            offset: 0,
+            hasMore: false,
+        };
+    }
+
+    const limit = Math.max(1, Math.min(5000, Math.floor(Number(params.limit) || 250)));
+    const offset = Math.max(0, Math.floor(Number(params.offset) || 0));
+    const cycleId = String(params.cycleId || '').trim();
+    const cycleFilterSql = cycleId ? Prisma.sql`WHERE t.cycle_id = ${cycleId}` : Prisma.empty;
+
+    const db = scalpPrisma();
+    const rows = await db.$queryRaw<PgResearchTaskQueryRow[]>(Prisma.sql`
+        SELECT
+            t.task_id AS "taskId",
+            t.cycle_id AS "cycleId",
+            t.deployment_id AS "deploymentId",
+            t.symbol,
+            t.strategy_id AS "strategyId",
+            t.tune_id AS "tuneId",
+            t.window_from AS "windowFrom",
+            t.window_to AS "windowTo",
+            t.status::text AS status,
+            t.attempts,
+            t.max_attempts AS "maxAttempts",
+            t.worker_id AS "workerId",
+            t.started_at AS "startedAt",
+            t.finished_at AS "finishedAt",
+            t.error_code AS "errorCode",
+            t.error_message AS "errorMessage",
+            t.result_json AS "resultJson",
+            t.priority,
+            t.created_at AS "createdAt",
+            t.updated_at AS "updatedAt",
+            (d.deployment_id IS NOT NULL) AS deployed,
+            d.enabled AS "deploymentEnabled",
+            (d.promotion_gate->>'eligible')::boolean AS "promotionEligible",
+            NULLIF(d.promotion_gate->>'reason', '') AS "promotionReason",
+            COUNT(*) OVER()::bigint AS "totalCount"
+        FROM scalp_research_tasks t
+        LEFT JOIN scalp_deployments d
+          ON d.deployment_id = t.deployment_id
+        ${cycleFilterSql}
+        ORDER BY t.updated_at DESC, t.created_at DESC, t.task_id DESC
+        LIMIT ${limit}
+        OFFSET ${offset};
+    `);
+
+    let total = 0;
+    const totalRaw = rows[0]?.totalCount;
+    if (Number.isFinite(Number(totalRaw))) {
+        total = Math.max(0, Math.floor(Number(totalRaw)));
+    } else if (rows.length === 0 && offset > 0) {
+        const countRows = await db.$queryRaw<Array<{ total: bigint | number }>>(Prisma.sql`
+            SELECT COUNT(*)::bigint AS total
+            FROM scalp_research_tasks t
+            ${cycleFilterSql};
+        `);
+        const fallbackTotalRaw = countRows[0]?.total;
+        total = Number.isFinite(Number(fallbackTotalRaw)) ? Math.max(0, Math.floor(Number(fallbackTotalRaw))) : 0;
+    }
+
+    const tasks = rows.map((row) => mapPgRowToResearchTask(row));
+    const hasMore = offset + tasks.length < total;
+    return {
+        tasks,
+        total,
+        limit,
+        offset,
+        hasMore,
+    };
+}
+
+export async function listRecentResearchTasks(limit = 1000): Promise<ScalpResearchTask[]> {
+    const page = await listResearchTasksPage({ limit, offset: 0 });
+    return page.tasks;
 }
