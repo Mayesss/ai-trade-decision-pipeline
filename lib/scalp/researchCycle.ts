@@ -696,7 +696,10 @@ export async function evaluateResearchCyclePreflight(
             ? requiredSuccessiveWeeksConfigured
             : Math.max(0, Math.min(52, Math.floor(Number(params.requiredSuccessiveWeeks) || 0)));
     const requiredSuccessiveWeeksLookbackFloor = deriveLookbackRequiredWeeks(params.lookbackDays);
-    const requiredSuccessiveWeeks = Math.max(requiredSuccessiveWeeksRequested, requiredSuccessiveWeeksLookbackFloor);
+    const requiredSuccessiveWeeks =
+        params.requiredSuccessiveWeeks === undefined
+            ? Math.max(requiredSuccessiveWeeksRequested, requiredSuccessiveWeeksLookbackFloor)
+            : requiredSuccessiveWeeksRequested;
 
     const [policy, universe, reportGeneratedAtIso] = await Promise.all([
         loadScalpSymbolDiscoveryPolicy(),
