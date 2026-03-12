@@ -661,7 +661,28 @@ export async function runScalpPipelineOrchestrator(
             continuationRequested = true;
             if (params.selfInvokeOnContinue !== false) {
                 continuation = await invokeContinuation({ debug: params.debug });
+                const continuationFailed =
+                    !continuation.invoked ||
+                    Boolean(continuation.error) ||
+                    (Number.isFinite(Number(continuation.status)) && Number(continuation.status) >= 400);
+                if (continuationFailed) {
+                    console.warn(
+                        JSON.stringify({
+                            scope: 'scalp_orchestrator',
+                            event: 'continuation_invoke_failed',
+                            runId: state.runId,
+                            stage: state.stage,
+                            continuation,
+                        }),
+                    );
+                }
             }
+            stageEvents.push({
+                stage: 'continue',
+                continuationRequested,
+                selfInvokeOnContinue: params.selfInvokeOnContinue !== false,
+                continuation,
+            });
             state.updatedAtMs = nowMs();
             await saveOrchestratorState(state);
             return {
