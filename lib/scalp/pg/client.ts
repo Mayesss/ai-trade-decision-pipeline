@@ -7,6 +7,21 @@ declare global {
 
 let warnedLegacyPgUrlFallback = false;
 
+const PRIMARY_SCALP_PG_URL_ENV_KEYS = [
+    'SCALP_PG_CONNECTION_STRING',
+    'DATABASE_URL',
+    'POSTGRES_PRISMA_URL',
+    'POSTGRES_URL',
+] as const;
+
+const LEGACY_SCALP_PG_URL_ENV_KEYS = ['PRISMA_CONNECTION_STRING', 'PRISMA_PG_POSTGRES_URL'] as const;
+
+type ScalpPgUrlResolution = {
+    envKey: string;
+    url: string;
+    legacy: boolean;
+};
+
 type ScalpPgOpContext = {
     model?: string | null;
     operation?: string | null;
@@ -78,34 +93,44 @@ function adaptScalpPrismaError(err: unknown, context: ScalpPgOpContext = {}): ne
     throw err;
 }
 
-function resolveScalpPgUrl(): string {
-    const preferred = String(process.env.PRISMA_CONNECTION_STRING || '').trim();
-    if (preferred) return preferred;
-    const legacy = String(process.env.PRISMA_PG_POSTGRES_URL || '').trim();
-    if (legacy) return legacy;
-    return '';
+function readEnv(name: string): string {
+    return String(process.env[name] || '').trim();
+}
+
+function resolveScalpPgUrl(): ScalpPgUrlResolution | null {
+    for (const envKey of PRIMARY_SCALP_PG_URL_ENV_KEYS) {
+        const url = readEnv(envKey);
+        if (url) return { envKey, url, legacy: false };
+    }
+    for (const envKey of LEGACY_SCALP_PG_URL_ENV_KEYS) {
+        const url = readEnv(envKey);
+        if (url) return { envKey, url, legacy: true };
+    }
+    return null;
+}
+
+function bridgeScalpPgEnv(url: string): void {
+    if (!readEnv('DATABASE_URL')) process.env.DATABASE_URL = url;
+    if (!readEnv('PRISMA_CONNECTION_STRING')) process.env.PRISMA_CONNECTION_STRING = url;
 }
 
 export function isScalpPgConfigured(): boolean {
-    return Boolean(resolveScalpPgUrl());
+    return resolveScalpPgUrl() !== null;
 }
 
 export function createScalpPrismaClient(): PrismaClient {
-    const url = resolveScalpPgUrl();
-    if (!url) {
-        throw new Error('Missing PRISMA_CONNECTION_STRING for scalp Postgres backend');
+    const resolved = resolveScalpPgUrl();
+    if (!resolved) {
+        throw new Error(
+            'Missing scalp PG connection string. Set DATABASE_URL (Neon) or SCALP_PG_CONNECTION_STRING.',
+        );
     }
-    // Backward compatibility: if only legacy env is set, bridge it into the canonical var and warn once.
-    if (!process.env.PRISMA_CONNECTION_STRING && process.env.PRISMA_PG_POSTGRES_URL) {
-        process.env.PRISMA_CONNECTION_STRING = process.env.PRISMA_PG_POSTGRES_URL;
-        if (!warnedLegacyPgUrlFallback) {
-            warnedLegacyPgUrlFallback = true;
-            console.warn(
-                '[scalp-pg] PRISMA_PG_POSTGRES_URL is deprecated; please migrate to PRISMA_CONNECTION_STRING.',
-            );
-        }
-    } else {
-        process.env.PRISMA_CONNECTION_STRING = url;
+    bridgeScalpPgEnv(resolved.url);
+    if (resolved.legacy && !warnedLegacyPgUrlFallback) {
+        warnedLegacyPgUrlFallback = true;
+        console.warn(
+            `[scalp-pg] ${resolved.envKey} is deprecated; prefer DATABASE_URL (Neon) or SCALP_PG_CONNECTION_STRING.`,
+        );
     }
     const base = new PrismaClient({
         log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],

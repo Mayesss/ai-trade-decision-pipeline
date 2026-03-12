@@ -357,7 +357,7 @@ export async function setScalpStrategyKvEnabled(params: {
     if (!isScalpPgConfigured()) {
         warnPgStoreOnce(
             'set_strategy_enabled_missing_pg',
-            'Scalp strategy toggle skipped because PRISMA_CONNECTION_STRING is not configured.',
+            'Scalp strategy toggle skipped because PG is not configured (set DATABASE_URL or SCALP_PG_CONNECTION_STRING).',
         );
         return loadScalpStrategyRuntimeSnapshot(params.envEnabled, strategyId);
     }
@@ -400,7 +400,7 @@ export async function setScalpDefaultStrategy(params: {
     } else {
         warnPgStoreOnce(
             'set_default_strategy_missing_pg',
-            'Scalp default strategy update skipped because PRISMA_CONNECTION_STRING is not configured.',
+            'Scalp default strategy update skipped because PG is not configured (set DATABASE_URL or SCALP_PG_CONNECTION_STRING).',
         );
     }
     return loadScalpStrategyRuntimeSnapshot(params.envEnabled, strategyId);

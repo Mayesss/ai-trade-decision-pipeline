@@ -85,7 +85,7 @@ export async function runExecuteDeploymentsPg(
             if (strictPgRequired) {
                 return res.status(503).json({
                     error: 'execute_deployments_pg_not_configured',
-                    message: 'PRISMA_CONNECTION_STRING is required for scalp PG execution.',
+                    message: 'Scalp PG is not configured; set DATABASE_URL (Neon) or SCALP_PG_CONNECTION_STRING.',
                     backend: 'pg',
                     strictPgRequired,
                 });
@@ -97,7 +97,7 @@ export async function runExecuteDeploymentsPg(
                 strictPgRequired,
                 skipped: true,
                 reason: 'pg_not_configured',
-                message: 'PRISMA_CONNECTION_STRING is not configured; skipping PG execution.',
+                message: 'Scalp PG is not configured; skipping PG execution.',
             });
         }
         if (!symbol && !all) {

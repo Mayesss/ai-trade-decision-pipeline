@@ -9,6 +9,10 @@ Design constraints:
   - single-statement status transitions when possible
 - Avoid per-row `upsert` loops for queue/task workloads.
 
+Runtime env resolution:
+- Primary: `SCALP_PG_CONNECTION_STRING`, `DATABASE_URL`, `POSTGRES_PRISMA_URL`, `POSTGRES_URL`
+- Legacy fallback: `PRISMA_CONNECTION_STRING`, `PRISMA_PG_POSTGRES_URL`
+
 Current modules:
 - `client.ts`: Prisma singleton and config guard.
 - `deployments.ts`: bulk deployment upsert + executable deployment query.

@@ -56,12 +56,26 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 test('execute deployment routes enforce strict PG requirement in cutover mode', async () => {
     const originalBackend = process.env.SCALP_BACKEND;
-    const originalConnectionString = process.env.PRISMA_CONNECTION_STRING;
-    const originalPgUrl = process.env.PRISMA_PG_POSTGRES_URL;
+    const pgEnvKeys = [
+        'SCALP_PG_CONNECTION_STRING',
+        'DATABASE_URL',
+        'POSTGRES_PRISMA_URL',
+        'POSTGRES_URL',
+        'PRISMA_CONNECTION_STRING',
+        'PRISMA_PG_POSTGRES_URL',
+    ] as const;
+    const originalPgEnv: Partial<Record<(typeof pgEnvKeys)[number], string>> = {};
+    for (const key of pgEnvKeys) {
+        const value = process.env[key];
+        if (value !== undefined) {
+            originalPgEnv[key] = value;
+        }
+    }
     try {
         process.env.SCALP_BACKEND = 'pg';
-        delete process.env.PRISMA_CONNECTION_STRING;
-        delete process.env.PRISMA_PG_POSTGRES_URL;
+        for (const key of pgEnvKeys) {
+            delete process.env[key];
+        }
 
         const baseQuery = {
             all: 'true',
@@ -105,9 +119,10 @@ test('execute deployment routes enforce strict PG requirement in cutover mode', 
     } finally {
         if (originalBackend === undefined) delete process.env.SCALP_BACKEND;
         else process.env.SCALP_BACKEND = originalBackend;
-        if (originalConnectionString === undefined) delete process.env.PRISMA_CONNECTION_STRING;
-        else process.env.PRISMA_CONNECTION_STRING = originalConnectionString;
-        if (originalPgUrl === undefined) delete process.env.PRISMA_PG_POSTGRES_URL;
-        else process.env.PRISMA_PG_POSTGRES_URL = originalPgUrl;
+        for (const key of pgEnvKeys) {
+            const value = originalPgEnv[key];
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+        }
     }
 });
