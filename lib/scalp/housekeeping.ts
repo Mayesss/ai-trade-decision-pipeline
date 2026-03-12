@@ -33,6 +33,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function normalizeSymbol(value: unknown): string {
+    return String(value || '')
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9._-]/g, '');
+}
+
 const ONE_DAY_MS = 24 * 60 * 60_000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 
@@ -112,6 +119,7 @@ export interface RunScalpHousekeepingResult {
         journalMax: number;
         tradeLedgerMax: number;
         candleHistoryKeepWeeks: number;
+        candleHistoryRequestedKeepWeeks: number;
         candleHistoryTimeframe: string;
     };
     summary: {
@@ -126,12 +134,24 @@ export interface RunScalpHousekeepingResult {
         candleHistorySymbolsScanned: number;
         candleHistorySymbolsPruned: number;
         candleHistoryCandlesDeleted: number;
+        candleHistorySymbolsSkipped: number;
         reportRefreshed: boolean;
     };
     details: {
         prunedCycleIds: string[];
         deletedResearchLockKeys: string[];
         deletedRunLockKeys: string[];
+        activeCycleRetentionGuard: {
+            minKeepWeeks: number;
+            protectedSymbols: string[];
+            runningCycles: Array<{
+                cycleId: string;
+                lookbackDays: number;
+                derivedLookbackWeeks: number;
+                recommendedKeepWeeks: number;
+                symbolCount: number;
+            }>;
+        };
     };
 }
 
@@ -153,6 +173,7 @@ async function pruneCandleHistoryRollingWeeks(params: {
     dryRun: boolean;
     keepWeeks: number;
     timeframe: string;
+    skipSymbols?: Set<string>;
 }): Promise<CandleRetentionResult> {
     const symbols = await listScalpCandleHistorySymbols(params.timeframe);
     if (!symbols.length) {
@@ -166,6 +187,7 @@ async function pruneCandleHistoryRollingWeeks(params: {
     let symbolsPruned = 0;
     let candlesDeleted = 0;
     for (const symbol of symbols) {
+        if (params.skipSymbols?.has(symbol)) continue;
         const loaded = await loadScalpCandleHistory(symbol, params.timeframe);
         const record = loaded.record;
         if (!record || !record.candles.length) continue;
@@ -201,6 +223,76 @@ async function pruneCandleHistoryRollingWeeks(params: {
 interface PgCyclePruneResult {
     prunedCycleIds: string[];
     taskRowsDeleted: number;
+}
+
+type ActiveCycleCandleRetentionGuard = {
+    minKeepWeeks: number;
+    protectedSymbols: Set<string>;
+    runningCycles: Array<{
+        cycleId: string;
+        lookbackDays: number;
+        derivedLookbackWeeks: number;
+        recommendedKeepWeeks: number;
+        symbolCount: number;
+    }>;
+};
+
+async function loadActiveCycleCandleRetentionGuard(fallbackKeepWeeks: number): Promise<ActiveCycleCandleRetentionGuard> {
+    if (!isScalpPgConfigured()) {
+        return {
+            minKeepWeeks: fallbackKeepWeeks,
+            protectedSymbols: new Set<string>(),
+            runningCycles: [],
+        };
+    }
+    const db = scalpPrisma();
+    const rows = await db.$queryRaw<
+        Array<{
+            cycleId: string;
+            lookbackDaysText: string | null;
+            symbolsJson: unknown;
+        }>
+    >(Prisma.sql`
+        SELECT
+            cycle_id AS "cycleId",
+            NULLIF(TRIM(params_json->>'lookbackDays'), '') AS "lookbackDaysText",
+            params_json->'symbols' AS "symbolsJson"
+        FROM scalp_research_cycles
+        WHERE status = 'running'::scalp_cycle_status
+        ORDER BY created_at DESC
+        LIMIT 200;
+    `);
+
+    const protectedSymbols = new Set<string>();
+    const runningCycles: ActiveCycleCandleRetentionGuard['runningCycles'] = [];
+    let minKeepWeeks = Math.max(1, fallbackKeepWeeks);
+
+    for (const row of rows) {
+        const cycleId = String(row.cycleId || '').trim();
+        if (!cycleId) continue;
+        const lookbackDays = Math.max(1, toPositiveInt(row.lookbackDaysText, 90));
+        const derivedLookbackWeeks = Math.max(1, Math.ceil(lookbackDays / 7));
+        const recommendedKeepWeeks = Math.max(1, derivedLookbackWeeks + 1);
+        minKeepWeeks = Math.max(minKeepWeeks, recommendedKeepWeeks);
+
+        const symbols = Array.isArray(row.symbolsJson)
+            ? row.symbolsJson.map((value) => normalizeSymbol(value)).filter((value) => Boolean(value))
+            : [];
+        for (const symbol of symbols) protectedSymbols.add(symbol);
+        runningCycles.push({
+            cycleId,
+            lookbackDays,
+            derivedLookbackWeeks,
+            recommendedKeepWeeks,
+            symbolCount: symbols.length,
+        });
+    }
+
+    return {
+        minKeepWeeks,
+        protectedSymbols,
+        runningCycles,
+    };
 }
 
 async function pruneResearchCyclesFromPg(params: {
@@ -315,13 +407,13 @@ export async function runScalpHousekeeping(
     );
     const maxScanKeys = toPositiveInt(params.maxScanKeys ?? process.env.SCALP_HOUSEKEEPING_MAX_SCAN_KEYS, 4000);
     const refreshReport = toBool(params.refreshReport ?? process.env.SCALP_HOUSEKEEPING_REFRESH_REPORT, true);
-    const candleHistoryKeepWeeks = Math.max(
+    const candleHistoryRequestedKeepWeeks = Math.max(
         1,
         Math.min(
             52,
             toPositiveInt(
                 params.candleHistoryKeepWeeks ?? process.env.SCALP_HOUSEKEEPING_CANDLE_HISTORY_KEEP_WEEKS,
-                12,
+                14,
             ),
         ),
     );
@@ -354,11 +446,14 @@ export async function runScalpHousekeeping(
         journalMax,
         tradeLedgerMax,
     });
+    const activeCycleCandleGuard = await loadActiveCycleCandleRetentionGuard(candleHistoryRequestedKeepWeeks);
+    const candleHistoryKeepWeeks = Math.max(candleHistoryRequestedKeepWeeks, activeCycleCandleGuard.minKeepWeeks);
     const candleRetention = await pruneCandleHistoryRollingWeeks({
         nowMs,
         dryRun,
         keepWeeks: candleHistoryKeepWeeks,
         timeframe: candleHistoryTimeframe,
+        skipSymbols: activeCycleCandleGuard.protectedSymbols,
     });
 
     let reportRefreshed = false;
@@ -380,6 +475,7 @@ export async function runScalpHousekeeping(
             journalMax,
             tradeLedgerMax,
             candleHistoryKeepWeeks,
+            candleHistoryRequestedKeepWeeks,
             candleHistoryTimeframe,
         },
         summary: {
@@ -394,12 +490,18 @@ export async function runScalpHousekeeping(
             candleHistorySymbolsScanned: candleRetention.symbolsScanned,
             candleHistorySymbolsPruned: candleRetention.symbolsPruned,
             candleHistoryCandlesDeleted: candleRetention.candlesDeleted,
+            candleHistorySymbolsSkipped: activeCycleCandleGuard.protectedSymbols.size,
             reportRefreshed,
         },
         details: {
             prunedCycleIds: cyclePrune.prunedCycleIds,
             deletedResearchLockKeys: [],
             deletedRunLockKeys: [],
+            activeCycleRetentionGuard: {
+                minKeepWeeks: activeCycleCandleGuard.minKeepWeeks,
+                protectedSymbols: Array.from(activeCycleCandleGuard.protectedSymbols).sort(),
+                runningCycles: activeCycleCandleGuard.runningCycles,
+            },
         },
     };
 }

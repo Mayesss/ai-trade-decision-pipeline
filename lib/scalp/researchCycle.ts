@@ -408,6 +408,11 @@ function toPositiveInt(value: unknown, fallback: number): number {
     return n;
 }
 
+function deriveLookbackRequiredWeeks(lookbackDaysRaw: unknown): number {
+    const lookbackDays = Math.max(1, toPositiveInt(lookbackDaysRaw, DEFAULT_LOOKBACK_DAYS));
+    return Math.max(0, Math.min(52, Math.ceil(lookbackDays / 7)));
+}
+
 function toNonNegativeInt(value: unknown, fallback: number): number {
     const n = Math.floor(Number(value));
     if (!Number.isFinite(n) || n < 0) return fallback;
@@ -686,10 +691,12 @@ export async function evaluateResearchCyclePreflight(
             ),
         ),
     );
-    const requiredSuccessiveWeeks =
+    const requiredSuccessiveWeeksRequested =
         params.requiredSuccessiveWeeks === undefined
             ? requiredSuccessiveWeeksConfigured
             : Math.max(0, Math.min(52, Math.floor(Number(params.requiredSuccessiveWeeks) || 0)));
+    const requiredSuccessiveWeeksLookbackFloor = deriveLookbackRequiredWeeks(params.lookbackDays);
+    const requiredSuccessiveWeeks = Math.max(requiredSuccessiveWeeksRequested, requiredSuccessiveWeeksLookbackFloor);
 
     const [policy, universe, reportGeneratedAtIso] = await Promise.all([
         loadScalpSymbolDiscoveryPolicy(),

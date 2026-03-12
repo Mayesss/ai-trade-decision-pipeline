@@ -218,8 +218,9 @@ export async function prepareAndStartScalpResearchCycle(
     }> = [];
     const seedTfMs = Math.max(60_000, timeframeToMs(seedTimeframe));
     const targetLatestClosedCandleMs = fetchToMs - seedTfMs;
+    const requiredLookbackWeeks = Math.max(1, Math.ceil(Math.max(1, lookbackDays) / 7));
     const requiredSuccessiveWeeks = Math.max(
-        1,
+        requiredLookbackWeeks,
         Math.min(52, parsePositiveInt(process.env.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS, DEFAULT_REQUIRED_SUCCESSIVE_WEEKS)),
     );
     if (!skipFill) {

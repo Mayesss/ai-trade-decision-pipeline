@@ -628,7 +628,14 @@ test('evaluateResearchCyclePreflight excludes underfilled symbols but allows rea
             candles: makeWeeklyCandles(5, 2),
         });
 
-        const out = await evaluateResearchCyclePreflight({ minCandlesPerTask: 20, nowMs: preflightNowMs });
+        const out = await evaluateResearchCyclePreflight({
+            symbols: ['EURUSD', 'GBPUSD'],
+            minCandlesPerTask: 20,
+            nowMs: preflightNowMs,
+            lookbackDays: 84,
+            requireUniverseSnapshot: false,
+            requireReportSnapshot: false,
+        });
         assert.equal(out.ready, true);
         assert.deepEqual(out.resolvedSymbols, ['EURUSD']);
         assert.ok(out.candleChecks.some((row) => row.symbol === 'GBPUSD' && row.ok === false));
@@ -718,7 +725,15 @@ test('evaluateResearchCyclePreflight filters symbols missing 12 successive compl
             candles: makeWeeklyCandles([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11]), // missing week 10
         });
 
-        const out = await evaluateResearchCyclePreflight({ minCandlesPerTask: 1, nowMs: preflightNowMs, maxCandleChecks: 2 });
+        const out = await evaluateResearchCyclePreflight({
+            symbols: ['EURUSD', 'GBPUSD'],
+            minCandlesPerTask: 1,
+            nowMs: preflightNowMs,
+            maxCandleChecks: 2,
+            lookbackDays: 84,
+            requireUniverseSnapshot: false,
+            requireReportSnapshot: false,
+        });
         assert.equal(out.ready, true);
         assert.deepEqual(out.resolvedSymbols, ['EURUSD']);
         assert.equal(out.weeklySuccessiveRequirement?.requiredWeeks, 12);
@@ -726,6 +741,101 @@ test('evaluateResearchCyclePreflight filters symbols missing 12 successive compl
         if (gbpExcluded) {
             assert.ok(gbpExcluded.missingWeeks > 0);
         }
+    } finally {
+        if (prevEnv.CANDLE_HISTORY_DIR === undefined) delete process.env.CANDLE_HISTORY_DIR;
+        else process.env.CANDLE_HISTORY_DIR = prevEnv.CANDLE_HISTORY_DIR;
+        if (prevEnv.SCALP_SYMBOL_UNIVERSE_PATH === undefined) delete process.env.SCALP_SYMBOL_UNIVERSE_PATH;
+        else process.env.SCALP_SYMBOL_UNIVERSE_PATH = prevEnv.SCALP_SYMBOL_UNIVERSE_PATH;
+        if (prevEnv.SCALP_RESEARCH_REPORT_PATH === undefined) delete process.env.SCALP_RESEARCH_REPORT_PATH;
+        else process.env.SCALP_RESEARCH_REPORT_PATH = prevEnv.SCALP_RESEARCH_REPORT_PATH;
+        if (prevEnv.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS === undefined)
+            delete process.env.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS;
+        else
+            process.env.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS =
+                prevEnv.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS;
+        if (prevEnv.ALLOW_SCALP_FILE_BACKEND === undefined) delete process.env.ALLOW_SCALP_FILE_BACKEND;
+        else process.env.ALLOW_SCALP_FILE_BACKEND = prevEnv.ALLOW_SCALP_FILE_BACKEND;
+        await rm(tmpRoot, { recursive: true, force: true });
+    }
+});
+
+test('evaluateResearchCyclePreflight enforces lookback-derived week floor over lower configured requirement', async () => {
+    const tmpRoot = await mkdtemp(path.join(os.tmpdir(), 'scalp-preflight-lookback-floor-'));
+    const prevEnv = {
+        CANDLE_HISTORY_DIR: process.env.CANDLE_HISTORY_DIR,
+        SCALP_SYMBOL_UNIVERSE_PATH: process.env.SCALP_SYMBOL_UNIVERSE_PATH,
+        SCALP_RESEARCH_REPORT_PATH: process.env.SCALP_RESEARCH_REPORT_PATH,
+        SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS: process.env.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS,
+        ALLOW_SCALP_FILE_BACKEND: process.env.ALLOW_SCALP_FILE_BACKEND,
+    };
+
+    try {
+        process.env.CANDLE_HISTORY_DIR = path.join(tmpRoot, 'candles');
+        process.env.SCALP_SYMBOL_UNIVERSE_PATH = path.join(tmpRoot, 'universe.json');
+        process.env.SCALP_RESEARCH_REPORT_PATH = path.join(tmpRoot, 'report.json');
+        process.env.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS = '12';
+        process.env.ALLOW_SCALP_FILE_BACKEND = '1';
+
+        await writeFile(
+            process.env.SCALP_SYMBOL_UNIVERSE_PATH,
+            JSON.stringify({
+                version: 1,
+                generatedAtIso: '2026-03-11T00:00:00.000Z',
+                policy: {},
+                source: 'weekly_discovery_v1',
+                dryRun: false,
+                previousSymbols: [],
+                selectedSymbols: ['EURUSD'],
+                addedSymbols: ['EURUSD'],
+                removedSymbols: [],
+                candidatesEvaluated: 1,
+                selectedRows: [],
+                topRejectedRows: [],
+            }),
+            'utf8',
+        );
+        await writeFile(
+            process.env.SCALP_RESEARCH_REPORT_PATH,
+            JSON.stringify({
+                generatedAtIso: '2026-03-11T00:05:00.000Z',
+            }),
+            'utf8',
+        );
+
+        const preflightNowMs = Date.UTC(2026, 2, 11, 12, 0, 0);
+        const oneDayMs = 24 * 60 * 60 * 1000;
+        const oneWeekMs = 7 * oneDayMs;
+        const dayStartMs = Date.UTC(2026, 2, 11, 0, 0, 0);
+        const dayOfWeek = new Date(dayStartMs).getUTCDay();
+        const daysSinceMonday = (dayOfWeek + 6) % 7;
+        const startCurrentWeekMondayMs = dayStartMs - daysSinceMonday * oneDayMs;
+        const firstRequiredWeekStartMs = startCurrentWeekMondayMs - 13 * oneWeekMs;
+        const candles = Array.from({ length: 12 }, (_, idx) => {
+            const ts = firstRequiredWeekStartMs + (idx + 1) * oneWeekMs + 12 * 60 * 60 * 1000;
+            return [ts, 1.1, 1.11, 1.09, 1.105, 10] as [number, number, number, number, number, number];
+        });
+
+        await saveScalpCandleHistory({
+            symbol: 'EURUSD',
+            timeframe: '1m',
+            epic: 'CS.D.EURUSD.TODAY.IP',
+            source: 'capital',
+            candles,
+        });
+
+        const out = await evaluateResearchCyclePreflight({
+            symbols: ['EURUSD'],
+            minCandlesPerTask: 1,
+            nowMs: preflightNowMs,
+            maxCandleChecks: 1,
+            lookbackDays: 90,
+            requireUniverseSnapshot: false,
+            requireReportSnapshot: false,
+        });
+        assert.equal(out.ready, false);
+        assert.equal(out.weeklySuccessiveRequirement?.requiredWeeks, 13);
+        assert.deepEqual(out.resolvedSymbols, []);
+        assert.equal(out.failures.some((row) => row.code === 'no_symbols_eligible'), true);
     } finally {
         if (prevEnv.CANDLE_HISTORY_DIR === undefined) delete process.env.CANDLE_HISTORY_DIR;
         else process.env.CANDLE_HISTORY_DIR = prevEnv.CANDLE_HISTORY_DIR;
