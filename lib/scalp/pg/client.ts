@@ -9,12 +9,15 @@ let warnedLegacyPgUrlFallback = false;
 
 const PRIMARY_SCALP_PG_URL_ENV_KEYS = [
     'SCALP_PG_CONNECTION_STRING',
-    'DATABASE_URL',
-    'POSTGRES_PRISMA_URL',
-    'POSTGRES_URL',
     'NEON__DATABASE_URL',
     'NEON__POSTGRES_PRISMA_URL',
     'NEON__POSTGRES_URL',
+    'NEON_DATABASE_URL',
+    'NEON_POSTGRES_PRISMA_URL',
+    'NEON_POSTGRES_URL',
+    'DATABASE_URL',
+    'POSTGRES_PRISMA_URL',
+    'POSTGRES_URL',
 ] as const;
 
 const LEGACY_SCALP_PG_URL_ENV_KEYS = ['PRISMA_CONNECTION_STRING', 'PRISMA_PG_POSTGRES_URL'] as const;
@@ -100,21 +103,60 @@ function readEnv(name: string): string {
     return String(process.env[name] || '').trim();
 }
 
+function looksLikeLegacyPrismaDataProxyUrl(url: string): boolean {
+    try {
+        const parsed = new URL(url);
+        const host = String(parsed.hostname || '').trim().toLowerCase();
+        return host === 'db.prisma.io' || host.endsWith('.db.prisma.io');
+    } catch {
+        const normalized = String(url || '').trim().toLowerCase();
+        return normalized.includes('db.prisma.io');
+    }
+}
+
+function buildUrlFromPgParts(prefix = ''): string {
+    const host = readEnv(`${prefix}PGHOST`);
+    const user = readEnv(`${prefix}PGUSER`);
+    const database = readEnv(`${prefix}PGDATABASE`);
+    if (!host || !user || !database) return '';
+    const password = readEnv(`${prefix}PGPASSWORD`);
+    const auth = password
+        ? `${encodeURIComponent(user)}:${encodeURIComponent(password)}`
+        : encodeURIComponent(user);
+    return `postgresql://${auth}@${host}/${encodeURIComponent(database)}?sslmode=require`;
+}
+
 function resolveScalpPgUrl(): ScalpPgUrlResolution | null {
     for (const envKey of PRIMARY_SCALP_PG_URL_ENV_KEYS) {
         const url = readEnv(envKey);
-        if (url) return { envKey, url, legacy: false };
+        if (!url) continue;
+        if (looksLikeLegacyPrismaDataProxyUrl(url)) continue;
+        return { envKey, url, legacy: false };
+    }
+    const neonDoubleUnderscoreParts = buildUrlFromPgParts('NEON__');
+    if (neonDoubleUnderscoreParts) {
+        return { envKey: 'NEON__PG*', url: neonDoubleUnderscoreParts, legacy: false };
+    }
+    const neonSingleUnderscoreParts = buildUrlFromPgParts('NEON_');
+    if (neonSingleUnderscoreParts) {
+        return { envKey: 'NEON_PG*', url: neonSingleUnderscoreParts, legacy: false };
+    }
+    const plainPgParts = buildUrlFromPgParts('');
+    if (plainPgParts) {
+        return { envKey: 'PG*', url: plainPgParts, legacy: false };
     }
     for (const envKey of LEGACY_SCALP_PG_URL_ENV_KEYS) {
         const url = readEnv(envKey);
-        if (url) return { envKey, url, legacy: true };
+        if (!url) continue;
+        if (looksLikeLegacyPrismaDataProxyUrl(url)) continue;
+        return { envKey, url, legacy: true };
     }
     return null;
 }
 
 function bridgeScalpPgEnv(url: string): void {
-    if (!readEnv('DATABASE_URL')) process.env.DATABASE_URL = url;
-    if (!readEnv('PRISMA_CONNECTION_STRING')) process.env.PRISMA_CONNECTION_STRING = url;
+    process.env.DATABASE_URL = url;
+    process.env.PRISMA_CONNECTION_STRING = url;
 }
 
 export function isScalpPgConfigured(): boolean {

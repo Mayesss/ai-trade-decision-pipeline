@@ -10,7 +10,7 @@ Design constraints:
 - Avoid per-row `upsert` loops for queue/task workloads.
 
 Runtime env resolution:
-- Primary: `SCALP_PG_CONNECTION_STRING`, `DATABASE_URL`, `POSTGRES_PRISMA_URL`, `POSTGRES_URL`, `NEON__DATABASE_URL`, `NEON__POSTGRES_PRISMA_URL`, `NEON__POSTGRES_URL`
+- Primary (in order): `SCALP_PG_CONNECTION_STRING`, `NEON__DATABASE_URL`, `NEON__POSTGRES_PRISMA_URL`, `NEON__POSTGRES_URL`, `DATABASE_URL`, `POSTGRES_PRISMA_URL`, `POSTGRES_URL`
 - Legacy fallback: `PRISMA_CONNECTION_STRING`, `PRISMA_PG_POSTGRES_URL`
 
 Current modules:

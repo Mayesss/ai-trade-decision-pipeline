@@ -58,6 +58,9 @@ test('execute deployment routes enforce strict PG requirement in cutover mode', 
     const originalBackend = process.env.SCALP_BACKEND;
     const pgEnvKeys = [
         'SCALP_PG_CONNECTION_STRING',
+        'NEON__DATABASE_URL',
+        'NEON__POSTGRES_PRISMA_URL',
+        'NEON__POSTGRES_URL',
         'DATABASE_URL',
         'POSTGRES_PRISMA_URL',
         'POSTGRES_URL',
