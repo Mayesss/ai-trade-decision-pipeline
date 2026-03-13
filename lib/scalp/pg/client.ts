@@ -157,6 +157,7 @@ function resolveScalpPgUrl(): ScalpPgUrlResolution | null {
 function bridgeScalpPgEnv(url: string): void {
     process.env.DATABASE_URL = url;
     process.env.PRISMA_CONNECTION_STRING = url;
+    process.env.PRISMA_PG_POSTGRES_URL = url;
 }
 
 export function isScalpPgConfigured(): boolean {

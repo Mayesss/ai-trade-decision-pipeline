@@ -75,11 +75,10 @@ loadEnvConfig(process.cwd());
 const databaseUrl = resolveDatabaseUrl();
 if (databaseUrl) {
     process.env.DATABASE_URL = databaseUrl;
+    process.env.PRISMA_CONNECTION_STRING = databaseUrl;
+    process.env.PRISMA_PG_POSTGRES_URL = databaseUrl;
     if (!readEnv('SCALP_PG_CONNECTION_STRING')) {
         process.env.SCALP_PG_CONNECTION_STRING = databaseUrl;
-    }
-    if (!readEnv('PRISMA_CONNECTION_STRING')) {
-        process.env.PRISMA_CONNECTION_STRING = databaseUrl;
     }
 }
 
