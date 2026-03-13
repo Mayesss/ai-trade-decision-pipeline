@@ -54,6 +54,8 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 const DEFAULT_INCREMENTAL_SNAPSHOT_LOOKBACK_MS = 7 * ONE_DAY_MS;
 const DEFAULT_MAX_NEW_SYMBOLS_PER_CYCLE = 5;
+const RESEARCH_WORKER_HEARTBEAT_JOB_KIND = 'execute_cycle';
+const RESEARCH_WORKER_HEARTBEAT_JOB_KEY = 'state:research_worker_heartbeat:v1';
 const RESEARCH_TASK_TIMEOUT_MS = Math.max(
     1_000,
     Math.min(10 * 60_000, Math.floor(Number(process.env.SCALP_RESEARCH_TASK_TIMEOUT_MS) || DEFAULT_TASK_TIMEOUT_MS)),
@@ -1595,7 +1597,53 @@ async function saveTask(
 }
 
 async function saveResearchWorkerHeartbeat(snapshot: ScalpResearchWorkerHeartbeatSnapshot): Promise<void> {
-    pgWorkerHeartbeatSnapshot = snapshot;
+    const normalized = normalizeResearchWorkerHeartbeat(snapshot);
+    if (!normalized) return;
+    pgWorkerHeartbeatSnapshot = normalized;
+    if (!isScalpPgConfigured()) return;
+    const db = scalpPrisma();
+    await db.$executeRaw(
+        Prisma.sql`
+            INSERT INTO scalp_jobs(
+                kind,
+                dedupe_key,
+                payload,
+                status,
+                attempts,
+                max_attempts,
+                scheduled_for,
+                next_run_at,
+                locked_by,
+                locked_at,
+                last_error
+            )
+            VALUES(
+                ${RESEARCH_WORKER_HEARTBEAT_JOB_KIND}::scalp_job_kind,
+                ${RESEARCH_WORKER_HEARTBEAT_JOB_KEY},
+                ${JSON.stringify(normalized)}::jsonb,
+                'succeeded'::scalp_job_status,
+                1,
+                1,
+                NOW(),
+                NOW(),
+                NULL,
+                NULL,
+                ${normalized.error}
+            )
+            ON CONFLICT(kind, dedupe_key)
+            DO UPDATE SET
+                payload = EXCLUDED.payload,
+                status = EXCLUDED.status,
+                attempts = EXCLUDED.attempts,
+                max_attempts = EXCLUDED.max_attempts,
+                scheduled_for = EXCLUDED.scheduled_for,
+                next_run_at = EXCLUDED.next_run_at,
+                locked_by = NULL,
+                locked_at = NULL,
+                last_error = EXCLUDED.last_error,
+                updated_at = NOW();
+        `,
+    );
 }
 
 type PgResearchTaskQueryRow = {
@@ -1936,7 +1984,24 @@ export async function loadActiveResearchCycleId(): Promise<string | null> {
 }
 
 export async function loadResearchWorkerHeartbeat(): Promise<ScalpResearchWorkerHeartbeatSnapshot | null> {
-    return normalizeResearchWorkerHeartbeat(pgWorkerHeartbeatSnapshot);
+    const inMemory = normalizeResearchWorkerHeartbeat(pgWorkerHeartbeatSnapshot);
+    if (!isScalpPgConfigured()) return inMemory;
+    try {
+        const db = scalpPrisma();
+        const rows = await db.$queryRaw<Array<{ payload: unknown }>>(Prisma.sql`
+            SELECT payload
+            FROM scalp_jobs
+            WHERE kind = ${RESEARCH_WORKER_HEARTBEAT_JOB_KIND}::scalp_job_kind
+              AND dedupe_key = ${RESEARCH_WORKER_HEARTBEAT_JOB_KEY}
+            LIMIT 1;
+        `);
+        const persisted = normalizeResearchWorkerHeartbeat(rows[0]?.payload);
+        if (!persisted) return inMemory;
+        if (!inMemory) return persisted;
+        return persisted.updatedAtMs >= inMemory.updatedAtMs ? persisted : inMemory;
+    } catch {
+        return inMemory;
+    }
 }
 
 async function setActiveResearchCycleId(cycleId: string | null): Promise<void> {

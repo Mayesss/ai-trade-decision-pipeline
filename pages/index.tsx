@@ -4227,21 +4227,6 @@ export default function Home() {
         valueFormatter: (params) => String(params.value || '—'),
       },
       {
-        headerName: 'Symbol',
-        field: 'symbol',
-        minWidth: 110,
-      },
-      {
-        headerName: 'Strategy',
-        field: 'strategyId',
-        minWidth: 220,
-      },
-      {
-        headerName: 'Tune',
-        field: 'tuneId',
-        minWidth: 150,
-      },
-      {
         headerName: 'Windows Results',
         field: 'windowsResults',
         minWidth: 560,
