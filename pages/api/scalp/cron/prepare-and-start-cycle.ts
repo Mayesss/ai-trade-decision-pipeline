@@ -71,6 +71,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const runningStaleAfterMs = parsePositiveInt(firstQueryValue(req.query.runningStaleAfterMs));
         const tunerEnabled = req.query.tunerEnabled === undefined ? undefined : parseBoolParam(req.query.tunerEnabled, true);
         const maxTuneVariantsPerStrategy = parsePositiveInt(firstQueryValue(req.query.maxTuneVariantsPerStrategy));
+        const plannerEnabled =
+            req.query.plannerEnabled === undefined ? undefined : parseBoolParam(req.query.plannerEnabled, true);
         const maxRequestsPerSymbol = parsePositiveInt(firstQueryValue(req.query.maxRequestsPerSymbol));
         const maxDurationMs = parsePositiveInt(firstQueryValue(req.query.maxDurationMs));
         const seedTimeframe = firstQueryValue(req.query.seedTimeframe);
@@ -108,6 +110,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             runningStaleAfterMs,
             tunerEnabled,
             maxTuneVariantsPerStrategy,
+            plannerEnabled,
             maxRequestsPerSymbol,
             maxDurationMs,
             seedTimeframe,
@@ -133,6 +136,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                   runningStaleAfterMs,
                   tunerEnabled,
                   maxTuneVariantsPerStrategy,
+                  plannerEnabled,
                   maxRequestsPerSymbol,
                   maxDurationMs,
                   seedTimeframe,

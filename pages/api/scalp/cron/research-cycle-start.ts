@@ -72,6 +72,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             runningStaleAfterMs: parsePositiveInt(firstQueryValue(req.query.runningStaleAfterMs)),
             tunerEnabled: req.query.tunerEnabled === undefined ? undefined : parseBoolParam(req.query.tunerEnabled, true),
             maxTuneVariantsPerStrategy: parsePositiveInt(firstQueryValue(req.query.maxTuneVariantsPerStrategy)),
+            plannerEnabled:
+                req.query.plannerEnabled === undefined ? undefined : parseBoolParam(req.query.plannerEnabled, true),
             startedBy: firstQueryValue(req.query.startedBy) || 'cron:research-cycle-start',
         });
         const shouldCallSuccessor = autoSuccessor && !dryRun && out.started && Boolean(out.cycle?.cycleId);

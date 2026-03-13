@@ -14,6 +14,11 @@ import {
     upsertResearchTasksBulkToPg,
     upsertSymbolCooldownSnapshotToPg,
 } from './pg/researchMirror';
+import {
+    buildScalpResearchPlan,
+    resolveScalpResearchPlannerPolicy,
+    type ScalpResearchPlannerPolicy,
+} from './researchPlanner';
 import { defaultScalpReplayConfig, runScalpReplay } from './replay/harness';
 import { buildScalpReplayRuntimeFromDeployment } from './replay/runtimeConfig';
 import { buildScalpResearchTuneVariants, resolveScalpResearchTunerPolicy } from './researchTuner';
@@ -79,6 +84,7 @@ export interface ScalpResearchCycleParams {
     runningStaleAfterMs: number;
     tunerEnabled?: boolean;
     maxTuneVariantsPerStrategy?: number;
+    plannerEnabled?: boolean;
 }
 
 export interface ScalpResearchTask {
@@ -189,6 +195,7 @@ export interface StartResearchCycleParams {
     runningStaleAfterMs?: number;
     tunerEnabled?: boolean;
     maxTuneVariantsPerStrategy?: number;
+    plannerEnabled?: boolean;
     requireUniverseSnapshot?: boolean;
     requireReportSnapshot?: boolean;
     startedBy?: string | null;
@@ -878,6 +885,7 @@ function normalizeResearchCycleParams(raw: unknown): ScalpResearchCycleParams {
             row.maxTuneVariantsPerStrategy === undefined
                 ? undefined
                 : toPositiveInt(row.maxTuneVariantsPerStrategy, resolveScalpResearchTunerPolicy().maxVariantsPerStrategy),
+        plannerEnabled: row.plannerEnabled === undefined ? undefined : toBool(row.plannerEnabled, true),
     };
 }
 
@@ -1386,6 +1394,9 @@ export function buildResearchCycleTasks(params: {
     strategyAllowlist: string[];
     tunerEnabled: boolean;
     maxTuneVariantsPerStrategy: number;
+    plannerEnabled?: boolean;
+    plannerPolicy?: Partial<ScalpResearchPlannerPolicy>;
+    previousSummary?: ScalpResearchCycleSummary | null;
 }): ScalpResearchTask[] {
     const symbols = dedupe(params.symbols.map((row) => normalizeSymbol(row)).filter((row) => Boolean(row)));
     // Enforce full ISO-like trading weeks: Monday 00:00 UTC -> next Monday 00:00 UTC.
@@ -1419,6 +1430,79 @@ export function buildResearchCycleTasks(params: {
         return candidate;
     };
 
+    const appendTasksForCombo = (row: {
+        symbol: string;
+        strategyId: string;
+        tuneId: string;
+        configOverride?: ScalpStrategyConfigOverride | null;
+    }): boolean => {
+        const deployment = resolveScalpDeployment({
+            symbol: row.symbol,
+            strategyId: row.strategyId,
+            tuneId: row.tuneId,
+        });
+        let chunkFrom = fromTs;
+        let chunkIdx = 0;
+        while (chunkFrom < completedWeekEndTs) {
+            const chunkTo = Math.min(completedWeekEndTs, chunkFrom + chunkMs);
+            const taskId = nextTaskId(`${row.symbol}_${row.strategyId}_${deployment.tuneId}_${chunkIdx + 1}`);
+            tasks.push({
+                version: RESEARCH_CYCLE_VERSION,
+                cycleId: params.cycleId,
+                taskId,
+                symbol: row.symbol,
+                strategyId: row.strategyId,
+                tuneId: deployment.tuneId,
+                deploymentId: deployment.deploymentId,
+                configOverride: row.configOverride || null,
+                windowFromTs: chunkFrom,
+                windowToTs: chunkTo,
+                status: 'pending',
+                attempts: 0,
+                createdAtMs: params.nowMs,
+                updatedAtMs: params.nowMs,
+                workerId: null,
+                startedAtMs: null,
+                finishedAtMs: null,
+                errorCode: null,
+                errorMessage: null,
+                result: null,
+            });
+            if (tasks.length >= params.maxTasks) {
+                return true;
+            }
+            chunkFrom = chunkTo;
+            chunkIdx += 1;
+        }
+        return false;
+    };
+
+    const plannerPolicy =
+        params.plannerEnabled === undefined
+            ? null
+            : resolveScalpResearchPlannerPolicy({
+                  ...(params.plannerPolicy || {}),
+                  enabled: params.plannerEnabled,
+              });
+    const plannedCombos = plannerPolicy?.enabled
+        ? buildScalpResearchPlan({
+              symbols,
+              strategyAllowlist: params.strategyAllowlist,
+              tunerEnabled: params.tunerEnabled,
+              maxTuneVariantsPerStrategy: params.maxTuneVariantsPerStrategy,
+              previousSummary: params.previousSummary || null,
+              policy: plannerPolicy,
+          })
+        : [];
+    if (plannedCombos.length > 0) {
+        for (const row of plannedCombos) {
+            if (appendTasksForCombo(row)) {
+                return tasks;
+            }
+        }
+        return tasks;
+    }
+
     for (const symbol of symbols) {
         const strategyIds = resolveRecommendedStrategiesForSymbol(symbol, params.strategyAllowlist).filter((id) => knownStrategies.has(id));
         if (!strategyIds.length) continue;
@@ -1431,45 +1515,17 @@ export function buildResearchCycleTasks(params: {
                       includeBaseline: true,
                   })
                 : [{ tuneId: 'default', configOverride: null }];
-            let chunkFrom = fromTs;
-            let chunkIdx = 0;
-            while (chunkFrom < completedWeekEndTs) {
-                const chunkTo = Math.min(completedWeekEndTs, chunkFrom + chunkMs);
-                for (const tune of tuneVariants) {
-                    const deployment = resolveScalpDeployment({
+            for (const tune of tuneVariants) {
+                if (
+                    appendTasksForCombo({
                         symbol,
                         strategyId,
                         tuneId: tune.tuneId,
-                    });
-                    const taskId = nextTaskId(`${symbol}_${strategyId}_${deployment.tuneId}_${chunkIdx + 1}`);
-                    tasks.push({
-                        version: RESEARCH_CYCLE_VERSION,
-                        cycleId: params.cycleId,
-                        taskId,
-                        symbol,
-                        strategyId,
-                        tuneId: deployment.tuneId,
-                        deploymentId: deployment.deploymentId,
                         configOverride: tune.configOverride || null,
-                        windowFromTs: chunkFrom,
-                        windowToTs: chunkTo,
-                        status: 'pending',
-                        attempts: 0,
-                        createdAtMs: params.nowMs,
-                        updatedAtMs: params.nowMs,
-                        workerId: null,
-                        startedAtMs: null,
-                        finishedAtMs: null,
-                        errorCode: null,
-                        errorMessage: null,
-                        result: null,
-                    });
-                    if (tasks.length >= params.maxTasks) {
-                        return tasks;
-                    }
+                    })
+                ) {
+                    return tasks;
                 }
-                chunkFrom = chunkTo;
-                chunkIdx += 1;
             }
         }
     }
@@ -2049,6 +2105,9 @@ export async function startScalpResearchCycle(params: StartResearchCycleParams =
         }
 
         const tunerPolicy = resolveScalpResearchTunerPolicy();
+        const plannerPolicy = resolveScalpResearchPlannerPolicy({
+            enabled: params.plannerEnabled,
+        });
         const symbols = preflight.resolvedSymbols;
 
         const cycleId = buildResearchCycleId(nowMs);
@@ -2066,19 +2125,8 @@ export async function startScalpResearchCycle(params: StartResearchCycleParams =
                 params.maxTuneVariantsPerStrategy,
                 tunerPolicy.maxVariantsPerStrategy,
             ),
+            plannerEnabled: plannerPolicy.enabled,
         };
-
-        const plannedTasks = buildResearchCycleTasks({
-            cycleId,
-            nowMs,
-            symbols,
-            lookbackDays: cycleParams.lookbackDays,
-            chunkDays: cycleParams.chunkDays,
-            maxTasks: cycleParams.maxTasks,
-            strategyAllowlist: preflight.strategyAllowlist,
-            tunerEnabled: cycleParams.tunerEnabled !== false,
-            maxTuneVariantsPerStrategy: Math.max(1, cycleParams.maxTuneVariantsPerStrategy || 1),
-        });
         const previousCycleLookbackMs = Math.max(
             ONE_DAY_MS,
             Math.min(
@@ -2099,7 +2147,10 @@ export async function startScalpResearchCycle(params: StartResearchCycleParams =
                 ),
             ),
         );
-        let tasks = plannedTasks;
+        let tasks: ScalpResearchTask[] = [];
+        let previousSummary: ScalpResearchCycleSummary | null = null;
+        let previousTasks: ScalpResearchTask[] = [];
+        let previousCycleRecent = false;
         const previousCycleId = await loadLatestCompletedResearchCycleId();
         if (previousCycleId) {
             const previousCycle = await loadResearchCycle(previousCycleId);
@@ -2108,13 +2159,39 @@ export async function startScalpResearchCycle(params: StartResearchCycleParams =
                 Math.floor(Number(previousCycle?.updatedAtMs) || Number(previousCycle?.createdAtMs) || 0),
             );
             if (previousCycle && nowMs - previousUpdatedAtMs <= previousCycleLookbackMs) {
-                const previousTasks = await listResearchCycleTasks(previousCycle.cycleId, 5000);
-                tasks = applyResearchCycleIncrementalSymbolPolicy({
-                    plannedTasks,
-                    processedTasksLastSnapshot: previousTasks,
-                    maxNewSymbolsPerCycle,
-                });
+                previousCycleRecent = true;
+                if (plannerPolicy.enabled) {
+                    previousSummary = previousCycle.latestSummary || null;
+                    if (!previousSummary) {
+                        previousTasks = await listResearchCycleTasks(previousCycle.cycleId, 5000);
+                        previousSummary = summarizeResearchTasks(previousCycle, previousTasks);
+                    }
+                } else {
+                    previousTasks = await listResearchCycleTasks(previousCycle.cycleId, 5000);
+                }
             }
+        }
+
+        const plannedTasks = buildResearchCycleTasks({
+            cycleId,
+            nowMs,
+            symbols,
+            lookbackDays: cycleParams.lookbackDays,
+            chunkDays: cycleParams.chunkDays,
+            maxTasks: cycleParams.maxTasks,
+            strategyAllowlist: preflight.strategyAllowlist,
+            tunerEnabled: cycleParams.tunerEnabled !== false,
+            maxTuneVariantsPerStrategy: Math.max(1, cycleParams.maxTuneVariantsPerStrategy || 1),
+            plannerEnabled: cycleParams.plannerEnabled,
+            previousSummary,
+        });
+        tasks = plannedTasks;
+        if (!plannerPolicy.enabled && previousCycleRecent && previousTasks.length > 0) {
+            tasks = applyResearchCycleIncrementalSymbolPolicy({
+                plannedTasks,
+                processedTasksLastSnapshot: previousTasks,
+                maxNewSymbolsPerCycle,
+            });
         }
 
         const cycle: ScalpResearchCycleSnapshot = {
