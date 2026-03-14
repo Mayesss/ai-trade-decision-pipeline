@@ -29,6 +29,7 @@ import {
 const DAY_MS = 24 * 60 * 60_000;
 const WEEK_MS = 7 * DAY_MS;
 const PROMOTION_SYNC_STATE_DEDUPE_KEY = "state:latest:v1";
+const PROMOTION_SYNC_PROGRESS_DEDUPE_KEY = "state:progress:v1";
 
 type CandleRow = [number, number, number, number, number, number];
 
@@ -627,6 +628,7 @@ export interface SyncResearchPromotionParams {
   cycleId?: string;
   dryRun?: boolean;
   requireCompletedCycle?: boolean;
+  debug?: boolean;
   sources?: ScalpDeploymentRegistrySource[];
   updatedBy?: string;
   nowMs?: number;
@@ -777,6 +779,33 @@ type PromotionSyncStateSnapshot = {
   materializationCreated: number;
 };
 
+export type PromotionSyncProgressStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed";
+
+export type PromotionSyncProgressSnapshot = {
+  version: 1;
+  status: PromotionSyncProgressStatus;
+  cycleId: string | null;
+  dryRun: boolean;
+  requireCompletedCycle: boolean;
+  phase: string | null;
+  startedAtMs: number | null;
+  updatedAtMs: number;
+  finishedAtMs: number | null;
+  totalDeployments: number | null;
+  processedDeployments: number;
+  matchedDeployments: number;
+  updatedDeployments: number;
+  currentSymbol: string | null;
+  currentStrategyId: string | null;
+  currentTuneId: string | null;
+  reason: string | null;
+  lastError: string | null;
+};
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
@@ -815,7 +844,70 @@ function normalizePromotionSyncState(
   };
 }
 
-async function loadPromotionSyncStateFromPg(): Promise<PromotionSyncStateSnapshot | null> {
+function normalizePromotionSyncProgressSnapshot(
+  raw: unknown,
+): PromotionSyncProgressSnapshot | null {
+  const row = asRecord(raw);
+  const status = String(row.status || "").trim().toLowerCase();
+  if (
+    status !== "queued" &&
+    status !== "running" &&
+    status !== "succeeded" &&
+    status !== "failed"
+  ) {
+    return null;
+  }
+  const updatedAtMs = Number(row.updatedAtMs);
+  if (!Number.isFinite(updatedAtMs) || updatedAtMs <= 0) return null;
+  const cycleId = String(row.cycleId || "").trim() || null;
+  const phase = String(row.phase || "").trim() || null;
+  const currentSymbol = String(row.currentSymbol || "").trim().toUpperCase() || null;
+  const currentStrategyId = String(row.currentStrategyId || "").trim().toLowerCase() || null;
+  const currentTuneId = String(row.currentTuneId || "").trim().toLowerCase() || null;
+  const reason = String(row.reason || "").trim() || null;
+  const lastError = String(row.lastError || "").trim() || null;
+  const startedAtMs = Number(row.startedAtMs);
+  const finishedAtMs = Number(row.finishedAtMs);
+  return {
+    version: 1,
+    status,
+    cycleId,
+    dryRun: toBool(row.dryRun, false),
+    requireCompletedCycle: toBool(row.requireCompletedCycle, true),
+    phase,
+    startedAtMs:
+      Number.isFinite(startedAtMs) && startedAtMs > 0
+        ? Math.floor(startedAtMs)
+        : null,
+    updatedAtMs: Math.floor(updatedAtMs),
+    finishedAtMs:
+      Number.isFinite(finishedAtMs) && finishedAtMs > 0
+        ? Math.floor(finishedAtMs)
+        : null,
+    totalDeployments: Number.isFinite(Number(row.totalDeployments))
+      ? Math.max(0, Math.floor(Number(row.totalDeployments)))
+      : null,
+    processedDeployments: Math.max(
+      0,
+      Math.floor(Number(row.processedDeployments) || 0),
+    ),
+    matchedDeployments: Math.max(
+      0,
+      Math.floor(Number(row.matchedDeployments) || 0),
+    ),
+    updatedDeployments: Math.max(
+      0,
+      Math.floor(Number(row.updatedDeployments) || 0),
+    ),
+    currentSymbol,
+    currentStrategyId,
+    currentTuneId,
+    reason,
+    lastError,
+  };
+}
+
+export async function loadPromotionSyncStateFromPg(): Promise<PromotionSyncStateSnapshot | null> {
   if (!isScalpPgConfigured()) return null;
   try {
     const db = scalpPrisma();
@@ -827,6 +919,23 @@ async function loadPromotionSyncStateFromPg(): Promise<PromotionSyncStateSnapsho
             LIMIT 1;
         `);
     return normalizePromotionSyncState(rows[0]?.payload);
+  } catch {
+    return null;
+  }
+}
+
+export async function loadPromotionSyncProgressSnapshot(): Promise<PromotionSyncProgressSnapshot | null> {
+  if (!isScalpPgConfigured()) return null;
+  try {
+    const db = scalpPrisma();
+    const rows = await db.$queryRaw<Array<{ payload: unknown }>>(Prisma.sql`
+            SELECT payload
+            FROM scalp_jobs
+            WHERE kind = 'promotion_sync'::scalp_job_kind
+              AND dedupe_key = ${PROMOTION_SYNC_PROGRESS_DEDUPE_KEY}
+            LIMIT 1;
+        `);
+    return normalizePromotionSyncProgressSnapshot(rows[0]?.payload);
   } catch {
     return null;
   }
@@ -872,6 +981,57 @@ async function savePromotionSyncStateToPg(
                 locked_by = NULL,
                 locked_at = NULL,
                 last_error = NULL,
+                updated_at = NOW();
+        `,
+  );
+}
+
+export async function savePromotionSyncProgressSnapshot(
+  snapshot: PromotionSyncProgressSnapshot,
+): Promise<void> {
+  if (!isScalpPgConfigured()) return;
+  const db = scalpPrisma();
+  const jobStatus =
+    snapshot.status === "failed"
+      ? "failed_permanent"
+      : snapshot.status === "succeeded"
+        ? "succeeded"
+        : "running";
+  await db.$executeRaw(
+    Prisma.sql`
+            INSERT INTO scalp_jobs(
+                kind,
+                dedupe_key,
+                payload,
+                status,
+                attempts,
+                max_attempts,
+                scheduled_for,
+                next_run_at,
+                last_error
+            )
+            VALUES(
+                'promotion_sync'::scalp_job_kind,
+                ${PROMOTION_SYNC_PROGRESS_DEDUPE_KEY},
+                ${JSON.stringify(snapshot)}::jsonb,
+                ${jobStatus}::scalp_job_status,
+                1,
+                1,
+                NOW(),
+                NOW(),
+                ${snapshot.lastError || null}
+            )
+            ON CONFLICT(kind, dedupe_key)
+            DO UPDATE SET
+                payload = EXCLUDED.payload,
+                status = EXCLUDED.status,
+                attempts = EXCLUDED.attempts,
+                max_attempts = EXCLUDED.max_attempts,
+                scheduled_for = EXCLUDED.scheduled_for,
+                next_run_at = EXCLUDED.next_run_at,
+                locked_by = NULL,
+                locked_at = NULL,
+                last_error = EXCLUDED.last_error,
                 updated_at = NOW();
         `,
   );
@@ -923,6 +1083,94 @@ function buildPromotionSyncSignature(params: {
 export async function syncResearchCyclePromotionGates(
   params: SyncResearchPromotionParams = {},
 ): Promise<SyncResearchPromotionResult> {
+  const debug = params.debug === true;
+  const startedAtMs = Date.now();
+  const emitSyncLog = (
+    event: string,
+    payload: Record<string, unknown>,
+    force = false,
+    level: "info" | "warn" = "info",
+  ): void => {
+    if (!force && !debug) return;
+    const line = JSON.stringify({
+      scope: "scalp_research_promotion_sync",
+      event,
+      elapsedMs: Date.now() - startedAtMs,
+      ...payload,
+    });
+    if (level === "warn") console.warn(line);
+    else console.info(line);
+  };
+  let progressSnapshot: PromotionSyncProgressSnapshot | null = null;
+  const persistProgress = async (
+    patch: Partial<PromotionSyncProgressSnapshot>,
+  ): Promise<void> => {
+    if (params.dryRun === true) return;
+    const base: PromotionSyncProgressSnapshot =
+      progressSnapshot || {
+        version: 1,
+        status: "running",
+        cycleId: null,
+        dryRun: false,
+        requireCompletedCycle: params.requireCompletedCycle ?? true,
+        phase: null,
+        startedAtMs: startedAtMs,
+        updatedAtMs: startedAtMs,
+        finishedAtMs: null,
+        totalDeployments: null,
+        processedDeployments: 0,
+        matchedDeployments: 0,
+        updatedDeployments: 0,
+        currentSymbol: null,
+        currentStrategyId: null,
+        currentTuneId: null,
+        reason: null,
+        lastError: null,
+      };
+    progressSnapshot = {
+      ...base,
+      ...patch,
+      cycleId:
+        patch.cycleId !== undefined
+          ? patch.cycleId
+          : base.cycleId,
+      updatedAtMs:
+        patch.updatedAtMs !== undefined
+          ? Math.max(0, Math.floor(Number(patch.updatedAtMs) || Date.now()))
+          : Date.now(),
+      processedDeployments: Math.max(
+        0,
+        Math.floor(
+          Number(
+            patch.processedDeployments !== undefined
+              ? patch.processedDeployments
+              : base.processedDeployments,
+          ) || 0,
+        ),
+      ),
+      matchedDeployments: Math.max(
+        0,
+        Math.floor(
+          Number(
+            patch.matchedDeployments !== undefined
+              ? patch.matchedDeployments
+              : base.matchedDeployments,
+          ) || 0,
+        ),
+      ),
+      updatedDeployments: Math.max(
+        0,
+        Math.floor(
+          Number(
+            patch.updatedDeployments !== undefined
+              ? patch.updatedDeployments
+              : base.updatedDeployments,
+          ) || 0,
+        ),
+      ),
+    };
+    await savePromotionSyncProgressSnapshot(progressSnapshot);
+  };
   const requestedCycleId = String(params.cycleId || "").trim();
   let cycleId = requestedCycleId || (await loadActiveResearchCycleId());
   if (!cycleId) {
@@ -1020,6 +1268,14 @@ export async function syncResearchCyclePromotionGates(
   };
 
   if (!cycleId) {
+    emitSyncLog(
+      "early_exit_cycle_not_found",
+      {
+        requestedCycleId: requestedCycleId || null,
+      },
+      true,
+      "warn",
+    );
     return {
       ok: false,
       cycleId: null,
@@ -1040,6 +1296,14 @@ export async function syncResearchCyclePromotionGates(
 
   const cycle = await loadResearchCycle(cycleId);
   if (!cycle) {
+    emitSyncLog(
+      "early_exit_cycle_not_loaded",
+      {
+        cycleId,
+      },
+      true,
+      "warn",
+    );
     return {
       ok: false,
       cycleId,
@@ -1059,6 +1323,15 @@ export async function syncResearchCyclePromotionGates(
   }
 
   if (requireCompletedCycle && cycle.status !== "completed") {
+    emitSyncLog(
+      "early_exit_cycle_not_completed",
+      {
+        cycleId,
+        cycleStatus: cycle.status,
+      },
+      true,
+      "warn",
+    );
     return {
       ok: false,
       cycleId,
@@ -1082,9 +1355,36 @@ export async function syncResearchCyclePromotionGates(
     : Date.now();
   const weeklyPolicy = resolveWeeklyPolicy(params, cycle);
   const confirmationPolicy = resolveConfirmationPolicy(params, cycle);
+  await persistProgress({
+    status: "running",
+    cycleId,
+    dryRun,
+    requireCompletedCycle,
+    phase: "load_cycle",
+    startedAtMs,
+    finishedAtMs: null,
+    reason: null,
+    lastError: null,
+  });
+  emitSyncLog("cycle_loaded", {
+    cycleId,
+    cycleStatus: cycle.status,
+    dryRun,
+    requireCompletedCycle,
+    weeklyPolicy,
+    confirmationPolicy,
+  });
 
   const deploymentSnapshot = await loadScalpDeploymentRegistry();
   let deployments = deploymentSnapshot.deployments.slice();
+  await persistProgress({
+    phase: "load_deployments",
+    totalDeployments: deployments.length,
+  });
+  emitSyncLog("deployments_loaded", {
+    totalDeployments: deployments.length,
+    allowedSources: Array.from(allowedSources).sort(),
+  });
   const preSyncSignature = buildPromotionSyncSignature({
     cycle,
     allowedSources,
@@ -1104,6 +1404,24 @@ export async function syncResearchCyclePromotionGates(
   if (!dryRun) {
     const lastSync = await loadPromotionSyncStateFromPg();
     if (lastSync?.signature === preSyncSignature) {
+      await persistProgress({
+        status: "succeeded",
+        cycleId,
+        phase: "already_current",
+        finishedAtMs: Date.now(),
+        totalDeployments: preSyncConsidered,
+        processedDeployments: preSyncConsidered,
+        currentSymbol: null,
+        currentStrategyId: null,
+        currentTuneId: null,
+        reason: "sync_already_current",
+        lastError: null,
+      });
+      emitSyncLog("early_exit_sync_already_current", {
+        cycleId,
+        deploymentsConsidered: preSyncConsidered,
+        lastSyncedAtMs: lastSync.syncedAtMs,
+      });
       return {
         ok: true,
         cycleId,
@@ -1132,7 +1450,15 @@ export async function syncResearchCyclePromotionGates(
   }
 
   const tasks = await listResearchCycleTasks(cycleId, 10000);
+  emitSyncLog("cycle_tasks_loaded", {
+    cycleId,
+    taskCount: tasks.length,
+  });
   const candidates = buildForwardValidationByCandidate(cycle, tasks);
+  emitSyncLog("candidates_built", {
+    cycleId,
+    candidateCount: candidates.length,
+  });
   const materializationCandidatePool = filterMaterializationCandidatesByQuality(
     candidates,
     materializationQualityPolicy,
@@ -1193,6 +1519,13 @@ export async function syncResearchCyclePromotionGates(
       windowFromTs: confirmationWindowFromTs,
       windowToTs: confirmationWindowToTs,
     });
+    emitSyncLog("confirmation_history_loaded", {
+      confirmationSymbols: confirmationSymbols.length,
+      confirmationCandidates: confirmationCandidateKeys.size,
+      historicalTaskRows: historicalTasks.length,
+      windowFromTs: confirmationWindowFromTs,
+      windowToTs: confirmationWindowToTs,
+    });
     const scopedHistoricalTasks = historicalTasks.filter((task) =>
       confirmationCandidateKeys.has(
         keyOf(task.symbol, task.strategyId, task.tuneId),
@@ -1209,11 +1542,19 @@ export async function syncResearchCyclePromotionGates(
     for (const row of confirmationRows) {
       confirmationByKey.set(keyOf(row.symbol, row.strategyId, row.tuneId), row);
     }
+    emitSyncLog("confirmation_candidates_built", {
+      confirmationRows: confirmationRows.length,
+    });
   }
   const materializationShortlist = buildCandidateMaterializationShortlist(
     materializationCandidatePool,
     materializeTopKPerSymbol,
   );
+  emitSyncLog("materialization_shortlist_built", {
+    qualityEligibleCandidates: materializationCandidatePool.length,
+    qualityRejectedCandidates: materializationRejectedByQuality,
+    shortlistedCandidates: materializationShortlist.length,
+  });
 
   const deploymentIds = new Set(deployments.map((row) => row.deploymentId));
   const materializationRowDrafts: Array<{
@@ -1286,6 +1627,13 @@ export async function syncResearchCyclePromotionGates(
   const considered = deployments.filter((row) =>
     allowedSources.has(row.source),
   );
+  await persistProgress({
+    phase: "evaluate_deployments",
+    totalDeployments: considered.length,
+  });
+  emitSyncLog("considered_deployments_built", {
+    consideredDeployments: considered.length,
+  });
 
   const rows: SyncResearchPromotionRow[] = [];
   let deploymentsMatched = 0;
@@ -1311,7 +1659,32 @@ export async function syncResearchCyclePromotionGates(
     }
   >();
 
-  for (const deployment of considered) {
+  for (let deploymentIndex = 0; deploymentIndex < considered.length; deploymentIndex += 1) {
+    const deployment = considered[deploymentIndex];
+    if (
+      debug &&
+      (deploymentIndex < 3 ||
+        (deploymentIndex + 1) % 25 === 0 ||
+        deploymentIndex === considered.length - 1)
+    ) {
+      emitSyncLog("deployment_progress", {
+        processed: deploymentIndex,
+        total: considered.length,
+        symbol: deployment.symbol,
+        strategyId: deployment.strategyId,
+        tuneId: deployment.tuneId,
+      });
+      await persistProgress({
+        phase: "evaluate_deployments",
+        totalDeployments: considered.length,
+        processedDeployments: deploymentIndex,
+        matchedDeployments: deploymentsMatched,
+        updatedDeployments: deploymentsUpdated,
+        currentSymbol: deployment.symbol,
+        currentStrategyId: deployment.strategyId,
+        currentTuneId: deployment.tuneId,
+      });
+    }
     const candidateKey = keyOf(
       deployment.symbol,
       deployment.strategyId,
@@ -1344,6 +1717,16 @@ export async function syncResearchCyclePromotionGates(
           nextGate: null,
           changed: false,
         });
+        await persistProgress({
+          phase: "evaluate_deployments",
+          totalDeployments: considered.length,
+          processedDeployments: deploymentIndex + 1,
+          matchedDeployments: deploymentsMatched,
+          updatedDeployments: deploymentsUpdated,
+          currentSymbol: deployment.symbol,
+          currentStrategyId: deployment.strategyId,
+          currentTuneId: deployment.tuneId,
+        });
         continue;
       }
 
@@ -1370,6 +1753,16 @@ export async function syncResearchCyclePromotionGates(
         updatedBy: params.updatedBy || "research-cycle-sync",
       });
       rowDrafts.push(draft);
+      await persistProgress({
+        phase: "evaluate_deployments",
+        totalDeployments: considered.length,
+        processedDeployments: deploymentIndex + 1,
+        matchedDeployments: deploymentsMatched,
+        updatedDeployments: deploymentsUpdated,
+        currentSymbol: deployment.symbol,
+        currentStrategyId: deployment.strategyId,
+        currentTuneId: deployment.tuneId,
+      });
       continue;
     }
     deploymentsMatched += 1;
@@ -1395,13 +1788,23 @@ export async function syncResearchCyclePromotionGates(
         weeklyGateReason = "not_in_90d_winner_shortlist";
       } else if (inWinnerShortlist) {
         if (!candlesBySymbol.has(deployment.symbol)) {
+          emitSyncLog("weekly_robustness_load_candles", {
+            symbol: deployment.symbol,
+          });
           const history = await loadScalpCandleHistory(deployment.symbol, "1m");
           candlesBySymbol.set(
             deployment.symbol,
             (history.record?.candles || []) as CandleRow[],
           );
+          emitSyncLog("weekly_robustness_candles_loaded", {
+            symbol: deployment.symbol,
+            candles: (history.record?.candles || []).length,
+          });
         }
         if (!symbolMetadataBySymbol.has(deployment.symbol)) {
+          emitSyncLog("weekly_robustness_load_symbol_meta", {
+            symbol: deployment.symbol,
+          });
           symbolMetadataBySymbol.set(
             deployment.symbol,
             await loadScalpSymbolMarketMetadata(deployment.symbol),
@@ -1415,6 +1818,13 @@ export async function syncResearchCyclePromotionGates(
           nowMs,
           lookbackDays: weeklyPolicy.lookbackDays,
           minCandlesPerSlice: weeklyPolicy.minCandlesPerSlice,
+        });
+        emitSyncLog("weekly_robustness_completed", {
+          symbol: deployment.symbol,
+          strategyId: deployment.strategyId,
+          tuneId: deployment.tuneId,
+          slices: weeklyRobustness?.slices ?? 0,
+          profitablePct: weeklyRobustness?.profitablePct ?? null,
         });
         const weeklyGate = evaluateWeeklyRobustnessGate(
           weeklyRobustness,
@@ -1474,6 +1884,16 @@ export async function syncResearchCyclePromotionGates(
         nextGate: null,
         changed: false,
       });
+      await persistProgress({
+        phase: "evaluate_deployments",
+        totalDeployments: considered.length,
+        processedDeployments: deploymentIndex + 1,
+        matchedDeployments: deploymentsMatched,
+        updatedDeployments: deploymentsUpdated,
+        currentSymbol: deployment.symbol,
+        currentStrategyId: deployment.strategyId,
+        currentTuneId: deployment.tuneId,
+      });
       continue;
     }
 
@@ -1493,13 +1913,35 @@ export async function syncResearchCyclePromotionGates(
       });
     }
     rowDrafts.push(draft);
+    await persistProgress({
+      phase: "evaluate_deployments",
+      totalDeployments: considered.length,
+      processedDeployments: deploymentIndex + 1,
+      matchedDeployments: deploymentsMatched,
+      updatedDeployments: deploymentsUpdated,
+      currentSymbol: deployment.symbol,
+      currentStrategyId: deployment.strategyId,
+      currentTuneId: deployment.tuneId,
+    });
   }
 
   if (!dryRun) {
     if (baselineUpserts.length > 0) {
+      await persistProgress({
+        phase: "persist_baseline",
+        processedDeployments: considered.length,
+        matchedDeployments: deploymentsMatched,
+        updatedDeployments: deploymentsUpdated,
+      });
+      emitSyncLog("baseline_upserts_start", {
+        count: baselineUpserts.length,
+      });
       const baselineOut =
         await upsertScalpDeploymentRegistryEntriesBulk(baselineUpserts);
       deployments = baselineOut.snapshot.deployments.slice();
+      emitSyncLog("baseline_upserts_completed", {
+        count: baselineUpserts.length,
+      });
     }
 
     if (forcedFromBaseline.size > 0) {
@@ -1526,9 +1968,21 @@ export async function syncResearchCyclePromotionGates(
     }
 
     if (forcedUpserts.length > 0) {
+      await persistProgress({
+        phase: "persist_forced",
+        processedDeployments: considered.length,
+        matchedDeployments: deploymentsMatched,
+        updatedDeployments: deploymentsUpdated,
+      });
+      emitSyncLog("forced_upserts_start", {
+        count: forcedUpserts.length,
+      });
       const forcedOut =
         await upsertScalpDeploymentRegistryEntriesBulk(forcedUpserts);
       deployments = forcedOut.snapshot.deployments.slice();
+      emitSyncLog("forced_upserts_completed", {
+        count: forcedUpserts.length,
+      });
     }
 
     const nextByDeploymentId = new Map(
@@ -1570,7 +2024,29 @@ export async function syncResearchCyclePromotionGates(
       deploymentsUpdated,
       materializationCreated: materialization.createdCandidates,
     } as PromotionSyncStateSnapshot);
+    await persistProgress({
+      status: "succeeded",
+      phase: "completed",
+      processedDeployments: considered.length,
+      matchedDeployments: deploymentsMatched,
+      updatedDeployments: deploymentsUpdated,
+      finishedAtMs: Date.now(),
+      currentSymbol: null,
+      currentStrategyId: null,
+      currentTuneId: null,
+      reason: null,
+      lastError: null,
+    });
   }
+
+  emitSyncLog("sync_completed", {
+    cycleId,
+    consideredDeployments: considered.length,
+    matchedDeployments: deploymentsMatched,
+    updatedDeployments: deploymentsUpdated,
+    rowCount: rows.length,
+    materializedCreated: materialization.createdCandidates,
+  });
 
   return {
     ok: true,

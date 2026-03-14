@@ -25,6 +25,10 @@ import {
   isScalpPgConfigured,
   scalpPrisma,
 } from "../../../../lib/scalp/pg/client";
+import {
+  loadPromotionSyncProgressSnapshot,
+  loadPromotionSyncStateFromPg,
+} from "../../../../lib/scalp/researchPromotion";
 import { normalizeScalpStrategyId } from "../../../../lib/scalp/strategies/registry";
 import { deriveScalpDayKey } from "../../../../lib/scalp/stateMachine";
 import {
@@ -214,7 +218,25 @@ type ScalpPipelineSnapshot = {
       running: number | null;
       completed: number | null;
       failed: number | null;
-    } | null;
+      } | null;
+  } | null;
+  promotionSync: {
+    status: "queued" | "running" | "succeeded" | "failed" | null;
+    cycleId: string | null;
+    phase: string | null;
+    startedAtMs: number | null;
+    updatedAtMs: number | null;
+    finishedAtMs: number | null;
+    totalDeployments: number | null;
+    processedDeployments: number | null;
+    matchedDeployments: number | null;
+    updatedDeployments: number | null;
+    currentSymbol: string | null;
+    currentStrategyId: string | null;
+    currentTuneId: string | null;
+    lastError: string | null;
+    lastCompletedCycleId: string | null;
+    lastCompletedAtMs: number | null;
   } | null;
   statusPanel: ScalpPipelineStatusPanel;
 };
@@ -321,9 +343,57 @@ function workerStepDetail(
   return detailParts.length ? detailParts.join(" · ") : null;
 }
 
+const PROMOTION_SYNC_STALE_AFTER_MS = 20 * 60_000;
+
+function promotionSyncDetail(
+  promotionSync: ScalpPipelineSnapshot["promotionSync"],
+): string | null {
+  if (!promotionSync) return null;
+  const parts: string[] = [];
+  const processed = safeCount(promotionSync.processedDeployments);
+  const total = safeCount(promotionSync.totalDeployments);
+  if (processed !== null && total !== null && total > 0) {
+    parts.push(`${processed} / ${total} deployments`);
+  } else if (total !== null && total > 0) {
+    parts.push(`${total} deployments`);
+  }
+  const currentTarget = [
+    promotionSync.currentSymbol,
+    promotionSync.currentStrategyId,
+    promotionSync.currentTuneId,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter((value) => Boolean(value))
+    .join(" · ");
+  if (currentTarget) parts.push(currentTarget);
+  if (promotionSync.lastError) parts.push(promotionSync.lastError);
+  if (!parts.length && promotionSync.phase) parts.push(promotionSync.phase);
+  return parts.length ? parts.join(" · ") : null;
+}
+
+function compositePromotionProgressPct(params: {
+  promotionStepIndex: number;
+  totalSteps: number;
+  processedDeployments: number | null;
+  totalDeployments: number | null;
+}): number | null {
+  if (params.promotionStepIndex < 0 || params.totalSteps <= 0) return null;
+  const processed = safeCount(params.processedDeployments);
+  const total = safeCount(params.totalDeployments);
+  const frac =
+    processed !== null && total !== null && total > 0
+      ? Math.max(0, Math.min(1, processed / total))
+      : 0;
+  return Math.max(
+    0,
+    Math.min(100, ((params.promotionStepIndex + frac) / params.totalSteps) * 100),
+  );
+}
+
 function buildPipelineStatusPanel(
   input: Omit<ScalpPipelineSnapshot, "statusPanel">,
 ): ScalpPipelineStatusPanel {
+  const nowMs = Date.now();
   const panicStopEnabled = input.panicStop.enabled === true;
   const panicStopReason = normalizeReason(input.panicStop.reason);
   const stage = String(input.orchestrator?.stage || "")
@@ -336,24 +406,68 @@ function buildPipelineStatusPanel(
   const workerStepIndex = PIPELINE_STEP_DEFS.findIndex(
     (step) => step.id === "worker",
   );
+  const promotionStepIndex = PIPELINE_STEP_DEFS.findIndex(
+    (step) => step.id === "promotion",
+  );
   const cycleRunning = cycleStatus === "running";
   const cycleCompleted = cycleStatus === "completed";
   const cycleFailed = ["failed", "error", "aborted", "cancelled"].includes(
     cycleStatus,
   );
+  const currentCycleId = input.cycle?.cycleId || null;
+  const promotionSync = input.promotionSync;
+  const promotionSyncFresh =
+    promotionSync?.updatedAtMs !== null &&
+    typeof promotionSync?.updatedAtMs === "number" &&
+    Number.isFinite(promotionSync.updatedAtMs) &&
+    nowMs - promotionSync.updatedAtMs <= PROMOTION_SYNC_STALE_AFTER_MS;
+  const promotionRunning =
+    Boolean(promotionSyncFresh) &&
+    (promotionSync?.status === "queued" || promotionSync?.status === "running") &&
+    (!currentCycleId || promotionSync?.cycleId === currentCycleId);
+  const promotionFailed =
+    Boolean(promotionSyncFresh) &&
+    promotionSync?.status === "failed" &&
+    (!currentCycleId || promotionSync?.cycleId === currentCycleId);
+  const promotionSucceededForCycle = Boolean(
+    currentCycleId &&
+      ((promotionSync?.status === "succeeded" &&
+        promotionSync?.cycleId === currentCycleId) ||
+        promotionSync?.lastCompletedCycleId === currentCycleId),
+  );
+  const promotionPending =
+    !cycleRunning &&
+    cycleCompleted &&
+    !promotionRunning &&
+    !promotionFailed &&
+    !promotionSucceededForCycle;
   const orchestratorErrorRaw =
     String(input.orchestrator?.lastError || "").trim() || null;
   const orchestratorError =
     panicStopEnabled && orchestratorErrorRaw === "panic_stop_enabled"
       ? null
       : orchestratorErrorRaw;
-  const progressPct = safeProgressPct(
+  const cycleOrchestratorProgressPct = safeProgressPct(
     input.cycle?.progressPct ?? input.orchestrator?.progressPct,
   );
+  const progressPct =
+    promotionRunning || promotionPending || promotionSucceededForCycle
+      ? compositePromotionProgressPct({
+          promotionStepIndex,
+          totalSteps: PIPELINE_STEP_DEFS.length,
+          processedDeployments: promotionSucceededForCycle
+            ? promotionSync?.totalDeployments ?? promotionSync?.processedDeployments ?? 1
+            : promotionSync?.processedDeployments ?? 0,
+          totalDeployments: promotionSucceededForCycle
+            ? promotionSync?.totalDeployments ?? promotionSync?.processedDeployments ?? 1
+            : promotionSync?.totalDeployments ?? 1,
+        }) ?? cycleOrchestratorProgressPct
+      : cycleOrchestratorProgressPct;
   const updatedAtMs = [
     input.panicStop.updatedAtMs,
     input.orchestrator?.updatedAtMs,
     input.cycle?.updatedAtMs,
+    input.promotionSync?.updatedAtMs,
   ]
     .filter(
       (value): value is number =>
@@ -364,28 +478,36 @@ function buildPipelineStatusPanel(
       null,
     );
   const currentStepIndex =
-    stageIndex >= 0
+    promotionRunning
+      ? promotionStepIndex
+      : stageIndex >= 0
       ? stageIndex
       : cycleRunning
         ? workerStepIndex
-        : cycleCompleted
+        : cycleCompleted && promotionSucceededForCycle
           ? PIPELINE_STEP_DEFS.length - 1
           : -1;
   const failureStepIndex =
-    orchestratorError || cycleFailed
+    promotionFailed
+      ? promotionStepIndex
+      : orchestratorError || cycleFailed
       ? stageIndex >= 0
         ? stageIndex
         : workerStepIndex
       : -1;
   const workerDetail = workerStepDetail(input.cycle?.totals || null);
+  const promotionDetail = promotionSyncDetail(promotionSync);
 
   const steps = PIPELINE_STEP_DEFS.map((step, index) => {
     let state: ScalpPipelineStepState = "pending";
     if (
-      cycleCompleted ||
+      (cycleCompleted && promotionSucceededForCycle) ||
       (stage === "done" && !orchestratorError && !cycleFailed)
     ) {
       state = "success";
+    } else if (promotionPending) {
+      if (index < promotionStepIndex) state = "success";
+      else if (index === promotionStepIndex) state = "pending";
     } else if (failureStepIndex >= 0) {
       if (index < failureStepIndex) state = "success";
       else if (index === failureStepIndex) state = "failed";
@@ -400,8 +522,12 @@ function buildPipelineStatusPanel(
 
     let detail: string | null = null;
     if (step.id === "worker") detail = workerDetail;
+    if (step.id === "promotion") detail = promotionDetail;
     if (state === "failed")
-      detail = orchestratorError || workerDetail || "pipeline failed";
+      detail =
+        step.id === "promotion"
+          ? promotionDetail || "promotion sync failed"
+          : orchestratorError || workerDetail || "pipeline failed";
     if (state === "blocked") detail = panicStopReason || "panic stop enabled";
     return {
       id: step.id,
@@ -446,6 +572,7 @@ function buildPipelineStatusPanel(
       status: "running",
       label: `${runningStep.label} in progress`,
       detail:
+        (runningStep.id === "promotion" ? promotionDetail : null) ||
         input.orchestrator?.progressLabel ||
         runningStep.detail ||
         (input.cycle?.cycleId ? `cycle ${input.cycle.cycleId}` : null),
@@ -456,11 +583,28 @@ function buildPipelineStatusPanel(
     };
   }
 
-  if (cycleCompleted || completedCount === PIPELINE_STEP_DEFS.length) {
+  if (promotionPending) {
+    return {
+      status: "running",
+      label: "Promotion gate pending",
+      detail:
+        promotionDetail ||
+        (currentCycleId
+          ? `latest cycle ${currentCycleId} completed; promotion sync is queued next`
+          : "latest cycle completed; promotion sync is pending"),
+      cycleId: currentCycleId,
+      updatedAtMs,
+      progressPct,
+      steps,
+    };
+  }
+
+  if ((cycleCompleted && promotionSucceededForCycle) || completedCount === PIPELINE_STEP_DEFS.length) {
     return {
       status: "completed",
       label: "Latest cycle completed",
       detail:
+        promotionDetail ||
         workerDetail ||
         (input.cycle?.cycleId ? `cycle ${input.cycle.cycleId}` : null),
       cycleId: input.cycle?.cycleId || null,
@@ -587,6 +731,10 @@ async function loadScalpPipelineSnapshot(
   const summary = asRecord(row.cycleSummary);
   const totals = asRecord(summary.totals);
   const cycleProgressPct = safeProgressPct(summary.progressPct);
+  const [promotionProgress, latestPromotionSync] = await Promise.all([
+    loadPromotionSyncProgressSnapshot(),
+    loadPromotionSyncStateFromPg(),
+  ]);
   const snapshotBase: Omit<ScalpPipelineSnapshot, "statusPanel"> = {
     panicStop: {
       enabled: panicStopEnabled,
@@ -633,6 +781,37 @@ async function loadScalpPipelineSnapshot(
             : null,
         }
       : null,
+    promotionSync:
+      promotionProgress || latestPromotionSync
+        ? {
+            status:
+              promotionProgress?.status ||
+              (latestPromotionSync ? "succeeded" : null),
+            cycleId: promotionProgress?.cycleId || latestPromotionSync?.cycleId || null,
+            phase: promotionProgress?.phase || null,
+            startedAtMs: promotionProgress?.startedAtMs || null,
+            updatedAtMs:
+              promotionProgress?.updatedAtMs ?? latestPromotionSync?.syncedAtMs ?? null,
+            finishedAtMs:
+              promotionProgress?.finishedAtMs ?? latestPromotionSync?.syncedAtMs ?? null,
+            totalDeployments: promotionProgress?.totalDeployments ?? null,
+            processedDeployments: promotionProgress?.processedDeployments ?? null,
+            matchedDeployments:
+              promotionProgress?.matchedDeployments ??
+              latestPromotionSync?.deploymentsMatched ??
+              null,
+            updatedDeployments:
+              promotionProgress?.updatedDeployments ??
+              latestPromotionSync?.deploymentsUpdated ??
+              null,
+            currentSymbol: promotionProgress?.currentSymbol || null,
+            currentStrategyId: promotionProgress?.currentStrategyId || null,
+            currentTuneId: promotionProgress?.currentTuneId || null,
+            lastError: promotionProgress?.lastError || null,
+            lastCompletedCycleId: latestPromotionSync?.cycleId || null,
+            lastCompletedAtMs: latestPromotionSync?.syncedAtMs || null,
+          }
+        : null,
   };
   return {
     ...snapshotBase,

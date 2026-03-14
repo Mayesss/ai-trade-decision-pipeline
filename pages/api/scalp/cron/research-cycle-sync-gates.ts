@@ -1,10 +1,13 @@
-export const config = { runtime: 'nodejs' };
+export const config = { runtime: 'nodejs', maxDuration: 600 };
 
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
 import { invokeCronEndpoint } from '../../../../lib/scalp/cronChaining';
-import { syncResearchCyclePromotionGates } from '../../../../lib/scalp/researchPromotion';
+import {
+    savePromotionSyncProgressSnapshot,
+    syncResearchCyclePromotionGates,
+} from '../../../../lib/scalp/researchPromotion';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean): boolean {
     if (value === undefined) return fallback;
@@ -109,7 +112,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const materializeEnabled = parseBoolParam(req.query.materializeEnabled, true);
     const materializeMinTradesPerWindow = parseNonNegativeInt(firstQueryValue(req.query.materializeMinTradesPerWindow));
     const materializeMinMeanExpectancyR = parseFiniteNumber(firstQueryValue(req.query.materializeMinMeanExpectancyR));
-    const debug = parseBoolParam(req.query.debug, false);
+    const debug = parseBoolParam(req.query.debug ?? req.query.dubg, false);
     const autoSuccessor = parseBoolParam(req.query.autoSuccessor, true);
     const successorPath = firstQueryValue(req.query.successorPath) || '/api/scalp/cron/orchestrate-pipeline';
     const startedAtMs = Date.now();
@@ -136,6 +139,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             materializeEnabled,
             materializeMinTradesPerWindow,
             materializeMinMeanExpectancyR,
+            debug,
         });
         const message =
             out.ok === false
@@ -198,6 +202,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             },
         });
     } catch (err: any) {
+        if (!dryRun) {
+            await savePromotionSyncProgressSnapshot({
+                version: 1,
+                status: 'failed',
+                cycleId: cycleId || null,
+                dryRun: false,
+                requireCompletedCycle,
+                phase: 'failed',
+                startedAtMs: startedAtMs,
+                updatedAtMs: Date.now(),
+                finishedAtMs: Date.now(),
+                totalDeployments: null,
+                processedDeployments: 0,
+                matchedDeployments: 0,
+                updatedDeployments: 0,
+                currentSymbol: null,
+                currentStrategyId: null,
+                currentTuneId: null,
+                reason: 'sync_failed',
+                lastError: String(err?.message || err || 'research_cycle_sync_gates_failed').slice(0, 600),
+            }).catch(() => null);
+        }
         logSyncGates(
             'sync_failed',
             {

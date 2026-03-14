@@ -55,6 +55,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     setNoStoreHeaders(res);
 
     try {
+        const debug = parseBoolParam(req.query.debug ?? req.query.dubg, false);
         const dryRun = parseBoolParam(req.query.dryRun, false);
         const force = parseBoolParam(req.query.force, true);
         const includeLiveQuotes = parseBoolParam(req.query.includeLiveQuotes, false);
@@ -146,6 +147,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                   autoContinueMaxHops,
                   autoSuccessor,
                   successorPath,
+                  debug,
               })
             : null;
         const shouldCallSuccessor =
@@ -156,6 +158,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                   autoContinue: 1,
                   continueHop: 0,
                   startedBy: 'cron:prepare-and-start-cycle:successor',
+                  debug,
               })
             : null;
 
@@ -171,6 +174,39 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             : `Cycle preparation completed but preflight is not ready: ${notReadyReasons.join(', ') || 'unknown_reason'}.`;
 
         const statusCode = out.ok ? 200 : 409;
+        if (debug || !out.ok) {
+            console.info(
+                JSON.stringify({
+                    scope: 'scalp_prepare_and_start_cycle_api',
+                    event: out.ok ? 'prepare_complete' : 'prepare_blocked',
+                    debug,
+                    dryRun,
+                    force,
+                    started: out.started,
+                    cycleId: out.cycle?.cycleId || null,
+                    selectedSymbols: out.symbols.length,
+                    processedSymbols: out.batch.processedSymbols.length,
+                    batch: out.batch,
+                    preflightReady: out.steps.preflight?.ready ?? null,
+                    preflightFailures: out.steps.preflight?.failures || [],
+                    fillRows: out.steps.fill.length,
+                    fillAddedCandles: out.steps.fill.reduce(
+                        (sum, row) => sum + Math.max(0, Math.floor(Number(row.addedCount) || 0)),
+                        0,
+                    ),
+                    fillErrors: out.steps.fill.filter((row) => Boolean(row.error)).map((row) => ({
+                        symbol: row.symbol,
+                        error: row.error,
+                    })),
+                    chaining: {
+                        autoContinue: shouldAutoContinue,
+                        continuation,
+                        autoSuccessor: shouldCallSuccessor,
+                        successor,
+                    },
+                }),
+            );
+        }
         return res.status(statusCode).json({
             ok: out.ok,
             started: out.started,

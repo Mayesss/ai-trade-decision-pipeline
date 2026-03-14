@@ -3,10 +3,9 @@ export const config = { runtime: 'nodejs' };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
-import { invokeCronEndpoint } from '../../../../lib/scalp/cronChaining';
+import { invokeCronEndpoint, invokeCronEndpointDetached } from '../../../../lib/scalp/cronChaining';
 import { loadScalpPanicStopState } from '../../../../lib/scalp/panicStop';
 import { aggregateScalpResearchCycle, runResearchWorker } from '../../../../lib/scalp/researchCycle';
-import { syncResearchCyclePromotionGates } from '../../../../lib/scalp/researchPromotion';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean): boolean {
     if (value === undefined) return fallback;
@@ -48,7 +47,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const maxRuns = parsePositiveInt(firstQueryValue(req.query.maxRuns));
     const concurrency = parsePositiveInt(firstQueryValue(req.query.concurrency));
     const maxDurationMs = parsePositiveInt(firstQueryValue(req.query.maxDurationMs));
-    const debug = parseBoolParam(req.query.debug, false);
+    const debug = parseBoolParam(req.query.debug ?? req.query.dubg, false);
     const autoContinue = parseBoolParam(req.query.autoContinue, true);
     const continueHop = Math.max(0, Math.floor(Number(firstQueryValue(req.query.continueHop)) || 0));
     const autoContinueMaxHops = Math.max(
@@ -106,19 +105,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                       finalizeWhenDone,
                   })
                 : null;
-        const promotionSync =
-            !preflightBlocked &&
-            syncPromotionGates &&
-            worker.cycleId &&
-            aggregate &&
-            (!requireCompletedCycleForSync || aggregate.summary.status === 'completed')
-                ? await syncResearchCyclePromotionGates({
-                      cycleId: worker.cycleId,
-                      dryRun: false,
-                      requireCompletedCycle: requireCompletedCycleForSync,
-                      updatedBy: 'cron:research-cycle-worker',
-                  })
-                : null;
+        const promotionSync = null;
         const shouldAutoContinue =
             autoContinue &&
             !preflightBlocked &&
@@ -152,13 +139,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             Boolean(worker.cycleId) &&
             Boolean(aggregate) &&
             aggregate!.summary.status === 'completed' &&
-            !promotionSync;
+            (syncPromotionGates || successorPath !== '/api/scalp/cron/research-cycle-sync-gates');
         const successor = shouldCallSuccessor
-            ? await invokeCronEndpoint(req, successorPath, {
+            ? await invokeCronEndpointDetached(req, successorPath, {
                   cycleId: worker.cycleId!,
                   dryRun: 0,
                   requireCompletedCycle: requireCompletedCycleForSync,
                   updatedBy: 'cron:research-cycle-worker:successor',
+                  debug,
               })
             : null;
         if (worker.failedRuns > 0 || shouldWarnNoProgress || preflightBlocked) {

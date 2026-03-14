@@ -3091,6 +3091,10 @@ export default function Home() {
     asFiniteNumber(scalpPipelineStatusPanel?.progressPct) ??
     asFiniteNumber(scalpPipelineCycle?.progressPct) ??
     asFiniteNumber(scalpPipelineOrchestrator?.progressPct);
+  const scalpPipelineStatusProgressLabel =
+    typeof scalpPipelineStatusProgressPct === "number"
+      ? `${scalpPipelineStatusProgressPct.toFixed(0)}%`
+      : null;
   const scalpPipelineStatusSteps = Array.isArray(
     scalpPipelineStatusPanel?.steps,
   )
@@ -6589,11 +6593,12 @@ export default function Home() {
                                 )}
                                 {scalpPipelineStatusLabel}
                               </span>
-                              {typeof scalpPipelineStatusProgressPct ===
-                              "number" ? (
+                              {scalpPipelineStatusProgressLabel ? (
                                 <span
                                   className={scalpTagNeutralClass}
-                                >{`${scalpPipelineStatusProgressPct.toFixed(0)}%`}</span>
+                                >
+                                  {scalpPipelineStatusProgressLabel}
+                                </span>
                               ) : null}
                             </div>
                             <p

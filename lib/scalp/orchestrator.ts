@@ -1,10 +1,10 @@
 import { Prisma } from '@prisma/client';
 
+import { invokeCronUrlDetached } from './cronChaining';
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 import { loadScalpPanicStopState } from './panicStop';
 import { prepareAndStartScalpResearchCycle } from './prepareAndStartCycle';
 import { aggregateScalpResearchCycle, loadActiveResearchCycleId, loadResearchCycle, runResearchWorker } from './researchCycle';
-import { syncResearchCyclePromotionGates } from './researchPromotion';
 import { runScalpSymbolDiscoveryCycle } from './symbolDiscovery';
 
 type OrchestratorStage = 'discover' | 'load_candles' | 'prepare' | 'worker' | 'aggregate' | 'promotion' | 'done';
@@ -632,21 +632,51 @@ export async function runScalpPipelineOrchestrator(
             }
 
             if (state.stage === 'promotion') {
-                const out = await syncResearchCyclePromotionGates({
-                    cycleId: state.cycleId || undefined,
-                    dryRun: false,
-                    requireCompletedCycle: true,
-                    materializeEnabled: true,
-                    updatedBy: 'cron:scalp-orchestrator',
-                });
+                const baseUrl = resolveBaseUrl();
+                const successor = baseUrl
+                    ? await invokeCronUrlDetached(
+                          baseUrl,
+                          '/api/scalp/cron/research-cycle-sync-gates',
+                          {
+                              cycleId: state.cycleId || undefined,
+                              dryRun: 0,
+                              requireCompletedCycle: 1,
+                              materializeEnabled: 1,
+                              updatedBy: 'cron:scalp-orchestrator',
+                          },
+                          750,
+                      )
+                    : { invoked: false, status: null, error: 'missing_base_url', url: null, detached: false };
                 stageEvents.push({
                     stage: 'promotion',
-                    ok: out.ok,
-                    reason: out.reason,
-                    deploymentsConsidered: out.deploymentsConsidered,
-                    deploymentsMatched: out.deploymentsMatched,
-                    deploymentsUpdated: out.deploymentsUpdated,
+                    invoked: successor.invoked,
+                    detached: successor.detached === true,
+                    status: successor.status,
+                    error: successor.error,
+                    url: successor.url,
                 });
+                if (!successor.invoked || successor.error) {
+                    state.lastError = successor.error || 'promotion_sync_launch_failed';
+                    state.updatedAtMs = nowMs();
+                    await saveOrchestratorState(state);
+                    return {
+                        ok: false,
+                        status: 'error',
+                        message: `promotion_sync_launch_failed:${state.lastError}`,
+                        runId: state.runId,
+                        stage: state.stage,
+                        state,
+                        diagnostics: {
+                            startedAtMs,
+                            finishedAtMs: nowMs(),
+                            durationMs: nowMs() - startedAtMs,
+                            maxDurationMs,
+                            continuationRequested: false,
+                            continuation: null,
+                            stageEvents,
+                        },
+                    };
+                }
                 state.stage = 'done';
                 state.completedAtMs = nowMs();
                 state.updatedAtMs = nowMs();

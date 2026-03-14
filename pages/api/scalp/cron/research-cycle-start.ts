@@ -56,6 +56,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const dryRun = parseBoolParam(req.query.dryRun, false);
     const force = parseBoolParam(req.query.force, false);
+    const debug = parseBoolParam(req.query.debug ?? req.query.dubg, false);
     const autoSuccessor = parseBoolParam(req.query.autoSuccessor, true);
     const successorPath = firstQueryValue(req.query.successorPath) || '/api/scalp/cron/research-cycle-worker';
 
@@ -83,8 +84,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                   autoContinue: 1,
                   continueHop: 0,
                   startedBy: 'cron:research-cycle-start:successor',
+                  debug,
               })
             : null;
+
+        if (debug) {
+            console.info(
+                JSON.stringify({
+                    scope: 'scalp_research_cycle_start_api',
+                    event: 'start_completed',
+                    dryRun,
+                    force,
+                    started: out.started,
+                    cycleId: out.cycle?.cycleId || null,
+                    taskCount: out.cycle?.taskIds.length || 0,
+                    symbols: out.cycle?.symbols.length || 0,
+                    autoSuccessor: shouldCallSuccessor,
+                }),
+            );
+        }
 
         return res.status(200).json({
             ok: true,
@@ -111,6 +129,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             snapshot: out.cycle,
         });
     } catch (err: any) {
+        if (debug) {
+            console.error(
+                JSON.stringify({
+                    scope: 'scalp_research_cycle_start_api',
+                    event: 'start_failed',
+                    dryRun,
+                    force,
+                    error: err?.message || String(err),
+                    stack: err?.stack || null,
+                }),
+            );
+        }
         if (String(err?.code || '') === 'research_cycle_preflight_failed' && err?.preflight) {
             return res.status(409).json({
                 error: 'research_cycle_preflight_failed',
