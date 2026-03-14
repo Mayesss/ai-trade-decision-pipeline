@@ -5830,7 +5830,7 @@ export default function Home() {
                 : "text-slate-700"
               : primaryExpectancyR > 0
                 ? "text-emerald-500"
-                : "text-rose-500";
+                : "text-red-500";
           const confirmationToneClass =
             confirmationExpectancyR === null || confirmationExpectancyR === 0
               ? scalpDarkMode
@@ -5838,7 +5838,7 @@ export default function Home() {
                 : "text-slate-500"
               : confirmationExpectancyR > 0
                 ? "text-emerald-500"
-                : "text-rose-500";
+                : "text-red-500";
           const primaryTitle = [
             `Primary horizon: ${primaryLabel}`,
             `Expectancy: ${formatScalpSignedR(primaryExpectancyR)}`,
@@ -5894,12 +5894,10 @@ export default function Home() {
                         ? "font-medium text-zinc-100"
                         : "font-medium text-slate-800"
                       : entry.value > 0
-                        ? scalpDarkMode
-                          ? "font-semibold text-emerald-300"
-                          : "font-semibold text-emerald-700"
+                        ? "font-semibold text-emerald-500"
                         : scalpDarkMode
-                          ? "font-semibold text-rose-300"
-                          : "font-semibold text-rose-700";
+                        ? "font-semibold text-red-500"
+                        : "font-semibold text-red-700";
                   const suffix = idx < entries.length - 1 ? " |" : "";
                   return (
                     <span
@@ -6111,30 +6109,40 @@ export default function Home() {
       .toUpperCase();
     if (level === "ERROR" || type === "ERROR") {
       return {
-        className: "border-rose-200 bg-rose-50 text-rose-700",
+        className: scalpDarkMode
+          ? "border-rose-500/35 bg-rose-500/12 text-rose-200"
+          : "border-rose-200 bg-rose-50 text-rose-700",
         Icon: ShieldPlus,
       };
     }
     if (level === "WARN") {
       return {
-        className: "border-amber-200 bg-amber-50 text-amber-700",
+        className: scalpDarkMode
+          ? "border-amber-500/35 bg-amber-500/12 text-amber-200"
+          : "border-amber-200 bg-amber-50 text-amber-700",
         Icon: Activity,
       };
     }
     if (type === "EXECUTION") {
       return {
-        className: "border-emerald-200 bg-emerald-50 text-emerald-700",
+        className: scalpDarkMode
+          ? "border-emerald-500/35 bg-emerald-500/12 text-emerald-200"
+          : "border-emerald-200 bg-emerald-50 text-emerald-700",
         Icon: Zap,
       };
     }
     if (type === "STATE") {
       return {
-        className: "border-sky-200 bg-sky-50 text-sky-700",
+        className: scalpDarkMode
+          ? "border-sky-500/35 bg-sky-500/12 text-sky-200"
+          : "border-sky-200 bg-sky-50 text-sky-700",
         Icon: Repeat,
       };
     }
     return {
-      className: "border-slate-200 bg-slate-100 text-slate-700",
+      className: scalpDarkMode
+        ? "border-zinc-700 bg-zinc-900/80 text-zinc-200"
+        : "border-slate-200 bg-slate-100 text-slate-700",
       Icon: BookOpen,
     };
   };
@@ -8659,7 +8667,11 @@ export default function Home() {
                                         .map((code, idx) => (
                                           <span
                                             key={`${entry.id || entry.timestampMs || idx}-${code}-${idx}`}
-                                            className="rounded-full border border-current/30 bg-white/50 px-1.5 py-0.5 text-[10px] font-semibold"
+                                            className={`rounded-full border px-1.5 py-0.5 text-[10px] font-semibold ${
+                                              scalpDarkMode
+                                                ? "border-current/20 bg-black/20"
+                                                : "border-current/30 bg-white/50"
+                                            }`}
                                           >
                                             {code.replace(/_/g, " ")}
                                           </span>
