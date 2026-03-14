@@ -6589,7 +6589,8 @@ export default function Home() {
                                 )}
                                 {scalpPipelineStatusLabel}
                               </span>
-                              {scalpPipelineStatusProgressPct !== null ? (
+                              {typeof scalpPipelineStatusProgressPct ===
+                              "number" ? (
                                 <span
                                   className={scalpTagNeutralClass}
                                 >{`${scalpPipelineStatusProgressPct.toFixed(0)}%`}</span>

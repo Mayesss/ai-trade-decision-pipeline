@@ -39,7 +39,7 @@ function fromRow(
       | "other",
     instrumentType: row.instrumentType ? String(row.instrumentType) : null,
     marketStatus: row.marketStatus ? String(row.marketStatus) : null,
-    pipSize: toNumberOrNull(row.pipSize),
+    pipSize: toNumberOrNull(row.pipSize) ?? undefined,
     pipPosition: toNumberOrNull(row.pipPosition),
     tickSize: toNumberOrNull(row.tickSize),
     decimalPlacesFactor: toNumberOrNull(row.decimalPlacesFactor),
