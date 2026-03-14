@@ -3180,6 +3180,43 @@ export default function Home() {
           } => Boolean(step),
         )
     : [];
+  const scalpPipelineFocusedStep = (() => {
+    if (!scalpPipelineStatusSteps.length) return null;
+    const firstRunning =
+      scalpPipelineStatusSteps.find((step) => step.state === "running") || null;
+    const firstPending =
+      scalpPipelineStatusSteps.find((step) => step.state === "pending") || null;
+    const firstFailed =
+      scalpPipelineStatusSteps.find((step) => step.state === "failed") || null;
+    const firstBlocked =
+      scalpPipelineStatusSteps.find((step) => step.state === "blocked") || null;
+    const lastSuccess =
+      [...scalpPipelineStatusSteps]
+        .reverse()
+        .find((step) => step.state === "success") || null;
+    if (scalpPipelineStatus === "running") {
+      return firstRunning || firstPending || lastSuccess;
+    }
+    if (scalpPipelineStatus === "failed") {
+      return firstFailed || firstBlocked || firstPending || lastSuccess;
+    }
+    if (scalpPipelineStatus === "blocked") {
+      return firstBlocked || firstPending || lastSuccess;
+    }
+    if (scalpPipelineStatus === "completed") {
+      return lastSuccess;
+    }
+    return null;
+  })();
+  const scalpPipelineFocusedStepId = scalpPipelineFocusedStep?.id || null;
+  const scalpPipelineFocusedStepMarker =
+    scalpPipelineStatus === "running"
+      ? "current"
+      : scalpPipelineStatus === "completed"
+        ? "last"
+        : scalpPipelineStatus === "failed" || scalpPipelineStatus === "blocked"
+          ? "stopped"
+          : null;
   const scalpPipelinePromotionStep =
     scalpPipelineStatusSteps.find((step) => step.id === "promotion") || null;
   const scalpPipelineCycleId =
@@ -4009,6 +4046,22 @@ export default function Home() {
   )
     .trim()
     .toUpperCase();
+  const scalpLatestGuardrailReasonCodes = Array.isArray(
+    scalpLatestGuardrailEntry?.reasonCodes,
+  )
+    ? scalpLatestGuardrailEntry.reasonCodes
+    : [];
+  const scalpLatestGuardrailIsWarmup = scalpLatestGuardrailReasonCodes.some(
+    (code) => {
+      const normalized = String(code || "")
+        .trim()
+        .toUpperCase();
+      return (
+        normalized.includes("SCALP_GUARDRAIL_WARMUP") ||
+        normalized === "GUARDRAIL_LOW_SAMPLE_30D"
+      );
+    },
+  );
   const scalpIneligibleCount = Math.max(
     0,
     scalpEnabledDeploymentCount - scalpPromotionEligibleCount,
@@ -5049,7 +5102,7 @@ export default function Home() {
             .nextRunAtMs,
           invokePath: scalpCronRuntimeMeta("scalp_live_guardrail_monitor")
             .invokePath,
-          role: "Pause hard-breach deployments",
+          role: "Track warmup and pause hard-breach deployments",
           status: scalpStatusFromTs(
             scalpLastGuardrailAtMs ?? scalpReportGeneratedAtMs,
             60 * 60_000,
@@ -5081,28 +5134,43 @@ export default function Home() {
               value: formatScalpTime(
                 scalpLastGuardrailAtMs ?? scalpReportGeneratedAtMs,
               ),
-              tone: scalpLastGuardrailAtMs ? "warning" : "neutral",
+              tone: scalpLastGuardrailAtMs
+                ? scalpLatestGuardrailIsWarmup
+                  ? "neutral"
+                  : "warning"
+                : "neutral",
             },
             {
               label: "Symbol",
               value: scalpLatestGuardrailSymbol || "—",
-              tone: scalpLatestGuardrailSymbol ? "warning" : "neutral",
+              tone: scalpLatestGuardrailSymbol
+                ? scalpLatestGuardrailIsWarmup
+                  ? "neutral"
+                  : "warning"
+                : "neutral",
             },
             {
               label: "Deployment",
               value: scalpLatestGuardrailDeploymentId || "—",
-              tone: scalpLatestGuardrailDeploymentId ? "warning" : "neutral",
+              tone: scalpLatestGuardrailDeploymentId
+                ? scalpLatestGuardrailIsWarmup
+                  ? "neutral"
+                  : "warning"
+                : "neutral",
             },
             {
               label: "Reason",
               value:
-                Array.isArray(scalpLatestGuardrailEntry?.reasonCodes) &&
-                scalpLatestGuardrailEntry.reasonCodes.length
+                scalpLatestGuardrailReasonCodes.length
                   ? String(
-                      scalpLatestGuardrailEntry.reasonCodes[0] || "",
+                      scalpLatestGuardrailReasonCodes[0] || "",
                     ).replace(/_/g, " ")
                   : "none",
-              tone: scalpLatestGuardrailEntry ? "warning" : "neutral",
+              tone: scalpLatestGuardrailEntry
+                ? scalpLatestGuardrailIsWarmup
+                  ? "neutral"
+                  : "warning"
+                : "neutral",
             },
           ],
           resultPreview: scalpLatestGuardrailEntry
@@ -5113,7 +5181,7 @@ export default function Home() {
                 level: scalpLatestGuardrailEntry.level || null,
                 symbol: scalpLatestGuardrailSymbol || null,
                 deploymentId: scalpLatestGuardrailDeploymentId || null,
-                reasonCodes: scalpLatestGuardrailEntry.reasonCodes || [],
+                reasonCodes: scalpLatestGuardrailReasonCodes,
                 payload: scalpLatestGuardrailPayload || null,
               }
             : {
@@ -5348,6 +5416,92 @@ export default function Home() {
   const scalpWorkerJobsGridThemeClass = scalpDarkMode
     ? "ag-theme-quartz-dark"
     : "ag-theme-quartz";
+  const scalpWorkerJobRankScore = (row: ScalpWorkerJobGridRow): number => {
+    const forwardValidation = row.forwardValidation || null;
+    const primaryExpectancy =
+      asFiniteNumber(forwardValidation?.meanExpectancyR) ??
+      asFiniteNumber(row.expectancyR) ??
+      0;
+    const primaryMedianExpectancy =
+      asFiniteNumber(forwardValidation?.weeklyMedianExpectancyR) ??
+      primaryExpectancy;
+    const profitablePct =
+      asFiniteNumber(forwardValidation?.profitableWindowPct) ?? 0;
+    const confirmationExpectancy =
+      asFiniteNumber(forwardValidation?.confirmationMeanExpectancyR) ?? 0;
+    const confirmationProfitablePct =
+      asFiniteNumber(forwardValidation?.confirmationProfitableWindowPct) ?? 0;
+    const concentrationPct = Math.max(
+      0,
+      (asFiniteNumber(forwardValidation?.weeklyTopWeekPnlConcentrationPct) ??
+        0) - 50,
+    );
+    const profitFactor =
+      asFiniteNumber(forwardValidation?.meanProfitFactor) ??
+      asFiniteNumber(row.profitFactor) ??
+      0;
+    const maxDrawdown =
+      asFiniteNumber(forwardValidation?.maxDrawdownR) ??
+      asFiniteNumber(row.totalMaxDrawdownR) ??
+      0;
+    const smoothedExpectancy =
+      (primaryExpectancy + primaryMedianExpectancy) / 2;
+    let score = smoothedExpectancy * (1 - concentrationPct / 100);
+    score += profitablePct / 100;
+    score += confirmationExpectancy * 0.35;
+    score += confirmationProfitablePct / 300;
+    score += Math.min(profitFactor, 25) * 0.02;
+    score -= maxDrawdown * 0.08;
+    if (row.promotionEligible === true) score += 0.5;
+    return score;
+  };
+  const compareScalpWorkerJobGridRows = (
+    a: ScalpWorkerJobGridRow,
+    b: ScalpWorkerJobGridRow,
+  ): number => {
+    const aScore = scalpWorkerJobRankScore(a);
+    const bScore = scalpWorkerJobRankScore(b);
+    if (bScore !== aScore) return bScore - aScore;
+
+    const aProfitablePct =
+      asFiniteNumber(a.forwardValidation?.profitableWindowPct) ?? 0;
+    const bProfitablePct =
+      asFiniteNumber(b.forwardValidation?.profitableWindowPct) ?? 0;
+    if (bProfitablePct !== aProfitablePct)
+      return bProfitablePct - aProfitablePct;
+
+    const aProfitFactor =
+      asFiniteNumber(a.forwardValidation?.meanProfitFactor) ??
+      asFiniteNumber(a.profitFactor) ??
+      Number.NEGATIVE_INFINITY;
+    const bProfitFactor =
+      asFiniteNumber(b.forwardValidation?.meanProfitFactor) ??
+      asFiniteNumber(b.profitFactor) ??
+      Number.NEGATIVE_INFINITY;
+    if (bProfitFactor !== aProfitFactor) return bProfitFactor - aProfitFactor;
+
+    const aDrawdown =
+      asFiniteNumber(a.forwardValidation?.maxDrawdownR) ??
+      asFiniteNumber(a.totalMaxDrawdownR) ??
+      Number.POSITIVE_INFINITY;
+    const bDrawdown =
+      asFiniteNumber(b.forwardValidation?.maxDrawdownR) ??
+      asFiniteNumber(b.totalMaxDrawdownR) ??
+      Number.POSITIVE_INFINITY;
+    if (aDrawdown !== bDrawdown) return aDrawdown - bDrawdown;
+
+    const aNetR = asFiniteNumber(a.totalNetR) ?? Number.NEGATIVE_INFINITY;
+    const bNetR = asFiniteNumber(b.totalNetR) ?? Number.NEGATIVE_INFINITY;
+    if (bNetR !== aNetR) return bNetR - aNetR;
+
+    if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
+    if (a.strategyId !== b.strategyId)
+      return a.strategyId.localeCompare(b.strategyId);
+    if (a.tuneId !== b.tuneId) return a.tuneId.localeCompare(b.tuneId);
+    return String(a.deploymentId || "").localeCompare(
+      String(b.deploymentId || ""),
+    );
+  };
   const scalpWorkerJobsGridRows = useMemo<ScalpWorkerJobGridRow[]>(() => {
     type MutableGridRow = ScalpWorkerJobGridRow & {
       statusCounts: {
@@ -5570,16 +5724,7 @@ export default function Home() {
           : null,
       });
     }
-    return out.sort((a, b) => {
-      if (a.deployed !== b.deployed) return a.deployed ? -1 : 1;
-      if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
-      if (a.strategyId !== b.strategyId)
-        return a.strategyId.localeCompare(b.strategyId);
-      if (a.tuneId !== b.tuneId) return a.tuneId.localeCompare(b.tuneId);
-      return String(a.deploymentId || "").localeCompare(
-        String(b.deploymentId || ""),
-      );
-    });
+    return out.sort(compareScalpWorkerJobGridRows);
   }, [scalpWorkerTaskRows]);
   const scalpWorkerJobsGridDefaultColDef = useMemo<
     ColDef<ScalpWorkerJobGridRow>
@@ -5707,10 +5852,16 @@ export default function Home() {
                 ) => {
                   const toneClass =
                     entry.value === null || entry.value === 0
-                      ? ""
+                      ? scalpDarkMode
+                        ? "font-medium text-zinc-100"
+                        : "font-medium text-slate-800"
                       : entry.value > 0
-                        ? "text-emerald-500"
-                        : "text-rose-500";
+                        ? scalpDarkMode
+                          ? "font-semibold text-emerald-300"
+                          : "font-semibold text-emerald-700"
+                        : scalpDarkMode
+                          ? "font-semibold text-rose-300"
+                          : "font-semibold text-rose-700";
                   const suffix = idx < entries.length - 1 ? " |" : "";
                   return (
                     <span
@@ -5751,22 +5902,11 @@ export default function Home() {
               : "blocked",
       },
       {
-        headerName: "Deployed",
-        field: "deployed",
-        minWidth: 120,
-        valueFormatter: (params) => (params.value ? "yes" : "no"),
-      },
-      {
         headerName: "Reason",
         field: "reason",
         minWidth: 250,
         valueFormatter: (params) =>
           String(params.value || "unknown").replace(/_/g, " "),
-      },
-      {
-        headerName: "Windows",
-        field: "windowCount",
-        minWidth: 110,
       },
       {
         headerName: "Trades",
@@ -5900,6 +6040,12 @@ export default function Home() {
         Icon: ShieldPlus,
       };
     }
+    if (/WARMUP|LOW_SAMPLE|SAMPLE_30D/.test(upper)) {
+      return {
+        className: "border-sky-200 bg-sky-50 text-sky-700",
+        Icon: Repeat,
+      };
+    }
     if (/ENTRY|EXEC|OPEN|CLOSE|BUY|SELL|TP|SL|TRAIL/.test(upper)) {
       return {
         className: "border-emerald-200 bg-emerald-50 text-emerald-700",
@@ -6013,6 +6159,27 @@ export default function Home() {
     if (state === "failed" || state === "blocked")
       return <XCircle className="h-3.5 w-3.5" />;
     return <Circle className="h-3.5 w-3.5" />;
+  };
+  const scalpPipelineStepBadgeClass = (params: {
+    state: ScalpPipelineStepState;
+    focused?: boolean;
+    runningContext?: boolean;
+  }) => {
+    const tone =
+      params.focused &&
+      params.runningContext &&
+      params.state === "pending"
+        ? "warning"
+        : scalpPipelineStepTone(params.state);
+    const base = scalpCronDetailToneMeta(tone);
+    if (!params.focused) {
+      return `${base} ${resolvedTheme === "dark" ? "opacity-80" : "opacity-90"}`;
+    }
+    return `${base} font-semibold shadow-sm ${
+      resolvedTheme === "dark"
+        ? "ring-1 ring-white/15"
+        : "ring-1 ring-slate-300"
+    }`;
   };
   const scalpWorkerTaskStatusMeta = (status: string) => {
     const normalized = String(status || "")
@@ -6646,18 +6813,39 @@ export default function Home() {
                         </div>
                         <div className="mt-4 flex flex-wrap items-center gap-2">
                           {scalpPipelineStatusSteps.length ? (
-                            scalpPipelineStatusSteps.map((step) => (
-                              <span
-                                key={`pipeline-step-${step.id}`}
-                                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${scalpCronDetailToneMeta(
-                                  scalpPipelineStepTone(step.state),
-                                )}`}
-                                title={step.detail || undefined}
-                              >
-                                {renderScalpPipelineStepIcon(step.state)}
-                                {step.label}
-                              </span>
-                            ))
+                            scalpPipelineStatusSteps.map((step) => {
+                              const isFocused =
+                                scalpPipelineFocusedStepId === step.id;
+                              return (
+                                <span
+                                  key={`pipeline-step-${step.id}`}
+                                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${scalpPipelineStepBadgeClass(
+                                    {
+                                      state: step.state,
+                                      focused: isFocused,
+                                      runningContext:
+                                        scalpPipelineStatus === "running",
+                                    },
+                                  )}`}
+                                  title={step.detail || undefined}
+                                >
+                                  {renderScalpPipelineStepIcon(step.state)}
+                                  {step.label}
+                                  {isFocused &&
+                                  scalpPipelineFocusedStepMarker ? (
+                                    <span
+                                      className={`rounded-full border px-1.5 py-0.5 text-[9px] uppercase tracking-[0.14em] ${
+                                        scalpDarkMode
+                                          ? "border-white/15 bg-white/8 text-zinc-100"
+                                          : "border-slate-300 bg-white/85 text-slate-700"
+                                      }`}
+                                    >
+                                      {scalpPipelineFocusedStepMarker}
+                                    </span>
+                                  ) : null}
+                                </span>
+                              );
+                            })
                           ) : (
                             <span className={scalpTagNeutralClass}>
                               No persisted cycle steps yet
@@ -8153,17 +8341,18 @@ export default function Home() {
                       <h3
                         className={`text-lg font-semibold ${scalpTextPrimaryClass}`}
                       >
-                        Cycle Worker Jobs
+                        Research Candidate History
                       </h3>
                       <span
                         className={scalpTagNeutralClass}
-                      >{`${scalpWorkerJobsGridRows.length} deployment rows`}</span>
+                      >{`${scalpWorkerJobsGridRows.length} researched candidates`}</span>
                     </div>
                     <div className={`mt-2 text-xs ${scalpTextSecondaryClass}`}>
-                      One row per deployment, with all window-level outcomes
-                      consolidated in the windows results column, plus compact
-                      12-week and 52-week confirmation context from promotion
-                      scoring.
+                      One row per researched candidate with persisted weekly
+                      test history across all cycles. Promotion status comes
+                      from the deployment registry and latest gate sync, while
+                      the windows column shows only candidates that actually
+                      have stored research task results.
                     </div>
                     {scalpWorkerJobsGridRows.length ? (
                       <div

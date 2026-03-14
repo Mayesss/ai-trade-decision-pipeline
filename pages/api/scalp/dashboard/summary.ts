@@ -425,10 +425,18 @@ function promotionSyncDetail(
   const parts: string[] = [];
   const processed = safeCount(promotionSync.processedDeployments);
   const total = safeCount(promotionSync.totalDeployments);
-  if (processed !== null && total !== null && total > 0) {
-    parts.push(`${processed} / ${total} deployments`);
+  const matched = safeCount(promotionSync.matchedDeployments);
+  if (
+    promotionSync.status === "succeeded" &&
+    matched !== null &&
+    total !== null &&
+    total > 0
+  ) {
+    parts.push(`${matched} matched / ${total} evaluated deployments`);
+  } else if (processed !== null && total !== null && total > 0) {
+    parts.push(`${processed} / ${total} evaluated deployments`);
   } else if (total !== null && total > 0) {
-    parts.push(`${total} deployments`);
+    parts.push(`${total} evaluated deployments`);
   }
   const currentTarget = [
     promotionSync.currentSymbol,

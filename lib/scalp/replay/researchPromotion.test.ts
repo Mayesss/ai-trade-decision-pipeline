@@ -3,8 +3,10 @@ import test from 'node:test';
 
 import {
     buildCandidateMaterializationShortlist,
+    buildBestEligibleTuneDeploymentIdSet,
     buildForwardValidationByCandidate,
     buildForwardValidationByCandidateFromTasks,
+    buildWinnerCandidateKeySet,
     filterMaterializationCandidatesByQuality,
 } from '../researchPromotion';
 import type { ScalpResearchCycleSnapshot, ScalpResearchTask } from '../researchCycle';
@@ -200,6 +202,183 @@ test('buildForwardValidationByCandidateFromTasks supports longer confirmation ho
     assert.equal(rows[0]?.profitableWindowPct, 50);
     assert.equal(rows[0]?.forwardValidation.selectionWindowDays, 364);
     assert.equal(rows[0]?.forwardValidation.forwardWindowDays, 7);
+    assert.ok(Math.abs((rows[0]?.medianExpectancyR || 0) - 0.1) < 1e-9);
+    assert.equal(rows[0]?.topWindowPnlConcentrationPct, 100);
+    assert.ok(Math.abs((rows[0]?.selectionScore || 0) - 0.05) < 1e-9);
+});
+
+test('buildWinnerCandidateKeySet prefers smoother strategies over outlier-heavy higher-mean candidates', () => {
+    const winners = buildWinnerCandidateKeySet(
+        [
+            {
+                symbol: 'BTCUSDT',
+                strategyId: 'trend_day_reacceleration_m15_m3',
+                tuneId: 'lucky',
+                deploymentId: 'BTCUSDT~trend_day_reacceleration_m15_m3~lucky',
+                rollCount: 12,
+                profitableWindowPct: 58,
+                profitableWindows: 7,
+                meanExpectancyR: 0.65,
+                medianExpectancyR: 0.08,
+                meanProfitFactor: 1.2,
+                maxDrawdownR: 4.5,
+                topWindowPnlConcentrationPct: 88,
+                selectionScore: null,
+                minTradesPerWindow: 3,
+                totalTrades: 72,
+                selectionWindowDays: 90,
+                forwardWindowDays: 7,
+                forwardValidation: {
+                    rollCount: 12,
+                    profitableWindowPct: 58,
+                    meanExpectancyR: 0.65,
+                    meanProfitFactor: 1.2,
+                    maxDrawdownR: 4.5,
+                    minTradesPerWindow: 3,
+                    selectionWindowDays: 90,
+                    forwardWindowDays: 7,
+                },
+            },
+            {
+                symbol: 'BTCUSDT',
+                strategyId: 'compression_breakout_pullback_m15_m3',
+                tuneId: 'steady',
+                deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~steady',
+                rollCount: 12,
+                profitableWindowPct: 83,
+                profitableWindows: 10,
+                meanExpectancyR: 0.46,
+                medianExpectancyR: 0.42,
+                meanProfitFactor: 2.8,
+                maxDrawdownR: 1.7,
+                topWindowPnlConcentrationPct: 36,
+                selectionScore: null,
+                minTradesPerWindow: 6,
+                totalTrades: 98,
+                selectionWindowDays: 90,
+                forwardWindowDays: 7,
+                forwardValidation: {
+                    rollCount: 12,
+                    profitableWindowPct: 83,
+                    meanExpectancyR: 0.46,
+                    meanProfitFactor: 2.8,
+                    maxDrawdownR: 1.7,
+                    minTradesPerWindow: 6,
+                    selectionWindowDays: 90,
+                    forwardWindowDays: 7,
+                },
+            },
+        ],
+        1,
+    );
+
+    assert.deepEqual(
+        Array.from(winners),
+        ['BTCUSDT::compression_breakout_pullback_m15_m3::steady'],
+    );
+});
+
+test('buildWinnerCandidateKeySet keeps only the best tune per strategy before symbol shortlist', () => {
+    const winners = buildWinnerCandidateKeySet(
+        [
+            {
+                symbol: 'BTCUSDT',
+                strategyId: 'compression_breakout_pullback_m15_m3',
+                tuneId: 'best',
+                deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~best',
+                rollCount: 12,
+                profitableWindowPct: 78,
+                profitableWindows: 9,
+                meanExpectancyR: 0.31,
+                medianExpectancyR: 0.29,
+                meanProfitFactor: 1.9,
+                maxDrawdownR: 2.1,
+                topWindowPnlConcentrationPct: 42,
+                selectionScore: null,
+                minTradesPerWindow: 4,
+                totalTrades: 80,
+                selectionWindowDays: 90,
+                forwardWindowDays: 7,
+                forwardValidation: {
+                    rollCount: 12,
+                    profitableWindowPct: 78,
+                    meanExpectancyR: 0.31,
+                    meanProfitFactor: 1.9,
+                    maxDrawdownR: 2.1,
+                    minTradesPerWindow: 4,
+                    selectionWindowDays: 90,
+                    forwardWindowDays: 7,
+                },
+            },
+            {
+                symbol: 'BTCUSDT',
+                strategyId: 'compression_breakout_pullback_m15_m3',
+                tuneId: 'second',
+                deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~second',
+                rollCount: 12,
+                profitableWindowPct: 76,
+                profitableWindows: 9,
+                meanExpectancyR: 0.29,
+                medianExpectancyR: 0.27,
+                meanProfitFactor: 1.8,
+                maxDrawdownR: 2.2,
+                topWindowPnlConcentrationPct: 44,
+                selectionScore: null,
+                minTradesPerWindow: 4,
+                totalTrades: 80,
+                selectionWindowDays: 90,
+                forwardWindowDays: 7,
+                forwardValidation: {
+                    rollCount: 12,
+                    profitableWindowPct: 76,
+                    meanExpectancyR: 0.29,
+                    meanProfitFactor: 1.8,
+                    maxDrawdownR: 2.2,
+                    minTradesPerWindow: 4,
+                    selectionWindowDays: 90,
+                    forwardWindowDays: 7,
+                },
+            },
+            {
+                symbol: 'BTCUSDT',
+                strategyId: 'regime_pullback_m15_m3',
+                tuneId: 'default',
+                deploymentId: 'BTCUSDT~regime_pullback_m15_m3~default',
+                rollCount: 12,
+                profitableWindowPct: 74,
+                profitableWindows: 9,
+                meanExpectancyR: 0.28,
+                medianExpectancyR: 0.26,
+                meanProfitFactor: 2.3,
+                maxDrawdownR: 1.8,
+                topWindowPnlConcentrationPct: 40,
+                selectionScore: null,
+                minTradesPerWindow: 4,
+                totalTrades: 76,
+                selectionWindowDays: 90,
+                forwardWindowDays: 7,
+                forwardValidation: {
+                    rollCount: 12,
+                    profitableWindowPct: 74,
+                    meanExpectancyR: 0.28,
+                    meanProfitFactor: 2.3,
+                    maxDrawdownR: 1.8,
+                    minTradesPerWindow: 4,
+                    selectionWindowDays: 90,
+                    forwardWindowDays: 7,
+                },
+            },
+        ],
+        2,
+    );
+
+    assert.deepEqual(
+        Array.from(winners).sort(),
+        [
+            'BTCUSDT::compression_breakout_pullback_m15_m3::best',
+            'BTCUSDT::regime_pullback_m15_m3::default',
+        ],
+    );
 });
 
 test('buildCandidateMaterializationShortlist returns top-k per symbol across tuned candidates', () => {
@@ -379,4 +558,129 @@ test('filterMaterializationCandidatesByQuality keeps only candidates with suffic
 
     assert.equal(filtered.length, 1);
     assert.equal(filtered[0]?.deploymentId, 'BTCUSDT~regime_pullback_m15_m3~a');
+});
+
+test('buildBestEligibleTuneDeploymentIdSet keeps only the best eligible tune per symbol strategy', () => {
+    const candidates = [
+        {
+            symbol: 'BTCUSDT',
+            strategyId: 'compression_breakout_pullback_m15_m3',
+            tuneId: 'default',
+            deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~default',
+            rollCount: 12,
+            profitableWindowPct: 91.67,
+            profitableWindows: 11,
+            meanExpectancyR: 0.42,
+            meanProfitFactor: 2.1,
+            maxDrawdownR: 1.8,
+            minTradesPerWindow: 6,
+            totalTrades: 96,
+            selectionWindowDays: 90,
+            forwardWindowDays: 7,
+            forwardValidation: {
+                rollCount: 12,
+                profitableWindowPct: 91.67,
+                meanExpectancyR: 0.42,
+                meanProfitFactor: 2.1,
+                maxDrawdownR: 1.8,
+                minTradesPerWindow: 6,
+                selectionWindowDays: 90,
+                forwardWindowDays: 7,
+            },
+        },
+        {
+            symbol: 'BTCUSDT',
+            strategyId: 'compression_breakout_pullback_m15_m3',
+            tuneId: 'auto_tr1p7',
+            deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~auto_tr1p7',
+            rollCount: 12,
+            profitableWindowPct: 92,
+            profitableWindows: 11,
+            meanExpectancyR: 0.43,
+            meanProfitFactor: 2.2,
+            maxDrawdownR: 1.7,
+            minTradesPerWindow: 6,
+            totalTrades: 98,
+            selectionWindowDays: 90,
+            forwardWindowDays: 7,
+            forwardValidation: {
+                rollCount: 12,
+                profitableWindowPct: 92,
+                meanExpectancyR: 0.43,
+                meanProfitFactor: 2.2,
+                maxDrawdownR: 1.7,
+                minTradesPerWindow: 6,
+                selectionWindowDays: 90,
+                forwardWindowDays: 7,
+            },
+        },
+        {
+            symbol: 'XAUUSDT',
+            strategyId: 'trend_day_reacceleration_m15_m3',
+            tuneId: 'default',
+            deploymentId: 'XAUUSDT~trend_day_reacceleration_m15_m3~default',
+            rollCount: 12,
+            profitableWindowPct: 91.67,
+            profitableWindows: 11,
+            meanExpectancyR: 0.63,
+            meanProfitFactor: 5.0,
+            maxDrawdownR: 3.65,
+            minTradesPerWindow: 8,
+            totalTrades: 112,
+            selectionWindowDays: 90,
+            forwardWindowDays: 7,
+            forwardValidation: {
+                rollCount: 12,
+                profitableWindowPct: 91.67,
+                meanExpectancyR: 0.63,
+                meanProfitFactor: 5.0,
+                maxDrawdownR: 3.65,
+                minTradesPerWindow: 8,
+                selectionWindowDays: 90,
+                forwardWindowDays: 7,
+            },
+        },
+    ];
+
+    const winners = buildBestEligibleTuneDeploymentIdSet({
+        candidates,
+        deployments: [
+            {
+                deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~default',
+                symbol: 'BTCUSDT',
+                strategyId: 'compression_breakout_pullback_m15_m3',
+                tuneId: 'default',
+                promotionGate: { eligible: true, reason: null, source: 'walk_forward', evaluatedAtMs: 1, forwardValidation: candidates[0].forwardValidation, thresholds: null },
+            },
+            {
+                deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~auto_tr1p7',
+                symbol: 'BTCUSDT',
+                strategyId: 'compression_breakout_pullback_m15_m3',
+                tuneId: 'auto_tr1p7',
+                promotionGate: { eligible: true, reason: null, source: 'walk_forward', evaluatedAtMs: 1, forwardValidation: candidates[1].forwardValidation, thresholds: null },
+            },
+            {
+                deploymentId: 'XAUUSDT~trend_day_reacceleration_m15_m3~default',
+                symbol: 'XAUUSDT',
+                strategyId: 'trend_day_reacceleration_m15_m3',
+                tuneId: 'default',
+                promotionGate: { eligible: true, reason: null, source: 'walk_forward', evaluatedAtMs: 1, forwardValidation: candidates[2].forwardValidation, thresholds: null },
+            },
+            {
+                deploymentId: 'XAUUSDT~regime_pullback_m15_m3~default',
+                symbol: 'XAUUSDT',
+                strategyId: 'regime_pullback_m15_m3',
+                tuneId: 'default',
+                promotionGate: { eligible: false, reason: 'missing_cycle_candidate', source: 'walk_forward', evaluatedAtMs: 1, forwardValidation: candidates[2].forwardValidation, thresholds: null },
+            },
+        ],
+    });
+
+    assert.deepEqual(
+        Array.from(winners).sort(),
+        [
+            'BTCUSDT~compression_breakout_pullback_m15_m3~auto_tr1p7',
+            'XAUUSDT~trend_day_reacceleration_m15_m3~default',
+        ],
+    );
 });

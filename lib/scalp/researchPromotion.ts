@@ -17,7 +17,6 @@ import { buildScalpReplayRuntimeFromDeployment } from "./replay/runtimeConfig";
 import type { ScalpSymbolMarketMetadata } from "./symbolMarketMetadata";
 import { loadScalpSymbolMarketMetadata } from "./symbolMarketMetadataStore";
 import {
-  listResearchCycleTasks,
   listLatestResearchTasksByWindow,
   loadActiveResearchCycleId,
   loadLatestCompletedResearchCycleId,
@@ -176,19 +175,94 @@ function median(values: number[]): number {
   return ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2;
 }
 
+function candidateMedianExpectancyR(
+  candidate: Pick<ScalpResearchForwardValidationCandidate, "meanExpectancyR"> & {
+    medianExpectancyR?: number | null;
+  },
+): number {
+  const medianValue = Number(candidate.medianExpectancyR);
+  if (Number.isFinite(medianValue)) return medianValue;
+  return Number(candidate.meanExpectancyR) || 0;
+}
+
+function candidateTopWindowPnlConcentrationPct(
+  candidate: {
+    topWindowPnlConcentrationPct?: number | null;
+  },
+): number {
+  const concentration = Number(candidate.topWindowPnlConcentrationPct);
+  if (!Number.isFinite(concentration)) return 0;
+  return Math.max(0, Math.min(100, concentration));
+}
+
+function candidateSelectionScore(
+  candidate: Pick<ScalpResearchForwardValidationCandidate, "meanExpectancyR"> & {
+    medianExpectancyR?: number | null;
+    topWindowPnlConcentrationPct?: number | null;
+    selectionScore?: number | null;
+  },
+): number {
+  const explicit = Number(candidate.selectionScore);
+  if (Number.isFinite(explicit)) return explicit;
+  const smoothedExpectancy =
+    (Number(candidate.meanExpectancyR) + candidateMedianExpectancyR(candidate)) /
+    2;
+  const concentrationPenalty = Math.max(
+    0,
+    candidateTopWindowPnlConcentrationPct(candidate) - 50,
+  );
+  return smoothedExpectancy * (1 - concentrationPenalty / 100);
+}
+
+function candidateProfitFactorForRanking(
+  candidate: Pick<ScalpResearchForwardValidationCandidate, "meanProfitFactor">,
+): number {
+  const profitFactor = Number(candidate.meanProfitFactor);
+  if (!Number.isFinite(profitFactor)) return Number.NEGATIVE_INFINITY;
+  return profitFactor;
+}
+
 function compareCandidates(
   a: ScalpResearchForwardValidationCandidate,
   b: ScalpResearchForwardValidationCandidate,
 ): number {
-  if (b.meanExpectancyR !== a.meanExpectancyR)
-    return b.meanExpectancyR - a.meanExpectancyR;
+  const aSelectionScore = candidateSelectionScore(a);
+  const bSelectionScore = candidateSelectionScore(b);
+  if (bSelectionScore !== aSelectionScore)
+    return bSelectionScore - aSelectionScore;
   if (b.profitableWindowPct !== a.profitableWindowPct)
     return b.profitableWindowPct - a.profitableWindowPct;
+  const aProfitFactor = candidateProfitFactorForRanking(a);
+  const bProfitFactor = candidateProfitFactorForRanking(b);
+  if (bProfitFactor !== aProfitFactor) return bProfitFactor - aProfitFactor;
   if (a.maxDrawdownR !== b.maxDrawdownR) return a.maxDrawdownR - b.maxDrawdownR;
+  const aMedianExpectancyR = candidateMedianExpectancyR(a);
+  const bMedianExpectancyR = candidateMedianExpectancyR(b);
+  if (bMedianExpectancyR !== aMedianExpectancyR)
+    return bMedianExpectancyR - aMedianExpectancyR;
+  if (b.meanExpectancyR !== a.meanExpectancyR)
+    return b.meanExpectancyR - a.meanExpectancyR;
   if (b.rollCount !== a.rollCount) return b.rollCount - a.rollCount;
   if (a.strategyId !== b.strategyId)
     return a.strategyId.localeCompare(b.strategyId);
   return a.tuneId.localeCompare(b.tuneId);
+}
+
+function buildBestTuneCandidatesBySymbolStrategy(
+  candidates: ScalpResearchForwardValidationCandidate[],
+): ScalpResearchForwardValidationCandidate[] {
+  const bestBySymbolStrategy = new Map<
+    string,
+    ScalpResearchForwardValidationCandidate
+  >();
+  for (const candidate of candidates) {
+    const strategyKey = strategyKeyOf(candidate.symbol, candidate.strategyId);
+    const current = bestBySymbolStrategy.get(strategyKey) || null;
+    if (!current || compareCandidates(candidate, current) < 0) {
+      bestBySymbolStrategy.set(strategyKey, candidate);
+    }
+  }
+  return Array.from(bestBySymbolStrategy.values()).sort(compareCandidates);
 }
 
 export function buildCandidateMaterializationShortlist(
@@ -218,13 +292,45 @@ export function buildWinnerCandidateKeySet(
   topKPerSymbol: number,
 ): Set<string> {
   const winnerKeys = new Set<string>();
-  for (const row of buildCandidateMaterializationShortlist(
-    candidates,
-    topKPerSymbol,
-  )) {
-    winnerKeys.add(keyOf(row.symbol, row.strategyId, row.tuneId));
+  const bySymbol = new Map<string, ScalpResearchForwardValidationCandidate[]>();
+  const strategyWinners = buildBestTuneCandidatesBySymbolStrategy(candidates);
+  for (const row of strategyWinners) {
+    if (!bySymbol.has(row.symbol)) {
+      bySymbol.set(row.symbol, []);
+    }
+    bySymbol.get(row.symbol)!.push(row);
+  }
+
+  const topK = Math.max(1, Math.floor(topKPerSymbol));
+  for (const rows of bySymbol.values()) {
+    rows.sort(compareCandidates);
+    for (const row of rows.slice(0, Math.min(topK, rows.length))) {
+      winnerKeys.add(keyOf(row.symbol, row.strategyId, row.tuneId));
+    }
   }
   return winnerKeys;
+}
+
+function topPositiveNetConcentrationPct(values: number[]): number {
+  const positiveNet = values.map((value) => Math.max(0, value));
+  const totalPositive = positiveNet.reduce((acc, value) => acc + value, 0);
+  if (totalPositive <= 0) return 100;
+  const topPositive = positiveNet.length ? Math.max(...positiveNet) : 0;
+  return (topPositive / totalPositive) * 100;
+}
+
+function buildForwardSelectionScore(params: {
+  meanExpectancyR: number;
+  medianExpectancyR: number;
+  topWindowPnlConcentrationPct: number;
+}): number {
+  const smoothedExpectancy =
+    (params.meanExpectancyR + params.medianExpectancyR) / 2;
+  const concentrationPenalty = Math.max(
+    0,
+    params.topWindowPnlConcentrationPct - 50,
+  );
+  return smoothedExpectancy * (1 - concentrationPenalty / 100);
 }
 
 export function evaluateWeeklyRobustnessGate(
@@ -456,8 +562,11 @@ export interface ScalpResearchForwardValidationCandidate {
   profitableWindowPct: number;
   profitableWindows: number;
   meanExpectancyR: number;
+  medianExpectancyR?: number | null;
   meanProfitFactor: number | null;
   maxDrawdownR: number;
+  topWindowPnlConcentrationPct?: number | null;
+  selectionScore?: number | null;
   minTradesPerWindow: number | null;
   totalTrades: number;
   selectionWindowDays: number;
@@ -496,6 +605,8 @@ export function buildForwardValidationByCandidateFromTasks(params: {
       rollCount: number;
       profitableWindows: number;
       expectancySum: number;
+      expectancyRows: number[];
+      netRows: number[];
       profitFactorSum: number;
       profitFactorCount: number;
       maxDrawdownR: number;
@@ -530,6 +641,8 @@ export function buildForwardValidationByCandidateFromTasks(params: {
         rollCount: 0,
         profitableWindows: 0,
         expectancySum: 0,
+        expectancyRows: [],
+        netRows: [],
         profitFactorSum: 0,
         profitFactorCount: 0,
         maxDrawdownR: 0,
@@ -552,6 +665,8 @@ export function buildForwardValidationByCandidateFromTasks(params: {
     row.rollCount += 1;
     row.totalTrades += trades;
     row.expectancySum += expectancyR;
+    row.expectancyRows.push(expectancyR);
+    row.netRows.push(netR);
     row.maxDrawdownR = Math.max(row.maxDrawdownR, maxDrawdownR);
     row.minTradesPerWindow =
       row.minTradesPerWindow === null
@@ -571,6 +686,15 @@ export function buildForwardValidationByCandidateFromTasks(params: {
     .map((row) => {
       const profitableWindowPct = (row.profitableWindows / row.rollCount) * 100;
       const meanExpectancyR = row.expectancySum / row.rollCount;
+      const medianExpectancyR = median(row.expectancyRows);
+      const topWindowPnlConcentrationPct = topPositiveNetConcentrationPct(
+        row.netRows,
+      );
+      const selectionScore = buildForwardSelectionScore({
+        meanExpectancyR,
+        medianExpectancyR,
+        topWindowPnlConcentrationPct,
+      });
       const meanProfitFactor =
         row.profitFactorCount > 0
           ? row.profitFactorSum / row.profitFactorCount
@@ -601,8 +725,11 @@ export function buildForwardValidationByCandidateFromTasks(params: {
         profitableWindowPct,
         profitableWindows: row.profitableWindows,
         meanExpectancyR,
+        medianExpectancyR,
         meanProfitFactor,
         maxDrawdownR: row.maxDrawdownR,
+        topWindowPnlConcentrationPct,
+        selectionScore,
         minTradesPerWindow: row.minTradesPerWindow,
         totalTrades: row.totalTrades,
         selectionWindowDays: params.selectionWindowDays,
@@ -766,6 +893,50 @@ function buildForcedIneligibleGate(params: {
       params.baseGate?.forwardValidation || params.forwardValidation,
     thresholds: params.baseGate?.thresholds || null,
   };
+}
+
+export function buildBestEligibleTuneDeploymentIdSet(params: {
+  deployments: Array<
+    Pick<
+      ScalpDeploymentRegistryEntry,
+      "deploymentId" | "symbol" | "strategyId" | "tuneId" | "promotionGate"
+    >
+  >;
+  candidates: ScalpResearchForwardValidationCandidate[];
+}): Set<string> {
+  const candidateByKey = new Map(
+    params.candidates.map((row) => [keyOf(row.symbol, row.strategyId, row.tuneId), row]),
+  );
+  const bestBySymbolStrategy = new Map<
+    string,
+    {
+      deploymentId: string;
+      candidate: ScalpResearchForwardValidationCandidate;
+    }
+  >();
+
+  for (const deployment of params.deployments) {
+    if (!deployment.promotionGate?.eligible) continue;
+    const candidate = candidateByKey.get(
+      keyOf(deployment.symbol, deployment.strategyId, deployment.tuneId),
+    );
+    if (!candidate) continue;
+    const symbolStrategyKey = strategyKeyOf(
+      deployment.symbol,
+      deployment.strategyId,
+    );
+    const current = bestBySymbolStrategy.get(symbolStrategyKey) || null;
+    if (!current || compareCandidates(candidate, current.candidate) < 0) {
+      bestBySymbolStrategy.set(symbolStrategyKey, {
+        deploymentId: deployment.deploymentId,
+        candidate,
+      });
+    }
+  }
+
+  return new Set(
+    Array.from(bestBySymbolStrategy.values()).map((row) => row.deploymentId),
+  );
 }
 
 type PromotionSyncStateSnapshot = {
@@ -1065,6 +1236,7 @@ function buildPromotionSyncSignature(params: {
     )
     .sort();
   return JSON.stringify({
+    algorithmVersion: 2,
     cycleId: params.cycle.cycleId,
     cycleStatus: params.cycle.status,
     cycleUpdatedAtMs: params.cycle.updatedAtMs,
@@ -1449,13 +1621,38 @@ export async function syncResearchCyclePromotionGates(
     }
   }
 
-  const tasks = await listResearchCycleTasks(cycleId, 10000);
-  emitSyncLog("cycle_tasks_loaded", {
-    cycleId,
-    taskCount: tasks.length,
+  const selectionWindowToTs = startOfWeekMondayUtc(nowMs);
+  const selectionWindowFromTs =
+    selectionWindowToTs - Math.max(1, cycle.params.lookbackDays) * DAY_MS;
+  const candidateSymbols = Array.from(
+    new Set(
+      deployments
+        .filter((row) => allowedSources.has(row.source))
+        .map((row) => row.symbol)
+        .filter((row) => Boolean(row)),
+    ),
+  );
+  const canonicalTasks = await listLatestResearchTasksByWindow({
+    symbols: candidateSymbols,
+    windowFromTs: selectionWindowFromTs,
+    windowToTs: selectionWindowToTs,
   });
-  const candidates = buildForwardValidationByCandidate(cycle, tasks);
-  emitSyncLog("candidates_built", {
+  emitSyncLog("canonical_history_tasks_loaded", {
+    cycleId,
+    symbols: candidateSymbols.length,
+    taskCount: canonicalTasks.length,
+    windowFromTs: selectionWindowFromTs,
+    windowToTs: selectionWindowToTs,
+  });
+  const candidates = buildForwardValidationByCandidateFromTasks({
+    tasks: canonicalTasks,
+    selectionWindowDays: cycle.params.lookbackDays,
+    forwardWindowDays: inferForwardWindowDaysFromTasks(
+      canonicalTasks,
+      cycle.params.chunkDays,
+    ),
+  });
+  emitSyncLog("canonical_history_candidates_built", {
     cycleId,
     candidateCount: candidates.length,
   });
@@ -1638,6 +1835,7 @@ export async function syncResearchCyclePromotionGates(
   const rows: SyncResearchPromotionRow[] = [];
   let deploymentsMatched = 0;
   let deploymentsUpdated = 0;
+  const updatedDeploymentIds = new Set<string>();
 
   const candlesBySymbol = new Map<string, CandleRow[]>();
   const symbolMetadataBySymbol = new Map<
@@ -1985,6 +2183,51 @@ export async function syncResearchCyclePromotionGates(
       });
     }
 
+    const currentConsideredDeployments = considered.map(
+      (row) =>
+        deployments.find((deployment) => deployment.deploymentId === row.deploymentId) ||
+        row,
+    );
+    const autoEnableWinnerIds = buildBestEligibleTuneDeploymentIdSet({
+      deployments: currentConsideredDeployments,
+      candidates,
+    });
+    const enablementUpserts = currentConsideredDeployments
+      .flatMap((deployment) => {
+        const shouldEnable = autoEnableWinnerIds.has(deployment.deploymentId);
+        if (deployment.enabled === shouldEnable) return [];
+        updatedDeploymentIds.add(deployment.deploymentId);
+        return [
+          {
+            deploymentId: deployment.deploymentId,
+            source: deployment.source,
+            enabled: shouldEnable,
+            updatedBy: params.updatedBy || "research-cycle-sync",
+          } satisfies ScalpDeploymentRegistryWriteParams,
+        ];
+      });
+
+    if (enablementUpserts.length > 0) {
+      await persistProgress({
+        phase: "persist_enablement",
+        processedDeployments: considered.length,
+        matchedDeployments: deploymentsMatched,
+        updatedDeployments: updatedDeploymentIds.size,
+      });
+      emitSyncLog("enablement_upserts_start", {
+        count: enablementUpserts.length,
+        winnerCount: autoEnableWinnerIds.size,
+      });
+      const enablementOut = await upsertScalpDeploymentRegistryEntriesBulk(
+        enablementUpserts,
+      );
+      deployments = enablementOut.snapshot.deployments.slice();
+      emitSyncLog("enablement_upserts_completed", {
+        count: enablementUpserts.length,
+        winnerCount: autoEnableWinnerIds.size,
+      });
+    }
+
     const nextByDeploymentId = new Map(
       deployments.map((row) => [row.deploymentId, row] as const),
     );
@@ -1992,13 +2235,14 @@ export async function syncResearchCyclePromotionGates(
       const nextGate =
         nextByDeploymentId.get(row.deploymentId)?.promotionGate || null;
       const changed = changedPromotionGate(row.previousGate, nextGate);
-      if (changed) deploymentsUpdated += 1;
+      if (changed) updatedDeploymentIds.add(row.deploymentId);
       rows.push({
         ...row,
         nextGate,
         changed,
       });
     }
+    deploymentsUpdated = updatedDeploymentIds.size;
   }
 
   if (!dryRun) {

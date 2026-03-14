@@ -75,8 +75,15 @@ export interface ScalpLiveGuardrailBreach {
     message: string;
 }
 
+export interface ScalpLiveGuardrailWarmup {
+    code: string;
+    message: string;
+}
+
 export interface ScalpLiveGuardrailEvaluation {
+    warmups: ScalpLiveGuardrailWarmup[];
     breaches: ScalpLiveGuardrailBreach[];
+    warmupCount: number;
     hardBreachCount: number;
     softBreachCount: number;
 }
@@ -85,6 +92,7 @@ export function evaluateScalpDeploymentGuardrail(
     row: Pick<ScalpResearchReportDeploymentRow, 'deploymentId' | 'perf30d' | 'forwardValidation'>,
     thresholds: ScalpLiveGuardrailThresholds,
 ): ScalpLiveGuardrailEvaluation {
+    const warmups: ScalpLiveGuardrailWarmup[] = [];
     const breaches: ScalpLiveGuardrailBreach[] = [];
     const trades30d = Math.max(0, Math.floor(toFinite(row.perf30d.trades, 0)));
     const expectancy30d = toFinite(row.perf30d.expectancyR, 0);
@@ -92,9 +100,8 @@ export function evaluateScalpDeploymentGuardrail(
     const tradesPerDay30d = trades30d / 30;
 
     if (trades30d < thresholds.minTrades30d) {
-        breaches.push({
+        warmups.push({
             code: 'GUARDRAIL_LOW_SAMPLE_30D',
-            severity: 'soft',
             message: `30D trades ${trades30d} < min ${thresholds.minTrades30d}`,
         });
     } else {
@@ -147,7 +154,13 @@ export function evaluateScalpDeploymentGuardrail(
 
     const hardBreachCount = breaches.filter((row) => row.severity === 'hard').length;
     const softBreachCount = breaches.length - hardBreachCount;
-    return { breaches, hardBreachCount, softBreachCount };
+    return {
+        warmups,
+        breaches,
+        warmupCount: warmups.length,
+        hardBreachCount,
+        softBreachCount,
+    };
 }
 
 export interface ScalpLiveGuardrailMonitorRow {
@@ -156,7 +169,9 @@ export interface ScalpLiveGuardrailMonitorRow {
     strategyId: string;
     tuneId: string;
     enabled: boolean;
+    warmups: ScalpLiveGuardrailWarmup[];
     breaches: ScalpLiveGuardrailBreach[];
+    warmupCount: number;
     hardBreachCount: number;
     softBreachCount: number;
     action: 'none' | 'pause';
@@ -180,6 +195,7 @@ export interface RunScalpLiveGuardrailMonitorResult {
     summary: {
         enabledDeployments: number;
         checkedDeployments: number;
+        warmupDeployments: number;
         breachedDeployments: number;
         hardBreachedDeployments: number;
         pausedDeployments: number;
@@ -199,27 +215,39 @@ function buildGuardrailJournalEntry(params: {
     deploymentId: string;
     strategyId: string;
     tuneId: string;
+    warmups: ScalpLiveGuardrailWarmup[];
     breaches: ScalpLiveGuardrailBreach[];
     action: 'none' | 'pause';
     dryRun: boolean;
     thresholds: ScalpLiveGuardrailThresholds;
     metrics: Pick<ScalpResearchReportDeploymentRow, 'perf30d' | 'forwardValidation'>;
 }): ScalpJournalEntry {
-    const level: ScalpJournalEntry['level'] = params.action === 'pause' ? 'error' : 'warn';
+    const hasBreaches = params.breaches.length > 0;
+    const level: ScalpJournalEntry['level'] = hasBreaches
+        ? params.action === 'pause'
+            ? 'error'
+            : 'warn'
+        : 'info';
+    const type: ScalpJournalEntry['type'] = hasBreaches ? 'risk' : 'state';
+    const categoryCode = hasBreaches ? 'SCALP_GUARDRAIL_BREACH' : 'SCALP_GUARDRAIL_WARMUP';
     return {
         id: `guardrail:${params.nowMs}:${params.deploymentId}`,
         timestampMs: params.nowMs,
-        type: 'risk',
+        type,
         symbol: params.symbol,
         dayKey: null,
         level,
-        reasonCodes: ['SCALP_GUARDRAIL_BREACH'].concat(params.breaches.map((row) => row.code)).slice(0, 12),
+        reasonCodes: [categoryCode]
+            .concat(params.warmups.map((row) => row.code))
+            .concat(params.breaches.map((row) => row.code))
+            .slice(0, 12),
         payload: {
             deploymentId: params.deploymentId,
             strategyId: params.strategyId,
             tuneId: params.tuneId,
             action: params.action,
             dryRun: params.dryRun,
+            warmups: params.warmups,
             breaches: params.breaches,
             thresholds: params.thresholds,
             perf30d: params.metrics.perf30d,
@@ -253,6 +281,7 @@ export async function runScalpLiveGuardrailMonitor(
 
     const rows: ScalpLiveGuardrailMonitorRow[] = [];
     let checkedDeployments = 0;
+    let warmupDeployments = 0;
     let breachedDeployments = 0;
     let hardBreachedDeployments = 0;
     let pausedDeployments = 0;
@@ -265,22 +294,25 @@ export async function runScalpLiveGuardrailMonitor(
         checkedDeployments += 1;
 
         const evaluation = evaluateScalpDeploymentGuardrail(row, thresholds);
+        const hasWarmups = evaluation.warmups.length > 0;
         const hasBreaches = evaluation.breaches.length > 0;
         const hasHardBreaches = evaluation.hardBreachCount > 0;
 
+        if (hasWarmups) warmupDeployments += 1;
         if (hasBreaches) breachedDeployments += 1;
         if (hasHardBreaches) hardBreachedDeployments += 1;
 
         const shouldPause = thresholds.autoPause && hasHardBreaches;
         let paused = false;
 
-        if (hasBreaches) {
+        if (hasWarmups || hasBreaches) {
             const journalEntry = buildGuardrailJournalEntry({
                 nowMs,
                 symbol: row.symbol,
                 deploymentId: row.deploymentId,
                 strategyId: row.strategyId,
                 tuneId: row.tuneId,
+                warmups: evaluation.warmups,
                 breaches: evaluation.breaches,
                 action: shouldPause ? 'pause' : 'none',
                 dryRun,
@@ -319,7 +351,9 @@ export async function runScalpLiveGuardrailMonitor(
             strategyId: row.strategyId,
             tuneId: row.tuneId,
             enabled: row.enabled,
+            warmups: evaluation.warmups,
             breaches: evaluation.breaches,
+            warmupCount: evaluation.warmupCount,
             hardBreachCount: evaluation.hardBreachCount,
             softBreachCount: evaluation.softBreachCount,
             action: shouldPause ? 'pause' : 'none',
@@ -330,6 +364,7 @@ export async function runScalpLiveGuardrailMonitor(
     rows.sort((a, b) => {
         if (b.hardBreachCount !== a.hardBreachCount) return b.hardBreachCount - a.hardBreachCount;
         if (b.softBreachCount !== a.softBreachCount) return b.softBreachCount - a.softBreachCount;
+        if (b.warmupCount !== a.warmupCount) return b.warmupCount - a.warmupCount;
         if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
         return a.strategyId.localeCompare(b.strategyId);
     });
@@ -343,6 +378,7 @@ export async function runScalpLiveGuardrailMonitor(
         summary: {
             enabledDeployments: report.deployments.filter((row) => row.enabled).length,
             checkedDeployments,
+            warmupDeployments,
             breachedDeployments,
             hardBreachedDeployments,
             pausedDeployments,

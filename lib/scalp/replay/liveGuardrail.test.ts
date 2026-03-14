@@ -20,7 +20,7 @@ function thresholds(overrides: Partial<ScalpLiveGuardrailThresholds> = {}): Scal
     };
 }
 
-test('evaluateScalpDeploymentGuardrail reports soft low-sample breach before hard checks', () => {
+test('evaluateScalpDeploymentGuardrail reports warmup low-sample signal before hard checks', () => {
     const out = evaluateScalpDeploymentGuardrail(
         {
             deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~default',
@@ -39,9 +39,11 @@ test('evaluateScalpDeploymentGuardrail reports soft low-sample breach before har
         thresholds(),
     );
 
+    assert.equal(out.warmupCount, 1);
     assert.equal(out.hardBreachCount, 0);
-    assert.equal(out.softBreachCount, 1);
-    assert.equal(out.breaches[0]?.code, 'GUARDRAIL_LOW_SAMPLE_30D');
+    assert.equal(out.softBreachCount, 0);
+    assert.equal(out.breaches.length, 0);
+    assert.equal(out.warmups[0]?.code, 'GUARDRAIL_LOW_SAMPLE_30D');
 });
 
 test('evaluateScalpDeploymentGuardrail emits hard breaches for expectancy/dd/churn/drift', () => {
@@ -73,6 +75,7 @@ test('evaluateScalpDeploymentGuardrail emits hard breaches for expectancy/dd/chu
     );
 
     const codes = new Set(out.breaches.map((row) => row.code));
+    assert.equal(out.warmupCount, 0);
     assert.equal(out.hardBreachCount >= 4, true);
     assert.equal(codes.has('GUARDRAIL_EXPECTANCY_BELOW_FLOOR_30D'), true);
     assert.equal(codes.has('GUARDRAIL_DRAWDOWN_ABOVE_CAP_30D'), true);
