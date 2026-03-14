@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
     buildCandidateMaterializationShortlist,
     buildForwardValidationByCandidate,
+    buildForwardValidationByCandidateFromTasks,
     filterMaterializationCandidatesByQuality,
 } from '../researchPromotion';
 import type { ScalpResearchCycleSnapshot, ScalpResearchTask } from '../researchCycle';
@@ -159,6 +160,46 @@ test('buildForwardValidationByCandidate computes roll-level gate metrics from co
     assert.equal(guarded.meanExpectancyR, 0.375);
     assert.equal(guarded.meanProfitFactor, null);
     assert.equal(guarded.minTradesPerWindow, 8);
+});
+
+test('buildForwardValidationByCandidateFromTasks supports longer confirmation horizons without changing ranking inputs', () => {
+    const tasks: ScalpResearchTask[] = [
+        makeCompletedTask({
+            cycleId: 'rc_old',
+            taskId: 'c1',
+            symbol: 'BTCUSDT',
+            strategyId: 'compression_breakout_pullback_m15_m3',
+            trades: 4,
+            netR: 1.2,
+            expectancyR: 0.3,
+            profitFactor: 1.4,
+            maxDrawdownR: 2,
+        }),
+        makeCompletedTask({
+            cycleId: 'rc_new',
+            taskId: 'c2',
+            symbol: 'BTCUSDT',
+            strategyId: 'compression_breakout_pullback_m15_m3',
+            trades: 6,
+            netR: -0.6,
+            expectancyR: -0.1,
+            profitFactor: 0.8,
+            maxDrawdownR: 3,
+        }),
+    ];
+
+    const rows = buildForwardValidationByCandidateFromTasks({
+        tasks,
+        selectionWindowDays: 364,
+        forwardWindowDays: 7,
+    });
+
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.rollCount, 2);
+    assert.equal(rows[0]?.totalTrades, 10);
+    assert.equal(rows[0]?.profitableWindowPct, 50);
+    assert.equal(rows[0]?.forwardValidation.selectionWindowDays, 364);
+    assert.equal(rows[0]?.forwardValidation.forwardWindowDays, 7);
 });
 
 test('buildCandidateMaterializationShortlist returns top-k per symbol across tuned candidates', () => {

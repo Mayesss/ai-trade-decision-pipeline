@@ -183,6 +183,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             dryRun: out.dryRun,
             requireCompletedCycle: out.requireCompletedCycle,
             weeklyPolicy: out.weeklyPolicy,
+            confirmationPolicy: out.confirmationPolicy,
             deploymentsConsidered: out.deploymentsConsidered,
             deploymentsMatched: out.deploymentsMatched,
             deploymentsUpdated: out.deploymentsUpdated,

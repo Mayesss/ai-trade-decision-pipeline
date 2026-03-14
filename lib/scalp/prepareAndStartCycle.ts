@@ -8,6 +8,7 @@ import {
 } from './candleHistory';
 import { evaluateResearchCyclePreflight, startScalpResearchCycle, type StartResearchCycleParams } from './researchCycle';
 import { refreshScalpResearchPortfolioReport } from './researchReporting';
+import { ensureScalpSymbolMarketMetadata } from './symbolMarketMetadataSync';
 import { loadScalpSymbolUniverseSnapshot, runScalpSymbolDiscoveryCycle } from './symbolDiscovery';
 import type { ScalpCandle } from './types';
 
@@ -229,6 +230,13 @@ export async function prepareAndStartScalpResearchCycle(
                 break;
             }
             try {
+                const marketMetadata = await ensureScalpSymbolMarketMetadata(symbol, {
+                    fetchIfMissing: true,
+                });
+                const epicResolved =
+                    marketMetadata?.epic
+                        ? { epic: marketMetadata.epic, source: 'metadata' as const }
+                        : await resolveCapitalEpicRuntime(symbol);
                 const existing = existingBySymbol.get(symbol) || [];
                 const oldestExistingTs = existing.length ? Number(existing[0]?.[0] || 0) : 0;
                 const latestExistingTs = existing.length ? Number(existing[existing.length - 1]?.[0] || 0) : 0;
@@ -244,7 +252,7 @@ export async function prepareAndStartScalpResearchCycle(
                     fillRows.push({
                         symbol,
                         timeframe: seedTimeframe,
-                        epic: null,
+                        epic: epicResolved.epic,
                         existingCount: existing.length,
                         fetchedCount: 0,
                         mergedCount: existing.length,
@@ -266,7 +274,6 @@ export async function prepareAndStartScalpResearchCycle(
                     }
                     return fetchFromMs;
                 })();
-                const epicResolved = await resolveCapitalEpicRuntime(symbol);
                 const fetchedRaw = await fetchCapitalCandlesByEpicDateRange(
                     epicResolved.epic,
                     seedTimeframe,

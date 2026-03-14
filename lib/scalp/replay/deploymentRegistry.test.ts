@@ -71,11 +71,22 @@ test('deployment registry upserts, filters, and removes tuned deployments via fi
                 minTradesPerWindow: 3,
                 selectionWindowDays: 90,
                 forwardWindowDays: 28,
+                confirmationWindowDays: 364,
+                confirmationRollCount: 18,
+                confirmationProfitableWindowPct: 61,
+                confirmationMeanExpectancyR: 0.08,
+                confirmationMeanProfitFactor: 1.11,
+                confirmationMaxDrawdownR: 6.4,
+                confirmationMinTradesPerWindow: 3,
+                confirmationTotalTrades: 54,
+                confirmationEvaluatedAtMs: 1234567890,
             },
         });
         assert.equal(promoted.entry.enabled, true);
         assert.equal(promoted.entry.promotionGate?.eligible, true);
         assert.equal(promoted.entry.promotionGate?.source, 'walk_forward');
+        assert.equal(promoted.entry.promotionGate?.forwardValidation?.confirmationWindowDays, 364);
+        assert.equal(promoted.entry.promotionGate?.forwardValidation?.confirmationTotalTrades, 54);
 
         const loaded = await loadScalpDeploymentRegistry();
         const filtered = filterScalpDeploymentRegistry(loaded, {

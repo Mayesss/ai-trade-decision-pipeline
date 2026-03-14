@@ -1,41 +1,65 @@
-export const config = { runtime: 'nodejs' };
+export const config = { runtime: "nodejs" };
 
-import type { NextApiRequest, NextApiResponse } from 'next';
-import { Prisma } from '@prisma/client';
+import type { NextApiRequest, NextApiResponse } from "next";
+import { Prisma } from "@prisma/client";
 
-import { requireAdminAccess } from '../../../../lib/admin';
-import { getScalpCronSymbolConfigs } from '../../../../lib/symbolRegistry';
+import { requireAdminAccess } from "../../../../lib/admin";
+import { getScalpCronSymbolConfigs } from "../../../../lib/symbolRegistry";
 import {
   listScalpCandleHistorySymbols,
   loadScalpCandleHistoryStatsBulk,
   normalizeHistoryTimeframe,
   timeframeToMs,
   type CandleHistoryBackend,
-} from '../../../../lib/scalp/candleHistory';
-import { getScalpStrategyConfig } from '../../../../lib/scalp/config';
-import { listScalpDeploymentRegistryEntries, type ScalpForwardValidationMetrics } from '../../../../lib/scalp/deploymentRegistry';
-import { DEFAULT_SCALP_TUNE_ID, resolveScalpDeployment } from '../../../../lib/scalp/deployments';
-import { isScalpPgConfigured, scalpPrisma } from '../../../../lib/scalp/pg/client';
-import { normalizeScalpStrategyId } from '../../../../lib/scalp/strategies/registry';
-import { deriveScalpDayKey } from '../../../../lib/scalp/stateMachine';
-import { loadScalpJournal, loadScalpSessionState, loadScalpStrategyRuntimeSnapshot, loadScalpTradeLedger } from '../../../../lib/scalp/store';
-import type { ScalpJournalEntry, ScalpTradeLedgerEntry } from '../../../../lib/scalp/types';
+} from "../../../../lib/scalp/candleHistory";
+import { getScalpStrategyConfig } from "../../../../lib/scalp/config";
+import {
+  listScalpDeploymentRegistryEntries,
+  type ScalpForwardValidationMetrics,
+} from "../../../../lib/scalp/deploymentRegistry";
+import {
+  DEFAULT_SCALP_TUNE_ID,
+  resolveScalpDeployment,
+} from "../../../../lib/scalp/deployments";
+import {
+  isScalpPgConfigured,
+  scalpPrisma,
+} from "../../../../lib/scalp/pg/client";
+import { normalizeScalpStrategyId } from "../../../../lib/scalp/strategies/registry";
+import { deriveScalpDayKey } from "../../../../lib/scalp/stateMachine";
+import {
+  loadScalpJournal,
+  loadScalpSessionState,
+  loadScalpStrategyRuntimeSnapshot,
+  loadScalpTradeLedger,
+} from "../../../../lib/scalp/store";
+import type {
+  ScalpJournalEntry,
+  ScalpTradeLedgerEntry,
+} from "../../../../lib/scalp/types";
 
-type SummaryRangeKey = '7D' | '30D' | '6M';
+type SummaryRangeKey = "7D" | "30D" | "6M";
 const SUMMARY_RANGE_LOOKBACK_MS: Record<SummaryRangeKey, number> = {
-  '7D': 7 * 24 * 60 * 60 * 1000,
-  '30D': 30 * 24 * 60 * 60 * 1000,
-  '6M': 183 * 24 * 60 * 60 * 1000,
+  "7D": 7 * 24 * 60 * 60 * 1000,
+  "30D": 30 * 24 * 60 * 60 * 1000,
+  "6M": 183 * 24 * 60 * 60 * 1000,
 };
 const SUMMARY_CACHE_TTL_MS = (() => {
-  const value = Number(process.env.SCALP_DASHBOARD_SUMMARY_CACHE_TTL_MS ?? 12_000);
+  const value = Number(
+    process.env.SCALP_DASHBOARD_SUMMARY_CACHE_TTL_MS ?? 12_000,
+  );
   if (!Number.isFinite(value)) return 12_000;
   return Math.max(0, Math.floor(value));
 })();
 const SUMMARY_CACHE_MAX_ENTRIES = 32;
-const summaryResponseCache = new Map<string, { expiresAtMs: number; payload: Record<string, unknown> }>();
+const summaryResponseCache = new Map<
+  string,
+  { expiresAtMs: number; payload: Record<string, unknown> }
+>();
 const HISTORY_DISCOVERY_CACHE_TTL_MS = (() => {
-  const value = Number(process.env.SCALP_DASHBOARD_HISTORY_CACHE_TTL_MS ?? 300_000);
+  const value = Number(
+    process.env.SCALP_DASHBOARD_HISTORY_CACHE_TTL_MS ?? 300_000,
+  );
   if (!Number.isFinite(value)) return 300_000;
   return Math.max(0, Math.floor(value));
 })();
@@ -50,7 +74,10 @@ const HISTORY_DISCOVERY_PREVIEW_LIMIT = (() => {
   if (!Number.isFinite(value)) return 20;
   return Math.max(1, Math.min(500, Math.floor(value)));
 })();
-const historyDiscoveryCache = new Map<string, { expiresAtMs: number; payload: HistoryDiscoverySnapshot }>();
+const historyDiscoveryCache = new Map<
+  string,
+  { expiresAtMs: number; payload: HistoryDiscoverySnapshot }
+>();
 
 type SymbolSnapshot = {
   symbol: string;
@@ -59,7 +86,7 @@ type SymbolSnapshot = {
   deploymentId: string;
   tune: string;
   cronSchedule: string | null;
-  cronRoute: 'execute-deployments';
+  cronRoute: "execute-deployments";
   cronPath: string;
   dayKey: string;
   state: string | null;
@@ -70,7 +97,7 @@ type SymbolSnapshot = {
   wins: number;
   losses: number;
   inTrade: boolean;
-  tradeSide: 'BUY' | 'SELL' | null;
+  tradeSide: "BUY" | "SELL" | null;
   dealReference: string | null;
   reasonCodes: string[];
   netR: number | null;
@@ -93,7 +120,7 @@ type HistoryDiscoveryRow = {
 
 type HistoryDiscoverySnapshot = {
   timeframe: string;
-  backend: CandleHistoryBackend | 'unknown';
+  backend: CandleHistoryBackend | "unknown";
   generatedAtMs: number;
   symbolCount: number;
   scannedCount: number;
@@ -115,6 +142,44 @@ type HistoryDiscoverySnapshot = {
   oldestCandleAtMs: number | null;
   newestCandleAtMs: number | null;
   rows: HistoryDiscoveryRow[];
+};
+
+const PIPELINE_STEP_DEFS = [
+  { id: "discover", label: "Discover" },
+  { id: "load_candles", label: "Load candles" },
+  { id: "prepare", label: "Prepare cycle" },
+  { id: "worker", label: "Run worker" },
+  { id: "aggregate", label: "Aggregate" },
+  { id: "promotion", label: "Promotion gate" },
+] as const;
+
+type ScalpPipelineStepId = (typeof PIPELINE_STEP_DEFS)[number]["id"];
+type ScalpPipelineStepState =
+  | "pending"
+  | "running"
+  | "success"
+  | "failed"
+  | "blocked";
+type ScalpPipelineStatus =
+  | "idle"
+  | "running"
+  | "completed"
+  | "failed"
+  | "blocked";
+
+type ScalpPipelineStatusPanel = {
+  status: ScalpPipelineStatus;
+  label: string;
+  detail: string | null;
+  cycleId: string | null;
+  updatedAtMs: number | null;
+  progressPct: number | null;
+  steps: Array<{
+    id: ScalpPipelineStepId;
+    label: string;
+    state: ScalpPipelineStepState;
+    detail: string | null;
+  }>;
 };
 
 type ScalpPipelineSnapshot = {
@@ -151,10 +216,15 @@ type ScalpPipelineSnapshot = {
       failed: number | null;
     } | null;
   } | null;
+  statusPanel: ScalpPipelineStatusPanel;
 };
 
+type ScalpPipelineCycleTotals = NonNullable<
+  NonNullable<ScalpPipelineSnapshot["cycle"]>["totals"]
+>;
+
 function asRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
 }
 
@@ -165,45 +235,255 @@ function asTsMs(value: unknown): number | null {
 }
 
 function parseUnknownBool(value: unknown): boolean {
-  if (typeof value === 'boolean') return value;
-  const normalized = String(value || '')
+  if (typeof value === "boolean") return value;
+  const normalized = String(value || "")
     .trim()
     .toLowerCase();
-  return ['1', 'true', 'yes', 'on'].includes(normalized);
+  return ["1", "true", "yes", "on"].includes(normalized);
 }
 
 function normalizeReason(value: unknown): string | null {
-  const text = String(value || '').trim();
+  const text = String(value || "").trim();
   if (!text) return null;
   return text.slice(0, 240);
 }
 
 function normalizeUpdatedBy(value: unknown): string | null {
-  const text = String(value || '').trim();
+  const text = String(value || "").trim();
   if (!text) return null;
   return text.slice(0, 120);
 }
 
-function pipelineStageMeta(stageRaw: unknown): { progressPct: number | null; progressLabel: string | null } {
-  const stage = String(stageRaw || '')
+function pipelineStageMeta(stageRaw: unknown): {
+  progressPct: number | null;
+  progressLabel: string | null;
+} {
+  const stage = String(stageRaw || "")
     .trim()
     .toLowerCase();
   if (!stage) return { progressPct: null, progressLabel: null };
   const map: Record<string, { pct: number; label: string }> = {
-    discover: { pct: 10, label: 'discovering symbols' },
-    load_candles: { pct: 24, label: 'loading candle history' },
-    prepare: { pct: 35, label: 'preparing/backfilling history' },
-    worker: { pct: 70, label: 'running cycle worker' },
-    aggregate: { pct: 88, label: 'aggregating cycle results' },
-    promotion: { pct: 96, label: 'applying promotion gate' },
-    done: { pct: 100, label: 'completed' },
+    discover: { pct: 10, label: "discovering symbols" },
+    load_candles: { pct: 24, label: "loading candle history" },
+    prepare: { pct: 35, label: "preparing/backfilling history" },
+    worker: { pct: 70, label: "running cycle worker" },
+    aggregate: { pct: 88, label: "aggregating cycle results" },
+    promotion: { pct: 96, label: "applying promotion gate" },
+    done: { pct: 100, label: "completed" },
   };
   const hit = map[stage];
-  if (!hit) return { progressPct: null, progressLabel: stage.replace(/_/g, ' ') };
+  if (!hit)
+    return { progressPct: null, progressLabel: stage.replace(/_/g, " ") };
   return { progressPct: hit.pct, progressLabel: hit.label };
 }
 
-async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSnapshot | null> {
+function safeProgressPct(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, n));
+}
+
+function safeCount(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.floor(n);
+}
+
+function workerStepDetail(
+  totals: ScalpPipelineCycleTotals | null,
+): string | null {
+  if (!totals) return null;
+  const tasks = safeCount(totals.tasks);
+  const completed = safeCount(totals.completed);
+  const running = safeCount(totals.running);
+  const pending = safeCount(totals.pending);
+  const failed = safeCount(totals.failed);
+  if (
+    tasks === null &&
+    completed === null &&
+    running === null &&
+    pending === null &&
+    failed === null
+  )
+    return null;
+
+  const detailParts: string[] = [];
+  if (tasks !== null) {
+    detailParts.push(
+      completed !== null ? `${completed} / ${tasks} tasks` : `${tasks} tasks`,
+    );
+  } else if (completed !== null) {
+    detailParts.push(`${completed} completed`);
+  }
+  if (running !== null && running > 0) detailParts.push(`${running} running`);
+  if (pending !== null && pending > 0) detailParts.push(`${pending} pending`);
+  if (failed !== null && failed > 0) detailParts.push(`${failed} failed`);
+  return detailParts.length ? detailParts.join(" · ") : null;
+}
+
+function buildPipelineStatusPanel(
+  input: Omit<ScalpPipelineSnapshot, "statusPanel">,
+): ScalpPipelineStatusPanel {
+  const panicStopEnabled = input.panicStop.enabled === true;
+  const panicStopReason = normalizeReason(input.panicStop.reason);
+  const stage = String(input.orchestrator?.stage || "")
+    .trim()
+    .toLowerCase();
+  const cycleStatus = String(input.cycle?.status || "")
+    .trim()
+    .toLowerCase();
+  const stageIndex = PIPELINE_STEP_DEFS.findIndex((step) => step.id === stage);
+  const workerStepIndex = PIPELINE_STEP_DEFS.findIndex(
+    (step) => step.id === "worker",
+  );
+  const cycleRunning = cycleStatus === "running";
+  const cycleCompleted = cycleStatus === "completed";
+  const cycleFailed = ["failed", "error", "aborted", "cancelled"].includes(
+    cycleStatus,
+  );
+  const orchestratorErrorRaw =
+    String(input.orchestrator?.lastError || "").trim() || null;
+  const orchestratorError =
+    panicStopEnabled && orchestratorErrorRaw === "panic_stop_enabled"
+      ? null
+      : orchestratorErrorRaw;
+  const progressPct = safeProgressPct(
+    input.cycle?.progressPct ?? input.orchestrator?.progressPct,
+  );
+  const updatedAtMs = [
+    input.panicStop.updatedAtMs,
+    input.orchestrator?.updatedAtMs,
+    input.cycle?.updatedAtMs,
+  ]
+    .filter(
+      (value): value is number =>
+        typeof value === "number" && Number.isFinite(value),
+    )
+    .reduce<number | null>(
+      (max, value) => (max === null ? value : Math.max(max, value)),
+      null,
+    );
+  const currentStepIndex =
+    stageIndex >= 0
+      ? stageIndex
+      : cycleRunning
+        ? workerStepIndex
+        : cycleCompleted
+          ? PIPELINE_STEP_DEFS.length - 1
+          : -1;
+  const failureStepIndex =
+    orchestratorError || cycleFailed
+      ? stageIndex >= 0
+        ? stageIndex
+        : workerStepIndex
+      : -1;
+  const workerDetail = workerStepDetail(input.cycle?.totals || null);
+
+  const steps = PIPELINE_STEP_DEFS.map((step, index) => {
+    let state: ScalpPipelineStepState = "pending";
+    if (
+      cycleCompleted ||
+      (stage === "done" && !orchestratorError && !cycleFailed)
+    ) {
+      state = "success";
+    } else if (failureStepIndex >= 0) {
+      if (index < failureStepIndex) state = "success";
+      else if (index === failureStepIndex) state = "failed";
+    } else if (currentStepIndex >= 0) {
+      if (index < currentStepIndex) state = "success";
+      else if (index === currentStepIndex) state = "running";
+    }
+
+    if (panicStopEnabled && !cycleRunning && state !== "success") {
+      state = "blocked";
+    }
+
+    let detail: string | null = null;
+    if (step.id === "worker") detail = workerDetail;
+    if (state === "failed")
+      detail = orchestratorError || workerDetail || "pipeline failed";
+    if (state === "blocked") detail = panicStopReason || "panic stop enabled";
+    return {
+      id: step.id,
+      label: step.label,
+      state,
+      detail,
+    };
+  });
+
+  const runningStep = steps.find((step) => step.state === "running") || null;
+  const failedStep = steps.find((step) => step.state === "failed") || null;
+  const completedCount = steps.filter(
+    (step) => step.state === "success",
+  ).length;
+
+  if (panicStopEnabled && !cycleRunning) {
+    return {
+      status: "blocked",
+      label: "Pipeline paused",
+      detail: panicStopReason || "panic stop is blocking new cycle work",
+      cycleId: input.cycle?.cycleId || null,
+      updatedAtMs,
+      progressPct,
+      steps,
+    };
+  }
+
+  if (failedStep) {
+    return {
+      status: "failed",
+      label: `${failedStep.label} failed`,
+      detail: failedStep.detail,
+      cycleId: input.cycle?.cycleId || null,
+      updatedAtMs,
+      progressPct,
+      steps,
+    };
+  }
+
+  if (runningStep) {
+    return {
+      status: "running",
+      label: `${runningStep.label} in progress`,
+      detail:
+        input.orchestrator?.progressLabel ||
+        runningStep.detail ||
+        (input.cycle?.cycleId ? `cycle ${input.cycle.cycleId}` : null),
+      cycleId: input.cycle?.cycleId || null,
+      updatedAtMs,
+      progressPct,
+      steps,
+    };
+  }
+
+  if (cycleCompleted || completedCount === PIPELINE_STEP_DEFS.length) {
+    return {
+      status: "completed",
+      label: "Latest cycle completed",
+      detail:
+        workerDetail ||
+        (input.cycle?.cycleId ? `cycle ${input.cycle.cycleId}` : null),
+      cycleId: input.cycle?.cycleId || null,
+      updatedAtMs,
+      progressPct,
+      steps,
+    };
+  }
+
+  return {
+    status: "idle",
+    label: "Awaiting next cycle",
+    detail: input.cycle?.cycleId ? `last cycle ${input.cycle.cycleId}` : null,
+    cycleId: input.cycle?.cycleId || null,
+    updatedAtMs,
+    progressPct,
+    steps,
+  };
+}
+
+async function loadScalpPipelineSnapshot(
+  nowMs: number,
+): Promise<ScalpPipelineSnapshot | null> {
   if (!isScalpPgConfigured()) return null;
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
@@ -282,19 +562,23 @@ async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSn
   const orchestratorPayload = asRecord(row.orchestratorPayload);
   const panicStopPayload = asRecord(row.panicStopPayload);
   const panicStopEnabled = parseUnknownBool(panicStopPayload.enabled);
-  const orchestratorStage = String(orchestratorPayload.stage || '').trim() || null;
+  const orchestratorStage =
+    String(orchestratorPayload.stage || "").trim() || null;
   const orchestratorStartedAtMs = asTsMs(orchestratorPayload.startedAtMs);
   const orchestratorCompletedAtMs = asTsMs(orchestratorPayload.completedAtMs);
   const orchestratorUpdatedAtMs = asTsMs(orchestratorPayload.updatedAtMs);
-  const orchestratorLastError = String(orchestratorPayload.lastError || '').trim() || null;
+  const orchestratorLastError =
+    String(orchestratorPayload.lastError || "").trim() || null;
   const orchestratorRunningStaleAfterMs = 20 * 60_000;
   const orchestratorFreshByUpdate =
-    orchestratorUpdatedAtMs !== null && Date.now() - orchestratorUpdatedAtMs <= orchestratorRunningStaleAfterMs;
+    orchestratorUpdatedAtMs !== null &&
+    nowMs - orchestratorUpdatedAtMs <= orchestratorRunningStaleAfterMs;
   const orchestratorRunningRaw =
     Boolean(orchestratorStage) &&
-    orchestratorStage !== 'done' &&
+    orchestratorStage !== "done" &&
     orchestratorStartedAtMs !== null &&
-    (orchestratorCompletedAtMs === null || orchestratorCompletedAtMs < orchestratorStartedAtMs) &&
+    (orchestratorCompletedAtMs === null ||
+      orchestratorCompletedAtMs < orchestratorStartedAtMs) &&
     !orchestratorLastError &&
     orchestratorFreshByUpdate;
   const orchestratorRunning = panicStopEnabled ? false : orchestratorRunningRaw;
@@ -302,8 +586,8 @@ async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSn
 
   const summary = asRecord(row.cycleSummary);
   const totals = asRecord(summary.totals);
-  const cycleProgressPct = Number(summary.progressPct);
-  return {
+  const cycleProgressPct = safeProgressPct(summary.progressPct);
+  const snapshotBase: Omit<ScalpPipelineSnapshot, "statusPanel"> = {
     panicStop: {
       enabled: panicStopEnabled,
       reason: normalizeReason(panicStopPayload.reason),
@@ -312,7 +596,7 @@ async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSn
     },
     orchestrator: orchestratorStage
       ? {
-          runId: String(orchestratorPayload.runId || '').trim() || null,
+          runId: String(orchestratorPayload.runId || "").trim() || null,
           stage: orchestratorStage,
           startedAtMs: orchestratorStartedAtMs,
           updatedAtMs: orchestratorUpdatedAtMs,
@@ -320,8 +604,11 @@ async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSn
           runningSinceMs: orchestratorRunning ? orchestratorStartedAtMs : null,
           isRunning: orchestratorRunning,
           progressPct:
-            Number.isFinite(cycleProgressPct) && cycleProgressPct >= 0
-              ? Math.max(stageMeta.progressPct ?? 0, Math.min(100, cycleProgressPct))
+            cycleProgressPct !== null
+              ? Math.max(
+                  stageMeta.progressPct ?? 0,
+                  Math.min(100, cycleProgressPct),
+                )
               : stageMeta.progressPct,
           progressLabel: stageMeta.progressLabel,
           lastError: orchestratorLastError,
@@ -334,95 +621,117 @@ async function loadScalpPipelineSnapshot(nowMs: number): Promise<ScalpPipelineSn
           createdAtMs: asTsMs(row.cycleCreatedAtMs),
           updatedAtMs: asTsMs(row.cycleUpdatedAtMs),
           completedAtMs: asTsMs(row.cycleCompletedAtMs),
-          progressPct: Number.isFinite(cycleProgressPct) ? Math.max(0, Math.min(100, cycleProgressPct)) : null,
+          progressPct: cycleProgressPct,
           totals: Object.keys(totals).length
             ? {
-                tasks: Number.isFinite(Number(totals.tasks)) ? Math.max(0, Math.floor(Number(totals.tasks))) : null,
-                pending: Number.isFinite(Number(totals.pending)) ? Math.max(0, Math.floor(Number(totals.pending))) : null,
-                running: Number.isFinite(Number(totals.running)) ? Math.max(0, Math.floor(Number(totals.running))) : null,
-                completed: Number.isFinite(Number(totals.completed))
-                  ? Math.max(0, Math.floor(Number(totals.completed)))
-                  : null,
-                failed: Number.isFinite(Number(totals.failed)) ? Math.max(0, Math.floor(Number(totals.failed))) : null,
+                tasks: safeCount(totals.tasks),
+                pending: safeCount(totals.pending),
+                running: safeCount(totals.running),
+                completed: safeCount(totals.completed),
+                failed: safeCount(totals.failed),
               }
             : null,
         }
       : null,
   };
+  return {
+    ...snapshotBase,
+    statusPanel: buildPipelineStatusPanel(snapshotBase),
+  };
 }
 
-function parseLimit(value: string | string[] | undefined, fallback: number): number {
+function parseLimit(
+  value: string | string[] | undefined,
+  fallback: number,
+): number {
   const first = Array.isArray(value) ? value[0] : value;
   const n = Number(first);
   if (!Number.isFinite(n) || n <= 0) return fallback;
   return Math.max(1, Math.min(300, Math.floor(n)));
 }
 
-function parseTradeLimit(value: string | string[] | undefined, fallback: number): number {
+function parseTradeLimit(
+  value: string | string[] | undefined,
+  fallback: number,
+): number {
   const first = Array.isArray(value) ? value[0] : value;
   const n = Number(first);
   if (!Number.isFinite(n) || n <= 0) return fallback;
   return Math.max(200, Math.min(50_000, Math.floor(n)));
 }
 
-function parseBool(value: string | string[] | undefined, fallback: boolean): boolean {
+function parseBool(
+  value: string | string[] | undefined,
+  fallback: boolean,
+): boolean {
   const first = firstQueryValue(value);
   if (!first) return fallback;
   const normalized = first.toLowerCase();
-  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
-  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
   return fallback;
 }
 
 function resolveSummaryRange(raw: unknown): SummaryRangeKey {
-  const normalized = String(raw || '')
+  const normalized = String(raw || "")
     .trim()
     .toUpperCase();
-  if (normalized === '30D') return '30D';
-  if (normalized === '6M') return '6M';
-  return '7D';
+  if (normalized === "30D") return "30D";
+  if (normalized === "6M") return "6M";
+  return "7D";
 }
 
-function firstQueryValue(value: string | string[] | undefined): string | undefined {
-  if (typeof value === 'string') return value.trim() || undefined;
-  if (Array.isArray(value) && value.length > 0) return String(value[0] || '').trim() || undefined;
+function firstQueryValue(
+  value: string | string[] | undefined,
+): string | undefined {
+  if (typeof value === "string") return value.trim() || undefined;
+  if (Array.isArray(value) && value.length > 0)
+    return String(value[0] || "").trim() || undefined;
   return undefined;
 }
 
 function journalStrategyId(entry: ScalpJournalEntry): string | null {
-  const payload = entry.payload && typeof entry.payload === 'object' ? (entry.payload as Record<string, unknown>) : {};
+  const payload =
+    entry.payload && typeof entry.payload === "object"
+      ? (entry.payload as Record<string, unknown>)
+      : {};
   const normalized = normalizeScalpStrategyId(payload.strategyId);
   return normalized || null;
 }
 
 function journalDeploymentId(entry: ScalpJournalEntry): string | null {
-  const payload = entry.payload && typeof entry.payload === 'object' ? (entry.payload as Record<string, unknown>) : {};
-  const normalized = String(payload.deploymentId || '').trim();
+  const payload =
+    entry.payload && typeof entry.payload === "object"
+      ? (entry.payload as Record<string, unknown>)
+      : {};
+  const normalized = String(payload.deploymentId || "").trim();
   return normalized || null;
 }
 
-function compactJournalEntry(entry: ScalpJournalEntry): Record<string, unknown> {
+function compactJournalEntry(
+  entry: ScalpJournalEntry,
+): Record<string, unknown> {
   const compactPayload = (value: unknown, depth = 0): unknown => {
     if (value === null || value === undefined) return null;
-    if (depth >= 3) return '[truncated]';
+    if (depth >= 3) return "[truncated]";
     const t = typeof value;
-    if (t === 'string') {
+    if (t === "string") {
       const text = String(value);
       return text.length > 400 ? `${text.slice(0, 397)}...` : text;
     }
-    if (t === 'number') {
+    if (t === "number") {
       const n = Number(value);
       return Number.isFinite(n) ? n : null;
     }
-    if (t === 'boolean') return value;
-    if (t === 'bigint') {
+    if (t === "boolean") return value;
+    if (t === "bigint") {
       const n = Number(value);
       return Number.isFinite(n) ? n : String(value);
     }
     if (Array.isArray(value)) {
       return value.slice(0, 20).map((row) => compactPayload(row, depth + 1));
     }
-    if (value && typeof value === 'object') {
+    if (value && typeof value === "object") {
       const row = value as Record<string, unknown>;
       const out: Record<string, unknown> = {};
       let count = 0;
@@ -443,12 +752,16 @@ function compactJournalEntry(entry: ScalpJournalEntry): Record<string, unknown> 
     level: entry.level,
     symbol: entry.symbol,
     dayKey: entry.dayKey,
-    reasonCodes: Array.isArray(entry.reasonCodes) ? entry.reasonCodes.slice(0, 8) : [],
+    reasonCodes: Array.isArray(entry.reasonCodes)
+      ? entry.reasonCodes.slice(0, 8)
+      : [],
     payload: compactPayload(entry.payload ?? {}),
   };
 }
 
-function computeRangePerformance(trades: ScalpTradeLedgerEntry[]): { netR: number; maxDrawdownR: number } | null {
+function computeRangePerformance(
+  trades: ScalpTradeLedgerEntry[],
+): { netR: number; maxDrawdownR: number } | null {
   if (!trades.length) return null;
   const ordered = trades.slice().sort((a, b) => a.exitAtMs - b.exitAtMs);
   let netR = 0;
@@ -471,12 +784,15 @@ function deriveTuneLabel(params: {
   defaultStrategyId: string;
   tuneId?: string | null;
 }): string {
-  const explicitTune = String(params.tuneId || '').trim().toLowerCase();
-  if (explicitTune && explicitTune !== DEFAULT_SCALP_TUNE_ID) return explicitTune;
+  const explicitTune = String(params.tuneId || "")
+    .trim()
+    .toLowerCase();
+  if (explicitTune && explicitTune !== DEFAULT_SCALP_TUNE_ID)
+    return explicitTune;
   const strategyId = normalizeScalpStrategyId(params.strategyId);
   const defaultStrategyId = normalizeScalpStrategyId(params.defaultStrategyId);
-  if (!strategyId) return 'default';
-  if (!defaultStrategyId || strategyId === defaultStrategyId) return 'default';
+  if (!strategyId) return "default";
+  if (!defaultStrategyId || strategyId === defaultStrategyId) return "default";
   const prefix = `${defaultStrategyId}_`;
   if (strategyId.startsWith(prefix) && strategyId.length > prefix.length) {
     return strategyId.slice(prefix.length);
@@ -485,9 +801,12 @@ function deriveTuneLabel(params: {
 }
 
 function setNoStoreHeaders(res: NextApiResponse): void {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
+  res.setHeader(
+    "Cache-Control",
+    "no-store, no-cache, must-revalidate, proxy-revalidate",
+  );
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
 }
 
 function makeSummaryCacheKey(input: {
@@ -512,14 +831,21 @@ function pruneSummaryCache(nowMs: number): void {
   }
   if (summaryResponseCache.size <= SUMMARY_CACHE_MAX_ENTRIES) return;
   const keys = Array.from(summaryResponseCache.keys());
-  while (summaryResponseCache.size > SUMMARY_CACHE_MAX_ENTRIES && keys.length > 0) {
+  while (
+    summaryResponseCache.size > SUMMARY_CACHE_MAX_ENTRIES &&
+    keys.length > 0
+  ) {
     const key = keys.shift();
     if (!key) break;
     summaryResponseCache.delete(key);
   }
 }
 
-function makeHistoryDiscoveryCacheKey(input: { timeframe: string; scanLimit: number; previewLimit: number }): string {
+function makeHistoryDiscoveryCacheKey(input: {
+  timeframe: string;
+  scanLimit: number;
+  previewLimit: number;
+}): string {
   return JSON.stringify({
     timeframe: input.timeframe,
     scanLimit: input.scanLimit,
@@ -533,7 +859,10 @@ function pruneHistoryDiscoveryCache(nowMs: number): void {
   }
   if (historyDiscoveryCache.size <= HISTORY_DISCOVERY_CACHE_MAX_ENTRIES) return;
   const keys = Array.from(historyDiscoveryCache.keys());
-  while (historyDiscoveryCache.size > HISTORY_DISCOVERY_CACHE_MAX_ENTRIES && keys.length > 0) {
+  while (
+    historyDiscoveryCache.size > HISTORY_DISCOVERY_CACHE_MAX_ENTRIES &&
+    keys.length > 0
+  ) {
     const key = keys.shift();
     if (!key) break;
     historyDiscoveryCache.delete(key);
@@ -570,11 +899,15 @@ async function loadHistoryDiscoverySnapshot(params: {
   requestId: string;
   logDebug: (event: string, payload?: Record<string, unknown>) => void;
 }): Promise<HistoryDiscoverySnapshot> {
-  const timeframe = normalizeHistoryTimeframe(String(process.env.SCALP_DASHBOARD_HISTORY_TIMEFRAME || '1m'));
+  const timeframe = normalizeHistoryTimeframe(
+    String(process.env.SCALP_DASHBOARD_HISTORY_TIMEFRAME || "1m"),
+  );
   const scanLimit = HISTORY_DISCOVERY_SCAN_LIMIT;
   const previewLimit = HISTORY_DISCOVERY_PREVIEW_LIMIT;
   const timeframeMs = Math.max(60_000, timeframeToMs(timeframe));
-  const emptySnapshot = (backend: CandleHistoryBackend | 'unknown' = 'unknown'): HistoryDiscoverySnapshot => ({
+  const emptySnapshot = (
+    backend: CandleHistoryBackend | "unknown" = "unknown",
+  ): HistoryDiscoverySnapshot => ({
     timeframe,
     backend,
     generatedAtMs: params.nowMs,
@@ -601,19 +934,24 @@ async function loadHistoryDiscoverySnapshot(params: {
   });
 
   if (!isScalpPgConfigured()) {
-    params.logDebug('history_snapshot_skipped', {
-      reason: 'pg_not_configured',
+    params.logDebug("history_snapshot_skipped", {
+      reason: "pg_not_configured",
       timeframe,
     });
     return emptySnapshot();
   }
 
-  const useCache = !params.debugLogsEnabled && HISTORY_DISCOVERY_CACHE_TTL_MS > 0;
-  const cacheKey = makeHistoryDiscoveryCacheKey({ timeframe, scanLimit, previewLimit });
+  const useCache =
+    !params.debugLogsEnabled && HISTORY_DISCOVERY_CACHE_TTL_MS > 0;
+  const cacheKey = makeHistoryDiscoveryCacheKey({
+    timeframe,
+    scanLimit,
+    previewLimit,
+  });
   if (useCache) {
     const cached = historyDiscoveryCache.get(cacheKey);
     if (cached && cached.expiresAtMs > params.nowMs) {
-      params.logDebug('history_cache_hit', {
+      params.logDebug("history_cache_hit", {
         cacheKey,
         ttlMsRemaining: cached.expiresAtMs - params.nowMs,
       });
@@ -623,38 +961,57 @@ async function loadHistoryDiscoverySnapshot(params: {
   }
 
   let symbols: string[] = [];
-  let loadedStats: Awaited<ReturnType<typeof loadScalpCandleHistoryStatsBulk>> = [];
+  let loadedStats: Awaited<ReturnType<typeof loadScalpCandleHistoryStatsBulk>> =
+    [];
   try {
     symbols = await listScalpCandleHistorySymbols(timeframe);
     const scannedSymbols = symbols.slice(0, scanLimit);
-    loadedStats = await loadScalpCandleHistoryStatsBulk(scannedSymbols, timeframe);
+    loadedStats = await loadScalpCandleHistoryStatsBulk(
+      scannedSymbols,
+      timeframe,
+    );
   } catch (err: any) {
     const rowError = {
-      kind: 'history_snapshot',
+      kind: "history_snapshot",
       timeframe,
       message: err?.message || String(err),
     };
     params.rowErrors.push(rowError);
-    console.error(`[scalp-summary][${params.requestId}] history_snapshot_error`, rowError, err?.stack || '');
-    params.logDebug('history_snapshot_error', rowError);
+    console.error(
+      `[scalp-summary][${params.requestId}] history_snapshot_error`,
+      rowError,
+      err?.stack || "",
+    );
+    params.logDebug("history_snapshot_error", rowError);
     return emptySnapshot();
   }
   const scannedSymbols = symbols.slice(0, scanLimit);
   const rows: HistoryDiscoveryRow[] = [];
-  let backend: CandleHistoryBackend | 'unknown' = 'unknown';
+  let backend: CandleHistoryBackend | "unknown" = "unknown";
   const dayMs = 24 * 60 * 60 * 1000;
   for (const row of loadedStats) {
     try {
-      if (backend === 'unknown') backend = row.backend;
+      if (backend === "unknown") backend = row.backend;
       const candleCount = Math.max(0, Math.floor(Number(row.candleCount) || 0));
       const fromTsMsRaw = Number(row.fromTsMs);
       const toTsMsRaw = Number(row.toTsMs);
-      const fromTsMs = Number.isFinite(fromTsMsRaw) && fromTsMsRaw > 0 ? Math.floor(fromTsMsRaw) : null;
-      const toTsMs = Number.isFinite(toTsMsRaw) && toTsMsRaw > 0 ? Math.floor(toTsMsRaw) : null;
+      const fromTsMs =
+        Number.isFinite(fromTsMsRaw) && fromTsMsRaw > 0
+          ? Math.floor(fromTsMsRaw)
+          : null;
+      const toTsMs =
+        Number.isFinite(toTsMsRaw) && toTsMsRaw > 0
+          ? Math.floor(toTsMsRaw)
+          : null;
       const updatedAtMsRaw = Number(row.updatedAtMs);
-      const updatedAtMs = Number.isFinite(updatedAtMsRaw) && updatedAtMsRaw > 0 ? Math.floor(updatedAtMsRaw) : null;
+      const updatedAtMs =
+        Number.isFinite(updatedAtMsRaw) && updatedAtMsRaw > 0
+          ? Math.floor(updatedAtMsRaw)
+          : null;
       const spanMs =
-        fromTsMs !== null && toTsMs !== null && toTsMs >= fromTsMs ? Math.max(0, toTsMs - fromTsMs) : null;
+        fromTsMs !== null && toTsMs !== null && toTsMs >= fromTsMs
+          ? Math.max(0, toTsMs - fromTsMs)
+          : null;
       const depthDays = spanMs === null ? null : spanMs / dayMs;
       const expectedCandles =
         spanMs === null
@@ -664,7 +1021,8 @@ async function loadHistoryDiscoverySnapshot(params: {
         expectedCandles && expectedCandles > 0
           ? Math.max(0, Math.min(100, (candleCount / expectedCandles) * 100))
           : null;
-      const barsPerDay = depthDays !== null && depthDays > 0 ? candleCount / depthDays : null;
+      const barsPerDay =
+        depthDays !== null && depthDays > 0 ? candleCount / depthDays : null;
       rows.push({
         symbol: row.symbol,
         candles: candleCount,
@@ -677,13 +1035,17 @@ async function loadHistoryDiscoverySnapshot(params: {
       } satisfies HistoryDiscoveryRow);
     } catch (err: any) {
       const rowError = {
-        kind: 'history_row',
+        kind: "history_row",
         symbol: row.symbol,
         timeframe,
         message: err?.message || String(err),
       };
       params.rowErrors.push(rowError);
-      console.error(`[scalp-summary][${params.requestId}] history_row_error`, rowError, err?.stack || '');
+      console.error(
+        `[scalp-summary][${params.requestId}] history_row_error`,
+        rowError,
+        err?.stack || "",
+      );
     }
   }
 
@@ -699,7 +1061,9 @@ async function loadHistoryDiscoverySnapshot(params: {
   const candleCounts = nonEmptyRows.map((row) => row.candles);
   const depthValues = nonEmptyRows
     .map((row) => row.depthDays)
-    .filter((row): row is number => row !== null && Number.isFinite(row) && row >= 0);
+    .filter(
+      (row): row is number => row !== null && Number.isFinite(row) && row >= 0,
+    );
   const totalCandles = candleCounts.reduce((acc, row) => acc + row, 0);
   const oldestCandleAtMs = nonEmptyRows.reduce<number | null>((acc, row) => {
     if (row.fromTsMs === null) return acc;
@@ -731,13 +1095,17 @@ async function loadHistoryDiscoverySnapshot(params: {
     maxCandles: candleCounts.length ? Math.max(...candleCounts) : null,
     avgDepthDays: roundMetric(meanValue(depthValues)),
     medianDepthDays: roundMetric(medianValue(depthValues)),
-    minDepthDays: depthValues.length ? roundMetric(Math.min(...depthValues)) : null,
-    maxDepthDays: depthValues.length ? roundMetric(Math.max(...depthValues)) : null,
+    minDepthDays: depthValues.length
+      ? roundMetric(Math.min(...depthValues))
+      : null,
+    maxDepthDays: depthValues.length
+      ? roundMetric(Math.max(...depthValues))
+      : null,
     oldestCandleAtMs,
     newestCandleAtMs,
     rows: rows.slice(0, previewLimit),
   };
-  params.logDebug('history_snapshot', {
+  params.logDebug("history_snapshot", {
     timeframe,
     backend,
     symbolCount: snapshot.symbolCount,
@@ -756,18 +1124,25 @@ async function loadHistoryDiscoverySnapshot(params: {
   return snapshot;
 }
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse,
+) {
+  if (req.method !== "GET") {
+    return res
+      .status(405)
+      .json({ error: "Method Not Allowed", message: "Use GET" });
   }
   if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
 
   const startedAtMs = Date.now();
   const requestId = `scalp_summary_${startedAtMs}_${Math.floor(Math.random() * 1e6)}`;
-  const debugLogsEnabled = parseBool(req.query.debug, false) || process.env.SCALP_DEBUG_SUMMARY === '1';
+  const debugLogsEnabled =
+    parseBool(req.query.debug, false) ||
+    process.env.SCALP_DEBUG_SUMMARY === "1";
   const rowErrors: Array<Record<string, unknown>> = [];
-  let stage = 'init';
+  let stage = "init";
   const logDebug = (event: string, payload: Record<string, unknown> = {}) => {
     if (!debugLogsEnabled) return;
     try {
@@ -784,19 +1159,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const nowMs = Date.now();
-    stage = 'parse_query';
+    stage = "parse_query";
     const journalLimit = parseLimit(req.query.journalLimit, 80);
     const tradeLimit = parseTradeLimit(req.query.tradeLimit, 5000);
-    const rangeParam = Array.isArray(req.query.range) ? req.query.range[0] : req.query.range;
+    const rangeParam = Array.isArray(req.query.range)
+      ? req.query.range[0]
+      : req.query.range;
     const range = resolveSummaryRange(rangeParam);
     const rangeStartMs = nowMs - SUMMARY_RANGE_LOOKBACK_MS[range];
     const requestedStrategyId = firstQueryValue(req.query.strategyId);
-    const useDeploymentRegistryRequested = parseBool(req.query.useDeploymentRegistry, false);
+    const useDeploymentRegistryRequested = parseBool(
+      req.query.useDeploymentRegistry,
+      false,
+    );
     const pgConfigured = isScalpPgConfigured();
     const useDeployments = useDeploymentRegistryRequested && pgConfigured;
     let useDeploymentsEffective = useDeployments;
     const bypassCache = parseBool(req.query.fresh, false);
-    const useResponseCache = !debugLogsEnabled && !bypassCache && SUMMARY_CACHE_TTL_MS > 0;
+    const useResponseCache =
+      !debugLogsEnabled && !bypassCache && SUMMARY_CACHE_TTL_MS > 0;
     const cacheKey = makeSummaryCacheKey({
       useDeployments,
       requestedStrategyId,
@@ -807,18 +1188,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (useResponseCache) {
       const cached = summaryResponseCache.get(cacheKey);
       if (cached && cached.expiresAtMs > nowMs) {
-        logDebug('cache_hit', {
+        logDebug("cache_hit", {
           cacheKey,
           ttlMsRemaining: cached.expiresAtMs - nowMs,
         });
-        res.setHeader('x-scalp-summary-cache', 'hit');
+        res.setHeader("x-scalp-summary-cache", "hit");
         return res.status(200).json(cached.payload);
       }
       if (cached) {
         summaryResponseCache.delete(cacheKey);
       }
     }
-    logDebug('request_parsed', {
+    logDebug("request_parsed", {
       method: req.method,
       url: req.url || null,
       requestedStrategyId: requestedStrategyId || null,
@@ -832,22 +1213,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       tradeLimit,
     });
     if (useDeploymentRegistryRequested && !pgConfigured) {
-      console.warn(`[scalp-summary][${requestId}] deployment_registry_fallback`, {
-        reason: 'pg_not_configured',
-        requested: true,
-        fallbackSource: 'cron_symbols',
-      });
+      console.warn(
+        `[scalp-summary][${requestId}] deployment_registry_fallback`,
+        {
+          reason: "pg_not_configured",
+          requested: true,
+          fallbackSource: "cron_symbols",
+        },
+      );
     }
 
-    stage = 'load_runtime';
+    stage = "load_runtime";
     const cfg = getScalpStrategyConfig();
-    const runtime = await loadScalpStrategyRuntimeSnapshot(cfg.enabled, requestedStrategyId);
-    const runtimeStrategies = Array.isArray(runtime.strategies) ? runtime.strategies : [];
-    const strategy =
-      runtime.strategy ||
+    const runtime = await loadScalpStrategyRuntimeSnapshot(
+      cfg.enabled,
+      requestedStrategyId,
+    );
+    const runtimeStrategies = Array.isArray(runtime.strategies)
+      ? runtime.strategies
+      : [];
+    const strategy = runtime.strategy ||
       runtimeStrategies.find((row) => row.strategyId === runtime.strategyId) ||
-      runtimeStrategies[0] ||
-      {
+      runtimeStrategies[0] || {
         strategyId: runtime.defaultStrategyId,
         shortName: runtime.defaultStrategyId,
         longName: runtime.defaultStrategyId,
@@ -859,38 +1246,52 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       };
     const dayKey = deriveScalpDayKey(nowMs, cfg.sessions.clockMode);
     const cronSymbolConfigs = getScalpCronSymbolConfigs();
-    const cronSymbolConfigBySymbol = new Map(cronSymbolConfigs.map((row) => [row.symbol.toUpperCase(), row]));
-    const cronAllConfig = cronSymbolConfigBySymbol.get('*') || null;
-    stage = 'load_pipeline_state';
+    const cronSymbolConfigBySymbol = new Map(
+      cronSymbolConfigs.map((row) => [row.symbol.toUpperCase(), row]),
+    );
+    const cronAllConfig = cronSymbolConfigBySymbol.get("*") || null;
+    stage = "load_pipeline_state";
     let pipeline: ScalpPipelineSnapshot | null = null;
     try {
       pipeline = await loadScalpPipelineSnapshot(nowMs);
     } catch (err: any) {
       const rowError = {
-        kind: 'pipeline_state',
+        kind: "pipeline_state",
         message: err?.message || String(err),
       };
       rowErrors.push(rowError);
-      console.error(`[scalp-summary][${requestId}] pipeline_state_error`, rowError, err?.stack || '');
+      console.error(
+        `[scalp-summary][${requestId}] pipeline_state_error`,
+        rowError,
+        err?.stack || "",
+      );
     }
-    stage = 'load_deployments';
-    let deploymentRows: Awaited<ReturnType<typeof listScalpDeploymentRegistryEntries>> = [];
+    stage = "load_deployments";
+    let deploymentRows: Awaited<
+      ReturnType<typeof listScalpDeploymentRegistryEntries>
+    > = [];
     if (useDeployments) {
       try {
-        deploymentRows = await listScalpDeploymentRegistryEntries({ enabled: true });
+        deploymentRows = await listScalpDeploymentRegistryEntries({
+          enabled: true,
+        });
       } catch (err: any) {
         const rowError = {
-          kind: 'deployment_registry',
+          kind: "deployment_registry",
           message: err?.message || String(err),
-          fallbackSource: 'cron_symbols',
+          fallbackSource: "cron_symbols",
         };
         rowErrors.push(rowError);
-        console.error(`[scalp-summary][${requestId}] deployment_registry_error`, rowError, err?.stack || '');
+        console.error(
+          `[scalp-summary][${requestId}] deployment_registry_error`,
+          rowError,
+          err?.stack || "",
+        );
         useDeploymentsEffective = false;
       }
     }
     const cronSymbols = useDeploymentsEffective ? [] : cronSymbolConfigs;
-    logDebug('runtime_loaded', {
+    logDebug("runtime_loaded", {
       defaultStrategyId: runtime.defaultStrategyId,
       runtimeStrategyCount: runtimeStrategies.length,
       cronSymbolCount: cronSymbolConfigs.length,
@@ -901,27 +1302,39 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       entrySessionProfile: cfg.sessions.entrySessionProfile,
     });
 
-    stage = 'build_rows';
+    stage = "build_rows";
     const rows: SymbolSnapshot[] = [];
     if (useDeploymentsEffective) {
       for (let idx = 0; idx < deploymentRows.length; idx += 1) {
         const deploymentRow = deploymentRows[idx]!;
         try {
-          const preferredStrategyId = normalizeScalpStrategyId(deploymentRow.strategyId);
+          const preferredStrategyId = normalizeScalpStrategyId(
+            deploymentRow.strategyId,
+          );
           const strategyControl =
-            runtimeStrategies.find((row) => row.strategyId === preferredStrategyId) || strategy;
+            runtimeStrategies.find(
+              (row) => row.strategyId === preferredStrategyId,
+            ) || strategy;
           const effectiveStrategyId = strategyControl.strategyId;
-          const cronSymbol = cronSymbolConfigBySymbol.get(String(deploymentRow.symbol || '').toUpperCase()) || cronAllConfig;
+          const cronSymbol =
+            cronSymbolConfigBySymbol.get(
+              String(deploymentRow.symbol || "").toUpperCase(),
+            ) || cronAllConfig;
           const deployment = resolveScalpDeployment({
             symbol: deploymentRow.symbol,
             strategyId: effectiveStrategyId,
             tuneId: deploymentRow.tuneId,
             deploymentId: deploymentRow.deploymentId,
           });
-          const state = await loadScalpSessionState(deployment.symbol, dayKey, effectiveStrategyId, {
-            tuneId: deployment.tuneId,
-            deploymentId: deployment.deploymentId,
-          });
+          const state = await loadScalpSessionState(
+            deployment.symbol,
+            dayKey,
+            effectiveStrategyId,
+            {
+              tuneId: deployment.tuneId,
+              deploymentId: deployment.deploymentId,
+            },
+          );
           rows.push({
             symbol: deployment.symbol,
             strategyId: effectiveStrategyId,
@@ -933,47 +1346,66 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               tuneId: deployment.tuneId,
             }),
             cronSchedule: cronSymbol?.schedule ?? null,
-            cronRoute: 'execute-deployments',
-            cronPath: cronSymbol?.path || '/api/scalp/cron/execute-deployments?all=true',
+            cronRoute: "execute-deployments",
+            cronPath:
+              cronSymbol?.path ||
+              "/api/scalp/cron/execute-deployments?all=true",
             dayKey,
             state: state?.state ?? null,
             updatedAtMs: state?.updatedAtMs ?? null,
             lastRunAtMs: state?.run?.lastRunAtMs ?? null,
-            dryRunLast: typeof state?.run?.dryRunLast === 'boolean' ? state.run.dryRunLast : null,
+            dryRunLast:
+              typeof state?.run?.dryRunLast === "boolean"
+                ? state.run.dryRunLast
+                : null,
             tradesPlaced: state?.stats?.tradesPlaced ?? 0,
             wins: state?.stats?.wins ?? 0,
             losses: state?.stats?.losses ?? 0,
-            inTrade: state?.state === 'IN_TRADE' || Boolean(state?.trade),
+            inTrade: state?.state === "IN_TRADE" || Boolean(state?.trade),
             tradeSide: state?.trade?.side ?? null,
             dealReference: state?.trade?.dealReference ?? null,
-            reasonCodes: Array.isArray(state?.run?.lastReasonCodes) ? state!.run.lastReasonCodes.slice(0, 8) : [],
+            reasonCodes: Array.isArray(state?.run?.lastReasonCodes)
+              ? state!.run.lastReasonCodes.slice(0, 8)
+              : [],
             netR: null,
             maxDrawdownR: null,
-            promotionEligible: typeof deploymentRow.promotionGate?.eligible === 'boolean' ? deploymentRow.promotionGate.eligible : null,
+            promotionEligible:
+              typeof deploymentRow.promotionGate?.eligible === "boolean"
+                ? deploymentRow.promotionGate.eligible
+                : null,
             promotionReason: deploymentRow.promotionGate?.reason || null,
-            forwardValidation: deploymentRow.promotionGate?.forwardValidation || null,
+            forwardValidation:
+              deploymentRow.promotionGate?.forwardValidation || null,
           });
         } catch (err: any) {
           const rowError = {
-            kind: 'deployment_row',
+            kind: "deployment_row",
             index: idx,
-            symbol: String((deploymentRow as any)?.symbol || ''),
-            strategyId: String((deploymentRow as any)?.strategyId || ''),
-            tuneId: String((deploymentRow as any)?.tuneId || ''),
-            deploymentId: String((deploymentRow as any)?.deploymentId || ''),
+            symbol: String((deploymentRow as any)?.symbol || ""),
+            strategyId: String((deploymentRow as any)?.strategyId || ""),
+            tuneId: String((deploymentRow as any)?.tuneId || ""),
+            deploymentId: String((deploymentRow as any)?.deploymentId || ""),
             message: err?.message || String(err),
           };
           rowErrors.push(rowError);
-          console.error(`[scalp-summary][${requestId}] deployment_row_error`, rowError, err?.stack || '');
+          console.error(
+            `[scalp-summary][${requestId}] deployment_row_error`,
+            rowError,
+            err?.stack || "",
+          );
         }
       }
     } else {
       for (let idx = 0; idx < cronSymbols.length; idx += 1) {
         const cronSymbol = cronSymbols[idx]!;
         try {
-          const preferredStrategyId = normalizeScalpStrategyId(cronSymbol.strategyId);
+          const preferredStrategyId = normalizeScalpStrategyId(
+            cronSymbol.strategyId,
+          );
           const strategyControl =
-            runtimeStrategies.find((row) => row.strategyId === preferredStrategyId) || strategy;
+            runtimeStrategies.find(
+              (row) => row.strategyId === preferredStrategyId,
+            ) || strategy;
           const effectiveStrategyId = strategyControl.strategyId;
           const deployment = resolveScalpDeployment({
             symbol: cronSymbol.symbol,
@@ -981,10 +1413,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             tuneId: cronSymbol.tuneId,
             deploymentId: cronSymbol.deploymentId,
           });
-          const state = await loadScalpSessionState(deployment.symbol, dayKey, effectiveStrategyId, {
-            tuneId: deployment.tuneId,
-            deploymentId: deployment.deploymentId,
-          });
+          const state = await loadScalpSessionState(
+            deployment.symbol,
+            dayKey,
+            effectiveStrategyId,
+            {
+              tuneId: deployment.tuneId,
+              deploymentId: deployment.deploymentId,
+            },
+          );
           rows.push({
             symbol: deployment.symbol,
             strategyId: effectiveStrategyId,
@@ -1002,14 +1439,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             state: state?.state ?? null,
             updatedAtMs: state?.updatedAtMs ?? null,
             lastRunAtMs: state?.run?.lastRunAtMs ?? null,
-            dryRunLast: typeof state?.run?.dryRunLast === 'boolean' ? state.run.dryRunLast : null,
+            dryRunLast:
+              typeof state?.run?.dryRunLast === "boolean"
+                ? state.run.dryRunLast
+                : null,
             tradesPlaced: state?.stats?.tradesPlaced ?? 0,
             wins: state?.stats?.wins ?? 0,
             losses: state?.stats?.losses ?? 0,
-            inTrade: state?.state === 'IN_TRADE' || Boolean(state?.trade),
+            inTrade: state?.state === "IN_TRADE" || Boolean(state?.trade),
             tradeSide: state?.trade?.side ?? null,
             dealReference: state?.trade?.dealReference ?? null,
-            reasonCodes: Array.isArray(state?.run?.lastReasonCodes) ? state!.run.lastReasonCodes.slice(0, 8) : [],
+            reasonCodes: Array.isArray(state?.run?.lastReasonCodes)
+              ? state!.run.lastReasonCodes.slice(0, 8)
+              : [],
             netR: null,
             maxDrawdownR: null,
             promotionEligible: null,
@@ -1018,39 +1460,51 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           });
         } catch (err: any) {
           const rowError = {
-            kind: 'cron_row',
+            kind: "cron_row",
             index: idx,
-            symbol: String((cronSymbol as any)?.symbol || ''),
-            strategyId: String((cronSymbol as any)?.strategyId || ''),
-            tuneId: String((cronSymbol as any)?.tuneId || ''),
-            deploymentId: String((cronSymbol as any)?.deploymentId || ''),
+            symbol: String((cronSymbol as any)?.symbol || ""),
+            strategyId: String((cronSymbol as any)?.strategyId || ""),
+            tuneId: String((cronSymbol as any)?.tuneId || ""),
+            deploymentId: String((cronSymbol as any)?.deploymentId || ""),
             message: err?.message || String(err),
           };
           rowErrors.push(rowError);
-          console.error(`[scalp-summary][${requestId}] cron_row_error`, rowError, err?.stack || '');
+          console.error(
+            `[scalp-summary][${requestId}] cron_row_error`,
+            rowError,
+            err?.stack || "",
+          );
         }
       }
     }
-    logDebug('rows_built', { rows: rows.length, rowErrors: rowErrors.length });
+    logDebug("rows_built", { rows: rows.length, rowErrors: rowErrors.length });
 
-    stage = 'compute_trade_perf';
+    stage = "compute_trade_perf";
     const tradeLedger = await loadScalpTradeLedger(tradeLimit);
     const tradesByDeploymentId = new Map<string, ScalpTradeLedgerEntry[]>();
     for (const trade of tradeLedger) {
       if (trade.dryRun) continue;
-      if (!(Number.isFinite(Number(trade.exitAtMs)) && Number(trade.exitAtMs) >= rangeStartMs)) continue;
-      const deploymentId = String(trade.deploymentId || '').trim();
+      if (
+        !(
+          Number.isFinite(Number(trade.exitAtMs)) &&
+          Number(trade.exitAtMs) >= rangeStartMs
+        )
+      )
+        continue;
+      const deploymentId = String(trade.deploymentId || "").trim();
       if (!deploymentId) continue;
       const bucket = tradesByDeploymentId.get(deploymentId) || [];
       bucket.push(trade);
       tradesByDeploymentId.set(deploymentId, bucket);
     }
     for (const row of rows) {
-      const perf = computeRangePerformance(tradesByDeploymentId.get(row.deploymentId) || []);
+      const perf = computeRangePerformance(
+        tradesByDeploymentId.get(row.deploymentId) || [],
+      );
       row.netR = perf?.netR ?? null;
       row.maxDrawdownR = perf?.maxDrawdownR ?? null;
     }
-    stage = 'load_history_discovery';
+    stage = "load_history_discovery";
     const history = await loadHistoryDiscoverySnapshot({
       nowMs,
       debugLogsEnabled,
@@ -1060,59 +1514,85 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
 
     const stateCounts = rows.reduce<Record<string, number>>((acc, row) => {
-      const key = row.state || 'MISSING';
+      const key = row.state || "MISSING";
       acc[key] = (acc[key] || 0) + 1;
       return acc;
     }, {});
     const openCount = rows.filter((row) => row.inTrade).length;
-    const runCount = rows.filter((row) => Number.isFinite(row.lastRunAtMs as number)).length;
+    const runCount = rows.filter((row) =>
+      Number.isFinite(row.lastRunAtMs as number),
+    ).length;
     const dryRunCount = rows.filter((row) => row.dryRunLast === true).length;
-    const totalTradesPlaced = rows.reduce((acc, row) => acc + row.tradesPlaced, 0);
+    const totalTradesPlaced = rows.reduce(
+      (acc, row) => acc + row.tradesPlaced,
+      0,
+    );
 
     const journal = await loadScalpJournal(journalLimit);
-    const strategyBySymbol = new Map(rows.map((row) => [row.symbol.toUpperCase(), row.strategyId]));
+    const strategyBySymbol = new Map(
+      rows.map((row) => [row.symbol.toUpperCase(), row.strategyId]),
+    );
     const allowedStrategyIds = new Set(rows.map((row) => row.strategyId));
     const allowedDeploymentIds = new Set(rows.map((row) => row.deploymentId));
     const latestExecutionBySymbol: Record<string, Record<string, unknown>> = {};
-    const latestExecutionByDeploymentId: Record<string, Record<string, unknown>> = {};
+    const latestExecutionByDeploymentId: Record<
+      string,
+      Record<string, unknown>
+    > = {};
     for (let idx = 0; idx < journal.length; idx += 1) {
       const entry = journal[idx]!;
       try {
         const entryStrategy = journalStrategyId(entry);
         const entryDeploymentId = journalDeploymentId(entry);
-        const symbol = String(entry.symbol || '').toUpperCase();
+        const symbol = String(entry.symbol || "").toUpperCase();
         if (!symbol) continue;
-        const expectedStrategyId = strategyBySymbol.get(symbol) || strategy.strategyId;
+        const expectedStrategyId =
+          strategyBySymbol.get(symbol) || strategy.strategyId;
         if (entryStrategy && entryStrategy !== expectedStrategyId) continue;
-        if (!entryStrategy && expectedStrategyId !== runtime.defaultStrategyId) continue;
-        if (entry.type !== 'execution' && entry.type !== 'state' && entry.type !== 'error') continue;
+        if (!entryStrategy && expectedStrategyId !== runtime.defaultStrategyId)
+          continue;
+        if (
+          entry.type !== "execution" &&
+          entry.type !== "state" &&
+          entry.type !== "error"
+        )
+          continue;
         const compacted = compactJournalEntry(entry);
         if (!latestExecutionBySymbol[symbol]) {
           latestExecutionBySymbol[symbol] = compacted;
         }
-        if (entryDeploymentId && allowedDeploymentIds.has(entryDeploymentId) && !latestExecutionByDeploymentId[entryDeploymentId]) {
+        if (
+          entryDeploymentId &&
+          allowedDeploymentIds.has(entryDeploymentId) &&
+          !latestExecutionByDeploymentId[entryDeploymentId]
+        ) {
           latestExecutionByDeploymentId[entryDeploymentId] = compacted;
         }
       } catch (err: any) {
         const rowError = {
-          kind: 'journal_row',
+          kind: "journal_row",
           index: idx,
-          symbol: String((entry as any)?.symbol || ''),
-          type: String((entry as any)?.type || ''),
+          symbol: String((entry as any)?.symbol || ""),
+          type: String((entry as any)?.type || ""),
           message: err?.message || String(err),
         };
         rowErrors.push(rowError);
-        console.error(`[scalp-summary][${requestId}] journal_row_error`, rowError, err?.stack || '');
+        console.error(
+          `[scalp-summary][${requestId}] journal_row_error`,
+          rowError,
+          err?.stack || "",
+        );
       }
     }
-    logDebug('journal_compacted', {
+    logDebug("journal_compacted", {
       journalRows: journal.length,
       latestExecutionBySymbol: Object.keys(latestExecutionBySymbol).length,
-      latestExecutionByDeploymentId: Object.keys(latestExecutionByDeploymentId).length,
+      latestExecutionByDeploymentId: Object.keys(latestExecutionByDeploymentId)
+        .length,
       rowErrors: rowErrors.length,
     });
 
-    stage = 'respond';
+    stage = "respond";
     const durationMs = Date.now() - startedAtMs;
     if (rowErrors.length > 0) {
       console.warn(`[scalp-summary][${requestId}] completed_with_row_errors`, {
@@ -1122,14 +1602,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         useDeploymentsEffective,
       });
     }
-    logDebug('success', { durationMs, rowErrors: rowErrors.length });
+    logDebug("success", { durationMs, rowErrors: rowErrors.length });
     const responsePayload: Record<string, unknown> = {
-      mode: 'scalp',
+      mode: "scalp",
       generatedAtMs: nowMs,
       dayKey,
       clockMode: cfg.sessions.clockMode,
       entrySessionProfile: cfg.sessions.entrySessionProfile,
-      source: useDeploymentsEffective ? 'deployment_registry' : 'cron_symbols',
+      source: useDeploymentsEffective ? "deployment_registry" : "cron_symbols",
       strategyId: strategy.strategyId,
       defaultStrategyId: runtime.defaultStrategyId,
       strategy,
@@ -1151,8 +1631,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       journal: journal
         .filter((entry) => {
           const entryStrategy = journalStrategyId(entry);
-          if (entryStrategy && !allowedStrategyIds.has(entryStrategy)) return false;
-          if (!entryStrategy && !allowedStrategyIds.has(runtime.defaultStrategyId)) return false;
+          if (entryStrategy && !allowedStrategyIds.has(entryStrategy))
+            return false;
+          if (
+            !entryStrategy &&
+            !allowedStrategyIds.has(runtime.defaultStrategyId)
+          )
+            return false;
           return true;
         })
         .map(compactJournalEntry),
@@ -1173,23 +1658,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         expiresAtMs: nowMs + SUMMARY_CACHE_TTL_MS,
         payload: responsePayload,
       });
-      res.setHeader('x-scalp-summary-cache', 'miss');
+      res.setHeader("x-scalp-summary-cache", "miss");
     } else {
-      res.setHeader('x-scalp-summary-cache', bypassCache ? 'bypass' : 'off');
+      res.setHeader("x-scalp-summary-cache", bypassCache ? "bypass" : "off");
     }
     return res.status(200).json(responsePayload);
   } catch (err: any) {
     console.error(`[scalp-summary][${requestId}] fatal_error`, {
       stage,
       message: err?.message || String(err),
-      stack: err?.stack || '',
-      url: req.url || '',
-      method: req.method || '',
+      stack: err?.stack || "",
+      url: req.url || "",
+      method: req.method || "",
       query: req.query || {},
       durationMs: Date.now() - startedAtMs,
     });
     return res.status(500).json({
-      error: 'scalp_dashboard_summary_failed',
+      error: "scalp_dashboard_summary_failed",
       message: err?.message || String(err),
     });
   }

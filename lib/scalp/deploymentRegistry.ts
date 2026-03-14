@@ -42,6 +42,16 @@ export interface ScalpForwardValidationMetrics {
     weeklyWorstNetR?: number | null;
     weeklyTopWeekPnlConcentrationPct?: number | null;
     weeklyEvaluatedAtMs?: number | null;
+    confirmationWindowDays?: number | null;
+    confirmationForwardWindowDays?: number | null;
+    confirmationRollCount?: number | null;
+    confirmationProfitableWindowPct?: number | null;
+    confirmationMeanExpectancyR?: number | null;
+    confirmationMeanProfitFactor?: number | null;
+    confirmationMaxDrawdownR?: number | null;
+    confirmationMinTradesPerWindow?: number | null;
+    confirmationTotalTrades?: number | null;
+    confirmationEvaluatedAtMs?: number | null;
 }
 
 export interface ScalpDeploymentPromotionGateThresholds {
@@ -339,6 +349,16 @@ function normalizeForwardValidation(value: unknown): ScalpForwardValidationMetri
     const weeklyWorstNetRRaw = normalizeFiniteNumber(value.weeklyWorstNetR);
     const weeklyTopWeekPnlConcentrationPctRaw = normalizeFiniteNumber(value.weeklyTopWeekPnlConcentrationPct);
     const weeklyEvaluatedAtMsRaw = normalizeFiniteNumber(value.weeklyEvaluatedAtMs);
+    const confirmationWindowDaysRaw = normalizeFiniteNumber(value.confirmationWindowDays);
+    const confirmationForwardWindowDaysRaw = normalizeFiniteNumber(value.confirmationForwardWindowDays);
+    const confirmationRollCountRaw = normalizeFiniteNumber(value.confirmationRollCount);
+    const confirmationProfitableWindowPctRaw = normalizeFiniteNumber(value.confirmationProfitableWindowPct);
+    const confirmationMeanExpectancyRRaw = normalizeFiniteNumber(value.confirmationMeanExpectancyR);
+    const confirmationMeanProfitFactorRaw = normalizeFiniteNumber(value.confirmationMeanProfitFactor);
+    const confirmationMaxDrawdownRRaw = normalizeFiniteNumber(value.confirmationMaxDrawdownR);
+    const confirmationMinTradesPerWindowRaw = normalizeFiniteNumber(value.confirmationMinTradesPerWindow);
+    const confirmationTotalTradesRaw = normalizeFiniteNumber(value.confirmationTotalTrades);
+    const confirmationEvaluatedAtMsRaw = normalizeFiniteNumber(value.confirmationEvaluatedAtMs);
 
     return {
         rollCount,
@@ -363,6 +383,42 @@ function normalizeForwardValidation(value: unknown): ScalpForwardValidationMetri
                 ? Math.max(0, Math.min(100, weeklyTopWeekPnlConcentrationPctRaw))
                 : null,
         weeklyEvaluatedAtMs: weeklyEvaluatedAtMsRaw !== null && weeklyEvaluatedAtMsRaw > 0 ? Math.floor(weeklyEvaluatedAtMsRaw) : null,
+        confirmationWindowDays:
+            confirmationWindowDaysRaw !== null && confirmationWindowDaysRaw > 0
+                ? Math.floor(confirmationWindowDaysRaw)
+                : null,
+        confirmationForwardWindowDays:
+            confirmationForwardWindowDaysRaw !== null && confirmationForwardWindowDaysRaw > 0
+                ? Math.floor(confirmationForwardWindowDaysRaw)
+                : null,
+        confirmationRollCount:
+            confirmationRollCountRaw !== null && confirmationRollCountRaw > 0
+                ? Math.floor(confirmationRollCountRaw)
+                : null,
+        confirmationProfitableWindowPct:
+            confirmationProfitableWindowPctRaw !== null
+                ? Math.max(0, Math.min(100, confirmationProfitableWindowPctRaw))
+                : null,
+        confirmationMeanExpectancyR:
+            confirmationMeanExpectancyRRaw !== null ? confirmationMeanExpectancyRRaw : null,
+        confirmationMeanProfitFactor:
+            confirmationMeanProfitFactorRaw !== null ? confirmationMeanProfitFactorRaw : null,
+        confirmationMaxDrawdownR:
+            confirmationMaxDrawdownRRaw !== null && confirmationMaxDrawdownRRaw >= 0
+                ? confirmationMaxDrawdownRRaw
+                : null,
+        confirmationMinTradesPerWindow:
+            confirmationMinTradesPerWindowRaw !== null && confirmationMinTradesPerWindowRaw >= 0
+                ? Math.floor(confirmationMinTradesPerWindowRaw)
+                : null,
+        confirmationTotalTrades:
+            confirmationTotalTradesRaw !== null && confirmationTotalTradesRaw >= 0
+                ? Math.floor(confirmationTotalTradesRaw)
+                : null,
+        confirmationEvaluatedAtMs:
+            confirmationEvaluatedAtMsRaw !== null && confirmationEvaluatedAtMsRaw > 0
+                ? Math.floor(confirmationEvaluatedAtMsRaw)
+                : null,
     };
 }
 

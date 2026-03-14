@@ -246,6 +246,30 @@ model ScalpSymbolCooldown {
   @@map("scalp_symbol_cooldowns")
 }
 
+model ScalpSymbolMarketMetadata {
+  symbol              String   @id
+  epic                String?
+  source              String
+  assetCategory       String   @map("asset_category")
+  instrumentType      String?  @map("instrument_type")
+  marketStatus        String?  @map("market_status")
+  pipSize             Decimal  @map("pip_size") @db.Decimal(20, 10)
+  pipPosition         Int?     @map("pip_position")
+  tickSize            Decimal? @map("tick_size") @db.Decimal(20, 10)
+  decimalPlacesFactor Int?     @map("decimal_places_factor")
+  scalingFactor       Int?     @map("scaling_factor")
+  minDealSize         Decimal? @map("min_deal_size") @db.Decimal(20, 10)
+  sizeDecimals        Int?     @map("size_decimals")
+  openingHoursJson    Json?    @map("opening_hours_json") @db.JsonB
+  fetchedAt           DateTime @map("fetched_at") @db.Timestamptz(3)
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@index([assetCategory, updatedAt(sort: Desc)], map: "scalp_symbol_market_metadata_category_updated_idx")
+  @@index([updatedAt(sort: Desc)], map: "scalp_symbol_market_metadata_updated_idx")
+  @@map("scalp_symbol_market_metadata")
+}
+
 model ScalpResearchReportSnapshot {
   reportKey   String   @id @map("report_key")
   payloadJson Json     @default(dbgenerated("'{}'::jsonb")) @map("payload_json") @db.JsonB
