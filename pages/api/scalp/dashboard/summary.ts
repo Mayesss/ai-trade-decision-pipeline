@@ -530,13 +530,17 @@ function buildPipelineStatusPanel(
     panicStopEnabled && orchestratorErrorRaw === "panic_stop_enabled"
       ? null
       : orchestratorErrorRaw;
+  const effectiveOrchestratorError =
+    stage === "promotion" && (promotionRunning || promotionSucceededForCycle)
+      ? null
+      : orchestratorError;
   const promotionLaunchFailed =
     !cycleRunning &&
     cycleCompleted &&
     stage === "promotion" &&
     !promotionRunning &&
     !promotionSucceededForCycle &&
-    Boolean(orchestratorError);
+    Boolean(effectiveOrchestratorError);
   const promotionPending =
     !cycleRunning &&
     cycleCompleted &&
@@ -593,7 +597,7 @@ function buildPipelineStatusPanel(
       ? promotionStepIndex
       : promotionLaunchFailed
       ? promotionStepIndex
-      : orchestratorError || cycleFailed
+      : effectiveOrchestratorError || cycleFailed
       ? stageIndex >= 0
         ? stageIndex
         : workerStepIndex
@@ -629,8 +633,10 @@ function buildPipelineStatusPanel(
     if (state === "failed")
       detail =
         step.id === "promotion"
-          ? promotionDetail || orchestratorError || "promotion sync failed"
-          : orchestratorError || workerDetail || "pipeline failed";
+          ? promotionDetail ||
+            effectiveOrchestratorError ||
+            "promotion sync failed"
+          : effectiveOrchestratorError || workerDetail || "pipeline failed";
     if (state === "blocked") detail = panicStopReason || "panic stop enabled";
     return {
       id: step.id,

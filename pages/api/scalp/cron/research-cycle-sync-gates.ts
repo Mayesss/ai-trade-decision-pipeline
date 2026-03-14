@@ -3,7 +3,7 @@ export const config = { runtime: 'nodejs', maxDuration: 600 };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
-import { invokeCronEndpoint } from '../../../../lib/scalp/cronChaining';
+import { invokeCronEndpoint, invokeCronEndpointDetached } from '../../../../lib/scalp/cronChaining';
 import {
     savePromotionSyncProgressSnapshot,
     syncResearchCyclePromotionGates,
@@ -112,10 +112,100 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const materializeEnabled = parseBoolParam(req.query.materializeEnabled, true);
     const materializeMinTradesPerWindow = parseNonNegativeInt(firstQueryValue(req.query.materializeMinTradesPerWindow));
     const materializeMinMeanExpectancyR = parseFiniteNumber(firstQueryValue(req.query.materializeMinMeanExpectancyR));
+    const launchDetached = parseBoolParam(req.query.async ?? req.query.detach, false);
     const debug = parseBoolParam(req.query.debug ?? req.query.dubg, false);
     const autoSuccessor = parseBoolParam(req.query.autoSuccessor, true);
     const successorPath = firstQueryValue(req.query.successorPath) || '/api/scalp/cron/orchestrate-pipeline';
     const startedAtMs = Date.now();
+
+    if (launchDetached) {
+        if (!dryRun) {
+            await savePromotionSyncProgressSnapshot({
+                version: 1,
+                status: 'queued',
+                cycleId: cycleId || null,
+                dryRun: false,
+                requireCompletedCycle,
+                phase: 'queued',
+                startedAtMs,
+                updatedAtMs: startedAtMs,
+                finishedAtMs: null,
+                totalDeployments: null,
+                processedDeployments: 0,
+                matchedDeployments: 0,
+                updatedDeployments: 0,
+                currentSymbol: null,
+                currentStrategyId: null,
+                currentTuneId: null,
+                reason: 'launch_requested',
+                lastError: null,
+            });
+        }
+        const launch = await invokeCronEndpointDetached(
+            req,
+            '/api/scalp/cron/research-cycle-sync-gates',
+            {
+                cycleId,
+                dryRun,
+                requireCompletedCycle,
+                sources: firstQueryValue(req.query.sources),
+                weeklyRobustnessEnabled,
+                weeklyRobustnessRequireWinnerShortlist,
+                weeklyRobustnessTopKPerSymbol,
+                weeklyRobustnessLookbackDays,
+                weeklyRobustnessMinCandlesPerSlice,
+                weeklyRobustnessMinSlices,
+                weeklyRobustnessMinProfitablePct,
+                weeklyRobustnessMinMedianExpectancyR,
+                weeklyRobustnessMaxTopWeekPnlConcentrationPct,
+                materializeMissingCandidates,
+                materializeTopKPerSymbol,
+                materializeSource,
+                materializeEnabled,
+                materializeMinTradesPerWindow,
+                materializeMinMeanExpectancyR,
+                updatedBy:
+                    firstQueryValue(req.query.updatedBy) ||
+                    'cron:research-cycle-sync-gates:detached-launch',
+                debug,
+                autoSuccessor,
+                successorPath,
+            },
+            750,
+        );
+        const launchOk = Boolean(launch.invoked) && !launch.error;
+        if (!launchOk && !dryRun) {
+            await savePromotionSyncProgressSnapshot({
+                version: 1,
+                status: 'failed',
+                cycleId: cycleId || null,
+                dryRun: false,
+                requireCompletedCycle,
+                phase: 'launch_failed',
+                startedAtMs,
+                updatedAtMs: Date.now(),
+                finishedAtMs: Date.now(),
+                totalDeployments: null,
+                processedDeployments: 0,
+                matchedDeployments: 0,
+                updatedDeployments: 0,
+                currentSymbol: null,
+                currentStrategyId: null,
+                currentTuneId: null,
+                reason: 'launch_failed',
+                lastError: launch.error || (launch.status ? `http_${launch.status}` : 'launch_failed'),
+            });
+        }
+        return res.status(launchOk ? 202 : 500).json({
+            ok: launchOk,
+            message: launchOk ? 'promotion gate sync launched' : 'promotion gate sync launch failed',
+            cycleId: cycleId || null,
+            dryRun,
+            requireCompletedCycle,
+            detached: launch.detached === true,
+            launch,
+        });
+    }
 
     try {
         const out = await syncResearchCyclePromotionGates({

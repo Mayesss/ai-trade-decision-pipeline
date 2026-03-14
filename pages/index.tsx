@@ -1213,6 +1213,8 @@ export default function Home() {
   const [scalpPanicStopUpdating, setScalpPanicStopUpdating] = useState(false);
   const [scalpCycleStartSubmitting, setScalpCycleStartSubmitting] =
     useState(false);
+  const [scalpPromotionRetrySubmitting, setScalpPromotionRetrySubmitting] =
+    useState(false);
   const [scalpWorkerRetryStateByTaskId, setScalpWorkerRetryStateByTaskId] =
     useState<
       Record<
@@ -2001,6 +2003,60 @@ export default function Home() {
       setError(err?.message || "Failed to start cycle");
     } finally {
       setScalpCycleStartSubmitting(false);
+    }
+  };
+
+  const retryScalpPromotionGate = async () => {
+    if (scalpPromotionRetrySubmitting) return;
+    const cycleId = String(
+      scalpPipelineStatusPanel?.cycleId ||
+        scalpPipelineCycle?.cycleId ||
+        scalpResearchCycle?.cycleId ||
+        scalpResearchCycle?.cycle?.cycleId ||
+        "",
+    ).trim();
+    if (!cycleId) {
+      setError("No cycle id available for promotion gate retry");
+      return;
+    }
+    setScalpPromotionRetrySubmitting(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams({
+        cycleId,
+        dryRun: "false",
+        requireCompletedCycle: "true",
+        materializeEnabled: "true",
+        autoSuccessor: "false",
+        async: "true",
+        updatedBy: "ui:promotion-gate-retry",
+      });
+      const res = await fetch(
+        `/api/scalp/cron/research-cycle-sync-gates?${params.toString()}`,
+        {
+          headers: buildAdminHeaders(),
+          cache: "no-store",
+        },
+      );
+      const payload = await res.json().catch(() => null);
+      if (res.status === 401) {
+        handleAuthExpired(
+          "Admin session expired. Re-enter ADMIN_ACCESS_SECRET.",
+        );
+        return;
+      }
+      if (!res.ok) {
+        const message =
+          String(payload?.message || payload?.error || "").trim() ||
+          `Failed to retry promotion gate (${res.status})`;
+        setError(message);
+        return;
+      }
+      void loadScalpDashboard({ silent: true, force: true });
+    } catch (err: any) {
+      setError(err?.message || "Failed to retry promotion gate");
+    } finally {
+      setScalpPromotionRetrySubmitting(false);
     }
   };
 
@@ -3124,6 +3180,25 @@ export default function Home() {
           } => Boolean(step),
         )
     : [];
+  const scalpPipelinePromotionStep =
+    scalpPipelineStatusSteps.find((step) => step.id === "promotion") || null;
+  const scalpPipelineCycleId =
+    String(
+      scalpPipelineStatusPanel?.cycleId ||
+        scalpPipelineCycle?.cycleId ||
+        scalpResearchCycle?.cycleId ||
+        scalpResearchCycle?.cycle?.cycleId ||
+        "",
+    ).trim() || null;
+  const scalpPromotionRetryVisible = Boolean(
+    scalpPipelineCycleId &&
+      scalpPipelinePromotionStep &&
+      (scalpPipelinePromotionStep.state === "pending" ||
+        scalpPipelinePromotionStep.state === "failed"),
+  );
+  const scalpPromotionRetryDisabled =
+    scalpPromotionRetrySubmitting ||
+    scalpPipelinePromotionStep?.state === "running";
   const scalpCycleStartDisabled =
     scalpCycleStartSubmitting || scalpPipelineStatus === "running";
   const scalpWorkerTasks = Array.isArray(scalpResearchCycle?.tasks)
@@ -6511,6 +6586,35 @@ export default function Home() {
                                 ? "starting..."
                                 : "Prepare + Start"}
                             </button>
+                            {scalpPromotionRetryVisible ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void retryScalpPromotionGate();
+                                }}
+                                disabled={scalpPromotionRetryDisabled}
+                                className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
+                                  scalpPromotionRetryDisabled
+                                    ? scalpDarkMode
+                                      ? "cursor-not-allowed border-zinc-700 text-zinc-500"
+                                      : "cursor-not-allowed border-slate-200 text-slate-400"
+                                    : scalpDarkMode
+                                      ? "border-amber-500/60 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20"
+                                      : "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
+                                }`}
+                                title={
+                                  scalpPipelinePromotionStep?.state === "failed"
+                                    ? "Retry the promotion gate sync for the current completed cycle."
+                                    : "Run the promotion gate sync for the current completed cycle."
+                                }
+                              >
+                                {scalpPromotionRetrySubmitting
+                                  ? "launching..."
+                                  : scalpPipelinePromotionStep?.state === "failed"
+                                    ? "Retry Promotion Gate"
+                                    : "Run Promotion Gate"}
+                              </button>
+                            ) : null}
                             <button
                               type="button"
                               onClick={() => {
