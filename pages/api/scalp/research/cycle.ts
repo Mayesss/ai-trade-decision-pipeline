@@ -13,7 +13,16 @@ import {
   loadResearchCycleSummary,
   loadResearchWorkerHeartbeat,
   retryResearchTask,
+  type ScalpResearchCycleSnapshot,
 } from "../../../../lib/scalp/researchCycle";
+
+const ACTIVE_CYCLE_STALE_AFTER_MS = (() => {
+  const value = Number(
+    process.env.SCALP_PIPELINE_ACTIVE_CYCLE_STALE_AFTER_MS ?? 20 * 60_000,
+  );
+  if (!Number.isFinite(value)) return 20 * 60_000;
+  return Math.max(60_000, Math.floor(value));
+})();
 
 function parseBoolParam(
   value: string | string[] | undefined,
@@ -58,6 +67,42 @@ function setNoStoreHeaders(res: NextApiResponse): void {
   res.setHeader("Expires", "0");
 }
 
+function isFreshWorkerHeartbeatForCycle(params: {
+  cycleId: string | null;
+  nowMs: number;
+  workerHeartbeat: Awaited<ReturnType<typeof loadResearchWorkerHeartbeat>>;
+}): boolean {
+  const cycleId = String(params.cycleId || "").trim();
+  if (!cycleId) return false;
+  const heartbeat = params.workerHeartbeat;
+  const heartbeatCycleId = String(heartbeat?.cycleId || "").trim();
+  if (!heartbeatCycleId || heartbeatCycleId !== cycleId) return false;
+  const heartbeatStatus = String(heartbeat?.status || "")
+    .trim()
+    .toLowerCase();
+  if (heartbeatStatus !== "started") return false;
+  const updatedAtMs = Number(heartbeat?.updatedAtMs);
+  if (!Number.isFinite(updatedAtMs) || updatedAtMs <= 0) return false;
+  return params.nowMs - Math.floor(updatedAtMs) <= ACTIVE_CYCLE_STALE_AFTER_MS;
+}
+
+function isStaleRunningCycle(params: {
+  cycle: ScalpResearchCycleSnapshot | null;
+  workerHeartbeat: Awaited<ReturnType<typeof loadResearchWorkerHeartbeat>>;
+  nowMs: number;
+}): boolean {
+  const cycle = params.cycle;
+  if (!cycle || cycle.status !== "running") return false;
+  if (params.nowMs - cycle.updatedAtMs <= ACTIVE_CYCLE_STALE_AFTER_MS) {
+    return false;
+  }
+  return !isFreshWorkerHeartbeatForCycle({
+    cycleId: cycle.cycleId,
+    nowMs: params.nowMs,
+    workerHeartbeat: params.workerHeartbeat,
+  });
+}
+
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse,
@@ -97,27 +142,47 @@ export default async function handler(
         ),
       );
 
+      const nowMs = Date.now();
       const activeCycleId = await loadActiveResearchCycleId();
+      const workerHeartbeat = await loadResearchWorkerHeartbeat();
+      const activeCycle =
+        !requestedCycleId && activeCycleId
+          ? await loadResearchCycle(activeCycleId)
+          : null;
+      const staleActiveCycle = isStaleRunningCycle({
+        cycle: activeCycle,
+        workerHeartbeat,
+        nowMs,
+      });
       const latestCompletedCycleId =
-        !requestedCycleId && !activeCycleId && allowLatestCompletedFallback
+        !requestedCycleId && allowLatestCompletedFallback
           ? await loadLatestCompletedResearchCycleId()
           : null;
-      const cycleId =
-        requestedCycleId || activeCycleId || latestCompletedCycleId;
+      const fallbackToCompleted =
+        !requestedCycleId &&
+        staleActiveCycle &&
+        latestCompletedCycleId &&
+        latestCompletedCycleId !== activeCycleId;
+      const cycleId = requestedCycleId
+        ? requestedCycleId
+        : fallbackToCompleted
+          ? latestCompletedCycleId
+          : activeCycleId || latestCompletedCycleId;
       const cycleSource = requestedCycleId
         ? "requested"
-        : activeCycleId
-          ? "active"
-          : latestCompletedCycleId
-            ? "latest_completed_fallback"
-            : "none";
+        : fallbackToCompleted
+          ? "stale_active_fallback"
+          : activeCycleId
+            ? "active"
+            : latestCompletedCycleId
+              ? "latest_completed_fallback"
+              : "none";
       if (!cycleId) {
         if (includeTasks && fallbackToRecentTasks) {
           const page = await listResearchTasksPage({
             limit: taskLimit,
             offset: taskOffset,
           });
-          const workerHeartbeat = await loadResearchWorkerHeartbeat();
           return res.status(200).json({
             ok: true,
             cycleId: null,
@@ -153,7 +218,15 @@ export default async function handler(
             finalizeWhenDone: false,
           })
         : null;
-      const cycle = aggregated?.cycle || (await loadResearchCycle(cycleId));
+      const cycle =
+        aggregated?.cycle ||
+        (requestedCycleId
+          ? await loadResearchCycle(cycleId)
+          : fallbackToCompleted && latestCompletedCycleId === cycleId
+            ? await loadResearchCycle(cycleId)
+            : activeCycle?.cycleId === cycleId
+              ? activeCycle
+              : await loadResearchCycle(cycleId));
       if (!cycle) {
         return res.status(404).json({
           error: "research_cycle_not_found",
@@ -177,8 +250,6 @@ export default async function handler(
           ? pagedTasks?.tasks || []
           : await listResearchCycleTasks(cycle.cycleId, taskLimit)
         : [];
-      const workerHeartbeat = await loadResearchWorkerHeartbeat();
-
       return res.status(200).json({
         ok: true,
         cycleId: cycle.cycleId,
@@ -189,6 +260,8 @@ export default async function handler(
           workerHeartbeat && workerHeartbeat.cycleId === cycle.cycleId
             ? workerHeartbeat
             : null,
+        staleActiveCycleId:
+          staleActiveCycle && activeCycleId ? activeCycleId : null,
         tasks: includeTasks ? tasks : undefined,
         taskCountReturned: includeTasks ? tasks.length : 0,
         includeTasks,

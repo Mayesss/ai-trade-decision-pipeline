@@ -29,6 +29,7 @@ import {
   loadPromotionSyncProgressSnapshot,
   loadPromotionSyncStateFromPg,
 } from "../../../../lib/scalp/researchPromotion";
+import { loadResearchWorkerHeartbeat } from "../../../../lib/scalp/researchCycle";
 import { normalizeScalpStrategyId } from "../../../../lib/scalp/strategies/registry";
 import { deriveScalpDayKey } from "../../../../lib/scalp/stateMachine";
 import {
@@ -77,6 +78,13 @@ const HISTORY_DISCOVERY_PREVIEW_LIMIT = (() => {
   const value = Number(process.env.SCALP_DASHBOARD_HISTORY_PREVIEW_LIMIT ?? 20);
   if (!Number.isFinite(value)) return 20;
   return Math.max(1, Math.min(500, Math.floor(value)));
+})();
+const PIPELINE_ACTIVE_CYCLE_STALE_AFTER_MS = (() => {
+  const value = Number(
+    process.env.SCALP_PIPELINE_ACTIVE_CYCLE_STALE_AFTER_MS ?? 20 * 60_000,
+  );
+  if (!Number.isFinite(value)) return 20 * 60_000;
+  return Math.max(60_000, Math.floor(value));
 })();
 const historyDiscoveryCache = new Map<
   string,
@@ -245,6 +253,15 @@ type ScalpPipelineCycleTotals = NonNullable<
   NonNullable<ScalpPipelineSnapshot["cycle"]>["totals"]
 >;
 
+type PipelineCycleCandidate = {
+  cycleId: string | null;
+  status: string | null;
+  createdAtMs: bigint | number | null;
+  updatedAtMs: bigint | number | null;
+  completedAtMs: bigint | number | null;
+  summary: unknown;
+};
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
@@ -254,6 +271,62 @@ function asTsMs(value: unknown): number | null {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return null;
   return Math.floor(n);
+}
+
+function isFreshWorkerHeartbeatForCycle(params: {
+  cycleId: string | null;
+  nowMs: number;
+  heartbeat:
+    | {
+        cycleId: string | null;
+        status: string | null;
+        updatedAtMs: number | null;
+      }
+    | null
+    | undefined;
+}): boolean {
+  const cycleId = String(params.cycleId || "").trim();
+  if (!cycleId) return false;
+  const heartbeatCycleId = String(params.heartbeat?.cycleId || "").trim();
+  if (!heartbeatCycleId || heartbeatCycleId !== cycleId) return false;
+  const heartbeatStatus = String(params.heartbeat?.status || "")
+    .trim()
+    .toLowerCase();
+  if (heartbeatStatus !== "started") return false;
+  const updatedAtMs = asTsMs(params.heartbeat?.updatedAtMs);
+  if (updatedAtMs === null) return false;
+  return params.nowMs - updatedAtMs <= PIPELINE_ACTIVE_CYCLE_STALE_AFTER_MS;
+}
+
+function selectPipelineCycleCandidate(params: {
+  nowMs: number;
+  workerHeartbeat:
+    | {
+        cycleId: string | null;
+        status: string | null;
+        updatedAtMs: number | null;
+      }
+    | null
+    | undefined;
+  runningCycle: PipelineCycleCandidate | null;
+  fallbackCycle: PipelineCycleCandidate | null;
+}): PipelineCycleCandidate | null {
+  const runningCycle = params.runningCycle;
+  if (runningCycle?.cycleId) {
+    const runningUpdatedAtMs = asTsMs(runningCycle.updatedAtMs);
+    const runningFreshByUpdate =
+      runningUpdatedAtMs !== null &&
+      params.nowMs - runningUpdatedAtMs <= PIPELINE_ACTIVE_CYCLE_STALE_AFTER_MS;
+    const runningFreshByHeartbeat = isFreshWorkerHeartbeatForCycle({
+      cycleId: runningCycle.cycleId,
+      nowMs: params.nowMs,
+      heartbeat: params.workerHeartbeat,
+    });
+    if (runningFreshByUpdate || runningFreshByHeartbeat) {
+      return runningCycle;
+    }
+  }
+  return params.fallbackCycle || runningCycle || null;
 }
 
 function parseUnknownBool(value: unknown): boolean {
@@ -635,12 +708,18 @@ async function loadScalpPipelineSnapshot(
       orchestratorPayload: unknown;
       panicStopPayload: unknown;
       panicStopUpdatedAtMs: bigint | number | null;
-      cycleId: string | null;
-      cycleStatus: string | null;
-      cycleCreatedAtMs: bigint | number | null;
-      cycleUpdatedAtMs: bigint | number | null;
-      cycleCompletedAtMs: bigint | number | null;
-      cycleSummary: unknown;
+      runningCycleId: string | null;
+      runningCycleStatus: string | null;
+      runningCycleCreatedAtMs: bigint | number | null;
+      runningCycleUpdatedAtMs: bigint | number | null;
+      runningCycleCompletedAtMs: bigint | number | null;
+      runningCycleSummary: unknown;
+      fallbackCycleId: string | null;
+      fallbackCycleStatus: string | null;
+      fallbackCycleCreatedAtMs: bigint | number | null;
+      fallbackCycleUpdatedAtMs: bigint | number | null;
+      fallbackCycleCompletedAtMs: bigint | number | null;
+      fallbackCycleSummary: unknown;
     }>
   >(Prisma.sql`
     WITH orchestrator_state AS (
@@ -659,7 +738,7 @@ async function loadScalpPipelineSnapshot(
         AND dedupe_key = 'scalp_panic_stop_v1'
       LIMIT 1
     ),
-    selected_cycle AS (
+    running_cycle AS (
       SELECT
         cycle_id,
         status::text AS status,
@@ -671,37 +750,87 @@ async function loadScalpPipelineSnapshot(
           ELSE (EXTRACT(EPOCH FROM completed_at) * 1000)::bigint
         END AS completed_at_ms
       FROM scalp_research_cycles
-      ORDER BY
-        CASE WHEN status = 'running'::scalp_cycle_status THEN 0 ELSE 1 END,
-        updated_at DESC
+      WHERE status = 'running'::scalp_cycle_status
+      ORDER BY updated_at DESC
+      LIMIT 1
+    ),
+    fallback_cycle AS (
+      SELECT
+        cycle_id,
+        status::text AS status,
+        latest_summary_json,
+        (EXTRACT(EPOCH FROM created_at) * 1000)::bigint AS created_at_ms,
+        (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint AS updated_at_ms,
+        CASE
+          WHEN completed_at IS NULL THEN NULL
+          ELSE (EXTRACT(EPOCH FROM completed_at) * 1000)::bigint
+        END AS completed_at_ms
+      FROM scalp_research_cycles
+      WHERE status <> 'running'::scalp_cycle_status
+      ORDER BY updated_at DESC
       LIMIT 1
     )
     SELECT
       (SELECT payload FROM orchestrator_state) AS "orchestratorPayload",
       (SELECT payload FROM panic_stop_state) AS "panicStopPayload",
       (SELECT updated_at_ms FROM panic_stop_state) AS "panicStopUpdatedAtMs",
-      sc.cycle_id AS "cycleId",
-      sc.status AS "cycleStatus",
-      sc.created_at_ms AS "cycleCreatedAtMs",
-      sc.updated_at_ms AS "cycleUpdatedAtMs",
-      sc.completed_at_ms AS "cycleCompletedAtMs",
-      sc.latest_summary_json AS "cycleSummary"
-    FROM selected_cycle sc
+      rc.cycle_id AS "runningCycleId",
+      rc.status AS "runningCycleStatus",
+      rc.created_at_ms AS "runningCycleCreatedAtMs",
+      rc.updated_at_ms AS "runningCycleUpdatedAtMs",
+      rc.completed_at_ms AS "runningCycleCompletedAtMs",
+      rc.latest_summary_json AS "runningCycleSummary",
+      fc.cycle_id AS "fallbackCycleId",
+      fc.status AS "fallbackCycleStatus",
+      fc.created_at_ms AS "fallbackCycleCreatedAtMs",
+      fc.updated_at_ms AS "fallbackCycleUpdatedAtMs",
+      fc.completed_at_ms AS "fallbackCycleCompletedAtMs",
+      fc.latest_summary_json AS "fallbackCycleSummary"
+    FROM running_cycle rc
+    FULL OUTER JOIN fallback_cycle fc ON TRUE
     UNION ALL
     SELECT
       (SELECT payload FROM orchestrator_state) AS "orchestratorPayload",
       (SELECT payload FROM panic_stop_state) AS "panicStopPayload",
       (SELECT updated_at_ms FROM panic_stop_state) AS "panicStopUpdatedAtMs",
-      NULL::text AS "cycleId",
-      NULL::text AS "cycleStatus",
-      NULL::bigint AS "cycleCreatedAtMs",
-      NULL::bigint AS "cycleUpdatedAtMs",
-      NULL::bigint AS "cycleCompletedAtMs",
-      NULL::jsonb AS "cycleSummary"
-    WHERE NOT EXISTS (SELECT 1 FROM selected_cycle);
+      NULL::text AS "runningCycleId",
+      NULL::text AS "runningCycleStatus",
+      NULL::bigint AS "runningCycleCreatedAtMs",
+      NULL::bigint AS "runningCycleUpdatedAtMs",
+      NULL::bigint AS "runningCycleCompletedAtMs",
+      NULL::jsonb AS "runningCycleSummary",
+      NULL::text AS "fallbackCycleId",
+      NULL::text AS "fallbackCycleStatus",
+      NULL::bigint AS "fallbackCycleCreatedAtMs",
+      NULL::bigint AS "fallbackCycleUpdatedAtMs",
+      NULL::bigint AS "fallbackCycleCompletedAtMs",
+      NULL::jsonb AS "fallbackCycleSummary"
+    WHERE NOT EXISTS (SELECT 1 FROM running_cycle)
+      AND NOT EXISTS (SELECT 1 FROM fallback_cycle);
   `);
   const row = rows[0];
   if (!row) return null;
+  const workerHeartbeat = await loadResearchWorkerHeartbeat();
+  const selectedCycle = selectPipelineCycleCandidate({
+    nowMs,
+    workerHeartbeat,
+    runningCycle: {
+      cycleId: row.runningCycleId,
+      status: row.runningCycleStatus,
+      createdAtMs: row.runningCycleCreatedAtMs,
+      updatedAtMs: row.runningCycleUpdatedAtMs,
+      completedAtMs: row.runningCycleCompletedAtMs,
+      summary: row.runningCycleSummary,
+    },
+    fallbackCycle: {
+      cycleId: row.fallbackCycleId,
+      status: row.fallbackCycleStatus,
+      createdAtMs: row.fallbackCycleCreatedAtMs,
+      updatedAtMs: row.fallbackCycleUpdatedAtMs,
+      completedAtMs: row.fallbackCycleCompletedAtMs,
+      summary: row.fallbackCycleSummary,
+    },
+  });
 
   const orchestratorPayload = asRecord(row.orchestratorPayload);
   const panicStopPayload = asRecord(row.panicStopPayload);
@@ -728,7 +857,7 @@ async function loadScalpPipelineSnapshot(
   const orchestratorRunning = panicStopEnabled ? false : orchestratorRunningRaw;
   const stageMeta = pipelineStageMeta(orchestratorStage);
 
-  const summary = asRecord(row.cycleSummary);
+  const summary = asRecord(selectedCycle?.summary);
   const totals = asRecord(summary.totals);
   const cycleProgressPct = safeProgressPct(summary.progressPct);
   const [promotionProgress, latestPromotionSync] = await Promise.all([
@@ -762,13 +891,13 @@ async function loadScalpPipelineSnapshot(
           lastError: orchestratorLastError,
         }
       : null,
-    cycle: row.cycleId
+    cycle: selectedCycle?.cycleId
       ? {
-          cycleId: row.cycleId,
-          status: row.cycleStatus,
-          createdAtMs: asTsMs(row.cycleCreatedAtMs),
-          updatedAtMs: asTsMs(row.cycleUpdatedAtMs),
-          completedAtMs: asTsMs(row.cycleCompletedAtMs),
+          cycleId: selectedCycle.cycleId,
+          status: selectedCycle.status,
+          createdAtMs: asTsMs(selectedCycle.createdAtMs),
+          updatedAtMs: asTsMs(selectedCycle.updatedAtMs),
+          completedAtMs: asTsMs(selectedCycle.completedAtMs),
           progressPct: cycleProgressPct,
           totals: Object.keys(totals).length
             ? {
