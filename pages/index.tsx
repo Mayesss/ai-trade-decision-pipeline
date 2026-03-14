@@ -1054,22 +1054,50 @@ function formatScalpNextRunIn(
   return `in ${minutes}m`;
 }
 
-function buildScalpCronRuntimeMap(
-  nowMs: number,
-): Record<string, ScalpCronRuntimeMeta> {
+function listVercelCronRows(): Array<{
+  path: string;
+  schedule: string;
+  pathname: string | null;
+}> {
   const crons: VercelCronEntry[] = Array.isArray((vercelConfig as any)?.crons)
     ? (vercelConfig as any).crons
     : [];
+  return crons.map((row) => {
+    const path = String(row?.path || "").trim();
+    const schedule = String(row?.schedule || "").trim();
+    const pathname = parseCronPathname(path);
+    return { path, schedule, pathname };
+  });
+}
+
+function nextCronRunAtMsForPath(params: {
+  nowMs: number;
+  pathname: string;
+  pathFilter?: (path: string) => boolean;
+}): number | null {
+  const expressions = dedupeStrings(
+    listVercelCronRows()
+      .filter((row) => row.pathname === params.pathname)
+      .filter((row) => (params.pathFilter ? params.pathFilter(row.path) : true))
+      .map((row) => row.schedule),
+  );
+  const nextRunCandidates = expressions
+    .map((expression) => nextCronRunAtMs(expression, params.nowMs))
+    .filter(
+      (value): value is number =>
+        typeof value === "number" && Number.isFinite(value),
+    );
+  return nextRunCandidates.length ? Math.min(...nextRunCandidates) : null;
+}
+
+function buildScalpCronRuntimeMap(
+  nowMs: number,
+): Record<string, ScalpCronRuntimeMeta> {
+  const crons = listVercelCronRows();
   const out: Record<string, ScalpCronRuntimeMeta> = {};
 
   for (const [id, def] of Object.entries(SCALP_CRON_PIPELINE_DEFINITIONS)) {
     const rows = crons
-      .map((row) => {
-        const path = String(row?.path || "").trim();
-        const schedule = String(row?.schedule || "").trim();
-        const pathname = parseCronPathname(path);
-        return { path, schedule, pathname };
-      })
       .filter(
         (row) =>
           row.pathname !== null && def.matchPathnames.includes(row.pathname),
@@ -3217,6 +3245,18 @@ export default function Home() {
         : scalpPipelineStatus === "failed" || scalpPipelineStatus === "blocked"
           ? "stopped"
           : null;
+  const scalpNextFreshCycleStartAtMs =
+    scalpPipelineStatus === "running"
+      ? null
+      : nextCronRunAtMsForPath({
+          nowMs: scalpCronNowMs,
+          pathname: "/api/scalp/cron/orchestrate-pipeline",
+          pathFilter: (path) => !/[?&]continue=1(?:&|$)/.test(path),
+        });
+  const scalpNextFreshCycleStartLabel =
+    scalpNextFreshCycleStartAtMs === null
+      ? null
+      : formatScalpNextRunIn(scalpNextFreshCycleStartAtMs, scalpCronNowMs);
   const scalpPipelinePromotionStep =
     scalpPipelineStatusSteps.find((step) => step.id === "promotion") || null;
   const scalpPipelineCycleId =
@@ -4132,9 +4172,7 @@ export default function Home() {
     return Date.now() - ts <= staleMs ? "healthy" : "lagging";
   };
   const scalpCronRuntimeById: Record<string, ScalpCronRuntimeMeta> =
-    SCALP_LEGACY_CRON_PIPELINE_UI
-      ? buildScalpCronRuntimeMap(scalpCronNowMs)
-      : {};
+    buildScalpCronRuntimeMap(scalpCronNowMs);
   const scalpCronRuntimeMeta = (id: string): ScalpCronRuntimeMeta =>
     scalpCronRuntimeById[id] || {
       expressions: [],
@@ -6726,6 +6764,13 @@ export default function Home() {
                               {scalpPipelineStatusDetail ||
                                 "Persisted orchestrator and cycle state from Postgres."}
                             </p>
+                            {scalpNextFreshCycleStartLabel ? (
+                              <p
+                                className={`mt-2 text-xs ${scalpTextMutedClass}`}
+                              >
+                                Next cycle start {scalpNextFreshCycleStartLabel}
+                              </p>
+                            ) : null}
                           </div>
                           <div className="flex items-center gap-2">
                             <button
