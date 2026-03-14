@@ -8,6 +8,27 @@ export interface CronInvokeResult {
     detached?: boolean;
 }
 
+function firstHeaderValue(value: string | string[] | undefined): string {
+    if (typeof value === 'string') return value.trim();
+    if (Array.isArray(value) && value.length > 0) return String(value[0] || '').trim();
+    return '';
+}
+
+function buildCronAuthHeaders(req?: NextApiRequest): Record<string, string> {
+    const headers: Record<string, string> = {};
+    const envAdminSecret = String(process.env.ADMIN_ACCESS_SECRET || '').trim();
+    const forwardedAdminSecret = firstHeaderValue(req?.headers['x-admin-access-secret']);
+    const forwardedAuthorization = firstHeaderValue(req?.headers.authorization);
+    if (envAdminSecret) {
+        headers['x-admin-access-secret'] = envAdminSecret;
+    } else if (forwardedAdminSecret) {
+        headers['x-admin-access-secret'] = forwardedAdminSecret;
+    } else if (forwardedAuthorization) {
+        headers.authorization = forwardedAuthorization;
+    }
+    return headers;
+}
+
 export function resolveCronBaseUrl(req: NextApiRequest): string | null {
     const explicit = String(process.env.SCALP_ORCHESTRATOR_BASE_URL || process.env.APP_BASE_URL || process.env.URL || '').trim();
     if (explicit) return explicit.replace(/\/+$/, '');
@@ -41,9 +62,7 @@ export async function invokeCronEndpoint(
     const baseUrl = resolveCronBaseUrl(req);
     if (!baseUrl) return { invoked: false, status: null, error: 'missing_base_url', url: null };
     const url = buildCronUrl(baseUrl, path, query);
-    const headers: Record<string, string> = {};
-    const adminSecret = String(process.env.ADMIN_ACCESS_SECRET || '').trim();
-    if (adminSecret) headers['x-admin-access-secret'] = adminSecret;
+    const headers = buildCronAuthHeaders(req);
     const ctrl = new AbortController();
     const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
@@ -79,7 +98,7 @@ export async function invokeCronEndpointDetached(
 ): Promise<CronInvokeResult> {
     const baseUrl = resolveCronBaseUrl(req);
     if (!baseUrl) return { invoked: false, status: null, error: 'missing_base_url', url: null, detached: false };
-    return invokeCronUrlDetached(baseUrl, path, query, timeoutMs);
+    return invokeCronUrlDetached(baseUrl, path, query, timeoutMs, buildCronAuthHeaders(req));
 }
 
 export async function invokeCronUrlDetached(
@@ -87,11 +106,13 @@ export async function invokeCronUrlDetached(
     path: string,
     query: Record<string, string | number | boolean | null | undefined>,
     timeoutMs = 750,
+    forwardedHeaders?: Record<string, string>,
 ): Promise<CronInvokeResult> {
     const url = buildCronUrl(baseUrl, path, query);
-    const headers: Record<string, string> = {};
-    const adminSecret = String(process.env.ADMIN_ACCESS_SECRET || '').trim();
-    if (adminSecret) headers['x-admin-access-secret'] = adminSecret;
+    const headers =
+        forwardedHeaders && Object.keys(forwardedHeaders).length
+            ? { ...forwardedHeaders }
+            : buildCronAuthHeaders();
     const ctrl = new AbortController();
     let timedOut = false;
     const timeout = setTimeout(() => {

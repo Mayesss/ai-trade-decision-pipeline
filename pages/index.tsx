@@ -8053,7 +8053,7 @@ export default function Home() {
                       </h3>
                       <span
                         className={scalpTagNeutralClass}
-                      >{`${scalpWorkerJobsGridRows.length} deployments`}</span>
+                      >{`${scalpWorkerJobsGridRows.length} deployment rows`}</span>
                     </div>
                     <div className={`mt-2 text-xs ${scalpTextSecondaryClass}`}>
                       One row per deployment, with all window-level outcomes

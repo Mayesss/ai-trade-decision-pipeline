@@ -444,6 +444,18 @@ function promotionSyncDetail(
   return parts.length ? parts.join(" · ") : null;
 }
 
+function promotionSyncMatchesCycle(
+  promotionSync: ScalpPipelineSnapshot["promotionSync"],
+  cycleId: string | null,
+): boolean {
+  if (!promotionSync || !cycleId) return false;
+  if (promotionSync.cycleId === cycleId) return true;
+  return (
+    promotionSync.status === "succeeded" &&
+    promotionSync.lastCompletedCycleId === cycleId
+  );
+}
+
 function compositePromotionProgressPct(params: {
   promotionStepIndex: number;
   totalSteps: number;
@@ -489,37 +501,49 @@ function buildPipelineStatusPanel(
   );
   const currentCycleId = input.cycle?.cycleId || null;
   const promotionSync = input.promotionSync;
+  const promotionSyncForCycle = promotionSyncMatchesCycle(
+    promotionSync,
+    currentCycleId,
+  )
+    ? promotionSync
+    : null;
   const promotionSyncFresh =
-    promotionSync?.updatedAtMs !== null &&
-    typeof promotionSync?.updatedAtMs === "number" &&
-    Number.isFinite(promotionSync.updatedAtMs) &&
-    nowMs - promotionSync.updatedAtMs <= PROMOTION_SYNC_STALE_AFTER_MS;
+    promotionSyncForCycle?.updatedAtMs !== null &&
+    typeof promotionSyncForCycle?.updatedAtMs === "number" &&
+    Number.isFinite(promotionSyncForCycle.updatedAtMs) &&
+    nowMs - promotionSyncForCycle.updatedAtMs <=
+      PROMOTION_SYNC_STALE_AFTER_MS;
   const promotionRunning =
     Boolean(promotionSyncFresh) &&
-    (promotionSync?.status === "queued" || promotionSync?.status === "running") &&
-    (!currentCycleId || promotionSync?.cycleId === currentCycleId);
+    (promotionSyncForCycle?.status === "queued" ||
+      promotionSyncForCycle?.status === "running");
   const promotionFailed =
-    Boolean(promotionSyncFresh) &&
-    promotionSync?.status === "failed" &&
-    (!currentCycleId || promotionSync?.cycleId === currentCycleId);
+    Boolean(promotionSyncFresh) && promotionSyncForCycle?.status === "failed";
   const promotionSucceededForCycle = Boolean(
     currentCycleId &&
-      ((promotionSync?.status === "succeeded" &&
-        promotionSync?.cycleId === currentCycleId) ||
-        promotionSync?.lastCompletedCycleId === currentCycleId),
+      promotionSyncMatchesCycle(promotionSync, currentCycleId) &&
+      promotionSyncForCycle?.status === "succeeded",
   );
-  const promotionPending =
-    !cycleRunning &&
-    cycleCompleted &&
-    !promotionRunning &&
-    !promotionFailed &&
-    !promotionSucceededForCycle;
   const orchestratorErrorRaw =
     String(input.orchestrator?.lastError || "").trim() || null;
   const orchestratorError =
     panicStopEnabled && orchestratorErrorRaw === "panic_stop_enabled"
       ? null
       : orchestratorErrorRaw;
+  const promotionLaunchFailed =
+    !cycleRunning &&
+    cycleCompleted &&
+    stage === "promotion" &&
+    !promotionRunning &&
+    !promotionSucceededForCycle &&
+    Boolean(orchestratorError);
+  const promotionPending =
+    !cycleRunning &&
+    cycleCompleted &&
+    !promotionRunning &&
+    !promotionFailed &&
+    !promotionLaunchFailed &&
+    !promotionSucceededForCycle;
   const cycleOrchestratorProgressPct = safeProgressPct(
     input.cycle?.progressPct ?? input.orchestrator?.progressPct,
   );
@@ -529,11 +553,15 @@ function buildPipelineStatusPanel(
           promotionStepIndex,
           totalSteps: PIPELINE_STEP_DEFS.length,
           processedDeployments: promotionSucceededForCycle
-            ? promotionSync?.totalDeployments ?? promotionSync?.processedDeployments ?? 1
-            : promotionSync?.processedDeployments ?? 0,
+            ? promotionSyncForCycle?.totalDeployments ??
+              promotionSyncForCycle?.processedDeployments ??
+              1
+            : promotionSyncForCycle?.processedDeployments ?? 0,
           totalDeployments: promotionSucceededForCycle
-            ? promotionSync?.totalDeployments ?? promotionSync?.processedDeployments ?? 1
-            : promotionSync?.totalDeployments ?? 1,
+            ? promotionSyncForCycle?.totalDeployments ??
+              promotionSyncForCycle?.processedDeployments ??
+              1
+            : promotionSyncForCycle?.totalDeployments ?? 1,
         }) ?? cycleOrchestratorProgressPct
       : cycleOrchestratorProgressPct;
   const updatedAtMs = [
@@ -563,13 +591,15 @@ function buildPipelineStatusPanel(
   const failureStepIndex =
     promotionFailed
       ? promotionStepIndex
+      : promotionLaunchFailed
+      ? promotionStepIndex
       : orchestratorError || cycleFailed
       ? stageIndex >= 0
         ? stageIndex
         : workerStepIndex
       : -1;
   const workerDetail = workerStepDetail(input.cycle?.totals || null);
-  const promotionDetail = promotionSyncDetail(promotionSync);
+  const promotionDetail = promotionSyncDetail(promotionSyncForCycle);
 
   const steps = PIPELINE_STEP_DEFS.map((step, index) => {
     let state: ScalpPipelineStepState = "pending";
@@ -599,7 +629,7 @@ function buildPipelineStatusPanel(
     if (state === "failed")
       detail =
         step.id === "promotion"
-          ? promotionDetail || "promotion sync failed"
+          ? promotionDetail || orchestratorError || "promotion sync failed"
           : orchestratorError || workerDetail || "pipeline failed";
     if (state === "blocked") detail = panicStopReason || "panic stop enabled";
     return {
@@ -663,7 +693,7 @@ function buildPipelineStatusPanel(
       detail:
         promotionDetail ||
         (currentCycleId
-          ? `latest cycle ${currentCycleId} completed; promotion sync is queued next`
+          ? `latest cycle ${currentCycleId} completed; promotion sync has not started for this cycle`
           : "latest cycle completed; promotion sync is pending"),
       cycleId: currentCycleId,
       updatedAtMs,
