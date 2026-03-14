@@ -92,7 +92,7 @@ function dedupeReasonCodes(codes: string[]): string[] {
     return Array.from(new Set(codes.map((code) => String(code || '').trim().toUpperCase()).filter((code) => code.length > 0)));
 }
 
-const SCALP_ENFORCED_RISK_PCT_OF_EQUITY = 5;
+const SCALP_ENFORCED_RISK_PCT_OF_EQUITY = 20;
 const SCALP_IDLE_HEARTBEAT_PERSIST_MS = (() => {
     const n = Number(process.env.SCALP_IDLE_HEARTBEAT_PERSIST_MS ?? 5 * 60_000);
     if (!Number.isFinite(n) || n <= 0) return 5 * 60_000;
@@ -449,7 +449,7 @@ export async function runScalpExecuteCycle(opts: {
                                         referenceEquityUsd: Number(liveEquityUsd),
                                     },
                                 };
-                                phaseReasonCodes.push('ENTRY_RISK_5PCT_LIVE_EQUITY');
+                                phaseReasonCodes.push(`ENTRY_RISK_${SCALP_ENFORCED_RISK_PCT_OF_EQUITY}PCT_LIVE_EQUITY`);
                                 canPlanEntry = true;
                             } else {
                                 phaseReasonCodes.push('ENTRY_BLOCKED_LIVE_EQUITY_UNAVAILABLE');
@@ -458,7 +458,7 @@ export async function runScalpExecuteCycle(opts: {
                             phaseReasonCodes.push('ENTRY_BLOCKED_LIVE_EQUITY_UNAVAILABLE');
                         }
                     } else {
-                        phaseReasonCodes.push('ENTRY_RISK_5PCT_REFERENCE_EQUITY');
+                            phaseReasonCodes.push(`ENTRY_RISK_${SCALP_ENFORCED_RISK_PCT_OF_EQUITY}PCT_REFERENCE_EQUITY`);
                     }
 
                     if (!canPlanEntry) {
