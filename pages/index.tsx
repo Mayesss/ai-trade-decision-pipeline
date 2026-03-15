@@ -234,6 +234,19 @@ type ScalpPipelineStatusPanel = {
   }>;
 };
 
+type ScalpSummaryDeployment = {
+  deploymentId?: string;
+  symbol?: string;
+  strategyId?: string;
+  tuneId?: string;
+  source?: string;
+  enabled?: boolean;
+  promotionEligible?: boolean | null;
+  promotionReason?: string | null;
+  forwardValidation?: ScalpForwardValidation | null;
+  updatedAtMs?: number | null;
+};
+
 type ScalpSummaryResponse = {
   mode?: "scalp";
   generatedAtMs?: number;
@@ -253,6 +266,7 @@ type ScalpSummaryResponse = {
     totalTradesPlaced?: number;
     stateCounts?: Record<string, number>;
   };
+  deployments?: ScalpSummaryDeployment[];
   pipeline?: {
     panicStop?: {
       enabled?: boolean;
@@ -737,6 +751,7 @@ type DashboardRangeKey = "7D" | "30D" | "6M";
 type ThemePreference = "system" | "light" | "dark";
 type ResolvedTheme = "light" | "dark";
 type StrategyMode = "swing" | "scalp";
+type ScalpResearchGridScope = "researched" | "deployments";
 
 const CURRENCY_SYMBOL = "₮"; // Tether-style symbol
 const THEME_PREFERENCE_STORAGE_KEY = "dashboard_theme_preference";
@@ -1243,6 +1258,8 @@ export default function Home() {
     useState(false);
   const [scalpPromotionRetrySubmitting, setScalpPromotionRetrySubmitting] =
     useState(false);
+  const [scalpResearchGridScope, setScalpResearchGridScope] =
+    useState<ScalpResearchGridScope>("researched");
   const [scalpWorkerRetryStateByTaskId, setScalpWorkerRetryStateByTaskId] =
     useState<
       Record<
@@ -2969,6 +2986,46 @@ export default function Home() {
       runtime: row,
     };
   });
+  const scalpRegistryDeployments = useMemo<ScalpOpsDeploymentRow[]>(
+    () =>
+      (Array.isArray(scalpSummary?.deployments) ? scalpSummary.deployments : [])
+        .map((row) => {
+          const deploymentId = String(row?.deploymentId || "").trim();
+          const symbol = String(row?.symbol || "")
+            .trim()
+            .toUpperCase();
+          const strategyId = String(row?.strategyId || "").trim();
+          if (!deploymentId || !symbol || !strategyId) return null;
+          return {
+            deploymentId,
+            symbol,
+            strategyId,
+            tuneId: String(row?.tuneId || "").trim() || "default",
+            source: String(row?.source || "").trim() || "registry",
+            enabled: row?.enabled === true,
+            promotionEligible:
+              typeof row?.promotionEligible === "boolean"
+                ? row.promotionEligible
+                : false,
+            promotionReason:
+              String(row?.promotionReason || "").trim() || null,
+            forwardValidation: row?.forwardValidation || null,
+            perf30dTrades: null,
+            perf30dExpectancyR: null,
+            perf30dNetR: null,
+            perf30dMaxDrawdownR: null,
+            runtime: null,
+          } satisfies ScalpOpsDeploymentRow;
+        })
+        .filter((row): row is ScalpOpsDeploymentRow => Boolean(row))
+        .sort((a, b) => {
+          if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
+          if (a.strategyId !== b.strategyId)
+            return a.strategyId.localeCompare(b.strategyId);
+          return a.tuneId.localeCompare(b.tuneId);
+        }),
+    [scalpSummary?.deployments],
+  );
 
   const scalpActiveOpsRow =
     (scalpActiveDeploymentId
@@ -5764,6 +5821,69 @@ export default function Home() {
     }
     return out.sort(compareScalpWorkerJobGridRows);
   }, [scalpWorkerTaskRows]);
+  const scalpAllDeploymentsGridRows = useMemo<ScalpWorkerJobGridRow[]>(() => {
+    const researchedByDeploymentId = new Map(
+      scalpWorkerJobsGridRows
+        .map((row) =>
+          row.deploymentId ? ([row.deploymentId, row] as const) : null,
+        )
+        .filter(
+          (
+            entry,
+          ): entry is readonly [string, ScalpWorkerJobGridRow] => Boolean(entry),
+        ),
+    );
+    const out = scalpRegistryDeployments.map((deployment) => {
+      const researched = researchedByDeploymentId.get(deployment.deploymentId);
+      if (researched) {
+        return {
+          ...researched,
+          rowId: `deployment:${deployment.deploymentId}`,
+          deploymentId: deployment.deploymentId,
+          forwardValidation:
+            deployment.forwardValidation || researched.forwardValidation,
+          deployed: researched.deployed || deployment.enabled,
+          deploymentEnabled: deployment.enabled,
+          promotionEligible: deployment.promotionEligible,
+          reason:
+            deployment.promotionReason ||
+            (deployment.promotionEligible ? "eligible" : researched.reason),
+        } satisfies ScalpWorkerJobGridRow;
+      }
+      const forwardValidation = deployment.forwardValidation || null;
+      return {
+        rowId: `deployment:${deployment.deploymentId}`,
+        deploymentId: deployment.deploymentId,
+        symbol: deployment.symbol,
+        strategyId: deployment.strategyId,
+        tuneId: deployment.tuneId,
+        forwardValidation,
+        deployed: deployment.enabled,
+        deploymentEnabled: deployment.enabled,
+        promotionEligible: deployment.promotionEligible,
+        reason:
+          deployment.promotionReason ||
+          (deployment.promotionEligible ? "eligible" : "not_evaluated"),
+        status: "registry",
+        windowCount: 0,
+        windowsResults: "—",
+        windowNetRs: [],
+        trades: null,
+        netR: null,
+        totalNetR: null,
+        expectancyR: asFiniteNumber(forwardValidation?.meanExpectancyR),
+        profitFactor: asFiniteNumber(forwardValidation?.meanProfitFactor),
+        maxDrawdownR: asFiniteNumber(forwardValidation?.maxDrawdownR),
+        totalMaxDrawdownR: asFiniteNumber(forwardValidation?.maxDrawdownR),
+        errorCodes: null,
+      } satisfies ScalpWorkerJobGridRow;
+    });
+    return out.sort(compareScalpWorkerJobGridRows);
+  }, [scalpRegistryDeployments, scalpWorkerJobsGridRows]);
+  const scalpSelectedWorkerGridRows =
+    scalpResearchGridScope === "deployments"
+      ? scalpAllDeploymentsGridRows
+      : scalpWorkerJobsGridRows;
   const scalpWorkerJobsGridDefaultColDef = useMemo<
     ColDef<ScalpWorkerJobGridRow>
   >(
@@ -8394,20 +8514,65 @@ export default function Home() {
                       <h3
                         className={`text-lg font-semibold ${scalpTextPrimaryClass}`}
                       >
-                        Research Candidate History
+                        Research Coverage
                       </h3>
-                      <span
-                        className={scalpTagNeutralClass}
-                      >{`${scalpWorkerJobsGridRows.length} researched candidates`}</span>
+                      <div className="flex items-center gap-2">
+                        <div
+                          className={`inline-flex rounded-full border p-1 ${
+                            scalpDarkMode
+                              ? "border-zinc-700 bg-zinc-900/80"
+                              : "border-slate-200 bg-slate-100"
+                          }`}
+                        >
+                          {(
+                            [
+                              {
+                                id: "researched",
+                                label: "Researched",
+                              },
+                              {
+                                id: "deployments",
+                                label: "All Deployments",
+                              },
+                            ] as const
+                          ).map((option) => {
+                            const active =
+                              scalpResearchGridScope === option.id;
+                            return (
+                              <button
+                                key={option.id}
+                                type="button"
+                                onClick={() =>
+                                  setScalpResearchGridScope(option.id)
+                                }
+                                className={`rounded-full px-3 py-1 text-[11px] font-medium transition ${
+                                  active
+                                    ? scalpDarkMode
+                                      ? "bg-zinc-100 text-zinc-900"
+                                      : "bg-white text-slate-900 shadow-sm"
+                                    : scalpDarkMode
+                                      ? "text-zinc-300 hover:text-zinc-100"
+                                      : "text-slate-500 hover:text-slate-700"
+                                }`}
+                              >
+                                {option.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <span className={scalpTagNeutralClass}>
+                          {scalpResearchGridScope === "deployments"
+                            ? `${scalpAllDeploymentsGridRows.length} deployments`
+                            : `${scalpWorkerJobsGridRows.length} researched candidates`}
+                        </span>
+                      </div>
                     </div>
                     <div className={`mt-2 text-xs ${scalpTextSecondaryClass}`}>
-                      One row per researched candidate with persisted weekly
-                      test history across all cycles. Promotion status comes
-                      from the deployment registry and latest gate sync, while
-                      the windows column shows only candidates that actually
-                      have stored research task results.
+                      {scalpResearchGridScope === "deployments"
+                        ? "One row per deployment in the registry. Weekly windows are shown when research history exists for that deployment; otherwise the row still appears with registry-level promotion and forward-validation state."
+                        : "One row per researched candidate with persisted weekly test history across all cycles. Promotion status comes from the deployment registry and latest gate sync, while the windows column shows only candidates that actually have stored research task results."}
                     </div>
-                    {scalpWorkerJobsGridRows.length ? (
+                    {scalpSelectedWorkerGridRows.length ? (
                       <div
                         className={`mt-4 h-[560px] w-full overflow-hidden rounded-xl border ${
                           scalpDarkMode
@@ -8417,7 +8582,7 @@ export default function Home() {
                       >
                         <AgGridReact
                           theme="legacy"
-                          rowData={scalpWorkerJobsGridRows}
+                          rowData={scalpSelectedWorkerGridRows}
                           columnDefs={scalpWorkerJobsGridColumnDefs}
                           defaultColDef={scalpWorkerJobsGridDefaultColDef}
                           immutableData
@@ -8447,8 +8612,9 @@ export default function Home() {
                             : "border-slate-200 text-slate-600"
                         }`}
                       >
-                        No cycle-worker jobs available yet. Run
-                        `scalp_prepare_and_start_cycle` then refresh this view.
+                        {scalpResearchGridScope === "deployments"
+                          ? "No deployment registry rows are available yet."
+                          : "No cycle-worker jobs available yet. Run `scalp_prepare_and_start_cycle` then refresh this view."}
                       </div>
                     )}
                   </section>

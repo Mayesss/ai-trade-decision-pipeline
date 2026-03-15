@@ -675,6 +675,11 @@ export function resolveSeedSymbolEligibility(params: {
     if (quality.toTs === null && !params.allowBootstrapSymbols) {
         return { eligible: false, reason: 'seed_bootstrap_disabled', quality };
     }
+    // Bootstrap mode should also repair corrupted or ultra-sparse history.
+    // Final post-fetch quality checks still decide whether the seed succeeds.
+    if (params.allowBootstrapSymbols) {
+        return { eligible: true, reason: null, quality };
+    }
     if (quality.toTs !== null && quality.avgBarsPerDay < params.policy.criteria.minAvgBarsPerDay) {
         return { eligible: false, reason: 'seed_avg_bars_per_day_below_min', quality };
     }
@@ -798,7 +803,10 @@ function normalizeFetchedCandles(rows: any[]): Array<[number, number, number, nu
         .sort((a, b) => a[0] - b[0]);
 }
 
-function resolveSeedConfig(params: ScalpSymbolDiscoveryRunParams): {
+function resolveSeedConfig(
+    params: ScalpSymbolDiscoveryRunParams,
+    policy: ScalpSymbolDiscoveryPolicy,
+): {
     enabled: boolean;
     timeframe: string;
     requestedTopSymbols: number;
@@ -810,10 +818,15 @@ function resolveSeedConfig(params: ScalpSymbolDiscoveryRunParams): {
     seedOnDryRun: boolean;
     allowBootstrapSymbols: boolean;
 } {
-    const requestedTopSymbols = toOptionalPositiveInt(
-        params.seedTopSymbols ?? process.env.SCALP_SYMBOL_DISCOVERY_SEED_TOP_SYMBOLS,
-        0,
+    const defaultRequestedTopSymbols = Math.max(
+        1,
+        Math.min(policy.limits.maxCandidates, Math.max(policy.limits.maxUniverseSymbols, policy.limits.minUniverseSymbols)),
     );
+    const requestedTopSymbolsRaw = params.seedTopSymbols ?? process.env.SCALP_SYMBOL_DISCOVERY_SEED_TOP_SYMBOLS;
+    const requestedTopSymbols =
+        String(requestedTopSymbolsRaw ?? '').trim() === '0'
+            ? 0
+            : toOptionalPositiveInt(requestedTopSymbolsRaw, defaultRequestedTopSymbols);
     const targetHistoryDays = Math.max(
         7,
         Math.min(365, toOptionalPositiveInt(params.seedTargetHistoryDays ?? process.env.SCALP_SYMBOL_DISCOVERY_SEED_TARGET_DAYS, 90)),
@@ -1710,7 +1723,7 @@ export async function runScalpSymbolDiscoveryCycle(
     const previous = await loadScalpSymbolUniverseSnapshot();
 
     const knownStrategies = new Set(listScalpStrategies().map((row) => row.id));
-    const seedConfig = resolveSeedConfig(params);
+    const seedConfig = resolveSeedConfig(params, policy);
     const seedShouldRun = seedConfig.enabled && (!dryRun || seedConfig.seedOnDryRun);
     const shouldLoadCapitalDiscovery = seedShouldRun || policy.sources.includeCapitalMarketsApi;
     let preloadedDiscovery: CapitalDiscoveryResult | null | undefined = undefined;

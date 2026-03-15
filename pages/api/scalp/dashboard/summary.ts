@@ -1622,11 +1622,15 @@ export default async function handler(
     let deploymentRows: Awaited<
       ReturnType<typeof listScalpDeploymentRegistryEntries>
     > = [];
+    let allDeploymentRows: Awaited<
+      ReturnType<typeof listScalpDeploymentRegistryEntries>
+    > = [];
     if (useDeployments) {
       try {
-        deploymentRows = await listScalpDeploymentRegistryEntries({
-          enabled: true,
-        });
+        allDeploymentRows = await listScalpDeploymentRegistryEntries();
+        deploymentRows = allDeploymentRows.filter(
+          (row) => row.enabled === true,
+        );
       } catch (err: any) {
         const rowError = {
           kind: "deployment_registry",
@@ -1974,6 +1978,21 @@ export default async function handler(
         totalTradesPlaced,
         stateCounts,
       },
+      deployments: allDeploymentRows.map((row) => ({
+        deploymentId: row.deploymentId,
+        symbol: row.symbol,
+        strategyId: row.strategyId,
+        tuneId: row.tuneId,
+        source: row.source,
+        enabled: row.enabled,
+        promotionEligible:
+          typeof row.promotionGate?.eligible === "boolean"
+            ? row.promotionGate.eligible
+            : null,
+        promotionReason: row.promotionGate?.reason || null,
+        forwardValidation: row.promotionGate?.forwardValidation || null,
+        updatedAtMs: row.updatedAtMs,
+      })),
       range,
       symbols: rows,
       pipeline,

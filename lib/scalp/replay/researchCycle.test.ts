@@ -24,6 +24,14 @@ import { saveScalpCandleHistory } from "../candleHistory";
 
 const DAY_MS = 24 * 60 * 60_000;
 
+function requireIsolatedScalpHistoryBackend(t: { skip: (message?: string) => void }): boolean {
+  if (process.env.SCALP_TEST_ALLOW_PG_HISTORY_MUTATION === "1") return true;
+  t.skip(
+    "requires isolated candle-history backend; otherwise synthetic fixtures contaminate configured Neon history",
+  );
+  return false;
+}
+
 function makeCycle(cycleId = "rc_test"): ScalpResearchCycleSnapshot {
   return {
     version: 1,
@@ -224,6 +232,39 @@ test("buildResearchCycleTasks skips historical windows already completed or abor
       [Date.UTC(2026, 1, 16), Date.UTC(2026, 1, 23)],
       [Date.UTC(2026, 1, 23), Date.UTC(2026, 2, 2)],
     ],
+  );
+});
+
+test("buildResearchCycleTasks seeds registry deployment tunes into rolling research coverage", () => {
+  const nowMs = Date.UTC(2026, 2, 2);
+  const tasks = buildResearchCycleTasks({
+    cycleId: "rc_registry_seed",
+    nowMs,
+    symbols: ["BTCUSDT"],
+    lookbackDays: 28,
+    chunkDays: 7,
+    maxTasks: 40,
+    strategyAllowlist: ["compression_breakout_pullback_m15_m3"],
+    tunerEnabled: false,
+    maxTuneVariantsPerStrategy: 1,
+    registryDeployments: [
+      {
+        symbol: "BTCUSDT",
+        strategyId: "compression_breakout_pullback_m15_m3",
+        tuneId: "default",
+      },
+      {
+        symbol: "BTCUSDT",
+        strategyId: "compression_breakout_pullback_m15_m3",
+        tuneId: "auto_tr1p7",
+      },
+    ],
+  });
+
+  assert.equal(tasks.length, 8);
+  assert.deepEqual(
+    Array.from(new Set(tasks.map((task) => task.tuneId))).sort(),
+    ["auto_tr1p7", "default"],
   );
 });
 
@@ -718,7 +759,8 @@ test("resolveResearchWorkerRuntimeConfig uses default concurrency but does not e
   assert.equal(out.maxDurationMs, 45_000);
 });
 
-test("evaluateResearchCyclePreflight excludes underfilled symbols but allows ready symbols", async () => {
+test("evaluateResearchCyclePreflight excludes underfilled symbols but allows ready symbols", async (t) => {
+  if (!requireIsolatedScalpHistoryBackend(t)) return;
   const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "scalp-preflight-"));
   const prevEnv = {
     CANDLE_HISTORY_DIR: process.env.CANDLE_HISTORY_DIR,
@@ -838,7 +880,8 @@ test("evaluateResearchCyclePreflight excludes underfilled symbols but allows rea
   }
 });
 
-test("evaluateResearchCyclePreflight filters symbols missing 12 successive completed weeks", async () => {
+test("evaluateResearchCyclePreflight filters symbols missing 12 successive completed weeks", async (t) => {
+  if (!requireIsolatedScalpHistoryBackend(t)) return;
   const tmpRoot = await mkdtemp(
     path.join(os.tmpdir(), "scalp-preflight-weeks-"),
   );
@@ -971,7 +1014,8 @@ test("evaluateResearchCyclePreflight filters symbols missing 12 successive compl
   }
 });
 
-test("evaluateResearchCyclePreflight enforces lookback-derived week floor over lower configured requirement", async () => {
+test("evaluateResearchCyclePreflight enforces lookback-derived week floor over lower configured requirement", async (t) => {
+  if (!requireIsolatedScalpHistoryBackend(t)) return;
   const tmpRoot = await mkdtemp(
     path.join(os.tmpdir(), "scalp-preflight-lookback-floor-"),
   );

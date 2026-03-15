@@ -9,6 +9,7 @@ import {
   loadScalpCandleHistory,
   loadScalpCandleHistoryBulk,
 } from "./candleHistory";
+import { loadScalpDeploymentRegistry } from "./deploymentRegistry";
 import { resolveScalpDeployment } from "./deployments";
 import { pipSizeForScalpSymbol } from "./marketData";
 import { isScalpPgConfigured, scalpPrisma } from "./pg/client";
@@ -1705,6 +1706,12 @@ export function buildResearchCycleTasks(params: {
   plannerPolicy?: Partial<ScalpResearchPlannerPolicy>;
   previousSummary?: ScalpResearchCycleSummary | null;
   historicalTasks?: ScalpResearchTask[];
+  registryDeployments?: Array<{
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    configOverride?: ScalpStrategyConfigOverride | null;
+  }>;
 }): ScalpResearchTask[] {
   const symbols = dedupe(
     params.symbols
@@ -1724,6 +1731,7 @@ export function buildResearchCycleTasks(params: {
   );
   const tasks: ScalpResearchTask[] = [];
   const usedTaskIds = new Set<string>();
+  const usedComboKeys = new Set<string>();
 
   const nextTaskId = (raw: string): string => {
     let candidate = sanitizeTuneId(raw) || "task";
@@ -1755,6 +1763,13 @@ export function buildResearchCycleTasks(params: {
     tuneId: string;
     configOverride?: ScalpStrategyConfigOverride | null;
   }): boolean => {
+    const comboKey = `${normalizeSymbol(row.symbol)}::${String(
+      row.strategyId || "",
+    )
+      .trim()
+      .toLowerCase()}::${sanitizeTuneId(row.tuneId)}`;
+    if (!comboKey || usedComboKeys.has(comboKey)) return false;
+    usedComboKeys.add(comboKey);
     const deployment = resolveScalpDeployment({
       symbol: row.symbol,
       strategyId: row.strategyId,
@@ -1812,6 +1827,34 @@ export function buildResearchCycleTasks(params: {
     }
     return false;
   };
+
+  const registryCombos = (params.registryDeployments || [])
+    .map((row) => ({
+      symbol: normalizeSymbol(row.symbol),
+      strategyId: String(row.strategyId || "")
+        .trim()
+        .toLowerCase(),
+      tuneId: sanitizeTuneId(row.tuneId) || "default",
+      configOverride: row.configOverride || null,
+    }))
+    .filter(
+      (row) =>
+        Boolean(row.symbol) &&
+        symbols.includes(row.symbol) &&
+        Boolean(row.strategyId) &&
+        knownStrategies.has(row.strategyId),
+    )
+    .sort((a, b) => {
+      if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
+      if (a.strategyId !== b.strategyId)
+        return a.strategyId.localeCompare(b.strategyId);
+      return a.tuneId.localeCompare(b.tuneId);
+    });
+  for (const row of registryCombos) {
+    if (appendTasksForCombo(row)) {
+      return tasks;
+    }
+  }
 
   const plannerPolicy =
     params.plannerEnabled === undefined
@@ -2711,6 +2754,14 @@ export async function startScalpResearchCycle(
       plannerEnabled: cycleParams.plannerEnabled,
       previousSummary,
       historicalTasks,
+      registryDeployments: (
+        await loadScalpDeploymentRegistry()
+      ).deployments.map((row) => ({
+        symbol: row.symbol,
+        strategyId: row.strategyId,
+        tuneId: row.tuneId,
+        configOverride: row.configOverride || null,
+      })),
     });
     let tasks = plannedTasks;
     if (!plannerPolicy.enabled && historicalTasks.length > 0) {

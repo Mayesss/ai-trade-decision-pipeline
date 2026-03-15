@@ -8,6 +8,7 @@ import {
     buildForwardValidationByCandidateFromTasks,
     buildWinnerCandidateKeySet,
     filterMaterializationCandidatesByQuality,
+    shouldEnforceWinnerShortlistForDeployment,
 } from '../researchPromotion';
 import type { ScalpResearchCycleSnapshot, ScalpResearchTask } from '../researchCycle';
 
@@ -650,6 +651,7 @@ test('buildBestEligibleTuneDeploymentIdSet keeps only the best eligible tune per
                 symbol: 'BTCUSDT',
                 strategyId: 'compression_breakout_pullback_m15_m3',
                 tuneId: 'default',
+                enabled: false,
                 promotionGate: { eligible: true, reason: null, source: 'walk_forward', evaluatedAtMs: 1, forwardValidation: candidates[0].forwardValidation, thresholds: null },
             },
             {
@@ -657,6 +659,7 @@ test('buildBestEligibleTuneDeploymentIdSet keeps only the best eligible tune per
                 symbol: 'BTCUSDT',
                 strategyId: 'compression_breakout_pullback_m15_m3',
                 tuneId: 'auto_tr1p7',
+                enabled: false,
                 promotionGate: { eligible: true, reason: null, source: 'walk_forward', evaluatedAtMs: 1, forwardValidation: candidates[1].forwardValidation, thresholds: null },
             },
             {
@@ -664,6 +667,7 @@ test('buildBestEligibleTuneDeploymentIdSet keeps only the best eligible tune per
                 symbol: 'XAUUSDT',
                 strategyId: 'trend_day_reacceleration_m15_m3',
                 tuneId: 'default',
+                enabled: false,
                 promotionGate: { eligible: true, reason: null, source: 'walk_forward', evaluatedAtMs: 1, forwardValidation: candidates[2].forwardValidation, thresholds: null },
             },
             {
@@ -671,6 +675,7 @@ test('buildBestEligibleTuneDeploymentIdSet keeps only the best eligible tune per
                 symbol: 'XAUUSDT',
                 strategyId: 'regime_pullback_m15_m3',
                 tuneId: 'default',
+                enabled: false,
                 promotionGate: { eligible: false, reason: 'missing_cycle_candidate', source: 'walk_forward', evaluatedAtMs: 1, forwardValidation: candidates[2].forwardValidation, thresholds: null },
             },
         ],
@@ -682,5 +687,211 @@ test('buildBestEligibleTuneDeploymentIdSet keeps only the best eligible tune per
             'BTCUSDT~compression_breakout_pullback_m15_m3~auto_tr1p7',
             'XAUUSDT~trend_day_reacceleration_m15_m3~default',
         ],
+    );
+});
+
+test('buildBestEligibleTuneDeploymentIdSet keeps an enabled incumbent when the challenger edge is marginal', () => {
+    const candidates = [
+        {
+            symbol: 'BTCUSDT',
+            strategyId: 'compression_breakout_pullback_m15_m3',
+            tuneId: 'default',
+            deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~default',
+            rollCount: 12,
+            profitableWindowPct: 91.67,
+            profitableWindows: 11,
+            meanExpectancyR: 0.42,
+            meanProfitFactor: 2.1,
+            maxDrawdownR: 1.8,
+            minTradesPerWindow: 6,
+            totalTrades: 96,
+            selectionWindowDays: 90,
+            forwardWindowDays: 7,
+            forwardValidation: {
+                rollCount: 12,
+                profitableWindowPct: 91.67,
+                meanExpectancyR: 0.42,
+                meanProfitFactor: 2.1,
+                maxDrawdownR: 1.8,
+                minTradesPerWindow: 6,
+                selectionWindowDays: 90,
+                forwardWindowDays: 7,
+            },
+        },
+        {
+            symbol: 'BTCUSDT',
+            strategyId: 'compression_breakout_pullback_m15_m3',
+            tuneId: 'auto_tr1p7',
+            deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~auto_tr1p7',
+            rollCount: 12,
+            profitableWindowPct: 92,
+            profitableWindows: 11,
+            meanExpectancyR: 0.43,
+            meanProfitFactor: 2.2,
+            maxDrawdownR: 1.7,
+            minTradesPerWindow: 6,
+            totalTrades: 98,
+            selectionWindowDays: 90,
+            forwardWindowDays: 7,
+            forwardValidation: {
+                rollCount: 12,
+                profitableWindowPct: 92,
+                meanExpectancyR: 0.43,
+                meanProfitFactor: 2.2,
+                maxDrawdownR: 1.7,
+                minTradesPerWindow: 6,
+                selectionWindowDays: 90,
+                forwardWindowDays: 7,
+            },
+        },
+    ];
+
+    const winners = buildBestEligibleTuneDeploymentIdSet({
+        candidates,
+        deployments: [
+            {
+                deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~default',
+                symbol: 'BTCUSDT',
+                strategyId: 'compression_breakout_pullback_m15_m3',
+                tuneId: 'default',
+                enabled: true,
+                promotionGate: { eligible: true, reason: null, source: 'walk_forward', evaluatedAtMs: 1, forwardValidation: candidates[0].forwardValidation, thresholds: null },
+            },
+            {
+                deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~auto_tr1p7',
+                symbol: 'BTCUSDT',
+                strategyId: 'compression_breakout_pullback_m15_m3',
+                tuneId: 'auto_tr1p7',
+                enabled: false,
+                promotionGate: { eligible: true, reason: null, source: 'walk_forward', evaluatedAtMs: 1, forwardValidation: candidates[1].forwardValidation, thresholds: null },
+            },
+        ],
+    });
+
+    assert.deepEqual(Array.from(winners), ['BTCUSDT~compression_breakout_pullback_m15_m3~default']);
+});
+
+test('buildBestEligibleTuneDeploymentIdSet replaces an enabled incumbent when the challenger is materially better', () => {
+    const candidates = [
+        {
+            symbol: 'BTCUSDT',
+            strategyId: 'compression_breakout_pullback_m15_m3',
+            tuneId: 'default',
+            deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~default',
+            rollCount: 12,
+            profitableWindowPct: 58,
+            profitableWindows: 7,
+            meanExpectancyR: 0.18,
+            medianExpectancyR: 0.1,
+            meanProfitFactor: 1.2,
+            maxDrawdownR: 3.4,
+            topWindowPnlConcentrationPct: 72,
+            minTradesPerWindow: 4,
+            totalTrades: 80,
+            selectionWindowDays: 90,
+            forwardWindowDays: 7,
+            forwardValidation: {
+                rollCount: 12,
+                profitableWindowPct: 58,
+                meanExpectancyR: 0.18,
+                meanProfitFactor: 1.2,
+                maxDrawdownR: 3.4,
+                minTradesPerWindow: 4,
+                selectionWindowDays: 90,
+                forwardWindowDays: 7,
+            },
+        },
+        {
+            symbol: 'BTCUSDT',
+            strategyId: 'compression_breakout_pullback_m15_m3',
+            tuneId: 'challenger',
+            deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~challenger',
+            rollCount: 12,
+            profitableWindowPct: 83,
+            profitableWindows: 10,
+            meanExpectancyR: 0.46,
+            medianExpectancyR: 0.41,
+            meanProfitFactor: 2.8,
+            maxDrawdownR: 1.7,
+            topWindowPnlConcentrationPct: 34,
+            minTradesPerWindow: 6,
+            totalTrades: 98,
+            selectionWindowDays: 90,
+            forwardWindowDays: 7,
+            forwardValidation: {
+                rollCount: 12,
+                profitableWindowPct: 83,
+                meanExpectancyR: 0.46,
+                meanProfitFactor: 2.8,
+                maxDrawdownR: 1.7,
+                minTradesPerWindow: 6,
+                selectionWindowDays: 90,
+                forwardWindowDays: 7,
+            },
+        },
+    ];
+
+    const winners = buildBestEligibleTuneDeploymentIdSet({
+        candidates,
+        deployments: [
+            {
+                deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~default',
+                symbol: 'BTCUSDT',
+                strategyId: 'compression_breakout_pullback_m15_m3',
+                tuneId: 'default',
+                enabled: true,
+                promotionGate: { eligible: true, reason: null, source: 'walk_forward', evaluatedAtMs: 1, forwardValidation: candidates[0].forwardValidation, thresholds: null },
+            },
+            {
+                deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~challenger',
+                symbol: 'BTCUSDT',
+                strategyId: 'compression_breakout_pullback_m15_m3',
+                tuneId: 'challenger',
+                enabled: false,
+                promotionGate: { eligible: true, reason: null, source: 'walk_forward', evaluatedAtMs: 1, forwardValidation: candidates[1].forwardValidation, thresholds: null },
+            },
+        ],
+    });
+
+    assert.deepEqual(Array.from(winners), ['BTCUSDT~compression_breakout_pullback_m15_m3~challenger']);
+});
+
+test('shouldEnforceWinnerShortlistForDeployment exempts incumbents from shortlist-only disqualification', () => {
+    assert.equal(
+        shouldEnforceWinnerShortlistForDeployment({
+            deployment: {
+                enabled: true,
+                promotionGate: {
+                    eligible: true,
+                    reason: null,
+                    source: 'walk_forward',
+                    evaluatedAtMs: 1,
+                    forwardValidation: null,
+                    thresholds: null,
+                },
+            },
+            inWinnerShortlist: false,
+            requireWinnerShortlist: true,
+        }),
+        false,
+    );
+
+    assert.equal(
+        shouldEnforceWinnerShortlistForDeployment({
+            deployment: {
+                enabled: false,
+                promotionGate: {
+                    eligible: false,
+                    reason: 'missing_cycle_candidate',
+                    source: 'walk_forward',
+                    evaluatedAtMs: 1,
+                    forwardValidation: null,
+                    thresholds: null,
+                },
+            },
+            inWinnerShortlist: false,
+            requireWinnerShortlist: true,
+        }),
+        true,
     );
 });

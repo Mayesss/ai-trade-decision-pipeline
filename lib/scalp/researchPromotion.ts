@@ -895,11 +895,56 @@ function buildForcedIneligibleGate(params: {
   };
 }
 
+function isPromotionIncumbent(
+  deployment: Pick<ScalpDeploymentRegistryEntry, "enabled" | "promotionGate">,
+): boolean {
+  return Boolean(deployment.enabled || deployment.promotionGate?.eligible);
+}
+
+export function shouldEnforceWinnerShortlistForDeployment(params: {
+  deployment: Pick<ScalpDeploymentRegistryEntry, "enabled" | "promotionGate">;
+  inWinnerShortlist: boolean;
+  requireWinnerShortlist: boolean;
+}): boolean {
+  if (!params.requireWinnerShortlist) return false;
+  if (params.inWinnerShortlist) return false;
+  return !isPromotionIncumbent(params.deployment);
+}
+
+function shouldReplaceIncumbentTune(params: {
+  incumbent: ScalpResearchForwardValidationCandidate;
+  challenger: ScalpResearchForwardValidationCandidate;
+}): boolean {
+  if (compareCandidates(params.challenger, params.incumbent) >= 0) return false;
+  const selectionScoreDelta =
+    candidateSelectionScore(params.challenger) -
+    candidateSelectionScore(params.incumbent);
+  const profitableWindowPctDelta =
+    params.challenger.profitableWindowPct - params.incumbent.profitableWindowPct;
+  const profitFactorDelta =
+    candidateProfitFactorForRanking(params.challenger) -
+    candidateProfitFactorForRanking(params.incumbent);
+  const maxDrawdownImprovement =
+    params.incumbent.maxDrawdownR - params.challenger.maxDrawdownR;
+  const meanExpectancyDelta =
+    params.challenger.meanExpectancyR - params.incumbent.meanExpectancyR;
+  if (selectionScoreDelta >= 0.05) return true;
+  if (profitableWindowPctDelta >= 5 && profitFactorDelta >= 0) return true;
+  if (profitFactorDelta >= 0.35 && maxDrawdownImprovement >= -0.25) return true;
+  if (meanExpectancyDelta >= 0.08 && maxDrawdownImprovement >= 0) return true;
+  return false;
+}
+
 export function buildBestEligibleTuneDeploymentIdSet(params: {
   deployments: Array<
     Pick<
       ScalpDeploymentRegistryEntry,
-      "deploymentId" | "symbol" | "strategyId" | "tuneId" | "promotionGate"
+      | "deploymentId"
+      | "symbol"
+      | "strategyId"
+      | "tuneId"
+      | "promotionGate"
+      | "enabled"
     >
   >;
   candidates: ScalpResearchForwardValidationCandidate[];
@@ -907,12 +952,13 @@ export function buildBestEligibleTuneDeploymentIdSet(params: {
   const candidateByKey = new Map(
     params.candidates.map((row) => [keyOf(row.symbol, row.strategyId, row.tuneId), row]),
   );
-  const bestBySymbolStrategy = new Map<
+  const eligibleBySymbolStrategy = new Map<
     string,
-    {
+    Array<{
       deploymentId: string;
+      enabled: boolean;
       candidate: ScalpResearchForwardValidationCandidate;
-    }
+    }>
   >();
 
   for (const deployment of params.deployments) {
@@ -925,18 +971,40 @@ export function buildBestEligibleTuneDeploymentIdSet(params: {
       deployment.symbol,
       deployment.strategyId,
     );
-    const current = bestBySymbolStrategy.get(symbolStrategyKey) || null;
-    if (!current || compareCandidates(candidate, current.candidate) < 0) {
-      bestBySymbolStrategy.set(symbolStrategyKey, {
-        deploymentId: deployment.deploymentId,
-        candidate,
-      });
+    if (!eligibleBySymbolStrategy.has(symbolStrategyKey)) {
+      eligibleBySymbolStrategy.set(symbolStrategyKey, []);
     }
+    eligibleBySymbolStrategy.get(symbolStrategyKey)!.push({
+      deploymentId: deployment.deploymentId,
+      enabled: Boolean(deployment.enabled),
+      candidate,
+    });
   }
 
-  return new Set(
-    Array.from(bestBySymbolStrategy.values()).map((row) => row.deploymentId),
-  );
+  const winnerIds = new Set<string>();
+  for (const rows of eligibleBySymbolStrategy.values()) {
+    if (!rows.length) continue;
+    rows.sort((a, b) => compareCandidates(a.candidate, b.candidate));
+    const best = rows[0] || null;
+    if (!best) continue;
+    const incumbent = rows.find((row) => row.enabled) || null;
+    if (!incumbent || incumbent.deploymentId === best.deploymentId) {
+      winnerIds.add(best.deploymentId);
+      continue;
+    }
+    if (
+      shouldReplaceIncumbentTune({
+        incumbent: incumbent.candidate,
+        challenger: best.candidate,
+      })
+    ) {
+      winnerIds.add(best.deploymentId);
+      continue;
+    }
+    winnerIds.add(incumbent.deploymentId);
+  }
+
+  return winnerIds;
 }
 
 type PromotionSyncStateSnapshot = {
@@ -1236,7 +1304,7 @@ function buildPromotionSyncSignature(params: {
     )
     .sort();
   return JSON.stringify({
-    algorithmVersion: 2,
+    algorithmVersion: 3,
     cycleId: params.cycle.cycleId,
     cycleStatus: params.cycle.status,
     cycleUpdatedAtMs: params.cycle.updatedAtMs,
@@ -1670,20 +1738,6 @@ export async function syncResearchCyclePromotionGates(
       row,
     ]),
   );
-  const candidatesBySymbolStrategy = new Map<
-    string,
-    ScalpResearchForwardValidationCandidate[]
-  >();
-  for (const row of candidates) {
-    const strategyKey = strategyKeyOf(row.symbol, row.strategyId);
-    if (!candidatesBySymbolStrategy.has(strategyKey)) {
-      candidatesBySymbolStrategy.set(strategyKey, []);
-    }
-    candidatesBySymbolStrategy.get(strategyKey)!.push(row);
-  }
-  for (const rows of candidatesBySymbolStrategy.values()) {
-    rows.sort(compareCandidates);
-  }
   const winnerCandidateKeys = buildWinnerCandidateKeySet(
     candidates,
     weeklyPolicy.topKPerSymbol,
@@ -1888,12 +1942,7 @@ export async function syncResearchCyclePromotionGates(
       deployment.strategyId,
       deployment.tuneId,
     );
-    const candidate =
-      candidateByKey.get(candidateKey) ||
-      candidatesBySymbolStrategy.get(
-        strategyKeyOf(deployment.symbol, deployment.strategyId),
-      )?.[0] ||
-      null;
+    const candidate = candidateByKey.get(candidateKey) || null;
     if (!candidate) {
       const weeklyGateReason = "missing_cycle_candidate";
       const draft: Omit<SyncResearchPromotionRow, "nextGate" | "changed"> = {
@@ -1982,9 +2031,15 @@ export async function syncResearchCyclePromotionGates(
     let weeklyGateReason: string | null = null;
 
     if (weeklyPolicy.enabled) {
-      if (!inWinnerShortlist && weeklyPolicy.requireWinnerShortlist) {
+      if (
+        shouldEnforceWinnerShortlistForDeployment({
+          deployment,
+          inWinnerShortlist,
+          requireWinnerShortlist: weeklyPolicy.requireWinnerShortlist,
+        })
+      ) {
         weeklyGateReason = "not_in_90d_winner_shortlist";
-      } else if (inWinnerShortlist) {
+      } else {
         if (!candlesBySymbol.has(deployment.symbol)) {
           emitSyncLog("weekly_robustness_load_candles", {
             symbol: deployment.symbol,

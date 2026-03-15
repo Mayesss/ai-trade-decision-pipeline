@@ -210,6 +210,16 @@ test('resolveSeedSymbolEligibility enforces bars/day and recent-bars gates for s
     assert.equal(sparseOut.eligible, false);
     assert.equal(sparseOut.reason, 'seed_avg_bars_per_day_below_min');
 
+    const sparseBootstrapOut = resolveSeedSymbolEligibility({
+        policy,
+        nowMs,
+        candles: sparseCandles,
+        hasStrategyFit: true,
+        allowBootstrapSymbols: true,
+    });
+    assert.equal(sparseBootstrapOut.eligible, true);
+    assert.equal(sparseBootstrapOut.reason, null);
+
     const denseCandles: Array<[number, number, number, number, number, number]> = [];
     const fiveDaysAgo = nowMs - 5 * 24 * 60 * 60 * 1000;
     for (let i = 0; i < 5 * 24 * 60; i += 1) {
