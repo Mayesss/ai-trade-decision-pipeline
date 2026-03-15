@@ -2987,43 +2987,46 @@ export default function Home() {
     };
   });
   const scalpRegistryDeployments = useMemo<ScalpOpsDeploymentRow[]>(
-    () =>
-      (Array.isArray(scalpSummary?.deployments) ? scalpSummary.deployments : [])
-        .map((row) => {
-          const deploymentId = String(row?.deploymentId || "").trim();
-          const symbol = String(row?.symbol || "")
-            .trim()
-            .toUpperCase();
-          const strategyId = String(row?.strategyId || "").trim();
-          if (!deploymentId || !symbol || !strategyId) return null;
-          return {
-            deploymentId,
-            symbol,
-            strategyId,
-            tuneId: String(row?.tuneId || "").trim() || "default",
-            source: String(row?.source || "").trim() || "registry",
-            enabled: row?.enabled === true,
-            promotionEligible:
-              typeof row?.promotionEligible === "boolean"
-                ? row.promotionEligible
-                : false,
-            promotionReason:
-              String(row?.promotionReason || "").trim() || null,
-            forwardValidation: row?.forwardValidation || null,
-            perf30dTrades: null,
-            perf30dExpectancyR: null,
-            perf30dNetR: null,
-            perf30dMaxDrawdownR: null,
-            runtime: null,
-          } satisfies ScalpOpsDeploymentRow;
-        })
-        .filter((row): row is ScalpOpsDeploymentRow => Boolean(row))
-        .sort((a, b) => {
+    () => {
+      const rows = (Array.isArray(scalpSummary?.deployments)
+        ? scalpSummary.deployments
+        : []
+      ).reduce<ScalpOpsDeploymentRow[]>((out, row) => {
+        const deploymentId = String(row?.deploymentId || "").trim();
+        const symbol = String(row?.symbol || "")
+          .trim()
+          .toUpperCase();
+        const strategyId = String(row?.strategyId || "").trim();
+        if (!deploymentId || !symbol || !strategyId) return out;
+        out.push({
+          deploymentId,
+          symbol,
+          strategyId,
+          tuneId: String(row?.tuneId || "").trim() || "default",
+          source: String(row?.source || "").trim() || "registry",
+          enabled: row?.enabled === true,
+          promotionEligible:
+            typeof row?.promotionEligible === "boolean"
+              ? row.promotionEligible
+              : false,
+          promotionReason:
+            String(row?.promotionReason || "").trim() || null,
+          forwardValidation: row?.forwardValidation || null,
+          perf30dTrades: null,
+          perf30dExpectancyR: null,
+          perf30dNetR: null,
+          perf30dMaxDrawdownR: null,
+          runtime: null,
+        });
+        return out;
+      }, []);
+      return rows.sort((a, b) => {
           if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
           if (a.strategyId !== b.strategyId)
             return a.strategyId.localeCompare(b.strategyId);
           return a.tuneId.localeCompare(b.tuneId);
-        }),
+        });
+    },
     [scalpSummary?.deployments],
   );
 
