@@ -476,6 +476,7 @@ type ScalpResearchCycleResponse = {
       | "started"
       | "completed"
       | "failed"
+      | "queue_idle"
       | "no_cycle"
       | "cycle_not_found"
       | "cycle_not_running"

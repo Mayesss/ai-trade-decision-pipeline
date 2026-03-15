@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 
 import {
   loadScalpDeploymentRegistry,
+  upsertScalpDeploymentRegistryEntry,
   upsertScalpDeploymentRegistryEntriesBulk,
   type ScalpDeploymentPromotionGate,
   type ScalpDeploymentRegistryEntry,
@@ -152,6 +153,19 @@ function startOfWeekMondayUtc(tsMs: number): number {
 function nextWeekMondayUtc(tsMs: number): number {
   const weekStart = startOfWeekMondayUtc(tsMs);
   return tsMs === weekStart ? weekStart : weekStart + WEEK_MS;
+}
+
+function normalizePromotionTriggerWeeks(value: unknown, fallback: number): number {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.max(1, n);
+}
+
+function resolveDeploymentPromotionTriggerWeeks(raw?: unknown): number {
+  return normalizePromotionTriggerWeeks(
+    raw ?? process.env.SCALP_RESEARCH_DEPLOYMENT_PROMOTION_TRIGGER_WEEKS,
+    12,
+  );
 }
 
 function toReplayCandles(rows: CandleRow[], spreadPips: number) {
@@ -752,6 +766,279 @@ export function buildForwardValidationByCandidate(
   });
 }
 
+export function evaluateFreshCompletedDeploymentWeeks(params: {
+  tasks: Array<
+    Pick<
+      ScalpResearchTask,
+      | "deploymentId"
+      | "symbol"
+      | "strategyId"
+      | "tuneId"
+      | "status"
+      | "result"
+      | "windowFromTs"
+      | "windowToTs"
+    >
+  >;
+  nowMs: number;
+  requiredWeeks?: number;
+}): {
+  ready: boolean;
+  requiredWeeks: number;
+  completedWeeks: number;
+  missingWeeks: number;
+  windowFromTs: number;
+  windowToTs: number;
+  readyTasks: Array<
+    Pick<
+      ScalpResearchTask,
+      | "deploymentId"
+      | "symbol"
+      | "strategyId"
+      | "tuneId"
+      | "status"
+      | "result"
+      | "windowFromTs"
+      | "windowToTs"
+    >
+  >;
+} {
+  const requiredWeeks = resolveDeploymentPromotionTriggerWeeks(
+    params.requiredWeeks,
+  );
+  const windowToTs = startOfWeekMondayUtc(params.nowMs);
+  const windowFromTs = windowToTs - requiredWeeks * WEEK_MS;
+  const expectedKeys = new Set<string>();
+  const readyTaskByWindowKey = new Map<
+    string,
+    Pick<
+      ScalpResearchTask,
+      | "deploymentId"
+      | "symbol"
+      | "strategyId"
+      | "tuneId"
+      | "status"
+      | "result"
+      | "windowFromTs"
+      | "windowToTs"
+    >
+  >();
+
+  for (let i = 0; i < requiredWeeks; i += 1) {
+    const fromTs = windowFromTs + i * WEEK_MS;
+    const toTs = fromTs + WEEK_MS;
+    expectedKeys.add(`${fromTs}:${toTs}`);
+  }
+
+  for (const task of params.tasks) {
+    if (task.status !== "completed" || !task.result) continue;
+    const fromTs = Math.floor(Number(task.windowFromTs) || 0);
+    const toTs = Math.floor(Number(task.windowToTs) || 0);
+    if (toTs - fromTs !== WEEK_MS) continue;
+    if (fromTs < windowFromTs || toTs > windowToTs) continue;
+    const key = `${fromTs}:${toTs}`;
+    if (!expectedKeys.has(key)) continue;
+    readyTaskByWindowKey.set(key, task);
+  }
+
+  const readyTasks = Array.from(readyTaskByWindowKey.values()).sort(
+    (a, b) => a.windowFromTs - b.windowFromTs,
+  );
+  const completedWeeks = readyTasks.length;
+  const missingWeeks = Math.max(0, requiredWeeks - completedWeeks);
+  return {
+    ready: missingWeeks === 0,
+    requiredWeeks,
+    completedWeeks,
+    missingWeeks,
+    windowFromTs,
+    windowToTs,
+    readyTasks,
+  };
+}
+
+export interface PromoteDeploymentFromResearchTaskResult {
+  ok: boolean;
+  triggered: boolean;
+  deploymentId: string;
+  ready: boolean;
+  requiredWeeks: number;
+  completedWeeks: number;
+  missingWeeks: number;
+  reason: string | null;
+  forwardValidation: ScalpForwardValidationMetrics | null;
+  promotionEligible: boolean | null;
+  promotionReason: string | null;
+}
+
+export async function maybePromoteDeploymentFromResearchTask(params: {
+  task: Pick<
+    ScalpResearchTask,
+    | "deploymentId"
+    | "symbol"
+    | "strategyId"
+    | "tuneId"
+    | "configOverride"
+    | "windowFromTs"
+    | "windowToTs"
+  >;
+  nowMs?: number;
+  requiredWeeks?: number;
+  updatedBy?: string;
+  source?: "backtest" | "matrix";
+}): Promise<PromoteDeploymentFromResearchTaskResult> {
+  const deploymentId = String(params.task.deploymentId || "").trim();
+  const symbol = String(params.task.symbol || "")
+    .trim()
+    .toUpperCase();
+  const strategyId = String(params.task.strategyId || "")
+    .trim()
+    .toLowerCase();
+  const tuneId = String(params.task.tuneId || "")
+    .trim()
+    .toLowerCase();
+  const requiredWeeks = resolveDeploymentPromotionTriggerWeeks(
+    params.requiredWeeks,
+  );
+  if (!deploymentId || !symbol || !strategyId || !tuneId) {
+    return {
+      ok: false,
+      triggered: false,
+      deploymentId,
+      ready: false,
+      requiredWeeks,
+      completedWeeks: 0,
+      missingWeeks: requiredWeeks,
+      reason: "deployment_identity_missing",
+      forwardValidation: null,
+      promotionEligible: null,
+      promotionReason: null,
+    };
+  }
+
+  const nowMs = Number.isFinite(Number(params.nowMs))
+    ? Math.floor(Number(params.nowMs))
+    : Date.now();
+  const selectionWindowDays = requiredWeeks * 7;
+  const selectionWindowToTs = startOfWeekMondayUtc(nowMs);
+  const selectionWindowFromTs =
+    selectionWindowToTs - selectionWindowDays * DAY_MS;
+  const canonicalTasks = (
+    await listLatestResearchTasksByWindow({
+      symbols: [symbol],
+      windowFromTs: selectionWindowFromTs,
+      windowToTs: selectionWindowToTs,
+    })
+  ).filter((task) => task.deploymentId === deploymentId);
+  const freshness = evaluateFreshCompletedDeploymentWeeks({
+    tasks: canonicalTasks,
+    nowMs,
+    requiredWeeks,
+  });
+  if (!freshness.ready) {
+    return {
+      ok: true,
+      triggered: false,
+      deploymentId,
+      ready: false,
+      requiredWeeks: freshness.requiredWeeks,
+      completedWeeks: freshness.completedWeeks,
+      missingWeeks: freshness.missingWeeks,
+      reason: "fresh_weeks_incomplete",
+      forwardValidation: null,
+      promotionEligible: null,
+      promotionReason: null,
+    };
+  }
+
+  const candidate =
+    buildForwardValidationByCandidateFromTasks({
+      tasks: freshness.readyTasks as ScalpResearchTask[],
+      selectionWindowDays,
+      forwardWindowDays: 7,
+    }).find((row) => row.deploymentId === deploymentId) || null;
+  if (!candidate) {
+    return {
+      ok: false,
+      triggered: false,
+      deploymentId,
+      ready: true,
+      requiredWeeks: freshness.requiredWeeks,
+      completedWeeks: freshness.completedWeeks,
+      missingWeeks: freshness.missingWeeks,
+      reason: "forward_validation_unavailable",
+      forwardValidation: null,
+      promotionEligible: null,
+      promotionReason: null,
+    };
+  }
+
+  const deploymentSnapshot = await loadScalpDeploymentRegistry();
+  const existing =
+    deploymentSnapshot.deployments.find((row) => row.deploymentId === deploymentId) ||
+    null;
+  const shouldPersistForwardValidation =
+    !existing ||
+    shouldReplaceRegistryForwardValidation({
+      existingForwardValidation: existing.promotionGate?.forwardValidation || null,
+      incomingForwardValidation: candidate.forwardValidation,
+    });
+  if (!shouldPersistForwardValidation) {
+    await rebalanceEnabledDeploymentsFromRegistryScan({
+      snapshot: deploymentSnapshot,
+      updatedBy: params.updatedBy || "research-worker:deploy-trigger",
+    });
+    return {
+      ok: true,
+      triggered: false,
+      deploymentId,
+      ready: true,
+      requiredWeeks: freshness.requiredWeeks,
+      completedWeeks: freshness.completedWeeks,
+      missingWeeks: freshness.missingWeeks,
+      reason: "existing_forward_validation_broader",
+      forwardValidation: existing?.promotionGate?.forwardValidation || null,
+      promotionEligible: existing?.promotionGate?.eligible ?? null,
+      promotionReason: existing?.promotionGate?.reason || null,
+    };
+  }
+
+  const upserted = await upsertScalpDeploymentRegistryEntry({
+    deploymentId,
+    symbol,
+    strategyId,
+    tuneId,
+    source: existing?.source || params.source || "backtest",
+    enabled: existing?.enabled ?? false,
+    configOverride:
+      params.task.configOverride !== undefined
+        ? params.task.configOverride
+        : existing?.configOverride ?? undefined,
+    forwardValidation: candidate.forwardValidation,
+    updatedBy: params.updatedBy || "research-worker:deploy-trigger",
+  });
+  const rebalanced = await rebalanceEnabledDeploymentsFromRegistryScan({
+    snapshot: upserted.snapshot,
+    updatedBy: params.updatedBy || "research-worker:deploy-trigger",
+  });
+  const finalEntry =
+    rebalanced.snapshot.deployments.find((row) => row.deploymentId === deploymentId) ||
+    upserted.entry;
+  return {
+    ok: true,
+    triggered: true,
+    deploymentId,
+    ready: true,
+    requiredWeeks: freshness.requiredWeeks,
+    completedWeeks: freshness.completedWeeks,
+    missingWeeks: freshness.missingWeeks,
+    reason: null,
+    forwardValidation: finalEntry.promotionGate?.forwardValidation || null,
+    promotionEligible: finalEntry.promotionGate?.eligible ?? null,
+    promotionReason: finalEntry.promotionGate?.reason || null,
+  };
+}
+
 export interface SyncResearchPromotionParams {
   cycleId?: string;
   dryRun?: boolean;
@@ -778,6 +1065,8 @@ export interface SyncResearchPromotionParams {
   materializeEnabled?: boolean;
   materializeMinTradesPerWindow?: number;
   materializeMinMeanExpectancyR?: number;
+  authoritativeRegistryRewrite?: boolean;
+  mutateEnablement?: boolean;
 }
 
 export interface SyncResearchMaterializationQualityPolicy {
@@ -1006,6 +1295,225 @@ export function buildBestEligibleTuneDeploymentIdSet(params: {
   }
 
   return winnerIds;
+}
+
+function registryEntryToForwardValidationCandidate(
+  deployment: Pick<
+    ScalpDeploymentRegistryEntry,
+    | "deploymentId"
+    | "symbol"
+    | "strategyId"
+    | "tuneId"
+    | "promotionGate"
+    | "source"
+  >,
+): ScalpResearchForwardValidationCandidate | null {
+  if (deployment.source !== "backtest" && deployment.source !== "matrix") {
+    return null;
+  }
+  if (!deployment.promotionGate?.eligible || !deployment.promotionGate.forwardValidation) {
+    return null;
+  }
+  const validation = deployment.promotionGate.forwardValidation;
+  const rollCount = Math.max(0, toPositiveInt(validation.rollCount, 0));
+  if (rollCount <= 0) return null;
+  const profitableWindowPct = Math.max(
+    0,
+    Math.min(100, Number(validation.profitableWindowPct) || 0),
+  );
+  const profitableWindows = Math.max(
+    0,
+    Math.round((rollCount * profitableWindowPct) / 100),
+  );
+  const maxDrawdownRaw = Number(validation.maxDrawdownR);
+  return {
+    symbol: deployment.symbol,
+    strategyId: deployment.strategyId,
+    tuneId: deployment.tuneId,
+    deploymentId: deployment.deploymentId,
+    rollCount,
+    profitableWindowPct,
+    profitableWindows,
+    meanExpectancyR: Number(validation.meanExpectancyR) || 0,
+    medianExpectancyR: null,
+    meanProfitFactor:
+      validation.meanProfitFactor === null ||
+      validation.meanProfitFactor === undefined
+        ? null
+        : Number(validation.meanProfitFactor),
+    maxDrawdownR: Number.isFinite(maxDrawdownRaw)
+      ? maxDrawdownRaw
+      : Number.POSITIVE_INFINITY,
+    topWindowPnlConcentrationPct: null,
+    selectionScore: null,
+    minTradesPerWindow:
+      validation.minTradesPerWindow === null ||
+      validation.minTradesPerWindow === undefined
+        ? null
+        : Number(validation.minTradesPerWindow),
+    totalTrades:
+      validation.confirmationTotalTrades === null ||
+      validation.confirmationTotalTrades === undefined
+        ? 0
+        : Math.max(0, Math.floor(Number(validation.confirmationTotalTrades) || 0)),
+    selectionWindowDays:
+      validation.selectionWindowDays === null ||
+      validation.selectionWindowDays === undefined
+        ? 0
+        : Math.max(0, Math.floor(Number(validation.selectionWindowDays) || 0)),
+    forwardWindowDays:
+      validation.forwardWindowDays === null ||
+      validation.forwardWindowDays === undefined
+        ? 0
+        : Math.max(0, Math.floor(Number(validation.forwardWindowDays) || 0)),
+    forwardValidation: validation,
+  };
+}
+
+export function buildStrongestEligibleDeploymentIdSetFromRegistry(params: {
+  deployments: Array<
+    Pick<
+      ScalpDeploymentRegistryEntry,
+      | "deploymentId"
+      | "symbol"
+      | "strategyId"
+      | "tuneId"
+      | "promotionGate"
+      | "source"
+    >
+  >;
+}): Set<string> {
+  const bySymbol = new Map<
+    string,
+    Array<{
+      deploymentId: string;
+      candidate: ScalpResearchForwardValidationCandidate;
+    }>
+  >();
+  for (const deployment of params.deployments) {
+    const candidate = registryEntryToForwardValidationCandidate(deployment);
+    if (!candidate) continue;
+    if (!bySymbol.has(deployment.symbol)) {
+      bySymbol.set(deployment.symbol, []);
+    }
+    bySymbol.get(deployment.symbol)!.push({
+      deploymentId: deployment.deploymentId,
+      candidate,
+    });
+  }
+
+  const winnerIds = new Set<string>();
+  for (const rows of bySymbol.values()) {
+    rows.sort((a, b) => compareCandidates(a.candidate, b.candidate));
+    const best = rows[0] || null;
+    if (best) winnerIds.add(best.deploymentId);
+  }
+  return winnerIds;
+}
+
+async function rebalanceEnabledDeploymentsFromRegistryScan(params: {
+  snapshot?: { deployments: ScalpDeploymentRegistryEntry[] } | null;
+  updatedBy?: string;
+}): Promise<{
+  snapshot: { deployments: ScalpDeploymentRegistryEntry[] };
+  winnerIds: Set<string>;
+  updatedCount: number;
+}> {
+  const baseSnapshot =
+    params.snapshot || (await loadScalpDeploymentRegistry());
+  const winnerIds = buildStrongestEligibleDeploymentIdSetFromRegistry({
+    deployments: baseSnapshot.deployments,
+  });
+  const enablementUpserts = baseSnapshot.deployments.flatMap((deployment) => {
+    if (deployment.source !== "backtest" && deployment.source !== "matrix") {
+      return [];
+    }
+    const shouldEnable = winnerIds.has(deployment.deploymentId);
+    if (deployment.enabled === shouldEnable) return [];
+    return [
+      {
+        deploymentId: deployment.deploymentId,
+        source: deployment.source,
+        enabled: shouldEnable,
+        updatedBy: params.updatedBy || "research-worker:enablement-scan",
+      } satisfies ScalpDeploymentRegistryWriteParams,
+    ];
+  });
+  if (!enablementUpserts.length) {
+    return {
+      snapshot: baseSnapshot,
+      winnerIds,
+      updatedCount: 0,
+    };
+  }
+  const out = await upsertScalpDeploymentRegistryEntriesBulk(enablementUpserts);
+  return {
+    snapshot: out.snapshot,
+    winnerIds,
+    updatedCount: enablementUpserts.length,
+  };
+}
+
+function effectiveForwardValidationWindowDays(
+  validation: ScalpForwardValidationMetrics | null | undefined,
+): number {
+  if (!validation) return 0;
+  const selectionWindowDays = toPositiveInt(validation.selectionWindowDays, 0);
+  const confirmationWindowDays = toPositiveInt(
+    validation.confirmationWindowDays,
+    0,
+  );
+  return Math.max(selectionWindowDays, confirmationWindowDays);
+}
+
+function effectiveForwardValidationRollCount(
+  validation: ScalpForwardValidationMetrics | null | undefined,
+): number {
+  if (!validation) return 0;
+  const selectionRollCount = toPositiveInt(validation.rollCount, 0);
+  const confirmationRollCount = toPositiveInt(
+    validation.confirmationRollCount,
+    0,
+  );
+  return Math.max(selectionRollCount, confirmationRollCount);
+}
+
+export function shouldReplaceRegistryForwardValidation(params: {
+  existingForwardValidation: ScalpForwardValidationMetrics | null | undefined;
+  incomingForwardValidation: ScalpForwardValidationMetrics | null | undefined;
+}): boolean {
+  const incoming = params.incomingForwardValidation || null;
+  if (!incoming) return false;
+  const existing = params.existingForwardValidation || null;
+  if (!existing) return true;
+
+  const incomingWindowDays = effectiveForwardValidationWindowDays(incoming);
+  const existingWindowDays = effectiveForwardValidationWindowDays(existing);
+  if (incomingWindowDays > existingWindowDays) return true;
+  if (incomingWindowDays < existingWindowDays) return false;
+
+  const incomingRollCount = effectiveForwardValidationRollCount(incoming);
+  const existingRollCount = effectiveForwardValidationRollCount(existing);
+  if (incomingRollCount > existingRollCount) return true;
+  if (incomingRollCount < existingRollCount) return false;
+
+  const incomingSelectionWindowDays = toPositiveInt(
+    incoming.selectionWindowDays,
+    0,
+  );
+  const existingSelectionWindowDays = toPositiveInt(
+    existing.selectionWindowDays,
+    0,
+  );
+  if (incomingSelectionWindowDays > existingSelectionWindowDays) return true;
+  if (incomingSelectionWindowDays < existingSelectionWindowDays) return false;
+
+  const incomingSelectionRollCount = toPositiveInt(incoming.rollCount, 0);
+  const existingSelectionRollCount = toPositiveInt(existing.rollCount, 0);
+  if (incomingSelectionRollCount > existingSelectionRollCount) return true;
+  if (incomingSelectionRollCount < existingSelectionRollCount) return false;
+
+  return true;
 }
 
 type PromotionSyncStateSnapshot = {
@@ -1505,6 +2013,15 @@ export async function syncResearchCyclePromotionGates(
         0,
       ),
     };
+  const authoritativeRegistryRewrite =
+    params.authoritativeRegistryRewrite ??
+    envOrFallbackBool(
+      "SCALP_RESEARCH_SYNC_AUTHORITATIVE_REGISTRY",
+      false,
+    );
+  const mutateEnablement =
+    params.mutateEnablement ??
+    envOrFallbackBool("SCALP_RESEARCH_SYNC_MUTATE_ENABLEMENT", false);
   const emptyMaterialization = {
     enabled: materializeMissingCandidates,
     source: materializeSource,
@@ -2007,29 +2524,6 @@ export async function syncResearchCyclePromotionGates(
         });
         continue;
       }
-
-      const forcedGate = buildForcedIneligibleGate({
-        baseGate: deployment.promotionGate,
-        reason: weeklyGateReason,
-        forwardValidation: deployment.promotionGate?.forwardValidation || {
-          rollCount: 0,
-          profitableWindowPct: 0,
-          meanExpectancyR: 0,
-          meanProfitFactor: null,
-          maxDrawdownR: null,
-          minTradesPerWindow: null,
-          selectionWindowDays: null,
-          forwardWindowDays: null,
-        },
-        nowMs,
-      });
-      forcedUpserts.push({
-        deploymentId: deployment.deploymentId,
-        source: deployment.source,
-        enabled: deployment.enabled,
-        promotionGate: forcedGate,
-        updatedBy: params.updatedBy || "research-cycle-sync",
-      });
       rowDrafts.push(draft);
       await persistProgress({
         phase: "evaluate_deployments",
@@ -2181,20 +2675,28 @@ export async function syncResearchCyclePromotionGates(
       continue;
     }
 
-    baselineUpserts.push({
-      deploymentId: deployment.deploymentId,
-      source: deployment.source,
-      enabled: deployment.enabled,
-      forwardValidation,
-      updatedBy: params.updatedBy || "research-cycle-sync",
-    });
-    if (weeklyGateReason) {
-      forcedFromBaseline.set(deployment.deploymentId, {
+    const shouldPersistForwardValidation =
+      shouldReplaceRegistryForwardValidation({
+        existingForwardValidation:
+          deployment.promotionGate?.forwardValidation || null,
+        incomingForwardValidation: forwardValidation,
+      });
+    if (shouldPersistForwardValidation) {
+      baselineUpserts.push({
+        deploymentId: deployment.deploymentId,
         source: deployment.source,
         enabled: deployment.enabled,
-        reason: weeklyGateReason,
         forwardValidation,
+        updatedBy: params.updatedBy || "research-cycle-sync",
       });
+      if (weeklyGateReason) {
+        forcedFromBaseline.set(deployment.deploymentId, {
+          source: deployment.source,
+          enabled: deployment.enabled,
+          reason: weeklyGateReason,
+          forwardValidation,
+        });
+      }
     }
     rowDrafts.push(draft);
     await persistProgress({
@@ -2228,7 +2730,7 @@ export async function syncResearchCyclePromotionGates(
       });
     }
 
-    if (forcedFromBaseline.size > 0) {
+    if (authoritativeRegistryRewrite && forcedFromBaseline.size > 0) {
       const deploymentById = new Map(
         deployments.map((row) => [row.deploymentId, row] as const),
       );
@@ -2251,7 +2753,7 @@ export async function syncResearchCyclePromotionGates(
       }
     }
 
-    if (forcedUpserts.length > 0) {
+    if (authoritativeRegistryRewrite && forcedUpserts.length > 0) {
       await persistProgress({
         phase: "persist_forced",
         processedDeployments: considered.length,
@@ -2269,49 +2771,53 @@ export async function syncResearchCyclePromotionGates(
       });
     }
 
-    const currentConsideredDeployments = considered.map(
-      (row) =>
-        deployments.find((deployment) => deployment.deploymentId === row.deploymentId) ||
-        row,
-    );
-    const autoEnableWinnerIds = buildBestEligibleTuneDeploymentIdSet({
-      deployments: currentConsideredDeployments,
-      candidates,
-    });
-    const enablementUpserts = currentConsideredDeployments
-      .flatMap((deployment) => {
-        const shouldEnable = autoEnableWinnerIds.has(deployment.deploymentId);
-        if (deployment.enabled === shouldEnable) return [];
-        updatedDeploymentIds.add(deployment.deploymentId);
-        return [
-          {
-            deploymentId: deployment.deploymentId,
-            source: deployment.source,
-            enabled: shouldEnable,
-            updatedBy: params.updatedBy || "research-cycle-sync",
-          } satisfies ScalpDeploymentRegistryWriteParams,
-        ];
-      });
-
-    if (enablementUpserts.length > 0) {
-      await persistProgress({
-        phase: "persist_enablement",
-        processedDeployments: considered.length,
-        matchedDeployments: deploymentsMatched,
-        updatedDeployments: updatedDeploymentIds.size,
-      });
-      emitSyncLog("enablement_upserts_start", {
-        count: enablementUpserts.length,
-        winnerCount: autoEnableWinnerIds.size,
-      });
-      const enablementOut = await upsertScalpDeploymentRegistryEntriesBulk(
-        enablementUpserts,
+    if (authoritativeRegistryRewrite && mutateEnablement) {
+      const currentConsideredDeployments = considered.map(
+        (row) =>
+          deployments.find(
+            (deployment) => deployment.deploymentId === row.deploymentId,
+          ) || row,
       );
-      deployments = enablementOut.snapshot.deployments.slice();
-      emitSyncLog("enablement_upserts_completed", {
-        count: enablementUpserts.length,
-        winnerCount: autoEnableWinnerIds.size,
+      const autoEnableWinnerIds = buildBestEligibleTuneDeploymentIdSet({
+        deployments: currentConsideredDeployments,
+        candidates,
       });
+      const enablementUpserts = currentConsideredDeployments.flatMap(
+        (deployment) => {
+          const shouldEnable = autoEnableWinnerIds.has(deployment.deploymentId);
+          if (deployment.enabled === shouldEnable) return [];
+          updatedDeploymentIds.add(deployment.deploymentId);
+          return [
+            {
+              deploymentId: deployment.deploymentId,
+              source: deployment.source,
+              enabled: shouldEnable,
+              updatedBy: params.updatedBy || "research-cycle-sync",
+            } satisfies ScalpDeploymentRegistryWriteParams,
+          ];
+        },
+      );
+
+      if (enablementUpserts.length > 0) {
+        await persistProgress({
+          phase: "persist_enablement",
+          processedDeployments: considered.length,
+          matchedDeployments: deploymentsMatched,
+          updatedDeployments: updatedDeploymentIds.size,
+        });
+        emitSyncLog("enablement_upserts_start", {
+          count: enablementUpserts.length,
+          winnerCount: autoEnableWinnerIds.size,
+        });
+        const enablementOut = await upsertScalpDeploymentRegistryEntriesBulk(
+          enablementUpserts,
+        );
+        deployments = enablementOut.snapshot.deployments.slice();
+        emitSyncLog("enablement_upserts_completed", {
+          count: enablementUpserts.length,
+          winnerCount: autoEnableWinnerIds.size,
+        });
+      }
     }
 
     const nextByDeploymentId = new Map(

@@ -67,6 +67,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const requireCompletedCycleForSync = parseBoolParam(req.query.requireCompletedCycleForSync, true);
     const autoSuccessor = parseBoolParam(req.query.autoSuccessor, true);
     const successorPath = firstQueryValue(req.query.successorPath) || '/api/scalp/cron/research-cycle-sync-gates';
+    const requestedGlobalQueue = !cycleId;
 
     try {
         const panicStop = await loadScalpPanicStopState();
@@ -95,6 +96,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 ? `worker blocked by preflight (${worker.orchestration.reasonCodes.join(',') || 'unknown'})`
                 : worker.attemptedRuns > 0
                   ? `worker processed ${worker.attemptedRuns} tasks (completed=${worker.completedRuns}, failed=${worker.failedRuns}, concurrency=${worker.concurrency}${worker.stoppedByDurationBudget ? ', stoppedByDurationBudget=true' : ''})`
+                  : requestedGlobalQueue
+                    ? 'queue idle (no pending research tasks)'
                   : noClaim
                     ? `no claimable tasks (pending=${noClaim.pending}, runningFresh=${noClaim.runningFresh}, runningStale=${noClaim.runningStale}, runningMissingStartedAt=${noClaim.runningMissingStartedAt}, failedPendingManualRetry=${noClaim.failedRetryable}, failedMaxed=${noClaim.failedMaxed}, symbolCooldownBlocked=${noClaim.symbolCooldownBlocked}, lockMisses=${noClaim.lockMisses})`
                     : 'worker did not claim any tasks';
@@ -106,7 +109,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                   })
                 : null;
         const promotionSync = null;
-        const shouldAutoContinue =
+        const shouldAutoContinueCycle =
             autoContinue &&
             !preflightBlocked &&
             continueHop < autoContinueMaxHops &&
@@ -115,9 +118,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             aggregate!.summary.status === 'running' &&
             (aggregate!.summary.totals.pending > 0 || aggregate!.summary.totals.running > 0) &&
             (worker.stoppedByDurationBudget || worker.attemptedRuns >= worker.maxRuns);
+        const shouldAutoContinueGlobal =
+            autoContinue &&
+            !preflightBlocked &&
+            continueHop < autoContinueMaxHops &&
+            requestedGlobalQueue &&
+            !worker.cycleId &&
+            worker.attemptedRuns > 0 &&
+            (worker.stoppedByDurationBudget || worker.attemptedRuns >= worker.maxRuns);
+        const shouldAutoContinue = shouldAutoContinueCycle || shouldAutoContinueGlobal;
         const continuation = shouldAutoContinue
             ? await invokeCronEndpoint(req, '/api/scalp/cron/research-cycle-worker', {
-                  cycleId: worker.cycleId!,
+                  cycleId: worker.cycleId || undefined,
                   maxRuns: worker.maxRuns,
                   concurrency: worker.concurrency,
                   maxDurationMs: worker.maxDurationMs,

@@ -21,17 +21,16 @@ function toDate(value: number | Date): Date {
 }
 
 export async function claimResearchTasksFromPg(params: {
-    cycleId: string;
+    cycleId?: string;
     workerId: string;
     limit: number;
     nowMs?: number;
 }): Promise<ClaimedResearchTaskRow[]> {
     const cycleId = String(params.cycleId || '').trim();
-    if (!cycleId) return [];
-
     const workerId = String(params.workerId || '').trim() || 'worker_unknown';
     const limit = Math.max(1, Math.min(500, Math.floor(Number(params.limit) || 1)));
     const now = toDate(Number(params.nowMs || Date.now()));
+    const cycleFilterSql = cycleId ? Prisma.sql`AND t.cycle_id = ${cycleId}` : Prisma.empty;
 
     const db = scalpPrisma();
     const rows = await db.$queryRaw<
@@ -54,8 +53,8 @@ export async function claimResearchTasksFromPg(params: {
             FROM scalp_research_tasks t
             LEFT JOIN scalp_symbol_cooldowns c
               ON c.symbol = t.symbol
-            WHERE t.cycle_id = ${cycleId}
-              AND t.status = 'pending'
+            WHERE t.status = 'pending'
+              ${cycleFilterSql}
               AND t.next_eligible_at <= ${now}
               AND t.attempts < t.max_attempts
               AND (c.blocked_until IS NULL OR c.blocked_until <= ${now})

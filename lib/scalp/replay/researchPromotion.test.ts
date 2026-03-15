@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import type { ScalpDeploymentRegistryEntry } from '../deploymentRegistry';
 import {
+    buildStrongestEligibleDeploymentIdSetFromRegistry,
     buildCandidateMaterializationShortlist,
     buildBestEligibleTuneDeploymentIdSet,
     buildForwardValidationByCandidate,
     buildForwardValidationByCandidateFromTasks,
     buildWinnerCandidateKeySet,
+    evaluateFreshCompletedDeploymentWeeks,
     filterMaterializationCandidatesByQuality,
+    shouldReplaceRegistryForwardValidation,
     shouldEnforceWinnerShortlistForDeployment,
 } from '../researchPromotion';
 import type { ScalpResearchCycleSnapshot, ScalpResearchTask } from '../researchCycle';
@@ -85,6 +89,51 @@ function makeCompletedTask(params: {
             grossProfitR: 2,
             grossLossR: -1,
         },
+    };
+}
+
+function makeEligibleDeployment(params: {
+    deploymentId: string;
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    enabled?: boolean;
+    source?: 'backtest' | 'matrix' | 'manual';
+    meanExpectancyR: number;
+    profitableWindowPct: number;
+    meanProfitFactor: number | null;
+    maxDrawdownR: number;
+}): ScalpDeploymentRegistryEntry {
+    return {
+        symbol: params.symbol,
+        strategyId: params.strategyId,
+        tuneId: params.tuneId,
+        deploymentId: params.deploymentId,
+        enabled: params.enabled ?? false,
+        source: params.source ?? 'backtest',
+        notes: null,
+        configOverride: null,
+        leaderboardEntry: null,
+        promotionGate: {
+            eligible: true,
+            reason: null,
+            source: 'walk_forward',
+            evaluatedAtMs: 0,
+            thresholds: null,
+            forwardValidation: {
+                rollCount: 12,
+                profitableWindowPct: params.profitableWindowPct,
+                meanExpectancyR: params.meanExpectancyR,
+                meanProfitFactor: params.meanProfitFactor,
+                maxDrawdownR: params.maxDrawdownR,
+                minTradesPerWindow: 4,
+                selectionWindowDays: 84,
+                forwardWindowDays: 7,
+            },
+        },
+        createdAtMs: 0,
+        updatedAtMs: 0,
+        updatedBy: 'test',
     };
 }
 
@@ -206,6 +255,132 @@ test('buildForwardValidationByCandidateFromTasks supports longer confirmation ho
     assert.ok(Math.abs((rows[0]?.medianExpectancyR || 0) - 0.1) < 1e-9);
     assert.equal(rows[0]?.topWindowPnlConcentrationPct, 100);
     assert.ok(Math.abs((rows[0]?.selectionScore || 0) - 0.05) < 1e-9);
+});
+
+test('evaluateFreshCompletedDeploymentWeeks is ready for 12 consecutive completed weekly windows', () => {
+    const currentWeekStart = Date.UTC(2026, 2, 16, 0, 0, 0);
+    const nowMs = currentWeekStart + 12 * 60 * 60 * 1000;
+    const tasks: ScalpResearchTask[] = Array.from({ length: 12 }, (_, idx) => {
+        const windowFromTs = currentWeekStart - (12 - idx) * 7 * 24 * 60 * 60 * 1000;
+        return {
+            ...makeCompletedTask({
+                cycleId: 'rc_ready_12w',
+                taskId: `w${idx + 1}`,
+                symbol: 'BTCUSDT',
+                strategyId: 'compression_breakout_pullback_m15_m3',
+                trades: 4,
+                netR: 0.5,
+                expectancyR: 0.125,
+                profitFactor: 1.2,
+                maxDrawdownR: 1.5,
+            }),
+            windowFromTs,
+            windowToTs: windowFromTs + 7 * 24 * 60 * 60 * 1000,
+        };
+    });
+
+    const out = evaluateFreshCompletedDeploymentWeeks({
+        tasks,
+        nowMs,
+        requiredWeeks: 12,
+    });
+
+    assert.equal(out.ready, true);
+    assert.equal(out.completedWeeks, 12);
+    assert.equal(out.missingWeeks, 0);
+    assert.equal(out.readyTasks.length, 12);
+});
+
+test('evaluateFreshCompletedDeploymentWeeks stays blocked when one weekly window is missing', () => {
+    const currentWeekStart = Date.UTC(2026, 2, 16, 0, 0, 0);
+    const nowMs = currentWeekStart + 12 * 60 * 60 * 1000;
+    const tasks: ScalpResearchTask[] = Array.from({ length: 11 }, (_, idx) => {
+        const sourceIndex = idx >= 5 ? idx + 1 : idx;
+        const windowFromTs = currentWeekStart - (12 - sourceIndex) * 7 * 24 * 60 * 60 * 1000;
+        return {
+            ...makeCompletedTask({
+                cycleId: 'rc_missing_12w',
+                taskId: `w${idx + 1}`,
+                symbol: 'BTCUSDT',
+                strategyId: 'compression_breakout_pullback_m15_m3',
+                trades: 4,
+                netR: 0.5,
+                expectancyR: 0.125,
+                profitFactor: 1.2,
+                maxDrawdownR: 1.5,
+            }),
+            windowFromTs,
+            windowToTs: windowFromTs + 7 * 24 * 60 * 60 * 1000,
+        };
+    });
+
+    const out = evaluateFreshCompletedDeploymentWeeks({
+        tasks,
+        nowMs,
+        requiredWeeks: 12,
+    });
+
+    assert.equal(out.ready, false);
+    assert.equal(out.completedWeeks, 11);
+    assert.equal(out.missingWeeks, 1);
+});
+
+test('buildStrongestEligibleDeploymentIdSetFromRegistry keeps one strongest eligible deployment per symbol', () => {
+    const winners = buildStrongestEligibleDeploymentIdSetFromRegistry({
+        deployments: [
+            makeEligibleDeployment({
+                deploymentId: 'BTCUSDT~compression_breakout_pullback_m15_m3~steady',
+                symbol: 'BTCUSDT',
+                strategyId: 'compression_breakout_pullback_m15_m3',
+                tuneId: 'steady',
+                meanExpectancyR: 0.24,
+                profitableWindowPct: 74,
+                meanProfitFactor: 1.8,
+                maxDrawdownR: 2.4,
+            }),
+            makeEligibleDeployment({
+                deploymentId: 'BTCUSDT~regime_pullback_m15_m3~best',
+                symbol: 'BTCUSDT',
+                strategyId: 'regime_pullback_m15_m3',
+                tuneId: 'best',
+                meanExpectancyR: 0.31,
+                profitableWindowPct: 78,
+                meanProfitFactor: 2.1,
+                maxDrawdownR: 1.9,
+            }),
+            makeEligibleDeployment({
+                deploymentId: 'XAUUSDT~trend_day_reacceleration_m15_m3~default',
+                symbol: 'XAUUSDT',
+                strategyId: 'trend_day_reacceleration_m15_m3',
+                tuneId: 'default',
+                meanExpectancyR: 0.19,
+                profitableWindowPct: 69,
+                meanProfitFactor: 1.6,
+                maxDrawdownR: 2.2,
+            }),
+            {
+                ...makeEligibleDeployment({
+                    deploymentId: 'BTCUSDT~manual_override~default',
+                    symbol: 'BTCUSDT',
+                    strategyId: 'manual_override',
+                    tuneId: 'default',
+                    meanExpectancyR: 10,
+                    profitableWindowPct: 100,
+                    meanProfitFactor: 9.9,
+                    maxDrawdownR: 0.1,
+                    source: 'manual',
+                }),
+            },
+        ],
+    });
+
+    assert.deepEqual(
+        Array.from(winners).sort(),
+        [
+            'BTCUSDT~regime_pullback_m15_m3~best',
+            'XAUUSDT~trend_day_reacceleration_m15_m3~default',
+        ],
+    );
 });
 
 test('buildWinnerCandidateKeySet prefers smoother strategies over outlier-heavy higher-mean candidates', () => {
@@ -687,6 +862,68 @@ test('buildBestEligibleTuneDeploymentIdSet keeps only the best eligible tune per
             'BTCUSDT~compression_breakout_pullback_m15_m3~auto_tr1p7',
             'XAUUSDT~trend_day_reacceleration_m15_m3~default',
         ],
+    );
+});
+
+test('shouldReplaceRegistryForwardValidation rejects narrower incoming validation snapshots', () => {
+    assert.equal(
+        shouldReplaceRegistryForwardValidation({
+            existingForwardValidation: {
+                rollCount: 12,
+                profitableWindowPct: 91.67,
+                meanExpectancyR: 0.42,
+                meanProfitFactor: 2.1,
+                maxDrawdownR: 1.8,
+                minTradesPerWindow: 6,
+                selectionWindowDays: 84,
+                forwardWindowDays: 7,
+                confirmationWindowDays: 364,
+                confirmationRollCount: 12,
+            },
+            incomingForwardValidation: {
+                rollCount: 1,
+                profitableWindowPct: 100,
+                meanExpectancyR: 2.3,
+                meanProfitFactor: 300,
+                maxDrawdownR: 0.04,
+                minTradesPerWindow: 6,
+                selectionWindowDays: 7,
+                forwardWindowDays: 7,
+                confirmationWindowDays: 7,
+                confirmationRollCount: 1,
+            },
+        }),
+        false,
+    );
+});
+
+test('shouldReplaceRegistryForwardValidation accepts broader incoming validation snapshots', () => {
+    assert.equal(
+        shouldReplaceRegistryForwardValidation({
+            existingForwardValidation: {
+                rollCount: 1,
+                profitableWindowPct: 100,
+                meanExpectancyR: 2.3,
+                meanProfitFactor: 300,
+                maxDrawdownR: 0.04,
+                minTradesPerWindow: 6,
+                selectionWindowDays: 7,
+                forwardWindowDays: 7,
+            },
+            incomingForwardValidation: {
+                rollCount: 12,
+                profitableWindowPct: 91.67,
+                meanExpectancyR: 0.42,
+                meanProfitFactor: 2.1,
+                maxDrawdownR: 1.8,
+                minTradesPerWindow: 6,
+                selectionWindowDays: 84,
+                forwardWindowDays: 7,
+                confirmationWindowDays: 364,
+                confirmationRollCount: 12,
+            },
+        }),
+        true,
     );
 });
 
