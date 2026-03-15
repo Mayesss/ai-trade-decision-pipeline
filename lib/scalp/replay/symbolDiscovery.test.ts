@@ -3,7 +3,9 @@ import test from 'node:test';
 
 import {
     buildNextUniverseWithChurnCaps,
+    resolveCompletedWeekCoverageStartMs,
     resolveRecommendedStrategiesForSymbol,
+    resolveRequiredHistoryDaysForCompletedWeeks,
     resolveSeedSymbolEligibility,
     summarizeSeedHistoryQuality,
 } from '../symbolDiscovery';
@@ -251,4 +253,17 @@ test('summarizeSeedHistoryQuality reports span, lag, and activity metrics', () =
     assert.ok((quality.avgBarsPerDay ?? 0) > 1300);
     assert.ok((quality.recentBars7d ?? 0) >= candles.length);
     assert.ok((quality.lagHours ?? 999) < 1);
+});
+
+test('completed-week coverage helpers extend seed history beyond raw lookback days when needed', () => {
+    const nowMs = Date.UTC(2026, 2, 10, 12, 0, 0); // Tuesday
+    const coverageStartMs = resolveCompletedWeekCoverageStartMs(nowMs, 13);
+    assert.equal(coverageStartMs, Date.UTC(2025, 11, 8, 0, 0, 0));
+
+    const effectiveDays = resolveRequiredHistoryDaysForCompletedWeeks({
+        nowMs,
+        targetHistoryDays: 90,
+        requiredSuccessiveWeeks: 13,
+    });
+    assert.equal(effectiveDays, 93);
 });

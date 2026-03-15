@@ -161,6 +161,7 @@ const DEFAULT_UNIVERSE_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-symbo
 const UNIVERSE_SNAPSHOT_KEY = 'latest:v1';
 const UNIVERSE_SNAPSHOT_JOBS_KEY = 'state:symbol_universe_snapshot:v1';
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 let latestUniverseSnapshot: ScalpSymbolUniverseSnapshot | null = null;
 const SEED_FRESHNESS_MAX_LAG_MS = 12 * 60 * 60 * 1000;
 
@@ -263,6 +264,31 @@ function normalizeStrategyIdArray(value: unknown): string[] {
         )
         .filter((row) => Boolean(row));
     return Array.from(new Set(normalized));
+}
+
+export function resolveCompletedWeekCoverageStartMs(nowMs: number, requiredWeeks: number): number {
+    const safeNowMs = Number.isFinite(Number(nowMs)) ? Math.max(0, Math.floor(Number(nowMs))) : Date.now();
+    const normalizedRequiredWeeks = Math.max(1, Math.min(52, Math.floor(Number(requiredWeeks) || 0)));
+    const dayStartMs = (() => {
+        const d = new Date(safeNowMs);
+        return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+    })();
+    const dayOfWeek = new Date(dayStartMs).getUTCDay(); // 0=Sunday ... 6=Saturday
+    const daysSinceMonday = (dayOfWeek + 6) % 7;
+    const startCurrentWeekMondayMs = dayStartMs - daysSinceMonday * ONE_DAY_MS;
+    return Math.max(0, startCurrentWeekMondayMs - normalizedRequiredWeeks * ONE_WEEK_MS);
+}
+
+export function resolveRequiredHistoryDaysForCompletedWeeks(params: {
+    nowMs: number;
+    targetHistoryDays: number;
+    requiredSuccessiveWeeks: number;
+}): number {
+    const safeNowMs = Number.isFinite(Number(params.nowMs)) ? Math.max(0, Math.floor(Number(params.nowMs))) : Date.now();
+    const targetHistoryDays = Math.max(1, Math.floor(Number(params.targetHistoryDays) || 0));
+    const coverageStartMs = resolveCompletedWeekCoverageStartMs(safeNowMs, params.requiredSuccessiveWeeks);
+    const coverageSpanDays = Math.max(1, Math.ceil((safeNowMs - coverageStartMs) / ONE_DAY_MS));
+    return Math.max(targetHistoryDays, coverageSpanDays);
 }
 
 function resolvePolicyPath(): string {
@@ -1070,6 +1096,26 @@ async function runScalpSymbolHistorySeedStage(params: {
     preloadedDiscoveryError?: string | null;
 }): Promise<ScalpSymbolDiscoverySeedSummary> {
     const cfg = params.config;
+    const requiredSuccessiveWeeksConfigured = Math.max(
+        1,
+        Math.min(
+            52,
+            toOptionalPositiveInt(
+                process.env.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS,
+                12,
+            ),
+        ),
+    );
+    const requiredSuccessiveWeeks = Math.max(
+        requiredSuccessiveWeeksConfigured,
+        Math.ceil(cfg.targetHistoryDays / 7),
+    );
+    const effectiveTargetHistoryDays = resolveRequiredHistoryDaysForCompletedWeeks({
+        nowMs: params.nowMs,
+        targetHistoryDays: cfg.targetHistoryDays,
+        requiredSuccessiveWeeks,
+    });
+    const effectiveMaxHistoryDays = Math.max(cfg.maxHistoryDays, effectiveTargetHistoryDays + 5);
     const summary: ScalpSymbolDiscoverySeedSummary = {
         enabled: cfg.enabled,
         dryRun: params.dryRun,
@@ -1079,8 +1125,8 @@ async function runScalpSymbolHistorySeedStage(params: {
         seededSymbols: 0,
         skippedSymbols: 0,
         failedSymbols: 0,
-        targetHistoryDays: cfg.targetHistoryDays,
-        maxHistoryDays: cfg.maxHistoryDays,
+        targetHistoryDays: effectiveTargetHistoryDays,
+        maxHistoryDays: effectiveMaxHistoryDays,
         chunkDays: cfg.chunkDays,
         maxRequestsPerSymbol: cfg.maxRequestsPerSymbol,
         maxSymbolsPerRun: cfg.maxSymbolsPerRun,
@@ -1156,7 +1202,7 @@ async function runScalpSymbolHistorySeedStage(params: {
     const tfMs = timeframeToMs(cfg.timeframe);
     const maxFetchPassesPerSymbol = Math.max(
         1,
-        Math.min(128, Math.ceil(cfg.targetHistoryDays / Math.max(1, cfg.chunkDays)) + 4),
+        Math.min(128, Math.ceil(effectiveTargetHistoryDays / Math.max(1, cfg.chunkDays)) + 4),
     );
     const eligibleTargets: Array<{
         symbol: string;
@@ -1244,7 +1290,7 @@ async function runScalpSymbolHistorySeedStage(params: {
                     candles: working,
                     nowMs: params.nowMs,
                     timeframeMs: tfMs,
-                    targetHistoryDays: cfg.targetHistoryDays,
+                    targetHistoryDays: effectiveTargetHistoryDays,
                     chunkDays: cfg.chunkDays,
                 });
                 if (!window) break;
@@ -1276,7 +1322,7 @@ async function runScalpSymbolHistorySeedStage(params: {
                 totalFetchedCount += fetched.length;
                 const merged = mergeScalpCandleHistory(working, fetched);
                 totalAddedCount += Math.max(0, merged.length - working.length);
-                const trimmed = trimHistoryToMaxDays(merged, cfg.maxHistoryDays);
+                const trimmed = trimHistoryToMaxDays(merged, effectiveMaxHistoryDays);
                 totalTrimmedCount += Math.max(0, merged.length - trimmed.length);
                 const changed = historyChanged(working, trimmed);
                 working = trimmed;
@@ -1288,7 +1334,7 @@ async function runScalpSymbolHistorySeedStage(params: {
 
             const afterQuality = summarizeSeedHistoryQuality(working, params.nowMs);
             const lagMs = afterQuality.toTs !== null ? Math.max(0, params.nowMs - afterQuality.toTs) : Number.POSITIVE_INFINITY;
-            const targetMet = afterQuality.spanDays + 1e-6 >= cfg.targetHistoryDays && lagMs <= SEED_FRESHNESS_MAX_LAG_MS;
+            const targetMet = afterQuality.spanDays + 1e-6 >= effectiveTargetHistoryDays && lagMs <= SEED_FRESHNESS_MAX_LAG_MS;
             const changed = historyChanged(existing, working);
 
             if (!params.dryRun && changed) {

@@ -9,7 +9,11 @@ import {
 import { evaluateResearchCyclePreflight, startScalpResearchCycle, type StartResearchCycleParams } from './researchCycle';
 import { refreshScalpResearchPortfolioReport } from './researchReporting';
 import { ensureScalpSymbolMarketMetadata } from './symbolMarketMetadataSync';
-import { loadScalpSymbolUniverseSnapshot, runScalpSymbolDiscoveryCycle } from './symbolDiscovery';
+import {
+    loadScalpSymbolUniverseSnapshot,
+    resolveCompletedWeekCoverageStartMs,
+    runScalpSymbolDiscoveryCycle,
+} from './symbolDiscovery';
 import type { ScalpCandle } from './types';
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -199,17 +203,10 @@ export async function prepareAndStartScalpResearchCycle(
     let finalized = skipFill ? true : params.finalizeBatch === true || !hasMore;
 
     const fillRows: PrepareAndStartCycleResult['steps']['fill'] = [];
-    const fetchFromMs = nowMs - lookbackDays * ONE_DAY_MS;
+    const rawFetchFromMs = nowMs - lookbackDays * ONE_DAY_MS;
     const fetchToMs = nowMs;
     const processedSymbols: string[] = [];
     const existingBySymbol = new Map<string, ScalpCandle[]>();
-    if (!skipFill && batchSymbols.length > 0) {
-        const existingBatch = await loadScalpCandleHistoryBulk(batchSymbols, seedTimeframe);
-        for (let i = 0; i < batchSymbols.length; i += 1) {
-            const symbol = batchSymbols[i]!;
-            existingBySymbol.set(symbol, existingBatch[i]?.record?.candles || []);
-        }
-    }
     const pendingSaves: Array<{
         symbol: string;
         timeframe: string;
@@ -224,6 +221,15 @@ export async function prepareAndStartScalpResearchCycle(
         requiredLookbackWeeks,
         Math.min(52, parsePositiveInt(process.env.SCALP_RESEARCH_PREFLIGHT_REQUIRED_SUCCESSIVE_WEEKS, DEFAULT_REQUIRED_SUCCESSIVE_WEEKS)),
     );
+    const requiredCoverageStartMs = resolveCompletedWeekCoverageStartMs(nowMs, requiredSuccessiveWeeks);
+    const fetchFromMs = Math.min(rawFetchFromMs, requiredCoverageStartMs);
+    if (!skipFill && batchSymbols.length > 0) {
+        const existingBatch = await loadScalpCandleHistoryBulk(batchSymbols, seedTimeframe);
+        for (let i = 0; i < batchSymbols.length; i += 1) {
+            const symbol = batchSymbols[i]!;
+            existingBySymbol.set(symbol, existingBatch[i]?.record?.candles || []);
+        }
+    }
     if (!skipFill) {
         for (const symbol of batchSymbols) {
             if (Date.now() - invokeStartedAtMs >= maxDurationMs) {
@@ -245,7 +251,7 @@ export async function prepareAndStartScalpResearchCycle(
                     existing.length > 0 &&
                     Number.isFinite(oldestExistingTs) &&
                     Number.isFinite(latestExistingTs) &&
-                    oldestExistingTs <= fetchFromMs &&
+                    oldestExistingTs <= requiredCoverageStartMs &&
                     latestExistingTs >= targetLatestClosedCandleMs &&
                     earliestMissingWeekStartMs === null;
                 if (hasCoverageForWindow) {
