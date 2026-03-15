@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   pruneScalpCandlesToRollingWeeks,
   resolveScalpResearchHistoryRetentionPolicy,
+  shouldPruneOrphanedDeployment,
   shouldPruneResearchCycle,
 } from "../housekeeping";
 
@@ -151,4 +152,50 @@ test("resolveScalpResearchHistoryRetentionPolicy never lets confirmation history
   assert.equal(out.confirmationKeepWeeks, 20);
   assert.equal(out.minimumRetainedWeeks, 21);
   assert.equal(out.minimumCycleRetentionDays, 154);
+});
+
+test("shouldPruneOrphanedDeployment prunes disabled backtest or matrix rows with no research history", () => {
+  assert.equal(
+    shouldPruneOrphanedDeployment({
+      source: "backtest",
+      enabled: false,
+      researchTaskCount: 0,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldPruneOrphanedDeployment({
+      source: "matrix",
+      enabled: false,
+      researchTaskCount: 0,
+    }),
+    true,
+  );
+});
+
+test("shouldPruneOrphanedDeployment preserves enabled, manual, or researched rows", () => {
+  assert.equal(
+    shouldPruneOrphanedDeployment({
+      source: "backtest",
+      enabled: true,
+      researchTaskCount: 0,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldPruneOrphanedDeployment({
+      source: "manual",
+      enabled: false,
+      researchTaskCount: 0,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldPruneOrphanedDeployment({
+      source: "backtest",
+      enabled: false,
+      researchTaskCount: 12,
+    }),
+    false,
+  );
 });

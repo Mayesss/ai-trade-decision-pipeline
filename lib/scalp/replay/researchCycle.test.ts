@@ -192,6 +192,24 @@ test("buildResearchCycleTasks skips historical windows already completed or abor
       symbol: "BTCUSDT",
       strategyId: "regime_pullback_m15_m3",
       status: "completed",
+      result: {
+        symbol: "BTCUSDT",
+        strategyId: "regime_pullback_m15_m3",
+        tuneId: "default",
+        deploymentId: "BTCUSDT~regime_pullback_m15_m3~default",
+        windowFromTs: Date.UTC(2026, 1, 2),
+        windowToTs: Date.UTC(2026, 1, 9),
+        trades: 8,
+        winRatePct: 50,
+        netR: 1.5,
+        expectancyR: 0.1875,
+        profitFactor: 1.4,
+        maxDrawdownR: 1.2,
+        avgHoldMinutes: 45,
+        netPnlUsd: 52.5,
+        grossProfitR: 3,
+        grossLossR: -1.5,
+      },
     }),
     deploymentId: "BTCUSDT~regime_pullback_m15_m3~default",
     tuneId: "default",
@@ -229,6 +247,48 @@ test("buildResearchCycleTasks skips historical windows already completed or abor
   assert.deepEqual(
     tasks.map((task) => [task.windowFromTs, task.windowToTs]),
     [
+      [Date.UTC(2026, 1, 16), Date.UTC(2026, 1, 23)],
+      [Date.UTC(2026, 1, 23), Date.UTC(2026, 2, 2)],
+    ],
+  );
+});
+
+test("buildResearchCycleTasks regenerates completed windows when result payload is missing", () => {
+  const nowMs = Date.UTC(2026, 2, 2);
+  const completedWithoutResult: ScalpResearchTask = {
+    ...makeTask({
+      cycleId: "rc_history",
+      taskId: "hist_completed_missing_result",
+      symbol: "BTCUSDT",
+      strategyId: "regime_pullback_m15_m3",
+      status: "completed",
+    }),
+    deploymentId: "BTCUSDT~regime_pullback_m15_m3~default",
+    tuneId: "default",
+    windowFromTs: Date.UTC(2026, 1, 2),
+    windowToTs: Date.UTC(2026, 1, 9),
+    result: null,
+  };
+
+  const tasks = buildResearchCycleTasks({
+    cycleId: "rc_regenerate_missing_result",
+    nowMs,
+    symbols: ["BTCUSDT"],
+    lookbackDays: 28,
+    chunkDays: 7,
+    maxTasks: 20,
+    strategyAllowlist: ["regime_pullback_m15_m3"],
+    tunerEnabled: false,
+    maxTuneVariantsPerStrategy: 1,
+    historicalTasks: [completedWithoutResult],
+  });
+
+  assert.equal(tasks.length, 4);
+  assert.deepEqual(
+    tasks.map((task) => [task.windowFromTs, task.windowToTs]),
+    [
+      [Date.UTC(2026, 1, 2), Date.UTC(2026, 1, 9)],
+      [Date.UTC(2026, 1, 9), Date.UTC(2026, 1, 16)],
       [Date.UTC(2026, 1, 16), Date.UTC(2026, 1, 23)],
       [Date.UTC(2026, 1, 23), Date.UTC(2026, 2, 2)],
     ],
@@ -279,8 +339,27 @@ test("applyResearchCycleIncrementalSymbolPolicy keeps unseen combos and caps new
         symbol: "EURUSD",
         strategyId: "regime_pullback_m15_m3",
         status: "completed",
+        result: {
+          symbol: "EURUSD",
+          strategyId: "regime_pullback_m15_m3",
+          tuneId: "default",
+          deploymentId: "EURUSD~regime_pullback_m15_m3~default",
+          windowFromTs: 1,
+          windowToTs: 2,
+          trades: 6,
+          winRatePct: 50,
+          netR: 1,
+          expectancyR: 1 / 6,
+          profitFactor: 1.2,
+          maxDrawdownR: 0.8,
+          avgHoldMinutes: 30,
+          netPnlUsd: 35,
+          grossProfitR: 2.2,
+          grossLossR: -1.2,
+        },
       }),
       tuneId: "default",
+      deploymentId: "EURUSD~regime_pullback_m15_m3~default",
     },
   ];
   const plannedTasks: ScalpResearchTask[] = [
@@ -355,6 +434,46 @@ test("applyResearchCycleIncrementalSymbolPolicy keeps unseen combos and caps new
   assert.equal(keptTaskIds.has("now_btc_comp"), true);
   assert.equal(keptTaskIds.has("now_xau_reg"), true);
   assert.equal(keptTaskIds.has("now_nas_reg"), false);
+});
+
+test("applyResearchCycleIncrementalSymbolPolicy keeps completed combos with missing results eligible", () => {
+  const plannedTasks: ScalpResearchTask[] = [
+    {
+      ...makeTask({
+        cycleId: "rc_now",
+        taskId: "now_btc_reg_default",
+        symbol: "BTCUSDT",
+        strategyId: "regime_pullback_m15_m3",
+        status: "pending",
+      }),
+      tuneId: "default",
+      deploymentId: "BTCUSDT~regime_pullback_m15_m3~default",
+    },
+  ];
+  const previousTasks: ScalpResearchTask[] = [
+    {
+      ...makeTask({
+        cycleId: "rc_prev",
+        taskId: "prev_btc_reg_default_missing_result",
+        symbol: "BTCUSDT",
+        strategyId: "regime_pullback_m15_m3",
+        status: "completed",
+      }),
+      tuneId: "default",
+      deploymentId: "BTCUSDT~regime_pullback_m15_m3~default",
+      result: null,
+    },
+  ];
+
+  const filtered = applyResearchCycleIncrementalSymbolPolicy({
+    plannedTasks,
+    processedTasksLastSnapshot: previousTasks,
+    maxNewSymbolsPerCycle: 0,
+  });
+
+  assert.deepEqual(filtered.map((row) => row.taskId), [
+    "now_btc_reg_default",
+  ]);
 });
 
 test("summarizeResearchTasks aggregates candidate metrics and keeps running status with pending tasks", () => {

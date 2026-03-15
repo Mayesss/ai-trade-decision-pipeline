@@ -14,9 +14,10 @@ function firstHeaderValue(value: string | string[] | undefined): string {
     return '';
 }
 
-function buildCronAuthHeaders(req?: NextApiRequest): Record<string, string> {
+export function buildCronAuthHeaders(req?: NextApiRequest): Record<string, string> {
     const headers: Record<string, string> = {};
     const envAdminSecret = String(process.env.ADMIN_ACCESS_SECRET || '').trim();
+    const vercelBypassSecret = String(process.env.VERCEL_AUTOMATION_BYPASS_SECRET || '').trim();
     const forwardedAdminSecret = firstHeaderValue(req?.headers['x-admin-access-secret']);
     const forwardedAuthorization = firstHeaderValue(req?.headers.authorization);
     if (envAdminSecret) {
@@ -25,6 +26,9 @@ function buildCronAuthHeaders(req?: NextApiRequest): Record<string, string> {
         headers['x-admin-access-secret'] = forwardedAdminSecret;
     } else if (forwardedAuthorization) {
         headers.authorization = forwardedAuthorization;
+    }
+    if (vercelBypassSecret) {
+        headers['x-vercel-protection-bypass'] = vercelBypassSecret;
     }
     return headers;
 }

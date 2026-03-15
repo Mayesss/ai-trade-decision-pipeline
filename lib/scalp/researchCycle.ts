@@ -1686,10 +1686,30 @@ function buildLatestResearchWindowTaskMap(
   return out;
 }
 
-function isResearchTaskTerminalStatus(
-  status: ScalpResearchTaskStatus,
+function hasUsableResearchTaskResult(
+  task: Pick<
+    ScalpResearchTask,
+    "deploymentId" | "windowFromTs" | "windowToTs" | "result"
+  >,
 ): boolean {
-  return status === "completed" || status === "aborted";
+  const result = task.result;
+  if (!result || !isRecord(result)) return false;
+  const deploymentId = String(result.deploymentId || "").trim();
+  const windowFromTs = Math.floor(Number(result.windowFromTs) || 0);
+  const windowToTs = Math.floor(Number(result.windowToTs) || 0);
+  const trades = Number(result.trades);
+  const netR = Number(result.netR);
+  return (
+    deploymentId.length > 0 &&
+    deploymentId === String(task.deploymentId || "").trim() &&
+    windowFromTs > 0 &&
+    windowFromTs === Math.floor(Number(task.windowFromTs) || 0) &&
+    windowToTs > windowFromTs &&
+    windowToTs === Math.floor(Number(task.windowToTs) || 0) &&
+    Number.isFinite(trades) &&
+    trades >= 0 &&
+    Number.isFinite(netR)
+  );
 }
 
 export function buildResearchCycleTasks(params: {
@@ -1788,7 +1808,9 @@ export function buildResearchCycleTasks(params: {
       );
       if (
         historicalTask &&
-        isResearchTaskTerminalStatus(historicalTask.status)
+        ((historicalTask.status === "completed" &&
+          hasUsableResearchTaskResult(historicalTask)) ||
+          historicalTask.status === "aborted")
       ) {
         chunkFrom = chunkTo;
         chunkIdx += 1;
@@ -1954,7 +1976,11 @@ export function applyResearchCycleIncrementalSymbolPolicy(params: {
     const symbolKey = researchTaskSymbolKey(task);
     if (!symbolKey) continue;
     processedSymbols.add(symbolKey);
-    if (status === "completed" || status === "failed" || status === "aborted") {
+    if (
+      (status === "completed" && hasUsableResearchTaskResult(task)) ||
+      status === "failed" ||
+      status === "aborted"
+    ) {
       processedComboKeys.add(researchTaskComboKey(task));
     }
   }

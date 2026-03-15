@@ -45,6 +45,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const lockMaxAgeMinutes = parsePositiveInt(firstQueryValue(req.query.lockMaxAgeMinutes));
     const maxScanKeys = parsePositiveInt(firstQueryValue(req.query.maxScanKeys));
     const refreshReport = parseBoolParam(req.query.refreshReport, true);
+    const cleanupOrphanDeployments = parseBoolParam(req.query.cleanupOrphanDeployments, true);
     const candleHistoryKeepWeeks = parsePositiveInt(firstQueryValue(req.query.candleHistoryKeepWeeks));
     const candleHistoryTimeframe = firstQueryValue(req.query.candleHistoryTimeframe);
 
@@ -55,6 +56,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             lockMaxAgeMinutes,
             maxScanKeys,
             refreshReport,
+            cleanupOrphanDeployments,
             candleHistoryKeepWeeks,
             candleHistoryTimeframe,
         });

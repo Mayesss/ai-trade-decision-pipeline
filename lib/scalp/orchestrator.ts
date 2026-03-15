@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 
-import { invokeCronUrlDetached } from './cronChaining';
+import { buildCronAuthHeaders, invokeCronUrlDetached } from './cronChaining';
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 import { loadScalpPanicStopState } from './panicStop';
 import { prepareAndStartScalpResearchCycle } from './prepareAndStartCycle';
@@ -202,11 +202,7 @@ async function invokeContinuation(params: { debug?: boolean } = {}): Promise<{ i
         return { invoked: false, status: null, error: 'missing_base_url' };
     }
     const url = `${baseUrl}/api/scalp/cron/orchestrate-pipeline?continue=1`;
-    const headers: Record<string, string> = {};
-    const adminSecret = String(process.env.ADMIN_ACCESS_SECRET || '').trim();
-    if (adminSecret) {
-        headers['x-admin-access-secret'] = adminSecret;
-    }
+    const headers = buildCronAuthHeaders();
     const ctrl = new AbortController();
     const timeout = setTimeout(() => ctrl.abort(), 4_000);
     try {

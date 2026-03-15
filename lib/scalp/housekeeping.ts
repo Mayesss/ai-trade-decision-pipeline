@@ -8,6 +8,7 @@ import {
 } from "./candleHistory";
 import { getScalpStrategyConfig } from "./config";
 import { isScalpPgConfigured, scalpPrisma } from "./pg/client";
+import { deleteDeploymentsByIdFromPg } from "./pg/deployments";
 import { refreshScalpResearchPortfolioReport } from "./researchReporting";
 import type { ScalpCandle } from "./types";
 
@@ -116,6 +117,24 @@ export function shouldPruneResearchCycle(params: {
   return status === "completed" || status === "failed" || status === "stalled";
 }
 
+export function shouldPruneOrphanedDeployment(params: {
+  source: unknown;
+  enabled: unknown;
+  researchTaskCount: unknown;
+}): boolean {
+  const source = String(params.source || "")
+    .trim()
+    .toLowerCase();
+  const enabled = params.enabled === true;
+  const researchTaskCount = Math.max(
+    0,
+    Math.floor(Number(params.researchTaskCount) || 0),
+  );
+  if (enabled) return false;
+  if (source !== "backtest" && source !== "matrix") return false;
+  return researchTaskCount <= 0;
+}
+
 export interface ScalpResearchHistoryRetentionPolicy {
   primaryReferenceWeeks: number;
   confirmationKeepWeeks: number;
@@ -186,6 +205,7 @@ export interface RunScalpHousekeepingParams {
   lockMaxAgeMinutes?: number;
   maxScanKeys?: number;
   refreshReport?: boolean;
+  cleanupOrphanDeployments?: boolean;
   candleHistoryKeepWeeks?: number;
   candleHistoryTimeframe?: string;
 }
@@ -201,6 +221,7 @@ export interface RunScalpHousekeepingResult {
     lockMaxAgeMinutes: number;
     maxScanKeys: number;
     refreshReport: boolean;
+    cleanupOrphanDeployments: boolean;
     journalMax: number;
     tradeLedgerMax: number;
     candleHistoryKeepWeeks: number;
@@ -218,6 +239,7 @@ export interface RunScalpHousekeepingResult {
     claimCursorKeysDeleted: number;
     researchLocksDeleted: number;
     runLocksDeleted: number;
+    orphanedDeploymentsPruned: number;
     listCompactions: number;
     candleHistorySymbolsScanned: number;
     candleHistorySymbolsPruned: number;
@@ -229,6 +251,7 @@ export interface RunScalpHousekeepingResult {
     prunedCycleIds: string[];
     deletedResearchLockKeys: string[];
     deletedRunLockKeys: string[];
+    orphanedDeploymentIds: string[];
     activeCycleRetentionGuard: {
       minKeepWeeks: number;
       protectedSymbols: string[];
@@ -247,6 +270,10 @@ interface CandleRetentionResult {
   symbolsScanned: number;
   symbolsPruned: number;
   candlesDeleted: number;
+}
+
+interface PgOrphanedDeploymentPruneResult {
+  prunedDeploymentIds: string[];
 }
 
 function toRecordSummary(record: ScalpCandleHistoryRecord | null): {
@@ -453,6 +480,64 @@ async function pruneResearchCyclesFromPg(params: {
   };
 }
 
+async function pruneOrphanedDeploymentsFromPg(params: {
+  dryRun: boolean;
+  enabled: boolean;
+}): Promise<PgOrphanedDeploymentPruneResult> {
+  if (!params.enabled || !isScalpPgConfigured()) {
+    return {
+      prunedDeploymentIds: [],
+    };
+  }
+
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<
+    Array<{
+      deploymentId: string;
+      source: string;
+      enabled: boolean;
+      researchTaskCount: bigint | number;
+    }>
+  >(Prisma.sql`
+        SELECT
+            d.deployment_id AS "deploymentId",
+            d.source,
+            d.enabled,
+            COUNT(t.task_id)::bigint AS "researchTaskCount"
+        FROM scalp_deployments d
+        LEFT JOIN scalp_research_tasks t
+          ON t.deployment_id = d.deployment_id
+        GROUP BY d.deployment_id, d.source, d.enabled
+        ORDER BY d.created_at ASC, d.deployment_id ASC
+        LIMIT 10000;
+    `);
+
+  const deploymentIds = rows
+    .filter((row) =>
+      shouldPruneOrphanedDeployment({
+        source: row.source,
+        enabled: row.enabled,
+        researchTaskCount: row.researchTaskCount,
+      }),
+    )
+    .map((row) => String(row.deploymentId || "").trim())
+    .filter((row) => Boolean(row));
+
+  if (!deploymentIds.length) {
+    return {
+      prunedDeploymentIds: [],
+    };
+  }
+
+  if (!params.dryRun) {
+    await deleteDeploymentsByIdFromPg(deploymentIds);
+  }
+
+  return {
+    prunedDeploymentIds: deploymentIds,
+  };
+}
+
 async function compactScalpTables(params: {
   dryRun: boolean;
   journalMax: number;
@@ -519,6 +604,11 @@ export async function runScalpHousekeeping(
     params.refreshReport ?? process.env.SCALP_HOUSEKEEPING_REFRESH_REPORT,
     true,
   );
+  const cleanupOrphanDeployments = toBool(
+    params.cleanupOrphanDeployments ??
+      process.env.SCALP_HOUSEKEEPING_CLEANUP_ORPHAN_DEPLOYMENTS,
+    true,
+  );
   const requestedCandleHistoryKeepWeeks = toOptionalPositiveInt(
     params.candleHistoryKeepWeeks ??
       process.env.SCALP_HOUSEKEEPING_CANDLE_HISTORY_KEEP_WEEKS,
@@ -564,6 +654,10 @@ export async function runScalpHousekeeping(
     retentionMs,
     dryRun,
   });
+  const orphanedDeploymentPrune = await pruneOrphanedDeploymentsFromPg({
+    dryRun,
+    enabled: cleanupOrphanDeployments,
+  });
 
   const listCompactions = await compactScalpTables({
     dryRun,
@@ -602,6 +696,7 @@ export async function runScalpHousekeeping(
       lockMaxAgeMinutes,
       maxScanKeys,
       refreshReport,
+      cleanupOrphanDeployments,
       journalMax,
       tradeLedgerMax,
       candleHistoryKeepWeeks,
@@ -619,6 +714,7 @@ export async function runScalpHousekeeping(
       claimCursorKeysDeleted: 0,
       researchLocksDeleted: 0,
       runLocksDeleted: 0,
+      orphanedDeploymentsPruned: orphanedDeploymentPrune.prunedDeploymentIds.length,
       listCompactions,
       candleHistorySymbolsScanned: candleRetention.symbolsScanned,
       candleHistorySymbolsPruned: candleRetention.symbolsPruned,
@@ -630,6 +726,7 @@ export async function runScalpHousekeeping(
       prunedCycleIds: cyclePrune.prunedCycleIds,
       deletedResearchLockKeys: [],
       deletedRunLockKeys: [],
+      orphanedDeploymentIds: orphanedDeploymentPrune.prunedDeploymentIds,
       activeCycleRetentionGuard: {
         minKeepWeeks: activeCycleCandleGuard.minKeepWeeks,
         protectedSymbols: Array.from(
