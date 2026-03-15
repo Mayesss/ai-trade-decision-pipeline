@@ -1971,7 +1971,7 @@ export function applyResearchCycleIncrementalSymbolPolicy(params: {
   );
   if (!plannedTasks.length || !processedTasks.length) return plannedTasks;
 
-  const processedComboKeys = new Set<string>();
+  const processedWindowKeys = new Set<string>();
   const processedSymbols = new Set<string>();
   for (const task of processedTasks) {
     const status = String(task.status || "")
@@ -1982,39 +1982,37 @@ export function applyResearchCycleIncrementalSymbolPolicy(params: {
     processedSymbols.add(symbolKey);
     if (
       (status === "completed" && hasUsableResearchTaskResult(task)) ||
-      status === "failed" ||
       status === "aborted"
     ) {
-      processedComboKeys.add(researchTaskComboKey(task));
+      processedWindowKeys.add(researchTaskWindowKey(task));
     }
   }
   if (!processedSymbols.size) return plannedTasks;
 
-  const allowedComboKeys = new Set<string>();
   const admittedNewSymbols = new Set<string>();
+  const allowedTaskIds = new Set<string>();
   for (const task of plannedTasks) {
     const symbolKey = researchTaskSymbolKey(task);
     if (!symbolKey) continue;
-    const comboKey = researchTaskComboKey(task);
+    const windowKey = researchTaskWindowKey(task);
+    const alreadyProcessedWindow = processedWindowKeys.has(windowKey);
     if (processedSymbols.has(symbolKey)) {
-      if (!processedComboKeys.has(comboKey)) {
-        allowedComboKeys.add(comboKey);
+      if (!alreadyProcessedWindow) {
+        allowedTaskIds.add(task.taskId);
       }
       continue;
     }
     if (admittedNewSymbols.has(symbolKey)) {
-      allowedComboKeys.add(comboKey);
+      allowedTaskIds.add(task.taskId);
       continue;
     }
     if (admittedNewSymbols.size < maxNewSymbolsPerCycle) {
       admittedNewSymbols.add(symbolKey);
-      allowedComboKeys.add(comboKey);
+      allowedTaskIds.add(task.taskId);
     }
   }
 
-  return plannedTasks.filter((task) =>
-    allowedComboKeys.has(researchTaskComboKey(task)),
-  );
+  return plannedTasks.filter((task) => allowedTaskIds.has(task.taskId));
 }
 
 async function saveCycle(cycle: ScalpResearchCycleSnapshot): Promise<void> {

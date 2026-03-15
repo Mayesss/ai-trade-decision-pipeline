@@ -372,6 +372,7 @@ test("applyResearchCycleIncrementalSymbolPolicy keeps unseen combos and caps new
         status: "pending",
       }),
       tuneId: "default",
+      deploymentId: "EURUSD~regime_pullback_m15_m3~default",
     },
     {
       ...makeTask({
@@ -473,6 +474,80 @@ test("applyResearchCycleIncrementalSymbolPolicy keeps completed combos with miss
 
   assert.deepEqual(filtered.map((row) => row.taskId), [
     "now_btc_reg_default",
+  ]);
+});
+
+test("applyResearchCycleIncrementalSymbolPolicy keeps missing weekly windows for partially processed combos eligible", () => {
+  const previousTasks: ScalpResearchTask[] = [
+    {
+      ...makeTask({
+        cycleId: "rc_prev",
+        taskId: "prev_btc_reg_week_1",
+        symbol: "BTCUSDT",
+        strategyId: "regime_pullback_m15_m3",
+        status: "completed",
+        result: {
+          symbol: "BTCUSDT",
+          strategyId: "regime_pullback_m15_m3",
+          tuneId: "default",
+          deploymentId: "BTCUSDT~regime_pullback_m15_m3~default",
+          windowFromTs: Date.UTC(2026, 0, 5),
+          windowToTs: Date.UTC(2026, 0, 12),
+          trades: 5,
+          winRatePct: 40,
+          netR: 0.4,
+          expectancyR: 0.08,
+          profitFactor: 1.1,
+          maxDrawdownR: 0.9,
+          avgHoldMinutes: 18,
+          netPnlUsd: 15,
+          grossProfitR: 1.4,
+          grossLossR: -1,
+        },
+      }),
+      tuneId: "default",
+      deploymentId: "BTCUSDT~regime_pullback_m15_m3~default",
+      windowFromTs: Date.UTC(2026, 0, 5),
+      windowToTs: Date.UTC(2026, 0, 12),
+    },
+  ];
+  const plannedTasks: ScalpResearchTask[] = [
+    {
+      ...makeTask({
+        cycleId: "rc_now",
+        taskId: "now_btc_reg_week_1_duplicate",
+        symbol: "BTCUSDT",
+        strategyId: "regime_pullback_m15_m3",
+        status: "pending",
+      }),
+      tuneId: "default",
+      deploymentId: "BTCUSDT~regime_pullback_m15_m3~default",
+      windowFromTs: Date.UTC(2026, 0, 5),
+      windowToTs: Date.UTC(2026, 0, 12),
+    },
+    {
+      ...makeTask({
+        cycleId: "rc_now",
+        taskId: "now_btc_reg_week_2_missing",
+        symbol: "BTCUSDT",
+        strategyId: "regime_pullback_m15_m3",
+        status: "pending",
+      }),
+      tuneId: "default",
+      deploymentId: "BTCUSDT~regime_pullback_m15_m3~default",
+      windowFromTs: Date.UTC(2026, 0, 12),
+      windowToTs: Date.UTC(2026, 0, 19),
+    },
+  ];
+
+  const filtered = applyResearchCycleIncrementalSymbolPolicy({
+    plannedTasks,
+    processedTasksLastSnapshot: previousTasks,
+    maxNewSymbolsPerCycle: 0,
+  });
+
+  assert.deepEqual(filtered.map((row) => row.taskId), [
+    "now_btc_reg_week_2_missing",
   ]);
 });
 
