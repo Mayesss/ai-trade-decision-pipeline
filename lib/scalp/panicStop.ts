@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 
+import { patchScalpPipelineRuntimeSnapshot } from './pipelineRuntime';
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 
 const PANIC_STOP_KIND = 'execute_cycle';
@@ -187,6 +188,24 @@ export async function setScalpPanicStopState(params: {
                         updated_at = NOW();
                 `,
             );
+            await patchScalpPipelineRuntimeSnapshot({
+                updatedAtMs: nowMs,
+                orchestrator: {
+                    runId: String(current.runId || '').trim() || null,
+                    stage: 'done',
+                    cycleId: String(current.cycleId || '').trim() || null,
+                    startedAtMs:
+                        Number.isFinite(Number(current.startedAtMs)) && Number(current.startedAtMs) > 0
+                            ? Math.floor(Number(current.startedAtMs))
+                            : null,
+                    updatedAtMs: nowMs,
+                    completedAtMs: nowMs,
+                    isRunning: false,
+                    progressPct: 100,
+                    progressLabel: 'completed',
+                    lastError: 'panic_stop_enabled',
+                },
+            });
         }
     }
     return {

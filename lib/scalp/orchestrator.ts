@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 
 import { buildCronAuthHeaders, invokeCronUrlDetached } from './cronChaining';
+import { patchScalpPipelineRuntimeSnapshot, type ScalpPipelineRuntimeOrchestratorSnapshot } from './pipelineRuntime';
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 import { loadScalpPanicStopState } from './panicStop';
 import { prepareAndStartScalpResearchCycle } from './prepareAndStartCycle';
@@ -108,6 +109,55 @@ function newState(tsMs: number): OrchestratorState {
     };
 }
 
+function pipelineStageMeta(stageRaw: string | null | undefined): {
+    progressPct: number | null;
+    progressLabel: string | null;
+} {
+    const stage = String(stageRaw || '')
+        .trim()
+        .toLowerCase();
+    if (!stage) return { progressPct: null, progressLabel: null };
+    const map: Record<string, { pct: number; label: string }> = {
+        discover: { pct: 10, label: 'discovering symbols' },
+        load_candles: { pct: 24, label: 'loading candle history' },
+        prepare: { pct: 35, label: 'preparing/backfilling history' },
+        worker: { pct: 70, label: 'running cycle worker' },
+        aggregate: { pct: 88, label: 'aggregating cycle results' },
+        promotion: { pct: 96, label: 'applying promotion gate' },
+        done: { pct: 100, label: 'completed' },
+    };
+    const hit = map[stage];
+    if (!hit) return { progressPct: null, progressLabel: stage.replace(/_/g, ' ') };
+    return { progressPct: hit.pct, progressLabel: hit.label };
+}
+
+function buildRuntimeOrchestratorSnapshot(
+    state: OrchestratorState,
+): ScalpPipelineRuntimeOrchestratorSnapshot {
+    const stageMeta = pipelineStageMeta(state.stage);
+    const startedAtMs = state.startedAtMs > 0 ? state.startedAtMs : null;
+    const updatedAtMs = state.updatedAtMs > 0 ? state.updatedAtMs : null;
+    const completedAtMs = state.completedAtMs && state.completedAtMs > 0 ? state.completedAtMs : null;
+    const lastError = state.lastError || null;
+    return {
+        runId: state.runId || null,
+        stage: state.stage || null,
+        cycleId: state.cycleId || null,
+        startedAtMs,
+        updatedAtMs,
+        completedAtMs,
+        isRunning:
+            Boolean(state.stage) &&
+            state.stage !== 'done' &&
+            startedAtMs !== null &&
+            (completedAtMs === null || completedAtMs < startedAtMs) &&
+            !lastError,
+        progressPct: stageMeta.progressPct,
+        progressLabel: stageMeta.progressLabel,
+        lastError,
+    };
+}
+
 function isRecoverablePrepareFailureCodes(codes: string[]): boolean {
     if (!codes.length) return false;
     return codes.every(
@@ -184,6 +234,10 @@ async function saveOrchestratorState(state: OrchestratorState): Promise<void> {
                 updated_at = NOW();
         `,
     );
+    await patchScalpPipelineRuntimeSnapshot({
+        updatedAtMs: state.updatedAtMs,
+        orchestrator: buildRuntimeOrchestratorSnapshot(state),
+    });
 }
 
 function resolveBaseUrl(): string | null {

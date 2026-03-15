@@ -11,6 +11,7 @@ import {
 } from "./deploymentRegistry";
 import { loadScalpCandleHistory } from "./candleHistory";
 import { pipSizeForScalpSymbol } from "./marketData";
+import { patchScalpPipelineRuntimeSnapshot } from "./pipelineRuntime";
 import { isScalpPgConfigured, scalpPrisma } from "./pg/client";
 import { runScalpReplay } from "./replay/harness";
 import { buildScalpReplayRuntimeFromDeployment } from "./replay/runtimeConfig";
@@ -1223,6 +1224,16 @@ async function savePromotionSyncStateToPg(
                 updated_at = NOW();
         `,
   );
+  await patchScalpPipelineRuntimeSnapshot({
+    updatedAtMs: snapshot.syncedAtMs,
+    promotionSyncCompletion: {
+      cycleId: snapshot.cycleId,
+      syncedAtMs: snapshot.syncedAtMs,
+      deploymentsConsidered: snapshot.deploymentsConsidered,
+      deploymentsMatched: snapshot.deploymentsMatched,
+      deploymentsUpdated: snapshot.deploymentsUpdated,
+    },
+  });
 }
 
 export async function savePromotionSyncProgressSnapshot(
@@ -1274,6 +1285,26 @@ export async function savePromotionSyncProgressSnapshot(
                 updated_at = NOW();
         `,
   );
+  await patchScalpPipelineRuntimeSnapshot({
+    updatedAtMs: snapshot.updatedAtMs,
+    promotionSync: {
+      status: snapshot.status,
+      cycleId: snapshot.cycleId,
+      phase: snapshot.phase,
+      startedAtMs: snapshot.startedAtMs,
+      updatedAtMs: snapshot.updatedAtMs,
+      finishedAtMs: snapshot.finishedAtMs,
+      totalDeployments: snapshot.totalDeployments,
+      processedDeployments: snapshot.processedDeployments,
+      matchedDeployments: snapshot.matchedDeployments,
+      updatedDeployments: snapshot.updatedDeployments,
+      currentSymbol: snapshot.currentSymbol,
+      currentStrategyId: snapshot.currentStrategyId,
+      currentTuneId: snapshot.currentTuneId,
+      reason: snapshot.reason,
+      lastError: snapshot.lastError,
+    },
+  });
 }
 
 function buildPromotionSyncSignature(params: {

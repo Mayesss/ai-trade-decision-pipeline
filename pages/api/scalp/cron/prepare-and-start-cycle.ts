@@ -4,6 +4,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
 import { invokeCronEndpoint } from '../../../../lib/scalp/cronChaining';
+import { patchScalpPipelineRuntimeSnapshot } from '../../../../lib/scalp/pipelineRuntime';
 import { prepareAndStartScalpResearchCycle } from '../../../../lib/scalp/prepareAndStartCycle';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean): boolean {
@@ -47,6 +48,50 @@ function setNoStoreHeaders(res: NextApiResponse): void {
     res.setHeader('Expires', '0');
 }
 
+function buildStageMeta(stageRaw: string): { progressPct: number | null; progressLabel: string | null } {
+    const stage = String(stageRaw || '')
+        .trim()
+        .toLowerCase();
+    const map: Record<string, { progressPct: number; progressLabel: string }> = {
+        discover: { progressPct: 10, progressLabel: 'discovering symbols' },
+        load_candles: { progressPct: 24, progressLabel: 'loading candle history' },
+        prepare: { progressPct: 35, progressLabel: 'preparing/backfilling history' },
+        worker: { progressPct: 70, progressLabel: 'running cycle worker' },
+        aggregate: { progressPct: 88, progressLabel: 'aggregating cycle results' },
+        promotion: { progressPct: 96, progressLabel: 'applying promotion gate' },
+        done: { progressPct: 100, progressLabel: 'completed' },
+    };
+    return map[stage] || { progressPct: null, progressLabel: stage || null };
+}
+
+async function persistPrepareStartHeroState(params: {
+    dryRun: boolean;
+    runId: string;
+    stage: 'load_candles' | 'prepare' | 'worker' | 'done';
+    startedAtMs: number;
+    updatedAtMs: number;
+    cycleId?: string | null;
+    lastError?: string | null;
+}): Promise<void> {
+    if (params.dryRun) return;
+    const meta = buildStageMeta(params.stage);
+    await patchScalpPipelineRuntimeSnapshot({
+        updatedAtMs: params.updatedAtMs,
+        orchestrator: {
+            runId: params.runId,
+            stage: params.stage,
+            cycleId: String(params.cycleId || '').trim() || null,
+            startedAtMs: params.startedAtMs,
+            updatedAtMs: params.updatedAtMs,
+            completedAtMs: params.stage === 'done' ? params.updatedAtMs : null,
+            isRunning: params.stage !== 'done' && !params.lastError,
+            progressPct: meta.progressPct,
+            progressLabel: meta.progressLabel,
+            lastError: String(params.lastError || '').trim() || null,
+        },
+    });
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (req.method !== 'GET') {
         return res.status(405).json({ error: 'Method Not Allowed', message: 'Use GET' });
@@ -78,6 +123,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const maxDurationMs = parsePositiveInt(firstQueryValue(req.query.maxDurationMs));
         const seedTimeframe = firstQueryValue(req.query.seedTimeframe);
         const startedBy = firstQueryValue(req.query.startedBy) || 'cron:prepare-and-start-cycle';
+        const pipelineRunId =
+            firstQueryValue(req.query.pipelineRunId) ||
+            `scalp_prepare_start_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
         const autoContinue = parseBoolParam(req.query.autoContinue, true);
         const continueHop = Math.max(0, Math.floor(Number(firstQueryValue(req.query.continueHop)) || 0));
         const autoContinueMaxHops = Math.max(
@@ -93,6 +141,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         );
         const autoSuccessor = parseBoolParam(req.query.autoSuccessor, true);
         const successorPath = firstQueryValue(req.query.successorPath) || '/api/scalp/cron/research-cycle-worker';
+        const requestStartedAtMs = Date.now();
+        const initialStage = finalizeBatch || firstQueryValue(req.query.skipFill) === 'true' ? 'prepare' : 'load_candles';
+
+        await persistPrepareStartHeroState({
+            dryRun,
+            runId: pipelineRunId,
+            stage: initialStage,
+            startedAtMs: requestStartedAtMs,
+            updatedAtMs: requestStartedAtMs,
+        });
 
         const out = await prepareAndStartScalpResearchCycle({
             dryRun,
@@ -142,6 +200,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                   maxDurationMs,
                   seedTimeframe,
                   startedBy,
+                  pipelineRunId,
                   autoContinue: true,
                   continueHop: continueHop + 1,
                   autoContinueMaxHops,
@@ -172,6 +231,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 ? 'Cycle prepared and started.'
                 : 'Cycle preparation completed (no start needed yet).'
             : `Cycle preparation completed but preflight is not ready: ${notReadyReasons.join(', ') || 'unknown_reason'}.`;
+
+        const runningCycleStatus = String(out.cycle?.status || '').trim().toLowerCase();
+        const heroStage = out.ok
+            ? out.started || runningCycleStatus === 'running'
+                ? 'worker'
+                : out.batch.hasMore || out.batch.finalized === false
+                  ? 'load_candles'
+                  : 'prepare'
+            : 'prepare';
+        const heroError = out.ok
+            ? null
+            : notReadyReasons.join(',') || 'research_cycle_preflight_failed';
+        await persistPrepareStartHeroState({
+            dryRun,
+            runId: pipelineRunId,
+            stage: heroStage,
+            startedAtMs: requestStartedAtMs,
+            updatedAtMs: Date.now(),
+            cycleId: out.cycle?.cycleId || null,
+            lastError: heroError,
+        });
 
         const statusCode = out.ok ? 200 : 409;
         if (debug || !out.ok) {
@@ -249,6 +329,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             },
         });
     } catch (err: any) {
+        const dryRun = parseBoolParam(req.query.dryRun, false);
+        const pipelineRunId =
+            firstQueryValue(req.query.pipelineRunId) ||
+            `scalp_prepare_start_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+        const updatedAtMs = Date.now();
+        await persistPrepareStartHeroState({
+            dryRun,
+            runId: pipelineRunId,
+            stage: 'prepare',
+            startedAtMs: updatedAtMs,
+            updatedAtMs,
+            lastError: err?.message || String(err),
+        });
         return res.status(500).json({
             error: 'prepare_and_start_cycle_failed',
             message: err?.message || String(err),

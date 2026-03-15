@@ -29,6 +29,7 @@ import {
   loadPromotionSyncProgressSnapshot,
   loadPromotionSyncStateFromPg,
 } from "../../../../lib/scalp/researchPromotion";
+import { loadScalpPipelineRuntimeSnapshot } from "../../../../lib/scalp/pipelineRuntime";
 import { loadResearchWorkerHeartbeat } from "../../../../lib/scalp/researchCycle";
 import { normalizeScalpStrategyId } from "../../../../lib/scalp/strategies/registry";
 import { deriveScalpDayKey } from "../../../../lib/scalp/stateMachine";
@@ -204,6 +205,7 @@ type ScalpPipelineSnapshot = {
   orchestrator: {
     runId: string | null;
     stage: string | null;
+    cycleId: string | null;
     startedAtMs: number | null;
     updatedAtMs: number | null;
     completedAtMs: number | null;
@@ -502,12 +504,22 @@ function buildPipelineStatusPanel(
   const promotionStepIndex = PIPELINE_STEP_DEFS.findIndex(
     (step) => step.id === "promotion",
   );
+  const activeOrchestratorRunning =
+    input.orchestrator?.isRunning === true && Boolean(stage) && stage !== "done";
+  const cycleMatchesOrchestrator =
+    !activeOrchestratorRunning ||
+    !input.orchestrator?.cycleId ||
+    input.orchestrator.cycleId === input.cycle?.cycleId;
   const cycleRunning = cycleStatus === "running";
   const cycleCompleted = cycleStatus === "completed";
   const cycleFailed = ["failed", "error", "aborted", "cancelled"].includes(
     cycleStatus,
   );
-  const currentCycleId = input.cycle?.cycleId || null;
+  const cycleCompletedForDisplay = cycleCompleted && !activeOrchestratorRunning;
+  const cycleFailedForDisplay = cycleFailed && !activeOrchestratorRunning;
+  const currentCycleId = activeOrchestratorRunning
+    ? input.orchestrator?.cycleId || null
+    : input.cycle?.cycleId || input.orchestrator?.cycleId || null;
   const promotionSync = input.promotionSync;
   const promotionSyncForCycle = promotionSyncMatchesCycle(
     promotionSync,
@@ -544,20 +556,22 @@ function buildPipelineStatusPanel(
       : orchestratorError;
   const promotionLaunchFailed =
     !cycleRunning &&
-    cycleCompleted &&
+    cycleCompletedForDisplay &&
     stage === "promotion" &&
     !promotionRunning &&
     !promotionSucceededForCycle &&
     Boolean(effectiveOrchestratorError);
   const promotionPending =
     !cycleRunning &&
-    cycleCompleted &&
+    cycleCompletedForDisplay &&
     !promotionRunning &&
     !promotionFailed &&
     !promotionLaunchFailed &&
     !promotionSucceededForCycle;
   const cycleOrchestratorProgressPct = safeProgressPct(
-    input.cycle?.progressPct ?? input.orchestrator?.progressPct,
+    activeOrchestratorRunning && !cycleMatchesOrchestrator
+      ? input.orchestrator?.progressPct
+      : input.cycle?.progressPct ?? input.orchestrator?.progressPct,
   );
   const progressPct =
     promotionRunning || promotionPending || promotionSucceededForCycle
@@ -605,7 +619,7 @@ function buildPipelineStatusPanel(
       ? promotionStepIndex
       : promotionLaunchFailed
       ? promotionStepIndex
-      : effectiveOrchestratorError || cycleFailed
+      : effectiveOrchestratorError || cycleFailedForDisplay
       ? stageIndex >= 0
         ? stageIndex
         : workerStepIndex
@@ -616,8 +630,8 @@ function buildPipelineStatusPanel(
   const steps = PIPELINE_STEP_DEFS.map((step, index) => {
     let state: ScalpPipelineStepState = "pending";
     if (
-      (cycleCompleted && promotionSucceededForCycle) ||
-      (stage === "done" && !orchestratorError && !cycleFailed)
+      (cycleCompletedForDisplay && promotionSucceededForCycle) ||
+      (stage === "done" && !orchestratorError && !cycleFailedForDisplay)
     ) {
       state = "success";
     } else if (promotionPending) {
@@ -677,7 +691,7 @@ function buildPipelineStatusPanel(
       status: "failed",
       label: `${failedStep.label} failed`,
       detail: failedStep.detail,
-      cycleId: input.cycle?.cycleId || null,
+      cycleId: currentCycleId,
       updatedAtMs,
       progressPct,
       steps,
@@ -692,8 +706,8 @@ function buildPipelineStatusPanel(
         (runningStep.id === "promotion" ? promotionDetail : null) ||
         input.orchestrator?.progressLabel ||
         runningStep.detail ||
-        (input.cycle?.cycleId ? `cycle ${input.cycle.cycleId}` : null),
-      cycleId: input.cycle?.cycleId || null,
+        (currentCycleId ? `cycle ${currentCycleId}` : null),
+      cycleId: currentCycleId,
       updatedAtMs,
       progressPct,
       steps,
@@ -716,15 +730,18 @@ function buildPipelineStatusPanel(
     };
   }
 
-  if ((cycleCompleted && promotionSucceededForCycle) || completedCount === PIPELINE_STEP_DEFS.length) {
+  if (
+    (cycleCompletedForDisplay && promotionSucceededForCycle) ||
+    completedCount === PIPELINE_STEP_DEFS.length
+  ) {
     return {
       status: "completed",
       label: "Latest cycle completed",
       detail:
         promotionDetail ||
         workerDetail ||
-        (input.cycle?.cycleId ? `cycle ${input.cycle.cycleId}` : null),
-      cycleId: input.cycle?.cycleId || null,
+        (currentCycleId ? `cycle ${currentCycleId}` : null),
+      cycleId: currentCycleId,
       updatedAtMs,
       progressPct,
       steps,
@@ -733,9 +750,9 @@ function buildPipelineStatusPanel(
 
   return {
     status: "idle",
-    label: "Awaiting next cycle",
-    detail: input.cycle?.cycleId ? `last cycle ${input.cycle.cycleId}` : null,
-    cycleId: input.cycle?.cycleId || null,
+    label: activeOrchestratorRunning ? "Cycle preparation in progress" : "Awaiting next cycle",
+    detail: currentCycleId ? `last cycle ${currentCycleId}` : null,
+    cycleId: currentCycleId,
     updatedAtMs,
     progressPct,
     steps,
@@ -854,7 +871,13 @@ async function loadScalpPipelineSnapshot(
   `);
   const row = rows[0];
   if (!row) return null;
-  const workerHeartbeat = await loadResearchWorkerHeartbeat();
+  const [workerHeartbeat, runtimeSnapshot, promotionProgress, latestPromotionSync] =
+    await Promise.all([
+      loadResearchWorkerHeartbeat(),
+      loadScalpPipelineRuntimeSnapshot(),
+      loadPromotionSyncProgressSnapshot(),
+      loadPromotionSyncStateFromPg(),
+    ]);
   const selectedCycle = selectPipelineCycleCandidate({
     nowMs,
     workerHeartbeat,
@@ -879,35 +902,209 @@ async function loadScalpPipelineSnapshot(
   const orchestratorPayload = asRecord(row.orchestratorPayload);
   const panicStopPayload = asRecord(row.panicStopPayload);
   const panicStopEnabled = parseUnknownBool(panicStopPayload.enabled);
-  const orchestratorStage =
+  const fallbackOrchestratorStage =
     String(orchestratorPayload.stage || "").trim() || null;
-  const orchestratorStartedAtMs = asTsMs(orchestratorPayload.startedAtMs);
-  const orchestratorCompletedAtMs = asTsMs(orchestratorPayload.completedAtMs);
-  const orchestratorUpdatedAtMs = asTsMs(orchestratorPayload.updatedAtMs);
-  const orchestratorLastError =
+  const fallbackOrchestratorStartedAtMs = asTsMs(orchestratorPayload.startedAtMs);
+  const fallbackOrchestratorCompletedAtMs = asTsMs(orchestratorPayload.completedAtMs);
+  const fallbackOrchestratorUpdatedAtMs = asTsMs(orchestratorPayload.updatedAtMs);
+  const fallbackOrchestratorLastError =
     String(orchestratorPayload.lastError || "").trim() || null;
   const orchestratorRunningStaleAfterMs = 20 * 60_000;
   const orchestratorFreshByUpdate =
-    orchestratorUpdatedAtMs !== null &&
-    nowMs - orchestratorUpdatedAtMs <= orchestratorRunningStaleAfterMs;
-  const orchestratorRunningRaw =
-    Boolean(orchestratorStage) &&
-    orchestratorStage !== "done" &&
-    orchestratorStartedAtMs !== null &&
-    (orchestratorCompletedAtMs === null ||
-      orchestratorCompletedAtMs < orchestratorStartedAtMs) &&
-    !orchestratorLastError &&
+    fallbackOrchestratorUpdatedAtMs !== null &&
+    nowMs - fallbackOrchestratorUpdatedAtMs <= orchestratorRunningStaleAfterMs;
+  const fallbackOrchestratorRunningRaw =
+    Boolean(fallbackOrchestratorStage) &&
+    fallbackOrchestratorStage !== "done" &&
+    fallbackOrchestratorStartedAtMs !== null &&
+    (fallbackOrchestratorCompletedAtMs === null ||
+      fallbackOrchestratorCompletedAtMs < fallbackOrchestratorStartedAtMs) &&
+    !fallbackOrchestratorLastError &&
     orchestratorFreshByUpdate;
-  const orchestratorRunning = panicStopEnabled ? false : orchestratorRunningRaw;
-  const stageMeta = pipelineStageMeta(orchestratorStage);
-
   const summary = asRecord(selectedCycle?.summary);
   const totals = asRecord(summary.totals);
   const cycleProgressPct = safeProgressPct(summary.progressPct);
-  const [promotionProgress, latestPromotionSync] = await Promise.all([
-    loadPromotionSyncProgressSnapshot(),
-    loadPromotionSyncStateFromPg(),
-  ]);
+  const fallbackOrchestrator = fallbackOrchestratorStage
+    ? {
+        runId: String(orchestratorPayload.runId || "").trim() || null,
+        stage: fallbackOrchestratorStage,
+        cycleId: String(orchestratorPayload.cycleId || "").trim() || null,
+        startedAtMs: fallbackOrchestratorStartedAtMs,
+        updatedAtMs: fallbackOrchestratorUpdatedAtMs,
+        completedAtMs: fallbackOrchestratorCompletedAtMs,
+        runningSinceMs: fallbackOrchestratorRunningRaw
+          ? fallbackOrchestratorStartedAtMs
+          : null,
+        isRunning: fallbackOrchestratorRunningRaw,
+        progressPct: null,
+        progressLabel: null,
+        lastError: fallbackOrchestratorLastError,
+      }
+    : null;
+  const runtimeOrchestrator = runtimeSnapshot?.orchestrator || null;
+  const hasRuntimeOrchestrator = runtimeOrchestrator !== null;
+  const mergedOrchestratorStage = hasRuntimeOrchestrator
+    ? runtimeOrchestrator.stage
+    : fallbackOrchestrator?.stage ?? null;
+  const mergedStageMeta = pipelineStageMeta(mergedOrchestratorStage);
+  const mergedOrchestratorCycleId = hasRuntimeOrchestrator
+    ? runtimeOrchestrator.cycleId
+    : fallbackOrchestrator?.cycleId ?? null;
+  const cycleProgressForOrchestrator =
+    cycleProgressPct !== null &&
+    selectedCycle?.cycleId &&
+    (mergedOrchestratorCycleId
+      ? selectedCycle.cycleId === mergedOrchestratorCycleId
+      : selectedCycle.status === "running")
+      ? cycleProgressPct
+      : null;
+  const orchestratorBaseProgressPct =
+    safeProgressPct(
+      hasRuntimeOrchestrator
+        ? runtimeOrchestrator.progressPct
+        : fallbackOrchestrator?.progressPct,
+    ) ?? mergedStageMeta.progressPct;
+  const mergedOrchestratorStartedAtMs = hasRuntimeOrchestrator
+    ? runtimeOrchestrator.startedAtMs
+    : fallbackOrchestrator?.startedAtMs ?? null;
+  const mergedOrchestratorIsRunning = panicStopEnabled
+    ? false
+    : hasRuntimeOrchestrator
+      ? runtimeOrchestrator.isRunning
+      : fallbackOrchestrator?.isRunning ??
+        false;
+  const mergedOrchestrator =
+    runtimeOrchestrator || fallbackOrchestrator
+      ? {
+          runId: hasRuntimeOrchestrator
+            ? runtimeOrchestrator.runId
+            : fallbackOrchestrator?.runId ?? null,
+          stage: mergedOrchestratorStage,
+          cycleId: mergedOrchestratorCycleId,
+          startedAtMs: mergedOrchestratorStartedAtMs,
+          updatedAtMs: hasRuntimeOrchestrator
+            ? runtimeOrchestrator.updatedAtMs
+            : fallbackOrchestrator?.updatedAtMs ??
+              null,
+          completedAtMs: hasRuntimeOrchestrator
+            ? runtimeOrchestrator.completedAtMs
+            : fallbackOrchestrator?.completedAtMs ??
+              null,
+          runningSinceMs:
+            mergedOrchestratorIsRunning ? mergedOrchestratorStartedAtMs : null,
+          isRunning: mergedOrchestratorIsRunning,
+          progressPct:
+            cycleProgressForOrchestrator !== null
+              ? Math.max(
+                  orchestratorBaseProgressPct ?? 0,
+                  Math.min(100, cycleProgressForOrchestrator),
+                )
+              : orchestratorBaseProgressPct,
+          progressLabel:
+            (hasRuntimeOrchestrator
+              ? runtimeOrchestrator.progressLabel
+              : fallbackOrchestrator?.progressLabel) ??
+            mergedStageMeta.progressLabel,
+          lastError: hasRuntimeOrchestrator
+            ? runtimeOrchestrator.lastError
+            : fallbackOrchestrator?.lastError ??
+              null,
+        }
+      : null;
+  const fallbackPromotionSync =
+    promotionProgress || latestPromotionSync
+      ? {
+          status:
+            promotionProgress?.status ||
+            (latestPromotionSync ? "succeeded" : null),
+          cycleId: promotionProgress?.cycleId || latestPromotionSync?.cycleId || null,
+          phase: promotionProgress?.phase || null,
+          startedAtMs: promotionProgress?.startedAtMs || null,
+          updatedAtMs:
+            promotionProgress?.updatedAtMs ?? latestPromotionSync?.syncedAtMs ?? null,
+          finishedAtMs:
+            promotionProgress?.finishedAtMs ?? latestPromotionSync?.syncedAtMs ?? null,
+          totalDeployments: promotionProgress?.totalDeployments ?? null,
+          processedDeployments: promotionProgress?.processedDeployments ?? null,
+          matchedDeployments:
+            promotionProgress?.matchedDeployments ??
+            latestPromotionSync?.deploymentsMatched ??
+            null,
+          updatedDeployments:
+            promotionProgress?.updatedDeployments ??
+            latestPromotionSync?.deploymentsUpdated ??
+            null,
+          currentSymbol: promotionProgress?.currentSymbol || null,
+          currentStrategyId: promotionProgress?.currentStrategyId || null,
+          currentTuneId: promotionProgress?.currentTuneId || null,
+          lastError: promotionProgress?.lastError || null,
+          lastCompletedCycleId: latestPromotionSync?.cycleId || null,
+          lastCompletedAtMs: latestPromotionSync?.syncedAtMs || null,
+        }
+      : null;
+  const runtimePromotionSync = runtimeSnapshot?.promotionSync || null;
+  const mergedPromotionSync =
+    runtimePromotionSync || fallbackPromotionSync
+      ? {
+          status:
+            runtimePromotionSync?.status ?? fallbackPromotionSync?.status ?? null,
+          cycleId:
+            runtimePromotionSync?.cycleId ?? fallbackPromotionSync?.cycleId ?? null,
+          phase: runtimePromotionSync?.phase ?? fallbackPromotionSync?.phase ?? null,
+          startedAtMs:
+            runtimePromotionSync?.startedAtMs ??
+            fallbackPromotionSync?.startedAtMs ??
+            null,
+          updatedAtMs:
+            runtimePromotionSync?.updatedAtMs ??
+            fallbackPromotionSync?.updatedAtMs ??
+            null,
+          finishedAtMs:
+            runtimePromotionSync?.finishedAtMs ??
+            fallbackPromotionSync?.finishedAtMs ??
+            null,
+          totalDeployments:
+            runtimePromotionSync?.totalDeployments ??
+            fallbackPromotionSync?.totalDeployments ??
+            null,
+          processedDeployments:
+            runtimePromotionSync?.processedDeployments ??
+            fallbackPromotionSync?.processedDeployments ??
+            null,
+          matchedDeployments:
+            runtimePromotionSync?.matchedDeployments ??
+            fallbackPromotionSync?.matchedDeployments ??
+            null,
+          updatedDeployments:
+            runtimePromotionSync?.updatedDeployments ??
+            fallbackPromotionSync?.updatedDeployments ??
+            null,
+          currentSymbol:
+            runtimePromotionSync?.currentSymbol ??
+            fallbackPromotionSync?.currentSymbol ??
+            null,
+          currentStrategyId:
+            runtimePromotionSync?.currentStrategyId ??
+            fallbackPromotionSync?.currentStrategyId ??
+            null,
+          currentTuneId:
+            runtimePromotionSync?.currentTuneId ??
+            fallbackPromotionSync?.currentTuneId ??
+            null,
+          lastError:
+            runtimePromotionSync?.lastError ??
+            fallbackPromotionSync?.lastError ??
+            null,
+          lastCompletedCycleId:
+            runtimePromotionSync?.lastCompletedCycleId ??
+            fallbackPromotionSync?.lastCompletedCycleId ??
+            null,
+          lastCompletedAtMs:
+            runtimePromotionSync?.lastCompletedAtMs ??
+            fallbackPromotionSync?.lastCompletedAtMs ??
+            null,
+        }
+      : null;
   const snapshotBase: Omit<ScalpPipelineSnapshot, "statusPanel"> = {
     panicStop: {
       enabled: panicStopEnabled,
@@ -915,26 +1112,7 @@ async function loadScalpPipelineSnapshot(
       updatedAtMs: asTsMs(row.panicStopUpdatedAtMs),
       updatedBy: normalizeUpdatedBy(panicStopPayload.updatedBy),
     },
-    orchestrator: orchestratorStage
-      ? {
-          runId: String(orchestratorPayload.runId || "").trim() || null,
-          stage: orchestratorStage,
-          startedAtMs: orchestratorStartedAtMs,
-          updatedAtMs: orchestratorUpdatedAtMs,
-          completedAtMs: orchestratorCompletedAtMs,
-          runningSinceMs: orchestratorRunning ? orchestratorStartedAtMs : null,
-          isRunning: orchestratorRunning,
-          progressPct:
-            cycleProgressPct !== null
-              ? Math.max(
-                  stageMeta.progressPct ?? 0,
-                  Math.min(100, cycleProgressPct),
-                )
-              : stageMeta.progressPct,
-          progressLabel: stageMeta.progressLabel,
-          lastError: orchestratorLastError,
-        }
-      : null,
+    orchestrator: mergedOrchestrator,
     cycle: selectedCycle?.cycleId
       ? {
           cycleId: selectedCycle.cycleId,
@@ -954,37 +1132,7 @@ async function loadScalpPipelineSnapshot(
             : null,
         }
       : null,
-    promotionSync:
-      promotionProgress || latestPromotionSync
-        ? {
-            status:
-              promotionProgress?.status ||
-              (latestPromotionSync ? "succeeded" : null),
-            cycleId: promotionProgress?.cycleId || latestPromotionSync?.cycleId || null,
-            phase: promotionProgress?.phase || null,
-            startedAtMs: promotionProgress?.startedAtMs || null,
-            updatedAtMs:
-              promotionProgress?.updatedAtMs ?? latestPromotionSync?.syncedAtMs ?? null,
-            finishedAtMs:
-              promotionProgress?.finishedAtMs ?? latestPromotionSync?.syncedAtMs ?? null,
-            totalDeployments: promotionProgress?.totalDeployments ?? null,
-            processedDeployments: promotionProgress?.processedDeployments ?? null,
-            matchedDeployments:
-              promotionProgress?.matchedDeployments ??
-              latestPromotionSync?.deploymentsMatched ??
-              null,
-            updatedDeployments:
-              promotionProgress?.updatedDeployments ??
-              latestPromotionSync?.deploymentsUpdated ??
-              null,
-            currentSymbol: promotionProgress?.currentSymbol || null,
-            currentStrategyId: promotionProgress?.currentStrategyId || null,
-            currentTuneId: promotionProgress?.currentTuneId || null,
-            lastError: promotionProgress?.lastError || null,
-            lastCompletedCycleId: latestPromotionSync?.cycleId || null,
-            lastCompletedAtMs: latestPromotionSync?.syncedAtMs || null,
-          }
-        : null,
+    promotionSync: mergedPromotionSync,
   };
   return {
     ...snapshotBase,
