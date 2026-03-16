@@ -76,6 +76,7 @@ const RESEARCH_WORKER_HEARTBEAT_JOB_KEY = "state:research_worker_heartbeat:v1";
 const RESEARCH_WORKER_CURSOR_JOB_KIND = "execute_cycle";
 const RESEARCH_WORKER_CURSOR_JOB_KEY = "state:research_worker_cursor:v1";
 const RESEARCH_WORKER_GLOBAL_ADVISORY_LOCK_KEY = 86753124;
+const STALE_CYCLE_REPLACED_ERROR_CODE = "cycle_stalled_replaced";
 const RESEARCH_TASK_TIMEOUT_MS = Math.max(
   1_000,
   Math.min(
@@ -2751,6 +2752,58 @@ export async function loadActiveResearchCycleId(): Promise<string | null> {
   return cycleId || null;
 }
 
+function resolveCycleStartStaleAfterMs(
+  params: StartResearchCycleParams,
+  cycle: ScalpResearchCycleSnapshot,
+): number {
+  const requested = toPositiveInt(params.runningStaleAfterMs, 0);
+  const cycleConfigured = toPositiveInt(
+    cycle.params.runningStaleAfterMs,
+    DEFAULT_RUNNING_STALE_AFTER_MS,
+  );
+  const effective =
+    requested > 0
+      ? requested
+      : Math.max(1, cycleConfigured || DEFAULT_RUNNING_STALE_AFTER_MS);
+  return Math.max(60_000, Math.min(24 * 60 * 60 * 1000, effective));
+}
+
+function cycleLastProgressMs(cycle: ScalpResearchCycleSnapshot): number {
+  return Math.max(
+    0,
+    Math.floor(Number(cycle.updatedAtMs) || Number(cycle.createdAtMs) || 0),
+  );
+}
+
+async function retireStaleRunningCycle(
+  cycle: ScalpResearchCycleSnapshot,
+  nowMs: number,
+): Promise<ScalpResearchCycleSnapshot> {
+  if (isScalpPgConfigured()) {
+    const db = scalpPrisma();
+    const finishedAt = new Date(Math.max(0, Math.floor(nowMs)));
+    await db.$executeRaw(Prisma.sql`
+        UPDATE scalp_research_tasks
+        SET
+            status = 'failed_permanent',
+            finished_at = ${finishedAt},
+            error_code = ${STALE_CYCLE_REPLACED_ERROR_CODE},
+            error_message = ${STALE_CYCLE_REPLACED_ERROR_CODE},
+            updated_at = NOW()
+        WHERE cycle_id = ${cycle.cycleId}
+          AND status IN ('pending', 'running');
+    `);
+  }
+
+  const nextCycle: ScalpResearchCycleSnapshot = {
+    ...cycle,
+    status: "stalled",
+    updatedAtMs: nowMs,
+  };
+  await saveCycle(nextCycle);
+  return nextCycle;
+}
+
 export async function loadResearchWorkerHeartbeat(): Promise<ScalpResearchWorkerHeartbeatSnapshot | null> {
   const inMemory = normalizeResearchWorkerHeartbeat(pgWorkerHeartbeatSnapshot);
   if (!isScalpPgConfigured()) return inMemory;
@@ -2813,7 +2866,14 @@ export async function startScalpResearchCycle(
     if (!force && activeCycleId) {
       const existing = await loadResearchCycle(activeCycleId);
       if (existing && existing.status === "running") {
-        return { started: false, cycle: existing };
+        const staleAfterMs = resolveCycleStartStaleAfterMs(params, existing);
+        const lastProgressMs = cycleLastProgressMs(existing);
+        const stale =
+          lastProgressMs <= 0 || nowMs - lastProgressMs >= staleAfterMs;
+        if (!stale) {
+          return { started: false, cycle: existing };
+        }
+        await retireStaleRunningCycle(existing, nowMs);
       }
     }
 
