@@ -91,9 +91,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 noClaim.runningMissingStartedAt > 0 ||
                 noClaim.failedRetryable > 0 ||
                 noClaim.lockMisses > 0);
+        const workerBusy = worker.orchestration.reasonCodes.includes('worker_busy');
         const workerMessage =
             preflightBlocked
                 ? `worker blocked by preflight (${worker.orchestration.reasonCodes.join(',') || 'unknown'})`
+                : workerBusy
+                  ? 'worker busy (noop, existing run still active)'
                 : worker.attemptedRuns > 0
                   ? `worker processed ${worker.attemptedRuns} tasks (completed=${worker.completedRuns}, failed=${worker.failedRuns}, concurrency=${worker.concurrency}${worker.stoppedByDurationBudget ? ', stoppedByDurationBudget=true' : ''})`
                   : requestedGlobalQueue

@@ -816,7 +816,7 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<
     primaryPathname: "/api/scalp/cron/orchestrate-pipeline",
     matchPathnames: ["/api/scalp/cron/orchestrate-pipeline"],
     fallbackInvokePath:
-      "/api/scalp/cron/orchestrate-pipeline?maxDurationMs=600000&selfInvokeOnContinue=true",
+      "/api/scalp/cron/orchestrate-pipeline?maxDurationMs=600000",
   },
   scalp_discover_symbols: {
     primaryPathname: "/api/scalp/cron/discover-symbols",

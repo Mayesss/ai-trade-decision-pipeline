@@ -1,14 +1,12 @@
 import { Prisma } from '@prisma/client';
 
-import { buildCronAuthHeaders, invokeCronUrlDetached } from './cronChaining';
 import { patchScalpPipelineRuntimeSnapshot, type ScalpPipelineRuntimeOrchestratorSnapshot } from './pipelineRuntime';
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 import { loadScalpPanicStopState } from './panicStop';
 import { prepareAndStartScalpResearchCycle } from './prepareAndStartCycle';
-import { aggregateScalpResearchCycle, loadActiveResearchCycleId, loadResearchCycle, runResearchWorker } from './researchCycle';
 import { runScalpSymbolDiscoveryCycle } from './symbolDiscovery';
 
-type OrchestratorStage = 'discover' | 'load_candles' | 'prepare' | 'worker' | 'aggregate' | 'promotion' | 'done';
+type OrchestratorStage = 'discover' | 'load_candles' | 'prepare' | 'done';
 
 interface OrchestratorState {
     version: 1;
@@ -49,8 +47,16 @@ function asState(value: unknown): OrchestratorState | null {
     const row = asRecord(value);
     if (Number(row.version) !== 1) return null;
     const runId = String(row.runId || '').trim();
-    const stage = String(row.stage || '').trim() as OrchestratorStage;
-    if (!runId || !['discover', 'load_candles', 'prepare', 'worker', 'aggregate', 'promotion', 'done'].includes(stage)) return null;
+    const rawStage = String(row.stage || '')
+        .trim()
+        .toLowerCase();
+    const legacyWorkerStage = rawStage === 'worker' || rawStage === 'aggregate' || rawStage === 'promotion';
+    const stage = (['discover', 'load_candles', 'prepare', 'done'].includes(rawStage)
+        ? rawStage
+        : legacyWorkerStage
+          ? 'done'
+          : '') as OrchestratorStage | '';
+    if (!runId || !stage) return null;
     return {
         version: 1,
         runId,
@@ -121,9 +127,6 @@ function pipelineStageMeta(stageRaw: string | null | undefined): {
         discover: { pct: 10, label: 'discovering symbols' },
         load_candles: { pct: 24, label: 'loading candle history' },
         prepare: { pct: 35, label: 'preparing/backfilling history' },
-        worker: { pct: 70, label: 'running cycle worker' },
-        aggregate: { pct: 88, label: 'aggregating cycle results' },
-        promotion: { pct: 96, label: 'applying promotion gate' },
         done: { pct: 100, label: 'completed' },
     };
     const hit = map[stage];
@@ -240,43 +243,6 @@ async function saveOrchestratorState(state: OrchestratorState): Promise<void> {
     });
 }
 
-function resolveBaseUrl(): string | null {
-    const explicit = String(process.env.SCALP_ORCHESTRATOR_BASE_URL || '').trim();
-    if (explicit) return explicit.replace(/\/+$/, '');
-    const appBase = String(process.env.APP_BASE_URL || process.env.URL || '').trim();
-    if (appBase) return appBase.replace(/\/+$/, '');
-    const vercelUrl = String(process.env.VERCEL_URL || '').trim();
-    if (vercelUrl) return `https://${vercelUrl.replace(/\/+$/, '')}`;
-    return null;
-}
-
-async function invokeContinuation(params: { debug?: boolean } = {}): Promise<{ invoked: boolean; status: number | null; error: string | null }> {
-    const baseUrl = resolveBaseUrl();
-    if (!baseUrl) {
-        return { invoked: false, status: null, error: 'missing_base_url' };
-    }
-    const url = `${baseUrl}/api/scalp/cron/orchestrate-pipeline?continue=1`;
-    const headers = buildCronAuthHeaders();
-    const ctrl = new AbortController();
-    const timeout = setTimeout(() => ctrl.abort(), 4_000);
-    try {
-        const res = await fetch(url, {
-            method: 'GET',
-            headers,
-            cache: 'no-store',
-            signal: ctrl.signal,
-        });
-        return { invoked: true, status: res.status, error: res.ok ? null : `http_${res.status}` };
-    } catch (err: any) {
-        return { invoked: false, status: null, error: String(err?.message || err || 'invoke_failed') };
-    } finally {
-        clearTimeout(timeout);
-        if (params.debug) {
-            // no-op placeholder for optional debug hook
-        }
-    }
-}
-
 function toPositiveInt(value: unknown, fallback: number): number {
     const n = Math.floor(Number(value));
     if (!Number.isFinite(n) || n <= 0) return fallback;
@@ -288,13 +254,6 @@ function estimateMaxRequestsPerSymbol(lookbackDays: number): number {
     // Capital candle fetch uses maxPerRequest=1000; keep safety headroom for gaps/retries.
     const requests = Math.ceil(minutes / 1000) + 12;
     return Math.max(40, Math.min(400, requests));
-}
-
-function isTerminalCycleStatus(status: string | null | undefined): boolean {
-    const normalized = String(status || '')
-        .trim()
-        .toLowerCase();
-    return normalized === 'completed' || normalized === 'failed' || normalized === 'stalled';
 }
 
 export interface RunScalpPipelineOrchestratorParams {
@@ -598,135 +557,10 @@ export async function runScalpPipelineOrchestrator(
                     continue;
                 }
 
-                state.cycleId = prep.cycle?.cycleId || (await loadActiveResearchCycleId()) || null;
+                state.cycleId = prep.cycle?.cycleId || null;
                 state.preparePasses += 1;
                 state.preparePassAddedCandles = 0;
                 state.preparePassErrors = 0;
-                state.stage = 'worker';
-                state.updatedAtMs = nowMs();
-                await saveOrchestratorState(state);
-                continue;
-            }
-
-            if (state.stage === 'worker') {
-                const remainingMs = Math.max(10_000, deadlineMs - nowMs());
-                const worker = await runResearchWorker({
-                    cycleId: state.cycleId || undefined,
-                    maxRuns: 200,
-                    concurrency: 16,
-                    maxDurationMs: Math.max(30_000, Math.min(remainingMs - 5_000, 2 * 60_000)),
-                });
-                state.cycleId = worker.cycleId || state.cycleId;
-                stageEvents.push({
-                    stage: 'worker',
-                    cycleId: worker.cycleId,
-                    attemptedRuns: worker.attemptedRuns,
-                    completedRuns: worker.completedRuns,
-                    failedRuns: worker.failedRuns,
-                    gate: worker.orchestration.gate,
-                    reasonCodes: worker.orchestration.reasonCodes,
-                    noClaimScanSummary: worker.noClaimScanSummary,
-                });
-                if (worker.orchestration.gate === 'blocked') {
-                    state.lastError = worker.orchestration.reasonCodes.join(',') || 'worker_preflight_blocked';
-                    state.updatedAtMs = nowMs();
-                    await saveOrchestratorState(state);
-                    return {
-                        ok: false,
-                        status: 'blocked',
-                        message: `worker_blocked:${state.lastError}`,
-                        runId: state.runId,
-                        stage: state.stage,
-                        state,
-                        diagnostics: {
-                            startedAtMs,
-                            finishedAtMs: nowMs(),
-                            durationMs: nowMs() - startedAtMs,
-                            maxDurationMs,
-                            continuationRequested: false,
-                            continuation: null,
-                            stageEvents,
-                        },
-                    };
-                }
-                state.stage = 'aggregate';
-                state.updatedAtMs = nowMs();
-                await saveOrchestratorState(state);
-                continue;
-            }
-
-            if (state.stage === 'aggregate') {
-                const aggregate = await aggregateScalpResearchCycle({
-                    cycleId: state.cycleId || undefined,
-                    finalizeWhenDone: true,
-                });
-                stageEvents.push({
-                    stage: 'aggregate',
-                    found: Boolean(aggregate),
-                    cycleId: aggregate?.cycle?.cycleId || state.cycleId || null,
-                    status: aggregate?.summary?.status || null,
-                    totals: aggregate?.summary?.totals || null,
-                });
-                if (!aggregate) {
-                    state.stage = 'done';
-                    state.completedAtMs = nowMs();
-                    state.updatedAtMs = nowMs();
-                    await saveOrchestratorState(state);
-                    continue;
-                }
-                state.cycleId = aggregate.cycle.cycleId;
-                state.stage = isTerminalCycleStatus(aggregate.summary.status) ? 'promotion' : 'worker';
-                state.updatedAtMs = nowMs();
-                await saveOrchestratorState(state);
-                continue;
-            }
-
-            if (state.stage === 'promotion') {
-                const baseUrl = resolveBaseUrl();
-                const successor = baseUrl
-                    ? await invokeCronUrlDetached(
-                          baseUrl,
-                          '/api/scalp/cron/research-cycle-sync-gates',
-                          {
-                              cycleId: state.cycleId || undefined,
-                              dryRun: 0,
-                              requireCompletedCycle: 1,
-                              materializeEnabled: 1,
-                              updatedBy: 'cron:scalp-orchestrator',
-                          },
-                          750,
-                      )
-                    : { invoked: false, status: null, error: 'missing_base_url', url: null, detached: false };
-                stageEvents.push({
-                    stage: 'promotion',
-                    invoked: successor.invoked,
-                    detached: successor.detached === true,
-                    status: successor.status,
-                    error: successor.error,
-                    url: successor.url,
-                });
-                if (!successor.invoked || successor.error) {
-                    state.lastError = successor.error || 'promotion_sync_launch_failed';
-                    state.updatedAtMs = nowMs();
-                    await saveOrchestratorState(state);
-                    return {
-                        ok: false,
-                        status: 'error',
-                        message: `promotion_sync_launch_failed:${state.lastError}`,
-                        runId: state.runId,
-                        stage: state.stage,
-                        state,
-                        diagnostics: {
-                            startedAtMs,
-                            finishedAtMs: nowMs(),
-                            durationMs: nowMs() - startedAtMs,
-                            maxDurationMs,
-                            continuationRequested: false,
-                            continuation: null,
-                            stageEvents,
-                        },
-                    };
-                }
                 state.stage = 'done';
                 state.completedAtMs = nowMs();
                 state.updatedAtMs = nowMs();
@@ -739,36 +573,18 @@ export async function runScalpPipelineOrchestrator(
 
         if (state.stage !== 'done') {
             continuationRequested = true;
-            if (params.selfInvokeOnContinue !== false) {
-                continuation = await invokeContinuation({ debug: params.debug });
-                const continuationFailed =
-                    !continuation.invoked ||
-                    Boolean(continuation.error) ||
-                    (Number.isFinite(Number(continuation.status)) && Number(continuation.status) >= 400);
-                if (continuationFailed) {
-                    console.warn(
-                        JSON.stringify({
-                            scope: 'scalp_orchestrator',
-                            event: 'continuation_invoke_failed',
-                            runId: state.runId,
-                            stage: state.stage,
-                            continuation,
-                        }),
-                    );
-                }
-            }
             stageEvents.push({
-                stage: 'continue',
+                stage: 'incomplete',
                 continuationRequested,
-                selfInvokeOnContinue: params.selfInvokeOnContinue !== false,
                 continuation,
+                maxDurationMs,
             });
             state.updatedAtMs = nowMs();
             await saveOrchestratorState(state);
             return {
                 ok: true,
                 status: 'continued',
-                message: `orchestrator_continues_at_stage:${state.stage}`,
+                message: `orchestrator_incomplete_at_stage:${state.stage}`,
                 runId: state.runId,
                 stage: state.stage,
                 state,

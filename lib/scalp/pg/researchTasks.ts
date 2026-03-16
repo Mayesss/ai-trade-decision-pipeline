@@ -22,11 +22,13 @@ function toDate(value: number | Date): Date {
 
 export async function claimResearchTasksFromPg(params: {
     cycleId?: string;
+    cursorTaskId?: string;
     workerId: string;
     limit: number;
     nowMs?: number;
 }): Promise<ClaimedResearchTaskRow[]> {
     const cycleId = String(params.cycleId || '').trim();
+    const cursorTaskId = String(params.cursorTaskId || '').trim();
     const workerId = String(params.workerId || '').trim() || 'worker_unknown';
     const limit = Math.max(1, Math.min(500, Math.floor(Number(params.limit) || 1)));
     const now = toDate(Number(params.nowMs || Date.now()));
@@ -58,7 +60,12 @@ export async function claimResearchTasksFromPg(params: {
               AND t.next_eligible_at <= ${now}
               AND t.attempts < t.max_attempts
               AND (c.blocked_until IS NULL OR c.blocked_until <= ${now})
-            ORDER BY t.priority ASC, t.created_at ASC, t.task_id ASC
+            ORDER BY
+              CASE
+                WHEN ${cursorTaskId} <> '' AND t.task_id <= ${cursorTaskId} THEN 1
+                ELSE 0
+              END ASC,
+              t.task_id ASC
             FOR UPDATE SKIP LOCKED
             LIMIT ${limit}
         )
