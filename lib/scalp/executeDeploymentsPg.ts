@@ -37,6 +37,12 @@ function parseNowMs(value: string | undefined): number | undefined {
     return undefined;
 }
 
+function parsePositiveInt(value: string | undefined): number | undefined {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num <= 0) return undefined;
+    return Math.floor(num);
+}
+
 function setNoStoreHeaders(res: NextApiResponse): void {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
@@ -72,6 +78,7 @@ export async function runExecuteDeploymentsPg(
     const dryRun = parseBoolParam(req.query.dryRun, true);
     const debug = parseBoolParam(req.query.debug, false);
     const nowMs = parseNowMs(firstQueryValue(req.query.nowMs));
+    const concurrencyQuery = parsePositiveInt(firstQueryValue(req.query.concurrency));
     const symbol = firstQueryValue(req.query.symbol);
     const all = parseBoolParam(req.query.all, false);
     const requirePromotionEligible = parseBoolParam(
@@ -157,6 +164,12 @@ export async function runExecuteDeploymentsPg(
         const alreadyClaimedDeployments = deployments.filter((row) => !claimedDeploymentIds.has(row.deploymentId));
         const deploymentsToRun = deployments.filter((row) => claimedDeploymentIds.has(row.deploymentId));
         const finalizeRows: FinalizeScalpExecutionRunInput[] = [];
+        const configuredConcurrency = Math.max(
+            1,
+            Math.min(32, Math.floor(Number(process.env.SCALP_EXECUTE_DEPLOYMENTS_CONCURRENCY) || 4)),
+        );
+        const requestedConcurrency = Math.max(1, concurrencyQuery ?? configuredConcurrency);
+        const effectiveConcurrency = Math.max(1, Math.min(requestedConcurrency, deploymentsToRun.length || 1));
 
         for (const deployment of alreadyClaimedDeployments) {
             results.push({
@@ -179,61 +192,84 @@ export async function runExecuteDeploymentsPg(
             });
         }
 
-        for (const deployment of deploymentsToRun) {
-            try {
-                const cycle = await runScalpExecuteCycle({
-                    symbol: deployment.symbol,
-                    dryRun,
-                    debug,
-                    nowMs: effectiveNowMs,
-                    strategyId: deployment.strategyId,
-                    tuneId: deployment.tuneId,
-                    deploymentId: deployment.deploymentId,
-                    configOverride: deployment.configOverride || undefined,
-                    marketSnapshotCache,
-                    runtimeSnapshot,
-                    brokerPositionSnapshots,
-                    skipBrokerSnapshotFetch,
-                });
-                const finishedAtMs = Date.now();
-                const executionRunStatus = cycle.runLockAcquired ? 'succeeded' : 'skipped';
-                results.push({
-                    ...cycle,
-                    enabled: deployment.enabled,
-                    source: deployment.source,
-                    promotionEligible: deployment.promotionEligible,
-                    promotionReason: deployment.promotionReason,
-                    backend: 'pg',
-                    executionRunStatus,
-                });
-                finalizeRows.push({
-                    deploymentId: deployment.deploymentId,
-                    scheduledMinuteMs,
-                    status: executionRunStatus,
-                    reasonCodes: cycle.reasonCodes,
-                    finishedAtMs,
-                });
-            } catch (err: any) {
-                const finishedAtMs = Date.now();
-                const message = String(err?.message || err || 'execution_failed');
-                const errorCode = extractErrorCode(message);
-                errors.push({
-                    symbol: deployment.symbol,
-                    strategyId: deployment.strategyId,
-                    tuneId: deployment.tuneId,
-                    deploymentId: deployment.deploymentId,
-                    error: message,
-                    errorCode,
-                });
-                finalizeRows.push({
-                    deploymentId: deployment.deploymentId,
-                    scheduledMinuteMs,
-                    status: 'failed',
-                    errorCode,
-                    errorMessage: message,
-                    finishedAtMs,
-                });
+        const runOutcomes: Array<{
+            result?: Record<string, unknown>;
+            error?: Record<string, unknown>;
+            finalize: FinalizeScalpExecutionRunInput;
+        }> = new Array(deploymentsToRun.length);
+        let nextIndex = 0;
+        const runWorker = async () => {
+            while (true) {
+                const idx = nextIndex;
+                nextIndex += 1;
+                if (idx >= deploymentsToRun.length) return;
+                const deployment = deploymentsToRun[idx]!;
+                try {
+                    const cycle = await runScalpExecuteCycle({
+                        symbol: deployment.symbol,
+                        dryRun,
+                        debug,
+                        nowMs: effectiveNowMs,
+                        strategyId: deployment.strategyId,
+                        tuneId: deployment.tuneId,
+                        deploymentId: deployment.deploymentId,
+                        configOverride: deployment.configOverride || undefined,
+                        marketSnapshotCache,
+                        runtimeSnapshot,
+                        brokerPositionSnapshots,
+                        skipBrokerSnapshotFetch,
+                    });
+                    const finishedAtMs = Date.now();
+                    const executionRunStatus = cycle.runLockAcquired ? 'succeeded' : 'skipped';
+                    runOutcomes[idx] = {
+                        result: {
+                            ...cycle,
+                            enabled: deployment.enabled,
+                            source: deployment.source,
+                            promotionEligible: deployment.promotionEligible,
+                            promotionReason: deployment.promotionReason,
+                            backend: 'pg',
+                            executionRunStatus,
+                        },
+                        finalize: {
+                            deploymentId: deployment.deploymentId,
+                            scheduledMinuteMs,
+                            status: executionRunStatus,
+                            reasonCodes: cycle.reasonCodes,
+                            finishedAtMs,
+                        },
+                    };
+                } catch (err: any) {
+                    const finishedAtMs = Date.now();
+                    const message = String(err?.message || err || 'execution_failed');
+                    const errorCode = extractErrorCode(message);
+                    runOutcomes[idx] = {
+                        error: {
+                            symbol: deployment.symbol,
+                            strategyId: deployment.strategyId,
+                            tuneId: deployment.tuneId,
+                            deploymentId: deployment.deploymentId,
+                            error: message,
+                            errorCode,
+                        },
+                        finalize: {
+                            deploymentId: deployment.deploymentId,
+                            scheduledMinuteMs,
+                            status: 'failed',
+                            errorCode,
+                            errorMessage: message,
+                            finishedAtMs,
+                        },
+                    };
+                }
             }
+        };
+        await Promise.all(Array.from({ length: effectiveConcurrency }, () => runWorker()));
+        for (const outcome of runOutcomes) {
+            if (!outcome) continue;
+            if (outcome.result) results.push(outcome.result);
+            if (outcome.error) errors.push(outcome.error);
+            finalizeRows.push(outcome.finalize);
         }
 
         let executionRunFinalizeUpdated = 0;
@@ -258,6 +294,8 @@ export async function runExecuteDeploymentsPg(
             requestedSymbol: symbol || null,
             requestedAll: all,
             requirePromotionEligible,
+            executionConcurrencyRequested: requestedConcurrency,
+            executionConcurrencyEffective: effectiveConcurrency,
             scheduledMinuteMs,
             executionRunClaimedCount: deploymentsToRun.length,
             executionRunSkippedAlreadyClaimedCount: alreadyClaimedDeployments.length,
