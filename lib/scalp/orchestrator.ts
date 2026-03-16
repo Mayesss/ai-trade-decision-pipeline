@@ -393,6 +393,7 @@ export async function runScalpPipelineOrchestrator(
     let continuationRequested = false;
     let continuation: { invoked: boolean; status: number | null; error: string | null } | null = null;
     let state: OrchestratorState | null = null;
+    let currentStage: OrchestratorStage | 'init' = 'init';
     try {
         const panicStop = await loadScalpPanicStopState();
         if (panicStop.enabled) {
@@ -433,6 +434,7 @@ export async function runScalpPipelineOrchestrator(
         await saveOrchestratorState(state);
 
         while (nowMs() < deadlineMs) {
+            currentStage = state.stage;
             if (state.stage === 'discover') {
                 const t0 = nowMs();
                 const snapshot = await runScalpSymbolDiscoveryCycle({
@@ -677,15 +679,30 @@ export async function runScalpPipelineOrchestrator(
             },
         };
     } catch (err: any) {
+        const rawError = String(err?.message || err || 'orchestrator_failed');
+        const stageTaggedError = `orchestrator_failed_at_${currentStage}:${rawError}`.slice(0, 400);
         if (state) {
-            state.lastError = String(err?.message || err || 'orchestrator_failed').slice(0, 400);
+            state.lastError = stageTaggedError;
             state.updatedAtMs = nowMs();
-            await saveOrchestratorState(state);
+            try {
+                await saveOrchestratorState(state);
+            } catch (saveErr: any) {
+                if (debug) {
+                    console.warn(
+                        JSON.stringify({
+                            scope: 'scalp_orchestrator',
+                            event: 'state_save_failed_after_error',
+                            saveErrorCode: classifyOrchestratorDbError(saveErr),
+                            saveErrorMessage: String(saveErr?.message || saveErr || 'state_save_failed'),
+                        }),
+                    );
+                }
+            }
         }
         return {
             ok: false,
             status: 'error',
-            message: String(err?.message || err || 'orchestrator_failed'),
+            message: stageTaggedError,
             runId: state?.runId || null,
             stage: state?.stage || null,
             state,
@@ -700,6 +717,17 @@ export async function runScalpPipelineOrchestrator(
             },
         };
     } finally {
-        await releaseAdvisoryLock();
+        try {
+            await releaseAdvisoryLock();
+        } catch (releaseErr: any) {
+            console.warn(
+                JSON.stringify({
+                    scope: 'scalp_orchestrator',
+                    event: 'advisory_lock_release_failed',
+                    errorCode: classifyOrchestratorDbError(releaseErr),
+                    errorMessage: String(releaseErr?.message || releaseErr || 'advisory_lock_release_failed'),
+                }),
+            );
+        }
     }
 }
