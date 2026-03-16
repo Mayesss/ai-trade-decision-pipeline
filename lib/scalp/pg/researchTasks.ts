@@ -66,7 +66,7 @@ export async function claimResearchTasksFromPg(params: {
                 ELSE 0
               END ASC,
               t.task_id ASC
-            FOR UPDATE SKIP LOCKED
+            FOR UPDATE OF t SKIP LOCKED
             LIMIT ${limit}
         )
         UPDATE scalp_research_tasks t
