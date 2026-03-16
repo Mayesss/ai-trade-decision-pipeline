@@ -249,6 +249,26 @@ function toPositiveInt(value: unknown, fallback: number): number {
     return n;
 }
 
+function classifyOrchestratorDbError(error: unknown): string {
+    const message = String((error as any)?.message || error || '')
+        .trim()
+        .toLowerCase();
+    if (!message) return 'db_error';
+    if (message.includes('timed out fetching a new connection from the connection pool')) {
+        return 'db_pool_timeout';
+    }
+    if (message.includes("can't reach database server")) {
+        return 'db_unreachable';
+    }
+    if (message.includes('connection pool')) {
+        return 'db_pool_error';
+    }
+    if (message.includes('prisma')) {
+        return 'db_prisma_error';
+    }
+    return 'db_error';
+}
+
 function estimateMaxRequestsPerSymbol(lookbackDays: number): number {
     const minutes = Math.max(1, lookbackDays) * 24 * 60;
     // Capital candle fetch uses maxPerRequest=1000; keep safety headroom for gaps/retries.
@@ -258,7 +278,6 @@ function estimateMaxRequestsPerSymbol(lookbackDays: number): number {
 
 export interface RunScalpPipelineOrchestratorParams {
     maxDurationMs?: number;
-    selfInvokeOnContinue?: boolean;
     continueRun?: boolean;
     debug?: boolean;
 }
@@ -284,6 +303,7 @@ export interface RunScalpPipelineOrchestratorResult {
 export async function runScalpPipelineOrchestrator(
     params: RunScalpPipelineOrchestratorParams = {},
 ): Promise<RunScalpPipelineOrchestratorResult> {
+    const debug = params.debug === true;
     const startedAtMs = nowMs();
     const maxDurationMs = Math.max(60_000, Math.min(10 * 60_000, toPositiveInt(params.maxDurationMs, 10 * 60_000)));
     const safetyMs = 30_000;
@@ -310,7 +330,46 @@ export async function runScalpPipelineOrchestrator(
         };
     }
 
-    const locked = await acquireAdvisoryLock();
+    let locked = false;
+    try {
+        locked = await acquireAdvisoryLock();
+    } catch (err: any) {
+        const errorCode = classifyOrchestratorDbError(err);
+        const errorMessage = String(err?.message || err || 'orchestrator_lock_acquire_failed');
+        stageEvents.push({
+            stage: 'init',
+            blockedBy: 'db_lock_acquire',
+            errorCode,
+            errorMessage,
+        });
+        if (debug) {
+            console.warn(
+                JSON.stringify({
+                    scope: 'scalp_orchestrator',
+                    event: 'advisory_lock_acquire_failed',
+                    errorCode,
+                    errorMessage,
+                }),
+            );
+        }
+        return {
+            ok: false,
+            status: 'error',
+            message: `orchestrator_lock_acquire_failed:${errorCode}`,
+            runId: null,
+            stage: null,
+            state: null,
+            diagnostics: {
+                startedAtMs,
+                finishedAtMs: nowMs(),
+                durationMs: nowMs() - startedAtMs,
+                maxDurationMs,
+                continuationRequested: false,
+                continuation: null,
+                stageEvents,
+            },
+        };
+    }
     if (!locked) {
         return {
             ok: true,

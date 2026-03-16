@@ -257,6 +257,11 @@ npm run start
 - `GET /api/scalp/cron/research-cycle-start?dryRun=false`
   - Starts a chunked offline research cycle over the active symbol universe (or explicit `symbols=...`) and persists task rows in KV.
   - Optional query params: `symbols=BTCUSDT,XAUUSDT`, `lookbackDays`, `chunkDays`, `maxTasks`, `maxAttempts`, `minCandlesPerTask`, `force`.
+- `GET /api/scalp/cron/orchestrate-pipeline?maxDurationMs=600000`
+  - Runs staged scalp pipeline orchestration (`discover -> load_candles -> prepare`) and persists progress in `scalp_pipeline_orchestrator_state_v1`.
+  - When a run exits with `status=continued`, the route self-invokes by default (`selfInvokeOnContinue=true`) using detached cron chaining and `continue=1`.
+  - Self-invoke hop budget is capped by `selfInvokeMaxHops` (query) or `SCALP_ORCHESTRATOR_SELF_INVOKE_MAX_HOPS` (env, default `8`).
+  - Response includes `selfInvoke` metadata with hop counters and continuation invoke status.
 - `GET /api/scalp/cron/research-cycle-worker?maxRuns=40&concurrency=4`
   - Claims pending/stale research tasks, runs replay for each claimed task, and writes per-task metrics.
   - Supports bounded parallel execution with `concurrency` (default env `SCALP_RESEARCH_WORKER_CONCURRENCY`).

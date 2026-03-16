@@ -3,6 +3,7 @@ export const config = { runtime: 'nodejs', maxDuration: 600 };
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
+import { invokeCronEndpointDetached } from '../../../../lib/scalp/cronChaining';
 import { runScalpPipelineOrchestrator } from '../../../../lib/scalp/orchestrator';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean): boolean {
@@ -41,14 +42,70 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     setNoStoreHeaders(res);
 
     try {
+        const maxDurationMs = parsePositiveInt(firstQueryValue(req.query.maxDurationMs));
+        const debug = parseBoolParam(req.query.debug, false);
+        const selfInvokeOnContinue = parseBoolParam(req.query.selfInvokeOnContinue, true);
+        const continueHop = Math.max(0, Math.floor(Number(firstQueryValue(req.query.continueHop)) || 0));
+        const selfInvokeMaxHops = Math.max(
+            0,
+            Math.min(
+                20,
+                Math.floor(
+                    Number(firstQueryValue(req.query.selfInvokeMaxHops)) ||
+                        Number(process.env.SCALP_ORCHESTRATOR_SELF_INVOKE_MAX_HOPS) ||
+                        8,
+                ),
+            ),
+        );
         const out = await runScalpPipelineOrchestrator({
-            maxDurationMs: parsePositiveInt(firstQueryValue(req.query.maxDurationMs)),
-            selfInvokeOnContinue: parseBoolParam(req.query.selfInvokeOnContinue, true),
+            maxDurationMs,
             continueRun: parseBoolParam(req.query.continue, false),
-            debug: parseBoolParam(req.query.debug, false),
+            debug,
         });
+        const shouldSelfInvoke =
+            selfInvokeOnContinue && out.status === 'continued' && continueHop < selfInvokeMaxHops;
+        const continuation = shouldSelfInvoke
+            ? await invokeCronEndpointDetached(
+                  req,
+                  '/api/scalp/cron/orchestrate-pipeline',
+                  {
+                      maxDurationMs,
+                      selfInvokeOnContinue: true,
+                      continue: true,
+                      continueHop: continueHop + 1,
+                      selfInvokeMaxHops,
+                      debug,
+                  },
+                  750,
+              )
+            : null;
+        if (debug || shouldSelfInvoke) {
+            const level = shouldSelfInvoke && continuation?.error ? 'warn' : 'info';
+            console[level](
+                JSON.stringify({
+                    scope: 'scalp_orchestrate_pipeline_api',
+                    event: 'self_invoke',
+                    runId: out.runId,
+                    status: out.status,
+                    stage: out.stage,
+                    continueHop,
+                    selfInvokeMaxHops,
+                    requested: shouldSelfInvoke,
+                    continuation,
+                }),
+            );
+        }
         const statusCode = out.status === 'blocked' ? 409 : out.status === 'error' ? 500 : 200;
-        return res.status(statusCode).json(out);
+        return res.status(statusCode).json({
+            ...out,
+            selfInvoke: {
+                enabled: selfInvokeOnContinue,
+                continueHop,
+                maxHops: selfInvokeMaxHops,
+                requested: shouldSelfInvoke,
+                continuation,
+            },
+        });
     } catch (err: any) {
         return res.status(500).json({
             error: 'scalp_orchestrator_failed',
@@ -56,4 +113,3 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         });
     }
 }
-
