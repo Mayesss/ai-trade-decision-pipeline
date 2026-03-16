@@ -907,9 +907,13 @@ async function loadScalpPipelineSnapshot(
   const fallbackOrchestratorStartedAtMs = asTsMs(orchestratorPayload.startedAtMs);
   const fallbackOrchestratorCompletedAtMs = asTsMs(orchestratorPayload.completedAtMs);
   const fallbackOrchestratorUpdatedAtMs = asTsMs(orchestratorPayload.updatedAtMs);
+  const fallbackOrchestratorLockUntilMs = asTsMs(orchestratorPayload.lockUntilMs);
   const fallbackOrchestratorLastError =
     String(orchestratorPayload.lastError || "").trim() || null;
   const orchestratorRunningStaleAfterMs = 20 * 60_000;
+  const orchestratorFreshByLock =
+    fallbackOrchestratorLockUntilMs === null ||
+    fallbackOrchestratorLockUntilMs >= nowMs;
   const orchestratorFreshByUpdate =
     fallbackOrchestratorUpdatedAtMs !== null &&
     nowMs - fallbackOrchestratorUpdatedAtMs <= orchestratorRunningStaleAfterMs;
@@ -920,6 +924,7 @@ async function loadScalpPipelineSnapshot(
     (fallbackOrchestratorCompletedAtMs === null ||
       fallbackOrchestratorCompletedAtMs < fallbackOrchestratorStartedAtMs) &&
     !fallbackOrchestratorLastError &&
+    orchestratorFreshByLock &&
     orchestratorFreshByUpdate;
   const summary = asRecord(selectedCycle?.summary);
   const totals = asRecord(summary.totals);
@@ -967,10 +972,20 @@ async function loadScalpPipelineSnapshot(
   const mergedOrchestratorStartedAtMs = hasRuntimeOrchestrator
     ? runtimeOrchestrator.startedAtMs
     : fallbackOrchestrator?.startedAtMs ?? null;
+  const runtimeOrchestratorFreshByUpdate =
+    runtimeOrchestrator?.updatedAtMs !== null &&
+    typeof runtimeOrchestrator?.updatedAtMs === "number" &&
+    Number.isFinite(runtimeOrchestrator.updatedAtMs) &&
+    nowMs - runtimeOrchestrator.updatedAtMs <=
+      orchestratorRunningStaleAfterMs;
+  const runtimeOrchestratorRunningRaw =
+    runtimeOrchestrator?.isRunning === true &&
+    runtimeOrchestratorFreshByUpdate &&
+    orchestratorFreshByLock;
   const mergedOrchestratorIsRunning = panicStopEnabled
     ? false
     : hasRuntimeOrchestrator
-      ? runtimeOrchestrator.isRunning
+      ? runtimeOrchestratorRunningRaw
       : fallbackOrchestrator?.isRunning ??
         false;
   const mergedOrchestrator =
