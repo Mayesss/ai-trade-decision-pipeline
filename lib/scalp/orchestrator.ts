@@ -32,7 +32,7 @@ interface OrchestratorState {
 
 const ORCHESTRATOR_STATE_KIND = 'execute_cycle';
 const ORCHESTRATOR_STATE_DEDUPE_KEY = 'scalp_pipeline_orchestrator_state_v1';
-const ORCHESTRATOR_ADVISORY_LOCK_KEY = 86753091;
+const ORCHESTRATOR_MUTEX_DEDUPE_KEY = 'scalp_pipeline_orchestrator_mutex_v1';
 
 function nowMs(): number {
     return Date.now();
@@ -168,20 +168,72 @@ function isRecoverablePrepareFailureCodes(codes: string[]): boolean {
     );
 }
 
-async function acquireAdvisoryLock(): Promise<boolean> {
+async function acquireAdvisoryLock(lockOwner: string, lockTtlMs: number): Promise<boolean> {
     if (!isScalpPgConfigured()) return false;
     const db = scalpPrisma();
-    const rows = await db.$queryRaw<Array<{ locked: boolean }>>(Prisma.sql`
-        SELECT pg_try_advisory_lock(${ORCHESTRATOR_ADVISORY_LOCK_KEY}) AS locked;
+    await db.$executeRaw(
+        Prisma.sql`
+            INSERT INTO scalp_jobs(
+                kind,
+                dedupe_key,
+                payload,
+                status,
+                attempts,
+                max_attempts,
+                scheduled_for,
+                next_run_at,
+                locked_by,
+                locked_at,
+                last_error
+            )
+            VALUES(
+                ${ORCHESTRATOR_STATE_KIND}::scalp_job_kind,
+                ${ORCHESTRATOR_MUTEX_DEDUPE_KEY},
+                '{}'::jsonb,
+                'succeeded'::scalp_job_status,
+                1,
+                1,
+                NOW(),
+                NOW(),
+                NULL,
+                NULL,
+                NULL
+            )
+            ON CONFLICT(kind, dedupe_key)
+            DO NOTHING;
+        `,
+    );
+    const rows = await db.$queryRaw<Array<{ id: bigint }>>(Prisma.sql`
+        UPDATE scalp_jobs
+        SET
+            locked_by = ${lockOwner},
+            locked_at = NOW(),
+            updated_at = NOW()
+        WHERE kind = ${ORCHESTRATOR_STATE_KIND}::scalp_job_kind
+          AND dedupe_key = ${ORCHESTRATOR_MUTEX_DEDUPE_KEY}
+          AND (
+              locked_by IS NULL
+              OR locked_at IS NULL
+              OR locked_at <= NOW() - (${Math.max(60_000, Math.floor(lockTtlMs))} * INTERVAL '1 millisecond')
+              OR locked_by = ${lockOwner}
+          )
+        RETURNING id;
     `);
-    return rows[0]?.locked === true;
+    return rows.length > 0;
 }
 
-async function releaseAdvisoryLock(): Promise<void> {
+async function releaseAdvisoryLock(lockOwner: string): Promise<void> {
     if (!isScalpPgConfigured()) return;
     const db = scalpPrisma();
     await db.$executeRaw(Prisma.sql`
-        SELECT pg_advisory_unlock(${ORCHESTRATOR_ADVISORY_LOCK_KEY});
+        UPDATE scalp_jobs
+        SET
+            locked_by = NULL,
+            locked_at = NULL,
+            updated_at = NOW()
+        WHERE kind = ${ORCHESTRATOR_STATE_KIND}::scalp_job_kind
+          AND dedupe_key = ${ORCHESTRATOR_MUTEX_DEDUPE_KEY}
+          AND locked_by = ${lockOwner};
     `);
 }
 
@@ -306,6 +358,8 @@ export async function runScalpPipelineOrchestrator(
     const debug = params.debug === true;
     const startedAtMs = nowMs();
     const maxDurationMs = Math.max(60_000, Math.min(10 * 60_000, toPositiveInt(params.maxDurationMs, 10 * 60_000)));
+    const lockOwnerToken = `scalp_orch_lock_${startedAtMs}_${Math.floor(Math.random() * 1_000_000)}`;
+    const lockTtlMs = maxDurationMs + 60_000;
     const safetyMs = 30_000;
     const deadlineMs = startedAtMs + Math.max(10_000, maxDurationMs - safetyMs);
     const stageEvents: Array<Record<string, unknown>> = [];
@@ -332,7 +386,7 @@ export async function runScalpPipelineOrchestrator(
 
     let locked = false;
     try {
-        locked = await acquireAdvisoryLock();
+        locked = await acquireAdvisoryLock(lockOwnerToken, lockTtlMs);
     } catch (err: any) {
         const errorCode = classifyOrchestratorDbError(err);
         const errorMessage = String(err?.message || err || 'orchestrator_lock_acquire_failed');
@@ -718,7 +772,7 @@ export async function runScalpPipelineOrchestrator(
         };
     } finally {
         try {
-            await releaseAdvisoryLock();
+            await releaseAdvisoryLock(lockOwnerToken);
         } catch (releaseErr: any) {
             console.warn(
                 JSON.stringify({

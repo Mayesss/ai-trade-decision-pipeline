@@ -393,78 +393,53 @@ async function saveToPgBulk(records: ScalpCandleHistoryRecord[]): Promise<ScalpC
     if (!records.length) {
         return { backend: 'pg', saved: 0, storageRef: 'scalp_candle_history_weeks:bulk' };
     }
-    const weekRows = records.flatMap((record) => candlesToWeeklyRows(record));
-    const pairRows = records.map((record) => ({ symbol: record.symbol, timeframe: record.timeframe }));
     const db = scalpPrisma();
-    const pairJson = JSON.stringify(pairRows);
-    const weekJson = JSON.stringify(
-        weekRows.map((row) => ({
-            symbol: row.symbol,
-            timeframe: row.timeframe,
-            week_start_ms: row.weekStartMs,
-            epic: row.epic,
-            source: row.source,
-            candles: row.candles,
-        })),
+    const chunkSize = Math.max(
+        1,
+        Math.min(10, Math.floor(Number(process.env.SCALP_CANDLE_HISTORY_BULK_SAVE_RECORD_CHUNK) || 1)),
     );
-
-    await db.$executeRaw(
-        Prisma.sql`
-            WITH pairs AS (
-                SELECT DISTINCT
-                    UPPER(TRIM(x.symbol)) AS symbol,
-                    LOWER(TRIM(x.timeframe)) AS timeframe
-                FROM jsonb_to_recordset(${pairJson}::jsonb) AS x(symbol text, timeframe text)
-            ),
-            input AS (
-                SELECT
-                    UPPER(TRIM(x.symbol)) AS symbol,
-                    LOWER(TRIM(x.timeframe)) AS timeframe,
-                    x.week_start_ms::bigint AS week_start_ms,
-                    NULLIF(UPPER(TRIM(COALESCE(x.epic, ''))), '') AS epic,
-                    COALESCE(NULLIF(TRIM(x.source), ''), 'capital') AS source,
-                    COALESCE(x.candles, '[]'::jsonb) AS candles
-                FROM jsonb_to_recordset(${weekJson}::jsonb) AS x(
-                    symbol text,
-                    timeframe text,
-                    week_start_ms bigint,
-                    epic text,
-                    source text,
-                    candles jsonb
-                )
-            ),
-            upserted AS (
-                INSERT INTO scalp_candle_history_weeks(symbol, timeframe, week_start, epic, source, candles_json, updated_at)
-                SELECT
-                    i.symbol,
-                    i.timeframe,
-                    to_timestamp(i.week_start_ms / 1000.0),
-                    i.epic,
-                    i.source,
-                    i.candles,
-                    NOW()
-                FROM input i
-                ON CONFLICT(symbol, timeframe, week_start)
-                DO UPDATE SET
-                    epic = EXCLUDED.epic,
-                    source = EXCLUDED.source,
-                    candles_json = EXCLUDED.candles_json,
-                    updated_at = NOW()
-                RETURNING 1
-            )
-            DELETE FROM scalp_candle_history_weeks w
-            USING pairs p
-            WHERE w.symbol = p.symbol
-              AND w.timeframe = p.timeframe
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM input i
-                  WHERE i.symbol = w.symbol
-                    AND i.timeframe = w.timeframe
-                    AND i.week_start_ms = (EXTRACT(EPOCH FROM w.week_start) * 1000)::bigint
-              );
-        `,
-    );
+    for (let offset = 0; offset < records.length; offset += chunkSize) {
+        const slice = records.slice(offset, offset + chunkSize);
+        if (!slice.length) continue;
+        for (const record of slice) {
+            const weekRows = candlesToWeeklyRows(record);
+            await db.$executeRaw(Prisma.sql`
+                DELETE FROM scalp_candle_history_weeks
+                WHERE symbol = ${record.symbol}
+                  AND timeframe = ${record.timeframe};
+            `);
+            for (const row of weekRows) {
+                await db.$executeRaw(
+                    Prisma.sql`
+                        INSERT INTO scalp_candle_history_weeks(
+                            symbol,
+                            timeframe,
+                            week_start,
+                            epic,
+                            source,
+                            candles_json,
+                            updated_at
+                        )
+                        VALUES(
+                            ${row.symbol},
+                            ${row.timeframe},
+                            to_timestamp(${row.weekStartMs} / 1000.0),
+                            ${row.epic},
+                            ${row.source},
+                            ${JSON.stringify(row.candles)}::jsonb,
+                            NOW()
+                        )
+                        ON CONFLICT(symbol, timeframe, week_start)
+                        DO UPDATE SET
+                            epic = EXCLUDED.epic,
+                            source = EXCLUDED.source,
+                            candles_json = EXCLUDED.candles_json,
+                            updated_at = NOW();
+                    `,
+                );
+            }
+        }
+    }
 
     return {
         backend: 'pg',

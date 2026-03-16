@@ -155,6 +155,11 @@ const CAPITAL_429_BACKOFF_MAX_MS = (() => {
   if (!Number.isFinite(raw) || raw <= 0) return 5000;
   return Math.max(500, Math.floor(raw));
 })();
+const CAPITAL_HTTP_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.CAPITAL_HTTP_TIMEOUT_MS ?? 25000);
+  if (!Number.isFinite(raw) || raw <= 0) return 25000;
+  return Math.max(3000, Math.min(120000, Math.floor(raw)));
+})();
 
 let cachedSession: SessionState | null = null;
 let capitalSessionPromise: Promise<SessionState> | null = null;
@@ -372,7 +377,33 @@ async function fetchCapitalRateLimited(
 
   while (true) {
     await waitForCapitalRateLimitSlot();
-    const res = await fetch(url, init);
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), CAPITAL_HTTP_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        ...init,
+        signal: ctrl.signal,
+      });
+    } catch (err: any) {
+      const isAbort =
+        String(err?.name || "").toLowerCase() === "aborterror" ||
+        String(err?.code || "").toUpperCase() === "ABORT_ERR";
+      if (isAbort) {
+        let path = url;
+        try {
+          path = new URL(url).pathname;
+        } catch {
+          // keep raw fallback
+        }
+        throw new Error(
+          `Capital API request timeout after ${CAPITAL_HTTP_TIMEOUT_MS}ms (${method} ${path})`,
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
     if (
       res.status !== 429 ||
       !canRetry429 ||
