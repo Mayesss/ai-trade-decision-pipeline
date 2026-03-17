@@ -28,6 +28,7 @@ import {
   type ScalpOpeningHoursSchedule,
   type ScalpSymbolMarketMetadata,
 } from "./scalp/symbolMarketMetadata";
+import type { ScalpAssetCategory } from "./scalp/symbolInfo";
 import type { TradeDecision } from "./trading";
 
 import defaultTickerEpicMap from "../data/capitalTickerMap.json";
@@ -200,6 +201,19 @@ const SCALP_CAPITAL_USE_ACCOUNT_LEVERAGE = readEnvBool(
     process.env.CAPITAL_USE_ACCOUNT_LEVERAGE,
   true,
 );
+function toPositiveNumberWithFallback(value: unknown, fallback: number): number {
+  const n = Number(value);
+  if (!(Number.isFinite(n) && n > 0)) return fallback;
+  return n;
+}
+const CAPITAL_LEVERAGE_BY_CATEGORY: Record<ScalpAssetCategory, number> = {
+  forex: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_FOREX, 30),
+  index: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_INDEX, 20),
+  commodity: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_COMMODITY, 20),
+  equity: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_EQUITY, 5),
+  crypto: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_CRYPTO, 2),
+  other: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_OTHER, 5),
+};
 
 let cachedSession: SessionState | null = null;
 let capitalSessionPromise: Promise<SessionState> | null = null;
@@ -2271,6 +2285,31 @@ function extractAccountEquityUsd(account: any): number | null {
   return balance;
 }
 
+function extractAccountAvailableMarginUsd(account: any): number | null {
+  const directAvailable = toPositiveFinite(
+    account?.balance?.available ??
+      account?.available ??
+      account?.availableFunds ??
+      account?.fundsAvailable ??
+      account?.availableToDeal,
+  );
+  if (directAvailable !== null) return directAvailable;
+
+  const equity = extractAccountEquityUsd(account);
+  const usedMargin = toPositiveFinite(
+    account?.balance?.margin ??
+      account?.margin ??
+      account?.usedMargin ??
+      account?.marginUsed,
+  );
+  if (equity !== null && usedMargin !== null) {
+    const free = equity - usedMargin;
+    if (free > 0) return free;
+  }
+
+  return equity;
+}
+
 export async function fetchCapitalAccountEquityUsd(): Promise<number | null> {
   const payload = await capitalFetch(
     "GET",
@@ -2288,6 +2327,27 @@ export async function fetchCapitalAccountEquityUsd(): Promise<number | null> {
     const equity = extractAccountEquityUsd(row);
     if (equity === null) continue;
     if (best === null || equity > best) best = equity;
+  }
+  return best;
+}
+
+export async function fetchCapitalAccountAvailableMarginUsd(): Promise<number | null> {
+  const payload = await capitalFetch(
+    "GET",
+    "/api/v1/accounts",
+    {},
+    undefined,
+    true,
+  );
+  const rows = extractAccountRows(payload);
+  if (!rows.length) return null;
+
+  // Use the largest positive free margin among returned accounts to avoid selecting an empty/inactive account.
+  let best: number | null = null;
+  for (const row of rows) {
+    const availableMargin = extractAccountAvailableMarginUsd(row);
+    if (availableMargin === null) continue;
+    if (best === null || availableMargin > best) best = availableMargin;
   }
   return best;
 }
@@ -2565,9 +2625,67 @@ async function openCapitalPosition(params: {
   if (!(referencePrice > 0))
     throw new Error(`Cannot derive reference price for ${symbol}`);
 
-  const orderNotional =
+  const assetCategory = scalpAssetCategoryFromInstrumentType(
+    normalizeTicker(symbol),
+    details.instrumentType,
+  );
+  const accountLeverageCap =
+    CAPITAL_LEVERAGE_BY_CATEGORY[assetCategory] ??
+    CAPITAL_LEVERAGE_BY_CATEGORY.other;
+  const effectiveLeverageForMarginCap = SCALP_CAPITAL_USE_ACCOUNT_LEVERAGE
+    ? accountLeverageCap
+    : leverage ?? 1;
+  const requestedNotional =
     sideSizeUSDT *
     (SCALP_CAPITAL_USE_ACCOUNT_LEVERAGE ? 1 : leverage ?? 1);
+  let orderNotional = requestedNotional;
+  const availableMarginUsd = await fetchCapitalAccountAvailableMarginUsd().catch(
+    () => null,
+  );
+  if (
+    Number.isFinite(availableMarginUsd as number) &&
+    Number(availableMarginUsd) > 0 &&
+    Number.isFinite(effectiveLeverageForMarginCap) &&
+    effectiveLeverageForMarginCap > 0
+  ) {
+    const maxNotionalByAvailableMargin =
+      Number(availableMarginUsd) * effectiveLeverageForMarginCap;
+    if (!(Number.isFinite(maxNotionalByAvailableMargin) && maxNotionalByAvailableMargin > 0)) {
+      return {
+        payload: null,
+        orderId: null,
+        dealId: null,
+        dealReference: clientOid,
+        size: null,
+        epic: details.epic,
+        dealStatus: "REJECTED",
+        confirmStatus: "MARGIN_CAP_BLOCKED",
+        rejectReason: "INSUFFICIENT_AVAILABLE_MARGIN",
+        accepted: false,
+      };
+    }
+    orderNotional = Math.min(requestedNotional, maxNotionalByAvailableMargin);
+    const minSize =
+      Number.isFinite(details.minDealSize as number) &&
+      Number(details.minDealSize) > 0
+        ? Number(details.minDealSize)
+        : 0.0001;
+    const minNotional = minSize * referencePrice;
+    if (minNotional > maxNotionalByAvailableMargin) {
+      return {
+        payload: null,
+        orderId: null,
+        dealId: null,
+        dealReference: clientOid,
+        size: minSize,
+        epic: details.epic,
+        dealStatus: "REJECTED",
+        confirmStatus: "MARGIN_CAP_BLOCKED",
+        rejectReason: "INSUFFICIENT_AVAILABLE_MARGIN",
+        accepted: false,
+      };
+    }
+  }
   const rawSize = orderNotional / referencePrice;
   const size = quantizeSize(rawSize, details.minDealSize, details.sizeDecimals);
   if (!(size > 0))
@@ -2904,6 +3022,18 @@ export async function executeCapitalDecision(
       leverage,
       clientOid,
     });
+    if (!opened.accepted) {
+      return {
+        placed: false,
+        orderId: null,
+        clientOid,
+        leverage,
+        size: opened.size,
+        epic: opened.epic,
+        dealStatus: opened.dealStatus ?? null,
+        rejectReason: opened.rejectReason ?? null,
+      };
+    }
     return {
       placed: true,
       orderId: opened.orderId,
@@ -2982,6 +3112,19 @@ export async function executeCapitalDecision(
       leverage,
       clientOid,
     });
+    if (!opened.accepted) {
+      return {
+        placed: false,
+        orderId: closed.orderId ?? null,
+        clientOid,
+        reversed: false,
+        leverage,
+        size: opened.size,
+        epic: opened.epic,
+        dealStatus: opened.dealStatus ?? null,
+        rejectReason: opened.rejectReason ?? null,
+      };
+    }
     return {
       placed: true,
       orderId: opened.orderId ?? closed.orderId,
