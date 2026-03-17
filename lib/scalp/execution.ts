@@ -525,8 +525,23 @@ export async function executeScalpEntryPlan(params: {
     profitLevel: params.plan.takeProfitPrice,
   });
 
+  const normalizeReasonFragment = (value: unknown): string | null => {
+    const normalized = String(value || "")
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9_]+/g, "_")
+      .replace(/_+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    return normalized ? normalized.slice(0, 64) : null;
+  };
+
   if (!exec.placed && !params.dryRun) {
-    return { state: next, reasonCodes: ["ENTRY_NOT_PLACED"] };
+    const reasonCodes = ["ENTRY_NOT_PLACED"];
+    const dealStatus = normalizeReasonFragment(exec.dealStatus);
+    const rejectReason = normalizeReasonFragment(exec.rejectReason);
+    if (dealStatus) reasonCodes.push(`ENTRY_DEAL_STATUS_${dealStatus}`);
+    if (rejectReason) reasonCodes.push(`ENTRY_REJECT_${rejectReason}`);
+    return { state: next, reasonCodes };
   }
 
   next.trade = {

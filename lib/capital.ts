@@ -122,6 +122,25 @@ export type CapitalPositionOwnershipMatch =
   | "epic"
   | null;
 
+export type CapitalScalpEntryResult = {
+  placed: boolean;
+  dryRun: boolean;
+  orderId: string | null;
+  dealId: string | null;
+  dealReference: string | null;
+  clientOid: string;
+  symbol: string;
+  direction: "BUY" | "SELL";
+  notionalUsd: number;
+  leverage: number | null;
+  orderType: "MARKET" | "LIMIT";
+  size: number | null;
+  epic: string | null;
+  dealStatus: string | null;
+  confirmStatus: string | null;
+  rejectReason: string | null;
+};
+
 const CAPITAL_API_BASE = (
   process.env.CAPITAL_API_BASE || "https://api-capital.backend-capital.com"
 ).replace(/\/+$/, "");
@@ -2053,6 +2072,50 @@ function extractConfirmDealReference(payload: any): string | null {
   return value || null;
 }
 
+function extractConfirmDealStatus(payload: any): string | null {
+  const value = normalizeCapitalText(payload?.dealStatus);
+  return value ? value.toUpperCase() : null;
+}
+
+function extractConfirmStatus(payload: any): string | null {
+  const value = normalizeCapitalText(payload?.status);
+  return value ? value.toUpperCase() : null;
+}
+
+function extractConfirmRejectReason(payload: any): string | null {
+  const value = normalizeCapitalText(payload?.rejectReason);
+  return value ? value.toUpperCase() : null;
+}
+
+async function fetchCapitalDealConfirmationByReference(
+  dealReference: string | null,
+): Promise<any | null> {
+  const normalized = String(dealReference || "").trim();
+  if (!normalized) return null;
+  const deadlineMs = Date.now() + 4_000;
+  while (Date.now() < deadlineMs) {
+    try {
+      const confirm = await capitalFetch(
+        "GET",
+        `/api/v1/confirms/${encodeURIComponent(normalized)}`,
+        {},
+        undefined,
+        true,
+      );
+      if (!confirm || typeof confirm !== "object") return confirm;
+      const status = extractConfirmDealStatus(confirm);
+      const confirmStatus = extractConfirmStatus(confirm);
+      const rejectReason = extractConfirmRejectReason(confirm);
+      if (status || confirmStatus || rejectReason) return confirm;
+      return confirm;
+    } catch {
+      // Retry until deadline; confirms can be briefly delayed.
+    }
+    await sleep(200);
+  }
+  return null;
+}
+
 async function resolveOpenedPositionOwnership(params: {
   epic: string;
   direction: "BUY" | "SELL";
@@ -2525,6 +2588,28 @@ async function openCapitalPosition(params: {
   );
   const dealIdRaw = payload?.dealId ?? payload?.positionDealId ?? null;
   const dealReferenceRaw = payload?.dealReference ?? clientOid;
+  const dealReferenceNormalized =
+    String(dealReferenceRaw || clientOid || "").trim() || clientOid;
+  const confirmPayload = await fetchCapitalDealConfirmationByReference(
+    dealReferenceNormalized,
+  );
+  const confirmDealStatus = extractConfirmDealStatus(confirmPayload);
+  const confirmStatus = extractConfirmStatus(confirmPayload);
+  const confirmRejectReason = extractConfirmRejectReason(confirmPayload);
+  if (confirmDealStatus !== "ACCEPTED") {
+    return {
+      payload,
+      orderId: null,
+      dealId: null,
+      dealReference: dealReferenceNormalized,
+      size,
+      epic: details.epic,
+      dealStatus: confirmDealStatus,
+      confirmStatus,
+      rejectReason: confirmRejectReason,
+      accepted: false,
+    };
+  }
   const resolvedOwnership = await resolveOpenedPositionOwnership({
     epic: details.epic,
     direction,
@@ -2538,7 +2623,18 @@ async function openCapitalPosition(params: {
   const dealReference =
     resolvedOwnership.dealReference ?? dealReferenceRaw ?? clientOid;
   const orderId = dealId ?? dealReference ?? payload?.id ?? null;
-  return { payload, orderId, dealId, dealReference, size, epic: details.epic };
+  return {
+    payload,
+    orderId,
+    dealId,
+    dealReference,
+    size,
+    epic: details.epic,
+    dealStatus: confirmDealStatus,
+    confirmStatus,
+    rejectReason: confirmRejectReason,
+    accepted: true,
+  };
 }
 
 export async function executeCapitalScalpEntry(params: {
@@ -2552,7 +2648,7 @@ export async function executeCapitalScalpEntry(params: {
   limitLevel?: number | null;
   stopLevel?: number | null;
   profitLevel?: number | null;
-}) {
+}): Promise<CapitalScalpEntryResult> {
   const symbol = String(params.symbol || "")
     .trim()
     .toUpperCase();
@@ -2572,12 +2668,19 @@ export async function executeCapitalScalpEntry(params: {
       placed: false,
       dryRun: true,
       orderId: null,
+      dealId: null,
+      dealReference: null,
       clientOid,
       symbol,
       direction: params.direction,
       notionalUsd,
       leverage,
       orderType,
+      size: null,
+      epic: null,
+      dealStatus: null,
+      confirmStatus: null,
+      rejectReason: null,
     };
   }
 
@@ -2593,6 +2696,26 @@ export async function executeCapitalScalpEntry(params: {
     profitLevel: params.profitLevel ?? null,
     forceOpen: true,
   });
+  if (!opened.accepted) {
+    return {
+      placed: false,
+      dryRun: false,
+      orderId: null,
+      dealId: null,
+      dealReference: opened.dealReference ?? clientOid,
+      clientOid,
+      symbol,
+      direction: params.direction,
+      notionalUsd,
+      leverage,
+      orderType,
+      size: opened.size,
+      epic: opened.epic,
+      dealStatus: opened.dealStatus ?? null,
+      confirmStatus: opened.confirmStatus ?? null,
+      rejectReason: opened.rejectReason ?? null,
+    };
+  }
   return {
     placed: true,
     dryRun: false,
@@ -2607,6 +2730,9 @@ export async function executeCapitalScalpEntry(params: {
     orderType,
     size: opened.size,
     epic: opened.epic,
+    dealStatus: opened.dealStatus ?? null,
+    confirmStatus: opened.confirmStatus ?? null,
+    rejectReason: opened.rejectReason ?? null,
   };
 }
 
