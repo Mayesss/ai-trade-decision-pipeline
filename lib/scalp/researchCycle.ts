@@ -46,7 +46,7 @@ const DEFAULT_CHUNK_DAYS = 7;
 const DEFAULT_MIN_CANDLES_PER_TASK = 180;
 const DEFAULT_MAX_TASKS = 4_000;
 const DEFAULT_MAX_ATTEMPTS = 2;
-const DEFAULT_RUNNING_STALE_AFTER_MS = 20 * 60 * 1000;
+const DEFAULT_RUNNING_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_SYMBOL_COOLDOWN_FAILURE_THRESHOLD = 3;
 const DEFAULT_SYMBOL_COOLDOWN_WINDOW_MS = 30 * 60 * 1000;
 const DEFAULT_SYMBOL_COOLDOWN_DURATION_MS = 3 * 60 * 60 * 1000;
@@ -2765,7 +2765,11 @@ function resolveCycleStartStaleAfterMs(
     requested > 0
       ? requested
       : Math.max(1, cycleConfigured || DEFAULT_RUNNING_STALE_AFTER_MS);
-  return Math.max(60_000, Math.min(24 * 60 * 60 * 1000, effective));
+  // Keep stale replacement conservative for low-frequency schedulers.
+  return Math.max(
+    DEFAULT_RUNNING_STALE_AFTER_MS,
+    Math.min(24 * 60 * 60 * 1000, effective),
+  );
 }
 
 function cycleLastProgressMs(cycle: ScalpResearchCycleSnapshot): number {

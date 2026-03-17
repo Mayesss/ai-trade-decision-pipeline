@@ -1420,15 +1420,91 @@ async function rebalanceEnabledDeploymentsFromRegistryScan(params: {
   winnerIds: Set<string>;
   updatedCount: number;
 }> {
-  const baseSnapshot =
-    params.snapshot || (await loadScalpDeploymentRegistry());
-  const winnerIds = buildStrongestEligibleDeploymentIdSetFromRegistry({
-    deployments: baseSnapshot.deployments,
+  let workingSnapshot = params.snapshot || (await loadScalpDeploymentRegistry());
+  const eligibleSources = new Set<ScalpDeploymentRegistrySource>([
+    "backtest",
+    "matrix",
+  ]);
+  const considered = workingSnapshot.deployments.filter((deployment) =>
+    eligibleSources.has(deployment.source),
+  );
+  if (!considered.length) {
+    return {
+      snapshot: workingSnapshot,
+      winnerIds: new Set<string>(),
+      updatedCount: 0,
+    };
+  }
+
+  const nowMs = Date.now();
+  const requiredWeeks = resolveDeploymentPromotionTriggerWeeks();
+  const freshnessWindowToTs = startOfWeekMondayUtc(nowMs);
+  const freshnessWindowFromTs =
+    freshnessWindowToTs - requiredWeeks * WEEK_MS;
+  const freshnessSymbols = Array.from(
+    new Set(considered.map((row) => row.symbol).filter((row) => Boolean(row))),
+  );
+  const freshnessTasks = await listLatestResearchTasksByWindow({
+    symbols: freshnessSymbols,
+    windowFromTs: freshnessWindowFromTs,
+    windowToTs: freshnessWindowToTs,
   });
-  const enablementUpserts = baseSnapshot.deployments.flatMap((deployment) => {
-    if (deployment.source !== "backtest" && deployment.source !== "matrix") {
-      return [];
+  const freshnessTasksByDeployment = new Map<string, ScalpResearchTask[]>();
+  for (const task of freshnessTasks) {
+    const deploymentId = String(task.deploymentId || "").trim();
+    if (!deploymentId) continue;
+    const bucket = freshnessTasksByDeployment.get(deploymentId) || [];
+    bucket.push(task);
+    freshnessTasksByDeployment.set(deploymentId, bucket);
+  }
+
+  const freshnessReadyIds = new Set<string>();
+  const freshnessForcedUpserts: ScalpDeploymentRegistryWriteParams[] = [];
+  for (const deployment of considered) {
+    const freshness = evaluateFreshCompletedDeploymentWeeks({
+      tasks: freshnessTasksByDeployment.get(deployment.deploymentId) || [],
+      nowMs,
+      requiredWeeks,
+    });
+    if (freshness.ready) {
+      freshnessReadyIds.add(deployment.deploymentId);
+      continue;
     }
+    const needsDisable =
+      deployment.enabled === true ||
+      deployment.promotionGate?.eligible === true ||
+      deployment.promotionGate?.reason !== "fresh_weeks_incomplete";
+    if (!needsDisable) continue;
+    const forcedGate = buildForcedIneligibleGate({
+      baseGate: deployment.promotionGate || null,
+      reason: "fresh_weeks_incomplete",
+      forwardValidation: deployment.promotionGate?.forwardValidation || null,
+      nowMs,
+    });
+    freshnessForcedUpserts.push({
+      deploymentId: deployment.deploymentId,
+      source: deployment.source,
+      enabled: false,
+      promotionGate: forcedGate,
+      updatedBy: params.updatedBy || "research-worker:enablement-scan:fresh12w",
+    });
+  }
+  let updatedCount = 0;
+  if (freshnessForcedUpserts.length > 0) {
+    const forcedOut = await upsertScalpDeploymentRegistryEntriesBulk(
+      freshnessForcedUpserts,
+    );
+    workingSnapshot = forcedOut.snapshot;
+    updatedCount += freshnessForcedUpserts.length;
+  }
+
+  const winnerIds = buildStrongestEligibleDeploymentIdSetFromRegistry({
+    deployments: workingSnapshot.deployments.filter((deployment) =>
+      freshnessReadyIds.has(deployment.deploymentId),
+    ),
+  });
+  const enablementUpserts = workingSnapshot.deployments.flatMap((deployment) => {
+    if (!eligibleSources.has(deployment.source)) return [];
     const shouldEnable = winnerIds.has(deployment.deploymentId);
     if (deployment.enabled === shouldEnable) return [];
     return [
@@ -1442,16 +1518,16 @@ async function rebalanceEnabledDeploymentsFromRegistryScan(params: {
   });
   if (!enablementUpserts.length) {
     return {
-      snapshot: baseSnapshot,
+      snapshot: workingSnapshot,
       winnerIds,
-      updatedCount: 0,
+      updatedCount,
     };
   }
   const out = await upsertScalpDeploymentRegistryEntriesBulk(enablementUpserts);
   return {
     snapshot: out.snapshot,
     winnerIds,
-    updatedCount: enablementUpserts.length,
+    updatedCount: updatedCount + enablementUpserts.length,
   };
 }
 
