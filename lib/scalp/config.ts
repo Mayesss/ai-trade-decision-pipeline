@@ -124,6 +124,10 @@ export function normalizeScalpSymbol(value: string | undefined): string {
 
 export function getScalpStrategyConfig(): ScalpStrategyConfig {
     const sessionTtlDays = toPositiveInt(process.env.SCALP_STATE_TTL_DAYS, 3);
+    const maxConfiguredLeverage = Math.max(
+        1,
+        Math.min(50, toPositiveInt(process.env.SCALP_MAX_LEVERAGE, 5)),
+    );
     return {
         enabled: toBool(process.env.SCALP_ENABLED, true),
         defaultSymbol: normalizeScalpSymbol(process.env.SCALP_DEFAULT_SYMBOL),
@@ -186,7 +190,7 @@ export function getScalpStrategyConfig(): ScalpStrategyConfig {
             riskPerTradePct: toPositiveNumber(process.env.SCALP_RISK_PER_TRADE_PCT, 0.35),
             referenceEquityUsd: toPositiveNumber(process.env.SCALP_REFERENCE_EQUITY_USD, 10_000),
             minNotionalUsd: toPositiveNumber(process.env.SCALP_MIN_NOTIONAL_USD, 100),
-            maxNotionalUsd: toPositiveNumber(process.env.SCALP_MAX_NOTIONAL_USD, 2_000),
+            maxNotionalUsd: toPositiveNumber(process.env.SCALP_MAX_NOTIONAL_USD, 100_000),
             takeProfitR: toPositiveNumber(process.env.SCALP_TAKE_PROFIT_R, 2),
             stopBufferPips: toNonNegativeNumber(process.env.SCALP_STOP_BUFFER_PIPS, 0.8),
             stopBufferSpreadMult: toNonNegativeNumber(process.env.SCALP_STOP_BUFFER_SPREAD_MULT, 1.0),
@@ -205,7 +209,7 @@ export function getScalpStrategyConfig(): ScalpStrategyConfig {
                 .toUpperCase() === 'LIMIT'
                 ? 'LIMIT'
                 : 'MARKET',
-            defaultLeverage: Math.max(1, Math.min(5, toPositiveInt(process.env.SCALP_DEFAULT_LEVERAGE, 1))),
+            defaultLeverage: Math.max(1, Math.min(maxConfiguredLeverage, toPositiveInt(process.env.SCALP_DEFAULT_LEVERAGE, 1))),
         },
         idempotency: {
             runLockSeconds: toPositiveInt(process.env.SCALP_RUN_LOCK_SECONDS, 90),

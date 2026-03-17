@@ -174,11 +174,32 @@ const CAPITAL_429_BACKOFF_MAX_MS = (() => {
   if (!Number.isFinite(raw) || raw <= 0) return 5000;
   return Math.max(500, Math.floor(raw));
 })();
+function readEnvBool(value: unknown, fallback: boolean): boolean {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return fallback;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
 const CAPITAL_HTTP_TIMEOUT_MS = (() => {
   const raw = Number(process.env.CAPITAL_HTTP_TIMEOUT_MS ?? 25000);
   if (!Number.isFinite(raw) || raw <= 0) return 25000;
   return Math.max(3000, Math.min(120000, Math.floor(raw)));
 })();
+const CAPITAL_MAX_BOT_LEVERAGE = (() => {
+  const raw = Number(
+    process.env.CAPITAL_MAX_BOT_LEVERAGE ?? process.env.SCALP_MAX_LEVERAGE ?? 5,
+  );
+  if (!Number.isFinite(raw) || raw <= 0) return 5;
+  return Math.max(1, Math.min(50, Math.floor(raw)));
+})();
+const SCALP_CAPITAL_USE_ACCOUNT_LEVERAGE = readEnvBool(
+  process.env.SCALP_CAPITAL_USE_ACCOUNT_LEVERAGE ??
+    process.env.CAPITAL_USE_ACCOUNT_LEVERAGE,
+  true,
+);
 
 let cachedSession: SessionState | null = null;
 let capitalSessionPromise: Promise<SessionState> | null = null;
@@ -666,7 +687,7 @@ function clampLeverage(value: unknown): number | null {
   const n = Number(value);
   if (!Number.isFinite(n)) return null;
   const rounded = Math.round(n);
-  const clamped = Math.max(1, Math.min(5, rounded));
+  const clamped = Math.max(1, Math.min(CAPITAL_MAX_BOT_LEVERAGE, rounded));
   return clamped;
 }
 
@@ -2544,7 +2565,9 @@ async function openCapitalPosition(params: {
   if (!(referencePrice > 0))
     throw new Error(`Cannot derive reference price for ${symbol}`);
 
-  const orderNotional = sideSizeUSDT * (leverage ?? 1);
+  const orderNotional =
+    sideSizeUSDT *
+    (SCALP_CAPITAL_USE_ACCOUNT_LEVERAGE ? 1 : leverage ?? 1);
   const rawSize = orderNotional / referencePrice;
   const size = quantizeSize(rawSize, details.minDealSize, details.sizeDecimals);
   if (!(size > 0))
@@ -2576,7 +2599,7 @@ async function openCapitalPosition(params: {
   ) {
     body.profitLevel = Number(profitLevel);
   }
-  if (leverage) body.leverage = leverage;
+  if (leverage && !SCALP_CAPITAL_USE_ACCOUNT_LEVERAGE) body.leverage = leverage;
 
   const submittedAtMs = Date.now();
   const payload = await capitalFetch(

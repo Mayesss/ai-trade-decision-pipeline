@@ -14,6 +14,10 @@ import type {
   ScalpStrategyConfig,
 } from "./types";
 import { pipSizeForScalpSymbol, timeframeMinutes } from "./marketData";
+import {
+  inferScalpAssetCategory,
+  type ScalpAssetCategory,
+} from "./symbolInfo";
 
 function toFinite(value: unknown, fallback = NaN): number {
   const n = Number(value);
@@ -23,6 +27,24 @@ function toFinite(value: unknown, fallback = NaN): number {
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
+
+function toPositiveNumberWithFallback(value: unknown, fallback: number): number {
+  const n = Number(value);
+  if (!(Number.isFinite(n) && n > 0)) return fallback;
+  return n;
+}
+
+const SCALP_CAPITAL_LEVERAGE_BY_CATEGORY: Record<ScalpAssetCategory, number> = {
+  forex: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_FOREX, 30),
+  index: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_INDEX, 20),
+  commodity: toPositiveNumberWithFallback(
+    process.env.SCALP_CAPITAL_LEVERAGE_COMMODITY,
+    20,
+  ),
+  equity: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_EQUITY, 5),
+  crypto: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_CRYPTO, 2),
+  other: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_OTHER, 5),
+};
 
 function high(
   candle: [number, number, number, number, number, number],
@@ -257,10 +279,28 @@ export function buildScalpEntryPlan(params: {
     params.cfg.risk.referenceEquityUsd *
     (params.cfg.risk.riskPerTradePct / 100);
   const rawNotionalUsd = (riskUsd * entryReferencePrice) / riskAbs;
+  const assetCategory =
+    params.market.symbolMeta?.assetCategory || inferScalpAssetCategory(state.symbol);
+  const categoryLeverage =
+    SCALP_CAPITAL_LEVERAGE_BY_CATEGORY[assetCategory] ||
+    SCALP_CAPITAL_LEVERAGE_BY_CATEGORY.other;
+  const maxNotionalByCategoryLeverage =
+    params.cfg.risk.referenceEquityUsd > 0
+      ? params.cfg.risk.referenceEquityUsd * categoryLeverage
+      : null;
+  const boundedMaxNotionalUsd =
+    Number.isFinite(maxNotionalByCategoryLeverage as number) &&
+    Number(maxNotionalByCategoryLeverage) > 0
+      ? Math.min(params.cfg.risk.maxNotionalUsd, Number(maxNotionalByCategoryLeverage))
+      : params.cfg.risk.maxNotionalUsd;
+  const boundedMinNotionalUsd = Math.min(
+    params.cfg.risk.minNotionalUsd,
+    boundedMaxNotionalUsd,
+  );
   const notionalUsd = clamp(
     rawNotionalUsd,
-    params.cfg.risk.minNotionalUsd,
-    params.cfg.risk.maxNotionalUsd,
+    boundedMinNotionalUsd,
+    boundedMaxNotionalUsd,
   );
   if (!(Number.isFinite(notionalUsd) && notionalUsd > 0)) {
     return { plan: null, reasonCodes: ["ENTRY_PLAN_INVALID_NOTIONAL"] };
@@ -290,7 +330,15 @@ export function buildScalpEntryPlan(params: {
       notionalUsd,
       leverage: params.cfg.execution.defaultLeverage,
     },
-    reasonCodes: ["ENTRY_INTENT_IFVG_TOUCH", "ENTRY_PLAN_READY"],
+    reasonCodes: [
+      "ENTRY_INTENT_IFVG_TOUCH",
+      "ENTRY_PLAN_READY",
+      ...(Number.isFinite(maxNotionalByCategoryLeverage as number) &&
+      Number(maxNotionalByCategoryLeverage) > 0 &&
+      Number(maxNotionalByCategoryLeverage) < params.cfg.risk.maxNotionalUsd
+        ? ["ENTRY_PLAN_ASSET_LEVERAGE_CAP_ACTIVE"]
+        : []),
+    ],
   };
 }
 
