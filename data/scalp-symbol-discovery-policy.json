@@ -16,7 +16,15 @@
     "minRecentBars7d": 4000,
     "minMedianRangePct": 0.025,
     "maxSpreadPips": 35,
-    "requireTradableQuote": true
+    "requireTradableQuote": true,
+    "byCategory": {
+      "forex": {
+        "minHistoryCoveragePct": 55,
+        "minAvgBarsPerDay": 800,
+        "minRecentBars7d": 1500,
+        "minMedianRangePct": 0.01
+      }
+    }
   },
   "sources": {
     "includeCapitalMarketsApi": true,

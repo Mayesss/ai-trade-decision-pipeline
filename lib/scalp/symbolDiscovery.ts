@@ -12,6 +12,20 @@ import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 import { inferScalpAssetCategory, type ScalpAssetCategory } from './symbolInfo';
 import { listScalpStrategies } from './strategies/registry';
 
+type ScalpSymbolDiscoveryCriteriaBase = {
+    minHistoryDays: number;
+    minHistoryCoveragePct: number;
+    minAvgBarsPerDay: number;
+    minRecentBars7d: number;
+    minMedianRangePct: number;
+    maxSpreadPips: number | null;
+    requireTradableQuote: boolean;
+};
+
+type ScalpSymbolDiscoveryCriteria = ScalpSymbolDiscoveryCriteriaBase & {
+    byCategory?: Partial<Record<ScalpAssetCategory, Partial<ScalpSymbolDiscoveryCriteriaBase>>>;
+};
+
 export interface ScalpSymbolDiscoveryPolicy {
     version: 1;
     updatedAt: string | null;
@@ -23,15 +37,7 @@ export interface ScalpSymbolDiscoveryPolicy {
         maxWeeklyRemoves: number;
         maxCandidates: number;
     };
-    criteria: {
-        minHistoryDays: number;
-        minHistoryCoveragePct: number;
-        minAvgBarsPerDay: number;
-        minRecentBars7d: number;
-        minMedianRangePct: number;
-        maxSpreadPips: number | null;
-        requireTradableQuote: boolean;
-    };
+    criteria: ScalpSymbolDiscoveryCriteria;
     sources: {
         includeCapitalMarketsApi: boolean;
         includeCapitalTickerMap: boolean;
@@ -185,6 +191,15 @@ const DEFAULT_POLICY: ScalpSymbolDiscoveryPolicy = {
         minMedianRangePct: 0.025,
         maxSpreadPips: 35,
         requireTradableQuote: true,
+        byCategory: {
+            // Forex is not a full 24/7 market; use realistic density/recency gates.
+            forex: {
+                minHistoryCoveragePct: 55,
+                minAvgBarsPerDay: 800,
+                minRecentBars7d: 1500,
+                minMedianRangePct: 0.01,
+            },
+        },
     },
     sources: {
         includeCapitalMarketsApi: true,
@@ -248,6 +263,111 @@ function toNonNegativeNumber(value: unknown, fallback: number): number {
     return n;
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return value as Record<string, unknown>;
+}
+
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+    return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+const SCALP_ASSET_CATEGORIES: ScalpAssetCategory[] = ['forex', 'index', 'commodity', 'equity', 'crypto', 'other'];
+
+function normalizeCategoryCriteriaOverrides(
+    raw: unknown,
+    fallback: ScalpSymbolDiscoveryCriteria['byCategory'] | undefined,
+): NonNullable<ScalpSymbolDiscoveryCriteria['byCategory']> {
+    const out: NonNullable<ScalpSymbolDiscoveryCriteria['byCategory']> = {};
+    const rawByCategory = asRecord(raw);
+    const fallbackByCategory = fallback || {};
+
+    for (const category of SCALP_ASSET_CATEGORIES) {
+        const rawOverride = asRecord(rawByCategory[category]);
+        const fallbackOverride = asRecord(fallbackByCategory[category]);
+        const override: Partial<ScalpSymbolDiscoveryCriteriaBase> = {};
+
+        const resolvedMinHistoryDays = hasOwn(rawOverride, 'minHistoryDays')
+            ? Math.max(1, toNonNegativeNumber(rawOverride.minHistoryDays, fallbackOverride.minHistoryDays as number))
+            : hasOwn(fallbackOverride, 'minHistoryDays')
+              ? Math.max(1, toNonNegativeNumber(fallbackOverride.minHistoryDays, 1))
+              : undefined;
+        if (resolvedMinHistoryDays !== undefined) override.minHistoryDays = resolvedMinHistoryDays;
+
+        const resolvedMinCoverage = hasOwn(rawOverride, 'minHistoryCoveragePct')
+            ? Math.max(1, Math.min(100, toNonNegativeNumber(rawOverride.minHistoryCoveragePct, fallbackOverride.minHistoryCoveragePct as number)))
+            : hasOwn(fallbackOverride, 'minHistoryCoveragePct')
+              ? Math.max(1, Math.min(100, toNonNegativeNumber(fallbackOverride.minHistoryCoveragePct, 1)))
+              : undefined;
+        if (resolvedMinCoverage !== undefined) override.minHistoryCoveragePct = resolvedMinCoverage;
+
+        const resolvedMinBarsPerDay = hasOwn(rawOverride, 'minAvgBarsPerDay')
+            ? Math.max(1, toNonNegativeNumber(rawOverride.minAvgBarsPerDay, fallbackOverride.minAvgBarsPerDay as number))
+            : hasOwn(fallbackOverride, 'minAvgBarsPerDay')
+              ? Math.max(1, toNonNegativeNumber(fallbackOverride.minAvgBarsPerDay, 1))
+              : undefined;
+        if (resolvedMinBarsPerDay !== undefined) override.minAvgBarsPerDay = resolvedMinBarsPerDay;
+
+        const resolvedMinRecentBars = hasOwn(rawOverride, 'minRecentBars7d')
+            ? Math.max(0, toNonNegativeNumber(rawOverride.minRecentBars7d, fallbackOverride.minRecentBars7d as number))
+            : hasOwn(fallbackOverride, 'minRecentBars7d')
+              ? Math.max(0, toNonNegativeNumber(fallbackOverride.minRecentBars7d, 0))
+              : undefined;
+        if (resolvedMinRecentBars !== undefined) override.minRecentBars7d = resolvedMinRecentBars;
+
+        const resolvedMedianRangePct = hasOwn(rawOverride, 'minMedianRangePct')
+            ? Math.max(0, toNonNegativeNumber(rawOverride.minMedianRangePct, fallbackOverride.minMedianRangePct as number))
+            : hasOwn(fallbackOverride, 'minMedianRangePct')
+              ? Math.max(0, toNonNegativeNumber(fallbackOverride.minMedianRangePct, 0))
+              : undefined;
+        if (resolvedMedianRangePct !== undefined) override.minMedianRangePct = resolvedMedianRangePct;
+
+        let resolvedMaxSpread: number | null | undefined;
+        if (hasOwn(rawOverride, 'maxSpreadPips')) {
+            const maxSpreadRaw = toNumber(rawOverride.maxSpreadPips, NaN);
+            resolvedMaxSpread = Number.isFinite(maxSpreadRaw) && maxSpreadRaw >= 0 ? maxSpreadRaw : null;
+        } else if (hasOwn(fallbackOverride, 'maxSpreadPips')) {
+            const fallbackMaxSpreadRaw = toNumber(fallbackOverride.maxSpreadPips, NaN);
+            resolvedMaxSpread =
+                Number.isFinite(fallbackMaxSpreadRaw) && fallbackMaxSpreadRaw >= 0 ? fallbackMaxSpreadRaw : null;
+        }
+        if (resolvedMaxSpread !== undefined) override.maxSpreadPips = resolvedMaxSpread;
+
+        const resolvedRequireTradableQuote = hasOwn(rawOverride, 'requireTradableQuote')
+            ? toBool(rawOverride.requireTradableQuote, toBool(fallbackOverride.requireTradableQuote, true))
+            : hasOwn(fallbackOverride, 'requireTradableQuote')
+              ? toBool(fallbackOverride.requireTradableQuote, true)
+              : undefined;
+        if (resolvedRequireTradableQuote !== undefined) override.requireTradableQuote = resolvedRequireTradableQuote;
+
+        if (Object.keys(override).length > 0) {
+            out[category] = override;
+        }
+    }
+
+    return out;
+}
+
+function resolveCriteriaForSymbol(
+    policy: ScalpSymbolDiscoveryPolicy,
+    symbol: string,
+): ScalpSymbolDiscoveryCriteriaBase {
+    const base = policy.criteria;
+    const category = inferScalpAssetCategory(symbol);
+    const override = base.byCategory?.[category] || null;
+    return {
+        minHistoryDays: Number(override?.minHistoryDays ?? base.minHistoryDays),
+        minHistoryCoveragePct: Number(override?.minHistoryCoveragePct ?? base.minHistoryCoveragePct),
+        minAvgBarsPerDay: Number(override?.minAvgBarsPerDay ?? base.minAvgBarsPerDay),
+        minRecentBars7d: Number(override?.minRecentBars7d ?? base.minRecentBars7d),
+        minMedianRangePct: Number(override?.minMedianRangePct ?? base.minMedianRangePct),
+        maxSpreadPips:
+            override?.maxSpreadPips === undefined ? base.maxSpreadPips : Number(override.maxSpreadPips) >= 0 ? Number(override.maxSpreadPips) : null,
+        requireTradableQuote:
+            override?.requireTradableQuote === undefined ? base.requireTradableQuote : Boolean(override.requireTradableQuote),
+    };
+}
+
 function normalizeStringArray(value: unknown): string[] {
     const rows = Array.isArray(value) ? value : [];
     const normalized = rows.map((row) => normalizeSymbol(row)).filter((row) => Boolean(row));
@@ -307,6 +427,7 @@ function resolveUniverseFilePath(): string {
 function normalizePolicy(raw: unknown): ScalpSymbolDiscoveryPolicy {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ...DEFAULT_POLICY };
     const row = raw as Record<string, unknown>;
+    const criteriaRow = asRecord(row.criteria);
 
     const maxUniverseSymbols = Math.max(1, toPositiveInt((row.limits as any)?.maxUniverseSymbols, DEFAULT_POLICY.limits.maxUniverseSymbols));
     const minUniverseSymbols = Math.max(
@@ -314,8 +435,9 @@ function normalizePolicy(raw: unknown): ScalpSymbolDiscoveryPolicy {
         Math.min(maxUniverseSymbols, toPositiveInt((row.limits as any)?.minUniverseSymbols, DEFAULT_POLICY.limits.minUniverseSymbols)),
     );
 
-    const maxSpreadPipsRaw = toNumber((row.criteria as any)?.maxSpreadPips, NaN);
+    const maxSpreadPipsRaw = toNumber(criteriaRow.maxSpreadPips, NaN);
     const maxSpreadPips = Number.isFinite(maxSpreadPipsRaw) && maxSpreadPipsRaw >= 0 ? maxSpreadPipsRaw : null;
+    const byCategory = normalizeCategoryCriteriaOverrides(criteriaRow.byCategory, DEFAULT_POLICY.criteria.byCategory);
 
     return {
         version: 1,
@@ -329,25 +451,26 @@ function normalizePolicy(raw: unknown): ScalpSymbolDiscoveryPolicy {
             maxCandidates: Math.max(1, toPositiveInt((row.limits as any)?.maxCandidates, DEFAULT_POLICY.limits.maxCandidates)),
         },
         criteria: {
-            minHistoryDays: Math.max(1, toNonNegativeNumber((row.criteria as any)?.minHistoryDays, DEFAULT_POLICY.criteria.minHistoryDays)),
+            minHistoryDays: Math.max(1, toNonNegativeNumber(criteriaRow.minHistoryDays, DEFAULT_POLICY.criteria.minHistoryDays)),
             minHistoryCoveragePct: Math.max(
                 1,
-                Math.min(100, toNonNegativeNumber((row.criteria as any)?.minHistoryCoveragePct, DEFAULT_POLICY.criteria.minHistoryCoveragePct)),
+                Math.min(100, toNonNegativeNumber(criteriaRow.minHistoryCoveragePct, DEFAULT_POLICY.criteria.minHistoryCoveragePct)),
             ),
             minAvgBarsPerDay: Math.max(
                 1,
-                toNonNegativeNumber((row.criteria as any)?.minAvgBarsPerDay, DEFAULT_POLICY.criteria.minAvgBarsPerDay),
+                toNonNegativeNumber(criteriaRow.minAvgBarsPerDay, DEFAULT_POLICY.criteria.minAvgBarsPerDay),
             ),
             minRecentBars7d: Math.max(
                 0,
-                toNonNegativeNumber((row.criteria as any)?.minRecentBars7d, DEFAULT_POLICY.criteria.minRecentBars7d),
+                toNonNegativeNumber(criteriaRow.minRecentBars7d, DEFAULT_POLICY.criteria.minRecentBars7d),
             ),
             minMedianRangePct: Math.max(
                 0,
-                toNonNegativeNumber((row.criteria as any)?.minMedianRangePct, DEFAULT_POLICY.criteria.minMedianRangePct),
+                toNonNegativeNumber(criteriaRow.minMedianRangePct, DEFAULT_POLICY.criteria.minMedianRangePct),
             ),
             maxSpreadPips,
-            requireTradableQuote: toBool((row.criteria as any)?.requireTradableQuote, DEFAULT_POLICY.criteria.requireTradableQuote),
+            requireTradableQuote: toBool(criteriaRow.requireTradableQuote, DEFAULT_POLICY.criteria.requireTradableQuote),
+            byCategory,
         },
         sources: {
             includeCapitalMarketsApi: toBool(
@@ -540,6 +663,7 @@ async function loadSymbolHistoryStats(symbol: string, nowMs: number): Promise<Sy
     if (isScalpPgConfigured()) {
         const db = scalpPrisma();
         const recentStartTs = startOfUtcDay(nowMs - 7 * 24 * 60 * 60_000);
+        const recentScanStartTs = Math.max(0, recentStartTs - 7 * 24 * 60 * 60_000);
         const medianWindowStartTs = startOfUtcDay(nowMs - 21 * 24 * 60 * 60_000);
         const rows = await db.$queryRaw<
             Array<{
@@ -554,20 +678,20 @@ async function loadSymbolHistoryStats(symbol: string, nowMs: number): Promise<Sy
                 SELECT
                     COALESCE(SUM(jsonb_array_length(candles_json)), 0)::bigint AS "totalBars",
                     MIN((EXTRACT(EPOCH FROM week_start) * 1000)::bigint) AS "minWeekStartMs",
-                    MAX((EXTRACT(EPOCH FROM week_start) * 1000)::bigint) AS "maxWeekStartMs",
-                    COALESCE(
-                        SUM(
-                            CASE
-                                WHEN week_start >= to_timestamp(${recentStartTs} / 1000.0)
-                                THEN jsonb_array_length(candles_json)
-                                ELSE 0
-                            END
-                        ),
-                        0
-                    )::bigint AS "recentBars7d"
+                    MAX((EXTRACT(EPOCH FROM week_start) * 1000)::bigint) AS "maxWeekStartMs"
                 FROM scalp_candle_history_weeks
                 WHERE symbol = ${normalized}
                   AND timeframe = '1m'
+            ),
+            recent AS (
+                SELECT
+                    COALESCE(COUNT(*), 0)::bigint AS "recentBars7d"
+                FROM scalp_candle_history_weeks w
+                CROSS JOIN LATERAL jsonb_array_elements(w.candles_json) elem
+                WHERE w.symbol = ${normalized}
+                  AND w.timeframe = '1m'
+                  AND w.week_start >= to_timestamp(${recentScanStartTs} / 1000.0)
+                  AND (elem->>0)::bigint >= ${recentStartTs}
             ),
             sample AS (
                 SELECT
@@ -592,12 +716,13 @@ async function loadSymbolHistoryStats(symbol: string, nowMs: number): Promise<Sy
                 a."totalBars",
                 a."minWeekStartMs",
                 a."maxWeekStartMs",
-                a."recentBars7d",
+                r."recentBars7d",
                 (
                     SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY range_pct)
                     FROM sample_limited
                 ) AS "medianRangePct"
-            FROM agg a;
+            FROM agg a
+            CROSS JOIN recent r;
         `);
         const row = rows[0];
         const bars1m = Math.max(0, Math.floor(Number(row?.totalBars || 0)));
@@ -690,12 +815,14 @@ export function summarizeSeedHistoryQuality(
 
 export function resolveSeedSymbolEligibility(params: {
     policy: ScalpSymbolDiscoveryPolicy;
+    symbol?: string;
     nowMs: number;
     candles: Array<[number, number, number, number, number, number]>;
     hasStrategyFit: boolean;
     allowBootstrapSymbols: boolean;
 }): { eligible: boolean; reason: string | null; quality: SeedHistoryQuality } {
     const quality = summarizeSeedHistoryQuality(params.candles, params.nowMs);
+    const criteria = resolveCriteriaForSymbol(params.policy, String(params.symbol || ''));
     if (!params.hasStrategyFit) {
         return { eligible: false, reason: 'seed_no_strategy_fit', quality };
     }
@@ -707,10 +834,10 @@ export function resolveSeedSymbolEligibility(params: {
     if (params.allowBootstrapSymbols) {
         return { eligible: true, reason: null, quality };
     }
-    if (quality.toTs !== null && quality.avgBarsPerDay < params.policy.criteria.minAvgBarsPerDay) {
+    if (quality.toTs !== null && quality.avgBarsPerDay < criteria.minAvgBarsPerDay) {
         return { eligible: false, reason: 'seed_avg_bars_per_day_below_min', quality };
     }
-    if (quality.toTs !== null && quality.recentBars7d < params.policy.criteria.minRecentBars7d) {
+    if (quality.toTs !== null && quality.recentBars7d < criteria.minRecentBars7d) {
         return { eligible: false, reason: 'seed_recent_bars_7d_below_min', quality };
     }
     return { eligible: true, reason: null, quality };
@@ -1222,6 +1349,7 @@ async function runScalpSymbolHistorySeedStage(params: {
             );
             const eligibility = resolveSeedSymbolEligibility({
                 policy: params.policy,
+                symbol,
                 nowMs: params.nowMs,
                 candles: existing,
                 hasStrategyFit: strategies.length > 0,
@@ -1578,6 +1706,7 @@ export async function evaluateScalpSymbolCandidate(params: {
     knownStrategyIds: Set<string>;
 }): Promise<ScalpSymbolCandidateRow> {
     const symbol = normalizeSymbol(params.symbol);
+    const criteria = resolveCriteriaForSymbol(params.policy, symbol);
     const historyStats = await loadSymbolHistoryStats(symbol, params.nowMs);
     const fromTs = historyStats.fromTs;
     const toTs = historyStats.toTs;
@@ -1613,34 +1742,34 @@ export async function evaluateScalpSymbolCandidate(params: {
     }
 
     const reasons: string[] = [];
-    if (spanDays < params.policy.criteria.minHistoryDays) reasons.push('history_days_below_min');
-    if (coveragePct < params.policy.criteria.minHistoryCoveragePct) reasons.push('history_coverage_below_min');
-    if (avgBarsPerDay < params.policy.criteria.minAvgBarsPerDay) reasons.push('avg_bars_per_day_below_min');
-    if (recentBars7d < params.policy.criteria.minRecentBars7d) reasons.push('recent_bars_7d_below_min');
-    if (medianRangePct < params.policy.criteria.minMedianRangePct) reasons.push('median_range_pct_below_min');
+    if (spanDays < criteria.minHistoryDays) reasons.push('history_days_below_min');
+    if (coveragePct < criteria.minHistoryCoveragePct) reasons.push('history_coverage_below_min');
+    if (avgBarsPerDay < criteria.minAvgBarsPerDay) reasons.push('avg_bars_per_day_below_min');
+    if (recentBars7d < criteria.minRecentBars7d) reasons.push('recent_bars_7d_below_min');
+    if (medianRangePct < criteria.minMedianRangePct) reasons.push('median_range_pct_below_min');
 
     const isBerlinWeekend = isBerlinWeekendMs(params.nowMs);
-    const quoteGateApplied = params.policy.criteria.requireTradableQuote && params.includeLiveQuotes && !isBerlinWeekend;
+    const quoteGateApplied = criteria.requireTradableQuote && params.includeLiveQuotes && !isBerlinWeekend;
     if (quoteGateApplied) {
         if (livePrice === null || livePrice <= 0) reasons.push('live_quote_missing_or_invalid');
     }
     if (
         !isBerlinWeekend &&
-        params.policy.criteria.maxSpreadPips !== null &&
+        criteria.maxSpreadPips !== null &&
         liveSpreadPips !== null &&
-        liveSpreadPips > params.policy.criteria.maxSpreadPips
+        liveSpreadPips > criteria.maxSpreadPips
     ) {
         reasons.push('live_spread_above_max');
     }
 
     let score = 0;
     score += clamp((coveragePct / 100) * 25, 0, 25);
-    score += clamp((spanDays / Math.max(params.policy.criteria.minHistoryDays, 1)) * 20, 0, 20);
-    score += clamp((avgBarsPerDay / Math.max(params.policy.criteria.minAvgBarsPerDay, 1)) * 20, 0, 20);
-    score += clamp((recentBars7d / Math.max(params.policy.criteria.minRecentBars7d, 1)) * 15, 0, 15);
-    score += clamp((medianRangePct / Math.max(params.policy.criteria.minMedianRangePct, 0.0001)) * 10, 0, 10);
-    if (liveSpreadPips !== null && params.policy.criteria.maxSpreadPips !== null) {
-        const spreadScore = liveSpreadPips <= 0 ? 10 : clamp((params.policy.criteria.maxSpreadPips / liveSpreadPips) * 10, 0, 10);
+    score += clamp((spanDays / Math.max(criteria.minHistoryDays, 1)) * 20, 0, 20);
+    score += clamp((avgBarsPerDay / Math.max(criteria.minAvgBarsPerDay, 1)) * 20, 0, 20);
+    score += clamp((recentBars7d / Math.max(criteria.minRecentBars7d, 1)) * 15, 0, 15);
+    score += clamp((medianRangePct / Math.max(criteria.minMedianRangePct, 0.0001)) * 10, 0, 10);
+    if (liveSpreadPips !== null && criteria.maxSpreadPips !== null) {
+        const spreadScore = liveSpreadPips <= 0 ? 10 : clamp((criteria.maxSpreadPips / liveSpreadPips) * 10, 0, 10);
         score += spreadScore;
     } else if (liveSpreadPips !== null) {
         score += 5;

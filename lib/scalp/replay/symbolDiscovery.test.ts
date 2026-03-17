@@ -239,6 +239,85 @@ test('resolveSeedSymbolEligibility enforces bars/day and recent-bars gates for s
     assert.equal(denseOut.reason, null);
 });
 
+test('resolveSeedSymbolEligibility applies category-aware forex threshold overrides', () => {
+    const nowMs = Date.UTC(2026, 2, 10, 12, 0, 0);
+    const basePolicy = {
+        version: 1 as const,
+        updatedAt: null,
+        notes: null,
+        limits: {
+            maxUniverseSymbols: 4,
+            minUniverseSymbols: 2,
+            maxWeeklyAdds: 2,
+            maxWeeklyRemoves: 1,
+            maxCandidates: 10,
+        },
+        criteria: {
+            minHistoryDays: 45,
+            minHistoryCoveragePct: 80,
+            minAvgBarsPerDay: 900,
+            minRecentBars7d: 4000,
+            minMedianRangePct: 0.025,
+            maxSpreadPips: 35,
+            requireTradableQuote: true,
+        },
+        sources: {
+            includeCapitalMarketsApi: true,
+            includeCapitalTickerMap: false,
+            includeDeploymentSymbols: true,
+            includeHistorySymbols: true,
+            requireHistoryPresence: true,
+            explicitSymbols: [],
+            excludedSymbols: [],
+        },
+        pinnedSymbols: ['BTCUSDT'],
+        strategyAllowlist: ['regime_pullback_m15_m3'],
+    };
+
+    const candles: Array<[number, number, number, number, number, number]> = [];
+    const anchorTs = nowMs - Math.floor(2.35 * 24 * 60 * 60 * 1000);
+    candles.push([anchorTs, 1, 1.01, 0.99, 1, 0]);
+    const recentStart = nowMs - 2000 * 60 * 1000;
+    for (let i = 0; i < 2000; i += 1) {
+        const ts = recentStart + i * 60 * 1000;
+        candles.push([ts, 1, 1.01, 0.99, 1, 0]);
+    }
+
+    const strictOut = resolveSeedSymbolEligibility({
+        policy: basePolicy as any,
+        symbol: 'EURUSD',
+        nowMs,
+        candles,
+        hasStrategyFit: true,
+        allowBootstrapSymbols: false,
+    });
+    assert.equal(strictOut.eligible, false);
+    assert.equal(strictOut.reason, 'seed_avg_bars_per_day_below_min');
+
+    const categoryAwarePolicy = {
+        ...basePolicy,
+        criteria: {
+            ...basePolicy.criteria,
+            byCategory: {
+                forex: {
+                    minAvgBarsPerDay: 800,
+                    minRecentBars7d: 1500,
+                },
+            },
+        },
+    };
+    const relaxedOut = resolveSeedSymbolEligibility({
+        policy: categoryAwarePolicy as any,
+        symbol: 'EURUSD',
+        nowMs,
+        candles,
+        hasStrategyFit: true,
+        allowBootstrapSymbols: false,
+    });
+    assert.equal(relaxedOut.eligible, true);
+    assert.equal(relaxedOut.reason, null);
+});
+
 test('summarizeSeedHistoryQuality reports span, lag, and activity metrics', () => {
     const nowMs = Date.UTC(2026, 2, 10, 12, 0, 0);
     const startMs = nowMs - 3 * 24 * 60 * 60 * 1000;
