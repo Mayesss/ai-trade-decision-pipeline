@@ -108,8 +108,8 @@ test('buildNextUniverseWithChurnCaps limits weekly adds/removes and preserves pi
         pinnedSymbols: ['XAUUSDT'],
     });
 
-    assert.deepEqual(out.selectedSymbols, ['A', 'B', 'E', 'XAUUSDT']);
-    assert.deepEqual(out.addedSymbols, ['E', 'XAUUSDT']);
+    assert.deepEqual(out.selectedSymbols, ['XAUUSDT', 'E', 'B', 'A']);
+    assert.deepEqual(out.addedSymbols, ['XAUUSDT', 'E']);
     assert.deepEqual(out.removedSymbols, ['C', 'D']);
 });
 

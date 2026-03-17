@@ -9,6 +9,7 @@ import { listScalpCandleHistorySymbols, loadScalpCandleHistory, mergeScalpCandle
 import { loadScalpDeploymentRegistry } from './deploymentRegistry';
 import { pipSizeForScalpSymbol } from './marketData';
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
+import { inferScalpAssetCategory, type ScalpAssetCategory } from './symbolInfo';
 import { listScalpStrategies } from './strategies/registry';
 
 export interface ScalpSymbolDiscoveryPolicy {
@@ -1678,6 +1679,44 @@ function byScoreDesc(a: ScalpSymbolCandidateRow, b: ScalpSymbolCandidateRow): nu
     return a.symbol.localeCompare(b.symbol);
 }
 
+const SCALP_ASSET_LEVERAGE_PRIORITY: Record<ScalpAssetCategory, number> = {
+    forex: 0,
+    index: 1,
+    commodity: 2,
+    equity: 3,
+    crypto: 4,
+    other: 5,
+};
+
+function leveragePriorityForSymbol(symbol: string): number {
+    const category = inferScalpAssetCategory(symbol);
+    return SCALP_ASSET_LEVERAGE_PRIORITY[category] ?? SCALP_ASSET_LEVERAGE_PRIORITY.other;
+}
+
+function compareByLeveragePriorityThenScore(
+    a: Pick<ScalpSymbolCandidateRow, 'symbol' | 'score'>,
+    b: Pick<ScalpSymbolCandidateRow, 'symbol' | 'score'>,
+): number {
+    const leverageCmp = leveragePriorityForSymbol(a.symbol) - leveragePriorityForSymbol(b.symbol);
+    if (leverageCmp !== 0) return leverageCmp;
+    if (b.score !== a.score) return b.score - a.score;
+    return a.symbol.localeCompare(b.symbol);
+}
+
+function sortSymbolsByLeveragePriority(
+    symbols: string[],
+    scoreBySymbol: Map<string, number>,
+): string[] {
+    return symbols.slice().sort((a, b) => {
+        const leverageCmp = leveragePriorityForSymbol(a) - leveragePriorityForSymbol(b);
+        if (leverageCmp !== 0) return leverageCmp;
+        const aScore = Number(scoreBySymbol.get(a) ?? -1);
+        const bScore = Number(scoreBySymbol.get(b) ?? -1);
+        if (bScore !== aScore) return bScore - aScore;
+        return a.localeCompare(b);
+    });
+}
+
 export function buildNextUniverseWithChurnCaps(params: {
     previousSymbols: string[];
     candidateRows: ScalpSymbolCandidateRow[];
@@ -1686,13 +1725,20 @@ export function buildNextUniverseWithChurnCaps(params: {
 }): { selectedSymbols: string[]; addedSymbols: string[]; removedSymbols: string[] } {
     const previous = Array.from(new Set(params.previousSymbols.map((row) => normalizeSymbol(row)).filter((row) => Boolean(row))));
     const pinned = new Set(params.pinnedSymbols.map((row) => normalizeSymbol(row)).filter((row) => Boolean(row)));
+    const scoreBySymbol = new Map(params.candidateRows.map((row) => [row.symbol, row.score]));
 
-    const eligibleSorted = params.candidateRows.filter((row) => row.eligible).slice().sort(byScoreDesc);
+    const eligibleSorted = params.candidateRows
+        .filter((row) => row.eligible)
+        .slice()
+        .sort(compareByLeveragePriorityThenScore);
     const targetTop = eligibleSorted.slice(0, params.policy.limits.maxUniverseSymbols).map((row) => row.symbol);
     const targetSet = new Set(targetTop);
 
     if (previous.length === 0) {
-        const first = Array.from(new Set([...Array.from(pinned), ...targetTop])).slice(0, params.policy.limits.maxUniverseSymbols);
+        const first = sortSymbolsByLeveragePriority(Array.from(new Set([...Array.from(pinned), ...targetTop])), scoreBySymbol).slice(
+            0,
+            params.policy.limits.maxUniverseSymbols,
+        );
         return {
             selectedSymbols: first,
             addedSymbols: first.slice(),
@@ -1729,11 +1775,12 @@ export function buildNextUniverseWithChurnCaps(params: {
     }
 
     if (next.size > params.policy.limits.maxUniverseSymbols) {
-        const scoreBySymbol = new Map(params.candidateRows.map((row) => [row.symbol, row.score]));
         const sorted = Array.from(next).sort((a, b) => {
             const aPinned = pinned.has(a) ? 1 : 0;
             const bPinned = pinned.has(b) ? 1 : 0;
             if (aPinned !== bPinned) return bPinned - aPinned;
+            const leverageCmp = leveragePriorityForSymbol(a) - leveragePriorityForSymbol(b);
+            if (leverageCmp !== 0) return leverageCmp;
             const aScore = scoreBySymbol.get(a) ?? -1;
             const bScore = scoreBySymbol.get(b) ?? -1;
             if (bScore !== aScore) return bScore - aScore;
@@ -1745,7 +1792,7 @@ export function buildNextUniverseWithChurnCaps(params: {
         }
     }
 
-    const selectedSymbols = Array.from(next).sort();
+    const selectedSymbols = sortSymbolsByLeveragePriority(Array.from(next), scoreBySymbol);
     const previousSet = new Set(previous);
     const selectedSet = new Set(selectedSymbols);
     const addedSymbols = selectedSymbols.filter((row) => !previousSet.has(row));
