@@ -1,4 +1,5 @@
 import { fetchCapitalCandlesByEpicDateRange, resolveCapitalEpicRuntime } from '../capital';
+import { bitgetFetch, resolveProductType } from '../bitget';
 import {
     loadScalpCandleHistoryBulk,
     mergeScalpCandleHistory,
@@ -18,6 +19,8 @@ import type { ScalpCandle } from './types';
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
+const ONE_MINUTE_MS = 60_000;
+const BITGET_HISTORY_CANDLES_MAX_LIMIT = 200;
 const DEFAULT_REQUIRED_SUCCESSIVE_WEEKS = 12;
 
 export interface PrepareAndStartCycleParams extends StartResearchCycleParams {
@@ -154,6 +157,100 @@ function normalizeFetchedCandles(rows: unknown[]): ScalpCandle[] {
         .sort((a, b) => a[0] - b[0]);
 }
 
+function normalizeBitgetHistoryGranularity(timeframe: string): string {
+    const normalized = String(timeframe || '').trim();
+    const lower = normalized.toLowerCase();
+    if (lower === '1m') return '1m';
+    if (lower === '3m') return '3m';
+    if (lower === '5m') return '5m';
+    if (lower === '15m') return '15m';
+    if (lower === '30m') return '30m';
+    if (lower === '1h') return '1H';
+    if (lower === '2h') return '2H';
+    if (lower === '4h') return '4H';
+    if (lower === '6h') return '6H';
+    if (lower === '12h') return '12H';
+    if (lower === '1d') return '1D';
+    if (lower === '1w' || lower === '4d') return '1W';
+    if (lower === '1mo' || lower === '1mth' || lower === '1month') return '1M';
+    return normalized || '1m';
+}
+
+async function fetchBitgetCandlesByEpicDateRange(
+    epic: string,
+    timeframe: string,
+    fromTsMs: number,
+    toTsMs: number,
+    opts: {
+        maxPerRequest?: number;
+        maxRequests?: number;
+    } = {},
+): Promise<ScalpCandle[]> {
+    const symbol = normalizeSymbol(epic);
+    if (!symbol) return [];
+
+    const startMs = Math.floor(Math.min(fromTsMs, toTsMs));
+    const endMs = Math.floor(Math.max(fromTsMs, toTsMs));
+    if (!(Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs)) {
+        return [];
+    }
+
+    const granularity = normalizeBitgetHistoryGranularity(timeframe);
+    const timeframeMs = Math.max(ONE_MINUTE_MS, timeframeToMs(normalizeHistoryTimeframe(timeframe || '1m')));
+    const requestLimit = Math.max(
+        20,
+        Math.min(BITGET_HISTORY_CANDLES_MAX_LIMIT, Math.floor(opts.maxPerRequest ?? BITGET_HISTORY_CANDLES_MAX_LIMIT)),
+    );
+    const maxRequests = Math.max(40, Math.floor(opts.maxRequests ?? 800));
+    const requestSpanBars = Math.max(220, requestLimit + 20);
+    const requestSpanMs = requestSpanBars * timeframeMs;
+    const productType = String(resolveProductType() || 'usdt-futures')
+        .trim()
+        .toUpperCase();
+
+    const candlesByTs = new Map<number, ScalpCandle>();
+    let cursorEnd = endMs;
+    let requests = 0;
+    while (cursorEnd >= startMs) {
+        if (requests >= maxRequests) {
+            throw new Error(`bitget_history_max_requests_reached_for_${symbol}`);
+        }
+        const startTime = Math.max(startMs, cursorEnd - requestSpanMs + timeframeMs);
+        const rows = await bitgetFetch('GET', '/api/v2/mix/market/history-candles', {
+            symbol,
+            productType,
+            granularity,
+            limit: requestLimit,
+            startTime,
+            endTime: cursorEnd,
+        });
+        requests += 1;
+
+        const parsedRows = Array.isArray(rows)
+            ? normalizeFetchedCandles(rows).filter((row) => row[0] >= startMs && row[0] <= endMs)
+            : [];
+        if (!parsedRows.length) {
+            if (startTime <= startMs) break;
+            cursorEnd = startTime - timeframeMs;
+            continue;
+        }
+
+        let oldestTs = Number.POSITIVE_INFINITY;
+        for (const candle of parsedRows) {
+            candlesByTs.set(candle[0], candle);
+            if (candle[0] < oldestTs) oldestTs = candle[0];
+        }
+        if (!Number.isFinite(oldestTs)) break;
+        if (oldestTs >= cursorEnd) {
+            cursorEnd -= requestSpanMs;
+        } else {
+            cursorEnd = oldestTs - 1;
+        }
+    }
+
+    return Array.from(candlesByTs.values()).sort((a, b) => a[0] - b[0]);
+}
+
 export async function prepareAndStartScalpResearchCycle(
     params: PrepareAndStartCycleParams = {},
 ): Promise<PrepareAndStartCycleResult> {
@@ -164,7 +261,8 @@ export async function prepareAndStartScalpResearchCycle(
     const minCandlesPerTask = parsePositiveInt(params.minCandlesPerTask, 180);
     const includeLiveQuotes = params.includeLiveQuotes === true;
     const seedTimeframe = normalizeHistoryTimeframe(params.seedTimeframe || '1m');
-    const defaultMaxRequests = Math.max(20, Math.min(800, Math.ceil((lookbackDays * 24 * 60) / 900) + 10));
+    // Bitget history-candles returns up to 200 rows per request. Keep enough headroom for deep lookbacks.
+    const defaultMaxRequests = Math.max(80, Math.min(1600, Math.ceil((lookbackDays * 24 * 60) / 180) + 24));
     const maxRequestsPerSymbol = parsePositiveInt(params.maxRequestsPerSymbol, defaultMaxRequests);
     const maxSymbolsPerRun = Math.max(1, parsePositiveInt(params.maxSymbolsPerRun, 1000));
     const maxDurationMs = Math.max(30_000, Math.min(10 * 60_000, parsePositiveInt(params.maxDurationMs, 4 * 60_000)));
@@ -211,7 +309,7 @@ export async function prepareAndStartScalpResearchCycle(
         symbol: string;
         timeframe: string;
         epic: string | null;
-        source: 'capital';
+        source: 'capital' | 'bitget';
         candles: ScalpCandle[];
     }> = [];
     const seedTfMs = Math.max(60_000, timeframeToMs(seedTimeframe));
@@ -239,9 +337,12 @@ export async function prepareAndStartScalpResearchCycle(
                 const marketMetadata = await ensureScalpSymbolMarketMetadata(symbol, {
                     fetchIfMissing: true,
                 });
+                const marketSource: 'capital' | 'bitget' = marketMetadata?.source === 'bitget' ? 'bitget' : 'capital';
                 const epicResolved =
                     marketMetadata?.epic
                         ? { epic: marketMetadata.epic, source: 'metadata' as const }
+                        : marketSource === 'bitget'
+                        ? { epic: symbol, source: 'symbol' as const }
                         : await resolveCapitalEpicRuntime(symbol);
                 const existing = existingBySymbol.get(symbol) || [];
                 const oldestExistingTs = existing.length ? Number(existing[0]?.[0] || 0) : 0;
@@ -280,18 +381,31 @@ export async function prepareAndStartScalpResearchCycle(
                     }
                     return fetchFromMs;
                 })();
-                const fetchedRaw = await fetchCapitalCandlesByEpicDateRange(
-                    epicResolved.epic,
-                    seedTimeframe,
-                    incrementalFetchFromMs,
-                    fetchToMs,
-                    {
-                        maxPerRequest: 1000,
-                        maxRequests: maxRequestsPerSymbol,
-                        debug: false,
-                        debugLabel: `prepare-cycle:${symbol}:${seedTimeframe}`,
-                    },
-                );
+                const epic = normalizeSymbol(epicResolved.epic || symbol);
+                const fetchedRaw =
+                    marketSource === 'bitget'
+                        ? await fetchBitgetCandlesByEpicDateRange(
+                              epic,
+                              seedTimeframe,
+                              incrementalFetchFromMs,
+                              fetchToMs,
+                              {
+                                  maxPerRequest: BITGET_HISTORY_CANDLES_MAX_LIMIT,
+                                  maxRequests: maxRequestsPerSymbol,
+                              },
+                          )
+                        : await fetchCapitalCandlesByEpicDateRange(
+                              epic,
+                              seedTimeframe,
+                              incrementalFetchFromMs,
+                              fetchToMs,
+                              {
+                                  maxPerRequest: 1000,
+                                  maxRequests: maxRequestsPerSymbol,
+                                  debug: false,
+                                  debugLabel: `prepare-cycle:${symbol}:${seedTimeframe}`,
+                              },
+                          );
                 const fetched = normalizeFetchedCandles(fetchedRaw);
                 const merged = mergeScalpCandleHistory(existing, fetched);
                 const addedCount = Math.max(0, merged.length - existing.length);
@@ -300,8 +414,8 @@ export async function prepareAndStartScalpResearchCycle(
                     pendingSaves.push({
                         symbol,
                         timeframe: seedTimeframe,
-                        epic: epicResolved.epic,
-                        source: 'capital',
+                        epic,
+                        source: marketSource,
                         candles: merged,
                     });
                     saved = true;

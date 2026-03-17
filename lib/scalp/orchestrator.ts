@@ -323,9 +323,9 @@ function classifyOrchestratorDbError(error: unknown): string {
 
 function estimateMaxRequestsPerSymbol(lookbackDays: number): number {
     const minutes = Math.max(1, lookbackDays) * 24 * 60;
-    // Capital candle fetch uses maxPerRequest=1000; keep safety headroom for gaps/retries.
-    const requests = Math.ceil(minutes / 1000) + 12;
-    return Math.max(40, Math.min(400, requests));
+    // Bitget history-candles returns up to 200 rows/request; include headroom for sparse windows.
+    const requests = Math.ceil(minutes / 180) + 24;
+    return Math.max(80, Math.min(1500, requests));
 }
 
 export interface RunScalpPipelineOrchestratorParams {

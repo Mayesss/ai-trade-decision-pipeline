@@ -162,10 +162,12 @@ function normalizePromotionTriggerWeeks(value: unknown, fallback: number): numbe
 }
 
 function resolveDeploymentPromotionTriggerWeeks(raw?: unknown): number {
-  return normalizePromotionTriggerWeeks(
+  const resolved = normalizePromotionTriggerWeeks(
     raw ?? process.env.SCALP_RESEARCH_DEPLOYMENT_PROMOTION_TRIGGER_WEEKS,
     12,
   );
+  // Promotion admission must never be lower than 12 consecutive completed weeks.
+  return Math.max(12, resolved);
 }
 
 function toReplayCandles(rows: CandleRow[], spreadPips: number) {
@@ -1171,7 +1173,7 @@ function changedPromotionGate(
 function buildForcedIneligibleGate(params: {
   baseGate: ScalpDeploymentPromotionGate | null;
   reason: string;
-  forwardValidation: ScalpForwardValidationMetrics;
+  forwardValidation: ScalpForwardValidationMetrics | null;
   nowMs: number;
 }): ScalpDeploymentPromotionGate {
   return {
@@ -1179,8 +1181,7 @@ function buildForcedIneligibleGate(params: {
     reason: params.reason,
     source: "walk_forward",
     evaluatedAtMs: params.nowMs,
-    forwardValidation:
-      params.baseGate?.forwardValidation || params.forwardValidation,
+    forwardValidation: params.baseGate?.forwardValidation || params.forwardValidation || null,
     thresholds: params.baseGate?.thresholds || null,
   };
 }
@@ -2272,6 +2273,31 @@ export async function syncResearchCyclePromotionGates(
     cycleId,
     candidateCount: candidates.length,
   });
+  const freshnessRequiredWeeks = resolveDeploymentPromotionTriggerWeeks();
+  const freshnessWindowToTs = selectionWindowToTs;
+  const freshnessWindowFromTs =
+    freshnessWindowToTs - freshnessRequiredWeeks * WEEK_MS;
+  const freshnessTasks = await listLatestResearchTasksByWindow({
+    symbols: candidateSymbols,
+    windowFromTs: freshnessWindowFromTs,
+    windowToTs: freshnessWindowToTs,
+  });
+  const freshnessTasksByDeployment = new Map<string, ScalpResearchTask[]>();
+  for (const task of freshnessTasks) {
+    const deploymentId = String(task.deploymentId || "").trim();
+    if (!deploymentId) continue;
+    const bucket = freshnessTasksByDeployment.get(deploymentId) || [];
+    bucket.push(task);
+    freshnessTasksByDeployment.set(deploymentId, bucket);
+  }
+  emitSyncLog("freshness_tasks_loaded", {
+    cycleId,
+    requiredWeeks: freshnessRequiredWeeks,
+    taskCount: freshnessTasks.length,
+    deploymentCount: freshnessTasksByDeployment.size,
+    windowFromTs: freshnessWindowFromTs,
+    windowToTs: freshnessWindowToTs,
+  });
   const materializationCandidatePool = filterMaterializationCandidatesByQuality(
     candidates,
     materializationQualityPolicy,
@@ -2448,6 +2474,10 @@ export async function syncResearchCyclePromotionGates(
     Omit<SyncResearchPromotionRow, "nextGate" | "changed">
   > = [];
   const baselineUpserts: ScalpDeploymentRegistryWriteParams[] = [];
+  const freshnessForcedUpsertsByDeployment = new Map<
+    string,
+    ScalpDeploymentRegistryWriteParams
+  >();
   const forcedUpserts: ScalpDeploymentRegistryWriteParams[] = [];
   const forcedFromBaseline = new Map<
     string,
@@ -2490,9 +2520,18 @@ export async function syncResearchCyclePromotionGates(
       deployment.strategyId,
       deployment.tuneId,
     );
+    const freshness = evaluateFreshCompletedDeploymentWeeks({
+      tasks: freshnessTasksByDeployment.get(deployment.deploymentId) || [],
+      nowMs,
+      requiredWeeks: freshnessRequiredWeeks,
+    });
+    const freshnessGateReason = freshness.ready
+      ? null
+      : "fresh_weeks_incomplete";
     const candidate = candidateByKey.get(candidateKey) || null;
     if (!candidate) {
-      const weeklyGateReason = "missing_cycle_candidate";
+      const weeklyGateReason =
+        freshnessGateReason || "missing_cycle_candidate";
       const draft: Omit<SyncResearchPromotionRow, "nextGate" | "changed"> = {
         deploymentId: deployment.deploymentId,
         symbol: deployment.symbol,
@@ -2523,6 +2562,21 @@ export async function syncResearchCyclePromotionGates(
           currentTuneId: deployment.tuneId,
         });
         continue;
+      }
+      if (freshnessGateReason) {
+        const forcedGate = buildForcedIneligibleGate({
+          baseGate: deployment.promotionGate || null,
+          reason: freshnessGateReason,
+          forwardValidation: deployment.promotionGate?.forwardValidation || null,
+          nowMs,
+        });
+        freshnessForcedUpsertsByDeployment.set(deployment.deploymentId, {
+          deploymentId: deployment.deploymentId,
+          source: deployment.source,
+          enabled: false,
+          promotionGate: forcedGate,
+          updatedBy: params.updatedBy || "research-cycle-sync:fresh12w",
+        });
       }
       rowDrafts.push(draft);
       await persistProgress({
@@ -2613,6 +2667,9 @@ export async function syncResearchCyclePromotionGates(
         }
       }
     }
+    if (freshnessGateReason) {
+      weeklyGateReason = freshnessGateReason;
+    }
 
     const forwardValidation: ScalpForwardValidationMetrics = {
       ...candidate.forwardValidation,
@@ -2642,6 +2699,21 @@ export async function syncResearchCyclePromotionGates(
       confirmationTotalTrades: confirmation?.totalTrades ?? null,
       confirmationEvaluatedAtMs: confirmation ? nowMs : null,
     };
+    if (freshnessGateReason) {
+      const forcedGate = buildForcedIneligibleGate({
+        baseGate: deployment.promotionGate || null,
+        reason: freshnessGateReason,
+        forwardValidation,
+        nowMs,
+      });
+      freshnessForcedUpsertsByDeployment.set(deployment.deploymentId, {
+        deploymentId: deployment.deploymentId,
+        source: deployment.source,
+        enabled: false,
+        promotionGate: forcedGate,
+        updatedBy: params.updatedBy || "research-cycle-sync:fresh12w",
+      });
+    }
 
     const draft: Omit<SyncResearchPromotionRow, "nextGate" | "changed"> = {
       deploymentId: deployment.deploymentId,
@@ -2727,6 +2799,29 @@ export async function syncResearchCyclePromotionGates(
       deployments = baselineOut.snapshot.deployments.slice();
       emitSyncLog("baseline_upserts_completed", {
         count: baselineUpserts.length,
+      });
+    }
+
+    if (freshnessForcedUpsertsByDeployment.size > 0) {
+      const freshnessForcedUpserts = Array.from(
+        freshnessForcedUpsertsByDeployment.values(),
+      );
+      await persistProgress({
+        phase: "persist_freshness_forced",
+        processedDeployments: considered.length,
+        matchedDeployments: deploymentsMatched,
+        updatedDeployments: deploymentsUpdated,
+      });
+      emitSyncLog("freshness_forced_upserts_start", {
+        count: freshnessForcedUpserts.length,
+        requiredWeeks: freshnessRequiredWeeks,
+      });
+      const freshnessOut = await upsertScalpDeploymentRegistryEntriesBulk(
+        freshnessForcedUpserts,
+      );
+      deployments = freshnessOut.snapshot.deployments.slice();
+      emitSyncLog("freshness_forced_upserts_completed", {
+        count: freshnessForcedUpserts.length,
       });
     }
 

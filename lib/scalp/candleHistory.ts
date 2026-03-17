@@ -10,7 +10,7 @@ export interface ScalpCandleHistoryRecord {
     symbol: string;
     timeframe: string;
     epic: string | null;
-    source: 'capital';
+    source: 'capital' | 'bitget';
     updatedAtMs: number;
     candles: ScalpCandle[];
 }
@@ -68,6 +68,15 @@ function normalizeTimeframe(value: string): string {
     return `${Math.floor(amount)}${unit}`;
 }
 
+function normalizeHistorySource(value: unknown, fallback: ScalpCandleHistoryRecord['source'] = 'capital'): ScalpCandleHistoryRecord['source'] {
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase();
+    if (normalized === 'bitget') return 'bitget';
+    if (normalized === 'capital') return 'capital';
+    return fallback;
+}
+
 function normalizeCandleRow(row: unknown): ScalpCandle | null {
     const value = row as unknown[];
     if (!Array.isArray(value)) return null;
@@ -93,7 +102,7 @@ function dedupeSortCandles(rows: ScalpCandle[]): ScalpCandle[] {
 
 function normalizeRecord(
     raw: unknown,
-    fallback: { symbol: string; timeframe: string; epic: string | null },
+    fallback: { symbol: string; timeframe: string; epic: string | null; source: ScalpCandleHistoryRecord['source'] },
 ): ScalpCandleHistoryRecord | null {
     if (!raw || typeof raw !== 'object') return null;
     const row = raw as Record<string, unknown>;
@@ -107,7 +116,7 @@ function normalizeRecord(
         symbol,
         timeframe,
         epic: row.epic ? String(row.epic).trim().toUpperCase() : fallback.epic,
-        source: 'capital',
+        source: normalizeHistorySource(row.source, fallback.source),
         updatedAtMs: Number.isFinite(Number(row.updatedAtMs)) ? Number(row.updatedAtMs) : Date.now(),
         candles,
     };
@@ -140,7 +149,7 @@ function candlesToWeeklyRows(record: ScalpCandleHistoryRecord): Array<{
     timeframe: string;
     weekStartMs: number;
     epic: string | null;
-    source: 'capital';
+    source: ScalpCandleHistoryRecord['source'];
     candles: ScalpCandle[];
 }> {
     const byWeek = new Map<number, ScalpCandle[]>();
@@ -172,6 +181,7 @@ function rowsToRecord(params: {
     if (!params.rows.length) return null;
     let latestUpdatedAtMs = 0;
     let epic: string | null = null;
+    let source: ScalpCandleHistoryRecord['source'] = 'capital';
     const merged: ScalpCandle[] = [];
     for (const row of params.rows) {
         const candles = Array.isArray(row.candles) ? row.candles : [];
@@ -181,6 +191,9 @@ function rowsToRecord(params: {
         }
         if (row.epic && !epic) {
             epic = String(row.epic).trim().toUpperCase();
+        }
+        if (row.source) {
+            source = normalizeHistorySource(row.source, source);
         }
         const updatedAtMs = Number(row.updatedAtMs || 0);
         if (Number.isFinite(updatedAtMs) && updatedAtMs > latestUpdatedAtMs) {
@@ -192,7 +205,7 @@ function rowsToRecord(params: {
         symbol: params.symbol,
         timeframe: params.timeframe,
         epic,
-        source: 'capital',
+        source,
         updatedAtMs: latestUpdatedAtMs > 0 ? latestUpdatedAtMs : Date.now(),
         candles: dedupeSortCandles(merged),
     };
@@ -499,7 +512,7 @@ export async function saveScalpCandleHistory(
         symbol,
         timeframe,
         epic: recordRaw.epic ? String(recordRaw.epic).trim().toUpperCase() : null,
-        source: 'capital',
+        source: normalizeHistorySource(recordRaw.source, 'capital'),
         updatedAtMs: Date.now(),
         candles: dedupeSortCandles(recordRaw.candles || []),
     };
@@ -571,11 +584,11 @@ export async function saveScalpCandleHistoryBulk(
                     symbol,
                     timeframe,
                     epic: recordRaw.epic,
-                    source: 'capital',
+                    source: normalizeHistorySource(recordRaw.source, 'capital'),
                     updatedAtMs: Date.now(),
                     candles: recordRaw.candles || [],
                 },
-                { symbol, timeframe, epic: null },
+                { symbol, timeframe, epic: null, source: 'capital' },
             );
             return normalized;
         })

@@ -92,6 +92,7 @@ type ScriptOptions = {
 
 const ONE_MINUTE_MS = 60_000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const BITGET_HISTORY_CANDLES_MAX_LIMIT = 200;
 
 function parseArgs(argv: string[]): ScriptOptions {
     const opts: ScriptOptions = {
@@ -101,8 +102,8 @@ function parseArgs(argv: string[]): ScriptOptions {
         requeueDeploymentIds: [],
         timeframe: '1m',
         defaultLookbackDays: 120,
-        limitPerRequest: 1000,
-        requestSpanMinutes: 2500,
+        limitPerRequest: BITGET_HISTORY_CANDLES_MAX_LIMIT,
+        requestSpanMinutes: 220,
         sleepMs: 25,
         maxRequestsPerSymbol: 2500,
         actor: 'phase3_capital_crypto_recycle_to_bitget',
@@ -151,7 +152,9 @@ function parseArgs(argv: string[]): ScriptOptions {
             if (Number.isFinite(n) && n > 0) opts.defaultLookbackDays = Math.max(1, Math.floor(n));
         } else if (key === '--limitPerRequest' && value) {
             const n = Number(value);
-            if (Number.isFinite(n) && n > 0) opts.limitPerRequest = Math.max(20, Math.min(1000, Math.floor(n)));
+            if (Number.isFinite(n) && n > 0) {
+                opts.limitPerRequest = Math.max(20, Math.min(BITGET_HISTORY_CANDLES_MAX_LIMIT, Math.floor(n)));
+            }
         } else if (key === '--requestSpanMinutes' && value) {
             const n = Number(value);
             if (Number.isFinite(n) && n > 0) opts.requestSpanMinutes = Math.max(120, Math.floor(n));
@@ -310,7 +313,7 @@ async function fetchBitget1mCandles(params: {
     let cursorEnd = toMs;
     let requests = 0;
     const spanMs = Math.max(120, Math.floor(params.requestSpanMinutes)) * ONE_MINUTE_MS;
-    const requestLimit = Math.max(20, Math.min(1000, Math.floor(params.limitPerRequest)));
+    const requestLimit = Math.max(20, Math.min(BITGET_HISTORY_CANDLES_MAX_LIMIT, Math.floor(params.limitPerRequest)));
     const maxRequests = Math.max(100, Math.floor(params.maxRequestsPerSymbol));
 
     while (cursorEnd >= fromMs) {
@@ -318,7 +321,7 @@ async function fetchBitget1mCandles(params: {
             throw new Error(`backfill_max_requests_reached_for_${symbol}`);
         }
         const startTime = Math.max(fromMs, cursorEnd - spanMs + ONE_MINUTE_MS);
-        const rows = await bitgetFetch('GET', '/api/v2/mix/market/candles', {
+        const rows = await bitgetFetch('GET', '/api/v2/mix/market/history-candles', {
             symbol,
             productType,
             granularity: '1m',
