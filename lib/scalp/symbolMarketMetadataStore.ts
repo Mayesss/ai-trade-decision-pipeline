@@ -27,7 +27,12 @@ function fromRow(
   return normalizeScalpSymbolMarketMetadata({
     symbol,
     epic: row.epic ? String(row.epic) : null,
-    source: row.source === "capital" ? "capital" : "heuristic",
+    source:
+      row.source === "capital"
+        ? "capital"
+        : row.source === "bitget"
+          ? "bitget"
+          : "heuristic",
     assetCategory: String(row.assetCategory || "")
       .trim()
       .toLowerCase() as

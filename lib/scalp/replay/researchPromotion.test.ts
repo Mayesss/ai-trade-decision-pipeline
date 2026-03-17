@@ -105,10 +105,12 @@ function makeEligibleDeployment(params: {
     maxDrawdownR: number;
 }): ScalpDeploymentRegistryEntry {
     return {
+        venue: 'capital',
         symbol: params.symbol,
         strategyId: params.strategyId,
         tuneId: params.tuneId,
         deploymentId: params.deploymentId,
+        tuneLabel: params.tuneId,
         enabled: params.enabled ?? false,
         source: params.source ?? 'backtest',
         notes: null,

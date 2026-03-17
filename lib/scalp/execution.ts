@@ -1,10 +1,5 @@
 import crypto from "crypto";
 
-import {
-  closeCapitalPositionByOwnership,
-  executeCapitalScalpEntry,
-  fetchCapitalOpenPositionSnapshots,
-} from "../capital";
 import { computeAtr } from "./detectors";
 import type { ScalpStrategyEntryIntent } from "./strategies/types";
 import type {
@@ -13,11 +8,18 @@ import type {
   ScalpSessionState,
   ScalpStrategyConfig,
 } from "./types";
+import {
+  getScalpVenueAdapter,
+  type ScalpVenueAdapter,
+  type ScalpBrokerPositionSnapshot,
+} from "./adapters";
+import { getScalpVenueFeeSchedule } from "./fees";
 import { pipSizeForScalpSymbol, timeframeMinutes } from "./marketData";
 import {
   inferScalpAssetCategory,
   type ScalpAssetCategory,
 } from "./symbolInfo";
+import type { ScalpVenue } from "./venue";
 
 function toFinite(value: unknown, fallback = NaN): number {
   const n = Number(value);
@@ -34,17 +36,77 @@ function toPositiveNumberWithFallback(value: unknown, fallback: number): number 
   return n;
 }
 
-const SCALP_CAPITAL_LEVERAGE_BY_CATEGORY: Record<ScalpAssetCategory, number> = {
-  forex: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_FOREX, 30),
-  index: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_INDEX, 20),
-  commodity: toPositiveNumberWithFallback(
-    process.env.SCALP_CAPITAL_LEVERAGE_COMMODITY,
-    20,
-  ),
-  equity: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_EQUITY, 5),
-  crypto: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_CRYPTO, 2),
-  other: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_OTHER, 5),
+const SCALP_LEVERAGE_BY_CATEGORY_BY_VENUE: Record<
+  ScalpVenue,
+  Record<ScalpAssetCategory, number>
+> = {
+  capital: {
+    forex: toPositiveNumberWithFallback(
+      process.env.SCALP_CAPITAL_LEVERAGE_FOREX,
+      30,
+    ),
+    index: toPositiveNumberWithFallback(
+      process.env.SCALP_CAPITAL_LEVERAGE_INDEX,
+      20,
+    ),
+    commodity: toPositiveNumberWithFallback(
+      process.env.SCALP_CAPITAL_LEVERAGE_COMMODITY,
+      20,
+    ),
+    equity: toPositiveNumberWithFallback(
+      process.env.SCALP_CAPITAL_LEVERAGE_EQUITY,
+      5,
+    ),
+    crypto: toPositiveNumberWithFallback(
+      process.env.SCALP_CAPITAL_LEVERAGE_CRYPTO,
+      2,
+    ),
+    other: toPositiveNumberWithFallback(
+      process.env.SCALP_CAPITAL_LEVERAGE_OTHER,
+      5,
+    ),
+  },
+  bitget: {
+    forex: toPositiveNumberWithFallback(
+      process.env.SCALP_BITGET_LEVERAGE_FOREX,
+      50,
+    ),
+    index: toPositiveNumberWithFallback(
+      process.env.SCALP_BITGET_LEVERAGE_INDEX,
+      50,
+    ),
+    commodity: toPositiveNumberWithFallback(
+      process.env.SCALP_BITGET_LEVERAGE_COMMODITY,
+      50,
+    ),
+    equity: toPositiveNumberWithFallback(
+      process.env.SCALP_BITGET_LEVERAGE_EQUITY,
+      20,
+    ),
+    crypto: toPositiveNumberWithFallback(
+      process.env.SCALP_BITGET_LEVERAGE_CRYPTO,
+      125,
+    ),
+    other: toPositiveNumberWithFallback(
+      process.env.SCALP_BITGET_LEVERAGE_OTHER,
+      20,
+    ),
+  },
 };
+
+function resolveScalpVenueLeverageCap(
+  venue: ScalpVenue,
+  category: ScalpAssetCategory,
+): number {
+  const byCategory =
+    SCALP_LEVERAGE_BY_CATEGORY_BY_VENUE[venue] ||
+    SCALP_LEVERAGE_BY_CATEGORY_BY_VENUE.capital;
+  return (
+    byCategory[category] ||
+    byCategory.other ||
+    SCALP_LEVERAGE_BY_CATEGORY_BY_VENUE.capital.other
+  );
+}
 
 function high(
   candle: [number, number, number, number, number, number],
@@ -158,6 +220,7 @@ async function closeScalpTradePortion(params: {
   closePct: number;
   dryRun: boolean;
   reason: string;
+  adapter?: ScalpVenueAdapter;
 }): Promise<{ closed: boolean; reasonCodes: string[] }> {
   const closePct = clamp(params.closePct, 0, 100);
   if (!(closePct > 0)) {
@@ -174,8 +237,9 @@ async function closeScalpTradePortion(params: {
   if (!brokerPositionId && !dealReference) {
     return { closed: false, reasonCodes: ["TRADE_CLOSE_MISSING_OWNERSHIP"] };
   }
+  const adapter = params.adapter || getScalpVenueAdapter("capital");
   try {
-    const closeRes = await closeCapitalPositionByOwnership({
+    const closeRes = await adapter.broker.closePositionByOwnership({
       dealId: brokerPositionId,
       dealReference,
       partialClosePct: closePct,
@@ -192,6 +256,8 @@ async function closeScalpTradePortion(params: {
             ? "TRADE_CLOSE_OWNERSHIP_AMBIGUOUS"
             : note === "no_matching_position"
               ? "TRADE_CLOSE_OWNED_POSITION_NOT_FOUND"
+              : note === "live_disabled"
+                ? "TRADE_CLOSE_BLOCKED_LIVE_DISABLED"
               : "TRADE_CLOSE_NOT_CONFIRMED",
       ],
     };
@@ -278,12 +344,21 @@ export function buildScalpEntryPlan(params: {
   const riskUsd =
     params.cfg.risk.referenceEquityUsd *
     (params.cfg.risk.riskPerTradePct / 100);
-  const rawNotionalUsd = (riskUsd * entryReferencePrice) / riskAbs;
+  const venue: ScalpVenue = params.state.venue || "capital";
   const assetCategory =
     params.market.symbolMeta?.assetCategory || inferScalpAssetCategory(state.symbol);
-  const categoryLeverage =
-    SCALP_CAPITAL_LEVERAGE_BY_CATEGORY[assetCategory] ||
-    SCALP_CAPITAL_LEVERAGE_BY_CATEGORY.other;
+  const categoryLeverage = resolveScalpVenueLeverageCap(venue, assetCategory);
+  const feeSchedule = getScalpVenueFeeSchedule(venue);
+  const takerFeeRate = Number.isFinite(Number(feeSchedule.takerFeeRate))
+    ? Math.max(0, Number(feeSchedule.takerFeeRate))
+    : 0;
+  const roundTripFeeRate = takerFeeRate * 2;
+  const stopRiskRate = riskAbs / entryReferencePrice;
+  const effectiveRiskRate = stopRiskRate + roundTripFeeRate;
+  if (!(Number.isFinite(effectiveRiskRate) && effectiveRiskRate > 0)) {
+    return { plan: null, reasonCodes: ["ENTRY_PLAN_INVALID_RISK_RATE"] };
+  }
+  const rawNotionalUsd = riskUsd / effectiveRiskRate;
   const maxNotionalByCategoryLeverage =
     params.cfg.risk.referenceEquityUsd > 0
       ? params.cfg.risk.referenceEquityUsd * categoryLeverage
@@ -338,13 +413,12 @@ export function buildScalpEntryPlan(params: {
       Number(maxNotionalByCategoryLeverage) < params.cfg.risk.maxNotionalUsd
         ? ["ENTRY_PLAN_ASSET_LEVERAGE_CAP_ACTIVE"]
         : []),
+      ...(roundTripFeeRate > 0 ? ["ENTRY_PLAN_FEE_AWARE_RISK_SIZING"] : []),
     ],
   };
 }
 
-type CapitalPositionSnapshot = Awaited<
-  ReturnType<typeof fetchCapitalOpenPositionSnapshots>
->[number];
+type CapitalPositionSnapshot = ScalpBrokerPositionSnapshot;
 
 function tradeBrokerPositionId(
   trade: ScalpSessionState["trade"],
@@ -398,8 +472,9 @@ export async function reconcileScalpBrokerPosition(params: {
   market: ScalpMarketSnapshot;
   dryRun: boolean;
   maxOpenPositionsPerSymbol: number;
-  snapshots?: Awaited<ReturnType<typeof fetchCapitalOpenPositionSnapshots>>;
+  snapshots?: ScalpBrokerPositionSnapshot[];
   skipSnapshotFetch?: boolean;
+  adapter?: ScalpVenueAdapter;
 }): Promise<{ state: ScalpSessionState; reasonCodes: string[] }> {
   if (params.dryRun)
     return {
@@ -408,6 +483,7 @@ export async function reconcileScalpBrokerPosition(params: {
     };
 
   let snapshots = params.snapshots ?? [];
+  const adapter = params.adapter || getScalpVenueAdapter("capital");
   if (!params.snapshots) {
     if (params.skipSnapshotFetch) {
       return {
@@ -416,7 +492,7 @@ export async function reconcileScalpBrokerPosition(params: {
       };
     }
     try {
-      snapshots = await fetchCapitalOpenPositionSnapshots();
+      snapshots = await adapter.broker.fetchOpenPositionSnapshots();
     } catch {
       return {
         state: params.state,
@@ -543,6 +619,7 @@ export async function executeScalpEntryPlan(params: {
   cfg: ScalpStrategyConfig;
   dryRun: boolean;
   nowMs: number;
+  adapter?: ScalpVenueAdapter;
 }): Promise<{ state: ScalpSessionState; reasonCodes: string[] }> {
   const next: ScalpSessionState = {
     ...params.state,
@@ -560,7 +637,8 @@ export async function executeScalpEntryPlan(params: {
     return { state: next, reasonCodes: ["LIVE_EXECUTION_DISABLED"] };
   }
 
-  const exec = await executeCapitalScalpEntry({
+  const adapter = params.adapter || getScalpVenueAdapter("capital");
+  const exec = await adapter.broker.executeScalpEntry({
     symbol: next.symbol,
     direction: params.plan.side,
     notionalUsd: params.plan.notionalUsd,
@@ -634,6 +712,7 @@ export async function manageScalpOpenTrade(params: {
   cfg: ScalpStrategyConfig;
   dryRun: boolean;
   nowMs: number;
+  adapter?: ScalpVenueAdapter;
 }): Promise<{
   state: ScalpSessionState;
   reasonCodes: string[];
@@ -745,6 +824,7 @@ export async function manageScalpOpenTrade(params: {
         closePct: tp1Pct,
         dryRun: params.dryRun,
         reason: "tp1_partial",
+        adapter: params.adapter,
       });
       reasonCodes.push(...tp1Close.reasonCodes);
       if (tp1Close.closed) {
@@ -816,6 +896,7 @@ export async function manageScalpOpenTrade(params: {
     closePct: 100,
     dryRun: params.dryRun,
     reason: stopHit ? "stop_exit" : "time_stop_exit",
+    adapter: params.adapter,
   });
   reasonCodes.push(...closeRes.reasonCodes);
   if (!closeRes.closed) {

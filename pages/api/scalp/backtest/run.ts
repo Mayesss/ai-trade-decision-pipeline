@@ -1379,6 +1379,7 @@ export default async function handler(
       tuneId: replay.config.tuneId,
       deploymentId: replay.config.deploymentId,
       deployment: {
+        venue: replay.config.deploymentId.startsWith("bitget:") ? "bitget" : "capital",
         symbol: replay.config.symbol,
         strategyId: replay.config.strategyId,
         tuneId: replay.config.tuneId,

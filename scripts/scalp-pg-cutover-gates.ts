@@ -414,6 +414,9 @@ async function gate0ControlPlaneCutoverConfig(): Promise<GateResult> {
     const backendIsPg = scalpBackend === 'pg';
 
     let mainExecutionCronCount = 0;
+    let mainExecutionCronCapitalCount = 0;
+    let mainExecutionCronBitgetCount = 0;
+    let mainExecutionCronUnscopedCount = 0;
     let pgExecutionCronCount = 0;
     let mainCronHasIncludeCanaryParam = false;
     let parseError: string | null = null;
@@ -430,6 +433,12 @@ async function gate0ControlPlaneCutoverConfig(): Promise<GateResult> {
                 if (cron.query.has('includeCanary')) {
                     mainCronHasIncludeCanaryParam = true;
                 }
+                const venue = String(cron.query.get('venue') || '')
+                    .trim()
+                    .toLowerCase();
+                if (venue === 'capital') mainExecutionCronCapitalCount += 1;
+                else if (venue === 'bitget') mainExecutionCronBitgetCount += 1;
+                else mainExecutionCronUnscopedCount += 1;
             } else if (cron.pathname === '/api/scalp/cron/execute-deployments-pg') {
                 pgExecutionCronCount += 1;
             }
@@ -453,9 +462,14 @@ async function gate0ControlPlaneCutoverConfig(): Promise<GateResult> {
         };
     }
 
+    const splitByVenueEnabled =
+        mainExecutionCronCapitalCount >= 1 &&
+        mainExecutionCronBitgetCount >= 1 &&
+        mainExecutionCronUnscopedCount === 0;
+
     const pass =
         backendIsPg &&
-        mainExecutionCronCount === 1 &&
+        splitByVenueEnabled &&
         pgExecutionCronCount === 0 &&
         !mainCronHasIncludeCanaryParam;
 
@@ -469,7 +483,12 @@ async function gate0ControlPlaneCutoverConfig(): Promise<GateResult> {
             backendIsPg,
             expectedBackend: 'pg',
             mainExecutionCronCount,
-            expectedMainExecutionCronCount: 1,
+            mainExecutionCronCapitalCount,
+            mainExecutionCronBitgetCount,
+            mainExecutionCronUnscopedCount,
+            expectedMainExecutionCronCapitalCountMin: 1,
+            expectedMainExecutionCronBitgetCountMin: 1,
+            expectedMainExecutionCronUnscopedCount: 0,
             pgExecutionCronCount,
             expectedPgExecutionCronCount: 0,
             mainCronHasIncludeCanaryParam,

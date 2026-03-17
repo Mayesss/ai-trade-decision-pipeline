@@ -28,6 +28,7 @@
   },
   "sources": {
     "includeCapitalMarketsApi": true,
+    "includeBitgetMarketsApi": true,
     "includeCapitalTickerMap": false,
     "includeDeploymentSymbols": true,
     "includeHistorySymbols": true,

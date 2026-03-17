@@ -4,6 +4,7 @@ import path from 'node:path';
 import { Prisma } from '@prisma/client';
 
 import defaultTickerEpicMap from '../../data/capitalTickerMap.json';
+import { resolveProductType } from '../bitget';
 import { discoverCapitalMarketSymbols, fetchCapitalCandlesByEpicDateRange, fetchCapitalLivePrice, resolveCapitalEpicRuntime } from '../capital';
 import { listScalpCandleHistorySymbols, loadScalpCandleHistory, mergeScalpCandleHistory, normalizeHistoryTimeframe, saveScalpCandleHistory, timeframeToMs } from './candleHistory';
 import { loadScalpDeploymentRegistry } from './deploymentRegistry';
@@ -40,6 +41,7 @@ export interface ScalpSymbolDiscoveryPolicy {
     criteria: ScalpSymbolDiscoveryCriteria;
     sources: {
         includeCapitalMarketsApi: boolean;
+        includeBitgetMarketsApi: boolean;
         includeCapitalTickerMap: boolean;
         includeDeploymentSymbols: boolean;
         includeHistorySymbols: boolean;
@@ -89,6 +91,7 @@ export interface ScalpSymbolUniverseSnapshot {
     diagnostics?: {
         sourceEnabled: {
             includeCapitalMarketsApi: boolean;
+            includeBitgetMarketsApi: boolean;
             includeCapitalTickerMap: boolean;
             includeDeploymentSymbols: boolean;
             includeHistorySymbols: boolean;
@@ -99,6 +102,8 @@ export interface ScalpSymbolUniverseSnapshot {
             capitalMarketsApi: number;
             capitalMarketsApiRows: number;
             capitalMarketsApiRowsTradeable: number;
+            bitgetMarketsApi: number;
+            bitgetMarketsApiRows: number;
             capitalTickerMap: number;
             deploymentSymbols: number;
             historySymbols: number;
@@ -106,6 +111,7 @@ export interface ScalpSymbolUniverseSnapshot {
             totalUnique: number;
         };
         capitalMarketsApiError: string | null;
+        bitgetMarketsApiError: string | null;
         includeLiveQuotes: boolean;
         requireTradableQuote: boolean;
         quoteGateApplied: boolean;
@@ -162,6 +168,15 @@ export interface ScalpSymbolDiscoverySeedSummary {
 }
 
 type CapitalDiscoveryResult = Awaited<ReturnType<typeof discoverCapitalMarketSymbols>>;
+type BitgetDiscoveryResult = {
+    symbols: string[];
+    diagnostics: {
+        rowsSeen: number;
+        mappedSymbols: number;
+        errors: string[];
+        productType: string;
+    };
+};
 
 const DEFAULT_POLICY_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-discovery-policy.json');
 const DEFAULT_UNIVERSE_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-universe.json');
@@ -203,6 +218,7 @@ const DEFAULT_POLICY: ScalpSymbolDiscoveryPolicy = {
     },
     sources: {
         includeCapitalMarketsApi: true,
+        includeBitgetMarketsApi: true,
         includeCapitalTickerMap: false,
         includeDeploymentSymbols: true,
         includeHistorySymbols: true,
@@ -476,6 +492,10 @@ function normalizePolicy(raw: unknown): ScalpSymbolDiscoveryPolicy {
             includeCapitalMarketsApi: toBool(
                 (row.sources as any)?.includeCapitalMarketsApi,
                 DEFAULT_POLICY.sources.includeCapitalMarketsApi,
+            ),
+            includeBitgetMarketsApi: toBool(
+                (row.sources as any)?.includeBitgetMarketsApi,
+                DEFAULT_POLICY.sources.includeBitgetMarketsApi,
             ),
             includeCapitalTickerMap: toBool(
                 (row.sources as any)?.includeCapitalTickerMap,
@@ -1043,6 +1063,97 @@ function isBerlinWeekendMs(tsMs: number): boolean {
     }
 }
 
+function normalizeBitgetProductTypeForQuery(value: string): string {
+    const normalized = String(value || '')
+        .trim()
+        .toUpperCase()
+        .replace(/_/g, '-');
+    if (normalized === 'USDT-FUTURES') return 'USDT-FUTURES';
+    if (normalized === 'USDC-FUTURES') return 'USDC-FUTURES';
+    if (normalized === 'COIN-FUTURES') return 'COIN-FUTURES';
+    return 'USDT-FUTURES';
+}
+
+function isBitgetDiscoverySymbolCandidate(symbolRaw: string): boolean {
+    const symbol = normalizeSymbol(symbolRaw);
+    if (!symbol) return false;
+    if (/^[A-Z]{6}$/.test(symbol)) return true;
+    if (symbol.endsWith('USDT')) return true;
+    if (symbol.startsWith('XAU') || symbol.startsWith('XAG')) return true;
+    if (
+        symbol.endsWith('USD') ||
+        symbol.endsWith('EUR') ||
+        symbol.endsWith('GBP') ||
+        symbol.endsWith('JPY') ||
+        symbol.endsWith('AUD') ||
+        symbol.endsWith('CAD') ||
+        symbol.endsWith('CHF') ||
+        symbol.endsWith('NZD')
+    ) {
+        return symbol.length >= 6 && symbol.length <= 12;
+    }
+    return false;
+}
+
+async function discoverBitgetMarketSymbols(params: {
+    maxSymbols?: number;
+} = {}): Promise<BitgetDiscoveryResult> {
+    const maxSymbols = Math.max(1, Math.min(5000, Math.floor(Number(params.maxSymbols) || 500)));
+    const productType = normalizeBitgetProductTypeForQuery(resolveProductType());
+    const diagnostics: BitgetDiscoveryResult['diagnostics'] = {
+        rowsSeen: 0,
+        mappedSymbols: 0,
+        errors: [],
+        productType,
+    };
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const url = `https://api.bitget.com/api/v2/mix/market/contracts?productType=${encodeURIComponent(productType)}`;
+
+    try {
+        const res = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+        });
+        const payload = await res.json().catch(() => null);
+        if (!res.ok || !payload || payload.code !== '00000') {
+            const details =
+                payload && typeof payload === 'object'
+                    ? `${String((payload as any).code || res.status)}:${String((payload as any).msg || res.statusText)}`
+                    : `${res.status}:${res.statusText}`;
+            throw new Error(`bitget_contracts_fetch_failed:${details}`);
+        }
+
+        const rows = Array.isArray(payload.data) ? payload.data : [];
+        diagnostics.rowsSeen = rows.length;
+        for (const row of rows) {
+            const symbol = normalizeSymbol((row as Record<string, unknown>)?.symbol);
+            if (!symbol) continue;
+            const status = String((row as Record<string, unknown>)?.symbolStatus || '')
+                .trim()
+                .toLowerCase();
+            if (status && status !== 'normal' && status !== 'listed' && status !== 'trading' && status !== 'online') {
+                continue;
+            }
+            if (!isBitgetDiscoverySymbolCandidate(symbol)) continue;
+            if (seen.has(symbol)) continue;
+            seen.add(symbol);
+            out.push(symbol);
+            diagnostics.mappedSymbols += 1;
+            if (out.length >= maxSymbols) break;
+        }
+    } catch (err: any) {
+        diagnostics.errors.push(String(err?.message || err || 'bitget_discovery_failed').slice(0, 220));
+    }
+
+    return {
+        symbols: out,
+        diagnostics,
+    };
+}
+
 export function resolveRecommendedStrategiesForSymbol(symbolRaw: string, allowlist: string[]): string[] {
     const symbol = normalizeSymbol(symbolRaw);
     const has = (id: string) => allowlist.length === 0 || allowlist.includes(id);
@@ -1565,6 +1676,8 @@ async function buildCandidatePool(
         nowMs: number;
         discoveredSymbols?: CapitalDiscoveryResult | null;
         discoveryError?: string | null;
+        discoveredBitgetSymbols?: BitgetDiscoveryResult | null;
+        bitgetDiscoveryError?: string | null;
     },
 ): Promise<{
     symbols: string[];
@@ -1574,6 +1687,7 @@ async function buildCandidatePool(
     const diagnostics: NonNullable<ScalpSymbolUniverseSnapshot['diagnostics']> = {
         sourceEnabled: {
             includeCapitalMarketsApi: policy.sources.includeCapitalMarketsApi,
+            includeBitgetMarketsApi: policy.sources.includeBitgetMarketsApi,
             includeCapitalTickerMap: policy.sources.includeCapitalTickerMap,
             includeDeploymentSymbols: policy.sources.includeDeploymentSymbols,
             includeHistorySymbols: policy.sources.includeHistorySymbols,
@@ -1584,6 +1698,8 @@ async function buildCandidatePool(
             capitalMarketsApi: 0,
             capitalMarketsApiRows: 0,
             capitalMarketsApiRowsTradeable: 0,
+            bitgetMarketsApi: 0,
+            bitgetMarketsApiRows: 0,
             capitalTickerMap: 0,
             deploymentSymbols: 0,
             historySymbols: 0,
@@ -1591,6 +1707,7 @@ async function buildCandidatePool(
             totalUnique: 0,
         },
         capitalMarketsApiError: null,
+        bitgetMarketsApiError: null,
         includeLiveQuotes: false,
         requireTradableQuote: policy.criteria.requireTradableQuote,
         quoteGateApplied: false,
@@ -1660,6 +1777,40 @@ async function buildCandidatePool(
                     ? params.discoveryError
                     : String(err?.message || err || 'capital_markets_api_discovery_failed');
             diagnostics.capitalMarketsApiError = String(fallback).slice(0, 220);
+        }
+    }
+
+    if (policy.sources.includeBitgetMarketsApi) {
+        const maxSymbols = Math.max(policy.limits.maxCandidates * 3, policy.limits.maxUniverseSymbols * 4, 200);
+        const hasPreloadedBitgetDiscovery = params.discoveredBitgetSymbols !== undefined;
+        try {
+            const discoveredBitgetSymbols =
+                hasPreloadedBitgetDiscovery
+                    ? params.discoveredBitgetSymbols
+                    : await discoverBitgetMarketSymbols({ maxSymbols });
+            diagnostics.sourceCounts.bitgetMarketsApiRows = discoveredBitgetSymbols?.diagnostics.rowsSeen || 0;
+            if (!discoveredBitgetSymbols) {
+                diagnostics.bitgetMarketsApiError = String(
+                    params.bitgetDiscoveryError || 'bitget_markets_api_discovery_failed',
+                ).slice(0, 220);
+            } else if ((discoveredBitgetSymbols.diagnostics.errors || []).length > 0) {
+                diagnostics.bitgetMarketsApiError = (discoveredBitgetSymbols.diagnostics.errors || []).slice(0, 3).join(' | ');
+            } else if (
+                (discoveredBitgetSymbols.diagnostics.rowsSeen || 0) > 0 &&
+                (discoveredBitgetSymbols.diagnostics.mappedSymbols || 0) === 0
+            ) {
+                diagnostics.bitgetMarketsApiError = 'bitget_markets_rows_unmapped';
+            }
+            for (const symbol of discoveredBitgetSymbols?.symbols || []) {
+                if (policy.sources.requireHistoryPresence && !historySymbolSet.has(normalizeSymbol(symbol))) continue;
+                addFromSource('bitgetMarketsApi', symbol);
+            }
+        } catch (err: any) {
+            const fallback =
+                hasPreloadedBitgetDiscovery && params.bitgetDiscoveryError
+                    ? params.bitgetDiscoveryError
+                    : String(err?.message || err || 'bitget_markets_api_discovery_failed');
+            diagnostics.bitgetMarketsApiError = String(fallback).slice(0, 220);
         }
     }
 
@@ -1998,11 +2149,29 @@ export async function runScalpSymbolDiscoveryCycle(
             }
           : null;
 
+    const shouldLoadBitgetDiscovery = policy.sources.includeBitgetMarketsApi;
+    let preloadedBitgetDiscovery: BitgetDiscoveryResult | null | undefined = undefined;
+    let preloadedBitgetDiscoveryError: string | null = null;
+    if (shouldLoadBitgetDiscovery) {
+        const maxSymbols = Math.max(
+            seedConfig.requestedTopSymbols * 6,
+            policy.limits.maxCandidates * 3,
+            policy.limits.maxUniverseSymbols * 4,
+            200,
+        );
+        preloadedBitgetDiscovery = await discoverBitgetMarketSymbols({ maxSymbols });
+        if ((preloadedBitgetDiscovery.diagnostics.errors || []).length > 0) {
+            preloadedBitgetDiscoveryError = (preloadedBitgetDiscovery.diagnostics.errors || []).slice(0, 3).join(' | ');
+        }
+    }
+
     const candidatePool = await buildCandidatePool(policy, {
         includeLiveQuotes,
         nowMs,
         discoveredSymbols: preloadedDiscovery,
         discoveryError: preloadedDiscoveryError,
+        discoveredBitgetSymbols: preloadedBitgetDiscovery,
+        bitgetDiscoveryError: preloadedBitgetDiscoveryError,
     });
     const cappedPool = candidatePool.symbols.slice(0, Math.max(1, params.maxCandidatesOverride || policy.limits.maxCandidates));
 

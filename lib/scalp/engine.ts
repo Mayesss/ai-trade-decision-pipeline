@@ -1,7 +1,6 @@
 import crypto from 'crypto';
 
-import { fetchCapitalAccountEquityUsd } from '../capital';
-import type { CapitalOpenPositionSnapshot } from '../capital';
+import { getScalpVenueAdapter, type ScalpBrokerPositionSnapshot } from './adapters';
 import { applyScalpStrategyConfigOverride, getScalpStrategyConfig, normalizeScalpSymbol } from './config';
 import type { ScalpStrategyConfigOverride } from './config';
 import { resolveScalpDeployment } from './deployments';
@@ -34,6 +33,7 @@ import type {
     ScalpSessionState,
     ScalpTradeLedgerEntry,
 } from './types';
+import type { ScalpVenue } from './venue';
 
 function journalEntry(params: {
     type: ScalpJournalEntry['type'];
@@ -100,6 +100,7 @@ const SCALP_IDLE_HEARTBEAT_PERSIST_MS = (() => {
 })();
 
 export async function runScalpExecuteCycle(opts: {
+    venue?: ScalpVenue;
     symbol?: string;
     dryRun?: boolean;
     nowMs?: number;
@@ -110,7 +111,7 @@ export async function runScalpExecuteCycle(opts: {
     debug?: boolean;
     marketSnapshotCache?: Map<string, ScalpMarketSnapshot>;
     runtimeSnapshot?: ScalpStrategyRuntimeSnapshot;
-    brokerPositionSnapshots?: CapitalOpenPositionSnapshot[];
+    brokerPositionSnapshots?: ScalpBrokerPositionSnapshot[];
     skipBrokerSnapshotFetch?: boolean;
 } = {}): Promise<ScalpExecuteCycleResult> {
     const baseCfg = getScalpStrategyConfig();
@@ -142,11 +143,13 @@ export async function runScalpExecuteCycle(opts: {
         };
     const strategyId = strategyControl.strategyId;
     const deployment = resolveScalpDeployment({
+        venue: opts.venue,
         symbol,
         strategyId,
         tuneId: opts.tuneId,
         deploymentId: opts.deploymentId,
     });
+    const venueAdapter = getScalpVenueAdapter(deployment.venue);
     const strategyDef =
         getScalpStrategyById(deployment.strategyId) ||
         getScalpStrategyById(runtime.defaultStrategyId) ||
@@ -194,6 +197,7 @@ export async function runScalpExecuteCycle(opts: {
         );
         return {
                 generatedAtMs: nowMs,
+                venue: deployment.venue,
                 symbol: deployment.symbol,
                 strategyId: deployment.strategyId,
                 tuneId: deployment.tuneId,
@@ -207,6 +211,7 @@ export async function runScalpExecuteCycle(opts: {
     }
 
     const runLockAcquired = await tryAcquireScalpRunLock(symbol, runId, cfg.idempotency.runLockSeconds, strategyId, {
+        venue: deployment.venue,
         tuneId: deployment.tuneId,
         deploymentId: deployment.deploymentId,
     });
@@ -233,6 +238,7 @@ export async function runScalpExecuteCycle(opts: {
         );
         return {
             generatedAtMs: nowMs,
+            venue: deployment.venue,
             symbol: deployment.symbol,
             strategyId: deployment.strategyId,
             tuneId: deployment.tuneId,
@@ -247,12 +253,14 @@ export async function runScalpExecuteCycle(opts: {
 
     try {
         const loadedState = await loadScalpSessionState(symbol, dayKey, strategyId, {
+            venue: deployment.venue,
             tuneId: deployment.tuneId,
             deploymentId: deployment.deploymentId,
         });
         const currentState =
             loadedState ||
             createInitialScalpSessionState({
+                venue: deployment.venue,
                 symbol: deployment.symbol,
                 strategyId: deployment.strategyId,
                 tuneId: deployment.tuneId,
@@ -280,6 +288,7 @@ export async function runScalpExecuteCycle(opts: {
         if (!cfg.risk.killSwitch) {
             try {
                 const snapshotCacheKey = [
+                    deployment.venue,
                     deployment.symbol,
                     cfg.timeframes.asiaBase,
                     cfg.timeframes.confirm,
@@ -310,6 +319,7 @@ export async function runScalpExecuteCycle(opts: {
                     }
                 } else {
                     market = await loadScalpMarketSnapshot({
+                        adapter: venueAdapter,
                         symbol,
                         nowMs,
                         windows,
@@ -372,6 +382,7 @@ export async function runScalpExecuteCycle(opts: {
                 }
 
                 const reconciled = await reconcileScalpBrokerPosition({
+                    adapter: venueAdapter,
                     state: nextState,
                     market,
                     dryRun,
@@ -386,6 +397,7 @@ export async function runScalpExecuteCycle(opts: {
                 const priorRealizedR = Number.isFinite(Number(nextState.stats.realizedR)) ? Number(nextState.stats.realizedR) : 0;
 
                 const managed = await manageScalpOpenTrade({
+                    adapter: venueAdapter,
                     state: nextState,
                     market,
                     cfg,
@@ -440,7 +452,7 @@ export async function runScalpExecuteCycle(opts: {
 
                     if (!dryRun) {
                         try {
-                            const liveEquityUsd = await fetchCapitalAccountEquityUsd();
+                            const liveEquityUsd = await venueAdapter.broker.fetchAccountEquityUsd();
                             if (Number.isFinite(liveEquityUsd as number) && Number(liveEquityUsd) > 0) {
                                 entryCfg = {
                                     ...entryCfg,
@@ -473,6 +485,7 @@ export async function runScalpExecuteCycle(opts: {
                         phaseReasonCodes.push(...planRes.reasonCodes);
                         if (planRes.plan) {
                             const entryRes = await executeScalpEntryPlan({
+                                adapter: venueAdapter,
                                 state: nextState,
                                 plan: planRes.plan,
                                 cfg: entryCfg,
@@ -539,6 +552,7 @@ export async function runScalpExecuteCycle(opts: {
 
         if (shouldPersistState) {
             await saveScalpSessionState(nextState, cfg.storage.sessionTtlSeconds, strategyId, {
+                venue: deployment.venue,
                 tuneId: deployment.tuneId,
                 deploymentId: deployment.deploymentId,
             });
@@ -593,6 +607,7 @@ export async function runScalpExecuteCycle(opts: {
 
         return {
             generatedAtMs: nowMs,
+            venue: deployment.venue,
             symbol: deployment.symbol,
             strategyId: deployment.strategyId,
             tuneId: deployment.tuneId,
@@ -626,6 +641,7 @@ export async function runScalpExecuteCycle(opts: {
         throw err;
     } finally {
         await releaseScalpRunLock(symbol, runId, strategyId, {
+            venue: deployment.venue,
             tuneId: deployment.tuneId,
             deploymentId: deployment.deploymentId,
         });

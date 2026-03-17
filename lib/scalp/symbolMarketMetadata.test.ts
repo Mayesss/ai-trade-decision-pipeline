@@ -52,6 +52,22 @@ test("normalizeScalpSymbolMarketMetadata preserves broker pip sizes", () => {
   assert.equal(metadata.tickSize, 1);
 });
 
+test("normalizeScalpSymbolMarketMetadata normalizes bitget crypto precision", () => {
+  const metadata = normalizeScalpSymbolMarketMetadata({
+    symbol: "XANUSDT",
+    epic: "XANUSDT",
+    source: "bitget",
+    assetCategory: "equity",
+    instrumentType: "PERPETUAL",
+    pipSize: 0.0000001,
+    tickSize: 0.000001,
+    decimalPlacesFactor: 6,
+    fetchedAtMs: 1,
+  });
+  assert.equal(metadata.assetCategory, "crypto");
+  assert.equal(metadata.pipSize, 0.000001);
+});
+
 test("scalpAssetCategoryFromInstrumentType maps Capital categories", () => {
   assert.equal(
     scalpAssetCategoryFromInstrumentType("BTCUSDT", "CRYPTOCURRENCIES"),

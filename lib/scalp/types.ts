@@ -1,4 +1,5 @@
 import type { ScalpSymbolMarketMetadata } from "./symbolMarketMetadata";
+import type { ScalpVenue } from "./venue";
 
 export type ScalpClockMode = "LONDON_TZ" | "UTC_FIXED";
 export type ScalpEntrySessionProfile =
@@ -23,6 +24,7 @@ export type ScalpState =
   | "COOLDOWN";
 
 export interface ScalpDeploymentRef {
+  venue: ScalpVenue;
   symbol: string;
   strategyId: string;
   tuneId: string;
@@ -121,6 +123,7 @@ export interface ScalpRunContext {
 
 export interface ScalpSessionState {
   version: 1 | 2;
+  venue: ScalpVenue;
   symbol: string;
   strategyId: string;
   tuneId: string;
@@ -300,6 +303,7 @@ export interface ScalpMarketSnapshot {
 
 export interface ScalpExecuteCycleResult {
   generatedAtMs: number;
+  venue: ScalpVenue;
   symbol: string;
   strategyId: string;
   tuneId: string;

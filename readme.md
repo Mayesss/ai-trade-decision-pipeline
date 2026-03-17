@@ -231,6 +231,8 @@ npm run start
 - `GET /api/scalp/cron/execute-deployments?all=true&dryRun=true`
   - Runs enabled deployments from the deployment registry (`kv` in `auto` mode when KV is configured, otherwise file).
   - Use `all=true` for one cron pass across all enabled deployment rows, or `symbol=<SYMBOL>` to target one symbol.
+  - Optional query: `venue=capital|bitget` to scope execution to a single venue.
+  - When `venue` is omitted and both venues are present, execution is split by venue and processed in parallel with venue-scoped mutex locks.
   - Optional query: `requirePromotionEligible=true` to execute only deployments with `promotionGate.eligible=true`.
 - `GET /api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true`
   - Weekly symbol-discovery cron. Scores symbols using policy + history quality + optional live quote checks, then writes the selected universe snapshot.
@@ -504,7 +506,8 @@ node --import tsx scripts/scalp-replay-matrix.ts \
   - `/api/scalp/cron/research-report?dryRun=false` hourly (refreshes operator portfolio report snapshot).
   - `/api/scalp/cron/live-guardrail-monitor?dryRun=false&autoPause=true` every 15 minutes (detects live drift and auto-pauses breached deployments).
   - `/api/scalp/cron/housekeeping?dryRun=false&refreshReport=true` hourly (retention cleanup + lock cleanup + list compaction).
-  - `/api/scalp/cron/execute-deployments?all=true&dryRun=false&requirePromotionEligible=true` every minute across promotion-eligible deployments.
+  - `/api/scalp/cron/execute-deployments?all=true&venue=capital&dryRun=false&requirePromotionEligible=true` every minute for promotion-eligible Capital deployments.
+  - `/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true` every minute for promotion-eligible Bitget deployments.
   - Symbol-specific scalp tuning is pinned by deployment row (`strategyId` + `tuneId`) in `data/scalp-deployments.json`.
 - Cron-declared routes are intentionally allowed without admin secret; non-cron routes remain protected when `ADMIN_ACCESS_SECRET` is set.
 

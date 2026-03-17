@@ -1,9 +1,4 @@
-import {
-  fetchCapitalCandlesByEpic,
-  fetchCapitalLivePrice,
-  resolveCapitalEpicRuntime,
-} from "../capital";
-import { ensureScalpSymbolMarketMetadata } from "./symbolMarketMetadataSync";
+import { getScalpVenueAdapter, type ScalpVenueAdapter } from "./adapters";
 import { pipSizeForScalpSymbol } from "./symbolInfo";
 import type {
   ScalpBaseTimeframe,
@@ -129,14 +124,14 @@ export async function loadScalpMarketSnapshot(params: {
   minBaseCandles: number;
   minConfirmCandles: number;
   maxCandlesPerRequest: number;
+  adapter?: ScalpVenueAdapter;
 }): Promise<ScalpMarketSnapshot> {
+  const adapter = params.adapter || getScalpVenueAdapter("capital");
   const symbol = String(params.symbol || "")
     .trim()
     .toUpperCase();
-  const symbolMetaPromise = ensureScalpSymbolMarketMetadata(symbol, {
-    fetchIfMissing: true,
-  });
-  const resolved = await resolveCapitalEpicRuntime(symbol);
+  const symbolMetaPromise = adapter.market.ensureSymbolMarketMetadata(symbol);
+  const resolved = await adapter.market.resolveEpicRuntime(symbol);
   const baseMinutes = timeframeMinutes(params.baseTf);
   const confirmMinutes = timeframeMinutes(params.confirmTf);
   const lookbackStartMs =
@@ -167,8 +162,8 @@ export async function loadScalpMarketSnapshot(params: {
   const [quote, baseRaw, confirmRaw] =
     baseTfApi === confirmTfApi
       ? await Promise.all([
-          fetchCapitalLivePrice(symbol),
-          fetchCapitalCandlesByEpic(
+          adapter.market.fetchLivePrice(symbol),
+          adapter.market.fetchCandlesByEpic(
             resolved.epic,
             baseTfApi,
             Math.max(baseLimit, confirmLimit),
@@ -176,9 +171,9 @@ export async function loadScalpMarketSnapshot(params: {
           Promise.resolve<any[]>([]),
         ])
       : await Promise.all([
-          fetchCapitalLivePrice(symbol),
-          fetchCapitalCandlesByEpic(resolved.epic, baseTfApi, baseLimit),
-          fetchCapitalCandlesByEpic(resolved.epic, confirmTfApi, confirmLimit),
+          adapter.market.fetchLivePrice(symbol),
+          adapter.market.fetchCandlesByEpic(resolved.epic, baseTfApi, baseLimit),
+          adapter.market.fetchCandlesByEpic(resolved.epic, confirmTfApi, confirmLimit),
         ]);
 
   const baseCandlesFull = sortCandles(

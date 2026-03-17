@@ -1,9 +1,17 @@
 import { Prisma } from '@prisma/client';
 
+import { resolveScalpDeploymentVenueFromId } from '../deployments';
+import {
+    formatScalpVenueDeploymentId,
+    normalizeScalpVenue,
+    parseScalpVenuePrefixedDeploymentId,
+    type ScalpVenue,
+} from '../venue';
 import { scalpPrisma } from './client';
 
 export interface PgExecutableDeploymentRow {
     deploymentId: string;
+    venue: ScalpVenue;
     symbol: string;
     strategyId: string;
     tuneId: string;
@@ -18,6 +26,7 @@ export interface PgExecutableDeploymentRow {
 
 export interface PgDeploymentRegistryRow {
     deploymentId: string;
+    venue: ScalpVenue;
     symbol: string;
     strategyId: string;
     tuneId: string;
@@ -32,6 +41,7 @@ export interface PgDeploymentRegistryRow {
 
 export interface PgUpsertDeploymentInput {
     deploymentId: string;
+    venue?: ScalpVenue;
     symbol: string;
     strategyId: string;
     tuneId: string;
@@ -49,6 +59,7 @@ function asJsonObject(value: unknown): Record<string, unknown> | null {
 
 export async function listExecutableDeploymentsFromPg(params: {
     requirePromotionEligible?: boolean;
+    venue?: ScalpVenue;
     symbol?: string;
     symbols?: string[];
     strategyId?: string;
@@ -56,6 +67,7 @@ export async function listExecutableDeploymentsFromPg(params: {
     limit?: number;
 } = {}): Promise<PgExecutableDeploymentRow[]> {
     const requirePromotionEligible = Boolean(params.requirePromotionEligible);
+    const venue = params.venue ? normalizeScalpVenue(params.venue) : null;
     const symbol = String(params.symbol || '')
         .trim()
         .toUpperCase();
@@ -80,6 +92,12 @@ export async function listExecutableDeploymentsFromPg(params: {
     const symbolFilterSql = symbols.length > 0 ? Prisma.sql`AND d.symbol IN (${Prisma.join(symbols)})` : Prisma.empty;
     const deploymentFilterSql =
         deploymentIds.length > 0 ? Prisma.sql`AND d.deployment_id IN (${Prisma.join(deploymentIds)})` : Prisma.empty;
+    const venueFilterSql =
+        venue === 'bitget'
+            ? Prisma.sql`AND d.deployment_id LIKE 'bitget:%'`
+            : venue === 'capital'
+            ? Prisma.sql`AND (d.deployment_id NOT LIKE '%:%' OR d.deployment_id LIKE 'capital:%')`
+            : Prisma.empty;
 
     const db = scalpPrisma();
     const rows = await db.$queryRaw<
@@ -115,6 +133,7 @@ export async function listExecutableDeploymentsFromPg(params: {
           ${symbolFilterSql}
           AND (${strategyId} = '' OR d.strategy_id = ${strategyId})
           ${deploymentFilterSql}
+          ${venueFilterSql}
           AND (${requirePromotionEligible} = FALSE OR COALESCE((d.promotion_gate->>'eligible')::boolean, false) = TRUE)
         ORDER BY d.symbol ASC, d.strategy_id ASC, d.tune_id ASC
         LIMIT ${limit};
@@ -122,6 +141,7 @@ export async function listExecutableDeploymentsFromPg(params: {
 
     return rows.map((row) => ({
         deploymentId: row.deploymentId,
+        venue: resolveScalpDeploymentVenueFromId(row.deploymentId),
         symbol: row.symbol,
         strategyId: row.strategyId,
         tuneId: row.tuneId,
@@ -136,12 +156,14 @@ export async function listExecutableDeploymentsFromPg(params: {
 }
 
 export async function listDeploymentsFromPg(params: {
+    venue?: ScalpVenue;
     symbol?: string;
     strategyId?: string;
     tuneId?: string;
     deploymentId?: string;
     limit?: number;
 } = {}): Promise<PgDeploymentRegistryRow[]> {
+    const venue = params.venue ? normalizeScalpVenue(params.venue) : null;
     const symbol = String(params.symbol || '')
         .trim()
         .toUpperCase();
@@ -153,6 +175,12 @@ export async function listDeploymentsFromPg(params: {
         .toLowerCase();
     const deploymentId = String(params.deploymentId || '').trim();
     const limit = Math.max(1, Math.min(5000, Math.floor(Number(params.limit) || 2000)));
+    const venueFilterSql =
+        venue === 'bitget'
+            ? Prisma.sql`AND deployment_id LIKE 'bitget:%'`
+            : venue === 'capital'
+            ? Prisma.sql`AND (deployment_id NOT LIKE '%:%' OR deployment_id LIKE 'capital:%')`
+            : Prisma.empty;
 
     const db = scalpPrisma();
     const rows = await db.$queryRaw<
@@ -187,12 +215,14 @@ export async function listDeploymentsFromPg(params: {
           AND (${strategyId} = '' OR strategy_id = ${strategyId})
           AND (${tuneId} = '' OR tune_id = ${tuneId})
           AND (${deploymentId} = '' OR deployment_id = ${deploymentId})
+          ${venueFilterSql}
         ORDER BY symbol ASC, strategy_id ASC, tune_id ASC
         LIMIT ${limit};
     `);
 
     return rows.map((row) => ({
         deploymentId: row.deploymentId,
+        venue: resolveScalpDeploymentVenueFromId(row.deploymentId),
         symbol: row.symbol,
         strategyId: row.strategyId,
         tuneId: row.tuneId,
@@ -208,8 +238,16 @@ export async function listDeploymentsFromPg(params: {
 
 export async function upsertDeploymentsBulkToPg(rows: PgUpsertDeploymentInput[]): Promise<number> {
     const payload = rows
-        .map((row) => ({
-            deployment_id: String(row.deploymentId || '').trim(),
+        .map((row) => {
+            const parsedDeploymentId = parseScalpVenuePrefixedDeploymentId(row.deploymentId);
+            const venue = normalizeScalpVenue(
+                row.venue ?? parsedDeploymentId.venue,
+                parsedDeploymentId.venue,
+            );
+            const deploymentKey =
+                parsedDeploymentId.deploymentKey || String(row.deploymentId || '').trim();
+            return {
+                deployment_id: formatScalpVenueDeploymentId(venue, deploymentKey),
             symbol: String(row.symbol || '').trim().toUpperCase(),
             strategy_id: String(row.strategyId || '').trim().toLowerCase(),
             tune_id: String(row.tuneId || '').trim().toLowerCase(),
@@ -218,7 +256,8 @@ export async function upsertDeploymentsBulkToPg(rows: PgUpsertDeploymentInput[])
             config_override: row.configOverride && typeof row.configOverride === 'object' ? row.configOverride : {},
             promotion_gate: row.promotionGate && typeof row.promotionGate === 'object' ? row.promotionGate : null,
             updated_by: String(row.updatedBy || '').trim() || null,
-        }))
+            };
+        })
         .filter((row) => row.deployment_id.length > 0 && row.symbol.length > 0 && row.strategy_id.length > 0 && row.tune_id.length > 0);
 
     if (!payload.length) return 0;

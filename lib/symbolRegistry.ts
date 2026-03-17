@@ -1,6 +1,7 @@
 import vercelConfig from '../vercel.json';
 import { resolveAnalysisPlatform, resolveNewsSource, type AnalysisPlatform, type NewsSource } from './platform';
 import { buildScalpDeploymentId, normalizeScalpTuneId } from './scalp/deployments';
+import { normalizeScalpVenue, type ScalpVenue } from './scalp/venue';
 import { resolveSwingCategory } from './swing/category';
 
 type VercelCron = {
@@ -9,6 +10,7 @@ type VercelCron = {
 };
 
 export type ScalpCronSymbolConfig = {
+  venue: ScalpVenue;
   symbol: string;
   strategyId: string | null;
   tuneId: string | null;
@@ -94,6 +96,7 @@ function parseScalpCronPath(path: string, schedule: string | null): ScalpCronSym
   const explicitSymbol = String(parsed.searchParams.get('symbol') || '')
     .trim()
     .toUpperCase();
+  const venue = normalizeScalpVenue(parsed.searchParams.get('venue'));
   const all = String(parsed.searchParams.get('all') || '')
     .trim()
     .toLowerCase();
@@ -101,6 +104,7 @@ function parseScalpCronPath(path: string, schedule: string | null): ScalpCronSym
   if (!symbol) return null;
 
   return {
+    venue,
     symbol,
     strategyId: normalizeScalpStrategyId(parsed.searchParams.get('strategyId')),
     tuneId: parsed.searchParams.get('tuneId') ? normalizeScalpTuneId(parsed.searchParams.get('tuneId')) : null,
@@ -108,6 +112,7 @@ function parseScalpCronPath(path: string, schedule: string | null): ScalpCronSym
       parsed.searchParams.get('deploymentId') ||
       (explicitSymbol && parsed.searchParams.get('strategyId')
         ? buildScalpDeploymentId({
+            venue,
             symbol: explicitSymbol,
             strategyId: String(parsed.searchParams.get('strategyId') || ''),
             tuneId: parsed.searchParams.get('tuneId'),

@@ -26,7 +26,7 @@ export interface ScalpSymbolMarketMetadata {
   version: 1;
   symbol: string;
   epic: string | null;
-  source: "capital" | "heuristic";
+  source: "capital" | "bitget" | "heuristic";
   assetCategory: ScalpAssetCategory;
   instrumentType: string | null;
   marketStatus: string | null;
@@ -71,6 +71,50 @@ function toPositiveNumber(value: unknown): number | null {
 function toInteger(value: unknown): number | null {
   const n = Number(value);
   return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
+function decimalPipSize(decimalPlacesFactor: number | null): number | null {
+  if (decimalPlacesFactor === null) return null;
+  const places = Math.max(0, Math.floor(decimalPlacesFactor));
+  const pip = 10 ** -places;
+  return Number.isFinite(pip) && pip > 0 ? pip : null;
+}
+
+function normalizeBitgetAssetCategory(params: {
+  source: ScalpSymbolMarketMetadata["source"];
+  symbol: string;
+  instrumentType: string | null;
+  assetCategory: ScalpAssetCategory;
+}): ScalpAssetCategory {
+  if (params.source !== "bitget") return params.assetCategory;
+  if (params.assetCategory === "crypto") return "crypto";
+  const instrumentType = String(params.instrumentType || "").trim().toUpperCase();
+  if (params.symbol.endsWith("USDT")) {
+    if (
+      params.assetCategory === "equity" ||
+      params.assetCategory === "other" ||
+      instrumentType.includes("PERP") ||
+      instrumentType.includes("FUTURE")
+    ) {
+      return "crypto";
+    }
+  }
+  return params.assetCategory;
+}
+
+function normalizeBitgetPipSize(params: {
+  source: ScalpSymbolMarketMetadata["source"];
+  assetCategory: ScalpAssetCategory;
+  explicitPipSize: number | null;
+  tickSize: number | null;
+  decimalPlacesFactor: number | null;
+  fallbackPipSize: number;
+}): number {
+  const fromDecimalPlaces = decimalPipSize(params.decimalPlacesFactor);
+  if (params.source === "bitget" && params.assetCategory === "crypto") {
+    return params.tickSize ?? fromDecimalPlaces ?? params.explicitPipSize ?? params.fallbackPipSize;
+  }
+  return params.explicitPipSize ?? params.fallbackPipSize;
 }
 
 function normalizeZone(value: unknown): string {
@@ -319,11 +363,23 @@ export function normalizeScalpSymbolMarketMetadata(
   const epic = normalizeText(value.epic)
     ? String(value.epic).trim().toUpperCase()
     : null;
+  const source: ScalpSymbolMarketMetadata["source"] =
+    value.source === "capital"
+      ? "capital"
+      : value.source === "bitget"
+        ? "bitget"
+        : "heuristic";
   const instrumentType =
     normalizeText(value.instrumentType)?.toUpperCase() || null;
-  const assetCategory =
+  const unresolvedAssetCategory =
     value.assetCategory ||
     scalpAssetCategoryFromInstrumentType(symbol, instrumentType);
+  const assetCategory = normalizeBitgetAssetCategory({
+    source,
+    symbol,
+    instrumentType,
+    assetCategory: unresolvedAssetCategory,
+  });
   const pipPosition = toInteger(value.pipPosition);
   const tickSize = toPositiveNumber(value.tickSize);
   const decimalPlacesFactor = toInteger(value.decimalPlacesFactor);
@@ -331,14 +387,20 @@ export function normalizeScalpSymbolMarketMetadata(
   const minDealSize = toPositiveNumber(value.minDealSize);
   const sizeDecimals = toInteger(value.sizeDecimals);
   const openingHours = normalizeScalpOpeningHours(value.openingHours);
-  const pipSizeCandidate =
-    toPositiveNumber(value.pipSize) ?? pipSizeForScalpSymbol(symbol);
+  const pipSizeCandidate = normalizeBitgetPipSize({
+    source,
+    assetCategory,
+    explicitPipSize: toPositiveNumber(value.pipSize),
+    tickSize,
+    decimalPlacesFactor,
+    fallbackPipSize: pipSizeForScalpSymbol(symbol),
+  });
 
   return {
     version: 1,
     symbol,
     epic,
-    source: value.source === "capital" ? "capital" : "heuristic",
+    source,
     assetCategory,
     instrumentType,
     marketStatus: normalizeText(value.marketStatus)?.toUpperCase() || null,
@@ -361,7 +423,7 @@ export function buildHeuristicScalpSymbolMarketMetadata(
   symbolRaw: string,
   params: {
     epic?: string | null;
-    source?: "capital" | "heuristic";
+    source?: "capital" | "bitget" | "heuristic";
     fetchedAtMs?: number;
   } = {},
 ): ScalpSymbolMarketMetadata {

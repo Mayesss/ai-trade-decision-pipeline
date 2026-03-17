@@ -16,6 +16,7 @@ import {
     normalizeScalpStrategyId,
 } from './strategies/registry';
 import type { ScalpJournalEntry, ScalpSessionState, ScalpTradeLedgerEntry } from './types';
+import { DEFAULT_SCALP_VENUE, normalizeScalpVenue, type ScalpVenue } from './venue';
 
 const SCALP_DEFAULT_STATE_TTL_SECONDS = 3 * 24 * 60 * 60;
 const SCALP_DEFAULT_JOURNAL_MAX = 500;
@@ -73,6 +74,7 @@ export interface ScalpStrategyRuntimeSnapshot {
 }
 
 type ScalpDeploymentKeyOptions = {
+    venue?: ScalpVenue;
     tuneId?: string;
     deploymentId?: string;
 };
@@ -85,16 +87,19 @@ function resolveStrategyId(value: unknown, fallback = defaultScalpStrategy.id): 
 }
 
 function resolveDeploymentKey(params: {
+    venue?: ScalpVenue;
     symbol: string;
     strategyId?: string;
     tuneId?: string;
     deploymentId?: string;
 }) {
     return resolveScalpDeployment({
+        venue: params.venue,
         symbol: params.symbol,
         strategyId: params.strategyId,
         tuneId: params.tuneId,
         deploymentId: params.deploymentId,
+        fallbackVenue: DEFAULT_SCALP_VENUE,
         fallbackStrategyId: defaultScalpStrategy.id,
         fallbackTuneId: DEFAULT_SCALP_TUNE_ID,
     });
@@ -103,6 +108,7 @@ function resolveDeploymentKey(params: {
 function hydrateSessionStateDeployment(
     state: ScalpSessionState,
     params: {
+        venue?: ScalpVenue;
         symbol: string;
         strategyId?: string;
         tuneId?: string;
@@ -110,6 +116,7 @@ function hydrateSessionStateDeployment(
     },
 ): ScalpSessionState {
     const deployment = resolveDeploymentKey({
+        venue: state.venue || params.venue,
         symbol: state.symbol || params.symbol,
         strategyId: state.strategyId || params.strategyId,
         tuneId: state.tuneId || params.tuneId,
@@ -118,6 +125,7 @@ function hydrateSessionStateDeployment(
     return {
         ...state,
         version: 2,
+        venue: deployment.venue,
         symbol: deployment.symbol,
         strategyId: deployment.strategyId,
         tuneId: deployment.tuneId,
@@ -436,6 +444,7 @@ function parseSessionState(raw: unknown): ScalpSessionState | null {
 
     return {
         version: Number(row.version) === 2 ? 2 : 1,
+        venue: normalizeScalpVenue(row.venue, DEFAULT_SCALP_VENUE),
         symbol,
         strategyId: normalizeScalpStrategyId(row.strategyId) || '',
         tuneId: normalizeScalpTuneId(row.tuneId, ''),
@@ -483,6 +492,7 @@ export async function loadScalpSessionState(
 ): Promise<ScalpSessionState | null> {
     if (!isScalpPgConfigured()) return null;
     const deployment = resolveDeploymentKey({
+        venue: opts.venue,
         symbol,
         strategyId,
         tuneId: opts.tuneId,
@@ -513,6 +523,7 @@ export async function saveScalpSessionState(
 ): Promise<void> {
     if (!isScalpPgConfigured()) return;
     const deployment = resolveDeploymentKey({
+        venue: opts.venue || state.venue,
         symbol: state.symbol,
         strategyId: state.strategyId || strategyId,
         tuneId: opts.tuneId || state.tuneId,

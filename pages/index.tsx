@@ -785,6 +785,27 @@ const SCALP_WORKER_TASK_LIMIT_PREVIEW = 100;
 const SCALP_WORKER_TASK_LIMIT_FULL = 5_000;
 const SCALP_MANUAL_CYCLE_START_PATH =
   "/api/scalp/cron/prepare-and-start-cycle?dryRun=false&force=false&plannerEnabled=true&autoSuccessor=true&startedBy=ui:cycle-start";
+type ScalpVenueUi = "capital" | "bitget";
+const SCALP_VENUE_ICON_SRC: Record<ScalpVenueUi, string> = {
+  capital: "/capital.svg",
+  bitget: "/bitget.svg",
+};
+
+function resolveScalpVenueUiFromDeploymentId(
+  deploymentId: string | null | undefined,
+): ScalpVenueUi {
+  const raw = String(deploymentId || "").trim().toLowerCase();
+  if (raw.startsWith("bitget:")) return "bitget";
+  return "capital";
+}
+
+function stripScalpVenuePrefixFromDeploymentId(
+  deploymentId: string | null | undefined,
+): string {
+  const raw = String(deploymentId || "").trim();
+  if (!raw) return "";
+  return raw.replace(/^(bitget|capital):/i, "").trim();
+}
 
 const ADMIN_SECRET_STORAGE_KEY = "admin_access_secret";
 const ADMIN_AUTH_TIMEOUT_MS = 4000;
@@ -3603,6 +3624,7 @@ export default function Home() {
         const status = String(task?.status || "pending")
           .trim()
           .toLowerCase();
+        const hasCompletedResult = status === "completed";
         const fromTs =
           asFiniteNumber(task?.windowFromTs) ??
           asFiniteNumber(task?.result?.windowFromTs);
@@ -3652,11 +3674,19 @@ export default function Home() {
           status,
           windowFromTs: fromTs,
           windowToTs: toTs,
-          trades: asFiniteNumber(task?.result?.trades),
-          netR: asFiniteNumber(task?.result?.netR),
-          expectancyR: asFiniteNumber(task?.result?.expectancyR),
-          profitFactor: asFiniteNumber(task?.result?.profitFactor),
-          maxDrawdownR: asFiniteNumber(task?.result?.maxDrawdownR),
+          trades: hasCompletedResult
+            ? asFiniteNumber(task?.result?.trades)
+            : null,
+          netR: hasCompletedResult ? asFiniteNumber(task?.result?.netR) : null,
+          expectancyR: hasCompletedResult
+            ? asFiniteNumber(task?.result?.expectancyR)
+            : null,
+          profitFactor: hasCompletedResult
+            ? asFiniteNumber(task?.result?.profitFactor)
+            : null,
+          maxDrawdownR: hasCompletedResult
+            ? asFiniteNumber(task?.result?.maxDrawdownR)
+            : null,
           errorCode: String(task?.errorCode || "").trim() || null,
           errorMessage: String(task?.errorMessage || "").trim() || null,
         };
@@ -5908,7 +5938,30 @@ export default function Home() {
         field: "deploymentId",
         pinned: "left",
         minWidth: 220,
-        valueFormatter: (params) => String(params.value || "—"),
+        cellRenderer: (params: any) => {
+          const deploymentId = String(params?.value || "").trim();
+          if (!deploymentId) {
+            return (
+              <span className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}>
+                —
+              </span>
+            );
+          }
+          const venue = resolveScalpVenueUiFromDeploymentId(deploymentId);
+          const iconSrc = SCALP_VENUE_ICON_SRC[venue];
+          const displayLabel =
+            stripScalpVenuePrefixFromDeploymentId(deploymentId) || deploymentId;
+          return (
+            <div className="flex items-center gap-2">
+              <img
+                src={iconSrc}
+                alt={`${venue} venue`}
+                className="h-3.5 w-auto opacity-80"
+              />
+              <span>{displayLabel}</span>
+            </div>
+          );
+        },
       },
       {
         headerName: "12w / 52w",

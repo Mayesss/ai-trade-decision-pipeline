@@ -615,6 +615,7 @@ function normalizeRegistryEntry(raw: unknown): ScalpDeploymentRegistryEntry | nu
     const legacyOverride = legacyRegimeGuardConfigOverride(raw.strategyId, raw.tuneId);
     const configOverride = mergeConfigOverrides(legacyOverride, normalizeConfigOverride(raw.configOverride));
     const deployment = resolveScalpDeployment({
+        venue: raw.venue,
         symbol: raw.symbol,
         strategyId: raw.strategyId,
         tuneId: raw.tuneId,
@@ -840,6 +841,7 @@ export async function listScalpDeploymentRegistryEntries(
 
 function mapPgDeploymentRowToRegistryEntry(row: PgDeploymentRegistryRow): ScalpDeploymentRegistryEntry {
     const deployment = resolveScalpDeployment({
+        venue: row.venue,
         symbol: row.symbol,
         strategyId: row.strategyId,
         tuneId: row.tuneId,
@@ -879,6 +881,7 @@ function toPgDeploymentUpsert(entry: ScalpDeploymentRegistryEntry): PgUpsertDepl
             : null;
     return {
         deploymentId: entry.deploymentId,
+        venue: entry.venue,
         symbol: entry.symbol,
         strategyId: entry.strategyId,
         tuneId: entry.tuneId,
