@@ -34,7 +34,6 @@ import {
   loadScalpPipelineRuntimeSnapshot,
   patchScalpPipelineRuntimeSnapshot,
 } from "../../../../lib/scalp/pipelineRuntime";
-import { loadResearchWorkerHeartbeat } from "../../../../lib/scalp/researchCycle";
 import { normalizeScalpStrategyId } from "../../../../lib/scalp/strategies/registry";
 import { deriveScalpDayKey } from "../../../../lib/scalp/stateMachine";
 import {
@@ -83,13 +82,6 @@ const HISTORY_DISCOVERY_PREVIEW_LIMIT = (() => {
   const value = Number(process.env.SCALP_DASHBOARD_HISTORY_PREVIEW_LIMIT ?? 20);
   if (!Number.isFinite(value)) return 20;
   return Math.max(1, Math.min(500, Math.floor(value)));
-})();
-const PIPELINE_ACTIVE_CYCLE_STALE_AFTER_MS = (() => {
-  const value = Number(
-    process.env.SCALP_PIPELINE_ACTIVE_CYCLE_STALE_AFTER_MS ?? 20 * 60_000,
-  );
-  if (!Number.isFinite(value)) return 20 * 60_000;
-  return Math.max(60_000, Math.floor(value));
 })();
 const historyDiscoveryCache = new Map<
   string,
@@ -268,15 +260,6 @@ type ScalpPipelineCycleTotals = NonNullable<
   NonNullable<ScalpPipelineSnapshot["cycle"]>["totals"]
 >;
 
-type PipelineCycleCandidate = {
-  cycleId: string | null;
-  status: string | null;
-  createdAtMs: bigint | number | null;
-  updatedAtMs: bigint | number | null;
-  completedAtMs: bigint | number | null;
-  summary: unknown;
-};
-
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
@@ -305,61 +288,6 @@ function asTsMs(value: unknown): number | null {
   return Math.floor(n);
 }
 
-function isFreshWorkerHeartbeatForCycle(params: {
-  cycleId: string | null;
-  nowMs: number;
-  heartbeat:
-    | {
-        cycleId: string | null;
-        status: string | null;
-        updatedAtMs: number | null;
-      }
-    | null
-    | undefined;
-}): boolean {
-  const cycleId = String(params.cycleId || "").trim();
-  if (!cycleId) return false;
-  const heartbeatCycleId = String(params.heartbeat?.cycleId || "").trim();
-  if (!heartbeatCycleId || heartbeatCycleId !== cycleId) return false;
-  const heartbeatStatus = String(params.heartbeat?.status || "")
-    .trim()
-    .toLowerCase();
-  if (heartbeatStatus !== "started") return false;
-  const updatedAtMs = asTsMs(params.heartbeat?.updatedAtMs);
-  if (updatedAtMs === null) return false;
-  return params.nowMs - updatedAtMs <= PIPELINE_ACTIVE_CYCLE_STALE_AFTER_MS;
-}
-
-function selectPipelineCycleCandidate(params: {
-  nowMs: number;
-  workerHeartbeat:
-    | {
-        cycleId: string | null;
-        status: string | null;
-        updatedAtMs: number | null;
-      }
-    | null
-    | undefined;
-  runningCycle: PipelineCycleCandidate | null;
-  fallbackCycle: PipelineCycleCandidate | null;
-}): PipelineCycleCandidate | null {
-  const runningCycle = params.runningCycle;
-  if (runningCycle?.cycleId) {
-    const runningUpdatedAtMs = asTsMs(runningCycle.updatedAtMs);
-    const runningFreshByUpdate =
-      runningUpdatedAtMs !== null &&
-      params.nowMs - runningUpdatedAtMs <= PIPELINE_ACTIVE_CYCLE_STALE_AFTER_MS;
-    const runningFreshByHeartbeat = isFreshWorkerHeartbeatForCycle({
-      cycleId: runningCycle.cycleId,
-      nowMs: params.nowMs,
-      heartbeat: params.workerHeartbeat,
-    });
-    if (runningFreshByUpdate || runningFreshByHeartbeat) {
-      return runningCycle;
-    }
-  }
-  return params.fallbackCycle || runningCycle || null;
-}
 
 function parseUnknownBool(value: unknown): boolean {
   if (typeof value === "boolean") return value;
@@ -484,18 +412,6 @@ function promotionSyncDetail(
   return parts.length ? parts.join(" · ") : null;
 }
 
-function promotionSyncMatchesCycle(
-  promotionSync: ScalpPipelineSnapshot["promotionSync"],
-  cycleId: string | null,
-): boolean {
-  if (!promotionSync || !cycleId) return false;
-  if (promotionSync.cycleId === cycleId) return true;
-  return (
-    promotionSync.status === "succeeded" &&
-    promotionSync.lastCompletedCycleId === cycleId
-  );
-}
-
 function compositePromotionProgressPct(params: {
   promotionStepIndex: number;
   totalSteps: number;
@@ -527,9 +443,6 @@ function buildPipelineStatusPanel(
   const orchestratorStatus = normalizeOrchestratorStatus(
     input.orchestrator?.status,
   );
-  const cycleStatus = String(input.cycle?.status || "")
-    .trim()
-    .toLowerCase();
   const stageIndex = PIPELINE_STEP_DEFS.findIndex((step) => step.id === stage);
   const workerStepIndex = PIPELINE_STEP_DEFS.findIndex(
     (step) => step.id === "worker",
@@ -537,98 +450,20 @@ function buildPipelineStatusPanel(
   const promotionStepIndex = PIPELINE_STEP_DEFS.findIndex(
     (step) => step.id === "promotion",
   );
-  const activeOrchestratorRunning =
+  const orchestratorActive =
     (orchestratorStatus === "working" ||
       (input.orchestrator?.isRunning === true &&
         orchestratorStatus !== "stale" &&
         orchestratorStatus !== "failed")) &&
     Boolean(stage) &&
     stage !== "done";
-  const cycleMatchesOrchestrator =
-    !activeOrchestratorRunning ||
-    !input.orchestrator?.cycleId ||
-    input.orchestrator.cycleId === input.cycle?.cycleId;
-  const cycleRunning = cycleStatus === "running";
-  const cycleCompleted = cycleStatus === "completed";
-  const cycleFailed = ["failed", "error", "aborted", "cancelled"].includes(
-    cycleStatus,
-  );
-  const cycleCompletedForDisplay = cycleCompleted && !activeOrchestratorRunning;
-  const cycleFailedForDisplay = cycleFailed && !activeOrchestratorRunning;
-  const currentCycleId = activeOrchestratorRunning
-    ? input.orchestrator?.cycleId || null
-    : input.cycle?.cycleId || input.orchestrator?.cycleId || null;
-  const promotionSync = input.promotionSync;
-  const promotionSyncForCycle = promotionSyncMatchesCycle(
-    promotionSync,
-    currentCycleId,
-  )
-    ? promotionSync
-    : null;
-  const promotionSyncFresh =
-    promotionSyncForCycle?.updatedAtMs !== null &&
-    typeof promotionSyncForCycle?.updatedAtMs === "number" &&
-    Number.isFinite(promotionSyncForCycle.updatedAtMs) &&
-    nowMs - promotionSyncForCycle.updatedAtMs <=
-      PROMOTION_SYNC_STALE_AFTER_MS;
-  const promotionRunning =
-    Boolean(promotionSyncFresh) &&
-    (promotionSyncForCycle?.status === "queued" ||
-      promotionSyncForCycle?.status === "running");
-  const promotionFailed =
-    Boolean(promotionSyncFresh) && promotionSyncForCycle?.status === "failed";
-  const promotionSucceededForCycle = Boolean(
-    currentCycleId &&
-      promotionSyncMatchesCycle(promotionSync, currentCycleId) &&
-      promotionSyncForCycle?.status === "succeeded",
-  );
-  const orchestratorErrorRaw =
-    String(input.orchestrator?.lastError || "").trim() || null;
-  const orchestratorStatusFailed = orchestratorStatus === "failed";
-  const orchestratorError =
-    panicStopEnabled && orchestratorErrorRaw === "panic_stop_enabled"
-      ? null
-      : orchestratorErrorRaw || (orchestratorStatusFailed ? "orchestrator_failed" : null);
-  const effectiveOrchestratorError =
-    stage === "promotion" && (promotionRunning || promotionSucceededForCycle)
-      ? null
-      : orchestratorError;
-  const promotionLaunchFailed =
-    !cycleRunning &&
-    cycleCompletedForDisplay &&
-    stage === "promotion" &&
-    !promotionRunning &&
-    !promotionSucceededForCycle &&
-    Boolean(effectiveOrchestratorError);
-  const promotionPending =
-    !cycleRunning &&
-    cycleCompletedForDisplay &&
-    !promotionRunning &&
-    !promotionFailed &&
-    !promotionLaunchFailed &&
-    !promotionSucceededForCycle;
-  const cycleOrchestratorProgressPct = safeProgressPct(
-    activeOrchestratorRunning && !cycleMatchesOrchestrator
-      ? input.orchestrator?.progressPct
-      : input.cycle?.progressPct ?? input.orchestrator?.progressPct,
-  );
-  const progressPct =
-    promotionRunning || promotionPending || promotionSucceededForCycle
-      ? compositePromotionProgressPct({
-          promotionStepIndex,
-          totalSteps: PIPELINE_STEP_DEFS.length,
-          processedDeployments: promotionSucceededForCycle
-            ? promotionSyncForCycle?.totalDeployments ??
-              promotionSyncForCycle?.processedDeployments ??
-              1
-            : promotionSyncForCycle?.processedDeployments ?? 0,
-          totalDeployments: promotionSucceededForCycle
-            ? promotionSyncForCycle?.totalDeployments ??
-              promotionSyncForCycle?.processedDeployments ??
-              1
-            : promotionSyncForCycle?.totalDeployments ?? 1,
-        }) ?? cycleOrchestratorProgressPct
-      : cycleOrchestratorProgressPct;
+  const currentCycleId =
+    String(
+      input.orchestrator?.cycleId ||
+        input.promotionSync?.cycleId ||
+        input.cycle?.cycleId ||
+        "",
+    ).trim() || null;
   const queuePending = safeCount(input.queue?.pending);
   const queueRunning = safeCount(input.queue?.running);
   const queueOutstanding =
@@ -640,6 +475,44 @@ function buildPipelineStatusPanel(
   if ((queueRunning ?? 0) > 0) queueDetailParts.push(`${queueRunning} running`);
   if ((queuePending ?? 0) > 0) queueDetailParts.push(`${queuePending} pending`);
   const queueDetail = queueDetailParts.length ? queueDetailParts.join(" · ") : null;
+  const promotionSync = input.promotionSync;
+  const promotionSyncFresh =
+    promotionSync?.updatedAtMs !== null &&
+    typeof promotionSync?.updatedAtMs === "number" &&
+    Number.isFinite(promotionSync.updatedAtMs) &&
+    nowMs - promotionSync.updatedAtMs <= PROMOTION_SYNC_STALE_AFTER_MS;
+  const promotionRunning =
+    Boolean(promotionSyncFresh) &&
+    (promotionSync?.status === "queued" || promotionSync?.status === "running");
+  const promotionFailed =
+    Boolean(promotionSyncFresh) && promotionSync?.status === "failed";
+  const promotionSucceeded = promotionSync?.status === "succeeded";
+  const promotionDetail =
+    promotionSync && (promotionSyncFresh || promotionSucceeded)
+      ? promotionSyncDetail(promotionSync)
+      : null;
+  const orchestratorErrorRaw =
+    String(input.orchestrator?.lastError || "").trim() || null;
+  const orchestratorStatusFailed = orchestratorStatus === "failed";
+  const orchestratorError =
+    panicStopEnabled && orchestratorErrorRaw === "panic_stop_enabled"
+      ? null
+      : orchestratorErrorRaw || (orchestratorStatusFailed ? "orchestrator_failed" : null);
+  const effectiveOrchestratorError =
+    stage === "promotion" && (promotionRunning || promotionSucceeded)
+      ? null
+      : orchestratorError;
+  const stageMeta = pipelineStageMeta(stage);
+  const orchestratorProgressPct =
+    safeProgressPct(input.orchestrator?.progressPct) ?? stageMeta.progressPct;
+  const progressPct = promotionRunning
+    ? compositePromotionProgressPct({
+        promotionStepIndex,
+        totalSteps: PIPELINE_STEP_DEFS.length,
+        processedDeployments: safeCount(promotionSync?.processedDeployments) ?? 0,
+        totalDeployments: safeCount(promotionSync?.totalDeployments) ?? 1,
+      }) ?? orchestratorProgressPct
+    : orchestratorProgressPct;
   const updatedAtMs = [
     input.panicStop.updatedAtMs,
     input.orchestrator?.updatedAtMs,
@@ -657,51 +530,45 @@ function buildPipelineStatusPanel(
   const currentStepIndex =
     promotionRunning
       ? promotionStepIndex
-      : stageIndex >= 0
+      : orchestratorActive && stageIndex >= 0
       ? stageIndex
-      : cycleRunning
-        ? workerStepIndex
-        : cycleCompleted && promotionSucceededForCycle
-          ? PIPELINE_STEP_DEFS.length - 1
-          : -1;
+      : queueHasOutstanding
+      ? workerStepIndex
+      : -1;
   const failureStepIndex =
     promotionFailed
       ? promotionStepIndex
-      : promotionLaunchFailed
-      ? promotionStepIndex
-      : effectiveOrchestratorError || cycleFailedForDisplay
+      : effectiveOrchestratorError
       ? stageIndex >= 0
         ? stageIndex
-        : workerStepIndex
+        : queueHasOutstanding
+        ? workerStepIndex
+        : -1
       : -1;
-  const workerDetail = workerStepDetail(input.cycle?.totals || null);
-  const shouldShowPromotionDetail = Boolean(
-    promotionSyncForCycle &&
-      (promotionSyncFresh || promotionSyncForCycle.status === "succeeded"),
-  );
-  const promotionDetail = shouldShowPromotionDetail
-    ? promotionSyncDetail(promotionSyncForCycle)
-    : null;
+  const workerDetail = queueDetail || workerStepDetail(input.cycle?.totals || null);
+  const completedState =
+    !orchestratorActive &&
+    !queueHasOutstanding &&
+    !promotionRunning &&
+    !promotionFailed &&
+    !effectiveOrchestratorError &&
+    (stage === "done" || promotionSucceeded);
 
   const steps = PIPELINE_STEP_DEFS.map((step, index) => {
     let state: ScalpPipelineStepState = "pending";
-    if (
-      (cycleCompletedForDisplay && promotionSucceededForCycle) ||
-      (stage === "done" && !orchestratorError && !cycleFailedForDisplay)
-    ) {
+    if (completedState) {
       state = "success";
-    } else if (promotionPending) {
-      if (index < promotionStepIndex) state = "success";
-      else if (index === promotionStepIndex) state = "pending";
     } else if (failureStepIndex >= 0) {
       if (index < failureStepIndex) state = "success";
       else if (index === failureStepIndex) state = "failed";
     } else if (currentStepIndex >= 0) {
       if (index < currentStepIndex) state = "success";
       else if (index === currentStepIndex) state = "running";
+    } else if (promotionSucceeded && index <= promotionStepIndex) {
+      state = "success";
     }
 
-    if (panicStopEnabled && !cycleRunning && state !== "success") {
+    if (panicStopEnabled && !orchestratorActive && state !== "success") {
       state = "blocked";
     }
 
@@ -730,12 +597,12 @@ function buildPipelineStatusPanel(
     (step) => step.state === "success",
   ).length;
 
-  if (panicStopEnabled && !cycleRunning) {
+  if (panicStopEnabled && !orchestratorActive && !promotionRunning) {
     return {
       status: "blocked",
       label: "Pipeline paused",
       detail: panicStopReason || "panic stop is blocking new cycle work",
-      cycleId: input.cycle?.cycleId || null,
+      cycleId: currentCycleId,
       updatedAtMs,
       progressPct,
       steps,
@@ -770,26 +637,7 @@ function buildPipelineStatusPanel(
     };
   }
 
-  if (promotionPending) {
-    return {
-      status: "running",
-      label: "Promotion gate pending",
-      detail:
-        promotionDetail ||
-        (currentCycleId
-          ? `latest cycle ${currentCycleId} completed; promotion sync has not started for this cycle`
-          : "latest cycle completed; promotion sync is pending"),
-      cycleId: currentCycleId,
-      updatedAtMs,
-      progressPct,
-      steps,
-    };
-  }
-
-  if (
-    (cycleCompletedForDisplay && promotionSucceededForCycle) ||
-    completedCount === PIPELINE_STEP_DEFS.length
-  ) {
+  if (completedState || completedCount === PIPELINE_STEP_DEFS.length) {
     return {
       status: "completed",
       label: "Latest cycle completed",
@@ -804,31 +652,10 @@ function buildPipelineStatusPanel(
     };
   }
 
-  if (queueHasOutstanding) {
-    const queueSteps = steps.map((step) => {
-      if (step.id !== "worker") return step;
-      if (step.state === "failed" || step.state === "success") return step;
-      return {
-        ...step,
-        state: "running" as const,
-        detail: step.detail || queueDetail,
-      };
-    });
-    return {
-      status: "running",
-      label: "Worker queue in progress",
-      detail: queueDetail || workerDetail || (currentCycleId ? `cycle ${currentCycleId}` : null),
-      cycleId: currentCycleId,
-      updatedAtMs,
-      progressPct,
-      steps: queueSteps,
-    };
-  }
-
   return {
     status: "idle",
-    label: activeOrchestratorRunning ? "Cycle preparation in progress" : "Awaiting next cycle",
-    detail: currentCycleId ? `last cycle ${currentCycleId}` : null,
+    label: "Awaiting next cycle",
+    detail: null,
     cycleId: currentCycleId,
     updatedAtMs,
     progressPct,
@@ -852,12 +679,6 @@ async function loadScalpPipelineSnapshot(
       runningCycleUpdatedAtMs: bigint | number | null;
       runningCycleCompletedAtMs: bigint | number | null;
       runningCycleSummary: unknown;
-      fallbackCycleId: string | null;
-      fallbackCycleStatus: string | null;
-      fallbackCycleCreatedAtMs: bigint | number | null;
-      fallbackCycleUpdatedAtMs: bigint | number | null;
-      fallbackCycleCompletedAtMs: bigint | number | null;
-      fallbackCycleSummary: unknown;
       queuePending: bigint | number | string | null;
       queueRetryWait: bigint | number | string | null;
       queueRunning: bigint | number | string | null;
@@ -895,22 +716,6 @@ async function loadScalpPipelineSnapshot(
       ORDER BY updated_at DESC
       LIMIT 1
     ),
-    fallback_cycle AS (
-      SELECT
-        cycle_id,
-        status::text AS status,
-        latest_summary_json,
-        (EXTRACT(EPOCH FROM created_at) * 1000)::bigint AS created_at_ms,
-        (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint AS updated_at_ms,
-        CASE
-          WHEN completed_at IS NULL THEN NULL
-          ELSE (EXTRACT(EPOCH FROM completed_at) * 1000)::bigint
-        END AS completed_at_ms
-      FROM scalp_research_cycles
-      WHERE status <> 'running'::scalp_cycle_status
-      ORDER BY updated_at DESC
-      LIMIT 1
-    ),
     queue_totals AS (
       SELECT
         COUNT(*) FILTER (WHERE status = 'pending')::bigint AS pending,
@@ -928,70 +733,31 @@ async function loadScalpPipelineSnapshot(
       rc.updated_at_ms AS "runningCycleUpdatedAtMs",
       rc.completed_at_ms AS "runningCycleCompletedAtMs",
       rc.latest_summary_json AS "runningCycleSummary",
-      fc.cycle_id AS "fallbackCycleId",
-      fc.status AS "fallbackCycleStatus",
-      fc.created_at_ms AS "fallbackCycleCreatedAtMs",
-      fc.updated_at_ms AS "fallbackCycleUpdatedAtMs",
-      fc.completed_at_ms AS "fallbackCycleCompletedAtMs",
-      fc.latest_summary_json AS "fallbackCycleSummary",
       qt.pending AS "queuePending",
       qt.retry_wait AS "queueRetryWait",
       qt.running AS "queueRunning"
-    FROM running_cycle rc
-    FULL OUTER JOIN fallback_cycle fc ON TRUE
-    CROSS JOIN queue_totals qt
-    UNION ALL
-    SELECT
-      (SELECT payload FROM orchestrator_state) AS "orchestratorPayload",
-      (SELECT payload FROM panic_stop_state) AS "panicStopPayload",
-      (SELECT updated_at_ms FROM panic_stop_state) AS "panicStopUpdatedAtMs",
-      NULL::text AS "runningCycleId",
-      NULL::text AS "runningCycleStatus",
-      NULL::bigint AS "runningCycleCreatedAtMs",
-      NULL::bigint AS "runningCycleUpdatedAtMs",
-      NULL::bigint AS "runningCycleCompletedAtMs",
-      NULL::jsonb AS "runningCycleSummary",
-      NULL::text AS "fallbackCycleId",
-      NULL::text AS "fallbackCycleStatus",
-      NULL::bigint AS "fallbackCycleCreatedAtMs",
-      NULL::bigint AS "fallbackCycleUpdatedAtMs",
-      NULL::bigint AS "fallbackCycleCompletedAtMs",
-      NULL::jsonb AS "fallbackCycleSummary",
-      (SELECT pending FROM queue_totals) AS "queuePending",
-      (SELECT retry_wait FROM queue_totals) AS "queueRetryWait",
-      (SELECT running FROM queue_totals) AS "queueRunning"
-    WHERE NOT EXISTS (SELECT 1 FROM running_cycle)
-      AND NOT EXISTS (SELECT 1 FROM fallback_cycle);
+    FROM queue_totals qt
+    LEFT JOIN running_cycle rc ON TRUE;
   `);
   const row = rows[0];
   if (!row) return null;
-  const [workerHeartbeat, runtimeSnapshot, promotionProgress, latestPromotionSync] =
+  const [runtimeSnapshot, promotionProgress, latestPromotionSync] =
     await Promise.all([
-      loadResearchWorkerHeartbeat(),
       loadScalpPipelineRuntimeSnapshot(),
       loadPromotionSyncProgressSnapshot(),
       loadPromotionSyncStateFromPg(),
     ]);
-  const selectedCycle = selectPipelineCycleCandidate({
-    nowMs,
-    workerHeartbeat,
-    runningCycle: {
-      cycleId: row.runningCycleId,
-      status: row.runningCycleStatus,
-      createdAtMs: row.runningCycleCreatedAtMs,
-      updatedAtMs: row.runningCycleUpdatedAtMs,
-      completedAtMs: row.runningCycleCompletedAtMs,
-      summary: row.runningCycleSummary,
-    },
-    fallbackCycle: {
-      cycleId: row.fallbackCycleId,
-      status: row.fallbackCycleStatus,
-      createdAtMs: row.fallbackCycleCreatedAtMs,
-      updatedAtMs: row.fallbackCycleUpdatedAtMs,
-      completedAtMs: row.fallbackCycleCompletedAtMs,
-      summary: row.fallbackCycleSummary,
-    },
-  });
+  const selectedCycle =
+    String(row.runningCycleId || "").trim()
+      ? {
+          cycleId: row.runningCycleId,
+          status: row.runningCycleStatus,
+          createdAtMs: row.runningCycleCreatedAtMs,
+          updatedAtMs: row.runningCycleUpdatedAtMs,
+          completedAtMs: row.runningCycleCompletedAtMs,
+          summary: row.runningCycleSummary,
+        }
+      : null;
 
   const orchestratorPayload = asRecord(row.orchestratorPayload);
   const panicStopPayload = asRecord(row.panicStopPayload);
@@ -1148,9 +914,8 @@ async function loadScalpPipelineSnapshot(
   const cycleProgressForOrchestrator =
     cycleProgressPct !== null &&
     selectedCycle?.cycleId &&
-    (mergedOrchestratorCycleId
-      ? selectedCycle.cycleId === mergedOrchestratorCycleId
-      : selectedCycle.status === "running")
+    mergedOrchestratorCycleId &&
+    selectedCycle.cycleId === mergedOrchestratorCycleId
       ? cycleProgressPct
       : null;
   const orchestratorBaseProgressPct =

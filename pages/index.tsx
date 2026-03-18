@@ -3268,6 +3268,10 @@ export default function Home() {
     asFiniteNumber(scalpPipelineStatusPanel?.progressPct) ??
     asFiniteNumber(scalpPipelineCycle?.progressPct) ??
     asFiniteNumber(scalpPipelineOrchestrator?.progressPct);
+  const scalpPipelineHeroProgressPct =
+    asFiniteNumber(scalpPipelineStatusPanel?.progressPct) ??
+    asFiniteNumber(scalpPipelineOrchestrator?.progressPct) ??
+    null;
   const scalpPipelineStatusProgressLabel =
     typeof scalpPipelineStatusProgressPct === "number"
       ? `${scalpPipelineStatusProgressPct.toFixed(0)}%`
@@ -3525,6 +3529,14 @@ export default function Home() {
           100
         : (asFiniteNumber(scalpResearchReport?.cycle?.progressPct) ??
           asFiniteNumber(scalpPipelineCycle?.progressPct))));
+  const scalpCycleProgressLabelForHero =
+    scalpCycleHeadlineUsesQueueFallback || scalpCycleProgressPct === null
+      ? null
+      : `${scalpCycleProgressPct.toFixed(0)}%`;
+  const scalpPipelineProgressLabelForHero =
+    scalpPipelineHeroProgressPct === null
+      ? "—"
+      : `${scalpPipelineHeroProgressPct.toFixed(0)}%`;
   const scalpUniverseSelectedCount =
     asFiniteNumber(scalpResearchUniverse?.selectedCount) ??
     asFiniteNumber(scalpResearchUniverse?.snapshot?.selectedSymbols?.length);
@@ -6970,7 +6982,7 @@ export default function Home() {
                               <p
                                 className={`text-[11px] uppercase tracking-[0.16em] ${scalpTextMutedClass}`}
                               >
-                                Cycle Progress
+                                Pipeline Progress
                               </p>
                               <span
                                 className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${scalpCronDetailToneMeta(
@@ -6995,15 +7007,14 @@ export default function Home() {
                               <p
                                 className={`text-2xl font-semibold ${scalpTextPrimaryClass}`}
                               >
-                                {scalpCycleHeadlineUsesQueueFallback ||
-                                scalpCycleProgressPct === null
-                                  ? "—"
-                                  : `${scalpCycleProgressPct.toFixed(0)}%`}
+                                {scalpPipelineProgressLabelForHero}
                               </p>
                               <p
                                 className={`pb-0.5 text-sm ${scalpTextSecondaryClass}`}
                               >
-                                {scalpCycleHeadlineTaskLabel}
+                                {scalpCycleProgressLabelForHero
+                                  ? `${scalpCycleHeadlineTaskLabel} · cycle ${scalpCycleProgressLabelForHero}`
+                                  : scalpCycleHeadlineTaskLabel}
                               </p>
                             </div>
                             <p
