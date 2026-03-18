@@ -237,6 +237,7 @@ export interface StartResearchCycleParams {
   tunerEnabled?: boolean;
   maxTuneVariantsPerStrategy?: number;
   plannerEnabled?: boolean;
+  bitgetOnlyNewTasks?: boolean;
   requireUniverseSnapshot?: boolean;
   requireReportSnapshot?: boolean;
   startedBy?: string | null;
@@ -1759,12 +1760,31 @@ export function buildResearchCycleTasks(params: {
     tuneId: string;
     configOverride?: ScalpStrategyConfigOverride | null;
   }>;
+  allowedVenues?: Array<"capital" | "bitget">;
 }): ScalpResearchTask[] {
   const symbols = dedupe(
     params.symbols
       .map((row) => normalizeSymbol(row))
       .filter((row) => Boolean(row)),
   );
+  const allowedVenueSet = new Set<"capital" | "bitget">(
+    (Array.isArray(params.allowedVenues) &&
+    params.allowedVenues.length > 0
+      ? params.allowedVenues
+      : ["capital", "bitget"]
+    ).filter(
+      (row): row is "capital" | "bitget" =>
+        row === "capital" || row === "bitget",
+    ),
+  );
+  if (allowedVenueSet.size === 0) {
+    allowedVenueSet.add("capital");
+    allowedVenueSet.add("bitget");
+  }
+  const forcedVenue =
+    allowedVenueSet.size === 1
+      ? (Array.from(allowedVenueSet)[0] as "capital" | "bitget")
+      : null;
   // Enforce full ISO-like trading weeks: Monday 00:00 UTC -> next Monday 00:00 UTC.
   // `chunkDays` is intentionally ignored so all task windows stay weekly.
   const { completedWeekEndTs, fromTs } = resolveResearchTaskWindowBounds(
@@ -1888,13 +1908,19 @@ export function buildResearchCycleTasks(params: {
       undefined;
     const inferredSymbolVenue =
       preferredVenueBySymbol.get(normalizeSymbol(row.symbol)) || undefined;
+    const resolvedVenueInput =
+      forcedVenue || row.venue || inferredSymbolVenue;
     const deployment = resolveScalpDeployment({
-      venue: row.venue ?? inferredSymbolVenue,
+      venue: resolvedVenueInput,
       symbol: row.symbol,
       strategyId: row.strategyId,
       tuneId: row.tuneId,
-      deploymentId: fallbackDeploymentId,
+      deploymentId: forcedVenue ? undefined : fallbackDeploymentId,
+      fallbackVenue: forcedVenue || undefined,
     });
+    if (!allowedVenueSet.has(deployment.venue)) {
+      return false;
+    }
     let chunkFrom = fromTs;
     let chunkIdx = 0;
     while (chunkFrom < completedWeekEndTs) {
@@ -2989,7 +3015,44 @@ export async function startScalpResearchCycle(
     const plannerPolicy = resolveScalpResearchPlannerPolicy({
       enabled: params.plannerEnabled,
     });
-    const symbols = preflight.resolvedSymbols;
+    const bitgetOnlyNewTasks =
+      params.bitgetOnlyNewTasks ??
+      toBool(process.env.SCALP_RESEARCH_NEW_TASKS_BITGET_ONLY, true);
+    const registryDeployments = (
+      await loadScalpDeploymentRegistry()
+    ).deployments.map((row) => ({
+      deploymentId: row.deploymentId,
+      venue: row.venue,
+      symbol: row.symbol,
+      strategyId: row.strategyId,
+      tuneId: row.tuneId,
+      configOverride: row.configOverride || null,
+    }));
+    const preflightSymbols = preflight.resolvedSymbols;
+    const marketMetadataBySymbol = bitgetOnlyNewTasks
+      ? await loadScalpSymbolMarketMetadataBulk(preflightSymbols)
+      : new Map<string, ScalpSymbolMarketMetadata | null>();
+    const registryBitgetSymbols = new Set(
+      registryDeployments
+        .filter((row) => {
+          const venueRaw = String(row.venue || "")
+            .trim()
+            .toLowerCase();
+          if (venueRaw === "bitget") return true;
+          return (
+            resolveScalpDeploymentVenueFromId(row.deploymentId) === "bitget"
+          );
+        })
+        .map((row) => normalizeSymbol(row.symbol))
+        .filter((row) => Boolean(row)),
+    );
+    const symbols = bitgetOnlyNewTasks
+      ? preflightSymbols.filter((symbol) => {
+          const metadata = marketMetadataBySymbol.get(symbol) || null;
+          if (metadata?.source === "bitget") return true;
+          return registryBitgetSymbols.has(symbol);
+        })
+      : preflightSymbols;
 
     const cycleId = buildResearchCycleId(nowMs);
     const cycleParams: ScalpResearchCycleParams = {
@@ -3070,16 +3133,8 @@ export async function startScalpResearchCycle(
       plannerEnabled: cycleParams.plannerEnabled,
       previousSummary,
       historicalTasks,
-      registryDeployments: (
-        await loadScalpDeploymentRegistry()
-      ).deployments.map((row) => ({
-        deploymentId: row.deploymentId,
-        venue: row.venue,
-        symbol: row.symbol,
-        strategyId: row.strategyId,
-        tuneId: row.tuneId,
-        configOverride: row.configOverride || null,
-      })),
+      registryDeployments,
+      allowedVenues: bitgetOnlyNewTasks ? ["bitget"] : ["bitget", "capital"],
     });
     let tasks = plannedTasks;
     if (!plannerPolicy.enabled && historicalTasks.length > 0) {

@@ -157,6 +157,35 @@ test("buildResearchCycleTasks enforces maxTasks cap", () => {
   assert.equal(tasks.length, 3);
 });
 
+test("buildResearchCycleTasks supports bitget-only venue gating for new tasks", () => {
+  const nowMs = Date.UTC(2026, 2, 1);
+  const tasks = buildResearchCycleTasks({
+    cycleId: "rc_bitget_only",
+    nowMs,
+    symbols: ["BTCUSDT"],
+    lookbackDays: 28,
+    chunkDays: 14,
+    maxTasks: 8,
+    strategyAllowlist: ["regime_pullback_m15_m3"],
+    tunerEnabled: false,
+    maxTuneVariantsPerStrategy: 1,
+    allowedVenues: ["bitget"],
+    registryDeployments: [
+      {
+        deploymentId: "BTCUSDT~regime_pullback_m15_m3~default",
+        venue: "capital",
+        symbol: "BTCUSDT",
+        strategyId: "regime_pullback_m15_m3",
+        tuneId: "default",
+        configOverride: null,
+      },
+    ],
+  });
+
+  assert.ok(tasks.length > 0);
+  assert.ok(tasks.every((task) => task.deploymentId.startsWith("bitget:")));
+});
+
 test("buildResearchCycleTasks expands symbol+strategy into capped tune variants when tuner is enabled", () => {
   const nowMs = Date.UTC(2026, 2, 1);
   const tasks = buildResearchCycleTasks({

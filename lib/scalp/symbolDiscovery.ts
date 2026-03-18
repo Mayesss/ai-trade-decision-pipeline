@@ -119,6 +119,11 @@ export interface ScalpSymbolUniverseSnapshot {
     seedSummary?: ScalpSymbolDiscoverySeedSummary | null;
 }
 
+export interface ScalpSymbolDiscoverySourceOverrides {
+    includeCapitalMarketsApi?: boolean;
+    includeBitgetMarketsApi?: boolean;
+}
+
 export interface ScalpSymbolDiscoveryRunParams {
     dryRun?: boolean;
     includeLiveQuotes?: boolean;
@@ -133,6 +138,7 @@ export interface ScalpSymbolDiscoveryRunParams {
     seedTimeframe?: string;
     seedOnDryRun?: boolean;
     seedAllowBootstrapSymbols?: boolean;
+    sourceOverrides?: ScalpSymbolDiscoverySourceOverrides;
 }
 
 export interface ScalpSymbolDiscoverySeedSymbolResult {
@@ -512,6 +518,24 @@ function normalizePolicy(raw: unknown): ScalpSymbolDiscoveryPolicy {
         },
         pinnedSymbols: normalizeStringArray(row.pinnedSymbols),
         strategyAllowlist: normalizeStrategyIdArray(row.strategyAllowlist),
+    };
+}
+
+function applyPolicySourceOverrides(
+    policy: ScalpSymbolDiscoveryPolicy,
+    overrides: ScalpSymbolDiscoverySourceOverrides | null | undefined,
+): ScalpSymbolDiscoveryPolicy {
+    if (!overrides) return policy;
+    const hasCapitalOverride = Object.prototype.hasOwnProperty.call(overrides, 'includeCapitalMarketsApi');
+    const hasBitgetOverride = Object.prototype.hasOwnProperty.call(overrides, 'includeBitgetMarketsApi');
+    if (!hasCapitalOverride && !hasBitgetOverride) return policy;
+    return {
+        ...policy,
+        sources: {
+            ...policy.sources,
+            ...(hasCapitalOverride ? { includeCapitalMarketsApi: Boolean(overrides.includeCapitalMarketsApi) } : {}),
+            ...(hasBitgetOverride ? { includeBitgetMarketsApi: Boolean(overrides.includeBitgetMarketsApi) } : {}),
+        },
     };
 }
 
@@ -1733,6 +1757,40 @@ async function buildCandidatePool(
     const isBerlinWeekend = isBerlinWeekendMs(params.nowMs);
     const requireTradeableForDiscovery = policy.criteria.requireTradableQuote && params.includeLiveQuotes && !isBerlinWeekend;
 
+    if (policy.sources.includeBitgetMarketsApi) {
+        const maxSymbols = Math.max(policy.limits.maxCandidates * 3, policy.limits.maxUniverseSymbols * 4, 200);
+        const hasPreloadedBitgetDiscovery = params.discoveredBitgetSymbols !== undefined;
+        try {
+            const discoveredBitgetSymbols =
+                hasPreloadedBitgetDiscovery
+                    ? params.discoveredBitgetSymbols
+                    : await discoverBitgetMarketSymbols({ maxSymbols });
+            diagnostics.sourceCounts.bitgetMarketsApiRows = discoveredBitgetSymbols?.diagnostics.rowsSeen || 0;
+            if (!discoveredBitgetSymbols) {
+                diagnostics.bitgetMarketsApiError = String(
+                    params.bitgetDiscoveryError || 'bitget_markets_api_discovery_failed',
+                ).slice(0, 220);
+            } else if ((discoveredBitgetSymbols.diagnostics.errors || []).length > 0) {
+                diagnostics.bitgetMarketsApiError = (discoveredBitgetSymbols.diagnostics.errors || []).slice(0, 3).join(' | ');
+            } else if (
+                (discoveredBitgetSymbols.diagnostics.rowsSeen || 0) > 0 &&
+                (discoveredBitgetSymbols.diagnostics.mappedSymbols || 0) === 0
+            ) {
+                diagnostics.bitgetMarketsApiError = 'bitget_markets_rows_unmapped';
+            }
+            for (const symbol of discoveredBitgetSymbols?.symbols || []) {
+                if (policy.sources.requireHistoryPresence && !historySymbolSet.has(normalizeSymbol(symbol))) continue;
+                addFromSource('bitgetMarketsApi', symbol);
+            }
+        } catch (err: any) {
+            const fallback =
+                hasPreloadedBitgetDiscovery && params.bitgetDiscoveryError
+                    ? params.bitgetDiscoveryError
+                    : String(err?.message || err || 'bitget_markets_api_discovery_failed');
+            diagnostics.bitgetMarketsApiError = String(fallback).slice(0, 220);
+        }
+    }
+
     if (policy.sources.includeCapitalMarketsApi) {
         const maxSymbols = Math.max(policy.limits.maxCandidates * 3, policy.limits.maxUniverseSymbols * 4, 200);
         const hasPreloadedDiscovery = params.discoveredSymbols !== undefined;
@@ -1777,40 +1835,6 @@ async function buildCandidatePool(
                     ? params.discoveryError
                     : String(err?.message || err || 'capital_markets_api_discovery_failed');
             diagnostics.capitalMarketsApiError = String(fallback).slice(0, 220);
-        }
-    }
-
-    if (policy.sources.includeBitgetMarketsApi) {
-        const maxSymbols = Math.max(policy.limits.maxCandidates * 3, policy.limits.maxUniverseSymbols * 4, 200);
-        const hasPreloadedBitgetDiscovery = params.discoveredBitgetSymbols !== undefined;
-        try {
-            const discoveredBitgetSymbols =
-                hasPreloadedBitgetDiscovery
-                    ? params.discoveredBitgetSymbols
-                    : await discoverBitgetMarketSymbols({ maxSymbols });
-            diagnostics.sourceCounts.bitgetMarketsApiRows = discoveredBitgetSymbols?.diagnostics.rowsSeen || 0;
-            if (!discoveredBitgetSymbols) {
-                diagnostics.bitgetMarketsApiError = String(
-                    params.bitgetDiscoveryError || 'bitget_markets_api_discovery_failed',
-                ).slice(0, 220);
-            } else if ((discoveredBitgetSymbols.diagnostics.errors || []).length > 0) {
-                diagnostics.bitgetMarketsApiError = (discoveredBitgetSymbols.diagnostics.errors || []).slice(0, 3).join(' | ');
-            } else if (
-                (discoveredBitgetSymbols.diagnostics.rowsSeen || 0) > 0 &&
-                (discoveredBitgetSymbols.diagnostics.mappedSymbols || 0) === 0
-            ) {
-                diagnostics.bitgetMarketsApiError = 'bitget_markets_rows_unmapped';
-            }
-            for (const symbol of discoveredBitgetSymbols?.symbols || []) {
-                if (policy.sources.requireHistoryPresence && !historySymbolSet.has(normalizeSymbol(symbol))) continue;
-                addFromSource('bitgetMarketsApi', symbol);
-            }
-        } catch (err: any) {
-            const fallback =
-                hasPreloadedBitgetDiscovery && params.bitgetDiscoveryError
-                    ? params.bitgetDiscoveryError
-                    : String(err?.message || err || 'bitget_markets_api_discovery_failed');
-            diagnostics.bitgetMarketsApiError = String(fallback).slice(0, 220);
         }
     }
 
@@ -2092,13 +2116,32 @@ export async function runScalpSymbolDiscoveryCycle(
     const dryRun = Boolean(params.dryRun);
     const includeLiveQuotes = params.includeLiveQuotes ?? true;
 
-    const policy = await loadScalpSymbolDiscoveryPolicy();
+    const policy = applyPolicySourceOverrides(
+        await loadScalpSymbolDiscoveryPolicy(),
+        params.sourceOverrides,
+    );
     const previous = await loadScalpSymbolUniverseSnapshot();
 
     const knownStrategies = new Set(listScalpStrategies().map((row) => row.id));
     const seedConfig = resolveSeedConfig(params, policy);
-    const seedShouldRun = seedConfig.enabled && (!dryRun || seedConfig.seedOnDryRun);
-    const shouldLoadCapitalDiscovery = seedShouldRun || policy.sources.includeCapitalMarketsApi;
+    const shouldLoadCapitalDiscovery = policy.sources.includeCapitalMarketsApi;
+    const seedShouldRun = shouldLoadCapitalDiscovery && seedConfig.enabled && (!dryRun || seedConfig.seedOnDryRun);
+    const shouldLoadBitgetDiscovery = policy.sources.includeBitgetMarketsApi;
+    let preloadedBitgetDiscovery: BitgetDiscoveryResult | null | undefined = undefined;
+    let preloadedBitgetDiscoveryError: string | null = null;
+    if (shouldLoadBitgetDiscovery) {
+        const maxSymbols = Math.max(
+            seedConfig.requestedTopSymbols * 6,
+            policy.limits.maxCandidates * 3,
+            policy.limits.maxUniverseSymbols * 4,
+            200,
+        );
+        preloadedBitgetDiscovery = await discoverBitgetMarketSymbols({ maxSymbols });
+        if ((preloadedBitgetDiscovery.diagnostics.errors || []).length > 0) {
+            preloadedBitgetDiscoveryError = (preloadedBitgetDiscovery.diagnostics.errors || []).slice(0, 3).join(' | ');
+        }
+    }
+
     let preloadedDiscovery: CapitalDiscoveryResult | null | undefined = undefined;
     let preloadedDiscoveryError: string | null = null;
     if (shouldLoadCapitalDiscovery) {
@@ -2129,7 +2172,7 @@ export async function runScalpSymbolDiscoveryCycle(
               preloadedDiscovery,
               preloadedDiscoveryError,
           })
-        : seedConfig.enabled
+        : seedConfig.enabled && shouldLoadCapitalDiscovery
           ? {
                 enabled: true,
                 dryRun,
@@ -2148,22 +2191,6 @@ export async function runScalpSymbolDiscoveryCycle(
                 results: [],
             }
           : null;
-
-    const shouldLoadBitgetDiscovery = policy.sources.includeBitgetMarketsApi;
-    let preloadedBitgetDiscovery: BitgetDiscoveryResult | null | undefined = undefined;
-    let preloadedBitgetDiscoveryError: string | null = null;
-    if (shouldLoadBitgetDiscovery) {
-        const maxSymbols = Math.max(
-            seedConfig.requestedTopSymbols * 6,
-            policy.limits.maxCandidates * 3,
-            policy.limits.maxUniverseSymbols * 4,
-            200,
-        );
-        preloadedBitgetDiscovery = await discoverBitgetMarketSymbols({ maxSymbols });
-        if ((preloadedBitgetDiscovery.diagnostics.errors || []).length > 0) {
-            preloadedBitgetDiscoveryError = (preloadedBitgetDiscovery.diagnostics.errors || []).slice(0, 3).join(' | ');
-        }
-    }
 
     const candidatePool = await buildCandidatePool(policy, {
         includeLiveQuotes,

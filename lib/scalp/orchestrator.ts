@@ -301,6 +301,17 @@ function toPositiveInt(value: unknown, fallback: number): number {
     return n;
 }
 
+function toBool(value: unknown, fallback: boolean): boolean {
+    if (typeof value === 'boolean') return value;
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase();
+    if (!normalized) return fallback;
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+    return fallback;
+}
+
 function classifyOrchestratorDbError(error: unknown): string {
     const message = String((error as any)?.message || error || '')
         .trim()
@@ -363,6 +374,8 @@ export async function runScalpPipelineOrchestrator(
     const safetyMs = 30_000;
     const deadlineMs = startedAtMs + Math.max(10_000, maxDurationMs - safetyMs);
     const stageEvents: Array<Record<string, unknown>> = [];
+    const includeBitgetDiscovery = toBool(process.env.SCALP_ORCHESTRATOR_DISCOVERY_INCLUDE_BITGET, true);
+    const includeCapitalDiscovery = toBool(process.env.SCALP_ORCHESTRATOR_DISCOVERY_INCLUDE_CAPITAL, false);
 
     if (!isScalpPgConfigured()) {
         return {
@@ -494,6 +507,11 @@ export async function runScalpPipelineOrchestrator(
                 const snapshot = await runScalpSymbolDiscoveryCycle({
                     dryRun: false,
                     includeLiveQuotes: true,
+                    seedTopSymbols: includeCapitalDiscovery ? undefined : 0,
+                    sourceOverrides: {
+                        includeBitgetMarketsApi: includeBitgetDiscovery,
+                        includeCapitalMarketsApi: includeCapitalDiscovery,
+                    },
                 });
                 state.stage = 'load_candles';
                 state.loadCursor = 0;
@@ -511,6 +529,8 @@ export async function runScalpPipelineOrchestrator(
                     durationMs: nowMs() - t0,
                     selectedSymbols: snapshot.selectedSymbols.length,
                     candidatesEvaluated: snapshot.candidatesEvaluated,
+                    includeBitgetDiscovery,
+                    includeCapitalDiscovery,
                 });
                 await saveOrchestratorState(state);
                 continue;

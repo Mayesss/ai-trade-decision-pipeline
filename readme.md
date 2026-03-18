@@ -237,7 +237,8 @@ npm run start
 - `GET /api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true`
   - Weekly symbol-discovery cron. Scores symbols using policy + history quality + optional live quote checks, then writes the selected universe snapshot.
   - Policy file: `data/scalp-symbol-discovery-policy.json`.
-  - Candidate pool can be sourced directly from Capital market search (`sources.includeCapitalMarketsApi=true`).
+  - Candidate pool can be sourced from Bitget contracts (`sources.includeBitgetMarketsApi=true`) and/or Capital market search (`sources.includeCapitalMarketsApi=true`).
+  - When both sources are enabled, Bitget symbols are ingested first (preferred source ordering).
   - Capital discovery now uses a full `/markets` scan first (local ranking/filtering), then falls back to term search only if full scan fails.
   - Optional env: `CAPITAL_MARKET_DISCOVERY_TERMS=USD,USDT,EUR,...` to control market-search terms.
   - Response includes `diagnostics` with source counts and Capital-market discovery error (if any).
@@ -258,9 +259,12 @@ npm run start
     - Seed stage now keeps fetching backfill/forward windows until both target span and freshness are met (90d + <=12h lag), or reports `seed_target_unmet`.
 - `GET /api/scalp/cron/research-cycle-start?dryRun=false`
   - Starts a chunked offline research cycle over the active symbol universe (or explicit `symbols=...`) and persists task rows in KV.
+  - New task creation is Bitget-only by default (`SCALP_RESEARCH_NEW_TASKS_BITGET_ONLY=true`).
   - Optional query params: `symbols=BTCUSDT,XAUUSDT`, `lookbackDays`, `chunkDays`, `maxTasks`, `maxAttempts`, `minCandlesPerTask`, `force`.
 - `GET /api/scalp/cron/orchestrate-pipeline?maxDurationMs=600000`
   - Runs staged scalp pipeline orchestration (`discover -> load_candles -> prepare`) and persists progress in `scalp_pipeline_orchestrator_state_v1`.
+  - Orchestrator discovery defaults to Bitget-only source overrides (`SCALP_ORCHESTRATOR_DISCOVERY_INCLUDE_BITGET=true`, `SCALP_ORCHESTRATOR_DISCOVERY_INCLUDE_CAPITAL=false`).
+  - Capital seed prefetch is disabled when orchestrator Capital discovery is disabled.
   - When a run exits with `status=continued`, the route self-invokes by default (`selfInvokeOnContinue=true`) using detached cron chaining and `continue=1`.
   - Self-invoke hop budget is capped by `selfInvokeMaxHops` (query) or `SCALP_ORCHESTRATOR_SELF_INVOKE_MAX_HOPS` (env, default `8`).
   - Response includes `selfInvoke` metadata with hop counters and continuation invoke status.
