@@ -5,7 +5,10 @@ import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 const PIPELINE_RUNTIME_KIND = 'execute_cycle';
 const PIPELINE_RUNTIME_DEDUPE_KEY = 'scalp_pipeline_runtime_v1';
 
+export type ScalpPipelineRuntimeOrchestratorStatus = 'working' | 'idle' | 'stale' | 'failed';
+
 export type ScalpPipelineRuntimeOrchestratorSnapshot = {
+    status: ScalpPipelineRuntimeOrchestratorStatus;
     runId: string | null;
     stage: string | null;
     cycleId: string | null;
@@ -101,10 +104,31 @@ function parseBool(value: unknown): boolean | null {
     return null;
 }
 
+function normalizeScalpPipelineRuntimeOrchestratorStatus(
+    value: unknown,
+): ScalpPipelineRuntimeOrchestratorStatus | null {
+    const status = normalizeOptionalText(value, 20, (text) => text.toLowerCase());
+    if (!status) return null;
+    if (status === 'working' || status === 'idle' || status === 'stale' || status === 'failed') {
+        return status;
+    }
+    return null;
+}
+
+export function inferScalpPipelineRuntimeOrchestratorStatus(params: {
+    isRunning: boolean;
+    lastError: string | null;
+}): ScalpPipelineRuntimeOrchestratorStatus {
+    if (params.lastError) return 'failed';
+    if (params.isRunning) return 'working';
+    return 'idle';
+}
+
 export function normalizeScalpPipelineRuntimeOrchestrator(
     value: unknown,
 ): ScalpPipelineRuntimeOrchestratorSnapshot | null {
     const row = asRecord(value);
+    const explicitStatus = normalizeScalpPipelineRuntimeOrchestratorStatus(row.status);
     const runId = normalizeOptionalText(row.runId, 120);
     const stage = normalizeOptionalText(row.stage, 60, (text) => text.toLowerCase());
     const cycleId = normalizeOptionalText(row.cycleId, 120);
@@ -121,7 +145,10 @@ export function normalizeScalpPipelineRuntimeOrchestrator(
         startedAtMs !== null &&
         (completedAtMs === null || completedAtMs < startedAtMs) &&
         !lastError;
+    const resolvedIsRunning = explicitIsRunning ?? inferredIsRunning;
+    const status = explicitStatus ?? inferScalpPipelineRuntimeOrchestratorStatus({ isRunning: resolvedIsRunning, lastError });
     if (
+        explicitStatus === null &&
         !runId &&
         !stage &&
         !cycleId &&
@@ -136,13 +163,14 @@ export function normalizeScalpPipelineRuntimeOrchestrator(
         return null;
     }
     return {
+        status,
         runId,
         stage,
         cycleId,
         startedAtMs,
         updatedAtMs,
         completedAtMs,
-        isRunning: explicitIsRunning ?? inferredIsRunning,
+        isRunning: resolvedIsRunning,
         progressPct,
         progressLabel,
         lastError,

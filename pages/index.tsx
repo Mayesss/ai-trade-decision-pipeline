@@ -275,8 +275,10 @@ type ScalpSummaryResponse = {
       updatedBy?: string | null;
     } | null;
     orchestrator?: {
+      status?: "working" | "idle" | "stale" | "failed" | null;
       runId?: string | null;
       stage?: string | null;
+      cycleId?: string | null;
       startedAtMs?: number | null;
       updatedAtMs?: number | null;
       completedAtMs?: number | null;
@@ -784,7 +786,7 @@ const SCALP_PROMOTION_SYNC_REFRESH_MS = 5 * 60_000;
 const SCALP_WORKER_TASK_LIMIT_PREVIEW = 100;
 const SCALP_WORKER_TASK_LIMIT_FULL = 5_000;
 const SCALP_MANUAL_CYCLE_START_PATH =
-  "/api/scalp/cron/prepare-and-start-cycle?dryRun=false&force=false&plannerEnabled=true&autoSuccessor=true&startedBy=ui:cycle-start";
+  "/api/scalp/cron/orchestrate-pipeline?maxDurationMs=600000&selfInvokeOnContinue=true&selfInvokeMaxHops=8";
 type ScalpVenueUi = "capital" | "bitget";
 const SCALP_VENUE_ICON_SRC: Record<ScalpVenueUi, string> = {
   capital: "/capital.svg",
@@ -852,7 +854,7 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<
       "/api/scalp/cron/research-cycle-start",
     ],
     fallbackInvokePath:
-      "/api/scalp/cron/prepare-and-start-cycle?dryRun=false&force=false&runDiscovery=false&lookbackDays=90&chunkDays=7&minCandlesPerTask=180&maxSymbolsPerRun=12&maxRequestsPerSymbol=24&maxDurationMs=240000",
+      "/api/scalp/cron/orchestrate-pipeline?maxDurationMs=600000&selfInvokeOnContinue=true&selfInvokeMaxHops=8",
   },
   scalp_cycle_worker: {
     primaryPathname: "/api/scalp/cron/research-cycle-worker",

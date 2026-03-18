@@ -1,10 +1,17 @@
 import { Prisma } from '@prisma/client';
 
-import { patchScalpPipelineRuntimeSnapshot, type ScalpPipelineRuntimeOrchestratorSnapshot } from './pipelineRuntime';
+import {
+    inferScalpPipelineRuntimeOrchestratorStatus,
+    patchScalpPipelineRuntimeSnapshot,
+    type ScalpPipelineRuntimeOrchestratorSnapshot,
+} from './pipelineRuntime';
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 import { loadScalpPanicStopState } from './panicStop';
 import { prepareAndStartScalpResearchCycle } from './prepareAndStartCycle';
 import { runScalpSymbolDiscoveryCycle } from './symbolDiscovery';
+import { loadScalpDeploymentRegistry } from './deploymentRegistry';
+import { resolveScalpDeploymentVenueFromId } from './deployments';
+import { loadScalpSymbolMarketMetadataBulk } from './symbolMarketMetadataStore';
 
 type OrchestratorStage = 'discover' | 'load_candles' | 'prepare' | 'done';
 
@@ -91,6 +98,51 @@ function newRunId(tsMs: number): string {
     return `scalp_orch_${tsMs}_${Math.floor(Math.random() * 1_000_000)}`;
 }
 
+function normalizeSymbol(value: unknown): string {
+    return String(value || '')
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9._-]/g, '');
+}
+
+function dedupeSymbols(values: string[]): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of values) {
+        const symbol = normalizeSymbol(raw);
+        if (!symbol || seen.has(symbol)) continue;
+        seen.add(symbol);
+        out.push(symbol);
+    }
+    return out;
+}
+
+async function filterToBitgetSymbols(symbolsRaw: string[]): Promise<string[]> {
+    const symbols = dedupeSymbols(symbolsRaw);
+    if (symbols.length === 0) return symbols;
+    const [metadataBySymbol, registry] = await Promise.all([
+        loadScalpSymbolMarketMetadataBulk(symbols),
+        loadScalpDeploymentRegistry(),
+    ]);
+    const registryBitgetSymbols = new Set(
+        registry.deployments
+            .filter((row) => {
+                const venueRaw = String(row.venue || '')
+                    .trim()
+                    .toLowerCase();
+                if (venueRaw === 'bitget') return true;
+                return resolveScalpDeploymentVenueFromId(row.deploymentId) === 'bitget';
+            })
+            .map((row) => normalizeSymbol(row.symbol))
+            .filter((row) => Boolean(row)),
+    );
+    return symbols.filter((symbol) => {
+        const metadata = metadataBySymbol.get(symbol) || null;
+        if (metadata?.source === 'bitget') return true;
+        return registryBitgetSymbols.has(symbol);
+    });
+}
+
 function newState(tsMs: number): OrchestratorState {
     return {
         version: 1,
@@ -142,19 +194,21 @@ function buildRuntimeOrchestratorSnapshot(
     const updatedAtMs = state.updatedAtMs > 0 ? state.updatedAtMs : null;
     const completedAtMs = state.completedAtMs && state.completedAtMs > 0 ? state.completedAtMs : null;
     const lastError = state.lastError || null;
+    const isRunning =
+        Boolean(state.stage) &&
+        state.stage !== 'done' &&
+        startedAtMs !== null &&
+        (completedAtMs === null || completedAtMs < startedAtMs) &&
+        !lastError;
     return {
+        status: inferScalpPipelineRuntimeOrchestratorStatus({ isRunning, lastError }),
         runId: state.runId || null,
         stage: state.stage || null,
         cycleId: state.cycleId || null,
         startedAtMs,
         updatedAtMs,
         completedAtMs,
-        isRunning:
-            Boolean(state.stage) &&
-            state.stage !== 'done' &&
-            startedAtMs !== null &&
-            (completedAtMs === null || completedAtMs < startedAtMs) &&
-            !lastError,
+        isRunning,
         progressPct: stageMeta.progressPct,
         progressLabel: stageMeta.progressLabel,
         lastError,
@@ -511,8 +565,14 @@ export async function runScalpPipelineOrchestrator(
                     sourceOverrides: {
                         includeBitgetMarketsApi: includeBitgetDiscovery,
                         includeCapitalMarketsApi: includeCapitalDiscovery,
+                        includeDeploymentSymbols: includeCapitalDiscovery,
+                        includeHistorySymbols: includeCapitalDiscovery,
                     },
                 });
+                const selectedSymbolsPreFilter = dedupeSymbols(snapshot.selectedSymbols.slice());
+                const selectedSymbols = includeCapitalDiscovery
+                    ? selectedSymbolsPreFilter
+                    : await filterToBitgetSymbols(selectedSymbolsPreFilter);
                 state.stage = 'load_candles';
                 state.loadCursor = 0;
                 state.loadPassAddedCandles = 0;
@@ -522,12 +582,13 @@ export async function runScalpPipelineOrchestrator(
                 state.preparePassAddedCandles = 0;
                 state.preparePassErrors = 0;
                 state.preparePasses = 0;
-                state.selectedSymbols = snapshot.selectedSymbols.slice();
+                state.selectedSymbols = selectedSymbols;
                 state.updatedAtMs = nowMs();
                 stageEvents.push({
                     stage: 'discover',
                     durationMs: nowMs() - t0,
-                    selectedSymbols: snapshot.selectedSymbols.length,
+                    selectedSymbols: selectedSymbols.length,
+                    selectedSymbolsPreFilter: selectedSymbolsPreFilter.length,
                     candidatesEvaluated: snapshot.candidatesEvaluated,
                     includeBitgetDiscovery,
                     includeCapitalDiscovery,

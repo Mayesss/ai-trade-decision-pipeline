@@ -4,7 +4,11 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../../../../lib/admin';
 import { invokeCronEndpoint } from '../../../../lib/scalp/cronChaining';
-import { patchScalpPipelineRuntimeSnapshot } from '../../../../lib/scalp/pipelineRuntime';
+import {
+    inferScalpPipelineRuntimeOrchestratorStatus,
+    type ScalpPipelineRuntimeOrchestratorStatus,
+    patchScalpPipelineRuntimeSnapshot,
+} from '../../../../lib/scalp/pipelineRuntime';
 import { prepareAndStartScalpResearchCycle } from '../../../../lib/scalp/prepareAndStartCycle';
 
 function parseBoolParam(value: string | string[] | undefined, fallback: boolean): boolean {
@@ -73,6 +77,7 @@ async function persistPrepareStartHeroState(params: {
     cycleId?: string | null;
     lastError?: string | null;
     isRunning?: boolean;
+    status?: ScalpPipelineRuntimeOrchestratorStatus;
 }): Promise<void> {
     if (params.dryRun) return;
     const meta = buildStageMeta(params.stage);
@@ -80,9 +85,14 @@ async function persistPrepareStartHeroState(params: {
         typeof params.isRunning === 'boolean'
             ? params.isRunning
             : params.stage !== 'done' && !params.lastError;
+    const status = params.status || inferScalpPipelineRuntimeOrchestratorStatus({
+        isRunning,
+        lastError: String(params.lastError || '').trim() || null,
+    });
     await patchScalpPipelineRuntimeSnapshot({
         updatedAtMs: params.updatedAtMs,
         orchestrator: {
+            status,
             runId: params.runId,
             stage: params.stage,
             cycleId: String(params.cycleId || '').trim() || null,
@@ -156,6 +166,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             startedAtMs: requestStartedAtMs,
             updatedAtMs: requestStartedAtMs,
             isRunning: true,
+            status: 'working',
         });
 
         const out = await prepareAndStartScalpResearchCycle({
@@ -252,6 +263,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const heroIsRunning = out.ok
             ? shouldAutoContinue || shouldCallSuccessor
             : false;
+        const heroStatus: ScalpPipelineRuntimeOrchestratorStatus = out.ok
+            ? heroIsRunning
+                ? 'working'
+                : 'idle'
+            : 'failed';
         await persistPrepareStartHeroState({
             dryRun,
             runId: pipelineRunId,
@@ -261,6 +277,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             cycleId: out.cycle?.cycleId || null,
             lastError: heroError,
             isRunning: heroIsRunning,
+            status: heroStatus,
         });
 
         const statusCode = out.ok ? 200 : 409;
@@ -352,6 +369,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             updatedAtMs,
             lastError: err?.message || String(err),
             isRunning: false,
+            status: 'failed',
         });
         if (String(err?.code || '') === 'research_cycle_lookback_below_minimum') {
             const minimumLookbackDays = Number(err?.minimumLookbackDays) || 84;

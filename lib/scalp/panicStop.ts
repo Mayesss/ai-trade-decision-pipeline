@@ -191,6 +191,7 @@ export async function setScalpPanicStopState(params: {
             await patchScalpPipelineRuntimeSnapshot({
                 updatedAtMs: nowMs,
                 orchestrator: {
+                    status: 'idle',
                     runId: String(current.runId || '').trim() || null,
                     stage: 'done',
                     cycleId: String(current.cycleId || '').trim() || null,

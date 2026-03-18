@@ -29,7 +29,11 @@ import {
   loadPromotionSyncProgressSnapshot,
   loadPromotionSyncStateFromPg,
 } from "../../../../lib/scalp/researchPromotion";
-import { loadScalpPipelineRuntimeSnapshot } from "../../../../lib/scalp/pipelineRuntime";
+import {
+  inferScalpPipelineRuntimeOrchestratorStatus,
+  loadScalpPipelineRuntimeSnapshot,
+  patchScalpPipelineRuntimeSnapshot,
+} from "../../../../lib/scalp/pipelineRuntime";
 import { loadResearchWorkerHeartbeat } from "../../../../lib/scalp/researchCycle";
 import { normalizeScalpStrategyId } from "../../../../lib/scalp/strategies/registry";
 import { deriveScalpDayKey } from "../../../../lib/scalp/stateMachine";
@@ -203,6 +207,7 @@ type ScalpPipelineSnapshot = {
     updatedBy: string | null;
   };
   orchestrator: {
+    status: "working" | "idle" | "stale" | "failed";
     runId: string | null;
     stage: string | null;
     cycleId: string | null;
@@ -267,6 +272,23 @@ type PipelineCycleCandidate = {
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
+}
+
+function normalizeOrchestratorStatus(
+  value: unknown,
+): "working" | "idle" | "stale" | "failed" | null {
+  const status = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (
+    status === "working" ||
+    status === "idle" ||
+    status === "stale" ||
+    status === "failed"
+  ) {
+    return status;
+  }
+  return null;
 }
 
 function asTsMs(value: unknown): number | null {
@@ -494,6 +516,9 @@ function buildPipelineStatusPanel(
   const stage = String(input.orchestrator?.stage || "")
     .trim()
     .toLowerCase();
+  const orchestratorStatus = normalizeOrchestratorStatus(
+    input.orchestrator?.status,
+  );
   const cycleStatus = String(input.cycle?.status || "")
     .trim()
     .toLowerCase();
@@ -505,7 +530,12 @@ function buildPipelineStatusPanel(
     (step) => step.id === "promotion",
   );
   const activeOrchestratorRunning =
-    input.orchestrator?.isRunning === true && Boolean(stage) && stage !== "done";
+    (orchestratorStatus === "working" ||
+      (input.orchestrator?.isRunning === true &&
+        orchestratorStatus !== "stale" &&
+        orchestratorStatus !== "failed")) &&
+    Boolean(stage) &&
+    stage !== "done";
   const cycleMatchesOrchestrator =
     !activeOrchestratorRunning ||
     !input.orchestrator?.cycleId ||
@@ -546,10 +576,11 @@ function buildPipelineStatusPanel(
   );
   const orchestratorErrorRaw =
     String(input.orchestrator?.lastError || "").trim() || null;
+  const orchestratorStatusFailed = orchestratorStatus === "failed";
   const orchestratorError =
     panicStopEnabled && orchestratorErrorRaw === "panic_stop_enabled"
       ? null
-      : orchestratorErrorRaw;
+      : orchestratorErrorRaw || (orchestratorStatusFailed ? "orchestrator_failed" : null);
   const effectiveOrchestratorError =
     stage === "promotion" && (promotionRunning || promotionSucceededForCycle)
       ? null
@@ -932,11 +963,18 @@ async function loadScalpPipelineSnapshot(
     !fallbackOrchestratorLastError &&
     orchestratorFreshByLock &&
     orchestratorFreshByUpdate;
+  const fallbackOrchestratorStatus = fallbackOrchestratorStage
+    ? inferScalpPipelineRuntimeOrchestratorStatus({
+        isRunning: fallbackOrchestratorRunningRaw,
+        lastError: fallbackOrchestratorLastError,
+      })
+    : null;
   const summary = asRecord(selectedCycle?.summary);
   const totals = asRecord(summary.totals);
   const cycleProgressPct = safeProgressPct(summary.progressPct);
   const fallbackOrchestrator = fallbackOrchestratorStage
     ? {
+        status: fallbackOrchestratorStatus || "idle",
         runId: String(orchestratorPayload.runId || "").trim() || null,
         stage: fallbackOrchestratorStage,
         cycleId: String(orchestratorPayload.cycleId || "").trim() || null,
@@ -953,6 +991,14 @@ async function loadScalpPipelineSnapshot(
       }
     : null;
   const runtimeOrchestrator = runtimeSnapshot?.orchestrator || null;
+  let runtimeOrchestratorStatus =
+    normalizeOrchestratorStatus(runtimeOrchestrator?.status) ||
+    (runtimeOrchestrator
+      ? inferScalpPipelineRuntimeOrchestratorStatus({
+          isRunning: runtimeOrchestrator.isRunning === true,
+          lastError: runtimeOrchestrator.lastError,
+        })
+      : null);
   const runtimeOrchestratorFreshByUpdate =
     runtimeOrchestrator?.updatedAtMs !== null &&
     typeof runtimeOrchestrator?.updatedAtMs === "number" &&
@@ -960,13 +1006,40 @@ async function loadScalpPipelineSnapshot(
     nowMs - runtimeOrchestrator.updatedAtMs <=
       orchestratorRunningStaleAfterMs;
   const runtimeOrchestratorStale =
-    runtimeOrchestrator?.isRunning === true &&
+    (runtimeOrchestratorStatus === "working" ||
+      runtimeOrchestrator?.isRunning === true) &&
     !runtimeOrchestratorFreshByUpdate;
+  if (
+    runtimeOrchestrator &&
+    runtimeOrchestratorStale &&
+    runtimeOrchestratorStatus !== "stale"
+  ) {
+    runtimeOrchestratorStatus = "stale";
+    await patchScalpPipelineRuntimeSnapshot({
+      updatedAtMs: nowMs,
+      orchestrator: {
+        status: "stale",
+        runId: runtimeOrchestrator.runId,
+        stage: runtimeOrchestrator.stage,
+        cycleId: runtimeOrchestrator.cycleId,
+        startedAtMs: runtimeOrchestrator.startedAtMs,
+        updatedAtMs: nowMs,
+        completedAtMs: runtimeOrchestrator.completedAtMs,
+        isRunning: false,
+        progressPct: runtimeOrchestrator.progressPct,
+        progressLabel: runtimeOrchestrator.progressLabel || "stale runtime state",
+        lastError: runtimeOrchestrator.lastError || "stale_runtime_state",
+      },
+    });
+  }
   const preferFallbackOrchestrator =
     runtimeOrchestratorStale && fallbackOrchestrator !== null;
   const effectiveRuntimeOrchestrator = preferFallbackOrchestrator
     ? null
     : runtimeOrchestrator;
+  const effectiveRuntimeOrchestratorStatus = preferFallbackOrchestrator
+    ? null
+    : runtimeOrchestratorStatus;
   const hasRuntimeOrchestrator = effectiveRuntimeOrchestrator !== null;
   const mergedOrchestratorStage = hasRuntimeOrchestrator
     ? effectiveRuntimeOrchestrator.stage
@@ -993,6 +1066,7 @@ async function loadScalpPipelineSnapshot(
     ? effectiveRuntimeOrchestrator.startedAtMs
     : fallbackOrchestrator?.startedAtMs ?? null;
   const runtimeOrchestratorRunningRaw =
+    effectiveRuntimeOrchestratorStatus === "working" &&
     effectiveRuntimeOrchestrator?.isRunning === true &&
     runtimeOrchestratorFreshByUpdate &&
     orchestratorFreshByLock;
@@ -1005,6 +1079,9 @@ async function loadScalpPipelineSnapshot(
   const mergedOrchestrator =
     effectiveRuntimeOrchestrator || fallbackOrchestrator
       ? {
+          status: hasRuntimeOrchestrator
+            ? effectiveRuntimeOrchestratorStatus || "idle"
+            : fallbackOrchestrator?.status || "idle",
           runId: hasRuntimeOrchestrator
             ? effectiveRuntimeOrchestrator.runId
             : fallbackOrchestrator?.runId ?? null,

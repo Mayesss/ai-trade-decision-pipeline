@@ -106,3 +106,46 @@ test('normalizeScalpPipelineRuntimeSnapshot drops empty payloads', () => {
     assert.equal(normalizeScalpPipelineRuntimeSnapshot({}), null);
     assert.equal(normalizeScalpPipelineRuntimeSnapshot(null), null);
 });
+
+test('normalizeScalpPipelineRuntimeSnapshot infers orchestrator status when absent', () => {
+    const snapshot = normalizeScalpPipelineRuntimeSnapshot({
+        version: 1,
+        updatedAtMs: 10,
+        orchestrator: {
+            runId: 'orch_2',
+            stage: 'load_candles',
+            cycleId: null,
+            startedAtMs: 5,
+            updatedAtMs: 10,
+            completedAtMs: null,
+            isRunning: true,
+            progressPct: 24,
+            progressLabel: 'loading candle history',
+            lastError: null,
+        },
+    });
+    assert.ok(snapshot?.orchestrator);
+    assert.equal(snapshot?.orchestrator?.status, 'working');
+});
+
+test('normalizeScalpPipelineRuntimeSnapshot preserves explicit stale orchestrator status', () => {
+    const snapshot = normalizeScalpPipelineRuntimeSnapshot({
+        version: 1,
+        updatedAtMs: 20,
+        orchestrator: {
+            status: 'stale',
+            runId: 'orch_3',
+            stage: 'load_candles',
+            cycleId: null,
+            startedAtMs: 5,
+            updatedAtMs: 10,
+            completedAtMs: null,
+            isRunning: false,
+            progressPct: 24,
+            progressLabel: 'stale runtime state',
+            lastError: 'stale_runtime_state',
+        },
+    });
+    assert.ok(snapshot?.orchestrator);
+    assert.equal(snapshot?.orchestrator?.status, 'stale');
+});
