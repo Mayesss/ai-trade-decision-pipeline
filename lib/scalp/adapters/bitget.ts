@@ -121,6 +121,21 @@ function clampLeverage(value: unknown): number | null {
   return Math.max(1, Math.min(maxCap, Math.floor(raw)));
 }
 
+function resolveConfiguredBitgetMaxLeverage(): number {
+  return clampLeverage(Number.MAX_SAFE_INTEGER) ?? 125;
+}
+
+function resolveSymbolBitgetMaxLeverage(
+  meta: SymbolMeta & Record<string, unknown>,
+): number {
+  const configuredCap = resolveConfiguredBitgetMaxLeverage();
+  const symbolCap = toPositive((meta as any).maxLever);
+  if (!(Number.isFinite(symbolCap as number) && Number(symbolCap) > 0)) {
+    return configuredCap;
+  }
+  return Math.max(1, Math.min(configuredCap, Math.floor(Number(symbolCap))));
+}
+
 function normalizeBitgetGranularity(value: string): string {
   const normalized = String(value || "")
     .trim()
@@ -315,6 +330,50 @@ async function fetchBitgetAccountEquityUsd(): Promise<number | null> {
   }
 }
 
+async function fetchBitgetAccountAvailableUsd(): Promise<number | null> {
+  const productTypeRaw = resolveProductType();
+  const productTypeQuery = normalizeProductTypeForQuery(productTypeRaw);
+
+  const parseAvailable = (rowsRaw: unknown): number | null => {
+    const rows = extractRows(rowsRaw);
+    let best: number | null = null;
+    for (const row of rows) {
+      const available =
+        toPositive((row as any)?.available) ??
+        toPositive((row as any)?.crossedMaxAvailable) ??
+        toPositive((row as any)?.maxTransferOut) ??
+        toPositive((row as any)?.accountEquity) ??
+        toPositive((row as any)?.usdtEquity);
+      if (available === null) continue;
+      if (best === null || available > best) best = available;
+    }
+    return best;
+  };
+
+  try {
+    const res = await bitgetFetch("GET", "/api/v2/mix/account/accounts", {
+      productType: productTypeQuery,
+    });
+    const best = parseAvailable(res);
+    if (best !== null) return best;
+  } catch {
+    // Continue to fallback endpoint.
+  }
+
+  const fallbackSymbol = normalizeSymbol(
+    process.env.SCALP_BITGET_ACCOUNT_SYMBOL || "BTCUSDT",
+  );
+  try {
+    const res = await bitgetFetch("GET", "/api/v2/mix/account/account", {
+      productType: productTypeQuery,
+      symbol: fallbackSymbol,
+    });
+    return parseAvailable(res);
+  } catch {
+    return null;
+  }
+}
+
 async function listBitgetOpenPositionSnapshots(): Promise<
   ScalpBrokerPositionSnapshot[]
 > {
@@ -456,7 +515,7 @@ async function executeBitgetScalpEntry(params: {
   const holdSide = direction === "BUY" ? "long" : "short";
   const clientOid = normalizeClientOid(params.clientOid, "bg-scl");
   const dryRun = params.dryRun !== false;
-  const leverage = clampLeverage(params.leverage ?? null);
+  const requestedLeverage = clampLeverage(params.leverage ?? null) ?? 1;
   const syntheticDealId = buildSyntheticPositionId(symbol, holdSide);
 
   if (!dryRun && !isBitgetLiveEnabled()) {
@@ -470,7 +529,7 @@ async function executeBitgetScalpEntry(params: {
       symbol,
       direction,
       notionalUsd,
-      leverage,
+      leverage: requestedLeverage,
       orderType,
       size: null,
       epic: symbol,
@@ -491,7 +550,7 @@ async function executeBitgetScalpEntry(params: {
       symbol,
       direction,
       notionalUsd,
-      leverage,
+      leverage: requestedLeverage,
       orderType,
       size: null,
       epic: symbol,
@@ -501,12 +560,48 @@ async function executeBitgetScalpEntry(params: {
     };
   }
 
+  const { meta } = await loadContractMeta(symbol);
+  const symbolLeverageCap = resolveSymbolBitgetMaxLeverage(meta);
+  const accountAvailableUsd = await fetchBitgetAccountAvailableUsd().catch(
+    () => null,
+  );
+  const requiredLeverage =
+    Number.isFinite(accountAvailableUsd as number) && Number(accountAvailableUsd) > 0
+      ? Math.max(
+          1,
+          Math.ceil((notionalUsd * 1.01) / Number(accountAvailableUsd)),
+        )
+      : 1;
+  const targetLeverage = Math.max(requestedLeverage, requiredLeverage);
+  const leverage = Math.max(1, Math.min(symbolLeverageCap, targetLeverage));
+
+  if (requiredLeverage > symbolLeverageCap) {
+    return {
+      placed: false,
+      dryRun: false,
+      orderId: null,
+      dealId: syntheticDealId,
+      dealReference: clientOid,
+      clientOid,
+      symbol,
+      direction,
+      notionalUsd,
+      leverage,
+      orderType,
+      size: null,
+      epic: symbol,
+      dealStatus: "REJECTED",
+      confirmStatus: "MARGIN_INSUFFICIENT",
+      rejectReason: "INSUFFICIENT_BALANCE_FOR_NOTIONAL",
+    };
+  }
+
   await setBitgetLeverage({
     symbol,
     direction,
     leverage,
-    dryRun,
-  }).catch(() => null);
+    dryRun: false,
+  });
 
   const productTypeRaw = resolveProductType();
   const size = await computeOrderSize(symbol, notionalUsd, productTypeRaw);
@@ -542,39 +637,50 @@ async function executeBitgetScalpEntry(params: {
     body.presetTakeProfitPrice = Number(params.profitLevel);
   }
 
-  const res = await bitgetFetch(
-    "POST",
-    "/api/v2/mix/order/place-order",
-    {},
-    body,
-  );
-  const orderId =
-    String((res as any)?.orderId || (res as any)?.order_id || "").trim() || null;
-  ownershipByClientOid.set(clientOid, {
-    symbol,
-    holdSide,
-    updatedAtMs: Date.now(),
-  });
-  cleanupOwnershipCache(Date.now());
-  return {
-    placed: true,
-    dryRun: false,
-    orderId,
-    dealId: syntheticDealId,
-    dealReference: clientOid,
-    clientOid,
-    symbol,
-    direction,
-    notionalUsd,
-    leverage,
-    orderType,
-    size,
-    epic: symbol,
-    dealStatus: "ACCEPTED",
-    confirmStatus: "SUBMITTED",
-    rejectReason: null,
-    raw: res,
-  };
+  try {
+    const res = await bitgetFetch(
+      "POST",
+      "/api/v2/mix/order/place-order",
+      {},
+      body,
+    );
+    const orderId =
+      String((res as any)?.orderId || (res as any)?.order_id || "").trim() || null;
+    ownershipByClientOid.set(clientOid, {
+      symbol,
+      holdSide,
+      updatedAtMs: Date.now(),
+    });
+    cleanupOwnershipCache(Date.now());
+    return {
+      placed: true,
+      dryRun: false,
+      orderId,
+      dealId: syntheticDealId,
+      dealReference: clientOid,
+      clientOid,
+      symbol,
+      direction,
+      notionalUsd,
+      leverage,
+      orderType,
+      size,
+      epic: symbol,
+      dealStatus: "ACCEPTED",
+      confirmStatus: "SUBMITTED",
+      rejectReason: null,
+      raw: res,
+    };
+  } finally {
+    if (leverage > 1) {
+      await setBitgetLeverage({
+        symbol,
+        direction,
+        leverage: 1,
+        dryRun: false,
+      }).catch(() => null);
+    }
+  }
 }
 
 function resolveCloseTarget(params: {

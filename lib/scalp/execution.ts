@@ -36,6 +36,35 @@ function toPositiveNumberWithFallback(value: unknown, fallback: number): number 
   return n;
 }
 
+function normalizeReasonFragment(value: unknown): string | null {
+  const normalized = String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized ? normalized.slice(0, 64) : null;
+}
+
+function classifyEntryExecutionError(err: unknown): string[] {
+  const message = String((err as any)?.message || err || "").trim();
+  const normalizedMessage = message.toUpperCase();
+  const reasonCodes = ["ENTRY_NOT_PLACED", "ENTRY_EXECUTION_ERROR"];
+  const bitgetCodeMatch = normalizedMessage.match(/\bBITGET ERROR\s+([0-9]+)\b/);
+  const bitgetCode = bitgetCodeMatch?.[1] || null;
+  if (bitgetCode) {
+    reasonCodes.push(`ENTRY_REJECT_BITGET_${bitgetCode}`);
+  }
+  if (
+    /EXCEEDS THE BALANCE|INSUFFICIENT (BALANCE|MARGIN|FUNDS)|NOT ENOUGH BALANCE/.test(
+      normalizedMessage,
+    )
+  ) {
+    reasonCodes.push("ENTRY_REJECT_INSUFFICIENT_BALANCE");
+  }
+  return Array.from(new Set(reasonCodes));
+}
+
 const SCALP_LEVERAGE_BY_CATEGORY_BY_VENUE: Record<
   ScalpVenue,
   Record<ScalpAssetCategory, number>
@@ -649,28 +678,23 @@ export async function executeScalpEntryPlan(params: {
   }
 
   const adapter = params.adapter || getScalpVenueAdapter("capital");
-  const exec = await adapter.broker.executeScalpEntry({
-    symbol: next.symbol,
-    direction: params.plan.side,
-    notionalUsd: params.plan.notionalUsd,
-    leverage: params.plan.leverage,
-    dryRun: params.dryRun,
-    clientOid: params.plan.dealReference,
-    orderType: params.plan.orderType,
-    limitLevel: params.plan.limitLevel,
-    stopLevel: params.plan.stopPrice,
-    profitLevel: params.plan.takeProfitPrice,
-  });
-
-  const normalizeReasonFragment = (value: unknown): string | null => {
-    const normalized = String(value || "")
-      .trim()
-      .toUpperCase()
-      .replace(/[^A-Z0-9_]+/g, "_")
-      .replace(/_+/g, "_")
-      .replace(/^_+|_+$/g, "");
-    return normalized ? normalized.slice(0, 64) : null;
-  };
+  let exec;
+  try {
+    exec = await adapter.broker.executeScalpEntry({
+      symbol: next.symbol,
+      direction: params.plan.side,
+      notionalUsd: params.plan.notionalUsd,
+      leverage: params.plan.leverage,
+      dryRun: params.dryRun,
+      clientOid: params.plan.dealReference,
+      orderType: params.plan.orderType,
+      limitLevel: params.plan.limitLevel,
+      stopLevel: params.plan.stopPrice,
+      profitLevel: params.plan.takeProfitPrice,
+    });
+  } catch (err) {
+    return { state: next, reasonCodes: classifyEntryExecutionError(err) };
+  }
 
   if (!exec.placed && !params.dryRun) {
     const reasonCodes = ["ENTRY_NOT_PLACED"];
