@@ -823,6 +823,134 @@ function quantizeSize(
   return Number(finalSize.toFixed(Math.max(0, sizeDecimals)));
 }
 
+type CapitalStopLossConstraint = {
+  kind: "minvalue" | "maxvalue";
+  value: number;
+};
+
+function parseCapitalStopLossConstraint(
+  error: unknown,
+): CapitalStopLossConstraint | null {
+  const message = String((error as any)?.message || error || "");
+  if (!message.toLowerCase().includes("error.invalid.stoploss")) return null;
+  const match = message.match(
+    /error\.invalid\.stoploss\.(minvalue|maxvalue)\s*:\s*(-?\d+(?:\.\d+)?)/i,
+  );
+  if (!match) return null;
+  const kind = String(match[1] || "")
+    .trim()
+    .toLowerCase();
+  const value = Number(match[2]);
+  if (!Number.isFinite(value)) return null;
+  if (kind !== "minvalue" && kind !== "maxvalue") return null;
+  return { kind, value };
+}
+
+function stopLossRejectReason(
+  constraint: CapitalStopLossConstraint | null,
+): string {
+  if (!constraint) return "INVALID_STOPLOSS";
+  return constraint.kind === "minvalue"
+    ? "INVALID_STOPLOSS_MINVALUE"
+    : "INVALID_STOPLOSS_MAXVALUE";
+}
+
+function adjustStopAndSizeForCapitalConstraint(params: {
+  direction: "BUY" | "SELL";
+  referencePrice: number;
+  stopLevel: number;
+  profitLevel: number | null;
+  size: number;
+  orderNotional: number;
+  minDealSize: number | null;
+  sizeDecimals: number;
+  constraint: CapitalStopLossConstraint;
+}): {
+  stopLevel: number;
+  profitLevel: number | null;
+  size: number;
+} | null {
+  const bound = Number(params.constraint.value);
+  if (!(Number.isFinite(bound) && bound > 0)) return null;
+
+  let adjustedStop =
+    params.constraint.kind === "minvalue"
+      ? Math.max(params.stopLevel, bound)
+      : Math.min(params.stopLevel, bound);
+
+  if (!(Number.isFinite(adjustedStop) && adjustedStop > 0)) return null;
+  if (params.direction === "BUY" && !(adjustedStop < params.referencePrice)) {
+    return null;
+  }
+  if (params.direction === "SELL" && !(adjustedStop > params.referencePrice)) {
+    return null;
+  }
+
+  const originalRiskAbs = Math.abs(params.stopLevel - params.referencePrice);
+  const adjustedRiskAbs = Math.abs(adjustedStop - params.referencePrice);
+
+  let adjustedSize = params.size;
+  if (
+    Number.isFinite(originalRiskAbs) &&
+    Number.isFinite(adjustedRiskAbs) &&
+    originalRiskAbs > 0 &&
+    adjustedRiskAbs > 0 &&
+    Number.isFinite(params.orderNotional) &&
+    params.orderNotional > 0 &&
+    Number.isFinite(params.referencePrice) &&
+    params.referencePrice > 0
+  ) {
+    // Preserve risk by scaling down size when broker forces a wider stop.
+    const scaledNotional =
+      params.orderNotional * (originalRiskAbs / adjustedRiskAbs);
+    const cappedNotional = Math.min(params.orderNotional, scaledNotional);
+    if (Number.isFinite(cappedNotional) && cappedNotional > 0) {
+      const rawSize = cappedNotional / params.referencePrice;
+      const quantized = quantizeSize(
+        rawSize,
+        params.minDealSize,
+        params.sizeDecimals,
+      );
+      if (Number.isFinite(quantized) && quantized > 0) {
+        adjustedSize = quantized;
+      }
+    }
+  }
+
+  let adjustedProfitLevel = params.profitLevel;
+  if (
+    Number.isFinite(Number(params.profitLevel)) &&
+    Number(params.profitLevel) > 0 &&
+    Number.isFinite(originalRiskAbs) &&
+    originalRiskAbs > 0 &&
+    Number.isFinite(adjustedRiskAbs) &&
+    adjustedRiskAbs > 0
+  ) {
+    const currentProfitAbs =
+      params.direction === "BUY"
+        ? Number(params.profitLevel) - params.referencePrice
+        : params.referencePrice - Number(params.profitLevel);
+    if (Number.isFinite(currentProfitAbs) && currentProfitAbs > 0) {
+      const targetRewardR = currentProfitAbs / originalRiskAbs;
+      const nextProfitAbs = adjustedRiskAbs * targetRewardR;
+      const nextProfitLevel =
+        params.direction === "BUY"
+          ? params.referencePrice + nextProfitAbs
+          : params.referencePrice - nextProfitAbs;
+      adjustedProfitLevel =
+        Number.isFinite(nextProfitLevel) && nextProfitLevel > 0
+          ? nextProfitLevel
+          : null;
+    }
+  }
+
+  return {
+    stopLevel: adjustedStop,
+    profitLevel: adjustedProfitLevel,
+    size: adjustedSize,
+  };
+}
+
 function extractPositionRows(payload: any): CapitalPositionRow[] {
   return extractRows<CapitalPositionRow>(payload, ["positions", "data"]);
 }
@@ -2687,9 +2815,12 @@ async function openCapitalPosition(params: {
     }
   }
   const rawSize = orderNotional / referencePrice;
-  const size = quantizeSize(rawSize, details.minDealSize, details.sizeDecimals);
+  let size = quantizeSize(rawSize, details.minDealSize, details.sizeDecimals);
   if (!(size > 0))
     throw new Error(`Computed non-positive order size for ${symbol}`);
+
+  const stopLevelNumber = safePositiveNumber(stopLevel);
+  const profitLevelNumber = safePositiveNumber(profitLevel);
 
   const body: Record<string, unknown> = {
     epic: details.epic,
@@ -2708,25 +2839,78 @@ async function openCapitalPosition(params: {
     }
     body.level = level;
   }
-  if (Number.isFinite(safeNumber(stopLevel, NaN)) && Number(stopLevel) > 0) {
-    body.stopLevel = Number(stopLevel);
+  if (stopLevelNumber !== null) {
+    body.stopLevel = stopLevelNumber;
   }
-  if (
-    Number.isFinite(safeNumber(profitLevel, NaN)) &&
-    Number(profitLevel) > 0
-  ) {
-    body.profitLevel = Number(profitLevel);
+  if (profitLevelNumber !== null) {
+    body.profitLevel = profitLevelNumber;
   }
   if (leverage && !SCALP_CAPITAL_USE_ACCOUNT_LEVERAGE) body.leverage = leverage;
 
   const submittedAtMs = Date.now();
-  const payload = await capitalFetch(
-    "POST",
-    "/api/v1/positions",
-    {},
-    body,
-    true,
-  );
+  let payload: any = null;
+  try {
+    payload = await capitalFetch("POST", "/api/v1/positions", {}, body, true);
+  } catch (err: any) {
+    const constraint = parseCapitalStopLossConstraint(err);
+    if (!constraint || stopLevelNumber === null) throw err;
+    const adjusted = adjustStopAndSizeForCapitalConstraint({
+      direction,
+      referencePrice,
+      stopLevel: stopLevelNumber,
+      profitLevel: profitLevelNumber,
+      size,
+      orderNotional,
+      minDealSize: details.minDealSize,
+      sizeDecimals: details.sizeDecimals,
+      constraint,
+    });
+    if (!adjusted) {
+      return {
+        payload: null,
+        orderId: null,
+        dealId: null,
+        dealReference: clientOid,
+        size,
+        epic: details.epic,
+        dealStatus: "REJECTED",
+        confirmStatus: "STOPLOSS_CONSTRAINT_BLOCKED",
+        rejectReason: stopLossRejectReason(constraint),
+        accepted: false,
+      };
+    }
+
+    size = adjusted.size;
+    body.size = adjusted.size;
+    body.stopLevel = adjusted.stopLevel;
+    if (
+      Number.isFinite(Number(adjusted.profitLevel)) &&
+      Number(adjusted.profitLevel) > 0
+    ) {
+      body.profitLevel = Number(adjusted.profitLevel);
+    } else {
+      delete body.profitLevel;
+    }
+
+    try {
+      payload = await capitalFetch("POST", "/api/v1/positions", {}, body, true);
+    } catch (retryErr: any) {
+      const retryConstraint = parseCapitalStopLossConstraint(retryErr);
+      if (!retryConstraint) throw retryErr;
+      return {
+        payload: null,
+        orderId: null,
+        dealId: null,
+        dealReference: clientOid,
+        size,
+        epic: details.epic,
+        dealStatus: "REJECTED",
+        confirmStatus: "STOPLOSS_CONSTRAINT_BLOCKED",
+        rejectReason: stopLossRejectReason(retryConstraint),
+        accepted: false,
+      };
+    }
+  }
   const dealIdRaw = payload?.dealId ?? payload?.positionDealId ?? null;
   const dealReferenceRaw = payload?.dealReference ?? clientOid;
   const dealReferenceNormalized =

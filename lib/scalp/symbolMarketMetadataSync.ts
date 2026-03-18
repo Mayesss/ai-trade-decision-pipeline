@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 
-import { fetchSymbolMeta } from "../analytics";
+import { fetchSymbolMeta, type SymbolMeta } from "../analytics";
 import { resolveProductType } from "../bitget";
 import { fetchCapitalSymbolMarketMetadata } from "../capital";
 
@@ -44,7 +44,7 @@ function decimalPipSize(decimalPlacesFactor: number | null): number | null {
 }
 
 function resolveBitgetTickSize(
-  meta: Record<string, unknown>,
+  meta: SymbolMeta & Record<string, unknown>,
   pricePlace: number | null,
 ): number | null {
   const decimalStep = decimalPipSize(pricePlace);
@@ -100,14 +100,17 @@ async function fetchBitgetSymbolMarketMetadata(
   symbol: string,
 ): Promise<ScalpSymbolMarketMetadata> {
   const nowMs = Date.now();
-  const meta = await fetchSymbolMeta(symbol, resolveProductType());
+  const meta = (await fetchSymbolMeta(
+    symbol,
+    resolveProductType(),
+  )) as SymbolMeta & Record<string, unknown>;
   const pricePlace = Number.isFinite(toFinite((meta as any).pricePlace))
     ? Math.max(0, Math.floor(toFinite((meta as any).pricePlace)))
     : null;
   const volumePlace = Number.isFinite(toFinite((meta as any).volumePlace))
     ? Math.max(0, Math.floor(toFinite((meta as any).volumePlace)))
     : null;
-  const tickSize = resolveBitgetTickSize(meta as Record<string, unknown>, pricePlace);
+  const tickSize = resolveBitgetTickSize(meta, pricePlace);
   const pipSize = tickSize ?? decimalPipSize(pricePlace);
   const instrumentType = String(
     (meta as any).symbolType || (meta as any).symbolTypeName || "PERPETUAL",
