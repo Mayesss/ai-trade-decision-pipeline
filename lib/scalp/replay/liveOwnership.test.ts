@@ -204,3 +204,59 @@ test('reconcileScalpBrokerPosition confirms an existing trade by exact owned dea
     assert.equal(reconciled.state.trade!.brokerPositionId, 'deal-owned');
     assert.ok(reconciled.reasonCodes.includes('BROKER_POSITION_CONFIRMED_BY_DEALREFERENCE'));
 });
+
+test('reconcileScalpBrokerPosition clears stale local live trade when owned position is missing', async () => {
+    const nowMs = Date.UTC(2026, 0, 5, 12, 0, 0, 0);
+    const epic = 'CS.D.EURUSD.CFD.IP';
+    const deploymentId = 'EURUSD~regime_pullback_m15_m3~default';
+    const state = createInitialScalpSessionState({
+        symbol: 'EURUSD',
+        strategyId: 'regime_pullback_m15_m3',
+        tuneId: 'default',
+        deploymentId,
+        dayKey: '2026-01-05',
+        nowMs,
+        killSwitchActive: false,
+    });
+    state.state = 'IN_TRADE';
+    state.trade = {
+        setupId: 'setup-stale',
+        dealReference: buildScalpDealReference({
+            deploymentId,
+            setupId: 'setup-stale',
+            dayKey: '2026-01-05',
+        }),
+        side: 'BUY',
+        entryPrice: 1.1,
+        stopPrice: 1.09,
+        takeProfitPrice: 1.12,
+        riskR: 1,
+        riskAbs: 0.01,
+        initialStopPrice: 1.09,
+        remainingSizePct: 1,
+        realizedR: 0,
+        tp1Done: false,
+        tp1Price: null,
+        trailActive: false,
+        trailStopPrice: null,
+        favorableExtremePrice: 1.1,
+        barsHeld: 0,
+        openedAtMs: nowMs - 180_000,
+        brokerOrderId: 'deal-stale',
+        brokerPositionId: 'deal-stale',
+        dryRun: false,
+    };
+
+    const reconciled = await reconcileScalpBrokerPosition({
+        state,
+        market: marketSnapshot({ nowMs, epic, price: 1.101 }),
+        dryRun: false,
+        maxOpenPositionsPerSymbol: 1,
+        snapshots: [],
+    });
+
+    assert.equal(reconciled.state.state, 'DONE');
+    assert.equal(reconciled.state.trade, null);
+    assert.equal(reconciled.state.stats.lastExitAtMs, nowMs);
+    assert.ok(reconciled.reasonCodes.includes('BROKER_OWNED_POSITION_NOT_FOUND_MARK_DONE'));
+});

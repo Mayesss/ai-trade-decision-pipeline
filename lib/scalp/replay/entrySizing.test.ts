@@ -94,7 +94,7 @@ function makeReadyState(params: {
   return state;
 }
 
-test("entry sizing is venue-aware (capital caps tighter than bitget for crypto)", () => {
+test("entry sizing remains executable when venue leverage caps prevent target risk", () => {
   const nowMs = Date.UTC(2026, 2, 17, 10, 0, 0, 0);
   const cfg = applyScalpStrategyConfigOverride(getScalpStrategyConfig(), {
     risk: {
@@ -123,6 +123,8 @@ test("entry sizing is venue-aware (capital caps tighter than bitget for crypto)"
   });
 
   assert.ok(capitalPlan.plan);
+  assert.ok(capitalPlan.reasonCodes.includes("ENTRY_PLAN_RISK_TARGET_UNREACHABLE"));
+  assert.ok(capitalPlan.reasonCodes.includes("ENTRY_PLAN_NOTIONAL_CAPPED_BELOW_TARGET"));
   assert.ok(bitgetPlan.plan);
   assert.ok(capitalPlan.reasonCodes.includes("ENTRY_PLAN_ASSET_LEVERAGE_CAP_ACTIVE"));
   assert.ok(bitgetPlan.reasonCodes.includes("ENTRY_PLAN_FEE_AWARE_RISK_SIZING"));

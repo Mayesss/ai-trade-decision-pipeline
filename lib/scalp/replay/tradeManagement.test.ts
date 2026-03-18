@@ -227,3 +227,74 @@ test("manageScalpOpenTrade executes TP1 partial and keeps runner open", async ()
   assert.ok((managed.state.trade!.realizedR ?? 0) > 0);
   assert.ok(managed.reasonCodes.includes("TP1_PARTIAL_EXECUTED"));
 });
+
+test("manageScalpOpenTrade treats missing owned broker position as already closed and clears stale trade", async () => {
+  const nowMs = Date.UTC(2026, 0, 5, 13, 0, 0, 0);
+  const state = createInitialScalpSessionState({
+    symbol: "EURUSD",
+    dayKey: "2026-01-05",
+    nowMs,
+    killSwitchActive: false,
+  });
+  state.state = "IN_TRADE";
+  state.trade = {
+    setupId: "stale-close",
+    dealReference: "stale-close-ref",
+    side: "BUY",
+    entryPrice: 1,
+    stopPrice: 0.99,
+    takeProfitPrice: 1.02,
+    riskR: 1,
+    riskAbs: 0.01,
+    initialStopPrice: 0.99,
+    remainingSizePct: 1,
+    realizedR: 0,
+    tp1Done: false,
+    tp1Price: null,
+    trailActive: false,
+    trailStopPrice: null,
+    favorableExtremePrice: 1,
+    barsHeld: 0,
+    openedAtMs: nowMs - 9 * 60_000,
+    brokerOrderId: "deal-stale",
+    brokerPositionId: "deal-stale",
+    dryRun: false,
+  };
+
+  const managed = await manageScalpOpenTrade({
+    state,
+    market: marketSnapshot({
+      nowMs,
+      price: 0.989,
+      confirmCandles: [
+        candle(nowMs - 9 * 60_000, 1.0, 1.0006, 0.9996, 1.0003),
+        candle(nowMs - 6 * 60_000, 1.0003, 1.0007, 0.9998, 1.0002),
+        candle(nowMs - 3 * 60_000, 1.0002, 1.0004, 0.989, 0.9892),
+      ],
+    }),
+    cfg: getScalpStrategyConfig(),
+    dryRun: false,
+    nowMs,
+    adapter: {
+      broker: {
+        async closePositionByOwnership() {
+          return {
+            closed: false,
+            orderId: null,
+            clientOid: "test-close-oid",
+            partial: false,
+            note: "no_matching_position",
+          };
+        },
+      },
+    } as any,
+  });
+
+  assert.equal(managed.state.trade, null);
+  assert.equal(managed.state.state, "DONE");
+  assert.equal(managed.state.stats.lastExitAtMs, nowMs);
+  assert.ok(managed.reasonCodes.includes("TRADE_CLOSE_OWNED_POSITION_NOT_FOUND"));
+  assert.ok(managed.reasonCodes.includes("TRADE_EXIT_ASSUMED_BROKER_CLOSED"));
+  assert.equal(managed.reasonCodes.includes("TRADE_EXIT_NOT_CONFIRMED"), false);
+  assert.equal(managed.closedTrade, null);
+});

@@ -420,6 +420,15 @@ export function buildScalpEntryPlan(params: {
   if (!(Number.isFinite(notionalUsd) && notionalUsd > 0)) {
     return { plan: null, reasonCodes: ["ENTRY_PLAN_INVALID_NOTIONAL"] };
   }
+  const leverageCapActive =
+    Number.isFinite(maxNotionalByCategoryLeverage as number) &&
+    Number(maxNotionalByCategoryLeverage) > 0 &&
+    Number(maxNotionalByCategoryLeverage) < params.cfg.risk.maxNotionalUsd;
+  const expectedRiskUsd = notionalUsd * effectiveRiskRate;
+  const riskTargetUnreachable =
+    rawNotionalUsd > notionalUsd &&
+    Number.isFinite(expectedRiskUsd) &&
+    expectedRiskUsd < riskUsd * 0.99;
 
   const takeProfitPrice =
     side === "BUY"
@@ -448,10 +457,12 @@ export function buildScalpEntryPlan(params: {
     reasonCodes: [
       "ENTRY_INTENT_IFVG_TOUCH",
       "ENTRY_PLAN_READY",
-      ...(Number.isFinite(maxNotionalByCategoryLeverage as number) &&
-      Number(maxNotionalByCategoryLeverage) > 0 &&
-      Number(maxNotionalByCategoryLeverage) < params.cfg.risk.maxNotionalUsd
-        ? ["ENTRY_PLAN_ASSET_LEVERAGE_CAP_ACTIVE"]
+      ...(leverageCapActive ? ["ENTRY_PLAN_ASSET_LEVERAGE_CAP_ACTIVE"] : []),
+      ...(riskTargetUnreachable
+        ? [
+            "ENTRY_PLAN_RISK_TARGET_UNREACHABLE",
+            "ENTRY_PLAN_NOTIONAL_CAPPED_BELOW_TARGET",
+          ]
         : []),
       ...(roundTripFeeRate > 0 ? ["ENTRY_PLAN_FEE_AWARE_RISK_SIZING"] : []),
     ],
@@ -543,6 +554,7 @@ export async function reconcileScalpBrokerPosition(params: {
 
   const next: ScalpSessionState = {
     ...params.state,
+    stats: { ...params.state.stats },
     trade: params.state.trade ? { ...params.state.trade } : null,
   };
   const owned = resolveOwnedScalpBrokerMatches({
@@ -565,11 +577,17 @@ export async function reconcileScalpBrokerPosition(params: {
   const ownedPosition = owned.matches[0] || null;
 
   if (!ownedPosition) {
-    if (next.state === "IN_TRADE" && next.trade && !next.trade.dryRun) {
-      next.state = "DONE";
+    if (next.trade && !next.trade.dryRun) {
+      next.trade = null;
+      next.stats.lastExitAtMs = params.market.nowMs;
+      if (next.state === "IN_TRADE") next.state = "DONE";
       return {
         state: next,
-        reasonCodes: ["BROKER_OWNED_POSITION_NOT_FOUND_MARK_DONE"],
+        reasonCodes: [
+          next.state === "DONE"
+            ? "BROKER_OWNED_POSITION_NOT_FOUND_MARK_DONE"
+            : "BROKER_OWNED_POSITION_NOT_FOUND_CLEAR_STALE",
+        ],
       };
     }
     return { state: next, reasonCodes: ["BROKER_POSITION_NONE"] };
@@ -935,6 +953,16 @@ export async function manageScalpOpenTrade(params: {
   });
   reasonCodes.push(...closeRes.reasonCodes);
   if (!closeRes.closed) {
+    if (closeRes.reasonCodes.includes("TRADE_CLOSE_OWNED_POSITION_NOT_FOUND")) {
+      next.trade = null;
+      next.stats.lastExitAtMs = params.nowMs;
+      next.state = "DONE";
+      return {
+        state: next,
+        reasonCodes: [...reasonCodes, "TRADE_EXIT_ASSUMED_BROKER_CLOSED"],
+        closedTrade: null,
+      };
+    }
     return {
       state: next,
       reasonCodes: [...reasonCodes, "TRADE_EXIT_NOT_CONFIRMED"],
