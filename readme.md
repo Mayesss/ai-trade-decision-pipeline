@@ -260,6 +260,7 @@ npm run start
 - `GET /api/scalp/cron/research-cycle-start?dryRun=false`
   - Starts a chunked offline research cycle over the active symbol universe (or explicit `symbols=...`) and persists task rows in KV.
   - New task creation is Bitget-only by default (`SCALP_RESEARCH_NEW_TASKS_BITGET_ONLY=true`).
+  - If the initially selected set yields zero tasks, planner auto-falls back to lower-load candidates (eligible rejected + Bitget 1m history pool), capped by `SCALP_RESEARCH_ZERO_TASKS_FALLBACK_SYMBOLS` (default `24`).
   - Optional query params: `symbols=BTCUSDT,XAUUSDT`, `lookbackDays`, `chunkDays`, `maxTasks`, `maxAttempts`, `minCandlesPerTask`, `force`.
 - `GET /api/scalp/cron/orchestrate-pipeline?maxDurationMs=600000`
   - Runs staged scalp pipeline orchestration (`discover -> load_candles -> prepare`) and persists progress in `scalp_pipeline_orchestrator_state_v1`.

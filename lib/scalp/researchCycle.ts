@@ -2664,6 +2664,75 @@ export async function listLatestResearchTasksByWindow(params: {
   return rows.map((row) => mapPgRowToResearchTask(row));
 }
 
+async function listBitgetHistorySymbolsForFallback(): Promise<string[]> {
+  if (!isScalpPgConfigured()) return [];
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{ symbol: string }>>(Prisma.sql`
+        SELECT DISTINCT symbol
+        FROM scalp_candle_history_weeks
+        WHERE timeframe = '1m'
+          AND source = 'bitget'
+        ORDER BY symbol ASC;
+    `);
+  return dedupe(
+    rows
+      .map((row) => normalizeSymbol(row.symbol))
+      .filter((row) => Boolean(row)),
+  );
+}
+
+async function rankSymbolsByHistoricalResearchLoad(
+  symbolsRaw: string[],
+): Promise<string[]> {
+  const symbols = dedupe(
+    (symbolsRaw || [])
+      .map((row) => normalizeSymbol(row))
+      .filter((row) => Boolean(row)),
+  );
+  if (!symbols.length || !isScalpPgConfigured()) return symbols;
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<
+    Array<{
+      symbol: string;
+      taskCount: bigint | number;
+      latestWindowToMs: bigint | number | null;
+    }>
+  >(Prisma.sql`
+        SELECT
+            symbol,
+            COUNT(*)::bigint AS "taskCount",
+            MAX((EXTRACT(EPOCH FROM window_to) * 1000)::bigint) AS "latestWindowToMs"
+        FROM scalp_research_tasks
+        WHERE symbol IN (${Prisma.join(symbols)})
+        GROUP BY symbol;
+    `);
+  const statsBySymbol = new Map<
+    string,
+    { taskCount: number; latestWindowToMs: number }
+  >();
+  for (const row of rows) {
+    const symbol = normalizeSymbol(row.symbol);
+    if (!symbol) continue;
+    statsBySymbol.set(symbol, {
+      taskCount: Math.max(0, Math.floor(Number(row.taskCount || 0))),
+      latestWindowToMs: Math.max(
+        0,
+        Math.floor(Number(row.latestWindowToMs || 0)),
+      ),
+    });
+  }
+  return symbols
+    .slice()
+    .sort((a, b) => {
+      const sa = statsBySymbol.get(a) || { taskCount: 0, latestWindowToMs: 0 };
+      const sb = statsBySymbol.get(b) || { taskCount: 0, latestWindowToMs: 0 };
+      if (sa.taskCount !== sb.taskCount) return sa.taskCount - sb.taskCount;
+      if (sa.latestWindowToMs !== sb.latestWindowToMs)
+        return sa.latestWindowToMs - sb.latestWindowToMs;
+      return a.localeCompare(b);
+    });
+}
+
 export async function loadResearchCycle(
   cycleId: string,
 ): Promise<ScalpResearchCycleSnapshot | null> {
@@ -3046,7 +3115,11 @@ export async function startScalpResearchCycle(
         .map((row) => normalizeSymbol(row.symbol))
         .filter((row) => Boolean(row)),
     );
-    const symbols = bitgetOnlyNewTasks
+    const bitgetHistorySymbols = bitgetOnlyNewTasks
+      ? await listBitgetHistorySymbolsForFallback()
+      : [];
+    const bitgetHistorySymbolSet = new Set(bitgetHistorySymbols);
+    let symbols = bitgetOnlyNewTasks
       ? preflightSymbols.filter((symbol) => {
           const metadata = marketMetadataBySymbol.get(symbol) || null;
           if (metadata?.source === "bitget") return true;
@@ -3055,28 +3128,6 @@ export async function startScalpResearchCycle(
       : preflightSymbols;
 
     const cycleId = buildResearchCycleId(nowMs);
-    const cycleParams: ScalpResearchCycleParams = {
-      symbols,
-      lookbackDays,
-      // Cycle windows are fixed weekly slices (Monday -> Sunday), regardless of requested chunkDays.
-      chunkDays: DEFAULT_CHUNK_DAYS,
-      minCandlesPerTask: toPositiveInt(
-        params.minCandlesPerTask,
-        DEFAULT_MIN_CANDLES_PER_TASK,
-      ),
-      maxTasks: toPositiveInt(params.maxTasks, DEFAULT_MAX_TASKS),
-      maxAttempts: toPositiveInt(params.maxAttempts, DEFAULT_MAX_ATTEMPTS),
-      runningStaleAfterMs: toPositiveInt(
-        params.runningStaleAfterMs,
-        DEFAULT_RUNNING_STALE_AFTER_MS,
-      ),
-      tunerEnabled: params.tunerEnabled ?? tunerPolicy.enabled,
-      maxTuneVariantsPerStrategy: toPositiveInt(
-        params.maxTuneVariantsPerStrategy,
-        tunerPolicy.maxVariantsPerStrategy,
-      ),
-      plannerEnabled: plannerPolicy.enabled,
-    };
     const maxNewSymbolsPerCycle = Math.max(
       0,
       Math.min(
@@ -3087,63 +3138,157 @@ export async function startScalpResearchCycle(
         ),
       ),
     );
-    const historicalWindowBounds = resolveResearchTaskWindowBounds(
-      nowMs,
-      cycleParams.lookbackDays,
-    );
-    const historicalTasks = await listLatestResearchTasksByWindow({
-      symbols,
-      windowFromTs: historicalWindowBounds.fromTs,
-      windowToTs: historicalWindowBounds.completedWeekEndTs,
-    });
-    const previousSummary =
-      plannerPolicy.enabled && historicalTasks.length > 0
-        ? summarizeResearchTasks(
-            {
-              version: RESEARCH_CYCLE_VERSION,
-              cycleId: "history",
-              status: "completed",
-              createdAtMs: 0,
-              updatedAtMs: nowMs,
-              startedBy: "history",
-              dryRun: true,
-              sourceUniverseGeneratedAt: null,
-              params: cycleParams,
-              symbols,
-              taskIds: historicalTasks.map((task) => task.taskId),
-              latestSummary: null,
-            },
-            historicalTasks,
-          )
-        : null;
-
-    const plannedTasks = buildResearchCycleTasks({
-      cycleId,
-      nowMs,
-      symbols,
-      lookbackDays: cycleParams.lookbackDays,
-      chunkDays: cycleParams.chunkDays,
-      maxTasks: cycleParams.maxTasks,
-      strategyAllowlist: preflight.strategyAllowlist,
-      tunerEnabled: cycleParams.tunerEnabled !== false,
-      maxTuneVariantsPerStrategy: Math.max(
-        1,
-        cycleParams.maxTuneVariantsPerStrategy || 1,
-      ),
-      plannerEnabled: cycleParams.plannerEnabled,
-      previousSummary,
-      historicalTasks,
-      registryDeployments,
-      allowedVenues: bitgetOnlyNewTasks ? ["bitget"] : ["bitget", "capital"],
-    });
-    let tasks = plannedTasks;
-    if (!plannerPolicy.enabled && historicalTasks.length > 0) {
-      tasks = applyResearchCycleIncrementalSymbolPolicy({
-        plannedTasks,
-        processedTasksLastSnapshot: historicalTasks,
-        maxNewSymbolsPerCycle,
+    const buildPlanForSymbols = async (
+      planningSymbolsRaw: string[],
+    ): Promise<{
+      cycleParams: ScalpResearchCycleParams;
+      historicalTasks: ScalpResearchTask[];
+      tasks: ScalpResearchTask[];
+    }> => {
+      const planningSymbols = dedupe(
+        (planningSymbolsRaw || [])
+          .map((row) => normalizeSymbol(row))
+          .filter((row) => Boolean(row)),
+      );
+      const cycleParams: ScalpResearchCycleParams = {
+        symbols: planningSymbols,
+        lookbackDays,
+        // Cycle windows are fixed weekly slices (Monday -> Sunday), regardless of requested chunkDays.
+        chunkDays: DEFAULT_CHUNK_DAYS,
+        minCandlesPerTask: toPositiveInt(
+          params.minCandlesPerTask,
+          DEFAULT_MIN_CANDLES_PER_TASK,
+        ),
+        maxTasks: toPositiveInt(params.maxTasks, DEFAULT_MAX_TASKS),
+        maxAttempts: toPositiveInt(params.maxAttempts, DEFAULT_MAX_ATTEMPTS),
+        runningStaleAfterMs: toPositiveInt(
+          params.runningStaleAfterMs,
+          DEFAULT_RUNNING_STALE_AFTER_MS,
+        ),
+        tunerEnabled: params.tunerEnabled ?? tunerPolicy.enabled,
+        maxTuneVariantsPerStrategy: toPositiveInt(
+          params.maxTuneVariantsPerStrategy,
+          tunerPolicy.maxVariantsPerStrategy,
+        ),
+        plannerEnabled: plannerPolicy.enabled,
+      };
+      const historicalWindowBounds = resolveResearchTaskWindowBounds(
+        nowMs,
+        cycleParams.lookbackDays,
+      );
+      const historicalTasks = await listLatestResearchTasksByWindow({
+        symbols: planningSymbols,
+        windowFromTs: historicalWindowBounds.fromTs,
+        windowToTs: historicalWindowBounds.completedWeekEndTs,
       });
+      const previousSummary =
+        plannerPolicy.enabled && historicalTasks.length > 0
+          ? summarizeResearchTasks(
+              {
+                version: RESEARCH_CYCLE_VERSION,
+                cycleId: "history",
+                status: "completed",
+                createdAtMs: 0,
+                updatedAtMs: nowMs,
+                startedBy: "history",
+                dryRun: true,
+                sourceUniverseGeneratedAt: null,
+                params: cycleParams,
+                symbols: planningSymbols,
+                taskIds: historicalTasks.map((task) => task.taskId),
+                latestSummary: null,
+              },
+              historicalTasks,
+            )
+          : null;
+      const plannedTasks = buildResearchCycleTasks({
+        cycleId,
+        nowMs,
+        symbols: planningSymbols,
+        lookbackDays: cycleParams.lookbackDays,
+        chunkDays: cycleParams.chunkDays,
+        maxTasks: cycleParams.maxTasks,
+        strategyAllowlist: preflight.strategyAllowlist,
+        tunerEnabled: cycleParams.tunerEnabled !== false,
+        maxTuneVariantsPerStrategy: Math.max(
+          1,
+          cycleParams.maxTuneVariantsPerStrategy || 1,
+        ),
+        plannerEnabled: cycleParams.plannerEnabled,
+        previousSummary,
+        historicalTasks,
+        registryDeployments,
+        allowedVenues: bitgetOnlyNewTasks ? ["bitget"] : ["bitget", "capital"],
+      });
+      const tasks =
+        !plannerPolicy.enabled && historicalTasks.length > 0
+          ? applyResearchCycleIncrementalSymbolPolicy({
+              plannedTasks,
+              processedTasksLastSnapshot: historicalTasks,
+              maxNewSymbolsPerCycle,
+            })
+          : plannedTasks;
+      return {
+        cycleParams,
+        historicalTasks,
+        tasks,
+      };
+    };
+
+    let plan = await buildPlanForSymbols(symbols);
+    if (plan.tasks.length === 0) {
+      const universe = await loadScalpSymbolUniverseSnapshot();
+      const eligibleRejectedSymbols = Array.isArray(universe?.topRejectedRows)
+        ? universe.topRejectedRows
+            .filter((row) => row?.eligible === true)
+            .map((row) => normalizeSymbol(row?.symbol))
+            .filter((row) => Boolean(row))
+        : [];
+      const fallbackPool = dedupe(
+        [...eligibleRejectedSymbols, ...bitgetHistorySymbols].filter(
+          (symbol) => !symbols.includes(symbol),
+        ),
+      );
+      if (fallbackPool.length > 0) {
+        const rankedFallbackPool =
+          await rankSymbolsByHistoricalResearchLoad(fallbackPool);
+        const fallbackCandidateCap = Math.max(
+          4,
+          Math.min(
+            200,
+            toPositiveInt(
+              process.env.SCALP_RESEARCH_ZERO_TASKS_FALLBACK_SYMBOLS,
+              24,
+            ),
+          ),
+        );
+        const fallbackPreflight = await evaluateResearchCyclePreflight({
+          ...params,
+          symbols: rankedFallbackPool.slice(0, fallbackCandidateCap),
+          lookbackDays,
+          requireUniverseSnapshot: false,
+          requireReportSnapshot: false,
+        });
+        const fallbackSymbols = dedupe(
+          (fallbackPreflight.resolvedSymbols || []).filter((symbol) => {
+            if (!bitgetOnlyNewTasks) return true;
+            if (bitgetHistorySymbolSet.has(symbol)) return true;
+            const metadata = marketMetadataBySymbol.get(symbol) || null;
+            if (metadata?.source === "bitget") return true;
+            return registryBitgetSymbols.has(symbol);
+          }),
+        );
+        if (fallbackSymbols.length > 0) {
+          const fallbackPlan = await buildPlanForSymbols(fallbackSymbols);
+          if (fallbackPlan.tasks.length > 0) {
+            symbols = fallbackSymbols;
+            plan = fallbackPlan;
+          }
+        }
+      }
     }
+    const cycleParams = plan.cycleParams;
+    const tasks = plan.tasks;
 
     const cycle: ScalpResearchCycleSnapshot = {
       version: RESEARCH_CYCLE_VERSION,
