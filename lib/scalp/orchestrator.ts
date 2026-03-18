@@ -8,12 +8,14 @@ import {
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 import { loadScalpPanicStopState } from './panicStop';
 import { prepareAndStartScalpResearchCycle } from './prepareAndStartCycle';
+import { syncResearchCyclePromotionGates } from './researchPromotion';
+import { aggregateScalpResearchCycle, runResearchWorker } from './researchCycle';
 import { runScalpSymbolDiscoveryCycle } from './symbolDiscovery';
 import { loadScalpDeploymentRegistry } from './deploymentRegistry';
 import { resolveScalpDeploymentVenueFromId } from './deployments';
 import { loadScalpSymbolMarketMetadataBulk } from './symbolMarketMetadataStore';
 
-type OrchestratorStage = 'discover' | 'load_candles' | 'prepare' | 'done';
+type OrchestratorStage = 'discover' | 'load_candles' | 'prepare' | 'worker' | 'aggregate' | 'promotion' | 'done';
 
 interface OrchestratorState {
     version: 1;
@@ -57,12 +59,9 @@ function asState(value: unknown): OrchestratorState | null {
     const rawStage = String(row.stage || '')
         .trim()
         .toLowerCase();
-    const legacyWorkerStage = rawStage === 'worker' || rawStage === 'aggregate' || rawStage === 'promotion';
-    const stage = (['discover', 'load_candles', 'prepare', 'done'].includes(rawStage)
+    const stage = (['discover', 'load_candles', 'prepare', 'worker', 'aggregate', 'promotion', 'done'].includes(rawStage)
         ? rawStage
-        : legacyWorkerStage
-          ? 'done'
-          : '') as OrchestratorStage | '';
+        : '') as OrchestratorStage | '';
     if (!runId || !stage) return null;
     return {
         version: 1,
@@ -179,6 +178,9 @@ function pipelineStageMeta(stageRaw: string | null | undefined): {
         discover: { pct: 10, label: 'discovering symbols' },
         load_candles: { pct: 24, label: 'loading candle history' },
         prepare: { pct: 35, label: 'preparing/backfilling history' },
+        worker: { pct: 70, label: 'running cycle worker' },
+        aggregate: { pct: 88, label: 'aggregating cycle results' },
+        promotion: { pct: 96, label: 'applying promotion gate' },
         done: { pct: 100, label: 'completed' },
     };
     const hit = map[stage];
@@ -442,6 +444,14 @@ export async function runScalpPipelineOrchestrator(
     const stageEvents: Array<Record<string, unknown>> = [];
     const includeBitgetDiscovery = toBool(process.env.SCALP_ORCHESTRATOR_DISCOVERY_INCLUDE_BITGET, true);
     const includeCapitalDiscovery = toBool(process.env.SCALP_ORCHESTRATOR_DISCOVERY_INCLUDE_CAPITAL, false);
+    const workerMaxRuns = Math.max(
+        1,
+        Math.min(2000, toPositiveInt(process.env.SCALP_ORCHESTRATOR_WORKER_MAX_RUNS, 96)),
+    );
+    const workerConcurrency = Math.max(
+        1,
+        Math.min(64, toPositiveInt(process.env.SCALP_ORCHESTRATOR_WORKER_CONCURRENCY, 2)),
+    );
 
     if (!isScalpPgConfigured()) {
         return {
@@ -769,6 +779,211 @@ export async function runScalpPipelineOrchestrator(
                 state.preparePasses += 1;
                 state.preparePassAddedCandles = 0;
                 state.preparePassErrors = 0;
+                state.stage = state.cycleId ? 'worker' : 'done';
+                state.completedAtMs = state.stage === 'done' ? nowMs() : null;
+                state.updatedAtMs = nowMs();
+                await saveOrchestratorState(state);
+                continue;
+            }
+
+            if (state.stage === 'worker') {
+                if (!state.cycleId) {
+                    state.lastError = 'worker_missing_cycle_id';
+                    state.updatedAtMs = nowMs();
+                    await saveOrchestratorState(state);
+                    return {
+                        ok: false,
+                        status: 'blocked',
+                        message: `orchestrator_blocked:${state.lastError}`,
+                        runId: state.runId,
+                        stage: state.stage,
+                        state,
+                        diagnostics: {
+                            startedAtMs,
+                            finishedAtMs: nowMs(),
+                            durationMs: nowMs() - startedAtMs,
+                            maxDurationMs,
+                            continuationRequested: false,
+                            continuation: null,
+                            stageEvents,
+                        },
+                    };
+                }
+                const remainingMs = Math.max(10_000, deadlineMs - nowMs());
+                const worker = await runResearchWorker({
+                    cycleId: state.cycleId,
+                    maxRuns: workerMaxRuns,
+                    concurrency: workerConcurrency,
+                    maxDurationMs: Math.max(30_000, Math.min(remainingMs - 5_000, 4 * 60_000)),
+                    debug,
+                });
+                stageEvents.push({
+                    stage: 'worker',
+                    cycleId: state.cycleId,
+                    attemptedRuns: worker.attemptedRuns,
+                    completedRuns: worker.completedRuns,
+                    failedRuns: worker.failedRuns,
+                    stoppedByDurationBudget: worker.stoppedByDurationBudget,
+                    orchestration: worker.orchestration,
+                });
+                state.stage = 'aggregate';
+                state.updatedAtMs = nowMs();
+                await saveOrchestratorState(state);
+                continue;
+            }
+
+            if (state.stage === 'aggregate') {
+                if (!state.cycleId) {
+                    state.lastError = 'aggregate_missing_cycle_id';
+                    state.updatedAtMs = nowMs();
+                    await saveOrchestratorState(state);
+                    return {
+                        ok: false,
+                        status: 'blocked',
+                        message: `orchestrator_blocked:${state.lastError}`,
+                        runId: state.runId,
+                        stage: state.stage,
+                        state,
+                        diagnostics: {
+                            startedAtMs,
+                            finishedAtMs: nowMs(),
+                            durationMs: nowMs() - startedAtMs,
+                            maxDurationMs,
+                            continuationRequested: false,
+                            continuation: null,
+                            stageEvents,
+                        },
+                    };
+                }
+                const aggregate = await aggregateScalpResearchCycle({
+                    cycleId: state.cycleId,
+                    finalizeWhenDone: true,
+                });
+                if (!aggregate) {
+                    state.lastError = 'aggregate_cycle_not_found';
+                    state.updatedAtMs = nowMs();
+                    await saveOrchestratorState(state);
+                    return {
+                        ok: false,
+                        status: 'blocked',
+                        message: `orchestrator_blocked:${state.lastError}`,
+                        runId: state.runId,
+                        stage: state.stage,
+                        state,
+                        diagnostics: {
+                            startedAtMs,
+                            finishedAtMs: nowMs(),
+                            durationMs: nowMs() - startedAtMs,
+                            maxDurationMs,
+                            continuationRequested: false,
+                            continuation: null,
+                            stageEvents,
+                        },
+                    };
+                }
+                stageEvents.push({
+                    stage: 'aggregate',
+                    cycleId: aggregate.cycle.cycleId,
+                    cycleStatus: aggregate.summary.status,
+                    progressPct: aggregate.summary.progressPct,
+                    totals: aggregate.summary.totals,
+                });
+                if (aggregate.summary.status === 'completed') {
+                    state.stage = 'promotion';
+                    state.updatedAtMs = nowMs();
+                    await saveOrchestratorState(state);
+                    continue;
+                }
+                if (aggregate.summary.status === 'running' || aggregate.summary.status === 'stalled') {
+                    state.stage = 'worker';
+                    state.updatedAtMs = nowMs();
+                    await saveOrchestratorState(state);
+                    if (nowMs() >= deadlineMs) break;
+                    continue;
+                }
+                state.lastError = `aggregate_status_${aggregate.summary.status || 'unknown'}`.slice(0, 180);
+                state.updatedAtMs = nowMs();
+                await saveOrchestratorState(state);
+                return {
+                    ok: false,
+                    status: 'blocked',
+                    message: `orchestrator_blocked:${state.lastError}`,
+                    runId: state.runId,
+                    stage: state.stage,
+                    state,
+                    diagnostics: {
+                        startedAtMs,
+                        finishedAtMs: nowMs(),
+                        durationMs: nowMs() - startedAtMs,
+                        maxDurationMs,
+                        continuationRequested: false,
+                        continuation: null,
+                        stageEvents,
+                    },
+                };
+            }
+
+            if (state.stage === 'promotion') {
+                if (!state.cycleId) {
+                    state.lastError = 'promotion_missing_cycle_id';
+                    state.updatedAtMs = nowMs();
+                    await saveOrchestratorState(state);
+                    return {
+                        ok: false,
+                        status: 'blocked',
+                        message: `orchestrator_blocked:${state.lastError}`,
+                        runId: state.runId,
+                        stage: state.stage,
+                        state,
+                        diagnostics: {
+                            startedAtMs,
+                            finishedAtMs: nowMs(),
+                            durationMs: nowMs() - startedAtMs,
+                            maxDurationMs,
+                            continuationRequested: false,
+                            continuation: null,
+                            stageEvents,
+                        },
+                    };
+                }
+                const promotion = await syncResearchCyclePromotionGates({
+                    cycleId: state.cycleId,
+                    dryRun: false,
+                    requireCompletedCycle: true,
+                    updatedBy: 'cron:scalp-orchestrator',
+                    debug,
+                });
+                stageEvents.push({
+                    stage: 'promotion',
+                    cycleId: state.cycleId,
+                    ok: promotion.ok,
+                    reason: promotion.reason || null,
+                    deploymentsConsidered: promotion.deploymentsConsidered,
+                    deploymentsMatched: promotion.deploymentsMatched,
+                    deploymentsUpdated: promotion.deploymentsUpdated,
+                });
+                if (promotion.ok === false) {
+                    state.lastError = `promotion_sync_${promotion.reason || 'failed'}`.slice(0, 180);
+                    state.updatedAtMs = nowMs();
+                    await saveOrchestratorState(state);
+                    return {
+                        ok: false,
+                        status: 'blocked',
+                        message: `orchestrator_blocked:${state.lastError}`,
+                        runId: state.runId,
+                        stage: state.stage,
+                        state,
+                        diagnostics: {
+                            startedAtMs,
+                            finishedAtMs: nowMs(),
+                            durationMs: nowMs() - startedAtMs,
+                            maxDurationMs,
+                            continuationRequested: false,
+                            continuation: null,
+                            stageEvents,
+                        },
+                    };
+                }
                 state.stage = 'done';
                 state.completedAtMs = nowMs();
                 state.updatedAtMs = nowMs();

@@ -11,7 +11,7 @@
     { "path": "/api/swing/analyze?symbol=GOLD&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
     { "path": "/api/swing/analyze?symbol=OIL_CRUDE&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
     { "path": "/api/swing/analyze?symbol=COFFEEARABICA&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced", "schedule": "0 * * * *" },
-    { "path": "/api/scalp/cron/orchestrate-pipeline?maxDurationMs=600000", "schedule": "45 2,14 * * *" },
+    { "path": "/api/scalp/cron/orchestrate-pipeline?maxDurationMs=600000", "schedule": "0 */2 * * *" },
     { "path": "/api/scalp/cron/research-cycle-worker?autoContinue=true&autoContinueMaxHops=3&aggregateAfter=false&autoSuccessor=true", "schedule": "*/5 * * * *" },
     { "path": "/api/scalp/cron/research-report?dryRun=false", "schedule": "0 * * * *" },
     { "path": "/api/scalp/cron/live-guardrail-monitor?dryRun=false&autoPause=true", "schedule": "*/15 * * * *" },
