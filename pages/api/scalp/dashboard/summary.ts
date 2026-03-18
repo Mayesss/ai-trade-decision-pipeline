@@ -953,13 +953,27 @@ async function loadScalpPipelineSnapshot(
       }
     : null;
   const runtimeOrchestrator = runtimeSnapshot?.orchestrator || null;
-  const hasRuntimeOrchestrator = runtimeOrchestrator !== null;
+  const runtimeOrchestratorFreshByUpdate =
+    runtimeOrchestrator?.updatedAtMs !== null &&
+    typeof runtimeOrchestrator?.updatedAtMs === "number" &&
+    Number.isFinite(runtimeOrchestrator.updatedAtMs) &&
+    nowMs - runtimeOrchestrator.updatedAtMs <=
+      orchestratorRunningStaleAfterMs;
+  const runtimeOrchestratorStale =
+    runtimeOrchestrator?.isRunning === true &&
+    !runtimeOrchestratorFreshByUpdate;
+  const preferFallbackOrchestrator =
+    runtimeOrchestratorStale && fallbackOrchestrator !== null;
+  const effectiveRuntimeOrchestrator = preferFallbackOrchestrator
+    ? null
+    : runtimeOrchestrator;
+  const hasRuntimeOrchestrator = effectiveRuntimeOrchestrator !== null;
   const mergedOrchestratorStage = hasRuntimeOrchestrator
-    ? runtimeOrchestrator.stage
+    ? effectiveRuntimeOrchestrator.stage
     : fallbackOrchestrator?.stage ?? null;
   const mergedStageMeta = pipelineStageMeta(mergedOrchestratorStage);
   const mergedOrchestratorCycleId = hasRuntimeOrchestrator
-    ? runtimeOrchestrator.cycleId
+    ? effectiveRuntimeOrchestrator.cycleId
     : fallbackOrchestrator?.cycleId ?? null;
   const cycleProgressForOrchestrator =
     cycleProgressPct !== null &&
@@ -972,20 +986,14 @@ async function loadScalpPipelineSnapshot(
   const orchestratorBaseProgressPct =
     safeProgressPct(
       hasRuntimeOrchestrator
-        ? runtimeOrchestrator.progressPct
+        ? effectiveRuntimeOrchestrator.progressPct
         : fallbackOrchestrator?.progressPct,
     ) ?? mergedStageMeta.progressPct;
   const mergedOrchestratorStartedAtMs = hasRuntimeOrchestrator
-    ? runtimeOrchestrator.startedAtMs
+    ? effectiveRuntimeOrchestrator.startedAtMs
     : fallbackOrchestrator?.startedAtMs ?? null;
-  const runtimeOrchestratorFreshByUpdate =
-    runtimeOrchestrator?.updatedAtMs !== null &&
-    typeof runtimeOrchestrator?.updatedAtMs === "number" &&
-    Number.isFinite(runtimeOrchestrator.updatedAtMs) &&
-    nowMs - runtimeOrchestrator.updatedAtMs <=
-      orchestratorRunningStaleAfterMs;
   const runtimeOrchestratorRunningRaw =
-    runtimeOrchestrator?.isRunning === true &&
+    effectiveRuntimeOrchestrator?.isRunning === true &&
     runtimeOrchestratorFreshByUpdate &&
     orchestratorFreshByLock;
   const mergedOrchestratorIsRunning = panicStopEnabled
@@ -995,20 +1003,20 @@ async function loadScalpPipelineSnapshot(
       : fallbackOrchestrator?.isRunning ??
         false;
   const mergedOrchestrator =
-    runtimeOrchestrator || fallbackOrchestrator
+    effectiveRuntimeOrchestrator || fallbackOrchestrator
       ? {
           runId: hasRuntimeOrchestrator
-            ? runtimeOrchestrator.runId
+            ? effectiveRuntimeOrchestrator.runId
             : fallbackOrchestrator?.runId ?? null,
           stage: mergedOrchestratorStage,
           cycleId: mergedOrchestratorCycleId,
           startedAtMs: mergedOrchestratorStartedAtMs,
           updatedAtMs: hasRuntimeOrchestrator
-            ? runtimeOrchestrator.updatedAtMs
+            ? effectiveRuntimeOrchestrator.updatedAtMs
             : fallbackOrchestrator?.updatedAtMs ??
               null,
           completedAtMs: hasRuntimeOrchestrator
-            ? runtimeOrchestrator.completedAtMs
+            ? effectiveRuntimeOrchestrator.completedAtMs
             : fallbackOrchestrator?.completedAtMs ??
               null,
           runningSinceMs:
@@ -1023,11 +1031,15 @@ async function loadScalpPipelineSnapshot(
               : orchestratorBaseProgressPct,
           progressLabel:
             (hasRuntimeOrchestrator
-              ? runtimeOrchestrator.progressLabel
+              ? runtimeOrchestratorStale
+                ? "stale runtime state"
+                : effectiveRuntimeOrchestrator.progressLabel
               : fallbackOrchestrator?.progressLabel) ??
             mergedStageMeta.progressLabel,
           lastError: hasRuntimeOrchestrator
-            ? runtimeOrchestrator.lastError
+            ? runtimeOrchestratorStale
+              ? "stale_runtime_state"
+              : effectiveRuntimeOrchestrator.lastError
             : fallbackOrchestrator?.lastError ??
               null,
         }

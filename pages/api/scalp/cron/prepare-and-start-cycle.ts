@@ -72,9 +72,14 @@ async function persistPrepareStartHeroState(params: {
     updatedAtMs: number;
     cycleId?: string | null;
     lastError?: string | null;
+    isRunning?: boolean;
 }): Promise<void> {
     if (params.dryRun) return;
     const meta = buildStageMeta(params.stage);
+    const isRunning =
+        typeof params.isRunning === 'boolean'
+            ? params.isRunning
+            : params.stage !== 'done' && !params.lastError;
     await patchScalpPipelineRuntimeSnapshot({
         updatedAtMs: params.updatedAtMs,
         orchestrator: {
@@ -84,7 +89,7 @@ async function persistPrepareStartHeroState(params: {
             startedAtMs: params.startedAtMs,
             updatedAtMs: params.updatedAtMs,
             completedAtMs: params.stage === 'done' ? params.updatedAtMs : null,
-            isRunning: params.stage !== 'done' && !params.lastError,
+            isRunning,
             progressPct: meta.progressPct,
             progressLabel: meta.progressLabel,
             lastError: String(params.lastError || '').trim() || null,
@@ -150,6 +155,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             stage: initialStage,
             startedAtMs: requestStartedAtMs,
             updatedAtMs: requestStartedAtMs,
+            isRunning: true,
         });
 
         const out = await prepareAndStartScalpResearchCycle({
@@ -243,6 +249,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const heroError = out.ok
             ? null
             : notReadyReasons.join(',') || 'research_cycle_preflight_failed';
+        const heroIsRunning = out.ok
+            ? shouldAutoContinue || shouldCallSuccessor
+            : false;
         await persistPrepareStartHeroState({
             dryRun,
             runId: pipelineRunId,
@@ -251,6 +260,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             updatedAtMs: Date.now(),
             cycleId: out.cycle?.cycleId || null,
             lastError: heroError,
+            isRunning: heroIsRunning,
         });
 
         const statusCode = out.ok ? 200 : 409;
@@ -341,6 +351,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             startedAtMs: updatedAtMs,
             updatedAtMs,
             lastError: err?.message || String(err),
+            isRunning: false,
         });
         if (String(err?.code || '') === 'research_cycle_lookback_below_minimum') {
             const minimumLookbackDays = Number(err?.minimumLookbackDays) || 84;
