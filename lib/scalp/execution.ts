@@ -335,7 +335,18 @@ export function buildScalpEntryPlan(params: {
     return { plan: null, reasonCodes: ["ENTRY_PLAN_INVALID_STOP"] };
   }
 
-  const riskAbs = Math.abs(entryReferencePrice - stopPrice);
+  const stopIsProtective =
+    side === "BUY"
+      ? stopPrice < entryReferencePrice
+      : stopPrice > entryReferencePrice;
+  if (!stopIsProtective) {
+    return { plan: null, reasonCodes: ["ENTRY_PLAN_STOP_NOT_PROTECTIVE"] };
+  }
+
+  const riskAbs =
+    side === "BUY"
+      ? entryReferencePrice - stopPrice
+      : stopPrice - entryReferencePrice;
   const minStopDistanceAbs = params.cfg.risk.minStopDistancePips * pipSize;
   if (!(Number.isFinite(riskAbs) && riskAbs >= minStopDistanceAbs)) {
     return { plan: null, reasonCodes: ["ENTRY_PLAN_STOP_DISTANCE_TOO_TIGHT"] };

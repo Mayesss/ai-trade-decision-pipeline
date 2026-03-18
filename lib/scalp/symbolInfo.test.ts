@@ -33,3 +33,7 @@ test("pipSizeForScalpSymbol prefers broker metadata when provided", () => {
   assert.equal(pipSizeForScalpSymbol("BTCUSDT", { pipSize: 1 }), 1);
   assert.equal(pipSizeForScalpSymbol("NAS100", { pipSize: 0.1 }), 0.1);
 });
+
+test("pipSizeForScalpSymbol floors tiny usd-quoted metadata to practical minimum", () => {
+  assert.equal(pipSizeForScalpSymbol("XANUSDT", { pipSize: 0.000001 }), 0.0001);
+});

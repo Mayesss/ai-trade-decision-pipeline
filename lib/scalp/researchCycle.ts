@@ -10,7 +10,10 @@ import {
   loadScalpCandleHistoryBulk,
 } from "./candleHistory";
 import { loadScalpDeploymentRegistry } from "./deploymentRegistry";
-import { resolveScalpDeployment } from "./deployments";
+import {
+  resolveScalpDeployment,
+  resolveScalpDeploymentVenueFromId,
+} from "./deployments";
 import { pipSizeForScalpSymbol } from "./marketData";
 import { isScalpPgConfigured, scalpPrisma } from "./pg/client";
 import {
@@ -42,6 +45,7 @@ import type { ScalpSymbolMarketMetadata } from "./symbolMarketMetadata";
 const RESEARCH_CYCLE_VERSION = 1 as const;
 
 const DEFAULT_LOOKBACK_DAYS = 90;
+export const MIN_RESEARCH_CYCLE_LOOKBACK_DAYS = 84;
 const DEFAULT_CHUNK_DAYS = 7;
 const DEFAULT_MIN_CANDLES_PER_TASK = 180;
 const DEFAULT_MAX_TASKS = 4_000;
@@ -76,7 +80,6 @@ const RESEARCH_WORKER_HEARTBEAT_JOB_KEY = "state:research_worker_heartbeat:v1";
 const RESEARCH_WORKER_CURSOR_JOB_KIND = "execute_cycle";
 const RESEARCH_WORKER_CURSOR_JOB_KEY = "state:research_worker_cursor:v1";
 const RESEARCH_WORKER_GLOBAL_ADVISORY_LOCK_KEY = 86753124;
-const STALE_CYCLE_REPLACED_ERROR_CODE = "cycle_stalled_replaced";
 const RESEARCH_TASK_TIMEOUT_MS = Math.max(
   1_000,
   Math.min(
@@ -455,6 +458,20 @@ function toPositiveInt(value: unknown, fallback: number): number {
   const n = Math.floor(Number(value));
   if (!Number.isFinite(n) || n <= 0) return fallback;
   return n;
+}
+
+export function resolveResearchCycleLookbackDaysOrThrow(
+  lookbackDaysRaw: unknown,
+): number {
+  const lookbackDays = toPositiveInt(lookbackDaysRaw, DEFAULT_LOOKBACK_DAYS);
+  if (lookbackDays < MIN_RESEARCH_CYCLE_LOOKBACK_DAYS) {
+    throw Object.assign(new Error("research_cycle_lookback_below_minimum"), {
+      code: "research_cycle_lookback_below_minimum",
+      minimumLookbackDays: MIN_RESEARCH_CYCLE_LOOKBACK_DAYS,
+      requestedLookbackDays: lookbackDays,
+    });
+  }
+  return lookbackDays;
 }
 
 function deriveLookbackRequiredWeeks(lookbackDaysRaw: unknown): number {
@@ -1735,6 +1752,8 @@ export function buildResearchCycleTasks(params: {
   previousSummary?: ScalpResearchCycleSummary | null;
   historicalTasks?: ScalpResearchTask[];
   registryDeployments?: Array<{
+    deploymentId?: string;
+    venue?: unknown;
     symbol: string;
     strategyId: string;
     tuneId: string;
@@ -1757,6 +1776,69 @@ export function buildResearchCycleTasks(params: {
   const latestHistoricalTasksByWindow = buildLatestResearchWindowTaskMap(
     params.historicalTasks || [],
   );
+  const symbolVenueVotes = new Map<string, { bitget: number; capital: number }>();
+  const recordSymbolVenueVote = (
+    symbolRaw: unknown,
+    venueRaw: unknown,
+    deploymentIdRaw: unknown,
+  ) => {
+    const symbol = normalizeSymbol(symbolRaw);
+    if (!symbol) return;
+    const explicitVenue = String(venueRaw || "").trim().toLowerCase();
+    let venue: string | null = null;
+    if (explicitVenue === "bitget" || explicitVenue === "capital") {
+      venue = explicitVenue;
+    } else {
+      const deploymentId = String(deploymentIdRaw || "").trim();
+      if (!deploymentId) return;
+      venue = resolveScalpDeploymentVenueFromId(deploymentId);
+    }
+    if (venue !== "bitget" && venue !== "capital") return;
+    const current = symbolVenueVotes.get(symbol) || { bitget: 0, capital: 0 };
+    current[venue] += 1;
+    symbolVenueVotes.set(symbol, current);
+  };
+  for (const row of params.registryDeployments || []) {
+    recordSymbolVenueVote(row.symbol, row.venue, row.deploymentId);
+  }
+  for (const row of params.historicalTasks || []) {
+    recordSymbolVenueVote(row.symbol, undefined, row.deploymentId);
+  }
+  const preferredVenueBySymbol = new Map<string, "bitget" | "capital">();
+  for (const [symbol, votes] of symbolVenueVotes.entries()) {
+    if (votes.bitget > votes.capital) {
+      preferredVenueBySymbol.set(symbol, "bitget");
+    } else if (votes.capital > votes.bitget) {
+      preferredVenueBySymbol.set(symbol, "capital");
+    }
+  }
+  const latestHistoricalDeploymentByCombo = new Map<string, string>();
+  const latestHistoricalDeploymentScoreByCombo = new Map<string, number>();
+  for (const task of params.historicalTasks || []) {
+    const comboKey = `${normalizeSymbol(task.symbol)}::${String(
+      task.strategyId || "",
+    )
+      .trim()
+      .toLowerCase()}::${sanitizeTuneId(task.tuneId)}`;
+    if (!comboKey) continue;
+    const deploymentId = String(task.deploymentId || "").trim();
+    if (!deploymentId) continue;
+    const score = Math.max(
+      0,
+      Math.floor(
+        Number(task.finishedAtMs) ||
+          Number(task.updatedAtMs) ||
+          Number(task.startedAtMs) ||
+          Number(task.createdAtMs) ||
+          0,
+      ),
+    );
+    const prevScore = latestHistoricalDeploymentScoreByCombo.get(comboKey) || 0;
+    if (score >= prevScore) {
+      latestHistoricalDeploymentScoreByCombo.set(comboKey, score);
+      latestHistoricalDeploymentByCombo.set(comboKey, deploymentId);
+    }
+  }
   const tasks: ScalpResearchTask[] = [];
   const usedTaskIds = new Set<string>();
   const usedComboKeys = new Set<string>();
@@ -1786,6 +1868,8 @@ export function buildResearchCycleTasks(params: {
   };
 
   const appendTasksForCombo = (row: {
+    deploymentId?: string;
+    venue?: unknown;
     symbol: string;
     strategyId: string;
     tuneId: string;
@@ -1798,10 +1882,18 @@ export function buildResearchCycleTasks(params: {
       .toLowerCase()}::${sanitizeTuneId(row.tuneId)}`;
     if (!comboKey || usedComboKeys.has(comboKey)) return false;
     usedComboKeys.add(comboKey);
+    const fallbackDeploymentId =
+      String(row.deploymentId || "").trim() ||
+      latestHistoricalDeploymentByCombo.get(comboKey) ||
+      undefined;
+    const inferredSymbolVenue =
+      preferredVenueBySymbol.get(normalizeSymbol(row.symbol)) || undefined;
     const deployment = resolveScalpDeployment({
+      venue: row.venue ?? inferredSymbolVenue,
       symbol: row.symbol,
       strategyId: row.strategyId,
       tuneId: row.tuneId,
+      deploymentId: fallbackDeploymentId,
     });
     let chunkFrom = fromTs;
     let chunkIdx = 0;
@@ -1860,6 +1952,8 @@ export function buildResearchCycleTasks(params: {
 
   const registryCombos = (params.registryDeployments || [])
     .map((row) => ({
+      deploymentId: String(row.deploymentId || "").trim() || undefined,
+      venue: row.venue,
       symbol: normalizeSymbol(row.symbol),
       strategyId: String(row.strategyId || "")
         .trim()
@@ -2752,60 +2846,51 @@ export async function loadActiveResearchCycleId(): Promise<string | null> {
   return cycleId || null;
 }
 
-function resolveCycleStartStaleAfterMs(
-  params: StartResearchCycleParams,
+async function summarizeOutstandingResearchCycleWork(
   cycle: ScalpResearchCycleSnapshot,
-): number {
-  const requested = toPositiveInt(params.runningStaleAfterMs, 0);
-  const cycleConfigured = toPositiveInt(
-    cycle.params.runningStaleAfterMs,
-    DEFAULT_RUNNING_STALE_AFTER_MS,
-  );
-  const effective =
-    requested > 0
-      ? requested
-      : Math.max(1, cycleConfigured || DEFAULT_RUNNING_STALE_AFTER_MS);
-  // Keep stale replacement conservative for low-frequency schedulers.
-  return Math.max(
-    DEFAULT_RUNNING_STALE_AFTER_MS,
-    Math.min(24 * 60 * 60 * 1000, effective),
-  );
-}
-
-function cycleLastProgressMs(cycle: ScalpResearchCycleSnapshot): number {
-  return Math.max(
-    0,
-    Math.floor(Number(cycle.updatedAtMs) || Number(cycle.createdAtMs) || 0),
-  );
-}
-
-async function retireStaleRunningCycle(
-  cycle: ScalpResearchCycleSnapshot,
-  nowMs: number,
-): Promise<ScalpResearchCycleSnapshot> {
+): Promise<{
+  pending: number;
+  running: number;
+  outstanding: number;
+}> {
   if (isScalpPgConfigured()) {
     const db = scalpPrisma();
-    const finishedAt = new Date(Math.max(0, Math.floor(nowMs)));
-    await db.$executeRaw(Prisma.sql`
-        UPDATE scalp_research_tasks
-        SET
-            status = 'failed_permanent',
-            finished_at = ${finishedAt},
-            error_code = ${STALE_CYCLE_REPLACED_ERROR_CODE},
-            error_message = ${STALE_CYCLE_REPLACED_ERROR_CODE},
-            updated_at = NOW()
-        WHERE cycle_id = ${cycle.cycleId}
-          AND status IN ('pending', 'running');
+    const rows = await db.$queryRaw<
+      Array<{
+        pending: number | string | null;
+        retryWait: number | string | null;
+        running: number | string | null;
+      }>
+    >(Prisma.sql`
+        SELECT
+            COUNT(*) FILTER (WHERE status = 'pending') AS "pending",
+            COUNT(*) FILTER (WHERE status = 'retry_wait') AS "retryWait",
+            COUNT(*) FILTER (WHERE status = 'running') AS "running"
+        FROM scalp_research_tasks
+        WHERE cycle_id = ${cycle.cycleId};
     `);
+    const row = rows[0];
+    const pending =
+      toNonNegativeInt(row?.pending, 0) + toNonNegativeInt(row?.retryWait, 0);
+    const running = toNonNegativeInt(row?.running, 0);
+    return {
+      pending,
+      running,
+      outstanding: pending + running,
+    };
   }
-
-  const nextCycle: ScalpResearchCycleSnapshot = {
-    ...cycle,
-    status: "stalled",
-    updatedAtMs: nowMs,
+  const tasks = await loadAllTasks(cycle);
+  let pending = 0;
+  let running = 0;
+  for (const task of tasks) {
+    if (task.status === "pending") pending += 1;
+    else if (task.status === "running") running += 1;
+  }
+  return {
+    pending,
+    running,
+    outstanding: pending + running,
   };
-  await saveCycle(nextCycle);
-  return nextCycle;
 }
 
 export async function loadResearchWorkerHeartbeat(): Promise<ScalpResearchWorkerHeartbeatSnapshot | null> {
@@ -2865,23 +2950,34 @@ export async function startScalpResearchCycle(
 
   try {
     const dryRun = Boolean(params.dryRun);
-    const force = Boolean(params.force);
+    const lookbackDays = resolveResearchCycleLookbackDaysOrThrow(
+      params.lookbackDays,
+    );
     const activeCycleId = await loadActiveResearchCycleId();
-    if (!force && activeCycleId) {
+    if (activeCycleId) {
       const existing = await loadResearchCycle(activeCycleId);
       if (existing && existing.status === "running") {
-        const staleAfterMs = resolveCycleStartStaleAfterMs(params, existing);
-        const lastProgressMs = cycleLastProgressMs(existing);
-        const stale =
-          lastProgressMs <= 0 || nowMs - lastProgressMs >= staleAfterMs;
-        if (!stale) {
+        const outstandingWork =
+          await summarizeOutstandingResearchCycleWork(existing);
+        if (outstandingWork.outstanding > 0) {
           return { started: false, cycle: existing };
         }
-        await retireStaleRunningCycle(existing, nowMs);
+        const aggregated = await aggregateScalpResearchCycle({
+          cycleId: existing.cycleId,
+          finalizeWhenDone: true,
+        });
+        const refreshed =
+          aggregated?.cycle || (await loadResearchCycle(existing.cycleId));
+        if (refreshed && refreshed.status === "running") {
+          return { started: false, cycle: refreshed };
+        }
       }
     }
 
-    const preflight = await evaluateResearchCyclePreflight(params);
+    const preflight = await evaluateResearchCyclePreflight({
+      ...params,
+      lookbackDays,
+    });
     if (!preflight.ready) {
       throw Object.assign(new Error("research_cycle_preflight_failed"), {
         code: "research_cycle_preflight_failed",
@@ -2898,7 +2994,7 @@ export async function startScalpResearchCycle(
     const cycleId = buildResearchCycleId(nowMs);
     const cycleParams: ScalpResearchCycleParams = {
       symbols,
-      lookbackDays: toPositiveInt(params.lookbackDays, DEFAULT_LOOKBACK_DAYS),
+      lookbackDays,
       // Cycle windows are fixed weekly slices (Monday -> Sunday), regardless of requested chunkDays.
       chunkDays: DEFAULT_CHUNK_DAYS,
       minCandlesPerTask: toPositiveInt(
@@ -2977,6 +3073,8 @@ export async function startScalpResearchCycle(
       registryDeployments: (
         await loadScalpDeploymentRegistry()
       ).deployments.map((row) => ({
+        deploymentId: row.deploymentId,
+        venue: row.venue,
         symbol: row.symbol,
         strategyId: row.strategyId,
         tuneId: row.tuneId,

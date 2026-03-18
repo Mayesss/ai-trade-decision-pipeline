@@ -59,7 +59,12 @@ function makeMarket(nowMs: number): ScalpMarketSnapshot {
   };
 }
 
-function makeReadyState(params: { venue: "capital" | "bitget"; nowMs: number }) {
+function makeReadyState(params: {
+  venue: "capital" | "bitget";
+  nowMs: number;
+  direction?: "BULLISH" | "BEARISH";
+  sweepPrice?: number;
+}) {
   const state = createInitialScalpSessionState({
     venue: params.venue,
     symbol: "BTCUSDT",
@@ -69,16 +74,16 @@ function makeReadyState(params: { venue: "capital" | "bitget"; nowMs: number }) 
   });
   state.state = "WAITING_RETRACE";
   state.sweep = {
-    side: "BUY_SIDE",
+    side: params.direction === "BEARISH" ? "SELL_SIDE" : "BUY_SIDE",
     sweepTsMs: params.nowMs - 60_000,
-    sweepPrice: 99,
+    sweepPrice: params.sweepPrice ?? 99,
     bufferAbs: 0,
     rejected: true,
     rejectedTsMs: params.nowMs - 30_000,
     reasonCodes: [],
   };
   state.ifvg = {
-    direction: "BULLISH",
+    direction: params.direction ?? "BULLISH",
     low: 99.8,
     high: 100.2,
     createdTsMs: params.nowMs - 60_000,
@@ -122,4 +127,54 @@ test("entry sizing is venue-aware (capital caps tighter than bitget for crypto)"
   assert.ok(capitalPlan.reasonCodes.includes("ENTRY_PLAN_ASSET_LEVERAGE_CAP_ACTIVE"));
   assert.ok(bitgetPlan.reasonCodes.includes("ENTRY_PLAN_FEE_AWARE_RISK_SIZING"));
   assert.ok((bitgetPlan.plan?.notionalUsd ?? 0) > (capitalPlan.plan?.notionalUsd ?? 0));
+});
+
+test("entry plan rejects BUY stop that is not protective", () => {
+  const nowMs = Date.UTC(2026, 2, 17, 10, 0, 0, 0);
+  const cfg = applyScalpStrategyConfigOverride(getScalpStrategyConfig(), {
+    risk: {
+      stopBufferPips: 0,
+      stopBufferSpreadMult: 0,
+      minStopDistancePips: 0.01,
+    },
+  });
+  const market = makeMarket(nowMs);
+  const plan = buildScalpEntryPlan({
+    state: makeReadyState({
+      venue: "bitget",
+      nowMs,
+      direction: "BULLISH",
+      sweepPrice: 101,
+    }),
+    market,
+    cfg,
+    entryIntent: { model: "ifvg_touch" },
+  });
+  assert.equal(plan.plan, null);
+  assert.ok(plan.reasonCodes.includes("ENTRY_PLAN_STOP_NOT_PROTECTIVE"));
+});
+
+test("entry plan rejects SELL stop that is not protective", () => {
+  const nowMs = Date.UTC(2026, 2, 17, 10, 0, 0, 0);
+  const cfg = applyScalpStrategyConfigOverride(getScalpStrategyConfig(), {
+    risk: {
+      stopBufferPips: 0,
+      stopBufferSpreadMult: 0,
+      minStopDistancePips: 0.01,
+    },
+  });
+  const market = makeMarket(nowMs);
+  const plan = buildScalpEntryPlan({
+    state: makeReadyState({
+      venue: "bitget",
+      nowMs,
+      direction: "BEARISH",
+      sweepPrice: 99,
+    }),
+    market,
+    cfg,
+    entryIntent: { model: "ifvg_touch" },
+  });
+  assert.equal(plan.plan, null);
+  assert.ok(plan.reasonCodes.includes("ENTRY_PLAN_STOP_NOT_PROTECTIVE"));
 });

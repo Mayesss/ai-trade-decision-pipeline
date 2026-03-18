@@ -7,7 +7,12 @@ import {
     saveScalpCandleHistoryBulk,
     timeframeToMs,
 } from './candleHistory';
-import { evaluateResearchCyclePreflight, startScalpResearchCycle, type StartResearchCycleParams } from './researchCycle';
+import {
+    evaluateResearchCyclePreflight,
+    resolveResearchCycleLookbackDaysOrThrow,
+    startScalpResearchCycle,
+    type StartResearchCycleParams,
+} from './researchCycle';
 import { refreshScalpResearchPortfolioReport } from './researchReporting';
 import { ensureScalpSymbolMarketMetadata } from './symbolMarketMetadataSync';
 import {
@@ -257,7 +262,7 @@ export async function prepareAndStartScalpResearchCycle(
     const invokeStartedAtMs = Date.now();
     const nowMs = Number.isFinite(Number(params.nowMs)) ? Math.floor(Number(params.nowMs)) : invokeStartedAtMs;
     const dryRun = Boolean(params.dryRun);
-    const lookbackDays = parsePositiveInt(params.lookbackDays, 90);
+    const lookbackDays = resolveResearchCycleLookbackDaysOrThrow(params.lookbackDays);
     const minCandlesPerTask = parsePositiveInt(params.minCandlesPerTask, 180);
     const includeLiveQuotes = params.includeLiveQuotes === true;
     const seedTimeframe = normalizeHistoryTimeframe(params.seedTimeframe || '1m');

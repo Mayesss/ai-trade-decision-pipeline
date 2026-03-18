@@ -20,7 +20,6 @@ import type { ScalpSymbolMarketMetadata } from "./symbolMarketMetadata";
 import { loadScalpSymbolMarketMetadata } from "./symbolMarketMetadataStore";
 import {
   listLatestResearchTasksByWindow,
-  loadActiveResearchCycleId,
   loadLatestCompletedResearchCycleId,
   loadResearchCycle,
   type ScalpResearchCycleSnapshot,
@@ -168,6 +167,11 @@ function resolveDeploymentPromotionTriggerWeeks(raw?: unknown): number {
   );
   // Promotion admission must never be lower than 12 consecutive completed weeks.
   return Math.max(12, resolved);
+}
+
+function resolvePromotionSelectionLookbackDays(raw?: unknown): number {
+  const minLookbackDays = resolveDeploymentPromotionTriggerWeeks() * 7;
+  return Math.max(minLookbackDays, toPositiveInt(raw, minLookbackDays));
 }
 
 function toReplayCandles(rows: CandleRow[], spreadPips: number) {
@@ -383,6 +387,7 @@ function resolveWeeklyPolicy(
   params: SyncResearchPromotionParams,
   cycle: ScalpResearchCycleSnapshot,
 ): SyncResearchWeeklyPolicy {
+  const minLookbackDays = resolvePromotionSelectionLookbackDays();
   const enabled =
     params.weeklyRobustnessEnabled ??
     envOrFallbackBool("SCALP_WEEKLY_ROBUSTNESS_ENABLED", true);
@@ -391,13 +396,12 @@ function resolveWeeklyPolicy(
       envOrFallbackNumber("SCALP_WEEKLY_ROBUSTNESS_TOPK_PER_SYMBOL", 2),
     2,
   );
-  const lookbackDays = toPositiveInt(
+  const lookbackDays = resolvePromotionSelectionLookbackDays(
     params.weeklyRobustnessLookbackDays ??
       envOrFallbackNumber(
         "SCALP_WEEKLY_ROBUSTNESS_LOOKBACK_DAYS",
-        cycle.params.lookbackDays,
+        Math.max(minLookbackDays, cycle.params.lookbackDays),
       ),
-    cycle.params.lookbackDays,
   );
   const minCandlesPerSlice = toPositiveInt(
     params.weeklyRobustnessMinCandlesPerSlice ??
@@ -2028,10 +2032,10 @@ export async function syncResearchCyclePromotionGates(
     await savePromotionSyncProgressSnapshot(progressSnapshot);
   };
   const requestedCycleId = String(params.cycleId || "").trim();
-  let cycleId = requestedCycleId || (await loadActiveResearchCycleId());
-  if (!cycleId) {
-    cycleId = await loadLatestCompletedResearchCycleId();
-  }
+  // Promotion sync should evaluate from a completed cycle context by default.
+  // Active/running cycles are only considered when explicitly requested via cycleId.
+  const cycleId =
+    requestedCycleId || (await loadLatestCompletedResearchCycleId());
   const dryRun = Boolean(params.dryRun);
   const requireCompletedCycle = params.requireCompletedCycle ?? true;
   const allowedSources = new Set<ScalpDeploymentRegistrySource>(
@@ -2123,7 +2127,7 @@ export async function syncResearchCyclePromotionGates(
   const fallbackPolicy: SyncResearchWeeklyPolicy = {
     enabled: true,
     topKPerSymbol: 2,
-    lookbackDays: 90,
+    lookbackDays: resolvePromotionSelectionLookbackDays(90),
     minCandlesPerSlice: 180,
     requireWinnerShortlist: true,
     minSlices: 8,
@@ -2315,8 +2319,11 @@ export async function syncResearchCyclePromotionGates(
   }
 
   const selectionWindowToTs = startOfWeekMondayUtc(nowMs);
+  const selectionWindowDays = resolvePromotionSelectionLookbackDays(
+    cycle.params.lookbackDays,
+  );
   const selectionWindowFromTs =
-    selectionWindowToTs - Math.max(1, cycle.params.lookbackDays) * DAY_MS;
+    selectionWindowToTs - selectionWindowDays * DAY_MS;
   const candidateSymbols = Array.from(
     new Set(
       deployments
@@ -2339,7 +2346,7 @@ export async function syncResearchCyclePromotionGates(
   });
   const candidates = buildForwardValidationByCandidateFromTasks({
     tasks: canonicalTasks,
-    selectionWindowDays: cycle.params.lookbackDays,
+    selectionWindowDays,
     forwardWindowDays: inferForwardWindowDaysFromTasks(
       canonicalTasks,
       cycle.params.chunkDays,

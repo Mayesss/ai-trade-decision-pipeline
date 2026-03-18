@@ -625,7 +625,13 @@ function buildPipelineStatusPanel(
         : workerStepIndex
       : -1;
   const workerDetail = workerStepDetail(input.cycle?.totals || null);
-  const promotionDetail = promotionSyncDetail(promotionSyncForCycle);
+  const shouldShowPromotionDetail = Boolean(
+    promotionSyncForCycle &&
+      (promotionSyncFresh || promotionSyncForCycle.status === "succeeded"),
+  );
+  const promotionDetail = shouldShowPromotionDetail
+    ? promotionSyncDetail(promotionSyncForCycle)
+    : null;
 
   const steps = PIPELINE_STEP_DEFS.map((step, index) => {
     let state: ScalpPipelineStepState = "pending";

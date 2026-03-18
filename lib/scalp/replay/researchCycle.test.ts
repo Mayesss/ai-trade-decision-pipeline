@@ -9,6 +9,7 @@ import type {
   ScalpResearchTask,
 } from "../researchCycle";
 import {
+  MIN_RESEARCH_CYCLE_LOOKBACK_DAYS,
   applyResearchCycleIncrementalSymbolPolicy,
   buildResearchCycleTasks,
   createEmptyResearchSymbolCooldownSnapshot,
@@ -17,6 +18,7 @@ import {
   isResearchSymbolCooldownActive,
   isResearchTaskFailureEligibleForSymbolCooldown,
   registerResearchSymbolFailure,
+  resolveResearchCycleLookbackDaysOrThrow,
   resolveResearchWorkerRuntimeConfig,
   summarizeResearchTasks,
 } from "../researchCycle";
@@ -325,6 +327,100 @@ test("buildResearchCycleTasks seeds registry deployment tunes into rolling resea
   assert.deepEqual(
     Array.from(new Set(tasks.map((task) => task.tuneId))).sort(),
     ["auto_tr1p7", "default"],
+  );
+});
+
+test("buildResearchCycleTasks preserves venue-prefixed deployment ids from registry rows", () => {
+  const nowMs = Date.UTC(2026, 2, 2);
+  const tasks = buildResearchCycleTasks({
+    cycleId: "rc_registry_venue",
+    nowMs,
+    symbols: ["XANUSDT"],
+    lookbackDays: 28,
+    chunkDays: 7,
+    maxTasks: 40,
+    strategyAllowlist: ["trend_day_reacceleration_m15_m3"],
+    tunerEnabled: false,
+    maxTuneVariantsPerStrategy: 1,
+    registryDeployments: [
+      {
+        deploymentId: "bitget:XANUSDT~trend_day_reacceleration_m15_m3~default",
+        symbol: "XANUSDT",
+        strategyId: "trend_day_reacceleration_m15_m3",
+        tuneId: "default",
+      },
+    ],
+  });
+
+  assert.equal(tasks.length, 4);
+  assert.equal(
+    new Set(tasks.map((task) => task.deploymentId)).size,
+    1,
+  );
+  assert.equal(
+    tasks[0]?.deploymentId,
+    "bitget:XANUSDT~trend_day_reacceleration_m15_m3~default",
+  );
+});
+
+test("buildResearchCycleTasks infers symbol venue from historical tasks when combo deployment id is missing", () => {
+  const nowMs = Date.UTC(2026, 2, 2);
+  const historical: ScalpResearchTask = {
+    ...makeTask({
+      cycleId: "rc_history_venue",
+      taskId: "hist_xan_bitget",
+      symbol: "XANUSDT",
+      strategyId: "regime_pullback_m15_m3",
+      status: "completed",
+      result: {
+        symbol: "XANUSDT",
+        strategyId: "regime_pullback_m15_m3",
+        tuneId: "default",
+        deploymentId: "bitget:XANUSDT~regime_pullback_m15_m3~default",
+        windowFromTs: Date.UTC(2026, 1, 2),
+        windowToTs: Date.UTC(2026, 1, 9),
+        trades: 8,
+        winRatePct: 50,
+        netR: 1.5,
+        expectancyR: 0.1875,
+        profitFactor: 1.4,
+        maxDrawdownR: 1.2,
+        avgHoldMinutes: 45,
+        netPnlUsd: 52.5,
+        grossProfitR: 3,
+        grossLossR: -1.5,
+      },
+    }),
+    deploymentId: "bitget:XANUSDT~regime_pullback_m15_m3~default",
+    tuneId: "default",
+    windowFromTs: Date.UTC(2026, 1, 2),
+    windowToTs: Date.UTC(2026, 1, 9),
+  };
+
+  const tasks = buildResearchCycleTasks({
+    cycleId: "rc_registry_infer_venue",
+    nowMs,
+    symbols: ["XANUSDT"],
+    lookbackDays: 28,
+    chunkDays: 7,
+    maxTasks: 40,
+    strategyAllowlist: ["trend_day_reacceleration_m15_m3"],
+    tunerEnabled: false,
+    maxTuneVariantsPerStrategy: 1,
+    historicalTasks: [historical],
+    registryDeployments: [
+      {
+        symbol: "XANUSDT",
+        strategyId: "trend_day_reacceleration_m15_m3",
+        tuneId: "default",
+      },
+    ],
+  });
+
+  assert.equal(tasks.length, 4);
+  assert.equal(
+    tasks[0]?.deploymentId,
+    "bitget:XANUSDT~trend_day_reacceleration_m15_m3~default",
   );
 });
 
@@ -799,6 +895,29 @@ test("evaluateResearchTaskClaimability treats pending tasks as claimable when at
   assert.equal(out.maxAttemptsReached, false);
   assert.equal(out.claimable, true);
   assert.equal(out.shouldAbortForAttempts, false);
+});
+
+test("resolveResearchCycleLookbackDaysOrThrow enforces minimum 84-day cycle horizon", () => {
+  const exactMin = resolveResearchCycleLookbackDaysOrThrow(
+    MIN_RESEARCH_CYCLE_LOOKBACK_DAYS,
+  );
+  assert.equal(exactMin, MIN_RESEARCH_CYCLE_LOOKBACK_DAYS);
+
+  assert.throws(
+    () => resolveResearchCycleLookbackDaysOrThrow(7),
+    (err: any) => {
+      assert.equal(
+        String(err?.code || ""),
+        "research_cycle_lookback_below_minimum",
+      );
+      assert.equal(
+        Number(err?.minimumLookbackDays),
+        MIN_RESEARCH_CYCLE_LOOKBACK_DAYS,
+      );
+      assert.equal(Number(err?.requestedLookbackDays), 7);
+      return true;
+    },
+  );
 });
 
 test("summarizeResearchTasks treats cooldown-deferred pending tasks as pending (not failed)", () => {

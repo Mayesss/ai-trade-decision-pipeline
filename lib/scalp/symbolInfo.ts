@@ -77,6 +77,14 @@ function normalizeSymbol(value: unknown): string {
     .replace(/[^A-Z0-9._-]/g, "");
 }
 
+function isUsdQuotedSymbol(symbol: string): boolean {
+  return (
+    symbol.endsWith("USDT") ||
+    symbol.endsWith("USDC") ||
+    symbol.endsWith("BUSD")
+  );
+}
+
 function stripQuoteSuffix(symbol: string): string {
   for (const suffix of ["USDT", "USDC", "USD", "EUR", "GBP", "JPY"]) {
     if (symbol.endsWith(suffix) && symbol.length > suffix.length) {
@@ -137,13 +145,23 @@ export function pipSizeForScalpSymbol(
 ): number {
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return 0.0001;
-  const metadataPipSize = Number(metadata?.pipSize);
-  if (Number.isFinite(metadataPipSize) && metadataPipSize > 0) {
-    return metadataPipSize;
-  }
+
+  const fallbackPipSize = (() => {
+    if (isPreciousMetalFamilySymbol(normalized)) return 0.01;
+    if (isFxSymbol(normalized))
+      return normalized.includes("JPY") ? 0.01 : 0.0001;
+    if (isUsdQuotedSymbol(normalized)) return 0.0001;
+    return 0.0001;
+  })();
+
   const override = resolvePipSizeOverride(normalized);
   if (override !== null) return override;
-  if (isPreciousMetalFamilySymbol(normalized)) return 0.01;
-  if (isFxSymbol(normalized)) return normalized.includes("JPY") ? 0.01 : 0.0001;
-  return 0.0001;
+
+  const metadataPipSize = Number(metadata?.pipSize);
+  if (Number.isFinite(metadataPipSize) && metadataPipSize > 0) {
+    // Exchange metadata can expose tiny tick-sized increments. Keep a practical
+    // floor so risk buffers/stops do not collapse into unrealistic micro-distances.
+    return Math.max(metadataPipSize, fallbackPipSize);
+  }
+  return fallbackPipSize;
 }

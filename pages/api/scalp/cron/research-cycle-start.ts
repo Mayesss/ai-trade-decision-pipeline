@@ -148,6 +148,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 preflight: err.preflight,
             });
         }
+        if (String(err?.code || '') === 'research_cycle_lookback_below_minimum') {
+            const minimumLookbackDays = Number(err?.minimumLookbackDays) || 84;
+            const requestedLookbackDays = Number(err?.requestedLookbackDays) || null;
+            return res.status(400).json({
+                error: 'research_cycle_lookback_below_minimum',
+                message: `lookbackDays must be at least ${minimumLookbackDays}.`,
+                minimumLookbackDays,
+                requestedLookbackDays,
+            });
+        }
         return res.status(500).json({
             error: 'research_cycle_start_failed',
             message: err?.message || String(err),

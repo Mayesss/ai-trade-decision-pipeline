@@ -254,6 +254,22 @@ export async function upsertResearchTasksBulkToPg(
                 updated_at timestamptz
             )
         ),
+        dep_map AS (
+            SELECT
+                x.symbol,
+                x.strategy_id,
+                x.tune_id,
+                COALESCE(
+                    d.deployment_id,
+                    MIN(x.deployment_id)
+                ) AS deployment_id
+            FROM input x
+            LEFT JOIN scalp_deployments d
+              ON d.symbol = x.symbol
+             AND d.strategy_id = x.strategy_id
+             AND d.tune_id = x.tune_id
+            GROUP BY x.symbol, x.strategy_id, x.tune_id, d.deployment_id
+        ),
         dep AS (
             INSERT INTO scalp_deployments(
                 deployment_id,
@@ -266,16 +282,45 @@ export async function upsertResearchTasksBulkToPg(
                 updated_by
             )
             SELECT DISTINCT
-                x.deployment_id,
-                x.symbol,
-                x.strategy_id,
-                x.tune_id,
+                m.deployment_id,
+                m.symbol,
+                m.strategy_id,
+                m.tune_id,
                 'backtest',
                 FALSE,
                 '{}'::jsonb,
                 'phase_g_pg_primary'
-            FROM input x
+            FROM dep_map m
             ON CONFLICT(deployment_id) DO NOTHING
+        ),
+        task_input AS (
+            SELECT
+                x.task_id,
+                x.cycle_id,
+                m.deployment_id,
+                x.symbol,
+                x.strategy_id,
+                x.tune_id,
+                x.window_from,
+                x.window_to,
+                x.status,
+                x.attempts,
+                x.max_attempts,
+                x.next_eligible_at,
+                x.worker_id,
+                x.started_at,
+                x.finished_at,
+                x.error_code,
+                x.error_message,
+                x.result_json,
+                x.priority,
+                x.created_at,
+                x.updated_at
+            FROM input x
+            INNER JOIN dep_map m
+              ON m.symbol = x.symbol
+             AND m.strategy_id = x.strategy_id
+             AND m.tune_id = x.tune_id
         )
         INSERT INTO scalp_research_tasks(
             task_id,
@@ -322,7 +367,7 @@ export async function upsertResearchTasksBulkToPg(
             x.priority,
             x.created_at,
             x.updated_at
-        FROM input x
+        FROM task_input x
         ON CONFLICT(task_id)
         DO UPDATE SET
             cycle_id = EXCLUDED.cycle_id,
