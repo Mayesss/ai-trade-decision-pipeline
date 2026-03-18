@@ -18,6 +18,9 @@ export type ScalpPipelineRuntimeOrchestratorSnapshot = {
     isRunning: boolean;
     progressPct: number | null;
     progressLabel: string | null;
+    loadCursor: number | null;
+    selectedSymbolsCount: number | null;
+    stageProgressPct: number | null;
     lastError: string | null;
 };
 
@@ -138,6 +141,9 @@ export function normalizeScalpPipelineRuntimeOrchestrator(
     const lastError = normalizeOptionalText(row.lastError, 400);
     const progressPct = normalizeProgressPct(row.progressPct);
     const progressLabel = normalizeOptionalText(row.progressLabel, 240);
+    const loadCursor = normalizeNonNegativeInt(row.loadCursor);
+    const selectedSymbolsCount = normalizeNonNegativeInt(row.selectedSymbolsCount);
+    const stageProgressPct = normalizeProgressPct(row.stageProgressPct);
     const explicitIsRunning = parseBool(row.isRunning);
     const inferredIsRunning =
         Boolean(stage) &&
@@ -158,6 +164,9 @@ export function normalizeScalpPipelineRuntimeOrchestrator(
         lastError === null &&
         progressPct === null &&
         progressLabel === null &&
+        loadCursor === null &&
+        selectedSymbolsCount === null &&
+        stageProgressPct === null &&
         explicitIsRunning === null
     ) {
         return null;
@@ -173,6 +182,9 @@ export function normalizeScalpPipelineRuntimeOrchestrator(
         isRunning: resolvedIsRunning,
         progressPct,
         progressLabel,
+        loadCursor,
+        selectedSymbolsCount,
+        stageProgressPct,
         lastError,
     };
 }

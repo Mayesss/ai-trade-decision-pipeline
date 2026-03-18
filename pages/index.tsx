@@ -286,6 +286,9 @@ type ScalpSummaryResponse = {
       isRunning?: boolean;
       progressPct?: number | null;
       progressLabel?: string | null;
+      loadCursor?: number | null;
+      selectedSymbolsCount?: number | null;
+      stageProgressPct?: number | null;
       lastError?: string | null;
     } | null;
     cycle?: {
@@ -302,6 +305,11 @@ type ScalpSummaryResponse = {
         completed?: number | null;
         failed?: number | null;
       } | null;
+    } | null;
+    queue?: {
+      pending?: number | null;
+      running?: number | null;
+      outstanding?: number | null;
     } | null;
     statusPanel?: ScalpPipelineStatusPanel | null;
   } | null;
@@ -3246,6 +3254,7 @@ export default function Home() {
   const scalpPipelineCycle = scalpSummary?.pipeline?.cycle || null;
   const scalpPipelineOrchestrator =
     scalpSummary?.pipeline?.orchestrator || null;
+  const scalpPipelineQueue = scalpSummary?.pipeline?.queue || null;
   const scalpPipelineStatusPanel = scalpSummary?.pipeline?.statusPanel || null;
   const scalpPipelineStatus = String(scalpPipelineStatusPanel?.status || "idle")
     .trim()
@@ -3469,6 +3478,30 @@ export default function Home() {
         ? scalpWorkerTaskStatusTotals.failed
         : (asFiniteNumber(scalpResearchReport?.cycle?.failed) ??
           asFiniteNumber(scalpPipelineCycle?.totals?.failed))));
+  const scalpPipelineQueuePending =
+    asFiniteNumber(scalpPipelineQueue?.pending) ?? null;
+  const scalpPipelineQueueRunning =
+    asFiniteNumber(scalpPipelineQueue?.running) ?? null;
+  const scalpPipelineQueueOutstanding =
+    asFiniteNumber(scalpPipelineQueue?.outstanding) ??
+    ((scalpPipelineQueuePending !== null || scalpPipelineQueueRunning !== null
+      ? (scalpPipelineQueuePending ?? 0) + (scalpPipelineQueueRunning ?? 0)
+      : null));
+  const scalpCycleHeadlineUsesQueueFallback =
+    (scalpCycleTasks === null || scalpCycleTasks <= 0) &&
+    scalpPipelineQueueOutstanding !== null &&
+    scalpPipelineQueueOutstanding > 0;
+  const scalpCycleHeadlineTasks = scalpCycleHeadlineUsesQueueFallback
+    ? scalpPipelineQueueOutstanding
+    : scalpCycleTasks;
+  const scalpCycleHeadlineCompleted = scalpCycleHeadlineUsesQueueFallback
+    ? 0
+    : scalpCycleCompleted;
+  const scalpCycleHeadlineTaskLabel = scalpCycleHeadlineUsesQueueFallback
+    ? `${Math.floor(scalpPipelineQueueOutstanding || 0)} queued`
+    : scalpCycleHeadlineCompleted !== null && scalpCycleHeadlineTasks !== null
+      ? `${Math.floor(scalpCycleHeadlineCompleted)} / ${Math.floor(scalpCycleHeadlineTasks)} tasks`
+      : "Awaiting cycle summary";
   const scalpCycleRunningStaleAsPending = scalpWorkerTasksCoverAll
     ? scalpWorkerTaskStatusTotals.runningStale +
       scalpWorkerTaskStatusTotals.runningMissingStartedAt
@@ -5501,6 +5534,36 @@ export default function Home() {
     if (scalpOrchestratorIsInProgress) return "running";
     return "pending";
   };
+  const scalpLoadCandlesStageProgressPct = (() => {
+    const direct = asFiniteNumber(scalpPipelineOrchestrator?.stageProgressPct);
+    if (direct !== null) return Math.max(0, Math.min(100, direct));
+    const loadCursor = asFiniteNumber(scalpPipelineOrchestrator?.loadCursor);
+    const selectedSymbolsCount = asFiniteNumber(
+      scalpPipelineOrchestrator?.selectedSymbolsCount,
+    );
+    if (
+      loadCursor === null ||
+      selectedSymbolsCount === null ||
+      selectedSymbolsCount <= 0
+    ) {
+      return null;
+    }
+    return Math.max(
+      0,
+      Math.min(100, (Math.min(loadCursor, selectedSymbolsCount) / selectedSymbolsCount) * 100),
+    );
+  })();
+  const scalpWorkerStageProgressPct =
+    scalpCycleProgressPct === null
+      ? null
+      : Math.max(0, Math.min(100, scalpCycleProgressPct));
+  const scalpOrchestratorSubtaskProgressPct = (stage: string): number | null => {
+    const state = scalpOrchestratorSubtaskState(stage);
+    if (state !== "running") return null;
+    if (stage === "load_candles") return scalpLoadCandlesStageProgressPct;
+    if (stage === "worker") return scalpWorkerStageProgressPct;
+    return null;
+  };
   const scalpActiveExecutionTs =
     scalpActiveExecution && typeof scalpActiveExecution.timestampMs === "number"
       ? scalpActiveExecution.timestampMs
@@ -6932,17 +6995,15 @@ export default function Home() {
                               <p
                                 className={`text-2xl font-semibold ${scalpTextPrimaryClass}`}
                               >
-                                {scalpCycleProgressPct === null
+                                {scalpCycleHeadlineUsesQueueFallback ||
+                                scalpCycleProgressPct === null
                                   ? "—"
                                   : `${scalpCycleProgressPct.toFixed(0)}%`}
                               </p>
                               <p
                                 className={`pb-0.5 text-sm ${scalpTextSecondaryClass}`}
                               >
-                                {scalpCycleCompleted !== null &&
-                                scalpCycleTasks !== null
-                                  ? `${Math.floor(scalpCycleCompleted)} / ${Math.floor(scalpCycleTasks)} tasks`
-                                  : "Awaiting cycle summary"}
+                                {scalpCycleHeadlineTaskLabel}
                               </p>
                             </div>
                             <p
@@ -6951,7 +7012,8 @@ export default function Home() {
                               {scalpPipelineStatusDetail ||
                                 "Persisted orchestrator and cycle state from Postgres."}
                             </p>
-                            {scalpNextFreshCycleStartLabel ? (
+                            {scalpNextFreshCycleStartLabel &&
+                            !scalpCycleHeadlineUsesQueueFallback ? (
                               <p
                                 className={`mt-2 text-xs ${scalpTextMutedClass}`}
                               >
@@ -7526,6 +7588,10 @@ export default function Home() {
                                                             scalpOrchestratorSubtaskState(
                                                               subtask.stage,
                                                             );
+                                                          const progressPct =
+                                                            scalpOrchestratorSubtaskProgressPct(
+                                                              subtask.stage,
+                                                            );
                                                           const icon =
                                                             state ===
                                                             "running" ? (
@@ -7544,51 +7610,80 @@ export default function Home() {
                                                           return (
                                                             <div
                                                               key={`orchestrator-subtask-${subtask.id}`}
-                                                              className={`flex items-center justify-between gap-3 rounded-lg border px-2.5 py-2 ${
+                                                              className={`rounded-lg border px-2.5 py-2 ${
                                                                 scalpDarkMode
                                                                   ? "border-zinc-700/80 bg-zinc-900/70"
                                                                   : "border-slate-200 bg-white"
                                                               }`}
                                                             >
-                                                              <div className="flex items-center gap-2">
+                                                              <div className="flex items-center justify-between gap-3">
+                                                                <div className="flex items-center gap-2">
+                                                                  <span
+                                                                    className={`text-[11px] ${scalpTextMutedClass}`}
+                                                                  >
+                                                                    {index + 1}.
+                                                                  </span>
+                                                                  {icon}
+                                                                  <span
+                                                                    className={`text-sm font-medium ${scalpTextPrimaryClass}`}
+                                                                  >
+                                                                    {
+                                                                      subtask.label
+                                                                    }
+                                                                  </span>
+                                                                </div>
                                                                 <span
-                                                                  className={`text-[11px] ${scalpTextMutedClass}`}
-                                                                >
-                                                                  {index + 1}.
-                                                                </span>
-                                                                {icon}
-                                                                <span
-                                                                  className={`text-sm font-medium ${scalpTextPrimaryClass}`}
-                                                                >
-                                                                  {
-                                                                    subtask.label
-                                                                  }
-                                                                </span>
-                                                              </div>
-                                                              <span
-                                                                className={`rounded-full border px-2 py-0.5 text-[11px] ${
-                                                                  state ===
-                                                                  "running"
-                                                                    ? scalpCronDetailToneMeta(
-                                                                        "warning",
-                                                                      )
-                                                                    : state ===
-                                                                        "success"
+                                                                  className={`rounded-full border px-2 py-0.5 text-[11px] ${
+                                                                    state ===
+                                                                    "running"
                                                                       ? scalpCronDetailToneMeta(
-                                                                          "positive",
+                                                                          "warning",
                                                                         )
                                                                       : state ===
-                                                                          "failed"
+                                                                          "success"
                                                                         ? scalpCronDetailToneMeta(
-                                                                            "critical",
+                                                                            "positive",
                                                                           )
-                                                                        : scalpCronDetailToneMeta(
-                                                                            "neutral",
-                                                                          )
-                                                                }`}
-                                                              >
-                                                                {state}
-                                                              </span>
+                                                                        : state ===
+                                                                            "failed"
+                                                                          ? scalpCronDetailToneMeta(
+                                                                              "critical",
+                                                                            )
+                                                                          : scalpCronDetailToneMeta(
+                                                                              "neutral",
+                                                                            )
+                                                                  }`}
+                                                                >
+                                                                  {state}
+                                                                </span>
+                                                              </div>
+                                                              {progressPct !==
+                                                              null ? (
+                                                                <div className="mt-2">
+                                                                  <div
+                                                                    className={`flex items-center justify-between text-[10px] uppercase tracking-[0.12em] ${scalpTextMutedClass}`}
+                                                                  >
+                                                                    <span>
+                                                                      progress
+                                                                    </span>
+                                                                    <span className="font-semibold">
+                                                                      {`${progressPct.toFixed(0)}%`}
+                                                                    </span>
+                                                                  </div>
+                                                                  <div
+                                                                    className={`mt-1 h-1.5 overflow-hidden rounded-full ${scalpVisualMetricTrackClass}`}
+                                                                  >
+                                                                    <div
+                                                                      className={`h-full rounded-full ${scalpVisualMetricFillMeta(
+                                                                        "warning",
+                                                                      )}`}
+                                                                      style={{
+                                                                        width: `${progressPct}%`,
+                                                                      }}
+                                                                    />
+                                                                  </div>
+                                                                </div>
+                                                              ) : null}
                                                             </div>
                                                           );
                                                         },

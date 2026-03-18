@@ -200,6 +200,15 @@ function buildRuntimeOrchestratorSnapshot(
         startedAtMs !== null &&
         (completedAtMs === null || completedAtMs < startedAtMs) &&
         !lastError;
+    const selectedSymbolsCount = state.selectedSymbols.length > 0 ? state.selectedSymbols.length : null;
+    const loadCursor =
+        selectedSymbolsCount !== null
+            ? Math.max(0, Math.min(state.loadCursor, selectedSymbolsCount))
+            : Math.max(0, state.loadCursor);
+    const stageProgressPct =
+        state.stage === 'load_candles' && selectedSymbolsCount && selectedSymbolsCount > 0
+            ? Math.max(0, Math.min(100, (loadCursor / selectedSymbolsCount) * 100))
+            : null;
     return {
         status: inferScalpPipelineRuntimeOrchestratorStatus({ isRunning, lastError }),
         runId: state.runId || null,
@@ -211,6 +220,9 @@ function buildRuntimeOrchestratorSnapshot(
         isRunning,
         progressPct: stageMeta.progressPct,
         progressLabel: stageMeta.progressLabel,
+        loadCursor,
+        selectedSymbolsCount,
+        stageProgressPct,
         lastError,
     };
 }

@@ -218,6 +218,9 @@ type ScalpPipelineSnapshot = {
     isRunning: boolean;
     progressPct: number | null;
     progressLabel: string | null;
+    loadCursor: number | null;
+    selectedSymbolsCount: number | null;
+    stageProgressPct: number | null;
     lastError: string | null;
   } | null;
   cycle: {
@@ -234,6 +237,11 @@ type ScalpPipelineSnapshot = {
       completed: number | null;
       failed: number | null;
       } | null;
+  } | null;
+  queue: {
+    pending: number | null;
+    running: number | null;
+    outstanding: number | null;
   } | null;
   promotionSync: {
     status: "queued" | "running" | "succeeded" | "failed" | null;
@@ -621,6 +629,17 @@ function buildPipelineStatusPanel(
             : promotionSyncForCycle?.totalDeployments ?? 1,
         }) ?? cycleOrchestratorProgressPct
       : cycleOrchestratorProgressPct;
+  const queuePending = safeCount(input.queue?.pending);
+  const queueRunning = safeCount(input.queue?.running);
+  const queueOutstanding =
+    safeCount(input.queue?.outstanding) ??
+    ((queuePending ?? 0) + (queueRunning ?? 0));
+  const queueHasOutstanding = queueOutstanding > 0;
+  const queueDetailParts: string[] = [];
+  if (queueOutstanding > 0) queueDetailParts.push(`${queueOutstanding} queued`);
+  if ((queueRunning ?? 0) > 0) queueDetailParts.push(`${queueRunning} running`);
+  if ((queuePending ?? 0) > 0) queueDetailParts.push(`${queuePending} pending`);
+  const queueDetail = queueDetailParts.length ? queueDetailParts.join(" · ") : null;
   const updatedAtMs = [
     input.panicStop.updatedAtMs,
     input.orchestrator?.updatedAtMs,
@@ -785,6 +804,27 @@ function buildPipelineStatusPanel(
     };
   }
 
+  if (queueHasOutstanding) {
+    const queueSteps = steps.map((step) => {
+      if (step.id !== "worker") return step;
+      if (step.state === "failed" || step.state === "success") return step;
+      return {
+        ...step,
+        state: "running" as const,
+        detail: step.detail || queueDetail,
+      };
+    });
+    return {
+      status: "running",
+      label: "Worker queue in progress",
+      detail: queueDetail || workerDetail || (currentCycleId ? `cycle ${currentCycleId}` : null),
+      cycleId: currentCycleId,
+      updatedAtMs,
+      progressPct,
+      steps: queueSteps,
+    };
+  }
+
   return {
     status: "idle",
     label: activeOrchestratorRunning ? "Cycle preparation in progress" : "Awaiting next cycle",
@@ -818,6 +858,9 @@ async function loadScalpPipelineSnapshot(
       fallbackCycleUpdatedAtMs: bigint | number | null;
       fallbackCycleCompletedAtMs: bigint | number | null;
       fallbackCycleSummary: unknown;
+      queuePending: bigint | number | string | null;
+      queueRetryWait: bigint | number | string | null;
+      queueRunning: bigint | number | string | null;
     }>
   >(Prisma.sql`
     WITH orchestrator_state AS (
@@ -867,6 +910,13 @@ async function loadScalpPipelineSnapshot(
       WHERE status <> 'running'::scalp_cycle_status
       ORDER BY updated_at DESC
       LIMIT 1
+    ),
+    queue_totals AS (
+      SELECT
+        COUNT(*) FILTER (WHERE status = 'pending')::bigint AS pending,
+        COUNT(*) FILTER (WHERE status = 'retry_wait')::bigint AS retry_wait,
+        COUNT(*) FILTER (WHERE status = 'running')::bigint AS running
+      FROM scalp_research_tasks
     )
     SELECT
       (SELECT payload FROM orchestrator_state) AS "orchestratorPayload",
@@ -883,9 +933,13 @@ async function loadScalpPipelineSnapshot(
       fc.created_at_ms AS "fallbackCycleCreatedAtMs",
       fc.updated_at_ms AS "fallbackCycleUpdatedAtMs",
       fc.completed_at_ms AS "fallbackCycleCompletedAtMs",
-      fc.latest_summary_json AS "fallbackCycleSummary"
+      fc.latest_summary_json AS "fallbackCycleSummary",
+      qt.pending AS "queuePending",
+      qt.retry_wait AS "queueRetryWait",
+      qt.running AS "queueRunning"
     FROM running_cycle rc
     FULL OUTER JOIN fallback_cycle fc ON TRUE
+    CROSS JOIN queue_totals qt
     UNION ALL
     SELECT
       (SELECT payload FROM orchestrator_state) AS "orchestratorPayload",
@@ -902,7 +956,10 @@ async function loadScalpPipelineSnapshot(
       NULL::bigint AS "fallbackCycleCreatedAtMs",
       NULL::bigint AS "fallbackCycleUpdatedAtMs",
       NULL::bigint AS "fallbackCycleCompletedAtMs",
-      NULL::jsonb AS "fallbackCycleSummary"
+      NULL::jsonb AS "fallbackCycleSummary",
+      (SELECT pending FROM queue_totals) AS "queuePending",
+      (SELECT retry_wait FROM queue_totals) AS "queueRetryWait",
+      (SELECT running FROM queue_totals) AS "queueRunning"
     WHERE NOT EXISTS (SELECT 1 FROM running_cycle)
       AND NOT EXISTS (SELECT 1 FROM fallback_cycle);
   `);
@@ -945,6 +1002,18 @@ async function loadScalpPipelineSnapshot(
   const fallbackOrchestratorCompletedAtMs = asTsMs(orchestratorPayload.completedAtMs);
   const fallbackOrchestratorUpdatedAtMs = asTsMs(orchestratorPayload.updatedAtMs);
   const fallbackOrchestratorLockUntilMs = asTsMs(orchestratorPayload.lockUntilMs);
+  const fallbackOrchestratorLoadCursor = Number.isFinite(
+    Number(orchestratorPayload.loadCursor),
+  )
+    ? Math.max(0, Math.floor(Number(orchestratorPayload.loadCursor)))
+    : null;
+  const fallbackOrchestratorSelectedSymbolsCount = Array.isArray(
+    orchestratorPayload.selectedSymbols,
+  )
+    ? orchestratorPayload.selectedSymbols.length
+    : Number.isFinite(Number(orchestratorPayload.selectedSymbolsCount))
+    ? Math.max(0, Math.floor(Number(orchestratorPayload.selectedSymbolsCount)))
+    : null;
   const fallbackOrchestratorLastError =
     String(orchestratorPayload.lastError || "").trim() || null;
   const orchestratorRunningStaleAfterMs = 20 * 60_000;
@@ -969,9 +1038,34 @@ async function loadScalpPipelineSnapshot(
         lastError: fallbackOrchestratorLastError,
       })
     : null;
+  const fallbackOrchestratorStageProgressPct =
+    fallbackOrchestratorStage?.toLowerCase() === "load_candles" &&
+    fallbackOrchestratorLoadCursor !== null &&
+    fallbackOrchestratorSelectedSymbolsCount !== null &&
+    fallbackOrchestratorSelectedSymbolsCount > 0
+      ? Math.max(
+          0,
+          Math.min(
+            100,
+            (fallbackOrchestratorLoadCursor / fallbackOrchestratorSelectedSymbolsCount) *
+              100,
+          ),
+        )
+      : null;
   const summary = asRecord(selectedCycle?.summary);
   const totals = asRecord(summary.totals);
   const cycleProgressPct = safeProgressPct(summary.progressPct);
+  const queuePending = safeCount(row.queuePending);
+  const queueRetryWait = safeCount(row.queueRetryWait);
+  const queueRunning = safeCount(row.queueRunning);
+  const queuePendingWithRetry =
+    queuePending !== null || queueRetryWait !== null
+      ? (queuePending ?? 0) + (queueRetryWait ?? 0)
+      : null;
+  const queueOutstanding =
+    queuePendingWithRetry !== null || queueRunning !== null
+      ? (queuePendingWithRetry ?? 0) + (queueRunning ?? 0)
+      : null;
   const fallbackOrchestrator = fallbackOrchestratorStage
     ? {
         status: fallbackOrchestratorStatus || "idle",
@@ -987,6 +1081,9 @@ async function loadScalpPipelineSnapshot(
         isRunning: fallbackOrchestratorRunningRaw,
         progressPct: null,
         progressLabel: null,
+        loadCursor: fallbackOrchestratorLoadCursor,
+        selectedSymbolsCount: fallbackOrchestratorSelectedSymbolsCount,
+        stageProgressPct: fallbackOrchestratorStageProgressPct,
         lastError: fallbackOrchestratorLastError,
       }
     : null;
@@ -1113,6 +1210,15 @@ async function loadScalpPipelineSnapshot(
                 : effectiveRuntimeOrchestrator.progressLabel
               : fallbackOrchestrator?.progressLabel) ??
             mergedStageMeta.progressLabel,
+          loadCursor: hasRuntimeOrchestrator
+            ? effectiveRuntimeOrchestrator.loadCursor ?? null
+            : fallbackOrchestrator?.loadCursor ?? null,
+          selectedSymbolsCount: hasRuntimeOrchestrator
+            ? effectiveRuntimeOrchestrator.selectedSymbolsCount ?? null
+            : fallbackOrchestrator?.selectedSymbolsCount ?? null,
+          stageProgressPct: hasRuntimeOrchestrator
+            ? effectiveRuntimeOrchestrator.stageProgressPct ?? null
+            : fallbackOrchestrator?.stageProgressPct ?? null,
           lastError: hasRuntimeOrchestrator
             ? runtimeOrchestratorStale
               ? "stale_runtime_state"
@@ -1242,6 +1348,14 @@ async function loadScalpPipelineSnapshot(
             : null,
         }
       : null,
+    queue:
+      queuePendingWithRetry !== null || queueRunning !== null
+        ? {
+            pending: queuePendingWithRetry,
+            running: queueRunning,
+            outstanding: queueOutstanding,
+          }
+        : null,
     promotionSync: mergedPromotionSync,
   };
   return {
