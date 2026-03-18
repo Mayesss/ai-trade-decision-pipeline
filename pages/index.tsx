@@ -3342,14 +3342,11 @@ export default function Home() {
         : scalpPipelineStatus === "failed" || scalpPipelineStatus === "blocked"
           ? "stopped"
           : null;
-  const scalpNextFreshCycleStartAtMs =
-    scalpPipelineStatus === "running"
-      ? null
-      : nextCronRunAtMsForPath({
-          nowMs: scalpCronNowMs,
-          pathname: "/api/scalp/cron/orchestrate-pipeline",
-          pathFilter: (path) => !/[?&]continue=1(?:&|$)/.test(path),
-        });
+  const scalpNextFreshCycleStartAtMs = nextCronRunAtMsForPath({
+    nowMs: scalpCronNowMs,
+    pathname: "/api/scalp/cron/orchestrate-pipeline",
+    pathFilter: (path) => !/[?&]continue=1(?:&|$)/.test(path),
+  });
   const scalpNextFreshCycleStartLabel =
     scalpNextFreshCycleStartAtMs === null
       ? null
@@ -7023,8 +7020,7 @@ export default function Home() {
                               {scalpPipelineStatusDetail ||
                                 "Persisted orchestrator and cycle state from Postgres."}
                             </p>
-                            {scalpNextFreshCycleStartLabel &&
-                            !scalpCycleHeadlineUsesQueueFallback ? (
+                            {scalpNextFreshCycleStartLabel ? (
                               <p
                                 className={`mt-2 text-xs ${scalpTextMutedClass}`}
                               >
