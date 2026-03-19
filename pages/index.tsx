@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Head from "next/head";
 import dynamic from "next/dynamic";
 import {
@@ -4203,6 +4203,38 @@ export default function Home() {
       scalpIsMobileViewport,
     ],
   );
+  const handleScalpGridGetRowId = useCallback(
+    (params: any) => String(params?.data?.rowId || ""),
+    [],
+  );
+  const handleScalpGridBodyScrollEnd = useCallback(
+    (event: any) => {
+      if (
+        event?.direction &&
+        String(event.direction).toLowerCase() !== "vertical"
+      ) {
+        return;
+      }
+      const totalRows = scalpSelectedWorkerGridRows.length;
+      const loadedRows = scalpVisibleWorkerGridRows.length;
+      if (!totalRows || loadedRows >= totalRows) return;
+      const range = event?.api?.getVerticalPixelRange?.();
+      const displayedRows = event?.api?.getDisplayedRowCount?.() || 0;
+      if (!range || displayedRows <= 0) return;
+      const nearBottom = range.bottom >= displayedRows * 54 - 108;
+      if (!nearBottom) return;
+      setScalpGridLoadedRows((prev) =>
+        Math.min(totalRows, prev + SCALP_GRID_LOAD_BATCH),
+      );
+    },
+    [scalpSelectedWorkerGridRows.length, scalpVisibleWorkerGridRows.length],
+  );
+  const handleScalpGridRowClicked = useCallback((event: any) => {
+    const deploymentId = String(event?.data?.deploymentId || "").trim();
+    if (deploymentId) {
+      setScalpActiveDeploymentId(deploymentId);
+    }
+  }, []);
 
   const scalpStateMeta = (state?: string | null) => {
     const normalized = String(state || "MISSING")
@@ -5268,38 +5300,10 @@ export default function Home() {
                           headerHeight={40}
                           immutableData
                           suppressScrollOnNewData
-                          getRowId={(params: any) =>
-                            String(params?.data?.rowId || "")
-                          }
+                          getRowId={handleScalpGridGetRowId}
                           animateRows
-                          onBodyScrollEnd={(event: any) => {
-                            if (
-                              event?.direction &&
-                              String(event.direction).toLowerCase() !== "vertical"
-                            ) {
-                              return;
-                            }
-                            const totalRows = scalpSelectedWorkerGridRows.length;
-                            const loadedRows = scalpVisibleWorkerGridRows.length;
-                            if (!totalRows || loadedRows >= totalRows) return;
-                            const range = event?.api?.getVerticalPixelRange?.();
-                            const displayedRows = event?.api?.getDisplayedRowCount?.() || 0;
-                            if (!range || displayedRows <= 0) return;
-                            const nearBottom =
-                              range.bottom >= displayedRows * 54 - 108;
-                            if (!nearBottom) return;
-                            setScalpGridLoadedRows((prev) =>
-                              Math.min(totalRows, prev + SCALP_GRID_LOAD_BATCH),
-                            );
-                          }}
-                          onRowClicked={(event: any) => {
-                            const deploymentId = String(
-                              event?.data?.deploymentId || "",
-                            ).trim();
-                            if (deploymentId) {
-                              setScalpActiveDeploymentId(deploymentId);
-                            }
-                          }}
+                          onBodyScrollEnd={handleScalpGridBodyScrollEnd}
+                          onRowClicked={handleScalpGridRowClicked}
                         />
                       </div>
                     ) : (
