@@ -1014,6 +1014,8 @@ export default function Home() {
   const [scalpCopiedDeploymentId, setScalpCopiedDeploymentId] = useState<
     string | null
   >(null);
+  const [scalpIsMobileViewport, setScalpIsMobileViewport] =
+    useState<boolean>(false);
   const [scalpGridLoadedRows, setScalpGridLoadedRows] = useState<number>(
     SCALP_GRID_LOAD_BATCH,
   );
@@ -1127,6 +1129,28 @@ export default function Home() {
       if (scalpCopyFeedbackTimerRef.current) {
         window.clearTimeout(scalpCopyFeedbackTimerRef.current);
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mobileMedia = window.matchMedia("(max-width: 640px)");
+    const applyViewport = (matches: boolean) => {
+      setScalpIsMobileViewport(matches);
+    };
+    applyViewport(mobileMedia.matches);
+    const onViewportChange = (event: MediaQueryListEvent) => {
+      applyViewport(event.matches);
+    };
+    if (typeof mobileMedia.addEventListener === "function") {
+      mobileMedia.addEventListener("change", onViewportChange);
+      return () => {
+        mobileMedia.removeEventListener("change", onViewportChange);
+      };
+    }
+    mobileMedia.addListener(onViewportChange);
+    return () => {
+      mobileMedia.removeListener(onViewportChange);
     };
   }, []);
 
@@ -3770,7 +3794,8 @@ export default function Home() {
         headerName: "Deployment",
         field: "deploymentId",
         pinned: "left",
-        minWidth: 220,
+        minWidth: scalpIsMobileViewport ? 150 : 220,
+        width: scalpIsMobileViewport ? 168 : 220,
         cellRenderer: (params: any) => {
           const deploymentId = String(params?.value || "").trim();
           if (!deploymentId) {
@@ -3788,7 +3813,7 @@ export default function Home() {
             stripScalpVenuePrefixFromDeploymentId(deploymentId) || deploymentId;
           const copied = scalpCopiedDeploymentId === deploymentId;
           return (
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <img
                 src={iconSrc}
                 alt={`${venue} venue`}
@@ -3801,7 +3826,7 @@ export default function Home() {
                     ? `Copied: ${displayLabel}`
                     : `Copy deployment name: ${displayLabel}`
                 }
-                className={`inline-flex items-center gap-1.5 cursor-copy text-left hover:underline ${
+                className={`inline-flex min-w-0 max-w-full items-center gap-1.5 cursor-copy text-left hover:underline ${
                   copied
                     ? "text-emerald-500"
                     : scalpDarkMode
@@ -3816,7 +3841,7 @@ export default function Home() {
                   )
                 }
               >
-                {displayLabel}
+                <span className="truncate">{displayLabel}</span>
                 {copied ? (
                   <CheckCircle2 className="h-3.5 w-3.5" />
                 ) : (
@@ -4144,6 +4169,7 @@ export default function Home() {
       scalpEnabledFilter,
       scalpWindowsResultsGlobalMaxAbs,
       scalpCopiedDeploymentId,
+      scalpIsMobileViewport,
     ],
   );
 
@@ -4544,7 +4570,7 @@ export default function Home() {
         <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
       </Head>
       <div
-        className={`min-h-screen px-4 py-6 relative sm:px-6 lg:px-8 ${
+        className={`relative min-h-screen overflow-x-hidden px-4 py-6 sm:px-6 lg:px-8 ${
           resolvedTheme === "dark"
             ? "theme-dark bg-slate-950 text-slate-100"
             : "theme-light bg-slate-50 text-slate-900"
@@ -5283,7 +5309,7 @@ export default function Home() {
                             "Selected Deployment";
                           return (
                             <h3
-                              className={`inline-flex items-center gap-2 text-lg font-semibold ${scalpTextPrimaryClass}`}
+                              className={`min-w-0 flex-1 inline-flex items-center gap-2 text-lg font-semibold ${scalpTextPrimaryClass}`}
                             >
                               {activeDeploymentId ? (
                                 <img
@@ -5292,11 +5318,15 @@ export default function Home() {
                                   className="h-4 w-auto opacity-85"
                                 />
                               ) : null}
-                              <span>{displayLabel}</span>
+                              <span className="min-w-0 truncate" title={displayLabel}>
+                                {displayLabel}
+                              </span>
                             </h3>
                           );
                         })()}
-                        <span className={`text-xs ${scalpTextSecondaryClass}`}>
+                        <span
+                          className={`shrink-0 text-xs ${scalpTextSecondaryClass}`}
+                        >
                           {scalpActiveRuntimeRow
                             ? scalpActiveRuntimeRow.symbol
                             : scalpActiveOpsRow?.symbol || "—"}
