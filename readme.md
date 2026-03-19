@@ -201,6 +201,16 @@ npm run start
     - `MICRO_TIMEFRAME=1H`, `PRIMARY_TIMEFRAME=4H`, `MACRO_TIMEFRAME=1D`, `CONTEXT_TIMEFRAME=1W`
   - Persists prompt, decision, execution result, and snapshot to KV (including `platform`, `newsSource`, `category`, and instrument identifier).
   - For `category=forex`, a compact macro-event context block is attached to prompt/snapshot as advisory input only (non-blocking).
+  - When swing cron hard-deactivate is enabled, Vercel cron-triggered `/api/swing/analyze` requests no-op with a HOLD response (manual/admin-triggered calls still run).
+- `GET /api/swing/ops/cron-control`
+  - Returns current swing cron control state used by dashboard UI:
+    - `hardDeactivated`
+    - `reason`
+    - `updatedAtMs`
+    - `updatedBy`
+- `POST /api/swing/ops/cron-control?hardDeactivated=true|false&reason=...&updatedBy=...`
+  - Updates swing cron hard-deactivate state (stored in KV).
+  - Intended for dashboard toggle / ops control.
 - `GET /api/swing/evaluate`
   - Legacy alias: `GET /api/evaluate`
   - Query params: `symbol` (required), `limit` (clamped `5..30`, default `30`), `batchSize` (clamped `2..10`, default `5`), `includeBatchEvaluations` (`true|false`), `async` (`true|false`)

@@ -138,6 +138,13 @@ type DashboardSummaryResponse = {
   range?: DashboardRangeKey;
 };
 
+type SwingCronControlState = {
+  hardDeactivated?: boolean;
+  reason?: string | null;
+  updatedAtMs?: number | null;
+  updatedBy?: string | null;
+};
+
 type ScalpDashboardSymbol = {
   symbol: string;
   strategyId: string;
@@ -1041,6 +1048,10 @@ export default function Home() {
     >
   >({});
   const [scalpPanicStopUpdating, setScalpPanicStopUpdating] = useState(false);
+  const [swingCronControl, setSwingCronControl] =
+    useState<SwingCronControlState | null>(null);
+  const [swingCronControlUpdating, setSwingCronControlUpdating] =
+    useState(false);
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
   const [livePriceConnected, setLivePriceConnected] = useState(false);
@@ -1349,6 +1360,22 @@ export default function Home() {
     });
   };
 
+  const loadSwingCronControl = async () => {
+    const res = await fetch("/api/swing/ops/cron-control", {
+      headers: buildAdminHeaders(),
+      cache: "no-store",
+    });
+    if (res.status === 401) {
+      handleAuthExpired("Admin session expired. Re-enter ADMIN_ACCESS_SECRET.");
+      throw new Error("Unauthorized");
+    }
+    if (!res.ok) {
+      throw new Error(`Failed to load swing cron control (${res.status})`);
+    }
+    const json = await res.json();
+    setSwingCronControl((json?.cronControl || null) as SwingCronControlState);
+  };
+
   const loadDashboard = async () => {
     setLoading(true);
     try {
@@ -1442,6 +1469,15 @@ export default function Home() {
       } catch (summaryErr: any) {
         summaryError =
           summaryErr?.message || "Failed to load dashboard summary";
+      }
+
+      try {
+        await loadSwingCronControl();
+      } catch (controlErr: any) {
+        summaryError =
+          summaryError ||
+          controlErr?.message ||
+          "Failed to load swing cron control";
       }
 
       setError(summaryError);
@@ -1638,6 +1674,46 @@ export default function Home() {
       setError(err?.message || "Failed to update panic stop");
     } finally {
       setScalpPanicStopUpdating(false);
+    }
+  };
+
+  const setSwingCronHardDeactivate = async (hardDeactivated: boolean) => {
+    if (swingCronControlUpdating) return;
+    setSwingCronControlUpdating(true);
+    try {
+      const reason = hardDeactivated
+        ? "manual_hard_deactivate_from_ui"
+        : "manual_reactivate_from_ui";
+      const updatedBy = "ui:swing-cron-control";
+      const params = new URLSearchParams({
+        hardDeactivated: hardDeactivated ? "true" : "false",
+        reason,
+        updatedBy,
+      });
+      const res = await fetch(`/api/swing/ops/cron-control?${params.toString()}`, {
+        method: "POST",
+        headers: buildAdminHeaders(),
+        cache: "no-store",
+      });
+      if (res.status === 401) {
+        handleAuthExpired(
+          "Admin session expired. Re-enter ADMIN_ACCESS_SECRET.",
+        );
+        return;
+      }
+      if (!res.ok) {
+        throw new Error(`swing_cron_control_update_failed (${res.status})`);
+      }
+      const json = await res.json().catch(() => null);
+      if (json?.cronControl) {
+        setSwingCronControl(json.cronControl as SwingCronControlState);
+      } else {
+        await loadSwingCronControl();
+      }
+    } catch (err: any) {
+      setError(err?.message || "Failed to update swing cron control");
+    } finally {
+      setSwingCronControlUpdating(false);
     }
   };
 
@@ -2230,6 +2306,12 @@ export default function Home() {
     currentEvalJob &&
     (currentEvalJob.status === "queued" || currentEvalJob.status === "running"),
   );
+  const swingCronControlLoaded = swingCronControl !== null;
+  const swingCronHardDeactivated = swingCronControl?.hardDeactivated === true;
+  const swingCronReason =
+    typeof swingCronControl?.reason === "string"
+      ? swingCronControl.reason.trim()
+      : "";
   const hasLastDecision = !!(
     current &&
     ("lastDecision" in current ||
@@ -4752,6 +4834,27 @@ export default function Home() {
                     : ""}
                 </p>
               ) : null}
+              {strategyMode === "swing" ? (
+                <p className="mt-1 text-xs text-slate-500">
+                  Swing cron:{" "}
+                  <span
+                    className={
+                      !swingCronControlLoaded
+                        ? "font-semibold text-slate-600"
+                        : swingCronHardDeactivated
+                          ? "font-semibold text-rose-700"
+                          : "font-semibold text-emerald-700"
+                    }
+                  >
+                    {!swingCronControlLoaded
+                      ? "loading"
+                      : swingCronHardDeactivated
+                        ? "hard-deactivated"
+                        : "active"}
+                  </span>
+                  {swingCronReason ? ` · ${swingCronReason}` : ""}
+                </p>
+              ) : null}
               {loading ? (
                 <p className="mt-1 text-xs text-slate-500">{loadingLabel}</p>
               ) : null}
@@ -4775,6 +4878,37 @@ export default function Home() {
                     : evaluateRunning
                       ? "Evaluating…"
                       : "Run Evaluation"}
+                </button>
+              ) : null}
+              {strategyMode === "swing" ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void setSwingCronHardDeactivate(!swingCronHardDeactivated);
+                  }}
+                  disabled={
+                    !adminGranted ||
+                    swingCronControlUpdating ||
+                    !swingCronControlLoaded
+                  }
+                  className={`rounded-full border px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                    swingCronHardDeactivated
+                      ? "border-rose-300 bg-rose-50 text-rose-700 hover:border-rose-400 hover:bg-rose-100"
+                      : "border-emerald-300 bg-emerald-50 text-emerald-700 hover:border-emerald-400 hover:bg-emerald-100"
+                  }`}
+                  title={
+                    swingCronHardDeactivated
+                      ? "Re-enable swing cron analyze execution"
+                      : "Hard-deactivate swing cron analyze execution"
+                  }
+                >
+                  {swingCronControlUpdating
+                    ? "Updating…"
+                    : !swingCronControlLoaded
+                      ? "Swing Cron: ..."
+                      : swingCronHardDeactivated
+                        ? "Swing Cron: OFF"
+                        : "Swing Cron: ON"}
                 </button>
               ) : null}
               <button

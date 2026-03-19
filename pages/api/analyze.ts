@@ -22,6 +22,7 @@ import {
 } from '../../lib/capital';
 import { resolveAnalysisPlatform, resolveInstrumentId, resolveNewsSource, type AnalysisPlatform } from '../../lib/platform';
 import { resolveSwingCategory } from '../../lib/swing/category';
+import { loadSwingCronControlState } from '../../lib/swing/cronControl';
 import { loadForexEventContext } from '../../lib/swing/forexEvents';
 
 import { buildPrompt, callAI, computeMomentumSignals, postprocessDecision, resolveDecisionPolicy } from '../../lib/ai';
@@ -69,6 +70,19 @@ function isPrimaryCloseTime(tf: string, now = new Date(), toleranceMinutes = 2):
     const totalMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
     const remainder = totalMinutes % minutes;
     return remainder === 0 || remainder <= toleranceMinutes || remainder >= minutes - toleranceMinutes;
+}
+
+function firstHeaderValue(value: string | string[] | undefined): string {
+    if (typeof value === 'string') return value.trim();
+    if (Array.isArray(value) && value.length > 0) return String(value[0] || '').trim();
+    return '';
+}
+
+function isAutomationCronRequest(req: NextApiRequest): boolean {
+    const cronHeader = firstHeaderValue(req.headers['x-vercel-cron']);
+    if (cronHeader) return true;
+    const userAgent = firstHeaderValue(req.headers['user-agent']).toLowerCase();
+    return userAgent.includes('vercel-cron');
 }
 
 // ------------------------------------------------------------------
@@ -196,6 +210,51 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             platform,
             instrumentId,
         });
+        const isSwingCronAnalyzeRequest = requestPath === '/api/swing/analyze' && isAutomationCronRequest(req);
+        if (isSwingCronAnalyzeRequest) {
+            const swingCronControl = await loadSwingCronControlState();
+            if (swingCronControl.hardDeactivated) {
+                emitGateDebug('swing_cron_hard_deactivated', {
+                    gate: 'SWING_CRON_HARD_DEACTIVATED',
+                    hardDeactivated: true,
+                    updatedAtMs: swingCronControl.updatedAtMs,
+                    updatedBy: swingCronControl.updatedBy,
+                    reason: swingCronControl.reason,
+                });
+                return res.status(200).json({
+                    symbol,
+                    platform,
+                    newsSource,
+                    category,
+                    instrumentId,
+                    timeFrame,
+                    dryRun,
+                    decisionPolicy,
+                    decision: {
+                        action: 'HOLD',
+                        bias: 'NEUTRAL',
+                        signal_strength: 'LOW',
+                        summary: 'swing_cron_hard_deactivated',
+                        reason: 'swing_cron_hard_deactivated',
+                    },
+                    execRes: { placed: false, orderId: null, clientOid: null, reason: 'swing_cron_hard_deactivated' },
+                    usedTape: false,
+                    promptSkipped: true,
+                    cronControl: swingCronControl,
+                    ...(debugGates
+                        ? {
+                              gateDebug: {
+                                  blockedBy: 'SWING_CRON_HARD_DEACTIVATED',
+                                  hardDeactivated: true,
+                                  updatedAtMs: swingCronControl.updatedAtMs,
+                                  updatedBy: swingCronControl.updatedBy,
+                                  reason: swingCronControl.reason,
+                              },
+                          }
+                        : {}),
+                });
+            }
+        }
 
         const positionInfo = await fetchPositionInfo(symbol);
         const positionOpen = positionInfo.status === 'open';
