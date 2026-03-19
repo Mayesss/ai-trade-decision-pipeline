@@ -81,6 +81,15 @@ export interface ScalpDeploymentPromotionFreshness {
     missingWeekStarts?: number[] | null;
 }
 
+export type ScalpDeploymentPromotionHysteresisDecision = 'enable' | 'disable' | 'hold';
+
+export interface ScalpDeploymentPromotionHysteresis {
+    passStreak: number;
+    failStreak: number;
+    lastStateChangeAtMs: number | null;
+    lastDecision: ScalpDeploymentPromotionHysteresisDecision | null;
+}
+
 export interface ScalpDeploymentPromotionGate {
     eligible: boolean;
     reason: string | null;
@@ -89,6 +98,7 @@ export interface ScalpDeploymentPromotionGate {
     forwardValidation: ScalpForwardValidationMetrics | null;
     thresholds: ScalpDeploymentPromotionGateThresholds | null;
     freshness?: ScalpDeploymentPromotionFreshness | null;
+    hysteresis?: ScalpDeploymentPromotionHysteresis | null;
 }
 
 export interface ScalpDeploymentRegistryEntry extends ScalpDeploymentRef {
@@ -513,6 +523,30 @@ function normalizePromotionFreshness(value: unknown): ScalpDeploymentPromotionFr
     };
 }
 
+function normalizePromotionHysteresisDecision(
+    value: unknown,
+): ScalpDeploymentPromotionHysteresisDecision | null {
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase();
+    if (normalized === 'enable' || normalized === 'disable' || normalized === 'hold') return normalized;
+    return null;
+}
+
+function normalizePromotionHysteresis(value: unknown): ScalpDeploymentPromotionHysteresis | null {
+    if (!isRecord(value)) return null;
+    const passStreak = Math.max(0, Math.floor(Number(value.passStreak) || 0));
+    const failStreak = Math.max(0, Math.floor(Number(value.failStreak) || 0));
+    const lastStateChangeAtMs = normalizePositiveTime(value.lastStateChangeAtMs);
+    const lastDecision = normalizePromotionHysteresisDecision(value.lastDecision);
+    return {
+        passStreak,
+        failStreak,
+        lastStateChangeAtMs,
+        lastDecision,
+    };
+}
+
 function normalizePromotionGate(value: unknown): ScalpDeploymentPromotionGate | null {
     if (!isRecord(value)) return null;
     const eligible = normalizeBool(value.eligible, false);
@@ -526,6 +560,7 @@ function normalizePromotionGate(value: unknown): ScalpDeploymentPromotionGate | 
         forwardValidation: normalizeForwardValidation(value.forwardValidation),
         thresholds: normalizeForwardGateThresholds(value.thresholds),
         freshness: normalizePromotionFreshness(value.freshness),
+        hysteresis: normalizePromotionHysteresis(value.hysteresis),
     };
 }
 

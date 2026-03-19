@@ -14,6 +14,7 @@ import {
 import {
   listScalpDeploymentRegistryEntries,
   upsertScalpDeploymentRegistryEntriesBulk,
+  type ScalpDeploymentPromotionHysteresis,
   type ScalpDeploymentPromotionGate,
   type ScalpDeploymentRegistryEntry,
   type ScalpForwardValidationMetrics,
@@ -24,6 +25,7 @@ import {
   buildForwardValidationByCandidateFromTasks,
   evaluateFreshCompletedDeploymentWeeks,
   evaluateWeeklyRobustnessGate,
+  type ScalpPromotionForwardValidationCandidate,
   type ScalpWeeklyRobustnessMetrics,
   type SyncResearchWeeklyPolicy,
 } from "./promotionPolicy";
@@ -725,6 +727,18 @@ async function countPendingLoadSymbols(): Promise<number> {
   return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
 }
 
+async function countActivePipelineSymbols(): Promise<number> {
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{ count: bigint | number | string }>>(
+    Prisma.sql`
+        SELECT COUNT(*)::bigint AS count
+        FROM scalp_pipeline_symbols
+        WHERE active = TRUE;
+    `,
+  );
+  return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
+}
+
 async function countPendingPrepareSymbols(): Promise<number> {
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
@@ -838,6 +852,421 @@ function resolveWeeklyPolicyDefaults(): SyncResearchWeeklyPolicy {
   };
 }
 
+function toBoundedFraction(value: unknown, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.min(1, n));
+}
+
+function resolvePromotionExplorationShare(): number {
+  return toBoundedFraction(
+    process.env.SCALP_PROMOTION_EXPLORATION_SHARE,
+    0.4,
+  );
+}
+
+function resolvePromotionHysteresisFailThreshold(): number {
+  return Math.max(
+    1,
+    Math.min(
+      10,
+      toPositiveInt(process.env.SCALP_PROMOTION_HYSTERESIS_FAIL_STREAK, 2),
+    ),
+  );
+}
+
+function resolvePromotionHysteresisPassThreshold(): number {
+  return Math.max(
+    1,
+    Math.min(
+      10,
+      toPositiveInt(process.env.SCALP_PROMOTION_HYSTERESIS_PASS_STREAK, 2),
+    ),
+  );
+}
+
+function resolvePromotionLoadNudgeMaxSymbols(): number {
+  return Math.max(
+    1,
+    Math.min(
+      1000,
+      toPositiveInt(process.env.SCALP_PROMOTION_NUDGE_LOAD_SYMBOLS_MAX, 40),
+    ),
+  );
+}
+
+function resolvePromotionWorkerNudgeMaxDeployments(): number {
+  return Math.max(
+    1,
+    Math.min(
+      5000,
+      toPositiveInt(
+        process.env.SCALP_PROMOTION_NUDGE_WORKER_DEPLOYMENTS_MAX,
+        120,
+      ),
+    ),
+  );
+}
+
+function resolvePromotionSelectionShrinkageK(): number {
+  return Math.max(
+    1,
+    Math.min(
+      52,
+      toPositiveInt(process.env.SCALP_WEEKLY_SELECTION_SHRINKAGE_K, 6),
+    ),
+  );
+}
+
+function candidateMedianExpectancyR(
+  candidate: Pick<ScalpPromotionForwardValidationCandidate, "meanExpectancyR"> & {
+    medianExpectancyR?: number | null;
+  },
+): number {
+  const medianValue = Number(candidate.medianExpectancyR);
+  if (Number.isFinite(medianValue)) return medianValue;
+  return Number(candidate.meanExpectancyR) || 0;
+}
+
+function candidateTopWindowPnlConcentrationPct(candidate: {
+  topWindowPnlConcentrationPct?: number | null;
+}): number {
+  const concentration = Number(candidate.topWindowPnlConcentrationPct);
+  if (!Number.isFinite(concentration)) return 0;
+  return Math.max(0, Math.min(100, concentration));
+}
+
+function candidateSelectionScoreForPipeline(
+  candidate: Pick<ScalpPromotionForwardValidationCandidate, "meanExpectancyR"> & {
+    trimmedMeanExpectancyR?: number | null;
+    medianExpectancyR?: number | null;
+    topWindowPnlConcentrationPct?: number | null;
+    selectionScore?: number | null;
+    rollCount?: number;
+  },
+): number {
+  const explicit = Number(candidate.selectionScore);
+  if (Number.isFinite(explicit)) return explicit;
+  const trimmedMeanValue = Number(candidate.trimmedMeanExpectancyR);
+  const robustMean = Number.isFinite(trimmedMeanValue)
+    ? trimmedMeanValue
+    : (Number(candidate.meanExpectancyR) +
+        candidateMedianExpectancyR(candidate)) /
+      2;
+  const smoothedExpectancy =
+    (robustMean + candidateMedianExpectancyR(candidate)) / 2;
+  const concentrationPenalty = Math.max(
+    0,
+    candidateTopWindowPnlConcentrationPct(candidate) - 50,
+  );
+  const concentrationAdjusted =
+    smoothedExpectancy * (1 - concentrationPenalty / 100);
+  const rollCount = Math.max(0, Math.floor(Number(candidate.rollCount) || 0));
+  const shrinkageK = resolvePromotionSelectionShrinkageK();
+  const sampleWeight = rollCount > 0 ? rollCount / (rollCount + shrinkageK) : 0;
+  return concentrationAdjusted * sampleWeight;
+}
+
+function candidateProfitFactorForRanking(
+  candidate: Pick<ScalpPromotionForwardValidationCandidate, "meanProfitFactor">,
+): number {
+  const profitFactor = Number(candidate.meanProfitFactor);
+  if (!Number.isFinite(profitFactor)) return Number.NEGATIVE_INFINITY;
+  return profitFactor;
+}
+
+function comparePromotionCandidates(
+  a: ScalpPromotionForwardValidationCandidate,
+  b: ScalpPromotionForwardValidationCandidate,
+): number {
+  const aSelectionScore = candidateSelectionScoreForPipeline(a);
+  const bSelectionScore = candidateSelectionScoreForPipeline(b);
+  if (bSelectionScore !== aSelectionScore)
+    return bSelectionScore - aSelectionScore;
+  if (b.profitableWindowPct !== a.profitableWindowPct)
+    return b.profitableWindowPct - a.profitableWindowPct;
+  const aProfitFactor = candidateProfitFactorForRanking(a);
+  const bProfitFactor = candidateProfitFactorForRanking(b);
+  if (bProfitFactor !== aProfitFactor) return bProfitFactor - aProfitFactor;
+  if (a.maxDrawdownR !== b.maxDrawdownR) return a.maxDrawdownR - b.maxDrawdownR;
+  const aMedianExpectancyR = candidateMedianExpectancyR(a);
+  const bMedianExpectancyR = candidateMedianExpectancyR(b);
+  if (bMedianExpectancyR !== aMedianExpectancyR)
+    return bMedianExpectancyR - aMedianExpectancyR;
+  if (b.meanExpectancyR !== a.meanExpectancyR)
+    return b.meanExpectancyR - a.meanExpectancyR;
+  if (b.rollCount !== a.rollCount) return b.rollCount - a.rollCount;
+  if (a.strategyId !== b.strategyId)
+    return a.strategyId.localeCompare(b.strategyId);
+  if (a.tuneId !== b.tuneId) return a.tuneId.localeCompare(b.tuneId);
+  return a.deploymentId.localeCompare(b.deploymentId);
+}
+
+export interface PromotionSelectionRow {
+  deploymentId: string;
+  symbol: string;
+  incumbent: boolean;
+  candidate: ScalpPromotionForwardValidationCandidate;
+}
+
+export interface PromotionSelectionResult {
+  winnerIds: Set<string>;
+  selectedRows: PromotionSelectionRow[];
+  explorationSlots: number;
+  exploitSlots: number;
+  explorationSelected: number;
+  exploitSelected: number;
+}
+
+export function selectPromotionWinnerRowsWithExploration(params: {
+  rows: PromotionSelectionRow[];
+  explorationShare: number;
+  maxSymbols: number;
+  maxPerSymbol: number;
+  maxDeployments: number;
+}): PromotionSelectionResult {
+  const maxSymbols = Math.max(1, Math.floor(Number(params.maxSymbols) || 1));
+  const maxPerSymbol = Math.max(
+    1,
+    Math.floor(Number(params.maxPerSymbol) || 1),
+  );
+  const maxDeployments = Math.max(
+    1,
+    Math.floor(Number(params.maxDeployments) || 1),
+  );
+  const rows = Array.isArray(params.rows) ? params.rows.slice() : [];
+  if (!rows.length) {
+    return {
+      winnerIds: new Set<string>(),
+      selectedRows: [],
+      explorationSlots: 0,
+      exploitSlots: 0,
+      explorationSelected: 0,
+      exploitSelected: 0,
+    };
+  }
+
+  const totalCap = Math.min(maxDeployments, rows.length);
+  const incumbents = rows
+    .filter((row) => row.incumbent)
+    .sort((a, b) => comparePromotionCandidates(a.candidate, b.candidate));
+  const challengers = rows
+    .filter((row) => !row.incumbent)
+    .sort((a, b) => comparePromotionCandidates(a.candidate, b.candidate));
+  const explorationShare = toBoundedFraction(params.explorationShare, 0.4);
+  let explorationSlots =
+    challengers.length > 0 ? Math.floor(totalCap * explorationShare) : 0;
+  if (challengers.length > 0 && totalCap > 1) {
+    explorationSlots = Math.max(1, explorationSlots);
+  }
+  if (!incumbents.length) explorationSlots = totalCap;
+  explorationSlots = Math.max(0, Math.min(totalCap, explorationSlots));
+  let exploitSlots = Math.max(0, totalCap - explorationSlots);
+  if (!challengers.length) {
+    explorationSlots = 0;
+    exploitSlots = totalCap;
+  }
+
+  const selectedRows: PromotionSelectionRow[] = [];
+  const selectedIds = new Set<string>();
+  const selectedSymbols = new Set<string>();
+  const perSymbolCount = new Map<string, number>();
+  let exploitSelected = 0;
+  let explorationSelected = 0;
+
+  const canSelect = (row: PromotionSelectionRow): boolean => {
+    if (selectedIds.has(row.deploymentId)) return false;
+    const symbol = normalizeSymbol(row.symbol);
+    if (!symbol) return false;
+    const currentPerSymbol = perSymbolCount.get(symbol) || 0;
+    if (currentPerSymbol >= maxPerSymbol) return false;
+    if (!selectedSymbols.has(symbol) && selectedSymbols.size >= maxSymbols) {
+      return false;
+    }
+    return true;
+  };
+
+  const addSelectedRow = (row: PromotionSelectionRow): boolean => {
+    if (!canSelect(row)) return false;
+    const symbol = normalizeSymbol(row.symbol);
+    selectedRows.push(row);
+    selectedIds.add(row.deploymentId);
+    selectedSymbols.add(symbol);
+    perSymbolCount.set(symbol, (perSymbolCount.get(symbol) || 0) + 1);
+    if (row.incumbent) exploitSelected += 1;
+    else explorationSelected += 1;
+    return true;
+  };
+
+  const selectFromPool = (pool: PromotionSelectionRow[], target: number): number => {
+    let picked = 0;
+    if (target <= 0) return picked;
+    for (const row of pool) {
+      if (picked >= target) break;
+      if (!addSelectedRow(row)) continue;
+      picked += 1;
+    }
+    return picked;
+  };
+
+  // Keep at least one candidate per currently active symbol when capacity allows.
+  const incumbentSymbolFloorRows = Array.from(
+    new Set(incumbents.map((row) => normalizeSymbol(row.symbol)).filter(Boolean)),
+  )
+    .map((symbol) =>
+      incumbents.find((row) => normalizeSymbol(row.symbol) === symbol) || null,
+    )
+    .filter((row): row is PromotionSelectionRow => Boolean(row))
+    .sort((a, b) => comparePromotionCandidates(a.candidate, b.candidate));
+  for (const row of incumbentSymbolFloorRows) {
+    if (selectedRows.length >= totalCap) break;
+    addSelectedRow(row);
+  }
+
+  const remainingExploitTarget = Math.max(0, exploitSlots - exploitSelected);
+  const remainingExplorationTarget = Math.max(
+    0,
+    explorationSlots - explorationSelected,
+  );
+  selectFromPool(incumbents, remainingExploitTarget);
+  selectFromPool(challengers, remainingExplorationTarget);
+
+  if (selectedRows.length < totalCap) {
+    const combined = rows
+      .slice()
+      .sort((a, b) => comparePromotionCandidates(a.candidate, b.candidate));
+    selectFromPool(combined, totalCap - selectedRows.length);
+  }
+
+  return {
+    winnerIds: new Set(selectedRows.map((row) => row.deploymentId)),
+    selectedRows,
+    explorationSlots,
+    exploitSlots,
+    explorationSelected,
+    exploitSelected,
+  };
+}
+
+export interface PromotionHysteresisResult {
+  enabled: boolean;
+  hysteresis: ScalpDeploymentPromotionHysteresis;
+  transition: "enabled" | "disabled" | "held";
+}
+
+export function applyPromotionHysteresis(params: {
+  currentlyEnabled: boolean;
+  shouldEnableNow: boolean;
+  previous: ScalpDeploymentPromotionHysteresis | null | undefined;
+  passThreshold: number;
+  failThreshold: number;
+  nowMs: number;
+  lockEnabled?: boolean;
+}): PromotionHysteresisResult {
+  const passThreshold = Math.max(1, Math.floor(Number(params.passThreshold) || 1));
+  const failThreshold = Math.max(1, Math.floor(Number(params.failThreshold) || 1));
+  const lockEnabled = Boolean(params.lockEnabled);
+  const previousPass = Math.max(
+    0,
+    Math.floor(Number(params.previous?.passStreak) || 0),
+  );
+  const previousFail = Math.max(
+    0,
+    Math.floor(Number(params.previous?.failStreak) || 0),
+  );
+  const passStreak = params.shouldEnableNow
+    ? Math.min(passThreshold, previousPass + 1)
+    : 0;
+  const failStreak = params.shouldEnableNow
+    ? 0
+    : Math.min(failThreshold, previousFail + 1);
+  let enabled = Boolean(params.currentlyEnabled);
+  if (enabled && lockEnabled) {
+    enabled = true;
+  } else if (enabled) {
+    if (!params.shouldEnableNow && failStreak >= failThreshold) {
+      enabled = false;
+    }
+  } else if (params.shouldEnableNow && passStreak >= passThreshold) {
+    enabled = true;
+  }
+  const transition: PromotionHysteresisResult["transition"] =
+    enabled !== Boolean(params.currentlyEnabled)
+      ? enabled
+        ? "enabled"
+        : "disabled"
+      : "held";
+  const hysteresis: ScalpDeploymentPromotionHysteresis = {
+    passStreak,
+    failStreak,
+    lastStateChangeAtMs:
+      transition === "held"
+        ? params.previous?.lastStateChangeAtMs || null
+        : params.nowMs,
+    lastDecision:
+      transition === "held"
+        ? "hold"
+        : transition === "enabled"
+          ? "enable"
+          : "disable",
+  };
+  return {
+    enabled,
+    hysteresis,
+    transition,
+  };
+}
+
+export interface DiscoverSyncExistingRow {
+  symbol: string;
+  active: boolean;
+}
+
+export interface DiscoverSymbolSyncPlan {
+  activeSymbols: string[];
+  catalogSymbols: string[];
+  addedActiveSymbols: string[];
+  removedActiveSymbols: string[];
+  catalogAddedSymbols: string[];
+}
+
+export function buildDiscoverSymbolSyncPlan(params: {
+  existingRows: DiscoverSyncExistingRow[];
+  activeSymbols: string[];
+  catalogSymbols: string[];
+}): DiscoverSymbolSyncPlan {
+  const existingRows = Array.isArray(params.existingRows) ? params.existingRows : [];
+  const existingActive = new Set(
+    existingRows
+      .filter((row) => Boolean(row.active))
+      .map((row) => normalizeSymbol(row.symbol))
+      .filter(Boolean),
+  );
+  const existingCatalog = new Set(
+    existingRows.map((row) => normalizeSymbol(row.symbol)).filter(Boolean),
+  );
+  const activeSymbols = Array.from(
+    new Set(
+      (params.activeSymbols || []).map((row) => normalizeSymbol(row)).filter(Boolean),
+    ),
+  );
+  const catalogSymbols = Array.from(
+    new Set(
+      (params.catalogSymbols || [])
+        .map((row) => normalizeSymbol(row))
+        .filter(Boolean),
+    ),
+  );
+  const activeSet = new Set(activeSymbols);
+  return {
+    activeSymbols,
+    catalogSymbols,
+    addedActiveSymbols: activeSymbols.filter((symbol) => !existingActive.has(symbol)),
+    removedActiveSymbols: Array.from(existingActive).filter((symbol) => !activeSet.has(symbol)),
+    catalogAddedSymbols: catalogSymbols.filter((symbol) => !existingCatalog.has(symbol)),
+  };
+}
+
 function median(values: number[]): number {
   if (!values.length) return 0;
   const sorted = values.slice().sort((a, b) => a - b);
@@ -946,10 +1375,11 @@ export async function runDiscoverPipelineJob(
   } = {},
 ): Promise<ScalpPipelineJobExecutionResult> {
   return runWithPipelineJobLock("discover", async ({ lockToken, lockMs }) => {
+    const dryRun = Boolean(params.dryRun);
     const nowMs = Date.now();
     const bitgetOnly = isScalpPipelineBitgetOnlyEnabled();
     const snapshot = await runScalpSymbolDiscoveryCycle({
-      dryRun: false,
+      dryRun,
       includeLiveQuotes: params.includeLiveQuotes ?? true,
       nowMs,
       maxCandidatesOverride: params.maxCandidates,
@@ -972,44 +1402,110 @@ export async function runDiscoverPipelineJob(
           }
         : undefined,
     });
-    const discoveredSymbols = Array.from(
+    const discoveredActiveSymbols = Array.from(
       new Set(
         (snapshot.selectedSymbols || [])
           .map((row) => normalizeSymbol(row))
           .filter(Boolean),
       ),
     );
-    const selectedSymbols = bitgetOnly
-      ? discoveredSymbols.filter((symbol) => isBitgetPipelineSymbol(symbol))
-      : discoveredSymbols;
-    const droppedNonBitgetSymbols = bitgetOnly
-      ? discoveredSymbols.filter((symbol) => !selectedSymbols.includes(symbol))
-      : [];
+    const discoveredCatalogSymbols = Array.from(
+      new Set(
+        [
+          ...(snapshot.selectedSymbols || []),
+          ...((snapshot.selectedRows || []).map((row) => row.symbol) || []),
+          ...((snapshot.topRejectedRows || []).map((row) => row.symbol) || []),
+        ]
+          .map((row) => normalizeSymbol(row))
+          .filter(Boolean),
+      ),
+    );
     const db = scalpPrisma();
+    const enabledDeploymentRows = await db.$queryRaw<Array<{ symbol: string }>>(
+      Prisma.sql`
+            SELECT DISTINCT symbol
+            FROM scalp_deployments
+            WHERE enabled = TRUE;
+        `,
+    );
+    const pinnedEnabledSymbols = Array.from(
+      new Set(
+        enabledDeploymentRows
+          .map((row) => normalizeSymbol(row.symbol))
+          .filter(Boolean),
+      ),
+    );
+    const activeSymbols = Array.from(
+      new Set(
+        (bitgetOnly
+          ? discoveredActiveSymbols.filter((symbol) => isBitgetPipelineSymbol(symbol))
+          : discoveredActiveSymbols
+        ).concat(
+          bitgetOnly
+            ? pinnedEnabledSymbols.filter((symbol) => isBitgetPipelineSymbol(symbol))
+            : pinnedEnabledSymbols,
+        ),
+      ),
+    );
+    const catalogSymbols = Array.from(
+      new Set(
+        (bitgetOnly
+          ? discoveredCatalogSymbols.filter((symbol) => isBitgetPipelineSymbol(symbol))
+          : discoveredCatalogSymbols
+        ).concat(activeSymbols),
+      ),
+    );
+    const droppedNonBitgetSymbols = bitgetOnly
+      ? discoveredCatalogSymbols.filter((symbol) => !catalogSymbols.includes(symbol))
+      : [];
 
     const existingRows = await db.$queryRaw<
-      Array<{ symbol: string; active: boolean }>
+      Array<{
+        symbol: string;
+        active: boolean;
+        loadStatus: string;
+        prepareStatus: string;
+      }>
     >(Prisma.sql`
-            SELECT symbol, active
+            SELECT
+                symbol,
+                active,
+                load_status AS "loadStatus",
+                prepare_status AS "prepareStatus"
             FROM scalp_pipeline_symbols;
         `);
-    const existingActive = new Set(
-      existingRows
-        .filter((row) => row.active)
-        .map((row) => normalizeSymbol(row.symbol))
-        .filter(Boolean),
+    const existingBySymbol = new Map(
+      existingRows.map((row) => [normalizeSymbol(row.symbol), row]),
     );
-    const selectedSet = new Set(selectedSymbols);
-    const addedSymbols = selectedSymbols.filter(
-      (symbol) => !existingActive.has(symbol),
-    );
-    const wouldRemoveSymbols = Array.from(existingActive).filter(
-      (symbol) => !selectedSet.has(symbol),
-    );
+    const syncPlan = buildDiscoverSymbolSyncPlan({
+      existingRows,
+      activeSymbols,
+      catalogSymbols,
+    });
+    const activeSet = new Set(syncPlan.activeSymbols);
+    const addedActiveSymbols = syncPlan.addedActiveSymbols;
+    const removedActiveSymbols = syncPlan.removedActiveSymbols;
+    const catalogAddedSymbols = syncPlan.catalogAddedSymbols;
 
-    for (const symbol of selectedSymbols) {
-      const previouslyActive = existingActive.has(symbol);
-      await db.$executeRaw(Prisma.sql`
+    if (!dryRun) {
+      for (const symbol of catalogSymbols) {
+        const existing = existingBySymbol.get(symbol) || null;
+        const previouslyActive = Boolean(existing?.active);
+        const isActive = activeSet.has(symbol);
+        const activatedNow = isActive && !previouslyActive;
+        const fallbackLoadStatus = isActive
+          ? activatedNow
+            ? "pending"
+            : "succeeded"
+          : "succeeded";
+        const fallbackPrepareStatus = isActive
+          ? activatedNow
+            ? "pending"
+            : "succeeded"
+          : "succeeded";
+        const fallbackLoadNextRunAt = activatedNow ? new Date(nowMs) : null;
+        const fallbackPrepareNextRunAt = activatedNow ? new Date(nowMs) : null;
+        await db.$executeRaw(Prisma.sql`
                 INSERT INTO scalp_pipeline_symbols(
                     symbol,
                     active,
@@ -1026,56 +1522,86 @@ export async function runDiscoverPipelineJob(
                 )
                 VALUES(
                     ${symbol},
-                    TRUE,
+                    ${isActive},
                     'succeeded',
                     0,
                     NULL,
                     NULL,
                     NOW(),
-                    ${previouslyActive ? "succeeded" : "pending"},
-                    ${previouslyActive ? null : new Date(nowMs)},
-                    ${previouslyActive ? "succeeded" : "pending"},
-                    ${previouslyActive ? null : new Date(nowMs)},
+                    ${fallbackLoadStatus},
+                    ${fallbackLoadNextRunAt},
+                    ${fallbackPrepareStatus},
+                    ${fallbackPrepareNextRunAt},
                     NOW()
                 )
                 ON CONFLICT(symbol)
                 DO UPDATE SET
-                    active = TRUE,
+                    active = ${isActive},
                     discover_status = 'succeeded',
                     discover_attempts = 0,
                     discover_next_run_at = NULL,
                     discover_error = NULL,
                     last_discovered_at = NOW(),
                     load_status = CASE
+                        WHEN ${isActive} = FALSE THEN scalp_pipeline_symbols.load_status
                         WHEN scalp_pipeline_symbols.load_status IN ('pending', 'running', 'retry_wait') THEN scalp_pipeline_symbols.load_status
-                        ELSE ${previouslyActive ? "succeeded" : "pending"}
+                        ELSE ${fallbackLoadStatus}
                     END,
                     load_next_run_at = CASE
+                        WHEN ${isActive} = FALSE THEN scalp_pipeline_symbols.load_next_run_at
                         WHEN scalp_pipeline_symbols.load_status IN ('pending', 'running', 'retry_wait') THEN scalp_pipeline_symbols.load_next_run_at
-                        ELSE ${previouslyActive ? null : new Date(nowMs)}
+                        ELSE ${fallbackLoadNextRunAt}
                     END,
                     prepare_status = CASE
+                        WHEN ${isActive} = FALSE THEN scalp_pipeline_symbols.prepare_status
                         WHEN scalp_pipeline_symbols.prepare_status IN ('pending', 'running', 'retry_wait') THEN scalp_pipeline_symbols.prepare_status
-                        ELSE ${previouslyActive ? "succeeded" : "pending"}
+                        ELSE ${fallbackPrepareStatus}
                     END,
                     prepare_next_run_at = CASE
+                        WHEN ${isActive} = FALSE THEN scalp_pipeline_symbols.prepare_next_run_at
                         WHEN scalp_pipeline_symbols.prepare_status IN ('pending', 'running', 'retry_wait') THEN scalp_pipeline_symbols.prepare_next_run_at
-                        ELSE ${previouslyActive ? null : new Date(nowMs)}
+                        ELSE ${fallbackPrepareNextRunAt}
                     END,
                     updated_at = NOW();
             `);
-    }
+      }
 
-    if (selectedSymbols.length > 0) {
-      await db.$executeRaw(Prisma.sql`
+      if (removedActiveSymbols.length > 0) {
+        await db.$executeRaw(Prisma.sql`
+                UPDATE scalp_pipeline_symbols
+                SET
+                    active = FALSE,
+                    updated_at = NOW()
+                WHERE active = TRUE
+                  AND symbol IN (${Prisma.join(removedActiveSymbols)});
+            `);
+      }
+
+      if (activeSymbols.length > 0) {
+        await db.$executeRaw(Prisma.sql`
                 UPDATE scalp_deployments
                 SET
                     in_universe = TRUE,
                     retired_at = NULL,
                     updated_by = 'pipeline:discover',
                     updated_at = NOW()
-                WHERE symbol IN (${Prisma.join(selectedSymbols)});
+                WHERE symbol IN (${Prisma.join(activeSymbols)});
             `);
+      }
+      if (removedActiveSymbols.length > 0) {
+        await db.$executeRaw(Prisma.sql`
+                UPDATE scalp_deployments
+                SET
+                    in_universe = FALSE,
+                    retired_at = NOW(),
+                    worker_dirty = FALSE,
+                    promotion_dirty = FALSE,
+                    updated_by = 'pipeline:discover',
+                    updated_at = NOW()
+                WHERE symbol IN (${Prisma.join(removedActiveSymbols)})
+                  AND enabled = FALSE;
+            `);
+      }
     }
 
     const pendingAfter = await countPendingLoadSymbols();
@@ -1083,12 +1609,19 @@ export async function runDiscoverPipelineJob(
       jobKind: "discover",
       lockToken,
       lockMs,
-      progressLabel: `selected ${selectedSymbols.length}`,
+      progressLabel: `selected ${activeSymbols.length}`,
       progress: {
-        selected: selectedSymbols.length,
-        added: addedSymbols.length,
-        removed: 0,
-        wouldRemove: wouldRemoveSymbols.length,
+        dryRun,
+        selected: activeSymbols.length,
+        activeSymbols: activeSymbols.length,
+        catalogSymbols: catalogSymbols.length,
+        added: addedActiveSymbols.length,
+        removed: removedActiveSymbols.length,
+        wouldRemove: removedActiveSymbols.length,
+        addedActiveSymbols: addedActiveSymbols.length,
+        removedActiveSymbols: removedActiveSymbols.length,
+        catalogAddedSymbols: catalogAddedSymbols.length,
+        pinnedEnabledSymbols: pinnedEnabledSymbols.length,
         droppedNonBitget: droppedNonBitgetSymbols.length,
         pendingLoad: pendingAfter,
       },
@@ -1096,19 +1629,26 @@ export async function runDiscoverPipelineJob(
 
     return {
       ok: true,
-      processed: selectedSymbols.length,
-      succeeded: selectedSymbols.length,
+      processed: activeSymbols.length,
+      succeeded: activeSymbols.length,
       retried: 0,
       failed: 0,
       pendingAfter,
-      downstreamRequested: pendingAfter > 0 || selectedSymbols.length > 0,
-      progressLabel: `selected ${selectedSymbols.length}`,
+      downstreamRequested: pendingAfter > 0 || activeSymbols.length > 0,
+      progressLabel: `selected ${activeSymbols.length}`,
       details: {
+        dryRun,
         generatedAtIso: snapshot.generatedAtIso,
-        selected: selectedSymbols.length,
-        addedSymbols,
-        removedSymbols: [],
-        wouldRemoveSymbols,
+        selected: activeSymbols.length,
+        addedSymbols: addedActiveSymbols,
+        removedSymbols: removedActiveSymbols,
+        wouldRemoveSymbols: removedActiveSymbols,
+        activeSymbols,
+        addedActiveSymbols,
+        removedActiveSymbols,
+        catalogAddedSymbols,
+        catalogSymbols,
+        pinnedEnabledSymbols,
         droppedNonBitgetSymbols,
         candidatesEvaluated: snapshot.candidatesEvaluated,
       },
@@ -1387,6 +1927,7 @@ export async function runLoadCandlesPipelineJob(
       );
 
       const claimed = await claimLoadSymbols(batchSize);
+      const activeSymbols = await countActivePipelineSymbols();
       let succeeded = 0;
       let retried = 0;
       let failed = 0;
@@ -1466,6 +2007,7 @@ export async function runLoadCandlesPipelineJob(
           progress: {
             processed: idx + 1,
             total: claimed.length,
+            activeSymbols,
             succeeded,
             retried,
             failed,
@@ -1486,6 +2028,7 @@ export async function runLoadCandlesPipelineJob(
           claimed.length > 0 ? `processed ${claimed.length}` : "idle",
         details: {
           requiredWeeks,
+          activeSymbols,
           claimed: claimed.length,
           succeeded,
           retried,
@@ -1617,6 +2160,61 @@ async function upsertWeeklyQueueRowsForDeployment(params: {
   return upserted;
 }
 
+async function ensureWeeklyQueueRowsExistForDeployment(params: {
+  deploymentId: string;
+  symbol: string;
+  strategyId: string;
+  tuneId: string;
+  nowMs: number;
+  requiredWeeks: number;
+}): Promise<number> {
+  const currentWeekStart = startOfWeekMondayUtc(params.nowMs);
+  const firstWeekStart = currentWeekStart - params.requiredWeeks * ONE_WEEK_MS;
+  const db = scalpPrisma();
+  let inserted = 0;
+  for (
+    let weekStartMs = firstWeekStart;
+    weekStartMs < currentWeekStart;
+    weekStartMs += ONE_WEEK_MS
+  ) {
+    const weekEndMs = weekStartMs + ONE_WEEK_MS;
+    const insertedRows = Number(
+      await db.$executeRaw(Prisma.sql`
+            INSERT INTO scalp_deployment_weekly_metrics(
+                deployment_id,
+                symbol,
+                strategy_id,
+                tune_id,
+                week_start,
+                week_end,
+                status,
+                attempts,
+                next_run_at,
+                created_at,
+                updated_at
+            )
+            VALUES(
+                ${params.deploymentId},
+                ${params.symbol},
+                ${params.strategyId},
+                ${params.tuneId},
+                ${new Date(weekStartMs)},
+                ${new Date(weekEndMs)},
+                'pending',
+                0,
+                NOW(),
+                NOW(),
+                NOW()
+            )
+            ON CONFLICT(deployment_id, week_start)
+            DO NOTHING;
+        `),
+    );
+    inserted += Math.max(0, insertedRows);
+  }
+  return inserted;
+}
+
 async function updatePrepareSymbolStatus(params: {
   symbol: string;
   status: ScalpPipelineQueueStatus;
@@ -1679,6 +2277,7 @@ export async function runPreparePipelineJob(
     const policy = await loadScalpSymbolDiscoveryPolicy();
     const strategies = new Set(listScalpStrategies().map((row) => row.id));
     const claimed = await claimPrepareSymbols(batchSize);
+    const activeSymbols = await countActivePipelineSymbols();
     const db = scalpPrisma();
 
     let succeeded = 0;
@@ -1696,12 +2295,12 @@ export async function runPreparePipelineJob(
                     SET
                         in_universe = FALSE,
                         retired_at = NOW(),
-                        enabled = FALSE,
                         worker_dirty = FALSE,
                         promotion_dirty = FALSE,
                         updated_by = 'pipeline:prepare',
                         updated_at = NOW()
-                    WHERE symbol = ${symbol};
+                    WHERE symbol = ${symbol}
+                      AND enabled = FALSE;
                 `);
         await updatePrepareSymbolStatus({
           symbol,
@@ -1719,6 +2318,7 @@ export async function runPreparePipelineJob(
           progress: {
             processed: idx + 1,
             total: claimed.length,
+            activeSymbols,
             succeeded,
             retried,
             failed,
@@ -1809,13 +2409,13 @@ export async function runPreparePipelineJob(
                         SET
                             in_universe = FALSE,
                             retired_at = NOW(),
-                            enabled = FALSE,
                             worker_dirty = FALSE,
                             promotion_dirty = FALSE,
                             updated_by = 'pipeline:prepare',
                             updated_at = NOW()
                         WHERE symbol = ${symbol}
-                          AND deployment_id NOT IN (${Prisma.join(uniqPreparedIds)});
+                          AND deployment_id NOT IN (${Prisma.join(uniqPreparedIds)})
+                          AND enabled = FALSE;
                     `);
         }
 
@@ -1891,6 +2491,7 @@ export async function runPreparePipelineJob(
         progress: {
           processed: idx + 1,
           total: claimed.length,
+          activeSymbols,
           succeeded,
           retried,
           failed,
@@ -1911,6 +2512,7 @@ export async function runPreparePipelineJob(
       progressLabel:
         claimed.length > 0 ? `processed ${claimed.length}` : "idle",
       details: {
+        activeSymbols,
         claimed: claimed.length,
         succeeded,
         retried,
@@ -1954,7 +2556,7 @@ async function claimWorkerRows(
             FROM scalp_deployment_weekly_metrics
             WHERE status IN ('pending', 'retry_wait')
               AND next_run_at <= NOW()
-            ORDER BY next_run_at ASC, week_start DESC, id ASC
+            ORDER BY next_run_at ASC, week_start ASC, id ASC
             FOR UPDATE SKIP LOCKED
             LIMIT ${limit}
         )
@@ -2068,6 +2670,7 @@ export async function runWorkerPipelineJob(
     );
 
     const claimed = await claimWorkerRows(batchSize, workerId);
+    const activeSymbols = await countActivePipelineSymbols();
     let succeeded = 0;
     let retried = 0;
     let failed = 0;
@@ -2205,6 +2808,7 @@ export async function runWorkerPipelineJob(
         progress: {
           processed: idx + 1,
           total: claimed.length,
+          activeSymbols,
           succeeded,
           retried,
           failed,
@@ -2224,6 +2828,7 @@ export async function runWorkerPipelineJob(
       progressLabel:
         claimed.length > 0 ? `processed ${claimed.length}` : "idle",
       details: {
+        activeSymbols,
         claimed: claimed.length,
         succeeded,
         retried,
@@ -2244,6 +2849,12 @@ export async function runPromotionPipelineJob(
       Math.min(600, toPositiveInt(params.batchSize, 200)),
     );
     const policy = resolveWeeklyPolicyDefaults();
+    const explorationShare = resolvePromotionExplorationShare();
+    const hysteresisFailThreshold = resolvePromotionHysteresisFailThreshold();
+    const hysteresisPassThreshold = resolvePromotionHysteresisPassThreshold();
+    const maxLoadNudgeSymbols = resolvePromotionLoadNudgeMaxSymbols();
+    const maxWorkerNudgeDeployments =
+      resolvePromotionWorkerNudgeMaxDeployments();
     const nowMs = Date.now();
     const requiredWeeks = resolvePromotionFreshWeeks();
     const windowToTs = startOfWeekMondayUtc(nowMs);
@@ -2256,8 +2867,21 @@ export async function runPromotionPipelineJob(
             SELECT deployment_id AS "deploymentId"
             FROM scalp_deployments
             WHERE in_universe = TRUE
-              AND promotion_dirty = TRUE
-            ORDER BY updated_at ASC, deployment_id ASC
+              AND (
+                promotion_dirty = TRUE
+                OR (
+                  enabled = TRUE
+                  AND COALESCE((promotion_gate #>> '{freshness,windowToTs}')::bigint, 0) < ${windowToTs}
+                )
+              )
+            ORDER BY
+                CASE
+                    WHEN promotion_dirty = TRUE THEN 0
+                    WHEN enabled = TRUE THEN 1
+                    ELSE 2
+                END ASC,
+                updated_at ASC,
+                deployment_id ASC
             LIMIT ${batchSize};
         `);
     if (!dirtyRows.length) {
@@ -2319,6 +2943,21 @@ export async function runPromotionPipelineJob(
           reason: "no_in_universe_deployments",
         },
       };
+    }
+
+    let weeklyQueueRowsInserted = 0;
+    const dirtyDeployments = consideredDeployments.filter((row) =>
+      dirtySet.has(row.deploymentId),
+    );
+    for (const deployment of dirtyDeployments) {
+      weeklyQueueRowsInserted += await ensureWeeklyQueueRowsExistForDeployment({
+        deploymentId: deployment.deploymentId,
+        symbol: deployment.symbol,
+        strategyId: deployment.strategyId,
+        tuneId: deployment.tuneId,
+        nowMs,
+        requiredWeeks,
+      });
     }
 
     const metricsRows = await db.$queryRaw<
@@ -2419,6 +3058,7 @@ export async function runPromotionPipelineJob(
       ReturnType<typeof evaluateFreshCompletedDeploymentWeeks>
     >();
     const gapSymbols = new Set<string>();
+    const gapMissingWeeksBySymbol = new Map<string, number>();
     const gapWindowsByDeploymentId = new Map<
       string,
       {
@@ -2442,7 +3082,17 @@ export async function runPromotionPipelineJob(
           freshReadyTasks.push(task);
         }
       } else if (freshness.missingWeeks > 0) {
-        gapSymbols.add(deployment.symbol);
+        const symbol = normalizeSymbol(deployment.symbol);
+        if (symbol) {
+          gapSymbols.add(symbol);
+          gapMissingWeeksBySymbol.set(
+            symbol,
+            Math.max(
+              gapMissingWeeksBySymbol.get(symbol) || 0,
+              freshness.missingWeeks,
+            ),
+          );
+        }
         gapWindowsByDeploymentId.set(deployment.deploymentId, {
           windowFromTs: freshness.windowFromTs,
           windowToTs: freshness.windowToTs,
@@ -2454,7 +3104,15 @@ export async function runPromotionPipelineJob(
 
     let nudgedLoadSymbols = 0;
     let nudgedWorkerRows = 0;
-    if (gapSymbols.size > 0) {
+    const loadSymbolsToNudge = Array.from(gapSymbols)
+      .sort((a, b) => {
+        const aMissing = gapMissingWeeksBySymbol.get(a) || 0;
+        const bMissing = gapMissingWeeksBySymbol.get(b) || 0;
+        if (bMissing !== aMissing) return bMissing - aMissing;
+        return a.localeCompare(b);
+      })
+      .slice(0, maxLoadNudgeSymbols);
+    if (loadSymbolsToNudge.length > 0) {
       nudgedLoadSymbols = Number(
         await db.$executeRaw(Prisma.sql`
                 UPDATE scalp_pipeline_symbols
@@ -2473,12 +3131,26 @@ export async function runPromotionPipelineJob(
                     END,
                     updated_at = NOW()
                 WHERE active = TRUE
-                  AND symbol IN (${Prisma.join(Array.from(gapSymbols))});
+                  AND symbol IN (${Prisma.join(loadSymbolsToNudge)});
             `),
       );
     }
-    if (gapWindowsByDeploymentId.size > 0) {
-      for (const [deploymentId, gapWindow] of gapWindowsByDeploymentId) {
+    const workerDeploymentsToNudge = Array.from(gapWindowsByDeploymentId.entries())
+      .sort((a, b) => {
+        if (b[1].missingWeeks !== a[1].missingWeeks) {
+          return b[1].missingWeeks - a[1].missingWeeks;
+        }
+        if (a[1].windowFromTs !== b[1].windowFromTs) {
+          return a[1].windowFromTs - b[1].windowFromTs;
+        }
+        return a[0].localeCompare(b[0]);
+      })
+      .map(([deploymentId]) => deploymentId)
+      .slice(0, maxWorkerNudgeDeployments);
+    if (workerDeploymentsToNudge.length > 0) {
+      for (const deploymentId of workerDeploymentsToNudge) {
+        const gapWindow = gapWindowsByDeploymentId.get(deploymentId);
+        if (!gapWindow) continue;
         nudgedWorkerRows += Number(
           await db.$executeRaw(Prisma.sql`
                     UPDATE scalp_deployment_weekly_metrics
@@ -2501,7 +3173,7 @@ export async function runPromotionPipelineJob(
                     worker_dirty = TRUE,
                     updated_by = 'pipeline:promotion',
                     updated_at = NOW()
-                WHERE deployment_id IN (${Prisma.join(Array.from(gapWindowsByDeploymentId.keys()))});
+                WHERE deployment_id IN (${Prisma.join(workerDeploymentsToNudge)});
             `);
     }
 
@@ -2638,10 +3310,35 @@ export async function runPromotionPipelineJob(
       maxPerSymbol: policy.topKPerSymbol,
       maxDeployments: policy.globalMaxDeployments,
     });
+    const selectionRows: PromotionSelectionRow[] = strategyWinnerDeployments
+      .map((row) => {
+        const key = `${row.symbol}::${row.strategyId}::${row.tuneId}`;
+        const candidate = candidateByKey.get(key) || null;
+        if (!candidate) return null;
+        return {
+          deploymentId: row.deploymentId,
+          symbol: row.symbol,
+          incumbent: Boolean(
+            inUniverseByDeploymentId.get(row.deploymentId)?.enabled,
+          ),
+          candidate,
+        };
+      })
+      .filter((row): row is PromotionSelectionRow => Boolean(row));
+    const explorationSelection = selectPromotionWinnerRowsWithExploration({
+      rows: selectionRows,
+      explorationShare,
+      maxSymbols: policy.globalMaxSymbols,
+      maxPerSymbol: policy.topKPerSymbol,
+      maxDeployments: policy.globalMaxDeployments,
+    });
+    const explorationWinnerIds = explorationSelection.winnerIds;
     const winnerIds = policy.requireWinnerShortlist
-      ? globalWinnerIds
+      ? explorationWinnerIds
       : strategyWinnerIds;
 
+    let enabledByHysteresis = 0;
+    let disabledByHysteresis = 0;
     const updates = consideredDeployments.map(
       (deployment): ScalpDeploymentRegistryEntry => {
         const key = `${deployment.symbol}::${deployment.strategyId}::${deployment.tuneId}`;
@@ -2661,8 +3358,11 @@ export async function runPromotionPipelineJob(
         const eligible = Boolean(
           candidate && freshness?.ready && !weeklyFailReason,
         );
+        const shortlistIncluded = winnerIds.has(deployment.deploymentId);
         const reason = eligible
-          ? "weekly_robustness_passed"
+          ? shortlistIncluded
+            ? "weekly_robustness_passed"
+            : "winner_shortlist_excluded"
           : weeklyFailReason ||
             (!freshness?.ready
               ? "fresh_weeks_incomplete"
@@ -2675,11 +3375,27 @@ export async function runPromotionPipelineJob(
           forwardValidation: candidate?.forwardValidation || null,
           thresholds: deployment.promotionGate?.thresholds || null,
           freshness: freshnessState,
+          hysteresis: null,
         };
-        const shouldEnable = eligible && winnerIds.has(deployment.deploymentId);
+        const currentlyEnabled = Boolean(
+          inUniverseByDeploymentId.get(deployment.deploymentId)?.enabled,
+        );
+        const shouldEnableNow = eligible && shortlistIncluded;
+        const hysteresis = applyPromotionHysteresis({
+          currentlyEnabled,
+          shouldEnableNow,
+          previous: deployment.promotionGate?.hysteresis || null,
+          passThreshold: hysteresisPassThreshold,
+          failThreshold: hysteresisFailThreshold,
+          nowMs,
+          lockEnabled: currentlyEnabled,
+        });
+        promotionGate.hysteresis = hysteresis.hysteresis;
+        if (hysteresis.transition === "enabled") enabledByHysteresis += 1;
+        if (hysteresis.transition === "disabled") disabledByHysteresis += 1;
         return {
           ...deployment,
-          enabled: shouldEnable,
+          enabled: hysteresis.enabled,
           promotionGate,
           updatedAtMs: nowMs,
           updatedBy: "pipeline:promotion",
@@ -2724,6 +3440,12 @@ export async function runPromotionPipelineJob(
             `);
     }
 
+    const consideredSymbolCount = new Set(
+      consideredDeployments.map((row) => normalizeSymbol(row.symbol)),
+    ).size;
+    const candidateSymbolCount = new Set(
+      candidates.map((row) => normalizeSymbol(row.symbol)),
+    ).size;
     const pendingAfter = await countPendingPromotionRows();
     await pulsePipelineJobProgress({
       jobKind: "promotion",
@@ -2733,10 +3455,23 @@ export async function runPromotionPipelineJob(
       progress: {
         processedDirtyDeployments: dirtyRows.length,
         consideredDeployments: consideredDeployments.length,
+        consideredSymbols: consideredSymbolCount,
         persistedDeployments: updatesToPersist.length,
         candidateCount: candidates.length,
+        candidateSymbols: candidateSymbolCount,
         strategyWinnerCount: strategyWinnerIds.size,
+        globalWinnerCount: globalWinnerIds.size,
         winnerCount: winnerIds.size,
+        explorationShare,
+        explorationSlots: explorationSelection.explorationSlots,
+        exploitSlots: explorationSelection.exploitSlots,
+        explorationSelected: explorationSelection.explorationSelected,
+        exploitSelected: explorationSelection.exploitSelected,
+        enabledByHysteresis,
+        disabledByHysteresis,
+        weeklyQueueRowsInserted,
+        loadNudgeSymbolsQueued: loadSymbolsToNudge.length,
+        workerNudgeDeploymentsQueued: workerDeploymentsToNudge.length,
         nudgedLoadSymbols,
         nudgedWorkerRows,
         pendingAfter,
@@ -2754,12 +3489,25 @@ export async function runPromotionPipelineJob(
       progressLabel: `updated ${updates.length}`,
       details: {
         policy,
+        explorationShare,
         dirtyDeployments: dirtyRows.length,
         consideredDeployments: consideredDeployments.length,
+        consideredSymbols: consideredSymbolCount,
         persistedDeployments: updatesToPersist.length,
         candidateCount: candidates.length,
+        candidateSymbols: candidateSymbolCount,
         strategyWinnerCount: strategyWinnerIds.size,
+        globalWinnerCount: globalWinnerIds.size,
         winnerCount: winnerIds.size,
+        explorationSlots: explorationSelection.explorationSlots,
+        exploitSlots: explorationSelection.exploitSlots,
+        explorationSelected: explorationSelection.explorationSelected,
+        exploitSelected: explorationSelection.exploitSelected,
+        enabledByHysteresis,
+        disabledByHysteresis,
+        weeklyQueueRowsInserted,
+        loadNudgeSymbolsQueued: loadSymbolsToNudge.length,
+        workerNudgeDeploymentsQueued: workerDeploymentsToNudge.length,
         nudgedLoadSymbols,
         nudgedWorkerRows,
       },

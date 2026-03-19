@@ -55,6 +55,7 @@ const ONE_DAY_MS = 24 * 60 * 60_000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 const DEFAULT_PIPELINE_HISTORY_KEEP_WEEKS = 14;
 const DEFAULT_WEEKLY_METRICS_RETENTION_DAYS = 180;
+const DEFAULT_PIPELINE_INACTIVE_SYMBOL_RETENTION_DAYS = 90;
 const DEFAULT_RESEARCH_PRIMARY_REFERENCE_WEEKS = 12;
 const DEFAULT_RESEARCH_CONFIRMATION_KEEP_WEEKS = 52;
 const DEFAULT_RESEARCH_CONFIRMATION_BUFFER_WEEKS = 2;
@@ -203,6 +204,7 @@ export interface RunScalpHousekeepingParams {
   dryRun?: boolean;
   nowMs?: number;
   cycleRetentionDays?: number;
+  inactiveSymbolRetentionDays?: number;
   lockMaxAgeMinutes?: number;
   maxScanKeys?: number;
   refreshReport?: boolean;
@@ -219,6 +221,8 @@ export interface RunScalpHousekeepingResult {
   config: {
     cycleRetentionDays: number;
     requestedCycleRetentionDays: number | null;
+    inactiveSymbolRetentionDays: number;
+    requestedInactiveSymbolRetentionDays: number | null;
     lockMaxAgeMinutes: number;
     maxScanKeys: number;
     refreshReport: boolean;
@@ -252,6 +256,7 @@ export interface RunScalpHousekeepingResult {
     stalePipelinePrepareRowsRecovered: number;
     stalePipelineWorkerRowsRecovered: number;
     weeklyMetricsRowsPruned: number;
+    inactivePipelineSymbolsPruned: number;
   };
   details: {
     prunedCycleIds: string[];
@@ -263,6 +268,7 @@ export interface RunScalpHousekeepingResult {
       protectedSymbols: string[];
       pendingSymbols: string[];
     };
+    prunedInactivePipelineSymbols: string[];
   };
 }
 
@@ -634,6 +640,37 @@ async function pruneOrphanedDeploymentsFromPg(params: {
   };
 }
 
+async function pruneInactivePipelineSymbolsFromPg(params: {
+  dryRun: boolean;
+  nowMs: number;
+  retentionDays: number;
+}): Promise<string[]> {
+  if (!isScalpPgConfigured()) return [];
+  const cutoff = new Date(params.nowMs - params.retentionDays * ONE_DAY_MS);
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{ symbol: string }>>(Prisma.sql`
+        SELECT symbol
+        FROM scalp_pipeline_symbols
+        WHERE active = FALSE
+          AND updated_at < ${cutoff}
+          AND load_status NOT IN ('pending', 'running', 'retry_wait')
+          AND prepare_status NOT IN ('pending', 'running', 'retry_wait')
+        ORDER BY updated_at ASC, symbol ASC
+        LIMIT 5000;
+    `);
+  const symbols = rows
+    .map((row) => normalizeSymbol(row.symbol))
+    .filter(Boolean);
+  if (!params.dryRun && symbols.length > 0) {
+    await db.$executeRaw(Prisma.sql`
+            DELETE FROM scalp_pipeline_symbols
+            WHERE active = FALSE
+              AND symbol IN (${Prisma.join(symbols)});
+        `);
+  }
+  return symbols;
+}
+
 async function compactScalpTables(params: {
   dryRun: boolean;
   journalMax: number;
@@ -680,6 +717,18 @@ export async function runScalpHousekeeping(
   const requestedCycleRetentionDays = toOptionalPositiveInt(
     params.cycleRetentionDays ??
       process.env.SCALP_HOUSEKEEPING_CYCLE_RETENTION_DAYS,
+  );
+  const requestedInactiveSymbolRetentionDays = toOptionalPositiveInt(
+    params.inactiveSymbolRetentionDays ??
+      process.env.SCALP_PIPELINE_INACTIVE_SYMBOL_RETENTION_DAYS,
+  );
+  const inactiveSymbolRetentionDays = Math.max(
+    30,
+    Math.min(
+      3650,
+      requestedInactiveSymbolRetentionDays ??
+        DEFAULT_PIPELINE_INACTIVE_SYMBOL_RETENTION_DAYS,
+    ),
   );
   const cycleRetentionDays = Math.max(
     14,
@@ -758,6 +807,11 @@ export async function runScalpHousekeeping(
     dryRun,
     enabled: cleanupOrphanDeployments,
   });
+  const prunedInactivePipelineSymbols = await pruneInactivePipelineSymbolsFromPg({
+    dryRun,
+    nowMs,
+    retentionDays: inactiveSymbolRetentionDays,
+  });
 
   const listCompactions = await compactScalpTables({
     dryRun,
@@ -790,6 +844,8 @@ export async function runScalpHousekeeping(
     config: {
       cycleRetentionDays,
       requestedCycleRetentionDays,
+      inactiveSymbolRetentionDays,
+      requestedInactiveSymbolRetentionDays,
       lockMaxAgeMinutes,
       maxScanKeys,
       refreshReport,
@@ -827,6 +883,7 @@ export async function runScalpHousekeeping(
         staleRecovery.stalePrepareRowsRecovered,
       stalePipelineWorkerRowsRecovered: staleRecovery.staleWorkerRowsRecovered,
       weeklyMetricsRowsPruned,
+      inactivePipelineSymbolsPruned: prunedInactivePipelineSymbols.length,
     },
     details: {
       prunedCycleIds: [],
@@ -840,6 +897,7 @@ export async function runScalpHousekeeping(
         ).sort(),
         pendingSymbols: activePipelineCandleGuard.pendingSymbols,
       },
+      prunedInactivePipelineSymbols,
     },
   };
 }

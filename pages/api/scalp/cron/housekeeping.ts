@@ -42,6 +42,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const dryRun = parseBoolParam(req.query.dryRun, false);
     const cycleRetentionDays = parsePositiveInt(firstQueryValue(req.query.cycleRetentionDays));
+    const inactiveSymbolRetentionDays = parsePositiveInt(
+        firstQueryValue(req.query.inactiveSymbolRetentionDays),
+    );
     const lockMaxAgeMinutes = parsePositiveInt(firstQueryValue(req.query.lockMaxAgeMinutes));
     const maxScanKeys = parsePositiveInt(firstQueryValue(req.query.maxScanKeys));
     const refreshReport = parseBoolParam(req.query.refreshReport, false);
@@ -53,6 +56,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const out = await runScalpHousekeeping({
             dryRun,
             cycleRetentionDays,
+            inactiveSymbolRetentionDays,
             lockMaxAgeMinutes,
             maxScanKeys,
             refreshReport,

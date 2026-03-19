@@ -3804,7 +3804,7 @@ export default function Home() {
         field: "deploymentId",
         pinned: "left",
         minWidth: scalpIsMobileViewport ? 150 : 220,
-        initialWidth: scalpIsMobileViewport ? 168 : 400,
+        initialWidth: scalpIsMobileViewport ? 168 : 480,
         cellRenderer: (params: any) => {
           const deploymentId = String(params?.value || "").trim();
           if (!deploymentId) {
@@ -4118,7 +4118,7 @@ export default function Home() {
       {
         headerName: "Total Net R",
         field: "totalNetR",
-        minWidth: 140,
+        width: 80,
         cellRenderer: (params: any) => {
           const value =
             typeof params?.value === "number" && Number.isFinite(params.value)
@@ -4131,31 +4131,18 @@ export default function Home() {
               </span>
             );
           }
-          const widthPct = Math.max(
-            8,
-            Math.min(100, Math.round((Math.abs(value) / 8) * 100)),
-          );
-          const trackClass = scalpDarkMode ? "bg-zinc-800" : "bg-slate-200";
           return (
-            <div className="flex min-w-[110px] flex-col gap-1 py-1">
-              <span
-                className={
-                  value >= 0
-                    ? "text-emerald-500"
-                    : scalpDarkMode
-                      ? "text-rose-400"
-                      : "text-rose-700"
-                }
-              >
-                {`${value >= 0 ? "+" : ""}${value.toFixed(2)}`}
-              </span>
-              <div className={`h-1.5 overflow-hidden rounded-full ${trackClass}`}>
-                <div
-                  className={`h-full ${scalpMiniBarTone(value)}`}
-                  style={{ width: `${widthPct}%` }}
-                />
-              </div>
-            </div>
+            <span
+              className={
+                value >= 0
+                  ? "text-emerald-500"
+                  : scalpDarkMode
+                    ? "text-rose-400"
+                    : "text-rose-700"
+              }
+            >
+              {`${value >= 0 ? "+" : ""}${value.toFixed(2)}`}
+            </span>
           );
         },
       },

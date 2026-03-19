@@ -64,6 +64,7 @@ export default async function handler(
   setNoStoreHeaders(res);
 
   const includeLiveQuotes = parseBool(req.query.includeLiveQuotes, true);
+  const dryRun = parseBool(req.query.dryRun, false);
   const maxCandidates = parseIntBounded(
     req.query.maxCandidates,
     250,
@@ -76,6 +77,7 @@ export default async function handler(
   const selfMaxHops = parseIntBounded(req.query.selfMaxHops, 6, 0, 50);
 
   const result = await runDiscoverPipelineJob({
+    dryRun,
     includeLiveQuotes,
     maxCandidates,
   });
@@ -115,6 +117,7 @@ export default async function handler(
       "/api/scalp/cron/discover-symbols",
       {
         includeLiveQuotes: includeLiveQuotes ? 1 : 0,
+        dryRun: dryRun ? 1 : 0,
         maxCandidates,
         autoContinue: 1,
         autoSuccessor: autoSuccessor ? 1 : 0,
