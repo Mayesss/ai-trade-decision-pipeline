@@ -117,6 +117,21 @@ function parsePositionSide(value: unknown): "long" | "short" | null {
   return null;
 }
 
+function parsePositionMode(value: unknown): "one_way_mode" | "hedge_mode" | null {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "one_way_mode") return "one_way_mode";
+  if (normalized === "hedge_mode") return "hedge_mode";
+  return null;
+}
+
+function isBitgetReduceOnlyParamError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const message = err.message.toUpperCase();
+  return message.includes("40017") && message.includes("REDUCEONLY");
+}
+
 function clampLeverage(value: unknown): number | null {
   const raw = toFinite(value);
   if (!(Number.isFinite(raw) && raw > 0)) return null;
@@ -425,6 +440,7 @@ async function listBitgetOpenPositionSnapshots(): Promise<
       dealId: buildSyntheticPositionId(symbol, holdSide),
       dealReference: null,
       side: holdSide,
+      posMode: parsePositionMode((row as any)?.posMode),
       entryPrice,
       leverage,
       size: sizeAbs,
@@ -914,19 +930,82 @@ async function closeBitgetPositionByOwnership(params: {
     };
   }
 
-  const closeSide = ownership.holdSide === "long" ? "sell" : "buy";
-  const res = await bitgetFetch("POST", "/api/v2/mix/order/place-order", {}, {
+  const isHedgeMode = match.posMode === "hedge_mode";
+  const closeBody: Record<string, unknown> = {
     symbol: ownership.symbol,
     productType: productTypeRaw,
     marginCoin: "USDT",
     marginMode: "isolated",
-    side: closeSide,
     orderType: "market",
     size: String(quantizedCloseSize),
     clientOid,
     force: "gtc",
-    reduceOnly: true,
-  });
+  };
+  if (isHedgeMode) {
+    closeBody.side = ownership.holdSide === "long" ? "buy" : "sell";
+    closeBody.tradeSide = "close";
+    closeBody.holdSide = ownership.holdSide;
+  } else {
+    closeBody.side = ownership.holdSide === "long" ? "sell" : "buy";
+    closeBody.reduceOnly = "YES";
+  }
+
+  let res: any;
+  let usedFlashCloseFallback = false;
+  try {
+    res = await bitgetFetch(
+      "POST",
+      "/api/v2/mix/order/place-order",
+      {},
+      closeBody,
+    );
+  } catch (err) {
+    if (!(closePct >= 100 && isBitgetReduceOnlyParamError(err))) {
+      throw err;
+    }
+    const flashBody: Record<string, unknown> = {
+      productType: productTypeRaw,
+      symbol: ownership.symbol,
+    };
+    if (isHedgeMode) {
+      flashBody.holdSide = ownership.holdSide;
+    }
+    res = await bitgetFetch("POST", "/api/v2/mix/order/close-positions", {}, flashBody);
+    usedFlashCloseFallback = true;
+  }
+  if (usedFlashCloseFallback) {
+    const successList = Array.isArray((res as any)?.successList)
+      ? ((res as any).successList as any[])
+      : [];
+    const failureList = Array.isArray((res as any)?.failureList)
+      ? ((res as any).failureList as any[])
+      : [];
+    if (successList.length === 0 && failureList.length > 0) {
+      return {
+        closed: false,
+        orderId: null,
+        clientOid,
+        partial: closePct < 100,
+        note: "flash_close_failed",
+      };
+    }
+    const firstSuccess = successList[0] as Record<string, unknown> | undefined;
+    const fallbackOrderId =
+      String(
+        firstSuccess?.orderId ||
+          firstSuccess?.order_id ||
+          (res as any)?.orderId ||
+          (res as any)?.order_id ||
+          "",
+      ).trim() || null;
+    return {
+      closed: true,
+      orderId: fallbackOrderId,
+      clientOid,
+      partial: closePct < 100,
+    };
+  }
+
   const orderId =
     String((res as any)?.orderId || (res as any)?.order_id || "").trim() || null;
   return {

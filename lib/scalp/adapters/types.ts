@@ -25,6 +25,7 @@ export interface ScalpBrokerPositionSnapshot {
   dealId: string | null;
   dealReference: string | null;
   side: "long" | "short" | null;
+  posMode?: "one_way_mode" | "hedge_mode" | null;
   entryPrice: number | null;
   leverage: number | null;
   size: number | null;
