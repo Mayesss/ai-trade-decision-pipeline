@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 
+import { resolveProductType } from '../lib/bitget';
 import { scalpPrisma } from '../lib/scalp/pg/client';
 import { formatScalpVenueDeploymentId, parseScalpVenuePrefixedDeploymentId, type ScalpVenue } from '../lib/scalp/venue';
 
@@ -31,6 +32,34 @@ type DeploymentRow = {
   createdAt: Date;
 };
 
+function envBool(name: string, fallback: boolean): boolean {
+  const raw = String(process.env[name] || '')
+    .trim()
+    .toLowerCase();
+  if (!raw) return fallback;
+  if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
+  if (['0', 'false', 'no', 'off'].includes(raw)) return false;
+  return fallback;
+}
+
+function normalizeSymbol(value: unknown): string {
+  return String(value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9._-]/g, '');
+}
+
+function isBitgetPipelineSymbol(symbolRaw: string): boolean {
+  const symbol = normalizeSymbol(symbolRaw);
+  if (!symbol) return false;
+  const productType = String(resolveProductType() || 'usdt-futures')
+    .trim()
+    .toLowerCase();
+  if (productType === 'usdc-futures') return symbol.endsWith('USDC');
+  if (productType === 'coin-futures') return symbol.endsWith('USD');
+  return symbol.endsWith('USDT');
+}
+
 function toTargetDeploymentId(currentId: string, targetVenue: ScalpVenue): string {
   const parsed = parseScalpVenuePrefixedDeploymentId(currentId);
   const key = parsed.deploymentKey || String(currentId || '').trim();
@@ -46,6 +75,7 @@ function parseArgs(argv: string[]) {
 
 async function loadCandidates(params: { onlySymbol?: string }): Promise<Candidate[]> {
   const db = scalpPrisma();
+  const bitgetOnly = envBool('SCALP_PIPELINE_BITGET_ONLY', true);
   const symbolFilter = params.onlySymbol
     ? Prisma.sql`AND d.symbol = ${params.onlySymbol}`
     : Prisma.empty;
@@ -101,15 +131,23 @@ async function loadCandidates(params: { onlySymbol?: string }): Promise<Candidat
       ON h.symbol = d.symbol
     WHERE COALESCE(h.history_source, m.source, 'capital') IN ('capital', 'bitget')
       ${symbolFilter}
-      AND (
-        (COALESCE(h.history_source, m.source, 'capital') = 'capital' AND d.deployment_id LIKE 'bitget:%')
-        OR
-        (COALESCE(h.history_source, m.source, 'capital') = 'bitget' AND d.deployment_id NOT LIKE 'bitget:%')
-      )
     ORDER BY d.symbol ASC, d.deployment_id ASC;
   `);
 
-  return rows;
+  const adjusted = rows.map((row) => {
+    if (bitgetOnly && isBitgetPipelineSymbol(row.symbol)) {
+      return {
+        ...row,
+        targetSource: 'bitget' as const,
+      };
+    }
+    return row;
+  });
+
+  return adjusted.filter((row) => {
+    const currentlyBitget = String(row.deploymentId || '').startsWith('bitget:');
+    return row.targetSource === 'bitget' ? !currentlyBitget : currentlyBitget;
+  });
 }
 
 async function loadDeploymentRow(

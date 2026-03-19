@@ -124,6 +124,7 @@ export interface ScalpSymbolDiscoverySourceOverrides {
     includeBitgetMarketsApi?: boolean;
     includeDeploymentSymbols?: boolean;
     includeHistorySymbols?: boolean;
+    requireHistoryPresence?: boolean;
 }
 
 export interface ScalpSymbolDiscoveryRunParams {
@@ -532,7 +533,8 @@ function applyPolicySourceOverrides(
     const hasBitgetOverride = Object.prototype.hasOwnProperty.call(overrides, 'includeBitgetMarketsApi');
     const hasDeploymentOverride = Object.prototype.hasOwnProperty.call(overrides, 'includeDeploymentSymbols');
     const hasHistoryOverride = Object.prototype.hasOwnProperty.call(overrides, 'includeHistorySymbols');
-    if (!hasCapitalOverride && !hasBitgetOverride && !hasDeploymentOverride && !hasHistoryOverride) return policy;
+    const hasRequireHistoryPresenceOverride = Object.prototype.hasOwnProperty.call(overrides, 'requireHistoryPresence');
+    if (!hasCapitalOverride && !hasBitgetOverride && !hasDeploymentOverride && !hasHistoryOverride && !hasRequireHistoryPresenceOverride) return policy;
     return {
         ...policy,
         sources: {
@@ -541,6 +543,9 @@ function applyPolicySourceOverrides(
             ...(hasBitgetOverride ? { includeBitgetMarketsApi: Boolean(overrides.includeBitgetMarketsApi) } : {}),
             ...(hasDeploymentOverride ? { includeDeploymentSymbols: Boolean(overrides.includeDeploymentSymbols) } : {}),
             ...(hasHistoryOverride ? { includeHistorySymbols: Boolean(overrides.includeHistorySymbols) } : {}),
+            ...(hasRequireHistoryPresenceOverride
+                ? { requireHistoryPresence: Boolean(overrides.requireHistoryPresence) }
+                : {}),
         },
     };
 }

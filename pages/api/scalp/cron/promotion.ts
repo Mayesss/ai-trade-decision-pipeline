@@ -64,6 +64,7 @@ export default async function handler(
   setNoStoreHeaders(res);
 
   const batchSize = parseIntBounded(req.query.batchSize, 200, 1, 1_500);
+  const autoSuccessor = parseBool(req.query.autoSuccessor, true);
   const autoContinue = parseBool(req.query.autoContinue, true);
   const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 50);
   const selfMaxHops = parseIntBounded(req.query.selfMaxHops, 6, 0, 50);
@@ -72,7 +73,41 @@ export default async function handler(
     batchSize,
   });
 
+  let downstreamLoadCandles: CronInvokeResult | null = null;
+  let downstreamWorker: CronInvokeResult | null = null;
   let selfRecall: CronInvokeResult | null = null;
+  if (
+    result.ok &&
+    !result.busy &&
+    autoSuccessor &&
+    result.downstreamRequested
+  ) {
+    downstreamLoadCandles = await invokeCronEndpointDetached(
+      req,
+      "/api/scalp/cron/load-candles",
+      {
+        autoContinue: 1,
+        autoSuccessor: 1,
+        selfHop: 0,
+        selfMaxHops,
+        triggeredBy: "promotion",
+      },
+      850,
+    );
+    downstreamWorker = await invokeCronEndpointDetached(
+      req,
+      "/api/scalp/cron/worker",
+      {
+        autoContinue: 1,
+        autoSuccessor: 1,
+        selfHop: 0,
+        selfMaxHops,
+        triggeredBy: "promotion",
+      },
+      850,
+    );
+  }
+
   if (
     result.ok &&
     !result.busy &&
@@ -98,9 +133,12 @@ export default async function handler(
     busy: result.busy,
     job: result,
     chaining: {
+      autoSuccessor,
       autoContinue,
       selfHop,
       selfMaxHops,
+      downstreamLoadCandles,
+      downstreamWorker,
       selfRecall,
     },
   });

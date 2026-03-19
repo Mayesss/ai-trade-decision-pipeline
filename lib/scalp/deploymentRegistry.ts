@@ -38,6 +38,8 @@ export interface ScalpForwardValidationMetrics {
     weeklySlices?: number | null;
     weeklyProfitablePct?: number | null;
     weeklyMeanExpectancyR?: number | null;
+    weeklyTrimmedMeanExpectancyR?: number | null;
+    weeklyP25ExpectancyR?: number | null;
     weeklyMedianExpectancyR?: number | null;
     weeklyWorstNetR?: number | null;
     weeklyTopWeekPnlConcentrationPct?: number | null;
@@ -63,10 +65,21 @@ export interface ScalpDeploymentPromotionGateThresholds {
     minWeeklySlices?: number | null;
     minWeeklyProfitablePct?: number | null;
     minWeeklyMedianExpectancyR?: number | null;
+    minWeeklyP25ExpectancyR?: number | null;
+    minWeeklyWorstNetR?: number | null;
     maxWeeklyTopWeekPnlConcentrationPct?: number | null;
 }
 
 export type ScalpDeploymentPromotionGateSource = 'walk_forward' | 'manual' | 'none';
+
+export interface ScalpDeploymentPromotionFreshness {
+    requiredWeeks: number;
+    completedWeeks: number;
+    missingWeeks: number;
+    windowFromTs: number;
+    windowToTs: number;
+    missingWeekStarts?: number[] | null;
+}
 
 export interface ScalpDeploymentPromotionGate {
     eligible: boolean;
@@ -75,6 +88,7 @@ export interface ScalpDeploymentPromotionGate {
     evaluatedAtMs: number;
     forwardValidation: ScalpForwardValidationMetrics | null;
     thresholds: ScalpDeploymentPromotionGateThresholds | null;
+    freshness?: ScalpDeploymentPromotionFreshness | null;
 }
 
 export interface ScalpDeploymentRegistryEntry extends ScalpDeploymentRef {
@@ -139,6 +153,8 @@ const DEFAULT_FORWARD_GATE_THRESHOLDS: ScalpDeploymentPromotionGateThresholds = 
     minWeeklySlices: null,
     minWeeklyProfitablePct: null,
     minWeeklyMedianExpectancyR: null,
+    minWeeklyP25ExpectancyR: null,
+    minWeeklyWorstNetR: null,
     maxWeeklyTopWeekPnlConcentrationPct: null,
 };
 const SCALP_PG_PERSIST_ACTOR = 'phase_g_pg_primary';
@@ -345,6 +361,8 @@ function normalizeForwardValidation(value: unknown): ScalpForwardValidationMetri
     const weeklySlicesRaw = normalizeFiniteNumber(value.weeklySlices);
     const weeklyProfitablePctRaw = normalizeFiniteNumber(value.weeklyProfitablePct);
     const weeklyMeanExpectancyRRaw = normalizeFiniteNumber(value.weeklyMeanExpectancyR);
+    const weeklyTrimmedMeanExpectancyRRaw = normalizeFiniteNumber(value.weeklyTrimmedMeanExpectancyR);
+    const weeklyP25ExpectancyRRaw = normalizeFiniteNumber(value.weeklyP25ExpectancyR);
     const weeklyMedianExpectancyRRaw = normalizeFiniteNumber(value.weeklyMedianExpectancyR);
     const weeklyWorstNetRRaw = normalizeFiniteNumber(value.weeklyWorstNetR);
     const weeklyTopWeekPnlConcentrationPctRaw = normalizeFiniteNumber(value.weeklyTopWeekPnlConcentrationPct);
@@ -376,6 +394,9 @@ function normalizeForwardValidation(value: unknown): ScalpForwardValidationMetri
         weeklyProfitablePct:
             weeklyProfitablePctRaw !== null ? Math.max(0, Math.min(100, weeklyProfitablePctRaw)) : null,
         weeklyMeanExpectancyR: weeklyMeanExpectancyRRaw !== null ? weeklyMeanExpectancyRRaw : null,
+        weeklyTrimmedMeanExpectancyR:
+            weeklyTrimmedMeanExpectancyRRaw !== null ? weeklyTrimmedMeanExpectancyRRaw : null,
+        weeklyP25ExpectancyR: weeklyP25ExpectancyRRaw !== null ? weeklyP25ExpectancyRRaw : null,
         weeklyMedianExpectancyR: weeklyMedianExpectancyRRaw !== null ? weeklyMedianExpectancyRRaw : null,
         weeklyWorstNetR: weeklyWorstNetRRaw !== null ? weeklyWorstNetRRaw : null,
         weeklyTopWeekPnlConcentrationPct:
@@ -440,6 +461,8 @@ function normalizeForwardGateThresholds(value: unknown): ScalpDeploymentPromotio
     const minWeeklySlicesRaw = normalizeFiniteNumber(value.minWeeklySlices);
     const minWeeklyProfitablePctRaw = normalizeFiniteNumber(value.minWeeklyProfitablePct);
     const minWeeklyMedianExpectancyRRaw = normalizeFiniteNumber(value.minWeeklyMedianExpectancyR);
+    const minWeeklyP25ExpectancyRRaw = normalizeFiniteNumber(value.minWeeklyP25ExpectancyR);
+    const minWeeklyWorstNetRRaw = normalizeFiniteNumber(value.minWeeklyWorstNetR);
     const maxWeeklyTopWeekPnlConcentrationPctRaw = normalizeFiniteNumber(value.maxWeeklyTopWeekPnlConcentrationPct);
     if (!Number.isFinite(minRollCount) || minRollCount <= 0) return null;
     if (minProfitableWindowPct === null || minMeanExpectancyR === null) return null;
@@ -454,10 +477,39 @@ function normalizeForwardGateThresholds(value: unknown): ScalpDeploymentPromotio
         minWeeklyProfitablePct:
             minWeeklyProfitablePctRaw !== null ? Math.max(0, Math.min(100, minWeeklyProfitablePctRaw)) : null,
         minWeeklyMedianExpectancyR: minWeeklyMedianExpectancyRRaw !== null ? minWeeklyMedianExpectancyRRaw : null,
+        minWeeklyP25ExpectancyR: minWeeklyP25ExpectancyRRaw !== null ? minWeeklyP25ExpectancyRRaw : null,
+        minWeeklyWorstNetR: minWeeklyWorstNetRRaw !== null ? minWeeklyWorstNetRRaw : null,
         maxWeeklyTopWeekPnlConcentrationPct:
             maxWeeklyTopWeekPnlConcentrationPctRaw !== null
                 ? Math.max(0, Math.min(100, maxWeeklyTopWeekPnlConcentrationPctRaw))
                 : null,
+    };
+}
+
+function normalizePromotionFreshness(value: unknown): ScalpDeploymentPromotionFreshness | null {
+    if (!isRecord(value)) return null;
+    const requiredWeeks = Math.floor(Number(value.requiredWeeks));
+    const completedWeeks = Math.floor(Number(value.completedWeeks));
+    const missingWeeks = Math.floor(Number(value.missingWeeks));
+    const windowFromTs = Math.floor(Number(value.windowFromTs));
+    const windowToTs = Math.floor(Number(value.windowToTs));
+    if (!Number.isFinite(requiredWeeks) || requiredWeeks <= 0) return null;
+    if (!Number.isFinite(completedWeeks) || completedWeeks < 0) return null;
+    if (!Number.isFinite(missingWeeks) || missingWeeks < 0) return null;
+    if (!Number.isFinite(windowFromTs) || windowFromTs <= 0) return null;
+    if (!Number.isFinite(windowToTs) || windowToTs <= windowFromTs) return null;
+    const missingWeekStarts = Array.isArray(value.missingWeekStarts)
+        ? value.missingWeekStarts
+              .map((row) => Math.floor(Number(row)))
+              .filter((row) => Number.isFinite(row) && row > 0)
+        : null;
+    return {
+        requiredWeeks,
+        completedWeeks,
+        missingWeeks,
+        windowFromTs,
+        windowToTs,
+        missingWeekStarts,
     };
 }
 
@@ -473,6 +525,7 @@ function normalizePromotionGate(value: unknown): ScalpDeploymentPromotionGate | 
         evaluatedAtMs,
         forwardValidation: normalizeForwardValidation(value.forwardValidation),
         thresholds: normalizeForwardGateThresholds(value.thresholds),
+        freshness: normalizePromotionFreshness(value.freshness),
     };
 }
 
@@ -486,6 +539,12 @@ function resolveForwardGateThresholds(): ScalpDeploymentPromotionGateThresholds 
     const minWeeklyProfitablePct = normalizeFiniteNumber(process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MIN_WEEKLY_PROFITABLE_PCT);
     const minWeeklyMedianExpectancyR = normalizeFiniteNumber(
         process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MIN_WEEKLY_MEDIAN_EXPECTANCY_R,
+    );
+    const minWeeklyP25ExpectancyR = normalizeFiniteNumber(
+        process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MIN_WEEKLY_P25_EXPECTANCY_R,
+    );
+    const minWeeklyWorstNetR = normalizeFiniteNumber(
+        process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MIN_WEEKLY_WORST_NET_R,
     );
     const maxWeeklyTopWeekPnlConcentrationPct = normalizeFiniteNumber(
         process.env.SCALP_DEPLOYMENT_FORWARD_GATE_MAX_WEEKLY_TOP_WEEK_PNL_CONCENTRATION_PCT,
@@ -516,6 +575,14 @@ function resolveForwardGateThresholds(): ScalpDeploymentPromotionGateThresholds 
             minWeeklyMedianExpectancyR !== null
                 ? minWeeklyMedianExpectancyR
                 : DEFAULT_FORWARD_GATE_THRESHOLDS.minWeeklyMedianExpectancyR,
+        minWeeklyP25ExpectancyR:
+            minWeeklyP25ExpectancyR !== null
+                ? minWeeklyP25ExpectancyR
+                : DEFAULT_FORWARD_GATE_THRESHOLDS.minWeeklyP25ExpectancyR,
+        minWeeklyWorstNetR:
+            minWeeklyWorstNetR !== null
+                ? minWeeklyWorstNetR
+                : DEFAULT_FORWARD_GATE_THRESHOLDS.minWeeklyWorstNetR,
         maxWeeklyTopWeekPnlConcentrationPct:
             maxWeeklyTopWeekPnlConcentrationPct !== null
                 ? Math.max(0, Math.min(100, maxWeeklyTopWeekPnlConcentrationPct))
@@ -572,6 +639,26 @@ function evaluateForwardValidationAgainstThresholds(
             weeklyMedianExpectancyR < thresholds.minWeeklyMedianExpectancyR
         ) {
             return { eligible: false, reason: 'weekly_median_expectancy_below_threshold' };
+        }
+    }
+    if (typeof thresholds.minWeeklyP25ExpectancyR === 'number') {
+        const weeklyP25ExpectancyR = validation.weeklyP25ExpectancyR;
+        if (
+            weeklyP25ExpectancyR === null ||
+            weeklyP25ExpectancyR === undefined ||
+            weeklyP25ExpectancyR < thresholds.minWeeklyP25ExpectancyR
+        ) {
+            return { eligible: false, reason: 'weekly_p25_expectancy_below_threshold' };
+        }
+    }
+    if (typeof thresholds.minWeeklyWorstNetR === 'number') {
+        const weeklyWorstNetR = validation.weeklyWorstNetR;
+        if (
+            weeklyWorstNetR === null ||
+            weeklyWorstNetR === undefined ||
+            weeklyWorstNetR < thresholds.minWeeklyWorstNetR
+        ) {
+            return { eligible: false, reason: 'weekly_worst_net_r_below_threshold' };
         }
     }
     if (typeof thresholds.maxWeeklyTopWeekPnlConcentrationPct === 'number') {

@@ -1006,6 +1006,9 @@ export default function Home() {
   const [scalpExpandedCronId, setScalpExpandedCronId] = useState<string | null>(
     null,
   );
+  const [scalpEnabledFilter, setScalpEnabledFilter] = useState<
+    "enabled" | "disabled"
+  >("enabled");
   const [scalpWorkerSort, setScalpWorkerSort] = useState<ScalpWorkerSortState>({
     key: "windowToTs",
     direction: "desc",
@@ -3648,7 +3651,27 @@ export default function Home() {
     });
     return out.sort(compareScalpWorkerJobGridRows);
   }, [scalpRegistryDeployments, scalpWorkerJobsGridRows]);
-  const scalpSelectedWorkerGridRows = scalpAllDeploymentsGridRows;
+  const scalpSelectedWorkerGridRows = useMemo<ScalpWorkerJobGridRow[]>(() => {
+    return scalpAllDeploymentsGridRows.filter((row) => {
+      if (scalpEnabledFilter === "enabled") {
+        return row.deploymentEnabled === true;
+      }
+      return row.deploymentEnabled === false;
+    });
+  }, [scalpAllDeploymentsGridRows, scalpEnabledFilter]);
+  const scalpWindowsResultsGlobalMaxAbs = useMemo(() => {
+    let maxAbs = 0;
+    for (const row of scalpSelectedWorkerGridRows) {
+      const entries = Array.isArray(row.windowNetRs) ? row.windowNetRs : [];
+      for (const entry of entries) {
+        if (typeof entry?.value !== "number" || !Number.isFinite(entry.value))
+          continue;
+        const abs = Math.abs(entry.value);
+        if (abs > maxAbs) maxAbs = abs;
+      }
+    }
+    return maxAbs > 0 ? maxAbs : 1;
+  }, [scalpSelectedWorkerGridRows]);
   const scalpWorkerJobsGridDefaultColDef = useMemo<
     ColDef<ScalpWorkerJobGridRow>
   >(
@@ -3819,27 +3842,19 @@ export default function Home() {
         headerName: "Windows Results",
         field: "windowsResults",
         minWidth: 280,
+        cellStyle: {
+          paddingTop: "0px",
+          paddingBottom: "0px",
+        },
         cellRenderer: (params: any) => {
           const entries = Array.isArray(params?.data?.windowNetRs)
             ? params.data.windowNetRs
             : [];
           if (!entries.length) return "—";
-          const numericEntries = entries.filter(
-            (entry: { value: number | null }) =>
-              typeof entry.value === "number" && Number.isFinite(entry.value),
-          );
-          const maxAbs = numericEntries.length
-            ? Math.max(
-                ...numericEntries.map((entry: { value: number | null }) =>
-                  Math.abs(entry.value || 0),
-                ),
-              )
-            : 1;
-          const latest = entries[entries.length - 1];
           const trackClass = scalpDarkMode ? "bg-zinc-800" : "bg-slate-200";
           return (
-            <div className="flex min-w-[220px] flex-col gap-1 py-1">
-              <div className={`flex h-7 items-end gap-1 rounded-md px-1 ${trackClass}`}>
+            <div className="h-full min-h-[48px] w-full py-1">
+              <div className={`flex h-full w-full items-end gap-1 rounded-md px-1 ${trackClass}`}>
                 {entries.map(
                   (
                     entry: {
@@ -3853,7 +3868,13 @@ export default function Home() {
                     const normalized =
                       value === null || !Number.isFinite(value)
                         ? 20
-                        : Math.max(18, Math.round((Math.abs(value) / maxAbs) * 100));
+                        : Math.max(
+                            6,
+                            Math.round(
+                              (Math.abs(value) / scalpWindowsResultsGlobalMaxAbs) *
+                                100,
+                            ),
+                          );
                     const toneClass =
                       value === null || value === 0
                         ? scalpDarkMode
@@ -3877,68 +3898,15 @@ export default function Home() {
                   },
                 )}
               </div>
-              <div
-                className={`flex items-center justify-between text-[10px] ${
-                  scalpDarkMode ? "text-zinc-400" : "text-slate-500"
-                }`}
-              >
-                <span>{`${entries.length} windows`}</span>
-                <span
-                  className={
-                    latest?.value === null || latest?.value === 0
-                      ? scalpDarkMode
-                        ? "text-zinc-300"
-                        : "text-slate-600"
-                      : latest?.value > 0
-                        ? "text-emerald-500"
-                        : scalpDarkMode
-                          ? "text-rose-400"
-                          : "text-rose-700"
-                  }
-                >
-                  {`latest ${latest?.display || "—"}`}
-                </span>
-              </div>
             </div>
-          );
-        },
-      },
-      {
-        headerName: "Enabled",
-        field: "deploymentEnabled",
-        minWidth: 120,
-        cellRenderer: (params: any) => {
-          const value =
-            params?.value === null || typeof params?.value === "undefined"
-              ? null
-              : Boolean(params.value);
-          if (value === null) {
-            return (
-              <span className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}>
-                —
-              </span>
-            );
-          }
-          const Icon = value ? CheckCircle2 : XCircle;
-          const toneClass = value
-            ? scalpDarkMode
-              ? "text-emerald-300"
-              : "text-emerald-600"
-            : scalpDarkMode
-              ? "text-rose-300"
-              : "text-rose-600";
-          return (
-            <span className={`inline-flex items-center gap-1.5 font-medium ${toneClass}`}>
-              <Icon className="h-3.5 w-3.5" />
-              {value ? "yes" : "no"}
-            </span>
           );
         },
       },
       {
         headerName: "Promotion",
         field: "promotionEligible",
-        minWidth: 130,
+        width: 70,
+        hide: scalpEnabledFilter === "enabled",
         cellRenderer: (params: any) => {
           const value =
             params?.value === null || typeof params?.value === "undefined"
@@ -3970,14 +3938,15 @@ export default function Home() {
       {
         headerName: "Reason",
         field: "reason",
-        minWidth: 250,
+        hide: scalpEnabledFilter === "enabled",
+        minWidth: 210,
         valueFormatter: (params) =>
           String(params.value || "unknown").replace(/_/g, " "),
       },
       {
         headerName: "Trades",
         field: "trades",
-        minWidth: 110,
+        width: 40,
         valueFormatter: (params) =>
           typeof params.value === "number" && Number.isFinite(params.value)
             ? Math.floor(params.value).toString()
@@ -4030,7 +3999,7 @@ export default function Home() {
       {
         headerName: "Expectancy",
         field: "expectancyR",
-        minWidth: 130,
+        width: 50,
         valueFormatter: (params) =>
           typeof params.value === "number" && Number.isFinite(params.value)
             ? `${params.value >= 0 ? "+" : ""}${params.value.toFixed(3)}`
@@ -4039,7 +4008,7 @@ export default function Home() {
       {
         headerName: "PF",
         field: "profitFactor",
-        minWidth: 100,
+        width: 50,
         valueFormatter: (params) =>
           typeof params.value === "number" && Number.isFinite(params.value)
             ? params.value.toFixed(2)
@@ -4048,7 +4017,7 @@ export default function Home() {
       {
         headerName: "Total Max DD",
         field: "totalMaxDrawdownR",
-        minWidth: 120,
+        width: 50,
         valueFormatter: (params) =>
           typeof params.value === "number" && Number.isFinite(params.value)
             ? `${params.value.toFixed(2)}R`
@@ -4057,11 +4026,12 @@ export default function Home() {
       {
         headerName: "Errors",
         field: "errorCodes",
+        hide: scalpEnabledFilter === "enabled",
         minWidth: 220,
         valueFormatter: (params) => String(params.value || "—"),
       },
     ],
-    [scalpDarkMode],
+    [scalpDarkMode, scalpEnabledFilter, scalpWindowsResultsGlobalMaxAbs],
   );
 
   const scalpStateMeta = (state?: string | null) => {
@@ -4777,7 +4747,7 @@ export default function Home() {
                             lane keeps detailed cron metrics below.
                           </p>
                           {scalpPipelineFlowSteps.length ? (
-                            <div className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(180px,272px))] justify-center gap-3 xl:justify-start">
+                            <div className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
                               {scalpPipelineFlowSteps.map((step) => {
                                 const Icon = scalpPipelineStepIcon(step.id);
                                 const visual = scalpPipelineStepVisualMeta(
@@ -5051,9 +5021,59 @@ export default function Home() {
                       >
                         Deployment Coverage
                       </h3>
-                      <span className={scalpTagNeutralClass}>
-                        {`${scalpAllDeploymentsGridRows.length} deployments`}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-xs ${scalpTextMutedClass}`}>
+                          Enabled
+                        </span>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={scalpEnabledFilter === "enabled"}
+                          aria-label="Toggle enabled filter"
+                          onClick={() =>
+                            setScalpEnabledFilter((prev) =>
+                              prev === "enabled" ? "disabled" : "enabled",
+                            )
+                          }
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${
+                            scalpDarkMode
+                              ? scalpEnabledFilter === "enabled"
+                                ? "border-emerald-500/60 bg-emerald-500/20"
+                                : "border-zinc-600 bg-zinc-800"
+                              : scalpEnabledFilter === "enabled"
+                                ? "border-emerald-300 bg-emerald-100"
+                                : "border-slate-300 bg-slate-100"
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full transition ${
+                              scalpDarkMode
+                                ? "bg-zinc-100"
+                                : "bg-white shadow-sm"
+                            } ${
+                              scalpEnabledFilter === "enabled"
+                                ? "translate-x-6"
+                                : "translate-x-1"
+                            }`}
+                          />
+                        </button>
+                        <span
+                          className={`text-xs font-semibold ${
+                            scalpEnabledFilter === "enabled"
+                              ? scalpDarkMode
+                                ? "text-emerald-300"
+                                : "text-emerald-700"
+                              : scalpDarkMode
+                                ? "text-rose-300"
+                                : "text-rose-700"
+                          }`}
+                        >
+                          {scalpEnabledFilter === "enabled" ? "yes" : "no"}
+                        </span>
+                        <span className={scalpTagNeutralClass}>
+                          {`${scalpSelectedWorkerGridRows.length}/${scalpAllDeploymentsGridRows.length}`}
+                        </span>
+                      </div>
                     </div>
                     <div className={`mt-2 text-xs ${scalpTextSecondaryClass}`}>
                       One row per deployment in the registry. Weekly windows
@@ -5063,7 +5083,7 @@ export default function Home() {
                     </div>
                     {scalpSelectedWorkerGridRows.length ? (
                       <div
-                        className={`mt-4 h-[560px] w-full overflow-hidden rounded-xl border ${
+                        className={`mt-4 h-[420px] w-full overflow-hidden rounded-xl border ${
                           scalpDarkMode
                             ? "border-zinc-700/60"
                             : "border-slate-200"
@@ -5103,7 +5123,9 @@ export default function Home() {
                             : "border-slate-200 text-slate-600"
                         }`}
                       >
-                        No deployment registry rows are available yet.
+                        {scalpAllDeploymentsGridRows.length
+                          ? "No deployments match the enabled filter."
+                          : "No deployment registry rows are available yet."}
                       </div>
                     )}
                   </section>
@@ -5149,72 +5171,200 @@ export default function Home() {
                                 </>
                               );
                             })()}
-                            <span className={scalpTagNeutralClass}>
+                            <span
+                              className={`${scalpTagNeutralClass} inline-flex items-center gap-1`}
+                            >
+                              <TimerReset className="h-3.5 w-3.5" />
                               {scalpActiveRuntimeRow.cronSchedule ||
                                 scalpActiveRuntimeRow.cronRoute ||
                                 "no schedule"}
                             </span>
+                            <span
+                              className={`${scalpTagNeutralClass} inline-flex items-center gap-1`}
+                            >
+                              <Activity className="h-3.5 w-3.5" />
+                              {formatScalpTime(
+                                scalpActiveExecutionTs ??
+                                  scalpActiveRuntimeRow.lastRunAtMs,
+                              )}
+                            </span>
+                            <span
+                              className={`${scalpTagNeutralClass} inline-flex items-center gap-1`}
+                            >
+                              <ArrowDownRight className="h-3.5 w-3.5" />
+                              {scalpActiveMaxDdR === null
+                                ? "DD —"
+                                : `DD ${Math.abs(scalpActiveMaxDdR).toFixed(2)}R`}
+                            </span>
                           </div>
-                          <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
-                            <div className={scalpCardClass}>
-                              <div
-                                className={`text-[11px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
-                              >
-                                Trades
+                          {(() => {
+                            const trades = Math.max(
+                              0,
+                              Number(scalpActiveRuntimeRow.tradesPlaced || 0),
+                            );
+                            const wins = Math.max(
+                              0,
+                              Number(scalpActiveRuntimeRow.wins || 0),
+                            );
+                            const losses = Math.max(
+                              0,
+                              Number(scalpActiveRuntimeRow.losses || 0),
+                            );
+                            const closedTrades = wins + losses;
+                            const tradesPct = Math.max(
+                              0,
+                              Math.min(100, trades * 2),
+                            );
+                            const winPct =
+                              scalpActiveWinRatePct === null
+                                ? null
+                                : Math.max(0, Math.min(100, scalpActiveWinRatePct));
+                            const netRPct =
+                              scalpActiveNetR === null
+                                ? null
+                                : Math.max(
+                                    0,
+                                    Math.min(100, 50 + scalpActiveNetR * 12.5),
+                                  );
+                            const winSplitPct =
+                              closedTrades > 0 ? (wins / closedTrades) * 100 : 0;
+                            const lossSplitPct =
+                              closedTrades > 0 ? (losses / closedTrades) * 100 : 0;
+                            const compactCardClass = scalpDarkMode
+                              ? "rounded-xl border border-zinc-700 bg-zinc-950/70 px-2.5 py-2"
+                              : "rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2";
+                            return (
+                              <div className="mt-3 grid grid-cols-2 gap-2 xl:grid-cols-4">
+                                <div className={compactCardClass}>
+                                  <div
+                                    className={`flex items-center justify-between text-[11px] ${scalpTextMutedClass}`}
+                                  >
+                                    <span className="inline-flex items-center gap-1">
+                                      <ListChecks className="h-3.5 w-3.5" />
+                                      Trades
+                                    </span>
+                                    <span
+                                      className={`text-sm font-semibold ${scalpTextPrimaryClass}`}
+                                    >
+                                      {trades}
+                                    </span>
+                                  </div>
+                                  <div
+                                    className={`mt-1.5 h-1.5 overflow-hidden rounded-full ${scalpVisualMetricTrackClass}`}
+                                  >
+                                    <div
+                                      className="h-full bg-sky-500"
+                                      style={{
+                                        width: `${Math.max(6, tradesPct)}%`,
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                                <div className={compactCardClass}>
+                                  <div
+                                    className={`flex items-center justify-between text-[11px] ${scalpTextMutedClass}`}
+                                  >
+                                    <span className="inline-flex items-center gap-1">
+                                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                                      Win
+                                    </span>
+                                    <span className="text-sm font-semibold text-emerald-500">
+                                      {winPct === null
+                                        ? "—"
+                                        : `${winPct.toFixed(0)}%`}
+                                    </span>
+                                  </div>
+                                  <div
+                                    className={`mt-1.5 h-1.5 overflow-hidden rounded-full ${scalpVisualMetricTrackClass}`}
+                                  >
+                                    <div
+                                      className="h-full bg-emerald-500"
+                                      style={{
+                                        width: `${Math.max(6, winPct || 0)}%`,
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                                <div className={compactCardClass}>
+                                  <div
+                                    className={`flex items-center justify-between text-[11px] ${scalpTextMutedClass}`}
+                                  >
+                                    <span className="inline-flex items-center gap-1">
+                                      <BarChart3 className="h-3.5 w-3.5" />
+                                      Net R
+                                    </span>
+                                    <span
+                                      className={`text-sm font-semibold ${
+                                        scalpActiveNetR === null
+                                          ? scalpTextPrimaryClass
+                                          : scalpActiveNetR >= 0
+                                            ? "text-emerald-500"
+                                            : "text-rose-500"
+                                      }`}
+                                    >
+                                      {scalpActiveNetR === null
+                                        ? "—"
+                                        : formatSignedR(scalpActiveNetR)}
+                                    </span>
+                                  </div>
+                                  <div
+                                    className={`mt-1.5 h-1.5 overflow-hidden rounded-full ${scalpVisualMetricTrackClass}`}
+                                  >
+                                    <div
+                                      className={`h-full ${
+                                        scalpActiveNetR === null
+                                          ? scalpDarkMode
+                                            ? "bg-zinc-400/80"
+                                            : "bg-slate-500"
+                                          : scalpActiveNetR >= 0
+                                            ? "bg-emerald-500"
+                                            : "bg-rose-500"
+                                      }`}
+                                      style={{
+                                        width: `${Math.max(6, netRPct || 0)}%`,
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                                <div className={compactCardClass}>
+                                  <div
+                                    className={`flex items-center justify-between text-[11px] ${scalpTextMutedClass}`}
+                                  >
+                                    <span className="inline-flex items-center gap-1">
+                                      <Activity className="h-3.5 w-3.5" />
+                                      W/L
+                                    </span>
+                                    <span
+                                      className={`text-sm font-semibold ${scalpTextPrimaryClass}`}
+                                    >
+                                      {`${wins}/${losses}`}
+                                    </span>
+                                  </div>
+                                  <div
+                                    className={`mt-1.5 flex h-1.5 overflow-hidden rounded-full ${scalpVisualMetricTrackClass}`}
+                                  >
+                                    <div
+                                      className="bg-emerald-500"
+                                      style={{
+                                        width: `${Math.max(0, winSplitPct)}%`,
+                                      }}
+                                    />
+                                    <div
+                                      className="bg-rose-500"
+                                      style={{
+                                        width: `${Math.max(0, lossSplitPct)}%`,
+                                      }}
+                                    />
+                                  </div>
+                                </div>
                               </div>
-                              <div
-                                className={`mt-1 text-xl font-semibold ${scalpTextPrimaryClass}`}
-                              >
-                                {scalpActiveRuntimeRow.tradesPlaced}
-                              </div>
-                            </div>
-                            <div className={scalpCardClass}>
-                              <div
-                                className={`text-[11px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
-                              >
-                                Win Rate
-                              </div>
-                              <div className="mt-1 text-xl font-semibold text-emerald-500">
-                                {scalpActiveWinRatePct === null
-                                  ? "—"
-                                  : `${scalpActiveWinRatePct.toFixed(0)}%`}
-                              </div>
-                            </div>
-                            <div className={scalpCardClass}>
-                              <div
-                                className={`text-[11px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
-                              >
-                                Net R
-                              </div>
-                              <div
-                                className={`mt-1 text-xl font-semibold ${scalpActiveNetR === null ? scalpTextPrimaryClass : scalpActiveNetR >= 0 ? "text-emerald-500" : "text-rose-500"}`}
-                              >
-                                {scalpActiveNetR === null
-                                  ? "—"
-                                  : formatSignedR(scalpActiveNetR)}
-                              </div>
-                            </div>
-                            <div className={scalpCardClass}>
-                              <div
-                                className={`text-[11px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
-                              >
-                                Last Run
-                              </div>
-                              <div
-                                className={`mt-1 text-xl font-semibold ${scalpTextPrimaryClass}`}
-                              >
-                                {formatScalpTime(
-                                  scalpActiveExecutionTs ??
-                                    scalpActiveRuntimeRow.lastRunAtMs,
-                                )}
-                              </div>
-                            </div>
-                          </div>
+                            );
+                          })()}
                           <div
-                            className={`mt-3 text-xs ${scalpTextSecondaryClass}`}
+                            className={`mt-2 flex items-center gap-1.5 text-[11px] ${scalpTextMutedClass}`}
                           >
-                            Deployment ID:{" "}
-                            <span className="font-mono">
+                            <Database className="h-3.5 w-3.5" />
+                            <span className={`truncate font-mono ${scalpTextSecondaryClass}`}>
                               {scalpActiveRuntimeRow.deploymentId}
                             </span>
                           </div>
@@ -5228,28 +5378,40 @@ export default function Home() {
                       )}
                     </article>
 
-                    <article className="space-y-4">
-                      <div className={`${scalpSectionShellClass} p-4`}>
-                        <div className="flex items-center justify-between">
-                          <div
-                            className={`text-xs uppercase tracking-[0.16em] ${scalpTextMutedClass}`}
-                          >
-                            Reason Snapshot
-                            {scalpActiveRuntimeRow
-                              ? ` · ${scalpActiveRuntimeRow.symbol}`
-                              : ""}
-                          </div>
-                          <div className={`text-xs ${scalpTextMutedClass}`}>
-                            {scalpReasonSnapshotState === "fresh"
-                              ? `${Math.min(scalpActiveReasonCodes.length, 8)} shown`
-                              : "none"}
-                          </div>
+                    <article className={`${scalpSectionShellClass} p-3`}>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div
+                          className={`text-xs uppercase tracking-[0.16em] ${scalpTextMutedClass}`}
+                        >
+                          Snapshot Feed
+                          {scalpActiveRuntimeRow
+                            ? ` · ${scalpActiveRuntimeRow.symbol}`
+                            : ""}
                         </div>
-                        {scalpActiveReasonCodes.length ? (
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            {scalpActiveReasonCodes
-                              .slice(0, 8)
-                              .map((code, idx) => {
+                      </div>
+                      <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-2">
+                        <div
+                          className={`rounded-xl border p-2.5 ${
+                            scalpDarkMode
+                              ? "border-zinc-700 bg-zinc-950/60"
+                              : "border-slate-200 bg-slate-50"
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div
+                              className={`text-xs uppercase tracking-[0.16em] ${scalpTextMutedClass}`}
+                            >
+                              Reason Snapshot
+                            </div>
+                            <div className={`text-xs ${scalpTextMutedClass}`}>
+                              {scalpReasonSnapshotState === "fresh"
+                                ? `${scalpActiveReasonCodes.length} shown`
+                                : "none"}
+                            </div>
+                          </div>
+                          {scalpActiveReasonCodes.length ? (
+                            <div className="mt-2 flex flex-wrap gap-1.5">
+                              {scalpActiveReasonCodes.map((code, idx) => {
                                 const meta = scalpReasonMeta(code);
                                 const Icon = meta.Icon;
                                 return (
@@ -5262,88 +5424,90 @@ export default function Home() {
                                   </span>
                                 );
                               })}
-                          </div>
-                        ) : (
-                          <div
-                            className={`mt-3 text-sm ${scalpTextSecondaryClass}`}
-                          >
-                            No reason codes recorded for this deployment.
-                          </div>
-                        )}
-                      </div>
-
-                      <div className={`${scalpSectionShellClass} p-4`}>
-                        <div className="flex items-center justify-between">
-                          <div
-                            className={`text-xs uppercase tracking-[0.16em] ${scalpTextMutedClass}`}
-                          >
-                            Journal Snapshot
-                            {scalpActiveRuntimeRow
-                              ? ` · ${scalpActiveRuntimeRow.symbol}`
-                              : ""}
-                          </div>
-                          <div className={`text-xs ${scalpTextMutedClass}`}>
-                            {scalpActiveJournal.length
-                              ? `${Math.min(scalpActiveJournal.length, 8)} events`
-                              : "empty"}
-                          </div>
+                            </div>
+                          ) : (
+                            <div
+                              className={`mt-2 text-sm ${scalpTextSecondaryClass}`}
+                            >
+                              No reason codes recorded for this deployment.
+                            </div>
+                          )}
                         </div>
-                        {scalpActiveJournal.length ? (
-                          <div className="mt-3 space-y-2">
-                            {scalpActiveJournal.slice(0, 8).map((entry) => {
-                              const meta = scalpJournalMeta({
-                                type: String(entry.type || ""),
-                                level: String(entry.level || ""),
-                              });
-                              const Icon = meta.Icon;
-                              return (
-                                <div
-                                  key={
-                                    entry.id ||
-                                    `${entry.timestampMs}-${entry.symbol || "na"}`
-                                  }
-                                  className={`rounded-xl border px-3 py-2 text-xs ${meta.className}`}
-                                >
-                                  <div className="flex flex-wrap items-center justify-between gap-2">
-                                    <div className="inline-flex items-center gap-1.5 font-semibold">
-                                      <Icon className="h-3.5 w-3.5" />
-                                      {String(
-                                        entry.type || "event",
-                                      ).toUpperCase()}
+
+                        <div
+                          className={`rounded-xl border p-2.5 ${
+                            scalpDarkMode
+                              ? "border-zinc-700 bg-zinc-950/60"
+                              : "border-slate-200 bg-slate-50"
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div
+                              className={`text-xs uppercase tracking-[0.16em] ${scalpTextMutedClass}`}
+                            >
+                              Journal Snapshot
+                            </div>
+                            <div className={`text-xs ${scalpTextMutedClass}`}>
+                              {scalpActiveJournal.length
+                                ? `${Math.min(scalpActiveJournal.length, 5)} events`
+                                : "empty"}
+                            </div>
+                          </div>
+                          {scalpActiveJournal.length ? (
+                            <div className="mt-2 space-y-1.5">
+                              {scalpActiveJournal.slice(0, 5).map((entry) => {
+                                const meta = scalpJournalMeta({
+                                  type: String(entry.type || ""),
+                                  level: String(entry.level || ""),
+                                });
+                                const Icon = meta.Icon;
+                                return (
+                                  <div
+                                    key={
+                                      entry.id ||
+                                      `${entry.timestampMs}-${entry.symbol || "na"}`
+                                    }
+                                    className={`rounded-xl border px-2.5 py-1.5 text-xs ${meta.className}`}
+                                  >
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <div className="inline-flex items-center gap-1.5 font-semibold">
+                                        <Icon className="h-3.5 w-3.5" />
+                                        {String(
+                                          entry.type || "event",
+                                        ).toUpperCase()}
+                                      </div>
+                                      <div>{formatScalpTime(entry.timestampMs)}</div>
                                     </div>
-                                    <div>
-                                      {formatScalpTime(entry.timestampMs)}
-                                    </div>
+                                    {(entry.reasonCodes || []).length ? (
+                                      <div className="mt-1 flex flex-wrap gap-1">
+                                        {(entry.reasonCodes || [])
+                                          .slice(0, 3)
+                                          .map((code, idx) => (
+                                            <span
+                                              key={`${entry.id || entry.timestampMs || idx}-${code}-${idx}`}
+                                              className={`rounded-full border px-1.5 py-0.5 text-[10px] font-semibold ${
+                                                scalpDarkMode
+                                                  ? "border-current/20 bg-black/20"
+                                                  : "border-current/30 bg-white/50"
+                                              }`}
+                                            >
+                                              {code.replace(/_/g, " ")}
+                                            </span>
+                                          ))}
+                                      </div>
+                                    ) : null}
                                   </div>
-                                  {(entry.reasonCodes || []).length ? (
-                                    <div className="mt-1 flex flex-wrap gap-1">
-                                      {(entry.reasonCodes || [])
-                                        .slice(0, 3)
-                                        .map((code, idx) => (
-                                          <span
-                                            key={`${entry.id || entry.timestampMs || idx}-${code}-${idx}`}
-                                            className={`rounded-full border px-1.5 py-0.5 text-[10px] font-semibold ${
-                                              scalpDarkMode
-                                                ? "border-current/20 bg-black/20"
-                                                : "border-current/30 bg-white/50"
-                                            }`}
-                                          >
-                                            {code.replace(/_/g, " ")}
-                                          </span>
-                                        ))}
-                                    </div>
-                                  ) : null}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <div
-                            className={`mt-3 text-sm ${scalpTextSecondaryClass}`}
-                          >
-                            No journal events for this deployment yet.
-                          </div>
-                        )}
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div
+                              className={`mt-2 text-sm ${scalpTextSecondaryClass}`}
+                            >
+                              No journal events for this deployment yet.
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </article>
                   </section>

@@ -11,6 +11,8 @@ export interface ScalpWeeklyRobustnessMetrics {
   profitableSlices: number;
   profitablePct: number;
   meanExpectancyR: number;
+  trimmedMeanExpectancyR: number;
+  p25ExpectancyR: number;
   medianExpectancyR: number;
   worstNetR: number;
   worstMaxDrawdownR: number;
@@ -22,12 +24,16 @@ export interface ScalpWeeklyRobustnessMetrics {
 export interface SyncResearchWeeklyPolicy {
   enabled: boolean;
   topKPerSymbol: number;
+  globalMaxSymbols: number;
+  globalMaxDeployments: number;
   lookbackDays: number;
   minCandlesPerSlice: number;
   requireWinnerShortlist: boolean;
   minSlices: number;
   minProfitablePct: number;
   minMedianExpectancyR: number;
+  minP25ExpectancyR: number;
+  minWorstNetR: number;
   maxTopWeekPnlConcentrationPct: number;
 }
 
@@ -63,6 +69,7 @@ export interface ScalpPromotionForwardValidationCandidate {
   profitableWindowPct: number;
   profitableWindows: number;
   meanExpectancyR: number;
+  trimmedMeanExpectancyR?: number | null;
   medianExpectancyR?: number | null;
   meanProfitFactor: number | null;
   maxDrawdownR: number;
@@ -141,6 +148,47 @@ function median(values: number[]): number {
   return ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2;
 }
 
+function mean(values: number[]): number {
+  if (!values.length) return 0;
+  return values.reduce((acc, value) => acc + value, 0) / values.length;
+}
+
+function quantile(values: number[], p: number): number {
+  if (!values.length) return 0;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const clampedP = Math.max(0, Math.min(1, p));
+  const index = (sorted.length - 1) * clampedP;
+  const low = Math.floor(index);
+  const high = Math.ceil(index);
+  const lowValue = sorted[low] as number;
+  const highValue = sorted[high] as number;
+  if (low === high) return lowValue;
+  const weight = index - low;
+  return lowValue + (highValue - lowValue) * weight;
+}
+
+function trimmedMean(values: number[], trimRatio: number): number {
+  if (!values.length) return 0;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const clampedTrim = Math.max(0, Math.min(0.49, trimRatio));
+  const trimCount = Math.floor(sorted.length * clampedTrim);
+  if (trimCount * 2 >= sorted.length) return mean(sorted);
+  const trimmed = sorted.slice(trimCount, sorted.length - trimCount);
+  return mean(trimmed.length ? trimmed : sorted);
+}
+
+function resolveSelectionTrimRatio(): number {
+  const env = Number(process.env.SCALP_WEEKLY_SELECTION_TRIM_RATIO);
+  if (!Number.isFinite(env)) return 0.15;
+  return Math.max(0, Math.min(0.4, env));
+}
+
+function resolveSelectionShrinkageK(): number {
+  const env = Number(process.env.SCALP_WEEKLY_SELECTION_SHRINKAGE_K);
+  if (!Number.isFinite(env)) return 6;
+  return Math.max(1, Math.min(52, Math.floor(env)));
+}
+
 function topPositiveNetConcentrationPct(values: number[]): number {
   const positiveNet = values.map((value) => Math.max(0, value));
   const totalPositive = positiveNet.reduce((acc, value) => acc + value, 0);
@@ -169,21 +217,37 @@ function candidateTopWindowPnlConcentrationPct(candidate: {
 
 function candidateSelectionScore(
   candidate: Pick<ScalpPromotionForwardValidationCandidate, "meanExpectancyR"> & {
+    trimmedMeanExpectancyR?: number | null;
     medianExpectancyR?: number | null;
     topWindowPnlConcentrationPct?: number | null;
     selectionScore?: number | null;
+    rollCount?: number;
   },
 ): number {
   const explicit = Number(candidate.selectionScore);
   if (Number.isFinite(explicit)) return explicit;
+  const trimmedMeanValue = Number(candidate.trimmedMeanExpectancyR);
+  const robustMean = Number.isFinite(trimmedMeanValue)
+    ? trimmedMeanValue
+    : (Number(candidate.meanExpectancyR) +
+        candidateMedianExpectancyR(candidate)) /
+      2;
   const smoothedExpectancy =
-    (Number(candidate.meanExpectancyR) + candidateMedianExpectancyR(candidate)) /
-    2;
+    (robustMean + candidateMedianExpectancyR(candidate)) / 2;
   const concentrationPenalty = Math.max(
     0,
     candidateTopWindowPnlConcentrationPct(candidate) - 50,
   );
-  return smoothedExpectancy * (1 - concentrationPenalty / 100);
+  const concentrationAdjusted =
+    smoothedExpectancy * (1 - concentrationPenalty / 100);
+  const rollCount = Math.max(
+    0,
+    Math.floor(Number(candidate.rollCount) || 0),
+  );
+  const shrinkageK = resolveSelectionShrinkageK();
+  const sampleWeight =
+    rollCount > 0 ? rollCount / (rollCount + shrinkageK) : 0;
+  return concentrationAdjusted * sampleWeight;
 }
 
 function candidateProfitFactorForRanking(
@@ -222,16 +286,25 @@ function compareCandidates(
 
 function buildForwardSelectionScore(params: {
   meanExpectancyR: number;
+  trimmedMeanExpectancyR: number;
   medianExpectancyR: number;
   topWindowPnlConcentrationPct: number;
+  rollCount: number;
 }): number {
-  const smoothedExpectancy =
-    (params.meanExpectancyR + params.medianExpectancyR) / 2;
+  const robustMean =
+    Number.isFinite(params.trimmedMeanExpectancyR)
+      ? params.trimmedMeanExpectancyR
+      : params.meanExpectancyR;
+  const smoothedExpectancy = (robustMean + params.medianExpectancyR) / 2;
   const concentrationPenalty = Math.max(
     0,
     params.topWindowPnlConcentrationPct - 50,
   );
-  return smoothedExpectancy * (1 - concentrationPenalty / 100);
+  const concentrationAdjusted = smoothedExpectancy * (1 - concentrationPenalty / 100);
+  const shrinkageK = resolveSelectionShrinkageK();
+  const rollCount = Math.max(0, Math.floor(params.rollCount || 0));
+  const sampleWeight = rollCount > 0 ? rollCount / (rollCount + shrinkageK) : 0;
+  return concentrationAdjusted * sampleWeight;
 }
 
 export function evaluateWeeklyRobustnessGate(
@@ -250,6 +323,18 @@ export function evaluateWeeklyRobustnessGate(
     return {
       passed: false,
       reason: "weekly_median_expectancy_below_threshold",
+    };
+  }
+  if (metrics.p25ExpectancyR < policy.minP25ExpectancyR) {
+    return {
+      passed: false,
+      reason: "weekly_p25_expectancy_below_threshold",
+    };
+  }
+  if (metrics.worstNetR < policy.minWorstNetR) {
+    return {
+      passed: false,
+      reason: "weekly_worst_net_r_below_threshold",
     };
   }
   if (
@@ -357,16 +442,23 @@ export function buildForwardValidationByCandidateFromTasks(params: {
   return Array.from(byCandidate.values())
     .filter((row) => row.rollCount > 0)
     .map((row) => {
+      const selectionTrimRatio = resolveSelectionTrimRatio();
       const profitableWindowPct = (row.profitableWindows / row.rollCount) * 100;
       const meanExpectancyR = row.expectancySum / row.rollCount;
+      const trimmedMeanExpectancyR = trimmedMean(
+        row.expectancyRows,
+        selectionTrimRatio,
+      );
       const medianExpectancyR = median(row.expectancyRows);
       const topWindowPnlConcentrationPct = topPositiveNetConcentrationPct(
         row.netRows,
       );
       const selectionScore = buildForwardSelectionScore({
         meanExpectancyR,
+        trimmedMeanExpectancyR,
         medianExpectancyR,
         topWindowPnlConcentrationPct,
+        rollCount: row.rollCount,
       });
       const meanProfitFactor =
         row.profitFactorCount > 0
@@ -384,6 +476,8 @@ export function buildForwardValidationByCandidateFromTasks(params: {
         weeklySlices: null,
         weeklyProfitablePct: null,
         weeklyMeanExpectancyR: null,
+        weeklyTrimmedMeanExpectancyR: null,
+        weeklyP25ExpectancyR: null,
         weeklyMedianExpectancyR: null,
         weeklyWorstNetR: null,
         weeklyTopWeekPnlConcentrationPct: null,
@@ -398,6 +492,7 @@ export function buildForwardValidationByCandidateFromTasks(params: {
         profitableWindowPct,
         profitableWindows: row.profitableWindows,
         meanExpectancyR,
+        trimmedMeanExpectancyR,
         medianExpectancyR,
         meanProfitFactor,
         maxDrawdownR: row.maxDrawdownR,
@@ -434,6 +529,7 @@ export function evaluateFreshCompletedDeploymentWeeks(params: {
   requiredWeeks: number;
   completedWeeks: number;
   missingWeeks: number;
+  missingWeekStarts: number[];
   windowFromTs: number;
   windowToTs: number;
   readyTasks: Array<
@@ -455,9 +551,8 @@ export function evaluateFreshCompletedDeploymentWeeks(params: {
   );
   const windowToTs = startOfWeekMondayUtc(params.nowMs);
   const windowFromTs = windowToTs - requiredWeeks * WEEK_MS;
-  const expectedKeys = new Set<string>();
-  const readyTaskByWindowKey = new Map<
-    string,
+  const completedTaskByWeekStart = new Map<
+    number,
     Pick<
       ScalpPromotionTaskLike,
       | "deploymentId"
@@ -471,35 +566,101 @@ export function evaluateFreshCompletedDeploymentWeeks(params: {
     >
   >();
 
-  for (let i = 0; i < requiredWeeks; i += 1) {
-    const fromTs = windowFromTs + i * WEEK_MS;
-    const toTs = fromTs + WEEK_MS;
-    expectedKeys.add(`${fromTs}:${toTs}`);
-  }
-
   for (const task of params.tasks) {
     if (task.status !== "completed" || !task.result) continue;
     const fromTs = Math.floor(Number(task.windowFromTs) || 0);
     const toTs = Math.floor(Number(task.windowToTs) || 0);
     if (toTs - fromTs !== WEEK_MS) continue;
-    if (fromTs < windowFromTs || toTs > windowToTs) continue;
-    const key = `${fromTs}:${toTs}`;
-    if (!expectedKeys.has(key)) continue;
-    readyTaskByWindowKey.set(key, task);
+    if (toTs > windowToTs) continue;
+    completedTaskByWeekStart.set(fromTs, task);
   }
 
-  const readyTasks = Array.from(readyTaskByWindowKey.values()).sort(
-    (a, b) => a.windowFromTs - b.windowFromTs,
+  const completedWeekStarts = Array.from(completedTaskByWeekStart.keys()).sort(
+    (a, b) => a - b,
   );
-  const completedWeeks = readyTasks.length;
-  const missingWeeks = Math.max(0, requiredWeeks - completedWeeks);
+  const latestCompleteWeekStart = windowToTs - WEEK_MS;
+  const earliestCompleteWeekStart = completedWeekStarts[0] ?? null;
+
+  let selectedWindowFromTs: number | null = null;
+  let readyTasks: Array<
+    Pick<
+      ScalpPromotionTaskLike,
+      | "deploymentId"
+      | "symbol"
+      | "strategyId"
+      | "tuneId"
+      | "status"
+      | "result"
+      | "windowFromTs"
+      | "windowToTs"
+    >
+  > = [];
+
+  if (earliestCompleteWeekStart !== null) {
+    const minEndStart =
+      earliestCompleteWeekStart + (requiredWeeks - 1) * WEEK_MS;
+    for (
+      let endWeekStart = latestCompleteWeekStart;
+      endWeekStart >= minEndStart;
+      endWeekStart -= WEEK_MS
+    ) {
+      const startWeekStart = endWeekStart - (requiredWeeks - 1) * WEEK_MS;
+      const candidateTasks: Array<
+        Pick<
+          ScalpPromotionTaskLike,
+          | "deploymentId"
+          | "symbol"
+          | "strategyId"
+          | "tuneId"
+          | "status"
+          | "result"
+          | "windowFromTs"
+          | "windowToTs"
+        >
+      > = [];
+      let missing = false;
+      for (let i = 0; i < requiredWeeks; i += 1) {
+        const weekStart = startWeekStart + i * WEEK_MS;
+        const task = completedTaskByWeekStart.get(weekStart);
+        if (!task) {
+          missing = true;
+          break;
+        }
+        candidateTasks.push(task);
+      }
+      if (!missing) {
+        selectedWindowFromTs = startWeekStart;
+        readyTasks = candidateTasks;
+        break;
+      }
+    }
+  }
+
+  let completedWeeks = 0;
+  const missingWeekStarts: number[] = [];
+  for (let i = 0; i < requiredWeeks; i += 1) {
+    const weekStart = windowFromTs + i * WEEK_MS;
+    if (completedTaskByWeekStart.has(weekStart)) {
+      completedWeeks += 1;
+    } else {
+      missingWeekStarts.push(weekStart);
+    }
+  }
+  const missingWeeks = missingWeekStarts.length;
+  const ready = selectedWindowFromTs !== null;
+  const missingForOutput = ready ? [] : missingWeekStarts;
+  const selectedFromTs =
+    selectedWindowFromTs !== null ? selectedWindowFromTs : windowFromTs;
+  const selectedToTs = selectedFromTs + requiredWeeks * WEEK_MS;
+
   return {
-    ready: missingWeeks === 0,
+    ready,
     requiredWeeks,
     completedWeeks,
     missingWeeks,
-    windowFromTs,
-    windowToTs,
+    missingWeekStarts: missingForOutput,
+    windowFromTs: selectedFromTs,
+    windowToTs: selectedToTs,
     readyTasks,
   };
 }
@@ -598,6 +759,98 @@ export function buildBestEligibleTuneDeploymentIdSet(params: {
   }
 
   return winnerIds;
+}
+
+export function buildGlobalSymbolRankedDeploymentIdSet(params: {
+  deployments: Array<
+    Pick<
+      ScalpDeploymentRegistryEntry,
+      | "deploymentId"
+      | "symbol"
+      | "strategyId"
+      | "tuneId"
+      | "promotionGate"
+      | "enabled"
+    >
+  >;
+  candidates: ScalpPromotionForwardValidationCandidate[];
+  maxSymbols: number;
+  maxPerSymbol: number;
+  maxDeployments: number;
+}): Set<string> {
+  const maxSymbols = Math.max(1, toPositiveInt(params.maxSymbols, 9999));
+  const maxPerSymbol = Math.max(1, toPositiveInt(params.maxPerSymbol, 1));
+  const maxDeployments = Math.max(1, toPositiveInt(params.maxDeployments, 9999));
+
+  const candidateByKey = new Map(
+    params.candidates.map((row) => [keyOf(row.symbol, row.strategyId, row.tuneId), row]),
+  );
+  const bySymbol = new Map<
+    string,
+    Array<{
+      deploymentId: string;
+      candidate: ScalpPromotionForwardValidationCandidate;
+    }>
+  >();
+
+  for (const deployment of params.deployments) {
+    if (!deployment.promotionGate?.eligible) continue;
+    const candidate = candidateByKey.get(
+      keyOf(deployment.symbol, deployment.strategyId, deployment.tuneId),
+    );
+    if (!candidate) continue;
+    const symbol = String(deployment.symbol || "").trim().toUpperCase();
+    if (!symbol) continue;
+    if (!bySymbol.has(symbol)) bySymbol.set(symbol, []);
+    bySymbol.get(symbol)!.push({
+      deploymentId: deployment.deploymentId,
+      candidate,
+    });
+  }
+
+  const symbolGroups = Array.from(bySymbol.entries())
+    .map(([symbol, rows]) => {
+      rows.sort((a, b) => compareCandidates(a.candidate, b.candidate));
+      return { symbol, rows, leader: rows[0] || null };
+    })
+    .filter((row) => row.leader !== null);
+
+  symbolGroups.sort((a, b) => {
+    if (!a.leader || !b.leader) return a.symbol.localeCompare(b.symbol);
+    const cmp = compareCandidates(a.leader.candidate, b.leader.candidate);
+    if (cmp !== 0) return cmp;
+    return a.symbol.localeCompare(b.symbol);
+  });
+
+  const selectedSymbols = symbolGroups.slice(0, Math.min(maxSymbols, symbolGroups.length));
+  const rankedDeployments: Array<{
+    deploymentId: string;
+    symbol: string;
+    candidate: ScalpPromotionForwardValidationCandidate;
+  }> = [];
+
+  for (const group of selectedSymbols) {
+    for (const row of group.rows.slice(0, Math.min(maxPerSymbol, group.rows.length))) {
+      rankedDeployments.push({
+        deploymentId: row.deploymentId,
+        symbol: group.symbol,
+        candidate: row.candidate,
+      });
+    }
+  }
+
+  rankedDeployments.sort((a, b) => {
+    const cmp = compareCandidates(a.candidate, b.candidate);
+    if (cmp !== 0) return cmp;
+    if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
+    return String(a.deploymentId || "").localeCompare(String(b.deploymentId || ""));
+  });
+
+  return new Set(
+    rankedDeployments
+      .slice(0, Math.min(maxDeployments, rankedDeployments.length))
+      .map((row) => row.deploymentId),
+  );
 }
 
 export function buildWinnerCandidateKeySet(

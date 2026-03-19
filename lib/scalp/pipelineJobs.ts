@@ -20,6 +20,7 @@ import {
 } from "./deploymentRegistry";
 import {
   buildBestEligibleTuneDeploymentIdSet,
+  buildGlobalSymbolRankedDeploymentIdSet,
   buildForwardValidationByCandidateFromTasks,
   evaluateFreshCompletedDeploymentWeeks,
   evaluateWeeklyRobustnessGate,
@@ -30,7 +31,10 @@ import { buildScalpResearchTuneVariants } from "./researchTuner";
 import { runScalpReplay } from "./replay/harness";
 import { buildScalpReplayRuntimeFromDeployment } from "./replay/runtimeConfig";
 import { isScalpPgConfigured, scalpPrisma } from "./pg/client";
-import { resolveScalpDeployment } from "./deployments";
+import {
+  resolveScalpDeployment,
+  resolveScalpDeploymentVenueFromId,
+} from "./deployments";
 import { listScalpStrategies } from "./strategies/registry";
 import {
   loadScalpSymbolDiscoveryPolicy,
@@ -184,6 +188,9 @@ async function resolvePipelineDeploymentVenue(
 ): Promise<ScalpVenue> {
   const symbol = normalizeSymbol(symbolRaw);
   if (!symbol) return "capital";
+  if (isScalpPipelineBitgetOnlyEnabled() && isBitgetPipelineSymbol(symbol)) {
+    return "bitget";
+  }
 
   const history = await loadScalpCandleHistory(symbol, "1m");
   if (history.record?.source === "bitget" || history.record?.source === "capital") {
@@ -245,6 +252,16 @@ function resolveRequiredSuccessiveWeeks(): number {
     Math.min(
       52,
       toPositiveInt(process.env.SCALP_PIPELINE_REQUIRED_SUCCESSIVE_WEEKS, 13),
+    ),
+  );
+}
+
+function resolvePromotionFreshWeeks(): number {
+  return Math.max(
+    12,
+    Math.min(
+      52,
+      toPositiveInt(envNumber("SCALP_PROMOTION_FRESH_WEEKS", 12), 12),
     ),
   );
 }
@@ -706,6 +723,26 @@ function resolveWeeklyPolicyDefaults(): SyncResearchWeeklyPolicy {
       1,
       toPositiveInt(envNumber("SCALP_WEEKLY_ROBUSTNESS_TOPK_PER_SYMBOL", 2), 2),
     ),
+    globalMaxSymbols: Math.max(
+      1,
+      Math.min(
+        200,
+        toPositiveInt(
+          envNumber("SCALP_WEEKLY_ROBUSTNESS_GLOBAL_MAX_SYMBOLS", 6),
+          6,
+        ),
+      ),
+    ),
+    globalMaxDeployments: Math.max(
+      1,
+      Math.min(
+        1_000,
+        toPositiveInt(
+          envNumber("SCALP_WEEKLY_ROBUSTNESS_GLOBAL_MAX_DEPLOYMENTS", 12),
+          12,
+        ),
+      ),
+    ),
     lookbackDays: Math.max(
       28,
       toPositiveInt(envNumber("SCALP_WEEKLY_ROBUSTNESS_LOOKBACK_DAYS", 91), 91),
@@ -726,19 +763,27 @@ function resolveWeeklyPolicyDefaults(): SyncResearchWeeklyPolicy {
       toPositiveInt(envNumber("SCALP_WEEKLY_ROBUSTNESS_MIN_SLICES", 8), 8),
     ),
     minProfitablePct: toBoundedPercent(
-      envNumber("SCALP_WEEKLY_ROBUSTNESS_MIN_PROFITABLE_PCT", 45),
-      45,
+      envNumber("SCALP_WEEKLY_ROBUSTNESS_MIN_PROFITABLE_PCT", 55),
+      55,
     ),
     minMedianExpectancyR: toFiniteNumber(
-      envNumber("SCALP_WEEKLY_ROBUSTNESS_MIN_MEDIAN_EXPECTANCY_R", 0),
-      0,
+      envNumber("SCALP_WEEKLY_ROBUSTNESS_MIN_MEDIAN_EXPECTANCY_R", 0.02),
+      0.02,
+    ),
+    minP25ExpectancyR: toFiniteNumber(
+      envNumber("SCALP_WEEKLY_ROBUSTNESS_MIN_P25_EXPECTANCY_R", -0.02),
+      -0.02,
+    ),
+    minWorstNetR: toFiniteNumber(
+      envNumber("SCALP_WEEKLY_ROBUSTNESS_MIN_WORST_NET_R", -1.5),
+      -1.5,
     ),
     maxTopWeekPnlConcentrationPct: toBoundedPercent(
       envNumber(
         "SCALP_WEEKLY_ROBUSTNESS_MAX_TOP_WEEK_PNL_CONCENTRATION_PCT",
-        80,
+        55,
       ),
-      80,
+      55,
     ),
   };
 }
@@ -751,6 +796,45 @@ function median(values: number[]): number {
   const left = sorted[mid - 1] || 0;
   const right = sorted[mid] || 0;
   return (left + right) / 2;
+}
+
+function mean(values: number[]): number {
+  if (!values.length) return 0;
+  return values.reduce((acc, row) => acc + row, 0) / values.length;
+}
+
+function quantile(values: number[], p: number): number {
+  if (!values.length) return 0;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const clampedP = Math.max(0, Math.min(1, p));
+  const index = (sorted.length - 1) * clampedP;
+  const low = Math.floor(index);
+  const high = Math.ceil(index);
+  const lowValue = sorted[low] || 0;
+  const highValue = sorted[high] || 0;
+  if (low === high) return lowValue;
+  const weight = index - low;
+  return lowValue + (highValue - lowValue) * weight;
+}
+
+function trimmedMean(values: number[], trimRatio: number): number {
+  if (!values.length) return 0;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const clampedTrim = Math.max(0, Math.min(0.49, trimRatio));
+  const trimCount = Math.floor(sorted.length * clampedTrim);
+  if (trimCount * 2 >= sorted.length) return mean(sorted);
+  const trimmed = sorted.slice(trimCount, sorted.length - trimCount);
+  return mean(trimmed.length ? trimmed : sorted);
+}
+
+function resolveWeeklySelectionTrimRatio(): number {
+  return Math.max(
+    0,
+    Math.min(
+      0.4,
+      toFiniteNumber(envNumber("SCALP_WEEKLY_SELECTION_TRIM_RATIO", 0.15), 0.15),
+    ),
+  );
 }
 
 function topPositiveNetConcentrationPct(values: number[]): number {
@@ -774,6 +858,11 @@ function computeWeeklyRobustnessFromTasks(params: {
   const totalNetR = netRows.reduce((acc, row) => acc + row, 0);
   const meanExpectancyR =
     expectancyRows.reduce((acc, row) => acc + row, 0) / slices;
+  const trimmedMeanExpectancyR = trimmedMean(
+    expectancyRows,
+    resolveWeeklySelectionTrimRatio(),
+  );
+  const p25ExpectancyR = quantile(expectancyRows, 0.25);
   const medianExpectancyR = median(expectancyRows);
   const worstNetR = netRows.reduce(
     (acc, row) => Math.min(acc, row),
@@ -788,6 +877,8 @@ function computeWeeklyRobustnessFromTasks(params: {
     profitableSlices,
     profitablePct: (profitableSlices / slices) * 100,
     meanExpectancyR,
+    trimmedMeanExpectancyR,
+    p25ExpectancyR,
     medianExpectancyR,
     worstNetR: Number.isFinite(worstNetR) ? worstNetR : 0,
     worstMaxDrawdownR,
@@ -827,6 +918,7 @@ export async function runDiscoverPipelineJob(
             includeBitgetMarketsApi: true,
             includeDeploymentSymbols: false,
             includeHistorySymbols: false,
+            requireHistoryPresence: false,
           }
         : undefined,
     });
@@ -861,7 +953,7 @@ export async function runDiscoverPipelineJob(
     const addedSymbols = selectedSymbols.filter(
       (symbol) => !existingActive.has(symbol),
     );
-    const removed = Array.from(existingActive).filter(
+    const wouldRemoveSymbols = Array.from(existingActive).filter(
       (symbol) => !selectedSet.has(symbol),
     );
 
@@ -924,30 +1016,6 @@ export async function runDiscoverPipelineJob(
             `);
     }
 
-    if (removed.length > 0) {
-      await db.$executeRaw(Prisma.sql`
-                UPDATE scalp_pipeline_symbols
-                SET
-                    active = FALSE,
-                    discover_status = 'succeeded',
-                    last_discovered_at = NOW(),
-                    updated_at = NOW()
-                WHERE symbol IN (${Prisma.join(removed)});
-            `);
-      await db.$executeRaw(Prisma.sql`
-                UPDATE scalp_deployments
-                SET
-                    in_universe = FALSE,
-                    retired_at = NOW(),
-                    enabled = FALSE,
-                    worker_dirty = FALSE,
-                    promotion_dirty = FALSE,
-                    updated_by = 'pipeline:discover',
-                    updated_at = NOW()
-                WHERE symbol IN (${Prisma.join(removed)});
-            `);
-    }
-
     if (selectedSymbols.length > 0) {
       await db.$executeRaw(Prisma.sql`
                 UPDATE scalp_deployments
@@ -969,7 +1037,8 @@ export async function runDiscoverPipelineJob(
       progress: {
         selected: selectedSymbols.length,
         added: addedSymbols.length,
-        removed: removed.length,
+        removed: 0,
+        wouldRemove: wouldRemoveSymbols.length,
         droppedNonBitget: droppedNonBitgetSymbols.length,
         pendingLoad: pendingAfter,
       },
@@ -988,7 +1057,8 @@ export async function runDiscoverPipelineJob(
         generatedAtIso: snapshot.generatedAtIso,
         selected: selectedSymbols.length,
         addedSymbols,
-        removedSymbols: removed,
+        removedSymbols: [],
+        wouldRemoveSymbols,
         droppedNonBitgetSymbols,
         candidatesEvaluated: snapshot.candidatesEvaluated,
       },
@@ -1631,12 +1701,14 @@ export async function runPreparePipelineJob(
                     FROM scalp_deployments
                     WHERE symbol = ${symbol};
                 `);
-        const existingByKey = new Map(
-          existingDeployments.map((dep) => [
-            `${dep.strategyId}::${dep.tuneId}`,
-            dep.deploymentId,
-          ]),
-        );
+        const existingByKey = new Map<string, string>();
+        for (const dep of existingDeployments) {
+          const key = `${dep.strategyId}::${dep.tuneId}`;
+          if (existingByKey.has(key)) continue;
+          const depVenue = resolveScalpDeploymentVenueFromId(dep.deploymentId);
+          if (depVenue !== symbolVenue) continue;
+          existingByKey.set(key, dep.deploymentId);
+        }
         const preparedIds: string[] = [];
 
         for (const strategyId of selectedStrategies) {
@@ -1832,7 +1904,7 @@ async function claimWorkerRows(
             FROM scalp_deployment_weekly_metrics
             WHERE status IN ('pending', 'retry_wait')
               AND next_run_at <= NOW()
-            ORDER BY next_run_at ASC, week_start ASC, id ASC
+            ORDER BY next_run_at ASC, week_start DESC, id ASC
             FOR UPDATE SKIP LOCKED
             LIMIT ${limit}
         )
@@ -2123,7 +2195,7 @@ export async function runPromotionPipelineJob(
     );
     const policy = resolveWeeklyPolicyDefaults();
     const nowMs = Date.now();
-    const requiredWeeks = resolveRequiredSuccessiveWeeks();
+    const requiredWeeks = resolvePromotionFreshWeeks();
     const windowToTs = startOfWeekMondayUtc(nowMs);
     const windowFromTs = windowToTs - policy.lookbackDays * ONE_DAY_MS;
 
@@ -2293,6 +2365,16 @@ export async function runPromotionPipelineJob(
       string,
       ReturnType<typeof evaluateFreshCompletedDeploymentWeeks>
     >();
+    const gapSymbols = new Set<string>();
+    const gapWindowsByDeploymentId = new Map<
+      string,
+      {
+        windowFromTs: number;
+        windowToTs: number;
+        missingWeekStarts: number[];
+        missingWeeks: number;
+      }
+    >();
     for (const deployment of consideredDeployments) {
       const deploymentTasks =
         tasksByDeploymentId.get(deployment.deploymentId) || [];
@@ -2306,7 +2388,68 @@ export async function runPromotionPipelineJob(
         for (const task of freshness.readyTasks) {
           freshReadyTasks.push(task);
         }
+      } else if (freshness.missingWeeks > 0) {
+        gapSymbols.add(deployment.symbol);
+        gapWindowsByDeploymentId.set(deployment.deploymentId, {
+          windowFromTs: freshness.windowFromTs,
+          windowToTs: freshness.windowToTs,
+          missingWeekStarts: freshness.missingWeekStarts || [],
+          missingWeeks: freshness.missingWeeks,
+        });
       }
+    }
+
+    let nudgedLoadSymbols = 0;
+    let nudgedWorkerRows = 0;
+    if (gapSymbols.size > 0) {
+      nudgedLoadSymbols = Number(
+        await db.$executeRaw(Prisma.sql`
+                UPDATE scalp_pipeline_symbols
+                SET
+                    load_status = CASE
+                        WHEN load_status = 'running' THEN load_status
+                        ELSE 'pending'
+                    END,
+                    load_next_run_at = CASE
+                        WHEN load_status = 'running' THEN load_next_run_at
+                        ELSE NOW()
+                    END,
+                    load_error = CASE
+                        WHEN load_status = 'running' THEN load_error
+                        ELSE NULL
+                    END,
+                    updated_at = NOW()
+                WHERE active = TRUE
+                  AND symbol IN (${Prisma.join(Array.from(gapSymbols))});
+            `),
+      );
+    }
+    if (gapWindowsByDeploymentId.size > 0) {
+      for (const [deploymentId, gapWindow] of gapWindowsByDeploymentId) {
+        nudgedWorkerRows += Number(
+          await db.$executeRaw(Prisma.sql`
+                    UPDATE scalp_deployment_weekly_metrics
+                    SET
+                        status = 'pending',
+                        next_run_at = NOW(),
+                        error_code = NULL,
+                        error_message = NULL,
+                        updated_at = NOW()
+                    WHERE deployment_id = ${deploymentId}
+                      AND week_start >= ${new Date(gapWindow.windowFromTs)}
+                      AND week_start < ${new Date(gapWindow.windowToTs)}
+                      AND status IN ('pending', 'retry_wait', 'failed');
+                `),
+        );
+      }
+      await db.$executeRaw(Prisma.sql`
+                UPDATE scalp_deployments
+                SET
+                    worker_dirty = TRUE,
+                    updated_by = 'pipeline:promotion',
+                    updated_at = NOW()
+                WHERE deployment_id IN (${Prisma.join(Array.from(gapWindowsByDeploymentId.keys()))});
+            `);
     }
 
     const candidates = buildForwardValidationByCandidateFromTasks({
@@ -2355,6 +2498,10 @@ export async function runPromotionPipelineJob(
         weeklyMetrics?.profitablePct ?? null;
       candidate.forwardValidation.weeklyMeanExpectancyR =
         weeklyMetrics?.meanExpectancyR ?? null;
+      candidate.forwardValidation.weeklyTrimmedMeanExpectancyR =
+        weeklyMetrics?.trimmedMeanExpectancyR ?? null;
+      candidate.forwardValidation.weeklyP25ExpectancyR =
+        weeklyMetrics?.p25ExpectancyR ?? null;
       candidate.forwardValidation.weeklyMedianExpectancyR =
         weeklyMetrics?.medianExpectancyR ?? null;
       candidate.forwardValidation.weeklyWorstNetR =
@@ -2369,6 +2516,16 @@ export async function runPromotionPipelineJob(
         const key = `${deployment.symbol}::${deployment.strategyId}::${deployment.tuneId}`;
         const candidate = candidateByKey.get(key) || null;
         const freshness = freshnessByDeploymentId.get(deployment.deploymentId);
+        const freshnessState = freshness
+          ? {
+              requiredWeeks: freshness.requiredWeeks,
+              completedWeeks: freshness.completedWeeks,
+              missingWeeks: freshness.missingWeeks,
+              windowFromTs: freshness.windowFromTs,
+              windowToTs: freshness.windowToTs,
+              missingWeekStarts: freshness.missingWeekStarts || [],
+            }
+          : null;
         const weeklyFailReason = weeklyGateReasonByKey.get(key) || null;
         const eligible = Boolean(
           candidate && freshness?.ready && !weeklyFailReason,
@@ -2397,21 +2554,45 @@ export async function runPromotionPipelineJob(
                 inUniverseByDeploymentId.get(deployment.deploymentId)
                   ?.promotionGate || null,
               )?.thresholds as any) || null,
+            freshness: freshnessState,
           } as ScalpDeploymentPromotionGate,
         };
       },
     );
 
-    const winnerIds = buildBestEligibleTuneDeploymentIdSet({
+    const strategyWinnerIds = buildBestEligibleTuneDeploymentIdSet({
       deployments: tempDeploymentsForWinners,
       candidates,
     });
+    const strategyWinnerDeployments = tempDeploymentsForWinners.filter((row) =>
+      strategyWinnerIds.has(row.deploymentId),
+    );
+    const globalWinnerIds = buildGlobalSymbolRankedDeploymentIdSet({
+      deployments: strategyWinnerDeployments,
+      candidates,
+      maxSymbols: policy.globalMaxSymbols,
+      maxPerSymbol: policy.topKPerSymbol,
+      maxDeployments: policy.globalMaxDeployments,
+    });
+    const winnerIds = policy.requireWinnerShortlist
+      ? globalWinnerIds
+      : strategyWinnerIds;
 
     const updates = consideredDeployments.map(
       (deployment): ScalpDeploymentRegistryEntry => {
         const key = `${deployment.symbol}::${deployment.strategyId}::${deployment.tuneId}`;
         const candidate = candidateByKey.get(key) || null;
         const freshness = freshnessByDeploymentId.get(deployment.deploymentId);
+        const freshnessState = freshness
+          ? {
+              requiredWeeks: freshness.requiredWeeks,
+              completedWeeks: freshness.completedWeeks,
+              missingWeeks: freshness.missingWeeks,
+              windowFromTs: freshness.windowFromTs,
+              windowToTs: freshness.windowToTs,
+              missingWeekStarts: freshness.missingWeekStarts || [],
+            }
+          : null;
         const weeklyFailReason = weeklyGateReasonByKey.get(key) || null;
         const eligible = Boolean(
           candidate && freshness?.ready && !weeklyFailReason,
@@ -2429,6 +2610,7 @@ export async function runPromotionPipelineJob(
           evaluatedAtMs: nowMs,
           forwardValidation: candidate?.forwardValidation || null,
           thresholds: deployment.promotionGate?.thresholds || null,
+          freshness: freshnessState,
         };
         const shouldEnable = eligible && winnerIds.has(deployment.deploymentId);
         return {
@@ -2478,7 +2660,10 @@ export async function runPromotionPipelineJob(
         processedDirtyDeployments: dirtyRows.length,
         consideredDeployments: consideredDeployments.length,
         candidateCount: candidates.length,
+        strategyWinnerCount: strategyWinnerIds.size,
         winnerCount: winnerIds.size,
+        nudgedLoadSymbols,
+        nudgedWorkerRows,
         pendingAfter,
       },
     });
@@ -2490,14 +2675,17 @@ export async function runPromotionPipelineJob(
       retried: 0,
       failed: 0,
       pendingAfter,
-      downstreamRequested: false,
+      downstreamRequested: nudgedLoadSymbols > 0 || nudgedWorkerRows > 0,
       progressLabel: `updated ${updates.length}`,
       details: {
         policy,
         dirtyDeployments: dirtyRows.length,
         consideredDeployments: consideredDeployments.length,
         candidateCount: candidates.length,
+        strategyWinnerCount: strategyWinnerIds.size,
         winnerCount: winnerIds.size,
+        nudgedLoadSymbols,
+        nudgedWorkerRows,
       },
     };
   });
