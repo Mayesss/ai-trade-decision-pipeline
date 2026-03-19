@@ -1,403 +1,482 @@
 import Head from 'next/head';
+import Script from 'next/script';
+import type { LucideIcon } from 'lucide-react';
+import {
+  Activity,
+  AlarmClockCheck,
+  ArrowUpRight,
+  Bot,
+  BrainCircuit,
+  CandlestickChart,
+  CheckCircle2,
+  Gauge,
+  Globe2,
+  PauseCircle,
+  Radar,
+  ShieldAlert,
+  ShieldCheck,
+  TimerReset,
+  TriangleAlert,
+} from 'lucide-react';
+import { useId } from 'react';
 
-type CronRow = {
+type Tone = 'positive' | 'warning' | 'critical' | 'neutral';
+type StepState = 'ok' | 'watch' | 'blocked';
+
+type PulseCard = {
   id: string;
-  cadence: string;
-  role: string;
-  status: 'healthy' | 'lagging' | 'blocked';
-  sla: string;
-  lastRun: string;
-  p95: string;
+  label: string;
+  value: string;
+  delta: string;
+  tone: Tone;
+  icon: LucideIcon;
+  spark: number[];
 };
 
-type DeploymentRow = {
-  deploymentId: string;
+type PipelineStep = {
+  id: string;
+  label: string;
+  state: StepState;
+  icon: LucideIcon;
+};
+
+type SymbolTile = {
   symbol: string;
   strategy: string;
-  tune: string;
-  promotionEligible: boolean;
-  forwardExp: number;
-  profitableWindowsPct: number;
-  maxDdR: number;
-  guardrail: string;
+  status: StepState;
+  icon: LucideIcon;
+  pnlSpark: number[];
+  mix: number[];
 };
 
-const pipelineCards = [
+const pulseCards: PulseCard[] = [
   {
-    label: 'Pipeline Progress',
-    value: '76%',
-    detail: '184 / 240 tasks complete',
-    tone: 'sky',
+    id: 'ops-health',
+    label: 'Ops Health',
+    value: 'Stable',
+    delta: '+3 lanes',
+    tone: 'positive',
+    icon: ShieldCheck,
+    spark: [9, 12, 13, 15, 14, 16, 18, 17, 19, 21, 20, 22],
   },
   {
-    label: '2W Forward Expectancy',
-    value: '-0.27 R',
-    detail: 'Gate floor >= 0.00 R',
-    tone: 'rose',
+    id: 'forward',
+    label: 'Forward Edge',
+    value: 'Thin',
+    delta: '-2 lanes',
+    tone: 'warning',
+    icon: Gauge,
+    spark: [14, 13, 13, 12, 12, 11, 10, 9, 10, 9, 8, 8],
   },
   {
-    label: '4W Forward Expectancy',
-    value: '-0.19 R',
-    detail: 'Selection was +0.74 R',
-    tone: 'amber',
+    id: 'guardrail',
+    label: 'Guardrail',
+    value: 'Armed',
+    delta: '2 pauses',
+    tone: 'neutral',
+    icon: ShieldAlert,
+    spark: [4, 5, 4, 4, 6, 5, 5, 4, 3, 3, 4, 3],
   },
   {
-    label: 'Promotion Eligible',
-    value: '2 / 11',
-    detail: 'Strict forward gate applied',
-    tone: 'emerald',
-  },
-];
-
-const cronRows: CronRow[] = [
-  {
-    id: 'scalp_discover_symbols',
-    cadence: 'Daily',
-    role: 'Freeze universe + emit chunk manifest',
-    status: 'healthy',
-    sla: '< 20s',
-    lastRun: '06:00',
-    p95: '7.3s',
-  },
-  {
-    id: 'scalp_worker',
-    cadence: 'Every 2m',
-    role: 'Claim and run one replay chunk',
-    status: 'healthy',
-    sla: '< 500s',
-    lastRun: '08:16',
-    p95: '332s',
-  },
-  {
-    id: 'scalp_prepare',
-    cadence: 'Every 10m',
-    role: 'Compute candidate summary + robustness labels',
-    status: 'lagging',
-    sla: '< 45s',
-    lastRun: '08:10',
-    p95: '53s',
-  },
-  {
-    id: 'scalp_promotion_gate_apply',
-    cadence: 'Daily',
-    role: 'Set promotionEligible + forwardValidation',
-    status: 'healthy',
-    sla: '< 30s',
-    lastRun: '06:11',
-    p95: '11.5s',
-  },
-  {
-    id: 'scalp_execute_deployments',
-    cadence: 'Every 1m',
-    role: 'Run enabled + gate-passed deployments only',
-    status: 'healthy',
-    sla: '< 60s',
-    lastRun: '08:16',
-    p95: '13.2s',
-  },
-  {
-    id: 'scalp_live_guardrail_monitor',
-    cadence: 'Every 10m',
-    role: 'Pause hard-breach deployments',
-    status: 'healthy',
-    sla: '< 30s',
-    lastRun: '08:10',
-    p95: '9.2s',
-  },
-  {
-    id: 'scalp_housekeeping',
-    cadence: 'Hourly',
-    role: 'Prune stale locks/jobs + compact lists',
-    status: 'healthy',
-    sla: '< 30s',
-    lastRun: '08:00',
-    p95: '5.8s',
+    id: 'latency',
+    label: 'Worker Latency',
+    value: 'Watch',
+    delta: '+7s',
+    tone: 'critical',
+    icon: TimerReset,
+    spark: [9, 8, 8, 9, 10, 10, 11, 12, 11, 13, 14, 15],
   },
 ];
 
-const deploymentRows: DeploymentRow[] = [
+const pipelineSteps: PipelineStep[] = [
+  { id: 'discover', label: 'Discover', state: 'ok', icon: Radar },
+  { id: 'load', label: 'Load', state: 'ok', icon: Globe2 },
+  { id: 'prepare', label: 'Prepare', state: 'watch', icon: BrainCircuit },
+  { id: 'worker', label: 'Worker', state: 'ok', icon: Bot },
+  { id: 'promote', label: 'Promote', state: 'watch', icon: ArrowUpRight },
+  { id: 'execute', label: 'Execute', state: 'ok', icon: CandlestickChart },
+  { id: 'monitor', label: 'Monitor', state: 'ok', icon: Activity },
+  { id: 'pause', label: 'Panic Stop', state: 'blocked', icon: PauseCircle },
+];
+
+const symbolTiles: SymbolTile[] = [
   {
-    deploymentId: 'btcusdt_cbp_dd8',
     symbol: 'BTCUSDT',
-    strategy: 'compression_breakout_pullback_m15_m3',
-    tune: 'dd8_e2_p8_tr1.5_ts18_sw0.20',
-    promotionEligible: false,
-    forwardExp: -0.24,
-    profitableWindowsPct: 33,
-    maxDdR: 5.7,
-    guardrail: 'expectancy drift',
+    strategy: 'compression_breakout_pullback',
+    status: 'watch',
+    icon: CandlestickChart,
+    pnlSpark: [8, 9, 7, 10, 11, 10, 9, 8, 6, 5, 4, 5, 4, 3],
+    mix: [32, 28, 21, 19],
   },
   {
-    deploymentId: 'btcusdt_guarded_pf',
-    symbol: 'BTCUSDT',
-    strategy: 'regime_pullback_m15_m3',
-    tune: 'guarded_high_pf_default',
-    promotionEligible: false,
-    forwardExp: -0.18,
-    profitableWindowsPct: 39,
-    maxDdR: 4.9,
-    guardrail: 'forward pct low',
-  },
-  {
-    deploymentId: 'ethusdt_guarded_base',
     symbol: 'ETHUSDT',
-    strategy: 'regime_pullback_m15_m3',
-    tune: 'default',
-    promotionEligible: true,
-    forwardExp: 0.05,
-    profitableWindowsPct: 58,
-    maxDdR: 3.1,
-    guardrail: 'none',
+    strategy: 'regime_pullback',
+    status: 'ok',
+    icon: CheckCircle2,
+    pnlSpark: [4, 5, 6, 5, 6, 7, 9, 8, 10, 11, 12, 11, 13, 14],
+    mix: [41, 24, 18, 17],
   },
   {
-    deploymentId: 'xauusd_guarded_lowdd',
     symbol: 'XAUUSD',
-    strategy: 'regime_pullback_m15_m3',
-    tune: 'xauusd_low_dd',
-    promotionEligible: true,
-    forwardExp: 0.08,
-    profitableWindowsPct: 62,
-    maxDdR: 2.6,
-    guardrail: 'none',
+    strategy: 'guarded_low_dd',
+    status: 'ok',
+    icon: ShieldCheck,
+    pnlSpark: [6, 6, 7, 8, 8, 7, 8, 9, 9, 10, 11, 10, 11, 12],
+    mix: [35, 29, 20, 16],
+  },
+  {
+    symbol: 'EURUSD',
+    strategy: 'trend_reacceleration',
+    status: 'blocked',
+    icon: TriangleAlert,
+    pnlSpark: [9, 8, 8, 7, 7, 6, 5, 5, 4, 4, 3, 3, 2, 2],
+    mix: [23, 21, 30, 26],
   },
 ];
 
-const blockedHoursRows = [
-  { variant: 'none', windowsBest: 8, expectancy: -0.12, pnlR: -3.8 },
-  { variant: '[10,11]', windowsBest: 4, expectancy: -0.09, pnlR: -2.4 },
-  { variant: '[9,10]', windowsBest: 2, expectancy: -0.15, pnlR: -4.1 },
-  { variant: '[11,12]', windowsBest: 3, expectancy: -0.13, pnlR: -3.2 },
-  { variant: '[10]', windowsBest: 1, expectancy: -0.14, pnlR: -3.7 },
-  { variant: '[11]', windowsBest: 0, expectancy: -0.19, pnlR: -5.5 },
+const sessionRows = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const sessionBlocks = ['00', '03', '06', '09', '12', '15', '18', '21'];
+const sessionHeat: number[][] = [
+  [0.2, 0.24, 0.28, 0.51, 0.68, 0.54, 0.35, 0.21],
+  [0.18, 0.22, 0.35, 0.57, 0.74, 0.49, 0.32, 0.19],
+  [0.17, 0.23, 0.31, 0.53, 0.72, 0.56, 0.31, 0.2],
+  [0.14, 0.2, 0.27, 0.47, 0.7, 0.58, 0.29, 0.17],
+  [0.12, 0.16, 0.24, 0.39, 0.62, 0.52, 0.26, 0.15],
+  [0.08, 0.11, 0.15, 0.22, 0.3, 0.24, 0.14, 0.1],
+  [0.07, 0.1, 0.14, 0.21, 0.28, 0.23, 0.13, 0.08],
 ];
 
-const stressRows = [
-  { scenario: 'baseline', netR: -1.8, expectancy: -0.09, pf: 0.94, dd: 4.9 },
-  { scenario: 'slippage x2', netR: -2.0, expectancy: -0.10, pf: 0.92, dd: 5.1 },
-  { scenario: 'spread +25%', netR: -2.4, expectancy: -0.12, pf: 0.89, dd: 5.4 },
-  { scenario: 'spread +50%', netR: -2.9, expectancy: -0.14, pf: 0.86, dd: 5.8 },
-  { scenario: 'x2 slip +50% spread', netR: -3.5, expectancy: -0.17, pf: 0.81, dd: 6.3 },
+const guardrailSlices = [
+  { id: 'risk', label: 'Risk', pct: 36, tone: 'positive' as Tone },
+  { id: 'latency', label: 'Latency', pct: 19, tone: 'warning' as Tone },
+  { id: 'fill', label: 'Fill Drift', pct: 26, tone: 'critical' as Tone },
+  { id: 'sessions', label: 'Session Drift', pct: 19, tone: 'neutral' as Tone },
 ];
 
-function toneClasses(tone: string): string {
-  if (tone === 'rose') return 'border-rose-300/60 bg-rose-200/20 text-rose-100';
-  if (tone === 'amber') return 'border-amber-300/60 bg-amber-200/20 text-amber-100';
-  if (tone === 'emerald') return 'border-emerald-300/60 bg-emerald-200/20 text-emerald-100';
-  return 'border-sky-300/60 bg-sky-200/20 text-sky-100';
+function toneSwatch(tone: Tone): string {
+  if (tone === 'positive') return 'from-emerald-400 to-teal-300';
+  if (tone === 'warning') return 'from-amber-300 to-orange-300';
+  if (tone === 'critical') return 'from-rose-400 to-pink-400';
+  return 'from-sky-400 to-cyan-300';
 }
 
-function statusClasses(status: CronRow['status']): string {
-  if (status === 'healthy') return 'bg-emerald-300/20 text-emerald-100 border-emerald-300/50';
-  if (status === 'lagging') return 'bg-amber-300/20 text-amber-100 border-amber-300/50';
-  return 'bg-rose-300/20 text-rose-100 border-rose-300/50';
+function toneText(tone: Tone): string {
+  if (tone === 'positive') return 'text-emerald-100';
+  if (tone === 'warning') return 'text-amber-100';
+  if (tone === 'critical') return 'text-rose-100';
+  return 'text-sky-100';
+}
+
+function stepBadge(state: StepState): string {
+  if (state === 'ok') return 'border-emerald-300/40 bg-emerald-300/20 text-emerald-100';
+  if (state === 'watch') return 'border-amber-300/40 bg-amber-300/20 text-amber-100';
+  return 'border-rose-300/45 bg-rose-300/20 text-rose-100';
+}
+
+function Sparkline({
+  points,
+  tone,
+}: {
+  points: number[];
+  tone: Tone;
+}) {
+  const gradientId = useId().replace(/:/g, '');
+  const width = 176;
+  const height = 58;
+  const min = Math.min(...points);
+  const max = Math.max(...points);
+  const range = Math.max(1, max - min);
+
+  const coords = points.map((value, index) => {
+    const x = (index / Math.max(1, points.length - 1)) * width;
+    const y = height - ((value - min) / range) * height;
+    return { x, y };
+  });
+
+  const line = coords.map((c) => `${c.x.toFixed(2)},${c.y.toFixed(2)}`).join(' ');
+  const area = `${line} ${width},${height} 0,${height}`;
+  const stroke =
+    tone === 'positive'
+      ? '#34d399'
+      : tone === 'warning'
+        ? '#fbbf24'
+        : tone === 'critical'
+          ? '#fb7185'
+          : '#38bdf8';
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="h-14 w-full">
+      <defs>
+        <linearGradient id={`fill-${tone}-${gradientId}`} x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stopColor={stroke} stopOpacity="0.42" />
+          <stop offset="100%" stopColor={stroke} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <polyline points={area} fill={`url(#fill-${tone}-${gradientId})`} />
+      <polyline points={line} fill="none" stroke={stroke} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function RingChart({ slices }: { slices: typeof guardrailSlices }) {
+  const size = 190;
+  const stroke = 26;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  let progress = 0;
+
+  return (
+    <svg viewBox={`0 0 ${size} ${size}`} className="h-48 w-48">
+      <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="#112236" strokeWidth={stroke} />
+      {slices.map((slice) => {
+        const ratio = slice.pct / 100;
+        const dash = circumference * ratio;
+        const gap = circumference - dash;
+        const rotation = (progress / 100) * 360 - 90;
+        progress += slice.pct;
+        const color =
+          slice.tone === 'positive'
+            ? '#34d399'
+            : slice.tone === 'warning'
+              ? '#fbbf24'
+              : slice.tone === 'critical'
+                ? '#fb7185'
+                : '#38bdf8';
+
+        return (
+          <circle
+            key={slice.id}
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            stroke={color}
+            strokeWidth={stroke}
+            strokeDasharray={`${dash} ${gap}`}
+            transform={`rotate(${rotation} ${size / 2} ${size / 2})`}
+            strokeLinecap="round"
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
+function MixBars({ values }: { values: number[] }) {
+  return (
+    <div className="flex h-2.5 overflow-hidden rounded-full bg-slate-800">
+      {values.map((v, idx) => (
+        <span
+          key={`${idx}-${v}`}
+          style={{ width: `${v}%` }}
+          className={
+            idx === 0
+              ? 'bg-emerald-400'
+              : idx === 1
+                ? 'bg-sky-400'
+                : idx === 2
+                  ? 'bg-amber-300'
+                  : 'bg-rose-400'
+          }
+        />
+      ))}
+    </div>
+  );
 }
 
 export default function ScalpUiRedesignPage() {
   return (
     <>
       <Head>
-        <title>Scalp Ops Console Redesign</title>
+        <title>Scalp UI Compact Redesign</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
         <link
-          href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
           rel="stylesheet"
         />
       </Head>
+      <Script src="https://mcp.figma.com/mcp/html-to-design/capture.js" strategy="afterInteractive" />
 
-      <main className="min-h-screen bg-[#08121a] text-slate-100">
-        <div className="mx-auto max-w-[1500px] px-4 py-6 sm:px-6 lg:px-8">
-          <div className="relative overflow-hidden rounded-3xl border border-cyan-300/25 bg-[radial-gradient(circle_at_20%_0%,rgba(59,130,246,0.35),transparent_50%),radial-gradient(circle_at_80%_20%,rgba(16,185,129,0.2),transparent_45%),linear-gradient(140deg,#0b1722,#0f2533_40%,#08131d)] p-6">
-            <div className="absolute right-5 top-5 rounded-full border border-cyan-200/30 bg-cyan-100/10 px-3 py-1 text-xs font-medium tracking-wider text-cyan-100">
-              jobs async_20260308_0600
+      <main className="min-h-screen bg-[#060d14] text-slate-100">
+        <div className="mx-auto max-w-[1450px] px-4 py-6 sm:px-6 lg:px-8">
+          <section className="relative overflow-hidden rounded-[28px] border border-cyan-300/25 bg-[radial-gradient(circle_at_0%_10%,rgba(56,189,248,0.32),transparent_45%),radial-gradient(circle_at_100%_0%,rgba(16,185,129,0.2),transparent_40%),linear-gradient(145deg,#091421,#0d1d2e_45%,#071019)] p-5 sm:p-6">
+            <div className="absolute right-4 top-4 rounded-full border border-cyan-200/35 bg-cyan-200/10 px-3 py-1 text-[11px] text-cyan-100">
+              compact scalp cockpit
             </div>
-            <p className="text-xs uppercase tracking-[0.26em] text-cyan-200/80" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-              Scalp Deployment Ops
+            <p
+              className="text-[11px] uppercase tracking-[0.22em] text-cyan-100/80"
+              style={{ fontFamily: 'IBM Plex Mono, monospace' }}
+            >
+              Scalp Deployment
             </p>
-            <h1 className="mt-2 max-w-3xl text-3xl sm:text-4xl" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
-              Deploy only what passes forward evidence, not yesterday’s rank.
+            <h1 className="mt-2 max-w-3xl text-2xl sm:text-4xl" style={{ fontFamily: 'Sora, sans-serif' }}>
+              Visual-first control plane, less logs and raw tables.
             </h1>
-            <p className="mt-3 max-w-4xl text-sm text-slate-200/85">
-              New control plane aligned to async cron jobs, promotion gate outcomes, blocked-hour falsification, execution stress,
-              and live guardrail actions.
-            </p>
-            <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              {pipelineCards.map((card) => (
-                <article key={card.label} className={`rounded-2xl border p-4 shadow-sm ${toneClasses(card.tone)}`}>
-                  <p className="text-[11px] uppercase tracking-[0.18em] opacity-85" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-                    {card.label}
-                  </p>
-                  <p className="mt-2 text-2xl font-semibold" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
-                    {card.value}
-                  </p>
-                  <p className="mt-1 text-xs opacity-90">{card.detail}</p>
-                </article>
-              ))}
+            <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {pulseCards.map((card) => {
+                const Icon = card.icon;
+                return (
+                  <article key={card.id} className="rounded-2xl border border-white/10 bg-slate-900/55 p-3">
+                    <div className="flex items-center justify-between">
+                      <div className={`inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br ${toneSwatch(card.tone)}`}>
+                        <Icon className="h-4 w-4 text-[#031018]" />
+                      </div>
+                      <span className={`text-[11px] ${toneText(card.tone)}`}>{card.delta}</span>
+                    </div>
+                    <p className="mt-3 text-xs text-slate-300">{card.label}</p>
+                    <p className="text-xl font-semibold" style={{ fontFamily: 'Sora, sans-serif' }}>
+                      {card.value}
+                    </p>
+                    <Sparkline points={card.spark} tone={card.tone} />
+                  </article>
+                );
+              })}
             </div>
-          </div>
+          </section>
 
-          <section className="mt-5">
-            <article className="rounded-3xl border border-slate-700/70 bg-[#0d1a26] p-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
-                  Cron Execution Pipeline
+          <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[1.3fr_1fr]">
+            <article className="rounded-3xl border border-slate-700/60 bg-[#0b1623] p-4 sm:p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-lg sm:text-xl" style={{ fontFamily: 'Sora, sans-serif' }}>
+                  Pipeline Flow
                 </h2>
-                <span className="rounded-full border border-sky-300/40 bg-sky-200/15 px-2 py-1 text-xs text-sky-100">
-                  timeout-safe chunks
-                </span>
+                <span className="rounded-full border border-sky-300/30 bg-sky-300/15 px-2.5 py-1 text-xs text-sky-100">8 active lanes</span>
               </div>
-              <div className="mt-4 overflow-x-auto">
-                <table className="w-full min-w-[760px] border-separate border-spacing-y-2 text-left text-sm">
-                  <thead className="text-[11px] uppercase tracking-[0.18em] text-slate-400" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-                    <tr>
-                      <th className="px-3 py-1">Cron</th>
-                      <th className="px-3 py-1">Cadence</th>
-                      <th className="px-3 py-1">Role</th>
-                      <th className="px-3 py-1">SLA</th>
-                      <th className="px-3 py-1">P95</th>
-                      <th className="px-3 py-1">Last</th>
-                      <th className="px-3 py-1">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {cronRows.map((row) => (
-                      <tr key={row.id} className="rounded-2xl bg-slate-900/65 text-slate-100">
-                        <td className="rounded-l-xl px-3 py-3 font-medium">{row.id}</td>
-                        <td className="px-3 py-3 text-slate-300">{row.cadence}</td>
-                        <td className="px-3 py-3 text-slate-200/90">{row.role}</td>
-                        <td className="px-3 py-3 text-slate-300">{row.sla}</td>
-                        <td className="px-3 py-3 text-slate-300">{row.p95}</td>
-                        <td className="px-3 py-3 text-slate-300">{row.lastRun}</td>
-                        <td className="rounded-r-xl px-3 py-3">
-                          <span className={`rounded-full border px-2 py-1 text-xs ${statusClasses(row.status)}`}>{row.status}</span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                {pipelineSteps.map((step) => {
+                  const Icon = step.icon;
+                  return (
+                    <div key={step.id} className="rounded-2xl border border-white/10 bg-slate-900/60 p-3">
+                      <div className="flex items-start justify-between">
+                        <div className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-700/80 bg-[#0b1320]">
+                          <Icon className="h-4 w-4 text-slate-100" />
+                        </div>
+                        <span className={`rounded-full border px-2 py-0.5 text-[10px] ${stepBadge(step.state)}`}>{step.state}</span>
+                      </div>
+                      <p className="mt-3 text-sm text-slate-200">{step.label}</p>
+                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+                        <div
+                          className={`h-full w-full ${
+                            step.state === 'ok'
+                              ? 'bg-emerald-400'
+                              : step.state === 'watch'
+                                ? 'bg-amber-300'
+                                : 'bg-rose-400'
+                          }`}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </article>
 
+            <article className="rounded-3xl border border-slate-700/60 bg-[#0b1623] p-4 sm:p-5">
+              <h2 className="text-lg sm:text-xl" style={{ fontFamily: 'Sora, sans-serif' }}>
+                Guardrail Mix
+              </h2>
+              <div className="mt-3 flex flex-col items-center gap-2">
+                <RingChart slices={guardrailSlices} />
+                <div className="grid w-full grid-cols-2 gap-2">
+                  {guardrailSlices.map((slice) => (
+                    <div key={slice.id} className="rounded-xl border border-white/10 bg-slate-900/60 px-3 py-2">
+                      <p className="text-xs text-slate-300">{slice.label}</p>
+                      <p className={`text-sm font-semibold ${toneText(slice.tone)}`}>{slice.pct}%</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </article>
           </section>
 
-          <section className="mt-5 rounded-3xl border border-slate-700/70 bg-[#0d1a26] p-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
-                Deployment Registry and Forward Validation
+          <section className="mt-5 rounded-3xl border border-slate-700/60 bg-[#0b1623] p-4 sm:p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-lg sm:text-xl" style={{ fontFamily: 'Sora, sans-serif' }}>
+                Symbol Pulse
               </h2>
-              <span className="rounded-full border border-cyan-300/40 bg-cyan-200/10 px-2 py-1 text-xs text-cyan-100">
-                source: data/scalp-deployments.json
+              <span className="rounded-full border border-emerald-300/35 bg-emerald-300/15 px-2.5 py-1 text-xs text-emerald-100">
+                graph-only view
               </span>
             </div>
-            <div className="mt-4 overflow-x-auto">
-              <table className="w-full min-w-[960px] border-separate border-spacing-y-2 text-left text-sm">
-                <thead className="text-[11px] uppercase tracking-[0.18em] text-slate-400" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-                  <tr>
-                    <th className="px-3 py-1">Deployment</th>
-                    <th className="px-3 py-1">Symbol</th>
-                    <th className="px-3 py-1">Strategy</th>
-                    <th className="px-3 py-1">Tune</th>
-                    <th className="px-3 py-1">Forward Exp</th>
-                    <th className="px-3 py-1">Profitable %</th>
-                    <th className="px-3 py-1">Max DD (R)</th>
-                    <th className="px-3 py-1">Guardrail</th>
-                    <th className="px-3 py-1">Promotion</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {deploymentRows.map((row) => (
-                    <tr key={row.deploymentId} className="bg-slate-900/65 text-slate-100">
-                      <td className="rounded-l-xl px-3 py-3 font-medium">{row.deploymentId}</td>
-                      <td className="px-3 py-3">{row.symbol}</td>
-                      <td className="px-3 py-3 text-slate-300">{row.strategy}</td>
-                      <td className="px-3 py-3 text-slate-300">{row.tune}</td>
-                      <td className={`px-3 py-3 ${row.forwardExp >= 0 ? 'text-emerald-200' : 'text-rose-200'}`}>
-                        {row.forwardExp.toFixed(2)}
-                      </td>
-                      <td className="px-3 py-3">{row.profitableWindowsPct}%</td>
-                      <td className="px-3 py-3">{row.maxDdR.toFixed(1)}</td>
-                      <td className="px-3 py-3 text-slate-300">{row.guardrail}</td>
-                      <td className="rounded-r-xl px-3 py-3">
-                        <span
-                          className={`rounded-full border px-2 py-1 text-xs ${
-                            row.promotionEligible
-                              ? 'border-emerald-300/40 bg-emerald-200/15 text-emerald-100'
-                              : 'border-rose-300/40 bg-rose-200/15 text-rose-100'
-                          }`}
-                        >
-                          {row.promotionEligible ? 'eligible' : 'blocked'}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-4">
+              {symbolTiles.map((tile) => {
+                const Icon = tile.icon;
+                return (
+                  <article key={tile.symbol} className="rounded-2xl border border-white/10 bg-slate-900/60 p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700/70 bg-[#09111c]">
+                          <Icon className="h-4 w-4 text-slate-100" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold" style={{ fontFamily: 'Sora, sans-serif' }}>
+                            {tile.symbol}
+                          </p>
+                          <p className="text-[11px] text-slate-400">{tile.strategy}</p>
+                        </div>
+                      </div>
+                      <span className={`rounded-full border px-2 py-0.5 text-[10px] ${stepBadge(tile.status)}`}>{tile.status}</span>
+                    </div>
+                    <div className="mt-3">
+                      <Sparkline
+                        points={tile.pnlSpark}
+                        tone={tile.status === 'ok' ? 'positive' : tile.status === 'watch' ? 'warning' : 'critical'}
+                      />
+                    </div>
+                    <div className="mt-2">
+                      <MixBars values={tile.mix} />
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           </section>
 
-          <section className="mt-5 grid grid-cols-1 gap-5 2xl:grid-cols-2">
-            <article className="rounded-3xl border border-slate-700/70 bg-[#0d1a26] p-4">
-              <h2 className="text-lg font-semibold text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
-                Blocked Berlin Hours Falsification
+          <section className="mt-5 rounded-3xl border border-slate-700/60 bg-[#0b1623] p-4 sm:p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-lg sm:text-xl" style={{ fontFamily: 'Sora, sans-serif' }}>
+                Session Heat
               </h2>
-              <p className="mt-1 text-xs text-slate-300">Result should hold across walk-forward windows, not just aggregate.</p>
-              <div className="mt-4 overflow-x-auto">
-                <table className="w-full min-w-[560px] border-separate border-spacing-y-2 text-left text-sm">
-                  <thead className="text-[11px] uppercase tracking-[0.18em] text-slate-400" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-                    <tr>
-                      <th className="px-3 py-1">Variant</th>
-                      <th className="px-3 py-1">Best windows</th>
-                      <th className="px-3 py-1">Expectancy</th>
-                      <th className="px-3 py-1">PnL (R)</th>
-                      <th className="px-3 py-1">Interpretation</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {blockedHoursRows.map((row) => (
-                      <tr key={row.variant} className="bg-slate-900/65">
-                        <td className="rounded-l-xl px-3 py-3">{row.variant}</td>
-                        <td className="px-3 py-3">{row.windowsBest}/18</td>
-                        <td className="px-3 py-3">{row.expectancy.toFixed(2)}</td>
-                        <td className="px-3 py-3">{row.pnlR.toFixed(1)}</td>
-                        <td className="rounded-r-xl px-3 py-3 text-slate-300">{row.variant === 'none' ? 'strong contender' : 'inconclusive'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </article>
+              <span className="rounded-full border border-slate-600 bg-slate-800/80 px-2.5 py-1 text-xs text-slate-300">UTC blocks</span>
+            </div>
 
-            <article className="rounded-3xl border border-slate-700/70 bg-[#0d1a26] p-4">
-              <h2 className="text-lg font-semibold text-slate-50" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
-                Execution Stress Ladder
-              </h2>
-              <p className="mt-1 text-xs text-slate-300">Monotonic deterioration should hold under harsher assumptions.</p>
-              <div className="mt-4 overflow-x-auto">
-                <table className="w-full min-w-[560px] border-separate border-spacing-y-2 text-left text-sm">
-                  <thead className="text-[11px] uppercase tracking-[0.18em] text-slate-400" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-                    <tr>
-                      <th className="px-3 py-1">Scenario</th>
-                      <th className="px-3 py-1">Net R</th>
-                      <th className="px-3 py-1">Expectancy</th>
-                      <th className="px-3 py-1">PF</th>
-                      <th className="px-3 py-1">Max DD</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {stressRows.map((row) => (
-                      <tr key={row.scenario} className="bg-slate-900/65">
-                        <td className="rounded-l-xl px-3 py-3">{row.scenario}</td>
-                        <td className="px-3 py-3">{row.netR.toFixed(1)}</td>
-                        <td className="px-3 py-3">{row.expectancy.toFixed(2)}</td>
-                        <td className="px-3 py-3">{row.pf.toFixed(2)}</td>
-                        <td className="rounded-r-xl px-3 py-3">{row.dd.toFixed(1)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+            <div className="overflow-x-auto">
+              <div className="min-w-[580px]">
+                <div className="mb-2 grid grid-cols-[74px_repeat(8,minmax(0,1fr))] gap-2">
+                  <div />
+                  {sessionBlocks.map((block) => (
+                    <p key={block} className="text-center text-[10px] uppercase tracking-[0.16em] text-slate-400">
+                      {block}
+                    </p>
+                  ))}
+                </div>
+                <div className="space-y-2">
+                  {sessionRows.map((day, rowIdx) => (
+                    <div key={day} className="grid grid-cols-[74px_repeat(8,minmax(0,1fr))] gap-2">
+                      <p className="pt-1 text-xs text-slate-400">{day}</p>
+                      {sessionHeat[rowIdx].map((intensity, colIdx) => (
+                        <span
+                          key={`${day}-${colIdx}`}
+                          className="h-7 rounded-lg border border-slate-800"
+                          style={{
+                            backgroundColor: `rgba(56, 189, 248, ${0.08 + intensity * 0.82})`,
+                            boxShadow: intensity > 0.56 ? '0 0 0 1px rgba(16,185,129,0.35) inset' : 'none',
+                          }}
+                        />
+                      ))}
+                    </div>
+                  ))}
+                </div>
               </div>
-            </article>
+            </div>
+          </section>
+
+          <section className="mt-5 flex items-center justify-end">
+            <p className="rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-[11px] text-slate-400">
+              icon + graph dominant layout for fast scan decisions
+            </p>
           </section>
         </div>
       </main>

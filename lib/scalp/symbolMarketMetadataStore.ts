@@ -51,6 +51,7 @@ function fromRow(
     scalingFactor: toNumberOrNull(row.scalingFactor),
     minDealSize: toNumberOrNull(row.minDealSize),
     sizeDecimals: toNumberOrNull(row.sizeDecimals),
+    maxLeverage: toNumberOrNull(row.maxLeverage),
     openingHours:
       row.openingHoursJson && typeof row.openingHoursJson === "object"
         ? (row.openingHoursJson as ScalpSymbolMarketMetadata["openingHours"])
@@ -80,6 +81,7 @@ export async function loadScalpSymbolMarketMetadata(
       scalingFactor: number | null;
       minDealSize: Prisma.Decimal | number | string | null;
       sizeDecimals: number | null;
+      maxLeverage: number | null;
       openingHoursJson: Record<string, unknown> | null;
       fetchedAtMs: bigint | number | null;
     }>
@@ -98,6 +100,7 @@ export async function loadScalpSymbolMarketMetadata(
         scaling_factor AS "scalingFactor",
         min_deal_size AS "minDealSize",
         size_decimals AS "sizeDecimals",
+        max_leverage AS "maxLeverage",
         opening_hours_json AS "openingHoursJson",
         (EXTRACT(EPOCH FROM fetched_at) * 1000)::bigint AS "fetchedAtMs"
       FROM scalp_symbol_market_metadata
@@ -133,6 +136,7 @@ export async function loadScalpSymbolMarketMetadataBulk(
       scalingFactor: number | null;
       minDealSize: Prisma.Decimal | number | string | null;
       sizeDecimals: number | null;
+      maxLeverage: number | null;
       openingHoursJson: Record<string, unknown> | null;
       fetchedAtMs: bigint | number | null;
     }>
@@ -151,6 +155,7 @@ export async function loadScalpSymbolMarketMetadataBulk(
         scaling_factor AS "scalingFactor",
         min_deal_size AS "minDealSize",
         size_decimals AS "sizeDecimals",
+        max_leverage AS "maxLeverage",
         opening_hours_json AS "openingHoursJson",
         (EXTRACT(EPOCH FROM fetched_at) * 1000)::bigint AS "fetchedAtMs"
       FROM scalp_symbol_market_metadata
@@ -194,6 +199,7 @@ export async function saveScalpSymbolMarketMetadataBulk(
       scaling_factor: row.scalingFactor,
       min_deal_size: row.minDealSize,
       size_decimals: row.sizeDecimals,
+      max_leverage: row.maxLeverage ?? null,
       opening_hours_json: row.openingHours
         ? JSON.stringify(row.openingHours)
         : null,
@@ -219,6 +225,7 @@ export async function saveScalpSymbolMarketMetadataBulk(
           CASE WHEN x.scaling_factor IS NULL THEN NULL ELSE x.scaling_factor::int END AS scaling_factor,
           CASE WHEN x.min_deal_size IS NULL THEN NULL ELSE x.min_deal_size::numeric END AS min_deal_size,
           CASE WHEN x.size_decimals IS NULL THEN NULL ELSE x.size_decimals::int END AS size_decimals,
+          CASE WHEN x.max_leverage IS NULL THEN NULL ELSE GREATEST(1, x.max_leverage::int) END AS max_leverage,
           CASE
             WHEN x.opening_hours_json IS NULL OR TRIM(x.opening_hours_json) = '' THEN NULL::jsonb
             ELSE x.opening_hours_json::jsonb
@@ -238,6 +245,7 @@ export async function saveScalpSymbolMarketMetadataBulk(
           scaling_factor int,
           min_deal_size numeric,
           size_decimals int,
+          max_leverage int,
           opening_hours_json text,
           fetched_at timestamptz
         )
@@ -256,6 +264,7 @@ export async function saveScalpSymbolMarketMetadataBulk(
         scaling_factor,
         min_deal_size,
         size_decimals,
+        max_leverage,
         opening_hours_json,
         fetched_at,
         updated_at
@@ -274,6 +283,7 @@ export async function saveScalpSymbolMarketMetadataBulk(
         scaling_factor,
         min_deal_size,
         size_decimals,
+        max_leverage,
         opening_hours_json,
         fetched_at,
         NOW()
@@ -292,6 +302,7 @@ export async function saveScalpSymbolMarketMetadataBulk(
         scaling_factor = EXCLUDED.scaling_factor,
         min_deal_size = EXCLUDED.min_deal_size,
         size_decimals = EXCLUDED.size_decimals,
+        max_leverage = EXCLUDED.max_leverage,
         opening_hours_json = EXCLUDED.opening_hours_json,
         fetched_at = EXCLUDED.fetched_at,
         updated_at = NOW();

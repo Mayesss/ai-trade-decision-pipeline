@@ -77,6 +77,29 @@ async function resolvePreferredVenue(
   if (!symbol || !isScalpPgConfigured()) return fallbackVenue;
   const db = scalpPrisma();
   try {
+    const historyRows = await db.$queryRaw<
+      Array<{ bitgetCount: bigint | number; capitalCount: bigint | number }>
+    >(Prisma.sql`
+        SELECT
+          COALESCE(SUM(CASE WHEN source = 'bitget' THEN 1 ELSE 0 END), 0)::bigint AS "bitgetCount",
+          COALESCE(SUM(CASE WHEN source = 'capital' THEN 1 ELSE 0 END), 0)::bigint AS "capitalCount"
+        FROM scalp_candle_history_weeks
+        WHERE symbol = ${symbol};
+      `);
+    const historyBitgetCount = Math.max(
+      0,
+      Number(historyRows[0]?.bitgetCount || 0),
+    );
+    const historyCapitalCount = Math.max(
+      0,
+      Number(historyRows[0]?.capitalCount || 0),
+    );
+    if (historyBitgetCount > 0 && historyCapitalCount === 0) return "bitget";
+    if (historyCapitalCount > 0 && historyBitgetCount === 0) return "capital";
+    if (historyCapitalCount > 0 && historyBitgetCount > 0) {
+      return historyBitgetCount >= historyCapitalCount ? "bitget" : "capital";
+    }
+
     const rows = await db.$queryRaw<
       Array<{ bitgetCount: bigint | number; capitalCount: bigint | number }>
     >(Prisma.sql`
@@ -110,6 +133,9 @@ async function fetchBitgetSymbolMarketMetadata(
   const volumePlace = Number.isFinite(toFinite((meta as any).volumePlace))
     ? Math.max(0, Math.floor(toFinite((meta as any).volumePlace)))
     : null;
+  const maxLeverageRaw = toPositive((meta as any).maxLever);
+  const maxLeverage =
+    maxLeverageRaw !== null ? Math.max(1, Math.floor(maxLeverageRaw)) : null;
   const tickSize = resolveBitgetTickSize(meta, pricePlace);
   const pipSize = tickSize ?? decimalPipSize(pricePlace);
   const instrumentType = String(
@@ -138,6 +164,7 @@ async function fetchBitgetSymbolMarketMetadata(
     scalingFactor: null,
     minDealSize: toPositive((meta as any).minTradeNum),
     sizeDecimals: volumePlace,
+    maxLeverage,
     fetchedAtMs: nowMs,
   });
 }

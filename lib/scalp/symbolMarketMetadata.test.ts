@@ -62,10 +62,12 @@ test("normalizeScalpSymbolMarketMetadata normalizes bitget crypto precision", ()
     pipSize: 0.0000001,
     tickSize: 0.000001,
     decimalPlacesFactor: 6,
+    maxLeverage: 50.9,
     fetchedAtMs: 1,
   });
   assert.equal(metadata.assetCategory, "crypto");
   assert.equal(metadata.pipSize, 0.000001);
+  assert.equal(metadata.maxLeverage, 50);
 });
 
 test("scalpAssetCategoryFromInstrumentType maps Capital categories", () => {

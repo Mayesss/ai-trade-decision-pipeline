@@ -182,6 +182,7 @@ model ScalpSymbolMarketMetadata {
   scalingFactor       Int?     @map("scaling_factor")
   minDealSize         Decimal? @map("min_deal_size") @db.Decimal(20, 10)
   sizeDecimals        Int?     @map("size_decimals")
+  maxLeverage         Int?     @map("max_leverage")
   openingHoursJson    Json?    @map("opening_hours_json") @db.JsonB
   fetchedAt           DateTime @map("fetched_at") @db.Timestamptz(3)
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(3)

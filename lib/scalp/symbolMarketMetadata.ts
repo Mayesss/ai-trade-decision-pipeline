@@ -37,6 +37,7 @@ export interface ScalpSymbolMarketMetadata {
   scalingFactor: number | null;
   minDealSize: number | null;
   sizeDecimals: number | null;
+  maxLeverage?: number | null;
   openingHours: ScalpOpeningHoursSchedule | null;
   fetchedAtMs: number;
 }
@@ -386,6 +387,9 @@ export function normalizeScalpSymbolMarketMetadata(
   const scalingFactor = toInteger(value.scalingFactor);
   const minDealSize = toPositiveNumber(value.minDealSize);
   const sizeDecimals = toInteger(value.sizeDecimals);
+  const maxLeverageRaw = toPositiveNumber(value.maxLeverage);
+  const maxLeverage =
+    maxLeverageRaw !== null ? Math.max(1, Math.floor(maxLeverageRaw)) : null;
   const openingHours = normalizeScalpOpeningHours(value.openingHours);
   const pipSizeCandidate = normalizeBitgetPipSize({
     source,
@@ -411,6 +415,7 @@ export function normalizeScalpSymbolMarketMetadata(
     scalingFactor,
     minDealSize,
     sizeDecimals,
+    maxLeverage,
     openingHours,
     fetchedAtMs: Math.max(
       0,

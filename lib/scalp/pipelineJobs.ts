@@ -40,7 +40,9 @@ import {
 } from "./symbolDiscovery";
 import { pipSizeForScalpSymbol } from "./marketData";
 import { ensureScalpSymbolMarketMetadata } from "./symbolMarketMetadataSync";
+import { loadScalpSymbolMarketMetadata } from "./symbolMarketMetadataStore";
 import type { ScalpCandle } from "./types";
+import type { ScalpVenue } from "./venue";
 
 const ONE_MINUTE_MS = 60_000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -175,6 +177,25 @@ function isBitgetPipelineSymbol(symbolRaw: string): boolean {
   if (productType === "usdc-futures") return symbol.endsWith("USDC");
   if (productType === "coin-futures") return symbol.endsWith("USD");
   return symbol.endsWith("USDT");
+}
+
+async function resolvePipelineDeploymentVenue(
+  symbolRaw: string,
+): Promise<ScalpVenue> {
+  const symbol = normalizeSymbol(symbolRaw);
+  if (!symbol) return "capital";
+
+  const history = await loadScalpCandleHistory(symbol, "1m");
+  if (history.record?.source === "bitget" || history.record?.source === "capital") {
+    return history.record.source;
+  }
+
+  const metadata = await loadScalpSymbolMarketMetadata(symbol);
+  if (metadata?.source === "bitget" || metadata?.source === "capital") {
+    return metadata.source;
+  }
+
+  return isBitgetPipelineSymbol(symbol) ? "bitget" : "capital";
 }
 
 function asJsonObject(value: unknown): Record<string, unknown> | null {
@@ -1595,6 +1616,27 @@ export async function runPreparePipelineJob(
           strategyIds.length > 0
             ? strategyIds
             : Array.from(strategies).slice(0, 1);
+        const symbolVenue = await resolvePipelineDeploymentVenue(symbol);
+        const existingDeployments = await db.$queryRaw<
+          Array<{
+            deploymentId: string;
+            strategyId: string;
+            tuneId: string;
+          }>
+        >(Prisma.sql`
+                    SELECT
+                        deployment_id AS "deploymentId",
+                        strategy_id AS "strategyId",
+                        tune_id AS "tuneId"
+                    FROM scalp_deployments
+                    WHERE symbol = ${symbol};
+                `);
+        const existingByKey = new Map(
+          existingDeployments.map((dep) => [
+            `${dep.strategyId}::${dep.tuneId}`,
+            dep.deploymentId,
+          ]),
+        );
         const preparedIds: string[] = [];
 
         for (const strategyId of selectedStrategies) {
@@ -1605,14 +1647,14 @@ export async function runPreparePipelineJob(
             maxVariantsPerStrategy: 4,
           }).slice(0, 4);
           const rows = variants.map((variant) => ({
-            deploymentId: bitgetOnly
-              ? resolveScalpDeployment({
-                  venue: "bitget",
-                  symbol,
-                  strategyId,
-                  tuneId: variant.tuneId,
-                }).deploymentId
-              : undefined,
+            deploymentId:
+              existingByKey.get(`${strategyId}::${variant.tuneId}`) ||
+              resolveScalpDeployment({
+                venue: symbolVenue,
+                symbol,
+                strategyId,
+                tuneId: variant.tuneId,
+              }).deploymentId,
             symbol,
             strategyId,
             tuneId: variant.tuneId,

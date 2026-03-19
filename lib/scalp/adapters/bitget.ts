@@ -274,6 +274,7 @@ async function loadContractMeta(symbolRaw: string): Promise<CachedContractMeta> 
     scalingFactor: null,
     minDealSize: toPositive(meta.minTradeNum),
     sizeDecimals: volumePlace,
+    maxLeverage: resolveSymbolBitgetMaxLeverage(meta),
     fetchedAtMs: nowMs,
   });
   const row: CachedContractMeta = { fetchedAtMs: nowMs, meta, metadata: normalized };
