@@ -86,6 +86,13 @@ export interface ScalpSymbolUniverseSnapshot {
     addedSymbols: string[];
     removedSymbols: string[];
     candidatesEvaluated: number;
+    evaluationWindow?: {
+        poolSize: number;
+        maxCandidates: number;
+        startOffset: number;
+        evaluatedCount: number;
+        nextOffset: number;
+    } | null;
     selectedRows: ScalpSymbolCandidateRow[];
     topRejectedRows: ScalpSymbolCandidateRow[];
     diagnostics?: {
@@ -1996,6 +2003,54 @@ function byScoreDesc(a: ScalpSymbolCandidateRow, b: ScalpSymbolCandidateRow): nu
     return a.symbol.localeCompare(b.symbol);
 }
 
+function normalizeCursorOffset(value: unknown): number {
+    const n = Math.floor(Number(value));
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return n;
+}
+
+export function resolveCandidateEvaluationWindow(params: {
+    symbols: string[];
+    maxCandidates: number;
+    startOffset?: number;
+}): {
+    selectedSymbols: string[];
+    poolSize: number;
+    maxCandidates: number;
+    startOffset: number;
+    evaluatedCount: number;
+    nextOffset: number;
+} {
+    const symbols = Array.isArray(params.symbols) ? params.symbols.filter((row) => Boolean(row)) : [];
+    const poolSize = symbols.length;
+    const maxCandidates = Math.max(1, Math.floor(Number(params.maxCandidates) || 1));
+    if (poolSize === 0) {
+        return {
+            selectedSymbols: [],
+            poolSize,
+            maxCandidates,
+            startOffset: 0,
+            evaluatedCount: 0,
+            nextOffset: 0,
+        };
+    }
+    const evaluatedCount = Math.min(poolSize, maxCandidates);
+    const startOffset = normalizeCursorOffset(params.startOffset) % poolSize;
+    const selectedSymbols: string[] = [];
+    for (let i = 0; i < evaluatedCount; i += 1) {
+        selectedSymbols.push(symbols[(startOffset + i) % poolSize] as string);
+    }
+    const nextOffset = (startOffset + evaluatedCount) % poolSize;
+    return {
+        selectedSymbols,
+        poolSize,
+        maxCandidates,
+        startOffset,
+        evaluatedCount,
+        nextOffset,
+    };
+}
+
 const SCALP_ASSET_LEVERAGE_PRIORITY: Record<ScalpAssetCategory, number> = {
     forex: 0,
     index: 1,
@@ -2213,7 +2268,14 @@ export async function runScalpSymbolDiscoveryCycle(
         discoveredBitgetSymbols: preloadedBitgetDiscovery,
         bitgetDiscoveryError: preloadedBitgetDiscoveryError,
     });
-    const cappedPool = candidatePool.symbols.slice(0, Math.max(1, params.maxCandidatesOverride || policy.limits.maxCandidates));
+    const maxCandidates = Math.max(1, Math.floor(Number(params.maxCandidatesOverride || policy.limits.maxCandidates) || 1));
+    const previousCursorOffset = normalizeCursorOffset(previous?.evaluationWindow?.nextOffset);
+    const evaluationWindow = resolveCandidateEvaluationWindow({
+        symbols: candidatePool.symbols,
+        maxCandidates,
+        startOffset: previousCursorOffset,
+    });
+    const cappedPool = evaluationWindow.selectedSymbols;
 
     const rows: ScalpSymbolCandidateRow[] = [];
     for (const symbol of cappedPool) {
@@ -2250,7 +2312,8 @@ export async function runScalpSymbolDiscoveryCycle(
         selectedSymbols: churn.selectedSymbols,
         addedSymbols: churn.addedSymbols,
         removedSymbols: churn.removedSymbols,
-        candidatesEvaluated: sorted.length,
+        candidatesEvaluated: evaluationWindow.evaluatedCount,
+        evaluationWindow,
         selectedRows,
         topRejectedRows: rejectedRows.slice(0, Math.max(10, policy.limits.maxUniverseSymbols)),
         diagnostics: {

@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
     buildNextUniverseWithChurnCaps,
+    resolveCandidateEvaluationWindow,
     resolveCompletedWeekCoverageStartMs,
     resolveRecommendedStrategiesForSymbol,
     resolveRequiredHistoryDaysForCompletedWeeks,
@@ -67,6 +68,46 @@ test('resolveRecommendedStrategiesForSymbol supports broader asset classes when 
         'regime_pullback_m15_m3',
         'pdh_pdl_reclaim_m15_m3',
     ]);
+});
+
+test('resolveCandidateEvaluationWindow rotates candidate coverage using cursor offset', () => {
+    const symbols = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
+    const first = resolveCandidateEvaluationWindow({
+        symbols,
+        maxCandidates: 3,
+        startOffset: 0,
+    });
+    assert.deepEqual(first.selectedSymbols, ['A', 'B', 'C']);
+    assert.equal(first.nextOffset, 3);
+
+    const second = resolveCandidateEvaluationWindow({
+        symbols,
+        maxCandidates: 3,
+        startOffset: first.nextOffset,
+    });
+    assert.deepEqual(second.selectedSymbols, ['D', 'E', 'F']);
+    assert.equal(second.nextOffset, 6);
+
+    const third = resolveCandidateEvaluationWindow({
+        symbols,
+        maxCandidates: 3,
+        startOffset: second.nextOffset,
+    });
+    assert.deepEqual(third.selectedSymbols, ['G', 'A', 'B']);
+    assert.equal(third.nextOffset, 2);
+});
+
+test('resolveCandidateEvaluationWindow evaluates entire pool when cap exceeds pool size', () => {
+    const symbols = ['A', 'B', 'C'];
+    const out = resolveCandidateEvaluationWindow({
+        symbols,
+        maxCandidates: 50,
+        startOffset: 2,
+    });
+    assert.deepEqual(out.selectedSymbols, ['C', 'A', 'B']);
+    assert.equal(out.evaluatedCount, 3);
+    assert.equal(out.poolSize, 3);
+    assert.equal(out.nextOffset, 2);
 });
 
 test('buildNextUniverseWithChurnCaps limits weekly adds/removes and preserves pinned symbols', () => {
