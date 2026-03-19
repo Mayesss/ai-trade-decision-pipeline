@@ -35,6 +35,7 @@ import {
   Star,
   ArrowUpRight,
   ArrowDownRight,
+  Copy,
   CheckCircle2,
   XCircle,
   type LucideIcon,
@@ -1009,6 +1010,9 @@ export default function Home() {
   const [scalpEnabledFilter, setScalpEnabledFilter] = useState<
     "enabled" | "disabled"
   >("enabled");
+  const [scalpCopiedDeploymentId, setScalpCopiedDeploymentId] = useState<
+    string | null
+  >(null);
   const [scalpWorkerSort, setScalpWorkerSort] = useState<ScalpWorkerSortState>({
     key: "windowToTs",
     direction: "desc",
@@ -1039,6 +1043,7 @@ export default function Home() {
   const evaluatePollTimersRef = useRef<Record<string, number>>({});
   const scalpSummaryFetchedAtMsRef = useRef<number>(0);
   const scalpSummaryErrorCountRef = useRef<number>(0);
+  const scalpCopyFeedbackTimerRef = useRef<number | null>(null);
 
   const readStoredAdminSecret = () => {
     if (typeof window === "undefined") return null;
@@ -1058,11 +1063,67 @@ export default function Home() {
     return secret ? { "x-admin-access-secret": secret } : undefined;
   };
 
+  const copyScalpDeploymentLabel = async (
+    event: React.MouseEvent<HTMLButtonElement>,
+    deploymentId: string,
+    label: string,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const text = String(label || "").trim();
+    if (!text) return;
+    let copied = false;
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      } catch {
+        copied = false;
+      }
+    }
+    if (!copied && typeof document !== "undefined") {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      try {
+        copied = document.execCommand("copy");
+      } catch {
+        copied = false;
+      } finally {
+        document.body.removeChild(textarea);
+      }
+    }
+    if (!copied) return;
+    setScalpCopiedDeploymentId(deploymentId);
+    if (scalpCopyFeedbackTimerRef.current) {
+      window.clearTimeout(scalpCopyFeedbackTimerRef.current);
+      scalpCopyFeedbackTimerRef.current = null;
+    }
+    scalpCopyFeedbackTimerRef.current = window.setTimeout(() => {
+      setScalpCopiedDeploymentId((prev) =>
+        prev === deploymentId ? null : prev,
+      );
+      scalpCopyFeedbackTimerRef.current = null;
+    }, 950);
+  };
+
   useEffect(() => {
     const timerId = window.setInterval(() => {
       setScalpCronNowMs(Date.now());
     }, 1_000);
     return () => window.clearInterval(timerId);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (scalpCopyFeedbackTimerRef.current) {
+        window.clearTimeout(scalpCopyFeedbackTimerRef.current);
+      }
+    };
   }, []);
 
   const resolveSystemTheme = (): ResolvedTheme => {
@@ -3707,6 +3768,7 @@ export default function Home() {
           const iconSrc = SCALP_VENUE_ICON_SRC[venue];
           const displayLabel =
             stripScalpVenuePrefixFromDeploymentId(deploymentId) || deploymentId;
+          const copied = scalpCopiedDeploymentId === deploymentId;
           return (
             <div className="flex items-center gap-2">
               <img
@@ -3714,7 +3776,35 @@ export default function Home() {
                 alt={`${venue} venue`}
                 className="h-3.5 w-auto opacity-80"
               />
-              <span>{displayLabel}</span>
+              <button
+                type="button"
+                title={
+                  copied
+                    ? `Copied: ${displayLabel}`
+                    : `Copy deployment name: ${displayLabel}`
+                }
+                className={`inline-flex items-center gap-1.5 cursor-copy text-left hover:underline ${
+                  copied
+                    ? "text-emerald-500"
+                    : scalpDarkMode
+                      ? "text-zinc-100"
+                      : "text-slate-900"
+                }`}
+                onClick={(event) =>
+                  void copyScalpDeploymentLabel(
+                    event,
+                    deploymentId,
+                    displayLabel,
+                  )
+                }
+              >
+                {displayLabel}
+                {copied ? (
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                ) : (
+                  <Copy className="h-3.5 w-3.5 opacity-70" />
+                )}
+              </button>
             </div>
           );
         },
@@ -4031,7 +4121,12 @@ export default function Home() {
         valueFormatter: (params) => String(params.value || "—"),
       },
     ],
-    [scalpDarkMode, scalpEnabledFilter, scalpWindowsResultsGlobalMaxAbs],
+    [
+      scalpDarkMode,
+      scalpEnabledFilter,
+      scalpWindowsResultsGlobalMaxAbs,
+      scalpCopiedDeploymentId,
+    ],
   );
 
   const scalpStateMeta = (state?: string | null) => {

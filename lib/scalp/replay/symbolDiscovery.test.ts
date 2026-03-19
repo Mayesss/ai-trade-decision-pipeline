@@ -21,6 +21,7 @@ test('resolveRecommendedStrategiesForSymbol maps BTC/XAU/FX symbols to expected 
     assert.deepEqual(resolveRecommendedStrategiesForSymbol('BTCUSDT', allowlist), [
         'regime_pullback_m15_m3',
         'compression_breakout_pullback_m15_m3',
+        'trend_day_reacceleration_m15_m3',
     ]);
     assert.deepEqual(resolveRecommendedStrategiesForSymbol('XAUUSDT', allowlist), [
         'regime_pullback_m15_m3',
@@ -45,6 +46,14 @@ test('resolveRecommendedStrategiesForSymbol supports broader asset classes when 
     assert.deepEqual(resolveRecommendedStrategiesForSymbol('ETHUSDT', allowlist), [
         'regime_pullback_m15_m3',
         'compression_breakout_pullback_m15_m3',
+        'trend_day_reacceleration_m15_m3',
+        'failed_auction_extreme_reversal_m15_m1',
+        'hss_ict_m15_m3_guarded',
+    ]);
+    assert.deepEqual(resolveRecommendedStrategiesForSymbol('XPLUSDT', allowlist), [
+        'regime_pullback_m15_m3',
+        'compression_breakout_pullback_m15_m3',
+        'trend_day_reacceleration_m15_m3',
         'failed_auction_extreme_reversal_m15_m1',
         'hss_ict_m15_m3_guarded',
     ]);

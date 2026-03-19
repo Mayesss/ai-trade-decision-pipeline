@@ -210,6 +210,56 @@ function asJsonObject(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function normalizeForStableComparison(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((row) => normalizeForStableComparison(row));
+  }
+  const obj = asJsonObject(value);
+  if (!obj) return value ?? null;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(obj).sort((a, b) => a.localeCompare(b))) {
+    const raw = obj[key];
+    if (raw === undefined) continue;
+    out[key] = normalizeForStableComparison(raw);
+  }
+  return out;
+}
+
+function stableStringify(value: unknown): string {
+  return JSON.stringify(normalizeForStableComparison(value));
+}
+
+function normalizePromotionGateForCompare(
+  gate: ScalpDeploymentPromotionGate | null | undefined,
+): Record<string, unknown> | null {
+  const root = asJsonObject(gate);
+  if (!root) return null;
+  const normalized: Record<string, unknown> = {
+    ...root,
+    // Ignore wall-clock-only fields so we only persist semantic changes.
+    evaluatedAtMs: 0,
+  };
+  const forwardValidation = asJsonObject(normalized.forwardValidation);
+  if (forwardValidation) {
+    normalized.forwardValidation = {
+      ...forwardValidation,
+      weeklyEvaluatedAtMs: 0,
+      confirmationEvaluatedAtMs: 0,
+    };
+  }
+  return normalized;
+}
+
+function hasPromotionStateChanged(params: {
+  previous: Pick<ScalpDeploymentRegistryEntry, "enabled" | "promotionGate">;
+  next: Pick<ScalpDeploymentRegistryEntry, "enabled" | "promotionGate">;
+}): boolean {
+  if (Boolean(params.previous.enabled) !== Boolean(params.next.enabled)) return true;
+  const prevGate = normalizePromotionGateForCompare(params.previous.promotionGate);
+  const nextGate = normalizePromotionGateForCompare(params.next.promotionGate);
+  return stableStringify(prevGate) !== stableStringify(nextGate);
+}
+
 function asTsMs(value: unknown): number | null {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return null;
@@ -2251,6 +2301,9 @@ export async function runPromotionPipelineJob(
       (row) =>
         inUniverseByDeploymentId.get(row.deploymentId)?.inUniverse === true,
     );
+    const consideredByDeploymentId = new Map(
+      consideredDeployments.map((row) => [row.deploymentId, row]),
+    );
     const consideredIds = consideredDeployments.map((row) => row.deploymentId);
     if (!consideredIds.length) {
       return {
@@ -2466,22 +2519,33 @@ export async function runPromotionPipelineJob(
 
     const weeklyByKey = new Map<string, ScalpWeeklyRobustnessMetrics | null>();
     const weeklyGateReasonByKey = new Map<string, string | null>();
+    const weeklyTasksByCandidateKey = new Map<
+      string,
+      Array<{ netR: number; expectancyR: number; maxDrawdownR: number }>
+    >();
+    for (const task of freshReadyTasks) {
+      const symbol = String(task.symbol || "").trim().toUpperCase();
+      const strategyId = String(task.strategyId || "")
+        .trim()
+        .toLowerCase();
+      const tuneId = String(task.tuneId || "")
+        .trim()
+        .toLowerCase();
+      if (!symbol || !strategyId || !tuneId) continue;
+      const key = `${symbol}::${strategyId}::${tuneId}`;
+      const bucket = weeklyTasksByCandidateKey.get(key) || [];
+      bucket.push({
+        netR: toFiniteNumber(task.result?.netR, 0),
+        expectancyR: toFiniteNumber(task.result?.expectancyR, 0),
+        maxDrawdownR: toFiniteNumber(task.result?.maxDrawdownR, 0),
+      });
+      weeklyTasksByCandidateKey.set(key, bucket);
+    }
 
     for (const candidate of candidates) {
       const key = `${candidate.symbol}::${candidate.strategyId}::${candidate.tuneId}`;
-      const candidateTasks = (freshReadyTasks || []).filter(
-        (task) =>
-          task.deploymentId === candidate.deploymentId &&
-          task.symbol === candidate.symbol &&
-          task.strategyId === candidate.strategyId &&
-          task.tuneId === candidate.tuneId,
-      );
       const weeklyMetrics = computeWeeklyRobustnessFromTasks({
-        tasks: candidateTasks.map((task) => ({
-          netR: toFiniteNumber(task.result?.netR, 0),
-          expectancyR: toFiniteNumber(task.result?.expectancyR, 0),
-          maxDrawdownR: toFiniteNumber(task.result?.maxDrawdownR, 0),
-        })),
+        tasks: weeklyTasksByCandidateKey.get(key) || [],
         nowMs,
       });
       weeklyByKey.set(key, weeklyMetrics);
@@ -2623,9 +2687,19 @@ export async function runPromotionPipelineJob(
       },
     );
 
-    if (updates.length > 0) {
+    const updatesToPersist = updates.filter((row) => {
+      if (dirtySet.has(row.deploymentId)) return true;
+      const previous = consideredByDeploymentId.get(row.deploymentId);
+      if (!previous) return true;
+      return hasPromotionStateChanged({
+        previous,
+        next: row,
+      });
+    });
+
+    if (updatesToPersist.length > 0) {
       await upsertScalpDeploymentRegistryEntriesBulk(
-        updates.map((row) => ({
+        updatesToPersist.map((row) => ({
           deploymentId: row.deploymentId,
           symbol: row.symbol,
           strategyId: row.strategyId,
@@ -2659,6 +2733,7 @@ export async function runPromotionPipelineJob(
       progress: {
         processedDirtyDeployments: dirtyRows.length,
         consideredDeployments: consideredDeployments.length,
+        persistedDeployments: updatesToPersist.length,
         candidateCount: candidates.length,
         strategyWinnerCount: strategyWinnerIds.size,
         winnerCount: winnerIds.size,
@@ -2681,6 +2756,7 @@ export async function runPromotionPipelineJob(
         policy,
         dirtyDeployments: dirtyRows.length,
         consideredDeployments: consideredDeployments.length,
+        persistedDeployments: updatesToPersist.length,
         candidateCount: candidates.length,
         strategyWinnerCount: strategyWinnerIds.size,
         winnerCount: winnerIds.size,

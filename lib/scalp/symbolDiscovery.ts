@@ -1321,10 +1321,12 @@ export function resolveRecommendedStrategiesForSymbol(symbolRaw: string, allowli
     if (isBtc) {
         push('regime_pullback_m15_m3');
         push('compression_breakout_pullback_m15_m3');
+        push('trend_day_reacceleration_m15_m3');
         push('failed_auction_extreme_reversal_m15_m1');
     } else if (isCrypto) {
         push('regime_pullback_m15_m3');
         push('compression_breakout_pullback_m15_m3');
+        push('trend_day_reacceleration_m15_m3');
         push('failed_auction_extreme_reversal_m15_m1');
         push('hss_ict_m15_m3_guarded');
     } else if (isXau) {
