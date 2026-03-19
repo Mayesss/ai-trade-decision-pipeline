@@ -742,13 +742,13 @@ async function executeBitgetScalpEntry(params: {
     body.price = Number(params.limitLevel);
   }
   if (Number.isFinite(toFinite(params.stopLevel)) && Number(params.stopLevel) > 0) {
-    body.presetStopLossPrice = Number(params.stopLevel);
+    body.presetStopLossPrice = String(Number(params.stopLevel));
   }
   if (
     Number.isFinite(toFinite(params.profitLevel)) &&
     Number(params.profitLevel) > 0
   ) {
-    body.presetTakeProfitPrice = Number(params.profitLevel);
+    body.presetStopSurplusPrice = String(Number(params.profitLevel));
   }
 
   try {

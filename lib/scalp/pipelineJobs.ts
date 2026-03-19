@@ -155,11 +155,26 @@ function envNumber(name: string, fallback: number): number {
   return n;
 }
 
+function isScalpPipelineBitgetOnlyEnabled(): boolean {
+  return envBool("SCALP_PIPELINE_BITGET_ONLY", true);
+}
+
 function normalizeSymbol(value: unknown): string {
   return String(value || "")
     .trim()
     .toUpperCase()
     .replace(/[^A-Z0-9._-]/g, "");
+}
+
+function isBitgetPipelineSymbol(symbolRaw: string): boolean {
+  const symbol = normalizeSymbol(symbolRaw);
+  if (!symbol) return false;
+  const productType = String(resolveProductType() || "usdt-futures")
+    .trim()
+    .toLowerCase();
+  if (productType === "usdc-futures") return symbol.endsWith("USDC");
+  if (productType === "coin-futures") return symbol.endsWith("USD");
+  return symbol.endsWith("USDT");
 }
 
 function asJsonObject(value: unknown): Record<string, unknown> | null {
@@ -770,6 +785,7 @@ export async function runDiscoverPipelineJob(
 ): Promise<ScalpPipelineJobExecutionResult> {
   return runWithPipelineJobLock("discover", async ({ lockToken, lockMs }) => {
     const nowMs = Date.now();
+    const bitgetOnly = isScalpPipelineBitgetOnlyEnabled();
     const snapshot = await runScalpSymbolDiscoveryCycle({
       dryRun: false,
       includeLiveQuotes: params.includeLiveQuotes ?? true,
@@ -784,14 +800,28 @@ export async function runDiscoverPipelineJob(
       seedTimeframe: "1m",
       seedOnDryRun: false,
       seedAllowBootstrapSymbols: true,
+      sourceOverrides: bitgetOnly
+        ? {
+            includeCapitalMarketsApi: false,
+            includeBitgetMarketsApi: true,
+            includeDeploymentSymbols: false,
+            includeHistorySymbols: false,
+          }
+        : undefined,
     });
-    const selectedSymbols = Array.from(
+    const discoveredSymbols = Array.from(
       new Set(
         (snapshot.selectedSymbols || [])
           .map((row) => normalizeSymbol(row))
           .filter(Boolean),
       ),
     );
+    const selectedSymbols = bitgetOnly
+      ? discoveredSymbols.filter((symbol) => isBitgetPipelineSymbol(symbol))
+      : discoveredSymbols;
+    const droppedNonBitgetSymbols = bitgetOnly
+      ? discoveredSymbols.filter((symbol) => !selectedSymbols.includes(symbol))
+      : [];
     const db = scalpPrisma();
 
     const existingRows = await db.$queryRaw<
@@ -807,6 +837,9 @@ export async function runDiscoverPipelineJob(
         .filter(Boolean),
     );
     const selectedSet = new Set(selectedSymbols);
+    const addedSymbols = selectedSymbols.filter(
+      (symbol) => !existingActive.has(symbol),
+    );
     const removed = Array.from(existingActive).filter(
       (symbol) => !selectedSet.has(symbol),
     );
@@ -914,8 +947,9 @@ export async function runDiscoverPipelineJob(
       progressLabel: `selected ${selectedSymbols.length}`,
       progress: {
         selected: selectedSymbols.length,
-        added: snapshot.addedSymbols.length,
+        added: addedSymbols.length,
         removed: removed.length,
+        droppedNonBitget: droppedNonBitgetSymbols.length,
         pendingLoad: pendingAfter,
       },
     });
@@ -932,8 +966,9 @@ export async function runDiscoverPipelineJob(
       details: {
         generatedAtIso: snapshot.generatedAtIso,
         selected: selectedSymbols.length,
-        addedSymbols: snapshot.addedSymbols,
+        addedSymbols,
         removedSymbols: removed,
+        droppedNonBitgetSymbols,
         candidatesEvaluated: snapshot.candidatesEvaluated,
       },
     };
@@ -1028,6 +1063,23 @@ async function ensureSymbolWeeklyCoverage(params: {
 }> {
   const history = await loadScalpCandleHistory(params.symbol, "1m");
   const existing = history.record?.candles || [];
+  const bitgetOnly = isScalpPipelineBitgetOnlyEnabled();
+  if (bitgetOnly && !isBitgetPipelineSymbol(params.symbol)) {
+    const coverage = countCoveredCompletedWeeks(
+      existing,
+      params.nowMs,
+      params.requiredWeeks,
+    );
+    return {
+      ok: false,
+      weeksCovered: coverage.covered,
+      latestWeekStartMs: coverage.latestWeekStartMs,
+      existingCount: existing.length,
+      fetchedCount: 0,
+      addedCount: 0,
+      error: "bitget_only_symbol_unsupported",
+    };
+  }
   const earliestMissingWeekStartMs = findEarliestMissingCompletedWeekStartMs(
     existing,
     params.nowMs,
@@ -1038,24 +1090,18 @@ async function ensureSymbolWeeklyCoverage(params: {
     params.nowMs,
     params.requiredWeeks,
   );
-  const latestClosedCandleTargetMs =
-    startOfWeekMondayUtc(params.nowMs) - seedTfMs;
-  const oldestExistingTs = existing.length ? Number(existing[0]?.[0] || 0) : 0;
+  const coverage = countCoveredCompletedWeeks(
+    existing,
+    params.nowMs,
+    params.requiredWeeks,
+  );
   const latestExistingTs = existing.length
     ? Number(existing[existing.length - 1]?.[0] || 0)
     : 0;
   const hasCoverage =
-    existing.length > 0 &&
-    oldestExistingTs <= requiredCoverageStartMs &&
-    latestExistingTs >= latestClosedCandleTargetMs &&
-    earliestMissingWeekStartMs === null;
+    earliestMissingWeekStartMs === null && coverage.covered >= params.requiredWeeks;
 
   if (hasCoverage) {
-    const coverage = countCoveredCompletedWeeks(
-      existing,
-      params.nowMs,
-      params.requiredWeeks,
-    );
     return {
       ok: true,
       weeksCovered: coverage.covered,
@@ -1067,16 +1113,22 @@ async function ensureSymbolWeeklyCoverage(params: {
     };
   }
 
-  const marketMetadata = await ensureScalpSymbolMarketMetadata(params.symbol, {
-    fetchIfMissing: true,
-  });
-  const marketSource: "capital" | "bitget" =
-    marketMetadata?.source === "bitget" ? "bitget" : "capital";
-  const epic =
-    marketMetadata?.epic ||
-    (marketSource === "bitget"
-      ? params.symbol
-      : (await resolveCapitalEpicRuntime(params.symbol)).epic);
+  const marketMetadata = bitgetOnly
+    ? null
+    : await ensureScalpSymbolMarketMetadata(params.symbol, {
+        fetchIfMissing: true,
+      });
+  const marketSource: "capital" | "bitget" = bitgetOnly
+    ? "bitget"
+    : marketMetadata?.source === "bitget"
+      ? "bitget"
+      : "capital";
+  const epic = bitgetOnly
+    ? params.symbol
+    : marketMetadata?.epic ||
+      (marketSource === "bitget"
+        ? params.symbol
+        : (await resolveCapitalEpicRuntime(params.symbol)).epic);
 
   const incrementalFetchFromMs = (() => {
     if (earliestMissingWeekStartMs !== null) {
@@ -1138,25 +1190,18 @@ async function ensureSymbolWeeklyCoverage(params: {
     params.nowMs,
     params.requiredWeeks,
   );
-  const mergedOldestTs = merged.length ? Number(merged[0]?.[0] || 0) : 0;
-  const mergedLatestTs = merged.length
-    ? Number(merged[merged.length - 1]?.[0] || 0)
-    : 0;
-  const mergedHasCoverage =
-    merged.length > 0 &&
-    mergedOldestTs <= requiredCoverageStartMs &&
-    mergedLatestTs >= latestClosedCandleTargetMs &&
-    mergedMissing === null;
-  const coverage = countCoveredCompletedWeeks(
+  const mergedCoverage = countCoveredCompletedWeeks(
     merged,
     params.nowMs,
     params.requiredWeeks,
   );
+  const mergedHasCoverage =
+    mergedMissing === null && mergedCoverage.covered >= params.requiredWeeks;
 
   return {
     ok: mergedHasCoverage,
-    weeksCovered: coverage.covered,
-    latestWeekStartMs: coverage.latestWeekStartMs,
+    weeksCovered: mergedCoverage.covered,
+    latestWeekStartMs: mergedCoverage.latestWeekStartMs,
     existingCount: existing.length,
     fetchedCount: fetched.length,
     addedCount: Math.max(0, merged.length - existing.length),
@@ -1465,6 +1510,7 @@ export async function runPreparePipelineJob(
   } = {},
 ): Promise<ScalpPipelineJobExecutionResult> {
   return runWithPipelineJobLock("prepare", async ({ lockToken, lockMs }) => {
+    const bitgetOnly = isScalpPipelineBitgetOnlyEnabled();
     const batchSize = Math.max(
       1,
       Math.min(30, toPositiveInt(params.batchSize, 4)),
@@ -1503,6 +1549,43 @@ export async function runPreparePipelineJob(
       const row = claimed[idx]!;
       const symbol = normalizeSymbol(row.symbol);
       if (!symbol) continue;
+      if (bitgetOnly && !isBitgetPipelineSymbol(symbol)) {
+        await db.$executeRaw(Prisma.sql`
+                    UPDATE scalp_deployments
+                    SET
+                        in_universe = FALSE,
+                        retired_at = NOW(),
+                        enabled = FALSE,
+                        worker_dirty = FALSE,
+                        promotion_dirty = FALSE,
+                        updated_by = 'pipeline:prepare',
+                        updated_at = NOW()
+                    WHERE symbol = ${symbol};
+                `);
+        await updatePrepareSymbolStatus({
+          symbol,
+          status: "failed",
+          attempts: row.attempts,
+          preparedDeployments: 0,
+          error: "bitget_only_symbol_unsupported",
+        });
+        failed += 1;
+        await pulsePipelineJobProgress({
+          jobKind: "prepare",
+          lockToken,
+          lockMs,
+          progressLabel: `processed ${idx + 1}/${claimed.length}`,
+          progress: {
+            processed: idx + 1,
+            total: claimed.length,
+            succeeded,
+            retried,
+            failed,
+            queuedWeeklyRows,
+          },
+        });
+        continue;
+      }
       try {
         const strategyIds = resolveRecommendedStrategiesForSymbol(
           symbol,
@@ -1522,6 +1605,14 @@ export async function runPreparePipelineJob(
             maxVariantsPerStrategy: 4,
           }).slice(0, 4);
           const rows = variants.map((variant) => ({
+            deploymentId: bitgetOnly
+              ? resolveScalpDeployment({
+                  venue: "bitget",
+                  symbol,
+                  strategyId,
+                  tuneId: variant.tuneId,
+                }).deploymentId
+              : undefined,
             symbol,
             strategyId,
             tuneId: variant.tuneId,
