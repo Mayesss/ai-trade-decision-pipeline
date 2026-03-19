@@ -3728,8 +3728,8 @@ export default function Home() {
         totalNetR: null,
         expectancyR: asFiniteNumber(forwardValidation?.meanExpectancyR),
         profitFactor: asFiniteNumber(forwardValidation?.meanProfitFactor),
-        maxDrawdownR: asFiniteNumber(forwardValidation?.maxDrawdownR),
-        totalMaxDrawdownR: asFiniteNumber(forwardValidation?.maxDrawdownR),
+        maxDrawdownR: null,
+        totalMaxDrawdownR: null,
         errorCodes: null,
       } satisfies ScalpWorkerJobGridRow;
     });
@@ -4178,8 +4178,8 @@ export default function Home() {
             : "—",
       },
       {
-        headerName: "Total Max DD",
-        field: "totalMaxDrawdownR",
+        headerName: "Max Weekly DD",
+        field: "maxDrawdownR",
         width: 50,
         valueFormatter: (params) =>
           typeof params.value === "number" && Number.isFinite(params.value)
