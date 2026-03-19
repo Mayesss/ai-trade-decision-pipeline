@@ -494,6 +494,7 @@ type ScalpWorkerJobGridRow = {
   windowCount: number;
   windowsResults: string;
   windowNetRs: Array<{
+    sortTs: number | null;
     value: number | null;
     display: string;
     tooltip: string;
@@ -3073,6 +3074,12 @@ export default function Home() {
           queueRetry +
           queueFailed +
           queueSucceeded;
+        const queueExecutionTotal =
+          queueRunning + queuePending + queueRetry + queueFailed;
+        const runningProgressPct =
+          queueExecutionTotal > 0
+            ? (queueRunning / queueExecutionTotal) * 100
+            : 0;
         const successDenominator = queueSucceeded + queueFailed;
         const successRatePct =
           successDenominator > 0
@@ -3137,24 +3144,15 @@ export default function Home() {
           ],
           visualMetrics: [
             {
-              label: "Pending+Retry",
-              valueLabel: `${queuePending + queueRetry}`,
-              pct:
-                queueTotal > 0
-                  ? ((queuePending + queueRetry) / queueTotal) * 100
-                  : null,
+              label: "Running",
+              valueLabel: `${queueRunning} / ${queueExecutionTotal}`,
+              pct: runningProgressPct,
               tone:
-                queuePending + queueRetry > 0
+                queueExecutionTotal > 0
                   ? queueRunning > 0
                     ? "warning"
                     : "neutral"
                   : "positive",
-            },
-            {
-              label: "Running",
-              valueLabel: `${queueRunning}`,
-              pct: queueTotal > 0 ? (queueRunning / queueTotal) * 100 : null,
-              tone: queueRunning > 0 ? "warning" : "neutral",
             },
             {
               label: "Success Rate",
@@ -3492,10 +3490,6 @@ export default function Home() {
             )
               .toISOString()
               .slice(0, 10)}`;
-      const weekValue =
-        row.trades !== null && row.expectancyR !== null
-          ? row.trades * row.expectancyR
-          : null;
       const netRValue = row.netR;
       const netRDisplay =
         netRValue === null
@@ -3561,7 +3555,7 @@ export default function Home() {
           statusCounts,
           windows: [
             {
-              sortTs: row.windowFromTs ?? row.windowToTs ?? 0,
+              sortTs: row.windowToTs ?? row.windowFromTs ?? 0,
               netRValue,
               netRDisplay,
               tooltipText,
@@ -3604,7 +3598,7 @@ export default function Home() {
 
       current.windowCount += 1;
       current.windows.push({
-        sortTs: row.windowFromTs ?? row.windowToTs ?? 0,
+        sortTs: row.windowToTs ?? row.windowFromTs ?? 0,
         netRValue,
         netRDisplay,
         tooltipText,
@@ -3660,6 +3654,7 @@ export default function Home() {
         windowCount: row.windowCount,
         windowsResults: windowRows.join(" | "),
         windowNetRs: sortedWindows.map((entry) => ({
+          sortTs: entry.sortTs || null,
           value: entry.netRValue,
           display: entry.netRDisplay,
           tooltip: entry.tooltipText,
@@ -3775,6 +3770,20 @@ export default function Home() {
     }
     return maxAbs > 0 ? maxAbs : 1;
   }, [scalpSelectedWorkerGridRows]);
+  const scalpWindowsResultWeekSlots = useMemo<number[]>(() => {
+    const uniqueWeekTs = new Set<number>();
+    for (const row of scalpSelectedWorkerGridRows) {
+      const entries = Array.isArray(row.windowNetRs) ? row.windowNetRs : [];
+      for (const entry of entries) {
+        const ts =
+          typeof entry?.sortTs === "number" && Number.isFinite(entry.sortTs)
+            ? Math.floor(entry.sortTs)
+            : null;
+        if (ts !== null && ts > 0) uniqueWeekTs.add(ts);
+      }
+    }
+    return Array.from(uniqueWeekTs).sort((a, b) => a - b);
+  }, [scalpSelectedWorkerGridRows]);
   const scalpWorkerJobsGridDefaultColDef = useMemo<
     ColDef<ScalpWorkerJobGridRow>
   >(
@@ -3795,7 +3804,7 @@ export default function Home() {
         field: "deploymentId",
         pinned: "left",
         minWidth: scalpIsMobileViewport ? 150 : 220,
-        width: scalpIsMobileViewport ? 168 : 220,
+        initialWidth: scalpIsMobileViewport ? 168 : 400,
         cellRenderer: (params: any) => {
           const deploymentId = String(params?.value || "").trim();
           if (!deploymentId) {
@@ -3983,53 +3992,74 @@ export default function Home() {
           const entries = Array.isArray(params?.data?.windowNetRs)
             ? params.data.windowNetRs
             : [];
-          if (!entries.length) return "—";
+          if (!entries.length || !scalpWindowsResultWeekSlots.length) return "—";
+          const rowEntryByWeekTs = new Map<
+            number,
+            {
+              sortTs: number | null;
+              value: number | null;
+              display: string;
+              tooltip: string;
+            }
+          >();
+          for (const entry of entries) {
+            const ts =
+              typeof entry?.sortTs === "number" && Number.isFinite(entry.sortTs)
+                ? Math.floor(entry.sortTs)
+                : null;
+            if (ts !== null && ts > 0) {
+              rowEntryByWeekTs.set(ts, entry);
+            }
+          }
           const trackClass = scalpDarkMode ? "bg-zinc-800" : "bg-slate-200";
           return (
             <div className="h-full min-h-[48px] w-full py-1">
-              <div className={`flex h-full w-full items-end gap-1 rounded-md px-1 ${trackClass}`}>
-                {entries.map(
-                  (
-                    entry: {
-                      value: number | null;
-                      display: string;
-                      tooltip: string;
-                    },
-                    idx: number,
-                  ) => {
-                    const value = entry.value;
-                    const normalized =
-                      value === null || !Number.isFinite(value)
-                        ? 20
-                        : Math.max(
-                            6,
-                            Math.round(
-                              (Math.abs(value) / scalpWindowsResultsGlobalMaxAbs) *
-                                100,
-                            ),
-                          );
-                    const toneClass =
-                      value === null || value === 0
-                        ? scalpDarkMode
-                          ? "bg-zinc-500/80"
-                          : "bg-slate-400"
-                        : value > 0
-                          ? scalpDarkMode
-                            ? "bg-emerald-400/90"
-                            : "bg-emerald-500"
-                          : scalpDarkMode
-                            ? "bg-rose-400/90"
-                            : "bg-rose-500";
+              <div
+                className={`flex h-full w-full items-end justify-end gap-1 overflow-hidden rounded-md px-1 ${trackClass}`}
+              >
+                {scalpWindowsResultWeekSlots.map((slotWeekTs, idx) => {
+                  const entry = rowEntryByWeekTs.get(slotWeekTs) || null;
+                  if (!entry) {
                     return (
                       <span
-                        key={`win-bar-${idx}`}
-                        className={`w-1.5 rounded-sm ${toneClass}`}
-                        style={{ height: `${Math.min(100, normalized)}%` }}
-                        title={entry.tooltip}
+                        key={`win-bar-empty-${slotWeekTs}-${idx}`}
+                        className="w-1.5 rounded-sm bg-transparent"
+                        style={{ height: "100%" }}
                       />
                     );
-                  },
-                )}
+                  }
+                  const value = entry.value;
+                  const normalized =
+                    value === null || !Number.isFinite(value)
+                      ? 20
+                      : Math.max(
+                          6,
+                          Math.round(
+                            (Math.abs(value) / scalpWindowsResultsGlobalMaxAbs) *
+                              100,
+                          ),
+                        );
+                  const toneClass =
+                    value === null || value === 0
+                      ? scalpDarkMode
+                        ? "bg-zinc-500/80"
+                        : "bg-slate-400"
+                      : value > 0
+                        ? scalpDarkMode
+                          ? "bg-emerald-400/90"
+                          : "bg-emerald-500"
+                        : scalpDarkMode
+                          ? "bg-rose-400/90"
+                          : "bg-rose-500";
+                  return (
+                    <span
+                      key={`win-bar-${slotWeekTs}-${idx}`}
+                      className={`w-1.5 rounded-sm ${toneClass}`}
+                      style={{ height: `${Math.min(100, normalized)}%` }}
+                      title={entry.tooltip}
+                    />
+                  );
+                })}
               </div>
             </div>
           );
@@ -4168,6 +4198,7 @@ export default function Home() {
       scalpDarkMode,
       scalpEnabledFilter,
       scalpWindowsResultsGlobalMaxAbs,
+      scalpWindowsResultWeekSlots,
       scalpCopiedDeploymentId,
       scalpIsMobileViewport,
     ],

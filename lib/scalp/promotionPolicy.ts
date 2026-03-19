@@ -572,16 +572,12 @@ export function evaluateFreshCompletedDeploymentWeeks(params: {
     const toTs = Math.floor(Number(task.windowToTs) || 0);
     if (toTs - fromTs !== WEEK_MS) continue;
     if (toTs > windowToTs) continue;
+    if (fromTs < windowFromTs) continue;
     completedTaskByWeekStart.set(fromTs, task);
   }
 
-  const completedWeekStarts = Array.from(completedTaskByWeekStart.keys()).sort(
-    (a, b) => a - b,
-  );
-  const latestCompleteWeekStart = windowToTs - WEEK_MS;
-  const earliestCompleteWeekStart = completedWeekStarts[0] ?? null;
-
-  let selectedWindowFromTs: number | null = null;
+  let completedWeeks = 0;
+  const missingWeekStarts: number[] = [];
   let readyTasks: Array<
     Pick<
       ScalpPromotionTaskLike,
@@ -595,63 +591,19 @@ export function evaluateFreshCompletedDeploymentWeeks(params: {
       | "windowToTs"
     >
   > = [];
-
-  if (earliestCompleteWeekStart !== null) {
-    const minEndStart =
-      earliestCompleteWeekStart + (requiredWeeks - 1) * WEEK_MS;
-    for (
-      let endWeekStart = latestCompleteWeekStart;
-      endWeekStart >= minEndStart;
-      endWeekStart -= WEEK_MS
-    ) {
-      const startWeekStart = endWeekStart - (requiredWeeks - 1) * WEEK_MS;
-      const candidateTasks: Array<
-        Pick<
-          ScalpPromotionTaskLike,
-          | "deploymentId"
-          | "symbol"
-          | "strategyId"
-          | "tuneId"
-          | "status"
-          | "result"
-          | "windowFromTs"
-          | "windowToTs"
-        >
-      > = [];
-      let missing = false;
-      for (let i = 0; i < requiredWeeks; i += 1) {
-        const weekStart = startWeekStart + i * WEEK_MS;
-        const task = completedTaskByWeekStart.get(weekStart);
-        if (!task) {
-          missing = true;
-          break;
-        }
-        candidateTasks.push(task);
-      }
-      if (!missing) {
-        selectedWindowFromTs = startWeekStart;
-        readyTasks = candidateTasks;
-        break;
-      }
-    }
-  }
-
-  let completedWeeks = 0;
-  const missingWeekStarts: number[] = [];
   for (let i = 0; i < requiredWeeks; i += 1) {
     const weekStart = windowFromTs + i * WEEK_MS;
-    if (completedTaskByWeekStart.has(weekStart)) {
+    const task = completedTaskByWeekStart.get(weekStart);
+    if (task) {
       completedWeeks += 1;
+      readyTasks.push(task);
     } else {
       missingWeekStarts.push(weekStart);
     }
   }
   const missingWeeks = missingWeekStarts.length;
-  const ready = selectedWindowFromTs !== null;
+  const ready = missingWeeks === 0 && readyTasks.length === requiredWeeks;
   const missingForOutput = ready ? [] : missingWeekStarts;
-  const selectedFromTs =
-    selectedWindowFromTs !== null ? selectedWindowFromTs : windowFromTs;
-  const selectedToTs = selectedFromTs + requiredWeeks * WEEK_MS;
 
   return {
     ready,
@@ -659,9 +611,9 @@ export function evaluateFreshCompletedDeploymentWeeks(params: {
     completedWeeks,
     missingWeeks,
     missingWeekStarts: missingForOutput,
-    windowFromTs: selectedFromTs,
-    windowToTs: selectedToTs,
-    readyTasks,
+    windowFromTs,
+    windowToTs,
+    readyTasks: ready ? readyTasks : [],
   };
 }
 
