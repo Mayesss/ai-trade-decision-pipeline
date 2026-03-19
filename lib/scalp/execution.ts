@@ -702,6 +702,7 @@ export async function executeScalpEntryPlan(params: {
       symbol: next.symbol,
       direction: params.plan.side,
       notionalUsd: params.plan.notionalUsd,
+      riskUsd: params.plan.riskUsd,
       leverage: params.plan.leverage,
       dryRun: params.dryRun,
       clientOid: params.plan.dealReference,

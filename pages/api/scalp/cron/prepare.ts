@@ -7,7 +7,7 @@ import {
   invokeCronEndpointDetached,
   type CronInvokeResult,
 } from "../../../../lib/scalp/cronChaining";
-import { runDiscoverPipelineJob } from "../../../../lib/scalp/pipelineJobs";
+import { runPreparePipelineJob } from "../../../../lib/scalp/pipelineJobs";
 
 function firstQueryValue(
   value: string | string[] | undefined,
@@ -63,21 +63,16 @@ export default async function handler(
   if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
 
-  const includeLiveQuotes = parseBool(req.query.includeLiveQuotes, true);
-  const maxCandidates = parseIntBounded(
-    req.query.maxCandidates,
-    250,
-    20,
-    2_000,
-  );
+  const batchSize = parseIntBounded(req.query.batchSize, 4, 1, 80);
+  const maxAttempts = parseIntBounded(req.query.maxAttempts, 5, 1, 20);
   const autoSuccessor = parseBool(req.query.autoSuccessor, true);
   const autoContinue = parseBool(req.query.autoContinue, true);
-  const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 20);
-  const selfMaxHops = parseIntBounded(req.query.selfMaxHops, 6, 0, 50);
+  const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 40);
+  const selfMaxHops = parseIntBounded(req.query.selfMaxHops, 8, 0, 50);
 
-  const result = await runDiscoverPipelineJob({
-    includeLiveQuotes,
-    maxCandidates,
+  const result = await runPreparePipelineJob({
+    batchSize,
+    maxAttempts,
   });
 
   let downstream: CronInvokeResult | null = null;
@@ -91,13 +86,13 @@ export default async function handler(
   ) {
     downstream = await invokeCronEndpointDetached(
       req,
-      "/api/scalp/cron/load-candles",
+      "/api/scalp/cron/worker",
       {
         autoContinue: 1,
         autoSuccessor: 1,
         selfHop: 0,
         selfMaxHops,
-        triggeredBy: "discover-symbols",
+        triggeredBy: "prepare",
       },
       850,
     );
@@ -112,10 +107,10 @@ export default async function handler(
   ) {
     selfRecall = await invokeCronEndpointDetached(
       req,
-      "/api/scalp/cron/discover-symbols",
+      "/api/scalp/cron/prepare",
       {
-        includeLiveQuotes: includeLiveQuotes ? 1 : 0,
-        maxCandidates,
+        batchSize,
+        maxAttempts,
         autoContinue: 1,
         autoSuccessor: autoSuccessor ? 1 : 0,
         selfHop: selfHop + 1,

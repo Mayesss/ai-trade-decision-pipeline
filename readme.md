@@ -5,6 +5,7 @@ Next.js app that runs an AI-driven trading loop for multiple platforms (Bitget +
 ---
 
 ## What’s Inside
+
 - **Next.js API routes** for analysis (`/api/analyze`), AI-driven evaluations (`/api/evaluate`), history/PNL enrichment (`/api/evaluations`, `/api/rest-history`, `/api/chart`), scalp cron execution, and health/debug helpers.
 - **Platform integrations**: Bitget (futures) and Capital.com (CFD/spot-style market access) with platform-selected market/execution paths.
 - **Signal stack**: multi-timeframe indicators (context/macro/primary/micro), support/resistance levels, momentum/extension gates, and provider-selected news sentiment (`coindesk` or `marketaux`).
@@ -13,6 +14,7 @@ Next.js app that runs an AI-driven trading loop for multiple platforms (Bitget +
 - **KV storage** (Upstash-compatible REST) for decision history, evaluations, and cached news (7d TTL for history, 1h for news).
 
 ## Requirements
+
 - Node.js 18+ (matches Next 16)
 - Bitget API key (futures) with trading permissions
 - Capital.com Open API credentials (for `platform=capital`)
@@ -24,12 +26,15 @@ Next.js app that runs an AI-driven trading loop for multiple platforms (Bitget +
 - Optional admin secret for protected routes (`ADMIN_ACCESS_SECRET`)
 
 ## Setup
-1) Install deps:
+
+1. Install deps:
+
 ```bash
 npm install
 ```
 
-2) Create `.env.local` with your secrets:
+2. Create `.env.local` with your secrets:
+
 ```bash
 # Bitget
 BITGET_API_KEY=...
@@ -131,7 +136,6 @@ MARKETAUX_API_KEY=...
 # SCALP_SYMBOL_DISCOVERY_POLICY_PATH=data/scalp-symbol-discovery-policy.json
 # SCALP_SYMBOL_UNIVERSE_STORE=auto                           # auto | kv | file
 # SCALP_SYMBOL_UNIVERSE_PATH=data/scalp-symbol-universe.json # used when store=file
-# SCALP_RESEARCH_REPORT_PATH=data/scalp-research-report.json # optional file fallback when ALLOW_SCALP_FILE_BACKEND=1
 # SCALP_RESEARCH_SYMBOL_COOLDOWN_ENABLED=true
 # SCALP_RESEARCH_SYMBOL_COOLDOWN_FAILURE_THRESHOLD=3
 # SCALP_RESEARCH_SYMBOL_COOLDOWN_WINDOW_MS=1800000
@@ -148,10 +152,10 @@ MARKETAUX_API_KEY=...
 # SCALP_GUARDRAIL_MAX_EXPECTANCY_DRIFT_R_30D=
 # SCALP_GUARDRAIL_MAX_TRADES_PER_DAY_30D=
 # SCALP_GUARDRAIL_MIN_FORWARD_PROFITABLE_PCT=
-# SCALP_HOUSEKEEPING_CYCLE_RETENTION_DAYS=14
+# SCALP_HOUSEKEEPING_CYCLE_RETENTION_DAYS=14               # legacy alias; used as pipeline retention days
 # SCALP_HOUSEKEEPING_LOCK_MAX_AGE_MINUTES=45
 # SCALP_HOUSEKEEPING_MAX_SCAN_KEYS=4000
-# SCALP_HOUSEKEEPING_REFRESH_REPORT=true
+# SCALP_HOUSEKEEPING_REFRESH_REPORT=false                  # no-op in async-job mode
 # SCALP_HOUSEKEEPING_JOURNAL_MAX=500
 # SCALP_HOUSEKEEPING_TRADE_LEDGER_MAX=10000
 
@@ -167,19 +171,22 @@ TAKER_FEE_RATE=0.0006          # used in prompts/edge checks
 # AI_MODEL and AI_BASE_URL are set in lib/constants.ts (current defaults: gpt-5.2 @ api.openai.com)
 ```
 
-3) Run the app:
+3. Run the app:
+
 ```bash
 npm run dev
 # open http://localhost:3000
 ```
 
 Build/start:
+
 ```bash
 npm run build
 npm run start
 ```
 
 ## API Routes (current behavior)
+
 - `GET /api/swing/analyze`
   - Legacy alias: `GET /api/analyze`
   - Query params:
@@ -225,7 +232,7 @@ npm run start
   - Body: `{ "secret": "..." }` to validate admin access when `ADMIN_ACCESS_SECRET` is set.
 - Admin protection policy
   - All API routes except `/api/admin-auth` require `x-admin-access-secret: <ADMIN_ACCESS_SECRET>` (or `Authorization: Bearer <ADMIN_ACCESS_SECRET>`) when `ADMIN_ACCESS_SECRET` is set.
-  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/scalp/cron/execute-deployments`, `/api/scalp/cron/discover-symbols`, `/api/scalp/cron/research-cycle-start`, `/api/scalp/cron/research-cycle-worker`, `/api/scalp/cron/research-cycle-aggregate`, `/api/scalp/cron/research-cycle-sync-gates`, `/api/scalp/cron/research-report`, `/api/scalp/cron/live-guardrail-monitor`, `/api/scalp/cron/housekeeping`.
+  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/scalp/cron/execute-deployments`, `/api/scalp/cron/discover-symbols`, `/api/scalp/cron/load-candles`, `/api/scalp/cron/prepare`, `/api/scalp/cron/worker`, `/api/scalp/cron/promotion`, `/api/scalp/cron/live-guardrail-monitor`, `/api/scalp/cron/housekeeping`.
 - `GET /api/forex/*`
   - Forex mode routes are deprecated and currently return `410` with `error=forex_mode_deprecated`.
 - `GET /api/scalp/cron/execute-deployments?all=true&dryRun=true`
@@ -257,61 +264,30 @@ npm run start
     - `seedOnDryRun=true` allow seeding during `dryRun=true` (for diagnostics only; no writes when dry run).
     - `seedAllowBootstrapSymbols=true|false` allow/disallow seeding symbols without existing candle history (`false` default).
     - Seed stage now keeps fetching backfill/forward windows until both target span and freshness are met (90d + <=12h lag), or reports `seed_target_unmet`.
-- `GET /api/scalp/cron/research-cycle-start?dryRun=false`
-  - Starts a chunked offline research cycle over the active symbol universe (or explicit `symbols=...`) and persists task rows in KV.
-  - New task creation is Bitget-only by default (`SCALP_RESEARCH_NEW_TASKS_BITGET_ONLY=true`).
-  - If the initially selected set yields zero tasks, planner auto-falls back to lower-load candidates (eligible rejected + Bitget 1m history pool), capped by `SCALP_RESEARCH_ZERO_TASKS_FALLBACK_SYMBOLS` (default `24`).
-  - Optional query params: `symbols=BTCUSDT,XAUUSDT`, `lookbackDays`, `chunkDays`, `maxTasks`, `maxAttempts`, `minCandlesPerTask`, `force`.
-- `GET /api/scalp/cron/orchestrate-pipeline?maxDurationMs=600000`
-  - Runs staged scalp pipeline orchestration (`discover -> load_candles -> prepare`) and persists progress in `scalp_pipeline_orchestrator_state_v1`.
-  - Orchestrator discovery defaults to Bitget-only source overrides (`SCALP_ORCHESTRATOR_DISCOVERY_INCLUDE_BITGET=true`, `SCALP_ORCHESTRATOR_DISCOVERY_INCLUDE_CAPITAL=false`).
-  - Capital seed prefetch is disabled when orchestrator Capital discovery is disabled.
-  - When a run exits with `status=continued`, the route self-invokes by default (`selfInvokeOnContinue=true`) using detached cron chaining and `continue=1`.
-  - Self-invoke hop budget is capped by `selfInvokeMaxHops` (query) or `SCALP_ORCHESTRATOR_SELF_INVOKE_MAX_HOPS` (env, default `8`).
-  - Response includes `selfInvoke` metadata with hop counters and continuation invoke status.
-- `GET /api/scalp/cron/research-cycle-worker?maxRuns=40&concurrency=4`
-  - Claims pending/stale research tasks, runs replay for each claimed task, and writes per-task metrics.
-  - Supports bounded parallel execution with `concurrency` (default env `SCALP_RESEARCH_WORKER_CONCURRENCY`).
-  - Stale/missing `running` tasks are only reclaimed when `attempts < maxAttempts`; exhausted rows are auto-marked `max_attempts_exhausted`.
-  - Optional symbol cooldown quarantine marks pending/running rows as `symbol_cooldown_active` after repeated hard failures within a window.
-  - Optional query params: `cycleId`, `workerId`, `concurrency`, `aggregateAfter=true|false`, `finalizeWhenDone=true|false`, `syncPromotionGates=true|false`, `requireCompletedCycleForSync=true|false`.
-- `GET /api/scalp/cron/research-cycle-aggregate`
-  - Recomputes cycle totals + candidate aggregates from task rows and stores the latest summary.
-  - Optional query params: `cycleId`, `finalizeWhenDone=true|false`.
-- `GET /api/scalp/cron/research-cycle-sync-gates`
-  - Derives forward-validation metrics from research-cycle windows and updates deployment `promotionGate` eligibility.
-  - Runs offline-only weekly robustness on 90d winner shortlists (no online paper-forward step):
-    - rank candidates per symbol on 90d results
-    - run weekly (7d) robustness slices only for top-K winners
-    - force ineligible for non-winner shortlist rows (when enabled), weekly-failing rows, or deployments missing in the completed cycle (`missing_cycle_candidate`)
-  - Defaults to matrix/backtest deployment sources and requires completed cycle status by default.
-  - Optional query params: `cycleId`, `sources=matrix,backtest`, `dryRun=true|false`, `requireCompletedCycle=true|false`,
-    `weeklyRobustnessEnabled=true|false`, `weeklyRobustnessTopKPerSymbol`, `weeklyRobustnessLookbackDays`,
-    `weeklyRobustnessMinCandlesPerSlice`, `weeklyRobustnessRequireWinnerShortlist=true|false`,
-    `weeklyRobustnessMinSlices`, `weeklyRobustnessMinProfitablePct`, `weeklyRobustnessMinMedianExpectancyR`,
-    `weeklyRobustnessMaxTopWeekPnlConcentrationPct`.
-- `GET /api/scalp/cron/research-report`
-  - Builds a portfolio/operator report snapshot from deployment registry, promotion-gate state, recent trade ledger performance, and cross-deployment correlation.
-  - Persists snapshot to Postgres when `dryRun=false` (used by research worker preflight gating).
-  - Optional query params: `dryRun=true|false`, `cycleId`, `tradeLimit`, `monthlyMonths`.
+- `GET /api/scalp/cron/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true`
+  - Independent async job that ensures each active symbol has the required completed 1m weekly coverage.
+  - Claims rows from `scalp_pipeline_symbols`, updates per-symbol load status, and can chain to `prepare`.
+- `GET /api/scalp/cron/prepare?batchSize=6&autoSuccessor=true&autoContinue=true`
+  - Independent async job that creates/updates deployment variants and queues weekly worker rows.
+  - Writes deployment state flags (`in_universe`, `worker_dirty`, `promotion_dirty`, `last_prepared_at`).
+- `GET /api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true`
+  - Independent async job that claims pending/retry weekly rows in `scalp_deployment_weekly_metrics`, runs replay, and persists weekly metrics.
+  - Marks deployments `promotion_dirty=true` when fresh worker output is available.
+- `GET /api/scalp/cron/promotion?batchSize=300&autoContinue=true`
+  - Independent async job that aggregates weekly metrics and applies promotion/enablement policy.
+  - Enforces best tune per symbol+strategy and clears dirty flags when processed.
 - `GET /api/scalp/cron/live-guardrail-monitor`
   - Evaluates enabled deployments against live guardrail thresholds (expectancy, drawdown, drift vs forward, churn proxy) and emits risk journal events.
   - Can auto-pause breached deployments when `autoPause=true`.
   - Optional query params: `dryRun=true|false`, `autoPause=true|false`, `tradeLimit`, `monthlyMonths`.
 - `GET /api/scalp/cron/housekeeping`
-  - Cleans stale/orphaned research artifacts and lock keys, compacts journal/trade-ledger lists, and optionally refreshes research report snapshot.
-  - Optional query params: `dryRun=true|false`, `cycleRetentionDays`, `lockMaxAgeMinutes`, `maxScanKeys`, `refreshReport=true|false`.
+  - Recovers stale pipeline job rows/locks, prunes old weekly metrics, compacts journal/trade-ledger lists, and prunes orphaned retired deployments.
+  - Optional query params: `dryRun=true|false`, `lockMaxAgeMinutes`, `maxScanKeys`, `cleanupOrphanDeployments=true|false`, `candleHistoryKeepWeeks`, `candleHistoryTimeframe`.
 - `GET /api/scalp/cron/canonicalize-deployments`
   - One-time/manual canonicalization pass for deployment registry storage (file/KV): rewrites legacy suffixed strategy IDs to root strategy IDs, applies legacy guard tune overrides, and dedupes collisions by latest `updatedAtMs`.
   - Defaults to `dryRun=true`; use `dryRun=false` to persist the canonical snapshot.
 - `GET /api/scalp/research/universe`
   - Returns the latest persisted symbol-discovery snapshot (selected symbols, adds/removes, candidate diagnostics).
-- `GET /api/scalp/research/cycle`
-  - Returns one research cycle snapshot + latest aggregate summary.
-  - Optional query params: `cycleId`, `refreshSummary=true|false`, `includeTasks=true|false`, `taskLimit`.
-- `GET /api/scalp/research/report`
-  - Returns the latest stored operator report snapshot.
-  - Optional query params: `refresh=true|false`, `cycleId`, `tradeLimit`, `monthlyMonths`.
 - `GET /api/scalp/dashboard/summary`
   - Scalp dashboard payload for UI tab (policy metadata, per-symbol state snapshot, aggregated counters, and recent journal tail).
   - Optional query: `strategyId=<id>` to view state/journal for a specific strategy.
@@ -341,10 +317,13 @@ npm run start
   - In history-source mode with `M15/M3`, replay uses `15m` candles for base/chart and `1m` candles for confirmation/price (aggregated to `M3`) to mirror live logic and reduce runtime cost.
   - Auto-falls back source resolution (`1m -> 5m -> 15m -> 1h`) if `1m` prices are unavailable for the symbol/range.
   - Returns summary, trades, and chart payload (`candles`, `markers`, `tradeSegments`) for UI rendering.
+
 ## Dry-Run Safety
+
 `dryRun` defaults to `false` in the analysis routes. If you are testing and do not want real orders, pass `dryRun=true` explicitly.
 
 Examples:
+
 ```bash
 # Safe single-symbol run
 curl "http://localhost:3000/api/swing/analyze?symbol=ETHUSDT&platform=bitget&newsSource=coindesk&dryRun=true&notional=100"
@@ -357,6 +336,7 @@ curl "http://localhost:3000/api/swing/analyze?symbol=QQQUSDT&platform=capital&ne
 ```
 
 ## Forex Replay Harness (Phase 1)
+
 - Purpose:
   - Lightweight, quote-aware replay for forex execution/management logic validation.
   - Validates bid/ask stop sides, spread stress windows, partial/BE/trailing sequencing, contextual re-entry locks, and rollover fee effects.
@@ -367,6 +347,7 @@ curl "http://localhost:3000/api/swing/analyze?symbol=QQQUSDT&platform=capital&ne
   - JSON quote stream with `ts`, `bid`, `ask` (plus optional `eventRisk`, `shock`, `rollover`, `spreadMultiplier`, `forceCloseReasonCode`).
   - Optional entry signals (`side`, `stopPrice`, optional `takeProfitPrice`/`notionalUsd`).
 - Usage:
+
 ```bash
 # run sample replay and write artifacts to /tmp/forex-replay
 npm run replay:run
@@ -405,6 +386,7 @@ rg -n "STOP_INVALIDATION_MIN_HOLD_ACTIVE" /tmp/forex-replay-stop-hold/timeline.j
 # run replay tests
 npm run test:forex
 ```
+
 - Artifacts written:
   - `summary.json`
   - `equity.json`
@@ -419,6 +401,7 @@ npm run test:forex
   - curated fixture manifest lives at `data/replay/fixtures/index.json`
 
 ## Scalp Replay Harness (Phase 4)
+
 - Purpose:
   - Offline replay/backtest for the scalp state machine (Asia range -> sweep/rejection -> displacement + MSS -> iFVG retest -> deterministic entry/exit).
   - Deterministic outputs for parameter tuning across fixtures with spread/slippage stress.
@@ -426,6 +409,7 @@ npm run test:forex
   - Replay runs are fully offline and never call Capital APIs.
   - Use replay first for strategy iteration; only move to cron dry-runs after replay behavior is acceptable.
 - Usage:
+
 ```bash
 # single fixture replay
 npm run replay:scalp
@@ -461,7 +445,9 @@ node --import tsx scripts/scalp-replay-matrix.ts \
   --scenarioFile data/scalp-replay/scenarios/example.json \
   --outDir /tmp/scalp-replay-matrix
 ```
+
 - Optional scenario-file shape:
+
 ```json
 {
   "scenarios": [
@@ -479,24 +465,28 @@ node --import tsx scripts/scalp-replay-matrix.ts \
   ]
 }
 ```
+
 - Artifacts:
   - Single replay: `summary.json`, `config.json`, `trades.json`, `timeline.json`, `trades.csv`, `timeline.csv`
   - Matrix replay: `matrix.summary.json`, `matrix.summary.csv`, `matrix.scenarios.csv`
   - `matrix.summary.json` includes both per-run rows and scenario-level robustness summaries (`tradeCoveragePct`, `avgNetR`, `worstMaxDrawdownR`, `robustnessScore`).
 
 ## Data Flow
-1) **Analyze** selects provider by `platform`, pulls market data + selected news source, computes indicators/analytics, builds the prompt, calls the LLM, and (optionally) executes the trade.  
-2) The decision, snapshot, prompt, and execution result are appended to KV history.  
-3) **Evaluate** replays recent history through another LLM to score data quality, action logic, guardrails, etc., then stores a single latest evaluation per symbol.  
-4) The dashboard consumes `/api/swing/evaluations` and `/api/swing/chart` to render PnL, prompts, biases, aspect ratings, and recent position overlays.
+
+1. **Analyze** selects provider by `platform`, pulls market data + selected news source, computes indicators/analytics, builds the prompt, calls the LLM, and (optionally) executes the trade.
+2. The decision, snapshot, prompt, and execution result are appended to KV history.
+3. **Evaluate** replays recent history through another LLM to score data quality, action logic, guardrails, etc., then stores a single latest evaluation per symbol.
+4. The dashboard consumes `/api/swing/evaluations` and `/api/swing/chart` to render PnL, prompts, biases, aspect ratings, and recent position overlays.
 
 ## Frontend Notes
+
 - Dashboard shell/state lives in `pages/index.tsx`; chart rendering lives in `components/ChartPanel.tsx`.
 - Charts use `lightweight-charts` with custom overlays, a live pulse marker, and a fullscreen toggle.
 - The UI uses Bitget public WebSocket ticker stream for live price updates and live open-PnL display.
 - If no evaluations are present, run `GET /api/swing/analyze?...&dryRun=true` then `GET /api/swing/evaluate?...` to seed data before opening the page.
 
 ## Deployment
+
 - Vercel-ready (`vercel.json` routes `/api/*` to Next API handlers). Provide the same env vars in Vercel’s dashboard or your host of choice.
 - KV REST endpoint/token must be reachable from the runtime; Bitget/AI/News calls require outbound network access.
 - Current cron entries include:
@@ -504,19 +494,19 @@ node --import tsx scripts/scalp-replay-matrix.ts \
   - `/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true&seedTopSymbols=12&seedChunkDays=10&seedTargetHistoryDays=90&seedMaxRequestsPerSymbol=40&seedMaxSymbolsPerRun=12` weekly Monday (deep seed + universe refresh).
   - `/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true&seedTopSymbols=4&seedChunkDays=3&seedTargetHistoryDays=90&seedMaxRequestsPerSymbol=20&seedMaxSymbolsPerRun=4` daily Tuesday-Friday (light top-up seed + refresh).
   - `/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=false&seedTopSymbols=4&seedChunkDays=3&seedTargetHistoryDays=90&seedMaxRequestsPerSymbol=20&seedMaxSymbolsPerRun=4` daily Saturday/Sunday (weekend top-up with quote gate relaxed).
-  - `/api/scalp/cron/research-cycle-start?dryRun=false&force=false` weekly after discovery (creates task graph).
-  - `/api/scalp/cron/research-cycle-worker?maxRuns=40&concurrency=4&aggregateAfter=false&syncPromotionGates=false...` every 2 minutes (executes chunked replay tasks with bounded parallelism).
-  - `/api/scalp/cron/research-cycle-aggregate?...` every 10 minutes (refreshes cycle summary/status).
-  - `/api/scalp/cron/research-cycle-sync-gates?...` every 20 minutes (reconciles deployment promotion gates from completed cycles).
-  - `/api/scalp/cron/research-report?dryRun=false` hourly (refreshes operator portfolio report snapshot).
+  - `/api/scalp/cron/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&selfMaxHops=8` every 10 minutes.
+  - `/api/scalp/cron/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8` every 10 minutes.
+  - `/api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&selfMaxHops=12` every 2 minutes.
+  - `/api/scalp/cron/promotion?batchSize=300&autoContinue=true&selfMaxHops=6` every 15 minutes.
   - `/api/scalp/cron/live-guardrail-monitor?dryRun=false&autoPause=true` every 15 minutes (detects live drift and auto-pauses breached deployments).
-  - `/api/scalp/cron/housekeeping?dryRun=false&refreshReport=true` hourly (retention cleanup + lock cleanup + list compaction).
+  - `/api/scalp/cron/housekeeping?dryRun=false&refreshReport=false` hourly (stale row recovery + retention cleanup + list compaction).
   - `/api/scalp/cron/execute-deployments?all=true&venue=capital&dryRun=false&requirePromotionEligible=true` every minute for promotion-eligible Capital deployments.
   - `/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true` every minute for promotion-eligible Bitget deployments.
   - Symbol-specific scalp tuning is pinned by deployment row (`strategyId` + `tuneId`) in `data/scalp-deployments.json`.
 - Cron-declared routes are intentionally allowed without admin secret; non-cron routes remain protected when `ADMIN_ACCESS_SECRET` is set.
 
 ## Troubleshooting
+
 - `GET /api/debug-env-values` to confirm env vars are detected.
 - `GET /api/swing/bitget-ping` to verify Bitget credentials/connectivity.
 - Watch server logs for KV errors (missing `upstash_payasyougo_KV_REST_API_URL`/`upstash_payasyougo_KV_REST_API_TOKEN`) or provider failures (`COINDESK_API_KEY`, `MARKETAUX_API_KEY`, ForexFactory feed reachability, Capital credentials).

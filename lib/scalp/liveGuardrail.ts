@@ -3,10 +3,10 @@ import {
     listScalpDeploymentRegistryEntries,
     upsertScalpDeploymentRegistryEntry,
     type ScalpDeploymentRegistryEntry,
+    type ScalpForwardValidationMetrics,
 } from './deploymentRegistry';
-import { refreshScalpResearchPortfolioReport, type ScalpResearchReportDeploymentRow } from './researchReporting';
-import { appendScalpJournal } from './store';
-import type { ScalpJournalEntry } from './types';
+import { appendScalpJournal, loadScalpTradeLedger } from './store';
+import type { ScalpJournalEntry, ScalpTradeLedgerEntry } from './types';
 
 function toFinite(value: unknown, fallback = 0): number {
     const n = Number(value);
@@ -41,6 +41,103 @@ function normalizeText(value: unknown, maxLen = 400): string {
     return String(value || '')
         .trim()
         .slice(0, maxLen);
+}
+
+interface ScalpLiveGuardrailTradeWindowPerformance {
+    trades: number;
+    wins: number;
+    losses: number;
+    netR: number;
+    expectancyR: number;
+    winRatePct: number;
+    maxDrawdownR: number;
+    lastTradeAtMs: number | null;
+}
+
+interface ScalpLiveGuardrailDeploymentMetrics {
+    deploymentId: string;
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    enabled: boolean;
+    forwardValidation: ScalpForwardValidationMetrics | null;
+    perf30d: ScalpLiveGuardrailTradeWindowPerformance;
+}
+
+function computeTradeWindowPerformance(
+    trades: ScalpTradeLedgerEntry[],
+    startMs: number,
+    endMs: number,
+): ScalpLiveGuardrailTradeWindowPerformance {
+    const scoped = trades
+        .filter((row) => !row.dryRun)
+        .filter((row) => Number.isFinite(Number(row.exitAtMs)))
+        .filter((row) => Number(row.exitAtMs) >= startMs && Number(row.exitAtMs) <= endMs)
+        .slice()
+        .sort((a, b) => Number(a.exitAtMs) - Number(b.exitAtMs));
+
+    let wins = 0;
+    let losses = 0;
+    let netR = 0;
+    let equityR = 0;
+    let peakR = 0;
+    let maxDrawdownR = 0;
+    let lastTradeAtMs: number | null = null;
+
+    for (const trade of scoped) {
+        const r = toFinite(trade.rMultiple, 0);
+        if (r > 0) wins += 1;
+        else if (r < 0) losses += 1;
+        netR += r;
+        equityR += r;
+        peakR = Math.max(peakR, equityR);
+        maxDrawdownR = Math.max(maxDrawdownR, peakR - equityR);
+        const ts = Number(trade.exitAtMs);
+        if (Number.isFinite(ts)) {
+            lastTradeAtMs = lastTradeAtMs === null ? ts : Math.max(lastTradeAtMs, ts);
+        }
+    }
+
+    const tradesCount = scoped.length;
+    return {
+        trades: tradesCount,
+        wins,
+        losses,
+        netR,
+        expectancyR: tradesCount > 0 ? netR / tradesCount : 0,
+        winRatePct: tradesCount > 0 ? (wins / tradesCount) * 100 : 0,
+        maxDrawdownR,
+        lastTradeAtMs,
+    };
+}
+
+function buildDeploymentMetrics(params: {
+    deployments: ScalpDeploymentRegistryEntry[];
+    tradeLedger: ScalpTradeLedgerEntry[];
+    nowMs: number;
+}): ScalpLiveGuardrailDeploymentMetrics[] {
+    const tradesByDeploymentId = new Map<string, ScalpTradeLedgerEntry[]>();
+    for (const trade of params.tradeLedger) {
+        const deploymentId = String(trade.deploymentId || '').trim();
+        if (!deploymentId) continue;
+        const bucket = tradesByDeploymentId.get(deploymentId) || [];
+        bucket.push(trade);
+        tradesByDeploymentId.set(deploymentId, bucket);
+    }
+
+    return params.deployments.map((deployment) => ({
+        deploymentId: deployment.deploymentId,
+        symbol: deployment.symbol,
+        strategyId: deployment.strategyId,
+        tuneId: deployment.tuneId,
+        enabled: Boolean(deployment.enabled),
+        forwardValidation: deployment.promotionGate?.forwardValidation || null,
+        perf30d: computeTradeWindowPerformance(
+            tradesByDeploymentId.get(deployment.deploymentId) || [],
+            params.nowMs - 30 * 24 * 60 * 60_000,
+            params.nowMs,
+        ),
+    }));
 }
 
 export interface ScalpLiveGuardrailThresholds {
@@ -89,7 +186,7 @@ export interface ScalpLiveGuardrailEvaluation {
 }
 
 export function evaluateScalpDeploymentGuardrail(
-    row: Pick<ScalpResearchReportDeploymentRow, 'deploymentId' | 'perf30d' | 'forwardValidation'>,
+    row: Pick<ScalpLiveGuardrailDeploymentMetrics, 'deploymentId' | 'perf30d' | 'forwardValidation'>,
     thresholds: ScalpLiveGuardrailThresholds,
 ): ScalpLiveGuardrailEvaluation {
     const warmups: ScalpLiveGuardrailWarmup[] = [];
@@ -220,7 +317,7 @@ function buildGuardrailJournalEntry(params: {
     action: 'none' | 'pause';
     dryRun: boolean;
     thresholds: ScalpLiveGuardrailThresholds;
-    metrics: Pick<ScalpResearchReportDeploymentRow, 'perf30d' | 'forwardValidation'>;
+    metrics: Pick<ScalpLiveGuardrailDeploymentMetrics, 'perf30d' | 'forwardValidation'>;
 }): ScalpJournalEntry {
     const hasBreaches = params.breaches.length > 0;
     const level: ScalpJournalEntry['level'] = hasBreaches
@@ -265,15 +362,16 @@ export async function runScalpLiveGuardrailMonitor(
         autoPause: params.autoPause ?? resolveScalpLiveGuardrailThresholds().autoPause,
     });
 
-    const [report, registryRows] = await Promise.all([
-        refreshScalpResearchPortfolioReport({
-            nowMs,
-            tradeLimit: params.tradeLimit,
-            monthlyMonths: params.monthlyMonths,
-            persist: false,
-        }),
+    const tradeLimit = Math.max(500, Math.min(50_000, Math.floor(Number(params.tradeLimit) || 20_000)));
+    const [registryRows, tradeLedger] = await Promise.all([
         listScalpDeploymentRegistryEntries({}),
+        loadScalpTradeLedger(tradeLimit),
     ]);
+    const deploymentMetrics = buildDeploymentMetrics({
+        deployments: registryRows,
+        tradeLedger,
+        nowMs,
+    });
 
     const registryByDeploymentId = new Map<string, ScalpDeploymentRegistryEntry>(
         registryRows.map((row) => [row.deploymentId, row]),
@@ -289,7 +387,7 @@ export async function runScalpLiveGuardrailMonitor(
     const cfg = getScalpStrategyConfig();
     const nowIso = new Date(nowMs).toISOString();
 
-    for (const row of report.deployments) {
+    for (const row of deploymentMetrics) {
         if (!row.enabled) continue;
         checkedDeployments += 1;
 
@@ -376,7 +474,7 @@ export async function runScalpLiveGuardrailMonitor(
         generatedAtIso: nowIso,
         thresholds,
         summary: {
-            enabledDeployments: report.deployments.filter((row) => row.enabled).length,
+            enabledDeployments: deploymentMetrics.filter((row) => row.enabled).length,
             checkedDeployments,
             warmupDeployments,
             breachedDeployments,

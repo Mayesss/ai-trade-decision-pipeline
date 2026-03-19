@@ -183,10 +183,6 @@ type InternalVariant = {
     score: number;
 };
 
-function hasSessionProfileOverride(variant: Pick<InternalVariant, 'configOverride'>): boolean {
-    return variant.configOverride?.sessions?.entrySessionProfile !== undefined;
-}
-
 export function buildScalpResearchTuneVariants(params: {
     symbol: string;
     strategyId: string;
@@ -311,7 +307,7 @@ export function buildScalpResearchTuneVariants(params: {
         const alts = pickNearestSessionProfileAlternatives(values, baseline);
         for (const value of alts) {
             pushVariant({
-                tuneId: `auto_sp${sessionProfileToken(value)}`,
+                tuneId: `auto_sp_${sessionProfileToken(value)}`,
                 configOverride: { sessions: { entrySessionProfile: value } },
                 score: scalpEntrySessionProfileDistance(value, baseline),
             });
@@ -441,24 +437,7 @@ export function buildScalpResearchTuneVariants(params: {
             if (a.score !== b.score) return a.score - b.score;
             return a.tuneId.localeCompare(b.tuneId);
         });
-    const selected = sortedVariants.slice(0, maxVariants);
-    const hasSessionVariantSelected = selected.some((row) => hasSessionProfileOverride(row));
-    const fallbackSessionVariant = sortedVariants.find((row) => hasSessionProfileOverride(row));
-    if (
-        maxVariants > 1 &&
-        !hasSessionVariantSelected &&
-        fallbackSessionVariant &&
-        !selected.some((row) => row.tuneId === fallbackSessionVariant.tuneId)
-    ) {
-        const replaceIdx = (() => {
-            for (let idx = selected.length - 1; idx >= 0; idx -= 1) {
-                if (selected[idx]?.tuneId !== 'default') return idx;
-            }
-            return selected.length - 1;
-        })();
-        if (replaceIdx >= 0) selected[replaceIdx] = fallbackSessionVariant;
-    }
-    return selected.map((row) => ({
+    return sortedVariants.slice(0, maxVariants).map((row) => ({
         tuneId: row.tuneId,
         configOverride: row.configOverride,
     }));

@@ -158,3 +158,23 @@
 .theme-dark .to-emerald-50 {
   --tw-gradient-to: rgb(6 78 59 / 0.28) var(--tw-gradient-to-position);
 }
+
+.theme-dark .scalp-grid-muted-dark {
+  --ag-background-color: rgb(18 20 24 / 1);
+  --ag-foreground-color: rgb(228 228 231 / 1);
+  --ag-header-background-color: rgb(24 27 34 / 1);
+  --ag-odd-row-background-color: rgb(21 24 30 / 1);
+  --ag-border-color: rgb(63 63 70 / 0.75);
+  --ag-accent-color: rgb(161 161 170 / 1);
+  --ag-input-focus-border-color: rgb(161 161 170 / 0.9);
+  --ag-row-hover-color: rgb(113 113 122 / 0.18);
+  --ag-selected-row-background-color: rgb(113 113 122 / 0.24);
+  --ag-range-selection-background-color: rgb(113 113 122 / 0.2);
+  --ag-range-selection-border-color: rgb(161 161 170 / 0.55);
+}
+
+.theme-dark .scalp-grid-muted-dark .ag-root-wrapper,
+.theme-dark .scalp-grid-muted-dark .ag-header,
+.theme-dark .scalp-grid-muted-dark .ag-paging-panel {
+  border-color: rgb(63 63 70 / 0.75);
+}

@@ -7,7 +7,7 @@ import {
   invokeCronEndpointDetached,
   type CronInvokeResult,
 } from "../../../../lib/scalp/cronChaining";
-import { runDiscoverPipelineJob } from "../../../../lib/scalp/pipelineJobs";
+import { runPromotionPipelineJob } from "../../../../lib/scalp/pipelineJobs";
 
 function firstQueryValue(
   value: string | string[] | undefined,
@@ -63,46 +63,16 @@ export default async function handler(
   if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
 
-  const includeLiveQuotes = parseBool(req.query.includeLiveQuotes, true);
-  const maxCandidates = parseIntBounded(
-    req.query.maxCandidates,
-    250,
-    20,
-    2_000,
-  );
-  const autoSuccessor = parseBool(req.query.autoSuccessor, true);
+  const batchSize = parseIntBounded(req.query.batchSize, 200, 1, 1_500);
   const autoContinue = parseBool(req.query.autoContinue, true);
-  const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 20);
+  const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 50);
   const selfMaxHops = parseIntBounded(req.query.selfMaxHops, 6, 0, 50);
 
-  const result = await runDiscoverPipelineJob({
-    includeLiveQuotes,
-    maxCandidates,
+  const result = await runPromotionPipelineJob({
+    batchSize,
   });
 
-  let downstream: CronInvokeResult | null = null;
   let selfRecall: CronInvokeResult | null = null;
-
-  if (
-    result.ok &&
-    !result.busy &&
-    autoSuccessor &&
-    result.downstreamRequested
-  ) {
-    downstream = await invokeCronEndpointDetached(
-      req,
-      "/api/scalp/cron/load-candles",
-      {
-        autoContinue: 1,
-        autoSuccessor: 1,
-        selfHop: 0,
-        selfMaxHops,
-        triggeredBy: "discover-symbols",
-      },
-      850,
-    );
-  }
-
   if (
     result.ok &&
     !result.busy &&
@@ -112,12 +82,10 @@ export default async function handler(
   ) {
     selfRecall = await invokeCronEndpointDetached(
       req,
-      "/api/scalp/cron/discover-symbols",
+      "/api/scalp/cron/promotion",
       {
-        includeLiveQuotes: includeLiveQuotes ? 1 : 0,
-        maxCandidates,
+        batchSize,
         autoContinue: 1,
-        autoSuccessor: autoSuccessor ? 1 : 0,
         selfHop: selfHop + 1,
         selfMaxHops,
       },
@@ -130,11 +98,9 @@ export default async function handler(
     busy: result.busy,
     job: result,
     chaining: {
-      autoSuccessor,
       autoContinue,
       selfHop,
       selfMaxHops,
-      downstream,
       selfRecall,
     },
   });

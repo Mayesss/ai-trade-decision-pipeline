@@ -5,7 +5,6 @@ import { scalpDeploymentRegistryPath } from './deploymentRegistry';
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 
 const DEFAULT_UNIVERSE_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-symbol-universe.json');
-const DEFAULT_REPORT_FILE_PATH = path.resolve(process.cwd(), 'data/scalp-research-report.json');
 const EMPTY_DEPLOYMENTS_SNAPSHOT = {
     version: 1,
     updatedAt: null,
@@ -16,9 +15,9 @@ const BASE_RESET_TABLES = [
     'scalp_shadow_job_runs',
     'scalp_jobs',
     'scalp_symbol_cooldowns',
-    'scalp_research_attempts',
-    'scalp_research_tasks',
-    'scalp_research_cycles',
+    'scalp_pipeline_jobs',
+    'scalp_pipeline_symbols',
+    'scalp_deployment_weekly_metrics',
     'scalp_execution_runs',
     'scalp_sessions',
     'scalp_journal',
@@ -200,7 +199,6 @@ export async function runScalpFullReset(
 
     const deploymentRegistryFile = scalpDeploymentRegistryPath();
     const universeFile = resolvePath('SCALP_SYMBOL_UNIVERSE_PATH', DEFAULT_UNIVERSE_FILE_PATH);
-    const reportFile = resolvePath('SCALP_RESEARCH_REPORT_PATH', DEFAULT_REPORT_FILE_PATH);
 
     {
         const existed = await pathExists(deploymentRegistryFile);
@@ -225,7 +223,7 @@ export async function runScalpFullReset(
         });
     }
 
-    for (const targetFile of [universeFile, reportFile]) {
+    for (const targetFile of [universeFile]) {
         const existed = await pathExists(targetFile);
         let changed = false;
         let error: string | null = null;

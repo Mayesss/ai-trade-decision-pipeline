@@ -225,10 +225,10 @@ const DEFAULT_POLICY: ScalpSymbolDiscoveryPolicy = {
         },
     },
     sources: {
-        includeCapitalMarketsApi: true,
+        includeCapitalMarketsApi: false,
         includeBitgetMarketsApi: true,
         includeCapitalTickerMap: false,
-        includeDeploymentSymbols: true,
+        includeDeploymentSymbols: false,
         includeHistorySymbols: true,
         requireHistoryPresence: true,
         explicitSymbols: [],

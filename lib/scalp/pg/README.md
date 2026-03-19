@@ -19,5 +19,3 @@ Current modules:
 - `executionRuns.ts`: execution-run idempotency claim/finalize primitives (`scalp_execution_runs`).
 - `jobs.ts`: queue enqueue/claim/complete primitives.
 - `storeMirror.ts`: runtime/session/journal/ledger persistence helpers for PG primary runtime.
-- `researchMirror.ts`: research cycle/task/cooldown persistence helpers for PG primary runtime.
-- `researchTasks.ts`: research claim/defer/complete/fail primitives.

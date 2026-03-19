@@ -8,12 +8,12 @@ datasource db {
 }
 
 enum ScalpJobKind {
-  EXECUTE_CYCLE    @map("execute_cycle")
-  RESEARCH_TASK    @map("research_task")
+  EXECUTE_CYCLE      @map("execute_cycle")
+  RESEARCH_TASK      @map("research_task")
   RESEARCH_AGGREGATE @map("research_aggregate")
-  PROMOTION_SYNC   @map("promotion_sync")
-  GUARDRAIL_CHECK  @map("guardrail_check")
-  HOUSEKEEPING     @map("housekeeping")
+  PROMOTION_SYNC     @map("promotion_sync")
+  GUARDRAIL_CHECK    @map("guardrail_check")
+  HOUSEKEEPING       @map("housekeeping")
 
   @@map("scalp_job_kind")
 }
@@ -36,46 +36,34 @@ enum ScalpShadowJobOutcome {
   @@map("scalp_shadow_job_outcome")
 }
 
-enum ScalpResearchTaskStatus {
-  PENDING          @map("pending")
-  RUNNING          @map("running")
-  RETRY_WAIT       @map("retry_wait")
-  COMPLETED        @map("completed")
-  FAILED_PERMANENT @map("failed_permanent")
-  CANCELLED        @map("cancelled")
-
-  @@map("scalp_research_task_status")
-}
-
-enum ScalpCycleStatus {
-  RUNNING   @map("running")
-  COMPLETED @map("completed")
-  FAILED    @map("failed")
-  STALLED   @map("stalled")
-
-  @@map("scalp_cycle_status")
-}
-
 model ScalpDeployment {
-  deploymentId  String   @id @map("deployment_id")
-  symbol        String
-  strategyId    String   @map("strategy_id")
-  tuneId        String   @map("tune_id")
-  source        String
-  enabled       Boolean  @default(false)
-  configOverride Json    @default(dbgenerated("'{}'::jsonb")) @map("config_override") @db.JsonB
-  promotionGate Json?    @map("promotion_gate") @db.JsonB
-  updatedBy     String?  @map("updated_by")
-  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+  deploymentId   String    @id @map("deployment_id")
+  symbol         String
+  strategyId     String    @map("strategy_id")
+  tuneId         String    @map("tune_id")
+  source         String
+  enabled        Boolean   @default(false)
+  configOverride Json      @default(dbgenerated("'{}'::jsonb")) @map("config_override") @db.JsonB
+  promotionGate  Json?     @map("promotion_gate") @db.JsonB
+  inUniverse     Boolean   @default(true) @map("in_universe")
+  workerDirty    Boolean   @default(false) @map("worker_dirty")
+  promotionDirty Boolean   @default(false) @map("promotion_dirty")
+  retiredAt      DateTime? @map("retired_at") @db.Timestamptz(3)
+  lastPreparedAt DateTime? @map("last_prepared_at") @db.Timestamptz(3)
+  updatedBy      String?   @map("updated_by")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
 
-  sessions       ScalpSession[]
-  executionRuns  ScalpExecutionRun[]
+  sessions        ScalpSession[]
+  executionRuns   ScalpExecutionRun[]
   tradeLedgerRows ScalpTradeLedger[]
-  researchTasks  ScalpResearchTask[]
+  weeklyMetrics   ScalpDeploymentWeeklyMetric[]
 
   @@unique([symbol, strategyId, tuneId], map: "scalp_deployments_unique_triplet")
   @@index([enabled], map: "scalp_deployments_enabled_idx")
+  @@index([inUniverse], map: "scalp_deployments_in_universe_idx")
+  @@index([workerDirty], map: "scalp_deployments_worker_dirty_idx")
+  @@index([promotionDirty], map: "scalp_deployments_promotion_dirty_idx")
   @@map("scalp_deployments")
 }
 
@@ -113,14 +101,14 @@ model ScalpSession {
 }
 
 model ScalpExecutionRun {
-  id              BigInt   @id @default(autoincrement())
-  deploymentId    String   @map("deployment_id")
-  scheduledMinute DateTime @map("scheduled_minute") @db.Timestamptz(3)
+  id              BigInt    @id @default(autoincrement())
+  deploymentId    String    @map("deployment_id")
+  scheduledMinute DateTime  @map("scheduled_minute") @db.Timestamptz(3)
   status          String
-  reasonCodes     String[] @default([]) @map("reason_codes")
-  errorCode       String?  @map("error_code")
-  errorMessage    String?  @map("error_message")
-  startedAt       DateTime @default(now()) @map("started_at") @db.Timestamptz(3)
+  reasonCodes     String[]  @default([]) @map("reason_codes")
+  errorCode       String?   @map("error_code")
+  errorMessage    String?   @map("error_message")
+  startedAt       DateTime  @default(now()) @map("started_at") @db.Timestamptz(3)
   finishedAt      DateTime? @map("finished_at") @db.Timestamptz(3)
 
   deployment ScalpDeployment @relation(fields: [deploymentId], references: [deploymentId], onDelete: Cascade)
@@ -131,15 +119,15 @@ model ScalpExecutionRun {
 }
 
 model ScalpJournal {
-  id          String   @id @db.Uuid
-  ts          DateTime @db.Timestamptz(3)
-  deploymentId String? @map("deployment_id")
-  symbol      String?
-  dayKey      DateTime? @map("day_key") @db.Date
-  level       String
-  type        String
-  reasonCodes String[] @default([]) @map("reason_codes")
-  payload     Json     @default(dbgenerated("'{}'::jsonb")) @db.JsonB
+  id           String    @id @db.Uuid
+  ts           DateTime  @db.Timestamptz(3)
+  deploymentId String?   @map("deployment_id")
+  symbol       String?
+  dayKey       DateTime? @map("day_key") @db.Date
+  level        String
+  type         String
+  reasonCodes  String[]  @default([]) @map("reason_codes")
+  payload      Json      @default(dbgenerated("'{}'::jsonb")) @db.JsonB
 
   @@index([ts(sort: Desc)], map: "scalp_journal_ts_idx")
   @@index([deploymentId, ts(sort: Desc)], map: "scalp_journal_deployment_idx")
@@ -166,81 +154,15 @@ model ScalpTradeLedger {
   @@map("scalp_trade_ledger")
 }
 
-model ScalpResearchCycle {
-  cycleId          String   @id @map("cycle_id")
-  status           ScalpCycleStatus
-  paramsJson       Json     @map("params_json") @db.JsonB
-  latestSummaryJson Json?   @map("latest_summary_json") @db.JsonB
-  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
-  completedAt      DateTime? @map("completed_at") @db.Timestamptz(3)
-
-  tasks ScalpResearchTask[]
-
-  @@index([status, updatedAt(sort: Desc)], map: "scalp_research_cycles_status_updated_idx")
-  @@map("scalp_research_cycles")
-}
-
-model ScalpResearchTask {
-  taskId         String                  @id @map("task_id")
-  cycleId        String                  @map("cycle_id")
-  deploymentId   String                  @map("deployment_id")
-  symbol         String
-  strategyId     String                  @map("strategy_id")
-  tuneId         String                  @map("tune_id")
-  windowFrom     DateTime                @map("window_from") @db.Timestamptz(3)
-  windowTo       DateTime                @map("window_to") @db.Timestamptz(3)
-  status         ScalpResearchTaskStatus @default(PENDING)
-  attempts       Int                     @default(0)
-  maxAttempts    Int                     @default(2) @map("max_attempts")
-  nextEligibleAt DateTime                @default(now()) @map("next_eligible_at") @db.Timestamptz(3)
-  workerId       String?                 @map("worker_id")
-  startedAt      DateTime?               @map("started_at") @db.Timestamptz(3)
-  finishedAt     DateTime?               @map("finished_at") @db.Timestamptz(3)
-  errorCode      String?                 @map("error_code")
-  errorMessage   String?                 @map("error_message")
-  resultJson     Json?                   @map("result_json") @db.JsonB
-  priority       Int                     @default(100)
-  createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt      DateTime                @default(now()) @map("updated_at") @db.Timestamptz(3)
-
-  cycle      ScalpResearchCycle @relation(fields: [cycleId], references: [cycleId], onDelete: Cascade)
-  deployment ScalpDeployment    @relation(fields: [deploymentId], references: [deploymentId])
-  attemptsRows ScalpResearchAttempt[]
-
-  @@unique([cycleId, deploymentId, windowFrom, windowTo], map: "scalp_research_tasks_unique_window")
-  @@index([status, nextEligibleAt, priority, createdAt], map: "scalp_research_tasks_claim_idx")
-  @@index([cycleId, status], map: "scalp_research_tasks_cycle_status_idx")
-  @@map("scalp_research_tasks")
-}
-
-model ScalpResearchAttempt {
-  id          BigInt   @id @default(autoincrement())
-  taskId      String   @map("task_id")
-  attemptNo   Int      @map("attempt_no")
-  status      String
-  errorCode   String?  @map("error_code")
-  errorMessage String? @map("error_message")
-  metricsJson Json?    @map("metrics_json") @db.JsonB
-  startedAt   DateTime @default(now()) @map("started_at") @db.Timestamptz(3)
-  finishedAt  DateTime? @map("finished_at") @db.Timestamptz(3)
-
-  task ScalpResearchTask @relation(fields: [taskId], references: [taskId], onDelete: Cascade)
-
-  @@unique([taskId, attemptNo], map: "scalp_research_attempts_unique_task_attempt")
-  @@index([taskId, startedAt(sort: Desc)], map: "scalp_research_attempts_task_started_idx")
-  @@map("scalp_research_attempts")
-}
-
 model ScalpSymbolCooldown {
-  symbol           String   @id
-  failureCount     Int      @default(0) @map("failure_count")
+  symbol           String    @id
+  failureCount     Int       @default(0) @map("failure_count")
   windowStartedAt  DateTime? @map("window_started_at") @db.Timestamptz(3)
   blockedUntil     DateTime? @map("blocked_until") @db.Timestamptz(3)
-  lastErrorCode    String?  @map("last_error_code")
-  lastErrorMessage String?  @map("last_error_message")
-  cycleId          String?  @map("cycle_id")
-  updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+  lastErrorCode    String?   @map("last_error_code")
+  lastErrorMessage String?   @map("last_error_message")
+  cycleId          String?   @map("cycle_id")
+  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
 
   @@index([blockedUntil], map: "scalp_symbol_cooldowns_blocked_idx")
   @@map("scalp_symbol_cooldowns")
@@ -268,17 +190,6 @@ model ScalpSymbolMarketMetadata {
   @@index([assetCategory, updatedAt(sort: Desc)], map: "scalp_symbol_market_metadata_category_updated_idx")
   @@index([updatedAt(sort: Desc)], map: "scalp_symbol_market_metadata_updated_idx")
   @@map("scalp_symbol_market_metadata")
-}
-
-model ScalpResearchReportSnapshot {
-  reportKey   String   @id @map("report_key")
-  payloadJson Json     @default(dbgenerated("'{}'::jsonb")) @map("payload_json") @db.JsonB
-  generatedAt DateTime @default(now()) @map("generated_at") @db.Timestamptz(3)
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
-
-  @@index([updatedAt(sort: Desc)], map: "scalp_research_report_snapshots_updated_idx")
-  @@map("scalp_research_report_snapshots")
 }
 
 model ScalpSymbolUniverseSnapshot {
@@ -337,4 +248,94 @@ model ScalpShadowJobRun {
   @@index([workerId, createdAt(sort: Desc)], map: "scalp_shadow_job_runs_worker_created_idx")
   @@index([createdAt(sort: Desc)], map: "scalp_shadow_job_runs_created_idx")
   @@map("scalp_shadow_job_runs")
+}
+
+model ScalpPipelineJob {
+  jobKind       String    @id @map("job_kind")
+  status        String    @default("idle")
+  lockToken     String?   @map("lock_token")
+  lockExpiresAt DateTime? @map("lock_expires_at") @db.Timestamptz(3)
+  runningSince  DateTime? @map("running_since") @db.Timestamptz(3)
+  nextRunAt     DateTime? @map("next_run_at") @db.Timestamptz(3)
+  attempts      Int       @default(0)
+  lastRunAt     DateTime? @map("last_run_at") @db.Timestamptz(3)
+  lastSuccessAt DateTime? @map("last_success_at") @db.Timestamptz(3)
+  lastError     String?   @map("last_error")
+  progressLabel String?   @map("progress_label")
+  progressJson  Json?     @map("progress_json") @db.JsonB
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@index([status], map: "scalp_pipeline_jobs_status_idx")
+  @@index([nextRunAt], map: "scalp_pipeline_jobs_next_run_idx")
+  @@map("scalp_pipeline_jobs")
+}
+
+model ScalpPipelineSymbol {
+  symbol              String    @id
+  active              Boolean   @default(true)
+  discoverStatus      String    @default("pending") @map("discover_status")
+  discoverAttempts    Int       @default(0) @map("discover_attempts")
+  discoverNextRunAt   DateTime? @map("discover_next_run_at") @db.Timestamptz(3)
+  discoverError       String?   @map("discover_error")
+  lastDiscoveredAt    DateTime? @map("last_discovered_at") @db.Timestamptz(3)
+  loadStatus          String    @default("pending") @map("load_status")
+  loadAttempts        Int       @default(0) @map("load_attempts")
+  loadNextRunAt       DateTime? @map("load_next_run_at") @db.Timestamptz(3)
+  loadError           String?   @map("load_error")
+  weeksCovered        Int       @default(0) @map("weeks_covered")
+  latestWeekStart     DateTime? @map("latest_week_start") @db.Timestamptz(3)
+  lastLoadedAt        DateTime? @map("last_loaded_at") @db.Timestamptz(3)
+  prepareStatus       String    @default("pending") @map("prepare_status")
+  prepareAttempts     Int       @default(0) @map("prepare_attempts")
+  prepareNextRunAt    DateTime? @map("prepare_next_run_at") @db.Timestamptz(3)
+  prepareError        String?   @map("prepare_error")
+  preparedDeployments Int       @default(0) @map("prepared_deployments")
+  lastPreparedAt      DateTime? @map("last_prepared_at") @db.Timestamptz(3)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@index([active], map: "scalp_pipeline_symbols_active_idx")
+  @@index([loadStatus, loadNextRunAt], map: "scalp_pipeline_symbols_load_claim_idx")
+  @@index([prepareStatus, prepareNextRunAt], map: "scalp_pipeline_symbols_prepare_claim_idx")
+  @@map("scalp_pipeline_symbols")
+}
+
+model ScalpDeploymentWeeklyMetric {
+  id             BigInt    @id @default(autoincrement())
+  deploymentId   String    @map("deployment_id")
+  symbol         String
+  strategyId     String    @map("strategy_id")
+  tuneId         String    @map("tune_id")
+  weekStart      DateTime  @map("week_start") @db.Timestamptz(3)
+  weekEnd        DateTime  @map("week_end") @db.Timestamptz(3)
+  status         String    @default("pending")
+  attempts       Int       @default(0)
+  nextRunAt      DateTime  @default(now()) @map("next_run_at") @db.Timestamptz(3)
+  workerId       String?   @map("worker_id")
+  startedAt      DateTime? @map("started_at") @db.Timestamptz(3)
+  finishedAt     DateTime? @map("finished_at") @db.Timestamptz(3)
+  errorCode      String?   @map("error_code")
+  errorMessage   String?   @map("error_message")
+  trades         Int?      @map("trades")
+  winRatePct     Decimal?  @map("win_rate_pct") @db.Decimal(10, 4)
+  netR           Decimal?  @map("net_r") @db.Decimal(20, 8)
+  expectancyR    Decimal?  @map("expectancy_r") @db.Decimal(20, 8)
+  profitFactor   Decimal?  @map("profit_factor") @db.Decimal(20, 8)
+  maxDrawdownR   Decimal?  @map("max_drawdown_r") @db.Decimal(20, 8)
+  avgHoldMinutes Decimal?  @map("avg_hold_minutes") @db.Decimal(20, 8)
+  netPnlUsd      Decimal?  @map("net_pnl_usd") @db.Decimal(20, 8)
+  grossProfitR   Decimal?  @map("gross_profit_r") @db.Decimal(20, 8)
+  grossLossR     Decimal?  @map("gross_loss_r") @db.Decimal(20, 8)
+  metricsJson    Json?     @map("metrics_json") @db.JsonB
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  deployment ScalpDeployment @relation(fields: [deploymentId], references: [deploymentId], onDelete: Cascade)
+
+  @@unique([deploymentId, weekStart], map: "scalp_deployment_weekly_metrics_unique_week")
+  @@index([status, nextRunAt, weekStart], map: "scalp_deployment_weekly_metrics_claim_idx")
+  @@index([deploymentId, weekStart(sort: Desc)], map: "scalp_deployment_weekly_metrics_deployment_week_idx")
+  @@index([symbol, strategyId, tuneId, weekStart(sort: Desc)], map: "scalp_deployment_weekly_metrics_symbol_strategy_week_idx")
+  @@map("scalp_deployment_weekly_metrics")
 }

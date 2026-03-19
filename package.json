@@ -27,7 +27,7 @@
     "db:pg:validate": "node scripts/with-db-env.mjs prisma validate",
     "db:pg:migrate:deploy": "node scripts/with-db-env.mjs prisma migrate deploy",
     "db:pg:health": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-pg-healthcheck.ts",
-    "db:pg:cutover:gates": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-pg-cutover-gates.ts",
+    "db:pg:backfill:weekly-metrics": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-backfill-weekly-metrics-from-research.ts --apply",
     "test:ts": "node --import tsx --test",
     "test:forex": "node --import tsx --test lib/forex/*.test.ts lib/forex/modules/*.test.ts lib/forex/replay/*.test.ts",
     "test:scalp": "node --import tsx --test lib/scalp/replay/*.test.ts lib/scalp/strategies/*.test.ts",

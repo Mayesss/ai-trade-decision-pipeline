@@ -22,9 +22,9 @@ type DeploymentRow = {
   guardrail: string;
 };
 
-const cycleCards = [
+const pipelineCards = [
   {
-    label: 'Cycle Progress',
+    label: 'Pipeline Progress',
     value: '76%',
     detail: '184 / 240 tasks complete',
     tone: 'sky',
@@ -51,7 +51,7 @@ const cycleCards = [
 
 const cronRows: CronRow[] = [
   {
-    id: 'scalp_cycle_start',
+    id: 'scalp_discover_symbols',
     cadence: 'Daily',
     role: 'Freeze universe + emit chunk manifest',
     status: 'healthy',
@@ -60,7 +60,7 @@ const cronRows: CronRow[] = [
     p95: '7.3s',
   },
   {
-    id: 'scalp_cycle_worker',
+    id: 'scalp_worker',
     cadence: 'Every 2m',
     role: 'Claim and run one replay chunk',
     status: 'healthy',
@@ -69,7 +69,7 @@ const cronRows: CronRow[] = [
     p95: '332s',
   },
   {
-    id: 'scalp_cycle_aggregate',
+    id: 'scalp_prepare',
     cadence: 'Every 10m',
     role: 'Compute candidate summary + robustness labels',
     status: 'lagging',
@@ -107,7 +107,7 @@ const cronRows: CronRow[] = [
   {
     id: 'scalp_housekeeping',
     cadence: 'Hourly',
-    role: 'Prune stale locks/cycles + compact lists',
+    role: 'Prune stale locks/jobs + compact lists',
     status: 'healthy',
     sla: '< 30s',
     lastRun: '08:00',
@@ -210,20 +210,20 @@ export default function ScalpUiRedesignPage() {
         <div className="mx-auto max-w-[1500px] px-4 py-6 sm:px-6 lg:px-8">
           <div className="relative overflow-hidden rounded-3xl border border-cyan-300/25 bg-[radial-gradient(circle_at_20%_0%,rgba(59,130,246,0.35),transparent_50%),radial-gradient(circle_at_80%_20%,rgba(16,185,129,0.2),transparent_45%),linear-gradient(140deg,#0b1722,#0f2533_40%,#08131d)] p-6">
             <div className="absolute right-5 top-5 rounded-full border border-cyan-200/30 bg-cyan-100/10 px-3 py-1 text-xs font-medium tracking-wider text-cyan-100">
-              cycle rc_20260308_0600
+              jobs async_20260308_0600
             </div>
             <p className="text-xs uppercase tracking-[0.26em] text-cyan-200/80" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-              Scalp Research Ops
+              Scalp Deployment Ops
             </p>
             <h1 className="mt-2 max-w-3xl text-3xl sm:text-4xl" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>
               Deploy only what passes forward evidence, not yesterday’s rank.
             </h1>
             <p className="mt-3 max-w-4xl text-sm text-slate-200/85">
-              New control plane aligned to research cycle cron pipeline, promotion gate outcomes, blocked-hour falsification, execution stress,
+              New control plane aligned to async cron jobs, promotion gate outcomes, blocked-hour falsification, execution stress,
               and live guardrail actions.
             </p>
             <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              {cycleCards.map((card) => (
+              {pipelineCards.map((card) => (
                 <article key={card.label} className={`rounded-2xl border p-4 shadow-sm ${toneClasses(card.tone)}`}>
                   <p className="text-[11px] uppercase tracking-[0.18em] opacity-85" style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
                     {card.label}

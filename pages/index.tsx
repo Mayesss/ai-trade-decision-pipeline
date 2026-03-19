@@ -223,7 +223,6 @@ type ScalpPipelineStatusPanel = {
   status?: ScalpPipelineStatus;
   label?: string;
   detail?: string | null;
-  cycleId?: string | null;
   updatedAtMs?: number | null;
   progressPct?: number | null;
   steps?: Array<{
@@ -232,6 +231,25 @@ type ScalpPipelineStatusPanel = {
     state?: ScalpPipelineStepState;
     detail?: string | null;
   }>;
+};
+
+type ScalpPipelineJobSummary = {
+  jobKind?: string;
+  status?: string;
+  locked?: boolean;
+  lastRunAtMs?: number | null;
+  lastSuccessAtMs?: number | null;
+  nextRunAtMs?: number | null;
+  lastError?: string | null;
+  progressLabel?: string | null;
+  progress?: Record<string, unknown> | null;
+  queue?: {
+    pending?: number;
+    running?: number;
+    retryWait?: number;
+    failed?: number;
+    succeeded?: number;
+  } | null;
 };
 
 type ScalpSummaryDeployment = {
@@ -245,6 +263,26 @@ type ScalpSummaryDeployment = {
   promotionReason?: string | null;
   forwardValidation?: ScalpForwardValidation | null;
   updatedAtMs?: number | null;
+};
+
+type ScalpSummaryWorkerRow = {
+  deploymentId?: string;
+  symbol?: string;
+  strategyId?: string;
+  tuneId?: string;
+  weekStartMs?: number | null;
+  weekEndMs?: number | null;
+  status?: string;
+  attempts?: number | null;
+  startedAtMs?: number | null;
+  finishedAtMs?: number | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  trades?: number | null;
+  netR?: number | null;
+  expectancyR?: number | null;
+  profitFactor?: number | null;
+  maxDrawdownR?: number | null;
 };
 
 type ScalpSummaryResponse = {
@@ -267,44 +305,20 @@ type ScalpSummaryResponse = {
     stateCounts?: Record<string, number>;
   };
   deployments?: ScalpSummaryDeployment[];
+  jobs?: ScalpPipelineJobSummary[];
+  workerRows?: ScalpSummaryWorkerRow[];
+  panicStop?: {
+    enabled?: boolean;
+    reason?: string | null;
+    updatedAtMs?: number | null;
+    updatedBy?: string | null;
+  } | null;
   pipeline?: {
     panicStop?: {
       enabled?: boolean;
       reason?: string | null;
       updatedAtMs?: number | null;
       updatedBy?: string | null;
-    } | null;
-    orchestrator?: {
-      status?: "working" | "idle" | "stale" | "failed" | null;
-      runId?: string | null;
-      stage?: string | null;
-      cycleId?: string | null;
-      startedAtMs?: number | null;
-      updatedAtMs?: number | null;
-      completedAtMs?: number | null;
-      runningSinceMs?: number | null;
-      isRunning?: boolean;
-      progressPct?: number | null;
-      progressLabel?: string | null;
-      loadCursor?: number | null;
-      selectedSymbolsCount?: number | null;
-      stageProgressPct?: number | null;
-      lastError?: string | null;
-    } | null;
-    cycle?: {
-      cycleId?: string | null;
-      status?: string | null;
-      createdAtMs?: number | null;
-      updatedAtMs?: number | null;
-      completedAtMs?: number | null;
-      progressPct?: number | null;
-      totals?: {
-        tasks?: number | null;
-        pending?: number | null;
-        running?: number | null;
-        completed?: number | null;
-        failed?: number | null;
-      } | null;
     } | null;
     queue?: {
       pending?: number | null;
@@ -359,77 +373,18 @@ type ScalpForwardValidation = {
   confirmationEvaluatedAtMs?: number | null;
 };
 
-type ScalpResearchReportDeployment = {
-  deploymentId: string;
-  symbol: string;
-  strategyId: string;
-  tuneId: string;
-  source?: string;
-  enabled?: boolean;
-  promotionEligible?: boolean;
-  promotionReason?: string | null;
-  forwardValidation?: ScalpForwardValidation | null;
-  perf30d?: {
-    trades?: number;
-    wins?: number;
-    losses?: number;
-    netR?: number;
-    expectancyR?: number;
-    winRatePct?: number;
-    maxDrawdownR?: number;
-  };
-  perf90d?: {
-    trades?: number;
-    wins?: number;
-    losses?: number;
-    netR?: number;
-    expectancyR?: number;
-    winRatePct?: number;
-    maxDrawdownR?: number;
-  };
-};
-
-type ScalpResearchReportSnapshot = {
-  generatedAtMs?: number;
-  generatedAtIso?: string;
-  cycle?: {
-    cycleId?: string | null;
-    status?: string | null;
-    progressPct?: number | null;
-    tasks?: number | null;
-    completed?: number | null;
-    failed?: number | null;
-    candidateCount?: number | null;
-  };
-  summary?: {
-    deploymentsTotal?: number;
-    deploymentsEnabled?: number;
-    enabledPromotionEligible?: number;
-    enabledPromotionIneligible?: number;
-    enabledWithoutGate?: number;
-    enabledSymbols?: number;
-    avgAbsPairCorrelation?: number | null;
-  };
-  deployments?: ScalpResearchReportDeployment[];
-};
-
-type ScalpResearchReportResponse = {
-  ok?: boolean;
-  snapshot?: ScalpResearchReportSnapshot;
-};
-
-type ScalpResearchCycleTaskResult = {
+type ScalpWorkerTaskResult = {
   windowFromTs?: number;
   windowToTs?: number;
   tuneId?: string;
-  trades?: number;
-  netR?: number;
-  expectancyR?: number;
+  trades?: number | null;
+  netR?: number | null;
+  expectancyR?: number | null;
   profitFactor?: number | null;
-  maxDrawdownR?: number;
+  maxDrawdownR?: number | null;
 };
 
-type ScalpResearchCycleTask = {
+type ScalpWorkerTask = {
   taskId?: string;
   symbol?: string;
   strategyId?: string;
@@ -441,7 +396,6 @@ type ScalpResearchCycleTask = {
   startedAtMs?: number | null;
   finishedAtMs?: number | null;
   status?: "pending" | "running" | "completed" | "failed" | string;
-  result?: ScalpResearchCycleTaskResult | null;
   configOverride?: Record<string, unknown> | null;
   deployed?: boolean | null;
   deploymentEnabled?: boolean | null;
@@ -449,180 +403,7 @@ type ScalpResearchCycleTask = {
   promotionReason?: string | null;
   errorCode?: string | null;
   errorMessage?: string | null;
-};
-
-type ScalpResearchCycleResponse = {
-  ok?: boolean;
-  cycleId?: string;
-  cycleSource?:
-    | "requested"
-    | "active"
-    | "latest_completed_fallback"
-    | "none"
-    | string;
-  cycle?: {
-    cycleId?: string;
-    status?: string;
-    createdAtMs?: number;
-    updatedAtMs?: number;
-    params?: {
-      runningStaleAfterMs?: number;
-    };
-  };
-  summary?: {
-    status?: string;
-    progressPct?: number;
-    generatedAtMs?: number;
-    totals?: {
-      tasks?: number;
-      pending?: number;
-      running?: number;
-      completed?: number;
-      failed?: number;
-    };
-  } | null;
-  workerHeartbeat?: {
-    status?:
-      | "started"
-      | "completed"
-      | "failed"
-      | "queue_idle"
-      | "no_cycle"
-      | "cycle_not_found"
-      | "cycle_not_running"
-      | string;
-    workerId?: string;
-    updatedAtMs?: number;
-    startedAtMs?: number | null;
-    finishedAtMs?: number | null;
-    durationMs?: number | null;
-    maxRuns?: number;
-    concurrency?: number;
-    maxDurationMs?: number;
-    attemptedRuns?: number;
-    completedRuns?: number;
-    failedRuns?: number;
-    stoppedByDurationBudget?: boolean;
-  } | null;
-  tasks?: ScalpResearchCycleTask[];
-  taskCountReturned?: number;
-  taskLimit?: number;
-  taskOffset?: number;
-  includeTasks?: boolean;
-  tasksMode?: "all" | "cycle" | string;
-  tasksTotal?: number;
-  tasksHasMore?: boolean;
-};
-
-type ScalpPromotionSyncMaterializationRow = {
-  deploymentId?: string;
-  symbol?: string;
-  strategyId?: string;
-  tuneId?: string;
-  source?: "matrix" | "backtest" | string;
-  exists?: boolean;
-  created?: boolean;
-};
-
-type ScalpPromotionSyncMaterialization = {
-  enabled?: boolean;
-  source?: "matrix" | "backtest" | string;
-  topKPerSymbol?: number;
-  shortlistedCandidates?: number;
-  missingCandidates?: number;
-  createdCandidates?: number;
-  rows?: ScalpPromotionSyncMaterializationRow[];
-};
-
-type ScalpPromotionSyncWeeklyPolicy = {
-  enabled?: boolean;
-  topKPerSymbol?: number;
-  lookbackDays?: number;
-  minCandlesPerSlice?: number;
-  requireWinnerShortlist?: boolean;
-  minSlices?: number;
-  minProfitablePct?: number;
-  minMedianExpectancyR?: number;
-  maxTopWeekPnlConcentrationPct?: number;
-};
-
-type ScalpPromotionSyncConfirmationPolicy = {
-  enabled?: boolean;
-  topKPerSymbol?: number;
-  lookbackDays?: number;
-};
-
-type ScalpPromotionSyncPreviewResponse = {
-  ok?: boolean;
-  cycleId?: string | null;
-  cycleStatus?: string | null;
-  reason?: string | null;
-  dryRun?: boolean;
-  requireCompletedCycle?: boolean;
-  weeklyPolicy?: ScalpPromotionSyncWeeklyPolicy | null;
-  confirmationPolicy?: ScalpPromotionSyncConfirmationPolicy | null;
-  deploymentsConsidered?: number;
-  deploymentsMatched?: number;
-  deploymentsUpdated?: number;
-  materialization?: ScalpPromotionSyncMaterialization | null;
-  rows?: Array<{
-    symbol?: string;
-    strategyId?: string;
-    tuneId?: string;
-    weeklyGateReason?: string | null;
-    previousGate?: {
-      reason?: string | null;
-      eligible?: boolean;
-      forwardValidation?: ScalpForwardValidation | null;
-    } | null;
-    nextGate?: {
-      reason?: string | null;
-      eligible?: boolean;
-      forwardValidation?: ScalpForwardValidation | null;
-    } | null;
-  }>;
-};
-
-type ScalpPromotionSyncSnapshot = ScalpPromotionSyncPreviewResponse & {
-  fetchedAtMs: number;
-};
-
-type ScalpResearchUniverseCandidateRow = {
-  symbol?: string;
-  eligible?: boolean;
-  score?: number;
-  reasons?: string[];
-  recommendedStrategyIds?: string[];
-};
-
-type ScalpResearchUniverseSeedResult = {
-  symbol?: string;
-  status?: "seeded" | "skipped" | "failed" | string;
-  reason?: string;
-  addedCount?: number;
-};
-
-type ScalpResearchUniverseSeedSummary = {
-  processedSymbols?: number;
-  seededSymbols?: number;
-  skippedSymbols?: number;
-  failedSymbols?: number;
-  results?: ScalpResearchUniverseSeedResult[];
-};
-
-type ScalpResearchUniverseResponse = {
-  ok?: boolean;
-  selectedCount?: number;
-  candidatesEvaluated?: number;
-  generatedAtIso?: string;
-  snapshot?: {
-    selectedSymbols?: string[];
-    candidatesEvaluated?: number;
-    generatedAtIso?: string;
-    selectedRows?: ScalpResearchUniverseCandidateRow[];
-    topRejectedRows?: ScalpResearchUniverseCandidateRow[];
-    seedSummary?: ScalpResearchUniverseSeedSummary | null;
-  };
+  result?: ScalpWorkerTaskResult | null;
 };
 
 type ScalpOpsDeploymentRow = {
@@ -762,7 +543,6 @@ type DashboardRangeKey = "7D" | "30D" | "6M";
 type ThemePreference = "system" | "light" | "dark";
 type ResolvedTheme = "light" | "dark";
 type StrategyMode = "swing" | "scalp";
-type ScalpResearchGridScope = "researched" | "deployments";
 
 const CURRENCY_SYMBOL = "₮"; // Tether-style symbol
 const THEME_PREFERENCE_STORAGE_KEY = "dashboard_theme_preference";
@@ -788,13 +568,7 @@ const SCALP_LIVE_POLL_VISIBLE_MS = 10_000;
 const SCALP_LIVE_POLL_HIDDEN_MS = 60_000;
 const SCALP_LIVE_POLL_ERROR_BACKOFF_MS = 120_000;
 const SCALP_MIN_REFRESH_GAP_MS = 8_000;
-const SCALP_LEGACY_CRON_PIPELINE_UI = false;
-const SCALP_RESEARCH_REFRESH_MS = 45_000;
-const SCALP_PROMOTION_SYNC_REFRESH_MS = 5 * 60_000;
-const SCALP_WORKER_TASK_LIMIT_PREVIEW = 100;
 const SCALP_WORKER_TASK_LIMIT_FULL = 5_000;
-const SCALP_MANUAL_CYCLE_START_PATH =
-  "/api/scalp/cron/orchestrate-pipeline?maxDurationMs=600000&selfInvokeOnContinue=true&selfInvokeMaxHops=8";
 type ScalpVenueUi = "capital" | "bitget";
 const SCALP_VENUE_ICON_SRC: Record<ScalpVenueUi, string> = {
   capital: "/capital.svg",
@@ -804,7 +578,9 @@ const SCALP_VENUE_ICON_SRC: Record<ScalpVenueUi, string> = {
 function resolveScalpVenueUiFromDeploymentId(
   deploymentId: string | null | undefined,
 ): ScalpVenueUi {
-  const raw = String(deploymentId || "").trim().toLowerCase();
+  const raw = String(deploymentId || "")
+    .trim()
+    .toLowerCase();
   if (raw.startsWith("bitget:")) return "bitget";
   return "capital";
 }
@@ -843,44 +619,35 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<
   string,
   ScalpCronPipelineDefinition
 > = {
-  scalp_orchestrator: {
-    primaryPathname: "/api/scalp/cron/orchestrate-pipeline",
-    matchPathnames: ["/api/scalp/cron/orchestrate-pipeline"],
-    fallbackInvokePath:
-      "/api/scalp/cron/orchestrate-pipeline?maxDurationMs=600000",
-  },
   scalp_discover_symbols: {
     primaryPathname: "/api/scalp/cron/discover-symbols",
     matchPathnames: ["/api/scalp/cron/discover-symbols"],
     fallbackInvokePath:
-      "/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true&seedTopSymbols=10&seedChunkDays=5&seedTargetHistoryDays=90&seedMaxHistoryDays=95&seedMaxRequestsPerSymbol=30&seedMaxSymbolsPerRun=10",
+      "/api/scalp/cron/discover-symbols?includeLiveQuotes=true&autoSuccessor=true&autoContinue=true&selfMaxHops=4",
   },
-  scalp_prepare_and_start_cycle: {
-    primaryPathname: "/api/scalp/cron/prepare-and-start-cycle",
-    matchPathnames: [
-      "/api/scalp/cron/prepare-and-start-cycle",
-      "/api/scalp/cron/research-cycle-start",
-    ],
+  scalp_load_candles: {
+    primaryPathname: "/api/scalp/cron/load-candles",
+    matchPathnames: ["/api/scalp/cron/load-candles"],
     fallbackInvokePath:
-      "/api/scalp/cron/orchestrate-pipeline?maxDurationMs=600000&selfInvokeOnContinue=true&selfInvokeMaxHops=8",
+      "/api/scalp/cron/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&selfMaxHops=8",
   },
-  scalp_cycle_worker: {
-    primaryPathname: "/api/scalp/cron/research-cycle-worker",
-    matchPathnames: ["/api/scalp/cron/research-cycle-worker"],
+  scalp_prepare: {
+    primaryPathname: "/api/scalp/cron/prepare",
+    matchPathnames: ["/api/scalp/cron/prepare"],
     fallbackInvokePath:
-      "/api/scalp/cron/research-cycle-worker?maxRuns=200&concurrency=16&maxDurationMs=600000&aggregateAfter=false&finalizeWhenDone=true&syncPromotionGates=false&requireCompletedCycleForSync=false",
+      "/api/scalp/cron/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8",
   },
-  scalp_cycle_aggregate: {
-    primaryPathname: "/api/scalp/cron/research-cycle-aggregate",
-    matchPathnames: ["/api/scalp/cron/research-cycle-aggregate"],
+  scalp_worker: {
+    primaryPathname: "/api/scalp/cron/worker",
+    matchPathnames: ["/api/scalp/cron/worker"],
     fallbackInvokePath:
-      "/api/scalp/cron/research-cycle-aggregate?finalizeWhenDone=true",
+      "/api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&selfMaxHops=12",
   },
-  scalp_promotion_gate_apply: {
-    primaryPathname: "/api/scalp/cron/research-cycle-sync-gates",
-    matchPathnames: ["/api/scalp/cron/research-cycle-sync-gates"],
+  scalp_promotion: {
+    primaryPathname: "/api/scalp/cron/promotion",
+    matchPathnames: ["/api/scalp/cron/promotion"],
     fallbackInvokePath:
-      "/api/scalp/cron/research-cycle-sync-gates?dryRun=false&requireCompletedCycle=true&materializeEnabled=true",
+      "/api/scalp/cron/promotion?batchSize=300&autoContinue=true&selfMaxHops=6",
   },
   scalp_execute_deployments: {
     primaryPathname: "/api/scalp/cron/execute-deployments",
@@ -898,7 +665,7 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<
     primaryPathname: "/api/scalp/cron/housekeeping",
     matchPathnames: ["/api/scalp/cron/housekeeping"],
     fallbackInvokePath:
-      "/api/scalp/cron/housekeeping?dryRun=false&refreshReport=true",
+      "/api/scalp/cron/housekeeping?dryRun=false&refreshReport=false",
   },
 };
 
@@ -1117,26 +884,6 @@ function listVercelCronRows(): Array<{
   });
 }
 
-function nextCronRunAtMsForPath(params: {
-  nowMs: number;
-  pathname: string;
-  pathFilter?: (path: string) => boolean;
-}): number | null {
-  const expressions = dedupeStrings(
-    listVercelCronRows()
-      .filter((row) => row.pathname === params.pathname)
-      .filter((row) => (params.pathFilter ? params.pathFilter(row.path) : true))
-      .map((row) => row.schedule),
-  );
-  const nextRunCandidates = expressions
-    .map((expression) => nextCronRunAtMs(expression, params.nowMs))
-    .filter(
-      (value): value is number =>
-        typeof value === "number" && Number.isFinite(value),
-    );
-  return nextRunCandidates.length ? Math.min(...nextRunCandidates) : null;
-}
-
 function buildScalpCronRuntimeMap(
   nowMs: number,
 ): Record<string, ScalpCronRuntimeMeta> {
@@ -1144,11 +891,10 @@ function buildScalpCronRuntimeMap(
   const out: Record<string, ScalpCronRuntimeMeta> = {};
 
   for (const [id, def] of Object.entries(SCALP_CRON_PIPELINE_DEFINITIONS)) {
-    const rows = crons
-      .filter(
-        (row) =>
-          row.pathname !== null && def.matchPathnames.includes(row.pathname),
-      );
+    const rows = crons.filter(
+      (row) =>
+        row.pathname !== null && def.matchPathnames.includes(row.pathname),
+    );
 
     const expressions = dedupeStrings(rows.map((row) => row.schedule));
     const nextRunCandidates = expressions
@@ -1247,24 +993,12 @@ export default function Home() {
   const [scalpSummary, setScalpSummary] = useState<ScalpSummaryResponse | null>(
     null,
   );
-  const [scalpResearchCycle, setScalpResearchCycle] =
-    useState<ScalpResearchCycleResponse | null>(null);
-  const [scalpWorkerGridCycle, setScalpWorkerGridCycle] =
-    useState<ScalpResearchCycleResponse | null>(null);
-  const [scalpResearchReport, setScalpResearchReport] =
-    useState<ScalpResearchReportSnapshot | null>(null);
-  const [scalpResearchUniverse, setScalpResearchUniverse] =
-    useState<ScalpResearchUniverseResponse | null>(null);
-  const [scalpPromotionSyncSnapshot, setScalpPromotionSyncSnapshot] =
-    useState<ScalpPromotionSyncSnapshot | null>(null);
   const [scalpActiveDeploymentId, setScalpActiveDeploymentId] = useState<
     string | null
   >(null);
   const [scalpExpandedCronId, setScalpExpandedCronId] = useState<string | null>(
     null,
   );
-  const [scalpWorkerTasksLoadingFull, setScalpWorkerTasksLoadingFull] =
-    useState(false);
   const [scalpWorkerSort, setScalpWorkerSort] = useState<ScalpWorkerSortState>({
     key: "windowToTs",
     direction: "desc",
@@ -1286,24 +1020,6 @@ export default function Home() {
     >
   >({});
   const [scalpPanicStopUpdating, setScalpPanicStopUpdating] = useState(false);
-  const [scalpCycleStartSubmitting, setScalpCycleStartSubmitting] =
-    useState(false);
-  const [scalpPromotionRetrySubmitting, setScalpPromotionRetrySubmitting] =
-    useState(false);
-  const [scalpResearchGridScope, setScalpResearchGridScope] =
-    useState<ScalpResearchGridScope>("researched");
-  const [scalpWorkerRetryStateByTaskId, setScalpWorkerRetryStateByTaskId] =
-    useState<
-      Record<
-        string,
-        {
-          running: boolean;
-          atMs: number | null;
-          ok: boolean | null;
-          message: string | null;
-        }
-      >
-    >({});
   const [livePriceNow, setLivePriceNow] = useState<number | null>(null);
   const [livePriceTs, setLivePriceTs] = useState<number | null>(null);
   const [livePriceConnected, setLivePriceConnected] = useState(false);
@@ -1311,10 +1027,7 @@ export default function Home() {
     useState<ThemePreference>("system");
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>("light");
   const evaluatePollTimersRef = useRef<Record<string, number>>({});
-  const scalpResearchFetchedAtMsRef = useRef<number>(0);
-  const scalpPromotionSyncFetchedAtMsRef = useRef<number>(0);
   const scalpSummaryFetchedAtMsRef = useRef<number>(0);
-  const scalpWorkerTasksLoadedOnceRef = useRef<boolean>(false);
   const scalpSummaryErrorCountRef = useRef<number>(0);
 
   const readStoredAdminSecret = () => {
@@ -1681,231 +1394,12 @@ export default function Home() {
       setScalpSummary(summaryJson);
       scalpSummaryFetchedAtMsRef.current = nowMs;
       scalpSummaryErrorCountRef.current = 0;
-      const shouldRefreshPromotionSync =
-        !silent ||
-        nowMs - scalpPromotionSyncFetchedAtMsRef.current >=
-          SCALP_PROMOTION_SYNC_REFRESH_MS;
-      if (shouldRefreshPromotionSync) {
-        const promotionSyncRes = await fetch(
-          "/api/scalp/cron/research-cycle-sync-gates?dryRun=true&weeklyRobustnessEnabled=false&requireCompletedCycle=true",
-          {
-            headers: buildAdminHeaders(),
-            cache: "no-store",
-          },
-        );
-        if (promotionSyncRes.status === 401) {
-          handleAuthExpired(
-            "Admin session expired. Re-enter ADMIN_ACCESS_SECRET.",
-          );
-          throw new Error("Unauthorized");
-        }
-        if (promotionSyncRes.ok) {
-          const promotionSyncJson = (await promotionSyncRes
-            .json()
-            .catch(() => null)) as ScalpPromotionSyncPreviewResponse | null;
-          if (promotionSyncJson) {
-            setScalpPromotionSyncSnapshot({
-              ...promotionSyncJson,
-              fetchedAtMs: nowMs,
-            });
-          }
-        } else if (promotionSyncRes.status === 404) {
-          setScalpPromotionSyncSnapshot(null);
-        }
-        scalpPromotionSyncFetchedAtMsRef.current = nowMs;
-      }
-      scalpResearchFetchedAtMsRef.current = nowMs;
       setError(null);
     } catch (err: any) {
       scalpSummaryErrorCountRef.current += 1;
       setError(err?.message || "Failed to load scalp dashboard");
     } finally {
       if (!silent) setLoading(false);
-    }
-  };
-
-  const scalpResearchCycleNeedsFullTasks = (
-    cycle: ScalpResearchCycleResponse | null,
-  ): boolean => {
-    if (!cycle) return false;
-    const tasksMode = String(cycle.tasksMode || "")
-      .trim()
-      .toLowerCase();
-    if (Boolean(cycle.includeTasks) && tasksMode === "all") {
-      if (typeof cycle.tasksHasMore === "boolean") return cycle.tasksHasMore;
-      const tasksTotal = Number(cycle.tasksTotal);
-      const taskCountReturned = Number(cycle.taskCountReturned);
-      if (
-        Number.isFinite(tasksTotal) &&
-        tasksTotal >= 0 &&
-        Number.isFinite(taskCountReturned) &&
-        taskCountReturned >= 0
-      ) {
-        return Math.floor(taskCountReturned) < Math.floor(tasksTotal);
-      }
-    }
-    const taskLimit = Number(cycle.taskLimit);
-    const taskCountReturned = Number(cycle.taskCountReturned);
-    const totalTasks = Number(cycle.summary?.totals?.tasks);
-    const safeTaskLimit =
-      Number.isFinite(taskLimit) && taskLimit > 0
-        ? Math.floor(taskLimit)
-        : null;
-    const safeTaskCountReturned =
-      Number.isFinite(taskCountReturned) && taskCountReturned >= 0
-        ? Math.floor(taskCountReturned)
-        : null;
-    const safeTotalTasks =
-      Number.isFinite(totalTasks) && totalTasks >= 0
-        ? Math.floor(totalTasks)
-        : null;
-    if (safeTaskLimit !== null && safeTaskLimit >= SCALP_WORKER_TASK_LIMIT_FULL)
-      return false;
-    if (safeTotalTasks !== null && safeTaskCountReturned !== null)
-      return safeTotalTasks > safeTaskCountReturned;
-    if (safeTaskCountReturned !== null && safeTaskLimit !== null)
-      return safeTaskCountReturned >= safeTaskLimit;
-    return false;
-  };
-
-  const loadScalpWorkerTasksFull = async (opts: { force?: boolean } = {}) => {
-    const force = opts.force === true;
-    if (scalpWorkerTasksLoadingFull) return;
-    if (!force && scalpWorkerTasksLoadedOnceRef.current) return;
-    if (
-      !force &&
-      scalpResearchCycle &&
-      !scalpResearchCycleNeedsFullTasks(scalpResearchCycle)
-    )
-      return;
-
-    setScalpWorkerTasksLoadingFull(true);
-    try {
-      const fetchCycle = async (params: URLSearchParams) => {
-        const res = await fetch(
-          `/api/scalp/research/cycle?${params.toString()}`,
-          {
-            headers: buildAdminHeaders(),
-            cache: "no-store",
-          },
-        );
-        return res;
-      };
-      const normalizeCycleResponse = (
-        json: ScalpResearchCycleResponse | null,
-        tasksMode: "cycle" | "all",
-      ): ScalpResearchCycleResponse | null => {
-        if (!json) return null;
-        const tasks = Array.isArray(json.tasks) ? json.tasks : [];
-        const totalRaw = Number(
-          json.tasksTotal ?? json.summary?.totals?.tasks ?? tasks.length,
-        );
-        const inferredTotal =
-          Number.isFinite(totalRaw) && totalRaw >= 0
-            ? Math.max(Math.floor(totalRaw), tasks.length)
-            : tasks.length;
-        return {
-          ...json,
-          includeTasks: true,
-          tasksMode,
-          tasks,
-          taskCountReturned: tasks.length,
-          taskOffset: tasksMode === "all" ? Number(json.taskOffset || 0) : 0,
-          taskLimit:
-            tasksMode === "all"
-              ? Number(json.taskLimit || SCALP_WORKER_TASK_LIMIT_FULL)
-              : SCALP_WORKER_TASK_LIMIT_FULL,
-          tasksTotal: inferredTotal,
-          tasksHasMore: Boolean(json.tasksHasMore),
-        };
-      };
-      const currentCycleParams = new URLSearchParams({
-        includeTasks: "true",
-        tasksMode: "cycle",
-        fallbackToRecentTasks: "false",
-        taskLimit: String(SCALP_WORKER_TASK_LIMIT_FULL),
-        taskOffset: "0",
-      });
-      const currentCycleRes = await fetchCycle(currentCycleParams);
-      if (currentCycleRes.status === 401) {
-        handleAuthExpired(
-          "Admin session expired. Re-enter ADMIN_ACCESS_SECRET.",
-        );
-        return;
-      }
-      if (currentCycleRes.status === 404) {
-        setScalpResearchCycle(null);
-      } else if (currentCycleRes.ok) {
-        const currentCycleJson = (await currentCycleRes
-          .json()
-          .catch(() => null)) as ScalpResearchCycleResponse | null;
-        setScalpResearchCycle(
-          normalizeCycleResponse(currentCycleJson, "cycle"),
-        );
-      }
-
-      const historyBaseParams = new URLSearchParams({
-        includeTasks: "true",
-        tasksMode: "all",
-        fallbackToRecentTasks: "true",
-        taskLimit: String(SCALP_WORKER_TASK_LIMIT_FULL),
-        taskOffset: "0",
-      });
-      let historyOffset = 0;
-      let historyPayload: ScalpResearchCycleResponse | null = null;
-      const historyTasks: ScalpResearchCycleTask[] = [];
-      while (true) {
-        historyBaseParams.set("taskOffset", String(historyOffset));
-        const historyRes = await fetchCycle(historyBaseParams);
-        if (historyRes.status === 401) {
-          handleAuthExpired(
-            "Admin session expired. Re-enter ADMIN_ACCESS_SECRET.",
-          );
-          return;
-        }
-        if (!historyRes.ok) break;
-        const historyJson = (await historyRes
-          .json()
-          .catch(() => null)) as ScalpResearchCycleResponse | null;
-        if (!historyJson) break;
-        historyPayload = historyJson;
-        const pageTasks = Array.isArray(historyJson.tasks)
-          ? historyJson.tasks
-          : [];
-        historyTasks.push(...pageTasks);
-        const pageTotal = Number(historyJson.tasksTotal);
-        const pageHasMore =
-          Boolean(historyJson.tasksHasMore) ||
-          (Number.isFinite(pageTotal) &&
-            pageTotal >= 0 &&
-            historyOffset + pageTasks.length < Math.floor(pageTotal));
-        if (!pageHasMore || pageTasks.length === 0) break;
-        historyOffset += pageTasks.length;
-      }
-      const nextGridCycle =
-        normalizeCycleResponse(
-          historyPayload
-            ? {
-                ...historyPayload,
-                tasks: historyTasks,
-                taskCountReturned: historyTasks.length,
-                taskOffset: 0,
-                taskLimit: SCALP_WORKER_TASK_LIMIT_FULL,
-                tasksTotal:
-                  historyPayload.tasksTotal ??
-                  historyPayload.summary?.totals?.tasks ??
-                  historyTasks.length,
-                tasksHasMore: false,
-              }
-            : null,
-          "all",
-        ) || null;
-      setScalpWorkerGridCycle(nextGridCycle);
-      scalpWorkerTasksLoadedOnceRef.current = true;
-    } catch (err) {
-      console.warn("Failed to lazy-load full scalp worker tasks:", err);
-    } finally {
-      setScalpWorkerTasksLoadingFull(false);
     }
   };
 
@@ -2044,193 +1538,6 @@ export default function Home() {
       setError(err?.message || "Failed to update panic stop");
     } finally {
       setScalpPanicStopUpdating(false);
-    }
-  };
-
-  const startScalpCycleManually = async () => {
-    if (scalpCycleStartSubmitting) return;
-    setScalpCycleStartSubmitting(true);
-    setError(null);
-    try {
-      const res = await fetch(SCALP_MANUAL_CYCLE_START_PATH, {
-        headers: buildAdminHeaders(),
-        cache: "no-store",
-      });
-      const payload = await res.json().catch(() => null);
-      if (res.status === 401) {
-        handleAuthExpired(
-          "Admin session expired. Re-enter ADMIN_ACCESS_SECRET.",
-        );
-        return;
-      }
-      if (!res.ok) {
-        const message =
-          String(payload?.message || payload?.error || "").trim() ||
-          `Failed to start cycle (${res.status})`;
-        setError(message);
-        return;
-      }
-
-      scalpWorkerTasksLoadedOnceRef.current = false;
-      setScalpResearchCycle(null);
-      setScalpWorkerGridCycle(null);
-      await loadScalpDashboard({ silent: true, force: true });
-      void loadScalpWorkerTasksFull({ force: true });
-    } catch (err: any) {
-      setError(err?.message || "Failed to start cycle");
-    } finally {
-      setScalpCycleStartSubmitting(false);
-    }
-  };
-
-  const retryScalpPromotionGate = async () => {
-    if (scalpPromotionRetrySubmitting) return;
-    const cycleId = String(
-      scalpPipelineStatusPanel?.cycleId ||
-        scalpPipelineCycle?.cycleId ||
-        scalpResearchCycle?.cycleId ||
-        scalpResearchCycle?.cycle?.cycleId ||
-        "",
-    ).trim();
-    if (!cycleId) {
-      setError("No cycle id available for promotion gate retry");
-      return;
-    }
-    setScalpPromotionRetrySubmitting(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams({
-        cycleId,
-        dryRun: "false",
-        requireCompletedCycle: "true",
-        materializeEnabled: "true",
-        autoSuccessor: "false",
-        async: "true",
-        updatedBy: "ui:promotion-gate-retry",
-      });
-      const res = await fetch(
-        `/api/scalp/cron/research-cycle-sync-gates?${params.toString()}`,
-        {
-          headers: buildAdminHeaders(),
-          cache: "no-store",
-        },
-      );
-      const payload = await res.json().catch(() => null);
-      if (res.status === 401) {
-        handleAuthExpired(
-          "Admin session expired. Re-enter ADMIN_ACCESS_SECRET.",
-        );
-        return;
-      }
-      if (!res.ok) {
-        const message =
-          String(payload?.message || payload?.error || "").trim() ||
-          `Failed to retry promotion gate (${res.status})`;
-        setError(message);
-        return;
-      }
-      void loadScalpDashboard({ silent: true, force: true });
-    } catch (err: any) {
-      setError(err?.message || "Failed to retry promotion gate");
-    } finally {
-      setScalpPromotionRetrySubmitting(false);
-    }
-  };
-
-  const retryScalpWorkerTask = async (taskIdRaw: string) => {
-    const taskId = String(taskIdRaw || "").trim();
-    const cycleId = String(
-      scalpResearchCycle?.cycleId || scalpResearchCycle?.cycle?.cycleId || "",
-    ).trim();
-    const cycleStatus = String(
-      scalpResearchCycle?.cycle?.status ||
-        scalpResearchCycle?.summary?.status ||
-        "",
-    )
-      .trim()
-      .toLowerCase();
-    if (!taskId || !cycleId || cycleStatus !== "running") {
-      setScalpWorkerRetryStateByTaskId((prev) => ({
-        ...prev,
-        [taskId || "unknown"]: {
-          running: false,
-          atMs: Date.now(),
-          ok: false,
-          message: "Retry unavailable unless cycle is active and running.",
-        },
-      }));
-      return;
-    }
-
-    setScalpWorkerRetryStateByTaskId((prev) => ({
-      ...prev,
-      [taskId]: {
-        running: true,
-        atMs: null,
-        ok: null,
-        message: null,
-      },
-    }));
-
-    try {
-      const res = await fetch("/api/scalp/research/cycle", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(buildAdminHeaders() || {}),
-        },
-        cache: "no-store",
-        body: JSON.stringify({
-          action: "retryTask",
-          cycleId,
-          taskId,
-        }),
-      });
-      const payload = await res.json().catch(() => null);
-      if (res.status === 401) {
-        handleAuthExpired(
-          "Admin session expired. Re-enter ADMIN_ACCESS_SECRET.",
-        );
-        throw new Error("Unauthorized");
-      }
-      if (!res.ok) {
-        const msg =
-          String(payload?.message || payload?.error || "").trim() ||
-          `Retry failed (${res.status})`;
-        setScalpWorkerRetryStateByTaskId((prev) => ({
-          ...prev,
-          [taskId]: {
-            running: false,
-            atMs: Date.now(),
-            ok: false,
-            message: msg,
-          },
-        }));
-        return;
-      }
-
-      setScalpWorkerRetryStateByTaskId((prev) => ({
-        ...prev,
-        [taskId]: {
-          running: false,
-          atMs: Date.now(),
-          ok: true,
-          message: "Requeued",
-        },
-      }));
-      await loadScalpDashboard({ silent: true, force: true });
-    } catch (err: any) {
-      const msg =
-        String(err?.message || "Retry failed").trim() || "Retry failed";
-      setScalpWorkerRetryStateByTaskId((prev) => ({
-        ...prev,
-        [taskId]: {
-          running: false,
-          atMs: Date.now(),
-          ok: false,
-          message: msg,
-        },
-      }));
     }
   };
 
@@ -2443,16 +1750,6 @@ export default function Home() {
       if (timerId) window.clearTimeout(timerId);
     };
   }, [adminGranted, strategyMode, adminSecret, dashboardRange]);
-
-  useEffect(() => {
-    if (!adminGranted || strategyMode !== "scalp") {
-      scalpWorkerTasksLoadedOnceRef.current = false;
-      return;
-    }
-    if (scalpWorkerTasksLoadedOnceRef.current) return;
-    scalpWorkerTasksLoadedOnceRef.current = true;
-    void loadScalpWorkerTasksFull({ force: true });
-  }, [adminGranted, strategyMode]);
 
   useEffect(() => {
     const rows = Array.isArray(scalpSummary?.symbols)
@@ -2964,29 +2261,7 @@ export default function Home() {
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
   };
-  const scalpReportDeployments = Array.isArray(scalpResearchReport?.deployments)
-    ? scalpResearchReport.deployments
-    : [];
-  const scalpReportByDeploymentId = new Map(
-    scalpReportDeployments
-      .map((row) => {
-        const deploymentId = String(row?.deploymentId || "").trim();
-        return deploymentId ? [deploymentId, row] : null;
-      })
-      .filter((entry): entry is [string, ScalpResearchReportDeployment] =>
-        Boolean(entry),
-      ),
-  );
   const scalpOpsDeployments: ScalpOpsDeploymentRow[] = scalpRows.map((row) => {
-    const report = scalpReportByDeploymentId.get(row.deploymentId) || null;
-    const reportPerf30dTrades = asFiniteNumber(report?.perf30d?.trades);
-    const reportPerf30dExpectancyR = asFiniteNumber(
-      report?.perf30d?.expectancyR,
-    );
-    const reportPerf30dNetR = asFiniteNumber(report?.perf30d?.netR);
-    const reportPerf30dMaxDrawdownR = asFiniteNumber(
-      report?.perf30d?.maxDrawdownR,
-    );
     const runtimePerf30dExpectancyR =
       row.tradesPlaced > 0 &&
       typeof row.netR === "number" &&
@@ -2998,69 +2273,60 @@ export default function Home() {
       deploymentId: row.deploymentId,
       symbol: row.symbol,
       strategyId: row.strategyId,
-      tuneId: String(row.tuneId || row.tune || report?.tuneId || "default"),
-      source: report
-        ? `runtime+${String(report.source || "report")}`
-        : "runtime",
+      tuneId: String(row.tuneId || row.tune || "default"),
+      source: "runtime",
       enabled: true,
       promotionEligible:
         typeof row.promotionEligible === "boolean"
           ? row.promotionEligible
-          : Boolean(report?.promotionEligible),
-      promotionReason: row.promotionReason || report?.promotionReason || null,
-      forwardValidation:
-        row.forwardValidation || report?.forwardValidation || null,
-      perf30dTrades: reportPerf30dTrades ?? asFiniteNumber(row.tradesPlaced),
-      perf30dExpectancyR: reportPerf30dExpectancyR ?? runtimePerf30dExpectancyR,
-      perf30dNetR: reportPerf30dNetR ?? asFiniteNumber(row.netR),
-      perf30dMaxDrawdownR:
-        reportPerf30dMaxDrawdownR ?? asFiniteNumber(row.maxDrawdownR),
+          : false,
+      promotionReason: row.promotionReason || null,
+      forwardValidation: row.forwardValidation || null,
+      perf30dTrades: asFiniteNumber(row.tradesPlaced),
+      perf30dExpectancyR: runtimePerf30dExpectancyR,
+      perf30dNetR: asFiniteNumber(row.netR),
+      perf30dMaxDrawdownR: asFiniteNumber(row.maxDrawdownR),
       runtime: row,
     };
   });
-  const scalpRegistryDeployments = useMemo<ScalpOpsDeploymentRow[]>(
-    () => {
-      const rows = (Array.isArray(scalpSummary?.deployments)
-        ? scalpSummary.deployments
-        : []
-      ).reduce<ScalpOpsDeploymentRow[]>((out, row) => {
-        const deploymentId = String(row?.deploymentId || "").trim();
-        const symbol = String(row?.symbol || "")
-          .trim()
-          .toUpperCase();
-        const strategyId = String(row?.strategyId || "").trim();
-        if (!deploymentId || !symbol || !strategyId) return out;
-        out.push({
-          deploymentId,
-          symbol,
-          strategyId,
-          tuneId: String(row?.tuneId || "").trim() || "default",
-          source: String(row?.source || "").trim() || "registry",
-          enabled: row?.enabled === true,
-          promotionEligible:
-            typeof row?.promotionEligible === "boolean"
-              ? row.promotionEligible
-              : false,
-          promotionReason:
-            String(row?.promotionReason || "").trim() || null,
-          forwardValidation: row?.forwardValidation || null,
-          perf30dTrades: null,
-          perf30dExpectancyR: null,
-          perf30dNetR: null,
-          perf30dMaxDrawdownR: null,
-          runtime: null,
-        });
-        return out;
-      }, []);
-      return rows.sort((a, b) => {
-          if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
-          if (a.strategyId !== b.strategyId)
-            return a.strategyId.localeCompare(b.strategyId);
-          return a.tuneId.localeCompare(b.tuneId);
-        });
-    },
-    [scalpSummary?.deployments],
-  );
+  const scalpRegistryDeployments = useMemo<ScalpOpsDeploymentRow[]>(() => {
+    const rows = (
+      Array.isArray(scalpSummary?.deployments) ? scalpSummary.deployments : []
+    ).reduce<ScalpOpsDeploymentRow[]>((out, row) => {
+      const deploymentId = String(row?.deploymentId || "").trim();
+      const symbol = String(row?.symbol || "")
+        .trim()
+        .toUpperCase();
+      const strategyId = String(row?.strategyId || "").trim();
+      if (!deploymentId || !symbol || !strategyId) return out;
+      out.push({
+        deploymentId,
+        symbol,
+        strategyId,
+        tuneId: String(row?.tuneId || "").trim() || "default",
+        source: String(row?.source || "").trim() || "registry",
+        enabled: row?.enabled === true,
+        promotionEligible:
+          typeof row?.promotionEligible === "boolean"
+            ? row.promotionEligible
+            : false,
+        promotionReason: String(row?.promotionReason || "").trim() || null,
+        forwardValidation: row?.forwardValidation || null,
+        perf30dTrades: null,
+        perf30dExpectancyR: null,
+        perf30dNetR: null,
+        perf30dMaxDrawdownR: null,
+        runtime: null,
+      });
+      return out;
+    }, []);
+    return rows.sort((a, b) => {
+      if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
+      if (a.strategyId !== b.strategyId)
+        return a.strategyId.localeCompare(b.strategyId);
+      return a.tuneId.localeCompare(b.tuneId);
+    });
+  }, [scalpSummary?.deployments]);
 
   const scalpActiveOpsRow =
     (scalpActiveDeploymentId
@@ -3090,297 +2356,229 @@ export default function Home() {
     ? scalpForwardProfitablePctRows.reduce((acc, row) => acc + row, 0) /
       scalpForwardProfitablePctRows.length
     : null;
-  const scalpPromotionSyncCycleId =
-    String(scalpPromotionSyncSnapshot?.cycleId || "").trim() || null;
-  const scalpPromotionSyncStatusRaw = String(
-    scalpPromotionSyncSnapshot?.cycleStatus || "",
-  )
-    .trim()
-    .toUpperCase();
-  const scalpPromotionSyncReason =
-    String(scalpPromotionSyncSnapshot?.reason || "").trim() || null;
-  const scalpPromotionSyncStatusTone: ScalpOpsCronDetailTone =
-    scalpPromotionSyncReason
-      ? "warning"
-      : scalpPromotionSyncStatusRaw.includes("FAILED")
-        ? "critical"
-        : scalpPromotionSyncStatusRaw.includes("RUNNING") ||
-            scalpPromotionSyncStatusRaw.includes("PENDING")
-          ? "warning"
-          : scalpPromotionSyncStatusRaw.includes("COMPLETE")
-            ? "positive"
-            : scalpPromotionSyncStatusRaw
-              ? "neutral"
-              : "warning";
-  const scalpPromotionSyncFetchedAtMs = asFiniteNumber(
-    scalpPromotionSyncSnapshot?.fetchedAtMs,
-  );
-  const scalpPromotionSyncConsidered = asFiniteNumber(
-    scalpPromotionSyncSnapshot?.deploymentsConsidered,
-  );
-  const scalpPromotionSyncMatched = asFiniteNumber(
-    scalpPromotionSyncSnapshot?.deploymentsMatched,
-  );
-  const scalpPromotionSyncUpdated = asFiniteNumber(
-    scalpPromotionSyncSnapshot?.deploymentsUpdated,
-  );
-  const scalpMaterializationShortlisted = asFiniteNumber(
-    scalpPromotionSyncSnapshot?.materialization?.shortlistedCandidates,
-  );
-  const scalpMaterializationMissing = asFiniteNumber(
-    scalpPromotionSyncSnapshot?.materialization?.missingCandidates,
-  );
-  const scalpMaterializationCreated = asFiniteNumber(
-    scalpPromotionSyncSnapshot?.materialization?.createdCandidates,
-  );
-  const scalpMaterializationSource =
-    String(scalpPromotionSyncSnapshot?.materialization?.source || "").trim() ||
-    null;
-  const scalpMaterializationTopKPerSymbol = asFiniteNumber(
-    scalpPromotionSyncSnapshot?.materialization?.topKPerSymbol,
-  );
-  const scalpMaterializationRows = useMemo(
-    () =>
-      Array.isArray(scalpPromotionSyncSnapshot?.materialization?.rows)
-        ? scalpPromotionSyncSnapshot.materialization.rows
-            .map((row) => ({
-              deploymentId: String(row?.deploymentId || "").trim(),
-              symbol: String(row?.symbol || "")
-                .trim()
-                .toUpperCase(),
-              strategyId: String(row?.strategyId || "").trim(),
-              tuneId: String(row?.tuneId || "").trim() || "default",
-              source:
-                String(row?.source || "")
-                  .trim()
-                  .toLowerCase() || null,
-              exists: Boolean(row?.exists),
-              created: Boolean(row?.created),
-            }))
-            .filter((row) => row.symbol && row.strategyId && row.deploymentId)
-            .sort((a, b) => {
-              if (a.exists !== b.exists) return a.exists ? -1 : 1;
-              if (a.symbol !== b.symbol)
-                return a.symbol.localeCompare(b.symbol);
-              if (a.strategyId !== b.strategyId)
-                return a.strategyId.localeCompare(b.strategyId);
-              return a.tuneId.localeCompare(b.tuneId);
-            })
-        : [],
-    [scalpPromotionSyncSnapshot?.materialization?.rows],
-  );
-  const scalpMaterializationExistingCount = scalpMaterializationRows.reduce(
-    (acc, row) => acc + (row.exists ? 1 : 0),
-    0,
-  );
-  const scalpMaterializationPreviewRows = useMemo(
-    () => scalpMaterializationRows.slice(0, 40),
-    [scalpMaterializationRows],
-  );
-  const scalpMaterializationKeySet = useMemo(
-    () =>
-      new Set<string>(
-        scalpMaterializationRows.map(
-          (row) => `${row.symbol}~${row.strategyId}~${row.tuneId}`,
-        ),
-      ),
-    [scalpMaterializationRows],
-  );
-  const scalpPromotionSyncRowMap = useMemo(() => {
-    const entries: Array<
-      [
-        string,
-        {
-          syncReason: string | null;
-          eligibleFromSync: boolean | null;
-          forwardValidation: ScalpForwardValidation | null;
-        },
-      ]
-    > = [];
-    for (const row of Array.isArray(scalpPromotionSyncSnapshot?.rows)
-      ? scalpPromotionSyncSnapshot.rows
-      : []) {
-      const symbol = String(row?.symbol || "")
-        .trim()
-        .toUpperCase();
-      const strategyId = String(row?.strategyId || "").trim();
-      const tuneId = String(row?.tuneId || "").trim() || "default";
-      if (!symbol || !strategyId) continue;
-      const syncReason =
-        String(row?.weeklyGateReason || "").trim() ||
-        String(row?.nextGate?.reason || "").trim() ||
-        String(row?.previousGate?.reason || "").trim() ||
-        null;
-      const eligibleFromSync =
-        typeof row?.nextGate?.eligible === "boolean"
-          ? row.nextGate.eligible
-          : typeof row?.previousGate?.eligible === "boolean"
-            ? row.previousGate.eligible
-            : null;
-      const forwardValidation =
-        row?.nextGate?.forwardValidation || row?.previousGate?.forwardValidation || null;
-      entries.push([
-        `${symbol}~${strategyId}~${tuneId}`,
-        { syncReason, eligibleFromSync, forwardValidation },
-      ]);
-    }
-    return new Map<
-      string,
-      {
-        syncReason: string | null;
-        eligibleFromSync: boolean | null;
-        forwardValidation: ScalpForwardValidation | null;
-      }
-    >(entries);
-  }, [scalpPromotionSyncSnapshot?.rows]);
   const scalpOpsByCandidateKey = useMemo(
     () =>
       new Map<string, ScalpOpsDeploymentRow>(
         scalpOpsDeployments.map(
           (row) =>
-            [`${row.symbol}~${row.strategyId}~${row.tuneId}`, row] as const,
+          [`${row.symbol}~${row.strategyId}~${row.tuneId}`, row] as const,
         ),
       ),
     [scalpOpsDeployments],
   );
-  const scalpAvgAbsPairCorrelation = asFiniteNumber(
-    scalpResearchReport?.summary?.avgAbsPairCorrelation,
-  );
-  const scalpPanicStop = scalpSummary?.pipeline?.panicStop || null;
+  const scalpPipelineJobs = Array.isArray(scalpSummary?.jobs)
+    ? scalpSummary.jobs
+    : [];
+  const scalpPanicStop =
+    scalpSummary?.panicStop || scalpSummary?.pipeline?.panicStop || null;
   const scalpPanicStopEnabled = scalpPanicStop?.enabled === true;
   const scalpPanicStopReason =
     String(scalpPanicStop?.reason || "").trim() || null;
   const scalpPanicStopUpdatedAtMs = asFiniteNumber(scalpPanicStop?.updatedAtMs);
-  const scalpPipelineCycle = scalpSummary?.pipeline?.cycle || null;
-  const scalpPipelineOrchestrator =
-    scalpSummary?.pipeline?.orchestrator || null;
-  const scalpPipelineQueue = scalpSummary?.pipeline?.queue || null;
-  const scalpPipelineStatusPanel = scalpSummary?.pipeline?.statusPanel || null;
+  const scalpPipelineStatusPanel = (() => {
+    const explicit = scalpSummary?.pipeline?.statusPanel || null;
+    if (explicit) return explicit;
+    const orderedKinds = [
+      "discover",
+      "load_candles",
+      "prepare",
+      "worker",
+      "promotion",
+    ];
+    const labelsByKind: Record<string, string> = {
+      discover: "Discover symbols",
+      load_candles: "Load candles",
+      prepare: "Prepare deployments",
+      worker: "Run worker",
+      promotion: "Promotion",
+    };
+    const byKind = new Map(
+      scalpPipelineJobs.map((job) => [
+        String(job?.jobKind || "")
+          .trim()
+          .toLowerCase(),
+        job,
+      ]),
+    );
+    const steps = orderedKinds.map((kind) => {
+      const job = byKind.get(kind) || null;
+      const status = String(job?.status || "")
+        .trim()
+        .toLowerCase();
+      const queuePending = Math.max(
+        0,
+        Math.floor(
+          Number(job?.queue?.pending || 0) + Number(job?.queue?.retryWait || 0),
+        ),
+      );
+      const queueRunning = Math.max(
+        0,
+        Math.floor(Number(job?.queue?.running || 0)),
+      );
+      const queueFailed = Math.max(
+        0,
+        Math.floor(Number(job?.queue?.failed || 0)),
+      );
+      const queueSucceeded = Math.max(
+        0,
+        Math.floor(Number(job?.queue?.succeeded || 0)),
+      );
+      const hasError =
+        status === "failed" || queueFailed > 0 || Boolean(job?.lastError);
+      const isRunning =
+        Boolean(job?.locked) || status === "running" || queueRunning > 0;
+      const isSuccess =
+        !hasError &&
+        !isRunning &&
+        queuePending <= 0 &&
+        (queueSucceeded > 0 || asFiniteNumber(job?.lastSuccessAtMs) !== null);
+      const state: ScalpPipelineStepState =
+        scalpPanicStopEnabled && !isSuccess
+          ? "blocked"
+          : hasError
+            ? "failed"
+            : isRunning
+              ? "running"
+              : isSuccess
+                ? "success"
+                : "pending";
+      const queueLabel = `${queuePending} pending · ${queueRunning} running`;
+      return {
+        id: kind,
+        label: labelsByKind[kind] || kind,
+        state,
+        detail:
+          String(job?.progressLabel || "").trim() ||
+          String(job?.lastError || "").trim() ||
+          queueLabel,
+      };
+    });
+    const firstFailed = steps.find((step) => step.state === "failed") || null;
+    const firstRunning = steps.find((step) => step.state === "running") || null;
+    const allSuccess =
+      steps.length > 0 && steps.every((step) => step.state === "success");
+    const hasPending = steps.some((step) => step.state === "pending");
+    const blocked = scalpPanicStopEnabled && !allSuccess && !firstRunning;
+    const completedCount = steps.filter(
+      (step) => step.state === "success",
+    ).length;
+    const runningBump = firstRunning ? 0.5 : 0;
+    const progressPct =
+      steps.length > 0
+        ? Math.max(
+            0,
+            Math.min(
+              100,
+              ((completedCount + runningBump) / steps.length) * 100,
+            ),
+          )
+        : null;
+    if (blocked) {
+      return {
+        status: "blocked",
+        label: "Pipeline paused",
+        detail: scalpPanicStopReason || "panic stop enabled",
+        updatedAtMs: scalpPanicStopUpdatedAtMs,
+        progressPct,
+        steps,
+      };
+    }
+    if (firstFailed) {
+      return {
+        status: "failed",
+        label: `${firstFailed.label} failed`,
+        detail: firstFailed.detail,
+        updatedAtMs: asFiniteNumber(Date.now()),
+        progressPct,
+        steps,
+      };
+    }
+    if (firstRunning) {
+      return {
+        status: "running",
+        label: `${firstRunning.label} in progress`,
+        detail: firstRunning.detail,
+        updatedAtMs: asFiniteNumber(Date.now()),
+        progressPct,
+        steps,
+      };
+    }
+    if (allSuccess) {
+      return {
+        status: "completed",
+        label: "All jobs healthy",
+        detail: "No pending backlog.",
+        updatedAtMs: asFiniteNumber(Date.now()),
+        progressPct: 100,
+        steps,
+      };
+    }
+    return {
+      status: hasPending ? "idle" : "completed",
+      label: hasPending ? "Awaiting pending work" : "All jobs healthy",
+      detail: hasPending ? null : "No pending backlog.",
+      updatedAtMs: asFiniteNumber(Date.now()),
+      progressPct,
+      steps,
+    };
+  })();
   const scalpPipelineStatus = String(scalpPipelineStatusPanel?.status || "idle")
     .trim()
     .toLowerCase() as ScalpPipelineStatus;
-  const scalpPipelineStatusLabel =
-    String(scalpPipelineStatusPanel?.label || "").trim() ||
-    "Awaiting next cycle";
-  const scalpPipelineStatusDetail =
-    String(scalpPipelineStatusPanel?.detail || "").trim() || null;
-  const scalpPipelineStatusProgressPct =
-    asFiniteNumber(scalpPipelineStatusPanel?.progressPct) ??
-    asFiniteNumber(scalpPipelineCycle?.progressPct) ??
-    asFiniteNumber(scalpPipelineOrchestrator?.progressPct);
-  const scalpPipelineHeroProgressPct =
-    asFiniteNumber(scalpPipelineStatusPanel?.progressPct) ??
-    asFiniteNumber(scalpPipelineOrchestrator?.progressPct) ??
-    null;
-  const scalpPipelineStatusProgressLabel =
-    typeof scalpPipelineStatusProgressPct === "number"
-      ? `${scalpPipelineStatusProgressPct.toFixed(0)}%`
-      : null;
-  const scalpPipelineStatusSteps = Array.isArray(
-    scalpPipelineStatusPanel?.steps,
-  )
-    ? scalpPipelineStatusPanel.steps
-        .map((step) => {
-          const label = String(step?.label || "").trim();
-          if (!label) return null;
-          return {
-            id:
-              String(step?.id || "").trim() ||
-              label.toLowerCase().replace(/\s+/g, "_"),
-            label,
-            state: (String(step?.state || "pending")
-              .trim()
-              .toLowerCase() || "pending") as ScalpPipelineStepState,
-            detail: String(step?.detail || "").trim() || null,
-          };
-        })
-        .filter(
-          (
-            step,
-          ): step is {
-            id: string;
-            label: string;
-            state: ScalpPipelineStepState;
-            detail: string | null;
-          } => Boolean(step),
-        )
+  const scalpSummaryWorkerRows = Array.isArray(scalpSummary?.workerRows)
+    ? scalpSummary.workerRows
     : [];
-  const scalpPipelineFocusedStep = (() => {
-    if (!scalpPipelineStatusSteps.length) return null;
-    const firstRunning =
-      scalpPipelineStatusSteps.find((step) => step.state === "running") || null;
-    const firstPending =
-      scalpPipelineStatusSteps.find((step) => step.state === "pending") || null;
-    const firstFailed =
-      scalpPipelineStatusSteps.find((step) => step.state === "failed") || null;
-    const firstBlocked =
-      scalpPipelineStatusSteps.find((step) => step.state === "blocked") || null;
-    const lastSuccess =
-      [...scalpPipelineStatusSteps]
-        .reverse()
-        .find((step) => step.state === "success") || null;
-    if (scalpPipelineStatus === "running") {
-      return firstRunning || firstPending || lastSuccess;
+  const scalpWorkerTasks = useMemo<ScalpWorkerTask[]>(() => {
+    const tasks: ScalpWorkerTask[] = [];
+    for (const row of scalpSummaryWorkerRows) {
+      const deploymentId = String(row?.deploymentId || "").trim() || null;
+      const symbol = String(row?.symbol || "")
+        .trim()
+        .toUpperCase();
+      const strategyId = String(row?.strategyId || "").trim();
+      if (!deploymentId || !symbol || !strategyId) continue;
+      const tuneId = String(row?.tuneId || "").trim() || "default";
+      const windowFromTs = asFiniteNumber(row?.weekStartMs);
+      const windowToTs = asFiniteNumber(row?.weekEndMs);
+      if (windowFromTs === null || windowToTs === null) continue;
+      const rawStatus = String(row?.status || "pending")
+        .trim()
+        .toLowerCase();
+      const normalizedStatus =
+        rawStatus === "succeeded"
+          ? "completed"
+          : rawStatus === "retry_wait"
+            ? "pending"
+            : rawStatus;
+      tasks.push({
+        taskId: `${deploymentId}:${windowFromTs}`,
+        symbol,
+        strategyId,
+        tuneId,
+        deploymentId,
+        windowFromTs,
+        windowToTs,
+        startedAtMs: asFiniteNumber(row?.startedAtMs),
+        finishedAtMs: asFiniteNumber(row?.finishedAtMs),
+        status: normalizedStatus,
+        errorCode: String(row?.errorCode || "").trim() || null,
+        errorMessage: String(row?.errorMessage || "").trim() || null,
+        result: {
+          windowFromTs,
+          windowToTs,
+          tuneId,
+          trades: asFiniteNumber(row?.trades),
+          netR: asFiniteNumber(row?.netR),
+          expectancyR: asFiniteNumber(row?.expectancyR),
+          profitFactor: asFiniteNumber(row?.profitFactor),
+          maxDrawdownR: asFiniteNumber(row?.maxDrawdownR),
+        },
+      });
     }
-    if (scalpPipelineStatus === "failed") {
-      return firstFailed || firstBlocked || firstPending || lastSuccess;
-    }
-    if (scalpPipelineStatus === "blocked") {
-      return firstBlocked || firstPending || lastSuccess;
-    }
-    if (scalpPipelineStatus === "completed") {
-      return lastSuccess;
-    }
-    return null;
-  })();
-  const scalpPipelineFocusedStepId = scalpPipelineFocusedStep?.id || null;
-  const scalpPipelineFocusedStepMarker =
-    scalpPipelineStatus === "running"
-      ? "current"
-      : scalpPipelineStatus === "completed"
-        ? "last"
-        : scalpPipelineStatus === "failed" || scalpPipelineStatus === "blocked"
-          ? "stopped"
-          : null;
-  const scalpNextFreshCycleStartAtMs = nextCronRunAtMsForPath({
-    nowMs: scalpCronNowMs,
-    pathname: "/api/scalp/cron/orchestrate-pipeline",
-    pathFilter: (path) => !/[?&]continue=1(?:&|$)/.test(path),
-  });
-  const scalpNextFreshCycleStartLabel =
-    scalpNextFreshCycleStartAtMs === null
-      ? null
-      : formatScalpNextRunIn(scalpNextFreshCycleStartAtMs, scalpCronNowMs);
-  const scalpPipelinePromotionStep =
-    scalpPipelineStatusSteps.find((step) => step.id === "promotion") || null;
-  const scalpPipelineCycleId =
-    String(
-      scalpPipelineStatusPanel?.cycleId ||
-        scalpPipelineCycle?.cycleId ||
-        scalpResearchCycle?.cycleId ||
-        scalpResearchCycle?.cycle?.cycleId ||
-        "",
-    ).trim() || null;
-  const scalpPromotionRetryVisible = Boolean(
-    scalpPipelineCycleId &&
-      scalpPipelinePromotionStep &&
-      (scalpPipelinePromotionStep.state === "pending" ||
-        scalpPipelinePromotionStep.state === "failed"),
-  );
-  const scalpPromotionRetryDisabled =
-    scalpPromotionRetrySubmitting ||
-    scalpPipelinePromotionStep?.state === "running";
-  const scalpCycleStartDisabled =
-    scalpCycleStartSubmitting || scalpPipelineStatus === "running";
-  const scalpWorkerTasks = Array.isArray(scalpResearchCycle?.tasks)
-    ? scalpResearchCycle.tasks
-    : [];
-  const scalpWorkerGridTasks = Array.isArray(scalpWorkerGridCycle?.tasks)
-    ? scalpWorkerGridCycle.tasks
-    : scalpWorkerTasks;
-  const scalpWorkerRunningStaleAfterMs =
-    asFiniteNumber(scalpResearchCycle?.cycle?.params?.runningStaleAfterMs) ??
-    20 * 60_000;
+    return tasks;
+  }, [scalpSummaryWorkerRows]);
+  const scalpWorkerGridTasks = scalpWorkerTasks;
+  const scalpWorkerRunningStaleAfterMs = 20 * 60_000;
   const scalpWorkerNowMs = Date.now();
   const scalpWorkerTaskStatusTotals = scalpWorkerTasks.reduce(
     (acc, task) => {
@@ -3416,96 +2614,20 @@ export default function Home() {
     },
   );
   const scalpWorkerTaskTotalsAvailable = scalpWorkerTaskStatusTotals.tasks > 0;
-  const scalpSummaryTaskTotals =
-    scalpResearchCycle?.summary?.totals || scalpPipelineCycle?.totals || null;
-  const scalpSummaryTaskCount = asFiniteNumber(scalpSummaryTaskTotals?.tasks);
-  const scalpResearchCycleTasksMode = String(
-    scalpResearchCycle?.tasksMode || "",
-  )
-    .trim()
-    .toLowerCase();
-  const scalpWorkerTaskCountReturned = asFiniteNumber(
-    scalpResearchCycle?.taskCountReturned,
-  );
-  const scalpWorkerTasksCoverAll =
-    Boolean(scalpResearchCycle?.includeTasks) &&
-    scalpResearchCycleTasksMode !== "all" &&
-    scalpWorkerTaskTotalsAvailable &&
-    scalpWorkerTaskCountReturned !== null &&
-    (scalpSummaryTaskCount !== null
-      ? scalpWorkerTaskCountReturned >= scalpSummaryTaskCount
-      : scalpWorkerTaskCountReturned >= scalpWorkerTaskStatusTotals.tasks);
-  const scalpCycleTotalsSource:
-    | "task_list_full"
-    | "summary_cache"
-    | "task_list_partial"
-    | "report_fallback" = scalpWorkerTasksCoverAll
-    ? "task_list_full"
-    : scalpSummaryTaskCount !== null
-      ? "summary_cache"
-      : scalpWorkerTaskTotalsAvailable
-        ? "task_list_partial"
-        : "report_fallback";
-  const scalpCycleTasks = scalpWorkerTasksCoverAll
+  const scalpCycleTasks = scalpWorkerTaskTotalsAvailable
     ? scalpWorkerTaskStatusTotals.tasks
-    : (scalpSummaryTaskCount ??
-      (scalpWorkerTaskTotalsAvailable
-        ? scalpWorkerTaskStatusTotals.tasks
-        : (asFiniteNumber(scalpResearchReport?.cycle?.tasks) ??
-          asFiniteNumber(scalpPipelineCycle?.totals?.tasks))));
-  const scalpCyclePending = scalpWorkerTasksCoverAll
+    : null;
+  const scalpCyclePending = scalpWorkerTaskTotalsAvailable
     ? scalpWorkerTaskStatusTotals.pending
-    : (asFiniteNumber(scalpSummaryTaskTotals?.pending) ??
-      (scalpWorkerTaskTotalsAvailable
-        ? scalpWorkerTaskStatusTotals.pending
-        : null));
-  const scalpCycleRunning = scalpWorkerTasksCoverAll
+    : null;
+  const scalpCycleRunning = scalpWorkerTaskTotalsAvailable
     ? scalpWorkerTaskStatusTotals.running
-    : (asFiniteNumber(scalpSummaryTaskTotals?.running) ??
-      (scalpWorkerTaskTotalsAvailable
-        ? scalpWorkerTaskStatusTotals.running
-        : null));
-  const scalpCycleCompleted = scalpWorkerTasksCoverAll
+    : null;
+  const scalpCycleCompleted = scalpWorkerTaskTotalsAvailable
     ? scalpWorkerTaskStatusTotals.completed
-    : (asFiniteNumber(scalpSummaryTaskTotals?.completed) ??
-      (scalpWorkerTaskTotalsAvailable
-        ? scalpWorkerTaskStatusTotals.completed
-        : (asFiniteNumber(scalpResearchReport?.cycle?.completed) ??
-          asFiniteNumber(scalpPipelineCycle?.totals?.completed))));
-  const scalpCycleFailed = scalpWorkerTasksCoverAll
+    : null;
+  const scalpCycleFailed = scalpWorkerTaskTotalsAvailable
     ? scalpWorkerTaskStatusTotals.failed
-    : (asFiniteNumber(scalpSummaryTaskTotals?.failed) ??
-      (scalpWorkerTaskTotalsAvailable
-        ? scalpWorkerTaskStatusTotals.failed
-        : (asFiniteNumber(scalpResearchReport?.cycle?.failed) ??
-          asFiniteNumber(scalpPipelineCycle?.totals?.failed))));
-  const scalpPipelineQueuePending =
-    asFiniteNumber(scalpPipelineQueue?.pending) ?? null;
-  const scalpPipelineQueueRunning =
-    asFiniteNumber(scalpPipelineQueue?.running) ?? null;
-  const scalpPipelineQueueOutstanding =
-    asFiniteNumber(scalpPipelineQueue?.outstanding) ??
-    ((scalpPipelineQueuePending !== null || scalpPipelineQueueRunning !== null
-      ? (scalpPipelineQueuePending ?? 0) + (scalpPipelineQueueRunning ?? 0)
-      : null));
-  const scalpCycleHeadlineUsesQueueFallback =
-    (scalpCycleTasks === null || scalpCycleTasks <= 0) &&
-    scalpPipelineQueueOutstanding !== null &&
-    scalpPipelineQueueOutstanding > 0;
-  const scalpCycleHeadlineTasks = scalpCycleHeadlineUsesQueueFallback
-    ? scalpPipelineQueueOutstanding
-    : scalpCycleTasks;
-  const scalpCycleHeadlineCompleted = scalpCycleHeadlineUsesQueueFallback
-    ? 0
-    : scalpCycleCompleted;
-  const scalpCycleHeadlineTaskLabel = scalpCycleHeadlineUsesQueueFallback
-    ? `${Math.floor(scalpPipelineQueueOutstanding || 0)} queued`
-    : scalpCycleHeadlineCompleted !== null && scalpCycleHeadlineTasks !== null
-      ? `${Math.floor(scalpCycleHeadlineCompleted)} / ${Math.floor(scalpCycleHeadlineTasks)} tasks`
-      : "Awaiting cycle summary";
-  const scalpCycleRunningStaleAsPending = scalpWorkerTasksCoverAll
-    ? scalpWorkerTaskStatusTotals.runningStale +
-      scalpWorkerTaskStatusTotals.runningMissingStartedAt
     : null;
   const scalpCycleProgressFromChosenTotals =
     scalpCycleTasks !== null &&
@@ -3514,32 +2636,9 @@ export default function Home() {
     scalpCycleFailed !== null
       ? ((scalpCycleCompleted + scalpCycleFailed) / scalpCycleTasks) * 100
       : null;
-  const scalpCycleProgressPct = scalpWorkerTasksCoverAll
-    ? (scalpCycleProgressFromChosenTotals ??
-      asFiniteNumber(scalpResearchCycle?.summary?.progressPct) ??
-      asFiniteNumber(scalpResearchReport?.cycle?.progressPct))
-    : (asFiniteNumber(scalpResearchCycle?.summary?.progressPct) ??
-      (scalpWorkerTaskTotalsAvailable
-        ? ((scalpWorkerTaskStatusTotals.completed +
-            scalpWorkerTaskStatusTotals.failed) /
-            scalpWorkerTaskStatusTotals.tasks) *
-          100
-        : (asFiniteNumber(scalpResearchReport?.cycle?.progressPct) ??
-          asFiniteNumber(scalpPipelineCycle?.progressPct))));
-  const scalpCycleProgressLabelForHero =
-    scalpCycleHeadlineUsesQueueFallback || scalpCycleProgressPct === null
-      ? null
-      : `${scalpCycleProgressPct.toFixed(0)}%`;
-  const scalpPipelineProgressLabelForHero =
-    scalpPipelineHeroProgressPct === null
-      ? "—"
-      : `${scalpPipelineHeroProgressPct.toFixed(0)}%`;
-  const scalpUniverseSelectedCount =
-    asFiniteNumber(scalpResearchUniverse?.selectedCount) ??
-    asFiniteNumber(scalpResearchUniverse?.snapshot?.selectedSymbols?.length);
-  const scalpUniverseCandidatesEvaluated =
-    asFiniteNumber(scalpResearchUniverse?.candidatesEvaluated) ??
-    asFiniteNumber(scalpResearchUniverse?.snapshot?.candidatesEvaluated);
+  const scalpCycleProgressPct = scalpCycleProgressFromChosenTotals;
+  const scalpUniverseSelectedCount = null;
+  const scalpUniverseCandidatesEvaluated = null;
 
   const scalpJournalRows = Array.isArray(scalpSummary?.journal)
     ? scalpSummary.journal
@@ -3574,57 +2673,10 @@ export default function Home() {
     if (days === null) return "—";
     if (days >= 360 && days <= 370) return "52w";
     if (days >= 80 && days <= 97) return "12w";
-    if (days % 7 === 0 && days / 7 <= 52) return `${Math.max(1, Math.round(days / 7))}w`;
+    if (days % 7 === 0 && days / 7 <= 52)
+      return `${Math.max(1, Math.round(days / 7))}w`;
     return `${days}d`;
   };
-  const scalpPipelineRunningSinceMs =
-    asFiniteNumber(scalpPipelineOrchestrator?.runningSinceMs) ??
-    asFiniteNumber(scalpPipelineOrchestrator?.startedAtMs);
-  const scalpPipelineProgressPct = asFiniteNumber(
-    scalpPipelineOrchestrator?.progressPct,
-  );
-  const scalpPipelineProgressLabel =
-    String(scalpPipelineOrchestrator?.progressLabel || "").trim() || null;
-  const scalpCycleId = String(
-    scalpResearchCycle?.cycleId ||
-      scalpResearchCycle?.cycle?.cycleId ||
-      scalpResearchReport?.cycle?.cycleId ||
-      scalpPipelineCycle?.cycleId ||
-      "",
-  ).trim();
-  const scalpCycleStatusRaw = String(
-    scalpResearchCycle?.summary?.status ||
-      scalpResearchCycle?.cycle?.status ||
-      scalpResearchReport?.cycle?.status ||
-      scalpPipelineCycle?.status ||
-      "unknown",
-  )
-    .trim()
-    .toUpperCase();
-  const scalpCycleStatusTone: ScalpOpsCronDetailTone =
-    scalpCycleStatusRaw.includes("FAILED")
-      ? "critical"
-      : scalpCycleStatusRaw.includes("RUNNING") ||
-          scalpCycleStatusRaw.includes("PENDING")
-        ? "warning"
-        : scalpCycleStatusRaw.includes("COMPLETE")
-          ? "positive"
-          : "neutral";
-  const scalpWorkerCycleSource =
-    String(scalpResearchCycle?.cycleSource || "").trim() || "none";
-  const scalpWorkerGridTasksLoadedCount = Array.isArray(
-    scalpWorkerGridCycle?.tasks,
-  )
-    ? scalpWorkerGridCycle.tasks.length
-    : scalpWorkerGridTasks.length;
-  const scalpWorkerGridTasksTotalCount =
-    asFiniteNumber(scalpWorkerGridCycle?.tasksTotal) ??
-    scalpWorkerGridTasksLoadedCount;
-  const scalpWorkerRetryCycleReady =
-    Boolean(scalpCycleId) &&
-    scalpCycleStatusRaw.includes("RUNNING") &&
-    (scalpWorkerCycleSource === "active" ||
-      scalpWorkerCycleSource === "requested");
   const compareScalpWorkerOptionalNumber = (
     a: number | null | undefined,
     b: number | null | undefined,
@@ -3677,10 +2729,7 @@ export default function Home() {
           asFiniteNumber(task?.result?.windowToTs);
         const candidateKey = `${symbol}~${strategyId}~${tuneId}`;
         const deploymentRow = scalpOpsByCandidateKey.get(candidateKey) || null;
-        const syncRow = scalpPromotionSyncRowMap.get(candidateKey) || null;
-        const inShortlist = scalpMaterializationKeySet.has(candidateKey);
-        const forwardValidation =
-          deploymentRow?.forwardValidation || syncRow?.forwardValidation || null;
+        const forwardValidation = deploymentRow?.forwardValidation || null;
         const deploymentId =
           taskDeploymentId || deploymentRow?.deploymentId || null;
         const deployed = taskDeployed ?? Boolean(deploymentId);
@@ -3690,20 +2739,13 @@ export default function Home() {
         const promotionEligible =
           taskPromotionEligible ??
           deploymentRow?.promotionEligible ??
-          (typeof syncRow?.eligibleFromSync === "boolean"
-            ? syncRow.eligibleFromSync
-            : null);
+          null;
         const whyNotPromoted =
           promotionEligible === true
             ? "eligible"
             : taskPromotionReason ||
               deploymentRow?.promotionReason ||
-              syncRow?.syncReason ||
-              (inShortlist
-                ? "shortlisted_pending_gate"
-                : deployed
-                  ? "promotion_unknown"
-                  : "not_deployed");
+              (deployed ? "promotion_unknown" : "not_deployed");
         return {
           taskId: String(task?.taskId || "").trim(),
           symbol,
@@ -3796,8 +2838,6 @@ export default function Home() {
   }, [
     scalpWorkerGridTasks,
     scalpOpsByCandidateKey,
-    scalpPromotionSyncRowMap,
-    scalpMaterializationKeySet,
     scalpWorkerSort.key,
     scalpWorkerSort.direction,
   ]);
@@ -3863,449 +2903,6 @@ export default function Home() {
     const toIso = new Date(toTs).toISOString().slice(0, 10);
     return `${fromIso} → ${toIso}`;
   };
-  const normalizeScalpUniverseSymbol = (value: unknown): string =>
-    String(value || "")
-      .trim()
-      .toUpperCase();
-  const scalpUniverseSymbols = Array.isArray(
-    scalpResearchUniverse?.snapshot?.selectedSymbols,
-  )
-    ? scalpResearchUniverse.snapshot.selectedSymbols
-        .map((symbol) => normalizeScalpUniverseSymbol(symbol))
-        .filter(Boolean)
-    : [];
-  const scalpUniverseSelectedRows = Array.isArray(
-    scalpResearchUniverse?.snapshot?.selectedRows,
-  )
-    ? scalpResearchUniverse.snapshot.selectedRows
-    : [];
-  const scalpUniverseRejectedRows = Array.isArray(
-    scalpResearchUniverse?.snapshot?.topRejectedRows,
-  )
-    ? scalpResearchUniverse.snapshot.topRejectedRows
-    : [];
-  const scalpUniverseSeedSummary =
-    scalpResearchUniverse?.snapshot?.seedSummary ?? null;
-  const scalpUniverseSeedResults = Array.isArray(
-    scalpUniverseSeedSummary?.results,
-  )
-    ? scalpUniverseSeedSummary.results
-    : [];
-  const scalpUniverseSeededSymbols = scalpUniverseSeedResults
-    .filter(
-      (row) =>
-        String(row?.status || "")
-          .trim()
-          .toLowerCase() === "seeded",
-    )
-    .map((row) => normalizeScalpUniverseSymbol(row?.symbol))
-    .filter(Boolean);
-  const scalpUniverseSeededCount =
-    asFiniteNumber(scalpUniverseSeedSummary?.seededSymbols) ??
-    scalpUniverseSeededSymbols.length;
-  const scalpUniverseSeedProcessedCount =
-    asFiniteNumber(scalpUniverseSeedSummary?.processedSymbols) ??
-    scalpUniverseSeedResults.length;
-  const scalpUniverseGeneratedAtMs = (() => {
-    const iso = String(
-      scalpResearchUniverse?.generatedAtIso ||
-        scalpResearchUniverse?.snapshot?.generatedAtIso ||
-        "",
-    ).trim();
-    if (!iso) return null;
-    const parsed = Date.parse(iso);
-    return Number.isFinite(parsed) ? parsed : null;
-  })();
-  const scalpUniverseEvaluationMap = new Map<
-    string,
-    ScalpResearchUniverseCandidateRow
-  >();
-  for (const row of scalpUniverseSelectedRows) {
-    const symbol = normalizeScalpUniverseSymbol(row?.symbol);
-    if (!symbol || scalpUniverseEvaluationMap.has(symbol)) continue;
-    scalpUniverseEvaluationMap.set(symbol, row);
-  }
-  for (const row of scalpUniverseRejectedRows) {
-    const symbol = normalizeScalpUniverseSymbol(row?.symbol);
-    if (!symbol || scalpUniverseEvaluationMap.has(symbol)) continue;
-    scalpUniverseEvaluationMap.set(symbol, row);
-  }
-  const scalpUniverseEvaluatedRows = Array.from(
-    scalpUniverseEvaluationMap.entries(),
-  ).map(([symbol, row]) => ({
-    symbol,
-    eligible: Boolean(row?.eligible),
-    score: asFiniteNumber(row?.score),
-    reasons: Array.isArray(row?.reasons)
-      ? row.reasons.map((reason) => String(reason || "")).filter(Boolean)
-      : [],
-    recommendedStrategyIds: Array.isArray(row?.recommendedStrategyIds)
-      ? row.recommendedStrategyIds
-          .map((strategyId) => String(strategyId || ""))
-          .filter(Boolean)
-      : [],
-  }));
-  const scalpUniverseEvaluatedCount =
-    asFiniteNumber(scalpResearchUniverse?.candidatesEvaluated) ??
-    asFiniteNumber(scalpResearchUniverse?.snapshot?.candidatesEvaluated) ??
-    scalpUniverseEvaluatedRows.length;
-  const scalpUniverseEvaluatedSymbols = scalpUniverseEvaluatedRows
-    .map((row) => row.symbol)
-    .filter(Boolean);
-  const scalpUniverseEligibleEvaluatedCount = scalpUniverseEvaluatedRows.reduce(
-    (acc, row) => acc + (row.eligible ? 1 : 0),
-    0,
-  );
-  const scalpUniversePipelineMap = new Map<string, ScalpUniversePipelineRow>();
-  const ensurePipelineRow = (symbol: string): ScalpUniversePipelineRow => {
-    const existing = scalpUniversePipelineMap.get(symbol);
-    if (existing) return existing;
-    const created: ScalpUniversePipelineRow = {
-      symbol,
-      discovered: false,
-      importStatus: "not_run",
-      importReason: null,
-      importAddedCount: null,
-      evaluated: false,
-      eligible: null,
-      score: null,
-      reasons: [],
-    };
-    scalpUniversePipelineMap.set(symbol, created);
-    return created;
-  };
-  for (const symbol of scalpUniverseSymbols) {
-    if (!symbol) continue;
-    const row = ensurePipelineRow(symbol);
-    row.discovered = true;
-  }
-  for (const result of scalpUniverseSeedResults) {
-    const symbol = normalizeScalpUniverseSymbol(result?.symbol);
-    if (!symbol) continue;
-    const row = ensurePipelineRow(symbol);
-    const status = String(result?.status || "")
-      .trim()
-      .toLowerCase();
-    if (status === "seeded" || status === "skipped" || status === "failed") {
-      row.importStatus = status;
-    }
-    row.importReason =
-      typeof result?.reason === "string" && result.reason.trim()
-        ? result.reason.trim()
-        : null;
-    row.importAddedCount = asFiniteNumber(result?.addedCount);
-  }
-  for (const evaluation of scalpUniverseEvaluatedRows) {
-    if (!evaluation.symbol) continue;
-    const row = ensurePipelineRow(evaluation.symbol);
-    row.evaluated = true;
-    row.eligible = evaluation.eligible;
-    row.score = evaluation.score;
-    row.reasons = evaluation.reasons;
-  }
-  const scalpUniversePipelineRows = Array.from(
-    scalpUniversePipelineMap.values(),
-  ).sort((a, b) => {
-    if (a.discovered !== b.discovered) return a.discovered ? -1 : 1;
-    const importRank = (
-      status: ScalpUniversePipelineRow["importStatus"],
-    ): number => {
-      if (status === "seeded") return 0;
-      if (status === "skipped") return 1;
-      if (status === "failed") return 2;
-      return 3;
-    };
-    const importDelta = importRank(a.importStatus) - importRank(b.importStatus);
-    if (importDelta !== 0) return importDelta;
-    if (a.evaluated !== b.evaluated) return a.evaluated ? -1 : 1;
-    return a.symbol.localeCompare(b.symbol);
-  });
-  const scalpUniverseDiscoveredPreview = scalpUniverseSymbols.slice(0, 8);
-  const scalpUniverseImportedPreview = scalpUniverseSeededSymbols.slice(0, 8);
-  const scalpUniverseEvaluatedPreview = scalpUniverseEvaluatedSymbols.slice(
-    0,
-    8,
-  );
-  const scalpHistorySnapshot = scalpSummary?.history || null;
-  const scalpHistoryTimeframe =
-    String(scalpHistorySnapshot?.timeframe || "").trim() || "1m";
-  const scalpHistoryBackend =
-    String(scalpHistorySnapshot?.backend || "").trim() || "unknown";
-  const scalpHistorySymbolCount = asFiniteNumber(
-    scalpHistorySnapshot?.symbolCount,
-  );
-  const scalpHistoryScannedCount = asFiniteNumber(
-    scalpHistorySnapshot?.scannedCount,
-  );
-  const scalpHistoryScannedLimit = asFiniteNumber(
-    scalpHistorySnapshot?.scannedLimit,
-  );
-  const scalpHistoryNonEmptyCount = asFiniteNumber(
-    scalpHistorySnapshot?.nonEmptyCount,
-  );
-  const scalpHistoryTotalCandles = asFiniteNumber(
-    scalpHistorySnapshot?.totalCandles,
-  );
-  const scalpHistoryMedianCandles = asFiniteNumber(
-    scalpHistorySnapshot?.medianCandles,
-  );
-  const scalpHistoryAvgCandles = asFiniteNumber(
-    scalpHistorySnapshot?.avgCandles,
-  );
-  const scalpHistoryMedianDepthDays = asFiniteNumber(
-    scalpHistorySnapshot?.medianDepthDays,
-  );
-  const scalpHistoryAvgDepthDays = asFiniteNumber(
-    scalpHistorySnapshot?.avgDepthDays,
-  );
-  const scalpHistoryNewestCandleAtMs = asFiniteNumber(
-    scalpHistorySnapshot?.newestCandleAtMs,
-  );
-  const scalpHistoryOldestCandleAtMs = asFiniteNumber(
-    scalpHistorySnapshot?.oldestCandleAtMs,
-  );
-  const scalpHistoryTruncated = Boolean(scalpHistorySnapshot?.truncated);
-  const scalpHistoryRows = (
-    Array.isArray(scalpHistorySnapshot?.rows) ? scalpHistorySnapshot.rows : []
-  )
-    .map((row) => {
-      const symbol = String(row?.symbol || "")
-        .trim()
-        .toUpperCase();
-      const candlesRaw = asFiniteNumber(row?.candles);
-      const candles =
-        candlesRaw === null ? null : Math.max(0, Math.floor(candlesRaw));
-      const depthDays = asFiniteNumber(row?.depthDays);
-      const barsPerDay = asFiniteNumber(row?.barsPerDay);
-      const coveragePct = asFiniteNumber(row?.coveragePct);
-      const fromTsMs = asFiniteNumber(row?.fromTsMs);
-      const toTsMs = asFiniteNumber(row?.toTsMs);
-      const updatedAtMs = asFiniteNumber(row?.updatedAtMs);
-      return {
-        symbol,
-        candles,
-        depthDays,
-        barsPerDay,
-        coveragePct,
-        fromTsMs,
-        toTsMs,
-        updatedAtMs,
-      };
-    })
-    .filter((row) => Boolean(row.symbol));
-  const scalpHistoryPreviewRows = scalpHistoryRows.slice(0, 12);
-  const isScalpGuardrailJournalEntry = (entry: ScalpJournalRow): boolean => {
-    const type = String(entry.type || "")
-      .trim()
-      .toUpperCase();
-    if (type === "RISK") return true;
-    if (!Array.isArray(entry.reasonCodes)) return false;
-    return entry.reasonCodes.some((code) => {
-      const normalized = String(code || "")
-        .trim()
-        .toUpperCase();
-      return (
-        normalized.includes("GUARDRAIL") ||
-        normalized.includes("BREACH") ||
-        normalized.includes("PAUSE")
-      );
-    });
-  };
-  const isScalpExecutionJournalEntry = (entry: ScalpJournalRow): boolean => {
-    const type = String(entry.type || "")
-      .trim()
-      .toUpperCase();
-    if (type === "EXECUTION") return true;
-    if (!Array.isArray(entry.reasonCodes)) return false;
-    return entry.reasonCodes.some((code) =>
-      String(code || "")
-        .trim()
-        .toUpperCase()
-        .includes("SCALP_PHASE3_EXECUTION"),
-    );
-  };
-  const scalpLatestJournalEntryBy = (
-    predicate: (entry: ScalpJournalRow) => boolean,
-  ): ScalpJournalRow | null =>
-    scalpJournalRows.reduce<ScalpJournalRow | null>((acc, entry) => {
-      if (!predicate(entry)) return acc;
-      const timestampMs =
-        typeof entry.timestampMs === "number" &&
-        Number.isFinite(entry.timestampMs)
-          ? entry.timestampMs
-          : null;
-      if (timestampMs === null) return acc;
-      if (!acc) return entry;
-      const accTs =
-        typeof acc.timestampMs === "number" && Number.isFinite(acc.timestampMs)
-          ? acc.timestampMs
-          : null;
-      if (accTs === null || timestampMs > accTs) return entry;
-      return acc;
-    }, null);
-  const scalpLastExecuteRunAtMs = scalpRows.reduce<number | null>(
-    (acc, row) => {
-      if (
-        typeof row.lastRunAtMs !== "number" ||
-        !Number.isFinite(row.lastRunAtMs)
-      )
-        return acc;
-      if (acc === null) return row.lastRunAtMs;
-      return Math.max(acc, row.lastRunAtMs);
-    },
-    null,
-  );
-  const scalpLatestExecutionJournalEntry = scalpLatestJournalEntryBy(
-    isScalpExecutionJournalEntry,
-  );
-  const scalpLatestGuardrailEntry = scalpLatestJournalEntryBy(
-    isScalpGuardrailJournalEntry,
-  );
-  const scalpLastGuardrailAtMs = asFiniteNumber(
-    scalpLatestGuardrailEntry?.timestampMs,
-  );
-  const scalpWorkerHeartbeatUpdatedAtMs =
-    asFiniteNumber(scalpResearchCycle?.workerHeartbeat?.updatedAtMs) ??
-    asFiniteNumber(scalpResearchCycle?.workerHeartbeat?.finishedAtMs) ??
-    asFiniteNumber(scalpResearchCycle?.workerHeartbeat?.startedAtMs);
-  const scalpWorkerHeartbeatDurationMs = asFiniteNumber(
-    scalpResearchCycle?.workerHeartbeat?.durationMs,
-  );
-  const scalpWorkerLastDurationMs =
-    scalpWorkerHeartbeatDurationMs ?? scalpWorkerLastDurationFromTasksMs;
-  const scalpCycleUpdatedAtMs =
-    asFiniteNumber(scalpResearchCycle?.cycle?.updatedAtMs) ??
-    asFiniteNumber(scalpResearchCycle?.summary?.generatedAtMs) ??
-    asFiniteNumber(scalpResearchReport?.generatedAtMs);
-  const scalpWorkerLastRunAtMs =
-    scalpWorkerHeartbeatUpdatedAtMs ?? scalpCycleUpdatedAtMs;
-  const scalpReportGeneratedAtMs = asFiniteNumber(
-    scalpResearchReport?.generatedAtMs,
-  );
-  const scalpDashboardGeneratedAtMs = asFiniteNumber(
-    scalpSummary?.generatedAtMs,
-  );
-  const scalpSummaryRunCount = asFiniteNumber(scalpSummary?.summary?.runCount);
-  const scalpSummaryDryRunCount = asFiniteNumber(
-    scalpSummary?.summary?.dryRunCount,
-  );
-  const scalpSummaryOpenCount = asFiniteNumber(
-    scalpSummary?.summary?.openCount,
-  );
-  const scalpSummaryTradesPlaced = asFiniteNumber(
-    scalpSummary?.summary?.totalTradesPlaced,
-  );
-  const scalpLatestExecutionPayload =
-    scalpLatestExecutionJournalEntry?.payload &&
-    typeof scalpLatestExecutionJournalEntry.payload === "object"
-      ? (scalpLatestExecutionJournalEntry.payload as Record<string, unknown>)
-      : null;
-  const scalpLatestGuardrailPayload =
-    scalpLatestGuardrailEntry?.payload &&
-    typeof scalpLatestGuardrailEntry.payload === "object"
-      ? (scalpLatestGuardrailEntry.payload as Record<string, unknown>)
-      : null;
-  const scalpLatestExecutionDeploymentId = String(
-    scalpLatestExecutionPayload?.deploymentId || "",
-  ).trim();
-  const scalpLatestExecutionSymbol = String(
-    scalpLatestExecutionPayload?.symbol || "",
-  )
-    .trim()
-    .toUpperCase();
-  const scalpLatestGuardrailDeploymentId = String(
-    scalpLatestGuardrailPayload?.deploymentId || "",
-  ).trim();
-  const scalpLatestGuardrailSymbol = String(
-    scalpLatestGuardrailEntry?.symbol || "",
-  )
-    .trim()
-    .toUpperCase();
-  const scalpLatestGuardrailReasonCodes = Array.isArray(
-    scalpLatestGuardrailEntry?.reasonCodes,
-  )
-    ? scalpLatestGuardrailEntry.reasonCodes
-    : [];
-  const scalpLatestGuardrailIsWarmup = scalpLatestGuardrailReasonCodes.some(
-    (code) => {
-      const normalized = String(code || "")
-        .trim()
-        .toUpperCase();
-      return (
-        normalized.includes("SCALP_GUARDRAIL_WARMUP") ||
-        normalized === "GUARDRAIL_LOW_SAMPLE_30D"
-      );
-    },
-  );
-  const scalpIneligibleCount = Math.max(
-    0,
-    scalpEnabledDeploymentCount - scalpPromotionEligibleCount,
-  );
-  const toScalpRatioPct = (
-    numerator: number | null,
-    denominator: number | null,
-  ): number | null => {
-    if (numerator === null || denominator === null || denominator <= 0)
-      return null;
-    const raw = (numerator / denominator) * 100;
-    if (!Number.isFinite(raw)) return null;
-    return Math.max(0, Math.min(100, raw));
-  };
-  const scalpDiscoverySelectionPct = toScalpRatioPct(
-    scalpUniverseSelectedCount,
-    scalpUniverseCandidatesEvaluated ?? scalpUniverseEvaluatedCount,
-  );
-  const scalpImportCoveragePct = toScalpRatioPct(
-    scalpUniverseSeededCount,
-    scalpUniverseSelectedCount,
-  );
-  const scalpEvaluationCoveragePct = toScalpRatioPct(
-    scalpUniverseEvaluatedCount,
-    scalpUniverseCandidatesEvaluated ?? scalpUniverseEvaluatedCount,
-  );
-  const scalpEligibleSharePct = toScalpRatioPct(
-    scalpUniverseEligibleEvaluatedCount,
-    scalpUniverseEvaluatedCount,
-  );
-  const scalpHistoryCoveragePct = toScalpRatioPct(
-    scalpHistoryNonEmptyCount,
-    scalpHistoryScannedCount ?? scalpHistorySymbolCount,
-  );
-  const scalpCycleCompletedPct = toScalpRatioPct(
-    scalpCycleCompleted,
-    scalpCycleTasks,
-  );
-  const scalpCycleFailedPct = toScalpRatioPct(
-    scalpCycleFailed,
-    scalpCycleTasks,
-  );
-  const scalpCycleQueuePct = toScalpRatioPct(
-    (scalpCyclePending ?? 0) + (scalpCycleRunning ?? 0),
-    scalpCycleTasks,
-  );
-  const scalpGateEligiblePct = toScalpRatioPct(
-    scalpPromotionEligibleCount,
-    scalpEnabledDeploymentCount,
-  );
-  const scalpGateBlockedPct = toScalpRatioPct(
-    scalpIneligibleCount,
-    scalpEnabledDeploymentCount,
-  );
-  const scalpMaterializationCoveragePct = toScalpRatioPct(
-    scalpMaterializationExistingCount,
-    scalpMaterializationShortlisted,
-  );
-  const scalpMaterializationCreatedFromMissingPct = toScalpRatioPct(
-    scalpMaterializationCreated,
-    scalpMaterializationMissing,
-  );
-  const scalpStatusFromTs = (
-    ts: number | null,
-    staleMs: number,
-  ): ScalpOpsCronStatus => {
-    if (typeof ts !== "number" || !Number.isFinite(ts)) return "unknown";
-    return Date.now() - ts <= staleMs ? "healthy" : "lagging";
-  };
   const scalpCronRuntimeById: Record<string, ScalpCronRuntimeMeta> =
     buildScalpCronRuntimeMap(scalpCronNowMs);
   const scalpCronRuntimeMeta = (id: string): ScalpCronRuntimeMeta =>
@@ -4315,1166 +2912,147 @@ export default function Home() {
       nextRunAtMs: null,
       invokePath: null,
     };
-  const scalpCronRows: ScalpOpsCronRow[] = SCALP_LEGACY_CRON_PIPELINE_UI
-    ? [
-        {
-          id: "scalp_orchestrator",
-          cadence: "Twice daily",
-          cronExpression:
-            scalpCronRuntimeMeta("scalp_orchestrator").expressionLabel,
-          nextRunAtMs: scalpCronRuntimeMeta("scalp_orchestrator").nextRunAtMs,
-          invokePath: scalpCronRuntimeMeta("scalp_orchestrator").invokePath,
-          role: "Run staged discovery -> prepare -> worker -> aggregate -> promotion pipeline",
-          status: scalpStatusFromTs(scalpCycleUpdatedAtMs, 36 * 60 * 60_000),
-          lastRunAtMs: scalpCycleUpdatedAtMs,
+  const scalpCronRows: ScalpOpsCronRow[] = scalpPipelineJobs.map((job) => {
+        const rawKind = String(job?.jobKind || "")
+          .trim()
+          .toLowerCase();
+        const rowId =
+          rawKind === "discover"
+            ? "scalp_discover_symbols"
+            : rawKind === "load_candles"
+              ? "scalp_load_candles"
+              : rawKind === "prepare"
+                ? "scalp_prepare"
+                : rawKind === "worker"
+                  ? "scalp_worker"
+                  : rawKind === "promotion"
+                    ? "scalp_promotion"
+                    : `scalp_${rawKind || "job"}`;
+        const queuePending = Math.max(
+          0,
+          Math.floor(Number(job?.queue?.pending || 0)),
+        );
+        const queueRunning = Math.max(
+          0,
+          Math.floor(Number(job?.queue?.running || 0)),
+        );
+        const queueRetry = Math.max(
+          0,
+          Math.floor(Number(job?.queue?.retryWait || 0)),
+        );
+        const queueFailed = Math.max(
+          0,
+          Math.floor(Number(job?.queue?.failed || 0)),
+        );
+        const queueSucceeded = Math.max(
+          0,
+          Math.floor(Number(job?.queue?.succeeded || 0)),
+        );
+        const nextRunAtMs =
+          asFiniteNumber(job?.nextRunAtMs) ??
+          scalpCronRuntimeMeta(rowId).nextRunAtMs;
+        const invokePath = scalpCronRuntimeMeta(rowId).invokePath;
+        const statusRaw = String(job?.status || "")
+          .trim()
+          .toLowerCase();
+        const status: ScalpOpsCronStatus =
+          statusRaw === "running" || Boolean(job?.locked)
+            ? "healthy"
+            : statusRaw === "failed"
+              ? "lagging"
+              : "unknown";
+        return {
+          id: rowId,
+          cadence: "State-driven",
+          cronExpression: scalpCronRuntimeMeta(rowId).expressionLabel,
+          nextRunAtMs,
+          invokePath,
+          role: rawKind.replace(/_/g, " "),
+          status,
+          lastRunAtMs: asFiniteNumber(job?.lastRunAtMs),
           lastDurationMs: null,
           details: [
-            {
-              label: "Cron",
-              value:
-                scalpCronRuntimeMeta("scalp_orchestrator").expressionLabel ||
-                "not configured",
-              tone: scalpCronRuntimeMeta("scalp_orchestrator").expressionLabel
-                ? "neutral"
-                : "warning",
-            },
-            {
-              label: "Next Run",
-              value: formatScalpNextRunIn(
-                scalpCronRuntimeMeta("scalp_orchestrator").nextRunAtMs,
-                scalpCronNowMs,
-              ),
-              tone: "neutral",
-            },
-            {
-              label: "Running Since",
-              value: formatScalpTime(scalpPipelineRunningSinceMs),
-              tone: scalpPipelineRunningSinceMs ? "warning" : "neutral",
-            },
-            {
-              label: "Progress",
-              value:
-                scalpPipelineProgressPct === null
-                  ? "—"
-                  : `${scalpPipelineProgressPct.toFixed(0)}%${
-                      scalpPipelineProgressLabel
-                        ? ` · ${scalpPipelineProgressLabel}`
-                        : ""
-                    }`,
-              tone:
-                scalpPipelineProgressPct !== null &&
-                scalpPipelineProgressPct >= 100
-                  ? "positive"
-                  : "warning",
-            },
-            {
-              label: "Cycle",
-              value: scalpCycleId || "pending",
-              tone: scalpCycleId ? "neutral" : "warning",
-            },
             {
               label: "Status",
-              value: scalpCycleStatusRaw.replace(/_/g, " "),
-              tone: scalpCycleStatusTone,
-            },
-          ],
-          resultPreview: {
-            cycleId: scalpCycleId || null,
-            status: scalpCycleStatusRaw || null,
-          },
-        },
-        {
-          id: "scalp_discover_symbols",
-          cadence: "Daily + intraweek",
-          cronExpression: scalpCronRuntimeMeta("scalp_discover_symbols")
-            .expressionLabel,
-          nextRunAtMs: scalpCronRuntimeMeta("scalp_discover_symbols")
-            .nextRunAtMs,
-          invokePath: scalpCronRuntimeMeta("scalp_discover_symbols").invokePath,
-          role: "Discover symbols and seed candle history",
-          status: scalpStatusFromTs(
-            scalpUniverseGeneratedAtMs,
-            36 * 60 * 60_000,
-          ),
-          lastRunAtMs: scalpUniverseGeneratedAtMs,
-          lastDurationMs: null,
-          details: [
-            {
-              label: "Cron",
-              value:
-                scalpCronRuntimeMeta("scalp_discover_symbols")
-                  .expressionLabel || "not configured",
-              tone: scalpCronRuntimeMeta("scalp_discover_symbols")
-                .expressionLabel
-                ? "neutral"
-                : "warning",
-            },
-            {
-              label: "Next Run",
-              value: formatScalpNextRunIn(
-                scalpCronRuntimeMeta("scalp_discover_symbols").nextRunAtMs,
-                scalpCronNowMs,
-              ),
-              tone: "neutral",
-            },
-            {
-              label: "Snapshot",
-              value: formatScalpTime(scalpUniverseGeneratedAtMs),
-              tone: scalpUniverseGeneratedAtMs ? "neutral" : "warning",
-            },
-            {
-              label: "Selected",
-              value: formatScalpCount(scalpUniverseSelectedCount),
-              tone: "neutral",
-            },
-            {
-              label: "Candidates",
-              value: formatScalpCount(scalpUniverseCandidatesEvaluated),
-              tone: "neutral",
-            },
-            {
-              label: "Imported",
-              value: formatScalpCount(scalpUniverseSeededCount),
-              tone: "neutral",
-            },
-            {
-              label: "History",
-              value: `${formatScalpCount(scalpHistoryNonEmptyCount)} / ${formatScalpCount(
-                scalpHistoryScannedCount ?? scalpHistorySymbolCount,
-              )}`,
+              value: statusRaw || "idle",
               tone:
-                scalpHistoryCoveragePct !== null &&
-                scalpHistoryCoveragePct >= 80
-                  ? "positive"
-                  : "warning",
-            },
-            {
-              label: "Median Depth",
-              value:
-                scalpHistoryMedianDepthDays === null
-                  ? "—"
-                  : `${scalpHistoryMedianDepthDays.toFixed(1)}d`,
-              tone:
-                scalpHistoryMedianDepthDays === null
-                  ? "neutral"
-                  : scalpHistoryMedianDepthDays >= 90
-                    ? "positive"
-                    : "warning",
-            },
-          ],
-          visualMetrics: [
-            {
-              label: "Selection Rate",
-              valueLabel:
-                scalpDiscoverySelectionPct === null
-                  ? "—"
-                  : `${scalpDiscoverySelectionPct.toFixed(1)}%`,
-              pct: scalpDiscoverySelectionPct,
-              tone: "neutral",
-            },
-            {
-              label: "Import Coverage",
-              valueLabel:
-                scalpImportCoveragePct === null
-                  ? "—"
-                  : `${scalpImportCoveragePct.toFixed(1)}%`,
-              pct: scalpImportCoveragePct,
-              tone:
-                scalpImportCoveragePct !== null && scalpImportCoveragePct >= 75
-                  ? "positive"
-                  : "warning",
-            },
-            {
-              label: "History Coverage",
-              valueLabel:
-                scalpHistoryCoveragePct === null
-                  ? "—"
-                  : `${scalpHistoryCoveragePct.toFixed(1)}%`,
-              pct: scalpHistoryCoveragePct,
-              tone:
-                scalpHistoryCoveragePct !== null &&
-                scalpHistoryCoveragePct >= 80
-                  ? "positive"
-                  : "warning",
-            },
-          ],
-          resultPreview: {
-            generatedAtIso:
-              scalpResearchUniverse?.generatedAtIso ||
-              scalpResearchUniverse?.snapshot?.generatedAtIso ||
-              null,
-            selectedSymbolsPreview: scalpUniverseSymbols.slice(0, 10),
-            selectedSymbolsRemaining: Math.max(
-              0,
-              scalpUniverseSymbols.length - 10,
-            ),
-            candidatesEvaluated:
-              scalpUniverseCandidatesEvaluated ?? scalpUniverseEvaluatedCount,
-            seedSummary: scalpUniverseSeedSummary || null,
-            history: {
-              timeframe: scalpHistoryTimeframe,
-              backend: scalpHistoryBackend,
-              symbolCount: scalpHistorySymbolCount,
-              scannedCount: scalpHistoryScannedCount,
-              nonEmptyCount: scalpHistoryNonEmptyCount,
-              totalCandles: scalpHistoryTotalCandles,
-              medianCandles: scalpHistoryMedianCandles,
-              medianDepthDays: scalpHistoryMedianDepthDays,
-              oldestCandleAtMs: scalpHistoryOldestCandleAtMs,
-              newestCandleAtMs: scalpHistoryNewestCandleAtMs,
-              rowsPreview: scalpHistoryPreviewRows,
-              rowsRemaining: Math.max(
-                0,
-                scalpHistoryRows.length - scalpHistoryPreviewRows.length,
-              ),
-            },
-          },
-        },
-        {
-          id: "scalp_prepare_and_start_cycle",
-          cadence: "Twice daily",
-          cronExpression: scalpCronRuntimeMeta("scalp_prepare_and_start_cycle")
-            .expressionLabel,
-          nextRunAtMs: scalpCronRuntimeMeta("scalp_prepare_and_start_cycle")
-            .nextRunAtMs,
-          invokePath: scalpCronRuntimeMeta("scalp_prepare_and_start_cycle")
-            .invokePath,
-          role: "Prepare data readiness and start research cycle",
-          status: scalpStatusFromTs(scalpCycleUpdatedAtMs, 36 * 60 * 60_000),
-          lastRunAtMs: scalpCycleUpdatedAtMs,
-          lastDurationMs: null,
-          details: [
-            {
-              label: "Cron",
-              value:
-                scalpCronRuntimeMeta("scalp_prepare_and_start_cycle")
-                  .expressionLabel || "not configured",
-              tone: scalpCronRuntimeMeta("scalp_prepare_and_start_cycle")
-                .expressionLabel
-                ? "neutral"
-                : "warning",
-            },
-            {
-              label: "Next Run",
-              value: formatScalpNextRunIn(
-                scalpCronRuntimeMeta("scalp_prepare_and_start_cycle")
-                  .nextRunAtMs,
-                scalpCronNowMs,
-              ),
-              tone: "neutral",
-            },
-            {
-              label: "Running Since",
-              value: formatScalpTime(scalpPipelineRunningSinceMs),
-              tone: scalpPipelineRunningSinceMs ? "warning" : "neutral",
-            },
-            {
-              label: "Progress",
-              value:
-                scalpPipelineProgressPct === null
-                  ? "—"
-                  : `${scalpPipelineProgressPct.toFixed(0)}%${
-                      scalpPipelineProgressLabel
-                        ? ` · ${scalpPipelineProgressLabel}`
-                        : ""
-                    }`,
-              tone:
-                scalpPipelineProgressPct !== null &&
-                scalpPipelineProgressPct >= 100
-                  ? "positive"
-                  : "warning",
-            },
-            {
-              label: "Cycle",
-              value: scalpCycleId || "pending",
-              tone: scalpCycleId ? "neutral" : "warning",
-            },
-            {
-              label: "Status",
-              value: scalpCycleStatusRaw.replace(/_/g, " "),
-              tone: scalpCycleStatusTone,
-            },
-            {
-              label: "Discovered",
-              value: formatScalpCount(scalpUniverseSelectedCount),
-              tone: "neutral",
-            },
-            {
-              label: "Imported",
-              value: formatScalpCount(scalpUniverseSeededCount),
-              tone: "neutral",
-            },
-            {
-              label: "Evaluated",
-              value: formatScalpCount(scalpUniverseEvaluatedCount),
-              tone: "neutral",
-            },
-            {
-              label: "Eligible",
-              value: formatScalpCount(scalpUniverseEligibleEvaluatedCount),
-              tone: "positive",
-            },
-            {
-              label: "History",
-              value: `${formatScalpCount(scalpHistoryNonEmptyCount)} / ${formatScalpCount(
-                scalpHistoryScannedCount ?? scalpHistorySymbolCount,
-              )}`,
-              tone:
-                scalpHistoryCoveragePct !== null &&
-                scalpHistoryCoveragePct >= 80
-                  ? "positive"
-                  : "warning",
-            },
-            {
-              label: "Median Depth",
-              value:
-                scalpHistoryMedianDepthDays === null
-                  ? "—"
-                  : `${scalpHistoryMedianDepthDays.toFixed(1)}d`,
-              tone:
-                scalpHistoryMedianDepthDays === null
-                  ? "neutral"
-                  : scalpHistoryMedianDepthDays >= 90
-                    ? "positive"
-                    : "warning",
-            },
-          ],
-          visualMetrics: [
-            {
-              label: "Selection Rate",
-              valueLabel:
-                scalpDiscoverySelectionPct === null
-                  ? "—"
-                  : `${scalpDiscoverySelectionPct.toFixed(1)}%`,
-              pct: scalpDiscoverySelectionPct,
-              tone: "neutral",
-            },
-            {
-              label: "Import Coverage",
-              valueLabel:
-                scalpImportCoveragePct === null
-                  ? "—"
-                  : `${scalpImportCoveragePct.toFixed(1)}%`,
-              pct: scalpImportCoveragePct,
-              tone:
-                scalpImportCoveragePct !== null && scalpImportCoveragePct >= 75
-                  ? "positive"
-                  : "warning",
-            },
-            {
-              label: "Evaluation Coverage",
-              valueLabel:
-                scalpEvaluationCoveragePct === null
-                  ? "—"
-                  : `${scalpEvaluationCoveragePct.toFixed(1)}%`,
-              pct: scalpEvaluationCoveragePct,
-              tone:
-                scalpEvaluationCoveragePct !== null &&
-                scalpEvaluationCoveragePct >= 90
-                  ? "positive"
-                  : "warning",
-            },
-            {
-              label: "History Coverage",
-              valueLabel:
-                scalpHistoryCoveragePct === null
-                  ? "—"
-                  : `${scalpHistoryCoveragePct.toFixed(1)}%`,
-              pct: scalpHistoryCoveragePct,
-              tone:
-                scalpHistoryCoveragePct !== null &&
-                scalpHistoryCoveragePct >= 80
-                  ? "positive"
-                  : "warning",
-            },
-            {
-              label: "Eligible Share",
-              valueLabel:
-                scalpEligibleSharePct === null
-                  ? "—"
-                  : `${scalpEligibleSharePct.toFixed(1)}%`,
-              pct: scalpEligibleSharePct,
-              tone:
-                scalpEligibleSharePct !== null && scalpEligibleSharePct >= 20
-                  ? "positive"
-                  : "neutral",
-            },
-          ],
-          resultPreview: {
-            cycleId: scalpCycleId || null,
-            status: scalpCycleStatusRaw || null,
-            discoveredSymbolsPreview: scalpUniverseSymbols.slice(0, 10),
-            discoveredSymbolsRemaining: Math.max(
-              0,
-              scalpUniverseSymbols.length - 10,
-            ),
-            importedSymbolsPreview: scalpUniverseSeededSymbols.slice(0, 10),
-            importedSymbolsRemaining: Math.max(
-              0,
-              scalpUniverseSeededSymbols.length - 10,
-            ),
-            evaluatedSymbolsPreview: scalpUniverseEvaluatedSymbols.slice(0, 10),
-            evaluatedSymbolsRemaining: Math.max(
-              0,
-              scalpUniverseEvaluatedSymbols.length - 10,
-            ),
-            candidatesEvaluated:
-              scalpUniverseCandidatesEvaluated ?? scalpUniverseEvaluatedCount,
-            seedProcessedSymbols: scalpUniverseSeedProcessedCount,
-            seedSummary: scalpUniverseSeedSummary || null,
-            topEvaluationRows: scalpUniverseEvaluatedRows
-              .slice(0, 8)
-              .map((row) => ({
-                symbol: row.symbol,
-                eligible: row.eligible,
-                score: row.score,
-                reasons: row.reasons,
-              })),
-            generatedAtIso:
-              scalpResearchUniverse?.generatedAtIso ||
-              scalpResearchUniverse?.snapshot?.generatedAtIso ||
-              null,
-          },
-        },
-        {
-          id: "scalp_cycle_worker",
-          cadence: "Every 1-2m",
-          cronExpression:
-            scalpCronRuntimeMeta("scalp_cycle_worker").expressionLabel,
-          nextRunAtMs: scalpCronRuntimeMeta("scalp_cycle_worker").nextRunAtMs,
-          invokePath: scalpCronRuntimeMeta("scalp_cycle_worker").invokePath,
-          role: "Claim and execute replay chunks",
-          status: scalpStatusFromTs(scalpWorkerLastRunAtMs, 20 * 60_000),
-          lastRunAtMs: scalpWorkerLastRunAtMs,
-          lastDurationMs: scalpWorkerLastDurationMs,
-          details: [
-            {
-              label: "Cron",
-              value:
-                scalpCronRuntimeMeta("scalp_cycle_worker").expressionLabel ||
-                "not configured",
-              tone: scalpCronRuntimeMeta("scalp_cycle_worker").expressionLabel
-                ? "neutral"
-                : "warning",
-            },
-            {
-              label: "Next Run",
-              value: formatScalpNextRunIn(
-                scalpCronRuntimeMeta("scalp_cycle_worker").nextRunAtMs,
-                scalpCronNowMs,
-              ),
-              tone: "neutral",
-            },
-            {
-              label: "Running Since",
-              value: formatScalpTime(
-                scalpPipelineRunningSinceMs ??
-                  asFiniteNumber(
-                    scalpResearchCycle?.workerHeartbeat?.startedAtMs,
-                  ),
-              ),
-              tone:
-                scalpPipelineRunningSinceMs ||
-                asFiniteNumber(scalpResearchCycle?.workerHeartbeat?.startedAtMs)
-                  ? "warning"
-                  : "neutral",
-            },
-            {
-              label: "Progress",
-              value:
-                scalpCycleProgressPct === null
-                  ? "—"
-                  : `${scalpCycleProgressPct.toFixed(1)}%`,
-              tone:
-                scalpCycleProgressPct !== null && scalpCycleProgressPct >= 99.9
-                  ? "positive"
-                  : "neutral",
-            },
-            {
-              label: "Worker Status",
-              value:
-                String(
-                  scalpResearchCycle?.workerHeartbeat?.status || "n/a",
-                ).trim() || "n/a",
-              tone:
-                scalpResearchCycle?.workerHeartbeat?.status === "failed"
+                statusRaw === "failed"
                   ? "critical"
-                  : scalpResearchCycle?.workerHeartbeat?.status
-                    ? "neutral"
-                    : "warning",
-            },
-            {
-              label: "Budget Stop",
-              value: scalpResearchCycle?.workerHeartbeat
-                ?.stoppedByDurationBudget
-                ? "yes"
-                : "no",
-              tone: scalpResearchCycle?.workerHeartbeat?.stoppedByDurationBudget
-                ? "warning"
-                : "neutral",
-            },
-            {
-              label: "Progress",
-              value: formatScalpPct(scalpCycleProgressPct),
-              tone: "neutral",
-            },
-            {
-              label: "Tasks",
-              value: formatScalpCount(scalpCycleTasks),
-              tone: "neutral",
-            },
-            {
-              label: "Pending",
-              value: formatScalpCount(scalpCyclePending),
-              tone: "warning",
-            },
-            {
-              label: "Running",
-              value: formatScalpCount(scalpCycleRunning),
-              tone: "warning",
-            },
-            {
-              label: "Stale→Pending",
-              value: formatScalpCount(scalpCycleRunningStaleAsPending),
-              tone: scalpCycleRunningStaleAsPending ? "warning" : "neutral",
-            },
-            {
-              label: "Failed",
-              value: formatScalpCount(scalpCycleFailed),
-              tone: scalpCycleFailed ? "critical" : "positive",
-            },
-          ],
-          visualMetrics: [
-            {
-              label: "Progress",
-              valueLabel:
-                scalpCycleProgressPct === null
-                  ? "—"
-                  : `${scalpCycleProgressPct.toFixed(1)}%`,
-              pct: scalpCycleProgressPct,
-              tone:
-                scalpCycleProgressPct !== null && scalpCycleProgressPct >= 99.9
-                  ? "positive"
-                  : "neutral",
-            },
-            {
-              label: "Completed Share",
-              valueLabel:
-                scalpCycleCompletedPct === null
-                  ? "—"
-                  : `${scalpCycleCompletedPct.toFixed(1)}%`,
-              pct: scalpCycleCompletedPct,
-              tone:
-                scalpCycleCompletedPct !== null && scalpCycleCompletedPct >= 70
-                  ? "positive"
-                  : "neutral",
-            },
-            {
-              label: "Queue Share",
-              valueLabel:
-                scalpCycleQueuePct === null
-                  ? "—"
-                  : `${scalpCycleQueuePct.toFixed(1)}%`,
-              pct: scalpCycleQueuePct,
-              tone:
-                scalpCycleQueuePct !== null && scalpCycleQueuePct > 30
-                  ? "warning"
-                  : "neutral",
-            },
-            {
-              label: "Failure Share",
-              valueLabel:
-                scalpCycleFailedPct === null
-                  ? "—"
-                  : `${scalpCycleFailedPct.toFixed(1)}%`,
-              pct: scalpCycleFailedPct,
-              tone:
-                scalpCycleFailedPct !== null && scalpCycleFailedPct > 0
-                  ? "critical"
-                  : "positive",
-            },
-          ],
-          resultPreview: {
-            cycleId: scalpCycleId || null,
-            status: scalpCycleStatusRaw || null,
-            progressPct: scalpCycleProgressPct,
-            totals: {
-              tasks: scalpCycleTasks,
-              pending: scalpCyclePending,
-              running: scalpCycleRunning,
-              completed: scalpCycleCompleted,
-              failed: scalpCycleFailed,
-            },
-            totalsSource: scalpCycleTotalsSource,
-            tasksLoaded: scalpWorkerTaskRows.length,
-            includeTasks: scalpResearchCycle?.includeTasks ?? null,
-            taskLimit: scalpResearchCycle?.taskLimit ?? null,
-          },
-        },
-        {
-          id: "scalp_cycle_aggregate",
-          cadence: "Every 10m",
-          cronExpression: scalpCronRuntimeMeta("scalp_cycle_aggregate")
-            .expressionLabel,
-          nextRunAtMs: scalpCronRuntimeMeta("scalp_cycle_aggregate")
-            .nextRunAtMs,
-          invokePath: scalpCronRuntimeMeta("scalp_cycle_aggregate").invokePath,
-          role: "Compute candidate/forward summary",
-          status: scalpStatusFromTs(scalpCycleUpdatedAtMs, 45 * 60_000),
-          lastRunAtMs: scalpCycleUpdatedAtMs,
-          lastDurationMs: null,
-          details: [
-            {
-              label: "Cron",
-              value:
-                scalpCronRuntimeMeta("scalp_cycle_aggregate").expressionLabel ||
-                "not configured",
-              tone: scalpCronRuntimeMeta("scalp_cycle_aggregate")
-                .expressionLabel
-                ? "neutral"
-                : "warning",
-            },
-            {
-              label: "Next Run",
-              value: formatScalpNextRunIn(
-                scalpCronRuntimeMeta("scalp_cycle_aggregate").nextRunAtMs,
-                scalpCronNowMs,
-              ),
-              tone: "neutral",
-            },
-            {
-              label: "Completed",
-              value: formatScalpCount(scalpCycleCompleted),
-              tone: "positive",
-            },
-            {
-              label: "Pending",
-              value: formatScalpCount(scalpCyclePending),
-              tone: (scalpCyclePending ?? 0) > 0 ? "warning" : "neutral",
-            },
-            {
-              label: "Candidates",
-              value: formatScalpCount(
-                asFiniteNumber(scalpResearchReport?.cycle?.candidateCount),
-              ),
-              tone: "neutral",
-            },
-            {
-              label: "Deployments",
-              value: formatScalpCount(
-                asFiniteNumber(scalpResearchReport?.summary?.deploymentsTotal),
-              ),
-              tone: "neutral",
-            },
-            {
-              label: "Enabled",
-              value: formatScalpCount(
-                asFiniteNumber(
-                  scalpResearchReport?.summary?.deploymentsEnabled,
-                ),
-              ),
-              tone: "neutral",
-            },
-            {
-              label: "Abs Corr",
-              value:
-                scalpAvgAbsPairCorrelation === null
-                  ? "—"
-                  : scalpAvgAbsPairCorrelation.toFixed(2),
-              tone:
-                scalpAvgAbsPairCorrelation !== null &&
-                scalpAvgAbsPairCorrelation >= 0.7
-                  ? "warning"
-                  : "neutral",
-            },
-          ],
-          resultPreview: {
-            cycle: scalpResearchReport?.cycle || null,
-            summary: scalpResearchReport?.summary || null,
-            generatedAtMs: scalpReportGeneratedAtMs,
-          },
-        },
-        {
-          id: "scalp_promotion_gate_apply",
-          cadence: "Daily",
-          cronExpression: scalpCronRuntimeMeta("scalp_promotion_gate_apply")
-            .expressionLabel,
-          nextRunAtMs: scalpCronRuntimeMeta("scalp_promotion_gate_apply")
-            .nextRunAtMs,
-          invokePath: scalpCronRuntimeMeta("scalp_promotion_gate_apply")
-            .invokePath,
-          role: "Apply forward validation gate",
-          status: scalpStatusFromTs(
-            scalpPromotionSyncFetchedAtMs ?? scalpReportGeneratedAtMs,
-            36 * 60 * 60_000,
-          ),
-          lastRunAtMs:
-            scalpPromotionSyncFetchedAtMs ?? scalpReportGeneratedAtMs,
-          lastDurationMs: null,
-          details: [
-            {
-              label: "Cron",
-              value:
-                scalpCronRuntimeMeta("scalp_promotion_gate_apply")
-                  .expressionLabel || "not configured",
-              tone: scalpCronRuntimeMeta("scalp_promotion_gate_apply")
-                .expressionLabel
-                ? "neutral"
-                : "warning",
-            },
-            {
-              label: "Next Run",
-              value: formatScalpNextRunIn(
-                scalpCronRuntimeMeta("scalp_promotion_gate_apply").nextRunAtMs,
-                scalpCronNowMs,
-              ),
-              tone: "neutral",
-            },
-            {
-              label: "Cycle",
-              value: scalpPromotionSyncCycleId || scalpCycleId || "pending",
-              tone:
-                scalpPromotionSyncCycleId || scalpCycleId
-                  ? "neutral"
-                  : "warning",
-            },
-            {
-              label: "Sync",
-              value: scalpPromotionSyncStatusRaw || "unknown",
-              tone: scalpPromotionSyncStatusTone,
-            },
-            {
-              label: "Enabled",
-              value: formatScalpCount(scalpEnabledDeploymentCount),
-              tone: "neutral",
-            },
-            {
-              label: "Eligible",
-              value: formatScalpCount(scalpPromotionEligibleCount),
-              tone: "positive",
-            },
-            {
-              label: "Blocked",
-              value: formatScalpCount(scalpIneligibleCount),
-              tone: scalpIneligibleCount > 0 ? "warning" : "positive",
-            },
-            {
-              label: "Shortlisted",
-              value: formatScalpCount(scalpMaterializationShortlisted),
-              tone: "neutral",
-            },
-            {
-              label: "Missing",
-              value: formatScalpCount(scalpMaterializationMissing),
-              tone:
-                scalpMaterializationMissing === null
-                  ? "neutral"
-                  : scalpMaterializationMissing > 0
+                  : statusRaw === "running"
                     ? "warning"
+                    : "neutral",
+            },
+            {
+              label: "Queue",
+              value: `${queuePending} pending · ${queueRunning} running · ${queueRetry} retry`,
+              tone:
+                queueFailed > 0
+                  ? "warning"
+                  : queueRunning > 0
+                    ? "neutral"
                     : "positive",
             },
             {
-              label: "Forward Exp",
-              value: formatScalpSignedR(scalpMeanForwardExpectancyR),
-              tone:
-                scalpMeanForwardExpectancyR === null
-                  ? "neutral"
-                  : scalpMeanForwardExpectancyR >= 0
-                    ? "positive"
-                    : "critical",
+              label: "Failed",
+              value: `${queueFailed}`,
+              tone: queueFailed > 0 ? "critical" : "neutral",
             },
             {
-              label: "Profitable",
-              value: formatScalpPct(scalpMeanForwardProfitablePct, 1),
-              tone:
-                scalpMeanForwardProfitablePct === null
-                  ? "neutral"
-                  : scalpMeanForwardProfitablePct >= 50
-                    ? "positive"
-                    : "warning",
-            },
-          ],
-          visualMetrics: [
-            {
-              label: "Eligible Share",
-              valueLabel:
-                scalpGateEligiblePct === null
-                  ? "—"
-                  : `${scalpGateEligiblePct.toFixed(1)}%`,
-              pct: scalpGateEligiblePct,
-              tone:
-                scalpGateEligiblePct !== null && scalpGateEligiblePct >= 60
-                  ? "positive"
-                  : "warning",
+              label: "Succeeded",
+              value: `${queueSucceeded}`,
+              tone: queueSucceeded > 0 ? "positive" : "neutral",
             },
             {
-              label: "Blocked Share",
-              valueLabel:
-                scalpGateBlockedPct === null
-                  ? "—"
-                  : `${scalpGateBlockedPct.toFixed(1)}%`,
-              pct: scalpGateBlockedPct,
-              tone:
-                scalpGateBlockedPct !== null && scalpGateBlockedPct > 40
-                  ? "warning"
-                  : "neutral",
-            },
-            {
-              label: "Profitable Forward",
-              valueLabel:
-                scalpMeanForwardProfitablePct === null
-                  ? "—"
-                  : `${scalpMeanForwardProfitablePct.toFixed(1)}%`,
-              pct: scalpMeanForwardProfitablePct,
-              tone:
-                scalpMeanForwardProfitablePct === null
-                  ? "neutral"
-                  : scalpMeanForwardProfitablePct >= 50
-                    ? "positive"
-                    : "warning",
-            },
-            {
-              label: "Shortlist Coverage",
-              valueLabel:
-                scalpMaterializationCoveragePct === null
-                  ? "—"
-                  : `${scalpMaterializationCoveragePct.toFixed(1)}%`,
-              pct: scalpMaterializationCoveragePct,
-              tone:
-                scalpMaterializationCoveragePct === null
-                  ? "neutral"
-                  : scalpMaterializationCoveragePct >= 80
-                    ? "positive"
-                    : "warning",
-            },
-            {
-              label: "Created from Missing",
-              valueLabel:
-                scalpMaterializationCreatedFromMissingPct === null
-                  ? "—"
-                  : `${scalpMaterializationCreatedFromMissingPct.toFixed(1)}%`,
-              pct: scalpMaterializationCreatedFromMissingPct,
-              tone:
-                scalpMaterializationCreatedFromMissingPct === null
-                  ? "neutral"
-                  : scalpMaterializationCreatedFromMissingPct >= 80
-                    ? "positive"
-                    : "warning",
-            },
-          ],
-          resultPreview: {
-            syncPreview: {
-              fetchedAtMs: scalpPromotionSyncFetchedAtMs,
-              cycleId: scalpPromotionSyncCycleId,
-              cycleStatus: scalpPromotionSyncStatusRaw || null,
-              reason: scalpPromotionSyncReason,
-              deploymentsConsidered: scalpPromotionSyncConsidered,
-              deploymentsMatched: scalpPromotionSyncMatched,
-              deploymentsUpdated: scalpPromotionSyncUpdated,
-              weeklyPolicy: scalpPromotionSyncSnapshot?.weeklyPolicy || null,
-              confirmationPolicy:
-                scalpPromotionSyncSnapshot?.confirmationPolicy || null,
-            },
-            materialization: {
-              source: scalpMaterializationSource,
-              topKPerSymbol: scalpMaterializationTopKPerSymbol,
-              shortlistedCandidates: scalpMaterializationShortlisted,
-              existingCandidates: scalpMaterializationExistingCount,
-              missingCandidates: scalpMaterializationMissing,
-              createdCandidates: scalpMaterializationCreated,
-              rowsPreview: scalpMaterializationPreviewRows.slice(0, 12),
-              rowsRemaining: Math.max(0, scalpMaterializationRows.length - 12),
-            },
-            enabledDeployments: scalpEnabledDeploymentCount,
-            promotionEligible: scalpPromotionEligibleCount,
-            ineligible: scalpIneligibleCount,
-            meanForwardExpectancyR: scalpMeanForwardExpectancyR,
-            meanForwardProfitableWindowPct: scalpMeanForwardProfitablePct,
-            reportGeneratedAtMs: scalpReportGeneratedAtMs,
-          },
-        },
-        {
-          id: "scalp_execute_deployments",
-          cadence: "Every 1m",
-          cronExpression: scalpCronRuntimeMeta("scalp_execute_deployments")
-            .expressionLabel,
-          nextRunAtMs: scalpCronRuntimeMeta("scalp_execute_deployments")
-            .nextRunAtMs,
-          invokePath: scalpCronRuntimeMeta("scalp_execute_deployments")
-            .invokePath,
-          role: "Run enabled and gate-eligible deployments",
-          status: scalpStatusFromTs(scalpLastExecuteRunAtMs, 10 * 60_000),
-          lastRunAtMs: scalpLastExecuteRunAtMs,
-          lastDurationMs: null,
-          details: [
-            {
-              label: "Cron",
-              value:
-                scalpCronRuntimeMeta("scalp_execute_deployments")
-                  .expressionLabel || "not configured",
-              tone: scalpCronRuntimeMeta("scalp_execute_deployments")
-                .expressionLabel
-                ? "neutral"
-                : "warning",
+              label: "Last Run",
+              value: formatScalpTime(asFiniteNumber(job?.lastRunAtMs)),
+              tone: "neutral",
             },
             {
               label: "Next Run",
-              value: formatScalpNextRunIn(
-                scalpCronRuntimeMeta("scalp_execute_deployments").nextRunAtMs,
-                scalpCronNowMs,
-              ),
+              value: formatScalpNextRunIn(nextRunAtMs, scalpCronNowMs),
               tone: "neutral",
             },
             {
-              label: "Run Count",
-              value: formatScalpCount(scalpSummaryRunCount),
-              tone: "neutral",
-            },
-            {
-              label: "Dry Runs",
-              value: formatScalpCount(scalpSummaryDryRunCount),
-              tone: "neutral",
-            },
-            {
-              label: "Open",
-              value: formatScalpCount(scalpSummaryOpenCount),
-              tone: "neutral",
-            },
-            {
-              label: "Trades",
-              value: formatScalpCount(scalpSummaryTradesPlaced),
-              tone: "neutral",
-            },
-            {
-              label: "Last Deployment",
-              value: scalpLatestExecutionDeploymentId || "—",
-              tone: scalpLatestExecutionDeploymentId ? "neutral" : "warning",
+              label: "Error",
+              value: String(job?.lastError || "").trim() || "none",
+              tone: job?.lastError ? "critical" : "neutral",
             },
           ],
           resultPreview: {
-            summary: scalpSummary?.summary || null,
-            latestExecution: {
-              atMs: scalpLatestExecutionJournalEntry?.timestampMs ?? null,
-              symbol: scalpLatestExecutionSymbol || null,
-              deploymentId: scalpLatestExecutionDeploymentId || null,
-              reasonCodes: Array.isArray(
-                scalpLatestExecutionJournalEntry?.reasonCodes,
-              )
-                ? scalpLatestExecutionJournalEntry?.reasonCodes
-                : [],
-              payload: scalpLatestExecutionPayload || null,
-            },
+            progressLabel: job?.progressLabel || null,
+            progress: job?.progress || null,
+            queue: job?.queue || null,
           },
-        },
-        {
-          id: "scalp_live_guardrail_monitor",
-          cadence: "Every 5-15m",
-          cronExpression: scalpCronRuntimeMeta("scalp_live_guardrail_monitor")
-            .expressionLabel,
-          nextRunAtMs: scalpCronRuntimeMeta("scalp_live_guardrail_monitor")
-            .nextRunAtMs,
-          invokePath: scalpCronRuntimeMeta("scalp_live_guardrail_monitor")
-            .invokePath,
-          role: "Track warmup and pause hard-breach deployments",
-          status: scalpStatusFromTs(
-            scalpLastGuardrailAtMs ?? scalpReportGeneratedAtMs,
-            60 * 60_000,
-          ),
-          lastRunAtMs: scalpLastGuardrailAtMs ?? scalpReportGeneratedAtMs,
-          lastDurationMs: null,
-          details: [
-            {
-              label: "Cron",
-              value:
-                scalpCronRuntimeMeta("scalp_live_guardrail_monitor")
-                  .expressionLabel || "not configured",
-              tone: scalpCronRuntimeMeta("scalp_live_guardrail_monitor")
-                .expressionLabel
-                ? "neutral"
-                : "warning",
-            },
-            {
-              label: "Next Run",
-              value: formatScalpNextRunIn(
-                scalpCronRuntimeMeta("scalp_live_guardrail_monitor")
-                  .nextRunAtMs,
-                scalpCronNowMs,
-              ),
-              tone: "neutral",
-            },
-            {
-              label: "Last Event",
-              value: formatScalpTime(
-                scalpLastGuardrailAtMs ?? scalpReportGeneratedAtMs,
-              ),
-              tone: scalpLastGuardrailAtMs
-                ? scalpLatestGuardrailIsWarmup
-                  ? "neutral"
-                  : "warning"
-                : "neutral",
-            },
-            {
-              label: "Symbol",
-              value: scalpLatestGuardrailSymbol || "—",
-              tone: scalpLatestGuardrailSymbol
-                ? scalpLatestGuardrailIsWarmup
-                  ? "neutral"
-                  : "warning"
-                : "neutral",
-            },
-            {
-              label: "Deployment",
-              value: scalpLatestGuardrailDeploymentId || "—",
-              tone: scalpLatestGuardrailDeploymentId
-                ? scalpLatestGuardrailIsWarmup
-                  ? "neutral"
-                  : "warning"
-                : "neutral",
-            },
-            {
-              label: "Reason",
-              value:
-                scalpLatestGuardrailReasonCodes.length
-                  ? String(
-                      scalpLatestGuardrailReasonCodes[0] || "",
-                    ).replace(/_/g, " ")
-                  : "none",
-              tone: scalpLatestGuardrailEntry
-                ? scalpLatestGuardrailIsWarmup
-                  ? "neutral"
-                  : "warning"
-                : "neutral",
-            },
-          ],
-          resultPreview: scalpLatestGuardrailEntry
-            ? {
-                id: scalpLatestGuardrailEntry.id || null,
-                timestampMs: scalpLatestGuardrailEntry.timestampMs || null,
-                type: scalpLatestGuardrailEntry.type || null,
-                level: scalpLatestGuardrailEntry.level || null,
-                symbol: scalpLatestGuardrailSymbol || null,
-                deploymentId: scalpLatestGuardrailDeploymentId || null,
-                reasonCodes: scalpLatestGuardrailReasonCodes,
-                payload: scalpLatestGuardrailPayload || null,
-              }
-            : {
-                message: "No guardrail event found in current journal window.",
-                journalWindowCount: scalpJournalRows.length,
-              },
-        },
-        {
-          id: "scalp_housekeeping",
-          cadence: "Hourly",
-          cronExpression:
-            scalpCronRuntimeMeta("scalp_housekeeping").expressionLabel,
-          nextRunAtMs: scalpCronRuntimeMeta("scalp_housekeeping").nextRunAtMs,
-          invokePath: scalpCronRuntimeMeta("scalp_housekeeping").invokePath,
-          role: "Prune stale locks and compact retention",
-          status: scalpStatusFromTs(
-            scalpDashboardGeneratedAtMs ?? scalpReportGeneratedAtMs,
-            2 * 60 * 60_000,
-          ),
-          lastRunAtMs: scalpDashboardGeneratedAtMs ?? scalpReportGeneratedAtMs,
-          lastDurationMs: null,
-          details: [
-            {
-              label: "Cron",
-              value:
-                scalpCronRuntimeMeta("scalp_housekeeping").expressionLabel ||
-                "not configured",
-              tone: scalpCronRuntimeMeta("scalp_housekeeping").expressionLabel
-                ? "neutral"
-                : "warning",
-            },
-            {
-              label: "Next Run",
-              value: formatScalpNextRunIn(
-                scalpCronRuntimeMeta("scalp_housekeeping").nextRunAtMs,
-                scalpCronNowMs,
-              ),
-              tone: "neutral",
-            },
-            {
-              label: "Dashboard Snapshot",
-              value: formatScalpTime(scalpDashboardGeneratedAtMs),
-              tone: scalpDashboardGeneratedAtMs ? "neutral" : "warning",
-            },
-            {
-              label: "Report Snapshot",
-              value: formatScalpTime(scalpReportGeneratedAtMs),
-              tone: scalpReportGeneratedAtMs ? "neutral" : "warning",
-            },
-            {
-              label: "Cycle Snapshot",
-              value: formatScalpTime(scalpCycleUpdatedAtMs),
-              tone: scalpCycleUpdatedAtMs ? "neutral" : "warning",
-            },
-            {
-              label: "Journal Rows",
-              value: formatScalpCount(asFiniteNumber(scalpJournalRows.length)),
-              tone: "neutral",
-            },
-          ],
-          resultPreview: {
-            source: scalpSummary?.source || null,
-            generatedAtMs: scalpDashboardGeneratedAtMs,
-            reportGeneratedAtMs: scalpReportGeneratedAtMs,
-            cycleUpdatedAtMs: scalpCycleUpdatedAtMs,
-            journalRowsLoaded: scalpJournalRows.length,
-          },
-        },
-      ]
-    : [];
-  const scalpWorkerHeartbeatStatus = String(
-    scalpResearchCycle?.workerHeartbeat?.status || "",
-  )
-    .trim()
-    .toLowerCase();
-  const scalpWorkerHeartbeatStartedAtMs = asFiniteNumber(
-    scalpResearchCycle?.workerHeartbeat?.startedAtMs,
+        } satisfies ScalpOpsCronRow;
+      });
+  const scalpRunningJobRowIds = new Set(
+    scalpPipelineJobs
+      .filter((job) => {
+        const status = String(job?.status || "")
+          .trim()
+          .toLowerCase();
+        return (
+          Boolean(job?.locked) ||
+          status === "running" ||
+          Math.max(0, Math.floor(Number(job?.queue?.running || 0))) > 0
+        );
+      })
+      .map((job) => {
+        const kind = String(job?.jobKind || "")
+          .trim()
+          .toLowerCase();
+        if (kind === "discover") return "scalp_discover_symbols";
+        if (kind === "load_candles") return "scalp_load_candles";
+        if (kind === "prepare") return "scalp_prepare";
+        if (kind === "worker") return "scalp_worker";
+        if (kind === "promotion") return "scalp_promotion";
+        return `scalp_${kind || "job"}`;
+      }),
   );
-  const scalpWorkerHeartbeatFinishedAtMs = asFiniteNumber(
-    scalpResearchCycle?.workerHeartbeat?.finishedAtMs,
-  );
-  const scalpWorkerHeartbeatBudgetMs = asFiniteNumber(
-    scalpResearchCycle?.workerHeartbeat?.maxDurationMs,
-  );
-  const scalpPipelineOrchestratorRunning =
-    scalpPipelineOrchestrator?.isRunning === true;
-  const scalpPipelineOrchestratorStartedAtMs = asFiniteNumber(
-    scalpPipelineOrchestrator?.runningSinceMs,
-  );
-  const scalpPipelineOrchestratorFresh =
-    scalpPipelineOrchestratorRunning &&
-    scalpPipelineOrchestratorStartedAtMs !== null &&
-    Date.now() - scalpPipelineOrchestratorStartedAtMs <= 12 * 60 * 60_000;
-  const scalpPipelineOrchestratorLastErrorRaw = String(
-    scalpPipelineOrchestrator?.lastError || "",
-  ).trim();
-  const scalpOrchestratorInvokeFailed =
-    scalpCronInvokeStateById["scalp_orchestrator"]?.ok === false;
-  const scalpOrchestratorFailureHint =
-    !scalpPanicStopEnabled &&
-    (Boolean(scalpPipelineOrchestratorLastErrorRaw) ||
-      scalpCycleStatusRaw === "FAILED" ||
-      scalpOrchestratorInvokeFailed);
-  const scalpWorkerIsInProgress =
-    !scalpPanicStopEnabled &&
-    scalpWorkerHeartbeatStatus === "started" &&
-    scalpWorkerHeartbeatStartedAtMs !== null &&
-    (scalpWorkerHeartbeatFinishedAtMs === null ||
-      scalpWorkerHeartbeatFinishedAtMs < scalpWorkerHeartbeatStartedAtMs) &&
-    Date.now() - scalpWorkerHeartbeatStartedAtMs <=
-      Math.max(60_000, (scalpWorkerHeartbeatBudgetMs || 120_000) * 3);
-  const scalpOrchestratorIsInProgress =
-    !scalpPanicStopEnabled &&
-    !scalpOrchestratorFailureHint &&
-    (scalpPipelineOrchestratorFresh || scalpWorkerIsInProgress);
   const scalpIsCronRowInProgress = (rowId: string): boolean => {
     const invokeRunning = Boolean(scalpCronInvokeStateById[rowId]?.running);
     if (invokeRunning) return true;
-    if (rowId === "scalp_cycle_worker") return scalpWorkerIsInProgress;
-    if (rowId === "scalp_orchestrator") return scalpOrchestratorIsInProgress;
+    if (scalpRunningJobRowIds.has(rowId)) return true;
     return false;
   };
   const scalpInProgressCronRows = scalpCronRows.filter((row) =>
@@ -5484,95 +3062,6 @@ export default function Home() {
     scalpInProgressCronRows.length > 0
       ? scalpInProgressCronRows.map((row) => row.id).join(", ")
       : "none";
-  const scalpOrchestratorStageRaw = String(
-    scalpPipelineOrchestrator?.stage || "",
-  )
-    .trim()
-    .toLowerCase();
-  const scalpOrchestratorStageOrder = [
-    "discover",
-    "load_candles",
-    "prepare",
-    "worker",
-    "aggregate",
-    "promotion",
-    "done",
-  ] as const;
-  const scalpOrchestratorStageIndex = scalpOrchestratorStageOrder.indexOf(
-    scalpOrchestratorStageRaw as (typeof scalpOrchestratorStageOrder)[number],
-  );
-  const scalpOrchestratorLastError = scalpPipelineOrchestratorLastErrorRaw;
-  const scalpOrchestratorHasFailure = scalpOrchestratorFailureHint;
-  const scalpOrchestratorChecklist = [
-    {
-      id: "scalp_discover_symbols",
-      stage: "discover",
-      label: "Discover symbols",
-    },
-    { id: "scalp_load_candles", stage: "load_candles", label: "Load candles" },
-    {
-      id: "scalp_prepare_and_start_cycle",
-      stage: "prepare",
-      label: "Prepare + start cycle",
-    },
-    { id: "scalp_cycle_worker", stage: "worker", label: "Run cycle worker" },
-    {
-      id: "scalp_cycle_aggregate",
-      stage: "aggregate",
-      label: "Aggregate cycle results",
-    },
-    {
-      id: "scalp_promotion_gate_apply",
-      stage: "promotion",
-      label: "Apply promotion gate",
-    },
-  ] as const;
-  const scalpOrchestratorSubtaskState = (
-    stage: string,
-  ): "pending" | "running" | "success" | "failed" => {
-    if (scalpPanicStopEnabled) return "pending";
-    if (scalpOrchestratorStageRaw === "done" && !scalpOrchestratorHasFailure)
-      return "success";
-    const idx = scalpOrchestratorChecklist.findIndex(
-      (row) => row.stage === stage,
-    );
-    if (idx < 0 || scalpOrchestratorStageIndex < 0) return "pending";
-    if (idx < scalpOrchestratorStageIndex) return "success";
-    if (idx > scalpOrchestratorStageIndex) return "pending";
-    if (scalpOrchestratorHasFailure) return "failed";
-    if (scalpOrchestratorIsInProgress) return "running";
-    return "pending";
-  };
-  const scalpLoadCandlesStageProgressPct = (() => {
-    const direct = asFiniteNumber(scalpPipelineOrchestrator?.stageProgressPct);
-    if (direct !== null) return Math.max(0, Math.min(100, direct));
-    const loadCursor = asFiniteNumber(scalpPipelineOrchestrator?.loadCursor);
-    const selectedSymbolsCount = asFiniteNumber(
-      scalpPipelineOrchestrator?.selectedSymbolsCount,
-    );
-    if (
-      loadCursor === null ||
-      selectedSymbolsCount === null ||
-      selectedSymbolsCount <= 0
-    ) {
-      return null;
-    }
-    return Math.max(
-      0,
-      Math.min(100, (Math.min(loadCursor, selectedSymbolsCount) / selectedSymbolsCount) * 100),
-    );
-  })();
-  const scalpWorkerStageProgressPct =
-    scalpCycleProgressPct === null
-      ? null
-      : Math.max(0, Math.min(100, scalpCycleProgressPct));
-  const scalpOrchestratorSubtaskProgressPct = (stage: string): number | null => {
-    const state = scalpOrchestratorSubtaskState(stage);
-    if (state !== "running") return null;
-    if (stage === "load_candles") return scalpLoadCandlesStageProgressPct;
-    if (stage === "worker") return scalpWorkerStageProgressPct;
-    return null;
-  };
   const scalpActiveExecutionTs =
     scalpActiveExecution && typeof scalpActiveExecution.timestampMs === "number"
       ? scalpActiveExecution.timestampMs
@@ -5617,7 +3106,7 @@ export default function Home() {
     ? "max-h-64 overflow-auto rounded-xl border border-zinc-700 bg-zinc-950/80 p-2 font-mono text-[11px] text-zinc-300"
     : "max-h-64 overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-2 font-mono text-[11px] text-slate-700";
   const scalpWorkerJobsGridThemeClass = scalpDarkMode
-    ? "ag-theme-quartz-dark"
+    ? "ag-theme-quartz-dark scalp-grid-muted-dark"
     : "ag-theme-quartz";
   const scalpWorkerJobRankScore = (row: ScalpWorkerJobGridRow): number => {
     const forwardValidation = row.forwardValidation || null;
@@ -5930,32 +3419,32 @@ export default function Home() {
     return out.sort(compareScalpWorkerJobGridRows);
   }, [scalpWorkerTaskRows]);
   const scalpAllDeploymentsGridRows = useMemo<ScalpWorkerJobGridRow[]>(() => {
-    const researchedByDeploymentId = new Map(
+    const workerMetricsByDeploymentId = new Map(
       scalpWorkerJobsGridRows
         .map((row) =>
           row.deploymentId ? ([row.deploymentId, row] as const) : null,
         )
-        .filter(
-          (
-            entry,
-          ): entry is readonly [string, ScalpWorkerJobGridRow] => Boolean(entry),
+        .filter((entry): entry is readonly [string, ScalpWorkerJobGridRow] =>
+          Boolean(entry),
         ),
     );
     const out = scalpRegistryDeployments.map((deployment) => {
-      const researched = researchedByDeploymentId.get(deployment.deploymentId);
-      if (researched) {
+      const workerMetrics = workerMetricsByDeploymentId.get(
+        deployment.deploymentId,
+      );
+      if (workerMetrics) {
         return {
-          ...researched,
+          ...workerMetrics,
           rowId: `deployment:${deployment.deploymentId}`,
           deploymentId: deployment.deploymentId,
           forwardValidation:
-            deployment.forwardValidation || researched.forwardValidation,
-          deployed: researched.deployed || deployment.enabled,
+            deployment.forwardValidation || workerMetrics.forwardValidation,
+          deployed: workerMetrics.deployed || deployment.enabled,
           deploymentEnabled: deployment.enabled,
           promotionEligible: deployment.promotionEligible,
           reason:
             deployment.promotionReason ||
-            (deployment.promotionEligible ? "eligible" : researched.reason),
+            (deployment.promotionEligible ? "eligible" : workerMetrics.reason),
         } satisfies ScalpWorkerJobGridRow;
       }
       const forwardValidation = deployment.forwardValidation || null;
@@ -5988,10 +3477,7 @@ export default function Home() {
     });
     return out.sort(compareScalpWorkerJobGridRows);
   }, [scalpRegistryDeployments, scalpWorkerJobsGridRows]);
-  const scalpSelectedWorkerGridRows =
-    scalpResearchGridScope === "deployments"
-      ? scalpAllDeploymentsGridRows
-      : scalpWorkerJobsGridRows;
+  const scalpSelectedWorkerGridRows = scalpAllDeploymentsGridRows;
   const scalpWorkerJobsGridDefaultColDef = useMemo<
     ColDef<ScalpWorkerJobGridRow>
   >(
@@ -6016,7 +3502,9 @@ export default function Home() {
           const deploymentId = String(params?.value || "").trim();
           if (!deploymentId) {
             return (
-              <span className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}>
+              <span
+                className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}
+              >
                 —
               </span>
             );
@@ -6047,7 +3535,9 @@ export default function Home() {
           const forwardValidation = params?.data?.forwardValidation || null;
           if (!forwardValidation) {
             return (
-              <span className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}>
+              <span
+                className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}
+              >
                 —
               </span>
             );
@@ -6147,8 +3637,8 @@ export default function Home() {
                       : entry.value > 0
                         ? "font-semibold text-emerald-500"
                         : scalpDarkMode
-                        ? "font-semibold text-red-500"
-                        : "font-semibold text-red-700";
+                          ? "font-semibold text-red-500"
+                          : "font-semibold text-red-700";
                   const suffix = idx < entries.length - 1 ? " |" : "";
                   return (
                     <span
@@ -6432,51 +3922,6 @@ export default function Home() {
     return resolvedTheme === "dark"
       ? "border-zinc-600 bg-zinc-800/70 text-zinc-200"
       : "border-slate-200 bg-slate-50 text-slate-700";
-  };
-  const scalpPipelineStatusTone = (
-    status: ScalpPipelineStatus,
-  ): ScalpOpsCronDetailTone => {
-    if (status === "completed") return "positive";
-    if (status === "running") return "warning";
-    if (status === "failed" || status === "blocked") return "critical";
-    return "neutral";
-  };
-  const scalpPipelineStepTone = (
-    state: ScalpPipelineStepState,
-  ): ScalpOpsCronDetailTone => {
-    if (state === "success") return "positive";
-    if (state === "running") return "warning";
-    if (state === "failed" || state === "blocked") return "critical";
-    return "neutral";
-  };
-  const renderScalpPipelineStepIcon = (state: ScalpPipelineStepState) => {
-    if (state === "running")
-      return <Repeat className="h-3.5 w-3.5 animate-spin" />;
-    if (state === "success") return <CheckCircle2 className="h-3.5 w-3.5" />;
-    if (state === "failed" || state === "blocked")
-      return <XCircle className="h-3.5 w-3.5" />;
-    return <Circle className="h-3.5 w-3.5" />;
-  };
-  const scalpPipelineStepBadgeClass = (params: {
-    state: ScalpPipelineStepState;
-    focused?: boolean;
-    runningContext?: boolean;
-  }) => {
-    const tone =
-      params.focused &&
-      params.runningContext &&
-      params.state === "pending"
-        ? "warning"
-        : scalpPipelineStepTone(params.state);
-    const base = scalpCronDetailToneMeta(tone);
-    if (!params.focused) {
-      return `${base} ${resolvedTheme === "dark" ? "opacity-80" : "opacity-90"}`;
-    }
-    return `${base} font-semibold shadow-sm ${
-      resolvedTheme === "dark"
-        ? "ring-1 ring-white/15"
-        : "ring-1 ring-slate-300"
-    }`;
   };
   const scalpWorkerTaskStatusMeta = (status: string) => {
     const normalized = String(status || "")
@@ -6944,15 +4389,13 @@ export default function Home() {
                           : "border-slate-200 bg-slate-50 text-slate-600"
                       }`}
                     >
-                      No enabled scalp deployments right now.
-                      Research/cycle/cron telemetry is still available below.
+                      No enabled scalp deployments right now. Job health and
+                      cron telemetry are still available below.
                     </div>
                   ) : null}
                   <section className={scalpHeroClass}>
                     <div className={scalpHeroBadgeClass}>
-                      {scalpResearchCycle?.cycleId ||
-                        scalpResearchReport?.cycle?.cycleId ||
-                        "cycle_pending"}
+                      {scalpPipelineStatus.toUpperCase()}
                     </div>
                     <p
                       className={`text-[11px] uppercase tracking-[0.24em] ${scalpTextMutedClass}`}
@@ -6967,1771 +4410,233 @@ export default function Home() {
                     <p
                       className={`mt-2 max-w-4xl text-sm ${scalpTextSecondaryClass}`}
                     >
-                      Live view combines cycle progress, promotion gate
+                      Live view combines pipeline job progress, promotion gate
                       outcomes, deployment-level forward validation, and runtime
                       execution signals.
                     </p>
-                    <div className="mt-5">
-                      <article className={scalpCardClass}>
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p
-                                className={`text-[11px] uppercase tracking-[0.16em] ${scalpTextMutedClass}`}
-                              >
-                                Pipeline Progress
-                              </p>
-                              <span
-                                className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${scalpCronDetailToneMeta(
-                                  scalpPipelineStatusTone(scalpPipelineStatus),
-                                )}`}
-                              >
-                                {renderScalpPipelineStepIcon(
-                                  scalpPipelineStatus === "completed"
-                                    ? "success"
-                                    : scalpPipelineStatus === "running"
-                                      ? "running"
-                                      : scalpPipelineStatus === "failed"
-                                        ? "failed"
-                                        : scalpPipelineStatus === "blocked"
-                                          ? "blocked"
-                                          : "pending",
-                                )}
-                                {scalpPipelineStatusLabel}
-                              </span>
-                            </div>
-                            <div className="mt-2 flex flex-wrap items-end gap-3">
-                              <p
-                                className={`text-2xl font-semibold ${scalpTextPrimaryClass}`}
-                              >
-                                {scalpPipelineProgressLabelForHero}
-                              </p>
-                              <p
-                                className={`pb-0.5 text-sm ${scalpTextSecondaryClass}`}
-                              >
-                                {scalpCycleProgressLabelForHero
-                                  ? `${scalpCycleHeadlineTaskLabel} · cycle ${scalpCycleProgressLabelForHero}`
-                                  : scalpCycleHeadlineTaskLabel}
-                              </p>
-                            </div>
-                            <p
-                              className={`mt-2 text-xs ${scalpTextSecondaryClass}`}
-                            >
-                              {scalpPipelineStatusDetail ||
-                                "Persisted orchestrator and cycle state from Postgres."}
-                            </p>
-                            {scalpNextFreshCycleStartLabel ? (
-                              <p
-                                className={`mt-2 text-xs ${scalpTextMutedClass}`}
-                              >
-                                Next cycle start {scalpNextFreshCycleStartLabel}
-                              </p>
-                            ) : null}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                void startScalpCycleManually();
-                              }}
-                              disabled={scalpCycleStartDisabled}
-                              className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
-                                scalpCycleStartDisabled
-                                  ? scalpDarkMode
-                                    ? "cursor-not-allowed border-zinc-700 text-zinc-500"
-                                    : "cursor-not-allowed border-slate-200 text-slate-400"
-                                  : scalpDarkMode
-                                    ? "border-sky-500/60 bg-sky-500/10 text-sky-200 hover:bg-sky-500/20"
-                                    : "border-sky-300 bg-sky-50 text-sky-700 hover:bg-sky-100"
-                              }`}
-                              title={
-                                scalpPipelineStatus === "running"
-                                  ? "Manual cycle start is unavailable while a cycle is already running."
-                                  : "Prepare history and start a new research cycle with auto-chained worker execution."
-                              }
-                            >
-                              {scalpCycleStartSubmitting
-                                ? "starting..."
-                                : "Prepare + Start"}
-                            </button>
-                            {scalpPromotionRetryVisible ? (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  void retryScalpPromotionGate();
-                                }}
-                                disabled={scalpPromotionRetryDisabled}
-                                className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
-                                  scalpPromotionRetryDisabled
-                                    ? scalpDarkMode
-                                      ? "cursor-not-allowed border-zinc-700 text-zinc-500"
-                                      : "cursor-not-allowed border-slate-200 text-slate-400"
-                                    : scalpDarkMode
-                                      ? "border-amber-500/60 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20"
-                                      : "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
-                                }`}
-                                title={
-                                  scalpPipelinePromotionStep?.state === "failed"
-                                    ? "Retry the promotion gate sync for the current completed cycle."
-                                    : "Run the promotion gate sync for the current completed cycle."
-                                }
-                              >
-                                {scalpPromotionRetrySubmitting
-                                  ? "launching..."
-                                  : scalpPipelinePromotionStep?.state === "failed"
-                                    ? "Retry Promotion Gate"
-                                    : "Run Promotion Gate"}
-                              </button>
-                            ) : null}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                void setScalpPanicStop(!scalpPanicStopEnabled);
-                              }}
-                              disabled={scalpPanicStopUpdating}
-                              className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
-                                scalpPanicStopEnabled
-                                  ? scalpDarkMode
-                                    ? "border-rose-500/70 bg-rose-500/15 text-rose-200 hover:bg-rose-500/25"
-                                    : "border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100"
-                                  : scalpDarkMode
-                                    ? "border-emerald-500/60 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20"
-                                    : "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
-                              } ${scalpPanicStopUpdating ? "cursor-not-allowed opacity-60" : ""}`}
-                              title={
-                                scalpPanicStopEnabled
-                                  ? "Disable panic stop and allow cron pipeline execution"
-                                  : "Enable panic stop to block orchestrator/worker runs"
-                              }
-                            >
-                              {scalpPanicStopUpdating
-                                ? "updating..."
-                                : scalpPanicStopEnabled
-                                  ? "Panic Stop: ON"
-                                  : "Panic Stop: OFF"}
-                            </button>
-                          </div>
-                        </div>
-                        <div className="mt-4 flex flex-wrap items-center gap-2">
-                          {scalpPipelineStatusSteps.length ? (
-                            scalpPipelineStatusSteps.map((step) => {
-                              const isFocused =
-                                scalpPipelineFocusedStepId === step.id;
-                              return (
-                                <span
-                                  key={`pipeline-step-${step.id}`}
-                                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${scalpPipelineStepBadgeClass(
-                                    {
-                                      state: step.state,
-                                      focused: isFocused,
-                                      runningContext:
-                                        scalpPipelineStatus === "running",
-                                    },
-                                  )}`}
-                                  title={step.detail || undefined}
-                                >
-                                  {renderScalpPipelineStepIcon(step.state)}
-                                  {step.label}
-                                  {isFocused &&
-                                  scalpPipelineFocusedStepMarker ? (
-                                    <span
-                                      className={`rounded-full border px-1.5 py-0.5 text-[9px] uppercase tracking-[0.14em] ${
-                                        scalpDarkMode
-                                          ? "border-white/15 bg-white/8 text-zinc-100"
-                                          : "border-slate-300 bg-white/85 text-slate-700"
-                                      }`}
-                                    >
-                                      {scalpPipelineFocusedStepMarker}
-                                    </span>
-                                  ) : null}
-                                </span>
-                              );
-                            })
-                          ) : (
-                            <span className={scalpTagNeutralClass}>
-                              No persisted cycle steps yet
-                            </span>
-                          )}
-                        </div>
-                      </article>
-                    </div>
                   </section>
 
-                  {false ? (
-                    <section className="grid grid-cols-1 gap-5">
-                      <article className={`${scalpSectionShellClass} p-4`}>
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <h3
-                                className={`text-lg font-semibold ${scalpTextPrimaryClass}`}
-                              >
-                                Cycle Status
-                              </h3>
-                              <span
-                                className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${scalpCronDetailToneMeta(
-                                  scalpPipelineStatusTone(scalpPipelineStatus),
-                                )}`}
-                              >
-                                {renderScalpPipelineStepIcon(
-                                  scalpPipelineStatus === "completed"
-                                    ? "success"
-                                    : scalpPipelineStatus === "running"
-                                      ? "running"
-                                      : scalpPipelineStatus === "failed"
-                                        ? "failed"
-                                        : scalpPipelineStatus === "blocked"
-                                          ? "blocked"
-                                          : "pending",
-                                )}
-                                {scalpPipelineStatusLabel}
-                              </span>
-                              {scalpPipelineStatusProgressLabel ? (
-                                <span
-                                  className={scalpTagNeutralClass}
-                                >
-                                  {scalpPipelineStatusProgressLabel}
-                                </span>
-                              ) : null}
-                            </div>
-                            <p
-                              className={`mt-2 text-sm ${scalpTextSecondaryClass}`}
+                  <section className="grid grid-cols-1 gap-5">
+                    <article className={`${scalpSectionShellClass} p-4`}>
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3
+                              className={`text-lg font-semibold ${scalpTextPrimaryClass}`}
                             >
-                              {scalpPipelineStatusDetail ||
-                                "Persisted orchestrator and cycle state from Postgres."}
-                            </p>
-                            <div className="mt-4 flex flex-wrap items-center gap-2">
-                              {scalpPipelineStatusSteps.length ? (
-                                scalpPipelineStatusSteps.map((step) => (
-                                  <span
-                                    key={`pipeline-step-${step.id}`}
-                                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${scalpCronDetailToneMeta(
-                                      scalpPipelineStepTone(step.state),
-                                    )}`}
-                                    title={step.detail || undefined}
-                                  >
-                                    {renderScalpPipelineStepIcon(step.state)}
-                                    {step.label}
-                                  </span>
-                                ))
+                              Pipeline Job Health
+                            </h3>
+                            <span className={scalpTagNeutralClass}>
+                              {`${scalpCronRows.length} jobs`}
+                            </span>
+                            <span
+                              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${
+                                scalpInProgressCronRows.length
+                                  ? scalpCronDetailToneMeta("warning")
+                                  : scalpCronDetailToneMeta("neutral")
+                              }`}
+                            >
+                              {scalpInProgressCronRows.length ? (
+                                <Repeat className="h-3.5 w-3.5 animate-spin" />
                               ) : (
-                                <span className={scalpTagNeutralClass}>
-                                  No persisted cycle steps yet
-                                </span>
+                                <Circle className="h-3.5 w-3.5" />
                               )}
-                            </div>
+                              {`In progress: ${scalpInProgressCronLabel}`}
+                            </span>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                void setScalpPanicStop(!scalpPanicStopEnabled);
-                              }}
-                              disabled={scalpPanicStopUpdating}
-                              className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
-                                scalpPanicStopEnabled
-                                  ? scalpDarkMode
-                                    ? "border-rose-500/70 bg-rose-500/15 text-rose-200 hover:bg-rose-500/25"
-                                    : "border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100"
-                                  : scalpDarkMode
-                                    ? "border-emerald-500/60 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20"
-                                    : "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
-                              } ${scalpPanicStopUpdating ? "cursor-not-allowed opacity-60" : ""}`}
-                              title={
-                                scalpPanicStopEnabled
-                                  ? "Disable panic stop and allow cron pipeline execution"
-                                  : "Enable panic stop to block orchestrator/worker runs"
-                              }
-                            >
-                              {scalpPanicStopUpdating
-                                ? "updating..."
-                                : scalpPanicStopEnabled
-                                  ? "Panic Stop: ON"
-                                  : "Panic Stop: OFF"}
-                            </button>
-                            {scalpPanicStopEnabled ? (
-                              <span
-                                className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${scalpCronDetailToneMeta(
-                                  "critical",
-                                )}`}
-                                title={scalpPanicStopReason || undefined}
-                              >
-                                blocked
-                                {scalpPanicStopUpdatedAtMs
-                                  ? ` · ${formatScalpTime(scalpPanicStopUpdatedAtMs)}`
-                                  : ""}
-                              </span>
-                            ) : null}
-                          </div>
+                          <p className={`mt-2 text-sm ${scalpTextSecondaryClass}`}>
+                            Status, queue depth, progress, and error state per
+                            async job. No run IDs are used.
+                          </p>
                         </div>
-                        {SCALP_LEGACY_CRON_PIPELINE_UI ? (
-                          <>
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <h3
-                                className={`text-lg font-semibold ${scalpTextPrimaryClass}`}
-                              >
-                                Cron Execution Pipeline
-                              </h3>
-                              <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    void setScalpPanicStop(
-                                      !scalpPanicStopEnabled,
-                                    );
-                                  }}
-                                  disabled={scalpPanicStopUpdating}
-                                  className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
-                                    scalpPanicStopEnabled
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void setScalpPanicStop(!scalpPanicStopEnabled);
+                            }}
+                            disabled={scalpPanicStopUpdating}
+                            className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
+                              scalpPanicStopEnabled
+                                ? scalpDarkMode
+                                  ? "border-rose-500/70 bg-rose-500/15 text-rose-200 hover:bg-rose-500/25"
+                                  : "border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100"
+                                : scalpDarkMode
+                                  ? "border-emerald-500/60 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20"
+                                  : "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                            } ${scalpPanicStopUpdating ? "cursor-not-allowed opacity-60" : ""}`}
+                            title={
+                              scalpPanicStopEnabled
+                                ? "Disable panic stop and allow cron pipeline execution"
+                                : "Enable panic stop to block pipeline jobs"
+                            }
+                          >
+                            {scalpPanicStopUpdating
+                              ? "updating..."
+                              : scalpPanicStopEnabled
+                                ? "Panic Stop: ON"
+                                : "Panic Stop: OFF"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
+                        {scalpCronRows.length ? (
+                          scalpCronRows.map((row) => {
+                            const invokeState =
+                              scalpCronInvokeStateById[row.id] || null;
+                            const rowInProgress = scalpIsCronRowInProgress(
+                              row.id,
+                            );
+                            const invokeButtonDisabled =
+                              !row.invokePath || Boolean(invokeState?.running);
+                            return (
+                              <article
+                                key={`job-health-${row.id}`}
+                                className={`${scalpCardClass} border ${
+                                  row.status === "lagging"
+                                    ? scalpDarkMode
+                                      ? "border-rose-500/40"
+                                      : "border-rose-300"
+                                    : rowInProgress
                                       ? scalpDarkMode
-                                        ? "border-rose-500/70 bg-rose-500/15 text-rose-200 hover:bg-rose-500/25"
-                                        : "border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100"
+                                        ? "border-amber-500/40"
+                                        : "border-amber-300"
                                       : scalpDarkMode
-                                        ? "border-emerald-500/60 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20"
-                                        : "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
-                                  } ${scalpPanicStopUpdating ? "cursor-not-allowed opacity-60" : ""}`}
-                                  title={
-                                    scalpPanicStopEnabled
-                                      ? "Disable panic stop and allow cron pipeline execution"
-                                      : "Enable panic stop to block orchestrator/worker runs"
-                                  }
-                                >
-                                  {scalpPanicStopUpdating
-                                    ? "updating..."
-                                    : scalpPanicStopEnabled
-                                      ? "Panic Stop: ON"
-                                      : "Panic Stop: OFF"}
-                                </button>
-                                <span className={scalpTagNeutralClass}>
-                                  timeout-safe chunks
-                                </span>
-                                <span
-                                  className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${
-                                    scalpInProgressCronRows.length
-                                      ? scalpCronDetailToneMeta("warning")
-                                      : scalpCronDetailToneMeta("neutral")
-                                  }`}
-                                >
-                                  {scalpInProgressCronRows.length ? (
-                                    <Repeat className="h-3.5 w-3.5 animate-spin" />
-                                  ) : (
-                                    <Circle className="h-3.5 w-3.5" />
-                                  )}
-                                  {`In progress: ${scalpInProgressCronLabel}`}
-                                </span>
-                                {scalpPanicStopEnabled ? (
+                                        ? "border-zinc-700"
+                                        : "border-slate-200"
+                                }`}
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <div
+                                      className={`text-sm font-semibold ${scalpTextPrimaryClass}`}
+                                    >
+                                      {row.id}
+                                    </div>
+                                    <div
+                                      className={`text-xs ${scalpTextSecondaryClass}`}
+                                    >
+                                      {row.role}
+                                    </div>
+                                  </div>
                                   <span
-                                    className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${scalpCronDetailToneMeta(
-                                      "critical",
+                                    className={`rounded-full border px-2 py-1 text-[11px] ${scalpCronStatusMeta(
+                                      row.status,
                                     )}`}
-                                    title={scalpPanicStopReason || undefined}
                                   >
-                                    blocked by panic stop
-                                    {scalpPanicStopUpdatedAtMs
-                                      ? ` · ${formatScalpTime(scalpPanicStopUpdatedAtMs)}`
-                                      : ""}
+                                    <span className="inline-flex items-center gap-1.5">
+                                      {rowInProgress ? (
+                                        <Repeat className="h-3.5 w-3.5 animate-spin" />
+                                      ) : null}
+                                      {rowInProgress ? "in_progress" : row.status}
+                                    </span>
                                   </span>
+                                </div>
+
+                                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                                  {row.details.map((detail) => (
+                                    <div
+                                      key={`${row.id}-${detail.label}`}
+                                      className={`rounded-lg border px-2 py-1.5 ${scalpCronDetailToneMeta(
+                                        detail.tone,
+                                      )}`}
+                                    >
+                                      <div className="uppercase tracking-[0.14em] opacity-75">
+                                        {detail.label}
+                                      </div>
+                                      <div className="mt-0.5 font-semibold">
+                                        {detail.value}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+
+                                <div className="mt-3 flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      void invokeScalpCronNow(row);
+                                    }}
+                                    disabled={invokeButtonDisabled}
+                                    className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
+                                      scalpDarkMode
+                                        ? "border-zinc-600 bg-zinc-800 text-zinc-200 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                        : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                    }`}
+                                  >
+                                    {invokeState?.running
+                                      ? "invoking..."
+                                      : "Invoke now()"}
+                                  </button>
+                                  {row.invokePath ? (
+                                    <span
+                                      className={`text-[11px] ${scalpTextMutedClass}`}
+                                    >
+                                      {row.invokePath}
+                                    </span>
+                                  ) : null}
+                                </div>
+
+                                {invokeState ? (
+                                  <div
+                                    className={`mt-2 rounded-lg border px-2 py-1.5 text-[11px] ${
+                                      invokeState.ok === true
+                                        ? scalpCronDetailToneMeta("positive")
+                                        : invokeState.ok === false
+                                          ? scalpCronDetailToneMeta(
+                                              "critical",
+                                            )
+                                          : scalpCronDetailToneMeta("neutral")
+                                    }`}
+                                  >
+                                    {invokeState.ok === null
+                                      ? "manual invoke not run"
+                                      : invokeState.ok
+                                        ? `manual invoke ok (${invokeState.status || "200"})`
+                                        : `manual invoke failed (${invokeState.status || "n/a"})`}
+                                    {invokeState.durationMs !== null
+                                      ? ` · ${formatScalpDuration(invokeState.durationMs)}`
+                                      : ""}
+                                    {invokeState.atMs
+                                      ? ` · ${formatScalpTime(invokeState.atMs)}`
+                                      : ""}
+                                  </div>
                                 ) : null}
-                              </div>
-                            </div>
-                            <div className="mt-4 overflow-x-auto">
-                              <table className="w-full min-w-[940px] border-separate border-spacing-y-2 text-left text-sm">
-                                <thead
-                                  className={`text-[11px] uppercase tracking-[0.16em] ${scalpTableHeaderClass}`}
-                                >
-                                  <tr>
-                                    <th className="px-3 py-1">Job</th>
-                                    <th className="px-3 py-1">Next Run</th>
-                                    <th className="px-3 py-1">Last</th>
-                                    <th className="px-3 py-1">Summary</th>
-                                    <th className="px-3 py-1">Status</th>
-                                    <th className="px-3 py-1">Action</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {scalpCronRows.map((row, rowIndex) => {
-                                    const isExpanded =
-                                      scalpExpandedCronId === row.id;
-                                    const invokeState =
-                                      scalpCronInvokeStateById[row.id] || null;
-                                    const rowInProgress =
-                                      scalpIsCronRowInProgress(row.id);
-                                    const invokeButtonDisabled =
-                                      !row.invokePath ||
-                                      Boolean(invokeState?.running);
-                                    const previousRow =
-                                      rowIndex > 0
-                                        ? scalpCronRows[rowIndex - 1]
-                                        : null;
-                                    const nextRunAfterPrevious =
-                                      typeof row.nextRunAtMs === "number" &&
-                                      Number.isFinite(row.nextRunAtMs) &&
-                                      typeof previousRow?.nextRunAtMs ===
-                                        "number" &&
-                                      Number.isFinite(
-                                        previousRow.nextRunAtMs,
-                                      ) &&
-                                      row.nextRunAtMs > previousRow.nextRunAtMs;
-                                    const rowLastDurationMs =
-                                      (typeof invokeState?.durationMs ===
-                                        "number" &&
-                                      Number.isFinite(invokeState.durationMs)
-                                        ? invokeState.durationMs
-                                        : null) ?? row.lastDurationMs;
-                                    const summaryDetails = row.details
-                                      .filter(
-                                        (detail) =>
-                                          detail.label !== "Cron" &&
-                                          detail.label !== "Next Run",
-                                      )
-                                      .slice(0, 2);
-                                    return (
-                                      <React.Fragment key={row.id}>
-                                        <tr
-                                          onClick={() => {
-                                            const nextExpandedId =
-                                              scalpExpandedCronId === row.id
-                                                ? null
-                                                : row.id;
-                                            setScalpExpandedCronId(
-                                              nextExpandedId,
-                                            );
-                                            if (
-                                              nextExpandedId ===
-                                              "scalp_cycle_worker"
-                                            ) {
-                                              void loadScalpWorkerTasksFull();
-                                            }
-                                          }}
-                                          className={`cursor-pointer transition ${scalpTableRowClass}`}
-                                        >
-                                          <td
-                                            className={`rounded-l-xl px-3 py-3 font-medium ${scalpTextPrimaryClass}`}
-                                          >
-                                            <div className="flex items-center gap-2">
-                                              <span>{row.id}</span>
-                                              <span
-                                                className={`rounded-full border px-1.5 py-0.5 text-[10px] ${
-                                                  scalpDarkMode
-                                                    ? "border-zinc-600 bg-zinc-800 text-zinc-300"
-                                                    : "border-slate-200 bg-white text-slate-500"
-                                                }`}
-                                              >
-                                                {isExpanded ? "hide" : "open"}
-                                              </span>
-                                            </div>
-                                            <div
-                                              className={`mt-0.5 text-[11px] ${scalpTextSecondaryClass}`}
-                                            >
-                                              {row.role}
-                                            </div>
-                                          </td>
-                                          <td
-                                            className={`px-3 py-3 ${scalpTextSecondaryClass}`}
-                                          >
-                                            <span
-                                              title={formatScalpTime(
-                                                row.nextRunAtMs,
-                                              )}
-                                            >
-                                              {formatScalpNextRunIn(
-                                                row.nextRunAtMs,
-                                                scalpCronNowMs,
-                                              )}
-                                            </span>
-                                            {nextRunAfterPrevious ? (
-                                              <div
-                                                className={`mt-0.5 text-[10px] ${scalpTextMutedClass}`}
-                                              >
-                                                after previous job
-                                              </div>
-                                            ) : null}
-                                          </td>
-                                          <td
-                                            className={`px-3 py-3 ${scalpTextSecondaryClass}`}
-                                          >
-                                            <div>
-                                              {formatScalpTime(row.lastRunAtMs)}
-                                            </div>
-                                            <div className="font-mono text-[11px]">
-                                              {formatScalpDuration(
-                                                rowLastDurationMs,
-                                              )}
-                                            </div>
-                                          </td>
-                                          <td
-                                            className={`px-3 py-3 ${scalpTextSecondaryClass}`}
-                                          >
-                                            {summaryDetails.length ? (
-                                              <div className="flex flex-wrap gap-1.5">
-                                                {summaryDetails.map(
-                                                  (detail) => (
-                                                    <span
-                                                      key={`${row.id}-summary-${detail.label}`}
-                                                      className={`rounded-full border px-2 py-0.5 text-[11px] ${scalpCronDetailToneMeta(
-                                                        detail.tone,
-                                                      )}`}
-                                                    >
-                                                      {`${detail.label}: ${detail.value}`}
-                                                    </span>
-                                                  ),
-                                                )}
-                                              </div>
-                                            ) : (
-                                              "—"
-                                            )}
-                                          </td>
-                                          <td className="px-3 py-3">
-                                            <span
-                                              className={`rounded-full border px-2 py-1 text-[11px] ${scalpCronStatusMeta(
-                                                row.status,
-                                              )}`}
-                                            >
-                                              <span className="inline-flex items-center gap-1.5">
-                                                {rowInProgress ? (
-                                                  <Repeat className="h-3.5 w-3.5 animate-spin" />
-                                                ) : null}
-                                                {rowInProgress
-                                                  ? "in_progress"
-                                                  : row.status}
-                                              </span>
-                                            </span>
-                                          </td>
-                                          <td className="rounded-r-xl px-3 py-3">
-                                            <button
-                                              type="button"
-                                              onClick={(event) => {
-                                                event.stopPropagation();
-                                                void invokeScalpCronNow(row);
-                                              }}
-                                              disabled={invokeButtonDisabled}
-                                              className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
-                                                scalpDarkMode
-                                                  ? "border-zinc-600 bg-zinc-800 text-zinc-200 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
-                                                  : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                                              }`}
-                                              title={
-                                                row.invokePath ||
-                                                "No invoke path configured"
-                                              }
-                                            >
-                                              {invokeState?.running
-                                                ? "invoking..."
-                                                : "Invoke now()"}
-                                            </button>
-                                          </td>
-                                        </tr>
-                                        {isExpanded ? (
-                                          <tr>
-                                            <td
-                                              colSpan={6}
-                                              className="px-0 pt-0"
-                                            >
-                                              <div
-                                                className={
-                                                  scalpCronExpandedPanelClass
-                                                }
-                                              >
-                                                <div
-                                                  className={`mb-2 text-[11px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
-                                                >
-                                                  Last execution snapshot
-                                                </div>
-                                                {invokeState ? (
-                                                  <div
-                                                    className={`mb-3 rounded-xl border px-2.5 py-2 text-xs ${
-                                                      invokeState.ok === true
-                                                        ? scalpCronDetailToneMeta(
-                                                            "positive",
-                                                          )
-                                                        : invokeState.ok ===
-                                                            false
-                                                          ? scalpCronDetailToneMeta(
-                                                              "critical",
-                                                            )
-                                                          : scalpCronDetailToneMeta(
-                                                              "neutral",
-                                                            )
-                                                    }`}
-                                                  >
-                                                    <span className="font-semibold">
-                                                      Manual invoke:
-                                                    </span>{" "}
-                                                    {invokeState.ok === null
-                                                      ? "not run"
-                                                      : invokeState.ok
-                                                        ? `ok (${invokeState.status || "200"})`
-                                                        : `failed (${invokeState.status || "n/a"})`}
-                                                    {invokeState.durationMs !==
-                                                    null
-                                                      ? ` · ${formatScalpDuration(invokeState.durationMs)}`
-                                                      : ""}
-                                                    {invokeState.message
-                                                      ? ` · ${invokeState.message}`
-                                                      : ""}
-                                                    {invokeState.atMs
-                                                      ? ` · ${formatScalpTime(invokeState.atMs)}`
-                                                      : ""}
-                                                  </div>
-                                                ) : null}
-                                                {row.id ===
-                                                "scalp_orchestrator" ? (
-                                                  <div
-                                                    className={`rounded-xl border px-3 py-3 ${
-                                                      scalpDarkMode
-                                                        ? "border-zinc-700 bg-zinc-950/50"
-                                                        : "border-slate-200 bg-slate-50"
-                                                    }`}
-                                                  >
-                                                    <div
-                                                      className={`mb-2 text-xs font-semibold ${scalpTextPrimaryClass}`}
-                                                    >
-                                                      Pipeline subtask checklist
-                                                    </div>
-                                                    <div className="space-y-2">
-                                                      {scalpOrchestratorChecklist.map(
-                                                        (subtask, index) => {
-                                                          const state =
-                                                            scalpOrchestratorSubtaskState(
-                                                              subtask.stage,
-                                                            );
-                                                          const progressPct =
-                                                            scalpOrchestratorSubtaskProgressPct(
-                                                              subtask.stage,
-                                                            );
-                                                          const icon =
-                                                            state ===
-                                                            "running" ? (
-                                                              <Repeat className="h-4 w-4 animate-spin text-amber-500" />
-                                                            ) : state ===
-                                                              "success" ? (
-                                                              <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                                                            ) : state ===
-                                                              "failed" ? (
-                                                              <XCircle className="h-4 w-4 text-rose-500" />
-                                                            ) : (
-                                                              <Circle
-                                                                className={`h-4 w-4 ${scalpTextMutedClass}`}
-                                                              />
-                                                            );
-                                                          return (
-                                                            <div
-                                                              key={`orchestrator-subtask-${subtask.id}`}
-                                                              className={`rounded-lg border px-2.5 py-2 ${
-                                                                scalpDarkMode
-                                                                  ? "border-zinc-700/80 bg-zinc-900/70"
-                                                                  : "border-slate-200 bg-white"
-                                                              }`}
-                                                            >
-                                                              <div className="flex items-center justify-between gap-3">
-                                                                <div className="flex items-center gap-2">
-                                                                  <span
-                                                                    className={`text-[11px] ${scalpTextMutedClass}`}
-                                                                  >
-                                                                    {index + 1}.
-                                                                  </span>
-                                                                  {icon}
-                                                                  <span
-                                                                    className={`text-sm font-medium ${scalpTextPrimaryClass}`}
-                                                                  >
-                                                                    {
-                                                                      subtask.label
-                                                                    }
-                                                                  </span>
-                                                                </div>
-                                                                <span
-                                                                  className={`rounded-full border px-2 py-0.5 text-[11px] ${
-                                                                    state ===
-                                                                    "running"
-                                                                      ? scalpCronDetailToneMeta(
-                                                                          "warning",
-                                                                        )
-                                                                      : state ===
-                                                                          "success"
-                                                                        ? scalpCronDetailToneMeta(
-                                                                            "positive",
-                                                                          )
-                                                                        : state ===
-                                                                            "failed"
-                                                                          ? scalpCronDetailToneMeta(
-                                                                              "critical",
-                                                                            )
-                                                                          : scalpCronDetailToneMeta(
-                                                                              "neutral",
-                                                                            )
-                                                                  }`}
-                                                                >
-                                                                  {state}
-                                                                </span>
-                                                              </div>
-                                                              {progressPct !==
-                                                              null ? (
-                                                                <div className="mt-2">
-                                                                  <div
-                                                                    className={`flex items-center justify-between text-[10px] uppercase tracking-[0.12em] ${scalpTextMutedClass}`}
-                                                                  >
-                                                                    <span>
-                                                                      progress
-                                                                    </span>
-                                                                    <span className="font-semibold">
-                                                                      {`${progressPct.toFixed(0)}%`}
-                                                                    </span>
-                                                                  </div>
-                                                                  <div
-                                                                    className={`mt-1 h-1.5 overflow-hidden rounded-full ${scalpVisualMetricTrackClass}`}
-                                                                  >
-                                                                    <div
-                                                                      className={`h-full rounded-full ${scalpVisualMetricFillMeta(
-                                                                        "warning",
-                                                                      )}`}
-                                                                      style={{
-                                                                        width: `${progressPct}%`,
-                                                                      }}
-                                                                    />
-                                                                  </div>
-                                                                </div>
-                                                              ) : null}
-                                                            </div>
-                                                          );
-                                                        },
-                                                      )}
-                                                    </div>
-                                                    {scalpPanicStopEnabled ? (
-                                                      <div
-                                                        className={`mt-2 text-xs ${scalpTextSecondaryClass}`}
-                                                      >
-                                                        blocked by panic stop
-                                                      </div>
-                                                    ) : null}
-                                                    {scalpOrchestratorHasFailure ? (
-                                                      <div className="mt-2 text-xs text-rose-500">
-                                                        {scalpOrchestratorLastError ||
-                                                          "pipeline failed"}
-                                                      </div>
-                                                    ) : null}
-                                                  </div>
-                                                ) : (
-                                                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-5">
-                                                    {row.details.map(
-                                                      (detail) => (
-                                                        <div
-                                                          key={`${row.id}-${detail.label}`}
-                                                          className={`rounded-xl border px-2.5 py-2 ${scalpCronDetailToneMeta(
-                                                            detail.tone,
-                                                          )}`}
-                                                        >
-                                                          <div className="text-[10px] uppercase tracking-[0.14em]">
-                                                            {detail.label}
-                                                          </div>
-                                                          <div className="mt-1 text-xs font-semibold">
-                                                            {detail.value}
-                                                          </div>
-                                                        </div>
-                                                      ),
-                                                    )}
-                                                  </div>
-                                                )}
-                                                {row.id !==
-                                                  "scalp_orchestrator" &&
-                                                row.visualMetrics &&
-                                                row.visualMetrics.length ? (
-                                                  <div className="mt-3">
-                                                    <div
-                                                      className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
-                                                    >
-                                                      Visual metrics
-                                                    </div>
-                                                    <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
-                                                      {row.visualMetrics.map(
-                                                        (metric) => {
-                                                          const pct =
-                                                            metric.pct === null
-                                                              ? 0
-                                                              : Math.max(
-                                                                  0,
-                                                                  Math.min(
-                                                                    100,
-                                                                    metric.pct,
-                                                                  ),
-                                                                );
-                                                          return (
-                                                            <div
-                                                              key={`${row.id}-visual-${metric.label}`}
-                                                              className={`rounded-xl border px-2.5 py-2 ${scalpCronDetailToneMeta(metric.tone)}`}
-                                                            >
-                                                              <div className="flex items-center justify-between text-[11px]">
-                                                                <span className="uppercase tracking-[0.12em]">
-                                                                  {metric.label}
-                                                                </span>
-                                                                <span className="font-semibold">
-                                                                  {
-                                                                    metric.valueLabel
-                                                                  }
-                                                                </span>
-                                                              </div>
-                                                              <div
-                                                                className={`mt-2 h-1.5 overflow-hidden rounded-full ${scalpVisualMetricTrackClass}`}
-                                                              >
-                                                                <div
-                                                                  className={`h-full rounded-full ${scalpVisualMetricFillMeta(metric.tone)}`}
-                                                                  style={{
-                                                                    width: `${pct}%`,
-                                                                  }}
-                                                                />
-                                                              </div>
-                                                            </div>
-                                                          );
-                                                        },
-                                                      )}
-                                                    </div>
-                                                  </div>
-                                                ) : null}
-                                                {row.id !==
-                                                  "scalp_orchestrator" &&
-                                                row.id ===
-                                                  "scalp_cycle_worker" ? (
-                                                  <div className="mt-3">
-                                                    <div
-                                                      className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
-                                                    >
-                                                      Task metrics by symbol,
-                                                      strategy, and window (
-                                                      {
-                                                        scalpWorkerTaskRows.length
-                                                      }{" "}
-                                                      shown)
-                                                    </div>
-                                                    <div
-                                                      className={`mb-2 text-[11px] ${scalpTextSecondaryClass}`}
-                                                    >
-                                                      Source:{" "}
-                                                      {scalpWorkerCycleSource.replace(
-                                                        /_/g,
-                                                        " ",
-                                                      )}{" "}
-                                                      • totals:{" "}
-                                                      {scalpCycleTotalsSource.replace(
-                                                        /_/g,
-                                                        " ",
-                                                      )}
-                                                      {scalpWorkerTasksLoadingFull
-                                                        ? " • loading full task list..."
-                                                        : scalpResearchCycleNeedsFullTasks(
-                                                              scalpResearchCycle,
-                                                            )
-                                                          ? ` • preview capped at ${SCALP_WORKER_TASK_LIMIT_PREVIEW}`
-                                                          : ""}
-                                                    </div>
-                                                    <div
-                                                      className={`max-h-80 overflow-auto rounded-xl border ${
-                                                        scalpDarkMode
-                                                          ? "border-zinc-700/40"
-                                                          : "border-slate-200"
-                                                      }`}
-                                                    >
-                                                      <table className="w-full min-w-[1380px] border-separate border-spacing-y-1.5 text-left text-sm">
-                                                        <thead
-                                                          className={`text-[10px] uppercase tracking-[0.14em] ${scalpTableHeaderClass}`}
-                                                        >
-                                                          <tr>
-                                                            <th className="px-3 py-1">
-                                                              {renderScalpWorkerSortableHeader(
-                                                                "Symbol",
-                                                                "symbol",
-                                                              )}
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              {renderScalpWorkerSortableHeader(
-                                                                "Strategy",
-                                                                "strategyId",
-                                                              )}
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              {renderScalpWorkerSortableHeader(
-                                                                "Tune",
-                                                                "tuneId",
-                                                              )}
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              {renderScalpWorkerSortableHeader(
-                                                                "Why not promoted",
-                                                                "whyNotPromoted",
-                                                              )}
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              {renderScalpWorkerSortableHeader(
-                                                                "Window",
-                                                                "windowToTs",
-                                                              )}
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              {renderScalpWorkerSortableHeader(
-                                                                "Status",
-                                                                "status",
-                                                              )}
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              {renderScalpWorkerSortableHeader(
-                                                                "Trades",
-                                                                "trades",
-                                                              )}
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              {renderScalpWorkerSortableHeader(
-                                                                "Net R",
-                                                                "netR",
-                                                              )}
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              {renderScalpWorkerSortableHeader(
-                                                                "Expectancy",
-                                                                "expectancyR",
-                                                              )}
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              {renderScalpWorkerSortableHeader(
-                                                                "PF",
-                                                                "profitFactor",
-                                                              )}
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              {renderScalpWorkerSortableHeader(
-                                                                "Max DD",
-                                                                "maxDrawdownR",
-                                                              )}
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              Action
-                                                            </th>
-                                                          </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                          {scalpWorkerTaskRows.length ? (
-                                                            scalpWorkerTaskRows.map(
-                                                              (taskRow) => {
-                                                                const retryState =
-                                                                  scalpWorkerRetryStateByTaskId[
-                                                                    taskRow
-                                                                      .taskId
-                                                                  ] || null;
-                                                                const canRetryTask =
-                                                                  taskRow.status ===
-                                                                    "failed" &&
-                                                                  Boolean(
-                                                                    taskRow.taskId,
-                                                                  ) &&
-                                                                  scalpWorkerRetryCycleReady;
-                                                                return (
-                                                                  <tr
-                                                                    key={`worker-task-${taskRow.taskId}`}
-                                                                    className={
-                                                                      scalpTableRowClass
-                                                                    }
-                                                                  >
-                                                                    <td
-                                                                      className={`rounded-l-xl px-3 py-2.5 font-medium ${scalpTextPrimaryClass}`}
-                                                                    >
-                                                                      {
-                                                                        taskRow.symbol
-                                                                      }
-                                                                    </td>
-                                                                    <td
-                                                                      className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}
-                                                                    >
-                                                                      {
-                                                                        taskRow.strategyId
-                                                                      }
-                                                                    </td>
-                                                                    <td
-                                                                      className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}
-                                                                    >
-                                                                      {
-                                                                        taskRow.tuneId
-                                                                      }
-                                                                    </td>
-                                                                    <td
-                                                                      className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}
-                                                                    >
-                                                                      {String(
-                                                                        taskRow.whyNotPromoted ||
-                                                                          "unknown",
-                                                                      ).replace(
-                                                                        /_/g,
-                                                                        " ",
-                                                                      )}
-                                                                    </td>
-                                                                    <td
-                                                                      className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}
-                                                                    >
-                                                                      {formatScalpWindowIso(
-                                                                        taskRow.windowFromTs,
-                                                                        taskRow.windowToTs,
-                                                                      )}
-                                                                    </td>
-                                                                    <td
-                                                                      className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}
-                                                                    >
-                                                                      <span
-                                                                        className={`rounded-full border px-2 py-1 text-[11px] ${scalpWorkerTaskStatusMeta(
-                                                                          taskRow.status,
-                                                                        )}`}
-                                                                      >
-                                                                        {taskRow.status ||
-                                                                          "pending"}
-                                                                      </span>
-                                                                    </td>
-                                                                    <td
-                                                                      className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}
-                                                                    >
-                                                                      {taskRow.trades ===
-                                                                      null
-                                                                        ? "—"
-                                                                        : Math.floor(
-                                                                            taskRow.trades,
-                                                                          )}
-                                                                    </td>
-                                                                    <td
-                                                                      className={`px-3 py-2.5 ${
-                                                                        taskRow.netR ===
-                                                                        null
-                                                                          ? scalpTextMutedClass
-                                                                          : taskRow.netR >=
-                                                                              0
-                                                                            ? "text-emerald-500"
-                                                                            : "text-rose-500"
-                                                                      }`}
-                                                                    >
-                                                                      {taskRow.netR ===
-                                                                      null
-                                                                        ? "—"
-                                                                        : `${taskRow.netR >= 0 ? "+" : ""}${taskRow.netR.toFixed(2)}`}
-                                                                    </td>
-                                                                    <td
-                                                                      className={`px-3 py-2.5 ${
-                                                                        taskRow.expectancyR ===
-                                                                        null
-                                                                          ? scalpTextMutedClass
-                                                                          : taskRow.expectancyR >=
-                                                                              0
-                                                                            ? "text-emerald-500"
-                                                                            : "text-rose-500"
-                                                                      }`}
-                                                                    >
-                                                                      {taskRow.expectancyR ===
-                                                                      null
-                                                                        ? "—"
-                                                                        : `${taskRow.expectancyR >= 0 ? "+" : ""}${taskRow.expectancyR.toFixed(3)}`}
-                                                                    </td>
-                                                                    <td
-                                                                      className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}
-                                                                    >
-                                                                      {taskRow.profitFactor ===
-                                                                      null
-                                                                        ? "—"
-                                                                        : taskRow.profitFactor.toFixed(
-                                                                            2,
-                                                                          )}
-                                                                    </td>
-                                                                    <td
-                                                                      className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}
-                                                                    >
-                                                                      {taskRow.maxDrawdownR ===
-                                                                      null
-                                                                        ? "—"
-                                                                        : `${taskRow.maxDrawdownR.toFixed(2)}R`}
-                                                                    </td>
-                                                                    <td
-                                                                      className={`rounded-r-xl px-3 py-2.5 ${scalpTextSecondaryClass}`}
-                                                                    >
-                                                                      {taskRow.status ===
-                                                                      "failed" ? (
-                                                                        <div className="flex items-center gap-2">
-                                                                          <button
-                                                                            type="button"
-                                                                            onClick={() =>
-                                                                              retryScalpWorkerTask(
-                                                                                taskRow.taskId,
-                                                                              )
-                                                                            }
-                                                                            disabled={
-                                                                              !canRetryTask ||
-                                                                              retryState?.running ===
-                                                                                true
-                                                                            }
-                                                                            className={`rounded-md border px-2 py-1 text-[11px] font-medium transition ${
-                                                                              !canRetryTask ||
-                                                                              retryState?.running ===
-                                                                                true
-                                                                                ? scalpDarkMode
-                                                                                  ? "cursor-not-allowed border-zinc-700 text-zinc-500"
-                                                                                  : "cursor-not-allowed border-slate-200 text-slate-400"
-                                                                                : scalpDarkMode
-                                                                                  ? "border-amber-500/50 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20"
-                                                                                  : "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
-                                                                            }`}
-                                                                          >
-                                                                            {retryState?.running
-                                                                              ? "Retrying..."
-                                                                              : "Retry"}
-                                                                          </button>
-                                                                          {retryState?.ok ===
-                                                                            false &&
-                                                                          retryState?.message ? (
-                                                                            <span className="max-w-[160px] truncate text-[10px] text-rose-500">
-                                                                              {
-                                                                                retryState.message
-                                                                              }
-                                                                            </span>
-                                                                          ) : null}
-                                                                          {retryState?.ok ===
-                                                                            true &&
-                                                                          retryState?.message ? (
-                                                                            <span className="text-[10px] text-emerald-500">
-                                                                              {
-                                                                                retryState.message
-                                                                              }
-                                                                            </span>
-                                                                          ) : null}
-                                                                        </div>
-                                                                      ) : (
-                                                                        "—"
-                                                                      )}
-                                                                    </td>
-                                                                  </tr>
-                                                                );
-                                                              },
-                                                            )
-                                                          ) : (
-                                                            <tr
-                                                              className={
-                                                                scalpTableRowClass
-                                                              }
-                                                            >
-                                                              <td
-                                                                colSpan={12}
-                                                                className={`rounded-xl px-3 py-4 text-sm ${scalpTextSecondaryClass}`}
-                                                              >
-                                                                {scalpResearchCycle
-                                                                  ? "Cycle loaded, but no tasks returned yet."
-                                                                  : "No active or completed research cycle found yet. Run scalp_prepare_and_start_cycle first."}
-                                                              </td>
-                                                            </tr>
-                                                          )}
-                                                        </tbody>
-                                                      </table>
-                                                    </div>
-                                                  </div>
-                                                ) : null}
-                                                {row.id !==
-                                                  "scalp_orchestrator" &&
-                                                row.id ===
-                                                  "scalp_promotion_gate_apply" ? (
-                                                  <div className="mt-3">
-                                                    <div
-                                                      className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
-                                                    >
-                                                      Materialization shortlist
-                                                      (
-                                                      {
-                                                        scalpMaterializationPreviewRows.length
-                                                      }{" "}
-                                                      shown)
-                                                    </div>
-                                                    <div
-                                                      className={`mb-2 text-[11px] ${scalpTextSecondaryClass}`}
-                                                    >
-                                                      Source:{" "}
-                                                      {scalpMaterializationSource ||
-                                                        "—"}{" "}
-                                                      • top K per symbol:{" "}
-                                                      {scalpMaterializationTopKPerSymbol ===
-                                                      null
-                                                        ? "—"
-                                                        : Math.max(
-                                                            1,
-                                                            Math.floor(
-                                                              scalpMaterializationTopKPerSymbol,
-                                                            ),
-                                                          )}{" "}
-                                                      • reason:{" "}
-                                                      {scalpPromotionSyncReason ||
-                                                        "none"}
-                                                    </div>
-                                                    <div
-                                                      className={`max-h-80 overflow-auto rounded-xl border ${
-                                                        scalpDarkMode
-                                                          ? "border-zinc-700/40"
-                                                          : "border-slate-200"
-                                                      }`}
-                                                    >
-                                                      <table className="w-full min-w-[1100px] border-separate border-spacing-y-1.5 text-left text-sm">
-                                                        <thead
-                                                          className={`text-[10px] uppercase tracking-[0.14em] ${scalpTableHeaderClass}`}
-                                                        >
-                                                          <tr>
-                                                            <th className="px-3 py-1">
-                                                              Symbol
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              Strategy
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              Tune
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              Deployment
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              In Registry
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              Created
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              Source
-                                                            </th>
-                                                          </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                          {scalpMaterializationPreviewRows.length ? (
-                                                            scalpMaterializationPreviewRows.map(
-                                                              (
-                                                                materializedRow,
-                                                              ) => (
-                                                                <tr
-                                                                  key={`materialization-row-${materializedRow.deploymentId}`}
-                                                                  className={
-                                                                    scalpTableRowClass
-                                                                  }
-                                                                >
-                                                                  <td
-                                                                    className={`rounded-l-xl px-3 py-2.5 font-medium ${scalpTextPrimaryClass}`}
-                                                                  >
-                                                                    {
-                                                                      materializedRow.symbol
-                                                                    }
-                                                                  </td>
-                                                                  <td
-                                                                    className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}
-                                                                  >
-                                                                    {
-                                                                      materializedRow.strategyId
-                                                                    }
-                                                                  </td>
-                                                                  <td
-                                                                    className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}
-                                                                  >
-                                                                    {
-                                                                      materializedRow.tuneId
-                                                                    }
-                                                                  </td>
-                                                                  <td
-                                                                    className={`px-3 py-2.5 font-mono text-[11px] ${scalpTextSecondaryClass}`}
-                                                                  >
-                                                                    {
-                                                                      materializedRow.deploymentId
-                                                                    }
-                                                                  </td>
-                                                                  <td
-                                                                    className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}
-                                                                  >
-                                                                    <span
-                                                                      className={`rounded-full border px-2 py-1 text-[11px] ${
-                                                                        materializedRow.exists
-                                                                          ? scalpDarkMode
-                                                                            ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
-                                                                            : "border-emerald-200 bg-emerald-50 text-emerald-700"
-                                                                          : scalpDarkMode
-                                                                            ? "border-amber-400/40 bg-amber-500/10 text-amber-200"
-                                                                            : "border-amber-200 bg-amber-50 text-amber-700"
-                                                                      }`}
-                                                                    >
-                                                                      {materializedRow.exists
-                                                                        ? "yes"
-                                                                        : "missing"}
-                                                                    </span>
-                                                                  </td>
-                                                                  <td
-                                                                    className={`px-3 py-2.5 ${scalpTextSecondaryClass}`}
-                                                                  >
-                                                                    <span
-                                                                      className={`rounded-full border px-2 py-1 text-[11px] ${
-                                                                        materializedRow.created
-                                                                          ? scalpDarkMode
-                                                                            ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
-                                                                            : "border-emerald-200 bg-emerald-50 text-emerald-700"
-                                                                          : scalpDarkMode
-                                                                            ? "border-zinc-600 bg-zinc-800 text-zinc-300"
-                                                                            : "border-slate-200 bg-slate-100 text-slate-600"
-                                                                      }`}
-                                                                    >
-                                                                      {materializedRow.created
-                                                                        ? "yes"
-                                                                        : "no"}
-                                                                    </span>
-                                                                  </td>
-                                                                  <td
-                                                                    className={`rounded-r-xl px-3 py-2.5 ${scalpTextSecondaryClass}`}
-                                                                  >
-                                                                    {materializedRow.source ||
-                                                                      "—"}
-                                                                  </td>
-                                                                </tr>
-                                                              ),
-                                                            )
-                                                          ) : (
-                                                            <tr
-                                                              className={
-                                                                scalpTableRowClass
-                                                              }
-                                                            >
-                                                              <td
-                                                                colSpan={7}
-                                                                className={`rounded-xl px-3 py-4 text-sm ${scalpTextSecondaryClass}`}
-                                                              >
-                                                                {scalpPromotionSyncSnapshot
-                                                                  ? "No shortlist rows returned yet for the latest sync preview."
-                                                                  : "No sync preview loaded yet. Wait for the next research refresh cycle."}
-                                                              </td>
-                                                            </tr>
-                                                          )}
-                                                        </tbody>
-                                                      </table>
-                                                    </div>
-                                                  </div>
-                                                ) : null}
-                                                {row.id !==
-                                                  "scalp_orchestrator" &&
-                                                row.resultPreview ? (
-                                                  <div className="mt-3">
-                                                    <div
-                                                      className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
-                                                    >
-                                                      Result payload
-                                                    </div>
-                                                    <pre
-                                                      className={
-                                                        scalpCronPreviewClass
-                                                      }
-                                                    >
-                                                      {JSON.stringify(
-                                                        row.resultPreview,
-                                                        null,
-                                                        2,
-                                                      )}
-                                                    </pre>
-                                                  </div>
-                                                ) : null}
-                                                {row.id !==
-                                                  "scalp_orchestrator" &&
-                                                row.id ===
-                                                  "scalp_discover_symbols" ? (
-                                                  <div className="mt-3">
-                                                    <div
-                                                      className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
-                                                    >
-                                                      Symbol discovery flow
-                                                    </div>
-                                                    <div className="overflow-x-auto">
-                                                      <table className="w-full min-w-[860px] border-separate border-spacing-y-2 text-left text-sm">
-                                                        <thead
-                                                          className={`text-[11px] uppercase tracking-[0.16em] ${scalpTableHeaderClass}`}
-                                                        >
-                                                          <tr>
-                                                            <th className="px-3 py-1">
-                                                              Symbol
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              Discovered
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              Data Import
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              Evaluation
-                                                            </th>
-                                                            <th className="px-3 py-1">
-                                                              Notes
-                                                            </th>
-                                                          </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                          {scalpUniversePipelineRows.length ? (
-                                                            scalpUniversePipelineRows.map(
-                                                              (pipelineRow) => (
-                                                                <tr
-                                                                  key={`universe-flow-${pipelineRow.symbol}`}
-                                                                  className={
-                                                                    scalpTableRowClass
-                                                                  }
-                                                                >
-                                                                  <td
-                                                                    className={`rounded-l-xl px-3 py-3 font-medium ${scalpTextPrimaryClass}`}
-                                                                  >
-                                                                    {
-                                                                      pipelineRow.symbol
-                                                                    }
-                                                                  </td>
-                                                                  <td
-                                                                    className={`px-3 py-3 ${scalpTextSecondaryClass}`}
-                                                                  >
-                                                                    <span
-                                                                      className={`rounded-full border px-2 py-1 text-[11px] ${
-                                                                        pipelineRow.discovered
-                                                                          ? scalpDarkMode
-                                                                            ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
-                                                                            : "border-emerald-200 bg-emerald-50 text-emerald-700"
-                                                                          : scalpDarkMode
-                                                                            ? "border-zinc-600 bg-zinc-800/70 text-zinc-300"
-                                                                            : "border-slate-200 bg-slate-100 text-slate-600"
-                                                                      }`}
-                                                                    >
-                                                                      {pipelineRow.discovered
-                                                                        ? "selected"
-                                                                        : "not selected"}
-                                                                    </span>
-                                                                  </td>
-                                                                  <td
-                                                                    className={`px-3 py-3 ${scalpTextSecondaryClass}`}
-                                                                  >
-                                                                    <div className="flex flex-wrap items-center gap-2">
-                                                                      <span
-                                                                        className={`rounded-full border px-2 py-1 text-[11px] ${scalpImportStatusMeta(
-                                                                          pipelineRow.importStatus,
-                                                                        )}`}
-                                                                      >
-                                                                        {
-                                                                          pipelineRow.importStatus
-                                                                        }
-                                                                      </span>
-                                                                      {typeof pipelineRow.importAddedCount ===
-                                                                        "number" &&
-                                                                      pipelineRow.importAddedCount >
-                                                                        0 ? (
-                                                                        <span
-                                                                          className={
-                                                                            scalpTagNeutralClass
-                                                                          }
-                                                                        >
-                                                                          {`+${Math.floor(pipelineRow.importAddedCount)} bars`}
-                                                                        </span>
-                                                                      ) : null}
-                                                                    </div>
-                                                                  </td>
-                                                                  <td
-                                                                    className={`px-3 py-3 ${scalpTextSecondaryClass}`}
-                                                                  >
-                                                                    <div className="flex flex-wrap items-center gap-2">
-                                                                      <span
-                                                                        className={`rounded-full border px-2 py-1 text-[11px] ${scalpEvaluationMeta(
-                                                                          pipelineRow.eligible,
-                                                                        )}`}
-                                                                      >
-                                                                        {!pipelineRow.evaluated
-                                                                          ? "pending"
-                                                                          : pipelineRow.eligible
-                                                                            ? "eligible"
-                                                                            : "ineligible"}
-                                                                      </span>
-                                                                      <span
-                                                                        className={
-                                                                          scalpTagNeutralClass
-                                                                        }
-                                                                      >
-                                                                        {pipelineRow.score ===
-                                                                        null
-                                                                          ? "score —"
-                                                                          : `score ${pipelineRow.score.toFixed(2)}`}
-                                                                      </span>
-                                                                    </div>
-                                                                  </td>
-                                                                  <td
-                                                                    className={`rounded-r-xl px-3 py-3 text-xs ${scalpTextSecondaryClass}`}
-                                                                  >
-                                                                    {pipelineRow
-                                                                      .reasons
-                                                                      .length
-                                                                      ? pipelineRow.reasons
-                                                                          .slice(
-                                                                            0,
-                                                                            3,
-                                                                          )
-                                                                          .join(
-                                                                            ", ",
-                                                                          )
-                                                                      : pipelineRow.importReason ||
-                                                                        (pipelineRow.evaluated
-                                                                          ? "passed filters"
-                                                                          : "awaiting evaluation")}
-                                                                  </td>
-                                                                </tr>
-                                                              ),
-                                                            )
-                                                          ) : (
-                                                            <tr
-                                                              className={
-                                                                scalpTableRowClass
-                                                              }
-                                                            >
-                                                              <td
-                                                                colSpan={5}
-                                                                className={`rounded-xl px-3 py-4 text-sm ${scalpTextSecondaryClass}`}
-                                                              >
-                                                                No symbol
-                                                                discovery
-                                                                snapshot loaded
-                                                                yet.
-                                                              </td>
-                                                            </tr>
-                                                          )}
-                                                        </tbody>
-                                                      </table>
-                                                    </div>
-                                                  </div>
-                                                ) : null}
-                                                {row.id !==
-                                                  "scalp_orchestrator" &&
-                                                row.id ===
-                                                  "scalp_prepare_and_start_cycle" ? (
-                                                  <div className="mt-3">
-                                                    <div
-                                                      className={`mb-1 text-[10px] uppercase tracking-[0.14em] ${scalpTextMutedClass}`}
-                                                    >
-                                                      History Rows (
-                                                      {
-                                                        scalpHistoryPreviewRows.length
-                                                      }
-                                                      )
-                                                    </div>
-                                                    <div
-                                                      className={`mb-2 text-[11px] ${scalpTextSecondaryClass}`}
-                                                    >
-                                                      oldest:{" "}
-                                                      {formatScalpTime(
-                                                        scalpHistoryOldestCandleAtMs,
-                                                      )}{" "}
-                                                      • newest:{" "}
-                                                      {formatScalpTime(
-                                                        scalpHistoryNewestCandleAtMs,
-                                                      )}
-                                                      {scalpHistoryAvgCandles ===
-                                                        null ||
-                                                      scalpHistoryAvgDepthDays ===
-                                                        null
-                                                        ? ""
-                                                        : ` • avg ${scalpHistoryAvgCandles.toFixed(0)} bars / ${scalpHistoryAvgDepthDays.toFixed(1)}d`}
-                                                      {scalpHistoryTruncated
-                                                        ? ` • scanned first ${formatScalpCount(
-                                                            scalpHistoryScannedLimit,
-                                                          )} symbols from history store`
-                                                        : ""}
-                                                    </div>
-                                                    <div className="overflow-x-auto">
-                                                      <table className="w-full min-w-[760px] border-separate border-spacing-y-1 text-left text-xs">
-                                                        <thead
-                                                          className={`text-[10px] uppercase tracking-[0.14em] ${scalpTableHeaderClass}`}
-                                                        >
-                                                          <tr>
-                                                            <th className="px-2 py-1">
-                                                              Symbol
-                                                            </th>
-                                                            <th className="px-2 py-1">
-                                                              Candles
-                                                            </th>
-                                                            <th className="px-2 py-1">
-                                                              Depth
-                                                            </th>
-                                                            <th className="px-2 py-1">
-                                                              Density
-                                                            </th>
-                                                            <th className="px-2 py-1">
-                                                              Coverage
-                                                            </th>
-                                                            <th className="px-2 py-1">
-                                                              Last Candle
-                                                            </th>
-                                                            <th className="px-2 py-1">
-                                                              Updated
-                                                            </th>
-                                                          </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                          {scalpHistoryPreviewRows.length ? (
-                                                            scalpHistoryPreviewRows.map(
-                                                              (historyRow) => (
-                                                                <tr
-                                                                  key={`history-row-${historyRow.symbol}`}
-                                                                  className={
-                                                                    scalpTableRowClass
-                                                                  }
-                                                                >
-                                                                  <td
-                                                                    className={`rounded-l-xl px-2 py-2 font-medium ${scalpTextPrimaryClass}`}
-                                                                  >
-                                                                    {
-                                                                      historyRow.symbol
-                                                                    }
-                                                                  </td>
-                                                                  <td
-                                                                    className={`px-2 py-2 ${scalpTextSecondaryClass}`}
-                                                                  >
-                                                                    {formatScalpCount(
-                                                                      historyRow.candles,
-                                                                    )}
-                                                                  </td>
-                                                                  <td
-                                                                    className={`px-2 py-2 ${scalpTextSecondaryClass}`}
-                                                                  >
-                                                                    {historyRow.depthDays ===
-                                                                    null
-                                                                      ? "—"
-                                                                      : `${historyRow.depthDays.toFixed(1)}d`}
-                                                                  </td>
-                                                                  <td
-                                                                    className={`px-2 py-2 ${scalpTextSecondaryClass}`}
-                                                                  >
-                                                                    {historyRow.barsPerDay ===
-                                                                    null
-                                                                      ? "—"
-                                                                      : `${historyRow.barsPerDay.toFixed(0)}/d`}
-                                                                  </td>
-                                                                  <td
-                                                                    className={`px-2 py-2 ${
-                                                                      historyRow.coveragePct ===
-                                                                      null
-                                                                        ? scalpTextMutedClass
-                                                                        : historyRow.coveragePct >=
-                                                                            95
-                                                                          ? "text-emerald-500"
-                                                                          : historyRow.coveragePct >=
-                                                                              80
-                                                                            ? "text-amber-500"
-                                                                            : "text-rose-500"
-                                                                    }`}
-                                                                  >
-                                                                    {formatScalpPct(
-                                                                      historyRow.coveragePct,
-                                                                      1,
-                                                                    )}
-                                                                  </td>
-                                                                  <td
-                                                                    className={`px-2 py-2 ${scalpTextSecondaryClass}`}
-                                                                  >
-                                                                    {formatScalpTime(
-                                                                      historyRow.toTsMs,
-                                                                    )}
-                                                                  </td>
-                                                                  <td
-                                                                    className={`rounded-r-xl px-2 py-2 ${scalpTextSecondaryClass}`}
-                                                                  >
-                                                                    {formatScalpTime(
-                                                                      historyRow.updatedAtMs,
-                                                                    )}
-                                                                  </td>
-                                                                </tr>
-                                                              ),
-                                                            )
-                                                          ) : (
-                                                            <tr
-                                                              className={
-                                                                scalpTableRowClass
-                                                              }
-                                                            >
-                                                              <td
-                                                                colSpan={7}
-                                                                className={`rounded-xl px-2 py-3 ${scalpTextSecondaryClass}`}
-                                                              >
-                                                                No
-                                                                candle-history
-                                                                rows found yet
-                                                                for the selected
-                                                                timeframe.
-                                                              </td>
-                                                            </tr>
-                                                          )}
-                                                        </tbody>
-                                                      </table>
-                                                    </div>
-                                                  </div>
-                                                ) : null}
-                                              </div>
-                                            </td>
-                                          </tr>
-                                        ) : null}
-                                      </React.Fragment>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
-                          </>
-                        ) : null}
-                      </article>
-                    </section>
-                  ) : null}
+                              </article>
+                            );
+                          })
+                        ) : (
+                          <div
+                            className={`rounded-xl border px-3 py-4 text-sm ${
+                              scalpDarkMode
+                                ? "border-zinc-700/60 text-zinc-300"
+                                : "border-slate-200 text-slate-600"
+                            }`}
+                          >
+                            No pipeline job rows are available yet.
+                          </div>
+                        )}
+                      </div>
+                    </article>
+                  </section>
 
                   <section className={`${scalpSectionShellClass} p-4`}>
                     <div className="flex items-center justify-between">
                       <h3
                         className={`text-lg font-semibold ${scalpTextPrimaryClass}`}
                       >
-                        Research Coverage
+                        Deployment Coverage
                       </h3>
-                      <div className="flex items-center gap-2">
-                        <div
-                          className={`inline-flex rounded-full border p-1 ${
-                            scalpDarkMode
-                              ? "border-zinc-700 bg-zinc-900/80"
-                              : "border-slate-200 bg-slate-100"
-                          }`}
-                        >
-                          {(
-                            [
-                              {
-                                id: "researched",
-                                label: "Researched",
-                              },
-                              {
-                                id: "deployments",
-                                label: "All Deployments",
-                              },
-                            ] as const
-                          ).map((option) => {
-                            const active =
-                              scalpResearchGridScope === option.id;
-                            return (
-                              <button
-                                key={option.id}
-                                type="button"
-                                onClick={() =>
-                                  setScalpResearchGridScope(option.id)
-                                }
-                                className={`rounded-full px-3 py-1 text-[11px] font-medium transition ${
-                                  active
-                                    ? scalpDarkMode
-                                      ? "bg-zinc-100 text-zinc-900"
-                                      : "bg-white text-slate-900 shadow-sm"
-                                    : scalpDarkMode
-                                      ? "text-zinc-300 hover:text-zinc-100"
-                                      : "text-slate-500 hover:text-slate-700"
-                                }`}
-                              >
-                                {option.label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                        <span className={scalpTagNeutralClass}>
-                          {scalpResearchGridScope === "deployments"
-                            ? `${scalpAllDeploymentsGridRows.length} deployments`
-                            : `${scalpWorkerJobsGridRows.length} researched candidates`}
-                        </span>
-                      </div>
+                      <span className={scalpTagNeutralClass}>
+                        {`${scalpAllDeploymentsGridRows.length} deployments`}
+                      </span>
                     </div>
                     <div className={`mt-2 text-xs ${scalpTextSecondaryClass}`}>
-                      {scalpResearchGridScope === "deployments"
-                        ? "One row per deployment in the registry. Weekly windows are shown when research history exists for that deployment; otherwise the row still appears with registry-level promotion and forward-validation state."
-                        : "One row per researched candidate with persisted weekly test history across all cycles. Promotion status comes from the deployment registry and latest gate sync, while the windows column shows only candidates that actually have stored research task results."}
+                      One row per deployment in the registry. Weekly windows
+                      are shown when worker history exists for that deployment;
+                      otherwise the row still appears with registry-level
+                      promotion and forward-validation state.
                     </div>
                     {scalpSelectedWorkerGridRows.length ? (
                       <div
@@ -8773,9 +4678,7 @@ export default function Home() {
                             : "border-slate-200 text-slate-600"
                         }`}
                       >
-                        {scalpResearchGridScope === "deployments"
-                          ? "No deployment registry rows are available yet."
-                          : "No cycle-worker jobs available yet. Run `scalp_prepare_and_start_cycle` then refresh this view."}
+                        No deployment registry rows are available yet.
                       </div>
                     )}
                   </section>

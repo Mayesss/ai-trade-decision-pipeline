@@ -29,6 +29,12 @@ const BITGET_OWNERSHIP_CACHE_TTL_MS = Math.max(
     Number(process.env.SCALP_BITGET_OWNERSHIP_CACHE_TTL_MS) || 24 * 60 * 60_000,
   ),
 );
+const BITGET_RISK_MARGIN_LEVERAGE_SAFETY_BUFFER = Math.max(
+  0,
+  Math.floor(
+    Number(process.env.SCALP_BITGET_RISK_MARGIN_LEVERAGE_SAFETY_BUFFER) || 2,
+  ),
+);
 
 type CachedContractMeta = {
   fetchedAtMs: number;
@@ -490,10 +496,35 @@ async function setBitgetLeverage(params: {
   });
 }
 
+function resolveLeverageForRiskMarginTarget(params: {
+  notionalUsd: number;
+  riskMarginTargetUsd: number | null;
+  fallbackLeverage: number;
+}): number {
+  const fallback = Math.max(1, Math.floor(params.fallbackLeverage));
+  if (!(Number.isFinite(params.notionalUsd) && params.notionalUsd > 0)) {
+    return fallback;
+  }
+  const riskTarget = toPositive(params.riskMarginTargetUsd);
+  if (!(Number.isFinite(riskTarget as number) && Number(riskTarget) > 0)) {
+    return fallback;
+  }
+  const rawLeverage = params.notionalUsd / Number(riskTarget);
+  if (!(Number.isFinite(rawLeverage) && rawLeverage > 0)) {
+    return fallback;
+  }
+  if (rawLeverage < 1) return 1;
+  const exactTargetLeverage = Math.floor(rawLeverage);
+  const bufferedLeverage =
+    exactTargetLeverage - BITGET_RISK_MARGIN_LEVERAGE_SAFETY_BUFFER;
+  return Math.max(1, bufferedLeverage);
+}
+
 async function executeBitgetScalpEntry(params: {
   symbol: string;
   direction: "BUY" | "SELL";
   notionalUsd: number;
+  riskUsd?: number | null;
   leverage?: number | null;
   dryRun?: boolean;
   clientOid?: string;
@@ -516,6 +547,12 @@ async function executeBitgetScalpEntry(params: {
   const clientOid = normalizeClientOid(params.clientOid, "bg-scl");
   const dryRun = params.dryRun !== false;
   const requestedLeverage = clampLeverage(params.leverage ?? null) ?? 1;
+  const riskMarginTargetUsd = toPositive(params.riskUsd);
+  const marginTargetLeverage = resolveLeverageForRiskMarginTarget({
+    notionalUsd,
+    riskMarginTargetUsd,
+    fallbackLeverage: requestedLeverage,
+  });
   const syntheticDealId = buildSyntheticPositionId(symbol, holdSide);
 
   if (!dryRun && !isBitgetLiveEnabled()) {
@@ -529,7 +566,7 @@ async function executeBitgetScalpEntry(params: {
       symbol,
       direction,
       notionalUsd,
-      leverage: requestedLeverage,
+      leverage: marginTargetLeverage,
       orderType,
       size: null,
       epic: symbol,
@@ -550,7 +587,7 @@ async function executeBitgetScalpEntry(params: {
       symbol,
       direction,
       notionalUsd,
-      leverage: requestedLeverage,
+      leverage: marginTargetLeverage,
       orderType,
       size: null,
       epic: symbol,
@@ -565,17 +602,70 @@ async function executeBitgetScalpEntry(params: {
   const accountAvailableUsd = await fetchBitgetAccountAvailableUsd().catch(
     () => null,
   );
-  const requiredLeverage =
+  if (
+    riskMarginTargetUsd !== null &&
+    Number.isFinite(riskMarginTargetUsd) &&
+    riskMarginTargetUsd > notionalUsd + 1e-9
+  ) {
+    return {
+      placed: false,
+      dryRun: false,
+      orderId: null,
+      dealId: syntheticDealId,
+      dealReference: clientOid,
+      clientOid,
+      symbol,
+      direction,
+      notionalUsd,
+      leverage: marginTargetLeverage,
+      orderType,
+      size: null,
+      epic: symbol,
+      dealStatus: "REJECTED",
+      confirmStatus: "MARGIN_TARGET_INVALID",
+      rejectReason: "RISK_MARGIN_TARGET_EXCEEDS_NOTIONAL",
+    };
+  }
+  if (
+    riskMarginTargetUsd !== null &&
+    Number.isFinite(accountAvailableUsd as number) &&
+    Number(accountAvailableUsd) > 0 &&
+    Number(accountAvailableUsd) + 1e-9 < riskMarginTargetUsd
+  ) {
+    return {
+      placed: false,
+      dryRun: false,
+      orderId: null,
+      dealId: syntheticDealId,
+      dealReference: clientOid,
+      clientOid,
+      symbol,
+      direction,
+      notionalUsd,
+      leverage: marginTargetLeverage,
+      orderType,
+      size: null,
+      epic: symbol,
+      dealStatus: "REJECTED",
+      confirmStatus: "MARGIN_INSUFFICIENT",
+      rejectReason: "INSUFFICIENT_AVAILABLE_MARGIN_FOR_RISK_TARGET",
+    };
+  }
+  const requiredLeverageByAvailable =
     Number.isFinite(accountAvailableUsd as number) && Number(accountAvailableUsd) > 0
       ? Math.max(
           1,
           Math.ceil((notionalUsd * 1.01) / Number(accountAvailableUsd)),
         )
       : 1;
-  const targetLeverage = Math.max(requestedLeverage, requiredLeverage);
+  const targetLeverage = Math.max(
+    marginTargetLeverage,
+    requiredLeverageByAvailable,
+  );
   const leverage = Math.max(1, Math.min(symbolLeverageCap, targetLeverage));
+  const isolatedMarginUsd = notionalUsd / leverage;
 
-  if (requiredLeverage > symbolLeverageCap) {
+  if (requiredLeverageByAvailable > symbolLeverageCap) {
     return {
       placed: false,
       dryRun: false,
@@ -593,6 +683,30 @@ async function executeBitgetScalpEntry(params: {
       dealStatus: "REJECTED",
       confirmStatus: "MARGIN_INSUFFICIENT",
       rejectReason: "INSUFFICIENT_BALANCE_FOR_NOTIONAL",
+    };
+  }
+  if (
+    riskMarginTargetUsd !== null &&
+    Number.isFinite(isolatedMarginUsd) &&
+    isolatedMarginUsd + 1e-9 < riskMarginTargetUsd
+  ) {
+    return {
+      placed: false,
+      dryRun: false,
+      orderId: null,
+      dealId: syntheticDealId,
+      dealReference: clientOid,
+      clientOid,
+      symbol,
+      direction,
+      notionalUsd,
+      leverage,
+      orderType,
+      size: null,
+      epic: symbol,
+      dealStatus: "REJECTED",
+      confirmStatus: "MARGIN_TARGET_UNATTAINABLE",
+      rejectReason: "RISK_MARGIN_TARGET_UNATTAINABLE_WITH_LEVERAGE",
     };
   }
 

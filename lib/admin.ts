@@ -1,42 +1,40 @@
-import type { NextApiRequest, NextApiResponse } from 'next';
+import type { NextApiRequest, NextApiResponse } from "next";
 
 export type AdminAccessResult = { ok: boolean; required: boolean };
 const UNAUTHENTICATED_CRON_ROUTES = new Set<string>([
-  '/api/swing/analyze',
-  '/api/scalp/cron/execute-deployments',
-  '/api/scalp/cron/discover-symbols',
-  '/api/scalp/cron/orchestrate-pipeline',
-  '/api/scalp/cron/prepare-and-start-cycle',
-  '/api/scalp/cron/research-cycle-start',
-  '/api/scalp/cron/research-cycle-worker',
-  '/api/scalp/cron/research-cycle-aggregate',
-  '/api/scalp/cron/research-cycle-sync-gates',
-  '/api/scalp/cron/research-report',
-  '/api/scalp/cron/live-guardrail-monitor',
-  '/api/scalp/cron/housekeeping',
+  "/api/swing/analyze",
+  "/api/scalp/cron/execute-deployments",
+  "/api/scalp/cron/discover-symbols",
+  "/api/scalp/cron/load-candles",
+  "/api/scalp/cron/prepare",
+  "/api/scalp/cron/worker",
+  "/api/scalp/cron/promotion",
+  "/api/scalp/cron/live-guardrail-monitor",
+  "/api/scalp/cron/housekeeping",
 ]);
 
 function firstHeaderValue(value: string | string[] | undefined): string {
-  if (typeof value === 'string') return value.trim();
-  if (Array.isArray(value) && value.length > 0) return String(value[0] || '').trim();
-  return '';
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value) && value.length > 0)
+    return String(value[0] || "").trim();
+  return "";
 }
 
 function parseBearerToken(value: string): string {
   const match = value.match(/^Bearer\s+(.+)$/i);
-  return match ? String(match[1] || '').trim() : '';
+  return match ? String(match[1] || "").trim() : "";
 }
 
 function requestPath(req: NextApiRequest): string {
-  const raw = String(req.url || '').trim();
-  if (!raw) return '';
+  const raw = String(req.url || "").trim();
+  if (!raw) return "";
   try {
-    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    if (raw.startsWith("http://") || raw.startsWith("https://")) {
       return new URL(raw).pathname;
     }
-    return new URL(raw, 'http://localhost').pathname;
+    return new URL(raw, "http://localhost").pathname;
   } catch {
-    return raw.split('?')[0] || '';
+    return raw.split("?")[0] || "";
   }
 }
 
@@ -53,16 +51,21 @@ export function checkAdminAccessHeader(req: NextApiRequest): AdminAccessResult {
     return { ok: true, required: false };
   }
 
-  const explicitHeader = firstHeaderValue(req.headers['x-admin-access-secret']);
-  const bearerHeader = parseBearerToken(firstHeaderValue(req.headers.authorization));
+  const explicitHeader = firstHeaderValue(req.headers["x-admin-access-secret"]);
+  const bearerHeader = parseBearerToken(
+    firstHeaderValue(req.headers.authorization),
+  );
   const provided = explicitHeader || bearerHeader;
   return { ok: provided === expected, required: true };
 }
 
-export function requireAdminAccess(req: NextApiRequest, res: NextApiResponse): boolean {
+export function requireAdminAccess(
+  req: NextApiRequest,
+  res: NextApiResponse,
+): boolean {
   const result = checkAdminAccessHeader(req);
   if (result.required && !result.ok) {
-    res.status(401).json({ error: 'Unauthorized' });
+    res.status(401).json({ error: "Unauthorized" });
     return false;
   }
   return true;

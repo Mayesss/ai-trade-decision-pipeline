@@ -9,7 +9,6 @@ import {
 import { getScalpStrategyConfig } from "./config";
 import { isScalpPgConfigured, scalpPrisma } from "./pg/client";
 import { deleteDeploymentsByIdFromPg } from "./pg/deployments";
-import { refreshScalpResearchPortfolioReport } from "./researchReporting";
 import type { ScalpCandle } from "./types";
 
 function toPositiveInt(value: unknown, fallback: number): number {
@@ -54,6 +53,8 @@ function normalizeSymbol(value: unknown): string {
 
 const ONE_DAY_MS = 24 * 60 * 60_000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
+const DEFAULT_PIPELINE_HISTORY_KEEP_WEEKS = 14;
+const DEFAULT_WEEKLY_METRICS_RETENTION_DAYS = 180;
 const DEFAULT_RESEARCH_PRIMARY_REFERENCE_WEEKS = 12;
 const DEFAULT_RESEARCH_CONFIRMATION_KEEP_WEEKS = 52;
 const DEFAULT_RESEARCH_CONFIRMATION_BUFFER_WEEKS = 2;
@@ -246,22 +247,21 @@ export interface RunScalpHousekeepingResult {
     candleHistoryCandlesDeleted: number;
     candleHistorySymbolsSkipped: number;
     reportRefreshed: boolean;
+    stalePipelineJobLocksCleared: number;
+    stalePipelineLoadRowsRecovered: number;
+    stalePipelinePrepareRowsRecovered: number;
+    stalePipelineWorkerRowsRecovered: number;
+    weeklyMetricsRowsPruned: number;
   };
   details: {
     prunedCycleIds: string[];
     deletedResearchLockKeys: string[];
     deletedRunLockKeys: string[];
     orphanedDeploymentIds: string[];
-    activeCycleRetentionGuard: {
+    activePipelineRetentionGuard: {
       minKeepWeeks: number;
       protectedSymbols: string[];
-      runningCycles: Array<{
-        cycleId: string;
-        lookbackDays: number;
-        derivedLookbackWeeks: number;
-        recommendedKeepWeeks: number;
-        symbolCount: number;
-      }>;
+      pendingSymbols: string[];
     };
   };
 }
@@ -338,146 +338,238 @@ async function pruneCandleHistoryRollingWeeks(params: {
   };
 }
 
-interface PgCyclePruneResult {
-  prunedCycleIds: string[];
-  taskRowsDeleted: number;
+function resolveRequiredSuccessiveWeeksForHousekeeping(): number {
+  return Math.max(
+    13,
+    Math.min(
+      52,
+      toPositiveInt(process.env.SCALP_PIPELINE_REQUIRED_SUCCESSIVE_WEEKS, 13),
+    ),
+  );
 }
 
-type ActiveCycleCandleRetentionGuard = {
+type ActivePipelineCandleRetentionGuard = {
   minKeepWeeks: number;
   protectedSymbols: Set<string>;
-  runningCycles: Array<{
-    cycleId: string;
-    lookbackDays: number;
-    derivedLookbackWeeks: number;
-    recommendedKeepWeeks: number;
-    symbolCount: number;
-  }>;
+  pendingSymbols: string[];
 };
 
-async function loadActiveCycleCandleRetentionGuard(
+async function loadActivePipelineCandleRetentionGuard(
   fallbackKeepWeeks: number,
-): Promise<ActiveCycleCandleRetentionGuard> {
+): Promise<ActivePipelineCandleRetentionGuard> {
+  const minKeepWeeks = Math.max(
+    fallbackKeepWeeks,
+    resolveRequiredSuccessiveWeeksForHousekeeping() + 1,
+  );
   if (!isScalpPgConfigured()) {
     return {
-      minKeepWeeks: fallbackKeepWeeks,
+      minKeepWeeks,
       protectedSymbols: new Set<string>(),
-      runningCycles: [],
+      pendingSymbols: [],
     };
   }
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
     Array<{
-      cycleId: string;
-      lookbackDaysText: string | null;
-      symbolsJson: unknown;
+      symbol: string;
     }>
   >(Prisma.sql`
         SELECT
-            cycle_id AS "cycleId",
-            NULLIF(TRIM(params_json->>'lookbackDays'), '') AS "lookbackDaysText",
-            params_json->'symbols' AS "symbolsJson"
-        FROM scalp_research_cycles
-        WHERE status = 'running'::scalp_cycle_status
-        ORDER BY created_at DESC
-        LIMIT 200;
+            symbol
+        FROM scalp_pipeline_symbols
+        WHERE active = TRUE
+          AND (
+            load_status IN ('pending', 'running', 'retry_wait')
+            OR prepare_status IN ('pending', 'running', 'retry_wait')
+          )
+        ORDER BY symbol ASC
+        LIMIT 5000;
     `);
 
   const protectedSymbols = new Set<string>();
-  const runningCycles: ActiveCycleCandleRetentionGuard["runningCycles"] = [];
-  let minKeepWeeks = Math.max(1, fallbackKeepWeeks);
-
   for (const row of rows) {
-    const cycleId = String(row.cycleId || "").trim();
-    if (!cycleId) continue;
-    const lookbackDays = Math.max(1, toPositiveInt(row.lookbackDaysText, 90));
-    const derivedLookbackWeeks = Math.max(1, Math.ceil(lookbackDays / 7));
-    const recommendedKeepWeeks = Math.max(1, derivedLookbackWeeks + 1);
-    minKeepWeeks = Math.max(minKeepWeeks, recommendedKeepWeeks);
-
-    const symbols = Array.isArray(row.symbolsJson)
-      ? row.symbolsJson
-          .map((value) => normalizeSymbol(value))
-          .filter((value) => Boolean(value))
-      : [];
-    for (const symbol of symbols) protectedSymbols.add(symbol);
-    runningCycles.push({
-      cycleId,
-      lookbackDays,
-      derivedLookbackWeeks,
-      recommendedKeepWeeks,
-      symbolCount: symbols.length,
-    });
+    const symbol = normalizeSymbol(row.symbol);
+    if (!symbol) continue;
+    protectedSymbols.add(symbol);
   }
 
   return {
     minKeepWeeks,
     protectedSymbols,
-    runningCycles,
+    pendingSymbols: Array.from(protectedSymbols).sort(),
   };
 }
 
-async function pruneResearchCyclesFromPg(params: {
-  nowMs: number;
-  retentionMs: number;
+interface StalePipelineRecoveryResult {
+  staleJobLocksCleared: number;
+  staleLoadRowsRecovered: number;
+  stalePrepareRowsRecovered: number;
+  staleWorkerRowsRecovered: number;
+}
+
+async function recoverStalePipelineRowsFromPg(params: {
+  lockMaxAgeMinutes: number;
   dryRun: boolean;
-}): Promise<PgCyclePruneResult> {
+}): Promise<StalePipelineRecoveryResult> {
   if (!isScalpPgConfigured()) {
     return {
-      prunedCycleIds: [],
-      taskRowsDeleted: 0,
+      staleJobLocksCleared: 0,
+      staleLoadRowsRecovered: 0,
+      stalePrepareRowsRecovered: 0,
+      staleWorkerRowsRecovered: 0,
     };
   }
 
   const db = scalpPrisma();
-  const completedCutoff = new Date(params.nowMs - params.retentionMs);
-  const runningCutoff = new Date(params.nowMs - params.retentionMs * 2);
-  const staleRows = await db.$queryRaw<Array<{ cycleId: string }>>(Prisma.sql`
-        SELECT cycle_id AS "cycleId"
-        FROM scalp_research_cycles
-        WHERE (
-            status IN ('completed'::scalp_cycle_status, 'failed'::scalp_cycle_status, 'stalled'::scalp_cycle_status)
-            AND updated_at < ${completedCutoff}
-        )
-        OR (
-            status = 'running'::scalp_cycle_status
-            AND updated_at < ${runningCutoff}
-        )
-        ORDER BY updated_at ASC
-        LIMIT 5000;
-    `);
+  const staleCutoff = new Date(
+    Date.now() - Math.max(1, params.lockMaxAgeMinutes) * 60_000,
+  );
 
-  const cycleIds = staleRows
-    .map((row) => String(row.cycleId || "").trim())
-    .filter((row) => Boolean(row));
-
-  if (!cycleIds.length) {
-    return {
-      prunedCycleIds: [],
-      taskRowsDeleted: 0,
-    };
-  }
-
-  const taskRows = await db.$queryRaw<
+  const staleJobRows = await db.$queryRaw<Array<{ count: bigint | number }>>(
+    Prisma.sql`
+          SELECT COUNT(*)::bigint AS count
+          FROM scalp_pipeline_jobs
+          WHERE status = 'running'
+            AND lock_expires_at IS NOT NULL
+            AND lock_expires_at < NOW();
+      `,
+  );
+  const staleLoadRows = await db.$queryRaw<Array<{ count: bigint | number }>>(
+    Prisma.sql`
+          SELECT COUNT(*)::bigint AS count
+          FROM scalp_pipeline_symbols
+          WHERE active = TRUE
+            AND load_status = 'running'
+            AND updated_at < ${staleCutoff};
+      `,
+  );
+  const stalePrepareRows = await db.$queryRaw<
     Array<{ count: bigint | number }>
   >(Prisma.sql`
-        SELECT COUNT(*)::bigint AS count
-        FROM scalp_research_tasks
-        WHERE cycle_id IN (${Prisma.join(cycleIds)});
-    `);
-  const taskRowsDeleted = Number(taskRows[0]?.count || 0);
+          SELECT COUNT(*)::bigint AS count
+          FROM scalp_pipeline_symbols
+          WHERE active = TRUE
+            AND prepare_status = 'running'
+            AND updated_at < ${staleCutoff};
+      `);
+  const staleWorkerRows = await db.$queryRaw<
+    Array<{ count: bigint | number }>
+  >(Prisma.sql`
+          SELECT COUNT(*)::bigint AS count
+          FROM scalp_deployment_weekly_metrics
+          WHERE status = 'running'
+            AND COALESCE(started_at, updated_at) < ${staleCutoff};
+      `);
+
+  const staleJobLocksCleared = Math.max(
+    0,
+    Math.floor(Number(staleJobRows[0]?.count || 0)),
+  );
+  const staleLoadRowsRecovered = Math.max(
+    0,
+    Math.floor(Number(staleLoadRows[0]?.count || 0)),
+  );
+  const stalePrepareRowsRecovered = Math.max(
+    0,
+    Math.floor(Number(stalePrepareRows[0]?.count || 0)),
+  );
+  const staleWorkerRowsRecovered = Math.max(
+    0,
+    Math.floor(Number(staleWorkerRows[0]?.count || 0)),
+  );
 
   if (!params.dryRun) {
-    await db.$executeRaw(Prisma.sql`
-            DELETE FROM scalp_research_cycles
-            WHERE cycle_id IN (${Prisma.join(cycleIds)});
-        `);
+    if (staleJobLocksCleared > 0) {
+      await db.$executeRaw(Prisma.sql`
+                UPDATE scalp_pipeline_jobs
+                SET
+                    status = 'idle',
+                    lock_token = NULL,
+                    lock_expires_at = NULL,
+                    running_since = NULL,
+                    last_error = COALESCE(last_error, 'housekeeping_recovered_stale_lock'),
+                    updated_at = NOW()
+                WHERE status = 'running'
+                  AND lock_expires_at IS NOT NULL
+                  AND lock_expires_at < NOW();
+            `);
+    }
+    if (staleLoadRowsRecovered > 0) {
+      await db.$executeRaw(Prisma.sql`
+                UPDATE scalp_pipeline_symbols
+                SET
+                    load_status = 'retry_wait',
+                    load_next_run_at = NOW(),
+                    load_error = COALESCE(load_error, 'housekeeping_recovered_stale_running_row'),
+                    updated_at = NOW()
+                WHERE active = TRUE
+                  AND load_status = 'running'
+                  AND updated_at < ${staleCutoff};
+            `);
+    }
+    if (stalePrepareRowsRecovered > 0) {
+      await db.$executeRaw(Prisma.sql`
+                UPDATE scalp_pipeline_symbols
+                SET
+                    prepare_status = 'retry_wait',
+                    prepare_next_run_at = NOW(),
+                    prepare_error = COALESCE(prepare_error, 'housekeeping_recovered_stale_running_row'),
+                    updated_at = NOW()
+                WHERE active = TRUE
+                  AND prepare_status = 'running'
+                  AND updated_at < ${staleCutoff};
+            `);
+    }
+    if (staleWorkerRowsRecovered > 0) {
+      await db.$executeRaw(Prisma.sql`
+                UPDATE scalp_deployment_weekly_metrics
+                SET
+                    status = 'retry_wait',
+                    next_run_at = NOW(),
+                    worker_id = NULL,
+                    started_at = NULL,
+                    finished_at = NOW(),
+                    error_code = COALESCE(error_code, 'housekeeping_stale_worker_recovered'),
+                    error_message = COALESCE(error_message, 'housekeeping recovered stale running worker row'),
+                    updated_at = NOW()
+                WHERE status = 'running'
+                  AND COALESCE(started_at, updated_at) < ${staleCutoff};
+            `);
+    }
   }
 
   return {
-    prunedCycleIds: cycleIds,
-    taskRowsDeleted,
+    staleJobLocksCleared,
+    staleLoadRowsRecovered,
+    stalePrepareRowsRecovered,
+    staleWorkerRowsRecovered,
   };
+}
+
+async function pruneWeeklyMetricsFromPg(params: {
+  nowMs: number;
+  retentionMs: number;
+  dryRun: boolean;
+}): Promise<number> {
+  if (!isScalpPgConfigured()) return 0;
+
+  const db = scalpPrisma();
+  const cutoff = new Date(params.nowMs - params.retentionMs);
+  const rows = await db.$queryRaw<Array<{ count: bigint | number }>>(Prisma.sql`
+        SELECT COUNT(*)::bigint AS count
+        FROM scalp_deployment_weekly_metrics
+        WHERE week_end < ${cutoff}
+          AND status IN ('succeeded', 'failed');
+    `);
+  const rowsToDelete = Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
+  if (!params.dryRun && rowsToDelete > 0) {
+    await db.$executeRaw(Prisma.sql`
+            DELETE FROM scalp_deployment_weekly_metrics
+            WHERE week_end < ${cutoff}
+              AND status IN ('succeeded', 'failed');
+        `);
+  }
+  return rowsToDelete;
 }
 
 async function pruneOrphanedDeploymentsFromPg(params: {
@@ -496,6 +588,7 @@ async function pruneOrphanedDeploymentsFromPg(params: {
       deploymentId: string;
       source: string;
       enabled: boolean;
+      inUniverse: boolean;
       researchTaskCount: bigint | number;
     }>
   >(Prisma.sql`
@@ -503,22 +596,25 @@ async function pruneOrphanedDeploymentsFromPg(params: {
             d.deployment_id AS "deploymentId",
             d.source,
             d.enabled,
-            COUNT(t.task_id)::bigint AS "researchTaskCount"
+            d.in_universe AS "inUniverse",
+            COUNT(m.id)::bigint AS "researchTaskCount"
         FROM scalp_deployments d
-        LEFT JOIN scalp_research_tasks t
-          ON t.deployment_id = d.deployment_id
-        GROUP BY d.deployment_id, d.source, d.enabled
+        LEFT JOIN scalp_deployment_weekly_metrics m
+          ON m.deployment_id = d.deployment_id
+        GROUP BY d.deployment_id, d.source, d.enabled, d.in_universe
         ORDER BY d.created_at ASC, d.deployment_id ASC
         LIMIT 10000;
     `);
 
   const deploymentIds = rows
-    .filter((row) =>
-      shouldPruneOrphanedDeployment({
-        source: row.source,
-        enabled: row.enabled,
-        researchTaskCount: row.researchTaskCount,
-      }),
+    .filter(
+      (row) =>
+        row.inUniverse === false &&
+        shouldPruneOrphanedDeployment({
+          source: row.source,
+          enabled: row.enabled,
+          researchTaskCount: row.researchTaskCount,
+        }),
     )
     .map((row) => String(row.deploymentId || "").trim())
     .filter((row) => Boolean(row));
@@ -581,15 +677,13 @@ export async function runScalpHousekeeping(
     : Date.now();
   const dryRun = Boolean(params.dryRun);
 
-  const retentionPolicy = resolveScalpResearchHistoryRetentionPolicy();
-
   const requestedCycleRetentionDays = toOptionalPositiveInt(
     params.cycleRetentionDays ??
       process.env.SCALP_HOUSEKEEPING_CYCLE_RETENTION_DAYS,
   );
   const cycleRetentionDays = Math.max(
-    retentionPolicy.minimumCycleRetentionDays,
-    requestedCycleRetentionDays ?? retentionPolicy.minimumCycleRetentionDays,
+    14,
+    requestedCycleRetentionDays ?? DEFAULT_WEEKLY_METRICS_RETENTION_DAYS,
   );
   const lockMaxAgeMinutes = toPositiveInt(
     params.lockMaxAgeMinutes ??
@@ -602,7 +696,7 @@ export async function runScalpHousekeeping(
   );
   const refreshReport = toBool(
     params.refreshReport ?? process.env.SCALP_HOUSEKEEPING_REFRESH_REPORT,
-    true,
+    false,
   );
   const cleanupOrphanDeployments = toBool(
     params.cleanupOrphanDeployments ??
@@ -613,11 +707,13 @@ export async function runScalpHousekeeping(
     params.candleHistoryKeepWeeks ??
       process.env.SCALP_HOUSEKEEPING_CANDLE_HISTORY_KEEP_WEEKS,
   );
+  const requiredSuccessiveWeeks =
+    resolveRequiredSuccessiveWeeksForHousekeeping();
   const candleHistoryRequestedKeepWeeks = Math.max(
-    retentionPolicy.minimumRetainedWeeks,
+    requiredSuccessiveWeeks + 1,
     Math.min(
-      MAX_RESEARCH_CONFIRMATION_KEEP_WEEKS,
-      requestedCandleHistoryKeepWeeks ?? retentionPolicy.minimumRetainedWeeks,
+      208,
+      requestedCandleHistoryKeepWeeks ?? DEFAULT_PIPELINE_HISTORY_KEEP_WEEKS,
     ),
   );
   const candleHistoryTimeframe = String(
@@ -649,7 +745,11 @@ export async function runScalpHousekeeping(
 
   const retentionMs = cycleRetentionDays * 24 * 60 * 60_000;
 
-  const cyclePrune = await pruneResearchCyclesFromPg({
+  const staleRecovery = await recoverStalePipelineRowsFromPg({
+    lockMaxAgeMinutes,
+    dryRun,
+  });
+  const weeklyMetricsRowsPruned = await pruneWeeklyMetricsFromPg({
     nowMs,
     retentionMs,
     dryRun,
@@ -664,26 +764,23 @@ export async function runScalpHousekeeping(
     journalMax,
     tradeLedgerMax,
   });
-  const activeCycleCandleGuard = await loadActiveCycleCandleRetentionGuard(
-    candleHistoryRequestedKeepWeeks,
-  );
+  const activePipelineCandleGuard =
+    await loadActivePipelineCandleRetentionGuard(
+      candleHistoryRequestedKeepWeeks,
+    );
   const candleHistoryKeepWeeks = Math.max(
     candleHistoryRequestedKeepWeeks,
-    activeCycleCandleGuard.minKeepWeeks,
+    activePipelineCandleGuard.minKeepWeeks,
   );
   const candleRetention = await pruneCandleHistoryRollingWeeks({
     nowMs,
     dryRun,
     keepWeeks: candleHistoryKeepWeeks,
     timeframe: candleHistoryTimeframe,
-    skipSymbols: activeCycleCandleGuard.protectedSymbols,
+    skipSymbols: activePipelineCandleGuard.protectedSymbols,
   });
 
-  let reportRefreshed = false;
-  if (refreshReport) {
-    await refreshScalpResearchPortfolioReport({ nowMs, persist: false });
-    reportRefreshed = true;
-  }
+  const reportRefreshed = false;
 
   return {
     ok: true,
@@ -702,37 +799,46 @@ export async function runScalpHousekeeping(
       candleHistoryKeepWeeks,
       requestedCandleHistoryKeepWeeks,
       candleHistoryTimeframe,
-      researchPrimaryReferenceWeeks: retentionPolicy.primaryReferenceWeeks,
-      researchConfirmationKeepWeeks: retentionPolicy.confirmationKeepWeeks,
-      researchConfirmationBufferWeeks: retentionPolicy.confirmationBufferWeeks,
+      researchPrimaryReferenceWeeks: DEFAULT_RESEARCH_PRIMARY_REFERENCE_WEEKS,
+      researchConfirmationKeepWeeks: DEFAULT_RESEARCH_CONFIRMATION_KEEP_WEEKS,
+      researchConfirmationBufferWeeks:
+        DEFAULT_RESEARCH_CONFIRMATION_BUFFER_WEEKS,
     },
     summary: {
-      cyclesPruned: cyclePrune.prunedCycleIds.length,
-      cycleKeysDeleted: dryRun ? 0 : cyclePrune.prunedCycleIds.length,
-      taskKeysDeleted: dryRun ? 0 : cyclePrune.taskRowsDeleted,
+      cyclesPruned: 0,
+      cycleKeysDeleted: 0,
+      taskKeysDeleted: 0,
       aggregateKeysDeleted: 0,
       claimCursorKeysDeleted: 0,
       researchLocksDeleted: 0,
       runLocksDeleted: 0,
-      orphanedDeploymentsPruned: orphanedDeploymentPrune.prunedDeploymentIds.length,
+      orphanedDeploymentsPruned:
+        orphanedDeploymentPrune.prunedDeploymentIds.length,
       listCompactions,
       candleHistorySymbolsScanned: candleRetention.symbolsScanned,
       candleHistorySymbolsPruned: candleRetention.symbolsPruned,
       candleHistoryCandlesDeleted: candleRetention.candlesDeleted,
-      candleHistorySymbolsSkipped: activeCycleCandleGuard.protectedSymbols.size,
+      candleHistorySymbolsSkipped:
+        activePipelineCandleGuard.protectedSymbols.size,
       reportRefreshed,
+      stalePipelineJobLocksCleared: staleRecovery.staleJobLocksCleared,
+      stalePipelineLoadRowsRecovered: staleRecovery.staleLoadRowsRecovered,
+      stalePipelinePrepareRowsRecovered:
+        staleRecovery.stalePrepareRowsRecovered,
+      stalePipelineWorkerRowsRecovered: staleRecovery.staleWorkerRowsRecovered,
+      weeklyMetricsRowsPruned,
     },
     details: {
-      prunedCycleIds: cyclePrune.prunedCycleIds,
+      prunedCycleIds: [],
       deletedResearchLockKeys: [],
       deletedRunLockKeys: [],
       orphanedDeploymentIds: orphanedDeploymentPrune.prunedDeploymentIds,
-      activeCycleRetentionGuard: {
-        minKeepWeeks: activeCycleCandleGuard.minKeepWeeks,
+      activePipelineRetentionGuard: {
+        minKeepWeeks: activePipelineCandleGuard.minKeepWeeks,
         protectedSymbols: Array.from(
-          activeCycleCandleGuard.protectedSymbols,
+          activePipelineCandleGuard.protectedSymbols,
         ).sort(),
-        runningCycles: activeCycleCandleGuard.runningCycles,
+        pendingSymbols: activePipelineCandleGuard.pendingSymbols,
       },
     },
   };
