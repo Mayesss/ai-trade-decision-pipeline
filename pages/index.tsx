@@ -5225,308 +5225,329 @@ export default function Home() {
                     )}
                   </section>
 
-                  <section className="grid grid-cols-1 gap-5 2xl:grid-cols-[1.15fr_1fr]">
+                  <section className="grid grid-cols-1 gap-5">
                     <article className={`${scalpSectionShellClass} p-4`}>
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <h3
-                          className={`text-lg font-semibold ${scalpTextPrimaryClass}`}
-                        >
-                          Active Deployment Focus
-                        </h3>
+                        {(() => {
+                          const activeDeploymentId = String(
+                            scalpActiveRuntimeRow?.deploymentId ||
+                              scalpActiveOpsRow?.deploymentId ||
+                              "",
+                          ).trim();
+                          const venue =
+                            resolveScalpVenueUiFromDeploymentId(activeDeploymentId);
+                          const iconSrc = SCALP_VENUE_ICON_SRC[venue];
+                          const displayLabel =
+                            stripScalpVenuePrefixFromDeploymentId(
+                              activeDeploymentId,
+                            ) ||
+                            activeDeploymentId ||
+                            "Selected Deployment";
+                          return (
+                            <h3
+                              className={`inline-flex items-center gap-2 text-lg font-semibold ${scalpTextPrimaryClass}`}
+                            >
+                              {activeDeploymentId ? (
+                                <img
+                                  src={iconSrc}
+                                  alt={`${venue} venue`}
+                                  className="h-4 w-auto opacity-85"
+                                />
+                              ) : null}
+                              <span>{displayLabel}</span>
+                            </h3>
+                          );
+                        })()}
                         <span className={`text-xs ${scalpTextSecondaryClass}`}>
                           {scalpActiveRuntimeRow
                             ? scalpActiveRuntimeRow.symbol
                             : scalpActiveOpsRow?.symbol || "—"}
                         </span>
                       </div>
-                      {scalpActiveRuntimeRow ? (
-                        <>
-                          <div className="mt-3 flex flex-wrap items-center gap-2">
-                            {(() => {
-                              const state = scalpStateMeta(
-                                scalpActiveRuntimeRow.state,
-                              );
-                              const StateIcon = state.Icon;
-                              const mode = scalpModeMeta(
-                                scalpActiveRuntimeRow.dryRunLast,
-                              );
-                              return (
-                                <>
-                                  <span
-                                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold ${state.className}`}
-                                  >
-                                    <StateIcon className="h-3.5 w-3.5" />
-                                    {state.label}
-                                  </span>
-                                  <span
-                                    className={`rounded-full border px-2 py-1 text-xs font-semibold ${mode.className}`}
-                                  >
-                                    {mode.label}
-                                  </span>
-                                </>
-                              );
-                            })()}
-                            <span
-                              className={`${scalpTagNeutralClass} inline-flex items-center gap-1`}
-                            >
-                              <TimerReset className="h-3.5 w-3.5" />
-                              {scalpActiveRuntimeRow.cronSchedule ||
-                                scalpActiveRuntimeRow.cronRoute ||
-                                "no schedule"}
-                            </span>
-                            <span
-                              className={`${scalpTagNeutralClass} inline-flex items-center gap-1`}
-                            >
-                              <Activity className="h-3.5 w-3.5" />
-                              {formatScalpTime(
-                                scalpActiveExecutionTs ??
-                                  scalpActiveRuntimeRow.lastRunAtMs,
-                              )}
-                            </span>
-                            <span
-                              className={`${scalpTagNeutralClass} inline-flex items-center gap-1`}
-                            >
-                              <ArrowDownRight className="h-3.5 w-3.5" />
-                              {scalpActiveMaxDdR === null
-                                ? "DD —"
-                                : `DD ${Math.abs(scalpActiveMaxDdR).toFixed(2)}R`}
-                            </span>
-                          </div>
-                          {(() => {
-                            const trades = Math.max(
-                              0,
-                              Number(scalpActiveRuntimeRow.tradesPlaced || 0),
-                            );
-                            const wins = Math.max(
-                              0,
-                              Number(scalpActiveRuntimeRow.wins || 0),
-                            );
-                            const losses = Math.max(
-                              0,
-                              Number(scalpActiveRuntimeRow.losses || 0),
-                            );
-                            const closedTrades = wins + losses;
-                            const tradesPct = Math.max(
-                              0,
-                              Math.min(100, trades * 2),
-                            );
-                            const winPct =
-                              scalpActiveWinRatePct === null
-                                ? null
-                                : Math.max(0, Math.min(100, scalpActiveWinRatePct));
-                            const netRPct =
-                              scalpActiveNetR === null
-                                ? null
-                                : Math.max(
-                                    0,
-                                    Math.min(100, 50 + scalpActiveNetR * 12.5),
+                      <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                        <div className="space-y-3">
+                          {scalpActiveRuntimeRow ? (
+                            <>
+                              <div className="flex flex-wrap items-center gap-2">
+                                {(() => {
+                                  const state = scalpStateMeta(
+                                    scalpActiveRuntimeRow.state,
                                   );
-                            const winSplitPct =
-                              closedTrades > 0 ? (wins / closedTrades) * 100 : 0;
-                            const lossSplitPct =
-                              closedTrades > 0 ? (losses / closedTrades) * 100 : 0;
-                            const compactCardClass = scalpDarkMode
-                              ? "rounded-xl border border-zinc-700 bg-zinc-950/70 px-2.5 py-2"
-                              : "rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2";
-                            return (
-                              <div className="mt-3 grid grid-cols-2 gap-2 xl:grid-cols-4">
-                                <div className={compactCardClass}>
-                                  <div
-                                    className={`flex items-center justify-between text-[11px] ${scalpTextMutedClass}`}
-                                  >
-                                    <span className="inline-flex items-center gap-1">
-                                      <ListChecks className="h-3.5 w-3.5" />
-                                      Trades
-                                    </span>
-                                    <span
-                                      className={`text-sm font-semibold ${scalpTextPrimaryClass}`}
-                                    >
-                                      {trades}
-                                    </span>
-                                  </div>
-                                  <div
-                                    className={`mt-1.5 h-1.5 overflow-hidden rounded-full ${scalpVisualMetricTrackClass}`}
-                                  >
-                                    <div
-                                      className="h-full bg-sky-500"
-                                      style={{
-                                        width: `${Math.max(6, tradesPct)}%`,
-                                      }}
-                                    />
-                                  </div>
-                                </div>
-                                <div className={compactCardClass}>
-                                  <div
-                                    className={`flex items-center justify-between text-[11px] ${scalpTextMutedClass}`}
-                                  >
-                                    <span className="inline-flex items-center gap-1">
-                                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
-                                      Win
-                                    </span>
-                                    <span className="text-sm font-semibold text-emerald-500">
-                                      {winPct === null
-                                        ? "—"
-                                        : `${winPct.toFixed(0)}%`}
-                                    </span>
-                                  </div>
-                                  <div
-                                    className={`mt-1.5 h-1.5 overflow-hidden rounded-full ${scalpVisualMetricTrackClass}`}
-                                  >
-                                    <div
-                                      className="h-full bg-emerald-500"
-                                      style={{
-                                        width: `${Math.max(6, winPct || 0)}%`,
-                                      }}
-                                    />
-                                  </div>
-                                </div>
-                                <div className={compactCardClass}>
-                                  <div
-                                    className={`flex items-center justify-between text-[11px] ${scalpTextMutedClass}`}
-                                  >
-                                    <span className="inline-flex items-center gap-1">
-                                      <BarChart3 className="h-3.5 w-3.5" />
-                                      Net R
-                                    </span>
-                                    <span
-                                      className={`text-sm font-semibold ${
-                                        scalpActiveNetR === null
-                                          ? scalpTextPrimaryClass
-                                          : scalpActiveNetR >= 0
-                                            ? "text-emerald-500"
-                                            : "text-rose-500"
-                                      }`}
-                                    >
-                                      {scalpActiveNetR === null
-                                        ? "—"
-                                        : formatSignedR(scalpActiveNetR)}
-                                    </span>
-                                  </div>
-                                  <div
-                                    className={`mt-1.5 h-1.5 overflow-hidden rounded-full ${scalpVisualMetricTrackClass}`}
-                                  >
-                                    <div
-                                      className={`h-full ${
-                                        scalpActiveNetR === null
-                                          ? scalpDarkMode
-                                            ? "bg-zinc-400/80"
-                                            : "bg-slate-500"
-                                          : scalpActiveNetR >= 0
-                                            ? "bg-emerald-500"
-                                            : "bg-rose-500"
-                                      }`}
-                                      style={{
-                                        width: `${Math.max(6, netRPct || 0)}%`,
-                                      }}
-                                    />
-                                  </div>
-                                </div>
-                                <div className={compactCardClass}>
-                                  <div
-                                    className={`flex items-center justify-between text-[11px] ${scalpTextMutedClass}`}
-                                  >
-                                    <span className="inline-flex items-center gap-1">
-                                      <Activity className="h-3.5 w-3.5" />
-                                      W/L
-                                    </span>
-                                    <span
-                                      className={`text-sm font-semibold ${scalpTextPrimaryClass}`}
-                                    >
-                                      {`${wins}/${losses}`}
-                                    </span>
-                                  </div>
-                                  <div
-                                    className={`mt-1.5 flex h-1.5 overflow-hidden rounded-full ${scalpVisualMetricTrackClass}`}
-                                  >
-                                    <div
-                                      className="bg-emerald-500"
-                                      style={{
-                                        width: `${Math.max(0, winSplitPct)}%`,
-                                      }}
-                                    />
-                                    <div
-                                      className="bg-rose-500"
-                                      style={{
-                                        width: `${Math.max(0, lossSplitPct)}%`,
-                                      }}
-                                    />
-                                  </div>
-                                </div>
+                                  const StateIcon = state.Icon;
+                                  const mode = scalpModeMeta(
+                                    scalpActiveRuntimeRow.dryRunLast,
+                                  );
+                                  return (
+                                    <>
+                                      <span
+                                        className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold ${state.className}`}
+                                      >
+                                        <StateIcon className="h-3.5 w-3.5" />
+                                        {state.label}
+                                      </span>
+                                      <span
+                                        className={`rounded-full border px-2 py-1 text-xs font-semibold ${mode.className}`}
+                                      >
+                                        {mode.label}
+                                      </span>
+                                    </>
+                                  );
+                                })()}
+                                <span
+                                  className={`${scalpTagNeutralClass} inline-flex items-center gap-1`}
+                                >
+                                  <TimerReset className="h-3.5 w-3.5" />
+                                  {scalpActiveRuntimeRow.cronSchedule ||
+                                    scalpActiveRuntimeRow.cronRoute ||
+                                    "no schedule"}
+                                </span>
+                                <span
+                                  className={`${scalpTagNeutralClass} inline-flex items-center gap-1`}
+                                >
+                                  <Activity className="h-3.5 w-3.5" />
+                                  {formatScalpTime(
+                                    scalpActiveExecutionTs ??
+                                      scalpActiveRuntimeRow.lastRunAtMs,
+                                  )}
+                                </span>
+                                <span
+                                  className={`${scalpTagNeutralClass} inline-flex items-center gap-1`}
+                                >
+                                  <ArrowDownRight className="h-3.5 w-3.5" />
+                                  {scalpActiveMaxDdR === null
+                                    ? "DD —"
+                                    : `DD ${Math.abs(scalpActiveMaxDdR).toFixed(2)}R`}
+                                </span>
                               </div>
-                            );
-                          })()}
-                          <div
-                            className={`mt-2 flex items-center gap-1.5 text-[11px] ${scalpTextMutedClass}`}
-                          >
-                            <Database className="h-3.5 w-3.5" />
-                            <span className={`truncate font-mono ${scalpTextSecondaryClass}`}>
-                              {scalpActiveRuntimeRow.deploymentId}
-                            </span>
-                          </div>
-                        </>
-                      ) : (
-                        <div
-                          className={`mt-4 text-sm ${scalpTextSecondaryClass}`}
-                        >
-                          No runtime state found for the selected deployment.
-                        </div>
-                      )}
-                    </article>
-
-                    <article className={`${scalpSectionShellClass} p-3`}>
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div
-                          className={`text-xs uppercase tracking-[0.16em] ${scalpTextMutedClass}`}
-                        >
-                          Snapshot Feed
-                          {scalpActiveRuntimeRow
-                            ? ` · ${scalpActiveRuntimeRow.symbol}`
-                            : ""}
-                        </div>
-                      </div>
-                      <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-2">
-                        <div
-                          className={`rounded-xl border p-2.5 ${
-                            scalpDarkMode
-                              ? "border-zinc-700 bg-zinc-950/60"
-                              : "border-slate-200 bg-slate-50"
-                          }`}
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div
-                              className={`text-xs uppercase tracking-[0.16em] ${scalpTextMutedClass}`}
-                            >
-                              Reason Snapshot
-                            </div>
-                            <div className={`text-xs ${scalpTextMutedClass}`}>
-                              {scalpReasonSnapshotState === "fresh"
-                                ? `${scalpActiveReasonCodes.length} shown`
-                                : "none"}
-                            </div>
-                          </div>
-                          {scalpActiveReasonCodes.length ? (
-                            <div className="mt-2 flex flex-wrap gap-1.5">
-                              {scalpActiveReasonCodes.map((code, idx) => {
-                                const meta = scalpReasonMeta(code);
-                                const Icon = meta.Icon;
-                                return (
-                                  <span
-                                    key={`${code}-${idx}`}
-                                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold ${meta.className}`}
-                                  >
-                                    <Icon className="h-3.5 w-3.5" />
-                                    {code.replace(/_/g, " ")}
-                                  </span>
+                              {(() => {
+                                const trades = Math.max(
+                                  0,
+                                  Number(scalpActiveRuntimeRow.tradesPlaced || 0),
                                 );
-                              })}
-                            </div>
+                                const wins = Math.max(
+                                  0,
+                                  Number(scalpActiveRuntimeRow.wins || 0),
+                                );
+                                const losses = Math.max(
+                                  0,
+                                  Number(scalpActiveRuntimeRow.losses || 0),
+                                );
+                                const closedTrades = wins + losses;
+                                const tradesPct = Math.max(
+                                  0,
+                                  Math.min(100, trades * 2),
+                                );
+                                const winPct =
+                                  scalpActiveWinRatePct === null
+                                    ? null
+                                    : Math.max(
+                                        0,
+                                        Math.min(100, scalpActiveWinRatePct),
+                                      );
+                                const netRPct =
+                                  scalpActiveNetR === null
+                                    ? null
+                                    : Math.max(
+                                        0,
+                                        Math.min(100, 50 + scalpActiveNetR * 12.5),
+                                      );
+                                const winSplitPct =
+                                  closedTrades > 0 ? (wins / closedTrades) * 100 : 0;
+                                const lossSplitPct =
+                                  closedTrades > 0
+                                    ? (losses / closedTrades) * 100
+                                    : 0;
+                                const compactCardClass = scalpDarkMode
+                                  ? "rounded-xl border border-zinc-700 bg-zinc-950/70 px-2.5 py-2"
+                                  : "rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2";
+                                return (
+                                  <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
+                                    <div className={compactCardClass}>
+                                      <div
+                                        className={`flex items-center justify-between text-[11px] ${scalpTextMutedClass}`}
+                                      >
+                                        <span className="inline-flex items-center gap-1">
+                                          <ListChecks className="h-3.5 w-3.5" />
+                                          Trades
+                                        </span>
+                                        <span
+                                          className={`text-sm font-semibold ${scalpTextPrimaryClass}`}
+                                        >
+                                          {trades}
+                                        </span>
+                                      </div>
+                                      <div
+                                        className={`mt-1.5 h-1.5 overflow-hidden rounded-full ${scalpVisualMetricTrackClass}`}
+                                      >
+                                        <div
+                                          className="h-full bg-sky-500"
+                                          style={{
+                                            width: `${Math.max(6, tradesPct)}%`,
+                                          }}
+                                        />
+                                      </div>
+                                    </div>
+                                    <div className={compactCardClass}>
+                                      <div
+                                        className={`flex items-center justify-between text-[11px] ${scalpTextMutedClass}`}
+                                      >
+                                        <span className="inline-flex items-center gap-1">
+                                          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                                          Win
+                                        </span>
+                                        <span className="text-sm font-semibold text-emerald-500">
+                                          {winPct === null
+                                            ? "—"
+                                            : `${winPct.toFixed(0)}%`}
+                                        </span>
+                                      </div>
+                                      <div
+                                        className={`mt-1.5 h-1.5 overflow-hidden rounded-full ${scalpVisualMetricTrackClass}`}
+                                      >
+                                        <div
+                                          className="h-full bg-emerald-500"
+                                          style={{
+                                            width: `${Math.max(6, winPct || 0)}%`,
+                                          }}
+                                        />
+                                      </div>
+                                    </div>
+                                    <div className={compactCardClass}>
+                                      <div
+                                        className={`flex items-center justify-between text-[11px] ${scalpTextMutedClass}`}
+                                      >
+                                        <span className="inline-flex items-center gap-1">
+                                          <BarChart3 className="h-3.5 w-3.5" />
+                                          Net R
+                                        </span>
+                                        <span
+                                          className={`text-sm font-semibold ${
+                                            scalpActiveNetR === null
+                                              ? scalpTextPrimaryClass
+                                              : scalpActiveNetR >= 0
+                                                ? "text-emerald-500"
+                                                : "text-rose-500"
+                                          }`}
+                                        >
+                                          {scalpActiveNetR === null
+                                            ? "—"
+                                            : formatSignedR(scalpActiveNetR)}
+                                        </span>
+                                      </div>
+                                      <div
+                                        className={`mt-1.5 h-1.5 overflow-hidden rounded-full ${scalpVisualMetricTrackClass}`}
+                                      >
+                                        <div
+                                          className={`h-full ${
+                                            scalpActiveNetR === null
+                                              ? scalpDarkMode
+                                                ? "bg-zinc-400/80"
+                                                : "bg-slate-500"
+                                              : scalpActiveNetR >= 0
+                                                ? "bg-emerald-500"
+                                                : "bg-rose-500"
+                                          }`}
+                                          style={{
+                                            width: `${Math.max(6, netRPct || 0)}%`,
+                                          }}
+                                        />
+                                      </div>
+                                    </div>
+                                    <div className={compactCardClass}>
+                                      <div
+                                        className={`flex items-center justify-between text-[11px] ${scalpTextMutedClass}`}
+                                      >
+                                        <span className="inline-flex items-center gap-1">
+                                          <Activity className="h-3.5 w-3.5" />
+                                          W/L
+                                        </span>
+                                        <span
+                                          className={`text-sm font-semibold ${scalpTextPrimaryClass}`}
+                                        >
+                                          {`${wins}/${losses}`}
+                                        </span>
+                                      </div>
+                                      <div
+                                        className={`mt-1.5 flex h-1.5 overflow-hidden rounded-full ${scalpVisualMetricTrackClass}`}
+                                      >
+                                        <div
+                                          className="bg-emerald-500"
+                                          style={{
+                                            width: `${Math.max(0, winSplitPct)}%`,
+                                          }}
+                                        />
+                                        <div
+                                          className="bg-rose-500"
+                                          style={{
+                                            width: `${Math.max(0, lossSplitPct)}%`,
+                                          }}
+                                        />
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+                              <div
+                                className={`flex items-center gap-1.5 text-[11px] ${scalpTextMutedClass}`}
+                              >
+                                <Database className="h-3.5 w-3.5" />
+                                <span
+                                  className={`truncate font-mono ${scalpTextSecondaryClass}`}
+                                >
+                                  {scalpActiveRuntimeRow.deploymentId}
+                                </span>
+                              </div>
+                            </>
                           ) : (
                             <div
-                              className={`mt-2 text-sm ${scalpTextSecondaryClass}`}
+                              className={`mt-1 text-sm ${scalpTextSecondaryClass}`}
                             >
-                              No reason codes recorded for this deployment.
+                              No runtime state found for the selected deployment.
                             </div>
                           )}
+                          <div
+                            className={`rounded-xl border p-2.5 ${
+                              scalpDarkMode
+                                ? "border-zinc-700 bg-zinc-950/60"
+                                : "border-slate-200 bg-slate-50"
+                            }`}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div
+                                className={`text-xs uppercase tracking-[0.16em] ${scalpTextMutedClass}`}
+                              >
+                                Reason Snapshot
+                              </div>
+                              <div className={`text-xs ${scalpTextMutedClass}`}>
+                                {scalpReasonSnapshotState === "fresh"
+                                  ? `${scalpActiveReasonCodes.length} shown`
+                                  : "none"}
+                              </div>
+                            </div>
+                            {scalpActiveReasonCodes.length ? (
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                {scalpActiveReasonCodes.map((code, idx) => {
+                                  const meta = scalpReasonMeta(code);
+                                  const Icon = meta.Icon;
+                                  return (
+                                    <span
+                                      key={`${code}-${idx}`}
+                                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold ${meta.className}`}
+                                    >
+                                      <Icon className="h-3.5 w-3.5" />
+                                      {code.replace(/_/g, " ")}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div
+                                className={`mt-2 text-sm ${scalpTextSecondaryClass}`}
+                              >
+                                No reason codes recorded for this deployment.
+                              </div>
+                            )}
+                          </div>
                         </div>
 
                         <div
@@ -5544,13 +5565,13 @@ export default function Home() {
                             </div>
                             <div className={`text-xs ${scalpTextMutedClass}`}>
                               {scalpActiveJournal.length
-                                ? `${Math.min(scalpActiveJournal.length, 5)} events`
+                                ? `${Math.min(scalpActiveJournal.length, 4)} events`
                                 : "empty"}
                             </div>
                           </div>
                           {scalpActiveJournal.length ? (
                             <div className="mt-2 space-y-1.5">
-                              {scalpActiveJournal.slice(0, 5).map((entry) => {
+                              {scalpActiveJournal.slice(0, 4).map((entry) => {
                                 const meta = scalpJournalMeta({
                                   type: String(entry.type || ""),
                                   level: String(entry.level || ""),
