@@ -577,6 +577,7 @@ const SCALP_LIVE_POLL_HIDDEN_MS = 60_000;
 const SCALP_LIVE_POLL_ERROR_BACKOFF_MS = 120_000;
 const SCALP_MIN_REFRESH_GAP_MS = 8_000;
 const SCALP_WORKER_TASK_LIMIT_FULL = 5_000;
+const SCALP_GRID_LOAD_BATCH = 60;
 type ScalpVenueUi = "capital" | "bitget";
 const SCALP_VENUE_ICON_SRC: Record<ScalpVenueUi, string> = {
   capital: "/capital.svg",
@@ -1013,6 +1014,9 @@ export default function Home() {
   const [scalpCopiedDeploymentId, setScalpCopiedDeploymentId] = useState<
     string | null
   >(null);
+  const [scalpGridLoadedRows, setScalpGridLoadedRows] = useState<number>(
+    SCALP_GRID_LOAD_BATCH,
+  );
   const [scalpWorkerSort, setScalpWorkerSort] = useState<ScalpWorkerSortState>({
     key: "windowToTs",
     direction: "desc",
@@ -3720,6 +3724,20 @@ export default function Home() {
       return row.deploymentEnabled === false;
     });
   }, [scalpAllDeploymentsGridRows, scalpEnabledFilter]);
+  useEffect(() => {
+    const total = scalpSelectedWorkerGridRows.length;
+    setScalpGridLoadedRows(
+      total > 0 ? Math.min(SCALP_GRID_LOAD_BATCH, total) : 0,
+    );
+  }, [scalpEnabledFilter, scalpSelectedWorkerGridRows.length]);
+  const scalpVisibleWorkerGridRows = useMemo<ScalpWorkerJobGridRow[]>(() => {
+    if (!scalpSelectedWorkerGridRows.length) return [];
+    const cappedCount = Math.max(
+      0,
+      Math.min(scalpGridLoadedRows, scalpSelectedWorkerGridRows.length),
+    );
+    return scalpSelectedWorkerGridRows.slice(0, cappedCount);
+  }, [scalpSelectedWorkerGridRows, scalpGridLoadedRows]);
   const scalpWindowsResultsGlobalMaxAbs = useMemo(() => {
     let maxAbs = 0;
     for (const row of scalpSelectedWorkerGridRows) {
@@ -5186,7 +5204,7 @@ export default function Home() {
                       >
                         <AgGridReact
                           theme="legacy"
-                          rowData={scalpSelectedWorkerGridRows}
+                          rowData={scalpVisibleWorkerGridRows}
                           columnDefs={scalpWorkerJobsGridColumnDefs}
                           defaultColDef={scalpWorkerJobsGridDefaultColDef}
                           rowHeight={54}
@@ -5197,9 +5215,26 @@ export default function Home() {
                             String(params?.data?.rowId || "")
                           }
                           animateRows
-                          pagination
-                          paginationPageSize={50}
-                          paginationPageSizeSelector={[25, 50, 100, 200]}
+                          onBodyScrollEnd={(event: any) => {
+                            if (
+                              event?.direction &&
+                              String(event.direction).toLowerCase() !== "vertical"
+                            ) {
+                              return;
+                            }
+                            const totalRows = scalpSelectedWorkerGridRows.length;
+                            const loadedRows = scalpVisibleWorkerGridRows.length;
+                            if (!totalRows || loadedRows >= totalRows) return;
+                            const range = event?.api?.getVerticalPixelRange?.();
+                            const displayedRows = event?.api?.getDisplayedRowCount?.() || 0;
+                            if (!range || displayedRows <= 0) return;
+                            const nearBottom =
+                              range.bottom >= displayedRows * 54 - 108;
+                            if (!nearBottom) return;
+                            setScalpGridLoadedRows((prev) =>
+                              Math.min(totalRows, prev + SCALP_GRID_LOAD_BATCH),
+                            );
+                          }}
                           onRowClicked={(event: any) => {
                             const deploymentId = String(
                               event?.data?.deploymentId || "",
@@ -5223,6 +5258,9 @@ export default function Home() {
                           : "No deployment registry rows are available yet."}
                       </div>
                     )}
+                    <div className={`mt-2 text-xs ${scalpTextMutedClass}`}>
+                      {`loaded ${scalpVisibleWorkerGridRows.length} rows of ${scalpSelectedWorkerGridRows.length}`}
+                    </div>
                   </section>
 
                   <section className="grid grid-cols-1 gap-5">
