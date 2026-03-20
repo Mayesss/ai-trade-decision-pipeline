@@ -4783,12 +4783,15 @@ export async function loadScalpPipelineJobsHealth(): Promise<
       }>
     >(Prisma.sql`
             SELECT
-                COUNT(*) FILTER (WHERE status = 'pending')::bigint AS "pendingWorker",
-                COUNT(*) FILTER (WHERE status = 'running')::bigint AS "runningWorker",
-                COUNT(*) FILTER (WHERE status = 'retry_wait')::bigint AS "retryWorker",
-                COUNT(*) FILTER (WHERE status = 'failed')::bigint AS "failedWorker",
-                COUNT(*) FILTER (WHERE status = 'succeeded')::bigint AS "succeededWorker"
-            FROM scalp_deployment_weekly_metrics;
+                COUNT(*) FILTER (WHERE m.status = 'pending')::bigint AS "pendingWorker",
+                COUNT(*) FILTER (WHERE m.status = 'running')::bigint AS "runningWorker",
+                COUNT(*) FILTER (WHERE m.status = 'retry_wait')::bigint AS "retryWorker",
+                COUNT(*) FILTER (WHERE m.status = 'failed')::bigint AS "failedWorker",
+                COUNT(*) FILTER (WHERE m.status = 'succeeded')::bigint AS "succeededWorker"
+            FROM scalp_deployment_weekly_metrics m
+            INNER JOIN scalp_deployments d
+              ON d.deployment_id = m.deployment_id
+            WHERE d.in_universe = TRUE;
         `),
     db.$queryRaw<
       Array<{
