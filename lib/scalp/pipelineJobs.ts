@@ -31,7 +31,10 @@ import {
   type ScalpWeeklyRobustnessMetrics,
   type SyncResearchWeeklyPolicy,
 } from "./promotionPolicy";
-import { buildScalpResearchTuneVariants } from "./researchTuner";
+import {
+  buildScalpResearchTuneVariants,
+  type ScalpResearchTuneVariant,
+} from "./researchTuner";
 import { runScalpReplay } from "./replay/harness";
 import { buildScalpReplayRuntimeFromDeployment } from "./replay/runtimeConfig";
 import { isScalpPgConfigured, scalpPrisma } from "./pg/client";
@@ -289,6 +292,22 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(normalizeForStableComparison(value));
 }
 
+function hashString32(value: string): number {
+  let hash = 2166136261 >>> 0;
+  for (let idx = 0; idx < value.length; idx += 1) {
+    hash ^= value.charCodeAt(idx);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+function rotateArrayByOffset<T>(rows: T[], offset: number): T[] {
+  if (!rows.length) return [];
+  const normalizedOffset = Math.max(0, Math.floor(offset)) % rows.length;
+  if (!normalizedOffset) return rows.slice();
+  return rows.slice(normalizedOffset).concat(rows.slice(0, normalizedOffset));
+}
+
 function normalizePromotionGateForCompare(
   gate: ScalpDeploymentPromotionGate | null | undefined,
 ): Record<string, unknown> | null {
@@ -440,6 +459,110 @@ function lifecycleIsSuppressed(
     return lifecycle.suspendedUntilMs === null || lifecycle.suspendedUntilMs > nowMs;
   }
   return false;
+}
+
+type PrepareExistingDeployment = {
+  deploymentId: string;
+  enabled: boolean;
+  promotionGate: unknown;
+};
+
+function selectPrepareTuneVariantsForStrategy(params: {
+  symbol: string;
+  strategyId: string;
+  nowMs: number;
+  maxSelected: number;
+  maxVariantPool: number;
+  maxNewPerRun: number;
+  existingByKey: Map<string, PrepareExistingDeployment>;
+}): ScalpResearchTuneVariant[] {
+  const maxSelected = Math.max(1, Math.floor(params.maxSelected));
+  const maxVariantPool = Math.max(maxSelected, Math.floor(params.maxVariantPool));
+  const maxNewPerRun = Math.max(
+    0,
+    Math.min(maxSelected, Math.floor(params.maxNewPerRun)),
+  );
+  const rawVariants = buildScalpResearchTuneVariants({
+    symbol: params.symbol,
+    strategyId: params.strategyId,
+    includeBaseline: true,
+    includeSessionProfileVariants: false,
+    maxVariantsPerStrategy: maxVariantPool,
+  });
+  const deduped: ScalpResearchTuneVariant[] = [];
+  const seenTuneIds = new Set<string>();
+  for (const variant of rawVariants) {
+    const tuneId = String(variant?.tuneId || "")
+      .trim()
+      .toLowerCase();
+    if (!tuneId || seenTuneIds.has(tuneId)) continue;
+    seenTuneIds.add(tuneId);
+    deduped.push({
+      tuneId,
+      configOverride: variant.configOverride || null,
+    });
+  }
+  const unseen: ScalpResearchTuneVariant[] = [];
+  const seenAndEligible: ScalpResearchTuneVariant[] = [];
+  for (const variant of deduped) {
+    const existing = params.existingByKey.get(
+      `${params.strategyId}::${variant.tuneId}`,
+    );
+    if (!existing) {
+      unseen.push(variant);
+      continue;
+    }
+    const lifecycle = normalizeLifecycleFromGate({
+      gate: asJsonObject(existing.promotionGate) as any,
+      tuneId: variant.tuneId,
+      enabled: Boolean(existing.enabled),
+      nowMs: params.nowMs,
+    });
+    if (lifecycleIsSuppressed(lifecycle, params.nowMs)) continue;
+    seenAndEligible.push(variant);
+  }
+
+  const selected: ScalpResearchTuneVariant[] = [];
+  const selectedTuneIds = new Set<string>();
+  const push = (variant: ScalpResearchTuneVariant | null | undefined) => {
+    if (!variant) return;
+    if (selected.length >= maxSelected) return;
+    const tuneId = String(variant.tuneId || "")
+      .trim()
+      .toLowerCase();
+    if (!tuneId || selectedTuneIds.has(tuneId)) return;
+    selectedTuneIds.add(tuneId);
+    selected.push({
+      tuneId,
+      configOverride: variant.configOverride || null,
+    });
+  };
+
+  for (const variant of unseen.slice(0, maxNewPerRun)) {
+    push(variant);
+  }
+
+  const remainingPool = seenAndEligible.concat(unseen.slice(maxNewPerRun));
+  if (remainingPool.length > 0 && selected.length < maxSelected) {
+    const rotationEpoch = Math.floor(params.nowMs / (6 * 60 * 60_000));
+    const rotationSeed = hashString32(
+      `${params.symbol}:${params.strategyId}:${rotationEpoch}`,
+    );
+    const rotated = rotateArrayByOffset(
+      remainingPool,
+      rotationSeed % remainingPool.length,
+    );
+    for (const variant of rotated) {
+      push(variant);
+      if (selected.length >= maxSelected) break;
+    }
+  }
+
+  if (!selected.length && deduped.length) {
+    push(deduped[0]);
+  }
+
+  return selected;
 }
 
 function withBerlinEntrySessionProfile(
@@ -2007,7 +2130,7 @@ export async function runDiscoverPipelineJob(
             includeCapitalMarketsApi: false,
             includeBitgetMarketsApi: true,
             includeDeploymentSymbols: false,
-            includeHistorySymbols: false,
+            includeHistorySymbols: true,
             requireHistoryPresence: false,
           }
         : undefined,
@@ -2944,6 +3067,35 @@ export async function runPreparePipelineJob(
         toPositiveInt(process.env.SCALP_PIPELINE_WORKER_REFRESH_WEEKS, 2),
       ),
     );
+    const variantsPerStrategy = Math.max(
+      1,
+      Math.min(
+        24,
+        toPositiveInt(
+          process.env.SCALP_PIPELINE_PREPARE_VARIANTS_PER_STRATEGY,
+          4,
+        ),
+      ),
+    );
+    const variantPoolPerStrategy = Math.max(
+      variantsPerStrategy,
+      Math.min(
+        256,
+        toPositiveInt(
+          process.env.SCALP_PIPELINE_PREPARE_VARIANT_POOL_PER_STRATEGY,
+          48,
+        ),
+      ),
+    );
+    const newVariantsPerStrategyRaw = Math.floor(
+      Number(process.env.SCALP_PIPELINE_PREPARE_NEW_VARIANTS_PER_STRATEGY),
+    );
+    const newVariantsPerStrategy = Number.isFinite(newVariantsPerStrategyRaw)
+      ? Math.max(
+          0,
+          Math.min(variantsPerStrategy, newVariantsPerStrategyRaw),
+        )
+      : Math.min(2, variantsPerStrategy);
     const nowMs = Date.now();
 
     const policy = await loadScalpSymbolDiscoveryPolicy();
@@ -3025,31 +3177,34 @@ export async function runPreparePipelineJob(
                     FROM scalp_deployments
                     WHERE symbol = ${symbol};
                 `);
-        const existingByKey = new Map<
-          string,
-          {
-            deploymentId: string;
-            enabled: boolean;
-            promotionGate: unknown;
-          }
-        >();
+        const existingByKey = new Map<string, PrepareExistingDeployment>();
         for (const dep of existingDeployments) {
           const key = `${dep.strategyId}::${dep.tuneId}`;
-          if (existingByKey.has(key)) continue;
+          const current = existingByKey.get(key) || null;
+          if (!current) {
+            existingByKey.set(key, dep);
+            continue;
+          }
+          const currentVenue = resolveScalpDeploymentVenueFromId(
+            current.deploymentId,
+          );
           const depVenue = resolveScalpDeploymentVenueFromId(dep.deploymentId);
-          if (depVenue !== symbolVenue) continue;
-          existingByKey.set(key, dep);
+          if (currentVenue !== symbolVenue && depVenue === symbolVenue) {
+            existingByKey.set(key, dep);
+          }
         }
         const preparedIds: string[] = [];
 
         for (const strategyId of selectedStrategies) {
-          const variants = buildScalpResearchTuneVariants({
+          const variants = selectPrepareTuneVariantsForStrategy({
             symbol,
             strategyId,
-            includeBaseline: true,
-            includeSessionProfileVariants: false,
-            maxVariantsPerStrategy: 4,
-          }).slice(0, 4);
+            nowMs,
+            maxSelected: variantsPerStrategy,
+            maxVariantPool: variantPoolPerStrategy,
+            maxNewPerRun: newVariantsPerStrategy,
+            existingByKey,
+          });
           const rows = variants
             .map((variant) => {
               const existing =
@@ -3272,13 +3427,19 @@ async function claimWorkerRows(
     }>
   >(Prisma.sql`
         WITH candidate AS (
-            SELECT id
+            SELECT m.id
             FROM scalp_deployment_weekly_metrics m
             INNER JOIN scalp_deployments d
               ON d.deployment_id = m.deployment_id
-            LEFT JOIN scalp_pipeline_symbols s
-              ON s.symbol = m.symbol
-            WHERE (COALESCE(s.active, FALSE) = TRUE OR d.enabled = TRUE)
+            WHERE (
+                    d.enabled = TRUE
+                    OR EXISTS (
+                      SELECT 1
+                      FROM scalp_pipeline_symbols s
+                      WHERE s.symbol = m.symbol
+                        AND s.active = TRUE
+                    )
+                  )
               AND m.status IN ('pending', 'retry_wait')
               AND m.next_run_at <= NOW()
               AND NOT (
@@ -3292,7 +3453,7 @@ async function claimWorkerRows(
                 )
               )
             ORDER BY m.next_run_at ASC, m.week_start ASC, m.id ASC
-            FOR UPDATE SKIP LOCKED
+            FOR UPDATE OF m SKIP LOCKED
             LIMIT ${limit}
         )
         UPDATE scalp_deployment_weekly_metrics m
