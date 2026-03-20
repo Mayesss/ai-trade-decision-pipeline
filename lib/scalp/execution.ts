@@ -575,6 +575,10 @@ export async function reconcileScalpBrokerPosition(params: {
     };
   }
   const ownedPosition = owned.matches[0] || null;
+  const maxOpenPositionsPerSymbol = Math.max(
+    1,
+    Math.floor(toFinite(params.maxOpenPositionsPerSymbol, 1)),
+  );
 
   if (!ownedPosition) {
     if (next.trade && !next.trade.dryRun) {
@@ -588,6 +592,12 @@ export async function reconcileScalpBrokerPosition(params: {
             ? "BROKER_OWNED_POSITION_NOT_FOUND_MARK_DONE"
             : "BROKER_OWNED_POSITION_NOT_FOUND_CLEAR_STALE",
         ],
+      };
+    }
+    if (owned.sameEpic.length >= maxOpenPositionsPerSymbol) {
+      return {
+        state: next,
+        reasonCodes: ["BROKER_SYMBOL_POSITION_LIMIT_REACHED"],
       };
     }
     return { state: next, reasonCodes: ["BROKER_POSITION_NONE"] };

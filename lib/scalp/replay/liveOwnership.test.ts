@@ -205,6 +205,52 @@ test('reconcileScalpBrokerPosition confirms an existing trade by exact owned dea
     assert.ok(reconciled.reasonCodes.includes('BROKER_POSITION_CONFIRMED_BY_DEALREFERENCE'));
 });
 
+test('reconcileScalpBrokerPosition blocks entry recovery when foreign same-symbol positions hit maxOpenPositionsPerSymbol', async () => {
+    const nowMs = Date.UTC(2026, 0, 5, 11, 30, 0, 0);
+    const epic = 'CS.D.EURUSD.CFD.IP';
+    const deploymentId = 'EURUSD~regime_pullback_m15_m3~default';
+    const state = createInitialScalpSessionState({
+        symbol: 'EURUSD',
+        strategyId: 'regime_pullback_m15_m3',
+        tuneId: 'default',
+        deploymentId,
+        dayKey: '2026-01-05',
+        nowMs,
+        killSwitchActive: false,
+    });
+
+    const reconciled = await reconcileScalpBrokerPosition({
+        state,
+        market: marketSnapshot({ nowMs, epic, price: 1.101 }),
+        dryRun: false,
+        maxOpenPositionsPerSymbol: 1,
+        snapshots: [
+            {
+                epic,
+                dealId: 'deal-foreign',
+                dealReference: buildScalpDealReference({
+                    deploymentId: 'EURUSD~trend_day_reacceleration_m15_m3~default',
+                    setupId: 'scalp:foreign',
+                    dayKey: '2026-01-05',
+                }),
+                side: 'long',
+                entryPrice: 1.102,
+                leverage: 10,
+                size: 1,
+                pnlPct: 0.1,
+                bid: 1.1009,
+                offer: 1.1011,
+                createdAtMs: nowMs - 120_000,
+                updatedAtMs: nowMs,
+            },
+        ],
+    });
+
+    assert.equal(reconciled.state.trade, null);
+    assert.equal(reconciled.state.state, 'IDLE');
+    assert.ok(reconciled.reasonCodes.includes('BROKER_SYMBOL_POSITION_LIMIT_REACHED'));
+});
+
 test('reconcileScalpBrokerPosition clears stale local live trade when owned position is missing', async () => {
     const nowMs = Date.UTC(2026, 0, 5, 12, 0, 0, 0);
     const epic = 'CS.D.EURUSD.CFD.IP';

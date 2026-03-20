@@ -392,6 +392,9 @@ export async function runScalpExecuteCycle(opts: {
                 });
                 nextState = reconciled.state;
                 phaseReasonCodes.push(...reconciled.reasonCodes);
+                const brokerPositionGuardBlocked =
+                    reconciled.reasonCodes.includes('BROKER_RECONCILE_UNAVAILABLE') ||
+                    reconciled.reasonCodes.includes('BROKER_SYMBOL_POSITION_LIMIT_REACHED');
                 const hadOpenTradeAtStartOfManage = Boolean(nextState.trade);
                 const tradeBeforeManage = hadOpenTradeAtStartOfManage && nextState.trade ? { ...nextState.trade } : null;
                 const priorRealizedR = Number.isFinite(Number(nextState.stats.realizedR)) ? Number(nextState.stats.realizedR) : 0;
@@ -440,7 +443,14 @@ export async function runScalpExecuteCycle(opts: {
                     phaseReasonCodes.push('DAILY_LOSS_LIMIT_BLOCKED_NEW_ENTRY');
                 }
 
-                if (!hadOpenTradeAtStartOfManage && !nextState.trade && entryIntent && nextState.state !== 'DONE' && nextState.state !== 'COOLDOWN') {
+                if (
+                    !hadOpenTradeAtStartOfManage &&
+                    !nextState.trade &&
+                    !brokerPositionGuardBlocked &&
+                    entryIntent &&
+                    nextState.state !== 'DONE' &&
+                    nextState.state !== 'COOLDOWN'
+                ) {
                     let entryCfg = {
                         ...cfg,
                         risk: {
