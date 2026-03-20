@@ -90,6 +90,24 @@ export interface ScalpDeploymentPromotionHysteresis {
     lastDecision: ScalpDeploymentPromotionHysteresisDecision | null;
 }
 
+export type ScalpDeploymentLifecycleState =
+    | 'candidate'
+    | 'incumbent_refresh'
+    | 'graduated'
+    | 'suspended'
+    | 'retired';
+
+export interface ScalpDeploymentPromotionLifecycle {
+    state: ScalpDeploymentLifecycleState;
+    tuneFamily: string | null;
+    suspendedUntilMs: number | null;
+    retiredUntilMs: number | null;
+    suspensionEventsMs: number[];
+    suspensionCount180d: number;
+    lastRolloverBerlinWeekStartMs: number | null;
+    lastSeatReleaseAtMs: number | null;
+}
+
 export interface ScalpDeploymentPromotionGate {
     eligible: boolean;
     reason: string | null;
@@ -99,6 +117,7 @@ export interface ScalpDeploymentPromotionGate {
     thresholds: ScalpDeploymentPromotionGateThresholds | null;
     freshness?: ScalpDeploymentPromotionFreshness | null;
     hysteresis?: ScalpDeploymentPromotionHysteresis | null;
+    lifecycle?: ScalpDeploymentPromotionLifecycle | null;
 }
 
 export interface ScalpDeploymentRegistryEntry extends ScalpDeploymentRef {
@@ -547,6 +566,54 @@ function normalizePromotionHysteresis(value: unknown): ScalpDeploymentPromotionH
     };
 }
 
+function normalizePromotionLifecycleState(value: unknown): ScalpDeploymentLifecycleState {
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase();
+    if (
+        normalized === 'candidate' ||
+        normalized === 'incumbent_refresh' ||
+        normalized === 'graduated' ||
+        normalized === 'suspended' ||
+        normalized === 'retired'
+    ) {
+        return normalized;
+    }
+    return 'candidate';
+}
+
+function normalizePromotionLifecycle(value: unknown): ScalpDeploymentPromotionLifecycle | null {
+    if (!isRecord(value)) return null;
+    const state = normalizePromotionLifecycleState(value.state);
+    const tuneFamily = normalizeOptionalText(value.tuneFamily, 80);
+    const suspendedUntilMs = normalizePositiveTime(value.suspendedUntilMs);
+    const retiredUntilMs = normalizePositiveTime(value.retiredUntilMs);
+    const suspensionEventsMs = Array.isArray(value.suspensionEventsMs)
+        ? value.suspensionEventsMs
+              .map((row) => normalizePositiveTime(row))
+              .filter((row): row is number => row !== null)
+              .sort((a, b) => a - b)
+        : [];
+    const suspensionCount180d = Math.max(
+        0,
+        Math.floor(Number(value.suspensionCount180d) || suspensionEventsMs.length),
+    );
+    const lastRolloverBerlinWeekStartMs = normalizePositiveTime(
+        value.lastRolloverBerlinWeekStartMs,
+    );
+    const lastSeatReleaseAtMs = normalizePositiveTime(value.lastSeatReleaseAtMs);
+    return {
+        state,
+        tuneFamily,
+        suspendedUntilMs,
+        retiredUntilMs,
+        suspensionEventsMs,
+        suspensionCount180d,
+        lastRolloverBerlinWeekStartMs,
+        lastSeatReleaseAtMs,
+    };
+}
+
 function normalizePromotionGate(value: unknown): ScalpDeploymentPromotionGate | null {
     if (!isRecord(value)) return null;
     const eligible = normalizeBool(value.eligible, false);
@@ -561,6 +628,7 @@ function normalizePromotionGate(value: unknown): ScalpDeploymentPromotionGate | 
         thresholds: normalizeForwardGateThresholds(value.thresholds),
         freshness: normalizePromotionFreshness(value.freshness),
         hysteresis: normalizePromotionHysteresis(value.hysteresis),
+        lifecycle: normalizePromotionLifecycle(value.lifecycle),
     };
 }
 

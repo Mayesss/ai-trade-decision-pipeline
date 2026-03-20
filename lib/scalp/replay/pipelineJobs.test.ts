@@ -6,7 +6,9 @@ import {
   buildPipelineJobDiagnostics,
   buildDiscoverSymbolSyncPlan,
   listScalpDurationTimelineRuns,
+  resolveLifecycleTuneFamily,
   selectPromotionWinnerRowsWithExploration,
+  startOfBerlinWeekMonday,
   type PromotionSelectionRow,
 } from "../pipelineJobs";
 import type { ScalpPromotionForwardValidationCandidate } from "../promotionPolicy";
@@ -326,6 +328,19 @@ test("selectPromotionWinnerRowsWithExploration keeps one row per incumbent symbo
   const selectedSymbols = new Set(out.selectedRows.map((row) => row.symbol));
   assert.equal(selectedSymbols.has("BTCUSDT"), true);
   assert.equal(selectedSymbols.has("ETHUSDT"), true);
+});
+
+test("resolveLifecycleTuneFamily normalizes tune id families", () => {
+  assert.equal(resolveLifecycleTuneFamily("default"), "base");
+  assert.equal(resolveLifecycleTuneFamily("auto_tr1p6"), "auto_tr");
+  assert.equal(resolveLifecycleTuneFamily("auto_mix_tr1p4_ts18"), "auto_mix");
+  assert.equal(resolveLifecycleTuneFamily("AUTO_SP_BERLIN"), "auto_sp");
+});
+
+test("startOfBerlinWeekMonday resolves Monday boundary in Berlin timezone", () => {
+  const tsMs = Date.UTC(2026, 2, 18, 12, 0, 0); // 2026-03-18T12:00:00Z
+  const weekStartMs = startOfBerlinWeekMonday(tsMs);
+  assert.equal(weekStartMs, Date.UTC(2026, 2, 15, 23, 0, 0));
 });
 
 test("buildPipelineJobDiagnostics computes duration for completed runs", () => {

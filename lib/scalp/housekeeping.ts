@@ -123,6 +123,7 @@ export function shouldPruneOrphanedDeployment(params: {
   source: unknown;
   enabled: unknown;
   researchTaskCount: unknown;
+  promotionGate?: unknown;
 }): boolean {
   const source = String(params.source || "")
     .trim()
@@ -132,7 +133,16 @@ export function shouldPruneOrphanedDeployment(params: {
     0,
     Math.floor(Number(params.researchTaskCount) || 0),
   );
+  const lifecycleState = String(
+    isRecord(params.promotionGate) &&
+      isRecord(params.promotionGate.lifecycle)
+      ? params.promotionGate.lifecycle.state
+      : "",
+  )
+    .trim()
+    .toLowerCase();
   if (enabled) return false;
+  if (lifecycleState === "suspended" || lifecycleState === "retired") return false;
   if (source !== "backtest" && source !== "matrix") return false;
   return researchTaskCount <= 0;
 }
@@ -595,6 +605,7 @@ async function pruneOrphanedDeploymentsFromPg(params: {
       source: string;
       enabled: boolean;
       inUniverse: boolean;
+      promotionGate: unknown;
       researchTaskCount: bigint | number;
     }>
   >(Prisma.sql`
@@ -603,11 +614,12 @@ async function pruneOrphanedDeploymentsFromPg(params: {
             d.source,
             d.enabled,
             d.in_universe AS "inUniverse",
+            d.promotion_gate AS "promotionGate",
             COUNT(m.id)::bigint AS "researchTaskCount"
         FROM scalp_deployments d
         LEFT JOIN scalp_deployment_weekly_metrics m
           ON m.deployment_id = d.deployment_id
-        GROUP BY d.deployment_id, d.source, d.enabled, d.in_universe
+        GROUP BY d.deployment_id, d.source, d.enabled, d.in_universe, d.promotion_gate
         ORDER BY d.created_at ASC, d.deployment_id ASC
         LIMIT 10000;
     `);
@@ -616,11 +628,12 @@ async function pruneOrphanedDeploymentsFromPg(params: {
     .filter(
       (row) =>
         row.inUniverse === false &&
-        shouldPruneOrphanedDeployment({
-          source: row.source,
-          enabled: row.enabled,
-          researchTaskCount: row.researchTaskCount,
-        }),
+          shouldPruneOrphanedDeployment({
+            source: row.source,
+            enabled: row.enabled,
+            promotionGate: row.promotionGate,
+            researchTaskCount: row.researchTaskCount,
+          }),
     )
     .map((row) => String(row.deploymentId || "").trim())
     .filter((row) => Boolean(row));

@@ -14,6 +14,8 @@ import {
 import {
   listScalpDeploymentRegistryEntries,
   upsertScalpDeploymentRegistryEntriesBulk,
+  type ScalpDeploymentLifecycleState,
+  type ScalpDeploymentPromotionLifecycle,
   type ScalpDeploymentPromotionHysteresis,
   type ScalpDeploymentPromotionGate,
   type ScalpDeploymentRegistryEntry,
@@ -329,6 +331,250 @@ function asNullableFiniteNumber(value: unknown): number | null {
   const n = Number(value);
   if (!Number.isFinite(n)) return null;
   return n;
+}
+
+const LIFECYCLE_SUSPEND_WINDOW_MS = 180 * ONE_DAY_MS;
+const LIFECYCLE_SUSPEND_EXACT_MS = 12 * ONE_WEEK_MS;
+const LIFECYCLE_SUSPEND_NEIGHBOR_MS = 8 * ONE_WEEK_MS;
+const LIFECYCLE_RETIRE_MS = 180 * ONE_DAY_MS;
+
+export function resolveLifecycleTuneFamily(tuneIdRaw: unknown): string {
+  const tuneId = String(tuneIdRaw || "")
+    .trim()
+    .toLowerCase();
+  if (!tuneId || tuneId === "default" || tuneId === "base") return "base";
+  if (tuneId.startsWith("auto_mix")) return "auto_mix";
+  if (tuneId.startsWith("auto_tr")) return "auto_tr";
+  if (tuneId.startsWith("auto_ts")) return "auto_ts";
+  if (tuneId.startsWith("auto_tp")) return "auto_tp";
+  if (tuneId.startsWith("auto_sw")) return "auto_sw";
+  if (tuneId.startsWith("auto_bh")) return "auto_bh";
+  if (tuneId.startsWith("auto_sp")) return "auto_sp";
+  const split = tuneId.split("_").filter(Boolean);
+  return split[0] || "base";
+}
+
+function normalizeLifecycleState(
+  value: unknown,
+  fallback: ScalpDeploymentLifecycleState,
+): ScalpDeploymentLifecycleState {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (
+    normalized === "candidate" ||
+    normalized === "incumbent_refresh" ||
+    normalized === "graduated" ||
+    normalized === "suspended" ||
+    normalized === "retired"
+  ) {
+    return normalized;
+  }
+  return fallback;
+}
+
+function normalizeLifecycleFromGate(params: {
+  gate: ScalpDeploymentPromotionGate | null | undefined;
+  tuneId: string;
+  enabled: boolean;
+  nowMs: number;
+}): ScalpDeploymentPromotionLifecycle {
+  const fallbackState: ScalpDeploymentLifecycleState = params.enabled
+    ? "graduated"
+    : "candidate";
+  const lifecycleRaw = asJsonObject(params.gate?.lifecycle);
+  const state = normalizeLifecycleState(lifecycleRaw?.state, fallbackState);
+  const suspendedUntilMs = asTsMs(lifecycleRaw?.suspendedUntilMs);
+  const retiredUntilMs = asTsMs(lifecycleRaw?.retiredUntilMs);
+  const suspensionEventsMs = Array.isArray(lifecycleRaw?.suspensionEventsMs)
+    ? lifecycleRaw.suspensionEventsMs
+        .map((row) => asTsMs(row))
+        .filter((row): row is number => row !== null)
+        .sort((a, b) => a - b)
+    : [];
+  const activeWindowStart = params.nowMs - LIFECYCLE_SUSPEND_WINDOW_MS;
+  const rollingEvents = suspensionEventsMs.filter((row) => row >= activeWindowStart);
+  const suspensionCount180d = Math.max(
+    0,
+    Math.floor(Number(lifecycleRaw?.suspensionCount180d) || rollingEvents.length),
+  );
+  const lifecycle: ScalpDeploymentPromotionLifecycle = {
+    state,
+    tuneFamily:
+      String(lifecycleRaw?.tuneFamily || "").trim().toLowerCase() ||
+      resolveLifecycleTuneFamily(params.tuneId),
+    suspendedUntilMs,
+    retiredUntilMs,
+    suspensionEventsMs: rollingEvents,
+    suspensionCount180d,
+    lastRolloverBerlinWeekStartMs: asTsMs(lifecycleRaw?.lastRolloverBerlinWeekStartMs),
+    lastSeatReleaseAtMs: asTsMs(lifecycleRaw?.lastSeatReleaseAtMs),
+  };
+  if (
+    lifecycle.state === "suspended" &&
+    lifecycle.suspendedUntilMs !== null &&
+    lifecycle.suspendedUntilMs <= params.nowMs
+  ) {
+    lifecycle.state = params.enabled ? "graduated" : "candidate";
+    lifecycle.suspendedUntilMs = null;
+  }
+  if (
+    lifecycle.state === "retired" &&
+    lifecycle.retiredUntilMs !== null &&
+    lifecycle.retiredUntilMs <= params.nowMs
+  ) {
+    lifecycle.state = params.enabled ? "graduated" : "candidate";
+    lifecycle.retiredUntilMs = null;
+  }
+  return lifecycle;
+}
+
+function lifecycleIsSuppressed(
+  lifecycle: ScalpDeploymentPromotionLifecycle,
+  nowMs: number,
+): boolean {
+  if (lifecycle.state === "retired") {
+    return lifecycle.retiredUntilMs === null || lifecycle.retiredUntilMs > nowMs;
+  }
+  if (lifecycle.state === "suspended") {
+    return lifecycle.suspendedUntilMs === null || lifecycle.suspendedUntilMs > nowMs;
+  }
+  return false;
+}
+
+function withBerlinEntrySessionProfile(
+  configOverride: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const root = asJsonObject(configOverride)
+    ? (JSON.parse(JSON.stringify(configOverride)) as Record<string, unknown>)
+    : {};
+  const existingSessions = asJsonObject(root.sessions);
+  const sessions = existingSessions ? { ...existingSessions } : {};
+  sessions.entrySessionProfile = "berlin";
+  root.sessions = sessions;
+  return root;
+}
+
+function applyLifecycleSuspension(params: {
+  lifecycle: ScalpDeploymentPromotionLifecycle;
+  nowMs: number;
+  durationMs: number;
+}): ScalpDeploymentPromotionLifecycle {
+  const nowMs = params.nowMs;
+  const events = params.lifecycle.suspensionEventsMs
+    .filter((row) => row >= nowMs - LIFECYCLE_SUSPEND_WINDOW_MS)
+    .concat(nowMs)
+    .sort((a, b) => a - b);
+  const suspensionCount180d = events.length;
+  if (suspensionCount180d >= 3) {
+    return {
+      ...params.lifecycle,
+      state: "retired",
+      suspendedUntilMs: null,
+      retiredUntilMs: nowMs + LIFECYCLE_RETIRE_MS,
+      suspensionEventsMs: events,
+      suspensionCount180d,
+    };
+  }
+  return {
+    ...params.lifecycle,
+    state: "suspended",
+    suspendedUntilMs: nowMs + Math.max(ONE_DAY_MS, params.durationMs),
+    retiredUntilMs: null,
+    suspensionEventsMs: events,
+    suspensionCount180d,
+  };
+}
+
+function parseDayKey(dayKey: string): { y: number; m: number; d: number } {
+  const match = String(dayKey || "")
+    .trim()
+    .match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) throw new Error(`Invalid day key: ${dayKey}`);
+  return { y: Number(match[1]), m: Number(match[2]), d: Number(match[3]) };
+}
+
+function parseClock(clock: string): { hh: number; mm: number } {
+  const match = String(clock || "")
+    .trim()
+    .match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  if (!match) throw new Error(`Invalid clock: ${clock}`);
+  return { hh: Number(match[1]), mm: Number(match[2]) };
+}
+
+function partsForTimeZone(
+  tsMs: number,
+  timeZone: string,
+): { y: number; m: number; d: number; weekday: number; hh: number; mm: number } {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    hourCycle: "h23",
+  });
+  const parts = fmt.formatToParts(new Date(tsMs));
+  const read = (
+    type: Intl.DateTimeFormatPartTypes,
+    fallback: string,
+  ): string => parts.find((row) => row.type === type)?.value || fallback;
+  const y = Number(read("year", "1970"));
+  const m = Number(read("month", "01"));
+  const d = Number(read("day", "01"));
+  const hhRaw = Number(read("hour", "00"));
+  const hh = hhRaw === 24 ? 0 : hhRaw;
+  const mm = Number(read("minute", "00"));
+  const weekdayLabel = read("weekday", "Mon").toLowerCase();
+  const weekdayMap: Record<string, number> = {
+    mon: 1,
+    tue: 2,
+    wed: 3,
+    thu: 4,
+    fri: 5,
+    sat: 6,
+    sun: 7,
+  };
+  return {
+    y: Number.isFinite(y) ? y : 1970,
+    m: Number.isFinite(m) ? m : 1,
+    d: Number.isFinite(d) ? d : 1,
+    weekday: weekdayMap[weekdayLabel.slice(0, 3)] || 1,
+    hh: Number.isFinite(hh) ? hh : 0,
+    mm: Number.isFinite(mm) ? mm : 0,
+  };
+}
+
+function utcMsFromZoned(dayKey: string, clock: string, timeZone: string): number {
+  const date = parseDayKey(dayKey);
+  const t = parseClock(clock);
+  let guessMs = Date.UTC(date.y, date.m - 1, date.d, t.hh, t.mm, 0, 0);
+  const targetDayInt = date.y * 10_000 + date.m * 100 + date.d;
+  const targetMinuteOfDay = t.hh * 60 + t.mm;
+  for (let i = 0; i < 6; i += 1) {
+    const local = partsForTimeZone(guessMs, timeZone);
+    const localDayInt = local.y * 10_000 + local.m * 100 + local.d;
+    const dayDelta =
+      localDayInt === targetDayInt ? 0 : localDayInt < targetDayInt ? 1 : -1;
+    const localMinuteOfDay = local.hh * 60 + local.mm;
+    const deltaMinutes = dayDelta * 1440 + (targetMinuteOfDay - localMinuteOfDay);
+    if (deltaMinutes === 0) break;
+    guessMs += deltaMinutes * ONE_MINUTE_MS;
+  }
+  return guessMs;
+}
+
+export function startOfBerlinWeekMonday(tsMs: number): number {
+  const local = partsForTimeZone(tsMs, "Europe/Berlin");
+  const dayKey = `${local.y.toString().padStart(4, "0")}-${local.m
+    .toString()
+    .padStart(2, "0")}-${local.d.toString().padStart(2, "0")}`;
+  const localMidnightMs = utcMsFromZoned(dayKey, "00:00", "Europe/Berlin");
+  const daysSinceMonday = (local.weekday + 6) % 7;
+  return localMidnightMs - daysSinceMonday * ONE_DAY_MS;
 }
 
 function startOfUtcDay(tsMs: number): number {
@@ -856,13 +1102,23 @@ async function runWithPipelineJobLock(
 }
 
 async function countPendingLoadSymbols(): Promise<number> {
+  const berlinWeekStartMs = startOfBerlinWeekMonday(Date.now());
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
     Array<{ count: bigint | number | string }>
   >(Prisma.sql`
+        WITH due_enabled_symbols AS (
+            SELECT DISTINCT d.symbol
+            FROM scalp_deployments d
+            WHERE d.enabled = TRUE
+              AND COALESCE((d.promotion_gate #>> '{lifecycle,lastRolloverBerlinWeekStartMs}')::bigint, 0) < ${berlinWeekStartMs}
+        )
         SELECT COUNT(*)::bigint AS count
         FROM scalp_pipeline_symbols
-        WHERE active = TRUE
+        WHERE (
+                active = TRUE
+                OR symbol IN (SELECT symbol FROM due_enabled_symbols)
+              )
           AND load_status IN ('pending', 'retry_wait')
           AND COALESCE(load_next_run_at, NOW()) <= NOW();
     `);
@@ -902,22 +1158,38 @@ async function countPendingWorkerRows(): Promise<number> {
     Array<{ count: bigint | number | string }>
   >(Prisma.sql`
         SELECT COUNT(*)::bigint AS count
-        FROM scalp_deployment_weekly_metrics
-        WHERE status IN ('pending', 'retry_wait')
-          AND next_run_at <= NOW();
+        FROM scalp_deployment_weekly_metrics m
+        INNER JOIN scalp_deployments d
+          ON d.deployment_id = m.deployment_id
+        WHERE d.in_universe = TRUE
+          AND m.status IN ('pending', 'retry_wait')
+          AND m.next_run_at <= NOW();
     `);
   return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
 }
 
 async function countPendingPromotionRows(): Promise<number> {
+  const nowMs = Date.now();
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
     Array<{ count: bigint | number | string }>
   >(Prisma.sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_deployments
-        WHERE in_universe = TRUE
-          AND promotion_dirty = TRUE;
+        WHERE (
+                in_universe = TRUE
+                AND promotion_dirty = TRUE
+              )
+           OR (
+                COALESCE((promotion_gate #>> '{lifecycle,state}')::text, '') = 'suspended'
+                AND COALESCE((promotion_gate #>> '{lifecycle,suspendedUntilMs}')::bigint, 0) > 0
+                AND COALESCE((promotion_gate #>> '{lifecycle,suspendedUntilMs}')::bigint, 0) <= ${nowMs}
+              )
+           OR (
+                COALESCE((promotion_gate #>> '{lifecycle,state}')::text, '') = 'retired'
+                AND COALESCE((promotion_gate #>> '{lifecycle,retiredUntilMs}')::bigint, 0) > 0
+                AND COALESCE((promotion_gate #>> '{lifecycle,retiredUntilMs}')::bigint, 0) <= ${nowMs}
+              );
     `);
   return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
 }
@@ -1563,30 +1835,11 @@ export async function runDiscoverPipelineJob(
       ),
     );
     const db = scalpPrisma();
-    const enabledDeploymentRows = await db.$queryRaw<Array<{ symbol: string }>>(
-      Prisma.sql`
-            SELECT DISTINCT symbol
-            FROM scalp_deployments
-            WHERE enabled = TRUE;
-        `,
-    );
-    const pinnedEnabledSymbols = Array.from(
-      new Set(
-        enabledDeploymentRows
-          .map((row) => normalizeSymbol(row.symbol))
-          .filter(Boolean),
-      ),
-    );
     const activeSymbols = Array.from(
       new Set(
-        (bitgetOnly
+        bitgetOnly
           ? discoveredActiveSymbols.filter((symbol) => isBitgetPipelineSymbol(symbol))
-          : discoveredActiveSymbols
-        ).concat(
-          bitgetOnly
-            ? pinnedEnabledSymbols.filter((symbol) => isBitgetPipelineSymbol(symbol))
-            : pinnedEnabledSymbols,
-        ),
+          : discoveredActiveSymbols,
       ),
     );
     const catalogSymbols = Array.from(
@@ -1719,17 +1972,6 @@ export async function runDiscoverPipelineJob(
             `);
       }
 
-      if (activeSymbols.length > 0) {
-        await db.$executeRaw(Prisma.sql`
-                UPDATE scalp_deployments
-                SET
-                    in_universe = TRUE,
-                    retired_at = NULL,
-                    updated_by = 'pipeline:discover',
-                    updated_at = NOW()
-                WHERE symbol IN (${Prisma.join(activeSymbols)});
-            `);
-      }
       if (removedActiveSymbols.length > 0) {
         await db.$executeRaw(Prisma.sql`
                 UPDATE scalp_deployments
@@ -1763,7 +2005,6 @@ export async function runDiscoverPipelineJob(
         addedActiveSymbols: addedActiveSymbols.length,
         removedActiveSymbols: removedActiveSymbols.length,
         catalogAddedSymbols: catalogAddedSymbols.length,
-        pinnedEnabledSymbols: pinnedEnabledSymbols.length,
         droppedNonBitget: droppedNonBitgetSymbols.length,
         pendingLoad: pendingAfter,
       },
@@ -1790,7 +2031,6 @@ export async function runDiscoverPipelineJob(
         removedActiveSymbols,
         catalogAddedSymbols,
         catalogSymbols,
-        pinnedEnabledSymbols,
         droppedNonBitgetSymbols,
         candidatesEvaluated: snapshot.candidatesEvaluated,
       },
@@ -1800,15 +2040,25 @@ export async function runDiscoverPipelineJob(
 
 async function claimLoadSymbols(
   limit: number,
+  berlinWeekStartMs: number,
 ): Promise<Array<{ symbol: string; attempts: number }>> {
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
     Array<{ symbol: string; attempts: number }>
   >(Prisma.sql`
-        WITH candidate AS (
+        WITH due_enabled_symbols AS (
+            SELECT DISTINCT d.symbol
+            FROM scalp_deployments d
+            WHERE d.enabled = TRUE
+              AND COALESCE((d.promotion_gate #>> '{lifecycle,lastRolloverBerlinWeekStartMs}')::bigint, 0) < ${berlinWeekStartMs}
+        ),
+        candidate AS (
             SELECT symbol
             FROM scalp_pipeline_symbols
-            WHERE active = TRUE
+            WHERE (
+                    active = TRUE
+                    OR symbol IN (SELECT symbol FROM due_enabled_symbols)
+                  )
               AND load_status IN ('pending', 'retry_wait')
               AND COALESCE(load_next_run_at, NOW()) <= NOW()
             ORDER BY COALESCE(load_next_run_at, NOW()) ASC, symbol ASC
@@ -1826,6 +2076,83 @@ async function claimLoadSymbols(
         RETURNING s.symbol, s.load_attempts AS attempts;
     `);
   return rows;
+}
+
+async function ensureLoadQueueSymbolsForDueIncumbents(
+  berlinWeekStartMs: number,
+): Promise<{ symbols: string[]; queued: number }> {
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{ symbol: string }>>(Prisma.sql`
+        SELECT DISTINCT d.symbol
+        FROM scalp_deployments d
+        WHERE d.enabled = TRUE
+          AND COALESCE((d.promotion_gate #>> '{lifecycle,lastRolloverBerlinWeekStartMs}')::bigint, 0) < ${berlinWeekStartMs}
+        ORDER BY d.symbol ASC
+        LIMIT 2000;
+    `);
+  const symbols = rows
+    .map((row) => normalizeSymbol(row.symbol))
+    .filter(Boolean);
+  if (!symbols.length) return { symbols: [], queued: 0 };
+  let queued = 0;
+  for (const symbol of symbols) {
+    queued += Number(
+      await db.$executeRaw(Prisma.sql`
+            INSERT INTO scalp_pipeline_symbols(
+                symbol,
+                active,
+                discover_status,
+                discover_attempts,
+                discover_next_run_at,
+                discover_error,
+                last_discovered_at,
+                load_status,
+                load_attempts,
+                load_next_run_at,
+                load_error,
+                prepare_status,
+                prepare_attempts,
+                prepare_next_run_at,
+                prepare_error,
+                updated_at
+            )
+            VALUES(
+                ${symbol},
+                FALSE,
+                'succeeded',
+                0,
+                NULL,
+                NULL,
+                NOW(),
+                'pending',
+                0,
+                NOW(),
+                NULL,
+                'succeeded',
+                0,
+                NULL,
+                NULL,
+                NOW()
+            )
+            ON CONFLICT(symbol)
+            DO UPDATE SET
+                load_status = CASE
+                    WHEN scalp_pipeline_symbols.load_status = 'running' THEN scalp_pipeline_symbols.load_status
+                    ELSE 'pending'
+                END,
+                load_next_run_at = CASE
+                    WHEN scalp_pipeline_symbols.load_status = 'running' THEN scalp_pipeline_symbols.load_next_run_at
+                    ELSE NOW()
+                END,
+                load_error = CASE
+                    WHEN scalp_pipeline_symbols.load_status = 'running' THEN scalp_pipeline_symbols.load_error
+                    ELSE NULL
+                END,
+                updated_at = NOW();
+        `),
+    );
+  }
+  return { symbols, queued };
 }
 
 async function updateLoadSymbolStatus(params: {
@@ -2041,6 +2368,7 @@ export async function runLoadCandlesPipelineJob(
   return runWithPipelineJobLock(
     "load_candles",
     async ({ lockToken, lockMs }) => {
+      const berlinWeekStartMs = startOfBerlinWeekMonday(Date.now());
       const requiredWeeks = resolveRequiredSuccessiveWeeks();
       const batchSize = Math.max(
         1,
@@ -2060,15 +2388,18 @@ export async function runLoadCandlesPipelineJob(
       const maxRequestsPerSymbol = Math.max(
         40,
         Math.min(
-          2500,
-          toPositiveInt(
-            process.env.SCALP_PIPELINE_LOAD_MAX_REQUESTS_PER_SYMBOL,
-            600,
-          ),
-        ),
-      );
+              2500,
+              toPositiveInt(
+                process.env.SCALP_PIPELINE_LOAD_MAX_REQUESTS_PER_SYMBOL,
+                600,
+              ),
+            ),
+          );
 
-      const claimed = await claimLoadSymbols(batchSize);
+      const dueIncumbents = await ensureLoadQueueSymbolsForDueIncumbents(
+        berlinWeekStartMs,
+      );
+      const claimed = await claimLoadSymbols(batchSize, berlinWeekStartMs);
       const activeSymbols = await countActivePipelineSymbols();
       let succeeded = 0;
       let retried = 0;
@@ -2150,6 +2481,7 @@ export async function runLoadCandlesPipelineJob(
             processed: idx + 1,
             total: claimed.length,
             activeSymbols,
+            dueIncumbentSymbolsQueued: dueIncumbents.symbols.length,
             succeeded,
             retried,
             failed,
@@ -2171,6 +2503,7 @@ export async function runLoadCandlesPipelineJob(
         details: {
           requiredWeeks,
           activeSymbols,
+          dueIncumbentSymbolsQueued: dueIncumbents.symbols.length,
           claimed: claimed.length,
           succeeded,
           retried,
@@ -2268,30 +2601,32 @@ async function upsertWeeklyQueueRowsForDeployment(params: {
                 week_end = EXCLUDED.week_end,
                 status = CASE
                     WHEN scalp_deployment_weekly_metrics.status IN ('pending', 'running', 'retry_wait') THEN scalp_deployment_weekly_metrics.status
-                    WHEN EXCLUDED.week_start >= ${new Date(refreshStart)} THEN 'pending'
+                    WHEN EXCLUDED.week_start >= ${new Date(refreshStart)}
+                        AND scalp_deployment_weekly_metrics.status IN ('failed')
+                    THEN 'pending'
                     ELSE scalp_deployment_weekly_metrics.status
                 END,
                 attempts = CASE
                     WHEN EXCLUDED.week_start >= ${new Date(refreshStart)}
-                        AND scalp_deployment_weekly_metrics.status NOT IN ('running')
+                        AND scalp_deployment_weekly_metrics.status IN ('failed')
                     THEN 0
                     ELSE scalp_deployment_weekly_metrics.attempts
                 END,
                 next_run_at = CASE
                     WHEN EXCLUDED.week_start >= ${new Date(refreshStart)}
-                        AND scalp_deployment_weekly_metrics.status NOT IN ('running')
+                        AND scalp_deployment_weekly_metrics.status IN ('failed')
                     THEN NOW()
                     ELSE scalp_deployment_weekly_metrics.next_run_at
                 END,
                 error_code = CASE
                     WHEN EXCLUDED.week_start >= ${new Date(refreshStart)}
-                        AND scalp_deployment_weekly_metrics.status NOT IN ('running')
+                        AND scalp_deployment_weekly_metrics.status IN ('failed')
                     THEN NULL
                     ELSE scalp_deployment_weekly_metrics.error_code
                 END,
                 error_message = CASE
                     WHEN EXCLUDED.week_start >= ${new Date(refreshStart)}
-                        AND scalp_deployment_weekly_metrics.status NOT IN ('running')
+                        AND scalp_deployment_weekly_metrics.status IN ('failed')
                     THEN NULL
                     ELSE scalp_deployment_weekly_metrics.error_message
                 END,
@@ -2415,6 +2750,7 @@ export async function runPreparePipelineJob(
         toPositiveInt(process.env.SCALP_PIPELINE_WORKER_REFRESH_WEEKS, 2),
       ),
     );
+    const nowMs = Date.now();
 
     const policy = await loadScalpSymbolDiscoveryPolicy();
     const strategies = new Set(listScalpStrategies().map((row) => row.id));
@@ -2484,22 +2820,33 @@ export async function runPreparePipelineJob(
             deploymentId: string;
             strategyId: string;
             tuneId: string;
+            enabled: boolean;
+            promotionGate: unknown;
           }>
         >(Prisma.sql`
                     SELECT
                         deployment_id AS "deploymentId",
                         strategy_id AS "strategyId",
-                        tune_id AS "tuneId"
+                        tune_id AS "tuneId",
+                        enabled,
+                        promotion_gate AS "promotionGate"
                     FROM scalp_deployments
                     WHERE symbol = ${symbol};
                 `);
-        const existingByKey = new Map<string, string>();
+        const existingByKey = new Map<
+          string,
+          {
+            deploymentId: string;
+            enabled: boolean;
+            promotionGate: unknown;
+          }
+        >();
         for (const dep of existingDeployments) {
           const key = `${dep.strategyId}::${dep.tuneId}`;
           if (existingByKey.has(key)) continue;
           const depVenue = resolveScalpDeploymentVenueFromId(dep.deploymentId);
           if (depVenue !== symbolVenue) continue;
-          existingByKey.set(key, dep.deploymentId);
+          existingByKey.set(key, dep);
         }
         const preparedIds: string[] = [];
 
@@ -2508,28 +2855,70 @@ export async function runPreparePipelineJob(
             symbol,
             strategyId,
             includeBaseline: true,
+            includeSessionProfileVariants: false,
             maxVariantsPerStrategy: 4,
           }).slice(0, 4);
-          const rows = variants.map((variant) => ({
-            deploymentId:
-              existingByKey.get(`${strategyId}::${variant.tuneId}`) ||
-              resolveScalpDeployment({
-                venue: symbolVenue,
+          const rows = variants
+            .map((variant) => {
+              const existing =
+                existingByKey.get(`${strategyId}::${variant.tuneId}`) || null;
+              const existingLifecycle = existing
+                ? normalizeLifecycleFromGate({
+                    gate: asJsonObject(existing.promotionGate) as any,
+                    tuneId: variant.tuneId,
+                    enabled: Boolean(existing.enabled),
+                    nowMs,
+                  })
+                : null;
+              if (existingLifecycle && lifecycleIsSuppressed(existingLifecycle, nowMs)) {
+                return null;
+              }
+              return {
+                deploymentId:
+                  existing?.deploymentId ||
+                  resolveScalpDeployment({
+                    venue: symbolVenue,
+                    symbol,
+                    strategyId,
+                    tuneId: variant.tuneId,
+                  }).deploymentId,
                 symbol,
                 strategyId,
                 tuneId: variant.tuneId,
-              }).deploymentId,
-            symbol,
-            strategyId,
-            tuneId: variant.tuneId,
-            source: "matrix" as const,
-            enabled: false,
-            configOverride: variant.configOverride || null,
-            updatedBy: "pipeline:prepare",
-          }));
+                source: "matrix" as const,
+                enabled: Boolean(existing?.enabled),
+                configOverride: withBerlinEntrySessionProfile(
+                  (variant.configOverride || null) as Record<string, unknown> | null,
+                ),
+                updatedBy: "pipeline:prepare",
+              };
+            })
+            .filter(
+              (
+                row,
+              ): row is {
+                deploymentId: string;
+                symbol: string;
+                strategyId: string;
+                tuneId: string;
+                source: "matrix";
+                enabled: boolean;
+                configOverride: Record<string, unknown>;
+                updatedBy: string;
+              } => Boolean(row),
+            );
+          if (!rows.length) continue;
           const upserted = await upsertScalpDeploymentRegistryEntriesBulk(rows);
           for (const entry of upserted.entries) {
-            preparedIds.push(entry.deploymentId);
+            const lifecycle = normalizeLifecycleFromGate({
+              gate: entry.promotionGate,
+              tuneId: entry.tuneId,
+              enabled: entry.enabled,
+              nowMs,
+            });
+            if (!entry.enabled || lifecycle.state === "incumbent_refresh") {
+              preparedIds.push(entry.deploymentId);
+            }
           }
         }
 
@@ -2695,10 +3084,13 @@ async function claimWorkerRows(
   >(Prisma.sql`
         WITH candidate AS (
             SELECT id
-            FROM scalp_deployment_weekly_metrics
-            WHERE status IN ('pending', 'retry_wait')
-              AND next_run_at <= NOW()
-            ORDER BY next_run_at ASC, week_start ASC, id ASC
+            FROM scalp_deployment_weekly_metrics m
+            INNER JOIN scalp_deployments d
+              ON d.deployment_id = m.deployment_id
+            WHERE d.in_universe = TRUE
+              AND m.status IN ('pending', 'retry_wait')
+              AND m.next_run_at <= NOW()
+            ORDER BY m.next_run_at ASC, m.week_start ASC, m.id ASC
             FOR UPDATE SKIP LOCKED
             LIMIT ${limit}
         )
@@ -2998,24 +3390,94 @@ export async function runPromotionPipelineJob(
     const maxWorkerNudgeDeployments =
       resolvePromotionWorkerNudgeMaxDeployments();
     const nowMs = Date.now();
+    const berlinWeekStartMs = startOfBerlinWeekMonday(nowMs);
     const requiredWeeks = resolvePromotionFreshWeeks();
     const windowToTs = startOfWeekMondayUtc(nowMs);
     const windowFromTs = windowToTs - policy.lookbackDays * ONE_DAY_MS;
+    const previousWeekStartTs = windowToTs - ONE_WEEK_MS;
 
     const db = scalpPrisma();
+    const rolloverDueRows = await db.$queryRaw<
+      Array<{
+        deploymentId: string;
+        symbol: string;
+        strategyId: string;
+        tuneId: string;
+      }>
+    >(Prisma.sql`
+            SELECT
+                deployment_id AS "deploymentId",
+                symbol,
+                strategy_id AS "strategyId",
+                tune_id AS "tuneId"
+            FROM scalp_deployments
+            WHERE enabled = TRUE
+              AND COALESCE((promotion_gate #>> '{lifecycle,lastRolloverBerlinWeekStartMs}')::bigint, 0) < ${berlinWeekStartMs}
+            ORDER BY updated_at ASC, deployment_id ASC
+            LIMIT 5000;
+        `);
+    const rolloverDueIds = rolloverDueRows.map((row) => row.deploymentId);
+    let rolloverIncumbentsQueued = 0;
+    if (rolloverDueIds.length > 0) {
+      rolloverIncumbentsQueued = rolloverDueIds.length;
+      await db.$executeRaw(Prisma.sql`
+                UPDATE scalp_deployments
+                SET
+                    in_universe = TRUE,
+                    promotion_dirty = TRUE,
+                    updated_by = 'pipeline:promotion',
+                    updated_at = NOW()
+                WHERE deployment_id IN (${Prisma.join(rolloverDueIds)});
+            `);
+      for (const row of rolloverDueRows) {
+        await ensureWeeklyQueueRowsExistForDeployment({
+          deploymentId: row.deploymentId,
+          symbol: row.symbol,
+          strategyId: row.strategyId,
+          tuneId: row.tuneId,
+          nowMs,
+          requiredWeeks,
+        });
+        await db.$executeRaw(Prisma.sql`
+                    UPDATE scalp_deployment_weekly_metrics
+                    SET
+                        status = 'pending',
+                        attempts = 0,
+                        next_run_at = NOW(),
+                        error_code = NULL,
+                        error_message = NULL,
+                        updated_at = NOW()
+                    WHERE deployment_id = ${row.deploymentId}
+                      AND week_start = ${new Date(previousWeekStartTs)}
+                      AND status IN ('pending', 'retry_wait', 'failed');
+                `);
+      }
+    }
     const dirtyRows = await db.$queryRaw<
       Array<{ deploymentId: string }>
     >(Prisma.sql`
             SELECT deployment_id AS "deploymentId"
             FROM scalp_deployments
-            WHERE in_universe = TRUE
-              AND (
-                promotion_dirty = TRUE
-                OR (
-                  enabled = TRUE
-                  AND COALESCE((promotion_gate #>> '{freshness,windowToTs}')::bigint, 0) < ${windowToTs}
-                )
-              )
+            WHERE (
+                    in_universe = TRUE
+                    AND (
+                        promotion_dirty = TRUE
+                        OR (
+                            enabled = TRUE
+                            AND COALESCE((promotion_gate #>> '{freshness,windowToTs}')::bigint, 0) < ${windowToTs}
+                        )
+                    )
+                  )
+               OR (
+                    COALESCE((promotion_gate #>> '{lifecycle,state}')::text, '') = 'suspended'
+                    AND COALESCE((promotion_gate #>> '{lifecycle,suspendedUntilMs}')::bigint, 0) > 0
+                    AND COALESCE((promotion_gate #>> '{lifecycle,suspendedUntilMs}')::bigint, 0) <= ${nowMs}
+                  )
+               OR (
+                    COALESCE((promotion_gate #>> '{lifecycle,state}')::text, '') = 'retired'
+                    AND COALESCE((promotion_gate #>> '{lifecycle,retiredUntilMs}')::bigint, 0) > 0
+                    AND COALESCE((promotion_gate #>> '{lifecycle,retiredUntilMs}')::bigint, 0) <= ${nowMs}
+                  )
             ORDER BY
                 CASE
                     WHEN promotion_dirty = TRUE THEN 0
@@ -3038,6 +3500,7 @@ export async function runPromotionPipelineJob(
         progressLabel: "idle",
         details: {
           reason: "no_promotion_dirty_deployments",
+          rolloverIncumbentsQueued,
         },
       };
     }
@@ -3063,10 +3526,12 @@ export async function runPromotionPipelineJob(
       inUniverseRows.map((row) => [row.deploymentId, row]),
     );
 
-    const consideredDeployments = allDeployments.filter(
-      (row) =>
-        inUniverseByDeploymentId.get(row.deploymentId)?.inUniverse === true,
-    );
+    const rolloverDueSet = new Set(rolloverDueIds);
+    const consideredDeployments = allDeployments.filter((row) => {
+      const inUniverse =
+        inUniverseByDeploymentId.get(row.deploymentId)?.inUniverse === true;
+      return inUniverse || dirtySet.has(row.deploymentId) || rolloverDueSet.has(row.deploymentId);
+    });
     const consideredByDeploymentId = new Map(
       consideredDeployments.map((row) => [row.deploymentId, row]),
     );
@@ -3092,6 +3557,18 @@ export async function runPromotionPipelineJob(
       dirtySet.has(row.deploymentId),
     );
     for (const deployment of dirtyDeployments) {
+      const rowState = inUniverseByDeploymentId.get(deployment.deploymentId);
+      const currentlyEnabled = Boolean(rowState?.enabled ?? deployment.enabled);
+      const lifecycle = normalizeLifecycleFromGate({
+        gate:
+          (asJsonObject(rowState?.promotionGate) as ScalpDeploymentPromotionGate | null) ||
+          deployment.promotionGate,
+        tuneId: deployment.tuneId,
+        enabled: currentlyEnabled,
+        nowMs,
+      });
+      if (lifecycleIsSuppressed(lifecycle, nowMs)) continue;
+      if (currentlyEnabled && lifecycle.state !== "incumbent_refresh") continue;
       weeklyQueueRowsInserted += await ensureWeeklyQueueRowsExistForDeployment({
         deploymentId: deployment.deploymentId,
         symbol: deployment.symbol,
@@ -3272,8 +3749,7 @@ export async function runPromotionPipelineJob(
                         ELSE NULL
                     END,
                     updated_at = NOW()
-                WHERE active = TRUE
-                  AND symbol IN (${Prisma.join(loadSymbolsToNudge)});
+                WHERE symbol IN (${Prisma.join(loadSymbolsToNudge)});
             `),
       );
     }
@@ -3393,6 +3869,27 @@ export async function runPromotionPipelineJob(
       (deployment) => {
         const key = `${deployment.symbol}::${deployment.strategyId}::${deployment.tuneId}`;
         const candidate = candidateByKey.get(key) || null;
+        const currentlyEnabled = Boolean(
+          inUniverseByDeploymentId.get(deployment.deploymentId)?.enabled,
+        );
+        const baseLifecycle = normalizeLifecycleFromGate({
+          gate:
+            (asJsonObject(
+              inUniverseByDeploymentId.get(deployment.deploymentId)?.promotionGate || null,
+            ) as ScalpDeploymentPromotionGate | null) || deployment.promotionGate,
+          tuneId: deployment.tuneId,
+          enabled: currentlyEnabled,
+          nowMs,
+        });
+        const lifecycle =
+          currentlyEnabled && rolloverDueSet.has(deployment.deploymentId)
+            ? {
+                ...baseLifecycle,
+                state: "incumbent_refresh" as const,
+                lastRolloverBerlinWeekStartMs: berlinWeekStartMs,
+              }
+            : baseLifecycle;
+        const suppressed = lifecycleIsSuppressed(lifecycle, nowMs);
         const freshness = freshnessByDeploymentId.get(deployment.deploymentId);
         const freshnessState = freshness
           ? {
@@ -3406,20 +3903,22 @@ export async function runPromotionPipelineJob(
           : null;
         const weeklyFailReason = weeklyGateReasonByKey.get(key) || null;
         const eligible = Boolean(
-          candidate && freshness?.ready && !weeklyFailReason,
+          !suppressed && candidate && freshness?.ready && !weeklyFailReason,
         );
         return {
           deploymentId: deployment.deploymentId,
           symbol: deployment.symbol,
           strategyId: deployment.strategyId,
           tuneId: deployment.tuneId,
-          enabled: Boolean(
-            inUniverseByDeploymentId.get(deployment.deploymentId)?.enabled,
-          ),
+          enabled: currentlyEnabled,
           promotionGate: {
             eligible,
             reason: eligible
               ? "weekly_robustness_passed"
+              : suppressed
+                ? lifecycle.state === "retired"
+                  ? "retired_cooldown"
+                  : "suspended_cooldown"
               : weeklyFailReason ||
                 (!freshness?.ready
                   ? "fresh_weeks_incomplete"
@@ -3433,6 +3932,7 @@ export async function runPromotionPipelineJob(
                   ?.promotionGate || null,
               )?.thresholds as any) || null,
             freshness: freshnessState,
+            lifecycle,
           } as ScalpDeploymentPromotionGate,
         };
       },
@@ -3479,80 +3979,248 @@ export async function runPromotionPipelineJob(
       ? explorationWinnerIds
       : strategyWinnerIds;
 
+    interface PromotionUpdateDraft {
+      entry: ScalpDeploymentRegistryEntry;
+      lifecycle: ScalpDeploymentPromotionLifecycle;
+      inUniverseNext: boolean;
+      exactLoser: boolean;
+      currentlyEnabled: boolean;
+      shortlistIncluded: boolean;
+    }
+
     let enabledByHysteresis = 0;
     let disabledByHysteresis = 0;
-    const updates = consideredDeployments.map(
-      (deployment): ScalpDeploymentRegistryEntry => {
-        const key = `${deployment.symbol}::${deployment.strategyId}::${deployment.tuneId}`;
-        const candidate = candidateByKey.get(key) || null;
-        const freshness = freshnessByDeploymentId.get(deployment.deploymentId);
-        const freshnessState = freshness
-          ? {
-              requiredWeeks: freshness.requiredWeeks,
-              completedWeeks: freshness.completedWeeks,
-              missingWeeks: freshness.missingWeeks,
-              windowFromTs: freshness.windowFromTs,
-              windowToTs: freshness.windowToTs,
-              missingWeekStarts: freshness.missingWeekStarts || [],
-            }
-          : null;
-        const weeklyFailReason = weeklyGateReasonByKey.get(key) || null;
-        const eligible = Boolean(
-          candidate && freshness?.ready && !weeklyFailReason,
-        );
-        const shortlistIncluded = winnerIds.has(deployment.deploymentId);
-        const reason = eligible
-          ? shortlistIncluded
-            ? "weekly_robustness_passed"
-            : "winner_shortlist_excluded"
+    let suspendedExact = 0;
+    let suspendedNeighbors = 0;
+    let retiredCount = 0;
+    const drafts: PromotionUpdateDraft[] = consideredDeployments.map((deployment) => {
+      const key = `${deployment.symbol}::${deployment.strategyId}::${deployment.tuneId}`;
+      const candidate = candidateByKey.get(key) || null;
+      const freshness = freshnessByDeploymentId.get(deployment.deploymentId);
+      const freshnessState = freshness
+        ? {
+            requiredWeeks: freshness.requiredWeeks,
+            completedWeeks: freshness.completedWeeks,
+            missingWeeks: freshness.missingWeeks,
+            windowFromTs: freshness.windowFromTs,
+            windowToTs: freshness.windowToTs,
+            missingWeekStarts: freshness.missingWeekStarts || [],
+          }
+        : null;
+      const rowState = inUniverseByDeploymentId.get(deployment.deploymentId);
+      const currentlyEnabled = Boolean(rowState?.enabled ?? deployment.enabled);
+      let lifecycle = normalizeLifecycleFromGate({
+        gate:
+          (asJsonObject(rowState?.promotionGate) as ScalpDeploymentPromotionGate | null) ||
+          deployment.promotionGate,
+        tuneId: deployment.tuneId,
+        enabled: currentlyEnabled,
+        nowMs,
+      });
+      if (currentlyEnabled && rolloverDueSet.has(deployment.deploymentId)) {
+        lifecycle = {
+          ...lifecycle,
+          state: "incumbent_refresh",
+          lastRolloverBerlinWeekStartMs: berlinWeekStartMs,
+        };
+      }
+      const suppressed = lifecycleIsSuppressed(lifecycle, nowMs);
+      const weeklyFailReason = weeklyGateReasonByKey.get(key) || null;
+      const eligible = Boolean(
+        !suppressed && candidate && freshness?.ready && !weeklyFailReason,
+      );
+      const shortlistIncluded = winnerIds.has(deployment.deploymentId);
+      const reason = eligible
+        ? shortlistIncluded
+          ? "weekly_robustness_passed"
+          : "winner_shortlist_excluded"
+        : suppressed
+          ? lifecycle.state === "retired"
+            ? "retired_cooldown"
+            : "suspended_cooldown"
           : weeklyFailReason ||
             (!freshness?.ready
               ? "fresh_weeks_incomplete"
               : "candidate_missing");
-        const promotionGate: ScalpDeploymentPromotionGate = {
-          eligible,
-          reason,
-          source: "walk_forward",
-          evaluatedAtMs: nowMs,
-          forwardValidation: candidate?.forwardValidation || null,
-          thresholds: deployment.promotionGate?.thresholds || null,
-          freshness: freshnessState,
-          hysteresis: null,
-        };
-        const currentlyEnabled = Boolean(
-          inUniverseByDeploymentId.get(deployment.deploymentId)?.enabled,
-        );
-        const shouldEnableNow = eligible && shortlistIncluded;
-        const hysteresis = applyPromotionHysteresis({
-          currentlyEnabled,
-          shouldEnableNow,
-          previous: deployment.promotionGate?.hysteresis || null,
-          passThreshold: hysteresisPassThreshold,
-          failThreshold: hysteresisFailThreshold,
+      const promotionGate: ScalpDeploymentPromotionGate = {
+        eligible,
+        reason,
+        source: "walk_forward",
+        evaluatedAtMs: nowMs,
+        forwardValidation: candidate?.forwardValidation || null,
+        thresholds: deployment.promotionGate?.thresholds || null,
+        freshness: freshnessState,
+        hysteresis: null,
+        lifecycle,
+      };
+      const shouldEnableNow = eligible && shortlistIncluded;
+      const hysteresis = applyPromotionHysteresis({
+        currentlyEnabled,
+        shouldEnableNow,
+        previous: deployment.promotionGate?.hysteresis || null,
+        passThreshold: hysteresisPassThreshold,
+        failThreshold: hysteresisFailThreshold,
+        nowMs,
+        lockEnabled: false,
+      });
+      promotionGate.hysteresis = hysteresis.hysteresis;
+      if (hysteresis.transition === "enabled") enabledByHysteresis += 1;
+      if (hysteresis.transition === "disabled") disabledByHysteresis += 1;
+
+      const exactLoser = Boolean(
+        !hysteresis.enabled &&
+          !suppressed &&
+          freshness?.ready &&
+          weeklyFailReason,
+      );
+      if (exactLoser) {
+        const nextLifecycle = applyLifecycleSuspension({
+          lifecycle,
           nowMs,
-          lockEnabled: currentlyEnabled,
+          durationMs: LIFECYCLE_SUSPEND_EXACT_MS,
         });
-        promotionGate.hysteresis = hysteresis.hysteresis;
-        if (hysteresis.transition === "enabled") enabledByHysteresis += 1;
-        if (hysteresis.transition === "disabled") disabledByHysteresis += 1;
-        return {
+        if (nextLifecycle.state === "retired") {
+          if (lifecycle.state !== "retired") retiredCount += 1;
+          promotionGate.reason = "retired_cooldown";
+        } else {
+          suspendedExact += 1;
+          promotionGate.reason = "suspended_exact_loser";
+        }
+        lifecycle = nextLifecycle;
+        promotionGate.lifecycle = lifecycle;
+      }
+
+      if (hysteresis.enabled && lifecycle.state !== "incumbent_refresh") {
+        lifecycle.state = "graduated";
+      } else if (
+        !hysteresis.enabled &&
+        lifecycle.state !== "suspended" &&
+        lifecycle.state !== "retired"
+      ) {
+        lifecycle.state = "candidate";
+      }
+
+      promotionGate.lifecycle = lifecycle;
+      return {
+        entry: {
           ...deployment,
           enabled: hysteresis.enabled,
           promotionGate,
           updatedAtMs: nowMs,
           updatedBy: "pipeline:promotion",
-        };
-      },
-    );
+        },
+        lifecycle,
+        inUniverseNext: Boolean(rowState?.inUniverse),
+        exactLoser,
+        currentlyEnabled,
+        shortlistIncluded,
+      };
+    });
 
-    const updatesToPersist = updates.filter((row) => {
-      if (dirtySet.has(row.deploymentId)) return true;
-      const previous = consideredByDeploymentId.get(row.deploymentId);
-      if (!previous) return true;
-      return hasPromotionStateChanged({
-        previous,
-        next: row,
-      });
+    const neighborSuspended = new Set<string>();
+    for (const loser of drafts.filter((row) => row.exactLoser)) {
+      const loserFamily =
+        loser.lifecycle.tuneFamily || resolveLifecycleTuneFamily(loser.entry.tuneId);
+      for (const candidate of drafts) {
+        if (candidate.entry.deploymentId === loser.entry.deploymentId) continue;
+        if (candidate.entry.enabled) continue;
+        if (neighborSuspended.has(candidate.entry.deploymentId)) continue;
+        if (candidate.entry.symbol !== loser.entry.symbol) continue;
+        if (candidate.entry.strategyId !== loser.entry.strategyId) continue;
+        const candidateFamily =
+          candidate.lifecycle.tuneFamily ||
+          resolveLifecycleTuneFamily(candidate.entry.tuneId);
+        if (candidateFamily !== loserFamily) continue;
+        if (lifecycleIsSuppressed(candidate.lifecycle, nowMs)) continue;
+        const nextLifecycle = applyLifecycleSuspension({
+          lifecycle: candidate.lifecycle,
+          nowMs,
+          durationMs: LIFECYCLE_SUSPEND_NEIGHBOR_MS,
+        });
+        if (nextLifecycle.state === "retired") {
+          if (candidate.lifecycle.state !== "retired") retiredCount += 1;
+          candidate.entry.promotionGate = {
+            ...(candidate.entry.promotionGate || ({} as ScalpDeploymentPromotionGate)),
+            reason: "retired_cooldown",
+            lifecycle: nextLifecycle,
+          };
+        } else {
+          suspendedNeighbors += 1;
+          candidate.entry.promotionGate = {
+            ...(candidate.entry.promotionGate || ({} as ScalpDeploymentPromotionGate)),
+            reason: "suspended_neighbor_family",
+            lifecycle: nextLifecycle,
+          };
+        }
+        candidate.lifecycle = nextLifecycle;
+        neighborSuspended.add(candidate.entry.deploymentId);
+      }
+    }
+
+    for (const row of drafts) {
+      const freshness = freshnessByDeploymentId.get(row.entry.deploymentId);
+      const lifecycle = row.lifecycle;
+      if (lifecycleIsSuppressed(lifecycle, nowMs)) {
+        row.inUniverseNext = false;
+      } else if (row.entry.enabled) {
+        if (lifecycle.state === "incumbent_refresh") {
+          if (freshness?.ready) {
+            lifecycle.state = "graduated";
+            lifecycle.lastSeatReleaseAtMs = nowMs;
+            row.inUniverseNext = false;
+          } else {
+            row.inUniverseNext = true;
+          }
+        } else {
+          lifecycle.state = "graduated";
+          row.inUniverseNext = false;
+        }
+      } else if (row.shortlistIncluded) {
+        lifecycle.state = "candidate";
+        row.inUniverseNext = true;
+      } else {
+        if (lifecycle.state !== "suspended" && lifecycle.state !== "retired") {
+          lifecycle.state = "candidate";
+        }
+        row.inUniverseNext = false;
+      }
+      if (row.entry.promotionGate) {
+        row.entry.promotionGate.lifecycle = lifecycle;
+      }
+    }
+
+    const updates = drafts.map((row) => row.entry);
+
+    const updatesToPersist = drafts
+      .filter((row) => {
+        if (dirtySet.has(row.entry.deploymentId)) return true;
+        const previousInUniverse = Boolean(
+          inUniverseByDeploymentId.get(row.entry.deploymentId)?.inUniverse,
+        );
+        if (previousInUniverse !== row.inUniverseNext) return true;
+        const previous = consideredByDeploymentId.get(row.entry.deploymentId);
+        if (!previous) return true;
+        return hasPromotionStateChanged({
+          previous,
+          next: row.entry,
+        });
+      })
+      .map((row) => row.entry);
+    const seatSyncRows = drafts.filter((row) => {
+      const previousInUniverse = Boolean(
+        inUniverseByDeploymentId.get(row.entry.deploymentId)?.inUniverse,
+      );
+      const previousLifecycleState = String(
+        asJsonObject(
+          asJsonObject(inUniverseByDeploymentId.get(row.entry.deploymentId)?.promotionGate)
+            ?.lifecycle,
+        )?.state || "",
+      )
+        .trim()
+        .toLowerCase();
+      const previousRetired = previousLifecycleState === "retired";
+      const nextRetired = row.lifecycle.state === "retired";
+      return previousInUniverse !== row.inUniverseNext || previousRetired !== nextRetired;
     });
 
     if (updatesToPersist.length > 0) {
@@ -3569,6 +4237,24 @@ export async function runPromotionPipelineJob(
           updatedBy: "pipeline:promotion",
         })),
       );
+    }
+
+    if (seatSyncRows.length > 0) {
+      for (const row of seatSyncRows) {
+        await db.$executeRaw(Prisma.sql`
+                    UPDATE scalp_deployments
+                    SET
+                        in_universe = ${row.inUniverseNext},
+                        retired_at = ${row.lifecycle.state === "retired" ? new Date(nowMs) : null},
+                        worker_dirty = CASE
+                            WHEN ${row.inUniverseNext} = TRUE THEN worker_dirty
+                            ELSE FALSE
+                        END,
+                        updated_by = 'pipeline:promotion',
+                        updated_at = NOW()
+                    WHERE deployment_id = ${row.entry.deploymentId};
+                `);
+      }
     }
 
     if (dirtySet.size > 0) {
@@ -3588,6 +4274,19 @@ export async function runPromotionPipelineJob(
     const candidateSymbolCount = new Set(
       candidates.map((row) => normalizeSymbol(row.symbol)),
     ).size;
+    const lifecycleCounts = {
+      candidate: 0,
+      incumbent_refresh: 0,
+      graduated: 0,
+      suspended: 0,
+      retired: 0,
+    };
+    for (const row of drafts) {
+      const state = row.lifecycle.state;
+      if (state in lifecycleCounts) {
+        lifecycleCounts[state as keyof typeof lifecycleCounts] += 1;
+      }
+    }
     const pendingAfter = await countPendingPromotionRows();
     await pulsePipelineJobProgress({
       jobKind: "promotion",
@@ -3611,11 +4310,16 @@ export async function runPromotionPipelineJob(
         exploitSelected: explorationSelection.exploitSelected,
         enabledByHysteresis,
         disabledByHysteresis,
+        rolloverIncumbentsQueued,
+        suspendedExact,
+        suspendedNeighbors,
+        retiredCount,
         weeklyQueueRowsInserted,
         loadNudgeSymbolsQueued: loadSymbolsToNudge.length,
         workerNudgeDeploymentsQueued: workerDeploymentsToNudge.length,
         nudgedLoadSymbols,
         nudgedWorkerRows,
+        lifecycleCounts,
         pendingAfter,
       },
     });
@@ -3647,11 +4351,16 @@ export async function runPromotionPipelineJob(
         exploitSelected: explorationSelection.exploitSelected,
         enabledByHysteresis,
         disabledByHysteresis,
+        rolloverIncumbentsQueued,
+        suspendedExact,
+        suspendedNeighbors,
+        retiredCount,
         weeklyQueueRowsInserted,
         loadNudgeSymbolsQueued: loadSymbolsToNudge.length,
         workerNudgeDeploymentsQueued: workerDeploymentsToNudge.length,
         nudgedLoadSymbols,
         nudgedWorkerRows,
+        lifecycleCounts,
       },
     };
   });

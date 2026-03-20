@@ -188,6 +188,7 @@ export function buildScalpResearchTuneVariants(params: {
     strategyId: string;
     maxVariantsPerStrategy?: number;
     includeBaseline?: boolean;
+    includeSessionProfileVariants?: boolean;
 }): ScalpResearchTuneVariant[] {
     const deployment = resolveScalpDeployment({
         symbol: params.symbol,
@@ -207,6 +208,7 @@ export function buildScalpResearchTuneVariants(params: {
         ),
     );
     const includeBaseline = params.includeBaseline !== false;
+    const includeSessionProfileVariants = params.includeSessionProfileVariants !== false;
     const strategyId = deployment.strategyId;
     const baselineTrail = runtime.strategy.trailAtrMult;
     const baselineTimeStop = runtime.strategy.timeStopBars;
@@ -385,7 +387,9 @@ export function buildScalpResearchTuneVariants(params: {
         }
     };
 
-    addSessionProfiles(listScalpEntrySessionProfiles());
+    if (includeSessionProfileVariants) {
+        addSessionProfiles(listScalpEntrySessionProfiles());
+    }
 
     if (strategyId === 'compression_breakout_pullback_m15_m3') {
         const trailValues = [1.3, 1.4, 1.5, 1.6, 1.7];

@@ -72,3 +72,15 @@ test('buildScalpResearchTuneVariants can expand beyond legacy 20-variant cap', (
     assert.ok(variants.length > 20);
     assert.ok(variants.length <= 48);
 });
+
+test('buildScalpResearchTuneVariants can disable session-profile variants for Berlin-strict pipeline generation', () => {
+    const variants = buildScalpResearchTuneVariants({
+        symbol: 'BTCUSDT',
+        strategyId: 'regime_pullback_m15_m3',
+        maxVariantsPerStrategy: 24,
+        includeSessionProfileVariants: false,
+    });
+
+    assert.ok(!variants.some((row) => row.tuneId.startsWith('auto_sp_')));
+    assert.ok(!variants.some((row) => row.configOverride?.sessions?.entrySessionProfile !== undefined));
+});
