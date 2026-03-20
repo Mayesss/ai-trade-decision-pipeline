@@ -252,7 +252,10 @@ type ScalpPipelineJobSummary = {
   jobKind?: string;
   status?: string;
   locked?: boolean;
+  runningSinceAtMs?: number | null;
+  runningDurationMs?: number | null;
   lastRunAtMs?: number | null;
+  lastDurationMs?: number | null;
   lastSuccessAtMs?: number | null;
   nextRunAtMs?: number | null;
   lastError?: string | null;
@@ -285,12 +288,14 @@ type ScalpSummaryWorkerRow = {
   symbol?: string;
   strategyId?: string;
   tuneId?: string;
+  workerId?: string | null;
   weekStartMs?: number | null;
   weekEndMs?: number | null;
   status?: string;
   attempts?: number | null;
   startedAtMs?: number | null;
   finishedAtMs?: number | null;
+  durationMs?: number | null;
   errorCode?: string | null;
   errorMessage?: string | null;
   trades?: number | null;
@@ -1632,7 +1637,7 @@ export default function Home() {
 
       const okMsg = String(payload?.message || "").trim() || "Invoked";
       const workerDurationMs = asFiniteNumber(
-        payload?.worker?.diagnostics?.durationMs,
+        payload?.job?.diagnostics?.durationMs,
       );
       const durationMs =
         workerDurationMs !== null
@@ -2766,6 +2771,7 @@ export default function Home() {
         strategyId,
         tuneId,
         deploymentId,
+        workerId: String(row?.workerId || "").trim() || null,
         windowFromTs,
         windowToTs,
         startedAtMs: asFiniteNumber(row?.startedAtMs),

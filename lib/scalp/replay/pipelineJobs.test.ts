@@ -3,7 +3,9 @@ import test from "node:test";
 
 import {
   applyPromotionHysteresis,
+  buildPipelineJobDiagnostics,
   buildDiscoverSymbolSyncPlan,
+  listScalpDurationTimelineRuns,
   selectPromotionWinnerRowsWithExploration,
   type PromotionSelectionRow,
 } from "../pipelineJobs";
@@ -324,4 +326,60 @@ test("selectPromotionWinnerRowsWithExploration keeps one row per incumbent symbo
   const selectedSymbols = new Set(out.selectedRows.map((row) => row.symbol));
   assert.equal(selectedSymbols.has("BTCUSDT"), true);
   assert.equal(selectedSymbols.has("ETHUSDT"), true);
+});
+
+test("buildPipelineJobDiagnostics computes duration for completed runs", () => {
+  const out = buildPipelineJobDiagnostics(1_000, 1_380);
+  assert.equal(out.startedAtMs, 1_000);
+  assert.equal(out.finishedAtMs, 1_380);
+  assert.equal(out.durationMs, 380);
+});
+
+test("buildPipelineJobDiagnostics handles failed/invalid timing bounds", () => {
+  const out = buildPipelineJobDiagnostics(2_000, 1_500);
+  assert.equal(out.startedAtMs, 2_000);
+  assert.equal(out.finishedAtMs, 1_500);
+  assert.equal(out.durationMs, null);
+});
+
+test("buildPipelineJobDiagnostics handles busy/no-run states", () => {
+  const out = buildPipelineJobDiagnostics(null, null);
+  assert.equal(out.startedAtMs, null);
+  assert.equal(out.finishedAtMs, null);
+  assert.equal(out.durationMs, null);
+});
+
+test("listScalpDurationTimelineRuns returns empty list when PG is not configured", async () => {
+  const pgEnvKeys = [
+    "SCALP_PG_CONNECTION_STRING",
+    "NEON__DATABASE_URL",
+    "NEON__POSTGRES_PRISMA_URL",
+    "NEON__POSTGRES_URL",
+    "DATABASE_URL",
+    "POSTGRES_PRISMA_URL",
+    "POSTGRES_URL",
+    "PRISMA_CONNECTION_STRING",
+    "PRISMA_PG_POSTGRES_URL",
+  ] as const;
+  const originalValues: Partial<Record<(typeof pgEnvKeys)[number], string>> =
+    {};
+  for (const key of pgEnvKeys) {
+    const value = process.env[key];
+    if (value !== undefined) originalValues[key] = value;
+    delete process.env[key];
+  }
+  try {
+    const runs = await listScalpDurationTimelineRuns({
+      source: "all",
+      jobKind: "all",
+      limit: 50,
+    });
+    assert.deepEqual(runs, []);
+  } finally {
+    for (const key of pgEnvKeys) {
+      const value = originalValues[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });

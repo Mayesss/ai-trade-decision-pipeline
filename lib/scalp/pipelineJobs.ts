@@ -72,6 +72,12 @@ export type ScalpPipelineQueueStatus =
   | "retry_wait"
   | "failed";
 
+export interface ScalpPipelineJobDiagnostics {
+  startedAtMs: number | null;
+  finishedAtMs: number | null;
+  durationMs: number | null;
+}
+
 export interface ScalpPipelineJobExecutionResult {
   ok: boolean;
   busy: boolean;
@@ -84,6 +90,7 @@ export interface ScalpPipelineJobExecutionResult {
   downstreamRequested: boolean;
   progressLabel: string | null;
   details: Record<string, unknown>;
+  diagnostics?: ScalpPipelineJobDiagnostics;
   error?: string;
 }
 
@@ -91,7 +98,10 @@ export interface ScalpPipelineJobHealth {
   jobKind: ScalpPipelineJobKind;
   status: string;
   locked: boolean;
+  runningSinceAtMs: number | null;
+  runningDurationMs: number | null;
   lastRunAtMs: number | null;
+  lastDurationMs: number | null;
   lastSuccessAtMs: number | null;
   nextRunAtMs: number | null;
   lastError: string | null;
@@ -111,12 +121,14 @@ export interface ScalpDeploymentWeeklyMetricSnapshotRow {
   symbol: string;
   strategyId: string;
   tuneId: string;
+  workerId: string | null;
   weekStartMs: number;
   weekEndMs: number;
   status: string;
   attempts: number;
   startedAtMs: number | null;
   finishedAtMs: number | null;
+  durationMs: number | null;
   errorCode: string | null;
   errorMessage: string | null;
   trades: number | null;
@@ -124,6 +136,27 @@ export interface ScalpDeploymentWeeklyMetricSnapshotRow {
   expectancyR: number | null;
   profitFactor: number | null;
   maxDrawdownR: number | null;
+}
+
+export type ScalpDurationTimelineSource = "pipeline" | "worker";
+
+export interface ScalpDurationTimelineRun {
+  source: ScalpDurationTimelineSource;
+  status: string;
+  startedAtMs: number | null;
+  finishedAtMs: number | null;
+  durationMs: number | null;
+  jobKind?: ScalpPipelineJobKind;
+  processed?: number;
+  succeeded?: number;
+  retried?: number;
+  failed?: number;
+  pendingAfter?: number;
+  downstreamRequested?: boolean;
+  workerId?: string | null;
+  taskCount?: number;
+  succeededCount?: number;
+  failedCount?: number;
 }
 
 function toFiniteNumber(value: unknown, fallback = 0): number {
@@ -161,6 +194,29 @@ function envNumber(name: string, fallback: number): number {
   const n = Number(process.env[name]);
   if (!Number.isFinite(n)) return fallback;
   return n;
+}
+
+export function buildPipelineJobDiagnostics(
+  startedAtMs: number | null,
+  finishedAtMs: number | null,
+): ScalpPipelineJobDiagnostics {
+  const started =
+    typeof startedAtMs === "number" && Number.isFinite(startedAtMs)
+      ? Math.max(0, Math.floor(startedAtMs))
+      : null;
+  const finished =
+    typeof finishedAtMs === "number" && Number.isFinite(finishedAtMs)
+      ? Math.max(0, Math.floor(finishedAtMs))
+      : null;
+  const durationMs =
+    started !== null && finished !== null && finished >= started
+      ? finished - started
+      : null;
+  return {
+    startedAtMs: started,
+    finishedAtMs: finished,
+    durationMs,
+  };
 }
 
 function isScalpPipelineBitgetOnlyEnabled(): boolean {
@@ -593,6 +649,7 @@ async function releasePipelineJobLock(params: {
   jobKind: ScalpPipelineJobKind;
   lockToken: string;
   success: boolean;
+  lastDurationMs?: number | null;
   nextRunAtMs?: number | null;
   lastError?: string | null;
   progressLabel?: string | null;
@@ -614,6 +671,7 @@ async function releasePipelineJobLock(params: {
             running_since = NULL,
             next_run_at = COALESCE(${nextRunAt}, next_run_at),
             last_success_at = CASE WHEN ${params.success} THEN NOW() ELSE last_success_at END,
+            last_duration_ms = ${params.lastDurationMs ?? null},
             last_error = ${params.lastError || null},
             progress_label = ${params.progressLabel || null},
             progress_json = ${params.progress ? JSON.stringify(params.progress) : null}::jsonb,
@@ -623,6 +681,70 @@ async function releasePipelineJobLock(params: {
     `);
 }
 
+async function insertPipelineJobRun(params: {
+  jobKind: ScalpPipelineJobKind;
+  status: "succeeded" | "failed";
+  diagnostics: ScalpPipelineJobDiagnostics;
+  result: Omit<ScalpPipelineJobExecutionResult, "jobKind" | "busy">;
+}): Promise<void> {
+  const startedAt = params.diagnostics.startedAtMs;
+  const finishedAt = params.diagnostics.finishedAtMs;
+  const durationMs = params.diagnostics.durationMs;
+  if (
+    startedAt === null ||
+    finishedAt === null ||
+    durationMs === null ||
+    finishedAt < startedAt
+  ) {
+    return;
+  }
+  const db = scalpPrisma();
+  try {
+    await db.$executeRaw(
+      Prisma.sql`
+      INSERT INTO scalp_pipeline_job_runs(
+        job_kind,
+        status,
+        started_at,
+        finished_at,
+        duration_ms,
+        processed,
+        succeeded,
+        retried,
+        failed,
+        pending_after,
+        downstream_requested,
+        error,
+        progress_label,
+        details_json
+      )
+      VALUES(
+        ${params.jobKind},
+        ${params.status},
+        ${new Date(startedAt)},
+        ${new Date(finishedAt)},
+        ${Math.max(0, Math.floor(durationMs))},
+        ${Math.max(0, Math.floor(Number(params.result.processed || 0)))},
+        ${Math.max(0, Math.floor(Number(params.result.succeeded || 0)))},
+        ${Math.max(0, Math.floor(Number(params.result.retried || 0)))},
+        ${Math.max(0, Math.floor(Number(params.result.failed || 0)))},
+        ${Math.max(0, Math.floor(Number(params.result.pendingAfter || 0)))},
+        ${Boolean(params.result.downstreamRequested)},
+        ${String(params.result.error || "").trim() || null},
+        ${params.result.progressLabel || null},
+        ${params.result.details ? JSON.stringify(params.result.details) : null}::jsonb
+      );
+    `,
+    );
+  } catch (err: any) {
+    console.warn("[scalp-pipeline-jobs] failed to persist pipeline run", {
+      jobKind: params.jobKind,
+      status: params.status,
+      message: err?.message || String(err),
+    });
+  }
+}
+
 async function runWithPipelineJobLock(
   jobKind: ScalpPipelineJobKind,
   run: (ctx: {
@@ -630,6 +752,7 @@ async function runWithPipelineJobLock(
     lockMs: number;
   }) => Promise<Omit<ScalpPipelineJobExecutionResult, "jobKind" | "busy">>,
 ): Promise<ScalpPipelineJobExecutionResult> {
+  const emptyDiagnostics = buildPipelineJobDiagnostics(null, null);
   if (!isScalpPgConfigured()) {
     return {
       ok: false,
@@ -643,6 +766,7 @@ async function runWithPipelineJobLock(
       downstreamRequested: false,
       progressLabel: null,
       details: {},
+      diagnostics: emptyDiagnostics,
       error: "scalp_pg_not_configured",
     };
   }
@@ -668,38 +792,40 @@ async function runWithPipelineJobLock(
       downstreamRequested: false,
       progressLabel: "busy",
       details: {},
+      diagnostics: emptyDiagnostics,
     };
   }
 
+  const runStartedAtMs = Date.now();
   try {
     const result = await run({ lockToken, lockMs });
+    const diagnostics = buildPipelineJobDiagnostics(runStartedAtMs, Date.now());
     await releasePipelineJobLock({
       jobKind,
       lockToken,
       success: result.ok,
+      lastDurationMs: diagnostics.durationMs,
       lastError: result.ok ? null : String(result.details?.error || ""),
       progressLabel: result.progressLabel || null,
       progress: result.details,
+    });
+    await insertPipelineJobRun({
+      jobKind,
+      status: result.ok ? "succeeded" : "failed",
+      diagnostics,
+      result,
     });
     return {
       ...result,
       busy: false,
       jobKind,
+      diagnostics,
     };
   } catch (err: any) {
     const error = String(err?.message || err || "pipeline_job_failed");
-    await releasePipelineJobLock({
-      jobKind,
-      lockToken,
-      success: false,
-      lastError: error.slice(0, 500),
-      progressLabel: "failed",
-      progress: { error },
-    });
-    return {
+    const diagnostics = buildPipelineJobDiagnostics(runStartedAtMs, Date.now());
+    const result = {
       ok: false,
-      busy: false,
-      jobKind,
       processed: 0,
       succeeded: 0,
       retried: 0,
@@ -709,7 +835,23 @@ async function runWithPipelineJobLock(
       progressLabel: "failed",
       details: { error },
       error,
-    };
+    } satisfies Omit<ScalpPipelineJobExecutionResult, "jobKind" | "busy">;
+    await releasePipelineJobLock({
+      jobKind,
+      lockToken,
+      success: false,
+      lastDurationMs: diagnostics.durationMs,
+      lastError: error.slice(0, 500),
+      progressLabel: "failed",
+      progress: { error },
+    });
+    await insertPipelineJobRun({
+      jobKind,
+      status: "failed",
+      diagnostics,
+      result,
+    });
+    return { ...result, busy: false, jobKind, diagnostics };
   }
 }
 
@@ -3531,7 +3673,9 @@ export async function loadScalpPipelineJobsHealth(): Promise<
         status: string;
         lockToken: string | null;
         lockExpiresAtMs: bigint | number | null;
+        runningSinceAtMs: bigint | number | null;
         lastRunAtMs: bigint | number | null;
+        lastDurationMs: number | null;
         lastSuccessAtMs: bigint | number | null;
         nextRunAtMs: bigint | number | null;
         lastError: string | null;
@@ -3544,7 +3688,9 @@ export async function loadScalpPipelineJobsHealth(): Promise<
                 status,
                 lock_token AS "lockToken",
                 (EXTRACT(EPOCH FROM lock_expires_at) * 1000)::bigint AS "lockExpiresAtMs",
+                (EXTRACT(EPOCH FROM running_since) * 1000)::bigint AS "runningSinceAtMs",
                 (EXTRACT(EPOCH FROM last_run_at) * 1000)::bigint AS "lastRunAtMs",
+                last_duration_ms AS "lastDurationMs",
                 (EXTRACT(EPOCH FROM last_success_at) * 1000)::bigint AS "lastSuccessAtMs",
                 (EXTRACT(EPOCH FROM next_run_at) * 1000)::bigint AS "nextRunAtMs",
                 last_error AS "lastError",
@@ -3687,11 +3833,24 @@ export async function loadScalpPipelineJobsHealth(): Promise<
   return SCALP_PIPELINE_JOB_KINDS.map((jobKind) => {
     const row = byJobKind.get(jobKind) || null;
     const lockExpiresAtMs = asTsMs(row?.lockExpiresAtMs);
+    const runningSinceAtMs = asTsMs(row?.runningSinceAtMs);
+    const runningDurationMs =
+      runningSinceAtMs !== null && runningSinceAtMs <= nowMs
+        ? nowMs - runningSinceAtMs
+        : null;
+    const lastDurationMsRaw = Number(row?.lastDurationMs);
+    const lastDurationMs =
+      Number.isFinite(lastDurationMsRaw) && lastDurationMsRaw >= 0
+        ? Math.floor(lastDurationMsRaw)
+        : null;
     return {
       jobKind,
       status: String(row?.status || "idle"),
       locked: typeof lockExpiresAtMs === "number" && lockExpiresAtMs > nowMs,
+      runningSinceAtMs,
+      runningDurationMs,
       lastRunAtMs: asTsMs(row?.lastRunAtMs),
+      lastDurationMs,
       lastSuccessAtMs: asTsMs(row?.lastSuccessAtMs),
       nextRunAtMs: asTsMs(row?.nextRunAtMs),
       lastError: String(row?.lastError || "").trim() || null,
@@ -3714,6 +3873,7 @@ export async function listScalpDeploymentWeeklyMetricRows(
       symbol: string;
       strategyId: string;
       tuneId: string;
+      workerId: string | null;
       weekStartMs: bigint | number | null;
       weekEndMs: bigint | number | null;
       status: string;
@@ -3734,6 +3894,7 @@ export async function listScalpDeploymentWeeklyMetricRows(
             m.symbol,
             m.strategy_id AS "strategyId",
             m.tune_id AS "tuneId",
+            m.worker_id AS "workerId",
             (EXTRACT(EPOCH FROM m.week_start) * 1000)::bigint AS "weekStartMs",
             (EXTRACT(EPOCH FROM m.week_end) * 1000)::bigint AS "weekEndMs",
             m.status,
@@ -3766,19 +3927,29 @@ export async function listScalpDeploymentWeeklyMetricRows(
       const weekEndMs = asTsMs(row.weekEndMs);
       if (!deploymentId || !symbol || !strategyId) return null;
       if (weekStartMs === null || weekEndMs === null) return null;
+      const startedAtMs = asTsMs(row.startedAtMs);
+      const finishedAtMs = asTsMs(row.finishedAtMs);
+      const durationMs =
+        startedAtMs !== null &&
+        finishedAtMs !== null &&
+        finishedAtMs >= startedAtMs
+          ? finishedAtMs - startedAtMs
+          : null;
       return {
         deploymentId,
         symbol,
         strategyId,
         tuneId,
+        workerId: String(row.workerId || "").trim() || null,
         weekStartMs,
         weekEndMs,
         status: String(row.status || "pending")
           .trim()
           .toLowerCase(),
         attempts: Math.max(0, Math.floor(Number(row.attempts || 0))),
-        startedAtMs: asTsMs(row.startedAtMs),
-        finishedAtMs: asTsMs(row.finishedAtMs),
+        startedAtMs,
+        finishedAtMs,
+        durationMs,
         errorCode: String(row.errorCode || "").trim() || null,
         errorMessage: String(row.errorMessage || "").trim() || null,
         trades:
@@ -3792,4 +3963,189 @@ export async function listScalpDeploymentWeeklyMetricRows(
       } satisfies ScalpDeploymentWeeklyMetricSnapshotRow;
     })
     .filter((row): row is ScalpDeploymentWeeklyMetricSnapshotRow => row !== null);
+}
+
+export async function listScalpDurationTimelineRuns(params: {
+  source?: "all" | ScalpDurationTimelineSource;
+  jobKind?: "all" | ScalpPipelineJobKind;
+  fromMs?: number;
+  toMs?: number;
+  limit?: number;
+}): Promise<ScalpDurationTimelineRun[]> {
+  if (!isScalpPgConfigured()) return [];
+  const source = params.source === "pipeline" || params.source === "worker"
+    ? params.source
+    : "all";
+  const jobKind = SCALP_PIPELINE_JOB_KINDS.includes(
+    params.jobKind as ScalpPipelineJobKind,
+  )
+    ? (params.jobKind as ScalpPipelineJobKind)
+    : "all";
+  const nowMs = Date.now();
+  const fromMs =
+    typeof params.fromMs === "number" && Number.isFinite(params.fromMs)
+      ? Math.floor(params.fromMs)
+      : nowMs - 7 * ONE_DAY_MS;
+  const toMs =
+    typeof params.toMs === "number" && Number.isFinite(params.toMs)
+      ? Math.floor(params.toMs)
+      : nowMs;
+  const rangeStartMs = Math.min(fromMs, toMs);
+  const rangeEndMs = Math.max(fromMs, toMs);
+  const limit = Math.max(1, Math.min(500, toPositiveInt(params.limit, 50)));
+  const db = scalpPrisma();
+
+  const pipelineRows =
+    source === "worker"
+      ? []
+      : await db.$queryRaw<
+          Array<{
+            jobKind: string;
+            status: string;
+            startedAtMs: bigint | number | null;
+            finishedAtMs: bigint | number | null;
+            durationMs: number | null;
+            processed: number | null;
+            succeeded: number | null;
+            retried: number | null;
+            failed: number | null;
+            pendingAfter: number | null;
+            downstreamRequested: boolean | null;
+          }>
+        >(Prisma.sql`
+          SELECT
+              r.job_kind AS "jobKind",
+              r.status,
+              (EXTRACT(EPOCH FROM r.started_at) * 1000)::bigint AS "startedAtMs",
+              (EXTRACT(EPOCH FROM r.finished_at) * 1000)::bigint AS "finishedAtMs",
+              r.duration_ms AS "durationMs",
+              r.processed,
+              r.succeeded,
+              r.retried,
+              r.failed,
+              r.pending_after AS "pendingAfter",
+              r.downstream_requested AS "downstreamRequested"
+          FROM scalp_pipeline_job_runs r
+          WHERE r.started_at >= ${new Date(rangeStartMs)}
+            AND r.started_at <= ${new Date(rangeEndMs)}
+            ${
+              jobKind === "all"
+                ? Prisma.empty
+                : Prisma.sql`AND r.job_kind = ${jobKind}`
+            }
+          ORDER BY r.finished_at DESC
+          LIMIT ${limit};
+        `);
+
+  const workerRows =
+    source === "pipeline"
+      ? []
+      : await db.$queryRaw<
+          Array<{
+            workerId: string;
+            startedAtMs: bigint | number | null;
+            finishedAtMs: bigint | number | null;
+            taskCount: bigint | number | null;
+            succeededCount: bigint | number | null;
+            failedCount: bigint | number | null;
+          }>
+        >(Prisma.sql`
+          SELECT
+              m.worker_id AS "workerId",
+              (EXTRACT(EPOCH FROM MIN(m.started_at)) * 1000)::bigint AS "startedAtMs",
+              (EXTRACT(EPOCH FROM MAX(m.finished_at)) * 1000)::bigint AS "finishedAtMs",
+              COUNT(*)::bigint AS "taskCount",
+              COUNT(*) FILTER (WHERE m.status = 'succeeded')::bigint AS "succeededCount",
+              COUNT(*) FILTER (WHERE m.status = 'failed')::bigint AS "failedCount"
+          FROM scalp_deployment_weekly_metrics m
+          WHERE m.worker_id IS NOT NULL
+            AND m.started_at IS NOT NULL
+            AND m.started_at >= ${new Date(rangeStartMs)}
+            AND m.started_at <= ${new Date(rangeEndMs)}
+          GROUP BY m.worker_id
+          ORDER BY MAX(m.finished_at) DESC NULLS LAST, MIN(m.started_at) DESC
+          LIMIT ${limit};
+        `);
+
+  const pipelineRuns = pipelineRows
+    .map((row) => {
+      const normalizedJobKind = String(row.jobKind || "").trim().toLowerCase();
+      if (
+        !SCALP_PIPELINE_JOB_KINDS.includes(
+          normalizedJobKind as ScalpPipelineJobKind,
+        )
+      ) {
+        return null;
+      }
+      const startedAtMs = asTsMs(row.startedAtMs);
+      const finishedAtMs = asTsMs(row.finishedAtMs);
+      const rawDurationMs = Number(row.durationMs);
+      const durationMs =
+        Number.isFinite(rawDurationMs) && rawDurationMs >= 0
+          ? Math.floor(rawDurationMs)
+          : startedAtMs !== null &&
+              finishedAtMs !== null &&
+              finishedAtMs >= startedAtMs
+            ? finishedAtMs - startedAtMs
+            : null;
+      return {
+        source: "pipeline",
+        status: String(row.status || "unknown").trim().toLowerCase() || "unknown",
+        startedAtMs,
+        finishedAtMs,
+        durationMs,
+        jobKind: normalizedJobKind as ScalpPipelineJobKind,
+        processed: Math.max(0, Math.floor(Number(row.processed || 0))),
+        succeeded: Math.max(0, Math.floor(Number(row.succeeded || 0))),
+        retried: Math.max(0, Math.floor(Number(row.retried || 0))),
+        failed: Math.max(0, Math.floor(Number(row.failed || 0))),
+        pendingAfter: Math.max(0, Math.floor(Number(row.pendingAfter || 0))),
+        downstreamRequested: Boolean(row.downstreamRequested),
+      } satisfies ScalpDurationTimelineRun;
+    })
+    .filter((row) => row !== null) as ScalpDurationTimelineRun[];
+
+  const workerRuns = workerRows
+    .map((row) => {
+      const workerId = String(row.workerId || "").trim();
+      if (!workerId) return null;
+      const startedAtMs = asTsMs(row.startedAtMs);
+      const finishedAtMs = asTsMs(row.finishedAtMs);
+      const durationMs =
+        startedAtMs !== null &&
+        finishedAtMs !== null &&
+        finishedAtMs >= startedAtMs
+          ? finishedAtMs - startedAtMs
+          : null;
+      const failedCount = Math.max(0, Math.floor(Number(row.failedCount || 0)));
+      const succeededCount = Math.max(
+        0,
+        Math.floor(Number(row.succeededCount || 0)),
+      );
+      const status = failedCount > 0
+        ? "failed"
+        : finishedAtMs === null
+          ? "running"
+          : "succeeded";
+      return {
+        source: "worker",
+        status,
+        startedAtMs,
+        finishedAtMs,
+        durationMs,
+        workerId,
+        taskCount: Math.max(0, Math.floor(Number(row.taskCount || 0))),
+        succeededCount,
+        failedCount,
+      } satisfies ScalpDurationTimelineRun;
+    })
+    .filter((row) => row !== null) as ScalpDurationTimelineRun[];
+
+  return [...pipelineRuns, ...workerRuns]
+    .sort((a, b) => {
+      const aSortTs = a.finishedAtMs ?? a.startedAtMs ?? 0;
+      const bSortTs = b.finishedAtMs ?? b.startedAtMs ?? 0;
+      return bSortTs - aSortTs;
+    })
+    .slice(0, limit);
 }

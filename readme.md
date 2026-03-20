@@ -299,8 +299,11 @@ npm run start
 - `GET /api/scalp/research/universe`
   - Returns the latest persisted symbol-discovery snapshot (selected symbols, adds/removes, candidate diagnostics).
 - `GET /api/scalp/dashboard/summary`
-  - Scalp dashboard payload for UI tab (policy metadata, per-symbol state snapshot, aggregated counters, and recent journal tail).
+  - Scalp dashboard payload for UI tab (policy metadata, per-symbol state snapshot, aggregated counters, recent journal tail, plus pipeline/worker duration fields).
   - Optional query: `strategyId=<id>` to view state/journal for a specific strategy.
+- `GET /api/scalp/ops/durations`
+  - Returns recent duration timeline rows for pipeline jobs and worker runs.
+  - Query params: `source=all|pipeline|worker`, `jobKind=all|discover|load_candles|prepare|worker|promotion`, `fromMs`, `toMs`, `limit<=500`.
 - `GET /api/scalp/strategy/control`
   - Returns runtime scalp strategy controls: selected strategy, default strategy, and per-strategy enabled state.
 - `POST /api/scalp/strategy/control`

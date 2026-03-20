@@ -261,6 +261,7 @@ model ScalpPipelineJob {
   attempts      Int       @default(0)
   lastRunAt     DateTime? @map("last_run_at") @db.Timestamptz(3)
   lastSuccessAt DateTime? @map("last_success_at") @db.Timestamptz(3)
+  lastDurationMs Int?     @map("last_duration_ms")
   lastError     String?   @map("last_error")
   progressLabel String?   @map("progress_label")
   progressJson  Json?     @map("progress_json") @db.JsonB
@@ -270,6 +271,29 @@ model ScalpPipelineJob {
   @@index([status], map: "scalp_pipeline_jobs_status_idx")
   @@index([nextRunAt], map: "scalp_pipeline_jobs_next_run_idx")
   @@map("scalp_pipeline_jobs")
+}
+
+model ScalpPipelineJobRun {
+  id                BigInt    @id @default(autoincrement())
+  jobKind           String    @map("job_kind")
+  status            String
+  startedAt         DateTime  @map("started_at") @db.Timestamptz(3)
+  finishedAt        DateTime  @map("finished_at") @db.Timestamptz(3)
+  durationMs        Int       @map("duration_ms")
+  processed         Int       @default(0)
+  succeeded         Int       @default(0)
+  retried           Int       @default(0)
+  failed            Int       @default(0)
+  pendingAfter      Int       @default(0) @map("pending_after")
+  downstreamRequested Boolean @default(false) @map("downstream_requested")
+  error             String?
+  progressLabel     String?   @map("progress_label")
+  detailsJson       Json?     @map("details_json") @db.JsonB
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([jobKind, startedAt(sort: Desc)], map: "scalp_pipeline_job_runs_kind_started_idx")
+  @@index([finishedAt(sort: Desc)], map: "scalp_pipeline_job_runs_finished_idx")
+  @@map("scalp_pipeline_job_runs")
 }
 
 model ScalpPipelineSymbol {
