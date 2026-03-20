@@ -640,7 +640,7 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<
     primaryPathname: "/api/scalp/cron/discover-symbols",
     matchPathnames: ["/api/scalp/cron/discover-symbols"],
     fallbackInvokePath:
-      "/api/scalp/cron/discover-symbols?includeLiveQuotes=true&autoSuccessor=true&autoContinue=true&selfMaxHops=4",
+      "/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true&autoSuccessor=true&autoContinue=true&selfMaxHops=4",
   },
   scalp_load_candles: {
     primaryPathname: "/api/scalp/cron/load-candles",
@@ -695,6 +695,31 @@ function parseCronPathname(rawPath: unknown): string | null {
     return new URL(value, "http://localhost").pathname;
   } catch {
     return null;
+  }
+}
+
+function normalizeInvokePathForScalpCronNow(
+  rowId: string,
+  rawInvokePath: string,
+): string {
+  const value = String(rawInvokePath || "").trim();
+  if (!value) return "";
+  const pathname = parseCronPathname(value);
+  const isDiscoverCron =
+    rowId === "scalp_discover_symbols" ||
+    pathname === "/api/scalp/cron/discover-symbols";
+  if (!isDiscoverCron) return value;
+  try {
+    const absolute = /^https?:\/\//i.test(value);
+    const parsed = new URL(value, "http://localhost");
+    parsed.searchParams.set("dryRun", "false");
+    if (absolute) return `${parsed.origin}${parsed.pathname}${parsed.search}`;
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    if (/([?&])dryRun=/i.test(value)) {
+      return value.replace(/([?&])dryRun=[^&#]*/i, "$1dryRun=false");
+    }
+    return `${value}${value.includes("?") ? "&" : "?"}dryRun=false`;
   }
 }
 
@@ -1540,7 +1565,10 @@ export default function Home() {
   };
 
   const invokeScalpCronNow = async (row: ScalpOpsCronRow) => {
-    const invokePath = String(row.invokePath || "").trim();
+    const invokePath = normalizeInvokePathForScalpCronNow(
+      row.id,
+      String(row.invokePath || "").trim(),
+    );
     if (!invokePath) {
       setScalpCronInvokeStateById((prev) => ({
         ...prev,
