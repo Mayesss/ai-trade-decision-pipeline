@@ -1175,6 +1175,12 @@ export default async function handler(
         tuneId: row.tuneId,
         source: row.source,
         enabled: row.enabled,
+        inUniverse:
+          typeof row.inUniverse === "boolean" ? row.inUniverse : null,
+        lifecycleState:
+          typeof row.promotionGate?.lifecycle?.state === "string"
+            ? row.promotionGate.lifecycle.state
+            : null,
         promotionEligible:
           typeof row.promotionGate?.eligible === "boolean"
             ? row.promotionGate.eligible

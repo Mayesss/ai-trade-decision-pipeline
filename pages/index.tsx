@@ -277,6 +277,14 @@ type ScalpSummaryDeployment = {
   tuneId?: string;
   source?: string;
   enabled?: boolean;
+  inUniverse?: boolean | null;
+  lifecycleState?:
+    | "candidate"
+    | "incumbent_refresh"
+    | "graduated"
+    | "suspended"
+    | "retired"
+    | null;
   promotionEligible?: boolean | null;
   promotionReason?: string | null;
   forwardValidation?: ScalpForwardValidation | null;
@@ -433,6 +441,14 @@ type ScalpOpsDeploymentRow = {
   tuneId: string;
   source: string;
   enabled: boolean;
+  inUniverse: boolean | null;
+  lifecycleState:
+    | "candidate"
+    | "incumbent_refresh"
+    | "graduated"
+    | "suspended"
+    | "retired"
+    | null;
   promotionEligible: boolean;
   promotionReason: string | null;
   forwardValidation: ScalpForwardValidation | null;
@@ -497,6 +513,14 @@ type ScalpWorkerJobGridRow = {
   symbol: string;
   strategyId: string;
   tuneId: string;
+  inUniverse?: boolean | null;
+  lifecycleState?:
+    | "candidate"
+    | "incumbent_refresh"
+    | "graduated"
+    | "suspended"
+    | "retired"
+    | null;
   forwardValidation: ScalpForwardValidation | null;
   deployed: boolean;
   deploymentEnabled: boolean | null;
@@ -2476,6 +2500,29 @@ export default function Home() {
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
   };
+  const normalizeScalpLifecycleState = (
+    value: unknown,
+  ):
+    | "candidate"
+    | "incumbent_refresh"
+    | "graduated"
+    | "suspended"
+    | "retired"
+    | null => {
+    const normalized = String(value || "")
+      .trim()
+      .toLowerCase();
+    if (
+      normalized === "candidate" ||
+      normalized === "incumbent_refresh" ||
+      normalized === "graduated" ||
+      normalized === "suspended" ||
+      normalized === "retired"
+    ) {
+      return normalized;
+    }
+    return null;
+  };
   const scalpOpsDeployments: ScalpOpsDeploymentRow[] = scalpRows.map((row) => {
     const runtimePerf30dExpectancyR =
       row.tradesPlaced > 0 &&
@@ -2491,6 +2538,8 @@ export default function Home() {
       tuneId: String(row.tuneId || row.tune || "default"),
       source: "runtime",
       enabled: true,
+      inUniverse: null,
+      lifecycleState: null,
       promotionEligible:
         typeof row.promotionEligible === "boolean"
           ? row.promotionEligible
@@ -2518,9 +2567,12 @@ export default function Home() {
         deploymentId,
         symbol,
         strategyId,
+        lifecycleState: normalizeScalpLifecycleState(row?.lifecycleState),
         tuneId: String(row?.tuneId || "").trim() || "default",
         source: String(row?.source || "").trim() || "registry",
         enabled: row?.enabled === true,
+        inUniverse:
+          typeof row?.inUniverse === "boolean" ? row.inUniverse : null,
         promotionEligible:
           typeof row?.promotionEligible === "boolean"
             ? row.promotionEligible
@@ -3815,6 +3867,8 @@ export default function Home() {
             deployment.forwardValidation || workerMetrics.forwardValidation,
           deployed: workerMetrics.deployed || deployment.enabled,
           deploymentEnabled: deployment.enabled,
+          inUniverse: deployment.inUniverse,
+          lifecycleState: deployment.lifecycleState,
           promotionEligible: deployment.promotionEligible,
           reason:
             deployment.promotionReason ||
@@ -3831,6 +3885,8 @@ export default function Home() {
         forwardValidation,
         deployed: deployment.enabled,
         deploymentEnabled: deployment.enabled,
+        inUniverse: deployment.inUniverse,
+        lifecycleState: deployment.lifecycleState,
         promotionEligible: deployment.promotionEligible,
         reason:
           deployment.promotionReason ||
@@ -4223,6 +4279,57 @@ export default function Home() {
           String(params.value || "unknown").replace(/_/g, " "),
       },
       {
+        headerName: "Lifecycle",
+        field: "lifecycleState",
+        minWidth: 150,
+        valueFormatter: (params) => {
+          const value = String(params.value || "")
+            .trim()
+            .toLowerCase();
+          if (!value) return "unknown";
+          return value.replace(/_/g, " ");
+        },
+        cellRenderer: (params: any) => {
+          const value = String(params?.value || "")
+            .trim()
+            .toLowerCase();
+          if (!value) {
+            return (
+              <span className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}>
+                unknown
+              </span>
+            );
+          }
+          const toneClass =
+            value === "graduated"
+              ? scalpDarkMode
+                ? "text-emerald-300"
+                : "text-emerald-700"
+              : value === "incumbent_refresh"
+                ? scalpDarkMode
+                  ? "text-sky-300"
+                  : "text-sky-700"
+                : value === "candidate"
+                  ? scalpDarkMode
+                    ? "text-zinc-300"
+                    : "text-slate-700"
+                  : value === "suspended"
+                    ? scalpDarkMode
+                      ? "text-amber-300"
+                      : "text-amber-700"
+                    : value === "retired"
+                      ? scalpDarkMode
+                        ? "text-rose-300"
+                        : "text-rose-700"
+                      : scalpDarkMode
+                        ? "text-zinc-300"
+                        : "text-slate-700";
+          return (
+            <span className={toneClass}>{value.replace(/_/g, " ")}</span>
+          );
+        },
+      },
+      {
         headerName: "Trades",
         field: "trades",
         width: 40,
@@ -4295,6 +4402,38 @@ export default function Home() {
         hide: scalpEnabledFilter === "enabled",
         minWidth: 220,
         valueFormatter: (params) => String(params.value || "—"),
+      },
+      {
+        headerName: "Universe",
+        field: "inUniverse",
+        hide: scalpEnabledFilter === "enabled",
+        minWidth: 140,
+        cellRenderer: (params: any) => {
+          const value =
+            typeof params?.value === "boolean" ? params.value : null;
+          if (value === null) {
+            return (
+              <span className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}>
+                unknown
+              </span>
+            );
+          }
+          return (
+            <span
+              className={
+                value
+                  ? scalpDarkMode
+                    ? "text-emerald-300"
+                    : "text-emerald-700"
+                  : scalpDarkMode
+                    ? "text-amber-300"
+                    : "text-amber-700"
+              }
+            >
+              {value ? "active" : "inactive"}
+            </span>
+          );
+        },
       },
     ],
     [

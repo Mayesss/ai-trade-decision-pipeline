@@ -32,6 +32,7 @@ export interface PgDeploymentRegistryRow {
     tuneId: string;
     source: 'manual' | 'backtest' | 'matrix';
     enabled: boolean;
+    inUniverse: boolean;
     configOverride: Record<string, unknown> | null;
     promotionGate: Record<string, unknown> | null;
     createdAtMs: number;
@@ -191,6 +192,7 @@ export async function listDeploymentsFromPg(params: {
             tuneId: string;
             source: string;
             enabled: boolean;
+            inUniverse: boolean;
             configOverride: unknown;
             promotionGate: unknown;
             createdAt: Date;
@@ -205,6 +207,7 @@ export async function listDeploymentsFromPg(params: {
             tune_id AS "tuneId",
             source,
             enabled,
+            in_universe AS "inUniverse",
             config_override AS "configOverride",
             promotion_gate AS "promotionGate",
             created_at AS "createdAt",
@@ -228,6 +231,7 @@ export async function listDeploymentsFromPg(params: {
         tuneId: row.tuneId,
         source: row.source as 'manual' | 'backtest' | 'matrix',
         enabled: Boolean(row.enabled),
+        inUniverse: Boolean(row.inUniverse),
         configOverride: asJsonObject(row.configOverride),
         promotionGate: asJsonObject(row.promotionGate),
         createdAtMs: row.createdAt instanceof Date ? row.createdAt.getTime() : 0,

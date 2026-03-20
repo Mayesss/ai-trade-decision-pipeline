@@ -122,6 +122,7 @@ export interface ScalpDeploymentPromotionGate {
 
 export interface ScalpDeploymentRegistryEntry extends ScalpDeploymentRef {
     enabled: boolean;
+    inUniverse?: boolean | null;
     source: ScalpDeploymentRegistrySource;
     notes: string | null;
     configOverride: ScalpStrategyConfigOverride | null;
@@ -816,6 +817,7 @@ function normalizeRegistryEntry(raw: unknown): ScalpDeploymentRegistryEntry | nu
     return {
         ...deployment,
         enabled: normalizeBool(raw.enabled, true),
+        inUniverse: typeof raw.inUniverse === 'boolean' ? raw.inUniverse : null,
         source: normalizeSource(raw.source, 'manual'),
         notes: normalizeOptionalText(raw.notes, 400),
         configOverride,
@@ -1047,6 +1049,7 @@ function mapPgDeploymentRowToRegistryEntry(row: PgDeploymentRegistryRow): ScalpD
     return {
         ...deployment,
         enabled: Boolean(row.enabled),
+        inUniverse: Boolean(row.inUniverse),
         source: normalizeSource(row.source, 'manual'),
         notes: notes ?? null,
         configOverride: normalizeConfigOverride(row.configOverride) ?? null,
