@@ -1332,6 +1332,61 @@ function resolvePromotionSelectionShrinkageK(): number {
   );
 }
 
+function resolveWorkerMaxClaimPerRun(): number {
+  return Math.max(
+    1,
+    Math.min(
+      400,
+      toPositiveInt(process.env.SCALP_PIPELINE_WORKER_MAX_CLAIM_PER_RUN, 10),
+    ),
+  );
+}
+
+function resolveWorkerRowTimeoutMs(lockMs: number): number {
+  const configured = Math.max(
+    30_000,
+    Math.min(
+      15 * 60_000,
+      toPositiveInt(process.env.SCALP_PIPELINE_WORKER_ROW_TIMEOUT_MS, 180_000),
+    ),
+  );
+  const lockBound = Math.max(30_000, lockMs - 15_000);
+  return Math.min(configured, lockBound);
+}
+
+function resolveWorkerReplayProgressEveryRuns(): number {
+  return Math.max(
+    20,
+    Math.min(
+      10_000,
+      toPositiveInt(process.env.SCALP_PIPELINE_WORKER_PROGRESS_EVERY_RUNS, 300),
+    ),
+  );
+}
+
+function resolveWorkerReplayProgressMinIntervalMs(): number {
+  return Math.max(
+    250,
+    Math.min(
+      15_000,
+      toPositiveInt(
+        process.env.SCALP_PIPELINE_WORKER_PROGRESS_MIN_INTERVAL_MS,
+        1_000,
+      ),
+    ),
+  );
+}
+
+class WorkerRowTimeoutError extends Error {
+  timeoutMs: number;
+
+  constructor(message: string, timeoutMs: number) {
+    super(message);
+    this.name = "WorkerRowTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 function candidateMedianExpectancyR(
   candidate: Pick<ScalpPromotionForwardValidationCandidate, "meanExpectancyR"> & {
     medianExpectancyR?: number | null;
@@ -3266,6 +3321,9 @@ async function claimWorkerRows(
             attempts = m.attempts + 1,
             worker_id = ${workerId},
             started_at = NOW(),
+            finished_at = NULL,
+            error_code = NULL,
+            error_message = NULL,
             updated_at = NOW()
         FROM candidate c
         WHERE m.id = c.id
@@ -3349,10 +3407,11 @@ export async function runWorkerPipelineJob(
 ): Promise<ScalpPipelineJobExecutionResult> {
   return runWithPipelineJobLock("worker", async ({ lockToken, lockMs }) => {
     const workerId = lockToken;
-    const batchSize = Math.max(
+    const requestedBatchSize = Math.max(
       1,
       Math.min(400, toPositiveInt(params.batchSize, 80)),
     );
+    const batchSize = Math.min(requestedBatchSize, resolveWorkerMaxClaimPerRun());
     const maxAttempts = Math.max(
       1,
       Math.min(20, toPositiveInt(params.maxAttempts, 5)),
@@ -3368,6 +3427,9 @@ export async function runWorkerPipelineJob(
       60,
       Math.min(20_000, toPositiveInt(params.minCandlesPerWeek, 180)),
     );
+    const rowTimeoutMs = resolveWorkerRowTimeoutMs(lockMs);
+    const replayProgressEveryRuns = resolveWorkerReplayProgressEveryRuns();
+    const replayProgressMinIntervalMs = resolveWorkerReplayProgressMinIntervalMs();
 
     const claimed = await claimWorkerRows(batchSize, workerId);
     const activeSymbols = await countActivePipelineSymbols();
@@ -3445,13 +3507,33 @@ export async function runWorkerPipelineJob(
           deployment: deploymentRef,
           configOverride: asJsonObject(dep.configOverride) as any,
         });
+        const rowStartedAtMs = Date.now();
         const replay = await runScalpReplay({
           candles: toReplayCandles(candles, runtime.defaultSpreadPips),
           pipSize: pipSizeForScalpSymbol(dep.symbol, meta),
           config: runtime,
           captureTimeline: false,
           symbolMeta: meta,
+          progress: {
+            everyRuns: replayProgressEveryRuns,
+            minIntervalMs: replayProgressMinIntervalMs,
+            onProgress: (progress) => {
+              if (progress.elapsedMs > rowTimeoutMs) {
+                throw new WorkerRowTimeoutError(
+                  `worker_row_timeout:${dep.deploymentId}:${progress.elapsedMs}`,
+                  rowTimeoutMs,
+                );
+              }
+            },
+          },
         });
+        const replayElapsedMs = Date.now() - rowStartedAtMs;
+        if (replayElapsedMs > rowTimeoutMs) {
+          throw new WorkerRowTimeoutError(
+            `worker_row_timeout:${dep.deploymentId}:${replayElapsedMs}`,
+            rowTimeoutMs,
+          );
+        }
 
         const metrics = {
           trades: replay.summary.trades,
@@ -3486,6 +3568,7 @@ export async function runWorkerPipelineJob(
         const message = String(
           err?.message || err || "worker_row_failed",
         ).slice(0, 500);
+        const timeoutError = err instanceof WorkerRowTimeoutError;
         const retry = row.attempts < maxAttempts;
         await completeWorkerRow({
           id: row.id,
@@ -3493,7 +3576,7 @@ export async function runWorkerPipelineJob(
           success: false,
           retry,
           retryAfterMs,
-          errorCode: "worker_replay_failed",
+          errorCode: timeoutError ? "worker_row_timeout" : "worker_replay_failed",
           errorMessage: message,
         });
         if (retry) retried += 1;
@@ -3508,6 +3591,9 @@ export async function runWorkerPipelineJob(
         progress: {
           processed: idx + 1,
           total: claimed.length,
+          requestedBatchSize,
+          effectiveBatchSize: batchSize,
+          rowTimeoutMs,
           activeSymbols,
           succeeded,
           retried,
@@ -3530,6 +3616,9 @@ export async function runWorkerPipelineJob(
       details: {
         activeSymbols,
         claimed: claimed.length,
+        requestedBatchSize,
+        effectiveBatchSize: batchSize,
+        rowTimeoutMs,
         succeeded,
         retried,
         failed,
