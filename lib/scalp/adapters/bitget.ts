@@ -32,7 +32,7 @@ const BITGET_OWNERSHIP_CACHE_TTL_MS = Math.max(
 const BITGET_RISK_MARGIN_LEVERAGE_SAFETY_BUFFER = Math.max(
   0,
   Math.floor(
-    Number(process.env.SCALP_BITGET_RISK_MARGIN_LEVERAGE_SAFETY_BUFFER) || 5,
+    Number(process.env.SCALP_BITGET_RISK_MARGIN_LEVERAGE_SAFETY_BUFFER) || 7,
   ),
 );
 
