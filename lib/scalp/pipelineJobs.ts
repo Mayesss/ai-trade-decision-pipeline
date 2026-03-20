@@ -1153,6 +1153,7 @@ async function countPendingPrepareSymbols(): Promise<number> {
 }
 
 async function countPendingWorkerRows(): Promise<number> {
+  const nowMs = Date.now();
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
     Array<{ count: bigint | number | string }>
@@ -1161,9 +1162,21 @@ async function countPendingWorkerRows(): Promise<number> {
         FROM scalp_deployment_weekly_metrics m
         INNER JOIN scalp_deployments d
           ON d.deployment_id = m.deployment_id
-        WHERE d.in_universe = TRUE
+        LEFT JOIN scalp_pipeline_symbols s
+          ON s.symbol = m.symbol
+        WHERE (COALESCE(s.active, FALSE) = TRUE OR d.enabled = TRUE)
           AND m.status IN ('pending', 'retry_wait')
-          AND m.next_run_at <= NOW();
+          AND m.next_run_at <= NOW()
+          AND NOT (
+            (
+              COALESCE((d.promotion_gate #>> '{lifecycle,state}')::text, '') = 'suspended'
+              AND COALESCE((d.promotion_gate #>> '{lifecycle,suspendedUntilMs}')::bigint, 0) > ${nowMs}
+            )
+            OR (
+              COALESCE((d.promotion_gate #>> '{lifecycle,state}')::text, '') = 'retired'
+              AND COALESCE((d.promotion_gate #>> '{lifecycle,retiredUntilMs}')::bigint, 0) > ${nowMs}
+            )
+          )
     `);
   return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
 }
@@ -1177,8 +1190,7 @@ async function countPendingPromotionRows(): Promise<number> {
         SELECT COUNT(*)::bigint AS count
         FROM scalp_deployments
         WHERE (
-                in_universe = TRUE
-                AND promotion_dirty = TRUE
+                promotion_dirty = TRUE
               )
            OR (
                 COALESCE((promotion_gate #>> '{lifecycle,state}')::text, '') = 'suspended'
@@ -1276,26 +1288,6 @@ function resolvePromotionExplorationShare(): number {
   return toBoundedFraction(
     process.env.SCALP_PROMOTION_EXPLORATION_SHARE,
     0.4,
-  );
-}
-
-function resolvePromotionHysteresisFailThreshold(): number {
-  return Math.max(
-    1,
-    Math.min(
-      10,
-      toPositiveInt(process.env.SCALP_PROMOTION_HYSTERESIS_FAIL_STREAK, 2),
-    ),
-  );
-}
-
-function resolvePromotionHysteresisPassThreshold(): number {
-  return Math.max(
-    1,
-    Math.min(
-      10,
-      toPositiveInt(process.env.SCALP_PROMOTION_HYSTERESIS_PASS_STREAK, 2),
-    ),
   );
 }
 
@@ -1793,38 +1785,21 @@ export function applyPromotionHysteresis(params: {
   currentlyEnabled: boolean;
   shouldEnableNow: boolean;
   previous: ScalpDeploymentPromotionHysteresis | null | undefined;
-  passThreshold: number;
-  failThreshold: number;
   nowMs: number;
   lockEnabled?: boolean;
 }): PromotionHysteresisResult {
-  const passThreshold = Math.max(1, Math.floor(Number(params.passThreshold) || 1));
-  const failThreshold = Math.max(1, Math.floor(Number(params.failThreshold) || 1));
   const lockEnabled = Boolean(params.lockEnabled);
-  const previousPass = Math.max(
-    0,
-    Math.floor(Number(params.previous?.passStreak) || 0),
-  );
-  const previousFail = Math.max(
-    0,
-    Math.floor(Number(params.previous?.failStreak) || 0),
-  );
-  const passStreak = params.shouldEnableNow
-    ? Math.min(passThreshold, previousPass + 1)
-    : 0;
-  const failStreak = params.shouldEnableNow
-    ? 0
-    : Math.min(failThreshold, previousFail + 1);
+
+  const passStreak = params.shouldEnableNow ? 1 : 0;
+  const failStreak = params.shouldEnableNow ? 0 : 1;
+
   let enabled = Boolean(params.currentlyEnabled);
   if (enabled && lockEnabled) {
     enabled = true;
-  } else if (enabled) {
-    if (!params.shouldEnableNow && failStreak >= failThreshold) {
-      enabled = false;
-    }
-  } else if (params.shouldEnableNow && passStreak >= passThreshold) {
-    enabled = true;
+  } else {
+    enabled = Boolean(params.shouldEnableNow);
   }
+
   const transition: PromotionHysteresisResult["transition"] =
     enabled !== Boolean(params.currentlyEnabled)
       ? enabled
@@ -2197,8 +2172,6 @@ export async function runDiscoverPipelineJob(
         await db.$executeRaw(Prisma.sql`
                 UPDATE scalp_deployments
                 SET
-                    in_universe = FALSE,
-                    retired_at = NOW(),
                     worker_dirty = FALSE,
                     promotion_dirty = FALSE,
                     updated_by = 'pipeline:discover',
@@ -2992,8 +2965,6 @@ export async function runPreparePipelineJob(
         await db.$executeRaw(Prisma.sql`
                     UPDATE scalp_deployments
                     SET
-                        in_universe = FALSE,
-                        retired_at = NOW(),
                         worker_dirty = FALSE,
                         promotion_dirty = FALSE,
                         updated_by = 'pipeline:prepare',
@@ -3148,8 +3119,6 @@ export async function runPreparePipelineJob(
           await db.$executeRaw(Prisma.sql`
                         UPDATE scalp_deployments
                         SET
-                            in_universe = TRUE,
-                            retired_at = NULL,
                             worker_dirty = TRUE,
                             updated_by = 'pipeline:prepare',
                             last_prepared_at = NOW(),
@@ -3159,8 +3128,6 @@ export async function runPreparePipelineJob(
           await db.$executeRaw(Prisma.sql`
                         UPDATE scalp_deployments
                         SET
-                            in_universe = FALSE,
-                            retired_at = NOW(),
                             worker_dirty = FALSE,
                             promotion_dirty = FALSE,
                             updated_by = 'pipeline:prepare',
@@ -3290,6 +3257,7 @@ async function claimWorkerRows(
     attempts: number;
   }>
 > {
+  const nowMs = Date.now();
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
     Array<{
@@ -3308,9 +3276,21 @@ async function claimWorkerRows(
             FROM scalp_deployment_weekly_metrics m
             INNER JOIN scalp_deployments d
               ON d.deployment_id = m.deployment_id
-            WHERE d.in_universe = TRUE
+            LEFT JOIN scalp_pipeline_symbols s
+              ON s.symbol = m.symbol
+            WHERE (COALESCE(s.active, FALSE) = TRUE OR d.enabled = TRUE)
               AND m.status IN ('pending', 'retry_wait')
               AND m.next_run_at <= NOW()
+              AND NOT (
+                (
+                  COALESCE((d.promotion_gate #>> '{lifecycle,state}')::text, '') = 'suspended'
+                  AND COALESCE((d.promotion_gate #>> '{lifecycle,suspendedUntilMs}')::bigint, 0) > ${nowMs}
+                )
+                OR (
+                  COALESCE((d.promotion_gate #>> '{lifecycle,state}')::text, '') = 'retired'
+                  AND COALESCE((d.promotion_gate #>> '{lifecycle,retiredUntilMs}')::bigint, 0) > ${nowMs}
+                )
+              )
             ORDER BY m.next_run_at ASC, m.week_start ASC, m.id ASC
             FOR UPDATE SKIP LOCKED
             LIMIT ${limit}
@@ -3639,8 +3619,6 @@ export async function runPromotionPipelineJob(
     );
     const policy = resolveWeeklyPolicyDefaults();
     const explorationShare = resolvePromotionExplorationShare();
-    const hysteresisFailThreshold = resolvePromotionHysteresisFailThreshold();
-    const hysteresisPassThreshold = resolvePromotionHysteresisPassThreshold();
     const maxLoadNudgeSymbols = resolvePromotionLoadNudgeMaxSymbols();
     const maxWorkerNudgeDeployments =
       resolvePromotionWorkerNudgeMaxDeployments();
@@ -3678,7 +3656,6 @@ export async function runPromotionPipelineJob(
       await db.$executeRaw(Prisma.sql`
                 UPDATE scalp_deployments
                 SET
-                    in_universe = TRUE,
                     promotion_dirty = TRUE,
                     updated_by = 'pipeline:promotion',
                     updated_at = NOW()
@@ -3714,13 +3691,10 @@ export async function runPromotionPipelineJob(
             SELECT d.deployment_id AS "deploymentId"
             FROM scalp_deployments d
             WHERE (
-                    d.in_universe = TRUE
-                    AND (
-                        d.promotion_dirty = TRUE
-                        OR (
-                            d.enabled = TRUE
-                            AND COALESCE((d.promotion_gate #>> '{freshness,windowToTs}')::bigint, 0) < ${windowToTs}
-                        )
+                    d.promotion_dirty = TRUE
+                    OR (
+                        d.enabled = TRUE
+                        AND COALESCE((d.promotion_gate #>> '{freshness,windowToTs}')::bigint, 0) < ${windowToTs}
                     )
                   )
                OR (
@@ -3773,34 +3747,29 @@ export async function runPromotionPipelineJob(
 
     const dirtySet = new Set(dirtyRows.map((row) => row.deploymentId));
     const allDeployments = await listScalpDeploymentRegistryEntries();
-    const inUniverseRows = await db.$queryRaw<
+    const deploymentStateRows = await db.$queryRaw<
       Array<{
         deploymentId: string;
-        inUniverse: boolean;
         enabled: boolean;
         promotionGate: unknown;
       }>
     >(Prisma.sql`
             SELECT
                 deployment_id AS "deploymentId",
-                in_universe AS "inUniverse",
                 enabled,
                 promotion_gate AS "promotionGate"
             FROM scalp_deployments;
         `);
-    const inUniverseByDeploymentId = new Map(
-      inUniverseRows.map((row) => [row.deploymentId, row]),
+    const deploymentStateByDeploymentId = new Map(
+      deploymentStateRows.map((row) => [row.deploymentId, row]),
     );
 
     const rolloverDueSet = new Set(rolloverDueIds);
     const consideredDeployments = allDeployments.filter((row) => {
-      const inUniverse =
-        inUniverseByDeploymentId.get(row.deploymentId)?.inUniverse === true;
       const currentlyEnabled =
-        inUniverseByDeploymentId.get(row.deploymentId)?.enabled === true ||
+        deploymentStateByDeploymentId.get(row.deploymentId)?.enabled === true ||
         row.enabled === true;
       return (
-        inUniverse ||
         dirtySet.has(row.deploymentId) ||
         rolloverDueSet.has(row.deploymentId) ||
         currentlyEnabled
@@ -3821,7 +3790,7 @@ export async function runPromotionPipelineJob(
         downstreamRequested: false,
         progressLabel: "idle",
         details: {
-          reason: "no_in_universe_deployments",
+          reason: "no_considered_deployments",
         },
       };
     }
@@ -3831,7 +3800,9 @@ export async function runPromotionPipelineJob(
       dirtySet.has(row.deploymentId),
     );
     for (const deployment of dirtyDeployments) {
-      const rowState = inUniverseByDeploymentId.get(deployment.deploymentId);
+      const rowState = deploymentStateByDeploymentId.get(
+        deployment.deploymentId,
+      );
       const currentlyEnabled = Boolean(rowState?.enabled ?? deployment.enabled);
       const lifecycle = normalizeLifecycleFromGate({
         gate:
@@ -4144,12 +4115,13 @@ export async function runPromotionPipelineJob(
         const key = `${deployment.symbol}::${deployment.strategyId}::${deployment.tuneId}`;
         const candidate = candidateByKey.get(key) || null;
         const currentlyEnabled = Boolean(
-          inUniverseByDeploymentId.get(deployment.deploymentId)?.enabled,
+          deploymentStateByDeploymentId.get(deployment.deploymentId)?.enabled,
         );
         const baseLifecycle = normalizeLifecycleFromGate({
           gate:
             (asJsonObject(
-              inUniverseByDeploymentId.get(deployment.deploymentId)?.promotionGate || null,
+              deploymentStateByDeploymentId.get(deployment.deploymentId)
+                ?.promotionGate || null,
             ) as ScalpDeploymentPromotionGate | null) || deployment.promotionGate,
           tuneId: deployment.tuneId,
           enabled: currentlyEnabled,
@@ -4202,7 +4174,7 @@ export async function runPromotionPipelineJob(
             forwardValidation: candidate?.forwardValidation || null,
             thresholds:
               (asJsonObject(
-                inUniverseByDeploymentId.get(deployment.deploymentId)
+                deploymentStateByDeploymentId.get(deployment.deploymentId)
                   ?.promotionGate || null,
               )?.thresholds as any) || null,
             freshness: freshnessState,
@@ -4235,7 +4207,7 @@ export async function runPromotionPipelineJob(
           deploymentId: row.deploymentId,
           symbol: row.symbol,
           incumbent: Boolean(
-            inUniverseByDeploymentId.get(row.deploymentId)?.enabled,
+            deploymentStateByDeploymentId.get(row.deploymentId)?.enabled,
           ),
           candidate,
         };
@@ -4256,7 +4228,6 @@ export async function runPromotionPipelineJob(
     interface PromotionUpdateDraft {
       entry: ScalpDeploymentRegistryEntry;
       lifecycle: ScalpDeploymentPromotionLifecycle;
-      inUniverseNext: boolean;
       exactLoser: boolean;
       currentlyEnabled: boolean;
       shortlistIncluded: boolean;
@@ -4283,7 +4254,9 @@ export async function runPromotionPipelineJob(
             missingWeekStarts: freshness.missingWeekStarts || [],
           }
         : null;
-      const rowState = inUniverseByDeploymentId.get(deployment.deploymentId);
+      const rowState = deploymentStateByDeploymentId.get(
+        deployment.deploymentId,
+      );
       const currentlyEnabled = Boolean(rowState?.enabled ?? deployment.enabled);
       let lifecycle = normalizeLifecycleFromGate({
         gate:
@@ -4334,8 +4307,6 @@ export async function runPromotionPipelineJob(
         currentlyEnabled,
         shouldEnableNow,
         previous: deployment.promotionGate?.hysteresis || null,
-        passThreshold: hysteresisPassThreshold,
-        failThreshold: hysteresisFailThreshold,
         nowMs,
         lockEnabled: false,
       });
@@ -4386,7 +4357,6 @@ export async function runPromotionPipelineJob(
           updatedBy: "pipeline:promotion",
         },
         lifecycle,
-        inUniverseNext: Boolean(rowState?.inUniverse),
         exactLoser,
         currentlyEnabled,
         shortlistIncluded,
@@ -4459,10 +4429,7 @@ export async function runPromotionPipelineJob(
         const previousHysteresis = row.entry.promotionGate?.hysteresis || null;
         const nextHysteresis: ScalpDeploymentPromotionHysteresis = {
           passStreak: 0,
-          failStreak: Math.max(
-            hysteresisFailThreshold,
-            Math.floor(Number(previousHysteresis?.failStreak) || 0),
-          ),
+          failStreak: Math.max(1, Math.floor(Number(previousHysteresis?.failStreak) || 0)),
           lastStateChangeAtMs: nowMs,
           lastDecision: "disable",
         };
@@ -4495,31 +4462,23 @@ export async function runPromotionPipelineJob(
       const freshness = freshnessByDeploymentId.get(row.entry.deploymentId);
       const lifecycle = row.lifecycle;
       if (lifecycleIsSuppressed(lifecycle, nowMs)) {
-        row.inUniverseNext = false;
       } else if (row.entry.enabled) {
         if (lifecycle.state === "incumbent_refresh") {
           if (freshness?.ready) {
             lifecycle.state = "graduated";
             lifecycle.lastSeatReleaseAtMs = nowMs;
-            row.inUniverseNext = false;
-          } else {
-            row.inUniverseNext = true;
           }
         } else {
           lifecycle.state = "graduated";
-          row.inUniverseNext = false;
         }
       } else if (row.shortlistIncluded) {
         lifecycle.state = "candidate";
-        row.inUniverseNext = true;
       } else if (row.forcedGraduatedNoSeat) {
         lifecycle.state = "graduated";
-        row.inUniverseNext = false;
       } else {
         if (lifecycle.state !== "suspended" && lifecycle.state !== "retired") {
           lifecycle.state = "candidate";
         }
-        row.inUniverseNext = false;
       }
       if (row.entry.promotionGate) {
         row.entry.promotionGate.lifecycle = lifecycle;
@@ -4531,10 +4490,6 @@ export async function runPromotionPipelineJob(
     const updatesToPersist = drafts
       .filter((row) => {
         if (dirtySet.has(row.entry.deploymentId)) return true;
-        const previousInUniverse = Boolean(
-          inUniverseByDeploymentId.get(row.entry.deploymentId)?.inUniverse,
-        );
-        if (previousInUniverse !== row.inUniverseNext) return true;
         const previous = consideredByDeploymentId.get(row.entry.deploymentId);
         if (!previous) return true;
         return hasPromotionStateChanged({
@@ -4543,21 +4498,20 @@ export async function runPromotionPipelineJob(
         });
       })
       .map((row) => row.entry);
-    const seatSyncRows = drafts.filter((row) => {
-      const previousInUniverse = Boolean(
-        inUniverseByDeploymentId.get(row.entry.deploymentId)?.inUniverse,
-      );
+    const lifecycleSyncRows = drafts.filter((row) => {
       const previousLifecycleState = String(
         asJsonObject(
-          asJsonObject(inUniverseByDeploymentId.get(row.entry.deploymentId)?.promotionGate)
-            ?.lifecycle,
+          asJsonObject(
+            deploymentStateByDeploymentId.get(row.entry.deploymentId)
+              ?.promotionGate,
+          )?.lifecycle,
         )?.state || "",
       )
         .trim()
         .toLowerCase();
       const previousRetired = previousLifecycleState === "retired";
       const nextRetired = row.lifecycle.state === "retired";
-      return previousInUniverse !== row.inUniverseNext || previousRetired !== nextRetired;
+      return previousRetired !== nextRetired;
     });
 
     if (updatesToPersist.length > 0) {
@@ -4576,17 +4530,12 @@ export async function runPromotionPipelineJob(
       );
     }
 
-    if (seatSyncRows.length > 0) {
-      for (const row of seatSyncRows) {
+    if (lifecycleSyncRows.length > 0) {
+      for (const row of lifecycleSyncRows) {
         await db.$executeRaw(Prisma.sql`
                     UPDATE scalp_deployments
                     SET
-                        in_universe = ${row.inUniverseNext},
                         retired_at = ${row.lifecycle.state === "retired" ? new Date(nowMs) : null},
-                        worker_dirty = CASE
-                            WHEN ${row.inUniverseNext} = TRUE THEN worker_dirty
-                            ELSE FALSE
-                        END,
                         updated_by = 'pipeline:promotion',
                         updated_at = NOW()
                     WHERE deployment_id = ${row.entry.deploymentId};
@@ -4710,6 +4659,7 @@ export async function loadScalpPipelineJobsHealth(): Promise<
 > {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
+  const nowMs = Date.now();
   for (const jobKind of SCALP_PIPELINE_JOB_KINDS) {
     await ensurePipelineJobRow(jobKind);
   }
@@ -4791,7 +4741,19 @@ export async function loadScalpPipelineJobsHealth(): Promise<
             FROM scalp_deployment_weekly_metrics m
             INNER JOIN scalp_deployments d
               ON d.deployment_id = m.deployment_id
-            WHERE d.in_universe = TRUE;
+            LEFT JOIN scalp_pipeline_symbols s
+              ON s.symbol = m.symbol
+            WHERE (COALESCE(s.active, FALSE) = TRUE OR d.enabled = TRUE)
+              AND NOT (
+                (
+                  COALESCE((d.promotion_gate #>> '{lifecycle,state}')::text, '') = 'suspended'
+                  AND COALESCE((d.promotion_gate #>> '{lifecycle,suspendedUntilMs}')::bigint, 0) > ${nowMs}
+                )
+                OR (
+                  COALESCE((d.promotion_gate #>> '{lifecycle,state}')::text, '') = 'retired'
+                  AND COALESCE((d.promotion_gate #>> '{lifecycle,retiredUntilMs}')::bigint, 0) > ${nowMs}
+                )
+              );
         `),
     db.$queryRaw<
       Array<{
@@ -4803,11 +4765,11 @@ export async function loadScalpPipelineJobsHealth(): Promise<
       }>
     >(Prisma.sql`
             SELECT
-                COUNT(*) FILTER (WHERE in_universe = TRUE AND promotion_dirty = TRUE)::bigint AS "pendingPromotion",
+                COUNT(*) FILTER (WHERE promotion_dirty = TRUE)::bigint AS "pendingPromotion",
                 0::bigint AS "runningPromotion",
                 0::bigint AS "retryPromotion",
                 0::bigint AS "failedPromotion",
-                COUNT(*) FILTER (WHERE in_universe = TRUE AND promotion_dirty = FALSE)::bigint AS "succeededPromotion"
+                COUNT(*) FILTER (WHERE promotion_dirty = FALSE)::bigint AS "succeededPromotion"
             FROM scalp_deployments;
         `),
   ]);
@@ -4815,8 +4777,6 @@ export async function loadScalpPipelineJobsHealth(): Promise<
   const symbolAgg = symbolRows[0] || ({} as any);
   const workerAgg = workerRows[0] || ({} as any);
   const promotionAgg = deploymentRows[0] || ({} as any);
-  const nowMs = Date.now();
-
   const byJobKind = new Map(jobRows.map((row) => [String(row.jobKind), row]));
 
   const queueByJobKind: Record<

@@ -71,56 +71,28 @@ test("buildDiscoverSymbolSyncPlan computes active/catalog adds and removals", ()
   assert.deepEqual(plan.catalogAddedSymbols, ["SOLUSDT", "ADAUSDT"]);
 });
 
-test("applyPromotionHysteresis requires 2 fails to disable and 2 passes to re-enable", () => {
+test("applyPromotionHysteresis applies immediate enable/disable decisions", () => {
   const nowMs = Date.UTC(2026, 2, 19, 20, 0, 0);
 
   const firstFail = applyPromotionHysteresis({
     currentlyEnabled: true,
     shouldEnableNow: false,
     previous: null,
-    passThreshold: 2,
-    failThreshold: 2,
     nowMs,
   });
-  assert.equal(firstFail.enabled, true);
-  assert.equal(firstFail.transition, "held");
+  assert.equal(firstFail.enabled, false);
+  assert.equal(firstFail.transition, "disabled");
   assert.equal(firstFail.hysteresis.failStreak, 1);
 
-  const secondFail = applyPromotionHysteresis({
-    currentlyEnabled: firstFail.enabled,
-    shouldEnableNow: false,
-    previous: firstFail.hysteresis,
-    passThreshold: 2,
-    failThreshold: 2,
-    nowMs: nowMs + 60_000,
-  });
-  assert.equal(secondFail.enabled, false);
-  assert.equal(secondFail.transition, "disabled");
-  assert.equal(secondFail.hysteresis.failStreak, 2);
-
   const firstPass = applyPromotionHysteresis({
-    currentlyEnabled: secondFail.enabled,
+    currentlyEnabled: firstFail.enabled,
     shouldEnableNow: true,
-    previous: secondFail.hysteresis,
-    passThreshold: 2,
-    failThreshold: 2,
+    previous: firstFail.hysteresis,
     nowMs: nowMs + 120_000,
   });
-  assert.equal(firstPass.enabled, false);
-  assert.equal(firstPass.transition, "held");
+  assert.equal(firstPass.enabled, true);
+  assert.equal(firstPass.transition, "enabled");
   assert.equal(firstPass.hysteresis.passStreak, 1);
-
-  const secondPass = applyPromotionHysteresis({
-    currentlyEnabled: firstPass.enabled,
-    shouldEnableNow: true,
-    previous: firstPass.hysteresis,
-    passThreshold: 2,
-    failThreshold: 2,
-    nowMs: nowMs + 180_000,
-  });
-  assert.equal(secondPass.enabled, true);
-  assert.equal(secondPass.transition, "enabled");
-  assert.equal(secondPass.hysteresis.passStreak, 2);
 });
 
 test("applyPromotionHysteresis keeps currently enabled deployment on when lockEnabled is true", () => {
@@ -134,14 +106,12 @@ test("applyPromotionHysteresis keeps currently enabled deployment on when lockEn
       lastStateChangeAtMs: nowMs - 60_000,
       lastDecision: "hold",
     },
-    passThreshold: 2,
-    failThreshold: 2,
     nowMs,
     lockEnabled: true,
   });
   assert.equal(out.enabled, true);
   assert.equal(out.transition, "held");
-  assert.equal(out.hysteresis.failStreak, 2);
+  assert.equal(out.hysteresis.failStreak, 1);
 });
 
 test("selectPromotionWinnerRowsWithExploration enforces 40% exploration split when possible", () => {
