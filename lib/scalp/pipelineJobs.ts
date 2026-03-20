@@ -2114,6 +2114,7 @@ export async function runDiscoverPipelineJob(
     const snapshot = await runScalpSymbolDiscoveryCycle({
       dryRun,
       includeLiveQuotes: params.includeLiveQuotes ?? true,
+      restrictToBitgetSymbols: bitgetOnly,
       nowMs,
       maxCandidatesOverride: params.maxCandidates,
       seedTopSymbols: 12,

@@ -137,6 +137,7 @@ export interface ScalpSymbolDiscoverySourceOverrides {
 export interface ScalpSymbolDiscoveryRunParams {
     dryRun?: boolean;
     includeLiveQuotes?: boolean;
+    restrictToBitgetSymbols?: boolean;
     nowMs?: number;
     maxCandidatesOverride?: number;
     seedTopSymbols?: number;
@@ -258,6 +259,17 @@ function normalizeSymbol(value: unknown): string {
         .trim()
         .toUpperCase()
         .replace(/[^A-Z0-9._-]/g, '');
+}
+
+function isBitgetCompatibleSymbol(value: unknown): boolean {
+    const symbol = normalizeSymbol(value);
+    if (!symbol) return false;
+    const productType = String(resolveProductType() || 'usdt-futures')
+        .trim()
+        .toLowerCase();
+    if (productType === 'usdc-futures') return symbol.endsWith('USDC');
+    if (productType === 'coin-futures') return symbol.endsWith('USD');
+    return symbol.endsWith('USDT');
 }
 
 function toBool(value: unknown, fallback: boolean): boolean {
@@ -1718,6 +1730,7 @@ async function buildCandidatePool(
     params: {
         includeLiveQuotes: boolean;
         nowMs: number;
+        restrictToBitgetSymbols?: boolean;
         discoveredSymbols?: CapitalDiscoveryResult | null;
         discoveryError?: string | null;
         discoveredBitgetSymbols?: BitgetDiscoveryResult | null;
@@ -1769,6 +1782,9 @@ async function buildCandidatePool(
     ) => {
         const normalized = normalizeSymbol(rawSymbol);
         if (!normalized) return;
+        if (params.restrictToBitgetSymbols && !isBitgetCompatibleSymbol(normalized)) {
+            return;
+        }
         if (pool.has(normalized)) return;
         pool.add(normalized);
         diagnostics.sourceCounts[source] += 1;
@@ -2183,6 +2199,7 @@ export async function runScalpSymbolDiscoveryCycle(
     const nowMs = Number.isFinite(Number(params.nowMs)) ? Math.floor(Number(params.nowMs)) : Date.now();
     const dryRun = Boolean(params.dryRun);
     const includeLiveQuotes = params.includeLiveQuotes ?? true;
+    const restrictToBitgetSymbols = Boolean(params.restrictToBitgetSymbols);
 
     const policy = applyPolicySourceOverrides(
         await loadScalpSymbolDiscoveryPolicy(),
@@ -2263,6 +2280,7 @@ export async function runScalpSymbolDiscoveryCycle(
     const candidatePool = await buildCandidatePool(policy, {
         includeLiveQuotes,
         nowMs,
+        restrictToBitgetSymbols,
         discoveredSymbols: preloadedDiscovery,
         discoveryError: preloadedDiscoveryError,
         discoveredBitgetSymbols: preloadedBitgetDiscovery,
@@ -2291,11 +2309,17 @@ export async function runScalpSymbolDiscoveryCycle(
     }
 
     const sorted = rows.slice().sort(byScoreDesc);
+    const previousSymbolsForChurn = restrictToBitgetSymbols
+        ? (previous?.selectedSymbols || []).filter((row) => isBitgetCompatibleSymbol(row))
+        : previous?.selectedSymbols || [];
+    const pinnedSymbolsForChurn = restrictToBitgetSymbols
+        ? policy.pinnedSymbols.filter((row) => isBitgetCompatibleSymbol(row))
+        : policy.pinnedSymbols;
     const churn = buildNextUniverseWithChurnCaps({
-        previousSymbols: previous?.selectedSymbols || [],
+        previousSymbols: previousSymbolsForChurn,
         candidateRows: sorted,
         policy,
-        pinnedSymbols: policy.pinnedSymbols,
+        pinnedSymbols: pinnedSymbolsForChurn,
     });
 
     const selectedSet = new Set(churn.selectedSymbols);
@@ -2308,7 +2332,7 @@ export async function runScalpSymbolDiscoveryCycle(
         policy,
         source: 'weekly_discovery_v1',
         dryRun,
-        previousSymbols: previous?.selectedSymbols || [],
+        previousSymbols: previousSymbolsForChurn,
         selectedSymbols: churn.selectedSymbols,
         addedSymbols: churn.addedSymbols,
         removedSymbols: churn.removedSymbols,
