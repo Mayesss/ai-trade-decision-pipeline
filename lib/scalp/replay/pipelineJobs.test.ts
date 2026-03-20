@@ -5,6 +5,7 @@ import {
   applyPromotionHysteresis,
   buildPipelineJobDiagnostics,
   buildDiscoverSymbolSyncPlan,
+  enforceSingleEnabledPerSymbolStrategy,
   listScalpDurationTimelineRuns,
   resolveLifecycleTuneFamily,
   selectPromotionWinnerRowsWithExploration,
@@ -328,6 +329,73 @@ test("selectPromotionWinnerRowsWithExploration keeps one row per incumbent symbo
   const selectedSymbols = new Set(out.selectedRows.map((row) => row.symbol));
   assert.equal(selectedSymbols.has("BTCUSDT"), true);
   assert.equal(selectedSymbols.has("ETHUSDT"), true);
+});
+
+test("enforceSingleEnabledPerSymbolStrategy keeps only shortlisted enabled deployment", () => {
+  const out = enforceSingleEnabledPerSymbolStrategy({
+    rows: [
+      {
+        deploymentId: "dep_a",
+        symbol: "FETUSDT",
+        strategyId: "compression_breakout_pullback_m15_m3",
+        tuneId: "auto_tr1p5",
+        enabled: true,
+        shortlistIncluded: false,
+      },
+      {
+        deploymentId: "dep_b",
+        symbol: "FETUSDT",
+        strategyId: "compression_breakout_pullback_m15_m3",
+        tuneId: "auto_tr1p6",
+        enabled: true,
+        shortlistIncluded: true,
+      },
+    ],
+  });
+
+  assert.equal(out.primaryEnabledIds.has("dep_b"), true);
+  assert.equal(out.demotedIds.has("dep_a"), true);
+  assert.equal(out.demotedIds.has("dep_b"), false);
+});
+
+test("enforceSingleEnabledPerSymbolStrategy falls back to candidate ranking when shortlist is absent", () => {
+  const out = enforceSingleEnabledPerSymbolStrategy({
+    rows: [
+      {
+        deploymentId: "dep_low",
+        symbol: "FETUSDT",
+        strategyId: "compression_breakout_pullback_m15_m3",
+        tuneId: "auto_tr1p5",
+        enabled: true,
+        shortlistIncluded: false,
+        candidate: makeCandidate({
+          deploymentId: "dep_low",
+          symbol: "FETUSDT",
+          strategyId: "compression_breakout_pullback_m15_m3",
+          tuneId: "auto_tr1p5",
+          selectionScore: 0.1,
+        }),
+      },
+      {
+        deploymentId: "dep_high",
+        symbol: "FETUSDT",
+        strategyId: "compression_breakout_pullback_m15_m3",
+        tuneId: "auto_tr1p6",
+        enabled: true,
+        shortlistIncluded: false,
+        candidate: makeCandidate({
+          deploymentId: "dep_high",
+          symbol: "FETUSDT",
+          strategyId: "compression_breakout_pullback_m15_m3",
+          tuneId: "auto_tr1p6",
+          selectionScore: 0.9,
+        }),
+      },
+    ],
+  });
+
+  assert.equal(out.primaryEnabledIds.has("dep_high"), true);
+  assert.equal(out.demotedIds.has("dep_low"), true);
 });
 
 test("resolveLifecycleTuneFamily normalizes tune id families", () => {

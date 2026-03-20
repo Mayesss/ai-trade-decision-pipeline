@@ -1562,6 +1562,172 @@ export function selectPromotionWinnerRowsWithExploration(params: {
   };
 }
 
+export interface PromotionEnabledUniquenessRow {
+  deploymentId: string;
+  symbol: string;
+  strategyId: string;
+  tuneId: string;
+  enabled: boolean;
+  shortlistIncluded: boolean;
+  candidate?: ScalpPromotionForwardValidationCandidate | null;
+  promotionGate?: ScalpDeploymentPromotionGate | null;
+}
+
+export interface PromotionEnabledUniquenessResult {
+  primaryEnabledIds: Set<string>;
+  demotedIds: Set<string>;
+}
+
+function asFiniteNumberOr(value: unknown, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return n;
+}
+
+function resolveUniquenessForwardValidationScore(
+  forwardValidation: ScalpForwardValidationMetrics | null | undefined,
+): {
+  selectionScore: number;
+  profitableWindowPct: number;
+  meanProfitFactor: number;
+  maxDrawdownR: number;
+} {
+  if (!forwardValidation) {
+    return {
+      selectionScore: Number.NEGATIVE_INFINITY,
+      profitableWindowPct: Number.NEGATIVE_INFINITY,
+      meanProfitFactor: Number.NEGATIVE_INFINITY,
+      maxDrawdownR: Number.POSITIVE_INFINITY,
+    };
+  }
+  const score = candidateSelectionScoreForPipeline({
+    meanExpectancyR: asFiniteNumberOr(
+      forwardValidation.weeklyMeanExpectancyR,
+      asFiniteNumberOr(forwardValidation.meanExpectancyR, 0),
+    ),
+    trimmedMeanExpectancyR: asFiniteNumberOr(
+      forwardValidation.weeklyTrimmedMeanExpectancyR,
+      asFiniteNumberOr(forwardValidation.meanExpectancyR, 0),
+    ),
+    medianExpectancyR: asFiniteNumberOr(
+      forwardValidation.weeklyMedianExpectancyR,
+      asFiniteNumberOr(forwardValidation.meanExpectancyR, 0),
+    ),
+    topWindowPnlConcentrationPct: asFiniteNumberOr(
+      forwardValidation.weeklyTopWeekPnlConcentrationPct,
+      0,
+    ),
+    rollCount: Math.max(
+      0,
+      Math.floor(
+        asFiniteNumberOr(
+          forwardValidation.weeklySlices,
+          asFiniteNumberOr(forwardValidation.rollCount, 0),
+        ),
+      ),
+    ),
+  });
+  const profitableWindowPct = asFiniteNumberOr(
+    forwardValidation.weeklyProfitablePct,
+    asFiniteNumberOr(forwardValidation.profitableWindowPct, Number.NEGATIVE_INFINITY),
+  );
+  const meanProfitFactor = asFiniteNumberOr(
+    forwardValidation.meanProfitFactor,
+    Number.NEGATIVE_INFINITY,
+  );
+  const maxDrawdownR = asFiniteNumberOr(
+    forwardValidation.maxDrawdownR,
+    Number.POSITIVE_INFINITY,
+  );
+  return {
+    selectionScore: score,
+    profitableWindowPct,
+    meanProfitFactor,
+    maxDrawdownR,
+  };
+}
+
+function compareEnabledRowsForUniqueness(
+  a: PromotionEnabledUniquenessRow,
+  b: PromotionEnabledUniquenessRow,
+): number {
+  if (a.shortlistIncluded !== b.shortlistIncluded) {
+    return a.shortlistIncluded ? -1 : 1;
+  }
+  if (a.candidate && b.candidate) {
+    const byCandidate = comparePromotionCandidates(a.candidate, b.candidate);
+    if (byCandidate !== 0) return byCandidate;
+  } else if (a.candidate || b.candidate) {
+    return a.candidate ? -1 : 1;
+  }
+  const aForward = resolveUniquenessForwardValidationScore(
+    a.promotionGate?.forwardValidation,
+  );
+  const bForward = resolveUniquenessForwardValidationScore(
+    b.promotionGate?.forwardValidation,
+  );
+  if (bForward.selectionScore !== aForward.selectionScore) {
+    return bForward.selectionScore - aForward.selectionScore;
+  }
+  if (bForward.profitableWindowPct !== aForward.profitableWindowPct) {
+    return bForward.profitableWindowPct - aForward.profitableWindowPct;
+  }
+  if (bForward.meanProfitFactor !== aForward.meanProfitFactor) {
+    return bForward.meanProfitFactor - aForward.meanProfitFactor;
+  }
+  if (aForward.maxDrawdownR !== bForward.maxDrawdownR) {
+    return aForward.maxDrawdownR - bForward.maxDrawdownR;
+  }
+  const aPass = Math.max(
+    0,
+    Math.floor(Number(a.promotionGate?.hysteresis?.passStreak) || 0),
+  );
+  const bPass = Math.max(
+    0,
+    Math.floor(Number(b.promotionGate?.hysteresis?.passStreak) || 0),
+  );
+  if (bPass !== aPass) return bPass - aPass;
+  if (a.tuneId !== b.tuneId) return a.tuneId.localeCompare(b.tuneId);
+  return a.deploymentId.localeCompare(b.deploymentId);
+}
+
+export function enforceSingleEnabledPerSymbolStrategy(params: {
+  rows: PromotionEnabledUniquenessRow[];
+}): PromotionEnabledUniquenessResult {
+  const rows = Array.isArray(params.rows) ? params.rows : [];
+  const enabledRows = rows.filter((row) => Boolean(row.enabled));
+  const bySymbolStrategy = new Map<string, PromotionEnabledUniquenessRow[]>();
+  for (const row of enabledRows) {
+    const symbol = normalizeSymbol(row.symbol);
+    const strategyId = String(row.strategyId || "")
+      .trim()
+      .toLowerCase();
+    if (!symbol || !strategyId) continue;
+    const key = `${symbol}::${strategyId}`;
+    const bucket = bySymbolStrategy.get(key) || [];
+    bucket.push(row);
+    bySymbolStrategy.set(key, bucket);
+  }
+  const primaryEnabledIds = new Set<string>();
+  const demotedIds = new Set<string>();
+  for (const groupRows of bySymbolStrategy.values()) {
+    if (!groupRows.length) continue;
+    const sorted = groupRows
+      .slice()
+      .sort((a, b) => compareEnabledRowsForUniqueness(a, b));
+    const primary = sorted[0];
+    if (!primary) continue;
+    primaryEnabledIds.add(primary.deploymentId);
+    for (let i = 1; i < sorted.length; i += 1) {
+      demotedIds.add(sorted[i].deploymentId);
+    }
+  }
+  return {
+    primaryEnabledIds,
+    demotedIds,
+  };
+}
+
 export interface PromotionHysteresisResult {
   enabled: boolean;
   hysteresis: ScalpDeploymentPromotionHysteresis;
@@ -3456,36 +3622,47 @@ export async function runPromotionPipelineJob(
     const dirtyRows = await db.$queryRaw<
       Array<{ deploymentId: string }>
     >(Prisma.sql`
-            SELECT deployment_id AS "deploymentId"
-            FROM scalp_deployments
+            SELECT d.deployment_id AS "deploymentId"
+            FROM scalp_deployments d
             WHERE (
-                    in_universe = TRUE
+                    d.in_universe = TRUE
                     AND (
-                        promotion_dirty = TRUE
+                        d.promotion_dirty = TRUE
                         OR (
-                            enabled = TRUE
-                            AND COALESCE((promotion_gate #>> '{freshness,windowToTs}')::bigint, 0) < ${windowToTs}
+                            d.enabled = TRUE
+                            AND COALESCE((d.promotion_gate #>> '{freshness,windowToTs}')::bigint, 0) < ${windowToTs}
                         )
                     )
                   )
                OR (
-                    COALESCE((promotion_gate #>> '{lifecycle,state}')::text, '') = 'suspended'
-                    AND COALESCE((promotion_gate #>> '{lifecycle,suspendedUntilMs}')::bigint, 0) > 0
-                    AND COALESCE((promotion_gate #>> '{lifecycle,suspendedUntilMs}')::bigint, 0) <= ${nowMs}
+                    COALESCE((d.promotion_gate #>> '{lifecycle,state}')::text, '') = 'suspended'
+                    AND COALESCE((d.promotion_gate #>> '{lifecycle,suspendedUntilMs}')::bigint, 0) > 0
+                    AND COALESCE((d.promotion_gate #>> '{lifecycle,suspendedUntilMs}')::bigint, 0) <= ${nowMs}
                   )
                OR (
-                    COALESCE((promotion_gate #>> '{lifecycle,state}')::text, '') = 'retired'
-                    AND COALESCE((promotion_gate #>> '{lifecycle,retiredUntilMs}')::bigint, 0) > 0
-                    AND COALESCE((promotion_gate #>> '{lifecycle,retiredUntilMs}')::bigint, 0) <= ${nowMs}
+                    COALESCE((d.promotion_gate #>> '{lifecycle,state}')::text, '') = 'retired'
+                    AND COALESCE((d.promotion_gate #>> '{lifecycle,retiredUntilMs}')::bigint, 0) > 0
+                    AND COALESCE((d.promotion_gate #>> '{lifecycle,retiredUntilMs}')::bigint, 0) <= ${nowMs}
+                  )
+               OR (
+                    d.enabled = TRUE
+                    AND EXISTS (
+                        SELECT 1
+                        FROM scalp_deployments d2
+                        WHERE d2.symbol = d.symbol
+                          AND d2.strategy_id = d.strategy_id
+                          AND d2.enabled = TRUE
+                          AND d2.deployment_id <> d.deployment_id
+                    )
                   )
             ORDER BY
                 CASE
-                    WHEN promotion_dirty = TRUE THEN 0
-                    WHEN enabled = TRUE THEN 1
+                    WHEN d.promotion_dirty = TRUE THEN 0
+                    WHEN d.enabled = TRUE THEN 1
                     ELSE 2
                 END ASC,
-                updated_at ASC,
-                deployment_id ASC
+                d.updated_at ASC,
+                d.deployment_id ASC
             LIMIT ${batchSize};
         `);
     if (!dirtyRows.length) {
@@ -3530,7 +3707,15 @@ export async function runPromotionPipelineJob(
     const consideredDeployments = allDeployments.filter((row) => {
       const inUniverse =
         inUniverseByDeploymentId.get(row.deploymentId)?.inUniverse === true;
-      return inUniverse || dirtySet.has(row.deploymentId) || rolloverDueSet.has(row.deploymentId);
+      const currentlyEnabled =
+        inUniverseByDeploymentId.get(row.deploymentId)?.enabled === true ||
+        row.enabled === true;
+      return (
+        inUniverse ||
+        dirtySet.has(row.deploymentId) ||
+        rolloverDueSet.has(row.deploymentId) ||
+        currentlyEnabled
+      );
     });
     const consideredByDeploymentId = new Map(
       consideredDeployments.map((row) => [row.deploymentId, row]),
@@ -3986,10 +4171,12 @@ export async function runPromotionPipelineJob(
       exactLoser: boolean;
       currentlyEnabled: boolean;
       shortlistIncluded: boolean;
+      forcedGraduatedNoSeat: boolean;
     }
 
     let enabledByHysteresis = 0;
     let disabledByHysteresis = 0;
+    let disabledByUniqueness = 0;
     let suspendedExact = 0;
     let suspendedNeighbors = 0;
     let retiredCount = 0;
@@ -4114,6 +4301,7 @@ export async function runPromotionPipelineJob(
         exactLoser,
         currentlyEnabled,
         shortlistIncluded,
+        forcedGraduatedNoSeat: false,
       };
     });
 
@@ -4157,6 +4345,63 @@ export async function runPromotionPipelineJob(
       }
     }
 
+    const uniquenessResolution = enforceSingleEnabledPerSymbolStrategy({
+      rows: drafts.map((row) => {
+        const key = `${row.entry.symbol}::${row.entry.strategyId}::${row.entry.tuneId}`;
+        return {
+          deploymentId: row.entry.deploymentId,
+          symbol: row.entry.symbol,
+          strategyId: row.entry.strategyId,
+          tuneId: row.entry.tuneId,
+          enabled: row.entry.enabled,
+          shortlistIncluded: row.shortlistIncluded,
+          candidate: candidateByKey.get(key) || null,
+          promotionGate: row.entry.promotionGate || null,
+        };
+      }),
+    });
+    if (uniquenessResolution.demotedIds.size > 0) {
+      for (const row of drafts) {
+        if (!uniquenessResolution.demotedIds.has(row.entry.deploymentId)) continue;
+        if (!row.entry.enabled) continue;
+        row.entry.enabled = false;
+        row.shortlistIncluded = false;
+        row.forcedGraduatedNoSeat = true;
+        const previousHysteresis = row.entry.promotionGate?.hysteresis || null;
+        const nextHysteresis: ScalpDeploymentPromotionHysteresis = {
+          passStreak: 0,
+          failStreak: Math.max(
+            hysteresisFailThreshold,
+            Math.floor(Number(previousHysteresis?.failStreak) || 0),
+          ),
+          lastStateChangeAtMs: nowMs,
+          lastDecision: "disable",
+        };
+        if (!row.entry.promotionGate) {
+          row.entry.promotionGate = {
+            eligible: false,
+            reason: "symbol_strategy_uniqueness_demoted",
+            source: "walk_forward",
+            evaluatedAtMs: nowMs,
+            forwardValidation: null,
+            thresholds: null,
+            freshness: null,
+            hysteresis: nextHysteresis,
+            lifecycle: row.lifecycle,
+          };
+        } else {
+          row.entry.promotionGate.reason = "symbol_strategy_uniqueness_demoted";
+          row.entry.promotionGate.hysteresis = nextHysteresis;
+          row.entry.promotionGate.lifecycle = row.lifecycle;
+        }
+        row.lifecycle.state = "graduated";
+        if (row.entry.promotionGate) {
+          row.entry.promotionGate.lifecycle = row.lifecycle;
+        }
+        disabledByUniqueness += 1;
+      }
+    }
+
     for (const row of drafts) {
       const freshness = freshnessByDeploymentId.get(row.entry.deploymentId);
       const lifecycle = row.lifecycle;
@@ -4178,6 +4423,9 @@ export async function runPromotionPipelineJob(
       } else if (row.shortlistIncluded) {
         lifecycle.state = "candidate";
         row.inUniverseNext = true;
+      } else if (row.forcedGraduatedNoSeat) {
+        lifecycle.state = "graduated";
+        row.inUniverseNext = false;
       } else {
         if (lifecycle.state !== "suspended" && lifecycle.state !== "retired") {
           lifecycle.state = "candidate";
@@ -4310,6 +4558,7 @@ export async function runPromotionPipelineJob(
         exploitSelected: explorationSelection.exploitSelected,
         enabledByHysteresis,
         disabledByHysteresis,
+        disabledByUniqueness,
         rolloverIncumbentsQueued,
         suspendedExact,
         suspendedNeighbors,
@@ -4351,6 +4600,7 @@ export async function runPromotionPipelineJob(
         exploitSelected: explorationSelection.exploitSelected,
         enabledByHysteresis,
         disabledByHysteresis,
+        disabledByUniqueness,
         rolloverIncumbentsQueued,
         suspendedExact,
         suspendedNeighbors,
