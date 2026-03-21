@@ -18,6 +18,9 @@ test("async-job scalp cron routes exist and cycle routes stay unscheduled", asyn
     "pages/api/scalp/cron/discover-symbols.ts",
     "pages/api/scalp/cron/load-candles.ts",
     "pages/api/scalp/cron/prepare.ts",
+    "pages/api/scalp/cron/v2/discover.ts",
+    "pages/api/scalp/cron/v2/load-candles.ts",
+    "pages/api/scalp/cron/v2/prepare.ts",
     "pages/api/scalp/cron/worker.ts",
     "pages/api/scalp/cron/promotion.ts",
   ];
@@ -42,9 +45,9 @@ test("async-job scalp cron routes exist and cycle routes stay unscheduled", asyn
     .filter(Boolean);
 
   const requiredCronPrefixes = [
-    "/api/scalp/cron/discover-symbols",
-    "/api/scalp/cron/load-candles",
-    "/api/scalp/cron/prepare",
+    "/api/scalp/cron/v2/discover",
+    "/api/scalp/cron/v2/load-candles",
+    "/api/scalp/cron/v2/prepare",
     "/api/scalp/cron/worker",
     "/api/scalp/cron/promotion",
   ];
@@ -57,6 +60,9 @@ test("async-job scalp cron routes exist and cycle routes stay unscheduled", asyn
   }
 
   const forbiddenCronPrefixes = [
+    "/api/scalp/cron/discover-symbols",
+    "/api/scalp/cron/load-candles",
+    "/api/scalp/cron/prepare",
     "/api/scalp/cron/orchestrate-pipeline",
     "/api/scalp/cron/prepare-and-start-cycle",
     "/api/scalp/cron/research-cycle-start",

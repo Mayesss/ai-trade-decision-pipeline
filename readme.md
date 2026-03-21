@@ -242,7 +242,7 @@ npm run start
   - Body: `{ "secret": "..." }` to validate admin access when `ADMIN_ACCESS_SECRET` is set.
 - Admin protection policy
   - All API routes except `/api/admin-auth` require `x-admin-access-secret: <ADMIN_ACCESS_SECRET>` (or `Authorization: Bearer <ADMIN_ACCESS_SECRET>`) when `ADMIN_ACCESS_SECRET` is set.
-  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/scalp/cron/execute-deployments`, `/api/scalp/cron/discover-symbols`, `/api/scalp/cron/load-candles`, `/api/scalp/cron/prepare`, `/api/scalp/cron/worker`, `/api/scalp/cron/promotion`, `/api/scalp/cron/live-guardrail-monitor`, `/api/scalp/cron/housekeeping`.
+  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/scalp/cron/execute-deployments`, `/api/scalp/cron/v2/discover`, `/api/scalp/cron/v2/load-candles`, `/api/scalp/cron/v2/prepare`, `/api/scalp/cron/worker`, `/api/scalp/cron/promotion`, `/api/scalp/cron/live-guardrail-monitor`, `/api/scalp/cron/housekeeping` (legacy `/api/scalp/cron/discover-symbols|load-candles|prepare` are deprecated).
 - `GET /api/forex/*`
   - Forex mode routes are deprecated and currently return `410` with `error=forex_mode_deprecated`.
 - `GET /api/scalp/cron/execute-deployments?all=true&dryRun=true`
@@ -251,7 +251,7 @@ npm run start
   - Optional query: `venue=capital|bitget` to scope execution to a single venue.
   - When `venue` is omitted and both venues are present, execution is split by venue and processed in parallel with venue-scoped mutex locks.
   - Optional query: `requirePromotionEligible=true` to execute only deployments with `promotionGate.eligible=true`.
-- `GET /api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true`
+- `GET /api/scalp/cron/v2/discover?dryRun=false&includeLiveQuotes=true`
   - Weekly symbol-discovery cron. Scores symbols using policy + history quality + optional live quote checks, then writes the selected universe snapshot.
   - Policy file: `data/scalp-symbol-discovery-policy.json`.
   - Candidate pool can be sourced from Bitget contracts (`sources.includeBitgetMarketsApi=true`) and/or Capital market search (`sources.includeCapitalMarketsApi=true`).
@@ -274,18 +274,15 @@ npm run start
     - `seedOnDryRun=true` allow seeding during `dryRun=true` (for diagnostics only; no writes when dry run).
     - `seedAllowBootstrapSymbols=true|false` allow/disallow seeding symbols without existing candle history (`false` default).
     - Seed stage now keeps fetching backfill/forward windows until both target span and freshness are met (90d + <=12h lag), or reports `seed_target_unmet`.
-- `GET /api/scalp/cron/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true`
-  - Independent async job that ensures each active symbol has the required completed 1m weekly coverage.
+- `GET /api/scalp/cron/v2/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true`
+  - Independent async job that ensures each discovered gate-pass symbol has the required completed 1m weekly coverage.
   - Loader behavior is progressive by default: prewarms recent candles first, then backfills older weeks in chunks.
-  - Load-queue priority order: enabled-rollover symbols first, active symbols second, inactive Bitget warmup symbols last.
-  - Inactive Bitget symbols can be kept warm (default disabled) to maintain recent coverage for fast reactivation when explicitly enabled.
+  - Load claims are strict gate-only from `scalp_discovered_symbols` (`load_status IN ('pending','retry_wait')`), with no enabled-incumbent or inactive warmup exceptions.
   - Optional env knobs:
     - `SCALP_PIPELINE_LOAD_PREWARM_WEEKS` (default `1`)
     - `SCALP_PIPELINE_LOAD_BACKFILL_CHUNK_WEEKS` (default matches prewarm)
-    - `SCALP_PIPELINE_LOAD_INCLUDE_INACTIVE_BITGET` (default `false`)
-    - `SCALP_PIPELINE_LOAD_INACTIVE_BITGET_WEEKS` (default `12`)
-  - Claims rows from `scalp_pipeline_symbols`, updates per-symbol load status, and can chain to `prepare`.
-- `GET /api/scalp/cron/prepare?batchSize=6&autoSuccessor=true&autoContinue=true`
+  - Claims rows from `scalp_discovered_symbols`, updates per-symbol load status, and can chain to `prepare`.
+- `GET /api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true`
   - Independent async job that creates/updates deployment variants and queues weekly worker rows.
   - Writes deployment state flags (`in_universe`, `worker_dirty`, `promotion_dirty`, `last_prepared_at`).
 - `GET /api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true`
@@ -512,11 +509,9 @@ node --import tsx scripts/scalp-replay-matrix.ts \
 - KV REST endpoint/token must be reachable from the runtime; Bitget/AI/News calls require outbound network access.
 - Current cron entries include:
   - `/api/swing/analyze?...&dryRun=false` hourly (live-trading mode).
-  - `/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true&seedTopSymbols=12&seedChunkDays=10&seedTargetHistoryDays=90&seedMaxRequestsPerSymbol=40&seedMaxSymbolsPerRun=12` weekly Monday (deep seed + universe refresh).
-  - `/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true&seedTopSymbols=4&seedChunkDays=3&seedTargetHistoryDays=90&seedMaxRequestsPerSymbol=20&seedMaxSymbolsPerRun=4` daily Tuesday-Friday (light top-up seed + refresh).
-  - `/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=false&seedTopSymbols=4&seedChunkDays=3&seedTargetHistoryDays=90&seedMaxRequestsPerSymbol=20&seedMaxSymbolsPerRun=4` daily Saturday/Sunday (weekend top-up with quote gate relaxed).
-  - `/api/scalp/cron/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&selfMaxHops=8` every 10 minutes.
-  - `/api/scalp/cron/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8` every 10 minutes.
+  - `/api/scalp/cron/v2/discover?dryRun=false&includeLiveQuotes=true&autoSuccessor=true&autoContinue=true&selfMaxHops=4` every 3 hours.
+  - `/api/scalp/cron/v2/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&selfMaxHops=8` every 10 minutes.
+  - `/api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8` every 10 minutes.
   - `/api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&selfMaxHops=12` every 2 minutes.
   - `/api/scalp/cron/promotion?batchSize=300&autoContinue=true&selfMaxHops=6` every 15 minutes.
   - `/api/scalp/cron/live-guardrail-monitor?dryRun=false&autoPause=true` every 15 minutes (detects live drift and auto-pauses breached deployments).

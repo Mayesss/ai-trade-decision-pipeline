@@ -20,15 +20,15 @@
       "schedule": "0 * * * *"
     },
     {
-      "path": "/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true&autoSuccessor=true&autoContinue=true&selfMaxHops=4",
+      "path": "/api/scalp/cron/v2/discover?dryRun=false&includeLiveQuotes=true&autoSuccessor=true&autoContinue=true&selfMaxHops=4",
       "schedule": "15 */3 * * *"
     },
     {
-      "path": "/api/scalp/cron/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&selfMaxHops=8",
+      "path": "/api/scalp/cron/v2/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&selfMaxHops=8",
       "schedule": "*/10 * * * *"
     },
     {
-      "path": "/api/scalp/cron/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8",
+      "path": "/api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8",
       "schedule": "2-59/10 * * * *"
     },
     {

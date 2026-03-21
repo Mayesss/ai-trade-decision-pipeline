@@ -666,22 +666,28 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<
   ScalpCronPipelineDefinition
 > = {
   scalp_discover_symbols: {
-    primaryPathname: "/api/scalp/cron/discover-symbols",
-    matchPathnames: ["/api/scalp/cron/discover-symbols"],
+    primaryPathname: "/api/scalp/cron/v2/discover",
+    matchPathnames: [
+      "/api/scalp/cron/v2/discover",
+      "/api/scalp/cron/discover-symbols",
+    ],
     fallbackInvokePath:
-      "/api/scalp/cron/discover-symbols?dryRun=false&includeLiveQuotes=true&autoSuccessor=true&autoContinue=true&selfMaxHops=4",
+      "/api/scalp/cron/v2/discover?dryRun=false&includeLiveQuotes=true&autoSuccessor=true&autoContinue=true&selfMaxHops=4",
   },
   scalp_load_candles: {
-    primaryPathname: "/api/scalp/cron/load-candles",
-    matchPathnames: ["/api/scalp/cron/load-candles"],
+    primaryPathname: "/api/scalp/cron/v2/load-candles",
+    matchPathnames: [
+      "/api/scalp/cron/v2/load-candles",
+      "/api/scalp/cron/load-candles",
+    ],
     fallbackInvokePath:
-      "/api/scalp/cron/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&selfMaxHops=8",
+      "/api/scalp/cron/v2/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&selfMaxHops=8",
   },
   scalp_prepare: {
-    primaryPathname: "/api/scalp/cron/prepare",
-    matchPathnames: ["/api/scalp/cron/prepare"],
+    primaryPathname: "/api/scalp/cron/v2/prepare",
+    matchPathnames: ["/api/scalp/cron/v2/prepare", "/api/scalp/cron/prepare"],
     fallbackInvokePath:
-      "/api/scalp/cron/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8",
+      "/api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8",
   },
   scalp_worker: {
     primaryPathname: "/api/scalp/cron/worker",
@@ -736,7 +742,8 @@ function normalizeInvokePathForScalpCronNow(
   const pathname = parseCronPathname(value);
   const isDiscoverCron =
     rowId === "scalp_discover_symbols" ||
-    pathname === "/api/scalp/cron/discover-symbols";
+    pathname === "/api/scalp/cron/discover-symbols" ||
+    pathname === "/api/scalp/cron/v2/discover";
   if (!isDiscoverCron) return value;
   try {
     const absolute = /^https?:\/\//i.test(value);

@@ -1026,30 +1026,6 @@ function resolveLoadBackfillChunkWeeks(
   );
 }
 
-function resolveLoadIncludeInactiveBitget(): boolean {
-  // Default off: avoid warming inactive symbols that are outside discovery-selected active set.
-  return envBool("SCALP_PIPELINE_LOAD_INCLUDE_INACTIVE_BITGET", false);
-}
-
-function resolveLoadInactiveBitgetWeeks(requiredWeeks: number): number {
-  return Math.max(
-    1,
-    Math.min(
-      requiredWeeks,
-      toPositiveInt(process.env.SCALP_PIPELINE_LOAD_INACTIVE_BITGET_WEEKS, 12),
-    ),
-  );
-}
-
-function resolveBitgetSymbolLikePattern(): string {
-  const productType = String(resolveProductType() || "usdt-futures")
-    .trim()
-    .toLowerCase();
-  if (productType === "usdc-futures") return "%USDC";
-  if (productType === "coin-futures") return "%USD";
-  return "%USDT";
-}
-
 function resolvePromotionFreshWeeks(): number {
   return Math.max(
     12,
@@ -1434,31 +1410,13 @@ async function runWithPipelineJobLock(
 }
 
 async function countPendingLoadSymbols(): Promise<number> {
-  const berlinWeekStartMs = startOfBerlinWeekMonday(Date.now());
-  const includeInactiveBitget = resolveLoadIncludeInactiveBitget();
-  const bitgetSymbolLikePattern = resolveBitgetSymbolLikePattern();
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
     Array<{ count: bigint | number | string }>
   >(Prisma.sql`
-        WITH due_enabled_symbols AS (
-            SELECT DISTINCT d.symbol
-            FROM scalp_deployments d
-            WHERE d.enabled = TRUE
-              AND COALESCE((d.promotion_gate #>> '{lifecycle,lastRolloverBerlinWeekStartMs}')::bigint, 0) < ${berlinWeekStartMs}
-        )
         SELECT COUNT(*)::bigint AS count
-        FROM scalp_pipeline_symbols
-        WHERE (
-                active = TRUE
-                OR symbol IN (SELECT symbol FROM due_enabled_symbols)
-                OR (
-                  ${includeInactiveBitget} = TRUE
-                  AND active = FALSE
-                  AND UPPER(symbol) LIKE ${bitgetSymbolLikePattern}
-                )
-              )
-          AND load_status IN ('pending', 'retry_wait')
+        FROM scalp_discovered_symbols
+        WHERE load_status IN ('pending', 'retry_wait')
           AND COALESCE(load_next_run_at, NOW()) <= NOW();
     `);
   return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
@@ -1469,8 +1427,7 @@ async function countActivePipelineSymbols(): Promise<number> {
   const rows = await db.$queryRaw<Array<{ count: bigint | number | string }>>(
     Prisma.sql`
         SELECT COUNT(*)::bigint AS count
-        FROM scalp_pipeline_symbols
-        WHERE active = TRUE;
+        FROM scalp_discovered_symbols;
     `,
   );
   return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
@@ -1482,9 +1439,8 @@ async function countPendingPrepareSymbols(): Promise<number> {
     Array<{ count: bigint | number | string }>
   >(Prisma.sql`
         SELECT COUNT(*)::bigint AS count
-        FROM scalp_pipeline_symbols
-        WHERE active = TRUE
-          AND load_status = 'succeeded'
+        FROM scalp_discovered_symbols
+        WHERE load_status = 'succeeded'
           AND prepare_status IN ('pending', 'retry_wait')
           AND COALESCE(prepare_next_run_at, NOW()) <= NOW();
     `);
@@ -1501,9 +1457,9 @@ async function countPendingWorkerRows(): Promise<number> {
         FROM scalp_deployment_weekly_metrics m
         INNER JOIN scalp_deployments d
           ON d.deployment_id = m.deployment_id
-        LEFT JOIN scalp_pipeline_symbols s
+        LEFT JOIN scalp_discovered_symbols s
           ON s.symbol = m.symbol
-        WHERE (COALESCE(s.active, FALSE) = TRUE OR d.enabled = TRUE)
+        WHERE (s.symbol IS NOT NULL OR d.enabled = TRUE)
           AND m.status IN ('pending', 'retry_wait')
           AND m.next_run_at <= NOW()
           AND NOT (
@@ -2316,6 +2272,251 @@ function computeWeeklyRobustnessFromTasks(params: {
   };
 }
 
+function buildAnySymbolTextMatchSql(
+  columnSql: Prisma.Sql,
+  symbols: string[],
+): Prisma.Sql {
+  if (!symbols.length) return Prisma.sql`FALSE`;
+  const filters = symbols.map((symbol) =>
+    Prisma.sql`${columnSql} ILIKE ${`%${symbol}%`}`,
+  );
+  return Prisma.sql`(${Prisma.join(filters, " OR ")})`;
+}
+
+async function safelyExecuteRaw(
+  db: ReturnType<typeof scalpPrisma>,
+  sql: Prisma.Sql,
+): Promise<number> {
+  try {
+    return Number(await db.$executeRaw(sql));
+  } catch {
+    return 0;
+  }
+}
+
+interface PruneDroppedSymbolsResult {
+  disabledEnabledDeployments: number;
+  prunedDeployments: number;
+  prunedWeeklyMetrics: number;
+  prunedExecutionRuns: number;
+  prunedSessions: number;
+  prunedTradeLedgerRows: number;
+  prunedJournalRows: number;
+  prunedCooldownRows: number;
+  prunedMetadataRows: number;
+  prunedCandleHistoryWeeks: number;
+  prunedLegacyCandleHistoryRows: number;
+  prunedLegacyPipelineRows: number;
+  prunedPipelineJobRunRows: number;
+  prunedPipelineJobRows: number;
+  prunedUniverseSnapshotRows: number;
+  prunedResearchSnapshotRows: number;
+}
+
+async function pruneDroppedDiscoveredSymbols(params: {
+  symbols: string[];
+  dryRun: boolean;
+}): Promise<PruneDroppedSymbolsResult> {
+  const symbols = Array.from(
+    new Set(
+      (params.symbols || []).map((row) => normalizeSymbol(row)).filter(Boolean),
+    ),
+  );
+  const empty: PruneDroppedSymbolsResult = {
+    disabledEnabledDeployments: 0,
+    prunedDeployments: 0,
+    prunedWeeklyMetrics: 0,
+    prunedExecutionRuns: 0,
+    prunedSessions: 0,
+    prunedTradeLedgerRows: 0,
+    prunedJournalRows: 0,
+    prunedCooldownRows: 0,
+    prunedMetadataRows: 0,
+    prunedCandleHistoryWeeks: 0,
+    prunedLegacyCandleHistoryRows: 0,
+    prunedLegacyPipelineRows: 0,
+    prunedPipelineJobRunRows: 0,
+    prunedPipelineJobRows: 0,
+    prunedUniverseSnapshotRows: 0,
+    prunedResearchSnapshotRows: 0,
+  };
+  if (!symbols.length || params.dryRun) return empty;
+
+  const db = scalpPrisma();
+  const deployments = await db.$queryRaw<Array<{ deploymentId: string }>>(Prisma.sql`
+      SELECT deployment_id AS "deploymentId"
+      FROM scalp_deployments
+      WHERE symbol IN (${Prisma.join(symbols)});
+  `);
+  const deploymentIds = deployments
+    .map((row) => String(row.deploymentId || "").trim())
+    .filter(Boolean);
+  const detailsJsonLike = buildAnySymbolTextMatchSql(
+    Prisma.sql`details_json::text`,
+    symbols,
+  );
+  const progressJsonLike = buildAnySymbolTextMatchSql(
+    Prisma.sql`progress_json::text`,
+    symbols,
+  );
+  const universePayloadLike = buildAnySymbolTextMatchSql(
+    Prisma.sql`payload_json::text`,
+    symbols,
+  );
+
+  const disabledEnabledDeployments = Number(
+    await db.$executeRaw(Prisma.sql`
+      UPDATE scalp_deployments
+      SET
+          enabled = FALSE,
+          in_universe = FALSE,
+          worker_dirty = FALSE,
+          promotion_dirty = FALSE,
+          updated_by = 'pipeline:discover:v2:gate_drop',
+          updated_at = NOW()
+      WHERE symbol IN (${Prisma.join(symbols)})
+        AND enabled = TRUE;
+    `),
+  );
+  const prunedTradeLedgerRows = Number(
+    await db.$executeRaw(Prisma.sql`
+      DELETE FROM scalp_trade_ledger
+      WHERE symbol IN (${Prisma.join(symbols)})
+         ${
+           deploymentIds.length
+             ? Prisma.sql`OR deployment_id IN (${Prisma.join(deploymentIds)})`
+             : Prisma.empty
+         };
+    `),
+  );
+  const prunedJournalRows = Number(
+    await db.$executeRaw(Prisma.sql`
+      DELETE FROM scalp_journal
+      WHERE symbol IN (${Prisma.join(symbols)})
+         ${
+           deploymentIds.length
+             ? Prisma.sql`OR deployment_id IN (${Prisma.join(deploymentIds)})`
+             : Prisma.empty
+         };
+    `),
+  );
+  const prunedWeeklyMetrics = Number(
+    await db.$executeRaw(Prisma.sql`
+      DELETE FROM scalp_deployment_weekly_metrics
+      WHERE symbol IN (${Prisma.join(symbols)})
+         ${
+           deploymentIds.length
+             ? Prisma.sql`OR deployment_id IN (${Prisma.join(deploymentIds)})`
+             : Prisma.empty
+         };
+    `),
+  );
+  const prunedExecutionRuns = Number(
+    deploymentIds.length
+      ? await db.$executeRaw(Prisma.sql`
+          DELETE FROM scalp_execution_runs
+          WHERE deployment_id IN (${Prisma.join(deploymentIds)});
+        `)
+      : 0,
+  );
+  const prunedSessions = Number(
+    deploymentIds.length
+      ? await db.$executeRaw(Prisma.sql`
+          DELETE FROM scalp_sessions
+          WHERE deployment_id IN (${Prisma.join(deploymentIds)});
+        `)
+      : 0,
+  );
+  const prunedDeployments = Number(
+    await db.$executeRaw(Prisma.sql`
+      DELETE FROM scalp_deployments
+      WHERE symbol IN (${Prisma.join(symbols)});
+    `),
+  );
+  const prunedCooldownRows = Number(
+    await db.$executeRaw(Prisma.sql`
+      DELETE FROM scalp_symbol_cooldowns
+      WHERE symbol IN (${Prisma.join(symbols)});
+    `),
+  );
+  const prunedMetadataRows = Number(
+    await db.$executeRaw(Prisma.sql`
+      DELETE FROM scalp_symbol_market_metadata
+      WHERE symbol IN (${Prisma.join(symbols)});
+    `),
+  );
+  const prunedCandleHistoryWeeks = Number(
+    await db.$executeRaw(Prisma.sql`
+      DELETE FROM scalp_candle_history_weeks
+      WHERE symbol IN (${Prisma.join(symbols)});
+    `),
+  );
+  const prunedLegacyCandleHistoryRows = await safelyExecuteRaw(
+    db,
+    Prisma.sql`
+      DELETE FROM scalp_candle_history
+      WHERE symbol IN (${Prisma.join(symbols)});
+    `,
+  );
+  const prunedLegacyPipelineRows = Number(
+    await db.$executeRaw(Prisma.sql`
+      DELETE FROM scalp_pipeline_symbols
+      WHERE symbol IN (${Prisma.join(symbols)});
+    `),
+  );
+  const prunedPipelineJobRunRows = Number(
+    await db.$executeRaw(Prisma.sql`
+      DELETE FROM scalp_pipeline_job_runs
+      WHERE ${detailsJsonLike};
+    `),
+  );
+  const prunedPipelineJobRows = Number(
+    await db.$executeRaw(Prisma.sql`
+      UPDATE scalp_pipeline_jobs
+      SET
+          progress_json = NULL,
+          progress_label = CASE
+              WHEN progress_label = 'selected 0' THEN progress_label
+              ELSE 'progress_reset_gate_drop'
+          END,
+          updated_at = NOW()
+      WHERE ${progressJsonLike};
+    `),
+  );
+  const prunedUniverseSnapshotRows = Number(
+    await db.$executeRaw(Prisma.sql`
+      DELETE FROM scalp_symbol_universe_snapshots
+      WHERE ${universePayloadLike};
+    `),
+  );
+  const prunedResearchSnapshotRows = await safelyExecuteRaw(
+    db,
+    Prisma.sql`
+      DELETE FROM scalp_research_report_snapshots
+      WHERE ${universePayloadLike};
+    `,
+  );
+
+  return {
+    disabledEnabledDeployments: Math.max(0, disabledEnabledDeployments),
+    prunedDeployments: Math.max(0, prunedDeployments),
+    prunedWeeklyMetrics: Math.max(0, prunedWeeklyMetrics),
+    prunedExecutionRuns: Math.max(0, prunedExecutionRuns),
+    prunedSessions: Math.max(0, prunedSessions),
+    prunedTradeLedgerRows: Math.max(0, prunedTradeLedgerRows),
+    prunedJournalRows: Math.max(0, prunedJournalRows),
+    prunedCooldownRows: Math.max(0, prunedCooldownRows),
+    prunedMetadataRows: Math.max(0, prunedMetadataRows),
+    prunedCandleHistoryWeeks: Math.max(0, prunedCandleHistoryWeeks),
+    prunedLegacyCandleHistoryRows: Math.max(0, prunedLegacyCandleHistoryRows),
+    prunedLegacyPipelineRows: Math.max(0, prunedLegacyPipelineRows),
+    prunedPipelineJobRunRows: Math.max(0, prunedPipelineJobRunRows),
+    prunedPipelineJobRows: Math.max(0, prunedPipelineJobRows),
+    prunedUniverseSnapshotRows: Math.max(0, prunedUniverseSnapshotRows),
+    prunedResearchSnapshotRows: Math.max(0, prunedResearchSnapshotRows),
+  };
+}
+
 export async function runDiscoverPipelineJob(
   params: {
     dryRun?: boolean;
@@ -2351,20 +2552,9 @@ export async function runDiscoverPipelineJob(
           }
         : undefined,
     });
-    const discoveredActiveSymbols = Array.from(
+    const discoveredGatePassSymbols = Array.from(
       new Set(
         (snapshot.selectedSymbols || [])
-          .map((row) => normalizeSymbol(row))
-          .filter(Boolean),
-      ),
-    );
-    const discoveredCatalogSymbols = Array.from(
-      new Set(
-        [
-          ...(snapshot.selectedSymbols || []),
-          ...((snapshot.selectedRows || []).map((row) => row.symbol) || []),
-          ...((snapshot.topRejectedRows || []).map((row) => row.symbol) || []),
-        ]
           .map((row) => normalizeSymbol(row))
           .filter(Boolean),
       ),
@@ -2373,150 +2563,116 @@ export async function runDiscoverPipelineJob(
     const activeSymbols = Array.from(
       new Set(
         bitgetOnly
-          ? discoveredActiveSymbols.filter((symbol) => isBitgetPipelineSymbol(symbol))
-          : discoveredActiveSymbols,
-      ),
-    );
-    const catalogSymbols = Array.from(
-      new Set(
-        (bitgetOnly
-          ? discoveredCatalogSymbols.filter((symbol) => isBitgetPipelineSymbol(symbol))
-          : discoveredCatalogSymbols
-        ).concat(activeSymbols),
+          ? discoveredGatePassSymbols.filter((symbol) => isBitgetPipelineSymbol(symbol))
+          : discoveredGatePassSymbols,
       ),
     );
     const droppedNonBitgetSymbols = bitgetOnly
-      ? discoveredCatalogSymbols.filter((symbol) => !catalogSymbols.includes(symbol))
+      ? discoveredGatePassSymbols.filter((symbol) => !activeSymbols.includes(symbol))
       : [];
 
     const existingRows = await db.$queryRaw<
       Array<{
         symbol: string;
-        active: boolean;
-        loadStatus: string;
-        prepareStatus: string;
       }>
     >(Prisma.sql`
             SELECT
-                symbol,
-                active,
-                load_status AS "loadStatus",
-                prepare_status AS "prepareStatus"
-            FROM scalp_pipeline_symbols;
+                symbol
+            FROM scalp_discovered_symbols;
         `);
     const existingBySymbol = new Map(
       existingRows.map((row) => [normalizeSymbol(row.symbol), row]),
     );
-    const syncPlan = buildDiscoverSymbolSyncPlan({
-      existingRows,
-      activeSymbols,
-      catalogSymbols,
-    });
-    const activeSet = new Set(syncPlan.activeSymbols);
-    const addedActiveSymbols = syncPlan.addedActiveSymbols;
-    const removedActiveSymbols = syncPlan.removedActiveSymbols;
-    const catalogAddedSymbols = syncPlan.catalogAddedSymbols;
+    const existingSymbols = Array.from(existingBySymbol.keys());
+    const activeSet = new Set(activeSymbols);
+    const addedActiveSymbols = activeSymbols.filter(
+      (symbol) => !existingBySymbol.has(symbol),
+    );
+    const wouldRemoveActiveSymbols = existingSymbols.filter(
+      (symbol) => !activeSet.has(symbol),
+    );
+    const droppedCleanup: PruneDroppedSymbolsResult = {
+      disabledEnabledDeployments: 0,
+      prunedDeployments: 0,
+      prunedWeeklyMetrics: 0,
+      prunedExecutionRuns: 0,
+      prunedSessions: 0,
+      prunedTradeLedgerRows: 0,
+      prunedJournalRows: 0,
+      prunedCooldownRows: 0,
+      prunedMetadataRows: 0,
+      prunedCandleHistoryWeeks: 0,
+      prunedLegacyCandleHistoryRows: 0,
+      prunedLegacyPipelineRows: 0,
+      prunedPipelineJobRunRows: 0,
+      prunedPipelineJobRows: 0,
+      prunedUniverseSnapshotRows: 0,
+      prunedResearchSnapshotRows: 0,
+    };
 
     if (!dryRun) {
-      for (const symbol of catalogSymbols) {
-        const existing = existingBySymbol.get(symbol) || null;
-        const previouslyActive = Boolean(existing?.active);
-        const isActive = activeSet.has(symbol);
-        const activatedNow = isActive && !previouslyActive;
-        const fallbackLoadStatus = isActive
-          ? activatedNow
-            ? "pending"
-            : "succeeded"
-          : "succeeded";
-        const fallbackPrepareStatus = isActive
-          ? activatedNow
-            ? "pending"
-            : "succeeded"
-          : "succeeded";
-        const fallbackLoadNextRunAt = activatedNow ? new Date(nowMs) : null;
-        const fallbackPrepareNextRunAt = activatedNow ? new Date(nowMs) : null;
+      for (const symbol of activeSymbols) {
         await db.$executeRaw(Prisma.sql`
-                INSERT INTO scalp_pipeline_symbols(
+                INSERT INTO scalp_discovered_symbols(
                     symbol,
-                    active,
-                    discover_status,
-                    discover_attempts,
-                    discover_next_run_at,
-                    discover_error,
                     last_discovered_at,
                     load_status,
+                    load_attempts,
                     load_next_run_at,
+                    load_error,
                     prepare_status,
+                    prepare_attempts,
                     prepare_next_run_at,
+                    prepare_error,
                     updated_at
                 )
                 VALUES(
                     ${symbol},
-                    ${isActive},
-                    'succeeded',
-                    0,
-                    NULL,
-                    NULL,
                     NOW(),
-                    ${fallbackLoadStatus},
-                    ${fallbackLoadNextRunAt},
-                    ${fallbackPrepareStatus},
-                    ${fallbackPrepareNextRunAt},
+                    'pending',
+                    0,
+                    NOW(),
+                    NULL,
+                    'pending',
+                    0,
+                    NOW(),
+                    NULL,
                     NOW()
                 )
                 ON CONFLICT(symbol)
                 DO UPDATE SET
-                    active = ${isActive},
-                    discover_status = 'succeeded',
-                    discover_attempts = 0,
-                    discover_next_run_at = NULL,
-                    discover_error = NULL,
                     last_discovered_at = NOW(),
                     load_status = CASE
-                        WHEN ${isActive} = FALSE THEN scalp_pipeline_symbols.load_status
-                        WHEN scalp_pipeline_symbols.load_status IN ('pending', 'running', 'retry_wait') THEN scalp_pipeline_symbols.load_status
-                        ELSE ${fallbackLoadStatus}
+                        WHEN scalp_discovered_symbols.load_status = 'failed' THEN 'pending'
+                        ELSE scalp_discovered_symbols.load_status
                     END,
                     load_next_run_at = CASE
-                        WHEN ${isActive} = FALSE THEN scalp_pipeline_symbols.load_next_run_at
-                        WHEN scalp_pipeline_symbols.load_status IN ('pending', 'running', 'retry_wait') THEN scalp_pipeline_symbols.load_next_run_at
-                        ELSE ${fallbackLoadNextRunAt}
+                        WHEN scalp_discovered_symbols.load_status = 'failed' THEN NOW()
+                        WHEN scalp_discovered_symbols.load_status = 'pending'
+                          AND scalp_discovered_symbols.load_next_run_at IS NULL
+                        THEN NOW()
+                        ELSE scalp_discovered_symbols.load_next_run_at
+                    END,
+                    load_error = CASE
+                        WHEN scalp_discovered_symbols.load_status = 'failed' THEN NULL
+                        ELSE scalp_discovered_symbols.load_error
                     END,
                     prepare_status = CASE
-                        WHEN ${isActive} = FALSE THEN scalp_pipeline_symbols.prepare_status
-                        WHEN scalp_pipeline_symbols.prepare_status IN ('pending', 'running', 'retry_wait') THEN scalp_pipeline_symbols.prepare_status
-                        ELSE ${fallbackPrepareStatus}
+                        WHEN scalp_discovered_symbols.prepare_status = 'failed' THEN 'pending'
+                        ELSE scalp_discovered_symbols.prepare_status
                     END,
                     prepare_next_run_at = CASE
-                        WHEN ${isActive} = FALSE THEN scalp_pipeline_symbols.prepare_next_run_at
-                        WHEN scalp_pipeline_symbols.prepare_status IN ('pending', 'running', 'retry_wait') THEN scalp_pipeline_symbols.prepare_next_run_at
-                        ELSE ${fallbackPrepareNextRunAt}
+                        WHEN scalp_discovered_symbols.prepare_status = 'failed' THEN NOW()
+                        WHEN scalp_discovered_symbols.prepare_status = 'pending'
+                          AND scalp_discovered_symbols.prepare_next_run_at IS NULL
+                        THEN NOW()
+                        ELSE scalp_discovered_symbols.prepare_next_run_at
+                    END,
+                    prepare_error = CASE
+                        WHEN scalp_discovered_symbols.prepare_status = 'failed' THEN NULL
+                        ELSE scalp_discovered_symbols.prepare_error
                     END,
                     updated_at = NOW();
-            `);
-      }
-
-      if (removedActiveSymbols.length > 0) {
-        await db.$executeRaw(Prisma.sql`
-                UPDATE scalp_pipeline_symbols
-                SET
-                    active = FALSE,
-                    updated_at = NOW()
-                WHERE active = TRUE
-                  AND symbol IN (${Prisma.join(removedActiveSymbols)});
-            `);
-      }
-
-      if (removedActiveSymbols.length > 0) {
-        await db.$executeRaw(Prisma.sql`
-                UPDATE scalp_deployments
-                SET
-                    worker_dirty = FALSE,
-                    promotion_dirty = FALSE,
-                    updated_by = 'pipeline:discover',
-                    updated_at = NOW()
-                WHERE symbol IN (${Prisma.join(removedActiveSymbols)})
-                  AND enabled = FALSE;
             `);
       }
     }
@@ -2531,14 +2687,14 @@ export async function runDiscoverPipelineJob(
         dryRun,
         selected: activeSymbols.length,
         activeSymbols: activeSymbols.length,
-        catalogSymbols: catalogSymbols.length,
         added: addedActiveSymbols.length,
-        removed: removedActiveSymbols.length,
-        wouldRemove: removedActiveSymbols.length,
+        removed: 0,
+        wouldRemove: wouldRemoveActiveSymbols.length,
         addedActiveSymbols: addedActiveSymbols.length,
-        removedActiveSymbols: removedActiveSymbols.length,
-        catalogAddedSymbols: catalogAddedSymbols.length,
+        removedActiveSymbols: 0,
+        wouldRemoveActiveSymbols: wouldRemoveActiveSymbols.length,
         droppedNonBitget: droppedNonBitgetSymbols.length,
+        droppedCleanup,
         pendingLoad: pendingAfter,
       },
     });
@@ -2550,21 +2706,21 @@ export async function runDiscoverPipelineJob(
       retried: 0,
       failed: 0,
       pendingAfter,
-      downstreamRequested: pendingAfter > 0 || activeSymbols.length > 0,
+      downstreamRequested: pendingAfter > 0,
       progressLabel: `selected ${activeSymbols.length}`,
       details: {
         dryRun,
         generatedAtIso: snapshot.generatedAtIso,
         selected: activeSymbols.length,
         addedSymbols: addedActiveSymbols,
-        removedSymbols: removedActiveSymbols,
-        wouldRemoveSymbols: removedActiveSymbols,
+        removedSymbols: [],
+        wouldRemoveSymbols: wouldRemoveActiveSymbols,
         activeSymbols,
         addedActiveSymbols,
-        removedActiveSymbols,
-        catalogAddedSymbols,
-        catalogSymbols,
+        removedActiveSymbols: [],
+        wouldRemoveActiveSymbols,
         droppedNonBitgetSymbols,
+        droppedCleanup,
         candidatesEvaluated: snapshot.candidatesEvaluated,
       },
     };
@@ -2573,16 +2729,10 @@ export async function runDiscoverPipelineJob(
 
 async function claimLoadSymbols(
   limit: number,
-  berlinWeekStartMs: number,
-  includeInactiveBitget: boolean,
-  bitgetSymbolLikePattern: string,
 ): Promise<
   Array<{
     symbol: string;
     attempts: number;
-    active: boolean;
-    dueEnabled: boolean;
-    bitgetSymbol: boolean;
   }>
 > {
   const db = scalpPrisma();
@@ -2590,45 +2740,20 @@ async function claimLoadSymbols(
     Array<{
       symbol: string;
       attempts: number;
-      active: boolean;
-      dueEnabled: boolean;
-      bitgetSymbol: boolean;
     }>
   >(Prisma.sql`
-        WITH due_enabled_symbols AS (
-            SELECT DISTINCT d.symbol
-            FROM scalp_deployments d
-            WHERE d.enabled = TRUE
-              AND COALESCE((d.promotion_gate #>> '{lifecycle,lastRolloverBerlinWeekStartMs}')::bigint, 0) < ${berlinWeekStartMs}
-        ),
+        WITH
         candidate AS (
             SELECT
-                p.symbol,
-                p.active,
-                (p.symbol IN (SELECT symbol FROM due_enabled_symbols)) AS "dueEnabled",
-                (UPPER(p.symbol) LIKE ${bitgetSymbolLikePattern}) AS "bitgetSymbol",
-                CASE
-                    WHEN p.symbol IN (SELECT symbol FROM due_enabled_symbols) THEN 0
-                    WHEN p.active = TRUE THEN 1
-                    ELSE 2
-                END AS priority_tier
-            FROM scalp_pipeline_symbols p
-            WHERE (
-                    p.active = TRUE
-                    OR p.symbol IN (SELECT symbol FROM due_enabled_symbols)
-                    OR (
-                      ${includeInactiveBitget} = TRUE
-                      AND p.active = FALSE
-                      AND UPPER(p.symbol) LIKE ${bitgetSymbolLikePattern}
-                    )
-                  )
-              AND p.load_status IN ('pending', 'retry_wait')
+                symbol
+            FROM scalp_discovered_symbols p
+            WHERE p.load_status IN ('pending', 'retry_wait')
               AND COALESCE(p.load_next_run_at, NOW()) <= NOW()
-            ORDER BY priority_tier ASC, COALESCE(p.load_next_run_at, NOW()) ASC, p.symbol ASC
+            ORDER BY COALESCE(p.load_next_run_at, NOW()) ASC, p.symbol ASC
             FOR UPDATE SKIP LOCKED
             LIMIT ${limit}
         )
-        UPDATE scalp_pipeline_symbols s
+        UPDATE scalp_discovered_symbols s
         SET
             load_status = 'running',
             load_attempts = s.load_attempts + 1,
@@ -2638,142 +2763,9 @@ async function claimLoadSymbols(
         WHERE s.symbol = c.symbol
         RETURNING
             s.symbol,
-            s.load_attempts AS attempts,
-            s.active,
-            c."dueEnabled" AS "dueEnabled",
-            c."bitgetSymbol" AS "bitgetSymbol";
+            s.load_attempts AS attempts;
     `);
   return rows;
-}
-
-async function ensureLoadQueueSymbolsForDueIncumbents(
-  berlinWeekStartMs: number,
-): Promise<{ symbols: string[]; queued: number }> {
-  const db = scalpPrisma();
-  const rows = await db.$queryRaw<Array<{ symbol: string }>>(Prisma.sql`
-        SELECT DISTINCT d.symbol
-        FROM scalp_deployments d
-        WHERE d.enabled = TRUE
-          AND COALESCE((d.promotion_gate #>> '{lifecycle,lastRolloverBerlinWeekStartMs}')::bigint, 0) < ${berlinWeekStartMs}
-        ORDER BY d.symbol ASC
-        LIMIT 2000;
-    `);
-  const symbols = rows
-    .map((row) => normalizeSymbol(row.symbol))
-    .filter(Boolean);
-  if (!symbols.length) return { symbols: [], queued: 0 };
-  let queued = 0;
-  for (const symbol of symbols) {
-    queued += Number(
-      await db.$executeRaw(Prisma.sql`
-            INSERT INTO scalp_pipeline_symbols(
-                symbol,
-                active,
-                discover_status,
-                discover_attempts,
-                discover_next_run_at,
-                discover_error,
-                last_discovered_at,
-                load_status,
-                load_attempts,
-                load_next_run_at,
-                load_error,
-                prepare_status,
-                prepare_attempts,
-                prepare_next_run_at,
-                prepare_error,
-                updated_at
-            )
-            VALUES(
-                ${symbol},
-                FALSE,
-                'succeeded',
-                0,
-                NULL,
-                NULL,
-                NOW(),
-                'pending',
-                0,
-                NOW(),
-                NULL,
-                'succeeded',
-                0,
-                NULL,
-                NULL,
-                NOW()
-            )
-            ON CONFLICT(symbol)
-            DO UPDATE SET
-                load_status = CASE
-                    WHEN scalp_pipeline_symbols.load_status = 'running' THEN scalp_pipeline_symbols.load_status
-                    ELSE 'pending'
-                END,
-                load_next_run_at = CASE
-                    WHEN scalp_pipeline_symbols.load_status = 'running' THEN scalp_pipeline_symbols.load_next_run_at
-                    ELSE NOW()
-                END,
-                load_error = CASE
-                    WHEN scalp_pipeline_symbols.load_status = 'running' THEN scalp_pipeline_symbols.load_error
-                    ELSE NULL
-                END,
-                updated_at = NOW();
-        `),
-    );
-  }
-  return { symbols, queued };
-}
-
-async function ensureLoadQueueSymbolsForInactiveBitgetWarmup(params: {
-  bitgetSymbolLikePattern: string;
-  requiredWeeks: number;
-  nowMs: number;
-  maxSymbols?: number;
-}): Promise<{ symbols: string[]; queued: number }> {
-  const db = scalpPrisma();
-  const maxSymbols = Math.max(
-    100,
-    Math.min(10_000, toPositiveInt(params.maxSymbols, 2500)),
-  );
-  const lastCompletedWeekStartMs =
-    resolveLastCompletedWeekBoundsUtc(params.nowMs).startCurrentWeekMondayMs -
-    ONE_WEEK_MS;
-  const rows = await db.$queryRaw<Array<{ symbol: string }>>(Prisma.sql`
-        WITH candidate AS (
-            SELECT symbol
-            FROM scalp_pipeline_symbols
-            WHERE active = FALSE
-              AND UPPER(symbol) LIKE ${params.bitgetSymbolLikePattern}
-              AND (
-                    COALESCE(weeks_covered, 0) < ${params.requiredWeeks}
-                    OR latest_week_start IS NULL
-                    OR latest_week_start < ${new Date(lastCompletedWeekStartMs)}
-                  )
-            ORDER BY COALESCE(load_next_run_at, NOW()) ASC, symbol ASC
-            LIMIT ${maxSymbols}
-        )
-        UPDATE scalp_pipeline_symbols s
-        SET
-            load_status = CASE
-                WHEN s.load_status = 'running' THEN s.load_status
-                ELSE 'pending'
-            END,
-            load_next_run_at = CASE
-                WHEN s.load_status = 'running' THEN s.load_next_run_at
-                ELSE NOW()
-            END,
-            load_error = CASE
-                WHEN s.load_status = 'running' THEN s.load_error
-                ELSE NULL
-            END,
-            updated_at = NOW()
-        FROM candidate c
-        WHERE s.symbol = c.symbol
-        RETURNING s.symbol;
-    `);
-  const symbols = rows
-    .map((row) => normalizeSymbol(row.symbol))
-    .filter(Boolean);
-  return { symbols, queued: symbols.length };
 }
 
 async function updateLoadSymbolStatus(params: {
@@ -2792,7 +2784,7 @@ async function updateLoadSymbolStatus(params: {
       ? new Date(Date.now() + params.retryAfterMs)
       : null;
   await db.$executeRaw(Prisma.sql`
-        UPDATE scalp_pipeline_symbols
+        UPDATE scalp_discovered_symbols
         SET
             load_status = ${params.status},
             load_attempts = ${params.attempts},
@@ -3014,16 +3006,12 @@ export async function runLoadCandlesPipelineJob(
   return runWithPipelineJobLock(
     "load_candles",
     async ({ lockToken, lockMs }) => {
-      const berlinWeekStartMs = startOfBerlinWeekMonday(Date.now());
       const requiredWeeks = resolveRequiredSuccessiveWeeks();
       const prewarmWeeks = resolveLoadPrewarmWeeks(requiredWeeks);
       const backfillChunkWeeks = resolveLoadBackfillChunkWeeks(
         requiredWeeks,
         prewarmWeeks,
       );
-      const includeInactiveBitget = resolveLoadIncludeInactiveBitget();
-      const bitgetSymbolLikePattern = resolveBitgetSymbolLikePattern();
-      const inactiveBitgetWeeks = resolveLoadInactiveBitgetWeeks(requiredWeeks);
       const batchSize = Math.max(
         1,
         Math.min(40, toPositiveInt(params.batchSize, 6)),
@@ -3050,25 +3038,9 @@ export async function runLoadCandlesPipelineJob(
             ),
           );
 
-      const dueIncumbents = await ensureLoadQueueSymbolsForDueIncumbents(
-        berlinWeekStartMs,
-      );
-      const inactiveBitgetWarmup = includeInactiveBitget
-        ? await ensureLoadQueueSymbolsForInactiveBitgetWarmup({
-            bitgetSymbolLikePattern,
-            requiredWeeks: inactiveBitgetWeeks,
-            nowMs: Date.now(),
-          })
-        : { symbols: [] as string[], queued: 0 };
-      const claimed = await claimLoadSymbols(
-        batchSize,
-        berlinWeekStartMs,
-        includeInactiveBitget,
-        bitgetSymbolLikePattern,
-      );
+      const claimed = await claimLoadSymbols(batchSize);
       const activeSymbols = await countActivePipelineSymbols();
       let succeeded = 0;
-      let succeededActive = 0;
       let retried = 0;
       let failed = 0;
 
@@ -3077,24 +3049,12 @@ export async function runLoadCandlesPipelineJob(
         const symbol = normalizeSymbol(row.symbol);
         if (!symbol) continue;
         try {
-          const symbolRequiredWeeks =
-            !row.active && row.bitgetSymbol
-              ? inactiveBitgetWeeks
-              : requiredWeeks;
-          const symbolPrewarmWeeks =
-            !row.active && row.bitgetSymbol
-              ? Math.max(prewarmWeeks, symbolRequiredWeeks)
-              : prewarmWeeks;
-          const symbolBackfillChunkWeeks =
-            !row.active && row.bitgetSymbol
-              ? Math.max(backfillChunkWeeks, symbolRequiredWeeks)
-              : backfillChunkWeeks;
           const coverage = await ensureSymbolWeeklyCoverage({
             symbol,
             nowMs: Date.now(),
-            requiredWeeks: symbolRequiredWeeks,
-            prewarmWeeks: symbolPrewarmWeeks,
-            backfillChunkWeeks: symbolBackfillChunkWeeks,
+            requiredWeeks,
+            prewarmWeeks,
+            backfillChunkWeeks,
             maxRequestsPerSymbol,
           });
           if (coverage.ok) {
@@ -3105,10 +3065,9 @@ export async function runLoadCandlesPipelineJob(
               error: null,
               weeksCovered: coverage.weeksCovered,
               latestWeekStartMs: coverage.latestWeekStartMs,
-              markPreparePending: row.active,
+              markPreparePending: true,
             });
             succeeded += 1;
-            if (row.active) succeededActive += 1;
           } else if (row.attempts >= maxAttempts) {
             await updateLoadSymbolStatus({
               symbol,
@@ -3163,10 +3122,7 @@ export async function runLoadCandlesPipelineJob(
             processed: idx + 1,
             total: claimed.length,
             activeSymbols,
-            dueIncumbentSymbolsQueued: dueIncumbents.symbols.length,
-            inactiveBitgetWarmupQueued: inactiveBitgetWarmup.symbols.length,
             succeeded,
-            succeededActive,
             retried,
             failed,
           },
@@ -3181,21 +3137,17 @@ export async function runLoadCandlesPipelineJob(
         retried,
         failed,
         pendingAfter,
-        downstreamRequested: succeededActive > 0,
+        downstreamRequested: succeeded > 0,
         progressLabel:
           claimed.length > 0 ? `processed ${claimed.length}` : "idle",
         details: {
           requiredWeeks,
           prewarmWeeks,
           backfillChunkWeeks,
-          includeInactiveBitget,
-          inactiveBitgetWeeks,
+          strictGateOnly: true,
           activeSymbols,
-          dueIncumbentSymbolsQueued: dueIncumbents.symbols.length,
-          inactiveBitgetWarmupQueued: inactiveBitgetWarmup.queued,
           claimed: claimed.length,
           succeeded,
-          succeededActive,
           retried,
           failed,
         },
@@ -3213,16 +3165,15 @@ async function claimPrepareSymbols(
   >(Prisma.sql`
         WITH candidate AS (
             SELECT symbol
-            FROM scalp_pipeline_symbols
-            WHERE active = TRUE
-              AND load_status = 'succeeded'
+            FROM scalp_discovered_symbols
+            WHERE load_status = 'succeeded'
               AND prepare_status IN ('pending', 'retry_wait')
               AND COALESCE(prepare_next_run_at, NOW()) <= NOW()
             ORDER BY COALESCE(prepare_next_run_at, NOW()) ASC, symbol ASC
             FOR UPDATE SKIP LOCKED
             LIMIT ${limit}
         )
-        UPDATE scalp_pipeline_symbols s
+        UPDATE scalp_discovered_symbols s
         SET
             prepare_status = 'running',
             prepare_attempts = s.prepare_attempts + 1,
@@ -3396,7 +3347,7 @@ async function updatePrepareSymbolStatus(params: {
       ? new Date(Date.now() + params.retryAfterMs)
       : null;
   await db.$executeRaw(Prisma.sql`
-        UPDATE scalp_pipeline_symbols
+        UPDATE scalp_discovered_symbols
         SET
             prepare_status = ${params.status},
             prepare_attempts = ${params.attempts},
@@ -3893,9 +3844,8 @@ async function claimWorkerRows(
                     d.enabled = TRUE
                     OR EXISTS (
                       SELECT 1
-                      FROM scalp_pipeline_symbols s
+                      FROM scalp_discovered_symbols s
                       WHERE s.symbol = m.symbol
-                        AND s.active = TRUE
                     )
                   )
               AND m.status IN ('pending', 'retry_wait')
@@ -4596,9 +4546,9 @@ export async function runPromotionPipelineJob(
       })
       .slice(0, maxLoadNudgeSymbols);
     if (loadSymbolsToNudge.length > 0) {
-      nudgedLoadSymbols = Number(
+        nudgedLoadSymbols = Number(
         await db.$executeRaw(Prisma.sql`
-                UPDATE scalp_pipeline_symbols
+                UPDATE scalp_discovered_symbols
                 SET
                     load_status = CASE
                         WHEN load_status = 'running' THEN load_status
@@ -5330,17 +5280,17 @@ export async function loadScalpPipelineJobsHealth(): Promise<
       }>
     >(Prisma.sql`
             SELECT
-                COUNT(*) FILTER (WHERE active = TRUE AND load_status = 'pending')::bigint AS "pendingLoad",
-                COUNT(*) FILTER (WHERE active = TRUE AND load_status = 'running')::bigint AS "runningLoad",
-                COUNT(*) FILTER (WHERE active = TRUE AND load_status = 'retry_wait')::bigint AS "retryLoad",
-                COUNT(*) FILTER (WHERE active = TRUE AND load_status = 'failed')::bigint AS "failedLoad",
-                COUNT(*) FILTER (WHERE active = TRUE AND load_status = 'succeeded')::bigint AS "succeededLoad",
-                COUNT(*) FILTER (WHERE active = TRUE AND prepare_status = 'pending')::bigint AS "pendingPrepare",
-                COUNT(*) FILTER (WHERE active = TRUE AND prepare_status = 'running')::bigint AS "runningPrepare",
-                COUNT(*) FILTER (WHERE active = TRUE AND prepare_status = 'retry_wait')::bigint AS "retryPrepare",
-                COUNT(*) FILTER (WHERE active = TRUE AND prepare_status = 'failed')::bigint AS "failedPrepare",
-                COUNT(*) FILTER (WHERE active = TRUE AND prepare_status = 'succeeded')::bigint AS "succeededPrepare"
-            FROM scalp_pipeline_symbols;
+                COUNT(*) FILTER (WHERE load_status = 'pending')::bigint AS "pendingLoad",
+                COUNT(*) FILTER (WHERE load_status = 'running')::bigint AS "runningLoad",
+                COUNT(*) FILTER (WHERE load_status = 'retry_wait')::bigint AS "retryLoad",
+                COUNT(*) FILTER (WHERE load_status = 'failed')::bigint AS "failedLoad",
+                COUNT(*) FILTER (WHERE load_status = 'succeeded')::bigint AS "succeededLoad",
+                COUNT(*) FILTER (WHERE prepare_status = 'pending')::bigint AS "pendingPrepare",
+                COUNT(*) FILTER (WHERE prepare_status = 'running')::bigint AS "runningPrepare",
+                COUNT(*) FILTER (WHERE prepare_status = 'retry_wait')::bigint AS "retryPrepare",
+                COUNT(*) FILTER (WHERE prepare_status = 'failed')::bigint AS "failedPrepare",
+                COUNT(*) FILTER (WHERE prepare_status = 'succeeded')::bigint AS "succeededPrepare"
+            FROM scalp_discovered_symbols;
         `),
     db.$queryRaw<
       Array<{
@@ -5360,9 +5310,9 @@ export async function loadScalpPipelineJobsHealth(): Promise<
             FROM scalp_deployment_weekly_metrics m
             INNER JOIN scalp_deployments d
               ON d.deployment_id = m.deployment_id
-            LEFT JOIN scalp_pipeline_symbols s
+            LEFT JOIN scalp_discovered_symbols s
               ON s.symbol = m.symbol
-            WHERE (COALESCE(s.active, FALSE) = TRUE OR d.enabled = TRUE)
+            WHERE (s.symbol IS NOT NULL OR d.enabled = TRUE)
               AND NOT (
                 (
                   COALESCE((d.promotion_gate #>> '{lifecycle,state}')::text, '') = 'suspended'

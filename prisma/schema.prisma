@@ -326,6 +326,30 @@ model ScalpPipelineSymbol {
   @@map("scalp_pipeline_symbols")
 }
 
+model ScalpDiscoveredSymbol {
+  symbol              String    @id
+  lastDiscoveredAt    DateTime? @map("last_discovered_at") @db.Timestamptz(3)
+  loadStatus          String    @default("pending") @map("load_status")
+  loadAttempts        Int       @default(0) @map("load_attempts")
+  loadNextRunAt       DateTime? @map("load_next_run_at") @db.Timestamptz(3)
+  loadError           String?   @map("load_error")
+  weeksCovered        Int       @default(0) @map("weeks_covered")
+  latestWeekStart     DateTime? @map("latest_week_start") @db.Timestamptz(3)
+  lastLoadedAt        DateTime? @map("last_loaded_at") @db.Timestamptz(3)
+  prepareStatus       String    @default("pending") @map("prepare_status")
+  prepareAttempts     Int       @default(0) @map("prepare_attempts")
+  prepareNextRunAt    DateTime? @map("prepare_next_run_at") @db.Timestamptz(3)
+  prepareError        String?   @map("prepare_error")
+  preparedDeployments Int       @default(0) @map("prepared_deployments")
+  lastPreparedAt      DateTime? @map("last_prepared_at") @db.Timestamptz(3)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@index([loadStatus, loadNextRunAt], map: "scalp_discovered_symbols_load_claim_idx")
+  @@index([prepareStatus, prepareNextRunAt], map: "scalp_discovered_symbols_prepare_claim_idx")
+  @@map("scalp_discovered_symbols")
+}
+
 model ScalpDeploymentWeeklyMetric {
   id             BigInt    @id @default(autoincrement())
   deploymentId   String    @map("deployment_id")

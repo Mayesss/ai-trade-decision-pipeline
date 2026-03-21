@@ -49,6 +49,8 @@ function setNoStoreHeaders(res: NextApiResponse): void {
   );
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
+  res.setHeader("Deprecation", "true");
+  res.setHeader("x-scalp-route-deprecated", "true");
 }
 
 export default async function handler(
@@ -93,7 +95,7 @@ export default async function handler(
   ) {
     downstream = await invokeCronEndpointDetached(
       req,
-      "/api/scalp/cron/load-candles",
+      "/api/scalp/cron/v2/load-candles",
       {
         autoContinue: 1,
         autoSuccessor: 1,
@@ -114,7 +116,7 @@ export default async function handler(
   ) {
     selfRecall = await invokeCronEndpointDetached(
       req,
-      "/api/scalp/cron/discover-symbols",
+      "/api/scalp/cron/v2/discover",
       {
         includeLiveQuotes: includeLiveQuotes ? 1 : 0,
         dryRun: dryRun ? 1 : 0,

@@ -49,6 +49,8 @@ function setNoStoreHeaders(res: NextApiResponse): void {
   );
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
+  res.setHeader("Deprecation", "true");
+  res.setHeader("x-scalp-route-deprecated", "true");
 }
 
 export default async function handler(
@@ -107,7 +109,7 @@ export default async function handler(
   ) {
     selfRecall = await invokeCronEndpointDetached(
       req,
-      "/api/scalp/cron/prepare",
+      "/api/scalp/cron/v2/prepare",
       {
         batchSize,
         maxAttempts,

@@ -2,12 +2,12 @@ export const config = { runtime: "nodejs" };
 
 import type { NextApiRequest, NextApiResponse } from "next";
 
-import { requireAdminAccess } from "../../../../lib/admin";
+import { requireAdminAccess } from "../../../../../lib/admin";
 import {
   invokeCronEndpointDetached,
   type CronInvokeResult,
-} from "../../../../lib/scalp/cronChaining";
-import { runPromotionPipelineJob } from "../../../../lib/scalp/pipelineJobs";
+} from "../../../../../lib/scalp/cronChaining";
+import { runDiscoverPipelineJob } from "../../../../../lib/scalp/pipelineJobs";
 
 function firstQueryValue(
   value: string | string[] | undefined,
@@ -63,26 +63,35 @@ export default async function handler(
   if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
 
-  const batchSize = parseIntBounded(req.query.batchSize, 200, 1, 1_500);
+  const includeLiveQuotes = parseBool(req.query.includeLiveQuotes, true);
+  const dryRun = parseBool(req.query.dryRun, false);
+  const maxCandidates = parseIntBounded(
+    req.query.maxCandidates,
+    250,
+    20,
+    2_000,
+  );
   const autoSuccessor = parseBool(req.query.autoSuccessor, true);
   const autoContinue = parseBool(req.query.autoContinue, true);
-  const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 50);
+  const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 20);
   const selfMaxHops = parseIntBounded(req.query.selfMaxHops, 6, 0, 50);
 
-  const result = await runPromotionPipelineJob({
-    batchSize,
+  const result = await runDiscoverPipelineJob({
+    dryRun,
+    includeLiveQuotes,
+    maxCandidates,
   });
 
-  let downstreamLoadCandles: CronInvokeResult | null = null;
-  let downstreamWorker: CronInvokeResult | null = null;
+  let downstream: CronInvokeResult | null = null;
   let selfRecall: CronInvokeResult | null = null;
+
   if (
     result.ok &&
     !result.busy &&
     autoSuccessor &&
     result.downstreamRequested
   ) {
-    downstreamLoadCandles = await invokeCronEndpointDetached(
+    downstream = await invokeCronEndpointDetached(
       req,
       "/api/scalp/cron/v2/load-candles",
       {
@@ -90,19 +99,7 @@ export default async function handler(
         autoSuccessor: 1,
         selfHop: 0,
         selfMaxHops,
-        triggeredBy: "promotion",
-      },
-      850,
-    );
-    downstreamWorker = await invokeCronEndpointDetached(
-      req,
-      "/api/scalp/cron/worker",
-      {
-        autoContinue: 1,
-        autoSuccessor: 1,
-        selfHop: 0,
-        selfMaxHops,
-        triggeredBy: "promotion",
+        triggeredBy: "discover-v2",
       },
       850,
     );
@@ -117,10 +114,13 @@ export default async function handler(
   ) {
     selfRecall = await invokeCronEndpointDetached(
       req,
-      "/api/scalp/cron/promotion",
+      "/api/scalp/cron/v2/discover",
       {
-        batchSize,
+        includeLiveQuotes: includeLiveQuotes ? 1 : 0,
+        dryRun: dryRun ? 1 : 0,
+        maxCandidates,
         autoContinue: 1,
+        autoSuccessor: autoSuccessor ? 1 : 0,
         selfHop: selfHop + 1,
         selfMaxHops,
       },
@@ -131,14 +131,14 @@ export default async function handler(
   return res.status(200).json({
     ok: result.ok,
     busy: result.busy,
+    v2: true,
     job: result,
     chaining: {
       autoSuccessor,
       autoContinue,
       selfHop,
       selfMaxHops,
-      downstreamLoadCandles,
-      downstreamWorker,
+      downstream,
       selfRecall,
     },
   });

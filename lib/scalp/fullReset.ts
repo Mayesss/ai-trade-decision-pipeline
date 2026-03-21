@@ -16,6 +16,7 @@ const BASE_RESET_TABLES = [
     'scalp_jobs',
     'scalp_symbol_cooldowns',
     'scalp_pipeline_jobs',
+    'scalp_discovered_symbols',
     'scalp_pipeline_symbols',
     'scalp_deployment_weekly_metrics',
     'scalp_execution_runs',

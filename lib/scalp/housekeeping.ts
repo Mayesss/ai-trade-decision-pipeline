@@ -392,9 +392,8 @@ async function loadActivePipelineCandleRetentionGuard(
   >(Prisma.sql`
         SELECT
             symbol
-        FROM scalp_pipeline_symbols
-        WHERE active = TRUE
-          AND (
+        FROM scalp_discovered_symbols
+        WHERE (
             load_status IN ('pending', 'running', 'retry_wait')
             OR prepare_status IN ('pending', 'running', 'retry_wait')
           )
@@ -453,9 +452,8 @@ async function recoverStalePipelineRowsFromPg(params: {
   const staleLoadRows = await db.$queryRaw<Array<{ count: bigint | number }>>(
     Prisma.sql`
           SELECT COUNT(*)::bigint AS count
-          FROM scalp_pipeline_symbols
-          WHERE active = TRUE
-            AND load_status = 'running'
+          FROM scalp_discovered_symbols
+          WHERE load_status = 'running'
             AND updated_at < ${staleCutoff};
       `,
   );
@@ -463,9 +461,8 @@ async function recoverStalePipelineRowsFromPg(params: {
     Array<{ count: bigint | number }>
   >(Prisma.sql`
           SELECT COUNT(*)::bigint AS count
-          FROM scalp_pipeline_symbols
-          WHERE active = TRUE
-            AND prepare_status = 'running'
+          FROM scalp_discovered_symbols
+          WHERE prepare_status = 'running'
             AND updated_at < ${staleCutoff};
       `);
   const staleWorkerRows = await db.$queryRaw<
@@ -512,27 +509,25 @@ async function recoverStalePipelineRowsFromPg(params: {
     }
     if (staleLoadRowsRecovered > 0) {
       await db.$executeRaw(Prisma.sql`
-                UPDATE scalp_pipeline_symbols
+                UPDATE scalp_discovered_symbols
                 SET
                     load_status = 'retry_wait',
                     load_next_run_at = NOW(),
                     load_error = COALESCE(load_error, 'housekeeping_recovered_stale_running_row'),
                     updated_at = NOW()
-                WHERE active = TRUE
-                  AND load_status = 'running'
+                WHERE load_status = 'running'
                   AND updated_at < ${staleCutoff};
             `);
     }
     if (stalePrepareRowsRecovered > 0) {
       await db.$executeRaw(Prisma.sql`
-                UPDATE scalp_pipeline_symbols
+                UPDATE scalp_discovered_symbols
                 SET
                     prepare_status = 'retry_wait',
                     prepare_next_run_at = NOW(),
                     prepare_error = COALESCE(prepare_error, 'housekeeping_recovered_stale_running_row'),
                     updated_at = NOW()
-                WHERE active = TRUE
-                  AND prepare_status = 'running'
+                WHERE prepare_status = 'running'
                   AND updated_at < ${staleCutoff};
             `);
     }
@@ -663,9 +658,8 @@ async function pruneInactivePipelineSymbolsFromPg(params: {
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{ symbol: string }>>(Prisma.sql`
         SELECT symbol
-        FROM scalp_pipeline_symbols
-        WHERE active = FALSE
-          AND updated_at < ${cutoff}
+        FROM scalp_discovered_symbols
+        WHERE updated_at < ${cutoff}
           AND load_status NOT IN ('pending', 'running', 'retry_wait')
           AND prepare_status NOT IN ('pending', 'running', 'retry_wait')
         ORDER BY updated_at ASC, symbol ASC
@@ -676,9 +670,8 @@ async function pruneInactivePipelineSymbolsFromPg(params: {
     .filter(Boolean);
   if (!params.dryRun && symbols.length > 0) {
     await db.$executeRaw(Prisma.sql`
-            DELETE FROM scalp_pipeline_symbols
-            WHERE active = FALSE
-              AND symbol IN (${Prisma.join(symbols)});
+            DELETE FROM scalp_discovered_symbols
+            WHERE symbol IN (${Prisma.join(symbols)});
         `);
   }
   return symbols;
