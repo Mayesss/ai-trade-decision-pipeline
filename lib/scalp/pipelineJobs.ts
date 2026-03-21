@@ -1760,7 +1760,7 @@ function resolveWorkerMaxClaimPerRun(): number {
     1,
     Math.min(
       400,
-      toPositiveInt(process.env.SCALP_PIPELINE_WORKER_MAX_CLAIM_PER_RUN, 10),
+      toPositiveInt(process.env.SCALP_PIPELINE_WORKER_MAX_CLAIM_PER_RUN, 40),
     ),
   );
 }
