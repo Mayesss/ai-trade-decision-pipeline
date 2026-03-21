@@ -4946,7 +4946,12 @@ export async function runPromotionPipelineJob(
     const weeklyGateReasonByKey = new Map<string, string | null>();
     const weeklyTasksByCandidateKey = new Map<
       string,
-      Array<{ netR: number; expectancyR: number; maxDrawdownR: number }>
+      Array<{
+        windowFromTs: number;
+        netR: number;
+        expectancyR: number;
+        maxDrawdownR: number;
+      }>
     >();
     for (const task of freshReadyTasks) {
       const symbol = String(task.symbol || "").trim().toUpperCase();
