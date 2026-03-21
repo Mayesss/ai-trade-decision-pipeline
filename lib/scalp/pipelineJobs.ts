@@ -992,10 +992,10 @@ function resolveLastCompletedWeekBoundsUtc(nowMs: number): {
 
 function resolveRequiredSuccessiveWeeks(): number {
   return Math.max(
-    13,
+    12,
     Math.min(
       52,
-      toPositiveInt(process.env.SCALP_PIPELINE_REQUIRED_SUCCESSIVE_WEEKS, 13),
+      toPositiveInt(process.env.SCALP_PIPELINE_REQUIRED_SUCCESSIVE_WEEKS, 12),
     ),
   );
 }
@@ -2768,6 +2768,33 @@ async function claimLoadSymbols(
   return rows;
 }
 
+async function nudgeLoadSymbolsForCoverageFloor(params: {
+  requiredWeeks: number;
+  nowMs: number;
+}): Promise<number> {
+  const db = scalpPrisma();
+  const { startCurrentWeekMondayMs } = resolveLastCompletedWeekBoundsUtc(
+    params.nowMs,
+  );
+  const lastCompletedWeekStartMs =
+    startCurrentWeekMondayMs - ONE_WEEK_MS;
+  const nudged = await db.$executeRaw(Prisma.sql`
+        UPDATE scalp_discovered_symbols
+        SET
+            load_status = 'pending',
+            load_next_run_at = NOW(),
+            load_error = NULL,
+            updated_at = NOW()
+        WHERE load_status IN ('succeeded', 'failed')
+          AND (
+            COALESCE(weeks_covered, 0) < ${Math.max(1, Math.floor(params.requiredWeeks))}
+            OR latest_week_start IS NULL
+            OR latest_week_start < ${new Date(lastCompletedWeekStartMs)}
+          );
+    `);
+  return Math.max(0, Number(nudged || 0));
+}
+
 async function updateLoadSymbolStatus(params: {
   symbol: string;
   status: ScalpPipelineQueueStatus;
@@ -3007,6 +3034,7 @@ export async function runLoadCandlesPipelineJob(
     "load_candles",
     async ({ lockToken, lockMs }) => {
       const requiredWeeks = resolveRequiredSuccessiveWeeks();
+      const nowMs = Date.now();
       const prewarmWeeks = resolveLoadPrewarmWeeks(requiredWeeks);
       const backfillChunkWeeks = resolveLoadBackfillChunkWeeks(
         requiredWeeks,
@@ -3037,6 +3065,10 @@ export async function runLoadCandlesPipelineJob(
               ),
             ),
           );
+      const coverageNudged = await nudgeLoadSymbolsForCoverageFloor({
+        requiredWeeks,
+        nowMs,
+      });
 
       const claimed = await claimLoadSymbols(batchSize);
       const activeSymbols = await countActivePipelineSymbols();
@@ -3122,6 +3154,7 @@ export async function runLoadCandlesPipelineJob(
             processed: idx + 1,
             total: claimed.length,
             activeSymbols,
+            coverageNudged,
             succeeded,
             retried,
             failed,
@@ -3146,6 +3179,7 @@ export async function runLoadCandlesPipelineJob(
           backfillChunkWeeks,
           strictGateOnly: true,
           activeSymbols,
+          coverageNudged,
           claimed: claimed.length,
           succeeded,
           retried,
