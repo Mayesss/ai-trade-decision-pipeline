@@ -17,8 +17,9 @@ import {
     finalizeScalpExecutionRunsBulk,
     type FinalizeScalpExecutionRunInput,
 } from './pg/executionRuns';
+import { normalizeScalpEntrySessionProfile } from './sessions';
 import { loadScalpStrategyRuntimeSnapshot } from './store';
-import type { ScalpMarketSnapshot } from './types';
+import type { ScalpEntrySessionProfile, ScalpMarketSnapshot } from './types';
 import { type ScalpVenue } from './venue';
 
 const EXECUTE_DEPLOYMENTS_MUTEX_KIND = 'execute_cycle';
@@ -61,6 +62,10 @@ function parseVenue(value: string | undefined): ScalpVenue | null | undefined {
         return normalized;
     }
     return null;
+}
+
+function parseEntrySessionProfile(value: string | undefined) {
+    return normalizeScalpEntrySessionProfile(value, 'berlin');
 }
 
 function setNoStoreHeaders(res: NextApiResponse): void {
@@ -128,18 +133,19 @@ function classifyVenueLockError(error: unknown): string {
     return 'venue_lock_error';
 }
 
-function buildVenueMutexDedupeKey(venue: ScalpVenue): string {
-    return `${EXECUTE_DEPLOYMENTS_MUTEX_PREFIX}:${venue}`;
+function buildVenueMutexDedupeKey(venue: ScalpVenue, entrySessionProfile: ScalpEntrySessionProfile): string {
+    return `${EXECUTE_DEPLOYMENTS_MUTEX_PREFIX}:${venue}:${entrySessionProfile}`;
 }
 
 async function acquireExecuteDeploymentsVenueLock(params: {
     venue: ScalpVenue;
+    entrySessionProfile: ScalpEntrySessionProfile;
     lockOwner: string;
     lockTtlMs: number;
 }): Promise<boolean> {
     if (!isScalpPgConfigured()) return false;
     const db = scalpPrisma();
-    const dedupeKey = buildVenueMutexDedupeKey(params.venue);
+    const dedupeKey = buildVenueMutexDedupeKey(params.venue, params.entrySessionProfile);
     await db.$executeRaw(
         Prisma.sql`
             INSERT INTO scalp_jobs(
@@ -158,7 +164,7 @@ async function acquireExecuteDeploymentsVenueLock(params: {
             VALUES(
                 ${EXECUTE_DEPLOYMENTS_MUTEX_KIND}::scalp_job_kind,
                 ${dedupeKey},
-                ${JSON.stringify({ venue: params.venue })}::jsonb,
+                ${JSON.stringify({ venue: params.venue, entrySessionProfile: params.entrySessionProfile })}::jsonb,
                 'succeeded'::scalp_job_status,
                 1,
                 1,
@@ -178,7 +184,7 @@ async function acquireExecuteDeploymentsVenueLock(params: {
             locked_by = ${params.lockOwner},
             locked_at = NOW(),
             updated_at = NOW(),
-            payload = COALESCE(payload, '{}'::jsonb) || ${JSON.stringify({ venue: params.venue })}::jsonb
+            payload = COALESCE(payload, '{}'::jsonb) || ${JSON.stringify({ venue: params.venue, entrySessionProfile: params.entrySessionProfile })}::jsonb
         WHERE kind = ${EXECUTE_DEPLOYMENTS_MUTEX_KIND}::scalp_job_kind
           AND dedupe_key = ${dedupeKey}
           AND (
@@ -192,10 +198,14 @@ async function acquireExecuteDeploymentsVenueLock(params: {
     return rows.length > 0;
 }
 
-async function releaseExecuteDeploymentsVenueLock(params: { venue: ScalpVenue; lockOwner: string }): Promise<void> {
+async function releaseExecuteDeploymentsVenueLock(params: {
+    venue: ScalpVenue;
+    entrySessionProfile: ScalpEntrySessionProfile;
+    lockOwner: string;
+}): Promise<void> {
     if (!isScalpPgConfigured()) return;
     const db = scalpPrisma();
-    const dedupeKey = buildVenueMutexDedupeKey(params.venue);
+    const dedupeKey = buildVenueMutexDedupeKey(params.venue, params.entrySessionProfile);
     await db.$executeRaw(Prisma.sql`
         UPDATE scalp_jobs
         SET
@@ -227,6 +237,7 @@ interface VenueBatchOutput {
 
 async function runVenueDeploymentsBatch(params: {
     venue: ScalpVenue;
+    entrySessionProfile: ScalpEntrySessionProfile;
     deployments: PgExecutableDeploymentRow[];
     dryRun: boolean;
     debug: boolean;
@@ -239,6 +250,7 @@ async function runVenueDeploymentsBatch(params: {
 }): Promise<VenueBatchOutput> {
     const {
         venue,
+        entrySessionProfile,
         deployments,
         dryRun,
         debug,
@@ -254,7 +266,7 @@ async function runVenueDeploymentsBatch(params: {
         venue,
         requestedConcurrency,
         effectiveConcurrency: deployments.length > 0 ? Math.max(1, Math.min(requestedConcurrency, deployments.length)) : 0,
-        lockOwner: `scalp_exec_lock_${venue}_${effectiveNowMs}_${Math.floor(Math.random() * 1_000_000)}`,
+        lockOwner: `scalp_exec_lock_${venue}_${entrySessionProfile}_${effectiveNowMs}_${Math.floor(Math.random() * 1_000_000)}`,
         lockAcquired: false,
         claimedCount: 0,
         skippedAlreadyClaimedCount: 0,
@@ -275,6 +287,7 @@ async function runVenueDeploymentsBatch(params: {
     try {
         output.lockAcquired = await acquireExecuteDeploymentsVenueLock({
             venue,
+            entrySessionProfile,
             lockOwner: output.lockOwner,
             lockTtlMs,
         });
@@ -479,7 +492,11 @@ async function runVenueDeploymentsBatch(params: {
         return output;
     } finally {
         try {
-            await releaseExecuteDeploymentsVenueLock({ venue, lockOwner: output.lockOwner });
+            await releaseExecuteDeploymentsVenueLock({
+                venue,
+                entrySessionProfile,
+                lockOwner: output.lockOwner,
+            });
         } catch (releaseErr: any) {
             const releaseError = {
                 venue,
@@ -520,6 +537,7 @@ export async function runExecuteDeploymentsPg(
     const concurrencyQuery = parsePositiveInt(firstQueryValue(req.query.concurrency));
     const symbol = firstQueryValue(req.query.symbol);
     const venue = parseVenue(firstQueryValue(req.query.venue));
+    const entrySessionProfile = parseEntrySessionProfile(firstQueryValue(req.query.session));
     const all = parseBoolParam(req.query.all, false);
     const requirePromotionEligible = parseBoolParam(
         req.query.requirePromotionEligible,
@@ -580,6 +598,7 @@ export async function runExecuteDeploymentsPg(
         const deploymentsRaw = await listExecutableDeploymentsFromPg({
             symbol,
             venue: venue ?? undefined,
+            sessionProfile: entrySessionProfile,
             requirePromotionEligible,
             limit: 2000,
         });
@@ -593,6 +612,7 @@ export async function runExecuteDeploymentsPg(
                 strictPgRequired,
                 requestedSymbol: symbol || null,
                 requestedVenue: venue || null,
+                requestedSession: entrySessionProfile,
                 requestedAll: all,
                 requirePromotionEligible,
                 count: 0,
@@ -630,6 +650,7 @@ export async function runExecuteDeploymentsPg(
                 const cache = marketSnapshotCacheByVenue.get(deploymentVenue) || new Map<string, ScalpMarketSnapshot>();
                 return runVenueDeploymentsBatch({
                     venue: deploymentVenue,
+                    entrySessionProfile,
                     deployments: rows,
                     dryRun,
                     debug,
@@ -692,6 +713,7 @@ export async function runExecuteDeploymentsPg(
             strictPgRequired,
             requestedSymbol: symbol || null,
             requestedVenue: venue || null,
+            requestedSession: entrySessionProfile,
             requestedAll: all,
             requirePromotionEligible,
             executionConcurrencyRequested,

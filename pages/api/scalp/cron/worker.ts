@@ -8,6 +8,7 @@ import {
   type CronInvokeResult,
 } from "../../../../lib/scalp/cronChaining";
 import { runWorkerPipelineJob } from "../../../../lib/scalp/pipelineJobs";
+import { normalizeScalpEntrySessionProfile } from "../../../../lib/scalp/sessions";
 
 function firstQueryValue(
   value: string | string[] | undefined,
@@ -40,6 +41,10 @@ function parseIntBounded(
   const n = Number(first);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+function parseEntrySessionProfile(value: string | string[] | undefined) {
+  return normalizeScalpEntrySessionProfile(firstQueryValue(value), "berlin");
 }
 
 function setNoStoreHeaders(res: NextApiResponse): void {
@@ -75,11 +80,13 @@ export default async function handler(
   const autoContinue = parseBool(req.query.autoContinue, true);
   const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 50);
   const selfMaxHops = parseIntBounded(req.query.selfMaxHops, 10, 0, 100);
+  const session = parseEntrySessionProfile(req.query.session);
 
   const result = await runWorkerPipelineJob({
     batchSize,
     maxAttempts,
     minCandlesPerWeek,
+    entrySessionProfile: session,
   });
 
   let downstream: CronInvokeResult | null = null;
@@ -100,6 +107,7 @@ export default async function handler(
         selfHop: 0,
         selfMaxHops,
         triggeredBy: "worker",
+        session,
       },
       850,
     );
@@ -123,6 +131,7 @@ export default async function handler(
         autoSuccessor: autoSuccessor ? 1 : 0,
         selfHop: selfHop + 1,
         selfMaxHops,
+        session,
       },
       700,
     );
@@ -137,6 +146,7 @@ export default async function handler(
       autoContinue,
       selfHop,
       selfMaxHops,
+      session,
       downstream,
       selfRecall,
     },

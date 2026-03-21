@@ -6,6 +6,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { requireAdminAccess } from "../../../../lib/admin";
 import { isScalpPgConfigured, scalpPrisma } from "../../../../lib/scalp/pg/client";
 import { loadScalpPipelineJobsHealth } from "../../../../lib/scalp/pipelineJobs";
+import { normalizeScalpEntrySessionProfile } from "../../../../lib/scalp/sessions";
 
 function setNoStoreHeaders(res: NextApiResponse): void {
   res.setHeader(
@@ -14,6 +15,15 @@ function setNoStoreHeaders(res: NextApiResponse): void {
   );
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
+}
+
+function firstQueryValue(
+  value: string | string[] | undefined,
+): string | undefined {
+  if (typeof value === "string") return value.trim() || undefined;
+  if (Array.isArray(value) && value.length > 0)
+    return String(value[0] || "").trim() || undefined;
+  return undefined;
 }
 
 export default async function handler(
@@ -29,13 +39,18 @@ export default async function handler(
   setNoStoreHeaders(res);
 
   const generatedAtMs = Date.now();
+  const entrySessionProfile = normalizeScalpEntrySessionProfile(
+    firstQueryValue(req.query.session),
+    "berlin",
+  );
   try {
-    const jobs = await loadScalpPipelineJobsHealth();
+    const jobs = await loadScalpPipelineJobsHealth({ entrySessionProfile });
     if (!isScalpPgConfigured()) {
       return res.status(200).json({
         ok: true,
         v2: true,
         generatedAtMs,
+        entrySessionProfile,
         pgConfigured: false,
         jobs,
         discoveredQueue: null,
@@ -66,16 +81,20 @@ export default async function handler(
       ok: true,
       v2: true,
       generatedAtMs,
+      entrySessionProfile,
       pgConfigured: true,
       jobs,
-      discoveredQueue: {
-        total: Math.max(0, Math.floor(Number(row.total || 0))),
-        pendingLoad: Math.max(0, Math.floor(Number(row.pendingLoad || 0))),
-        runningLoad: Math.max(0, Math.floor(Number(row.runningLoad || 0))),
-        retryLoad: Math.max(0, Math.floor(Number(row.retryLoad || 0))),
-        succeededLoad: Math.max(0, Math.floor(Number(row.succeededLoad || 0))),
-        pendingPrepare: Math.max(0, Math.floor(Number(row.pendingPrepare || 0))),
-      },
+      discoveredQueue:
+        entrySessionProfile === "berlin"
+          ? {
+              total: Math.max(0, Math.floor(Number(row.total || 0))),
+              pendingLoad: Math.max(0, Math.floor(Number(row.pendingLoad || 0))),
+              runningLoad: Math.max(0, Math.floor(Number(row.runningLoad || 0))),
+              retryLoad: Math.max(0, Math.floor(Number(row.retryLoad || 0))),
+              succeededLoad: Math.max(0, Math.floor(Number(row.succeededLoad || 0))),
+              pendingPrepare: Math.max(0, Math.floor(Number(row.pendingPrepare || 0))),
+            }
+          : null,
     });
   } catch (err: any) {
     return res.status(500).json({

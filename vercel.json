@@ -28,11 +28,35 @@
       "schedule": "*/10 * * * *"
     },
     {
-      "path": "/api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8",
+      "path": "/api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8&session=berlin",
       "schedule": "2 * * * *"
     },
     {
-      "path": "/api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&selfMaxHops=12",
+      "path": "/api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8&session=tokyo",
+      "schedule": "2 * * * *"
+    },
+    {
+      "path": "/api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8&session=tokyo_london_overlap",
+      "schedule": "2 * * * *"
+    },
+    {
+      "path": "/api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8&session=newyork",
+      "schedule": "2 * * * *"
+    },
+    {
+      "path": "/api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&selfMaxHops=12&session=berlin",
+      "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&selfMaxHops=12&session=tokyo",
+      "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&selfMaxHops=12&session=tokyo_london_overlap",
+      "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&selfMaxHops=12&session=newyork",
       "schedule": "*/2 * * * *"
     },
     {
@@ -48,7 +72,19 @@
       "schedule": "5 * * * *"
     },
     {
-      "path": "/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true",
+      "path": "/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true&session=berlin",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true&session=tokyo",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true&session=tokyo_london_overlap",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true&session=newyork",
       "schedule": "* * * * *"
     }
   ]

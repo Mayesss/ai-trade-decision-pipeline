@@ -12,6 +12,7 @@ import {
   type CandleHistoryBackend,
 } from "../../../../lib/scalp/candleHistory";
 import { getScalpStrategyConfig } from "../../../../lib/scalp/config";
+import { normalizeScalpEntrySessionProfile } from "../../../../lib/scalp/sessions";
 import {
   listScalpDeploymentRegistryEntries,
   type ScalpForwardValidationMetrics,
@@ -195,6 +196,47 @@ function firstQueryValue(
   return undefined;
 }
 
+function parseEntrySessionProfile(
+  value: string | string[] | undefined,
+) {
+  return normalizeScalpEntrySessionProfile(firstQueryValue(value), "berlin");
+}
+
+function resolveDeploymentEntrySessionProfile(
+  configOverride: unknown,
+  explicitEntrySessionProfile?: unknown,
+) {
+  if (explicitEntrySessionProfile !== undefined) {
+    return normalizeScalpEntrySessionProfile(explicitEntrySessionProfile, "berlin");
+  }
+  if (!configOverride || typeof configOverride !== "object") {
+    return normalizeScalpEntrySessionProfile(undefined, "berlin");
+  }
+  const sessions =
+    (configOverride as Record<string, unknown>).sessions &&
+    typeof (configOverride as Record<string, unknown>).sessions === "object"
+      ? ((configOverride as Record<string, unknown>)
+          .sessions as Record<string, unknown>)
+      : null;
+  const raw = sessions ? sessions.entrySessionProfile : undefined;
+  return normalizeScalpEntrySessionProfile(raw, "berlin");
+}
+
+function withSessionQuery(path: string, session: string): string {
+  const value = String(path || "").trim();
+  if (!value) return value;
+  try {
+    const isAbsolute = /^https?:\/\//i.test(value);
+    const parsed = new URL(value, "http://localhost");
+    parsed.searchParams.set("session", session);
+    if (isAbsolute) return `${parsed.origin}${parsed.pathname}${parsed.search}`;
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    const sep = value.includes("?") ? "&" : "?";
+    return `${value}${sep}session=${encodeURIComponent(session)}`;
+  }
+}
+
 function journalStrategyId(entry: ScalpJournalEntry): string | null {
   const payload =
     entry.payload && typeof entry.payload === "object"
@@ -317,6 +359,7 @@ function setNoStoreHeaders(res: NextApiResponse): void {
 function makeSummaryCacheKey(input: {
   useDeployments: boolean;
   requestedStrategyId?: string;
+  entrySessionProfile: string;
   range: SummaryRangeKey;
   journalLimit: number;
   tradeLimit: number;
@@ -324,6 +367,7 @@ function makeSummaryCacheKey(input: {
   return JSON.stringify({
     useDeployments: input.useDeployments,
     strategyId: input.requestedStrategyId || null,
+    entrySessionProfile: input.entrySessionProfile,
     range: input.range,
     journalLimit: input.journalLimit,
     tradeLimit: input.tradeLimit,
@@ -673,6 +717,7 @@ export default async function handler(
     const range = resolveSummaryRange(rangeParam);
     const rangeStartMs = nowMs - SUMMARY_RANGE_LOOKBACK_MS[range];
     const requestedStrategyId = firstQueryValue(req.query.strategyId);
+    const entrySessionProfile = parseEntrySessionProfile(req.query.session);
     const useDeploymentRegistryRequested = parseBool(
       req.query.useDeploymentRegistry,
       false,
@@ -686,6 +731,7 @@ export default async function handler(
     const cacheKey = makeSummaryCacheKey({
       useDeployments,
       requestedStrategyId,
+      entrySessionProfile,
       range,
       journalLimit,
       tradeLimit,
@@ -708,6 +754,7 @@ export default async function handler(
       method: req.method,
       url: req.url || null,
       requestedStrategyId: requestedStrategyId || null,
+      entrySessionProfile,
       useDeployments,
       useDeploymentRegistryRequested,
       pgConfigured,
@@ -767,7 +814,7 @@ export default async function handler(
       updatedBy: null as string | null,
     };
     try {
-      jobs = await loadScalpPipelineJobsHealth();
+      jobs = await loadScalpPipelineJobsHealth({ entrySessionProfile });
     } catch (err: any) {
       const rowError = {
         kind: "jobs_state",
@@ -781,7 +828,9 @@ export default async function handler(
       );
     }
     try {
-      workerRows = await listScalpDeploymentWeeklyMetricRows();
+      workerRows = await listScalpDeploymentWeeklyMetricRows({
+        entrySessionProfile,
+      });
     } catch (err: any) {
       const rowError = {
         kind: "worker_rows_state",
@@ -817,10 +866,16 @@ export default async function handler(
     > = [];
     if (useDeployments) {
       try {
-        allDeploymentRows = await listScalpDeploymentRegistryEntries();
-        deploymentRows = allDeploymentRows.filter(
-          (row) => row.enabled === true,
+        const rawDeployments = await listScalpDeploymentRegistryEntries();
+        allDeploymentRows = rawDeployments.filter(
+          (row) =>
+            resolveDeploymentEntrySessionProfile(
+              row.configOverride,
+              row.entrySessionProfile,
+            ) ===
+            entrySessionProfile,
         );
+        deploymentRows = allDeploymentRows.filter((row) => row.enabled === true);
       } catch (err: any) {
         const rowError = {
           kind: "deployment_registry",
@@ -837,6 +892,16 @@ export default async function handler(
       }
     }
     const cronSymbols = useDeploymentsEffective ? [] : cronSymbolConfigs;
+    if (useDeploymentsEffective) {
+      const allowedDeploymentIds = new Set(
+        allDeploymentRows
+          .map((row) => String(row.deploymentId || "").trim())
+          .filter((row) => Boolean(row)),
+      );
+      workerRows = workerRows.filter((row) =>
+        allowedDeploymentIds.has(String(row.deploymentId || "").trim()),
+      );
+    }
     logDebug("runtime_loaded", {
       defaultStrategyId: runtime.defaultStrategyId,
       runtimeStrategyCount: runtimeStrategies.length,
@@ -845,7 +910,7 @@ export default async function handler(
       useDeploymentsEffective,
       dayKey,
       clockMode: cfg.sessions.clockMode,
-      entrySessionProfile: cfg.sessions.entrySessionProfile,
+      entrySessionProfile,
     });
 
     stage = "build_rows";
@@ -893,9 +958,11 @@ export default async function handler(
             }),
             cronSchedule: cronSymbol?.schedule ?? null,
             cronRoute: "execute-deployments",
-            cronPath:
+            cronPath: withSessionQuery(
               cronSymbol?.path ||
-              "/api/scalp/cron/execute-deployments?all=true",
+                "/api/scalp/cron/execute-deployments?all=true",
+              entrySessionProfile,
+            ),
             dayKey,
             state: state?.state ?? null,
             updatedAtMs: state?.updatedAtMs ?? null,
@@ -980,7 +1047,7 @@ export default async function handler(
             }),
             cronSchedule: cronSymbol.schedule,
             cronRoute: cronSymbol.route,
-            cronPath: cronSymbol.path,
+            cronPath: withSessionQuery(cronSymbol.path, entrySessionProfile),
             dayKey,
             state: state?.state ?? null,
             updatedAtMs: state?.updatedAtMs ?? null,
@@ -1154,7 +1221,7 @@ export default async function handler(
       generatedAtMs: nowMs,
       dayKey,
       clockMode: cfg.sessions.clockMode,
-      entrySessionProfile: cfg.sessions.entrySessionProfile,
+      entrySessionProfile,
       source: useDeploymentsEffective ? "deployment_registry" : "cron_symbols",
       strategyId: strategy.strategyId,
       defaultStrategyId: runtime.defaultStrategyId,
@@ -1170,6 +1237,10 @@ export default async function handler(
       },
       deployments: allDeploymentRows.map((row) => ({
         deploymentId: row.deploymentId,
+        entrySessionProfile: resolveDeploymentEntrySessionProfile(
+          row.configOverride,
+          row.entrySessionProfile,
+        ),
         symbol: row.symbol,
         strategyId: row.strategyId,
         tuneId: row.tuneId,

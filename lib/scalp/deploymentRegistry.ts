@@ -22,7 +22,8 @@ import {
     resolveXauusdGuardBlockedBerlinHours,
     resolveXauusdGuardOptimizedRiskDefaults,
 } from './strategies/regimePullbackM15M3XauusdGuarded';
-import type { ScalpDeploymentRef } from './types';
+import { normalizeScalpEntrySessionProfile } from './sessions';
+import type { ScalpDeploymentRef, ScalpEntrySessionProfile } from './types';
 
 export type ScalpDeploymentRegistrySource = 'manual' | 'backtest' | 'matrix';
 
@@ -121,6 +122,7 @@ export interface ScalpDeploymentPromotionGate {
 }
 
 export interface ScalpDeploymentRegistryEntry extends ScalpDeploymentRef {
+    entrySessionProfile?: ScalpEntrySessionProfile | null;
     enabled: boolean;
     inUniverse?: boolean | null;
     source: ScalpDeploymentRegistrySource;
@@ -159,6 +161,7 @@ export type ScalpDeploymentRegistryWriteParams = {
     strategyId?: unknown;
     tuneId?: unknown;
     deploymentId?: unknown;
+    entrySessionProfile?: unknown;
     enabled?: unknown;
     source?: unknown;
     notes?: unknown;
@@ -213,6 +216,17 @@ function normalizeSource(value: unknown, fallback: ScalpDeploymentRegistrySource
         .toLowerCase();
     if (normalized === 'manual' || normalized === 'backtest' || normalized === 'matrix') return normalized;
     return fallback;
+}
+
+function resolveEntrySessionProfileFromConfigOverride(
+    configOverride: ScalpStrategyConfigOverride | null | undefined,
+): ScalpEntrySessionProfile {
+    const sessions =
+        configOverride && typeof configOverride === 'object' && configOverride.sessions
+            ? configOverride.sessions
+            : null;
+    const raw = sessions && typeof sessions === 'object' ? (sessions as Record<string, unknown>).entrySessionProfile : undefined;
+    return normalizeScalpEntrySessionProfile(raw, 'berlin');
 }
 
 function normalizeOptionalText(value: unknown, maxLen: number): string | null {
@@ -814,8 +828,13 @@ function normalizeRegistryEntry(raw: unknown): ScalpDeploymentRegistryEntry | nu
     });
     const createdAtMs = normalizePositiveTime(raw.createdAtMs) || Date.now();
     const updatedAtMs = normalizePositiveTime(raw.updatedAtMs) || createdAtMs;
+    const resolvedEntrySessionProfile = normalizeScalpEntrySessionProfile(
+        (raw as Record<string, unknown>).entrySessionProfile,
+        resolveEntrySessionProfileFromConfigOverride(configOverride),
+    );
     return {
         ...deployment,
+        entrySessionProfile: resolvedEntrySessionProfile,
         enabled: normalizeBool(raw.enabled, true),
         inUniverse: typeof raw.inUniverse === 'boolean' ? raw.inUniverse : null,
         source: normalizeSource(raw.source, 'manual'),
@@ -1048,6 +1067,7 @@ function mapPgDeploymentRowToRegistryEntry(row: PgDeploymentRegistryRow): ScalpD
     const promotionGate = normalizePromotionGate(promotionGateRaw);
     return {
         ...deployment,
+        entrySessionProfile: row.entrySessionProfile,
         enabled: Boolean(row.enabled),
         inUniverse: Boolean(row.inUniverse),
         source: normalizeSource(row.source, 'manual'),
@@ -1075,6 +1095,10 @@ function toPgDeploymentUpsert(entry: ScalpDeploymentRegistryEntry): PgUpsertDepl
     return {
         deploymentId: entry.deploymentId,
         venue: entry.venue,
+        entrySessionProfile: normalizeScalpEntrySessionProfile(
+            entry.entrySessionProfile,
+            resolveEntrySessionProfileFromConfigOverride(entry.configOverride),
+        ),
         symbol: entry.symbol,
         strategyId: entry.strategyId,
         tuneId: entry.tuneId,
@@ -1126,6 +1150,15 @@ function applyUpsertScalpDeploymentRegistryEntry(
 
     const entry: ScalpDeploymentRegistryEntry = {
         ...deployment,
+        entrySessionProfile: normalizeScalpEntrySessionProfile(
+            (params as Record<string, unknown>).entrySessionProfile,
+            existing?.entrySessionProfile ??
+                resolveEntrySessionProfileFromConfigOverride(
+                    normalizeConfigOverride(params.configOverride) ??
+                        existing?.configOverride ??
+                        null,
+                ),
+        ),
         enabled,
         source,
         notes: normalizeOptionalText(params.notes, 400) ?? existing?.notes ?? null,

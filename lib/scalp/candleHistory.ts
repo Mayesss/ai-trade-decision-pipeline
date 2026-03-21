@@ -247,6 +247,53 @@ async function loadFromPg(symbol: string, timeframe: string): Promise<ScalpCandl
     };
 }
 
+async function loadFromPgRange(
+    symbol: string,
+    timeframe: string,
+    fromTsMs: number,
+    toTsMs: number,
+): Promise<ScalpCandleHistoryLoadResult> {
+    const fromMs = Math.max(0, Math.floor(Number(fromTsMs) || 0));
+    const toMsRaw = Math.max(0, Math.floor(Number(toTsMs) || 0));
+    const toMs = Math.max(fromMs + 1, toMsRaw);
+    const db = scalpPrisma();
+    const rows = await db.$queryRaw<
+        Array<{
+            epic: string | null;
+            source: string | null;
+            updatedAtMs: bigint | number | null;
+            candles: unknown;
+        }>
+    >(Prisma.sql`
+        SELECT
+            epic,
+            source,
+            (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint AS "updatedAtMs",
+            candles_json AS candles
+        FROM scalp_candle_history_weeks
+        WHERE symbol = ${symbol}
+          AND timeframe = ${timeframe}
+          AND week_start < to_timestamp(${toMs} / 1000.0)
+          AND (week_start + interval '7 day') > to_timestamp(${fromMs} / 1000.0)
+        ORDER BY week_start ASC;
+    `);
+    const record = rowsToRecord({
+        symbol,
+        timeframe,
+        rows: rows.map((row) => ({
+            epic: row.epic,
+            source: row.source,
+            updatedAtMs: Number(row.updatedAtMs || 0),
+            candles: row.candles,
+        })),
+    });
+    return {
+        backend: 'pg',
+        storageRef: `scalp_candle_history_weeks:${symbol}:${timeframe}:${fromMs}-${toMs}`,
+        record,
+    };
+}
+
 async function loadFromPgBulk(symbols: string[], timeframe: string): Promise<ScalpCandleHistoryLoadResult[]> {
     if (!symbols.length) return [];
     const db = scalpPrisma();
@@ -493,6 +540,26 @@ export async function loadScalpCandleHistory(
     }
     void backend;
     return loadFromPg(symbol, timeframe);
+}
+
+export async function loadScalpCandleHistoryInRange(
+    symbolRaw: string,
+    timeframeRaw: string,
+    fromTsMs: number,
+    toTsMs: number,
+    opts: { backend?: CandleHistoryBackend } = {},
+): Promise<ScalpCandleHistoryLoadResult> {
+    const symbol = normalizeSymbol(symbolRaw);
+    const timeframe = normalizeTimeframe(timeframeRaw);
+    if (!symbol) {
+        throw new Error('Invalid candle-history symbol');
+    }
+    const backend = resolveBackend(opts.backend);
+    if (!isScalpPgConfigured()) {
+        throw new Error('scalp_pg_not_configured_for_candle_history');
+    }
+    void backend;
+    return loadFromPgRange(symbol, timeframe, fromTsMs, toTsMs);
 }
 
 export async function saveScalpCandleHistory(

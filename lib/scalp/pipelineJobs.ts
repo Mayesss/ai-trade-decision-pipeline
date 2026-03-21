@@ -4,6 +4,7 @@ import { bitgetFetch, resolveProductType } from "../bitget";
 import { fetchBitgetCandlesByEpicDateRange } from "./bitgetHistory";
 import {
   loadScalpCandleHistory,
+  loadScalpCandleHistoryInRange,
   mergeScalpCandleHistory,
   saveScalpCandleHistory,
   timeframeToMs,
@@ -36,9 +37,11 @@ import { runScalpReplay } from "./replay/harness";
 import { buildScalpReplayRuntimeFromDeployment } from "./replay/runtimeConfig";
 import { isScalpPgConfigured, scalpPrisma } from "./pg/client";
 import {
+  normalizeScalpTuneId,
   resolveScalpDeployment,
   resolveScalpDeploymentVenueFromId,
 } from "./deployments";
+import { normalizeScalpEntrySessionProfile } from "./sessions";
 import { listScalpStrategies } from "./strategies/registry";
 import {
   loadScalpSymbolDiscoveryPolicy,
@@ -48,7 +51,7 @@ import {
 } from "./symbolDiscovery";
 import { pipSizeForScalpSymbol } from "./marketData";
 import { ensureScalpSymbolMarketMetadata } from "./symbolMarketMetadataSync";
-import type { ScalpCandle } from "./types";
+import type { ScalpCandle, ScalpEntrySessionProfile } from "./types";
 import type { ScalpVenue } from "./venue";
 
 const ONE_MINUTE_MS = 60_000;
@@ -97,6 +100,7 @@ export interface ScalpPipelineJobExecutionResult {
 
 export interface ScalpPipelineJobHealth {
   jobKind: ScalpPipelineJobKind;
+  entrySessionProfile: ScalpEntrySessionProfile;
   status: string;
   locked: boolean;
   runningSinceAtMs: number | null;
@@ -791,6 +795,7 @@ async function prunePrepareOverflowNonEnabledVariants(params: {
   db: ReturnType<typeof scalpPrisma>;
   symbol: string;
   strategyId: string;
+  entrySessionProfile: ScalpEntrySessionProfile;
   hardCap: number;
   protectedDeploymentIds: string[];
 }): Promise<{ pruned: number; blockedByLedger: number }> {
@@ -814,7 +819,8 @@ async function prunePrepareOverflowNonEnabledVariants(params: {
             EXTRACT(EPOCH FROM updated_at) * 1000 AS "updatedAtMs"
         FROM scalp_deployments
         WHERE symbol = ${params.symbol}
-          AND strategy_id = ${params.strategyId};
+          AND strategy_id = ${params.strategyId}
+          AND entry_session_profile = ${params.entrySessionProfile};
     `);
   if (rows.length <= hardCap) return { pruned: 0, blockedByLedger: 0 };
 
@@ -873,17 +879,57 @@ async function prunePrepareOverflowNonEnabledVariants(params: {
   };
 }
 
-function withBerlinEntrySessionProfile(
+function normalizeEntrySessionProfileInput(
+  value: unknown,
+): ScalpEntrySessionProfile {
+  return normalizeScalpEntrySessionProfile(value, "berlin");
+}
+
+function withEntrySessionProfile(
   configOverride: Record<string, unknown> | null | undefined,
+  entrySessionProfile: ScalpEntrySessionProfile,
 ): Record<string, unknown> {
   const root = asJsonObject(configOverride)
     ? (JSON.parse(JSON.stringify(configOverride)) as Record<string, unknown>)
     : {};
   const existingSessions = asJsonObject(root.sessions);
   const sessions = existingSessions ? { ...existingSessions } : {};
-  sessions.entrySessionProfile = "berlin";
+  sessions.entrySessionProfile = normalizeEntrySessionProfileInput(
+    entrySessionProfile,
+  );
   root.sessions = sessions;
   return root;
+}
+
+function isSessionScopedTuneId(
+  tuneId: string,
+  entrySessionProfile: ScalpEntrySessionProfile,
+): boolean {
+  if (entrySessionProfile === "berlin") return true;
+  return tuneId.endsWith(`__sp_${entrySessionProfile}`);
+}
+
+function toSessionScopedTuneId(
+  tuneId: string,
+  entrySessionProfile: ScalpEntrySessionProfile,
+): string {
+  const base = normalizeScalpTuneId(tuneId);
+  if (entrySessionProfile === "berlin") return base;
+  if (isSessionScopedTuneId(base, entrySessionProfile)) return base;
+  return normalizeScalpTuneId(`${base}__sp_${entrySessionProfile}`, base);
+}
+
+function toBaseTuneIdForSession(
+  tuneId: string,
+  entrySessionProfile: ScalpEntrySessionProfile,
+): string {
+  const normalized = normalizeScalpTuneId(tuneId);
+  if (entrySessionProfile === "berlin") return normalized;
+  const suffix = `__sp_${entrySessionProfile}`;
+  if (normalized.endsWith(suffix) && normalized.length > suffix.length) {
+    return normalizeScalpTuneId(normalized.slice(0, -suffix.length));
+  }
+  return normalized;
 }
 
 function applyLifecycleSuspension(params: {
@@ -1187,21 +1233,23 @@ function toReplayCandles(
 
 async function ensurePipelineJobRow(
   jobKind: ScalpPipelineJobKind,
+  entrySessionProfile: ScalpEntrySessionProfile = "berlin",
 ): Promise<void> {
   const db = scalpPrisma();
   await db.$executeRaw(Prisma.sql`
-        INSERT INTO scalp_pipeline_jobs(job_kind, status, next_run_at, created_at, updated_at)
-        VALUES(${jobKind}, 'idle', NOW(), NOW(), NOW())
-        ON CONFLICT(job_kind) DO NOTHING;
+        INSERT INTO scalp_pipeline_jobs(job_kind, entry_session_profile, status, next_run_at, created_at, updated_at)
+        VALUES(${jobKind}, ${entrySessionProfile}, 'idle', NOW(), NOW(), NOW())
+        ON CONFLICT(job_kind, entry_session_profile) DO NOTHING;
     `);
 }
 
 async function acquirePipelineJobLock(params: {
   jobKind: ScalpPipelineJobKind;
+  entrySessionProfile: ScalpEntrySessionProfile;
   lockToken: string;
   lockMs: number;
 }): Promise<boolean> {
-  await ensurePipelineJobRow(params.jobKind);
+  await ensurePipelineJobRow(params.jobKind, params.entrySessionProfile);
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{ jobKind: string }>>(Prisma.sql`
         UPDATE scalp_pipeline_jobs
@@ -1214,6 +1262,7 @@ async function acquirePipelineJobLock(params: {
             last_run_at = NOW(),
             updated_at = NOW()
         WHERE job_kind = ${params.jobKind}
+          AND entry_session_profile = ${params.entrySessionProfile}
           AND (lock_expires_at IS NULL OR lock_expires_at < NOW())
         RETURNING job_kind AS "jobKind";
     `);
@@ -1222,11 +1271,15 @@ async function acquirePipelineJobLock(params: {
 
 async function pulsePipelineJobProgress(params: {
   jobKind: ScalpPipelineJobKind;
+  entrySessionProfile?: ScalpEntrySessionProfile;
   lockToken: string;
   lockMs: number;
   progressLabel?: string | null;
   progress?: Record<string, unknown> | null;
 }): Promise<void> {
+  const entrySessionProfile = normalizeEntrySessionProfileInput(
+    params.entrySessionProfile,
+  );
   const db = scalpPrisma();
   await db.$executeRaw(Prisma.sql`
         UPDATE scalp_pipeline_jobs
@@ -1236,12 +1289,14 @@ async function pulsePipelineJobProgress(params: {
             progress_json = ${params.progress ? JSON.stringify(params.progress) : null}::jsonb,
             updated_at = NOW()
         WHERE job_kind = ${params.jobKind}
+          AND entry_session_profile = ${entrySessionProfile}
           AND lock_token = ${params.lockToken};
     `);
 }
 
 async function releasePipelineJobLock(params: {
   jobKind: ScalpPipelineJobKind;
+  entrySessionProfile: ScalpEntrySessionProfile;
   lockToken: string;
   success: boolean;
   lastDurationMs?: number | null;
@@ -1272,12 +1327,14 @@ async function releasePipelineJobLock(params: {
             progress_json = ${params.progress ? JSON.stringify(params.progress) : null}::jsonb,
             updated_at = NOW()
         WHERE job_kind = ${params.jobKind}
+          AND entry_session_profile = ${params.entrySessionProfile}
           AND lock_token = ${params.lockToken};
     `);
 }
 
 async function insertPipelineJobRun(params: {
   jobKind: ScalpPipelineJobKind;
+  entrySessionProfile: ScalpEntrySessionProfile;
   status: "succeeded" | "failed";
   diagnostics: ScalpPipelineJobDiagnostics;
   result: Omit<ScalpPipelineJobExecutionResult, "jobKind" | "busy">;
@@ -1299,6 +1356,7 @@ async function insertPipelineJobRun(params: {
       Prisma.sql`
       INSERT INTO scalp_pipeline_job_runs(
         job_kind,
+        entry_session_profile,
         status,
         started_at,
         finished_at,
@@ -1315,6 +1373,7 @@ async function insertPipelineJobRun(params: {
       )
       VALUES(
         ${params.jobKind},
+        ${params.entrySessionProfile},
         ${params.status},
         ${new Date(startedAt)},
         ${new Date(finishedAt)},
@@ -1346,8 +1405,14 @@ async function runWithPipelineJobLock(
     lockToken: string;
     lockMs: number;
   }) => Promise<Omit<ScalpPipelineJobExecutionResult, "jobKind" | "busy">>,
+  options: {
+    entrySessionProfile?: ScalpEntrySessionProfile;
+  } = {},
 ): Promise<ScalpPipelineJobExecutionResult> {
   const emptyDiagnostics = buildPipelineJobDiagnostics(null, null);
+  const entrySessionProfile = normalizeEntrySessionProfileInput(
+    options.entrySessionProfile,
+  );
   if (!isScalpPgConfigured()) {
     return {
       ok: false,
@@ -1372,8 +1437,13 @@ async function runWithPipelineJobLock(
       toPositiveInt(process.env.SCALP_PIPELINE_JOB_LOCK_MS, 6 * 60_000),
     ),
   );
-  const lockToken = `${jobKind}:${Date.now()}:${Math.floor(Math.random() * 1_000_000)}`;
-  const acquired = await acquirePipelineJobLock({ jobKind, lockToken, lockMs });
+  const lockToken = `${jobKind}:${entrySessionProfile}:${Date.now()}:${Math.floor(Math.random() * 1_000_000)}`;
+  const acquired = await acquirePipelineJobLock({
+    jobKind,
+    entrySessionProfile,
+    lockToken,
+    lockMs,
+  });
   if (!acquired) {
     return {
       ok: true,
@@ -1397,6 +1467,7 @@ async function runWithPipelineJobLock(
     const diagnostics = buildPipelineJobDiagnostics(runStartedAtMs, Date.now());
     await releasePipelineJobLock({
       jobKind,
+      entrySessionProfile,
       lockToken,
       success: result.ok,
       lastDurationMs: diagnostics.durationMs,
@@ -1406,6 +1477,7 @@ async function runWithPipelineJobLock(
     });
     await insertPipelineJobRun({
       jobKind,
+      entrySessionProfile,
       status: result.ok ? "succeeded" : "failed",
       diagnostics,
       result,
@@ -1433,6 +1505,7 @@ async function runWithPipelineJobLock(
     } satisfies Omit<ScalpPipelineJobExecutionResult, "jobKind" | "busy">;
     await releasePipelineJobLock({
       jobKind,
+      entrySessionProfile,
       lockToken,
       success: false,
       lastDurationMs: diagnostics.durationMs,
@@ -1442,6 +1515,7 @@ async function runWithPipelineJobLock(
     });
     await insertPipelineJobRun({
       jobKind,
+      entrySessionProfile,
       status: "failed",
       diagnostics,
       result,
@@ -1474,8 +1548,32 @@ async function countActivePipelineSymbols(): Promise<number> {
   return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
 }
 
-async function countPendingPrepareSymbols(): Promise<number> {
+async function countPendingPrepareSymbols(
+  entrySessionProfile: ScalpEntrySessionProfile = "berlin",
+): Promise<number> {
   const db = scalpPrisma();
+  if (entrySessionProfile !== "berlin") {
+    const rows = await db.$queryRaw<
+      Array<{ count: bigint | number | string }>
+    >(Prisma.sql`
+        SELECT COUNT(*)::bigint AS count
+        FROM scalp_discovered_symbols s
+        WHERE s.load_status = 'succeeded'
+          AND EXISTS (
+            SELECT 1
+            FROM scalp_deployments d
+            WHERE d.symbol = s.symbol
+              AND d.entry_session_profile = 'berlin'
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM scalp_deployments d
+            WHERE d.symbol = s.symbol
+              AND d.entry_session_profile = ${entrySessionProfile}
+          );
+    `);
+    return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
+  }
   const rows = await db.$queryRaw<
     Array<{ count: bigint | number | string }>
   >(Prisma.sql`
@@ -1488,7 +1586,9 @@ async function countPendingPrepareSymbols(): Promise<number> {
   return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
 }
 
-async function countPendingWorkerRows(): Promise<number> {
+async function countPendingWorkerRows(
+  entrySessionProfile: ScalpEntrySessionProfile = "berlin",
+): Promise<number> {
   const nowMs = Date.now();
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
@@ -1501,6 +1601,7 @@ async function countPendingWorkerRows(): Promise<number> {
         LEFT JOIN scalp_discovered_symbols s
           ON s.symbol = m.symbol
         WHERE (s.symbol IS NOT NULL OR d.enabled = TRUE)
+          AND m.entry_session_profile = ${entrySessionProfile}
           AND m.status IN ('pending', 'retry_wait')
           AND m.next_run_at <= NOW()
           AND NOT (
@@ -3233,8 +3334,41 @@ export async function runLoadCandlesPipelineJob(
 
 async function claimPrepareSymbols(
   limit: number,
+  entrySessionProfile: ScalpEntrySessionProfile = "berlin",
 ): Promise<Array<{ symbol: string; attempts: number }>> {
   const db = scalpPrisma();
+  if (entrySessionProfile !== "berlin") {
+    const rows = await db.$queryRaw<
+      Array<{ symbol: string; attempts: number }>
+    >(Prisma.sql`
+        WITH candidate AS (
+            SELECT symbol
+            FROM scalp_discovered_symbols
+            WHERE load_status = 'succeeded'
+              AND EXISTS (
+                SELECT 1
+                FROM scalp_deployments d
+                WHERE d.symbol = scalp_discovered_symbols.symbol
+                  AND d.entry_session_profile = 'berlin'
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM scalp_deployments d
+                WHERE d.symbol = scalp_discovered_symbols.symbol
+                  AND d.entry_session_profile = ${entrySessionProfile}
+              )
+            ORDER BY symbol ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${limit}
+        )
+        UPDATE scalp_discovered_symbols s
+        SET updated_at = NOW()
+        FROM candidate c
+        WHERE s.symbol = c.symbol
+        RETURNING s.symbol, s.prepare_attempts AS attempts;
+    `);
+    return rows;
+  }
   const rows = await db.$queryRaw<
     Array<{ symbol: string; attempts: number }>
   >(Prisma.sql`
@@ -3266,10 +3400,14 @@ async function upsertWeeklyQueueRowsForDeployment(params: {
   symbol: string;
   strategyId: string;
   tuneId: string;
+  entrySessionProfile?: ScalpEntrySessionProfile;
   nowMs: number;
   requiredWeeks: number;
   refreshRecentWeeks: number;
 }): Promise<number> {
+  const entrySessionProfile = normalizeEntrySessionProfileInput(
+    params.entrySessionProfile,
+  );
   const currentWeekStart = startOfWeekMondayUtc(params.nowMs);
   const firstWeekStart = currentWeekStart - params.requiredWeeks * ONE_WEEK_MS;
   const refreshStart =
@@ -3285,6 +3423,7 @@ async function upsertWeeklyQueueRowsForDeployment(params: {
     await db.$executeRaw(Prisma.sql`
             INSERT INTO scalp_deployment_weekly_metrics(
                 deployment_id,
+                entry_session_profile,
                 symbol,
                 strategy_id,
                 tune_id,
@@ -3298,6 +3437,7 @@ async function upsertWeeklyQueueRowsForDeployment(params: {
             )
             VALUES(
                 ${params.deploymentId},
+                ${entrySessionProfile},
                 ${params.symbol},
                 ${params.strategyId},
                 ${params.tuneId},
@@ -3312,6 +3452,7 @@ async function upsertWeeklyQueueRowsForDeployment(params: {
             ON CONFLICT(deployment_id, week_start)
             DO UPDATE SET
                 symbol = EXCLUDED.symbol,
+                entry_session_profile = EXCLUDED.entry_session_profile,
                 strategy_id = EXCLUDED.strategy_id,
                 tune_id = EXCLUDED.tune_id,
                 week_end = EXCLUDED.week_end,
@@ -3358,9 +3499,13 @@ async function ensureWeeklyQueueRowsExistForDeployment(params: {
   symbol: string;
   strategyId: string;
   tuneId: string;
+  entrySessionProfile?: ScalpEntrySessionProfile;
   nowMs: number;
   requiredWeeks: number;
 }): Promise<number> {
+  const entrySessionProfile = normalizeEntrySessionProfileInput(
+    params.entrySessionProfile,
+  );
   const currentWeekStart = startOfWeekMondayUtc(params.nowMs);
   const firstWeekStart = currentWeekStart - params.requiredWeeks * ONE_WEEK_MS;
   const db = scalpPrisma();
@@ -3375,6 +3520,7 @@ async function ensureWeeklyQueueRowsExistForDeployment(params: {
       await db.$executeRaw(Prisma.sql`
             INSERT INTO scalp_deployment_weekly_metrics(
                 deployment_id,
+                entry_session_profile,
                 symbol,
                 strategy_id,
                 tune_id,
@@ -3388,6 +3534,7 @@ async function ensureWeeklyQueueRowsExistForDeployment(params: {
             )
             VALUES(
                 ${params.deploymentId},
+                ${entrySessionProfile},
                 ${params.symbol},
                 ${params.strategyId},
                 ${params.tuneId},
@@ -3413,9 +3560,14 @@ async function updatePrepareSymbolStatus(params: {
   status: ScalpPipelineQueueStatus;
   attempts: number;
   preparedDeployments: number;
+  entrySessionProfile?: ScalpEntrySessionProfile;
   error?: string | null;
   retryAfterMs?: number;
 }): Promise<void> {
+  const entrySessionProfile = normalizeEntrySessionProfileInput(
+    params.entrySessionProfile,
+  );
+  if (entrySessionProfile !== "berlin") return;
   const db = scalpPrisma();
   const nextRunAt =
     typeof params.retryAfterMs === "number" && params.retryAfterMs > 0
@@ -3439,9 +3591,15 @@ export async function runPreparePipelineJob(
   params: {
     batchSize?: number;
     maxAttempts?: number;
+    entrySessionProfile?: ScalpEntrySessionProfile;
   } = {},
 ): Promise<ScalpPipelineJobExecutionResult> {
-  return runWithPipelineJobLock("prepare", async ({ lockToken, lockMs }) => {
+  const entrySessionProfile = normalizeEntrySessionProfileInput(
+    params.entrySessionProfile,
+  );
+  return runWithPipelineJobLock(
+    "prepare",
+    async ({ lockToken, lockMs }) => {
     const bitgetOnly = isScalpPipelineBitgetOnlyEnabled();
     const batchSize = Math.max(
       1,
@@ -3529,7 +3687,7 @@ export async function runPreparePipelineJob(
 
     const policy = await loadScalpSymbolDiscoveryPolicy();
     const strategies = new Set(listScalpStrategies().map((row) => row.id));
-    const claimed = await claimPrepareSymbols(batchSize);
+    const claimed = await claimPrepareSymbols(batchSize, entrySessionProfile);
     const activeSymbols = await countActivePipelineSymbols();
     const db = scalpPrisma();
 
@@ -3553,6 +3711,7 @@ export async function runPreparePipelineJob(
                         updated_by = 'pipeline:prepare',
                         updated_at = NOW()
                     WHERE symbol = ${symbol}
+                      AND entry_session_profile = ${entrySessionProfile}
                       AND enabled = FALSE;
                 `);
         await updatePrepareSymbolStatus({
@@ -3560,11 +3719,13 @@ export async function runPreparePipelineJob(
           status: "failed",
           attempts: row.attempts,
           preparedDeployments: 0,
+          entrySessionProfile,
           error: "bitget_only_symbol_unsupported",
         });
         failed += 1;
         await pulsePipelineJobProgress({
           jobKind: "prepare",
+          entrySessionProfile,
           lockToken,
           lockMs,
           progressLabel: `processed ${idx + 1}/${claimed.length}`,
@@ -3614,11 +3775,12 @@ export async function runPreparePipelineJob(
                         EXTRACT(EPOCH FROM created_at) * 1000 AS "createdAtMs",
                         EXTRACT(EPOCH FROM updated_at) * 1000 AS "updatedAtMs"
                     FROM scalp_deployments
-                    WHERE symbol = ${symbol};
+                    WHERE symbol = ${symbol}
+                      AND entry_session_profile = ${entrySessionProfile};
                 `);
         const existingByKey = new Map<string, PrepareExistingDeployment>();
         for (const dep of existingDeployments) {
-          const key = `${dep.strategyId}::${dep.tuneId}`;
+          const key = `${dep.strategyId}::${toBaseTuneIdForSession(dep.tuneId, entrySessionProfile)}`;
           const current = existingByKey.get(key) || null;
           if (!current) {
             existingByKey.set(key, {
@@ -3665,24 +3827,30 @@ export async function runPreparePipelineJob(
             existingByKey,
           });
           const protectedStrategyDeploymentIds = variants.map((variant) => {
-            const existing =
-              existingByKey.get(`${strategyId}::${variant.tuneId}`) || null;
+            const existing = existingByKey.get(`${strategyId}::${variant.tuneId}`) || null;
+            const effectiveTuneId = toSessionScopedTuneId(
+              variant.tuneId,
+              entrySessionProfile,
+            );
             if (existing?.deploymentId) return existing.deploymentId;
             return resolveScalpDeployment({
               venue: symbolVenue,
               symbol,
               strategyId,
-              tuneId: variant.tuneId,
+              tuneId: effectiveTuneId,
             }).deploymentId;
           });
           const rows = variants
             .map((variant) => {
-              const existing =
-                existingByKey.get(`${strategyId}::${variant.tuneId}`) || null;
+              const existing = existingByKey.get(`${strategyId}::${variant.tuneId}`) || null;
+              const effectiveTuneId = toSessionScopedTuneId(
+                variant.tuneId,
+                entrySessionProfile,
+              );
               const existingLifecycle = existing
                 ? normalizeLifecycleFromGate({
                     gate: asJsonObject(existing.promotionGate) as any,
-                    tuneId: variant.tuneId,
+                    tuneId: effectiveTuneId,
                     enabled: Boolean(existing.enabled),
                     nowMs,
                   })
@@ -3697,15 +3865,16 @@ export async function runPreparePipelineJob(
                     venue: symbolVenue,
                     symbol,
                     strategyId,
-                    tuneId: variant.tuneId,
+                    tuneId: effectiveTuneId,
                   }).deploymentId,
                 symbol,
                 strategyId,
-                tuneId: variant.tuneId,
+                tuneId: effectiveTuneId,
                 source: "matrix" as const,
                 enabled: Boolean(existing?.enabled),
-                configOverride: withBerlinEntrySessionProfile(
+                configOverride: withEntrySessionProfile(
                   (variant.configOverride || null) as Record<string, unknown> | null,
+                  entrySessionProfile,
                 ),
                 updatedBy: "pipeline:prepare",
               };
@@ -3742,6 +3911,7 @@ export async function runPreparePipelineJob(
             db,
             symbol,
             strategyId,
+            entrySessionProfile,
             hardCap: hardCapPerStrategy,
             protectedDeploymentIds: protectedStrategyDeploymentIds,
           });
@@ -3768,6 +3938,7 @@ export async function runPreparePipelineJob(
                             updated_by = 'pipeline:prepare',
                             updated_at = NOW()
                         WHERE symbol = ${symbol}
+                          AND entry_session_profile = ${entrySessionProfile}
                           AND deployment_id NOT IN (${Prisma.join(uniqPreparedIds)})
                           AND enabled = FALSE;
                     `);
@@ -3798,6 +3969,7 @@ export async function runPreparePipelineJob(
             symbol: dep.symbol,
             strategyId: dep.strategyId,
             tuneId: dep.tuneId,
+            entrySessionProfile,
             nowMs: Date.now(),
             requiredWeeks,
             refreshRecentWeeks,
@@ -3809,6 +3981,7 @@ export async function runPreparePipelineJob(
           status: "succeeded",
           attempts: row.attempts,
           preparedDeployments: uniqPreparedIds.length,
+          entrySessionProfile,
           error: null,
         });
         succeeded += 1;
@@ -3822,6 +3995,7 @@ export async function runPreparePipelineJob(
             status: "failed",
             attempts: row.attempts,
             preparedDeployments: 0,
+            entrySessionProfile,
             error: message,
           });
           failed += 1;
@@ -3831,6 +4005,7 @@ export async function runPreparePipelineJob(
             status: "retry_wait",
             attempts: row.attempts,
             preparedDeployments: 0,
+            entrySessionProfile,
             error: message,
             retryAfterMs,
           });
@@ -3839,6 +4014,7 @@ export async function runPreparePipelineJob(
       }
       await pulsePipelineJobProgress({
         jobKind: "prepare",
+        entrySessionProfile,
         lockToken,
         lockMs,
         progressLabel: `processed ${idx + 1}/${claimed.length}`,
@@ -3856,7 +4032,7 @@ export async function runPreparePipelineJob(
         });
     }
 
-    const pendingAfter = await countPendingPrepareSymbols();
+    const pendingAfter = await countPendingPrepareSymbols(entrySessionProfile);
     return {
       ok: true,
       processed: claimed.length,
@@ -3868,6 +4044,7 @@ export async function runPreparePipelineJob(
       progressLabel:
         claimed.length > 0 ? `processed ${claimed.length}` : "idle",
         details: {
+          entrySessionProfile,
           activeSymbols,
           claimed: claimed.length,
           succeeded,
@@ -3878,12 +4055,15 @@ export async function runPreparePipelineJob(
           blockedOverflowByLedger,
         },
       };
-  });
+    },
+    { entrySessionProfile },
+  );
 }
 
 async function claimWorkerRows(
   limit: number,
   workerId: string,
+  entrySessionProfile: ScalpEntrySessionProfile = "berlin",
 ): Promise<
   Array<{
     id: bigint;
@@ -3923,6 +4103,7 @@ async function claimWorkerRows(
                       WHERE s.symbol = m.symbol
                     )
                   )
+              AND m.entry_session_profile = ${entrySessionProfile}
               AND m.status IN ('pending', 'retry_wait')
               AND m.next_run_at <= NOW()
               AND NOT (
@@ -4027,9 +4208,15 @@ export async function runWorkerPipelineJob(
     batchSize?: number;
     maxAttempts?: number;
     minCandlesPerWeek?: number;
+    entrySessionProfile?: ScalpEntrySessionProfile;
   } = {},
 ): Promise<ScalpPipelineJobExecutionResult> {
-  return runWithPipelineJobLock("worker", async ({ lockToken, lockMs }) => {
+  const entrySessionProfile = normalizeEntrySessionProfileInput(
+    params.entrySessionProfile,
+  );
+  return runWithPipelineJobLock(
+    "worker",
+    async ({ lockToken, lockMs }) => {
     const workerId = lockToken;
     const requestedBatchSize = Math.max(
       1,
@@ -4055,7 +4242,11 @@ export async function runWorkerPipelineJob(
     const replayProgressEveryRuns = resolveWorkerReplayProgressEveryRuns();
     const replayProgressMinIntervalMs = resolveWorkerReplayProgressMinIntervalMs();
 
-    const claimed = await claimWorkerRows(batchSize, workerId);
+    const claimed = await claimWorkerRows(
+      batchSize,
+      workerId,
+      entrySessionProfile,
+    );
     const activeSymbols = await countActivePipelineSymbols();
     let succeeded = 0;
     let retried = 0;
@@ -4097,11 +4288,30 @@ export async function runWorkerPipelineJob(
           failed += 1;
           continue;
         }
-        const history = await loadScalpCandleHistory(dep.symbol, "1m");
-        const candles = (history.record?.candles || []).filter((candle) => {
-          const ts = Number(candle?.[0] || 0);
-          return ts >= row.weekStart.getTime() && ts < row.weekEnd.getTime();
+        const deploymentRef = resolveScalpDeployment({
+          symbol: dep.symbol,
+          strategyId: dep.strategyId,
+          tuneId: dep.tuneId,
+          deploymentId: dep.deploymentId,
         });
+        const runtime = buildScalpReplayRuntimeFromDeployment({
+          deployment: deploymentRef,
+          configOverride: asJsonObject(dep.configOverride) as any,
+        });
+
+        const weekStartMs = row.weekStart.getTime();
+        const weekEndMs = row.weekEnd.getTime();
+        const history = await loadScalpCandleHistoryInRange(
+          dep.symbol,
+          "1m",
+          weekStartMs,
+          weekEndMs,
+        );
+        const weekCandles = (history.record?.candles || []).filter((candle) => {
+          const ts = Number(candle?.[0] || 0);
+          return ts >= weekStartMs && ts < weekEndMs;
+        });
+        const candles = weekCandles;
         if (candles.length < minCandlesPerWeek) {
           const retry = row.attempts < maxAttempts;
           await completeWorkerRow({
@@ -4120,16 +4330,6 @@ export async function runWorkerPipelineJob(
 
         const meta = await ensureScalpSymbolMarketMetadata(dep.symbol, {
           fetchIfMissing: true,
-        });
-        const deploymentRef = resolveScalpDeployment({
-          symbol: dep.symbol,
-          strategyId: dep.strategyId,
-          tuneId: dep.tuneId,
-          deploymentId: dep.deploymentId,
-        });
-        const runtime = buildScalpReplayRuntimeFromDeployment({
-          deployment: deploymentRef,
-          configOverride: asJsonObject(dep.configOverride) as any,
         });
         const rowStartedAtMs = Date.now();
         const replay = await runScalpReplay({
@@ -4209,6 +4409,7 @@ export async function runWorkerPipelineJob(
 
       await pulsePipelineJobProgress({
         jobKind: "worker",
+        entrySessionProfile,
         lockToken,
         lockMs,
         progressLabel: `processed ${idx + 1}/${claimed.length}`,
@@ -4226,7 +4427,7 @@ export async function runWorkerPipelineJob(
       });
     }
 
-    const pendingAfter = await countPendingWorkerRows();
+    const pendingAfter = await countPendingWorkerRows(entrySessionProfile);
     return {
       ok: true,
       processed: claimed.length,
@@ -4234,10 +4435,11 @@ export async function runWorkerPipelineJob(
       retried,
       failed,
       pendingAfter,
-      downstreamRequested: succeeded > 0,
+      downstreamRequested: claimed.length > 0 && pendingAfter === 0,
       progressLabel:
         claimed.length > 0 ? `processed ${claimed.length}` : "idle",
       details: {
+        entrySessionProfile,
         activeSymbols,
         claimed: claimed.length,
         requestedBatchSize,
@@ -4248,7 +4450,9 @@ export async function runWorkerPipelineJob(
         failed,
       },
     };
-  });
+    },
+    { entrySessionProfile },
+  );
 }
 
 export async function runPromotionPipelineJob(
@@ -4277,6 +4481,7 @@ export async function runPromotionPipelineJob(
     const rolloverDueRows = await db.$queryRaw<
       Array<{
         deploymentId: string;
+        entrySessionProfile: string;
         symbol: string;
         strategyId: string;
         tuneId: string;
@@ -4284,6 +4489,7 @@ export async function runPromotionPipelineJob(
     >(Prisma.sql`
             SELECT
                 deployment_id AS "deploymentId",
+                entry_session_profile AS "entrySessionProfile",
                 symbol,
                 strategy_id AS "strategyId",
                 tune_id AS "tuneId"
@@ -4311,6 +4517,9 @@ export async function runPromotionPipelineJob(
           symbol: row.symbol,
           strategyId: row.strategyId,
           tuneId: row.tuneId,
+          entrySessionProfile: normalizeEntrySessionProfileInput(
+            row.entrySessionProfile,
+          ),
           nowMs,
           requiredWeeks,
         });
@@ -4395,12 +4604,14 @@ export async function runPromotionPipelineJob(
       Array<{
         deploymentId: string;
         enabled: boolean;
+        entrySessionProfile: string;
         promotionGate: unknown;
       }>
     >(Prisma.sql`
             SELECT
                 deployment_id AS "deploymentId",
                 enabled,
+                entry_session_profile AS "entrySessionProfile",
                 promotion_gate AS "promotionGate"
             FROM scalp_deployments;
         `);
@@ -4458,11 +4669,15 @@ export async function runPromotionPipelineJob(
       });
       if (lifecycleIsSuppressed(lifecycle, nowMs)) continue;
       if (currentlyEnabled && lifecycle.state !== "incumbent_refresh") continue;
+      const entrySessionProfile = normalizeEntrySessionProfileInput(
+        rowState?.entrySessionProfile,
+      );
       weeklyQueueRowsInserted += await ensureWeeklyQueueRowsExistForDeployment({
         deploymentId: deployment.deploymentId,
         symbol: deployment.symbol,
         strategyId: deployment.strategyId,
         tuneId: deployment.tuneId,
+        entrySessionProfile,
         nowMs,
         requiredWeeks,
       });
@@ -5298,17 +5513,21 @@ export async function runPromotionPipelineJob(
   });
 }
 
-export async function loadScalpPipelineJobsHealth(): Promise<
-  ScalpPipelineJobHealth[]
-> {
+export async function loadScalpPipelineJobsHealth(params: {
+  entrySessionProfile?: ScalpEntrySessionProfile;
+} = {}): Promise<ScalpPipelineJobHealth[]> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
   const nowMs = Date.now();
+  const entrySessionProfile = normalizeEntrySessionProfileInput(
+    params.entrySessionProfile,
+  );
+  const isBerlinSession = entrySessionProfile === "berlin";
   for (const jobKind of SCALP_PIPELINE_JOB_KINDS) {
-    await ensurePipelineJobRow(jobKind);
+    await ensurePipelineJobRow(jobKind, entrySessionProfile);
   }
 
-  const [jobRows, symbolRows, workerRows, deploymentRows] = await Promise.all([
+  const [jobRows, symbolRows, workerRows, deploymentRows, pendingPrepareForSession] = await Promise.all([
     db.$queryRaw<
       Array<{
         jobKind: string;
@@ -5338,22 +5557,24 @@ export async function loadScalpPipelineJobsHealth(): Promise<
                 last_error AS "lastError",
                 progress_label AS "progressLabel",
                 progress_json AS "progressJson"
-            FROM scalp_pipeline_jobs;
+            FROM scalp_pipeline_jobs
+            WHERE entry_session_profile = ${entrySessionProfile};
         `),
-    db.$queryRaw<
-      Array<{
-        pendingLoad: bigint | number | null;
-        runningLoad: bigint | number | null;
-        retryLoad: bigint | number | null;
-        failedLoad: bigint | number | null;
-        succeededLoad: bigint | number | null;
-        pendingPrepare: bigint | number | null;
-        runningPrepare: bigint | number | null;
-        retryPrepare: bigint | number | null;
-        failedPrepare: bigint | number | null;
-        succeededPrepare: bigint | number | null;
-      }>
-    >(Prisma.sql`
+    isBerlinSession
+      ? db.$queryRaw<
+          Array<{
+            pendingLoad: bigint | number | null;
+            runningLoad: bigint | number | null;
+            retryLoad: bigint | number | null;
+            failedLoad: bigint | number | null;
+            succeededLoad: bigint | number | null;
+            pendingPrepare: bigint | number | null;
+            runningPrepare: bigint | number | null;
+            retryPrepare: bigint | number | null;
+            failedPrepare: bigint | number | null;
+            succeededPrepare: bigint | number | null;
+          }>
+        >(Prisma.sql`
             SELECT
                 COUNT(*) FILTER (WHERE load_status = 'pending')::bigint AS "pendingLoad",
                 COUNT(*) FILTER (WHERE load_status = 'running')::bigint AS "runningLoad",
@@ -5366,7 +5587,8 @@ export async function loadScalpPipelineJobsHealth(): Promise<
                 COUNT(*) FILTER (WHERE prepare_status = 'failed')::bigint AS "failedPrepare",
                 COUNT(*) FILTER (WHERE prepare_status = 'succeeded')::bigint AS "succeededPrepare"
             FROM scalp_discovered_symbols;
-        `),
+        `)
+      : Promise.resolve([]),
     db.$queryRaw<
       Array<{
         pendingWorker: bigint | number | null;
@@ -5388,6 +5610,7 @@ export async function loadScalpPipelineJobsHealth(): Promise<
             LEFT JOIN scalp_discovered_symbols s
               ON s.symbol = m.symbol
             WHERE (s.symbol IS NOT NULL OR d.enabled = TRUE)
+              AND m.entry_session_profile = ${entrySessionProfile}
               AND NOT (
                 (
                   COALESCE((d.promotion_gate #>> '{lifecycle,state}')::text, '') = 'suspended'
@@ -5414,11 +5637,26 @@ export async function loadScalpPipelineJobsHealth(): Promise<
                 0::bigint AS "retryPromotion",
                 0::bigint AS "failedPromotion",
                 COUNT(*) FILTER (WHERE promotion_dirty = FALSE)::bigint AS "succeededPromotion"
-            FROM scalp_deployments;
+            FROM scalp_deployments
+            WHERE entry_session_profile = ${entrySessionProfile};
         `),
+    isBerlinSession ? Promise.resolve(null) : countPendingPrepareSymbols(entrySessionProfile),
   ]);
 
-  const symbolAgg = symbolRows[0] || ({} as any);
+  const symbolAgg = isBerlinSession
+    ? symbolRows[0] || ({} as any)
+    : {
+        pendingLoad: 0,
+        runningLoad: 0,
+        retryLoad: 0,
+        failedLoad: 0,
+        succeededLoad: 0,
+        pendingPrepare: pendingPrepareForSession ?? 0,
+        runningPrepare: 0,
+        retryPrepare: 0,
+        failedPrepare: 0,
+        succeededPrepare: 0,
+      };
   const workerAgg = workerRows[0] || ({} as any);
   const promotionAgg = deploymentRows[0] || ({} as any);
   const byJobKind = new Map(jobRows.map((row) => [String(row.jobKind), row]));
@@ -5428,18 +5666,32 @@ export async function loadScalpPipelineJobsHealth(): Promise<
     ScalpPipelineJobHealth["queue"]
   > = {
     discover: {
-      pending: Math.max(0, Math.floor(Number(symbolAgg.pendingLoad || 0))),
+      pending: isBerlinSession
+        ? Math.max(0, Math.floor(Number(symbolAgg.pendingLoad || 0)))
+        : 0,
       running: 0,
       retryWait: 0,
       failed: 0,
-      succeeded: Math.max(0, Math.floor(Number(symbolAgg.succeededLoad || 0))),
+      succeeded: isBerlinSession
+        ? Math.max(0, Math.floor(Number(symbolAgg.succeededLoad || 0)))
+        : 0,
     },
     load_candles: {
-      pending: Math.max(0, Math.floor(Number(symbolAgg.pendingLoad || 0))),
-      running: Math.max(0, Math.floor(Number(symbolAgg.runningLoad || 0))),
-      retryWait: Math.max(0, Math.floor(Number(symbolAgg.retryLoad || 0))),
-      failed: Math.max(0, Math.floor(Number(symbolAgg.failedLoad || 0))),
-      succeeded: Math.max(0, Math.floor(Number(symbolAgg.succeededLoad || 0))),
+      pending: isBerlinSession
+        ? Math.max(0, Math.floor(Number(symbolAgg.pendingLoad || 0)))
+        : 0,
+      running: isBerlinSession
+        ? Math.max(0, Math.floor(Number(symbolAgg.runningLoad || 0)))
+        : 0,
+      retryWait: isBerlinSession
+        ? Math.max(0, Math.floor(Number(symbolAgg.retryLoad || 0)))
+        : 0,
+      failed: isBerlinSession
+        ? Math.max(0, Math.floor(Number(symbolAgg.failedLoad || 0)))
+        : 0,
+      succeeded: isBerlinSession
+        ? Math.max(0, Math.floor(Number(symbolAgg.succeededLoad || 0)))
+        : 0,
     },
     prepare: {
       pending: Math.max(0, Math.floor(Number(symbolAgg.pendingPrepare || 0))),
@@ -5500,6 +5752,7 @@ export async function loadScalpPipelineJobsHealth(): Promise<
         : null;
     return {
       jobKind,
+      entrySessionProfile,
       status: String(row?.status || "idle"),
       locked: typeof lockExpiresAtMs === "number" && lockExpiresAtMs > nowMs,
       runningSinceAtMs,
@@ -5517,11 +5770,17 @@ export async function loadScalpPipelineJobsHealth(): Promise<
 }
 
 export async function listScalpDeploymentWeeklyMetricRows(
-  params: { limit?: number } = {},
+  params: {
+    limit?: number;
+    entrySessionProfile?: ScalpEntrySessionProfile;
+  } = {},
 ): Promise<ScalpDeploymentWeeklyMetricSnapshotRow[]> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
   const limit = Math.max(1, Math.min(20_000, toPositiveInt(params.limit, 8_000)));
+  const entrySessionProfile = params.entrySessionProfile
+    ? normalizeEntrySessionProfileInput(params.entrySessionProfile)
+    : "";
   const rows = await db.$queryRaw<
     Array<{
       deploymentId: string;
@@ -5566,6 +5825,7 @@ export async function listScalpDeploymentWeeklyMetricRows(
         FROM scalp_deployment_weekly_metrics m
         JOIN scalp_deployments d
           ON d.deployment_id = m.deployment_id
+        WHERE (${entrySessionProfile} = '' OR m.entry_session_profile = ${entrySessionProfile})
         ORDER BY m.week_start DESC, m.deployment_id ASC
         LIMIT ${limit};
     `);
@@ -5623,6 +5883,7 @@ export async function listScalpDeploymentWeeklyMetricRows(
 export async function listScalpDurationTimelineRuns(params: {
   source?: "all" | ScalpDurationTimelineSource;
   jobKind?: "all" | ScalpPipelineJobKind;
+  entrySessionProfile?: ScalpEntrySessionProfile;
   fromMs?: number;
   toMs?: number;
   limit?: number;
@@ -5648,6 +5909,9 @@ export async function listScalpDurationTimelineRuns(params: {
   const rangeStartMs = Math.min(fromMs, toMs);
   const rangeEndMs = Math.max(fromMs, toMs);
   const limit = Math.max(1, Math.min(500, toPositiveInt(params.limit, 50)));
+  const entrySessionProfile = params.entrySessionProfile
+    ? normalizeEntrySessionProfileInput(params.entrySessionProfile)
+    : "";
   const db = scalpPrisma();
 
   const pipelineRows =
@@ -5684,6 +5948,11 @@ export async function listScalpDurationTimelineRuns(params: {
           WHERE r.started_at >= ${new Date(rangeStartMs)}
             AND r.started_at <= ${new Date(rangeEndMs)}
             ${
+              entrySessionProfile
+                ? Prisma.sql`AND r.entry_session_profile = ${entrySessionProfile}`
+                : Prisma.empty
+            }
+            ${
               jobKind === "all"
                 ? Prisma.empty
                 : Prisma.sql`AND r.job_kind = ${jobKind}`
@@ -5717,6 +5986,11 @@ export async function listScalpDurationTimelineRuns(params: {
             AND m.started_at IS NOT NULL
             AND m.started_at >= ${new Date(rangeStartMs)}
             AND m.started_at <= ${new Date(rangeEndMs)}
+            ${
+              entrySessionProfile
+                ? Prisma.sql`AND m.entry_session_profile = ${entrySessionProfile}`
+                : Prisma.empty
+            }
           GROUP BY m.worker_id
           ORDER BY MAX(m.finished_at) DESC NULLS LAST, MIN(m.started_at) DESC
           LIMIT ${limit};

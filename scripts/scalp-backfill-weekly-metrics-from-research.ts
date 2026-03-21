@@ -116,6 +116,7 @@ async function ensureWeeklyMetricsTable(): Promise<void> {
         CREATE TABLE IF NOT EXISTS scalp_deployment_weekly_metrics (
             id bigserial PRIMARY KEY,
             deployment_id text NOT NULL REFERENCES scalp_deployments(deployment_id) ON DELETE CASCADE,
+            entry_session_profile text NOT NULL DEFAULT 'berlin',
             symbol text NOT NULL,
             strategy_id text NOT NULL,
             tune_id text NOT NULL,
@@ -151,6 +152,10 @@ async function ensureWeeklyMetricsTable(): Promise<void> {
         CREATE INDEX IF NOT EXISTS scalp_deployment_weekly_metrics_claim_idx
             ON scalp_deployment_weekly_metrics(status, next_run_at, week_start);
     `);
+    await db.$executeRaw(Prisma.sql`
+        CREATE INDEX IF NOT EXISTS scalp_deployment_weekly_metrics_session_claim_idx
+            ON scalp_deployment_weekly_metrics(entry_session_profile, status, next_run_at, week_start);
+    `);
 
     await db.$executeRaw(Prisma.sql`
         CREATE INDEX IF NOT EXISTS scalp_deployment_weekly_metrics_deployment_week_idx
@@ -171,6 +176,7 @@ async function previewBackfill(): Promise<BackfillResult> {
         WITH src_base AS (
             SELECT
                 t.deployment_id,
+                d.entry_session_profile,
                 t.symbol,
                 t.strategy_id,
                 t.tune_id,
@@ -187,6 +193,7 @@ async function previewBackfill(): Promise<BackfillResult> {
         src AS (
             SELECT DISTINCT ON (deployment_id, week_start)
                 deployment_id,
+                entry_session_profile,
                 symbol,
                 strategy_id,
                 tune_id,
@@ -283,6 +290,7 @@ async function runBackfill(): Promise<BackfillResult> {
         src AS (
             SELECT DISTINCT ON (deployment_id, week_start)
                 deployment_id,
+                entry_session_profile,
                 symbol,
                 strategy_id,
                 tune_id,
@@ -383,6 +391,7 @@ async function runBackfill(): Promise<BackfillResult> {
         upserted AS (
             INSERT INTO scalp_deployment_weekly_metrics(
                 deployment_id,
+                entry_session_profile,
                 symbol,
                 strategy_id,
                 tune_id,
@@ -412,6 +421,7 @@ async function runBackfill(): Promise<BackfillResult> {
             )
             SELECT
                 src.deployment_id,
+                src.entry_session_profile,
                 src.symbol,
                 src.strategy_id,
                 src.tune_id,
@@ -442,6 +452,7 @@ async function runBackfill(): Promise<BackfillResult> {
             ON CONFLICT(deployment_id, week_start)
             DO UPDATE SET
                 symbol = EXCLUDED.symbol,
+                entry_session_profile = EXCLUDED.entry_session_profile,
                 strategy_id = EXCLUDED.strategy_id,
                 tune_id = EXCLUDED.tune_id,
                 week_end = EXCLUDED.week_end,

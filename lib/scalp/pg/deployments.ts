@@ -7,11 +7,14 @@ import {
     parseScalpVenuePrefixedDeploymentId,
     type ScalpVenue,
 } from '../venue';
+import { normalizeScalpEntrySessionProfile } from '../sessions';
+import type { ScalpEntrySessionProfile } from '../types';
 import { scalpPrisma } from './client';
 
 export interface PgExecutableDeploymentRow {
     deploymentId: string;
     venue: ScalpVenue;
+    entrySessionProfile: ScalpEntrySessionProfile;
     symbol: string;
     strategyId: string;
     tuneId: string;
@@ -27,6 +30,7 @@ export interface PgExecutableDeploymentRow {
 export interface PgDeploymentRegistryRow {
     deploymentId: string;
     venue: ScalpVenue;
+    entrySessionProfile: ScalpEntrySessionProfile;
     symbol: string;
     strategyId: string;
     tuneId: string;
@@ -43,6 +47,7 @@ export interface PgDeploymentRegistryRow {
 export interface PgUpsertDeploymentInput {
     deploymentId: string;
     venue?: ScalpVenue;
+    entrySessionProfile?: ScalpEntrySessionProfile;
     symbol: string;
     strategyId: string;
     tuneId: string;
@@ -58,6 +63,18 @@ function asJsonObject(value: unknown): Record<string, unknown> | null {
     return value as Record<string, unknown>;
 }
 
+function resolveEntrySessionProfileFromConfigOverride(value: unknown): ScalpEntrySessionProfile {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return normalizeScalpEntrySessionProfile(undefined, 'berlin');
+    }
+    const root = value as Record<string, unknown>;
+    const sessions =
+        root.sessions && typeof root.sessions === 'object' && !Array.isArray(root.sessions)
+            ? (root.sessions as Record<string, unknown>)
+            : null;
+    return normalizeScalpEntrySessionProfile(sessions?.entrySessionProfile, 'berlin');
+}
+
 export async function listExecutableDeploymentsFromPg(params: {
     requirePromotionEligible?: boolean;
     venue?: ScalpVenue;
@@ -65,6 +82,7 @@ export async function listExecutableDeploymentsFromPg(params: {
     symbols?: string[];
     strategyId?: string;
     deploymentIds?: string[];
+    sessionProfile?: ScalpEntrySessionProfile;
     limit?: number;
 } = {}): Promise<PgExecutableDeploymentRow[]> {
     const requirePromotionEligible = Boolean(params.requirePromotionEligible);
@@ -89,6 +107,9 @@ export async function listExecutableDeploymentsFromPg(params: {
               .map((row) => String(row || '').trim())
               .filter((row, idx, rows) => row.length > 0 && rows.indexOf(row) === idx)
         : [];
+    const sessionProfile = String(params.sessionProfile || '')
+        .trim()
+        .toLowerCase();
     const limit = Math.max(1, Math.min(2000, Math.floor(Number(params.limit) || 250)));
     const symbolFilterSql = symbols.length > 0 ? Prisma.sql`AND d.symbol IN (${Prisma.join(symbols)})` : Prisma.empty;
     const deploymentFilterSql =
@@ -102,6 +123,7 @@ export async function listExecutableDeploymentsFromPg(params: {
     const rows = await db.$queryRaw<
         Array<{
             deploymentId: string;
+            entrySessionProfile: string | null;
             symbol: string;
             strategyId: string;
             tuneId: string;
@@ -116,6 +138,7 @@ export async function listExecutableDeploymentsFromPg(params: {
     >(Prisma.sql`
         SELECT
             d.deployment_id AS "deploymentId",
+            d.entry_session_profile AS "entrySessionProfile",
             d.symbol,
             d.strategy_id AS "strategyId",
             d.tune_id AS "tuneId",
@@ -133,6 +156,10 @@ export async function listExecutableDeploymentsFromPg(params: {
           AND (${strategyId} = '' OR d.strategy_id = ${strategyId})
           ${deploymentFilterSql}
           ${venueFilterSql}
+          AND (
+              ${sessionProfile} = ''
+              OR d.entry_session_profile = ${sessionProfile}
+          )
           AND (${requirePromotionEligible} = FALSE OR COALESCE((d.promotion_gate->>'eligible')::boolean, false) = TRUE)
         ORDER BY d.symbol ASC, d.strategy_id ASC, d.tune_id ASC
         LIMIT ${limit};
@@ -141,6 +168,10 @@ export async function listExecutableDeploymentsFromPg(params: {
     return rows.map((row) => ({
         deploymentId: row.deploymentId,
         venue: resolveScalpDeploymentVenueFromId(row.deploymentId),
+        entrySessionProfile: normalizeScalpEntrySessionProfile(
+            row.entrySessionProfile,
+            'berlin',
+        ),
         symbol: row.symbol,
         strategyId: row.strategyId,
         tuneId: row.tuneId,
@@ -183,6 +214,7 @@ export async function listDeploymentsFromPg(params: {
     const rows = await db.$queryRaw<
         Array<{
             deploymentId: string;
+            entrySessionProfile: string | null;
             symbol: string;
             strategyId: string;
             tuneId: string;
@@ -198,6 +230,7 @@ export async function listDeploymentsFromPg(params: {
     >(Prisma.sql`
         SELECT
             deployment_id AS "deploymentId",
+            entry_session_profile AS "entrySessionProfile",
             symbol,
             strategy_id AS "strategyId",
             tune_id AS "tuneId",
@@ -222,6 +255,10 @@ export async function listDeploymentsFromPg(params: {
     return rows.map((row) => ({
         deploymentId: row.deploymentId,
         venue: resolveScalpDeploymentVenueFromId(row.deploymentId),
+        entrySessionProfile: normalizeScalpEntrySessionProfile(
+            row.entrySessionProfile,
+            'berlin',
+        ),
         symbol: row.symbol,
         strategyId: row.strategyId,
         tuneId: row.tuneId,
@@ -248,14 +285,18 @@ export async function upsertDeploymentsBulkToPg(rows: PgUpsertDeploymentInput[])
                 parsedDeploymentId.deploymentKey || String(row.deploymentId || '').trim();
             return {
                 deployment_id: formatScalpVenueDeploymentId(venue, deploymentKey),
-            symbol: String(row.symbol || '').trim().toUpperCase(),
-            strategy_id: String(row.strategyId || '').trim().toLowerCase(),
-            tune_id: String(row.tuneId || '').trim().toLowerCase(),
-            source: row.source,
-            enabled: Boolean(row.enabled),
-            config_override: row.configOverride && typeof row.configOverride === 'object' ? row.configOverride : {},
-            promotion_gate: row.promotionGate && typeof row.promotionGate === 'object' ? row.promotionGate : null,
-            updated_by: String(row.updatedBy || '').trim() || null,
+                entry_session_profile: normalizeScalpEntrySessionProfile(
+                    row.entrySessionProfile,
+                    resolveEntrySessionProfileFromConfigOverride(row.configOverride),
+                ),
+                symbol: String(row.symbol || '').trim().toUpperCase(),
+                strategy_id: String(row.strategyId || '').trim().toLowerCase(),
+                tune_id: String(row.tuneId || '').trim().toLowerCase(),
+                source: row.source,
+                enabled: Boolean(row.enabled),
+                config_override: row.configOverride && typeof row.configOverride === 'object' ? row.configOverride : {},
+                promotion_gate: row.promotionGate && typeof row.promotionGate === 'object' ? row.promotionGate : null,
+                updated_by: String(row.updatedBy || '').trim() || null,
             };
         })
         .filter((row) => row.deployment_id.length > 0 && row.symbol.length > 0 && row.strategy_id.length > 0 && row.tune_id.length > 0);
@@ -270,6 +311,7 @@ export async function upsertDeploymentsBulkToPg(rows: PgUpsertDeploymentInput[])
             SELECT *
             FROM jsonb_to_recordset(${payloadJson}::jsonb) AS x(
                 deployment_id text,
+                entry_session_profile text,
                 symbol text,
                 strategy_id text,
                 tune_id text,
@@ -282,6 +324,7 @@ export async function upsertDeploymentsBulkToPg(rows: PgUpsertDeploymentInput[])
         )
         INSERT INTO scalp_deployments(
             deployment_id,
+            entry_session_profile,
             symbol,
             strategy_id,
             tune_id,
@@ -293,6 +336,7 @@ export async function upsertDeploymentsBulkToPg(rows: PgUpsertDeploymentInput[])
         )
         SELECT
             x.deployment_id,
+            COALESCE(NULLIF(LOWER(x.entry_session_profile), ''), 'berlin'),
             x.symbol,
             x.strategy_id,
             x.tune_id,
@@ -305,6 +349,7 @@ export async function upsertDeploymentsBulkToPg(rows: PgUpsertDeploymentInput[])
         ON CONFLICT(deployment_id)
         DO UPDATE SET
             symbol = EXCLUDED.symbol,
+            entry_session_profile = EXCLUDED.entry_session_profile,
             strategy_id = EXCLUDED.strategy_id,
             tune_id = EXCLUDED.tune_id,
             source = EXCLUDED.source,

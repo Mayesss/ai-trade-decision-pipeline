@@ -12,7 +12,6 @@ import {
   BarChart3,
   Bot,
   BookOpen,
-  BrainCircuit,
   CandlestickChart,
   ShieldPlus,
   Wand2,
@@ -37,7 +36,6 @@ import {
   ArrowDownRight,
   Copy,
   CheckCircle2,
-  XCircle,
   type LucideIcon,
 } from "lucide-react";
 
@@ -319,6 +317,7 @@ type ScalpSummaryResponse = {
   range?: DashboardRangeKey;
   dayKey?: string;
   clockMode?: "LONDON_TZ" | "UTC_FIXED" | string;
+  entrySessionProfile?: ScalpEntrySessionProfileUi | string;
   source?: "deployment_registry" | "cron_symbols" | string;
   strategyId?: string;
   defaultStrategyId?: string;
@@ -588,6 +587,11 @@ type DashboardRangeKey = "7D" | "30D" | "6M";
 type ThemePreference = "system" | "light" | "dark";
 type ResolvedTheme = "light" | "dark";
 type StrategyMode = "swing" | "scalp";
+type ScalpEntrySessionProfileUi =
+  | "berlin"
+  | "tokyo"
+  | "tokyo_london_overlap"
+  | "newyork";
 
 const CURRENCY_SYMBOL = "₮"; // Tether-style symbol
 const THEME_PREFERENCE_STORAGE_KEY = "dashboard_theme_preference";
@@ -642,6 +646,16 @@ function stripScalpVenuePrefixFromDeploymentId(
 const ADMIN_SECRET_STORAGE_KEY = "admin_access_secret";
 const ADMIN_AUTH_TIMEOUT_MS = 4000;
 const STRATEGY_MODE_STORAGE_KEY = "strategy_mode";
+const SCALP_ENTRY_SESSION_STORAGE_KEY = "scalp_entry_session_profile";
+const SCALP_ENTRY_SESSION_TABS: Array<{
+  id: ScalpEntrySessionProfileUi;
+  label: string;
+}> = [
+  { id: "berlin", label: "Berlin" },
+  { id: "tokyo", label: "Tokyo" },
+  { id: "tokyo_london_overlap", label: "Tokyo-London" },
+  { id: "newyork", label: "New York" },
+];
 
 type VercelCronEntry = {
   path?: string;
@@ -733,9 +747,34 @@ function parseCronPathname(rawPath: unknown): string | null {
   }
 }
 
+function parseEntrySessionProfileFromCronPath(
+  rawPath: unknown,
+): ScalpEntrySessionProfileUi | null {
+  const value = String(rawPath || "").trim();
+  if (!value) return null;
+  try {
+    const parsed = new URL(value, "http://localhost");
+    const raw = String(parsed.searchParams.get("session") || "")
+      .trim()
+      .toLowerCase();
+    if (
+      raw === "berlin" ||
+      raw === "tokyo" ||
+      raw === "tokyo_london_overlap" ||
+      raw === "newyork"
+    ) {
+      return raw;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeInvokePathForScalpCronNow(
   rowId: string,
   rawInvokePath: string,
+  entrySessionProfile: ScalpEntrySessionProfileUi,
 ): string {
   const value = String(rawInvokePath || "").trim();
   if (!value) return "";
@@ -744,18 +783,44 @@ function normalizeInvokePathForScalpCronNow(
     rowId === "scalp_discover_symbols" ||
     pathname === "/api/scalp/cron/discover-symbols" ||
     pathname === "/api/scalp/cron/v2/discover";
-  if (!isDiscoverCron) return value;
+  const isSessionScopedCron =
+    rowId === "scalp_prepare" ||
+    rowId === "scalp_worker" ||
+    rowId === "scalp_execute_deployments" ||
+    pathname === "/api/scalp/cron/prepare" ||
+    pathname === "/api/scalp/cron/v2/prepare" ||
+    pathname === "/api/scalp/cron/worker" ||
+    pathname === "/api/scalp/cron/execute-deployments";
+  if (!isDiscoverCron && !isSessionScopedCron) return value;
   try {
     const absolute = /^https?:\/\//i.test(value);
     const parsed = new URL(value, "http://localhost");
-    parsed.searchParams.set("dryRun", "false");
+    if (isDiscoverCron) parsed.searchParams.set("dryRun", "false");
+    if (isSessionScopedCron) {
+      parsed.searchParams.set("session", entrySessionProfile);
+    }
     if (absolute) return `${parsed.origin}${parsed.pathname}${parsed.search}`;
     return `${parsed.pathname}${parsed.search}`;
   } catch {
-    if (/([?&])dryRun=/i.test(value)) {
-      return value.replace(/([?&])dryRun=[^&#]*/i, "$1dryRun=false");
+    let next = value;
+    if (isDiscoverCron) {
+      if (/([?&])dryRun=/i.test(next)) {
+        next = next.replace(/([?&])dryRun=[^&#]*/i, "$1dryRun=false");
+      } else {
+        next = `${next}${next.includes("?") ? "&" : "?"}dryRun=false`;
+      }
     }
-    return `${value}${value.includes("?") ? "&" : "?"}dryRun=false`;
+    if (isSessionScopedCron) {
+      if (/([?&])session=/i.test(next)) {
+        next = next.replace(
+          /([?&])session=[^&#]*/i,
+          `$1session=${encodeURIComponent(entrySessionProfile)}`,
+        );
+      } else {
+        next = `${next}${next.includes("?") ? "&" : "?"}session=${encodeURIComponent(entrySessionProfile)}`;
+      }
+    }
+    return next;
   }
 }
 
@@ -964,15 +1029,26 @@ function listVercelCronRows(): Array<{
 
 function buildScalpCronRuntimeMap(
   nowMs: number,
+  entrySessionProfile: ScalpEntrySessionProfileUi,
 ): Record<string, ScalpCronRuntimeMeta> {
   const crons = listVercelCronRows();
   const out: Record<string, ScalpCronRuntimeMeta> = {};
 
   for (const [id, def] of Object.entries(SCALP_CRON_PIPELINE_DEFINITIONS)) {
-    const rows = crons.filter(
+    const baseRows = crons.filter(
       (row) =>
         row.pathname !== null && def.matchPathnames.includes(row.pathname),
     );
+    const isSessionScopedCron =
+      id === "scalp_prepare" ||
+      id === "scalp_worker" ||
+      id === "scalp_execute_deployments";
+    const rows = isSessionScopedCron
+      ? baseRows.filter((row) => {
+          const profile = parseEntrySessionProfileFromCronPath(row.path);
+          return profile === null || profile === entrySessionProfile;
+        })
+      : baseRows;
 
     const expressions = dedupeStrings(rows.map((row) => row.schedule));
     const nextRunCandidates = expressions
@@ -1068,6 +1144,8 @@ export default function Home() {
   >(null);
   const [dashboardRange, setDashboardRange] = useState<DashboardRangeKey>("7D");
   const [strategyMode, setStrategyMode] = useState<StrategyMode>("swing");
+  const [scalpSession, setScalpSession] =
+    useState<ScalpEntrySessionProfileUi>("berlin");
   const [scalpSummary, setScalpSummary] = useState<ScalpSummaryResponse | null>(
     null,
   );
@@ -1567,6 +1645,7 @@ export default function Home() {
       const params = new URLSearchParams({
         useDeploymentRegistry: "true",
         range: dashboardRange,
+        session: scalpSession,
       });
       if (!silent || force) {
         params.set("fresh", "true");
@@ -1604,6 +1683,7 @@ export default function Home() {
     const invokePath = normalizeInvokePathForScalpCronNow(
       row.id,
       String(row.invokePath || "").trim(),
+      scalpSession,
     );
     if (!invokePath) {
       setScalpCronInvokeStateById((prev) => ({
@@ -1934,6 +2014,23 @@ export default function Home() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    const stored = String(
+      window.localStorage.getItem(SCALP_ENTRY_SESSION_STORAGE_KEY) || "",
+    )
+      .trim()
+      .toLowerCase();
+    if (
+      stored === "berlin" ||
+      stored === "tokyo" ||
+      stored === "tokyo_london_overlap" ||
+      stored === "newyork"
+    ) {
+      setScalpSession(stored);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
     if (themePreference !== "system") return;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const handleThemeChange = () => {
@@ -1954,13 +2051,19 @@ export default function Home() {
   }, [resolvedTheme]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(SCALP_ENTRY_SESSION_STORAGE_KEY, scalpSession);
+  }, [scalpSession]);
+
+  useEffect(() => {
     if (!adminGranted) return;
     if (strategyMode === "scalp") {
+      scalpSummaryFetchedAtMsRef.current = 0;
       loadScalpDashboard();
       return;
     }
     loadDashboard();
-  }, [adminGranted, dashboardRange, strategyMode]);
+  }, [adminGranted, dashboardRange, strategyMode, scalpSession]);
 
   useEffect(() => {
     if (!adminGranted || strategyMode !== "scalp") return;
@@ -1989,7 +2092,7 @@ export default function Home() {
       cancelled = true;
       if (timerId) window.clearTimeout(timerId);
     };
-  }, [adminGranted, strategyMode, adminSecret, dashboardRange]);
+  }, [adminGranted, strategyMode, adminSecret, dashboardRange, scalpSession]);
 
   useEffect(() => {
     const rows = Array.isArray(scalpSummary?.symbols)
@@ -2646,7 +2749,12 @@ export default function Home() {
     const kind = String(job?.jobKind || "")
       .trim()
       .toLowerCase();
-    return kind !== "discover" && kind !== "load_candles";
+    return (
+      kind !== "discover" &&
+      kind !== "load_candles" &&
+      kind !== "prepare" &&
+      kind !== "promotion"
+    );
   });
   const scalpPanicStop =
     scalpSummary?.panicStop || scalpSummary?.pipeline?.panicStop || null;
@@ -2657,11 +2765,9 @@ export default function Home() {
   const scalpPipelineStatusPanel = (() => {
     const explicit = scalpSummary?.pipeline?.statusPanel || null;
     if (explicit) return explicit;
-    const orderedKinds = ["prepare", "worker", "promotion"];
+    const orderedKinds = ["worker"];
     const labelsByKind: Record<string, string> = {
-      prepare: "Prepare deployments",
       worker: "Run worker",
-      promotion: "Promotion",
     };
     const byKind = new Map(
       scalpPipelineJobs.map((job) => [
@@ -2909,6 +3015,16 @@ export default function Home() {
       ? ((scalpCycleCompleted + scalpCycleFailed) / scalpCycleTasks) * 100
       : null;
   const scalpCycleProgressPct = scalpCycleProgressFromChosenTotals;
+  const scalpWorkerFinishedTasks =
+    scalpCycleCompleted !== null && scalpCycleFailed !== null
+      ? scalpCycleCompleted + scalpCycleFailed
+      : null;
+  const scalpWorkerSuccessRatePct =
+    scalpWorkerFinishedTasks !== null &&
+    scalpWorkerFinishedTasks > 0 &&
+    scalpCycleCompleted !== null
+      ? (scalpCycleCompleted / scalpWorkerFinishedTasks) * 100
+      : null;
   const scalpUniverseSelectedCount = null;
   const scalpUniverseCandidatesEvaluated = null;
 
@@ -2943,8 +3059,6 @@ export default function Home() {
         ? Math.max(1, Math.round(value))
         : null;
     if (days === null) return "—";
-    if (days >= 360 && days <= 370) return "52w";
-    if (days >= 80 && days <= 97) return "12w";
     if (days % 7 === 0 && days / 7 <= 52)
       return `${Math.max(1, Math.round(days / 7))}w`;
     return `${days}d`;
@@ -3113,27 +3227,32 @@ export default function Home() {
     scalpWorkerSort.key,
     scalpWorkerSort.direction,
   ]);
-  const scalpWorkerLastDurationFromTasksMs = (() => {
+  const scalpWorkerLatestRunSummary = (() => {
     const completedTaskRuns = scalpWorkerTasks
       .map((task) => {
         const workerId = String(task?.workerId || "").trim();
+        const symbol = String(task?.symbol || "")
+          .trim()
+          .toUpperCase();
         const startedAtMs = asFiniteNumber(task?.startedAtMs);
         const finishedAtMs = asFiniteNumber(task?.finishedAtMs);
         if (
           !workerId ||
+          !symbol ||
           startedAtMs === null ||
           finishedAtMs === null ||
           finishedAtMs < startedAtMs
         ) {
           return null;
         }
-        return { workerId, startedAtMs, finishedAtMs };
+        return { workerId, symbol, startedAtMs, finishedAtMs };
       })
       .filter(
         (
           row,
         ): row is {
           workerId: string;
+          symbol: string;
           startedAtMs: number;
           finishedAtMs: number;
         } => row !== null,
@@ -3164,8 +3283,116 @@ export default function Home() {
     ) {
       return null;
     }
-    return runFinishedAtMs - runStartedAtMs;
+    const durationMs = runFinishedAtMs - runStartedAtMs;
+    const symbols = new Set(
+      sameRunTasks.map((row) => String(row.symbol || "").trim().toUpperCase()),
+    );
+    return {
+      durationMs,
+      taskCount: sameRunTasks.length,
+      symbolCount: Array.from(symbols).filter((symbol) => Boolean(symbol)).length,
+      finishedAtMs: runFinishedAtMs,
+    };
   })();
+  const scalpWorkerLastDurationFromTasksMs =
+    scalpWorkerLatestRunSummary?.durationMs ?? null;
+  const scalpWorkerLatestThroughputTasksPerMin =
+    scalpWorkerLatestRunSummary &&
+    scalpWorkerLatestRunSummary.durationMs > 0 &&
+    scalpWorkerLatestRunSummary.taskCount > 0
+      ? scalpWorkerLatestRunSummary.taskCount /
+        (scalpWorkerLatestRunSummary.durationMs / 60_000)
+      : null;
+  const scalpWorkerPerformanceSummary = useMemo(() => {
+    const processedSymbols = new Set<string>();
+    let completedRows = 0;
+    let netRSum = 0;
+    let netRCount = 0;
+    let expectancySum = 0;
+    let expectancyCount = 0;
+    for (const row of scalpWorkerTaskRows) {
+      const status = String(row?.status || "")
+        .trim()
+        .toLowerCase();
+      const symbol = String(row?.symbol || "")
+        .trim()
+        .toUpperCase();
+      if ((status === "completed" || status === "failed") && symbol) {
+        processedSymbols.add(symbol);
+      }
+      if (status !== "completed") continue;
+      completedRows += 1;
+      if (typeof row?.netR === "number" && Number.isFinite(row.netR)) {
+        netRSum += row.netR;
+        netRCount += 1;
+      }
+      if (
+        typeof row?.expectancyR === "number" &&
+        Number.isFinite(row.expectancyR)
+      ) {
+        expectancySum += row.expectancyR;
+        expectancyCount += 1;
+      }
+    }
+    return {
+      processedSymbolCount: processedSymbols.size,
+      completedTaskRows: completedRows,
+      avgNetRPerCompletedTask: netRCount > 0 ? netRSum / netRCount : null,
+      avgExpectancyPerCompletedTask:
+        expectancyCount > 0 ? expectancySum / expectancyCount : null,
+    };
+  }, [scalpWorkerTaskRows]);
+  const scalpWorkerCompactStats = [
+    {
+      id: "symbols",
+      label: "symbols",
+      value: formatScalpCount(scalpWorkerPerformanceSummary.processedSymbolCount),
+    },
+    {
+      id: "progress",
+      label: "progress",
+      value: formatScalpPct(scalpCycleProgressPct, 0),
+    },
+    {
+      id: "success",
+      label: "success",
+      value: formatScalpPct(scalpWorkerSuccessRatePct, 0),
+    },
+    {
+      id: "run",
+      label: "last run",
+      value: formatScalpDuration(scalpWorkerLastDurationFromTasksMs),
+    },
+    {
+      id: "throughput",
+      label: "throughput",
+      value:
+        scalpWorkerLatestThroughputTasksPerMin === null
+          ? "—"
+          : `${scalpWorkerLatestThroughputTasksPerMin.toFixed(1)} tasks/min`,
+    },
+    {
+      id: "netr",
+      label: "avg netR",
+      value: formatScalpSignedR(
+        scalpWorkerPerformanceSummary.avgNetRPerCompletedTask,
+      ),
+    },
+    {
+      id: "exp",
+      label: "avg exp",
+      value: formatScalpSignedR(
+        scalpWorkerPerformanceSummary.avgExpectancyPerCompletedTask,
+      ),
+    },
+  ] as const;
+  const scalpWorkerCompactStatusLine = `finished ${formatScalpCount(
+    scalpWorkerFinishedTasks,
+  )} · completed ${formatScalpCount(
+    scalpCycleCompleted,
+  )} · failed ${formatScalpCount(scalpCycleFailed)} · running ${formatScalpCount(
+    scalpCycleRunning,
+  )} · pending ${formatScalpCount(scalpCyclePending)}`;
   const formatScalpWindowIso = (
     fromTs: number | null,
     toTs: number | null,
@@ -3176,7 +3403,7 @@ export default function Home() {
     return `${fromIso} → ${toIso}`;
   };
   const scalpCronRuntimeById: Record<string, ScalpCronRuntimeMeta> =
-    buildScalpCronRuntimeMap(scalpCronNowMs);
+    buildScalpCronRuntimeMap(scalpCronNowMs, scalpSession);
   const scalpCronRuntimeMeta = (id: string): ScalpCronRuntimeMeta =>
     scalpCronRuntimeById[id] || {
       expressions: [],
@@ -3484,9 +3711,7 @@ export default function Home() {
       .toLowerCase();
     if (normalized.includes("discover")) return Radar;
     if (normalized.includes("load")) return Globe2;
-    if (normalized.includes("prepare")) return BrainCircuit;
     if (normalized.includes("worker")) return Bot;
-    if (normalized.includes("promotion")) return ArrowUpRight;
     if (normalized.includes("execute")) return CandlestickChart;
     if (normalized.includes("monitor")) return Activity;
     if (normalized.includes("panic") || normalized.includes("stop"))
@@ -3501,7 +3726,12 @@ export default function Home() {
     const id = String(step?.id || "")
       .trim()
       .toLowerCase();
-    return id !== "discover" && id !== "load_candles";
+    return (
+      id !== "discover" &&
+      id !== "load_candles" &&
+      id !== "prepare" &&
+      id !== "promotion"
+    );
   });
   const scalpPipelineStepVisualMeta = (state?: ScalpPipelineStepState) => {
     if (state === "success") {
@@ -3565,10 +3795,6 @@ export default function Home() {
       primaryExpectancy;
     const profitablePct =
       asFiniteNumber(forwardValidation?.profitableWindowPct) ?? 0;
-    const confirmationExpectancy =
-      asFiniteNumber(forwardValidation?.confirmationMeanExpectancyR) ?? 0;
-    const confirmationProfitablePct =
-      asFiniteNumber(forwardValidation?.confirmationProfitableWindowPct) ?? 0;
     const concentrationPct = Math.max(
       0,
       (asFiniteNumber(forwardValidation?.weeklyTopWeekPnlConcentrationPct) ??
@@ -3586,11 +3812,8 @@ export default function Home() {
       (primaryExpectancy + primaryMedianExpectancy) / 2;
     let score = smoothedExpectancy * (1 - concentrationPct / 100);
     score += profitablePct / 100;
-    score += confirmationExpectancy * 0.35;
-    score += confirmationProfitablePct / 300;
     score += Math.min(profitFactor, 25) * 0.02;
     score -= maxDrawdown * 0.08;
-    if (row.promotionEligible === true) score += 0.5;
     return score;
   };
   const compareScalpWorkerJobGridRows = (
@@ -4051,9 +4274,9 @@ export default function Home() {
         },
       },
       {
-        headerName: "12w / 52w",
+        headerName: "Forward Validation",
         field: "forwardValidation",
-        minWidth: 220,
+        minWidth: 180,
         sortable: false,
         filter: false,
         cellRenderer: (params: any) => {
@@ -4077,18 +4300,6 @@ export default function Home() {
           const primaryLabel = formatScalpHorizonLabel(
             asFiniteNumber(forwardValidation?.selectionWindowDays),
           );
-          const confirmationExpectancyR = asFiniteNumber(
-            forwardValidation?.confirmationMeanExpectancyR,
-          );
-          const confirmationProfitablePct = asFiniteNumber(
-            forwardValidation?.confirmationProfitableWindowPct,
-          );
-          const confirmationRollCount = asFiniteNumber(
-            forwardValidation?.confirmationRollCount,
-          );
-          const confirmationLabel = formatScalpHorizonLabel(
-            asFiniteNumber(forwardValidation?.confirmationWindowDays),
-          );
           const primaryToneClass =
             primaryExpectancyR === null || primaryExpectancyR === 0
               ? scalpDarkMode
@@ -4097,38 +4308,20 @@ export default function Home() {
               : primaryExpectancyR > 0
                 ? "text-emerald-500"
                 : "text-red-500";
-          const confirmationToneClass =
-            confirmationExpectancyR === null || confirmationExpectancyR === 0
-              ? scalpDarkMode
-                ? "text-zinc-400"
-                : "text-slate-500"
-              : confirmationExpectancyR > 0
-                ? "text-emerald-500"
-                : "text-red-500";
           const primaryTitle = [
-            `Primary horizon: ${primaryLabel}`,
+            `Horizon: ${primaryLabel}`,
             `Expectancy: ${formatScalpSignedR(primaryExpectancyR)}`,
             `Profitable: ${formatScalpPct(primaryProfitablePct, 0)}`,
             `Windows: ${formatScalpCount(primaryRollCount)}`,
-          ].join(" | ");
-          const confirmationTitle = [
-            `Confirmation horizon: ${confirmationLabel}`,
-            `Expectancy: ${formatScalpSignedR(confirmationExpectancyR)}`,
-            `Profitable: ${formatScalpPct(confirmationProfitablePct, 0)}`,
-            `Windows: ${formatScalpCount(confirmationRollCount)}`,
           ].join(" | ");
           const primaryPct = Math.max(
             0,
             Math.min(100, primaryProfitablePct ?? 0),
           );
-          const confirmationPct = Math.max(
-            0,
-            Math.min(100, confirmationProfitablePct ?? 0),
-          );
           const trackClass = scalpDarkMode ? "bg-zinc-800" : "bg-slate-200";
 
           return (
-            <div className="flex min-w-[190px] flex-col gap-1 py-1 leading-tight">
+            <div className="flex min-w-[170px] flex-col gap-1 py-1 leading-tight">
               <div title={primaryTitle}>
                 <div className="flex items-center justify-between text-[11px]">
                   <span className={scalpDarkMode ? "text-zinc-400" : "text-slate-500"}>
@@ -4145,25 +4338,11 @@ export default function Home() {
                   />
                 </div>
               </div>
-              <div title={confirmationTitle}>
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className={scalpDarkMode ? "text-zinc-500" : "text-slate-500"}>
-                    {confirmationLabel}
-                  </span>
-                  <span className={confirmationToneClass}>
-                    {confirmationRollCount === null &&
-                    confirmationExpectancyR === null &&
-                    confirmationProfitablePct === null
-                      ? "—"
-                      : formatScalpSignedR(confirmationExpectancyR)}
-                  </span>
-                </div>
-                <div className={`mt-0.5 h-1.5 overflow-hidden rounded-full ${trackClass}`}>
-                  <div
-                    className={`h-full ${scalpMiniBarTone(confirmationExpectancyR)}`}
-                    style={{ width: `${Math.max(6, confirmationPct)}%` }}
-                  />
-                </div>
+              <div
+                className={`flex items-center justify-between text-[10px] ${scalpDarkMode ? "text-zinc-500" : "text-slate-500"}`}
+              >
+                <span>{formatScalpPct(primaryProfitablePct, 0)} profitable</span>
+                <span>{formatScalpCount(primaryRollCount)} windows</span>
               </div>
             </div>
           );
@@ -4251,39 +4430,6 @@ export default function Home() {
                 })}
               </div>
             </div>
-          );
-        },
-      },
-      {
-        headerName: "Promotion",
-        field: "promotionEligible",
-        width: 70,
-        hide: scalpEnabledFilter === "enabled",
-        cellRenderer: (params: any) => {
-          const value =
-            params?.value === null || typeof params?.value === "undefined"
-              ? null
-              : Boolean(params.value);
-          if (value === null) {
-            return (
-              <span className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}>
-                unknown
-              </span>
-            );
-          }
-          const Icon = value ? CheckCircle2 : XCircle;
-          const toneClass = value
-            ? scalpDarkMode
-              ? "text-emerald-300"
-              : "text-emerald-600"
-            : scalpDarkMode
-              ? "text-rose-300"
-              : "text-rose-600";
-          return (
-            <span className={`inline-flex items-center gap-1.5 font-medium ${toneClass}`}>
-              <Icon className="h-3.5 w-3.5" />
-              {value ? "eligible" : "blocked"}
-            </span>
           );
         },
       },
@@ -5170,6 +5316,31 @@ export default function Home() {
             </div>
           )}
 
+          {strategyMode === "scalp" && !error && (
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              {SCALP_ENTRY_SESSION_TABS.map((tab) => {
+                const isActive = scalpSession === tab.id;
+                return (
+                  <button
+                    key={`scalp-session-${tab.id}`}
+                    type="button"
+                    onClick={() => {
+                      setScalpSession(tab.id);
+                      scalpSummaryFetchedAtMsRef.current = 0;
+                    }}
+                    className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                      isActive
+                        ? "border-sky-300 bg-sky-50 text-sky-700 shadow-sm ring-2 ring-sky-200/80"
+                        : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-800"
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           <div className="mt-4 pb-8">
             {strategyMode === "scalp" ? (
               loading ? (
@@ -5212,6 +5383,9 @@ export default function Home() {
                             </h3>
                             <span className={scalpTagNeutralClass}>
                               {`${scalpCronRows.length} jobs`}
+                            </span>
+                            <span className={scalpTagNeutralClass}>
+                              {`session: ${scalpSession}`}
                             </span>
                             <span
                               className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${
@@ -5256,16 +5430,22 @@ export default function Home() {
                             </button>
                           </div>
                           <p className={`mt-2 text-sm ${scalpTextSecondaryClass}`}>
-                            Visual lane view from prepare to promotion. Each
+                            Visual lane view for active worker stages. Each
                             lane keeps detailed cron metrics below.
                           </p>
                           {scalpPipelineFlowSteps.length ? (
-                            <div className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3">
+                            <div className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
                               {scalpPipelineFlowSteps.map((step) => {
                                 const Icon = scalpPipelineStepIcon(step.id);
                                 const visual = scalpPipelineStepVisualMeta(
                                   step.state,
                                 );
+                                const normalizedStepId = String(step.id || "")
+                                  .trim()
+                                  .toLowerCase();
+                                const isWorkerStep =
+                                  normalizedStepId === "worker" ||
+                                  normalizedStepId.includes("worker");
                                 const row = scalpCronRowForStep(step.id);
                                 const rowInProgress = row
                                   ? scalpIsCronRowInProgress(row.id)
@@ -5304,15 +5484,38 @@ export default function Home() {
                                       .trim() || undefined}
                                   >
                                     <div className="flex items-start justify-between gap-2">
-                                      <span
-                                        className={`inline-flex h-7 w-7 items-center justify-center rounded-lg border ${
-                                          scalpDarkMode
-                                            ? "border-zinc-600 bg-zinc-800"
-                                            : "border-slate-300 bg-white"
-                                        }`}
-                                      >
-                                        <Icon className="h-3.5 w-3.5" />
-                                      </span>
+                                      <div className="flex min-w-0 flex-1 items-start gap-2">
+                                        <span
+                                          className={`inline-flex h-7 w-7 items-center justify-center rounded-lg border ${
+                                            scalpDarkMode
+                                              ? "border-zinc-600 bg-zinc-800"
+                                              : "border-slate-300 bg-white"
+                                          }`}
+                                        >
+                                          <Icon className="h-3.5 w-3.5" />
+                                        </span>
+                                        {isWorkerStep ? (
+                                          <div className="flex min-w-0 flex-wrap gap-1">
+                                            {scalpWorkerCompactStats.map((stat) => (
+                                              <span
+                                                key={`worker-step-stat-${step.id || "worker"}-${stat.id}`}
+                                                className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] ${
+                                                  scalpDarkMode
+                                                    ? "border-zinc-600 bg-zinc-900/80 text-zinc-200"
+                                                    : "border-slate-300 bg-slate-50 text-slate-700"
+                                                }`}
+                                              >
+                                                <span className="opacity-70">
+                                                  {stat.label}
+                                                </span>
+                                                <span className="font-semibold">
+                                                  {stat.value}
+                                                </span>
+                                              </span>
+                                            ))}
+                                          </div>
+                                        ) : null}
+                                      </div>
                                       <span
                                         className={`rounded-full border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.12em] ${visual.badge}`}
                                       >
@@ -5429,6 +5632,19 @@ export default function Home() {
                                             ? "Hide metrics"
                                             : "Open metrics"}
                                         </button>
+                                      </div>
+                                    ) : null}
+                                    {isWorkerStep ? (
+                                      <div
+                                        className={`mt-2 border-t pt-1.5 text-[10px] ${
+                                          scalpDarkMode
+                                            ? "border-zinc-700/80 text-zinc-400"
+                                            : "border-slate-200 text-slate-500"
+                                        }`}
+                                      >
+                                        {`${scalpWorkerCompactStatusLine} · last finish ${formatScalpTime(
+                                          scalpWorkerLatestRunSummary?.finishedAtMs ?? null,
+                                        )}`}
                                       </div>
                                     ) : null}
                                   </div>
@@ -5605,7 +5821,7 @@ export default function Home() {
                       One row per deployment in the registry. Weekly windows
                       are shown when worker history exists for that deployment;
                       otherwise the row still appears with registry-level
-                      promotion and forward-validation state.
+                      status and forward-validation state.
                     </div>
                     {scalpSelectedWorkerGridRows.length ? (
                       <div

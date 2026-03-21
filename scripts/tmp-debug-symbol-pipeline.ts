@@ -37,6 +37,7 @@ async function main() {
     db.$queryRaw<Array<any>>(Prisma.sql`
       SELECT
         deployment_id,
+        entry_session_profile,
         strategy_id,
         tune_id,
         in_universe,
@@ -54,6 +55,7 @@ async function main() {
     db.$queryRaw<Array<any>>(Prisma.sql`
       SELECT
         deployment_id,
+        entry_session_profile,
         week_start,
         week_end,
         status,
@@ -85,6 +87,7 @@ async function main() {
     db.$queryRaw<Array<any>>(Prisma.sql`
       SELECT
         job_kind,
+        entry_session_profile,
         status,
         lock_token,
         lock_expires_at,
@@ -94,7 +97,7 @@ async function main() {
         progress_label,
         updated_at
       FROM scalp_pipeline_jobs
-      ORDER BY job_kind;
+      ORDER BY entry_session_profile, job_kind;
     `),
   ]);
 

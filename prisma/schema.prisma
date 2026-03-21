@@ -41,6 +41,7 @@ model ScalpDeployment {
   symbol         String
   strategyId     String    @map("strategy_id")
   tuneId         String    @map("tune_id")
+  entrySessionProfile String @default("berlin") @map("entry_session_profile")
   source         String
   enabled        Boolean   @default(false)
   configOverride Json      @default(dbgenerated("'{}'::jsonb")) @map("config_override") @db.JsonB
@@ -61,6 +62,8 @@ model ScalpDeployment {
 
   @@unique([symbol, strategyId, tuneId], map: "scalp_deployments_unique_triplet")
   @@index([enabled], map: "scalp_deployments_enabled_idx")
+  @@index([entrySessionProfile], map: "scalp_deployments_entry_session_profile_idx")
+  @@index([entrySessionProfile, symbol], map: "scalp_deployments_session_symbol_idx")
   @@index([inUniverse], map: "scalp_deployments_in_universe_idx")
   @@index([workerDirty], map: "scalp_deployments_worker_dirty_idx")
   @@index([promotionDirty], map: "scalp_deployments_promotion_dirty_idx")
@@ -252,7 +255,8 @@ model ScalpShadowJobRun {
 }
 
 model ScalpPipelineJob {
-  jobKind       String    @id @map("job_kind")
+  jobKind       String    @map("job_kind")
+  entrySessionProfile String @default("berlin") @map("entry_session_profile")
   status        String    @default("idle")
   lockToken     String?   @map("lock_token")
   lockExpiresAt DateTime? @map("lock_expires_at") @db.Timestamptz(3)
@@ -268,14 +272,18 @@ model ScalpPipelineJob {
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt     DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
 
+  @@id([jobKind, entrySessionProfile])
   @@index([status], map: "scalp_pipeline_jobs_status_idx")
   @@index([nextRunAt], map: "scalp_pipeline_jobs_next_run_idx")
+  @@index([entrySessionProfile, status], map: "scalp_pipeline_jobs_session_status_idx")
+  @@index([entrySessionProfile, nextRunAt], map: "scalp_pipeline_jobs_session_next_run_idx")
   @@map("scalp_pipeline_jobs")
 }
 
 model ScalpPipelineJobRun {
   id                BigInt    @id @default(autoincrement())
   jobKind           String    @map("job_kind")
+  entrySessionProfile String  @default("berlin") @map("entry_session_profile")
   status            String
   startedAt         DateTime  @map("started_at") @db.Timestamptz(3)
   finishedAt        DateTime  @map("finished_at") @db.Timestamptz(3)
@@ -293,6 +301,8 @@ model ScalpPipelineJobRun {
 
   @@index([jobKind, startedAt(sort: Desc)], map: "scalp_pipeline_job_runs_kind_started_idx")
   @@index([finishedAt(sort: Desc)], map: "scalp_pipeline_job_runs_finished_idx")
+  @@index([entrySessionProfile, jobKind, startedAt(sort: Desc)], map: "scalp_pipeline_job_runs_session_kind_started_idx")
+  @@index([entrySessionProfile, finishedAt(sort: Desc)], map: "scalp_pipeline_job_runs_session_finished_idx")
   @@map("scalp_pipeline_job_runs")
 }
 
@@ -353,6 +363,7 @@ model ScalpDiscoveredSymbol {
 model ScalpDeploymentWeeklyMetric {
   id             BigInt    @id @default(autoincrement())
   deploymentId   String    @map("deployment_id")
+  entrySessionProfile String @default("berlin") @map("entry_session_profile")
   symbol         String
   strategyId     String    @map("strategy_id")
   tuneId         String    @map("tune_id")
@@ -384,6 +395,8 @@ model ScalpDeploymentWeeklyMetric {
 
   @@unique([deploymentId, weekStart], map: "scalp_deployment_weekly_metrics_unique_week")
   @@index([status, nextRunAt, weekStart], map: "scalp_deployment_weekly_metrics_claim_idx")
+  @@index([entrySessionProfile, status, nextRunAt, weekStart], map: "scalp_deployment_weekly_metrics_session_claim_idx")
+  @@index([entrySessionProfile, deploymentId, weekStart(sort: Desc)], map: "scalp_deployment_weekly_metrics_session_deployment_week_idx")
   @@index([deploymentId, weekStart(sort: Desc)], map: "scalp_deployment_weekly_metrics_deployment_week_idx")
   @@index([symbol, strategyId, tuneId, weekStart(sort: Desc)], map: "scalp_deployment_weekly_metrics_symbol_strategy_week_idx")
   @@map("scalp_deployment_weekly_metrics")

@@ -253,6 +253,7 @@ async function collectCounts(params: {
         SELECT COUNT(*)::bigint AS count
         FROM scalp_jobs
         WHERE dedupe_key LIKE 'scalp_execute_deployments_mutex_v2:capital'
+           OR dedupe_key LIKE 'scalp_execute_deployments_mutex_v2:capital:%'
            OR payload::text ILIKE '%"venue":"capital"%'
            OR payload::text ILIKE '%capital:%'
            OR payload::text ILIKE '%"source":"capital"%';
@@ -394,6 +395,7 @@ async function applyPurge(params: {
       await tx.$executeRaw(Prisma.sql`
         DELETE FROM scalp_jobs
         WHERE dedupe_key LIKE 'scalp_execute_deployments_mutex_v2:capital'
+           OR dedupe_key LIKE 'scalp_execute_deployments_mutex_v2:capital:%'
            OR payload::text ILIKE '%"venue":"capital"%'
            OR payload::text ILIKE '%capital:%'
            OR payload::text ILIKE '%"source":"capital"%';
