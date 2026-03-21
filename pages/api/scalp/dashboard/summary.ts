@@ -76,10 +76,46 @@ const HISTORY_DISCOVERY_PREVIEW_LIMIT = (() => {
   if (!Number.isFinite(value)) return 20;
   return Math.max(1, Math.min(500, Math.floor(value)));
 })();
+const DEFAULT_WEEKLY_METRICS_RETENTION_DAYS = 1095;
+const WORKER_ROWS_LIMIT_MIN = 8_000;
+const WORKER_ROWS_LIMIT_MAX = 500_000;
+const WORKER_ROWS_RETENTION_DAYS = (() => {
+  const value = Number(
+    process.env.SCALP_HOUSEKEEPING_CYCLE_RETENTION_DAYS ??
+      DEFAULT_WEEKLY_METRICS_RETENTION_DAYS,
+  );
+  if (!Number.isFinite(value)) return DEFAULT_WEEKLY_METRICS_RETENTION_DAYS;
+  return Math.max(30, Math.min(3650, Math.floor(value)));
+})();
+const WORKER_ROWS_LIMIT_OVERRIDE = (() => {
+  const value = Number(process.env.SCALP_DASHBOARD_WORKER_ROWS_LIMIT);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return Math.max(
+    WORKER_ROWS_LIMIT_MIN,
+    Math.min(WORKER_ROWS_LIMIT_MAX, Math.floor(value)),
+  );
+})();
 const historyDiscoveryCache = new Map<
   string,
   { expiresAtMs: number; payload: HistoryDiscoverySnapshot }
 >();
+
+function resolveWorkerRowsFetchLimit(expectedDeploymentCount: number): number {
+  if (WORKER_ROWS_LIMIT_OVERRIDE !== null) return WORKER_ROWS_LIMIT_OVERRIDE;
+  const deploymentCount = Math.max(
+    1,
+    Math.floor(Number(expectedDeploymentCount) || 0),
+  );
+  const retentionWeeks = Math.max(
+    12,
+    Math.ceil(WORKER_ROWS_RETENTION_DAYS / 7) + 2,
+  );
+  const expectedRows = deploymentCount * retentionWeeks;
+  return Math.max(
+    WORKER_ROWS_LIMIT_MIN,
+    Math.min(WORKER_ROWS_LIMIT_MAX, expectedRows),
+  );
+}
 
 type SymbolSnapshot = {
   symbol: string;
@@ -828,22 +864,6 @@ export default async function handler(
       );
     }
     try {
-      workerRows = await listScalpDeploymentWeeklyMetricRows({
-        entrySessionProfile,
-      });
-    } catch (err: any) {
-      const rowError = {
-        kind: "worker_rows_state",
-        message: err?.message || String(err),
-      };
-      rowErrors.push(rowError);
-      console.error(
-        `[scalp-summary][${requestId}] worker_rows_state_error`,
-        rowError,
-        err?.stack || "",
-      );
-    }
-    try {
       panicStop = await loadScalpPanicStopState();
     } catch (err: any) {
       const rowError = {
@@ -892,6 +912,26 @@ export default async function handler(
       }
     }
     const cronSymbols = useDeploymentsEffective ? [] : cronSymbolConfigs;
+    const workerRowsFetchLimit = resolveWorkerRowsFetchLimit(
+      useDeploymentsEffective ? allDeploymentRows.length : cronSymbols.length,
+    );
+    try {
+      workerRows = await listScalpDeploymentWeeklyMetricRows({
+        entrySessionProfile,
+        limit: workerRowsFetchLimit,
+      });
+    } catch (err: any) {
+      const rowError = {
+        kind: "worker_rows_state",
+        message: err?.message || String(err),
+      };
+      rowErrors.push(rowError);
+      console.error(
+        `[scalp-summary][${requestId}] worker_rows_state_error`,
+        rowError,
+        err?.stack || "",
+      );
+    }
     if (useDeploymentsEffective) {
       const allowedDeploymentIds = new Set(
         allDeploymentRows
@@ -908,6 +948,8 @@ export default async function handler(
       cronSymbolCount: cronSymbolConfigs.length,
       deploymentRowCount: deploymentRows.length,
       useDeploymentsEffective,
+      workerRowsFetched: workerRows.length,
+      workerRowsFetchLimit,
       dayKey,
       clockMode: cfg.sessions.clockMode,
       entrySessionProfile,

@@ -5777,7 +5777,10 @@ export async function listScalpDeploymentWeeklyMetricRows(
 ): Promise<ScalpDeploymentWeeklyMetricSnapshotRow[]> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
-  const limit = Math.max(1, Math.min(20_000, toPositiveInt(params.limit, 8_000)));
+  const limit = Math.max(
+    1,
+    Math.min(500_000, toPositiveInt(params.limit, 8_000)),
+  );
   const entrySessionProfile = params.entrySessionProfile
     ? normalizeEntrySessionProfileInput(params.entrySessionProfile)
     : "";

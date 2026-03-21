@@ -60,7 +60,7 @@
       "schedule": "*/15 * * * *"
     },
     {
-      "path": "/api/scalp/cron/housekeeping?dryRun=false&refreshReport=false&candleHistoryKeepWeeks=14",
+      "path": "/api/scalp/cron/housekeeping?dryRun=false&refreshReport=false&cycleRetentionDays=1095&candleHistoryKeepWeeks=14",
       "schedule": "5 * * * *"
     },
     {

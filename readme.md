@@ -153,7 +153,7 @@ MARKETAUX_API_KEY=...
 # SCALP_GUARDRAIL_MAX_EXPECTANCY_DRIFT_R_30D=
 # SCALP_GUARDRAIL_MAX_TRADES_PER_DAY_30D=
 # SCALP_GUARDRAIL_MIN_FORWARD_PROFITABLE_PCT=
-# SCALP_HOUSEKEEPING_CYCLE_RETENTION_DAYS=14               # legacy alias; used as pipeline retention days
+# SCALP_HOUSEKEEPING_CYCLE_RETENTION_DAYS=1095             # weekly metrics retention (3 years)
 # SCALP_HOUSEKEEPING_LOCK_MAX_AGE_MINUTES=45
 # SCALP_HOUSEKEEPING_MAX_SCAN_KEYS=4000
 # SCALP_HOUSEKEEPING_REFRESH_REPORT=false                  # no-op in async-job mode
@@ -520,7 +520,7 @@ node --import tsx scripts/scalp-replay-matrix.ts \
   - `/api/scalp/cron/worker?...&session=berlin|tokyo|newyork` on separate cron rows per session.
   - `/api/scalp/cron/promotion?batchSize=300&autoContinue=true&selfMaxHops=6` every 15 minutes.
   - `/api/scalp/cron/live-guardrail-monitor?dryRun=false&autoPause=true` every 15 minutes (detects live drift and auto-pauses breached deployments).
-  - `/api/scalp/cron/housekeeping?dryRun=false&refreshReport=false` hourly (stale row recovery + retention cleanup + list compaction).
+  - `/api/scalp/cron/housekeeping?dryRun=false&refreshReport=false&cycleRetentionDays=1095` hourly (stale row recovery + retention cleanup + list compaction).
   - `/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true&session=berlin|tokyo|newyork` on separate cron rows per session.
   - Symbol-specific scalp tuning is pinned by deployment row (`strategyId` + `tuneId`) in `data/scalp-deployments.json`.
 - Cron-declared routes are intentionally allowed without admin secret; non-cron routes remain protected when `ADMIN_ACCESS_SECRET` is set.
