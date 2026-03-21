@@ -1712,6 +1712,10 @@ function resolveWeeklyPolicyDefaults(): SyncResearchWeeklyPolicy {
       ),
       55,
     ),
+    minFourWeekNetR: toFiniteNumber(
+      envNumber("SCALP_WEEKLY_ROBUSTNESS_MIN_4W_NET_R", 8),
+      8,
+    ),
   };
 }
 
@@ -2372,15 +2376,39 @@ function topPositiveNetConcentrationPct(values: number[]): number {
 }
 
 function computeWeeklyRobustnessFromTasks(params: {
-  tasks: Array<{ netR: number; expectancyR: number; maxDrawdownR: number }>;
+  tasks: Array<{
+    windowFromTs: number;
+    netR: number;
+    expectancyR: number;
+    maxDrawdownR: number;
+  }>;
   nowMs: number;
 }): ScalpWeeklyRobustnessMetrics | null {
+  const FOUR_WEEK_GROUP_SIZE = 4;
+  const FOUR_WEEK_GROUP_COUNT = 3;
   if (!params.tasks.length) return null;
-  const profitableSlices = params.tasks.filter((row) => row.netR > 0).length;
-  const expectancyRows = params.tasks.map((row) => row.expectancyR);
-  const netRows = params.tasks.map((row) => row.netR);
-  const maxDrawdownRows = params.tasks.map((row) => row.maxDrawdownR);
-  const slices = params.tasks.length;
+  const orderedTasks = params.tasks
+    .slice()
+    .sort((a, b) => a.windowFromTs - b.windowFromTs);
+  const profitableSlices = orderedTasks.filter((row) => row.netR > 0).length;
+  const expectancyRows = orderedTasks.map((row) => row.expectancyR);
+  const netRows = orderedTasks.map((row) => row.netR);
+  const maxDrawdownRows = orderedTasks.map((row) => row.maxDrawdownR);
+  const slices = orderedTasks.length;
+  const groupLookbackSlices = FOUR_WEEK_GROUP_SIZE * FOUR_WEEK_GROUP_COUNT;
+  const recentNetRows = netRows.slice(-groupLookbackSlices);
+  const fourWeekGroupNetR: number[] = [];
+  for (let groupIndex = 0; groupIndex < FOUR_WEEK_GROUP_COUNT; groupIndex += 1) {
+    const start = groupIndex * FOUR_WEEK_GROUP_SIZE;
+    const end = start + FOUR_WEEK_GROUP_SIZE;
+    if (end > recentNetRows.length) break;
+    fourWeekGroupNetR.push(
+      recentNetRows.slice(start, end).reduce((acc, row) => acc + row, 0),
+    );
+  }
+  const fourWeekMinNetR = fourWeekGroupNetR.length
+    ? Math.min(...fourWeekGroupNetR)
+    : null;
   const totalNetR = netRows.reduce((acc, row) => acc + row, 0);
   const meanExpectancyR =
     expectancyRows.reduce((acc, row) => acc + row, 0) / slices;
@@ -2410,6 +2438,9 @@ function computeWeeklyRobustnessFromTasks(params: {
     worstMaxDrawdownR,
     topWeekPnlConcentrationPct: topPositiveNetConcentrationPct(netRows),
     totalNetR,
+    fourWeekGroupNetR,
+    fourWeekGroupsEvaluated: fourWeekGroupNetR.length,
+    fourWeekMinNetR,
     evaluatedAtMs: params.nowMs,
   };
 }
@@ -4929,6 +4960,7 @@ export async function runPromotionPipelineJob(
       const key = `${symbol}::${strategyId}::${tuneId}`;
       const bucket = weeklyTasksByCandidateKey.get(key) || [];
       bucket.push({
+        windowFromTs: Math.floor(Number(task.windowFromTs) || 0),
         netR: toFiniteNumber(task.result?.netR, 0),
         expectancyR: toFiniteNumber(task.result?.expectancyR, 0),
         maxDrawdownR: toFiniteNumber(task.result?.maxDrawdownR, 0),

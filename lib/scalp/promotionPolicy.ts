@@ -18,6 +18,9 @@ export interface ScalpWeeklyRobustnessMetrics {
   worstMaxDrawdownR: number;
   topWeekPnlConcentrationPct: number;
   totalNetR: number;
+  fourWeekGroupNetR: number[];
+  fourWeekGroupsEvaluated: number;
+  fourWeekMinNetR: number | null;
   evaluatedAtMs: number;
 }
 
@@ -35,6 +38,7 @@ export interface SyncResearchWeeklyPolicy {
   minP25ExpectancyR: number;
   minWorstNetR: number;
   maxTopWeekPnlConcentrationPct: number;
+  minFourWeekNetR: number;
 }
 
 export interface ScalpPromotionTaskResult {
@@ -311,10 +315,26 @@ export function evaluateWeeklyRobustnessGate(
   metrics: ScalpWeeklyRobustnessMetrics | null,
   policy: SyncResearchWeeklyPolicy,
 ): { passed: boolean; reason: string | null } {
+  const FOUR_WEEK_GROUP_COUNT = 3;
   if (!policy.enabled) return { passed: true, reason: null };
   if (!metrics) return { passed: false, reason: "weekly_robustness_missing" };
   if (metrics.slices < policy.minSlices) {
     return { passed: false, reason: "weekly_slice_count_below_threshold" };
+  }
+  if (metrics.fourWeekGroupsEvaluated < FOUR_WEEK_GROUP_COUNT) {
+    return {
+      passed: false,
+      reason: "weekly_four_week_groups_missing",
+    };
+  }
+  if (
+    (metrics.fourWeekMinNetR ?? Number.NEGATIVE_INFINITY) <
+    policy.minFourWeekNetR
+  ) {
+    return {
+      passed: false,
+      reason: "weekly_four_week_net_r_below_threshold",
+    };
   }
   if (metrics.profitablePct < policy.minProfitablePct) {
     return { passed: false, reason: "weekly_profitable_pct_below_threshold" };
