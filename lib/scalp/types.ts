@@ -4,7 +4,6 @@ import type { ScalpVenue } from "./venue";
 export type ScalpClockMode = "LONDON_TZ" | "UTC_FIXED";
 export type ScalpEntrySessionProfile =
   | "tokyo"
-  | "tokyo_london_overlap"
   | "berlin"
   | "newyork";
 export type ScalpBaseTimeframe = "M1" | "M3" | "M5" | "M15";

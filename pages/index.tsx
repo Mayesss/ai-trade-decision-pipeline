@@ -7,6 +7,7 @@ import {
   type ColDef,
 } from "ag-grid-community";
 import vercelConfig from "../vercel.json";
+import { inScalpEntrySessionProfileWindow } from "../lib/scalp/sessions";
 import {
   Activity,
   BarChart3,
@@ -590,7 +591,6 @@ type StrategyMode = "swing" | "scalp";
 type ScalpEntrySessionProfileUi =
   | "berlin"
   | "tokyo"
-  | "tokyo_london_overlap"
   | "newyork";
 
 const CURRENCY_SYMBOL = "₮"; // Tether-style symbol
@@ -647,15 +647,144 @@ const ADMIN_SECRET_STORAGE_KEY = "admin_access_secret";
 const ADMIN_AUTH_TIMEOUT_MS = 4000;
 const STRATEGY_MODE_STORAGE_KEY = "strategy_mode";
 const SCALP_ENTRY_SESSION_STORAGE_KEY = "scalp_entry_session_profile";
-const SCALP_ENTRY_SESSION_TABS: Array<{
+type ScalpSessionTimelineColorMeta = {
   id: ScalpEntrySessionProfileUi;
   label: string;
-}> = [
-  { id: "berlin", label: "Berlin" },
-  { id: "tokyo", label: "Tokyo" },
-  { id: "tokyo_london_overlap", label: "Tokyo-London" },
-  { id: "newyork", label: "New York" },
+  lightFill: string;
+  darkFill: string;
+  lightBorder: string;
+  darkBorder: string;
+};
+const SCALP_SESSION_TIMELINE_COLORS: ScalpSessionTimelineColorMeta[] = [
+  {
+    id: "tokyo",
+    label: "Tokyo",
+    lightFill: "rgba(14, 165, 233, 0.35)",
+    darkFill: "rgba(56, 189, 248, 0.28)",
+    lightBorder: "rgba(2, 132, 199, 0.72)",
+    darkBorder: "rgba(56, 189, 248, 0.62)",
+  },
+  {
+    id: "berlin",
+    label: "Berlin",
+    lightFill: "rgba(16, 185, 129, 0.3)",
+    darkFill: "rgba(52, 211, 153, 0.24)",
+    lightBorder: "rgba(5, 150, 105, 0.7)",
+    darkBorder: "rgba(52, 211, 153, 0.58)",
+  },
+  {
+    id: "newyork",
+    label: "New York",
+    lightFill: "rgba(244, 63, 94, 0.28)",
+    darkFill: "rgba(251, 113, 133, 0.24)",
+    lightBorder: "rgba(225, 29, 72, 0.7)",
+    darkBorder: "rgba(251, 113, 133, 0.56)",
+  },
 ];
+const SCALP_SESSION_TIMELINE_TICK_MINUTES = [0, 360, 720, 1080, 1440];
+
+type TimeZoneClockParts = {
+  y: number;
+  m: number;
+  d: number;
+  hh: number;
+  mm: number;
+};
+
+function readClockPartsInTimeZone(
+  tsMs: number,
+  timeZone: string,
+): TimeZoneClockParts {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(new Date(tsMs));
+  const read = (type: Intl.DateTimeFormatPartTypes, fallback: number) => {
+    const raw = parts.find((part) => part.type === type)?.value;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : fallback;
+  };
+  const hourRaw = read("hour", 0);
+  return {
+    y: read("year", 1970),
+    m: read("month", 1),
+    d: read("day", 1),
+    hh: hourRaw === 24 ? 0 : hourRaw,
+    mm: read("minute", 0),
+  };
+}
+
+function formatDayKeyFromClockParts(parts: TimeZoneClockParts): string {
+  return `${String(parts.y).padStart(4, "0")}-${String(parts.m).padStart(2, "0")}-${String(parts.d).padStart(2, "0")}`;
+}
+
+function parseTimelineDayKey(dayKey: string): { y: number; m: number; d: number } | null {
+  const match = String(dayKey || "")
+    .trim()
+    .match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  return {
+    y: Number(match[1]),
+    m: Number(match[2]),
+    d: Number(match[3]),
+  };
+}
+
+function parseTimelineClock(
+  clock: string,
+): { hh: number; mm: number } | null {
+  const match = String(clock || "")
+    .trim()
+    .match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  if (!match) return null;
+  return { hh: Number(match[1]), mm: Number(match[2]) };
+}
+
+function utcMsFromZonedDayClock(
+  dayKey: string,
+  clock: string,
+  timeZone: string,
+): number | null {
+  const parsedDay = parseTimelineDayKey(dayKey);
+  const parsedClock = parseTimelineClock(clock);
+  if (!parsedDay || !parsedClock) return null;
+  let guessMs = Date.UTC(
+    parsedDay.y,
+    parsedDay.m - 1,
+    parsedDay.d,
+    parsedClock.hh,
+    parsedClock.mm,
+    0,
+    0,
+  );
+  const targetDayInt = parsedDay.y * 10_000 + parsedDay.m * 100 + parsedDay.d;
+  const targetMinuteOfDay = parsedClock.hh * 60 + parsedClock.mm;
+  for (let i = 0; i < 6; i += 1) {
+    const local = readClockPartsInTimeZone(guessMs, timeZone);
+    const localDayInt = local.y * 10_000 + local.m * 100 + local.d;
+    const dayDelta =
+      localDayInt === targetDayInt ? 0 : localDayInt < targetDayInt ? 1 : -1;
+    const localMinuteOfDay = local.hh * 60 + local.mm;
+    const deltaMinutes = dayDelta * 1440 + (targetMinuteOfDay - localMinuteOfDay);
+    if (deltaMinutes === 0) break;
+    guessMs += deltaMinutes * 60_000;
+  }
+  return guessMs;
+}
+
+function formatTimelineMinuteLabel(minuteOfDay: number): string {
+  const safeMinute = Math.max(0, Math.min(1440, Math.floor(minuteOfDay)));
+  const normalizedMinute = safeMinute === 1440 ? 0 : safeMinute;
+  const hh = Math.floor(normalizedMinute / 60);
+  const mm = normalizedMinute % 60;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
 
 type VercelCronEntry = {
   path?: string;
@@ -760,7 +889,6 @@ function parseEntrySessionProfileFromCronPath(
     if (
       raw === "berlin" ||
       raw === "tokyo" ||
-      raw === "tokyo_london_overlap" ||
       raw === "newyork"
     ) {
       return raw;
@@ -2022,7 +2150,6 @@ export default function Home() {
     if (
       stored === "berlin" ||
       stored === "tokyo" ||
-      stored === "tokyo_london_overlap" ||
       stored === "newyork"
     ) {
       setScalpSession(stored);
@@ -3705,6 +3832,62 @@ export default function Home() {
   const scalpWorkerJobsGridThemeClass = scalpDarkMode
     ? "ag-theme-quartz-dark scalp-grid-muted-dark"
     : "ag-theme-quartz";
+  const scalpBerlinClockParts = useMemo(
+    () => readClockPartsInTimeZone(scalpCronNowMs, BERLIN_TZ),
+    [scalpCronNowMs],
+  );
+  const scalpBerlinDayKey = useMemo(
+    () => formatDayKeyFromClockParts(scalpBerlinClockParts),
+    [scalpBerlinClockParts],
+  );
+  const scalpBerlinNowMinuteOfDay = useMemo(
+    () =>
+      Math.max(0, Math.min(1439, scalpBerlinClockParts.hh * 60 + scalpBerlinClockParts.mm)),
+    [scalpBerlinClockParts],
+  );
+  const scalpBerlinNowLabel = useMemo(
+    () =>
+      `${String(scalpBerlinClockParts.hh).padStart(2, "0")}:${String(
+        scalpBerlinClockParts.mm,
+      ).padStart(2, "0")}`,
+    [scalpBerlinClockParts],
+  );
+  const scalpBerlinDayStartMs = useMemo(() => {
+    const fromTz = utcMsFromZonedDayClock(scalpBerlinDayKey, "00:00", BERLIN_TZ);
+    if (typeof fromTz === "number" && Number.isFinite(fromTz)) return fromTz;
+    return scalpCronNowMs - scalpBerlinNowMinuteOfDay * 60_000;
+  }, [scalpBerlinDayKey, scalpCronNowMs, scalpBerlinNowMinuteOfDay]);
+  const scalpSessionTimelineTracks = useMemo(
+    () =>
+      SCALP_SESSION_TIMELINE_COLORS.map((meta) => {
+        const segments: Array<{ startMinute: number; endMinute: number }> = [];
+        let activeStart: number | null = null;
+        for (let minute = 0; minute < 1440; minute += 1) {
+          const tsMs = scalpBerlinDayStartMs + minute * 60_000;
+          const active = inScalpEntrySessionProfileWindow(tsMs, meta.id);
+          if (active && activeStart === null) {
+            activeStart = minute;
+            continue;
+          }
+          if (!active && activeStart !== null) {
+            segments.push({ startMinute: activeStart, endMinute: minute });
+            activeStart = null;
+          }
+        }
+        if (activeStart !== null) {
+          segments.push({ startMinute: activeStart, endMinute: 1440 });
+        }
+        return {
+          ...meta,
+          segments,
+        };
+      }),
+    [scalpBerlinDayStartMs],
+  );
+  const scalpSessionTimelineNowPct = useMemo(
+    () => (scalpBerlinNowMinuteOfDay / 1440) * 100,
+    [scalpBerlinNowMinuteOfDay],
+  );
   const scalpPipelineStepIcon = (id?: string | null): LucideIcon => {
     const normalized = String(id || "")
       .trim()
@@ -5112,8 +5295,9 @@ export default function Home() {
           </div>
         )}
         <div className="w-full">
-          <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white px-6 py-5 shadow-sm">
-            <div>
+          <div className="rounded-2xl border border-slate-200 bg-white px-6 py-5 shadow-sm">
+            <div className="flex items-center justify-between gap-4">
+              <div>
               <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
                 Performance
               </p>
@@ -5194,8 +5378,8 @@ export default function Home() {
               {loading ? (
                 <p className="mt-1 text-xs text-slate-500">{loadingLabel}</p>
               ) : null}
-            </div>
-            <div className="flex items-center gap-2">
+              </div>
+              <div className="flex items-center gap-2">
               {strategyMode === "swing" ? (
                 <button
                   onClick={() =>
@@ -5247,20 +5431,134 @@ export default function Home() {
                         : "Swing Cron: ON"}
                 </button>
               ) : null}
-              <button
-                onClick={() => {
-                  if (strategyMode === "scalp") {
-                    loadScalpDashboard();
-                    return;
-                  }
-                  loadDashboard();
-                }}
-                disabled={!adminGranted}
-                className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Refresh
-              </button>
+                <button
+                  onClick={() => {
+                    if (strategyMode === "scalp") {
+                      loadScalpDashboard();
+                      return;
+                    }
+                    loadDashboard();
+                  }}
+                  disabled={!adminGranted}
+                  className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Refresh
+                </button>
+              </div>
             </div>
+            {strategyMode === "scalp" ? (
+              <div
+                className={`mt-3 w-full rounded-xl border p-2.5 ${
+                  resolvedTheme === "dark"
+                    ? "border-zinc-700 bg-zinc-900/85"
+                    : "border-slate-200 bg-slate-50"
+                }`}
+              >
+                <div
+                  className={`relative h-14 overflow-hidden rounded-lg border ${
+                    resolvedTheme === "dark"
+                      ? "border-zinc-700 bg-zinc-950"
+                      : "border-slate-300 bg-white"
+                  }`}
+                >
+                  {SCALP_SESSION_TIMELINE_TICK_MINUTES.map((minute) => (
+                    <div
+                      key={`header-timeline-grid-${minute}`}
+                      className={`pointer-events-none absolute inset-y-0 w-px ${
+                        resolvedTheme === "dark" ? "bg-zinc-700/90" : "bg-slate-200"
+                      }`}
+                      style={{ left: `${(minute / 1440) * 100}%` }}
+                    />
+                  ))}
+                  {scalpSessionTimelineTracks.map((track) =>
+                    track.segments.map((segment, segmentIndex) => {
+                      const startPct = (segment.startMinute / 1440) * 100;
+                      const widthPct =
+                        ((segment.endMinute - segment.startMinute) / 1440) * 100;
+                      const isActiveSession = scalpSession === track.id;
+                      return (
+                        <button
+                          type="button"
+                          key={`header-timeline-segment-${track.id}-${segmentIndex}`}
+                          onClick={() => {
+                            setScalpSession(track.id);
+                            scalpSummaryFetchedAtMsRef.current = 0;
+                          }}
+                          className={`absolute rounded-md border px-1.5 text-[10px] font-semibold transition ${
+                            resolvedTheme === "dark"
+                              ? "text-zinc-100 hover:brightness-110"
+                              : "text-slate-900 hover:brightness-95"
+                          } ${
+                            isActiveSession
+                              ? resolvedTheme === "dark"
+                                ? "z-10 ring-2 ring-white/90"
+                                : "z-10 ring-2 ring-black/85"
+                              : ""
+                          }`}
+                          style={{
+                            top: "20%",
+                            bottom: "20%",
+                            left: `${startPct}%`,
+                            width: `${widthPct}%`,
+                            backgroundColor:
+                              resolvedTheme === "dark"
+                                ? track.darkFill
+                                : track.lightFill,
+                            borderColor:
+                              resolvedTheme === "dark"
+                                ? track.darkBorder
+                                : track.lightBorder,
+                          }}
+                          aria-label={`Select ${track.label} session`}
+                          aria-pressed={isActiveSession}
+                          title={`${track.label}: ${formatTimelineMinuteLabel(
+                            segment.startMinute,
+                          )} - ${formatTimelineMinuteLabel(segment.endMinute)}`}
+                        >
+                          <span className="inline-flex h-full items-center truncate">
+                            {track.label}
+                          </span>
+                        </button>
+                      );
+                    }),
+                  )}
+                  <div
+                    className="pointer-events-none absolute inset-y-0 w-[2px]"
+                    style={{
+                      left: `calc(${scalpSessionTimelineNowPct}% - 1px)`,
+                      backgroundColor:
+                        resolvedTheme === "dark"
+                          ? "rgba(255, 255, 255, 0.96)"
+                          : "rgba(0, 0, 0, 0.94)",
+                      boxShadow:
+                        resolvedTheme === "dark"
+                          ? "0 0 0 1px rgba(255,255,255,0.2)"
+                          : "0 0 0 1px rgba(0,0,0,0.18)",
+                    }}
+                  />
+                </div>
+                <div
+                  className={`mt-1.5 grid grid-cols-5 text-[10px] ${
+                    resolvedTheme === "dark" ? "text-zinc-400" : "text-slate-500"
+                  }`}
+                >
+                  {SCALP_SESSION_TIMELINE_TICK_MINUTES.map((minute, idx) => (
+                    <span
+                      key={`header-timeline-tick-${minute}`}
+                      className={
+                        idx === 0
+                          ? "text-left"
+                          : idx === SCALP_SESSION_TIMELINE_TICK_MINUTES.length - 1
+                            ? "text-right"
+                            : "text-center"
+                      }
+                    >
+                      {formatTimelineMinuteLabel(minute)}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
 
           {error && (
@@ -5313,31 +5611,6 @@ export default function Home() {
                     className="h-9 w-24 animate-pulse rounded-full border border-slate-200 bg-slate-100"
                   />
                 ))}
-            </div>
-          )}
-
-          {strategyMode === "scalp" && !error && (
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              {SCALP_ENTRY_SESSION_TABS.map((tab) => {
-                const isActive = scalpSession === tab.id;
-                return (
-                  <button
-                    key={`scalp-session-${tab.id}`}
-                    type="button"
-                    onClick={() => {
-                      setScalpSession(tab.id);
-                      scalpSummaryFetchedAtMsRef.current = 0;
-                    }}
-                    className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
-                      isActive
-                        ? "border-sky-300 bg-sky-50 text-sky-700 shadow-sm ring-2 ring-sky-200/80"
-                        : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-800"
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                );
-              })}
             </div>
           )}
 

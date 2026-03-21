@@ -2,7 +2,6 @@ import type { ScalpClockMode, ScalpEntrySessionProfile, ScalpSessionWindows } fr
 
 const SCALP_ENTRY_SESSION_PROFILE_ORDER: ScalpEntrySessionProfile[] = [
     'tokyo',
-    'tokyo_london_overlap',
     'berlin',
     'newyork',
 ];
@@ -20,11 +19,6 @@ const SCALP_ENTRY_SESSION_PROFILES: Record<ScalpEntrySessionProfile, ScalpEntryS
         profile: 'tokyo',
         timeZone: 'Asia/Tokyo',
         windowsLocal: [['09:00', '13:00']],
-    },
-    tokyo_london_overlap: {
-        profile: 'tokyo_london_overlap',
-        timeZone: 'Europe/London',
-        windowsLocal: [['07:00', '11:00']],
     },
     berlin: {
         profile: 'berlin',
