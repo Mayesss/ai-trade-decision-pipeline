@@ -1027,7 +1027,8 @@ function resolveLoadBackfillChunkWeeks(
 }
 
 function resolveLoadIncludeInactiveBitget(): boolean {
-  return envBool("SCALP_PIPELINE_LOAD_INCLUDE_INACTIVE_BITGET", true);
+  // Default off: avoid warming inactive symbols that are outside discovery-selected active set.
+  return envBool("SCALP_PIPELINE_LOAD_INCLUDE_INACTIVE_BITGET", false);
 }
 
 function resolveLoadInactiveBitgetWeeks(requiredWeeks: number): number {

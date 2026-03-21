@@ -278,11 +278,11 @@ npm run start
   - Independent async job that ensures each active symbol has the required completed 1m weekly coverage.
   - Loader behavior is progressive by default: prewarms recent candles first, then backfills older weeks in chunks.
   - Load-queue priority order: enabled-rollover symbols first, active symbols second, inactive Bitget warmup symbols last.
-  - Inactive Bitget symbols can be kept warm (default enabled) to maintain recent coverage for fast reactivation.
+  - Inactive Bitget symbols can be kept warm (default disabled) to maintain recent coverage for fast reactivation when explicitly enabled.
   - Optional env knobs:
     - `SCALP_PIPELINE_LOAD_PREWARM_WEEKS` (default `1`)
     - `SCALP_PIPELINE_LOAD_BACKFILL_CHUNK_WEEKS` (default matches prewarm)
-    - `SCALP_PIPELINE_LOAD_INCLUDE_INACTIVE_BITGET` (default `true`)
+    - `SCALP_PIPELINE_LOAD_INCLUDE_INACTIVE_BITGET` (default `false`)
     - `SCALP_PIPELINE_LOAD_INACTIVE_BITGET_WEEKS` (default `12`)
   - Claims rows from `scalp_pipeline_symbols`, updates per-symbol load status, and can chain to `prepare`.
 - `GET /api/scalp/cron/prepare?batchSize=6&autoSuccessor=true&autoContinue=true`
