@@ -261,6 +261,13 @@ test("manageScalpOpenTrade treats missing owned broker position as already close
     dryRun: false,
   };
 
+  const cfg = applyScalpStrategyConfigOverride(getScalpStrategyConfig(), {
+    risk: {
+      dailyLossLimitR: -99,
+      consecutiveLossPauseThreshold: 5,
+    },
+  });
+
   const managed = await manageScalpOpenTrade({
     state,
     market: marketSnapshot({
@@ -272,7 +279,7 @@ test("manageScalpOpenTrade treats missing owned broker position as already close
         candle(nowMs - 3 * 60_000, 1.0002, 1.0004, 0.989, 0.9892),
       ],
     }),
-    cfg: getScalpStrategyConfig(),
+    cfg,
     dryRun: false,
     nowMs,
     adapter: {
@@ -291,10 +298,16 @@ test("manageScalpOpenTrade treats missing owned broker position as already close
   });
 
   assert.equal(managed.state.trade, null);
-  assert.equal(managed.state.state, "DONE");
+  assert.equal(managed.state.state, "IDLE");
   assert.equal(managed.state.stats.lastExitAtMs, nowMs);
+  assert.equal(managed.state.stats.losses, 1);
+  assert.equal(managed.state.stats.wins, 0);
+  assert.ok(Math.abs((managed.state.stats.realizedR ?? 0) + 1) < 1e-9);
   assert.ok(managed.reasonCodes.includes("TRADE_CLOSE_OWNED_POSITION_NOT_FOUND"));
   assert.ok(managed.reasonCodes.includes("TRADE_EXIT_ASSUMED_BROKER_CLOSED"));
+  assert.ok(managed.reasonCodes.includes("TRADE_EXIT_STOP_HIT"));
   assert.equal(managed.reasonCodes.includes("TRADE_EXIT_NOT_CONFIRMED"), false);
-  assert.equal(managed.closedTrade, null);
+  assert.equal(managed.closedTrade?.exitReason, "STOP");
+  assert.equal(managed.closedTrade?.exitPrice, 0.99);
+  assert.ok(Math.abs((managed.closedTrade?.totalTradeR ?? 0) + 1) < 1e-9);
 });

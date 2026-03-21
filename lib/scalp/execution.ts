@@ -963,22 +963,18 @@ export async function manageScalpOpenTrade(params: {
     adapter: params.adapter,
   });
   reasonCodes.push(...closeRes.reasonCodes);
-  if (!closeRes.closed) {
-    if (closeRes.reasonCodes.includes("TRADE_CLOSE_OWNED_POSITION_NOT_FOUND")) {
-      next.trade = null;
-      next.stats.lastExitAtMs = params.nowMs;
-      next.state = "DONE";
-      return {
-        state: next,
-        reasonCodes: [...reasonCodes, "TRADE_EXIT_ASSUMED_BROKER_CLOSED"],
-        closedTrade: null,
-      };
-    }
+  const assumedClosedByBroker =
+    !closeRes.closed &&
+    closeRes.reasonCodes.includes("TRADE_CLOSE_OWNED_POSITION_NOT_FOUND");
+  if (!closeRes.closed && !assumedClosedByBroker) {
     return {
       state: next,
       reasonCodes: [...reasonCodes, "TRADE_EXIT_NOT_CONFIRMED"],
       closedTrade: null,
     };
+  }
+  if (assumedClosedByBroker) {
+    reasonCodes.push("TRADE_EXIT_ASSUMED_BROKER_CLOSED");
   }
 
   const remaining = clamp(toFinite(trade.remainingSizePct, 1), 0, 1);
