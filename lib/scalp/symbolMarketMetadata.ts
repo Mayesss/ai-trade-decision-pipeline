@@ -26,7 +26,7 @@ export interface ScalpSymbolMarketMetadata {
   version: 1;
   symbol: string;
   epic: string | null;
-  source: "capital" | "bitget" | "heuristic";
+  source: "bitget" | "heuristic";
   assetCategory: ScalpAssetCategory;
   instrumentType: string | null;
   marketStatus: string | null;
@@ -365,11 +365,7 @@ export function normalizeScalpSymbolMarketMetadata(
     ? String(value.epic).trim().toUpperCase()
     : null;
   const source: ScalpSymbolMarketMetadata["source"] =
-    value.source === "capital"
-      ? "capital"
-      : value.source === "bitget"
-        ? "bitget"
-        : "heuristic";
+    value.source === "bitget" ? "bitget" : "heuristic";
   const instrumentType =
     normalizeText(value.instrumentType)?.toUpperCase() || null;
   const unresolvedAssetCategory =
@@ -428,7 +424,7 @@ export function buildHeuristicScalpSymbolMarketMetadata(
   symbolRaw: string,
   params: {
     epic?: string | null;
-    source?: "capital" | "bitget" | "heuristic";
+    source?: "bitget" | "heuristic";
     fetchedAtMs?: number;
   } = {},
 ): ScalpSymbolMarketMetadata {

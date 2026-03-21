@@ -96,8 +96,6 @@ export async function listExecutableDeploymentsFromPg(params: {
     const venueFilterSql =
         venue === 'bitget'
             ? Prisma.sql`AND d.deployment_id LIKE 'bitget:%'`
-            : venue === 'capital'
-            ? Prisma.sql`AND (d.deployment_id NOT LIKE '%:%' OR d.deployment_id LIKE 'capital:%')`
             : Prisma.empty;
 
     const db = scalpPrisma();
@@ -179,8 +177,6 @@ export async function listDeploymentsFromPg(params: {
     const venueFilterSql =
         venue === 'bitget'
             ? Prisma.sql`AND deployment_id LIKE 'bitget:%'`
-            : venue === 'capital'
-            ? Prisma.sql`AND (deployment_id NOT LIKE '%:%' OR deployment_id LIKE 'capital:%')`
             : Prisma.empty;
 
     const db = scalpPrisma();

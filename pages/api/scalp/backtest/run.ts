@@ -1,17 +1,19 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 
-import {
-  fetchCapitalCandlesByEpic,
-  fetchCapitalCandlesByEpicDateRange,
-  resolveCapitalEpicRuntime,
-} from "../../../../lib/capital";
 import { requireAdminAccess } from "../../../../lib/admin";
+import {
+  fetchBitgetCandlesByEpic,
+  fetchBitgetCandlesByEpicDateRange,
+} from "../../../../lib/scalp/bitgetHistory";
 import {
   type CandleHistoryBackend,
   loadScalpCandleHistory,
   normalizeHistoryTimeframe,
 } from "../../../../lib/scalp/candleHistory";
-import { resolveScalpDeployment } from "../../../../lib/scalp/deployments";
+import {
+  resolveScalpDeployment,
+  resolveScalpDeploymentVenueFromId,
+} from "../../../../lib/scalp/deployments";
 import {
   defaultScalpReplayConfig,
   normalizeScalpReplayInput,
@@ -414,19 +416,17 @@ async function fetchReplayCandlesWithFallback(params: {
       : lookbackLimitForTimeframe(params.lookbackCandles, tf);
     try {
       const rows = params.hasEffectiveRange
-        ? await fetchCapitalCandlesByEpicDateRange(
+        ? await fetchBitgetCandlesByEpicDateRange(
             params.epic,
             tf,
             params.fromTsMs!,
             params.toTsMs!,
             {
-              maxPerRequest: MAX_LOOKBACK_CANDLES,
+              maxPerRequest: 200,
               maxRequests: 220,
-              debug: params.debugEnabled,
-              debugLabel: `${params.epic}:${tf}`,
             },
           )
-        : await fetchCapitalCandlesByEpic(params.epic, tf, lookbackLimit!);
+        : await fetchBitgetCandlesByEpic(params.epic, tf, lookbackLimit!);
       const candles = Array.isArray(rows) ? rows.length : 0;
       const status: FetchAttemptStatus = candles > 0 ? "ok" : "empty";
       const attempt: FetchAttemptDiagnostic = {
@@ -441,7 +441,7 @@ async function fetchReplayCandlesWithFallback(params: {
         lookbackLimit,
       };
       attempts.push(attempt);
-      logBacktest("capital_fetch_attempt", attempt, params.debugEnabled);
+      logBacktest("bitget_fetch_attempt", attempt, params.debugEnabled);
       if (Array.isArray(rows) && rows.length > 0) {
         return {
           candles: rows,
@@ -473,11 +473,11 @@ async function fetchReplayCandlesWithFallback(params: {
         errorMessage: message,
       };
       attempts.push(attempt);
-      logBacktest("capital_fetch_attempt", attempt, params.debugEnabled);
+      logBacktest("bitget_fetch_attempt", attempt, params.debugEnabled);
       if (!pricesNotFound) {
         throw attachBacktestError(
-          `Capital fetch failed at timeframe ${tf}: ${message}`,
-          "capital_fetch_failed",
+          `Bitget fetch failed at timeframe ${tf}: ${message}`,
+          "bitget_fetch_failed",
           {
             mode,
             dataFetchMode: params.dataFetchMode,
@@ -490,7 +490,7 @@ async function fetchReplayCandlesWithFallback(params: {
     }
   }
   throw attachBacktestError(
-    `Capital prices unavailable for this symbol/time window. Attempts: ${formatAttemptSummary(attempts)}. ` +
+    `Bitget prices unavailable for this symbol/time window. Attempts: ${formatAttemptSummary(attempts)}. ` +
       `The selected window may include closed-market periods; try ending the range during active market hours.`,
     "no_prices_in_range",
     {
@@ -925,10 +925,11 @@ export default async function handler(
 
     const marketMetadata = await ensureScalpSymbolMarketMetadata(symbol, {
       fetchIfMissing: true,
+      venue: "bitget",
     });
     const resolved = marketMetadata?.epic
       ? { epic: marketMetadata.epic, source: "metadata" as const }
-      : await resolveCapitalEpicRuntime(symbol);
+      : { epic: symbol, source: "symbol" as const };
     logBacktest(
       "epic_resolved",
       {
@@ -1074,13 +1075,13 @@ export default async function handler(
       ? "ui_cache"
       : useStoredHistoryRows
         ? "history_store"
-        : "capital_api";
+        : "bitget_api";
     logBacktest(
       useCachedRows
         ? "using_cached_candles"
         : useStoredHistoryRows
           ? "using_history_store_candles"
-          : "using_capital_candles",
+          : "using_bitget_candles",
       {
         symbol,
         sourceTimeframe: fetched.sourceTimeframe,
@@ -1379,7 +1380,7 @@ export default async function handler(
       tuneId: replay.config.tuneId,
       deploymentId: replay.config.deploymentId,
       deployment: {
-        venue: replay.config.deploymentId.startsWith("bitget:") ? "bitget" : "capital",
+        venue: resolveScalpDeploymentVenueFromId(replay.config.deploymentId),
         symbol: replay.config.symbol,
         strategyId: replay.config.strategyId,
         tuneId: replay.config.tuneId,
@@ -1446,7 +1447,7 @@ export default async function handler(
     if (
       code === "no_prices_in_range" ||
       isPricesNotFoundError(err) ||
-      message.includes("Capital prices unavailable for this symbol/time window")
+      message.includes("Bitget prices unavailable for this symbol/time window")
     ) {
       return res.status(422).json({
         error: code || "no_prices_in_range",

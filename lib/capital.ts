@@ -2059,7 +2059,7 @@ export async function fetchCapitalSymbolMarketMetadata(
   return normalizeScalpSymbolMarketMetadata({
     symbol: normalizedSymbol,
     epic: details.epic || resolved.epic,
-    source: "capital",
+    source: "heuristic",
     assetCategory: scalpAssetCategoryFromInstrumentType(
       normalizedSymbol,
       instrumentType,

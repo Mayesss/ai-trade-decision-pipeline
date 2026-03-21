@@ -57,7 +57,7 @@ function parseVenue(value: string | undefined): ScalpVenue | null | undefined {
     const normalized = String(value || '')
         .trim()
         .toLowerCase();
-    if (normalized === 'capital' || normalized === 'bitget') {
+    if (normalized === 'bitget') {
         return normalized;
     }
     return null;
@@ -89,10 +89,7 @@ function toPositiveInt(value: unknown, fallback: number): number {
 }
 
 function resolveVenueDefaultConcurrency(venue: ScalpVenue): number {
-    const perVenueEnvKey =
-        venue === 'capital'
-            ? 'SCALP_EXECUTE_DEPLOYMENTS_CONCURRENCY_CAPITAL'
-            : 'SCALP_EXECUTE_DEPLOYMENTS_CONCURRENCY_BITGET';
+    const perVenueEnvKey = 'SCALP_EXECUTE_DEPLOYMENTS_CONCURRENCY_BITGET';
     const configuredPerVenue = Number(process.env[perVenueEnvKey]);
     if (Number.isFinite(configuredPerVenue) && configuredPerVenue > 0) {
         return Math.max(1, Math.min(32, Math.floor(configuredPerVenue)));
@@ -544,7 +541,7 @@ export async function runExecuteDeploymentsPg(
         if (venue === null) {
             return res.status(400).json({
                 error: 'invalid_venue',
-                message: 'Unsupported venue. Use ?venue=capital or ?venue=bitget.',
+                message: 'Unsupported venue. Use ?venue=bitget.',
             });
         }
         if (venue && !isScalpVenueAdapterSupported(venue)) {
@@ -580,12 +577,13 @@ export async function runExecuteDeploymentsPg(
             });
         }
 
-        const deployments = await listExecutableDeploymentsFromPg({
+        const deploymentsRaw = await listExecutableDeploymentsFromPg({
             symbol,
             venue: venue ?? undefined,
             requirePromotionEligible,
             limit: 2000,
         });
+        const deployments = deploymentsRaw.filter((row) => isScalpVenueAdapterSupported(row.venue));
 
         if (!deployments.length) {
             return res.status(200).json({

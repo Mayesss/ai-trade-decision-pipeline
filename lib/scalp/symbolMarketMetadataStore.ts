@@ -27,12 +27,7 @@ function fromRow(
   return normalizeScalpSymbolMarketMetadata({
     symbol,
     epic: row.epic ? String(row.epic) : null,
-    source:
-      row.source === "capital"
-        ? "capital"
-        : row.source === "bitget"
-          ? "bitget"
-          : "heuristic",
+    source: row.source === "bitget" ? "bitget" : "heuristic",
     assetCategory: String(row.assetCategory || "")
       .trim()
       .toLowerCase() as
@@ -214,7 +209,7 @@ export async function saveScalpSymbolMarketMetadataBulk(
         SELECT
           UPPER(TRIM(x.symbol)) AS symbol,
           NULLIF(UPPER(TRIM(COALESCE(x.epic, ''))), '') AS epic,
-          COALESCE(NULLIF(TRIM(x.source), ''), 'capital') AS source,
+          COALESCE(NULLIF(TRIM(x.source), ''), 'bitget') AS source,
           LOWER(TRIM(COALESCE(x.asset_category, 'other'))) AS asset_category,
           NULLIF(UPPER(TRIM(COALESCE(x.instrument_type, ''))), '') AS instrument_type,
           NULLIF(UPPER(TRIM(COALESCE(x.market_status, ''))), '') AS market_status,

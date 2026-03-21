@@ -2,11 +2,8 @@ export const config = { runtime: "nodejs" };
 
 import type { NextApiRequest, NextApiResponse } from "next";
 
-import {
-  fetchCapitalCandlesByEpicDateRange,
-  resolveCapitalEpicRuntime,
-} from "../../../lib/capital";
 import { requireAdminAccess } from "../../../lib/admin";
+import { fetchBitgetCandlesByEpicDateRange } from "../../../lib/scalp/bitgetHistory";
 import {
   type CandleHistoryBackend,
   loadScalpCandleHistory,
@@ -149,7 +146,6 @@ export default async function handler(
     );
     const dryRun = parseBool(req.query.dryRun, true);
     const nowMs = parseNowMs(firstQueryValue(req.query.nowMs)) ?? Date.now();
-    const debug = parseBool(req.query.debug, false);
     const backend = parseBackend(firstQueryValue(req.query.backend));
 
     const history = await loadScalpCandleHistory(symbol, timeframe, {
@@ -182,10 +178,12 @@ export default async function handler(
 
     const marketMetadata = await ensureScalpSymbolMarketMetadata(symbol, {
       fetchIfMissing: true,
+      venue: "bitget",
     });
-    const epicResolved = marketMetadata?.epic
-      ? { epic: marketMetadata.epic, source: "metadata" as const }
-      : await resolveCapitalEpicRuntime(symbol);
+    const epicResolved = {
+      epic: marketMetadata?.epic || symbol,
+      source: marketMetadata?.epic ? ("metadata" as const) : ("symbol" as const),
+    };
 
     if (!(fetchToMs > fetchFromMs)) {
       return res.status(200).json({
@@ -207,16 +205,14 @@ export default async function handler(
       });
     }
 
-    const fetchedRaw = await fetchCapitalCandlesByEpicDateRange(
+    const fetchedRaw = await fetchBitgetCandlesByEpicDateRange(
       epicResolved.epic,
       timeframe,
       fetchFromMs,
       fetchToMs,
       {
-        maxPerRequest: 1000,
+        maxPerRequest: 200,
         maxRequests,
-        debug,
-        debugLabel: `${symbol}:${timeframe}:fill`,
       },
     );
     const fetched = normalizeFetchedCandles(fetchedRaw);
@@ -234,7 +230,7 @@ export default async function handler(
           symbol,
           timeframe,
           epic: epicResolved.epic,
-          source: "capital",
+          source: "bitget",
           candles: merged,
         },
         { backend },

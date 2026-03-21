@@ -1,10 +1,7 @@
 import { Prisma } from "@prisma/client";
 
-import {
-  fetchCapitalCandlesByEpicDateRange,
-  resolveCapitalEpicRuntime,
-} from "../capital";
 import { bitgetFetch, resolveProductType } from "../bitget";
+import { fetchBitgetCandlesByEpicDateRange } from "./bitgetHistory";
 import {
   loadScalpCandleHistory,
   mergeScalpCandleHistory,
@@ -51,7 +48,6 @@ import {
 } from "./symbolDiscovery";
 import { pipSizeForScalpSymbol } from "./marketData";
 import { ensureScalpSymbolMarketMetadata } from "./symbolMarketMetadataSync";
-import { loadScalpSymbolMarketMetadata } from "./symbolMarketMetadataStore";
 import type { ScalpCandle } from "./types";
 import type { ScalpVenue } from "./venue";
 
@@ -59,7 +55,6 @@ const ONE_MINUTE_MS = 60_000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 const BITGET_HISTORY_CANDLES_MAX_LIMIT = 200;
-const BITGET_HISTORY_MAX_REQUESTS_HARD_CAP = 5000;
 
 export const SCALP_PIPELINE_JOB_KINDS = [
   "discover",
@@ -251,22 +246,8 @@ async function resolvePipelineDeploymentVenue(
   symbolRaw: string,
 ): Promise<ScalpVenue> {
   const symbol = normalizeSymbol(symbolRaw);
-  if (!symbol) return "capital";
-  if (isScalpPipelineBitgetOnlyEnabled() && isBitgetPipelineSymbol(symbol)) {
-    return "bitget";
-  }
-
-  const history = await loadScalpCandleHistory(symbol, "1m");
-  if (history.record?.source === "bitget" || history.record?.source === "capital") {
-    return history.record.source;
-  }
-
-  const metadata = await loadScalpSymbolMarketMetadata(symbol);
-  if (metadata?.source === "bitget" || metadata?.source === "capital") {
-    return metadata.source;
-  }
-
-  return isBitgetPipelineSymbol(symbol) ? "bitget" : "capital";
+  if (!symbol) return "bitget";
+  return "bitget";
 }
 
 function asJsonObject(value: unknown): Record<string, unknown> | null {
@@ -1184,136 +1165,6 @@ function toReplayCandles(
     volume: Number(row[5] || 0),
     spreadPips: Number.isFinite(spreadPips) ? spreadPips : 0,
   }));
-}
-
-function normalizeBitgetHistoryGranularity(timeframe: string): string {
-  const normalized = String(timeframe || "").trim();
-  const lower = normalized.toLowerCase();
-  if (lower === "1m") return "1m";
-  if (lower === "3m") return "3m";
-  if (lower === "5m") return "5m";
-  if (lower === "15m") return "15m";
-  if (lower === "30m") return "30m";
-  if (lower === "1h") return "1H";
-  if (lower === "2h") return "2H";
-  if (lower === "4h") return "4H";
-  if (lower === "6h") return "6H";
-  if (lower === "12h") return "12H";
-  if (lower === "1d") return "1D";
-  if (lower === "1w" || lower === "4d") return "1W";
-  if (lower === "1mo" || lower === "1mth" || lower === "1month") return "1M";
-  return normalized || "1m";
-}
-
-async function fetchBitgetCandlesByEpicDateRange(
-  epic: string,
-  timeframe: string,
-  fromTsMs: number,
-  toTsMs: number,
-  opts: {
-    maxPerRequest?: number;
-    maxRequests?: number;
-  } = {},
-): Promise<ScalpCandle[]> {
-  const symbol = normalizeSymbol(epic);
-  if (!symbol) return [];
-
-  const startMs = Math.floor(Math.min(fromTsMs, toTsMs));
-  const endMs = Math.floor(Math.max(fromTsMs, toTsMs));
-  if (
-    !(Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs)
-  ) {
-    return [];
-  }
-
-  const granularity = normalizeBitgetHistoryGranularity(timeframe);
-  const timeframeMs = Math.max(ONE_MINUTE_MS, timeframeToMs("1m"));
-  const requestLimit = Math.max(
-    20,
-    Math.min(
-      BITGET_HISTORY_CANDLES_MAX_LIMIT,
-      Math.floor(opts.maxPerRequest ?? BITGET_HISTORY_CANDLES_MAX_LIMIT),
-    ),
-  );
-  const configuredMaxRequests = Math.max(
-    40,
-    Math.floor(opts.maxRequests ?? 1_200),
-  );
-  const requestedBars = Math.max(
-    1,
-    Math.floor((endMs - startMs) / timeframeMs) + 1,
-  );
-  const minimumRequestsForRange = Math.max(
-    1,
-    Math.ceil(requestedBars / Math.max(1, requestLimit)),
-  );
-  // Include headroom for session gaps and sparse market windows.
-  const adaptiveMaxRequests = Math.max(
-    configuredMaxRequests,
-    Math.ceil(minimumRequestsForRange * 1.35),
-  );
-  const maxRequests = Math.max(
-    40,
-    Math.min(BITGET_HISTORY_MAX_REQUESTS_HARD_CAP, adaptiveMaxRequests),
-  );
-  const requestSpanBars = Math.max(220, requestLimit + 20);
-  const requestSpanMs = requestSpanBars * timeframeMs;
-  const productType = String(resolveProductType() || "usdt-futures")
-    .trim()
-    .toUpperCase();
-
-  const candlesByTs = new Map<number, ScalpCandle>();
-  let cursorEnd = endMs;
-  let requests = 0;
-  while (cursorEnd >= startMs) {
-    if (requests >= maxRequests) {
-      throw new Error(
-        `bitget_history_max_requests_reached_for_${symbol}:max=${maxRequests}:requestedBars=${requestedBars}:limit=${requestLimit}`,
-      );
-    }
-    const startTime = Math.max(
-      startMs,
-      cursorEnd - requestSpanMs + timeframeMs,
-    );
-    const rows = await bitgetFetch(
-      "GET",
-      "/api/v2/mix/market/history-candles",
-      {
-        symbol,
-        productType,
-        granularity,
-        limit: requestLimit,
-        startTime,
-        endTime: cursorEnd,
-      },
-    );
-    requests += 1;
-
-    const parsedRows = Array.isArray(rows)
-      ? normalizeFetchedCandles(rows).filter(
-          (row) => row[0] >= startMs && row[0] <= endMs,
-        )
-      : [];
-    if (!parsedRows.length) {
-      if (startTime <= startMs) break;
-      cursorEnd = startTime - timeframeMs;
-      continue;
-    }
-
-    let oldestTs = Number.POSITIVE_INFINITY;
-    for (const candle of parsedRows) {
-      candlesByTs.set(candle[0], candle);
-      if (candle[0] < oldestTs) oldestTs = candle[0];
-    }
-    if (!Number.isFinite(oldestTs)) break;
-    if (oldestTs >= cursorEnd) {
-      cursorEnd -= requestSpanMs;
-    } else {
-      cursorEnd = oldestTs - 1;
-    }
-  }
-
-  return Array.from(candlesByTs.values()).sort((a, b) => a[0] - b[0]);
 }
 
 async function ensurePipelineJobRow(
@@ -2492,7 +2343,6 @@ export async function runDiscoverPipelineJob(
       seedAllowBootstrapSymbols: true,
       sourceOverrides: bitgetOnly
         ? {
-            includeCapitalMarketsApi: false,
             includeBitgetMarketsApi: true,
             includeDeploymentSymbols: false,
             includeHistorySymbols: true,
@@ -3098,49 +2948,25 @@ async function ensureSymbolWeeklyCoverage(params: {
     };
   }
 
-  const marketMetadata = bitgetOnly
-    ? null
-    : await ensureScalpSymbolMarketMetadata(params.symbol, {
-        fetchIfMissing: true,
-      });
-  const marketSource: "capital" | "bitget" = bitgetOnly
-    ? "bitget"
-    : marketMetadata?.source === "bitget"
-      ? "bitget"
-      : "capital";
-  const epic = bitgetOnly
-    ? params.symbol
-    : marketMetadata?.epic ||
-      (marketSource === "bitget"
-        ? params.symbol
-        : (await resolveCapitalEpicRuntime(params.symbol)).epic);
+  const marketMetadata = await ensureScalpSymbolMarketMetadata(params.symbol, {
+    fetchIfMissing: true,
+    venue: "bitget",
+  });
+  const marketSource: "bitget" = "bitget";
+  const epic = marketMetadata?.epic || params.symbol;
   const fetchFromMs = Math.floor(fetchWindow.fromMs);
   const fetchToMs = Math.floor(fetchWindow.toMs);
 
-  const fetchedRaw =
-    marketSource === "bitget"
-      ? await fetchBitgetCandlesByEpicDateRange(
-          epic,
-          "1m",
-          fetchFromMs,
-          fetchToMs,
-          {
-            maxPerRequest: BITGET_HISTORY_CANDLES_MAX_LIMIT,
-            maxRequests: params.maxRequestsPerSymbol,
-          },
-        )
-      : await fetchCapitalCandlesByEpicDateRange(
-          epic,
-          "1m",
-          fetchFromMs,
-          fetchToMs,
-          {
-            maxPerRequest: 1000,
-            maxRequests: params.maxRequestsPerSymbol,
-            debug: false,
-            debugLabel: `pipeline-load:${params.symbol}:1m:${fetchFromMs}-${fetchToMs}`,
-          },
-        );
+  const fetchedRaw = await fetchBitgetCandlesByEpicDateRange(
+    epic,
+    "1m",
+    fetchFromMs,
+    fetchToMs,
+    {
+      maxPerRequest: BITGET_HISTORY_CANDLES_MAX_LIMIT,
+      maxRequests: params.maxRequestsPerSymbol,
+    },
+  );
   const fetched = normalizeFetchedCandles(fetchedRaw);
   const merged = mergeScalpCandleHistory(existing, fetched);
 

@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 
-import defaultTickerEpicMap from "../../../../data/capitalTickerMap.json";
 import { requireAdminAccess } from "../../../../lib/admin";
+import { bitgetFetch, resolveProductType } from "../../../../lib/bitget";
 import { inferScalpAssetCategory } from "../../../../lib/scalp/symbolInfo";
 
 type AssetRow = {
@@ -9,31 +9,6 @@ type AssetRow = {
   epic: string;
   category: "forex" | "crypto" | "index" | "commodity" | "equity" | "other";
 };
-
-function parseEnvTickerMap(): Record<string, string> {
-  const raw = process.env.CAPITAL_TICKER_EPIC_MAP;
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      return {};
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof v !== "string") continue;
-      const symbol = String(k || "")
-        .trim()
-        .toUpperCase();
-      const epic = String(v || "")
-        .trim()
-        .toUpperCase();
-      if (!symbol || !epic) continue;
-      out[symbol] = epic;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
 
 function categoryRank(category: AssetRow["category"]): number {
   if (category === "forex") return 1;
@@ -54,35 +29,40 @@ export default async function handler(
       .json({ error: "Method Not Allowed", message: "Use GET" });
   }
   if (!requireAdminAccess(req, res)) return;
-
-  const defaultMap = defaultTickerEpicMap as Record<string, string>;
-  const envMap = parseEnvTickerMap();
-  const merged = { ...defaultMap, ...envMap };
-
-  const assets: AssetRow[] = Object.entries(merged)
-    .map(([symbol, epic]) => {
-      const normalizedSymbol = String(symbol || "")
+  try {
+    const contracts = await bitgetFetch("GET", "/api/v2/mix/market/contracts", {
+      productType: String(resolveProductType() || "usdt-futures")
         .trim()
-        .toUpperCase();
-      const normalizedEpic = String(epic || "")
-        .trim()
-        .toUpperCase();
-      if (!normalizedSymbol || !normalizedEpic) return null;
-      return {
-        symbol: normalizedSymbol,
-        epic: normalizedEpic,
-        category: inferScalpAssetCategory(normalizedSymbol),
-      } satisfies AssetRow;
-    })
-    .filter((row): row is AssetRow => Boolean(row))
-    .sort((a, b) => {
-      const byCategory = categoryRank(a.category) - categoryRank(b.category);
-      if (byCategory !== 0) return byCategory;
-      return a.symbol.localeCompare(b.symbol);
+        .toUpperCase(),
     });
+    const rows = Array.isArray(contracts) ? contracts : [];
+    const assets: AssetRow[] = rows
+      .map((row) => {
+        const normalizedSymbol = String((row as any)?.symbol || "")
+          .trim()
+          .toUpperCase();
+        if (!normalizedSymbol) return null;
+        return {
+          symbol: normalizedSymbol,
+          epic: normalizedSymbol,
+          category: inferScalpAssetCategory(normalizedSymbol),
+        } satisfies AssetRow;
+      })
+      .filter((row): row is AssetRow => Boolean(row))
+      .sort((a, b) => {
+        const byCategory = categoryRank(a.category) - categoryRank(b.category);
+        if (byCategory !== 0) return byCategory;
+        return a.symbol.localeCompare(b.symbol);
+      });
 
-  return res.status(200).json({
-    count: assets.length,
-    assets,
-  });
+    return res.status(200).json({
+      count: assets.length,
+      assets,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      error: "scalp_assets_fetch_failed",
+      message: err?.message || String(err),
+    });
+  }
 }

@@ -1,10 +1,6 @@
-import { Prisma } from "@prisma/client";
-
 import { fetchSymbolMeta, type SymbolMeta } from "../analytics";
 import { resolveProductType } from "../bitget";
-import { fetchCapitalSymbolMarketMetadata } from "../capital";
 
-import { isScalpPgConfigured, scalpPrisma } from "./pg/client";
 import type { ScalpSymbolMarketMetadata } from "./symbolMarketMetadata";
 import {
   buildHeuristicScalpSymbolMarketMetadata,
@@ -68,55 +64,6 @@ function resolveBitgetAssetCategory(symbol: string) {
   const inferred = inferScalpAssetCategory(symbol);
   if (inferred === "equity" || inferred === "other") return "crypto";
   return inferred;
-}
-
-async function resolvePreferredVenue(
-  symbol: string,
-  fallbackVenue: ScalpVenue,
-): Promise<ScalpVenue> {
-  if (!symbol || !isScalpPgConfigured()) return fallbackVenue;
-  const db = scalpPrisma();
-  try {
-    const historyRows = await db.$queryRaw<
-      Array<{ bitgetCount: bigint | number; capitalCount: bigint | number }>
-    >(Prisma.sql`
-        SELECT
-          COALESCE(SUM(CASE WHEN source = 'bitget' THEN 1 ELSE 0 END), 0)::bigint AS "bitgetCount",
-          COALESCE(SUM(CASE WHEN source = 'capital' THEN 1 ELSE 0 END), 0)::bigint AS "capitalCount"
-        FROM scalp_candle_history_weeks
-        WHERE symbol = ${symbol};
-      `);
-    const historyBitgetCount = Math.max(
-      0,
-      Number(historyRows[0]?.bitgetCount || 0),
-    );
-    const historyCapitalCount = Math.max(
-      0,
-      Number(historyRows[0]?.capitalCount || 0),
-    );
-    if (historyBitgetCount > 0 && historyCapitalCount === 0) return "bitget";
-    if (historyCapitalCount > 0 && historyBitgetCount === 0) return "capital";
-    if (historyCapitalCount > 0 && historyBitgetCount > 0) {
-      return historyBitgetCount >= historyCapitalCount ? "bitget" : "capital";
-    }
-
-    const rows = await db.$queryRaw<
-      Array<{ bitgetCount: bigint | number; capitalCount: bigint | number }>
-    >(Prisma.sql`
-        SELECT
-          COALESCE(SUM(CASE WHEN deployment_id LIKE 'bitget:%' THEN 1 ELSE 0 END), 0)::bigint AS "bitgetCount",
-          COALESCE(SUM(CASE WHEN deployment_id NOT LIKE 'bitget:%' THEN 1 ELSE 0 END), 0)::bigint AS "capitalCount"
-        FROM scalp_deployments
-        WHERE symbol = ${symbol};
-      `);
-    const bitgetCount = Math.max(0, Number(rows[0]?.bitgetCount || 0));
-    const capitalCount = Math.max(0, Number(rows[0]?.capitalCount || 0));
-    if (bitgetCount > 0 && capitalCount === 0) return "bitget";
-    if (capitalCount > 0 && bitgetCount === 0) return "capital";
-  } catch {
-    return fallbackVenue;
-  }
-  return fallbackVenue;
 }
 
 async function fetchBitgetSymbolMarketMetadata(
@@ -207,21 +154,8 @@ export async function ensureScalpSymbolMarketMetadata(
   );
 
   const stored = await loadScalpSymbolMarketMetadata(symbol);
-  const storedVenue =
-    stored?.source === "bitget"
-      ? "bitget"
-      : stored?.source === "capital"
-        ? "capital"
-        : null;
-  const requestedVenue = normalizeScalpVenue(
-    opts.venue ?? storedVenue,
-    "capital",
-  );
-  const preferredVenue = await resolvePreferredVenue(symbol, requestedVenue);
-  const venueMismatch =
-    preferredVenue === "bitget" &&
-    stored !== null &&
-    stored?.source !== "bitget";
+  const requestedVenue = normalizeScalpVenue(opts.venue, "bitget");
+  const venueMismatch = stored !== null && stored?.source !== "bitget";
   const stale = isScalpSymbolMarketMetadataStale(stored, nowMs, maxAgeMs);
   if (
     !opts.forceRefresh &&
@@ -236,10 +170,8 @@ export async function ensureScalpSymbolMarketMetadata(
   }
 
   try {
-    const fetched =
-      preferredVenue === "bitget"
-        ? await fetchBitgetSymbolMarketMetadata(symbol)
-        : await fetchCapitalSymbolMarketMetadata(symbol);
+    void requestedVenue;
+    const fetched = await fetchBitgetSymbolMarketMetadata(symbol);
     await saveScalpSymbolMarketMetadata(fetched);
     return fetched;
   } catch {

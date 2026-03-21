@@ -10,7 +10,7 @@ export interface ScalpCandleHistoryRecord {
     symbol: string;
     timeframe: string;
     epic: string | null;
-    source: 'capital' | 'bitget';
+    source: 'bitget';
     updatedAtMs: number;
     candles: ScalpCandle[];
 }
@@ -68,12 +68,11 @@ function normalizeTimeframe(value: string): string {
     return `${Math.floor(amount)}${unit}`;
 }
 
-function normalizeHistorySource(value: unknown, fallback: ScalpCandleHistoryRecord['source'] = 'capital'): ScalpCandleHistoryRecord['source'] {
+function normalizeHistorySource(value: unknown, fallback: ScalpCandleHistoryRecord['source'] = 'bitget'): ScalpCandleHistoryRecord['source'] {
     const normalized = String(value || '')
         .trim()
         .toLowerCase();
     if (normalized === 'bitget') return 'bitget';
-    if (normalized === 'capital') return 'capital';
     return fallback;
 }
 
@@ -181,7 +180,7 @@ function rowsToRecord(params: {
     if (!params.rows.length) return null;
     let latestUpdatedAtMs = 0;
     let epic: string | null = null;
-    let source: ScalpCandleHistoryRecord['source'] = 'capital';
+    let source: ScalpCandleHistoryRecord['source'] = 'bitget';
     const merged: ScalpCandle[] = [];
     for (const row of params.rows) {
         const candles = Array.isArray(row.candles) ? row.candles : [];
@@ -512,7 +511,7 @@ export async function saveScalpCandleHistory(
         symbol,
         timeframe,
         epic: recordRaw.epic ? String(recordRaw.epic).trim().toUpperCase() : null,
-        source: normalizeHistorySource(recordRaw.source, 'capital'),
+        source: normalizeHistorySource(recordRaw.source, 'bitget'),
         updatedAtMs: Date.now(),
         candles: dedupeSortCandles(recordRaw.candles || []),
     };
@@ -584,11 +583,11 @@ export async function saveScalpCandleHistoryBulk(
                     symbol,
                     timeframe,
                     epic: recordRaw.epic,
-                    source: normalizeHistorySource(recordRaw.source, 'capital'),
+                    source: normalizeHistorySource(recordRaw.source, 'bitget'),
                     updatedAtMs: Date.now(),
                     candles: recordRaw.candles || [],
                 },
-                { symbol, timeframe, epic: null, source: 'capital' },
+                { symbol, timeframe, epic: null, source: 'bitget' },
             );
             return normalized;
         })

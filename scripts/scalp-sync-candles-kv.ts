@@ -113,7 +113,7 @@ async function main(): Promise<void> {
                         symbol,
                         timeframe,
                         epic: source.record.epic,
-                        source: 'capital',
+                        source: 'bitget',
                         candles: filteredCandles,
                     },
                     { backend: 'pg' },

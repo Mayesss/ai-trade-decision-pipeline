@@ -24,15 +24,12 @@ export function timeframeMinutes(
   return 15;
 }
 
-function toCapitalTfSpec(tf: ScalpBaseTimeframe | ScalpConfirmTimeframe): {
+function toScalpTfSpec(tf: ScalpBaseTimeframe | ScalpConfirmTimeframe): {
   apiTf: string;
   sourceMinutes: number;
 } {
   if (tf === "M1") return { apiTf: "1m", sourceMinutes: 1 };
-  if (tf === "M3") {
-    // Capital often rejects native 3m resolution; pull 1m and aggregate locally.
-    return { apiTf: "1m", sourceMinutes: 1 };
-  }
+  if (tf === "M3") return { apiTf: "3m", sourceMinutes: 3 };
   if (tf === "M5") return { apiTf: "5m", sourceMinutes: 5 };
   return { apiTf: "15m", sourceMinutes: 15 };
 }
@@ -126,7 +123,7 @@ export async function loadScalpMarketSnapshot(params: {
   maxCandlesPerRequest: number;
   adapter?: ScalpVenueAdapter;
 }): Promise<ScalpMarketSnapshot> {
-  const adapter = params.adapter || getScalpVenueAdapter("capital");
+  const adapter = params.adapter || getScalpVenueAdapter("bitget");
   const symbol = String(params.symbol || "")
     .trim()
     .toUpperCase();
@@ -137,8 +134,8 @@ export async function loadScalpMarketSnapshot(params: {
   const lookbackStartMs =
     Math.min(params.windows.asiaStartMs, params.windows.raidStartMs) -
     60 * 60 * 1000;
-  const baseTfSpec = toCapitalTfSpec(params.baseTf);
-  const confirmTfSpec = toCapitalTfSpec(params.confirmTf);
+  const baseTfSpec = toScalpTfSpec(params.baseTf);
+  const confirmTfSpec = toScalpTfSpec(params.confirmTf);
 
   const baseLimit = estimateLimit({
     nowMs: params.nowMs,

@@ -6,24 +6,24 @@ import { getDefaultScalpStrategy } from '../strategies/registry';
 
 test('resolveScalpDeployment normalizes explicit symbol, strategy, and tune inputs', () => {
     const deployment = resolveScalpDeployment({
-        venue: 'capital',
+        venue: 'bitget',
         symbol: 'eurusd',
         strategyId: 'REGIME_PULLBACK_M15_M3',
         tuneId: 'London Return V1!!',
     });
 
     assert.equal(deployment.symbol, 'EURUSD');
-    assert.equal(deployment.venue, 'capital');
+    assert.equal(deployment.venue, 'bitget');
     assert.equal(deployment.strategyId, 'regime_pullback_m15_m3');
     assert.equal(deployment.tuneId, 'london-return-v1');
-    assert.equal(deployment.deploymentId, 'EURUSD~regime_pullback_m15_m3~london-return-v1');
+    assert.equal(deployment.deploymentId, 'bitget:EURUSD~regime_pullback_m15_m3~london-return-v1');
     assert.equal(deployment.tuneLabel, 'london-return-v1');
 });
 
 test('parseScalpDeploymentId round-trips a deployment key for later live ownership tracking', () => {
     const strategyId = getDefaultScalpStrategy().id;
     const deploymentId = buildScalpDeploymentId({
-        venue: 'capital',
+        venue: 'bitget',
         symbol: 'GBPUSD',
         strategyId,
         tuneId: 'session_a',
@@ -32,14 +32,14 @@ test('parseScalpDeploymentId round-trips a deployment key for later live ownersh
     const parsed = parseScalpDeploymentId(deploymentId);
 
     assert.ok(parsed);
-    assert.equal(parsed?.venue, 'capital');
+    assert.equal(parsed?.venue, 'bitget');
     assert.equal(parsed?.symbol, 'GBPUSD');
     assert.equal(parsed?.strategyId, strategyId);
     assert.equal(parsed?.tuneId, 'session_a');
     assert.equal(parsed?.deploymentId, deploymentId);
 });
 
-test('buildScalpDeploymentId prefixes non-capital venues to avoid key collisions', () => {
+test('buildScalpDeploymentId always prefixes venue to avoid legacy collisions', () => {
     const strategyId = getDefaultScalpStrategy().id;
     const deploymentId = buildScalpDeploymentId({
         venue: 'bitget',
@@ -53,4 +53,12 @@ test('buildScalpDeploymentId prefixes non-capital venues to avoid key collisions
     assert.ok(parsed);
     assert.equal(parsed?.venue, 'bitget');
     assert.equal(parsed?.symbol, 'BTCUSDT');
+});
+
+test('parseScalpDeploymentId treats unprefixed ids as default venue ids', () => {
+    const strategyId = getDefaultScalpStrategy().id;
+    const parsed = parseScalpDeploymentId(`EURUSD~${strategyId}~default`);
+    assert.ok(parsed);
+    assert.equal(parsed?.venue, 'bitget');
+    assert.equal(parsed?.symbol, 'EURUSD');
 });

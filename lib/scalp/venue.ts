@@ -1,6 +1,6 @@
-export type ScalpVenue = "capital" | "bitget";
+export type ScalpVenue = "bitget";
 
-export const DEFAULT_SCALP_VENUE: ScalpVenue = "capital";
+export const DEFAULT_SCALP_VENUE: ScalpVenue = "bitget";
 
 export function normalizeScalpVenue(
   value: unknown,
@@ -9,7 +9,6 @@ export function normalizeScalpVenue(
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
-  if (normalized === "capital") return "capital";
   if (normalized === "bitget") return "bitget";
   return fallback;
 }
@@ -21,11 +20,14 @@ export function parseScalpVenuePrefixedDeploymentId(value: unknown): {
   const raw = String(value || "").trim();
   if (!raw) return { venue: DEFAULT_SCALP_VENUE, deploymentKey: "" };
   const match = raw.match(/^([a-z0-9_-]+):(.*)$/i);
-  if (!match) return { venue: DEFAULT_SCALP_VENUE, deploymentKey: raw };
+  if (!match) {
+    // Legacy unprefixed ids are normalized to current default venue.
+    return { venue: DEFAULT_SCALP_VENUE, deploymentKey: raw };
+  }
   const prefix = String(match[1] || "")
     .trim()
     .toLowerCase();
-  if (prefix !== "capital" && prefix !== "bitget") {
+  if (prefix !== "bitget") {
     return { venue: DEFAULT_SCALP_VENUE, deploymentKey: raw };
   }
   const venue = normalizeScalpVenue(prefix, DEFAULT_SCALP_VENUE);
@@ -40,6 +42,5 @@ export function formatScalpVenueDeploymentId(
 ): string {
   const key = String(deploymentKey || "").trim();
   if (!key) return key;
-  if (venue === DEFAULT_SCALP_VENUE) return key;
   return `${venue}:${key}`;
 }

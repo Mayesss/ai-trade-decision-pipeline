@@ -60,7 +60,7 @@ function makeMarket(nowMs: number): ScalpMarketSnapshot {
 }
 
 function makeReadyState(params: {
-  venue: "capital" | "bitget";
+  venue: "bitget";
   nowMs: number;
   direction?: "BULLISH" | "BEARISH";
   sweepPrice?: number;
@@ -94,12 +94,12 @@ function makeReadyState(params: {
   return state;
 }
 
-test("entry sizing remains executable when venue leverage caps prevent target risk", () => {
+test("entry sizing remains executable when leverage cap prevents target risk", () => {
   const nowMs = Date.UTC(2026, 2, 17, 10, 0, 0, 0);
   const cfg = applyScalpStrategyConfigOverride(getScalpStrategyConfig(), {
     risk: {
       referenceEquityUsd: 100,
-      riskPerTradePct: 20,
+      riskPerTradePct: 100,
       minNotionalUsd: 1,
       maxNotionalUsd: 100_000,
       stopBufferPips: 0,
@@ -109,12 +109,6 @@ test("entry sizing remains executable when venue leverage caps prevent target ri
   });
   const market = makeMarket(nowMs);
 
-  const capitalPlan = buildScalpEntryPlan({
-    state: makeReadyState({ venue: "capital", nowMs }),
-    market,
-    cfg,
-    entryIntent: { model: "ifvg_touch" },
-  });
   const bitgetPlan = buildScalpEntryPlan({
     state: makeReadyState({ venue: "bitget", nowMs }),
     market,
@@ -122,13 +116,13 @@ test("entry sizing remains executable when venue leverage caps prevent target ri
     entryIntent: { model: "ifvg_touch" },
   });
 
-  assert.ok(capitalPlan.plan);
-  assert.ok(capitalPlan.reasonCodes.includes("ENTRY_PLAN_RISK_TARGET_UNREACHABLE"));
-  assert.ok(capitalPlan.reasonCodes.includes("ENTRY_PLAN_NOTIONAL_CAPPED_BELOW_TARGET"));
   assert.ok(bitgetPlan.plan);
-  assert.ok(capitalPlan.reasonCodes.includes("ENTRY_PLAN_ASSET_LEVERAGE_CAP_ACTIVE"));
+  assert.ok(
+    bitgetPlan.reasonCodes.includes("ENTRY_PLAN_ASSET_LEVERAGE_CAP_ACTIVE") ||
+      bitgetPlan.reasonCodes.includes("ENTRY_PLAN_RISK_TARGET_UNREACHABLE"),
+  );
   assert.ok(bitgetPlan.reasonCodes.includes("ENTRY_PLAN_FEE_AWARE_RISK_SIZING"));
-  assert.ok((bitgetPlan.plan?.notionalUsd ?? 0) > (capitalPlan.plan?.notionalUsd ?? 0));
+  assert.ok((bitgetPlan.plan?.notionalUsd ?? 0) > 0);
 });
 
 test("entry plan rejects BUY stop that is not protective", () => {

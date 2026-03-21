@@ -294,11 +294,11 @@ interface PgOrphanedDeploymentPruneResult {
 
 function toRecordSummary(record: ScalpCandleHistoryRecord | null): {
   epic: string | null;
-  source: "capital";
+  source: "bitget";
 } {
   return {
     epic: record?.epic ?? null,
-    source: "capital",
+    source: "bitget",
   };
 }
 

@@ -33,7 +33,7 @@ test('deployment registry upserts, filters, and removes tuned deployments via fi
                 symbol: 'EURUSD',
                 strategyId: 'regime_pullback_m15_m3',
                 tuneId: 'return_a',
-                deploymentId: 'EURUSD~regime_pullback_m15_m3~return_a',
+                deploymentId: 'bitget:EURUSD~regime_pullback_m15_m3~return_a',
                 tuneLabel: 'return_a',
                 netR: 3.2,
                 profitFactor: 1.8,
@@ -58,7 +58,7 @@ test('deployment registry upserts, filters, and removes tuned deployments via fi
         assert.equal(upserted.snapshot.deployments.length, 1);
 
         const promoted = await upsertScalpDeploymentRegistryEntry({
-            deploymentId: 'EURUSD~regime_pullback_m15_m3~return_a',
+            deploymentId: 'bitget:EURUSD~regime_pullback_m15_m3~return_a',
             enabled: true,
             source: 'matrix',
             updatedBy: 'test',
@@ -95,11 +95,11 @@ test('deployment registry upserts, filters, and removes tuned deployments via fi
             promotionEligible: 'true',
         });
         assert.equal(filtered.length, 1);
-        assert.equal(filtered[0]?.deploymentId, 'EURUSD~regime_pullback_m15_m3~return_a');
+        assert.equal(filtered[0]?.deploymentId, 'bitget:EURUSD~regime_pullback_m15_m3~return_a');
         assert.deepEqual(filtered[0]?.configOverride, { risk: { takeProfitR: 1.4 } });
 
         const removed = await removeScalpDeploymentRegistryEntry({
-            deploymentId: 'EURUSD~regime_pullback_m15_m3~return_a',
+            deploymentId: 'bitget:EURUSD~regime_pullback_m15_m3~return_a',
         });
         assert.equal(removed.removed, true);
         assert.equal(removed.snapshot.deployments.length, 0);
@@ -220,9 +220,12 @@ test('canonicalizeScalpDeploymentRegistry rewrites legacy guarded strategy rows 
         const row = loaded.deployments[0];
         assert.ok(row);
         assert.equal(row.strategyId, 'regime_pullback_m15_m3');
-        assert.equal(row.deploymentId, 'BTCUSDT~regime_pullback_m15_m3~guarded_high_pf_default');
+        assert.equal(row.deploymentId, 'bitget:BTCUSDT~regime_pullback_m15_m3~guarded_high_pf_default');
         assert.equal(row.leaderboardEntry?.strategyId, 'regime_pullback_m15_m3');
-        assert.equal(row.leaderboardEntry?.deploymentId, 'BTCUSDT~regime_pullback_m15_m3~guarded_high_pf_default');
+        assert.equal(
+            row.leaderboardEntry?.deploymentId,
+            'bitget:BTCUSDT~regime_pullback_m15_m3~guarded_high_pf_default',
+        );
         assert.equal(row.configOverride?.risk?.tp1ClosePct, 20);
         assert.equal(row.configOverride?.risk?.trailAtrMult, 1.4);
         assert.equal(row.configOverride?.risk?.timeStopBars, 15);
@@ -282,7 +285,7 @@ test('deployment registry bulk upsert applies multiple rows and resolves duplica
                 updatedBy: 'test-bulk',
             },
             {
-                deploymentId: 'EURUSD~regime_pullback_m15_m3~return_a',
+                deploymentId: 'bitget:EURUSD~regime_pullback_m15_m3~return_a',
                 source: 'matrix',
                 enabled: true,
                 updatedBy: 'test-bulk',
@@ -304,7 +307,7 @@ test('deployment registry bulk upsert applies multiple rows and resolves duplica
         assert.equal(loaded.deployments.length, 2);
 
         const returnA = loaded.deployments.find(
-            (row) => row.deploymentId === 'EURUSD~regime_pullback_m15_m3~return_a',
+            (row) => row.deploymentId === 'bitget:EURUSD~regime_pullback_m15_m3~return_a',
         );
         assert.ok(returnA);
         assert.equal(returnA.enabled, true);

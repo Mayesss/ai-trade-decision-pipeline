@@ -16,7 +16,7 @@ function sessionMetadata(): ScalpSymbolMarketMetadata {
     version: 1,
     symbol: "XAUUSDT",
     epic: "CS.D.XAUUSD.TODAY.IP",
-    source: "capital",
+    source: "bitget",
     assetCategory: "commodity",
     instrumentType: "COMMODITIES",
     marketStatus: "TRADEABLE",

@@ -132,8 +132,7 @@ test('buildNextUniverseWithChurnCaps limits weekly adds/removes and preserves pi
             requireTradableQuote: false,
         },
         sources: {
-            includeCapitalMarketsApi: true,
-            includeCapitalTickerMap: true,
+            includeBitgetMarketsApi: true,
             includeDeploymentSymbols: true,
             includeHistorySymbols: true,
             requireHistoryPresence: true,
@@ -186,8 +185,7 @@ test('resolveSeedSymbolEligibility blocks bootstrap symbols when bootstrap seedi
             requireTradableQuote: true,
         },
         sources: {
-            includeCapitalMarketsApi: true,
-            includeCapitalTickerMap: false,
+            includeBitgetMarketsApi: true,
             includeDeploymentSymbols: true,
             includeHistorySymbols: true,
             requireHistoryPresence: true,
@@ -233,8 +231,7 @@ test('resolveSeedSymbolEligibility enforces bars/day and recent-bars gates for s
             requireTradableQuote: true,
         },
         sources: {
-            includeCapitalMarketsApi: true,
-            includeCapitalTickerMap: false,
+            includeBitgetMarketsApi: true,
             includeDeploymentSymbols: true,
             includeHistorySymbols: true,
             requireHistoryPresence: true,
@@ -312,8 +309,7 @@ test('resolveSeedSymbolEligibility applies category-aware forex threshold overri
             requireTradableQuote: true,
         },
         sources: {
-            includeCapitalMarketsApi: true,
-            includeCapitalTickerMap: false,
+            includeBitgetMarketsApi: true,
             includeDeploymentSymbols: true,
             includeHistorySymbols: true,
             requireHistoryPresence: true,

@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import { writeFile } from 'node:fs/promises';
 
-import capitalTickerMap from '../data/capitalTickerMap.json';
-import { loadScalpCandleHistory } from '../lib/scalp/candleHistory';
+import { listScalpCandleHistorySymbols, loadScalpCandleHistory } from '../lib/scalp/candleHistory';
 import { pipSizeForScalpSymbol } from '../lib/scalp/marketData';
 import { defaultScalpReplayConfig, runScalpReplay } from '../lib/scalp/replay/harness';
 import { applySymbolGuardRiskDefaultsToReplayRuntime } from '../lib/scalp/strategies/guardDefaults';
@@ -174,8 +173,9 @@ async function main() {
     const executeMinutes = toPositiveInt(process.env.EXECUTE_MINUTES, 3);
     const nowMs = Date.now();
     const fromMs = nowMs - days * DAY_MS;
-    const symbols = Object.keys(capitalTickerMap as Record<string, string>)
+    const symbols = (await listScalpCandleHistorySymbols('1m'))
         .map((s) => String(s).toUpperCase())
+        .filter((s, idx, rows) => Boolean(s) && rows.indexOf(s) === idx)
         .sort();
 
     const rows: SymbolResult[] = [];

@@ -48,10 +48,6 @@
       "schedule": "5 * * * *"
     },
     {
-      "path": "/api/scalp/cron/execute-deployments?all=true&venue=capital&dryRun=false&requirePromotionEligible=true",
-      "schedule": "* * * * *"
-    },
-    {
       "path": "/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true",
       "schedule": "* * * * *"
     }

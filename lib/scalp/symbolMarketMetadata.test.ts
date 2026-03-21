@@ -27,7 +27,7 @@ test("normalizeScalpSymbolMarketMetadata preserves broker pip sizes", () => {
   const metadata = normalizeScalpSymbolMarketMetadata({
     symbol: "BTCUSDT",
     epic: "CS.D.BITCOIN.TODAY.IP",
-    source: "capital",
+    source: "bitget",
     assetCategory: "crypto",
     pipSize: 1,
     pipPosition: 0,
@@ -70,7 +70,7 @@ test("normalizeScalpSymbolMarketMetadata normalizes bitget crypto precision", ()
   assert.equal(metadata.maxLeverage, 50);
 });
 
-test("scalpAssetCategoryFromInstrumentType maps Capital categories", () => {
+test("scalpAssetCategoryFromInstrumentType maps instrument categories", () => {
   assert.equal(
     scalpAssetCategoryFromInstrumentType("BTCUSDT", "CRYPTOCURRENCIES"),
     "crypto",

@@ -69,32 +69,6 @@ const SCALP_LEVERAGE_BY_CATEGORY_BY_VENUE: Record<
   ScalpVenue,
   Record<ScalpAssetCategory, number>
 > = {
-  capital: {
-    forex: toPositiveNumberWithFallback(
-      process.env.SCALP_CAPITAL_LEVERAGE_FOREX,
-      30,
-    ),
-    index: toPositiveNumberWithFallback(
-      process.env.SCALP_CAPITAL_LEVERAGE_INDEX,
-      20,
-    ),
-    commodity: toPositiveNumberWithFallback(
-      process.env.SCALP_CAPITAL_LEVERAGE_COMMODITY,
-      20,
-    ),
-    equity: toPositiveNumberWithFallback(
-      process.env.SCALP_CAPITAL_LEVERAGE_EQUITY,
-      5,
-    ),
-    crypto: toPositiveNumberWithFallback(
-      process.env.SCALP_CAPITAL_LEVERAGE_CRYPTO,
-      2,
-    ),
-    other: toPositiveNumberWithFallback(
-      process.env.SCALP_CAPITAL_LEVERAGE_OTHER,
-      5,
-    ),
-  },
   bitget: {
     forex: toPositiveNumberWithFallback(
       process.env.SCALP_BITGET_LEVERAGE_FOREX,
@@ -129,11 +103,11 @@ function resolveScalpVenueLeverageCap(
 ): number {
   const byCategory =
     SCALP_LEVERAGE_BY_CATEGORY_BY_VENUE[venue] ||
-    SCALP_LEVERAGE_BY_CATEGORY_BY_VENUE.capital;
+    SCALP_LEVERAGE_BY_CATEGORY_BY_VENUE.bitget;
   return (
     byCategory[category] ||
     byCategory.other ||
-    SCALP_LEVERAGE_BY_CATEGORY_BY_VENUE.capital.other
+    SCALP_LEVERAGE_BY_CATEGORY_BY_VENUE.bitget.other
   );
 }
 
@@ -266,7 +240,7 @@ async function closeScalpTradePortion(params: {
   if (!brokerPositionId && !dealReference) {
     return { closed: false, reasonCodes: ["TRADE_CLOSE_MISSING_OWNERSHIP"] };
   }
-  const adapter = params.adapter || getScalpVenueAdapter("capital");
+  const adapter = params.adapter || getScalpVenueAdapter("bitget");
   try {
     const closeRes = await adapter.broker.closePositionByOwnership({
       dealId: brokerPositionId,
@@ -384,7 +358,7 @@ export function buildScalpEntryPlan(params: {
   const riskUsd =
     params.cfg.risk.referenceEquityUsd *
     (params.cfg.risk.riskPerTradePct / 100);
-  const venue: ScalpVenue = params.state.venue || "capital";
+  const venue: ScalpVenue = params.state.venue || "bitget";
   const assetCategory =
     params.market.symbolMeta?.assetCategory || inferScalpAssetCategory(state.symbol);
   const categoryLeverage = resolveScalpVenueLeverageCap(venue, assetCategory);
@@ -534,7 +508,7 @@ export async function reconcileScalpBrokerPosition(params: {
     };
 
   let snapshots = params.snapshots ?? [];
-  const adapter = params.adapter || getScalpVenueAdapter("capital");
+  const adapter = params.adapter || getScalpVenueAdapter("bitget");
   if (!params.snapshots) {
     if (params.skipSnapshotFetch) {
       return {
@@ -705,7 +679,7 @@ export async function executeScalpEntryPlan(params: {
     return { state: next, reasonCodes: ["LIVE_EXECUTION_DISABLED"] };
   }
 
-  const adapter = params.adapter || getScalpVenueAdapter("capital");
+  const adapter = params.adapter || getScalpVenueAdapter("bitget");
   let exec;
   try {
     exec = await adapter.broker.executeScalpEntry({
