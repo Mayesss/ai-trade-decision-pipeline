@@ -59,6 +59,7 @@ const ONE_MINUTE_MS = 60_000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 const BITGET_HISTORY_CANDLES_MAX_LIMIT = 200;
+const BITGET_HISTORY_MAX_REQUESTS_HARD_CAP = 5000;
 
 export const SCALP_PIPELINE_JOB_KINDS = [
   "discover",
@@ -900,7 +901,27 @@ async function fetchBitgetCandlesByEpicDateRange(
       Math.floor(opts.maxPerRequest ?? BITGET_HISTORY_CANDLES_MAX_LIMIT),
     ),
   );
-  const maxRequests = Math.max(40, Math.floor(opts.maxRequests ?? 800));
+  const configuredMaxRequests = Math.max(
+    40,
+    Math.floor(opts.maxRequests ?? 1_200),
+  );
+  const requestedBars = Math.max(
+    1,
+    Math.floor((endMs - startMs) / timeframeMs) + 1,
+  );
+  const minimumRequestsForRange = Math.max(
+    1,
+    Math.ceil(requestedBars / Math.max(1, requestLimit)),
+  );
+  // Include headroom for session gaps and sparse market windows.
+  const adaptiveMaxRequests = Math.max(
+    configuredMaxRequests,
+    Math.ceil(minimumRequestsForRange * 1.35),
+  );
+  const maxRequests = Math.max(
+    40,
+    Math.min(BITGET_HISTORY_MAX_REQUESTS_HARD_CAP, adaptiveMaxRequests),
+  );
   const requestSpanBars = Math.max(220, requestLimit + 20);
   const requestSpanMs = requestSpanBars * timeframeMs;
   const productType = String(resolveProductType() || "usdt-futures")
@@ -912,7 +933,9 @@ async function fetchBitgetCandlesByEpicDateRange(
   let requests = 0;
   while (cursorEnd >= startMs) {
     if (requests >= maxRequests) {
-      throw new Error(`bitget_history_max_requests_reached_for_${symbol}`);
+      throw new Error(
+        `bitget_history_max_requests_reached_for_${symbol}:max=${maxRequests}:requestedBars=${requestedBars}:limit=${requestLimit}`,
+      );
     }
     const startTime = Math.max(
       startMs,
@@ -2709,7 +2732,7 @@ export async function runLoadCandlesPipelineJob(
               2500,
               toPositiveInt(
                 process.env.SCALP_PIPELINE_LOAD_MAX_REQUESTS_PER_SYMBOL,
-                600,
+                1200,
               ),
             ),
           );
