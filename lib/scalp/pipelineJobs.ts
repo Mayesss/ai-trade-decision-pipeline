@@ -458,6 +458,43 @@ function extractPrepareVariantScore(gateRaw: unknown): number {
   return bestExpectancy * 1_000 + pf * 10;
 }
 
+function extractPrepareVariantExpectancyR(gateRaw: unknown): number | null {
+  const gate = asJsonObject(gateRaw);
+  const forward = asJsonObject(gate?.forwardValidation);
+  if (!forward) return null;
+  const medianExpectancy = asNullableFiniteNumber(
+    forward.weeklyMedianExpectancyR ?? forward.medianExpectancyR,
+  );
+  const meanExpectancy = asNullableFiniteNumber(
+    forward.weeklyMeanExpectancyR ?? forward.meanExpectancyR,
+  );
+  const p25Expectancy = asNullableFiniteNumber(
+    forward.weeklyP25ExpectancyR ?? forward.p25ExpectancyR,
+  );
+  return medianExpectancy ?? meanExpectancy ?? p25Expectancy ?? null;
+}
+
+function resolvePrepareExpansionMinExpectancyR(): number {
+  const raw = Number(process.env.SCALP_PIPELINE_PREPARE_EXPANSION_MIN_EXPECTANCY_R);
+  if (!Number.isFinite(raw)) return 0;
+  return Math.max(-1, Math.min(1, raw));
+}
+
+function hasPrepareExpansionAnchor(
+  rows: PrepareExistingDeployment[],
+): boolean {
+  if (!rows.length) return false;
+  const minExpectancyR = resolvePrepareExpansionMinExpectancyR();
+  for (const row of rows) {
+    if (row.enabled) return true;
+    const expectancyR = extractPrepareVariantExpectancyR(row.promotionGate);
+    if (expectancyR !== null && expectancyR >= minExpectancyR) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function comparePrepareExistingRowsPriority(
   a: PrepareExistingDeployment,
   b: PrepareExistingDeployment,
@@ -611,12 +648,16 @@ export function selectPrepareTuneVariantsForStrategy(params: {
   const winnerTuneIds = sortedSeenRows
     .filter((row, idx) => row.enabled || idx === 0)
     .map((row) => row.tuneId);
-  const warmupMode = sortedSeenVariants.length < seedTarget;
-  const targetSelected = warmupMode ? seedTarget : maxSelected;
+  const loserTrackMode =
+    sortedSeenVariants.length > 0 && !hasPrepareExpansionAnchor(sortedSeenRows);
+  const warmupMode = !loserTrackMode && sortedSeenVariants.length < seedTarget;
+  const targetSelected = loserTrackMode ? 1 : warmupMode ? seedTarget : maxSelected;
   const warmupNeed = Math.max(0, seedTarget - sortedSeenVariants.length);
-  const maxNewBudget = warmupMode
-    ? warmupNeed
-    : Math.min(maxNewPerRun, maxSelected);
+  const maxNewBudget = loserTrackMode
+    ? 0
+    : warmupMode
+      ? warmupNeed
+      : Math.min(maxNewPerRun, maxSelected);
   const neighborUnseen = collectNeighborUnseenVariants({
     orderedVariants: deduped,
     unseenTuneIds,

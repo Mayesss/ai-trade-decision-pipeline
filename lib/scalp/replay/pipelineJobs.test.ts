@@ -394,6 +394,82 @@ test("prepare variant selection warms up with a small seed before wider expansio
   assert.equal(out[0]?.tuneId, "default");
 });
 
+test("prepare variant selection does not expand loser tracks with negative expectancy", () => {
+  const existingByKey = new Map([
+    [
+      "regime_pullback_m15_m3::default",
+      {
+        deploymentId: "dep_loser_default",
+        strategyId: "regime_pullback_m15_m3",
+        tuneId: "default",
+        enabled: false,
+        inUniverse: false,
+        promotionGate: {
+          forwardValidation: {
+            medianExpectancyR: -0.08,
+            meanProfitFactor: 0.85,
+          },
+        },
+        createdAtMs: 10,
+        updatedAtMs: 10,
+      },
+    ],
+  ]);
+
+  const out = selectPrepareTuneVariantsForStrategy({
+    symbol: "FETUSDT",
+    strategyId: "regime_pullback_m15_m3",
+    nowMs: Date.UTC(2026, 2, 21, 10, 0, 0),
+    maxSelected: 4,
+    seedTarget: 2,
+    maxVariantPool: 32,
+    maxNewPerRun: 2,
+    winnerNeighborRadius: 1,
+    existingByKey,
+  } as any);
+
+  assert.equal(out.length, 1);
+  assert.equal(out[0]?.tuneId, "default");
+});
+
+test("prepare variant selection can expand around anchored tracks", () => {
+  const existingByKey = new Map([
+    [
+      "regime_pullback_m15_m3::default",
+      {
+        deploymentId: "dep_winner_default",
+        strategyId: "regime_pullback_m15_m3",
+        tuneId: "default",
+        enabled: false,
+        inUniverse: true,
+        promotionGate: {
+          forwardValidation: {
+            medianExpectancyR: 0.06,
+            meanProfitFactor: 1.25,
+          },
+        },
+        createdAtMs: 20,
+        updatedAtMs: 20,
+      },
+    ],
+  ]);
+
+  const out = selectPrepareTuneVariantsForStrategy({
+    symbol: "FETUSDT",
+    strategyId: "regime_pullback_m15_m3",
+    nowMs: Date.UTC(2026, 2, 21, 10, 30, 0),
+    maxSelected: 4,
+    seedTarget: 2,
+    maxVariantPool: 32,
+    maxNewPerRun: 2,
+    winnerNeighborRadius: 1,
+    existingByKey,
+  } as any);
+
+  assert.equal(out.length >= 2, true);
+  assert.equal(out.some((row) => row.tuneId === "default"), true);
+});
+
 test("prepare overflow planning keeps protected/enabled rows and prunes oldest non-enabled overflow", () => {
   const out = planPrepareOverflowNonEnabledVariants({
     hardCap: 3,

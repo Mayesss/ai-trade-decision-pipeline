@@ -29,7 +29,7 @@
     },
     {
       "path": "/api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8",
-      "schedule": "2-59/10 * * * *"
+      "schedule": "2 * * * *"
     },
     {
       "path": "/api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&selfMaxHops=12",
