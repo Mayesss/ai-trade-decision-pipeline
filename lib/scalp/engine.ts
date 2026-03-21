@@ -92,7 +92,7 @@ function dedupeReasonCodes(codes: string[]): string[] {
     return Array.from(new Set(codes.map((code) => String(code || '').trim().toUpperCase()).filter((code) => code.length > 0)));
 }
 
-const SCALP_ENFORCED_RISK_PCT_OF_EQUITY = 10;
+const SCALP_ENFORCED_RISK_PCT_OF_EQUITY = 5;
 const SCALP_IDLE_HEARTBEAT_PERSIST_MS = (() => {
     const n = Number(process.env.SCALP_IDLE_HEARTBEAT_PERSIST_MS ?? 5 * 60_000);
     if (!Number.isFinite(n) || n <= 0) return 5 * 60_000;
