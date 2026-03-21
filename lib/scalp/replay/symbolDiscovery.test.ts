@@ -123,7 +123,6 @@ test('buildNextUniverseWithChurnCaps limits weekly adds/removes and preserves pi
             maxCandidates: 10,
         },
         criteria: {
-            minHistoryDays: 1,
             minHistoryCoveragePct: 1,
             minAvgBarsPerDay: 1,
             minRecentBars7d: 1,
@@ -162,7 +161,7 @@ test('buildNextUniverseWithChurnCaps limits weekly adds/removes and preserves pi
     assert.deepEqual(out.removedSymbols, ['C', 'D']);
 });
 
-test('resolveSeedSymbolEligibility blocks bootstrap symbols when bootstrap seeding is disabled', () => {
+test('resolveSeedSymbolEligibility only gates on strategy fit', () => {
     const nowMs = Date.UTC(2026, 2, 10, 12, 0, 0);
     const policy = {
         version: 1 as const,
@@ -176,7 +175,6 @@ test('resolveSeedSymbolEligibility blocks bootstrap symbols when bootstrap seedi
             maxCandidates: 10,
         },
         criteria: {
-            minHistoryDays: 45,
             minHistoryCoveragePct: 80,
             minAvgBarsPerDay: 900,
             minRecentBars7d: 4000,
@@ -200,15 +198,15 @@ test('resolveSeedSymbolEligibility blocks bootstrap symbols when bootstrap seedi
         policy,
         nowMs,
         candles: [],
-        hasStrategyFit: true,
+        hasStrategyFit: false,
         allowBootstrapSymbols: false,
     });
 
     assert.equal(out.eligible, false);
-    assert.equal(out.reason, 'seed_bootstrap_disabled');
+    assert.equal(out.reason, 'seed_no_strategy_fit');
 });
 
-test('resolveSeedSymbolEligibility enforces bars/day and recent-bars gates for seed stage', () => {
+test('resolveSeedSymbolEligibility does not gate on local history density/recency', () => {
     const nowMs = Date.UTC(2026, 2, 10, 12, 0, 0);
     const policy = {
         version: 1 as const,
@@ -222,7 +220,6 @@ test('resolveSeedSymbolEligibility enforces bars/day and recent-bars gates for s
             maxCandidates: 10,
         },
         criteria: {
-            minHistoryDays: 45,
             minHistoryCoveragePct: 80,
             minAvgBarsPerDay: 900,
             minRecentBars7d: 4000,
@@ -256,8 +253,8 @@ test('resolveSeedSymbolEligibility enforces bars/day and recent-bars gates for s
         hasStrategyFit: true,
         allowBootstrapSymbols: false,
     });
-    assert.equal(sparseOut.eligible, false);
-    assert.equal(sparseOut.reason, 'seed_avg_bars_per_day_below_min');
+    assert.equal(sparseOut.eligible, true);
+    assert.equal(sparseOut.reason, null);
 
     const sparseBootstrapOut = resolveSeedSymbolEligibility({
         policy,
@@ -286,7 +283,7 @@ test('resolveSeedSymbolEligibility enforces bars/day and recent-bars gates for s
     assert.equal(denseOut.reason, null);
 });
 
-test('resolveSeedSymbolEligibility applies category-aware forex threshold overrides', () => {
+test('resolveSeedSymbolEligibility ignores category history thresholds for discover gating', () => {
     const nowMs = Date.UTC(2026, 2, 10, 12, 0, 0);
     const basePolicy = {
         version: 1 as const,
@@ -300,7 +297,6 @@ test('resolveSeedSymbolEligibility applies category-aware forex threshold overri
             maxCandidates: 10,
         },
         criteria: {
-            minHistoryDays: 45,
             minHistoryCoveragePct: 80,
             minAvgBarsPerDay: 900,
             minRecentBars7d: 4000,
@@ -337,8 +333,8 @@ test('resolveSeedSymbolEligibility applies category-aware forex threshold overri
         hasStrategyFit: true,
         allowBootstrapSymbols: false,
     });
-    assert.equal(strictOut.eligible, false);
-    assert.equal(strictOut.reason, 'seed_avg_bars_per_day_below_min');
+    assert.equal(strictOut.eligible, true);
+    assert.equal(strictOut.reason, null);
 
     const categoryAwarePolicy = {
         ...basePolicy,

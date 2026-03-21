@@ -10,7 +10,6 @@
     "maxCandidates": 400
   },
   "criteria": {
-    "minHistoryDays": 45,
     "minHistoryCoveragePct": 80,
     "minAvgBarsPerDay": 900,
     "minRecentBars7d": 4000,

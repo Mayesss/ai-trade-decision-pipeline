@@ -13,7 +13,6 @@ import { inferScalpAssetCategory, type ScalpAssetCategory } from './symbolInfo';
 import { listScalpStrategies } from './strategies/registry';
 
 type ScalpSymbolDiscoveryCriteriaBase = {
-    minHistoryDays: number;
     minHistoryCoveragePct: number;
     minAvgBarsPerDay: number;
     minRecentBars7d: number;
@@ -204,7 +203,6 @@ const DEFAULT_POLICY: ScalpSymbolDiscoveryPolicy = {
         maxCandidates: 40,
     },
     criteria: {
-        minHistoryDays: 45,
         minHistoryCoveragePct: 80,
         minAvgBarsPerDay: 900,
         minRecentBars7d: 4000,
@@ -317,13 +315,6 @@ function normalizeCategoryCriteriaOverrides(
         const fallbackOverride = asRecord(fallbackByCategory[category]);
         const override: Partial<ScalpSymbolDiscoveryCriteriaBase> = {};
 
-        const resolvedMinHistoryDays = hasOwn(rawOverride, 'minHistoryDays')
-            ? Math.max(1, toNonNegativeNumber(rawOverride.minHistoryDays, fallbackOverride.minHistoryDays as number))
-            : hasOwn(fallbackOverride, 'minHistoryDays')
-              ? Math.max(1, toNonNegativeNumber(fallbackOverride.minHistoryDays, 1))
-              : undefined;
-        if (resolvedMinHistoryDays !== undefined) override.minHistoryDays = resolvedMinHistoryDays;
-
         const resolvedMinCoverage = hasOwn(rawOverride, 'minHistoryCoveragePct')
             ? Math.max(1, Math.min(100, toNonNegativeNumber(rawOverride.minHistoryCoveragePct, fallbackOverride.minHistoryCoveragePct as number)))
             : hasOwn(fallbackOverride, 'minHistoryCoveragePct')
@@ -386,7 +377,6 @@ function resolveCriteriaForSymbol(
     const category = inferScalpAssetCategory(symbol);
     const override = base.byCategory?.[category] || null;
     return {
-        minHistoryDays: Number(override?.minHistoryDays ?? base.minHistoryDays),
         minHistoryCoveragePct: Number(override?.minHistoryCoveragePct ?? base.minHistoryCoveragePct),
         minAvgBarsPerDay: Number(override?.minAvgBarsPerDay ?? base.minAvgBarsPerDay),
         minRecentBars7d: Number(override?.minRecentBars7d ?? base.minRecentBars7d),
@@ -481,7 +471,6 @@ function normalizePolicy(raw: unknown): ScalpSymbolDiscoveryPolicy {
             maxCandidates: Math.max(1, toPositiveInt((row.limits as any)?.maxCandidates, DEFAULT_POLICY.limits.maxCandidates)),
         },
         criteria: {
-            minHistoryDays: Math.max(1, toNonNegativeNumber(criteriaRow.minHistoryDays, DEFAULT_POLICY.criteria.minHistoryDays)),
             minHistoryCoveragePct: Math.max(
                 1,
                 Math.min(100, toNonNegativeNumber(criteriaRow.minHistoryCoveragePct, DEFAULT_POLICY.criteria.minHistoryCoveragePct)),
@@ -872,24 +861,11 @@ export function resolveSeedSymbolEligibility(params: {
     allowBootstrapSymbols: boolean;
 }): { eligible: boolean; reason: string | null; quality: SeedHistoryQuality } {
     const quality = summarizeSeedHistoryQuality(params.candles, params.nowMs);
-    const criteria = resolveCriteriaForSymbol(params.policy, String(params.symbol || ''));
     if (!params.hasStrategyFit) {
         return { eligible: false, reason: 'seed_no_strategy_fit', quality };
     }
-    if (quality.toTs === null && !params.allowBootstrapSymbols) {
-        return { eligible: false, reason: 'seed_bootstrap_disabled', quality };
-    }
-    // Bootstrap mode should also repair corrupted or ultra-sparse history.
-    // Final post-fetch quality checks still decide whether the seed succeeds.
-    if (params.allowBootstrapSymbols) {
-        return { eligible: true, reason: null, quality };
-    }
-    if (quality.toTs !== null && quality.avgBarsPerDay < criteria.minAvgBarsPerDay) {
-        return { eligible: false, reason: 'seed_avg_bars_per_day_below_min', quality };
-    }
-    if (quality.toTs !== null && quality.recentBars7d < criteria.minRecentBars7d) {
-        return { eligible: false, reason: 'seed_recent_bars_7d_below_min', quality };
-    }
+    // Discover seeding should not reject candidates based on local history quality.
+    // History sufficiency is handled by the fetch/target loop downstream.
     return { eligible: true, reason: null, quality };
 }
 
@@ -1864,11 +1840,6 @@ export async function evaluateScalpSymbolCandidate(params: {
     }
 
     const reasons: string[] = [];
-    if (spanDays < criteria.minHistoryDays) reasons.push('history_days_below_min');
-    if (coveragePct < criteria.minHistoryCoveragePct) reasons.push('history_coverage_below_min');
-    if (avgBarsPerDay < criteria.minAvgBarsPerDay) reasons.push('avg_bars_per_day_below_min');
-    if (recentBars7d < criteria.minRecentBars7d) reasons.push('recent_bars_7d_below_min');
-    if (medianRangePct < criteria.minMedianRangePct) reasons.push('median_range_pct_below_min');
 
     const isBerlinWeekend = isBerlinWeekendMs(params.nowMs);
     const quoteGateApplied = criteria.requireTradableQuote && params.includeLiveQuotes && !isBerlinWeekend;
@@ -1886,7 +1857,6 @@ export async function evaluateScalpSymbolCandidate(params: {
 
     let score = 0;
     score += clamp((coveragePct / 100) * 25, 0, 25);
-    score += clamp((spanDays / Math.max(criteria.minHistoryDays, 1)) * 20, 0, 20);
     score += clamp((avgBarsPerDay / Math.max(criteria.minAvgBarsPerDay, 1)) * 20, 0, 20);
     score += clamp((recentBars7d / Math.max(criteria.minRecentBars7d, 1)) * 15, 0, 15);
     score += clamp((medianRangePct / Math.max(criteria.minMedianRangePct, 0.0001)) * 10, 0, 10);
