@@ -7,7 +7,9 @@ import {
   buildDiscoverSymbolSyncPlan,
   enforceSingleEnabledPerSymbolStrategy,
   listScalpDurationTimelineRuns,
+  planPrepareOverflowNonEnabledVariants,
   resolveLifecycleTuneFamily,
+  selectPrepareTuneVariantsForStrategy,
   selectPromotionWinnerRowsWithExploration,
   startOfBerlinWeekMonday,
   type PromotionSelectionRow,
@@ -373,6 +375,76 @@ test("resolveLifecycleTuneFamily normalizes tune id families", () => {
   assert.equal(resolveLifecycleTuneFamily("auto_tr1p6"), "auto_tr");
   assert.equal(resolveLifecycleTuneFamily("auto_mix_tr1p4_ts18"), "auto_mix");
   assert.equal(resolveLifecycleTuneFamily("AUTO_SP_BERLIN"), "auto_sp");
+});
+
+test("prepare variant selection warms up with a small seed before wider expansion", () => {
+  const out = selectPrepareTuneVariantsForStrategy({
+    symbol: "FETUSDT",
+    strategyId: "regime_pullback_m15_m3",
+    nowMs: Date.UTC(2026, 2, 21, 9, 0, 0),
+    maxSelected: 4,
+    seedTarget: 2,
+    maxVariantPool: 32,
+    maxNewPerRun: 1,
+    winnerNeighborRadius: 1,
+    existingByKey: new Map(),
+  } as any);
+
+  assert.equal(out.length, 2);
+  assert.equal(out[0]?.tuneId, "default");
+});
+
+test("prepare overflow planning keeps protected/enabled rows and prunes oldest non-enabled overflow", () => {
+  const out = planPrepareOverflowNonEnabledVariants({
+    hardCap: 3,
+    protectedDeploymentIds: ["dep_4"],
+    rows: [
+      {
+        deploymentId: "dep_1",
+        enabled: false,
+        inUniverse: true,
+        promotionGate: { forwardValidation: { meanExpectancyR: 0.01 } },
+        createdAtMs: 10,
+        updatedAtMs: 10,
+      },
+      {
+        deploymentId: "dep_2",
+        enabled: true,
+        inUniverse: true,
+        promotionGate: { forwardValidation: { meanExpectancyR: 0.05 } },
+        createdAtMs: 20,
+        updatedAtMs: 20,
+      },
+      {
+        deploymentId: "dep_3",
+        enabled: false,
+        inUniverse: true,
+        promotionGate: { forwardValidation: { meanExpectancyR: 0.08 } },
+        createdAtMs: 30,
+        updatedAtMs: 30,
+      },
+      {
+        deploymentId: "dep_4",
+        enabled: false,
+        inUniverse: true,
+        promotionGate: null,
+        createdAtMs: 40,
+        updatedAtMs: 40,
+      },
+      {
+        deploymentId: "dep_5",
+        enabled: false,
+        inUniverse: false,
+        promotionGate: { forwardValidation: { meanExpectancyR: -0.2 } },
+        createdAtMs: 50,
+        updatedAtMs: 50,
+      },
+    ],
+  });
+
+  assert.equal(out.keepIds.includes("dep_2"), true);
+  assert.equal(out.keepIds.includes("dep_4"), true);
+  assert.deepEqual(out.pruneIds, ["dep_1", "dep_5"]);
 });
 
 test("startOfBerlinWeekMonday resolves Monday boundary in Berlin timezone", () => {

@@ -293,22 +293,6 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(normalizeForStableComparison(value));
 }
 
-function hashString32(value: string): number {
-  let hash = 2166136261 >>> 0;
-  for (let idx = 0; idx < value.length; idx += 1) {
-    hash ^= value.charCodeAt(idx);
-    hash = Math.imul(hash, 16777619) >>> 0;
-  }
-  return hash >>> 0;
-}
-
-function rotateArrayByOffset<T>(rows: T[], offset: number): T[] {
-  if (!rows.length) return [];
-  const normalizedOffset = Math.max(0, Math.floor(offset)) % rows.length;
-  if (!normalizedOffset) return rows.slice();
-  return rows.slice(normalizedOffset).concat(rows.slice(0, normalizedOffset));
-}
-
 function normalizePromotionGateForCompare(
   gate: ScalpDeploymentPromotionGate | null | undefined,
 ): Record<string, unknown> | null {
@@ -464,24 +448,128 @@ function lifecycleIsSuppressed(
 
 type PrepareExistingDeployment = {
   deploymentId: string;
+  strategyId: string;
+  tuneId: string;
   enabled: boolean;
+  inUniverse: boolean;
   promotionGate: unknown;
+  createdAtMs: number;
+  updatedAtMs: number;
 };
 
-function selectPrepareTuneVariantsForStrategy(params: {
+function extractPrepareVariantScore(gateRaw: unknown): number {
+  const gate = asJsonObject(gateRaw);
+  const forward = asJsonObject(gate?.forwardValidation);
+  if (!forward) return Number.NEGATIVE_INFINITY;
+  const medianExpectancy = asNullableFiniteNumber(
+    forward.weeklyMedianExpectancyR ?? forward.medianExpectancyR,
+  );
+  const meanExpectancy = asNullableFiniteNumber(
+    forward.weeklyMeanExpectancyR ?? forward.meanExpectancyR,
+  );
+  const p25Expectancy = asNullableFiniteNumber(
+    forward.weeklyP25ExpectancyR ?? forward.p25ExpectancyR,
+  );
+  const profitFactor = asNullableFiniteNumber(forward.meanProfitFactor);
+  const bestExpectancy =
+    medianExpectancy ?? meanExpectancy ?? p25Expectancy ?? -1;
+  const pf = profitFactor ?? 0;
+  return bestExpectancy * 1_000 + pf * 10;
+}
+
+function comparePrepareExistingRowsPriority(
+  a: PrepareExistingDeployment,
+  b: PrepareExistingDeployment,
+): number {
+  if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+  const scoreDiff =
+    extractPrepareVariantScore(b.promotionGate) -
+    extractPrepareVariantScore(a.promotionGate);
+  if (Math.abs(scoreDiff) > 1e-9) return scoreDiff > 0 ? 1 : -1;
+  if (a.inUniverse !== b.inUniverse) return a.inUniverse ? -1 : 1;
+  if (a.updatedAtMs !== b.updatedAtMs) return b.updatedAtMs - a.updatedAtMs;
+  if (a.createdAtMs !== b.createdAtMs) return b.createdAtMs - a.createdAtMs;
+  return a.deploymentId.localeCompare(b.deploymentId);
+}
+
+function collectNeighborUnseenVariants(params: {
+  orderedVariants: ScalpResearchTuneVariant[];
+  unseenTuneIds: Set<string>;
+  winnerTuneIds: string[];
+  radius: number;
+}): ScalpResearchTuneVariant[] {
+  const radius = Math.max(1, Math.min(6, Math.floor(params.radius)));
+  if (!params.orderedVariants.length) return [];
+  if (!params.unseenTuneIds.size) return [];
+  if (!params.winnerTuneIds.length) return [];
+
+  const indexByTuneId = new Map<string, number>();
+  params.orderedVariants.forEach((variant, idx) => {
+    indexByTuneId.set(variant.tuneId, idx);
+  });
+  const winnerIndices = params.winnerTuneIds
+    .map((tuneId) => indexByTuneId.get(tuneId))
+    .filter((idx): idx is number => Number.isFinite(idx))
+    .sort((a, b) => a - b);
+  if (!winnerIndices.length) return [];
+
+  const out: ScalpResearchTuneVariant[] = [];
+  const seenTuneIds = new Set<string>();
+  for (let distance = 1; distance <= radius; distance += 1) {
+    for (const center of winnerIndices) {
+      const leftIdx = center - distance;
+      if (leftIdx >= 0) {
+        const left = params.orderedVariants[leftIdx];
+        if (
+          left &&
+          params.unseenTuneIds.has(left.tuneId) &&
+          !seenTuneIds.has(left.tuneId)
+        ) {
+          seenTuneIds.add(left.tuneId);
+          out.push(left);
+        }
+      }
+      const rightIdx = center + distance;
+      if (rightIdx < params.orderedVariants.length) {
+        const right = params.orderedVariants[rightIdx];
+        if (
+          right &&
+          params.unseenTuneIds.has(right.tuneId) &&
+          !seenTuneIds.has(right.tuneId)
+        ) {
+          seenTuneIds.add(right.tuneId);
+          out.push(right);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+export function selectPrepareTuneVariantsForStrategy(params: {
   symbol: string;
   strategyId: string;
   nowMs: number;
   maxSelected: number;
+  seedTarget: number;
   maxVariantPool: number;
   maxNewPerRun: number;
+  winnerNeighborRadius: number;
   existingByKey: Map<string, PrepareExistingDeployment>;
 }): ScalpResearchTuneVariant[] {
   const maxSelected = Math.max(1, Math.floor(params.maxSelected));
+  const seedTarget = Math.max(
+    1,
+    Math.min(maxSelected, Math.floor(params.seedTarget)),
+  );
   const maxVariantPool = Math.max(maxSelected, Math.floor(params.maxVariantPool));
   const maxNewPerRun = Math.max(
     0,
     Math.min(maxSelected, Math.floor(params.maxNewPerRun)),
+  );
+  const winnerNeighborRadius = Math.max(
+    1,
+    Math.min(6, Math.floor(params.winnerNeighborRadius)),
   );
   const rawVariants = buildScalpResearchTuneVariants({
     symbol: params.symbol,
@@ -503,14 +591,23 @@ function selectPrepareTuneVariantsForStrategy(params: {
       configOverride: variant.configOverride || null,
     });
   }
+
+  const dedupedByTuneId = new Map<string, ScalpResearchTuneVariant>();
+  for (const variant of deduped) {
+    dedupedByTuneId.set(variant.tuneId, variant);
+  }
+
+  const seenAndEligibleRows: PrepareExistingDeployment[] = [];
   const unseen: ScalpResearchTuneVariant[] = [];
-  const seenAndEligible: ScalpResearchTuneVariant[] = [];
+  const unseenTuneIds = new Set<string>();
+  const seenAndEligibleTuneIds = new Set<string>();
   for (const variant of deduped) {
     const existing = params.existingByKey.get(
       `${params.strategyId}::${variant.tuneId}`,
     );
     if (!existing) {
       unseen.push(variant);
+      unseenTuneIds.add(variant.tuneId);
       continue;
     }
     const lifecycle = normalizeLifecycleFromGate({
@@ -520,14 +617,45 @@ function selectPrepareTuneVariantsForStrategy(params: {
       nowMs: params.nowMs,
     });
     if (lifecycleIsSuppressed(lifecycle, params.nowMs)) continue;
-    seenAndEligible.push(variant);
+    seenAndEligibleRows.push(existing);
+    seenAndEligibleTuneIds.add(variant.tuneId);
   }
+
+  const sortedSeenRows = seenAndEligibleRows
+    .slice()
+    .sort(comparePrepareExistingRowsPriority);
+  const sortedSeenVariants = sortedSeenRows
+    .map((row) => dedupedByTuneId.get(row.tuneId) || null)
+    .filter((row): row is ScalpResearchTuneVariant => Boolean(row));
+  const winnerTuneIds = sortedSeenRows
+    .filter((row, idx) => row.enabled || idx === 0)
+    .map((row) => row.tuneId);
+  const warmupMode = sortedSeenVariants.length < seedTarget;
+  const targetSelected = warmupMode ? seedTarget : maxSelected;
+  const warmupNeed = Math.max(0, seedTarget - sortedSeenVariants.length);
+  const maxNewBudget = warmupMode
+    ? warmupNeed
+    : Math.min(maxNewPerRun, maxSelected);
+  const neighborUnseen = collectNeighborUnseenVariants({
+    orderedVariants: deduped,
+    unseenTuneIds,
+    winnerTuneIds,
+    radius: winnerNeighborRadius,
+  });
+  const rankedUnseen = warmupMode
+    ? unseen
+    : neighborUnseen.concat(
+        unseen.filter(
+          (row) => !neighborUnseen.some((neighbor) => neighbor.tuneId === row.tuneId),
+        ),
+      );
 
   const selected: ScalpResearchTuneVariant[] = [];
   const selectedTuneIds = new Set<string>();
+  let selectedNewCount = 0;
   const push = (variant: ScalpResearchTuneVariant | null | undefined) => {
     if (!variant) return;
-    if (selected.length >= maxSelected) return;
+    if (selected.length >= targetSelected) return;
     const tuneId = String(variant.tuneId || "")
       .trim()
       .toLowerCase();
@@ -537,25 +665,34 @@ function selectPrepareTuneVariantsForStrategy(params: {
       tuneId,
       configOverride: variant.configOverride || null,
     });
+    if (!seenAndEligibleTuneIds.has(tuneId)) {
+      selectedNewCount += 1;
+    }
   };
 
-  for (const variant of unseen.slice(0, maxNewPerRun)) {
+  const reservedSeenSlots = Math.max(
+    0,
+    targetSelected - Math.min(maxNewBudget, rankedUnseen.length),
+  );
+  for (const variant of sortedSeenVariants.slice(0, reservedSeenSlots)) {
     push(variant);
   }
-
-  const remainingPool = seenAndEligible.concat(unseen.slice(maxNewPerRun));
-  if (remainingPool.length > 0 && selected.length < maxSelected) {
-    const rotationEpoch = Math.floor(params.nowMs / (6 * 60 * 60_000));
-    const rotationSeed = hashString32(
-      `${params.symbol}:${params.strategyId}:${rotationEpoch}`,
-    );
-    const rotated = rotateArrayByOffset(
-      remainingPool,
-      rotationSeed % remainingPool.length,
-    );
-    for (const variant of rotated) {
+  for (const variant of rankedUnseen) {
+    if (selectedNewCount >= maxNewBudget) break;
+    push(variant);
+    if (selected.length >= targetSelected) break;
+  }
+  if (selected.length < targetSelected) {
+    for (const variant of sortedSeenVariants) {
       push(variant);
-      if (selected.length >= maxSelected) break;
+      if (selected.length >= targetSelected) break;
+    }
+  }
+  if (selected.length < targetSelected && selectedNewCount < maxNewBudget) {
+    for (const variant of unseen) {
+      if (selectedNewCount >= maxNewBudget) break;
+      push(variant);
+      if (selected.length >= targetSelected) break;
     }
   }
 
@@ -564,6 +701,154 @@ function selectPrepareTuneVariantsForStrategy(params: {
   }
 
   return selected;
+}
+
+type PrepareOverflowCandidate = {
+  deploymentId: string;
+  enabled: boolean;
+  inUniverse: boolean;
+  promotionGate: unknown;
+  createdAtMs: number;
+  updatedAtMs: number;
+};
+
+export function planPrepareOverflowNonEnabledVariants(params: {
+  rows: PrepareOverflowCandidate[];
+  hardCap: number;
+  protectedDeploymentIds?: string[];
+}): { keepIds: string[]; pruneIds: string[] } {
+  const hardCap = Math.max(1, Math.floor(params.hardCap));
+  const rows = Array.isArray(params.rows) ? params.rows.slice() : [];
+  if (!rows.length) return { keepIds: [], pruneIds: [] };
+
+  const protectedIds = new Set(
+    (params.protectedDeploymentIds || [])
+      .map((row) => String(row || "").trim())
+      .filter((row) => Boolean(row)),
+  );
+  const keep = new Set<string>();
+  for (const row of rows) {
+    if (row.enabled || protectedIds.has(row.deploymentId)) {
+      keep.add(row.deploymentId);
+    }
+  }
+
+  const ranked = rows
+    .filter((row) => !keep.has(row.deploymentId))
+    .sort((a, b) => {
+      if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+      const scoreDiff =
+        extractPrepareVariantScore(b.promotionGate) -
+        extractPrepareVariantScore(a.promotionGate);
+      if (Math.abs(scoreDiff) > 1e-9) return scoreDiff > 0 ? 1 : -1;
+      if (a.inUniverse !== b.inUniverse) return a.inUniverse ? -1 : 1;
+      if (a.updatedAtMs !== b.updatedAtMs) return b.updatedAtMs - a.updatedAtMs;
+      if (a.createdAtMs !== b.createdAtMs) return b.createdAtMs - a.createdAtMs;
+      return a.deploymentId.localeCompare(b.deploymentId);
+    });
+  for (const row of ranked) {
+    if (keep.size >= hardCap) break;
+    keep.add(row.deploymentId);
+  }
+
+  const prune = rows
+    .filter((row) => !keep.has(row.deploymentId) && !row.enabled)
+    .sort((a, b) => {
+      if (a.updatedAtMs !== b.updatedAtMs) return a.updatedAtMs - b.updatedAtMs;
+      if (a.createdAtMs !== b.createdAtMs) return a.createdAtMs - b.createdAtMs;
+      return a.deploymentId.localeCompare(b.deploymentId);
+    })
+    .map((row) => row.deploymentId);
+  return {
+    keepIds: Array.from(keep),
+    pruneIds: prune,
+  };
+}
+
+async function prunePrepareOverflowNonEnabledVariants(params: {
+  db: ReturnType<typeof scalpPrisma>;
+  symbol: string;
+  strategyId: string;
+  hardCap: number;
+  protectedDeploymentIds: string[];
+}): Promise<{ pruned: number; blockedByLedger: number }> {
+  const hardCap = Math.max(1, Math.floor(params.hardCap));
+  const rows = await params.db.$queryRaw<
+    Array<{
+      deploymentId: string;
+      enabled: boolean;
+      inUniverse: boolean;
+      promotionGate: unknown;
+      createdAtMs: bigint | number;
+      updatedAtMs: bigint | number;
+    }>
+  >(Prisma.sql`
+        SELECT
+            deployment_id AS "deploymentId",
+            enabled,
+            in_universe AS "inUniverse",
+            promotion_gate AS "promotionGate",
+            EXTRACT(EPOCH FROM created_at) * 1000 AS "createdAtMs",
+            EXTRACT(EPOCH FROM updated_at) * 1000 AS "updatedAtMs"
+        FROM scalp_deployments
+        WHERE symbol = ${params.symbol}
+          AND strategy_id = ${params.strategyId};
+    `);
+  if (rows.length <= hardCap) return { pruned: 0, blockedByLedger: 0 };
+
+  const plan = planPrepareOverflowNonEnabledVariants({
+    rows: rows.map((row) => ({
+      deploymentId: row.deploymentId,
+      enabled: Boolean(row.enabled),
+      inUniverse: Boolean(row.inUniverse),
+      promotionGate: row.promotionGate,
+      createdAtMs: Math.max(0, Math.floor(Number(row.createdAtMs) || 0)),
+      updatedAtMs: Math.max(0, Math.floor(Number(row.updatedAtMs) || 0)),
+    })),
+    hardCap,
+    protectedDeploymentIds: params.protectedDeploymentIds,
+  });
+  if (!plan.pruneIds.length) return { pruned: 0, blockedByLedger: 0 };
+
+  const blockedRows = await params.db.$queryRaw<Array<{ deploymentId: string }>>(
+    Prisma.sql`
+          SELECT DISTINCT deployment_id AS "deploymentId"
+          FROM scalp_trade_ledger
+          WHERE deployment_id IN (${Prisma.join(plan.pruneIds)});
+      `,
+  );
+  const blocked = new Set(
+    blockedRows
+      .map((row) => String(row.deploymentId || "").trim())
+      .filter((row) => Boolean(row)),
+  );
+  const deletableIds = plan.pruneIds.filter((row) => !blocked.has(row));
+  const blockedIds = plan.pruneIds.filter((row) => blocked.has(row));
+
+  if (deletableIds.length > 0) {
+    await params.db.$executeRaw(Prisma.sql`
+          DELETE FROM scalp_deployments
+          WHERE deployment_id IN (${Prisma.join(deletableIds)})
+            AND enabled = FALSE;
+      `);
+  }
+  if (blockedIds.length > 0) {
+    await params.db.$executeRaw(Prisma.sql`
+          UPDATE scalp_deployments
+          SET
+              in_universe = FALSE,
+              worker_dirty = FALSE,
+              promotion_dirty = FALSE,
+              updated_by = 'pipeline:prepare:cap',
+              updated_at = NOW()
+          WHERE deployment_id IN (${Prisma.join(blockedIds)})
+            AND enabled = FALSE;
+      `);
+  }
+  return {
+    pruned: deletableIds.length,
+    blockedByLedger: blockedIds.length,
+  };
 }
 
 function withBerlinEntrySessionProfile(
@@ -3111,6 +3396,16 @@ export async function runPreparePipelineJob(
         ),
       ),
     );
+    const seedVariantsPerStrategy = Math.max(
+      1,
+      Math.min(
+        variantsPerStrategy,
+        toPositiveInt(
+          process.env.SCALP_PIPELINE_PREPARE_SEED_VARIANTS_PER_STRATEGY,
+          Math.min(2, variantsPerStrategy),
+        ),
+      ),
+    );
     const newVariantsPerStrategyRaw = Math.floor(
       Number(process.env.SCALP_PIPELINE_PREPARE_NEW_VARIANTS_PER_STRATEGY),
     );
@@ -3119,7 +3414,27 @@ export async function runPreparePipelineJob(
           0,
           Math.min(variantsPerStrategy, newVariantsPerStrategyRaw),
         )
-      : Math.min(2, variantsPerStrategy);
+      : Math.min(1, variantsPerStrategy);
+    const winnerNeighborRadius = Math.max(
+      1,
+      Math.min(
+        6,
+        toPositiveInt(
+          process.env.SCALP_PIPELINE_PREPARE_WINNER_NEIGHBOR_RADIUS,
+          1,
+        ),
+      ),
+    );
+    const hardCapPerStrategy = Math.max(
+      variantsPerStrategy,
+      Math.min(
+        256,
+        toPositiveInt(
+          process.env.SCALP_PIPELINE_PREPARE_HARD_CAP_PER_STRATEGY,
+          Math.max(12, variantsPerStrategy * 3),
+        ),
+      ),
+    );
     const nowMs = Date.now();
 
     const policy = await loadScalpSymbolDiscoveryPolicy();
@@ -3132,6 +3447,8 @@ export async function runPreparePipelineJob(
     let retried = 0;
     let failed = 0;
     let queuedWeeklyRows = 0;
+    let prunedOverflowDeployments = 0;
+    let blockedOverflowByLedger = 0;
 
     for (let idx = 0; idx < claimed.length; idx += 1) {
       const row = claimed[idx]!;
@@ -3169,6 +3486,8 @@ export async function runPreparePipelineJob(
             retried,
             failed,
             queuedWeeklyRows,
+            prunedOverflowDeployments,
+            blockedOverflowByLedger,
           },
         });
         continue;
@@ -3189,7 +3508,10 @@ export async function runPreparePipelineJob(
             strategyId: string;
             tuneId: string;
             enabled: boolean;
+            inUniverse: boolean;
             promotionGate: unknown;
+            createdAtMs: bigint | number;
+            updatedAtMs: bigint | number;
           }>
         >(Prisma.sql`
                     SELECT
@@ -3197,7 +3519,10 @@ export async function runPreparePipelineJob(
                         strategy_id AS "strategyId",
                         tune_id AS "tuneId",
                         enabled,
-                        promotion_gate AS "promotionGate"
+                        in_universe AS "inUniverse",
+                        promotion_gate AS "promotionGate",
+                        EXTRACT(EPOCH FROM created_at) * 1000 AS "createdAtMs",
+                        EXTRACT(EPOCH FROM updated_at) * 1000 AS "updatedAtMs"
                     FROM scalp_deployments
                     WHERE symbol = ${symbol};
                 `);
@@ -3206,7 +3531,16 @@ export async function runPreparePipelineJob(
           const key = `${dep.strategyId}::${dep.tuneId}`;
           const current = existingByKey.get(key) || null;
           if (!current) {
-            existingByKey.set(key, dep);
+            existingByKey.set(key, {
+              deploymentId: dep.deploymentId,
+              strategyId: dep.strategyId,
+              tuneId: dep.tuneId,
+              enabled: dep.enabled,
+              inUniverse: Boolean(dep.inUniverse),
+              promotionGate: dep.promotionGate,
+              createdAtMs: Math.max(0, Math.floor(Number(dep.createdAtMs) || 0)),
+              updatedAtMs: Math.max(0, Math.floor(Number(dep.updatedAtMs) || 0)),
+            });
             continue;
           }
           const currentVenue = resolveScalpDeploymentVenueFromId(
@@ -3214,7 +3548,16 @@ export async function runPreparePipelineJob(
           );
           const depVenue = resolveScalpDeploymentVenueFromId(dep.deploymentId);
           if (currentVenue !== symbolVenue && depVenue === symbolVenue) {
-            existingByKey.set(key, dep);
+            existingByKey.set(key, {
+              deploymentId: dep.deploymentId,
+              strategyId: dep.strategyId,
+              tuneId: dep.tuneId,
+              enabled: dep.enabled,
+              inUniverse: Boolean(dep.inUniverse),
+              promotionGate: dep.promotionGate,
+              createdAtMs: Math.max(0, Math.floor(Number(dep.createdAtMs) || 0)),
+              updatedAtMs: Math.max(0, Math.floor(Number(dep.updatedAtMs) || 0)),
+            });
           }
         }
         const preparedIds: string[] = [];
@@ -3225,9 +3568,22 @@ export async function runPreparePipelineJob(
             strategyId,
             nowMs,
             maxSelected: variantsPerStrategy,
+            seedTarget: seedVariantsPerStrategy,
             maxVariantPool: variantPoolPerStrategy,
             maxNewPerRun: newVariantsPerStrategy,
+            winnerNeighborRadius,
             existingByKey,
+          });
+          const protectedStrategyDeploymentIds = variants.map((variant) => {
+            const existing =
+              existingByKey.get(`${strategyId}::${variant.tuneId}`) || null;
+            if (existing?.deploymentId) return existing.deploymentId;
+            return resolveScalpDeployment({
+              venue: symbolVenue,
+              symbol,
+              strategyId,
+              tuneId: variant.tuneId,
+            }).deploymentId;
           });
           const rows = variants
             .map((variant) => {
@@ -3278,19 +3634,29 @@ export async function runPreparePipelineJob(
                 updatedBy: string;
               } => Boolean(row),
             );
-          if (!rows.length) continue;
-          const upserted = await upsertScalpDeploymentRegistryEntriesBulk(rows);
-          for (const entry of upserted.entries) {
-            const lifecycle = normalizeLifecycleFromGate({
-              gate: entry.promotionGate,
-              tuneId: entry.tuneId,
-              enabled: entry.enabled,
-              nowMs,
-            });
-            if (!entry.enabled || lifecycle.state === "incumbent_refresh") {
-              preparedIds.push(entry.deploymentId);
+          if (rows.length > 0) {
+            const upserted = await upsertScalpDeploymentRegistryEntriesBulk(rows);
+            for (const entry of upserted.entries) {
+              const lifecycle = normalizeLifecycleFromGate({
+                gate: entry.promotionGate,
+                tuneId: entry.tuneId,
+                enabled: entry.enabled,
+                nowMs,
+              });
+              if (!entry.enabled || lifecycle.state === "incumbent_refresh") {
+                preparedIds.push(entry.deploymentId);
+              }
             }
           }
+          const pruneOut = await prunePrepareOverflowNonEnabledVariants({
+            db,
+            symbol,
+            strategyId,
+            hardCap: hardCapPerStrategy,
+            protectedDeploymentIds: protectedStrategyDeploymentIds,
+          });
+          prunedOverflowDeployments += pruneOut.pruned;
+          blockedOverflowByLedger += pruneOut.blockedByLedger;
         }
 
         const uniqPreparedIds = Array.from(new Set(preparedIds));
@@ -3390,12 +3756,14 @@ export async function runPreparePipelineJob(
           processed: idx + 1,
           total: claimed.length,
           activeSymbols,
-          succeeded,
-          retried,
-          failed,
-          queuedWeeklyRows,
-        },
-      });
+            succeeded,
+            retried,
+            failed,
+            queuedWeeklyRows,
+            prunedOverflowDeployments,
+            blockedOverflowByLedger,
+          },
+        });
     }
 
     const pendingAfter = await countPendingPrepareSymbols();
@@ -3409,15 +3777,17 @@ export async function runPreparePipelineJob(
       downstreamRequested: queuedWeeklyRows > 0,
       progressLabel:
         claimed.length > 0 ? `processed ${claimed.length}` : "idle",
-      details: {
-        activeSymbols,
-        claimed: claimed.length,
-        succeeded,
-        retried,
-        failed,
-        queuedWeeklyRows,
-      },
-    };
+        details: {
+          activeSymbols,
+          claimed: claimed.length,
+          succeeded,
+          retried,
+          failed,
+          queuedWeeklyRows,
+          prunedOverflowDeployments,
+          blockedOverflowByLedger,
+        },
+      };
   });
 }
 
