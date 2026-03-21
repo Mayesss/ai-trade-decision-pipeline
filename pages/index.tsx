@@ -2640,9 +2640,14 @@ export default function Home() {
       ),
     [scalpOpsDeployments],
   );
-  const scalpPipelineJobs = Array.isArray(scalpSummary?.jobs)
-    ? scalpSummary.jobs
-    : [];
+  const scalpPipelineJobs = (
+    Array.isArray(scalpSummary?.jobs) ? scalpSummary.jobs : []
+  ).filter((job) => {
+    const kind = String(job?.jobKind || "")
+      .trim()
+      .toLowerCase();
+    return kind !== "discover" && kind !== "load_candles";
+  });
   const scalpPanicStop =
     scalpSummary?.panicStop || scalpSummary?.pipeline?.panicStop || null;
   const scalpPanicStopEnabled = scalpPanicStop?.enabled === true;
@@ -2652,16 +2657,8 @@ export default function Home() {
   const scalpPipelineStatusPanel = (() => {
     const explicit = scalpSummary?.pipeline?.statusPanel || null;
     if (explicit) return explicit;
-    const orderedKinds = [
-      "discover",
-      "load_candles",
-      "prepare",
-      "worker",
-      "promotion",
-    ];
+    const orderedKinds = ["prepare", "worker", "promotion"];
     const labelsByKind: Record<string, string> = {
-      discover: "Discover symbols",
-      load_candles: "Load candles",
       prepare: "Prepare deployments",
       worker: "Run worker",
       promotion: "Promotion",
@@ -3251,10 +3248,13 @@ export default function Home() {
           queueSucceeded;
         const queueExecutionTotal =
           queueRunning + queuePending + queueRetry + queueFailed;
-        const runningProgressPct =
-          queueExecutionTotal > 0
-            ? (queueRunning / queueExecutionTotal) * 100
-            : 0;
+        const completedWork = queueSucceeded + queueFailed;
+        const progressDenominator =
+          completedWork + queuePending + queueRunning + queueRetry;
+        const progressPct =
+          progressDenominator > 0
+            ? (completedWork / progressDenominator) * 100
+            : null;
         const successDenominator = queueSucceeded + queueFailed;
         const successRatePct =
           successDenominator > 0
@@ -3319,15 +3319,18 @@ export default function Home() {
           ],
           visualMetrics: [
             {
-              label: "Running",
-              valueLabel: `${queueRunning} / ${queueExecutionTotal}`,
-              pct: runningProgressPct,
+              label: "Progress",
+              valueLabel:
+                progressPct === null ? "—" : `${progressPct.toFixed(0)}%`,
+              pct: progressPct,
               tone:
-                queueExecutionTotal > 0
-                  ? queueRunning > 0
-                    ? "warning"
-                    : "neutral"
-                  : "positive",
+                progressPct === null
+                  ? "neutral"
+                  : progressPct >= 100
+                    ? "positive"
+                    : queueRunning > 0
+                      ? "warning"
+                      : "neutral",
             },
             {
               label: "Success Rate",
@@ -3490,9 +3493,16 @@ export default function Home() {
       return PauseCircle;
     return TimerReset;
   };
-  const scalpPipelineFlowSteps = Array.isArray(scalpPipelineStatusPanel?.steps)
-    ? scalpPipelineStatusPanel.steps
-    : [];
+  const scalpPipelineFlowSteps = (
+    Array.isArray(scalpPipelineStatusPanel?.steps)
+      ? scalpPipelineStatusPanel.steps
+      : []
+  ).filter((step) => {
+    const id = String(step?.id || "")
+      .trim()
+      .toLowerCase();
+    return id !== "discover" && id !== "load_candles";
+  });
   const scalpPipelineStepVisualMeta = (state?: ScalpPipelineStepState) => {
     if (state === "success") {
       return {
@@ -5246,7 +5256,7 @@ export default function Home() {
                             </button>
                           </div>
                           <p className={`mt-2 text-sm ${scalpTextSecondaryClass}`}>
-                            Visual lane view from discover to promotion. Each
+                            Visual lane view from prepare to promotion. Each
                             lane keeps detailed cron metrics below.
                           </p>
                           {scalpPipelineFlowSteps.length ? (
@@ -5269,6 +5279,19 @@ export default function Home() {
                                 const invokeDisabled =
                                   !row?.invokePath ||
                                   Boolean(invokeState?.running);
+                                const rowQueue = (row?.resultPreview?.queue ||
+                                  {}) as Record<string, unknown>;
+                                const rowRunningCount = Math.max(
+                                  0,
+                                  Math.floor(Number(rowQueue.running || 0)),
+                                );
+                                const rowQueuedCount = Math.max(
+                                  0,
+                                  Math.floor(
+                                    Number(rowQueue.pending || 0) +
+                                      Number(rowQueue.retryWait || 0),
+                                  ),
+                                );
                                 return (
                                   <div
                                     key={`pipeline-step-${step.id || step.label}`}
@@ -5306,7 +5329,7 @@ export default function Home() {
                                         ? `last ${formatScalpTime(row.lastRunAtMs)} · next ${formatScalpNextRunIn(
                                             row.nextRunAtMs,
                                             scalpCronNowMs,
-                                          )}`
+                                          )} · ${rowRunningCount} running · ${rowQueuedCount} queued`
                                         : String(step.detail || "—")}
                                     </div>
                                     {(row?.visualMetrics || []).length ? (
