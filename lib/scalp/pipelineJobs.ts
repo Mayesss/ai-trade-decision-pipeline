@@ -1019,6 +1019,55 @@ function resolveRequiredSuccessiveWeeks(): number {
   );
 }
 
+function resolveLoadPrewarmWeeks(requiredWeeks: number): number {
+  return Math.max(
+    1,
+    Math.min(
+      requiredWeeks,
+      toPositiveInt(process.env.SCALP_PIPELINE_LOAD_PREWARM_WEEKS, 1),
+    ),
+  );
+}
+
+function resolveLoadBackfillChunkWeeks(
+  requiredWeeks: number,
+  prewarmWeeks: number,
+): number {
+  return Math.max(
+    prewarmWeeks,
+    Math.min(
+      requiredWeeks,
+      toPositiveInt(
+        process.env.SCALP_PIPELINE_LOAD_BACKFILL_CHUNK_WEEKS,
+        prewarmWeeks,
+      ),
+    ),
+  );
+}
+
+function resolveLoadIncludeInactiveBitget(): boolean {
+  return envBool("SCALP_PIPELINE_LOAD_INCLUDE_INACTIVE_BITGET", true);
+}
+
+function resolveLoadInactiveBitgetWeeks(requiredWeeks: number): number {
+  return Math.max(
+    1,
+    Math.min(
+      requiredWeeks,
+      toPositiveInt(process.env.SCALP_PIPELINE_LOAD_INACTIVE_BITGET_WEEKS, 12),
+    ),
+  );
+}
+
+function resolveBitgetSymbolLikePattern(): string {
+  const productType = String(resolveProductType() || "usdt-futures")
+    .trim()
+    .toLowerCase();
+  if (productType === "usdc-futures") return "%USDC";
+  if (productType === "coin-futures") return "%USD";
+  return "%USDT";
+}
+
 function resolvePromotionFreshWeeks(): number {
   return Math.max(
     12,
@@ -1534,6 +1583,8 @@ async function runWithPipelineJobLock(
 
 async function countPendingLoadSymbols(): Promise<number> {
   const berlinWeekStartMs = startOfBerlinWeekMonday(Date.now());
+  const includeInactiveBitget = resolveLoadIncludeInactiveBitget();
+  const bitgetSymbolLikePattern = resolveBitgetSymbolLikePattern();
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
     Array<{ count: bigint | number | string }>
@@ -1549,6 +1600,11 @@ async function countPendingLoadSymbols(): Promise<number> {
         WHERE (
                 active = TRUE
                 OR symbol IN (SELECT symbol FROM due_enabled_symbols)
+                OR (
+                  ${includeInactiveBitget} = TRUE
+                  AND active = FALSE
+                  AND UPPER(symbol) LIKE ${bitgetSymbolLikePattern}
+                )
               )
           AND load_status IN ('pending', 'retry_wait')
           AND COALESCE(load_next_run_at, NOW()) <= NOW();
@@ -2667,10 +2723,26 @@ export async function runDiscoverPipelineJob(
 async function claimLoadSymbols(
   limit: number,
   berlinWeekStartMs: number,
-): Promise<Array<{ symbol: string; attempts: number }>> {
+  includeInactiveBitget: boolean,
+  bitgetSymbolLikePattern: string,
+): Promise<
+  Array<{
+    symbol: string;
+    attempts: number;
+    active: boolean;
+    dueEnabled: boolean;
+    bitgetSymbol: boolean;
+  }>
+> {
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
-    Array<{ symbol: string; attempts: number }>
+    Array<{
+      symbol: string;
+      attempts: number;
+      active: boolean;
+      dueEnabled: boolean;
+      bitgetSymbol: boolean;
+    }>
   >(Prisma.sql`
         WITH due_enabled_symbols AS (
             SELECT DISTINCT d.symbol
@@ -2679,15 +2751,29 @@ async function claimLoadSymbols(
               AND COALESCE((d.promotion_gate #>> '{lifecycle,lastRolloverBerlinWeekStartMs}')::bigint, 0) < ${berlinWeekStartMs}
         ),
         candidate AS (
-            SELECT symbol
-            FROM scalp_pipeline_symbols
+            SELECT
+                p.symbol,
+                p.active,
+                (p.symbol IN (SELECT symbol FROM due_enabled_symbols)) AS "dueEnabled",
+                (UPPER(p.symbol) LIKE ${bitgetSymbolLikePattern}) AS "bitgetSymbol",
+                CASE
+                    WHEN p.symbol IN (SELECT symbol FROM due_enabled_symbols) THEN 0
+                    WHEN p.active = TRUE THEN 1
+                    ELSE 2
+                END AS priority_tier
+            FROM scalp_pipeline_symbols p
             WHERE (
-                    active = TRUE
-                    OR symbol IN (SELECT symbol FROM due_enabled_symbols)
+                    p.active = TRUE
+                    OR p.symbol IN (SELECT symbol FROM due_enabled_symbols)
+                    OR (
+                      ${includeInactiveBitget} = TRUE
+                      AND p.active = FALSE
+                      AND UPPER(p.symbol) LIKE ${bitgetSymbolLikePattern}
+                    )
                   )
-              AND load_status IN ('pending', 'retry_wait')
-              AND COALESCE(load_next_run_at, NOW()) <= NOW()
-            ORDER BY COALESCE(load_next_run_at, NOW()) ASC, symbol ASC
+              AND p.load_status IN ('pending', 'retry_wait')
+              AND COALESCE(p.load_next_run_at, NOW()) <= NOW()
+            ORDER BY priority_tier ASC, COALESCE(p.load_next_run_at, NOW()) ASC, p.symbol ASC
             FOR UPDATE SKIP LOCKED
             LIMIT ${limit}
         )
@@ -2699,7 +2785,12 @@ async function claimLoadSymbols(
             updated_at = NOW()
         FROM candidate c
         WHERE s.symbol = c.symbol
-        RETURNING s.symbol, s.load_attempts AS attempts;
+        RETURNING
+            s.symbol,
+            s.load_attempts AS attempts,
+            s.active,
+            c."dueEnabled" AS "dueEnabled",
+            c."bitgetSymbol" AS "bitgetSymbol";
     `);
   return rows;
 }
@@ -2781,6 +2872,59 @@ async function ensureLoadQueueSymbolsForDueIncumbents(
   return { symbols, queued };
 }
 
+async function ensureLoadQueueSymbolsForInactiveBitgetWarmup(params: {
+  bitgetSymbolLikePattern: string;
+  requiredWeeks: number;
+  nowMs: number;
+  maxSymbols?: number;
+}): Promise<{ symbols: string[]; queued: number }> {
+  const db = scalpPrisma();
+  const maxSymbols = Math.max(
+    100,
+    Math.min(10_000, toPositiveInt(params.maxSymbols, 2500)),
+  );
+  const lastCompletedWeekStartMs =
+    resolveLastCompletedWeekBoundsUtc(params.nowMs).startCurrentWeekMondayMs -
+    ONE_WEEK_MS;
+  const rows = await db.$queryRaw<Array<{ symbol: string }>>(Prisma.sql`
+        WITH candidate AS (
+            SELECT symbol
+            FROM scalp_pipeline_symbols
+            WHERE active = FALSE
+              AND UPPER(symbol) LIKE ${params.bitgetSymbolLikePattern}
+              AND (
+                    COALESCE(weeks_covered, 0) < ${params.requiredWeeks}
+                    OR latest_week_start IS NULL
+                    OR latest_week_start < ${new Date(lastCompletedWeekStartMs)}
+                  )
+            ORDER BY COALESCE(load_next_run_at, NOW()) ASC, symbol ASC
+            LIMIT ${maxSymbols}
+        )
+        UPDATE scalp_pipeline_symbols s
+        SET
+            load_status = CASE
+                WHEN s.load_status = 'running' THEN s.load_status
+                ELSE 'pending'
+            END,
+            load_next_run_at = CASE
+                WHEN s.load_status = 'running' THEN s.load_next_run_at
+                ELSE NOW()
+            END,
+            load_error = CASE
+                WHEN s.load_status = 'running' THEN s.load_error
+                ELSE NULL
+            END,
+            updated_at = NOW()
+        FROM candidate c
+        WHERE s.symbol = c.symbol
+        RETURNING s.symbol;
+    `);
+  const symbols = rows
+    .map((row) => normalizeSymbol(row.symbol))
+    .filter(Boolean);
+  return { symbols, queued: symbols.length };
+}
+
 async function updateLoadSymbolStatus(params: {
   symbol: string;
   status: ScalpPipelineQueueStatus;
@@ -2827,6 +2971,8 @@ async function ensureSymbolWeeklyCoverage(params: {
   symbol: string;
   nowMs: number;
   requiredWeeks: number;
+  prewarmWeeks: number;
+  backfillChunkWeeks: number;
   maxRequestsPerSymbol: number;
 }): Promise<{
   ok: boolean;
@@ -2866,13 +3012,23 @@ async function ensureSymbolWeeklyCoverage(params: {
     params.nowMs,
     params.requiredWeeks,
   );
+  const prewarmWeeks = Math.max(
+    1,
+    Math.min(params.requiredWeeks, Math.floor(params.prewarmWeeks)),
+  );
+  const backfillChunkWeeks = Math.max(
+    prewarmWeeks,
+    Math.min(params.requiredWeeks, Math.floor(params.backfillChunkWeeks)),
+  );
+  const prewarmSpanMs = prewarmWeeks * ONE_WEEK_MS;
+  const backfillChunkMs = backfillChunkWeeks * ONE_WEEK_MS;
   const coverage = countCoveredCompletedWeeks(
     existing,
     params.nowMs,
     params.requiredWeeks,
   );
-  const latestExistingTs = existing.length
-    ? Number(existing[existing.length - 1]?.[0] || 0)
+  const oldestExistingTs = existing.length
+    ? Number(existing[0]?.[0] || 0)
     : 0;
   const hasCoverage =
     earliestMissingWeekStartMs === null && coverage.covered >= params.requiredWeeks;
@@ -2886,6 +3042,59 @@ async function ensureSymbolWeeklyCoverage(params: {
       fetchedCount: 0,
       addedCount: 0,
       error: null,
+    };
+  }
+
+  const fetchWindow = (() => {
+    // First-touch symbols: warm recent history first so load jobs don't stall on deep backfill.
+    if (
+      !existing.length ||
+      !Number.isFinite(oldestExistingTs) ||
+      oldestExistingTs <= 0
+    ) {
+      const fromMs = Math.max(requiredCoverageStartMs, params.nowMs - prewarmSpanMs);
+      const toMs = params.nowMs;
+      return { fromMs, toMs };
+    }
+
+    // Missing older weeks: move backward gradually in fixed chunks.
+    if (
+      earliestMissingWeekStartMs !== null &&
+      earliestMissingWeekStartMs < oldestExistingTs
+    ) {
+      const toMs = Math.min(
+        params.nowMs,
+        Math.max(requiredCoverageStartMs + seedTfMs, oldestExistingTs + seedTfMs * 2),
+      );
+      const fromMs = Math.max(requiredCoverageStartMs, toMs - backfillChunkMs);
+      return { fromMs, toMs };
+    }
+
+    // Missing week in-range: fill a bounded gap window.
+    const fromMs = Math.max(
+      requiredCoverageStartMs,
+      earliestMissingWeekStartMs ?? requiredCoverageStartMs,
+    );
+    const toMs = Math.min(params.nowMs, fromMs + backfillChunkMs - seedTfMs);
+    return {
+      fromMs,
+      toMs: toMs > fromMs ? toMs : Math.min(params.nowMs, fromMs + seedTfMs),
+    };
+  })();
+
+  if (
+    !Number.isFinite(fetchWindow.fromMs) ||
+    !Number.isFinite(fetchWindow.toMs) ||
+    fetchWindow.toMs <= fetchWindow.fromMs
+  ) {
+    return {
+      ok: false,
+      weeksCovered: coverage.covered,
+      latestWeekStartMs: coverage.latestWeekStartMs,
+      existingCount: existing.length,
+      fetchedCount: 0,
+      addedCount: 0,
+      error: "invalid_fetch_window",
     };
   }
 
@@ -2905,31 +3114,15 @@ async function ensureSymbolWeeklyCoverage(params: {
       (marketSource === "bitget"
         ? params.symbol
         : (await resolveCapitalEpicRuntime(params.symbol)).epic);
-
-  const incrementalFetchFromMs = (() => {
-    if (earliestMissingWeekStartMs !== null) {
-      return Math.max(earliestMissingWeekStartMs, requiredCoverageStartMs);
-    }
-    if (
-      existing.length > 0 &&
-      Number.isFinite(latestExistingTs) &&
-      latestExistingTs > 0
-    ) {
-      return Math.max(
-        requiredCoverageStartMs,
-        Math.floor(latestExistingTs - seedTfMs * 2),
-      );
-    }
-    return requiredCoverageStartMs;
-  })();
-  const fetchToMs = params.nowMs;
+  const fetchFromMs = Math.floor(fetchWindow.fromMs);
+  const fetchToMs = Math.floor(fetchWindow.toMs);
 
   const fetchedRaw =
     marketSource === "bitget"
       ? await fetchBitgetCandlesByEpicDateRange(
           epic,
           "1m",
-          incrementalFetchFromMs,
+          fetchFromMs,
           fetchToMs,
           {
             maxPerRequest: BITGET_HISTORY_CANDLES_MAX_LIMIT,
@@ -2939,13 +3132,13 @@ async function ensureSymbolWeeklyCoverage(params: {
       : await fetchCapitalCandlesByEpicDateRange(
           epic,
           "1m",
-          incrementalFetchFromMs,
+          fetchFromMs,
           fetchToMs,
           {
             maxPerRequest: 1000,
             maxRequests: params.maxRequestsPerSymbol,
             debug: false,
-            debugLabel: `pipeline-load:${params.symbol}:1m`,
+            debugLabel: `pipeline-load:${params.symbol}:1m:${fetchFromMs}-${fetchToMs}`,
           },
         );
   const fetched = normalizeFetchedCandles(fetchedRaw);
@@ -2996,6 +3189,14 @@ export async function runLoadCandlesPipelineJob(
     async ({ lockToken, lockMs }) => {
       const berlinWeekStartMs = startOfBerlinWeekMonday(Date.now());
       const requiredWeeks = resolveRequiredSuccessiveWeeks();
+      const prewarmWeeks = resolveLoadPrewarmWeeks(requiredWeeks);
+      const backfillChunkWeeks = resolveLoadBackfillChunkWeeks(
+        requiredWeeks,
+        prewarmWeeks,
+      );
+      const includeInactiveBitget = resolveLoadIncludeInactiveBitget();
+      const bitgetSymbolLikePattern = resolveBitgetSymbolLikePattern();
+      const inactiveBitgetWeeks = resolveLoadInactiveBitgetWeeks(requiredWeeks);
       const batchSize = Math.max(
         1,
         Math.min(40, toPositiveInt(params.batchSize, 6)),
@@ -3025,9 +3226,22 @@ export async function runLoadCandlesPipelineJob(
       const dueIncumbents = await ensureLoadQueueSymbolsForDueIncumbents(
         berlinWeekStartMs,
       );
-      const claimed = await claimLoadSymbols(batchSize, berlinWeekStartMs);
+      const inactiveBitgetWarmup = includeInactiveBitget
+        ? await ensureLoadQueueSymbolsForInactiveBitgetWarmup({
+            bitgetSymbolLikePattern,
+            requiredWeeks: inactiveBitgetWeeks,
+            nowMs: Date.now(),
+          })
+        : { symbols: [] as string[], queued: 0 };
+      const claimed = await claimLoadSymbols(
+        batchSize,
+        berlinWeekStartMs,
+        includeInactiveBitget,
+        bitgetSymbolLikePattern,
+      );
       const activeSymbols = await countActivePipelineSymbols();
       let succeeded = 0;
+      let succeededActive = 0;
       let retried = 0;
       let failed = 0;
 
@@ -3036,10 +3250,24 @@ export async function runLoadCandlesPipelineJob(
         const symbol = normalizeSymbol(row.symbol);
         if (!symbol) continue;
         try {
+          const symbolRequiredWeeks =
+            !row.active && row.bitgetSymbol
+              ? inactiveBitgetWeeks
+              : requiredWeeks;
+          const symbolPrewarmWeeks =
+            !row.active && row.bitgetSymbol
+              ? Math.max(prewarmWeeks, symbolRequiredWeeks)
+              : prewarmWeeks;
+          const symbolBackfillChunkWeeks =
+            !row.active && row.bitgetSymbol
+              ? Math.max(backfillChunkWeeks, symbolRequiredWeeks)
+              : backfillChunkWeeks;
           const coverage = await ensureSymbolWeeklyCoverage({
             symbol,
             nowMs: Date.now(),
-            requiredWeeks,
+            requiredWeeks: symbolRequiredWeeks,
+            prewarmWeeks: symbolPrewarmWeeks,
+            backfillChunkWeeks: symbolBackfillChunkWeeks,
             maxRequestsPerSymbol,
           });
           if (coverage.ok) {
@@ -3050,9 +3278,10 @@ export async function runLoadCandlesPipelineJob(
               error: null,
               weeksCovered: coverage.weeksCovered,
               latestWeekStartMs: coverage.latestWeekStartMs,
-              markPreparePending: true,
+              markPreparePending: row.active,
             });
             succeeded += 1;
+            if (row.active) succeededActive += 1;
           } else if (row.attempts >= maxAttempts) {
             await updateLoadSymbolStatus({
               symbol,
@@ -3108,7 +3337,9 @@ export async function runLoadCandlesPipelineJob(
             total: claimed.length,
             activeSymbols,
             dueIncumbentSymbolsQueued: dueIncumbents.symbols.length,
+            inactiveBitgetWarmupQueued: inactiveBitgetWarmup.symbols.length,
             succeeded,
+            succeededActive,
             retried,
             failed,
           },
@@ -3123,15 +3354,21 @@ export async function runLoadCandlesPipelineJob(
         retried,
         failed,
         pendingAfter,
-        downstreamRequested: succeeded > 0,
+        downstreamRequested: succeededActive > 0,
         progressLabel:
           claimed.length > 0 ? `processed ${claimed.length}` : "idle",
         details: {
           requiredWeeks,
+          prewarmWeeks,
+          backfillChunkWeeks,
+          includeInactiveBitget,
+          inactiveBitgetWeeks,
           activeSymbols,
           dueIncumbentSymbolsQueued: dueIncumbents.symbols.length,
+          inactiveBitgetWarmupQueued: inactiveBitgetWarmup.queued,
           claimed: claimed.length,
           succeeded,
+          succeededActive,
           retried,
           failed,
         },
