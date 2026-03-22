@@ -17,7 +17,7 @@ import {
     finalizeScalpExecutionRunsBulk,
     type FinalizeScalpExecutionRunInput,
 } from './pg/executionRuns';
-import { normalizeScalpEntrySessionProfile } from './sessions';
+import { listScalpEntrySessionProfiles, parseScalpEntrySessionProfileStrict } from './sessions';
 import { loadScalpStrategyRuntimeSnapshot } from './store';
 import type { ScalpEntrySessionProfile, ScalpMarketSnapshot } from './types';
 import { type ScalpVenue } from './venue';
@@ -64,8 +64,8 @@ function parseVenue(value: string | undefined): ScalpVenue | null | undefined {
     return null;
 }
 
-function parseEntrySessionProfile(value: string | undefined) {
-    return normalizeScalpEntrySessionProfile(value, 'berlin');
+function parseEntrySessionProfile(value: string | undefined): ScalpEntrySessionProfile | null {
+    return parseScalpEntrySessionProfileStrict(value);
 }
 
 function setNoStoreHeaders(res: NextApiResponse): void {
@@ -560,6 +560,12 @@ export async function runExecuteDeploymentsPg(
             return res.status(400).json({
                 error: 'invalid_venue',
                 message: 'Unsupported venue. Use ?venue=bitget.',
+            });
+        }
+        if (!entrySessionProfile) {
+            return res.status(400).json({
+                error: 'invalid_session',
+                message: `Use session=${listScalpEntrySessionProfiles().join('|')}.`,
             });
         }
         if (venue && !isScalpVenueAdapterSupported(venue)) {

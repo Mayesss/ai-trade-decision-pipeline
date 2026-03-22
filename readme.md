@@ -91,7 +91,7 @@ MARKETAUX_API_KEY=...
 # SCALP_LIVE_ENABLED=false              # keep false by default (fail-closed)
 # SCALP_DEFAULT_SYMBOL=EURUSD
 # SCALP_SESSION_CLOCK_MODE=LONDON_TZ    # or UTC_FIXED
-# Entry session profile env is no longer used; default runtime session is Berlin.
+# Entry session profile env is no longer used; canonical baseline session id is berlin.
 # Use `?session=berlin|tokyo|newyork` on scalp planner/worker/executor routes.
 # SCALP_ENTRY_ORDER_TYPE=MARKET         # or LIMIT
 # SCALP_RISK_PER_TRADE_PCT=0.35

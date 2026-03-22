@@ -8,7 +8,10 @@ import {
   type CronInvokeResult,
 } from "../../../../lib/scalp/cronChaining";
 import { runWorkerPipelineJob } from "../../../../lib/scalp/pipelineJobs";
-import { normalizeScalpEntrySessionProfile } from "../../../../lib/scalp/sessions";
+import {
+  listScalpEntrySessionProfiles,
+  parseScalpEntrySessionProfileStrict,
+} from "../../../../lib/scalp/sessions";
 
 function firstQueryValue(
   value: string | string[] | undefined,
@@ -44,7 +47,7 @@ function parseIntBounded(
 }
 
 function parseEntrySessionProfile(value: string | string[] | undefined) {
-  return normalizeScalpEntrySessionProfile(firstQueryValue(value), "berlin");
+  return parseScalpEntrySessionProfileStrict(firstQueryValue(value));
 }
 
 function setNoStoreHeaders(res: NextApiResponse): void {
@@ -81,6 +84,12 @@ export default async function handler(
   const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 50);
   const selfMaxHops = parseIntBounded(req.query.selfMaxHops, 10, 0, 100);
   const session = parseEntrySessionProfile(req.query.session);
+  if (!session) {
+    return res.status(400).json({
+      error: "invalid_session",
+      message: `Use session=${listScalpEntrySessionProfiles().join("|")}.`,
+    });
+  }
 
   const result = await runWorkerPipelineJob({
     batchSize,

@@ -78,6 +78,7 @@ test("scalp durations route validates query filters and supports limit bounds", 
     source: "pipeline",
     jobKind: "prepare",
     limit: "999",
+    session: "berlin",
   });
   const res = createRes();
   await durationsHandler(req as any, res as any);

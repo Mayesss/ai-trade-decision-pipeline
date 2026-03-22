@@ -6,7 +6,10 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { requireAdminAccess } from "../../../../lib/admin";
 import { isScalpPgConfigured, scalpPrisma } from "../../../../lib/scalp/pg/client";
 import { loadScalpPipelineJobsHealth } from "../../../../lib/scalp/pipelineJobs";
-import { normalizeScalpEntrySessionProfile } from "../../../../lib/scalp/sessions";
+import {
+  listScalpEntrySessionProfiles,
+  parseScalpEntrySessionProfileStrict,
+} from "../../../../lib/scalp/sessions";
 
 function setNoStoreHeaders(res: NextApiResponse): void {
   res.setHeader(
@@ -39,10 +42,16 @@ export default async function handler(
   setNoStoreHeaders(res);
 
   const generatedAtMs = Date.now();
-  const entrySessionProfile = normalizeScalpEntrySessionProfile(
+  const entrySessionProfile = parseScalpEntrySessionProfileStrict(
     firstQueryValue(req.query.session),
-    "berlin",
   );
+  if (!entrySessionProfile) {
+    return res.status(400).json({
+      error: "invalid_session",
+      message: `Use session=${listScalpEntrySessionProfiles().join("|")}.`,
+      generatedAtMs,
+    });
+  }
   try {
     const jobs = await loadScalpPipelineJobsHealth({ entrySessionProfile });
     if (!isScalpPgConfigured()) {

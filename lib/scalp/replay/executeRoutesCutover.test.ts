@@ -85,6 +85,7 @@ test('execute deployment routes enforce strict PG requirement in cutover mode', 
             dryRun: 'true',
             requirePromotionEligible: 'true',
             nowMs: '1773179160000',
+            session: 'berlin',
         };
 
         const strictReq = createReq('/api/scalp/cron/execute-deployments', baseQuery);

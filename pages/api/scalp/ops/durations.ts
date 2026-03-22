@@ -9,7 +9,10 @@ import {
   type ScalpDurationTimelineSource,
   type ScalpPipelineJobKind,
 } from "../../../../lib/scalp/pipelineJobs";
-import { normalizeScalpEntrySessionProfile } from "../../../../lib/scalp/sessions";
+import {
+  listScalpEntrySessionProfiles,
+  parseScalpEntrySessionProfileStrict,
+} from "../../../../lib/scalp/sessions";
 
 type SourceFilter = "all" | ScalpDurationTimelineSource;
 type JobKindFilter = "all" | ScalpPipelineJobKind;
@@ -98,10 +101,15 @@ export default async function handler(
   const fromMs = fromMsRaw ?? nowMs - 7 * 24 * 60 * 60 * 1000;
   const toMs = toMsRaw ?? nowMs;
   const limit = parseLimit(firstQueryValue(req.query.limit));
-  const sessionRaw = firstQueryValue(req.query.session);
-  const entrySessionProfile = sessionRaw
-    ? normalizeScalpEntrySessionProfile(sessionRaw, "berlin")
-    : undefined;
+  const entrySessionProfile = parseScalpEntrySessionProfileStrict(
+    firstQueryValue(req.query.session),
+  );
+  if (!entrySessionProfile) {
+    return res.status(400).json({
+      error: "invalid_session",
+      message: `Use session=${listScalpEntrySessionProfiles().join("|")}.`,
+    });
+  }
 
   try {
     const runs = await listScalpDurationTimelineRuns({
@@ -118,7 +126,7 @@ export default async function handler(
       filters: {
         source,
         jobKind,
-        entrySessionProfile: entrySessionProfile || null,
+        entrySessionProfile,
         fromMs,
         toMs,
         limit,

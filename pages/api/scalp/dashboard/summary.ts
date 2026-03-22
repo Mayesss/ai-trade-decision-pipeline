@@ -12,7 +12,11 @@ import {
   type CandleHistoryBackend,
 } from "../../../../lib/scalp/candleHistory";
 import { getScalpStrategyConfig } from "../../../../lib/scalp/config";
-import { normalizeScalpEntrySessionProfile } from "../../../../lib/scalp/sessions";
+import {
+  listScalpEntrySessionProfiles,
+  normalizeScalpEntrySessionProfile,
+  parseScalpEntrySessionProfileStrict,
+} from "../../../../lib/scalp/sessions";
 import {
   listScalpDeploymentRegistryEntries,
   type ScalpForwardValidationMetrics,
@@ -235,7 +239,7 @@ function firstQueryValue(
 function parseEntrySessionProfile(
   value: string | string[] | undefined,
 ) {
-  return normalizeScalpEntrySessionProfile(firstQueryValue(value), "berlin");
+  return parseScalpEntrySessionProfileStrict(firstQueryValue(value));
 }
 
 function resolveDeploymentEntrySessionProfile(
@@ -754,6 +758,12 @@ export default async function handler(
     const rangeStartMs = nowMs - SUMMARY_RANGE_LOOKBACK_MS[range];
     const requestedStrategyId = firstQueryValue(req.query.strategyId);
     const entrySessionProfile = parseEntrySessionProfile(req.query.session);
+    if (!entrySessionProfile) {
+      return res.status(400).json({
+        error: "invalid_session",
+        message: `Use session=${listScalpEntrySessionProfiles().join("|")}.`,
+      });
+    }
     const useDeploymentRegistryRequested = parseBool(
       req.query.useDeploymentRegistry,
       false,

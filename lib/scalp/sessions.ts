@@ -32,6 +32,12 @@ const SCALP_ENTRY_SESSION_PROFILES: Record<ScalpEntrySessionProfile, ScalpEntryS
     },
 };
 
+const SCALP_ENTRY_SESSION_PROFILE_ALIASES: Record<string, ScalpEntrySessionProfile> = {
+    tokyo: 'tokyo',
+    berlin: 'berlin',
+    newyork: 'newyork',
+};
+
 function parseDayKey(dayKey: string): { y: number; m: number; d: number } {
     const match = String(dayKey || '')
         .trim()
@@ -110,18 +116,32 @@ function getEntrySessionProfileDefinition(profile: ScalpEntrySessionProfile): Sc
     return SCALP_ENTRY_SESSION_PROFILES[profile];
 }
 
+function toNormalizedEntrySessionProfileToken(value: unknown): string {
+    return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, '');
+}
+
 export function normalizeScalpEntrySessionProfile(
     value: unknown,
     fallback: ScalpEntrySessionProfile = DEFAULT_SCALP_ENTRY_SESSION_PROFILE,
 ): ScalpEntrySessionProfile {
-    const normalized = String(value || '')
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9_]/g, '') as ScalpEntrySessionProfile;
-    if (normalized in SCALP_ENTRY_SESSION_PROFILES) {
-        return normalized;
+    const normalized = toNormalizedEntrySessionProfileToken(value);
+    const canonical = SCALP_ENTRY_SESSION_PROFILE_ALIASES[normalized];
+    if (canonical) {
+        return canonical;
     }
     return fallback;
+}
+
+export function parseScalpEntrySessionProfileStrict(value: unknown): ScalpEntrySessionProfile | null {
+    const normalized = toNormalizedEntrySessionProfileToken(value);
+    const canonical = SCALP_ENTRY_SESSION_PROFILE_ALIASES[normalized];
+    if (canonical) {
+        return canonical;
+    }
+    return null;
 }
 
 export function listScalpEntrySessionProfiles(): ScalpEntrySessionProfile[] {
