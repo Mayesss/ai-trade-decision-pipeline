@@ -92,7 +92,7 @@ MARKETAUX_API_KEY=...
 # SCALP_DEFAULT_SYMBOL=EURUSD
 # SCALP_SESSION_CLOCK_MODE=LONDON_TZ    # or UTC_FIXED
 # Entry session profile env is no longer used; canonical baseline session id is berlin.
-# Use `?session=berlin|tokyo|newyork` on scalp planner/worker/executor routes.
+# Use `?session=berlin|tokyo|newyork|sydney` on scalp planner/worker/executor routes.
 # SCALP_ENTRY_ORDER_TYPE=MARKET         # or LIMIT
 # SCALP_RISK_PER_TRADE_PCT=0.35
 # SCALP_REFERENCE_EQUITY_USD=10000
@@ -252,7 +252,7 @@ npm run start
   - Use `all=true` for one cron pass across all enabled deployment rows, or `symbol=<SYMBOL>` to target one symbol.
   - Optional query: `venue=capital|bitget` to scope execution to a single venue.
   - When `venue` is omitted and both venues are present, execution is split by venue and processed in parallel with venue-scoped mutex locks.
-  - Required for session lanes: `session=berlin|tokyo|newyork`.
+  - Required for session lanes: `session=berlin|tokyo|newyork|sydney`.
   - Optional query: `requirePromotionEligible=true` to execute only deployments with `promotionGate.eligible=true`.
 - `GET /api/scalp/cron/v2/discover?dryRun=false&includeLiveQuotes=true`
   - Weekly symbol-discovery cron. Scores symbols using policy + history quality + optional live quote checks, then writes the selected universe snapshot.
@@ -294,7 +294,7 @@ npm run start
   - With `autoSuccessor=true`, worker chains to promotion when the current drain pass leaves no claimable worker rows (`pendingAfter=0`).
   - Marks deployments `promotion_dirty=true` when fresh worker output is available.
   - Session lanes are isolated by explicit `session` parameter and DB session columns.
-- `GET /api/scalp/cron/promotion?batchSize=300&autoContinue=true`
+- `GET /api/scalp/cron/promotion?batchSize=300&autoSuccessor=true&autoContinue=true`
   - Independent async job that aggregates weekly metrics and applies promotion/enablement policy.
   - Enforces best tune per symbol+strategy and clears dirty flags when processed.
 - `GET /api/scalp/cron/live-guardrail-monitor`
@@ -517,12 +517,12 @@ node --import tsx scripts/scalp-replay-matrix.ts \
   - `/api/swing/analyze?...&dryRun=false` hourly (live-trading mode).
   - `/api/scalp/cron/v2/discover?dryRun=false&includeLiveQuotes=true&autoSuccessor=true&autoContinue=true&selfMaxHops=4` every 3 hours.
   - `/api/scalp/cron/v2/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&selfMaxHops=8` every 10 minutes.
-  - `/api/scalp/cron/v2/prepare?...&session=berlin|tokyo|newyork` on separate cron rows per session.
-  - `/api/scalp/cron/worker?...&session=berlin|tokyo|newyork` on separate cron rows per session.
-  - `/api/scalp/cron/promotion?batchSize=300&autoContinue=true&selfMaxHops=6` every 15 minutes.
+  - `/api/scalp/cron/v2/prepare?...&session=berlin|tokyo|newyork|sydney` on separate cron rows per session.
+  - `/api/scalp/cron/worker?...&session=berlin|tokyo|newyork|sydney` on separate cron rows per session.
+  - `/api/scalp/cron/promotion?batchSize=300&autoSuccessor=true&autoContinue=true&selfMaxHops=6` every 15 minutes.
   - `/api/scalp/cron/live-guardrail-monitor?dryRun=false&autoPause=true` every 15 minutes (detects live drift and auto-pauses breached deployments).
   - `/api/scalp/cron/housekeeping?dryRun=false&refreshReport=false&cycleRetentionDays=1095` hourly (stale row recovery + retention cleanup + list compaction).
-  - `/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true&session=berlin|tokyo|newyork` on separate cron rows per session.
+  - `/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true&session=berlin|tokyo|newyork|sydney` on separate cron rows per session.
   - Symbol-specific scalp tuning is pinned by deployment row (`strategyId` + `tuneId`) in `data/scalp-deployments.json`.
 - Cron-declared routes are intentionally allowed without admin secret; non-cron routes remain protected when `ADMIN_ACCESS_SECRET` is set.
 

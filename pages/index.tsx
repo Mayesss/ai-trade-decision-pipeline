@@ -591,7 +591,8 @@ type StrategyMode = "swing" | "scalp";
 type ScalpEntrySessionProfileUi =
   | "berlin"
   | "tokyo"
-  | "newyork";
+  | "newyork"
+  | "sydney";
 
 const CURRENCY_SYMBOL = "₮"; // Tether-style symbol
 const THEME_PREFERENCE_STORAGE_KEY = "dashboard_theme_preference";
@@ -679,6 +680,14 @@ const SCALP_SESSION_TIMELINE_COLORS: ScalpSessionTimelineColorMeta[] = [
     darkFill: "rgba(251, 113, 133, 0.24)",
     lightBorder: "rgba(225, 29, 72, 0.7)",
     darkBorder: "rgba(251, 113, 133, 0.56)",
+  },
+  {
+    id: "sydney",
+    label: "Sydney",
+    lightFill: "rgba(249, 115, 22, 0.28)",
+    darkFill: "rgba(251, 146, 60, 0.24)",
+    lightBorder: "rgba(234, 88, 12, 0.7)",
+    darkBorder: "rgba(251, 146, 60, 0.56)",
   },
 ];
 const SCALP_SESSION_TIMELINE_TICK_MINUTES = [0, 360, 720, 1080, 1440];
@@ -842,7 +851,7 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<
     primaryPathname: "/api/scalp/cron/promotion",
     matchPathnames: ["/api/scalp/cron/promotion"],
     fallbackInvokePath:
-      "/api/scalp/cron/promotion?batchSize=300&autoContinue=true&selfMaxHops=6",
+      "/api/scalp/cron/promotion?batchSize=300&autoSuccessor=true&autoContinue=true&selfMaxHops=6",
   },
   scalp_execute_deployments: {
     primaryPathname: "/api/scalp/cron/execute-deployments",
@@ -889,7 +898,8 @@ function parseEntrySessionProfileFromCronPath(
     if (
       raw === "berlin" ||
       raw === "tokyo" ||
-      raw === "newyork"
+      raw === "newyork" ||
+      raw === "sydney"
     ) {
       return raw;
     }
@@ -2150,7 +2160,8 @@ export default function Home() {
     if (
       stored === "berlin" ||
       stored === "tokyo" ||
-      stored === "newyork"
+      stored === "newyork" ||
+      stored === "sydney"
     ) {
       setScalpSession(stored);
     }

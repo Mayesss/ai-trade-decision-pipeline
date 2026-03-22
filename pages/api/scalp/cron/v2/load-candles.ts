@@ -8,6 +8,10 @@ import {
   type CronInvokeResult,
 } from "../../../../../lib/scalp/cronChaining";
 import { runLoadCandlesPipelineJob } from "../../../../../lib/scalp/pipelineJobs";
+import {
+  listScalpEntrySessionProfiles,
+  parseScalpEntrySessionProfileStrict,
+} from "../../../../../lib/scalp/sessions";
 
 function firstQueryValue(
   value: string | string[] | undefined,
@@ -69,6 +73,19 @@ export default async function handler(
   const autoContinue = parseBool(req.query.autoContinue, true);
   const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 40);
   const selfMaxHops = parseIntBounded(req.query.selfMaxHops, 8, 0, 50);
+  const requestedSessionRaw = firstQueryValue(req.query.session);
+  const session = requestedSessionRaw
+    ? parseScalpEntrySessionProfileStrict(requestedSessionRaw)
+    : null;
+  if (requestedSessionRaw && !session) {
+    return res.status(400).json({
+      error: "invalid_session",
+      message: `Use session=${listScalpEntrySessionProfiles().join("|")}.`,
+    });
+  }
+  const downstreamSessions = session
+    ? [session]
+    : listScalpEntrySessionProfiles();
 
   const result = await runLoadCandlesPipelineJob({
     batchSize,
@@ -76,6 +93,7 @@ export default async function handler(
   });
 
   let downstream: CronInvokeResult | null = null;
+  let downstreamPrepare: CronInvokeResult[] = [];
   let selfRecall: CronInvokeResult | null = null;
 
   if (
@@ -84,18 +102,24 @@ export default async function handler(
     autoSuccessor &&
     result.downstreamRequested
   ) {
-    downstream = await invokeCronEndpointDetached(
-      req,
-      "/api/scalp/cron/v2/prepare",
-      {
-        autoContinue: 1,
-        autoSuccessor: 1,
-        selfHop: 0,
-        selfMaxHops,
-        triggeredBy: "load-candles-v2",
-      },
-      850,
+    downstreamPrepare = await Promise.all(
+      downstreamSessions.map((entrySessionProfile) =>
+        invokeCronEndpointDetached(
+          req,
+          "/api/scalp/cron/v2/prepare",
+          {
+            autoContinue: 1,
+            autoSuccessor: 1,
+            selfHop: 0,
+            selfMaxHops,
+            triggeredBy: "load-candles-v2",
+            session: entrySessionProfile,
+          },
+          850,
+        ),
+      ),
     );
+    downstream = downstreamPrepare[0] || null;
   }
 
   if (
@@ -115,6 +139,7 @@ export default async function handler(
         autoSuccessor: autoSuccessor ? 1 : 0,
         selfHop: selfHop + 1,
         selfMaxHops,
+        session: session || undefined,
       },
       700,
     );
@@ -130,7 +155,9 @@ export default async function handler(
       autoContinue,
       selfHop,
       selfMaxHops,
+      session,
       downstream,
+      downstreamPrepare,
       selfRecall,
     },
   });

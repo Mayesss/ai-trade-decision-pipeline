@@ -40,6 +40,10 @@
       "schedule": "2 * * * *"
     },
     {
+      "path": "/api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8&session=sydney",
+      "schedule": "2 * * * *"
+    },
+    {
       "path": "/api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&selfMaxHops=12&session=berlin",
       "schedule": "*/2 * * * *"
     },
@@ -52,7 +56,11 @@
       "schedule": "*/2 * * * *"
     },
     {
-      "path": "/api/scalp/cron/promotion?batchSize=300&autoContinue=true&selfMaxHops=6",
+      "path": "/api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&selfMaxHops=12&session=sydney",
+      "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/scalp/cron/promotion?batchSize=300&autoSuccessor=true&autoContinue=true&selfMaxHops=6",
       "schedule": "*/15 * * * *"
     },
     {
@@ -73,6 +81,10 @@
     },
     {
       "path": "/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true&session=newyork",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true&session=sydney",
       "schedule": "* * * * *"
     }
   ]

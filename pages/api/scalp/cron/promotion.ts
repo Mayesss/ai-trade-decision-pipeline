@@ -8,6 +8,10 @@ import {
   type CronInvokeResult,
 } from "../../../../lib/scalp/cronChaining";
 import { runPromotionPipelineJob } from "../../../../lib/scalp/pipelineJobs";
+import {
+  listScalpEntrySessionProfiles,
+  parseScalpEntrySessionProfileStrict,
+} from "../../../../lib/scalp/sessions";
 
 function firstQueryValue(
   value: string | string[] | undefined,
@@ -68,6 +72,19 @@ export default async function handler(
   const autoContinue = parseBool(req.query.autoContinue, true);
   const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 50);
   const selfMaxHops = parseIntBounded(req.query.selfMaxHops, 6, 0, 50);
+  const requestedSessionRaw = firstQueryValue(req.query.session);
+  const session = requestedSessionRaw
+    ? parseScalpEntrySessionProfileStrict(requestedSessionRaw)
+    : null;
+  if (requestedSessionRaw && !session) {
+    return res.status(400).json({
+      error: "invalid_session",
+      message: `Use session=${listScalpEntrySessionProfiles().join("|")}.`,
+    });
+  }
+  const downstreamSessions = session
+    ? [session]
+    : listScalpEntrySessionProfiles();
 
   const result = await runPromotionPipelineJob({
     batchSize,
@@ -75,6 +92,7 @@ export default async function handler(
 
   let downstreamLoadCandles: CronInvokeResult | null = null;
   let downstreamWorker: CronInvokeResult | null = null;
+  let downstreamWorkers: CronInvokeResult[] = [];
   let selfRecall: CronInvokeResult | null = null;
   if (
     result.ok &&
@@ -91,21 +109,28 @@ export default async function handler(
         selfHop: 0,
         selfMaxHops,
         triggeredBy: "promotion",
+        session: session || undefined,
       },
       850,
     );
-    downstreamWorker = await invokeCronEndpointDetached(
-      req,
-      "/api/scalp/cron/worker",
-      {
-        autoContinue: 1,
-        autoSuccessor: 1,
-        selfHop: 0,
-        selfMaxHops,
-        triggeredBy: "promotion",
-      },
-      850,
+    downstreamWorkers = await Promise.all(
+      downstreamSessions.map((entrySessionProfile) =>
+        invokeCronEndpointDetached(
+          req,
+          "/api/scalp/cron/worker",
+          {
+            autoContinue: 1,
+            autoSuccessor: 1,
+            selfHop: 0,
+            selfMaxHops,
+            triggeredBy: "promotion",
+            session: entrySessionProfile,
+          },
+          850,
+        ),
+      ),
     );
+    downstreamWorker = downstreamWorkers[0] || null;
   }
 
   if (
@@ -121,8 +146,10 @@ export default async function handler(
       {
         batchSize,
         autoContinue: 1,
+        autoSuccessor: autoSuccessor ? 1 : 0,
         selfHop: selfHop + 1,
         selfMaxHops,
+        session: session || undefined,
       },
       700,
     );
@@ -137,8 +164,10 @@ export default async function handler(
       autoContinue,
       selfHop,
       selfMaxHops,
+      session,
       downstreamLoadCandles,
       downstreamWorker,
+      downstreamWorkers,
       selfRecall,
     },
   });

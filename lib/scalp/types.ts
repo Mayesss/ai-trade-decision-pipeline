@@ -5,7 +5,8 @@ export type ScalpClockMode = "LONDON_TZ" | "UTC_FIXED";
 export type ScalpEntrySessionProfile =
   | "tokyo"
   | "berlin"
-  | "newyork";
+  | "newyork"
+  | "sydney";
 export type ScalpBaseTimeframe = "M1" | "M3" | "M5" | "M15";
 export type ScalpConfirmTimeframe = "M1" | "M3";
 export type ScalpFvgEntryMode = "first_touch" | "midline_touch" | "full_fill";

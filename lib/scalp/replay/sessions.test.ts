@@ -8,15 +8,14 @@ import {
     scalpEntrySessionProfileDistance,
 } from '../sessions';
 
-test('entry session profiles include tokyo/berlin/newyork and exclude sydney', () => {
+test('entry session profiles include tokyo/berlin/newyork/sydney', () => {
     const profiles = listScalpEntrySessionProfiles();
-    assert.deepEqual(profiles, ['tokyo', 'berlin', 'newyork']);
-    assert.ok(!profiles.includes('sydney' as any));
+    assert.deepEqual(profiles, ['tokyo', 'berlin', 'newyork', 'sydney']);
 });
 
 test('entry session profile normalization falls back to berlin for unknown values', () => {
     assert.equal(normalizeScalpEntrySessionProfile('london_overlap', 'berlin'), 'berlin');
-    assert.equal(normalizeScalpEntrySessionProfile('SYDNEY', 'berlin'), 'berlin');
+    assert.equal(normalizeScalpEntrySessionProfile('SYDNEY', 'berlin'), 'sydney');
 });
 
 test('entry session profile distance follows configured ordering', () => {
@@ -33,6 +32,8 @@ test('entry session profile windows evaluate timestamps in profile-local timezon
 
     const tokyoInside = Date.UTC(2026, 0, 5, 1, 30, 0, 0); // 10:30 Tokyo (JST)
     const newYorkInside = Date.UTC(2026, 0, 5, 14, 0, 0, 0); // 09:00 New York (EST)
+    const sydneyInside = Date.UTC(2026, 0, 4, 22, 0, 0, 0); // 09:00 Sydney (AEDT)
     assert.equal(inScalpEntrySessionProfileWindow(tokyoInside, 'tokyo'), true);
     assert.equal(inScalpEntrySessionProfileWindow(newYorkInside, 'newyork'), true);
+    assert.equal(inScalpEntrySessionProfileWindow(sydneyInside, 'sydney'), true);
 });

@@ -4,6 +4,7 @@ const SCALP_ENTRY_SESSION_PROFILE_ORDER: ScalpEntrySessionProfile[] = [
     'tokyo',
     'berlin',
     'newyork',
+    'sydney',
 ];
 
 export const DEFAULT_SCALP_ENTRY_SESSION_PROFILE: ScalpEntrySessionProfile = 'berlin';
@@ -30,12 +31,18 @@ const SCALP_ENTRY_SESSION_PROFILES: Record<ScalpEntrySessionProfile, ScalpEntryS
         timeZone: 'America/New_York',
         windowsLocal: [['08:00', '12:00']],
     },
+    sydney: {
+        profile: 'sydney',
+        timeZone: 'Australia/Sydney',
+        windowsLocal: [['08:00', '12:00']],
+    },
 };
 
 const SCALP_ENTRY_SESSION_PROFILE_ALIASES: Record<string, ScalpEntrySessionProfile> = {
     tokyo: 'tokyo',
     berlin: 'berlin',
     newyork: 'newyork',
+    sydney: 'sydney',
 };
 
 function parseDayKey(dayKey: string): { y: number; m: number; d: number } {
