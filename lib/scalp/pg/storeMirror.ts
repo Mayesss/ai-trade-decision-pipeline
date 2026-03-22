@@ -2,7 +2,6 @@ import crypto from 'node:crypto';
 
 import { empty, join, raw, sql } from './sql';
 
-import { normalizeScalpTuneId } from '../deployments';
 import { getDefaultScalpStrategy, getScalpStrategyById } from '../strategies/registry';
 import type { ScalpJournalEntry, ScalpSessionState, ScalpTradeLedgerEntry } from '../types';
 import { scalpPrisma } from './client';
@@ -171,13 +170,6 @@ export async function upsertStrategyOverridesBulkToPg(
 export async function upsertSessionStateToPg(state: ScalpSessionState): Promise<number> {
     const deploymentId = String(state.deploymentId || '').trim();
     if (!deploymentId) return 0;
-    const symbol = String(state.symbol || '')
-        .trim()
-        .toUpperCase();
-    const strategyId = String(state.strategyId || '')
-        .trim()
-        .toLowerCase();
-    const tuneId = normalizeScalpTuneId(state.tuneId, 'default');
     const dayKey = normalizeDayKey(state.dayKey);
     const updatedAt = toDate(state.updatedAtMs, Date.now());
     const reasonCodes = normalizeReasonCodes(state.run?.lastReasonCodes);
@@ -186,22 +178,6 @@ export async function upsertSessionStateToPg(state: ScalpSessionState): Promise<
     const db = scalpPrisma();
     const updated = await db.$executeRaw(
         sql`
-        WITH dep AS (
-            INSERT INTO scalp_deployments(
-                deployment_id, symbol, strategy_id, tune_id, source, enabled, config_override, updated_by
-            )
-            VALUES(
-                ${deploymentId},
-                ${symbol},
-                ${strategyId},
-                ${tuneId},
-                'manual',
-                TRUE,
-                '{}'::jsonb,
-                'phase_g_pg_primary'
-            )
-            ON CONFLICT(deployment_id) DO NOTHING
-        )
         INSERT INTO scalp_sessions(
             deployment_id,
             day_key,
@@ -209,13 +185,14 @@ export async function upsertSessionStateToPg(state: ScalpSessionState): Promise<
             last_reason_codes,
             updated_at
         )
-        VALUES(
-            ${deploymentId},
+        SELECT
+            d.deployment_id,
             ${dayKey}::date,
             ${JSON.stringify(stateJson)}::jsonb,
             ${reasonCodes},
             ${updatedAt}
-        )
+        FROM scalp_deployments d
+        WHERE d.deployment_id = ${deploymentId}
         ON CONFLICT(deployment_id, day_key)
         DO UPDATE SET
             state_json = EXCLUDED.state_json,
@@ -272,13 +249,6 @@ export async function insertTradeLedgerEntryToPg(entry: ScalpTradeLedgerEntry): 
     );
     const deploymentId = String(entry.deploymentId || '').trim();
     if (!deploymentId) return 0;
-    const symbol = String(entry.symbol || '')
-        .trim()
-        .toUpperCase();
-    const strategyId = String(entry.strategyId || '')
-        .trim()
-        .toLowerCase();
-    const tuneId = normalizeScalpTuneId(entry.tuneId, 'default');
     const exitAt = toDate(entry.exitAtMs, Date.now());
     const side = entry.side === 'BUY' || entry.side === 'SELL' ? entry.side : null;
     const reasonCodes = normalizeReasonCodes(entry.reasonCodes);
@@ -287,22 +257,6 @@ export async function insertTradeLedgerEntryToPg(entry: ScalpTradeLedgerEntry): 
     const db = scalpPrisma();
     const updated = await db.$executeRaw(
         sql`
-        WITH dep AS (
-            INSERT INTO scalp_deployments(
-                deployment_id, symbol, strategy_id, tune_id, source, enabled, config_override, updated_by
-            )
-            VALUES(
-                ${deploymentId},
-                ${symbol},
-                ${strategyId},
-                ${tuneId},
-                'manual',
-                TRUE,
-                '{}'::jsonb,
-                'phase_g_pg_primary'
-            )
-            ON CONFLICT(deployment_id) DO NOTHING
-        )
         INSERT INTO scalp_trade_ledger(
             id,
             exit_at,
@@ -315,18 +269,19 @@ export async function insertTradeLedgerEntryToPg(entry: ScalpTradeLedgerEntry): 
             r_multiple,
             reason_codes
         )
-        VALUES(
+        SELECT
             ${entryId}::uuid,
             ${exitAt},
-            ${deploymentId},
-            ${symbol},
-            ${strategyId},
-            ${tuneId},
+            d.deployment_id,
+            d.symbol,
+            d.strategy_id,
+            d.tune_id,
             ${side},
             ${Boolean(entry.dryRun)},
             ${rMultiple},
             ${reasonCodes}
-        )
+        FROM scalp_deployments d
+        WHERE d.deployment_id = ${deploymentId}
         ON CONFLICT(id)
         DO UPDATE SET
             exit_at = EXCLUDED.exit_at,

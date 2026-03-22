@@ -533,7 +533,13 @@ export async function saveScalpSessionState(
     });
     const nextState = hydrateSessionStateDeployment(state, deployment);
     try {
-        await upsertSessionStateToPg(nextState);
+        const persisted = await upsertSessionStateToPg(nextState);
+        if (persisted === 0) {
+            warnPgStoreOnce(
+                'save_session_state_missing_deployment',
+                `Skipped scalp session persistence because deployment is not registered: ${deployment.deploymentId}`,
+            );
+        }
     } catch (err) {
         warnPgStoreOnce('save_session_state_failed', 'Failed to persist scalp session state to PG.', err);
     }
@@ -660,7 +666,13 @@ export async function appendScalpTradeLedgerEntry(
     if (!isScalpPgConfigured()) return;
     const sanitized = sanitizeTradeLedgerEntry(entry);
     try {
-        await insertTradeLedgerEntryToPg(sanitized);
+        const persisted = await insertTradeLedgerEntryToPg(sanitized);
+        if (persisted === 0) {
+            warnPgStoreOnce(
+                'append_trade_ledger_missing_deployment',
+                `Skipped scalp trade ledger persistence because deployment is not registered: ${sanitized.deploymentId}`,
+            );
+        }
     } catch (err) {
         warnPgStoreOnce('append_trade_ledger_failed', 'Failed to append scalp trade ledger row in PG.', err);
     }
