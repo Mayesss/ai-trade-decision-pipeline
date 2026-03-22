@@ -50,6 +50,10 @@ const SUMMARY_RANGE_LOOKBACK_MS: Record<SummaryRangeKey, number> = {
   "30D": 30 * 24 * 60 * 60 * 1000,
   "6M": 183 * 24 * 60 * 60 * 1000,
 };
+const DAY_MS = 24 * 60 * 60 * 1000;
+const BONUS_BACKTEST_WINDOW_WEEKS = 12;
+const BONUS_BACKTEST_WINDOW_DAYS = BONUS_BACKTEST_WINDOW_WEEKS * 7;
+const BONUS_BACKTEST_WINDOW_MS = BONUS_BACKTEST_WINDOW_DAYS * DAY_MS;
 const SUMMARY_CACHE_TTL_MS = (() => {
   const value = Number(
     process.env.SCALP_DASHBOARD_SUMMARY_CACHE_TTL_MS ?? 12_000,
@@ -147,6 +151,26 @@ type SymbolSnapshot = {
   promotionEligible: boolean | null;
   promotionReason: string | null;
   forwardValidation: ScalpForwardValidationMetrics | null;
+};
+
+type ScalpSummaryDeploymentLifecycleState =
+  | "candidate"
+  | "incumbent_refresh"
+  | "graduated"
+  | "suspended"
+  | "retired";
+
+type ScalpSummaryBonusBacktest12w = {
+  windowFromTs: number;
+  windowToTs: number;
+  selectionWindowDays: number;
+  rollCount: number;
+  totalTrades: number;
+  netR: number | null;
+  meanExpectancyR: number | null;
+  meanProfitFactor: number | null;
+  maxDrawdownR: number | null;
+  profitableWindowPct: number | null;
 };
 
 type HistoryDiscoveryRow = {
@@ -479,6 +503,100 @@ function medianValue(values: number[]): number | null {
   const right = sorted[mid];
   if (!Number.isFinite(left) || !Number.isFinite(right)) return null;
   return (left + right) / 2;
+}
+
+function asFiniteNumber(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function normalizeDeploymentLifecycleState(
+  value: unknown,
+): ScalpSummaryDeploymentLifecycleState | null {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (
+    normalized === "candidate" ||
+    normalized === "incumbent_refresh" ||
+    normalized === "graduated" ||
+    normalized === "suspended" ||
+    normalized === "retired"
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function computeBonusBacktest12w(params: {
+  nowMs: number;
+  enabled: boolean;
+  lifecycleState: ScalpSummaryDeploymentLifecycleState | null;
+  selectionWindowDaysRaw: unknown;
+  weeklyRows: Awaited<ReturnType<typeof listScalpDeploymentWeeklyMetricRows>>;
+}): ScalpSummaryBonusBacktest12w | null {
+  if (!params.enabled || params.lifecycleState !== "graduated") return null;
+  const selectionWindowDays = Math.max(
+    1,
+    Math.floor(
+      asFiniteNumber(params.selectionWindowDaysRaw) ?? BONUS_BACKTEST_WINDOW_DAYS,
+    ),
+  );
+  const windowToTs = params.nowMs - selectionWindowDays * DAY_MS;
+  const windowFromTs = windowToTs - BONUS_BACKTEST_WINDOW_MS;
+  const completedRows = params.weeklyRows.filter((row) => {
+    if (row.status !== "completed") return false;
+    return row.weekStartMs >= windowFromTs && row.weekEndMs <= windowToTs;
+  });
+
+  const rollCount = completedRows.length;
+  const totalTrades = completedRows.reduce(
+    (acc, row) => acc + Math.max(0, Math.floor(asFiniteNumber(row.trades) ?? 0)),
+    0,
+  );
+  const netRValues = completedRows
+    .map((row) => asFiniteNumber(row.netR))
+    .filter((row): row is number => row !== null);
+  const expectancyValues = completedRows
+    .map((row) => asFiniteNumber(row.expectancyR))
+    .filter((row): row is number => row !== null);
+  const profitFactorValues = completedRows
+    .map((row) => asFiniteNumber(row.profitFactor))
+    .filter((row): row is number => row !== null);
+  const drawdownValues = completedRows
+    .map((row) => asFiniteNumber(row.maxDrawdownR))
+    .filter((row): row is number => row !== null);
+
+  const netRTotal =
+    netRValues.length > 0
+      ? netRValues.reduce((acc, row) => acc + row, 0)
+      : null;
+  const profitableRows = completedRows.filter(
+    (row) => (asFiniteNumber(row.netR) ?? Number.NEGATIVE_INFINITY) > 0,
+  ).length;
+
+  return {
+    windowFromTs,
+    windowToTs,
+    selectionWindowDays: BONUS_BACKTEST_WINDOW_DAYS,
+    rollCount,
+    totalTrades,
+    netR: roundMetric(netRTotal),
+    meanExpectancyR: roundMetric(
+      totalTrades > 0 && netRTotal !== null
+        ? netRTotal / totalTrades
+        : meanValue(expectancyValues),
+      4,
+    ),
+    meanProfitFactor: roundMetric(meanValue(profitFactorValues), 3),
+    maxDrawdownR: roundMetric(
+      drawdownValues.length ? Math.max(...drawdownValues) : null,
+    ),
+    profitableWindowPct: roundMetric(
+      rollCount > 0 ? (profitableRows / rollCount) * 100 : null,
+      1,
+    ),
+  };
 }
 
 async function loadHistoryDiscoverySnapshot(params: {
@@ -952,6 +1070,39 @@ export default async function handler(
         allowedDeploymentIds.has(String(row.deploymentId || "").trim()),
       );
     }
+    const workerRowsByDeploymentId = new Map<
+      string,
+      Awaited<ReturnType<typeof listScalpDeploymentWeeklyMetricRows>>
+    >();
+    for (const row of workerRows) {
+      const deploymentId = String(row.deploymentId || "").trim();
+      if (!deploymentId) continue;
+      const bucket = workerRowsByDeploymentId.get(deploymentId) || [];
+      bucket.push(row);
+      workerRowsByDeploymentId.set(deploymentId, bucket);
+    }
+    const bonusBacktest12wByDeploymentId = new Map<
+      string,
+      ScalpSummaryBonusBacktest12w
+    >();
+    for (const row of allDeploymentRows) {
+      const deploymentId = String(row.deploymentId || "").trim();
+      if (!deploymentId) continue;
+      const lifecycleState = normalizeDeploymentLifecycleState(
+        row.promotionGate?.lifecycle?.state,
+      );
+      const bonusMetrics = computeBonusBacktest12w({
+        nowMs,
+        enabled: row.enabled === true,
+        lifecycleState,
+        selectionWindowDaysRaw:
+          row.promotionGate?.forwardValidation?.selectionWindowDays,
+        weeklyRows: workerRowsByDeploymentId.get(deploymentId) || [],
+      });
+      if (bonusMetrics) {
+        bonusBacktest12wByDeploymentId.set(deploymentId, bonusMetrics);
+      }
+    }
     logDebug("runtime_loaded", {
       defaultStrategyId: runtime.defaultStrategyId,
       runtimeStrategyCount: runtimeStrategies.length,
@@ -960,6 +1111,7 @@ export default async function handler(
       useDeploymentsEffective,
       workerRowsFetched: workerRows.length,
       workerRowsFetchLimit,
+      bonusBacktestDeploymentCount: bonusBacktest12wByDeploymentId.size,
       dayKey,
       clockMode: cfg.sessions.clockMode,
       entrySessionProfile,
@@ -1300,16 +1452,19 @@ export default async function handler(
         enabled: row.enabled,
         inUniverse:
           typeof row.inUniverse === "boolean" ? row.inUniverse : null,
-        lifecycleState:
-          typeof row.promotionGate?.lifecycle?.state === "string"
-            ? row.promotionGate.lifecycle.state
-            : null,
+        lifecycleState: normalizeDeploymentLifecycleState(
+          row.promotionGate?.lifecycle?.state,
+        ),
         promotionEligible:
           typeof row.promotionGate?.eligible === "boolean"
             ? row.promotionGate.eligible
             : null,
         promotionReason: row.promotionGate?.reason || null,
         forwardValidation: row.promotionGate?.forwardValidation || null,
+        bonusBacktest12w:
+          bonusBacktest12wByDeploymentId.get(
+            String(row.deploymentId || "").trim(),
+          ) || null,
         updatedAtMs: row.updatedAtMs,
       })),
       range,

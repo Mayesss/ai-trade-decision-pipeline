@@ -287,6 +287,7 @@ type ScalpSummaryDeployment = {
   promotionEligible?: boolean | null;
   promotionReason?: string | null;
   forwardValidation?: ScalpForwardValidation | null;
+  bonusBacktest12w?: ScalpBonusBacktest12w | null;
   updatedAtMs?: number | null;
 };
 
@@ -401,6 +402,19 @@ type ScalpForwardValidation = {
   confirmationEvaluatedAtMs?: number | null;
 };
 
+type ScalpBonusBacktest12w = {
+  windowFromTs?: number | null;
+  windowToTs?: number | null;
+  selectionWindowDays?: number | null;
+  rollCount?: number | null;
+  totalTrades?: number | null;
+  netR?: number | null;
+  meanExpectancyR?: number | null;
+  meanProfitFactor?: number | null;
+  maxDrawdownR?: number | null;
+  profitableWindowPct?: number | null;
+};
+
 type ScalpWorkerTaskResult = {
   windowFromTs?: number;
   windowToTs?: number;
@@ -452,6 +466,7 @@ type ScalpOpsDeploymentRow = {
   promotionEligible: boolean;
   promotionReason: string | null;
   forwardValidation: ScalpForwardValidation | null;
+  bonusBacktest12w: ScalpBonusBacktest12w | null;
   perf30dTrades: number | null;
   perf30dExpectancyR: number | null;
   perf30dNetR: number | null;
@@ -522,6 +537,7 @@ type ScalpWorkerJobGridRow = {
     | "retired"
     | null;
   forwardValidation: ScalpForwardValidation | null;
+  bonusBacktest12w?: ScalpBonusBacktest12w | null;
   deployed: boolean;
   deploymentEnabled: boolean | null;
   promotionEligible: boolean | null;
@@ -2794,6 +2810,7 @@ export default function Home() {
           : false,
       promotionReason: row.promotionReason || null,
       forwardValidation: row.forwardValidation || null,
+      bonusBacktest12w: null,
       perf30dTrades: asFiniteNumber(row.tradesPlaced),
       perf30dExpectancyR: runtimePerf30dExpectancyR,
       perf30dNetR: asFiniteNumber(row.netR),
@@ -2827,6 +2844,7 @@ export default function Home() {
             : false,
         promotionReason: String(row?.promotionReason || "").trim() || null,
         forwardValidation: row?.forwardValidation || null,
+        bonusBacktest12w: row?.bonusBacktest12w || null,
         perf30dTrades: null,
         perf30dExpectancyR: null,
         perf30dNetR: null,
@@ -4138,6 +4156,7 @@ export default function Home() {
           strategyId: row.strategyId,
           tuneId: row.tuneId,
           forwardValidation: row.forwardValidation,
+          bonusBacktest12w: null,
           deployed: row.deployed,
           deploymentEnabled: row.deploymentEnabled,
           promotionEligible: row.promotionEligible,
@@ -4248,6 +4267,7 @@ export default function Home() {
         strategyId: row.strategyId,
         tuneId: row.tuneId,
         forwardValidation: row.forwardValidation,
+        bonusBacktest12w: row.bonusBacktest12w || null,
         deployed: row.deployed,
         deploymentEnabled: row.deploymentEnabled,
         promotionEligible: row.promotionEligible,
@@ -4299,6 +4319,8 @@ export default function Home() {
           deploymentId: deployment.deploymentId,
           forwardValidation:
             deployment.forwardValidation || workerMetrics.forwardValidation,
+          bonusBacktest12w:
+            deployment.bonusBacktest12w || workerMetrics.bonusBacktest12w,
           deployed: workerMetrics.deployed || deployment.enabled,
           deploymentEnabled: deployment.enabled,
           inUniverse: deployment.inUniverse,
@@ -4317,6 +4339,7 @@ export default function Home() {
         strategyId: deployment.strategyId,
         tuneId: deployment.tuneId,
         forwardValidation,
+        bonusBacktest12w: deployment.bonusBacktest12w || null,
         deployed: deployment.enabled,
         deploymentEnabled: deployment.enabled,
         inUniverse: deployment.inUniverse,
@@ -4537,6 +4560,94 @@ export default function Home() {
               >
                 <span>{formatScalpPct(primaryProfitablePct, 0)} profitable</span>
                 <span>{formatScalpCount(primaryRollCount)} windows</span>
+              </div>
+            </div>
+          );
+        },
+      },
+      {
+        headerName: "Bonus 12W (Past)",
+        field: "bonusBacktest12w",
+        minWidth: 200,
+        sortable: false,
+        filter: false,
+        cellRenderer: (params: any) => {
+          const bonusBacktest = params?.data?.bonusBacktest12w || null;
+          if (!bonusBacktest) {
+            return (
+              <span
+                className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}
+              >
+                —
+              </span>
+            );
+          }
+          const primaryExpectancyR = asFiniteNumber(
+            bonusBacktest?.meanExpectancyR,
+          );
+          const primaryProfitablePct = asFiniteNumber(
+            bonusBacktest?.profitableWindowPct,
+          );
+          const primaryRollCount = asFiniteNumber(bonusBacktest?.rollCount);
+          const primaryTrades = asFiniteNumber(bonusBacktest?.totalTrades);
+          const primaryLabel = formatScalpHorizonLabel(
+            asFiniteNumber(bonusBacktest?.selectionWindowDays),
+          );
+          const rangeFromTs = asFiniteNumber(bonusBacktest?.windowFromTs);
+          const rangeToTs = asFiniteNumber(bonusBacktest?.windowToTs);
+          const rangeLabel =
+            rangeFromTs !== null && rangeToTs !== null
+              ? `${new Date(rangeFromTs).toISOString().slice(0, 10)} → ${new Date(
+                  Math.max(rangeFromTs, rangeToTs - 1),
+                )
+                  .toISOString()
+                  .slice(0, 10)}`
+              : "—";
+          const primaryToneClass =
+            primaryExpectancyR === null || primaryExpectancyR === 0
+              ? scalpDarkMode
+                ? "text-zinc-200"
+                : "text-slate-700"
+              : primaryExpectancyR > 0
+                ? "text-emerald-500"
+                : "text-red-500";
+          const primaryTitle = [
+            `Backtest range: ${rangeLabel}`,
+            `Horizon: ${primaryLabel}`,
+            `Expectancy: ${formatScalpSignedR(primaryExpectancyR)}`,
+            `Profitable: ${formatScalpPct(primaryProfitablePct, 0)}`,
+            `Windows: ${formatScalpCount(primaryRollCount)}`,
+            `Trades: ${formatScalpCount(primaryTrades)}`,
+          ].join(" | ");
+          const primaryPct = Math.max(
+            0,
+            Math.min(100, primaryProfitablePct ?? 0),
+          );
+          const trackClass = scalpDarkMode ? "bg-zinc-800" : "bg-slate-200";
+
+          return (
+            <div className="flex min-w-[170px] flex-col gap-1 py-1 leading-tight">
+              <div title={primaryTitle}>
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className={scalpDarkMode ? "text-zinc-400" : "text-slate-500"}>
+                    {primaryLabel}
+                  </span>
+                  <span className={primaryToneClass}>
+                    {formatScalpSignedR(primaryExpectancyR)}
+                  </span>
+                </div>
+                <div className={`mt-0.5 h-1.5 overflow-hidden rounded-full ${trackClass}`}>
+                  <div
+                    className={`h-full ${scalpMiniBarTone(primaryExpectancyR)}`}
+                    style={{ width: `${Math.max(6, primaryPct)}%` }}
+                  />
+                </div>
+              </div>
+              <div
+                className={`flex items-center justify-between text-[10px] ${scalpDarkMode ? "text-zinc-500" : "text-slate-500"}`}
+              >
+                <span>{formatScalpPct(primaryProfitablePct, 0)} profitable</span>
+                <span>{`${formatScalpCount(primaryRollCount)}w · ${formatScalpCount(primaryTrades)}t`}</span>
               </div>
             </div>
           );
