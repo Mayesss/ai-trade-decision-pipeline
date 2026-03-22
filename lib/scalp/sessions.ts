@@ -45,6 +45,14 @@ const SCALP_ENTRY_SESSION_PROFILE_ALIASES: Record<string, ScalpEntrySessionProfi
     sydney: 'sydney',
 };
 
+function parseBool(value: string | undefined, fallback: boolean): boolean {
+    if (value === undefined) return fallback;
+    const normalized = String(value).trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+    return fallback;
+}
+
 function parseDayKey(dayKey: string): { y: number; m: number; d: number } {
     const match = String(dayKey || '')
         .trim()
@@ -109,6 +117,27 @@ function partsForTimeZone(tsMs: number, timeZone: string): { y: number; m: numbe
         hh: read('hour', 0),
         mm: read('minute', 0),
     };
+}
+
+export function isScalpSundayForClockMode(nowMs: number, clockMode: ScalpClockMode): boolean {
+    if (clockMode === 'UTC_FIXED') {
+        return new Date(nowMs).getUTCDay() === 0;
+    }
+    const local = partsForTimeZone(nowMs, 'Europe/London');
+    const localDayStartUtcMs = Date.UTC(local.y, local.m - 1, local.d, 0, 0, 0, 0);
+    return new Date(localDayStartUtcMs).getUTCDay() === 0;
+}
+
+export function scalpSundayEntryBlockEnabled(): boolean {
+    return parseBool(process.env.SCALP_BLOCK_SUNDAY_ENTRIES, true);
+}
+
+export function isScalpSundayEntryBlocked(params: {
+    nowMs: number;
+    clockMode: ScalpClockMode;
+}): boolean {
+    if (!scalpSundayEntryBlockEnabled()) return false;
+    return isScalpSundayForClockMode(params.nowMs, params.clockMode);
 }
 
 export function minuteOfDayInTimeZone(tsMs: number, timeZone: string): number {

@@ -12,7 +12,7 @@ import {
 } from "../execution";
 import { pipSizeForScalpSymbol, timeframeMinutes } from "../marketData";
 import { evaluateScalpReplayMarketGate } from "../marketHours";
-import { buildScalpSessionWindows } from "../sessions";
+import { buildScalpSessionWindows, isScalpSundayEntryBlocked } from "../sessions";
 import type { ScalpSymbolMarketMetadata } from "../symbolMarketMetadata";
 import { getScalpStrategyConfig } from "../config";
 import { resolveScalpDeployment } from "../deployments";
@@ -936,6 +936,13 @@ export async function runScalpReplay(params: {
         state.state = "DONE";
         manageReasonCodes.push("DAILY_LOSS_LIMIT_BLOCKED_NEW_ENTRY");
       }
+      const sundayEntryBlocked = isScalpSundayEntryBlocked({
+        nowMs,
+        clockMode: strategyCfg.sessions.clockMode,
+      });
+      if (sundayEntryBlocked) {
+        manageReasonCodes.push("ENTRY_BLOCKED_SUNDAY_GLOBAL");
+      }
 
       const runReasons = dedupeReasonCodes([
         "SCALP_REPLAY_RUN",
@@ -974,6 +981,7 @@ export async function runScalpReplay(params: {
         entryIntent &&
         state.state !== "DONE" &&
         state.state !== "COOLDOWN" &&
+        !sundayEntryBlocked &&
         !marketGate.entryBlocked &&
         !marketGate.marketClosed
       ) {

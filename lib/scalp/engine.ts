@@ -12,7 +12,7 @@ import {
     resolveLegacyIfvgEntryIntent,
 } from './execution';
 import { loadScalpMarketSnapshot } from './marketData';
-import { buildScalpSessionWindows } from './sessions';
+import { buildScalpSessionWindows, isScalpSundayEntryBlocked } from './sessions';
 import { getDefaultScalpStrategy, getScalpStrategyById, getScalpStrategyPreferredTimeframes } from './strategies/registry';
 import { applySymbolGuardRiskDefaultsToStrategyConfig } from './strategies/guardDefaults';
 import { advanceScalpStateMachine, createInitialScalpSessionState, deriveScalpDayKey } from './stateMachine';
@@ -442,6 +442,13 @@ export async function runScalpExecuteCycle(opts: {
                     nextState.state = 'DONE';
                     phaseReasonCodes.push('DAILY_LOSS_LIMIT_BLOCKED_NEW_ENTRY');
                 }
+                const sundayEntryBlocked = isScalpSundayEntryBlocked({
+                    nowMs,
+                    clockMode: cfg.sessions.clockMode,
+                });
+                if (sundayEntryBlocked) {
+                    phaseReasonCodes.push('ENTRY_BLOCKED_SUNDAY_GLOBAL');
+                }
 
                 if (
                     !hadOpenTradeAtStartOfManage &&
@@ -449,7 +456,8 @@ export async function runScalpExecuteCycle(opts: {
                     !brokerPositionGuardBlocked &&
                     entryIntent &&
                     nextState.state !== 'DONE' &&
-                    nextState.state !== 'COOLDOWN'
+                    nextState.state !== 'COOLDOWN' &&
+                    !sundayEntryBlocked
                 ) {
                     let entryCfg = {
                         ...cfg,

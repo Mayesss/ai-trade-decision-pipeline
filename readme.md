@@ -91,6 +91,7 @@ MARKETAUX_API_KEY=...
 # SCALP_LIVE_ENABLED=false              # keep false by default (fail-closed)
 # SCALP_DEFAULT_SYMBOL=EURUSD
 # SCALP_SESSION_CLOCK_MODE=LONDON_TZ    # or UTC_FIXED
+# SCALP_BLOCK_SUNDAY_ENTRIES=true       # global entry gate (default true): block new entries on Sunday by session clock
 # Entry session profile env is no longer used; canonical baseline session id is berlin.
 # Use `?session=berlin|tokyo|newyork|sydney` on scalp planner/worker/executor routes.
 # SCALP_ENTRY_ORDER_TYPE=MARKET         # or LIMIT

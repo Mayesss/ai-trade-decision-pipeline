@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import {
     inScalpEntrySessionProfileWindow,
+    isScalpSundayEntryBlocked,
+    isScalpSundayForClockMode,
     listScalpEntrySessionProfiles,
     normalizeScalpEntrySessionProfile,
     scalpEntrySessionProfileDistance,
@@ -36,4 +38,36 @@ test('entry session profile windows evaluate timestamps in profile-local timezon
     assert.equal(inScalpEntrySessionProfileWindow(tokyoInside, 'tokyo'), true);
     assert.equal(inScalpEntrySessionProfileWindow(newYorkInside, 'newyork'), true);
     assert.equal(inScalpEntrySessionProfileWindow(sydneyInside, 'sydney'), true);
+});
+
+test('sunday gate defaults to enabled and can be turned off via env', () => {
+    const prev = process.env.SCALP_BLOCK_SUNDAY_ENTRIES;
+    try {
+        delete process.env.SCALP_BLOCK_SUNDAY_ENTRIES;
+        assert.equal(
+            isScalpSundayEntryBlocked({
+                nowMs: Date.UTC(2026, 0, 4, 10, 0, 0, 0), // Sunday
+                clockMode: 'UTC_FIXED',
+            }),
+            true,
+        );
+
+        process.env.SCALP_BLOCK_SUNDAY_ENTRIES = 'false';
+        assert.equal(
+            isScalpSundayEntryBlocked({
+                nowMs: Date.UTC(2026, 0, 4, 10, 0, 0, 0), // Sunday
+                clockMode: 'UTC_FIXED',
+            }),
+            false,
+        );
+    } finally {
+        if (prev === undefined) delete process.env.SCALP_BLOCK_SUNDAY_ENTRIES;
+        else process.env.SCALP_BLOCK_SUNDAY_ENTRIES = prev;
+    }
+});
+
+test('sunday detection follows configured session clock mode', () => {
+    const ts = Date.UTC(2026, 5, 7, 23, 30, 0, 0); // Sunday UTC; Monday in London during DST
+    assert.equal(isScalpSundayForClockMode(ts, 'UTC_FIXED'), true);
+    assert.equal(isScalpSundayForClockMode(ts, 'LONDON_TZ'), false);
 });
