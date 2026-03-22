@@ -14,7 +14,7 @@ Runtime env resolution:
 - Legacy fallback: `PRISMA_CONNECTION_STRING`, `PRISMA_PG_POSTGRES_URL`
 
 Current modules:
-- `client.ts`: Prisma singleton and config guard.
+- `client.ts`: native `pg` pool singleton and config guard (Prisma-free runtime DB client).
 - `deployments.ts`: bulk deployment upsert + executable deployment query.
 - `executionRuns.ts`: execution-run idempotency claim/finalize primitives (`scalp_execution_runs`).
 - `jobs.ts`: queue enqueue/claim/complete primitives.

@@ -1,6 +1,6 @@
 export const config = { runtime: "nodejs" };
 
-import { Prisma } from "@prisma/client";
+import { empty, join, raw, sql } from '../../../../lib/scalp/pg/sql';
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../lib/admin";
@@ -75,7 +75,7 @@ export default async function handler(
         succeededLoad: bigint | number | null;
         pendingPrepare: bigint | number | null;
       }>
-    >(Prisma.sql`
+    >(sql`
       SELECT
           COUNT(*)::bigint AS total,
           COUNT(*) FILTER (WHERE load_status = 'pending')::bigint AS "pendingLoad",

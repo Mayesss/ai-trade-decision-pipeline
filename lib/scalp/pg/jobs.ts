@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { empty, join, raw, sql } from './sql';
 
 import { scalpPrisma } from './client';
 
@@ -59,7 +59,7 @@ export async function enqueueScalpJobsBulk(rows: EnqueueScalpJobInput[]): Promis
     const db = scalpPrisma();
     const payloadJson = JSON.stringify(payload);
     const updated = await db.$executeRaw(
-        Prisma.sql`
+        sql`
         WITH input AS (
             SELECT *
             FROM jsonb_to_recordset(${payloadJson}::jsonb) AS x(
@@ -122,7 +122,7 @@ export async function claimScalpJobs(params: {
             scheduledFor: Date;
             nextRunAt: Date;
         }>
-    >(Prisma.sql`
+    >(sql`
         WITH candidate AS (
             SELECT j.id
             FROM scalp_jobs j
@@ -181,7 +181,7 @@ export async function completeScalpJob(params: {
     const db = scalpPrisma();
     if (params.success) {
         const updated = await db.$executeRaw(
-            Prisma.sql`
+            sql`
             UPDATE scalp_jobs
             SET
                 status = 'succeeded',
@@ -196,9 +196,9 @@ export async function completeScalpJob(params: {
         return Number(updated || 0);
     }
 
-    const retryStatus = nextRunAt ? Prisma.sql`'retry_wait'::scalp_job_status` : Prisma.sql`'failed_permanent'::scalp_job_status`;
+    const retryStatus = nextRunAt ? sql`'retry_wait'::scalp_job_status` : sql`'failed_permanent'::scalp_job_status`;
     const updated = await db.$executeRaw(
-        Prisma.sql`
+        sql`
         UPDATE scalp_jobs
         SET
             status = ${retryStatus},

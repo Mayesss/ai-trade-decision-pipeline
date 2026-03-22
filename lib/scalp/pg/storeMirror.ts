@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 
-import { Prisma } from '@prisma/client';
+import { empty, join, raw, sql } from './sql';
 
 import { normalizeScalpTuneId } from '../deployments';
 import { getDefaultScalpStrategy, getScalpStrategyById } from '../strategies/registry';
@@ -72,7 +72,7 @@ export async function upsertRuntimeDefaultToPg(params: {
     const updatedBy = normalizeOptionalText(params.updatedBy, 120);
     const db = scalpPrisma();
     const updated = await db.$executeRaw(
-        Prisma.sql`
+        sql`
         INSERT INTO scalp_runtime_settings(singleton, default_strategy_id, env_enabled, updated_by, updated_at)
         VALUES(TRUE, ${defaultStrategyId}, ${Boolean(params.envEnabled)}, ${updatedBy}, NOW())
         ON CONFLICT(singleton)
@@ -101,7 +101,7 @@ export async function upsertStrategyOverrideToPg(params: {
     const updatedBy = normalizeOptionalText(params.updatedBy, 120);
     const db = scalpPrisma();
     const updated = await db.$executeRaw(
-        Prisma.sql`
+        sql`
         INSERT INTO scalp_strategy_overrides(strategy_id, kv_enabled, updated_by, updated_at)
         VALUES(${strategyId}, ${kvEnabled}, ${updatedBy}, ${updatedAt})
         ON CONFLICT(strategy_id)
@@ -140,7 +140,7 @@ export async function upsertStrategyOverridesBulkToPg(
     if (!payload.length) return 0;
     const db = scalpPrisma();
     const updated = await db.$executeRaw(
-        Prisma.sql`
+        sql`
         WITH input AS (
             SELECT *
             FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb) AS x(
@@ -185,7 +185,7 @@ export async function upsertSessionStateToPg(state: ScalpSessionState): Promise<
 
     const db = scalpPrisma();
     const updated = await db.$executeRaw(
-        Prisma.sql`
+        sql`
         WITH dep AS (
             INSERT INTO scalp_deployments(
                 deployment_id, symbol, strategy_id, tune_id, source, enabled, config_override, updated_by
@@ -243,7 +243,7 @@ export async function insertJournalEntryToPg(entry: ScalpJournalEntry): Promise<
 
     const db = scalpPrisma();
     const updated = await db.$executeRaw(
-        Prisma.sql`
+        sql`
         INSERT INTO scalp_journal(
             id, ts, deployment_id, symbol, day_key, level, type, reason_codes, payload
         )
@@ -252,7 +252,7 @@ export async function insertJournalEntryToPg(entry: ScalpJournalEntry): Promise<
             ${ts},
             ${deploymentId},
             ${symbol},
-            ${dayKey ? Prisma.sql`${dayKey}::date` : Prisma.sql`NULL::date`},
+            ${dayKey ? sql`${dayKey}::date` : sql`NULL::date`},
             ${level},
             ${type},
             ${reasonCodes},
@@ -286,7 +286,7 @@ export async function insertTradeLedgerEntryToPg(entry: ScalpTradeLedgerEntry): 
 
     const db = scalpPrisma();
     const updated = await db.$executeRaw(
-        Prisma.sql`
+        sql`
         WITH dep AS (
             INSERT INTO scalp_deployments(
                 deployment_id, symbol, strategy_id, tune_id, source, enabled, config_override, updated_by

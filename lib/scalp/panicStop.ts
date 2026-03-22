@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { empty, join, raw, sql } from './pg/sql';
 
 import { patchScalpPipelineRuntimeSnapshot } from './pipelineRuntime';
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
@@ -49,7 +49,7 @@ export async function loadScalpPanicStopState(): Promise<ScalpPanicStopState> {
         };
     }
     const db = scalpPrisma();
-    const rows = await db.$queryRaw<Array<{ payload: unknown; updatedAtMs: bigint | number | null }>>(Prisma.sql`
+    const rows = await db.$queryRaw<Array<{ payload: unknown; updatedAtMs: bigint | number | null }>>(sql`
         SELECT
             payload,
             (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint AS "updatedAtMs"
@@ -94,7 +94,7 @@ export async function setScalpPanicStopState(params: {
     };
     const db = scalpPrisma();
     await db.$executeRaw(
-        Prisma.sql`
+        sql`
             INSERT INTO scalp_jobs(
                 kind,
                 dedupe_key,
@@ -132,7 +132,7 @@ export async function setScalpPanicStopState(params: {
         `,
     );
     if (payload.enabled) {
-        const orchestratorRows = await db.$queryRaw<Array<{ payload: unknown }>>(Prisma.sql`
+        const orchestratorRows = await db.$queryRaw<Array<{ payload: unknown }>>(sql`
             SELECT payload
             FROM scalp_jobs
             WHERE kind = ${PANIC_STOP_KIND}::scalp_job_kind
@@ -151,7 +151,7 @@ export async function setScalpPanicStopState(params: {
                 lastError: 'panic_stop_enabled',
             };
             await db.$executeRaw(
-                Prisma.sql`
+                sql`
                     INSERT INTO scalp_jobs(
                         kind,
                         dedupe_key,

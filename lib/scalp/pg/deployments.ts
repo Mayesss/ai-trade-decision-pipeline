@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { empty, join, raw, sql } from './sql';
 
 import { resolveScalpDeploymentVenueFromId } from '../deployments';
 import {
@@ -111,13 +111,13 @@ export async function listExecutableDeploymentsFromPg(params: {
         .trim()
         .toLowerCase();
     const limit = Math.max(1, Math.min(2000, Math.floor(Number(params.limit) || 250)));
-    const symbolFilterSql = symbols.length > 0 ? Prisma.sql`AND d.symbol IN (${Prisma.join(symbols)})` : Prisma.empty;
+    const symbolFilterSql = symbols.length > 0 ? sql`AND d.symbol IN (${join(symbols)})` : empty;
     const deploymentFilterSql =
-        deploymentIds.length > 0 ? Prisma.sql`AND d.deployment_id IN (${Prisma.join(deploymentIds)})` : Prisma.empty;
+        deploymentIds.length > 0 ? sql`AND d.deployment_id IN (${join(deploymentIds)})` : empty;
     const venueFilterSql =
         venue === 'bitget'
-            ? Prisma.sql`AND d.deployment_id LIKE 'bitget:%'`
-            : Prisma.empty;
+            ? sql`AND d.deployment_id LIKE 'bitget:%'`
+            : empty;
 
     const db = scalpPrisma();
     const rows = await db.$queryRaw<
@@ -135,7 +135,7 @@ export async function listExecutableDeploymentsFromPg(params: {
             updatedAt: Date;
             updatedBy: string | null;
         }>
-    >(Prisma.sql`
+    >(sql`
         SELECT
             d.deployment_id AS "deploymentId",
             d.entry_session_profile AS "entrySessionProfile",
@@ -207,8 +207,8 @@ export async function listDeploymentsFromPg(params: {
     const limit = Math.max(1, Math.min(5000, Math.floor(Number(params.limit) || 2000)));
     const venueFilterSql =
         venue === 'bitget'
-            ? Prisma.sql`AND deployment_id LIKE 'bitget:%'`
-            : Prisma.empty;
+            ? sql`AND deployment_id LIKE 'bitget:%'`
+            : empty;
 
     const db = scalpPrisma();
     const rows = await db.$queryRaw<
@@ -227,7 +227,7 @@ export async function listDeploymentsFromPg(params: {
             updatedAt: Date;
             updatedBy: string | null;
         }>
-    >(Prisma.sql`
+    >(sql`
         SELECT
             deployment_id AS "deploymentId",
             entry_session_profile AS "entrySessionProfile",
@@ -306,7 +306,7 @@ export async function upsertDeploymentsBulkToPg(rows: PgUpsertDeploymentInput[])
     const db = scalpPrisma();
     const payloadJson = JSON.stringify(payload);
     const updated = await db.$executeRaw(
-        Prisma.sql`
+        sql`
         WITH input AS (
             SELECT *
             FROM jsonb_to_recordset(${payloadJson}::jsonb) AS x(
@@ -372,9 +372,9 @@ export async function deleteDeploymentsByIdFromPg(deploymentIds: string[]): Prom
 
     const db = scalpPrisma();
     const updated = await db.$executeRaw(
-        Prisma.sql`
+        sql`
         DELETE FROM scalp_deployments
-        WHERE deployment_id IN (${Prisma.join(ids)});
+        WHERE deployment_id IN (${join(ids)});
         `,
     );
 

@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { Prisma } from '@prisma/client';
+import { empty, join, raw, sql } from './pg/sql';
 
 import { bitgetFetch, resolveProductType } from '../bitget';
 import { fetchBitgetCandlesByEpicDateRange } from './bitgetHistory';
@@ -549,7 +549,7 @@ export async function loadScalpSymbolUniverseSnapshot(): Promise<ScalpSymbolUniv
     if (isScalpPgConfigured()) {
         try {
             const db = scalpPrisma();
-            const rows = await db.$queryRaw<Array<{ payload: unknown }>>(Prisma.sql`
+            const rows = await db.$queryRaw<Array<{ payload: unknown }>>(sql`
                 SELECT payload_json AS payload
                 FROM scalp_symbol_universe_snapshots
                 WHERE snapshot_key = ${UNIVERSE_SNAPSHOT_KEY}
@@ -565,7 +565,7 @@ export async function loadScalpSymbolUniverseSnapshot(): Promise<ScalpSymbolUniv
         }
         try {
             const db = scalpPrisma();
-            const rows = await db.$queryRaw<Array<{ payload: unknown }>>(Prisma.sql`
+            const rows = await db.$queryRaw<Array<{ payload: unknown }>>(sql`
                 SELECT payload
                 FROM scalp_jobs
                 WHERE kind = 'guardrail_check'::scalp_job_kind
@@ -598,7 +598,7 @@ async function saveScalpSymbolUniverseSnapshot(snapshot: ScalpSymbolUniverseSnap
         const db = scalpPrisma();
         try {
             await db.$executeRaw(
-                Prisma.sql`
+                sql`
                     INSERT INTO scalp_symbol_universe_snapshots(
                         snapshot_key,
                         payload_json,
@@ -620,7 +620,7 @@ async function saveScalpSymbolUniverseSnapshot(snapshot: ScalpSymbolUniverseSnap
             );
         } catch {
             await db.$executeRaw(
-                Prisma.sql`
+                sql`
                     INSERT INTO scalp_jobs(
                         kind,
                         dedupe_key,
@@ -712,7 +712,7 @@ async function loadSymbolHistoryStats(symbol: string, nowMs: number): Promise<Sy
                 recentBars7d: bigint | number | null;
                 medianRangePct: number | null;
             }>
-        >(Prisma.sql`
+        >(sql`
             WITH agg AS (
                 SELECT
                     COALESCE(SUM(jsonb_array_length(candles_json)), 0)::bigint AS "totalBars",

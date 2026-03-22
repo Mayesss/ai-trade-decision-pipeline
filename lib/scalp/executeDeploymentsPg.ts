@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { empty, join, raw, sql } from './pg/sql';
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { requireAdminAccess } from '../admin';
@@ -147,7 +147,7 @@ async function acquireExecuteDeploymentsVenueLock(params: {
     const db = scalpPrisma();
     const dedupeKey = buildVenueMutexDedupeKey(params.venue, params.entrySessionProfile);
     await db.$executeRaw(
-        Prisma.sql`
+        sql`
             INSERT INTO scalp_jobs(
                 kind,
                 dedupe_key,
@@ -178,7 +178,7 @@ async function acquireExecuteDeploymentsVenueLock(params: {
             DO NOTHING;
         `,
     );
-    const rows = await db.$queryRaw<Array<{ id: bigint }>>(Prisma.sql`
+    const rows = await db.$queryRaw<Array<{ id: bigint }>>(sql`
         UPDATE scalp_jobs
         SET
             locked_by = ${params.lockOwner},
@@ -206,7 +206,7 @@ async function releaseExecuteDeploymentsVenueLock(params: {
     if (!isScalpPgConfigured()) return;
     const db = scalpPrisma();
     const dedupeKey = buildVenueMutexDedupeKey(params.venue, params.entrySessionProfile);
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
         UPDATE scalp_jobs
         SET
             locked_by = NULL,

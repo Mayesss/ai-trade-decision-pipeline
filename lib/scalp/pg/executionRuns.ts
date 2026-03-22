@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { empty, join, raw, sql } from './sql';
 
 import { scalpPrisma } from './client';
 
@@ -82,7 +82,7 @@ export async function claimScalpExecutionRunSlotsBulk(
 
     const db = scalpPrisma();
     const payloadJson = JSON.stringify(payload);
-    const inserted = await db.$queryRaw<Array<{ deploymentId: string; scheduledMinute: Date }>>(Prisma.sql`
+    const inserted = await db.$queryRaw<Array<{ deploymentId: string; scheduledMinute: Date }>>(sql`
         WITH input AS (
             SELECT *
             FROM jsonb_to_recordset(${payloadJson}::jsonb) AS x(
@@ -137,7 +137,7 @@ export async function finalizeScalpExecutionRunsBulk(rows: FinalizeScalpExecutio
     const db = scalpPrisma();
     const payloadJson = JSON.stringify(payload);
     const updated = await db.$executeRaw(
-        Prisma.sql`
+        sql`
         WITH input AS (
             SELECT *
             FROM jsonb_to_recordset(${payloadJson}::jsonb) AS x(

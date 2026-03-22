@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { empty, join, raw, sql } from './pg/sql';
 
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 import type { ScalpCandle } from './types';
@@ -219,7 +219,7 @@ async function loadFromPg(symbol: string, timeframe: string): Promise<ScalpCandl
             updatedAtMs: bigint | number | null;
             candles: unknown;
         }>
-    >(Prisma.sql`
+    >(sql`
         SELECT
             epic,
             source,
@@ -264,7 +264,7 @@ async function loadFromPgRange(
             updatedAtMs: bigint | number | null;
             candles: unknown;
         }>
-    >(Prisma.sql`
+    >(sql`
         SELECT
             epic,
             source,
@@ -313,7 +313,7 @@ async function loadFromPgBulk(symbols: string[], timeframe: string): Promise<Sca
                 updatedAtMs: bigint | number | null;
                 candles: unknown;
             }>
-        >(Prisma.sql`
+        >(sql`
             SELECT
                 symbol,
                 epic,
@@ -322,7 +322,7 @@ async function loadFromPgBulk(symbols: string[], timeframe: string): Promise<Sca
                 candles_json AS candles
             FROM scalp_candle_history_weeks
             WHERE timeframe = ${timeframe}
-              AND symbol IN (${Prisma.join(slice)})
+              AND symbol IN (${join(slice)})
             ORDER BY symbol ASC, week_start ASC;
         `);
         for (const row of rows) {
@@ -383,7 +383,7 @@ async function loadFromPgStatsBulk(symbols: string[], timeframe: string): Promis
                 fromTsMs: bigint | number | null;
                 toTsMs: bigint | number | null;
             }>
-        >(Prisma.sql`
+        >(sql`
             SELECT
                 symbol,
                 NULLIF(MAX(TRIM(COALESCE(epic, ''))), '') AS epic,
@@ -407,7 +407,7 @@ async function loadFromPgStatsBulk(symbols: string[], timeframe: string): Promis
                 ) AS "toTsMs"
             FROM scalp_candle_history_weeks
             WHERE timeframe = ${timeframe}
-              AND symbol IN (${Prisma.join(slice)})
+              AND symbol IN (${join(slice)})
             GROUP BY symbol;
         `);
         for (const row of rows) {
@@ -462,14 +462,14 @@ async function saveToPgBulk(records: ScalpCandleHistoryRecord[]): Promise<ScalpC
         if (!slice.length) continue;
         for (const record of slice) {
             const weekRows = candlesToWeeklyRows(record);
-            await db.$executeRaw(Prisma.sql`
+            await db.$executeRaw(sql`
                 DELETE FROM scalp_candle_history_weeks
                 WHERE symbol = ${record.symbol}
                   AND timeframe = ${record.timeframe};
             `);
             for (const row of weekRows) {
                 await db.$executeRaw(
-                    Prisma.sql`
+                    sql`
                         INSERT INTO scalp_candle_history_weeks(
                             symbol,
                             timeframe,
@@ -509,7 +509,7 @@ async function saveToPgBulk(records: ScalpCandleHistoryRecord[]): Promise<ScalpC
 
 async function listHistorySymbolsFromPg(timeframe: string): Promise<string[]> {
     const db = scalpPrisma();
-    const rows = await db.$queryRaw<Array<{ symbol: string }>>(Prisma.sql`
+    const rows = await db.$queryRaw<Array<{ symbol: string }>>(sql`
         SELECT DISTINCT symbol
         FROM scalp_candle_history_weeks
         WHERE timeframe = ${timeframe}

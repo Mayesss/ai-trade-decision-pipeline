@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { empty, join, raw, sql } from './pg/sql';
 
 import { DEFAULT_SCALP_TUNE_ID, normalizeScalpTuneId, resolveScalpDeployment } from './deployments';
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
@@ -115,12 +115,14 @@ function hydrateSessionStateDeployment(
         deploymentId?: string;
     },
 ): ScalpSessionState {
+    // Prefer caller-provided deployment identity so legacy state payloads
+    // cannot overwrite canonical session-scoped ids.
     const deployment = resolveDeploymentKey({
-        venue: state.venue || params.venue,
-        symbol: state.symbol || params.symbol,
-        strategyId: state.strategyId || params.strategyId,
-        tuneId: state.tuneId || params.tuneId,
-        deploymentId: state.deploymentId || params.deploymentId,
+        venue: params.venue || state.venue,
+        symbol: params.symbol || state.symbol,
+        strategyId: params.strategyId || state.strategyId,
+        tuneId: params.tuneId || state.tuneId,
+        deploymentId: params.deploymentId || state.deploymentId,
     });
     return {
         ...state,
@@ -272,7 +274,7 @@ async function loadRuntimeSettingsFromPg(): Promise<ScalpRuntimeSettings> {
     try {
         const db = scalpPrisma();
         const [runtimeRows, overrideRows] = await Promise.all([
-            db.$queryRaw<Array<{ defaultStrategyId: string | null }>>(Prisma.sql`
+            db.$queryRaw<Array<{ defaultStrategyId: string | null }>>(sql`
                 SELECT default_strategy_id AS "defaultStrategyId"
                 FROM scalp_runtime_settings
                 WHERE singleton = TRUE
@@ -285,7 +287,7 @@ async function loadRuntimeSettingsFromPg(): Promise<ScalpRuntimeSettings> {
                     updatedAt: Date | null;
                     updatedBy: string | null;
                 }>
-            >(Prisma.sql`
+            >(sql`
                 SELECT
                     strategy_id AS "strategyId",
                     kv_enabled AS "kvEnabled",
@@ -500,7 +502,7 @@ export async function loadScalpSessionState(
     });
     try {
         const db = scalpPrisma();
-        const rows = await db.$queryRaw<Array<{ stateJson: unknown }>>(Prisma.sql`
+        const rows = await db.$queryRaw<Array<{ stateJson: unknown }>>(sql`
             SELECT state_json AS "stateJson"
             FROM scalp_sessions
             WHERE deployment_id = ${deployment.deploymentId}
@@ -584,7 +586,7 @@ export async function loadScalpJournal(limit = 200): Promise<ScalpJournalEntry[]
                 reasonCodes: string[];
                 payload: unknown;
             }>
-        >(Prisma.sql`
+        >(sql`
             SELECT
                 id::text AS id,
                 (EXTRACT(EPOCH FROM ts) * 1000.0)::bigint AS "timestampMs",
@@ -683,7 +685,7 @@ export async function loadScalpTradeLedger(limit = 2_000): Promise<ScalpTradeLed
                 rMultiple: number | string;
                 reasonCodes: string[];
             }>
-        >(Prisma.sql`
+        >(sql`
             SELECT
                 id::text AS id,
                 (EXTRACT(EPOCH FROM created_at) * 1000.0)::bigint AS "timestampMs",

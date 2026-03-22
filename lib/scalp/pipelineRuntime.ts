@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { empty, join, raw, sql } from './pg/sql';
 
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 
@@ -379,7 +379,7 @@ export async function loadScalpPipelineRuntimeSnapshot(): Promise<ScalpPipelineR
     if (!isScalpPgConfigured()) return null;
     try {
         const db = scalpPrisma();
-        const rows = await db.$queryRaw<Array<{ payload: unknown }>>(Prisma.sql`
+        const rows = await db.$queryRaw<Array<{ payload: unknown }>>(sql`
             SELECT payload
             FROM scalp_jobs
             WHERE kind = ${PIPELINE_RUNTIME_KIND}::scalp_job_kind
@@ -426,7 +426,7 @@ export async function patchScalpPipelineRuntimeSnapshot(patch: ScalpPipelineRunt
         if (Object.keys(payload).length <= 2) return;
         const db = scalpPrisma();
         await db.$executeRaw(
-            Prisma.sql`
+            sql`
                 INSERT INTO scalp_jobs(
                     kind,
                     dedupe_key,

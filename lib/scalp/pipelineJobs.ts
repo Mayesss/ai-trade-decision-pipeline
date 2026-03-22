@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { empty, join, raw, sql, type SqlFragment } from "./pg/sql";
 
 import { bitgetFetch, resolveProductType } from "../bitget";
 import { fetchBitgetCandlesByEpicDateRange } from "./bitgetHistory";
@@ -809,7 +809,7 @@ async function prunePrepareOverflowNonEnabledVariants(params: {
       createdAtMs: bigint | number;
       updatedAtMs: bigint | number;
     }>
-  >(Prisma.sql`
+  >(sql`
         SELECT
             deployment_id AS "deploymentId",
             enabled,
@@ -839,10 +839,10 @@ async function prunePrepareOverflowNonEnabledVariants(params: {
   if (!plan.pruneIds.length) return { pruned: 0, blockedByLedger: 0 };
 
   const blockedRows = await params.db.$queryRaw<Array<{ deploymentId: string }>>(
-    Prisma.sql`
+    sql`
           SELECT DISTINCT deployment_id AS "deploymentId"
           FROM scalp_trade_ledger
-          WHERE deployment_id IN (${Prisma.join(plan.pruneIds)});
+          WHERE deployment_id IN (${join(plan.pruneIds)});
       `,
   );
   const blocked = new Set(
@@ -854,14 +854,14 @@ async function prunePrepareOverflowNonEnabledVariants(params: {
   const blockedIds = plan.pruneIds.filter((row) => blocked.has(row));
 
   if (deletableIds.length > 0) {
-    await params.db.$executeRaw(Prisma.sql`
+    await params.db.$executeRaw(sql`
           DELETE FROM scalp_deployments
-          WHERE deployment_id IN (${Prisma.join(deletableIds)})
+          WHERE deployment_id IN (${join(deletableIds)})
             AND enabled = FALSE;
       `);
   }
   if (blockedIds.length > 0) {
-    await params.db.$executeRaw(Prisma.sql`
+    await params.db.$executeRaw(sql`
           UPDATE scalp_deployments
           SET
               in_universe = FALSE,
@@ -869,7 +869,7 @@ async function prunePrepareOverflowNonEnabledVariants(params: {
               promotion_dirty = FALSE,
               updated_by = 'pipeline:prepare:cap',
               updated_at = NOW()
-          WHERE deployment_id IN (${Prisma.join(blockedIds)})
+          WHERE deployment_id IN (${join(blockedIds)})
             AND enabled = FALSE;
       `);
   }
@@ -1248,7 +1248,7 @@ async function ensurePipelineJobRow(
   entrySessionProfile: ScalpEntrySessionProfile = "berlin",
 ): Promise<void> {
   const db = scalpPrisma();
-  await db.$executeRaw(Prisma.sql`
+  await db.$executeRaw(sql`
         INSERT INTO scalp_pipeline_jobs(job_kind, entry_session_profile, status, next_run_at, created_at, updated_at)
         VALUES(${jobKind}, ${entrySessionProfile}, 'idle', NOW(), NOW(), NOW())
         ON CONFLICT(job_kind, entry_session_profile) DO NOTHING;
@@ -1263,7 +1263,7 @@ async function acquirePipelineJobLock(params: {
 }): Promise<boolean> {
   await ensurePipelineJobRow(params.jobKind, params.entrySessionProfile);
   const db = scalpPrisma();
-  const rows = await db.$queryRaw<Array<{ jobKind: string }>>(Prisma.sql`
+  const rows = await db.$queryRaw<Array<{ jobKind: string }>>(sql`
         UPDATE scalp_pipeline_jobs
         SET
             status = 'running',
@@ -1293,7 +1293,7 @@ async function pulsePipelineJobProgress(params: {
     params.entrySessionProfile,
   );
   const db = scalpPrisma();
-  await db.$executeRaw(Prisma.sql`
+  await db.$executeRaw(sql`
         UPDATE scalp_pipeline_jobs
         SET
             lock_expires_at = NOW() + make_interval(secs => ${Math.max(5, Math.floor(params.lockMs / 1000))}),
@@ -1324,7 +1324,7 @@ async function releasePipelineJobLock(params: {
       ? new Date(params.nextRunAtMs)
       : null;
   const db = scalpPrisma();
-  await db.$executeRaw(Prisma.sql`
+  await db.$executeRaw(sql`
         UPDATE scalp_pipeline_jobs
         SET
             status = ${params.success ? "idle" : "failed"},
@@ -1365,7 +1365,7 @@ async function insertPipelineJobRun(params: {
   const db = scalpPrisma();
   try {
     await db.$executeRaw(
-      Prisma.sql`
+      sql`
       INSERT INTO scalp_pipeline_job_runs(
         job_kind,
         entry_session_profile,
@@ -1540,7 +1540,7 @@ async function countPendingLoadSymbols(): Promise<number> {
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
     Array<{ count: bigint | number | string }>
-  >(Prisma.sql`
+  >(sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_discovered_symbols
         WHERE load_status IN ('pending', 'retry_wait')
@@ -1552,7 +1552,7 @@ async function countPendingLoadSymbols(): Promise<number> {
 async function countActivePipelineSymbols(): Promise<number> {
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{ count: bigint | number | string }>>(
-    Prisma.sql`
+    sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_discovered_symbols;
     `,
@@ -1567,7 +1567,7 @@ async function countPendingPrepareSymbols(
   if (entrySessionProfile !== "berlin") {
     const rows = await db.$queryRaw<
       Array<{ count: bigint | number | string }>
-    >(Prisma.sql`
+    >(sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_discovered_symbols s
         WHERE s.load_status = 'succeeded'
@@ -1588,7 +1588,7 @@ async function countPendingPrepareSymbols(
   }
   const rows = await db.$queryRaw<
     Array<{ count: bigint | number | string }>
-  >(Prisma.sql`
+  >(sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_discovered_symbols
         WHERE load_status = 'succeeded'
@@ -1605,7 +1605,7 @@ async function countPendingWorkerRows(
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
     Array<{ count: bigint | number | string }>
-  >(Prisma.sql`
+  >(sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_deployment_weekly_metrics m
         INNER JOIN scalp_deployments d
@@ -1635,7 +1635,7 @@ async function countPendingPromotionRows(): Promise<number> {
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
     Array<{ count: bigint | number | string }>
-  >(Prisma.sql`
+  >(sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_deployments
         WHERE (
@@ -2458,19 +2458,19 @@ function computeWeeklyRobustnessFromTasks(params: {
 }
 
 function buildAnySymbolTextMatchSql(
-  columnSql: Prisma.Sql,
+  columnSql: SqlFragment,
   symbols: string[],
-): Prisma.Sql {
-  if (!symbols.length) return Prisma.sql`FALSE`;
+): SqlFragment {
+  if (!symbols.length) return sql`FALSE`;
   const filters = symbols.map((symbol) =>
-    Prisma.sql`${columnSql} ILIKE ${`%${symbol}%`}`,
+    sql`${columnSql} ILIKE ${`%${symbol}%`}`,
   );
-  return Prisma.sql`(${Prisma.join(filters, " OR ")})`;
+  return sql`(${join(filters, " OR ")})`;
 }
 
 async function safelyExecuteRaw(
   db: ReturnType<typeof scalpPrisma>,
-  sql: Prisma.Sql,
+  sql: SqlFragment,
 ): Promise<number> {
   try {
     return Number(await db.$executeRaw(sql));
@@ -2528,29 +2528,29 @@ async function pruneDroppedDiscoveredSymbols(params: {
   if (!symbols.length || params.dryRun) return empty;
 
   const db = scalpPrisma();
-  const deployments = await db.$queryRaw<Array<{ deploymentId: string }>>(Prisma.sql`
+  const deployments = await db.$queryRaw<Array<{ deploymentId: string }>>(sql`
       SELECT deployment_id AS "deploymentId"
       FROM scalp_deployments
-      WHERE symbol IN (${Prisma.join(symbols)});
+      WHERE symbol IN (${join(symbols)});
   `);
   const deploymentIds = deployments
     .map((row) => String(row.deploymentId || "").trim())
     .filter(Boolean);
   const detailsJsonLike = buildAnySymbolTextMatchSql(
-    Prisma.sql`details_json::text`,
+    sql`details_json::text`,
     symbols,
   );
   const progressJsonLike = buildAnySymbolTextMatchSql(
-    Prisma.sql`progress_json::text`,
+    sql`progress_json::text`,
     symbols,
   );
   const universePayloadLike = buildAnySymbolTextMatchSql(
-    Prisma.sql`payload_json::text`,
+    sql`payload_json::text`,
     symbols,
   );
 
   const disabledEnabledDeployments = Number(
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
       UPDATE scalp_deployments
       SET
           enabled = FALSE,
@@ -2559,104 +2559,104 @@ async function pruneDroppedDiscoveredSymbols(params: {
           promotion_dirty = FALSE,
           updated_by = 'pipeline:discover:v2:gate_drop',
           updated_at = NOW()
-      WHERE symbol IN (${Prisma.join(symbols)})
+      WHERE symbol IN (${join(symbols)})
         AND enabled = TRUE;
     `),
   );
   const prunedTradeLedgerRows = Number(
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
       DELETE FROM scalp_trade_ledger
-      WHERE symbol IN (${Prisma.join(symbols)})
+      WHERE symbol IN (${join(symbols)})
          ${
            deploymentIds.length
-             ? Prisma.sql`OR deployment_id IN (${Prisma.join(deploymentIds)})`
-             : Prisma.empty
+             ? sql`OR deployment_id IN (${join(deploymentIds)})`
+             : empty
          };
     `),
   );
   const prunedJournalRows = Number(
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
       DELETE FROM scalp_journal
-      WHERE symbol IN (${Prisma.join(symbols)})
+      WHERE symbol IN (${join(symbols)})
          ${
            deploymentIds.length
-             ? Prisma.sql`OR deployment_id IN (${Prisma.join(deploymentIds)})`
-             : Prisma.empty
+             ? sql`OR deployment_id IN (${join(deploymentIds)})`
+             : empty
          };
     `),
   );
   const prunedWeeklyMetrics = Number(
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
       DELETE FROM scalp_deployment_weekly_metrics
-      WHERE symbol IN (${Prisma.join(symbols)})
+      WHERE symbol IN (${join(symbols)})
          ${
            deploymentIds.length
-             ? Prisma.sql`OR deployment_id IN (${Prisma.join(deploymentIds)})`
-             : Prisma.empty
+             ? sql`OR deployment_id IN (${join(deploymentIds)})`
+             : empty
          };
     `),
   );
   const prunedExecutionRuns = Number(
     deploymentIds.length
-      ? await db.$executeRaw(Prisma.sql`
+      ? await db.$executeRaw(sql`
           DELETE FROM scalp_execution_runs
-          WHERE deployment_id IN (${Prisma.join(deploymentIds)});
+          WHERE deployment_id IN (${join(deploymentIds)});
         `)
       : 0,
   );
   const prunedSessions = Number(
     deploymentIds.length
-      ? await db.$executeRaw(Prisma.sql`
+      ? await db.$executeRaw(sql`
           DELETE FROM scalp_sessions
-          WHERE deployment_id IN (${Prisma.join(deploymentIds)});
+          WHERE deployment_id IN (${join(deploymentIds)});
         `)
       : 0,
   );
   const prunedDeployments = Number(
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
       DELETE FROM scalp_deployments
-      WHERE symbol IN (${Prisma.join(symbols)});
+      WHERE symbol IN (${join(symbols)});
     `),
   );
   const prunedCooldownRows = Number(
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
       DELETE FROM scalp_symbol_cooldowns
-      WHERE symbol IN (${Prisma.join(symbols)});
+      WHERE symbol IN (${join(symbols)});
     `),
   );
   const prunedMetadataRows = Number(
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
       DELETE FROM scalp_symbol_market_metadata
-      WHERE symbol IN (${Prisma.join(symbols)});
+      WHERE symbol IN (${join(symbols)});
     `),
   );
   const prunedCandleHistoryWeeks = Number(
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
       DELETE FROM scalp_candle_history_weeks
-      WHERE symbol IN (${Prisma.join(symbols)});
+      WHERE symbol IN (${join(symbols)});
     `),
   );
   const prunedLegacyCandleHistoryRows = await safelyExecuteRaw(
     db,
-    Prisma.sql`
+    sql`
       DELETE FROM scalp_candle_history
-      WHERE symbol IN (${Prisma.join(symbols)});
+      WHERE symbol IN (${join(symbols)});
     `,
   );
   const prunedLegacyPipelineRows = Number(
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
       DELETE FROM scalp_pipeline_symbols
-      WHERE symbol IN (${Prisma.join(symbols)});
+      WHERE symbol IN (${join(symbols)});
     `),
   );
   const prunedPipelineJobRunRows = Number(
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
       DELETE FROM scalp_pipeline_job_runs
       WHERE ${detailsJsonLike};
     `),
   );
   const prunedPipelineJobRows = Number(
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
       UPDATE scalp_pipeline_jobs
       SET
           progress_json = NULL,
@@ -2669,14 +2669,14 @@ async function pruneDroppedDiscoveredSymbols(params: {
     `),
   );
   const prunedUniverseSnapshotRows = Number(
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
       DELETE FROM scalp_symbol_universe_snapshots
       WHERE ${universePayloadLike};
     `),
   );
   const prunedResearchSnapshotRows = await safelyExecuteRaw(
     db,
-    Prisma.sql`
+    sql`
       DELETE FROM scalp_research_report_snapshots
       WHERE ${universePayloadLike};
     `,
@@ -2760,7 +2760,7 @@ export async function runDiscoverPipelineJob(
       Array<{
         symbol: string;
       }>
-    >(Prisma.sql`
+    >(sql`
             SELECT
                 symbol
             FROM scalp_discovered_symbols;
@@ -2797,7 +2797,7 @@ export async function runDiscoverPipelineJob(
 
     if (!dryRun) {
       for (const symbol of activeSymbols) {
-        await db.$executeRaw(Prisma.sql`
+        await db.$executeRaw(sql`
                 INSERT INTO scalp_discovered_symbols(
                     symbol,
                     last_discovered_at,
@@ -2926,7 +2926,7 @@ async function claimLoadSymbols(
       symbol: string;
       attempts: number;
     }>
-  >(Prisma.sql`
+  >(sql`
         WITH
         candidate AS (
             SELECT
@@ -2963,7 +2963,7 @@ async function nudgeLoadSymbolsForCoverageFloor(params: {
   );
   const lastCompletedWeekStartMs =
     startCurrentWeekMondayMs - ONE_WEEK_MS;
-  const nudged = await db.$executeRaw(Prisma.sql`
+  const nudged = await db.$executeRaw(sql`
         UPDATE scalp_discovered_symbols
         SET
             load_status = 'pending',
@@ -2995,7 +2995,7 @@ async function updateLoadSymbolStatus(params: {
     typeof params.retryAfterMs === "number" && params.retryAfterMs > 0
       ? new Date(Date.now() + params.retryAfterMs)
       : null;
-  await db.$executeRaw(Prisma.sql`
+  await db.$executeRaw(sql`
         UPDATE scalp_discovered_symbols
         SET
             load_status = ${params.status},
@@ -3383,7 +3383,7 @@ async function claimPrepareSymbols(
   if (entrySessionProfile !== "berlin") {
     const rows = await db.$queryRaw<
       Array<{ symbol: string; attempts: number }>
-    >(Prisma.sql`
+    >(sql`
         WITH candidate AS (
             SELECT symbol
             FROM scalp_discovered_symbols
@@ -3414,7 +3414,7 @@ async function claimPrepareSymbols(
   }
   const rows = await db.$queryRaw<
     Array<{ symbol: string; attempts: number }>
-  >(Prisma.sql`
+  >(sql`
         WITH candidate AS (
             SELECT symbol
             FROM scalp_discovered_symbols
@@ -3463,7 +3463,7 @@ async function upsertWeeklyQueueRowsForDeployment(params: {
     weekStartMs += ONE_WEEK_MS
   ) {
     const weekEndMs = weekStartMs + ONE_WEEK_MS;
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
             INSERT INTO scalp_deployment_weekly_metrics(
                 deployment_id,
                 entry_session_profile,
@@ -3560,7 +3560,7 @@ async function ensureWeeklyQueueRowsExistForDeployment(params: {
   ) {
     const weekEndMs = weekStartMs + ONE_WEEK_MS;
     const insertedRows = Number(
-      await db.$executeRaw(Prisma.sql`
+      await db.$executeRaw(sql`
             INSERT INTO scalp_deployment_weekly_metrics(
                 deployment_id,
                 entry_session_profile,
@@ -3616,7 +3616,7 @@ async function updatePrepareSymbolStatus(params: {
     typeof params.retryAfterMs === "number" && params.retryAfterMs > 0
       ? new Date(Date.now() + params.retryAfterMs)
       : null;
-  await db.$executeRaw(Prisma.sql`
+  await db.$executeRaw(sql`
         UPDATE scalp_discovered_symbols
         SET
             prepare_status = ${params.status},
@@ -3746,7 +3746,7 @@ export async function runPreparePipelineJob(
       const symbol = normalizeSymbol(row.symbol);
       if (!symbol) continue;
       if (bitgetOnly && !isBitgetPipelineSymbol(symbol)) {
-        await db.$executeRaw(Prisma.sql`
+        await db.$executeRaw(sql`
                     UPDATE scalp_deployments
                     SET
                         worker_dirty = FALSE,
@@ -3807,7 +3807,7 @@ export async function runPreparePipelineJob(
             createdAtMs: bigint | number;
             updatedAtMs: bigint | number;
           }>
-        >(Prisma.sql`
+        >(sql`
                     SELECT
                         deployment_id AS "deploymentId",
                         strategy_id AS "strategyId",
@@ -3971,16 +3971,16 @@ export async function runPreparePipelineJob(
 
         const uniqPreparedIds = Array.from(new Set(preparedIds));
         if (uniqPreparedIds.length > 0) {
-          await db.$executeRaw(Prisma.sql`
+          await db.$executeRaw(sql`
                         UPDATE scalp_deployments
                         SET
                             worker_dirty = TRUE,
                             updated_by = 'pipeline:prepare',
                             last_prepared_at = NOW(),
                             updated_at = NOW()
-                        WHERE deployment_id IN (${Prisma.join(uniqPreparedIds)});
+                        WHERE deployment_id IN (${join(uniqPreparedIds)});
                     `);
-          await db.$executeRaw(Prisma.sql`
+          await db.$executeRaw(sql`
                         UPDATE scalp_deployments
                         SET
                             worker_dirty = FALSE,
@@ -3989,7 +3989,7 @@ export async function runPreparePipelineJob(
                             updated_at = NOW()
                         WHERE symbol = ${symbol}
                           AND entry_session_profile = ${entrySessionProfile}
-                          AND deployment_id NOT IN (${Prisma.join(uniqPreparedIds)})
+                          AND deployment_id NOT IN (${join(uniqPreparedIds)})
                           AND enabled = FALSE;
                     `);
         }
@@ -4002,7 +4002,7 @@ export async function runPreparePipelineJob(
               strategyId: string;
               tuneId: string;
             }>
-          >(Prisma.sql`
+          >(sql`
                         SELECT
                             deployment_id AS "deploymentId",
                             symbol,
@@ -4139,7 +4139,7 @@ async function claimWorkerRows(
       weekEnd: Date;
       attempts: number;
     }>
-  >(Prisma.sql`
+  >(sql`
         WITH candidate AS (
             SELECT m.id
             FROM scalp_deployment_weekly_metrics m
@@ -4227,7 +4227,7 @@ async function completeWorkerRow(params: {
       ? new Date(Date.now() + params.retryAfterMs)
       : null;
   const metricsJson = params.metrics ? JSON.stringify(params.metrics) : null;
-  await db.$executeRaw(Prisma.sql`
+  await db.$executeRaw(sql`
         UPDATE scalp_deployment_weekly_metrics
         SET
             status = ${status},
@@ -4314,7 +4314,7 @@ export async function runWorkerPipelineJob(
             tuneId: string;
             configOverride: unknown;
           }>
-        >(Prisma.sql`
+        >(sql`
                     SELECT
                         deployment_id AS "deploymentId",
                         symbol,
@@ -4428,7 +4428,7 @@ export async function runWorkerPipelineJob(
           retry: false,
           metrics,
         });
-        await db.$executeRaw(Prisma.sql`
+        await db.$executeRaw(sql`
                     UPDATE scalp_deployments
                     SET
                         promotion_dirty = TRUE,
@@ -4536,7 +4536,7 @@ export async function runPromotionPipelineJob(
         strategyId: string;
         tuneId: string;
       }>
-    >(Prisma.sql`
+    >(sql`
             SELECT
                 deployment_id AS "deploymentId",
                 entry_session_profile AS "entrySessionProfile",
@@ -4553,13 +4553,13 @@ export async function runPromotionPipelineJob(
     let rolloverIncumbentsQueued = 0;
     if (rolloverDueIds.length > 0) {
       rolloverIncumbentsQueued = rolloverDueIds.length;
-      await db.$executeRaw(Prisma.sql`
+      await db.$executeRaw(sql`
                 UPDATE scalp_deployments
                 SET
                     promotion_dirty = TRUE,
                     updated_by = 'pipeline:promotion',
                     updated_at = NOW()
-                WHERE deployment_id IN (${Prisma.join(rolloverDueIds)});
+                WHERE deployment_id IN (${join(rolloverDueIds)});
             `);
       for (const row of rolloverDueRows) {
         await ensureWeeklyQueueRowsExistForDeployment({
@@ -4573,7 +4573,7 @@ export async function runPromotionPipelineJob(
           nowMs,
           requiredWeeks,
         });
-        await db.$executeRaw(Prisma.sql`
+        await db.$executeRaw(sql`
                     UPDATE scalp_deployment_weekly_metrics
                     SET
                         status = 'pending',
@@ -4590,7 +4590,7 @@ export async function runPromotionPipelineJob(
     }
     const dirtyRows = await db.$queryRaw<
       Array<{ deploymentId: string }>
-    >(Prisma.sql`
+    >(sql`
             SELECT d.deployment_id AS "deploymentId"
             FROM scalp_deployments d
             WHERE (
@@ -4657,7 +4657,7 @@ export async function runPromotionPipelineJob(
         entrySessionProfile: string;
         promotionGate: unknown;
       }>
-    >(Prisma.sql`
+    >(sql`
             SELECT
                 deployment_id AS "deploymentId",
                 enabled,
@@ -4752,7 +4752,7 @@ export async function runPromotionPipelineJob(
         grossProfitR: number | null;
         grossLossR: number | null;
       }>
-    >(Prisma.sql`
+    >(sql`
             SELECT
                 deployment_id AS "deploymentId",
                 symbol,
@@ -4771,7 +4771,7 @@ export async function runPromotionPipelineJob(
                 gross_profit_r AS "grossProfitR",
                 gross_loss_r AS "grossLossR"
             FROM scalp_deployment_weekly_metrics
-            WHERE deployment_id IN (${Prisma.join(consideredIds)})
+            WHERE deployment_id IN (${join(consideredIds)})
               AND status = 'succeeded'
               AND week_start >= ${new Date(windowFromTs)}
               AND week_start < ${new Date(windowToTs)}
@@ -4887,7 +4887,7 @@ export async function runPromotionPipelineJob(
       .slice(0, maxLoadNudgeSymbols);
     if (loadSymbolsToNudge.length > 0) {
         nudgedLoadSymbols = Number(
-        await db.$executeRaw(Prisma.sql`
+        await db.$executeRaw(sql`
                 UPDATE scalp_discovered_symbols
                 SET
                     load_status = CASE
@@ -4903,7 +4903,7 @@ export async function runPromotionPipelineJob(
                         ELSE NULL
                     END,
                     updated_at = NOW()
-                WHERE symbol IN (${Prisma.join(loadSymbolsToNudge)});
+                WHERE symbol IN (${join(loadSymbolsToNudge)});
             `),
       );
     }
@@ -4924,7 +4924,7 @@ export async function runPromotionPipelineJob(
         const gapWindow = gapWindowsByDeploymentId.get(deploymentId);
         if (!gapWindow) continue;
         nudgedWorkerRows += Number(
-          await db.$executeRaw(Prisma.sql`
+          await db.$executeRaw(sql`
                     UPDATE scalp_deployment_weekly_metrics
                     SET
                         status = 'pending',
@@ -4939,13 +4939,13 @@ export async function runPromotionPipelineJob(
                 `),
         );
       }
-      await db.$executeRaw(Prisma.sql`
+      await db.$executeRaw(sql`
                 UPDATE scalp_deployments
                 SET
                     worker_dirty = TRUE,
                     updated_by = 'pipeline:promotion',
                     updated_at = NOW()
-                WHERE deployment_id IN (${Prisma.join(workerDeploymentsToNudge)});
+                WHERE deployment_id IN (${join(workerDeploymentsToNudge)});
             `);
     }
 
@@ -5447,7 +5447,7 @@ export async function runPromotionPipelineJob(
 
     if (lifecycleSyncRows.length > 0) {
       for (const row of lifecycleSyncRows) {
-        await db.$executeRaw(Prisma.sql`
+        await db.$executeRaw(sql`
                     UPDATE scalp_deployments
                     SET
                         retired_at = ${row.lifecycle.state === "retired" ? new Date(nowMs) : null},
@@ -5459,13 +5459,13 @@ export async function runPromotionPipelineJob(
     }
 
     if (dirtySet.size > 0) {
-      await db.$executeRaw(Prisma.sql`
+      await db.$executeRaw(sql`
                 UPDATE scalp_deployments
                 SET
                     promotion_dirty = FALSE,
                     updated_by = 'pipeline:promotion',
                     updated_at = NOW()
-                WHERE deployment_id IN (${Prisma.join(Array.from(dirtySet))});
+                WHERE deployment_id IN (${join(Array.from(dirtySet))});
             `);
     }
 
@@ -5599,7 +5599,7 @@ export async function loadScalpPipelineJobsHealth(params: {
         progressLabel: string | null;
         progressJson: unknown;
       }>
-    >(Prisma.sql`
+    >(sql`
             SELECT
                 job_kind AS "jobKind",
                 status,
@@ -5630,7 +5630,7 @@ export async function loadScalpPipelineJobsHealth(params: {
             failedPrepare: bigint | number | null;
             succeededPrepare: bigint | number | null;
           }>
-        >(Prisma.sql`
+        >(sql`
             SELECT
                 COUNT(*) FILTER (WHERE load_status = 'pending')::bigint AS "pendingLoad",
                 COUNT(*) FILTER (WHERE load_status = 'running')::bigint AS "runningLoad",
@@ -5653,7 +5653,7 @@ export async function loadScalpPipelineJobsHealth(params: {
         failedWorker: bigint | number | null;
         succeededWorker: bigint | number | null;
       }>
-    >(Prisma.sql`
+    >(sql`
             SELECT
                 COUNT(*) FILTER (WHERE m.status = 'pending')::bigint AS "pendingWorker",
                 COUNT(*) FILTER (WHERE m.status = 'running')::bigint AS "runningWorker",
@@ -5686,7 +5686,7 @@ export async function loadScalpPipelineJobsHealth(params: {
         failedPromotion: bigint | number | null;
         succeededPromotion: bigint | number | null;
       }>
-    >(Prisma.sql`
+    >(sql`
             SELECT
                 COUNT(*) FILTER (WHERE promotion_dirty = TRUE)::bigint AS "pendingPromotion",
                 0::bigint AS "runningPromotion",
@@ -5861,7 +5861,7 @@ export async function listScalpDeploymentWeeklyMetricRows(
       profitFactor: unknown;
       maxDrawdownR: unknown;
     }>
-  >(Prisma.sql`
+  >(sql`
         SELECT
             m.deployment_id AS "deploymentId",
             m.symbol,
@@ -5990,7 +5990,7 @@ export async function listScalpDurationTimelineRuns(params: {
             pendingAfter: number | null;
             downstreamRequested: boolean | null;
           }>
-        >(Prisma.sql`
+        >(sql`
           SELECT
               r.job_kind AS "jobKind",
               r.status,
@@ -6008,13 +6008,13 @@ export async function listScalpDurationTimelineRuns(params: {
             AND r.started_at <= ${new Date(rangeEndMs)}
             ${
               entrySessionProfile
-                ? Prisma.sql`AND r.entry_session_profile = ${entrySessionProfile}`
-                : Prisma.empty
+                ? sql`AND r.entry_session_profile = ${entrySessionProfile}`
+                : empty
             }
             ${
               jobKind === "all"
-                ? Prisma.empty
-                : Prisma.sql`AND r.job_kind = ${jobKind}`
+                ? empty
+                : sql`AND r.job_kind = ${jobKind}`
             }
           ORDER BY r.finished_at DESC
           LIMIT ${limit};
@@ -6032,7 +6032,7 @@ export async function listScalpDurationTimelineRuns(params: {
             succeededCount: bigint | number | null;
             failedCount: bigint | number | null;
           }>
-        >(Prisma.sql`
+        >(sql`
           SELECT
               m.worker_id AS "workerId",
               (EXTRACT(EPOCH FROM MIN(m.started_at)) * 1000)::bigint AS "startedAtMs",
@@ -6047,8 +6047,8 @@ export async function listScalpDurationTimelineRuns(params: {
             AND m.started_at <= ${new Date(rangeEndMs)}
             ${
               entrySessionProfile
-                ? Prisma.sql`AND m.entry_session_profile = ${entrySessionProfile}`
-                : Prisma.empty
+                ? sql`AND m.entry_session_profile = ${entrySessionProfile}`
+                : empty
             }
           GROUP BY m.worker_id
           ORDER BY MAX(m.finished_at) DESC NULLS LAST, MIN(m.started_at) DESC

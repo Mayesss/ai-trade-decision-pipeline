@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { empty, join, raw, sql } from './pg/sql';
 
 import { isScalpPgConfigured, scalpPrisma } from "./pg/client";
 import {
@@ -69,18 +69,18 @@ export async function loadScalpSymbolMarketMetadata(
       assetCategory: string;
       instrumentType: string | null;
       marketStatus: string | null;
-      pipSize: Prisma.Decimal | number | string | null;
+      pipSize: number | string | null;
       pipPosition: number | null;
-      tickSize: Prisma.Decimal | number | string | null;
+      tickSize: number | string | null;
       decimalPlacesFactor: number | null;
       scalingFactor: number | null;
-      minDealSize: Prisma.Decimal | number | string | null;
+      minDealSize: number | string | null;
       sizeDecimals: number | null;
       maxLeverage: number | null;
       openingHoursJson: Record<string, unknown> | null;
       fetchedAtMs: bigint | number | null;
     }>
-  >(Prisma.sql`
+  >(sql`
       SELECT
         symbol,
         epic,
@@ -124,18 +124,18 @@ export async function loadScalpSymbolMarketMetadataBulk(
       assetCategory: string;
       instrumentType: string | null;
       marketStatus: string | null;
-      pipSize: Prisma.Decimal | number | string | null;
+      pipSize: number | string | null;
       pipPosition: number | null;
-      tickSize: Prisma.Decimal | number | string | null;
+      tickSize: number | string | null;
       decimalPlacesFactor: number | null;
       scalingFactor: number | null;
-      minDealSize: Prisma.Decimal | number | string | null;
+      minDealSize: number | string | null;
       sizeDecimals: number | null;
       maxLeverage: number | null;
       openingHoursJson: Record<string, unknown> | null;
       fetchedAtMs: bigint | number | null;
     }>
-  >(Prisma.sql`
+  >(sql`
       SELECT
         symbol,
         epic,
@@ -154,7 +154,7 @@ export async function loadScalpSymbolMarketMetadataBulk(
         opening_hours_json AS "openingHoursJson",
         (EXTRACT(EPOCH FROM fetched_at) * 1000)::bigint AS "fetchedAtMs"
       FROM scalp_symbol_market_metadata
-      WHERE symbol IN (${Prisma.join(symbols)});
+      WHERE symbol IN (${join(symbols)});
     `);
   for (const row of rows) {
     const parsed = fromRow(row as Record<string, unknown>);
@@ -204,7 +204,7 @@ export async function saveScalpSymbolMarketMetadataBulk(
 
   const db = scalpPrisma();
   const updated = await db.$executeRaw(
-    Prisma.sql`
+    sql`
       WITH input AS (
         SELECT
           UPPER(TRIM(x.symbol)) AS symbol,

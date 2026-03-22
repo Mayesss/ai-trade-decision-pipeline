@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { empty, join, raw, sql } from './pg/sql';
 
 import {
   listScalpCandleHistorySymbols,
@@ -389,7 +389,7 @@ async function loadActivePipelineCandleRetentionGuard(
     Array<{
       symbol: string;
     }>
-  >(Prisma.sql`
+  >(sql`
         SELECT
             symbol
         FROM scalp_discovered_symbols
@@ -441,7 +441,7 @@ async function recoverStalePipelineRowsFromPg(params: {
   );
 
   const staleJobRows = await db.$queryRaw<Array<{ count: bigint | number }>>(
-    Prisma.sql`
+    sql`
           SELECT COUNT(*)::bigint AS count
           FROM scalp_pipeline_jobs
           WHERE status = 'running'
@@ -450,7 +450,7 @@ async function recoverStalePipelineRowsFromPg(params: {
       `,
   );
   const staleLoadRows = await db.$queryRaw<Array<{ count: bigint | number }>>(
-    Prisma.sql`
+    sql`
           SELECT COUNT(*)::bigint AS count
           FROM scalp_discovered_symbols
           WHERE load_status = 'running'
@@ -459,7 +459,7 @@ async function recoverStalePipelineRowsFromPg(params: {
   );
   const stalePrepareRows = await db.$queryRaw<
     Array<{ count: bigint | number }>
-  >(Prisma.sql`
+  >(sql`
           SELECT COUNT(*)::bigint AS count
           FROM scalp_discovered_symbols
           WHERE prepare_status = 'running'
@@ -467,7 +467,7 @@ async function recoverStalePipelineRowsFromPg(params: {
       `);
   const staleWorkerRows = await db.$queryRaw<
     Array<{ count: bigint | number }>
-  >(Prisma.sql`
+  >(sql`
           SELECT COUNT(*)::bigint AS count
           FROM scalp_deployment_weekly_metrics
           WHERE status = 'running'
@@ -493,7 +493,7 @@ async function recoverStalePipelineRowsFromPg(params: {
 
   if (!params.dryRun) {
     if (staleJobLocksCleared > 0) {
-      await db.$executeRaw(Prisma.sql`
+      await db.$executeRaw(sql`
                 UPDATE scalp_pipeline_jobs
                 SET
                     status = 'idle',
@@ -508,7 +508,7 @@ async function recoverStalePipelineRowsFromPg(params: {
             `);
     }
     if (staleLoadRowsRecovered > 0) {
-      await db.$executeRaw(Prisma.sql`
+      await db.$executeRaw(sql`
                 UPDATE scalp_discovered_symbols
                 SET
                     load_status = 'retry_wait',
@@ -520,7 +520,7 @@ async function recoverStalePipelineRowsFromPg(params: {
             `);
     }
     if (stalePrepareRowsRecovered > 0) {
-      await db.$executeRaw(Prisma.sql`
+      await db.$executeRaw(sql`
                 UPDATE scalp_discovered_symbols
                 SET
                     prepare_status = 'retry_wait',
@@ -532,7 +532,7 @@ async function recoverStalePipelineRowsFromPg(params: {
             `);
     }
     if (staleWorkerRowsRecovered > 0) {
-      await db.$executeRaw(Prisma.sql`
+      await db.$executeRaw(sql`
                 UPDATE scalp_deployment_weekly_metrics
                 SET
                     status = 'retry_wait',
@@ -566,7 +566,7 @@ async function pruneWeeklyMetricsFromPg(params: {
 
   const db = scalpPrisma();
   const cutoff = new Date(params.nowMs - params.retentionMs);
-  const rows = await db.$queryRaw<Array<{ count: bigint | number }>>(Prisma.sql`
+  const rows = await db.$queryRaw<Array<{ count: bigint | number }>>(sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_deployment_weekly_metrics
         WHERE week_end < ${cutoff}
@@ -574,7 +574,7 @@ async function pruneWeeklyMetricsFromPg(params: {
     `);
   const rowsToDelete = Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
   if (!params.dryRun && rowsToDelete > 0) {
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
             DELETE FROM scalp_deployment_weekly_metrics
             WHERE week_end < ${cutoff}
               AND status IN ('succeeded', 'failed');
@@ -603,7 +603,7 @@ async function pruneOrphanedDeploymentsFromPg(params: {
       promotionGate: unknown;
       researchTaskCount: bigint | number;
     }>
-  >(Prisma.sql`
+  >(sql`
         SELECT
             d.deployment_id AS "deploymentId",
             d.source,
@@ -656,7 +656,7 @@ async function pruneInactivePipelineSymbolsFromPg(params: {
   if (!isScalpPgConfigured()) return [];
   const cutoff = new Date(params.nowMs - params.retentionDays * ONE_DAY_MS);
   const db = scalpPrisma();
-  const rows = await db.$queryRaw<Array<{ symbol: string }>>(Prisma.sql`
+  const rows = await db.$queryRaw<Array<{ symbol: string }>>(sql`
         SELECT symbol
         FROM scalp_discovered_symbols
         WHERE updated_at < ${cutoff}
@@ -669,9 +669,9 @@ async function pruneInactivePipelineSymbolsFromPg(params: {
     .map((row) => normalizeSymbol(row.symbol))
     .filter(Boolean);
   if (!params.dryRun && symbols.length > 0) {
-    await db.$executeRaw(Prisma.sql`
+    await db.$executeRaw(sql`
             DELETE FROM scalp_discovered_symbols
-            WHERE symbol IN (${Prisma.join(symbols)});
+            WHERE symbol IN (${join(symbols)});
         `);
   }
   return symbols;
@@ -685,7 +685,7 @@ async function compactScalpTables(params: {
   if (params.dryRun || !isScalpPgConfigured()) return 0;
 
   const db = scalpPrisma();
-  await db.$executeRaw(Prisma.sql`
+  await db.$executeRaw(sql`
         WITH doomed AS (
             SELECT id
             FROM scalp_journal
@@ -697,7 +697,7 @@ async function compactScalpTables(params: {
         WHERE j.id = d.id;
     `);
 
-  await db.$executeRaw(Prisma.sql`
+  await db.$executeRaw(sql`
         WITH doomed AS (
             SELECT id
             FROM scalp_trade_ledger

@@ -13,6 +13,7 @@
     "lightweight-charts": "^5.0.9",
     "lucide-react": "^0.561.0",
     "next": "^16.0.7",
+    "pg": "^8.20.0",
     "postcss": "^8.5.6",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
@@ -41,6 +42,7 @@
     "scalp:purge-capital-traces": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-purge-capital-traces.ts"
   },
   "devDependencies": {
+    "@types/pg": "^8.20.0",
     "baseline-browser-mapping": "^2.9.19",
     "prisma": "^6.16.0",
     "tsx": "^4.21.0"
