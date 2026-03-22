@@ -905,8 +905,12 @@ function isSessionScopedTuneId(
   tuneId: string,
   entrySessionProfile: ScalpEntrySessionProfile,
 ): boolean {
-  if (entrySessionProfile === "berlin") return true;
-  return tuneId.endsWith(`__sp_${entrySessionProfile}`);
+  if (!tuneId) return false;
+  if (entrySessionProfile === "berlin") {
+    return tuneId.endsWith("_berlin") && tuneId.length > "_berlin".length;
+  }
+  const suffix = `__sp_${entrySessionProfile}`;
+  return tuneId.endsWith(suffix) && tuneId.length > suffix.length;
 }
 
 function toSessionScopedTuneId(
@@ -914,8 +918,10 @@ function toSessionScopedTuneId(
   entrySessionProfile: ScalpEntrySessionProfile,
 ): string {
   const base = normalizeScalpTuneId(tuneId);
-  if (entrySessionProfile === "berlin") return base;
   if (isSessionScopedTuneId(base, entrySessionProfile)) return base;
+  if (entrySessionProfile === "berlin") {
+    return normalizeScalpTuneId(`${base}_berlin`, base);
+  }
   return normalizeScalpTuneId(`${base}__sp_${entrySessionProfile}`, base);
 }
 
@@ -924,7 +930,13 @@ function toBaseTuneIdForSession(
   entrySessionProfile: ScalpEntrySessionProfile,
 ): string {
   const normalized = normalizeScalpTuneId(tuneId);
-  if (entrySessionProfile === "berlin") return normalized;
+  if (entrySessionProfile === "berlin") {
+    const suffix = "_berlin";
+    if (normalized.endsWith(suffix) && normalized.length > suffix.length) {
+      return normalizeScalpTuneId(normalized.slice(0, -suffix.length));
+    }
+    return normalized;
+  }
   const suffix = `__sp_${entrySessionProfile}`;
   if (normalized.endsWith(suffix) && normalized.length > suffix.length) {
     return normalizeScalpTuneId(normalized.slice(0, -suffix.length));
@@ -3830,7 +3842,14 @@ export async function runPreparePipelineJob(
             current.deploymentId,
           );
           const depVenue = resolveScalpDeploymentVenueFromId(dep.deploymentId);
-          if (currentVenue !== symbolVenue && depVenue === symbolVenue) {
+          const shouldPreferByVenue =
+            currentVenue !== symbolVenue && depVenue === symbolVenue;
+          const shouldPreferBerlinCanonical =
+            entrySessionProfile === "berlin" &&
+            currentVenue === depVenue &&
+            !isSessionScopedTuneId(current.tuneId, "berlin") &&
+            isSessionScopedTuneId(dep.tuneId, "berlin");
+          if (shouldPreferByVenue || shouldPreferBerlinCanonical) {
             existingByKey.set(key, {
               deploymentId: dep.deploymentId,
               strategyId: dep.strategyId,
