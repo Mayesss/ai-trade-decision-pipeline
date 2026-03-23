@@ -330,3 +330,61 @@ test('deployment registry bulk upsert applies multiple rows and resolves duplica
         }
     }
 });
+
+test('deployment registry normalizes and persists promotion halving metadata', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'scalp-deployments-halving-'));
+    const prevPath = process.env.SCALP_DEPLOYMENTS_REGISTRY_PATH;
+    const prevStore = process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE;
+    const prevAllowFile = process.env.ALLOW_SCALP_FILE_BACKEND;
+    process.env.SCALP_DEPLOYMENTS_REGISTRY_PATH = path.join(dir, 'registry.json');
+    process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE = 'file';
+    process.env.ALLOW_SCALP_FILE_BACKEND = '1';
+
+    try {
+        await upsertScalpDeploymentRegistryEntry({
+            symbol: 'eurusd',
+            strategyId: 'regime_pullback_m15_m3',
+            tuneId: 'staged_a',
+            source: 'matrix',
+            enabled: false,
+            promotionGate: {
+                eligible: false,
+                reason: 'fresh_weeks_incomplete',
+                source: 'walk_forward',
+                evaluatedAtMs: 1000,
+                forwardValidation: null,
+                thresholds: null,
+                halving: {
+                    mode: 'staged',
+                    stage: 'B',
+                    targetWeeks: 6,
+                    epochWeekStartMs: 1710720000000,
+                    score: 1.23,
+                    cohortRank: 2,
+                    cohortSize: 5,
+                    updatedAtMs: 1710723600000,
+                },
+            },
+            updatedBy: 'test-halving',
+        });
+
+        const loaded = await loadScalpDeploymentRegistry();
+        const row = loaded.deployments.find(
+            (item) => item.deploymentId === 'bitget:EURUSD~regime_pullback_m15_m3~staged_a',
+        );
+        assert.ok(row);
+        assert.equal(row.promotionGate?.halving?.mode, 'staged');
+        assert.equal(row.promotionGate?.halving?.stage, 'B');
+        assert.equal(row.promotionGate?.halving?.targetWeeks, 6);
+        assert.equal(row.promotionGate?.halving?.epochWeekStartMs, 1710720000000);
+        assert.equal(row.promotionGate?.halving?.cohortRank, 2);
+        assert.equal(row.promotionGate?.halving?.cohortSize, 5);
+    } finally {
+        if (prevPath === undefined) delete process.env.SCALP_DEPLOYMENTS_REGISTRY_PATH;
+        else process.env.SCALP_DEPLOYMENTS_REGISTRY_PATH = prevPath;
+        if (prevStore === undefined) delete process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE;
+        else process.env.SCALP_DEPLOYMENTS_REGISTRY_STORE = prevStore;
+        if (prevAllowFile === undefined) delete process.env.ALLOW_SCALP_FILE_BACKEND;
+        else process.env.ALLOW_SCALP_FILE_BACKEND = prevAllowFile;
+    }
+});

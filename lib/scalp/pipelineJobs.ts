@@ -12,6 +12,8 @@ import {
 import {
   listScalpDeploymentRegistryEntries,
   upsertScalpDeploymentRegistryEntriesBulk,
+  type ScalpDeploymentPromotionHalving,
+  type ScalpDeploymentPromotionHalvingStage,
   type ScalpDeploymentLifecycleState,
   type ScalpDeploymentPromotionLifecycle,
   type ScalpDeploymentPromotionHysteresis,
@@ -23,8 +25,8 @@ import {
   buildBestEligibleTuneDeploymentIdSet,
   buildGlobalSymbolRankedDeploymentIdSet,
   buildForwardValidationByCandidateFromTasks,
-  evaluateFreshCompletedDeploymentWeeks,
   evaluateWeeklyRobustnessGate,
+  type ScalpPromotionTaskLike,
   type ScalpPromotionForwardValidationCandidate,
   type ScalpWeeklyRobustnessMetrics,
   type SyncResearchWeeklyPolicy,
@@ -63,6 +65,23 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 const BITGET_HISTORY_CANDLES_MAX_LIMIT = 200;
 const TRADING_WEEK_CANDLES_1M_MAX = 6 * 24 * 60;
+
+const STAGED_EVAL_MIN_WEEKS = 1;
+const STAGED_EVAL_MAX_WEEKS = 52;
+const STAGED_EVAL_DEFAULT_STAGE_A_WEEKS = 2;
+const STAGED_EVAL_DEFAULT_STAGE_B_WEEKS = 6;
+const STAGED_EVAL_DEFAULT_STAGE_C_WEEKS = 12;
+
+interface ScalpStagedEvalConfig {
+  enabled: boolean;
+  stageAWeeks: number;
+  stageBWeeks: number;
+  stageCWeeks: number;
+  stageAKeepShare: number;
+  stageBKeepShare: number;
+  minSurvivors: number;
+  reopenOnEpoch: boolean;
+}
 
 export const SCALP_PIPELINE_JOB_KINDS = [
   "discover",
@@ -204,6 +223,225 @@ function envNumber(name: string, fallback: number): number {
   const n = Number(process.env[name]);
   if (!Number.isFinite(n)) return fallback;
   return n;
+}
+
+function toBoundedFractionValue(value: unknown, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.min(1, n));
+}
+
+function normalizeStagedHalvingStage(
+  value: unknown,
+): ScalpDeploymentPromotionHalvingStage {
+  const normalized = String(value || "").trim();
+  if (normalized === "A" || normalized === "B" || normalized === "C") {
+    return normalized;
+  }
+  if (normalized === "pruned") return "pruned";
+  return "A";
+}
+
+function resolveStagedEvalConfig(): ScalpStagedEvalConfig {
+  const enabled = envBool("SCALP_STAGED_EVAL_ENABLED", true);
+  const stageAWeeksRaw = toPositiveInt(
+    envNumber("SCALP_STAGED_EVAL_STAGE_A_WEEKS", STAGED_EVAL_DEFAULT_STAGE_A_WEEKS),
+    STAGED_EVAL_DEFAULT_STAGE_A_WEEKS,
+    STAGED_EVAL_MAX_WEEKS,
+  );
+  const stageAWeeks = Math.max(
+    STAGED_EVAL_MIN_WEEKS,
+    Math.min(STAGED_EVAL_MAX_WEEKS, stageAWeeksRaw),
+  );
+  const stageBWeeksRaw = toPositiveInt(
+    envNumber("SCALP_STAGED_EVAL_STAGE_B_WEEKS", STAGED_EVAL_DEFAULT_STAGE_B_WEEKS),
+    STAGED_EVAL_DEFAULT_STAGE_B_WEEKS,
+    STAGED_EVAL_MAX_WEEKS,
+  );
+  const stageBWeeks = Math.max(
+    stageAWeeks + 1,
+    Math.min(STAGED_EVAL_MAX_WEEKS, stageBWeeksRaw),
+  );
+  const stageCWeeksRaw = toPositiveInt(
+    envNumber("SCALP_STAGED_EVAL_STAGE_C_WEEKS", STAGED_EVAL_DEFAULT_STAGE_C_WEEKS),
+    STAGED_EVAL_DEFAULT_STAGE_C_WEEKS,
+    STAGED_EVAL_MAX_WEEKS,
+  );
+  const stageCWeeks = Math.max(
+    stageBWeeks + 1,
+    Math.min(STAGED_EVAL_MAX_WEEKS, stageCWeeksRaw),
+  );
+  const stageAKeepShare = toBoundedFractionValue(
+    process.env.SCALP_STAGED_EVAL_STAGE_A_KEEP_SHARE,
+    0.4,
+  );
+  const stageBKeepShare = toBoundedFractionValue(
+    process.env.SCALP_STAGED_EVAL_STAGE_B_KEEP_SHARE,
+    0.35,
+  );
+  return {
+    enabled,
+    stageAWeeks,
+    stageBWeeks,
+    stageCWeeks,
+    stageAKeepShare,
+    stageBKeepShare,
+    minSurvivors: Math.max(
+      1,
+      Math.min(
+        100,
+        toPositiveInt(
+          envNumber("SCALP_STAGED_EVAL_MIN_SURVIVORS", 1),
+          1,
+          100,
+        ),
+      ),
+    ),
+    reopenOnEpoch: envBool("SCALP_STAGED_EVAL_REOPEN_ON_EPOCH", true),
+  };
+}
+
+function resolveStagedTargetWeeksForStage(
+  cfg: ScalpStagedEvalConfig,
+  stage: ScalpDeploymentPromotionHalvingStage,
+): number {
+  if (stage === "A") return cfg.stageAWeeks;
+  if (stage === "B") return cfg.stageBWeeks;
+  return cfg.stageCWeeks;
+}
+
+function normalizedStagedHalving(
+  value: unknown,
+): ScalpDeploymentPromotionHalving | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const mode = String(row.mode || "").trim().toLowerCase();
+  if (mode !== "staged") return null;
+  const targetWeeks = Math.floor(Number(row.targetWeeks));
+  const epochWeekStartMs = Math.floor(Number(row.epochWeekStartMs));
+  const updatedAtMs = Math.floor(Number(row.updatedAtMs));
+  if (!Number.isFinite(targetWeeks) || targetWeeks <= 0) return null;
+  if (!Number.isFinite(epochWeekStartMs) || epochWeekStartMs <= 0) return null;
+  if (!Number.isFinite(updatedAtMs) || updatedAtMs <= 0) return null;
+  const score = Number(row.score);
+  const cohortRank = Number(row.cohortRank);
+  const cohortSize = Number(row.cohortSize);
+  return {
+    mode: "staged",
+    stage: normalizeStagedHalvingStage(row.stage),
+    targetWeeks,
+    epochWeekStartMs,
+    score: Number.isFinite(score) ? score : null,
+    cohortRank:
+      Number.isFinite(cohortRank) && cohortRank > 0
+        ? Math.floor(cohortRank)
+        : null,
+    cohortSize:
+      Number.isFinite(cohortSize) && cohortSize > 0
+        ? Math.floor(cohortSize)
+        : null,
+    updatedAtMs,
+  };
+}
+
+function cloneGateWithHalving(params: {
+  gate: ScalpDeploymentPromotionGate | null | undefined;
+  halving: ScalpDeploymentPromotionHalving;
+  nowMs: number;
+}): ScalpDeploymentPromotionGate {
+  const base: ScalpDeploymentPromotionGate = params.gate
+    ? {
+        ...params.gate,
+      }
+    : {
+        eligible: false,
+        reason: "missing_forward_validation",
+        source: "none",
+        evaluatedAtMs: params.nowMs,
+        forwardValidation: null,
+        thresholds: null,
+        freshness: null,
+        hysteresis: null,
+        lifecycle: null,
+      };
+  return {
+    ...base,
+    halving: {
+      ...params.halving,
+    },
+  };
+}
+
+function resolveDesiredHalvingForDeployment(params: {
+  gate: ScalpDeploymentPromotionGate | null | undefined;
+  enabled: boolean;
+  cfg: ScalpStagedEvalConfig;
+  epochWeekStartMs: number;
+  nowMs: number;
+}): ScalpDeploymentPromotionHalving | null {
+  if (!params.cfg.enabled) return null;
+  const existing = normalizedStagedHalving(params.gate?.halving);
+  if (params.enabled) {
+    const next: ScalpDeploymentPromotionHalving = {
+      mode: "staged",
+      stage: "C",
+      targetWeeks: params.cfg.stageCWeeks,
+      epochWeekStartMs: params.epochWeekStartMs,
+      score: existing?.score ?? null,
+      cohortRank: existing?.cohortRank ?? null,
+      cohortSize: existing?.cohortSize ?? null,
+      updatedAtMs: params.nowMs,
+    };
+    if (
+      existing &&
+      existing.mode === next.mode &&
+      existing.stage === next.stage &&
+      existing.targetWeeks === next.targetWeeks &&
+      existing.epochWeekStartMs === next.epochWeekStartMs &&
+      existing.score === next.score &&
+      existing.cohortRank === next.cohortRank &&
+      existing.cohortSize === next.cohortSize
+    ) {
+      next.updatedAtMs = existing.updatedAtMs;
+    }
+    return next;
+  }
+  const existingEpoch = existing?.epochWeekStartMs || 0;
+  const shouldReopenPruned =
+    existing?.stage === "pruned" &&
+    params.cfg.reopenOnEpoch &&
+    existingEpoch > 0 &&
+    existingEpoch < params.epochWeekStartMs;
+  const stage = shouldReopenPruned
+    ? "A"
+    : existing?.stage || ("A" as ScalpDeploymentPromotionHalvingStage);
+  const targetWeeks = resolveStagedTargetWeeksForStage(params.cfg, stage);
+  const next: ScalpDeploymentPromotionHalving = {
+    mode: "staged",
+    stage,
+    targetWeeks,
+    epochWeekStartMs:
+      shouldReopenPruned || existingEpoch <= 0
+        ? params.epochWeekStartMs
+        : existingEpoch,
+    score: shouldReopenPruned ? null : existing?.score ?? null,
+    cohortRank: shouldReopenPruned ? null : existing?.cohortRank ?? null,
+    cohortSize: shouldReopenPruned ? null : existing?.cohortSize ?? null,
+    updatedAtMs: params.nowMs,
+  };
+  if (
+    existing &&
+    existing.mode === next.mode &&
+    existing.stage === next.stage &&
+    existing.targetWeeks === next.targetWeeks &&
+    existing.epochWeekStartMs === next.epochWeekStartMs &&
+    existing.score === next.score &&
+    existing.cohortRank === next.cohortRank &&
+    existing.cohortSize === next.cohortSize
+  ) {
+    next.updatedAtMs = existing.updatedAtMs;
+  }
+  return next;
 }
 
 export function buildPipelineJobDiagnostics(
@@ -1695,6 +1933,7 @@ async function countPendingWorkerRows(
           AND m.entry_session_profile = ${entrySessionProfile}
           AND m.status IN ('pending', 'retry_wait')
           AND m.next_run_at <= NOW()
+          AND COALESCE((d.promotion_gate #>> '{halving,stage}')::text, '') <> 'pruned'
           AND NOT (
             (
               COALESCE((d.promotion_gate #>> '{lifecycle,state}')::text, '') = 'suspended'
@@ -1711,6 +1950,8 @@ async function countPendingWorkerRows(
 
 async function countPendingPromotionRows(): Promise<number> {
   const nowMs = Date.now();
+  const epochWeekStartMs = resolveCompletedWeekWindowToUtc(nowMs);
+  const stagedEval = resolveStagedEvalConfig();
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
     Array<{ count: bigint | number | string }>
@@ -1729,6 +1970,13 @@ async function countPendingPromotionRows(): Promise<number> {
                 COALESCE((promotion_gate #>> '{lifecycle,state}')::text, '') = 'retired'
                 AND COALESCE((promotion_gate #>> '{lifecycle,retiredUntilMs}')::bigint, 0) > 0
                 AND COALESCE((promotion_gate #>> '{lifecycle,retiredUntilMs}')::bigint, 0) <= ${nowMs}
+              )
+           OR (
+                ${stagedEval.enabled && stagedEval.reopenOnEpoch}
+                AND enabled = FALSE
+                AND COALESCE((promotion_gate #>> '{halving,mode}')::text, '') = 'staged'
+                AND COALESCE((promotion_gate #>> '{halving,stage}')::text, '') = 'pruned'
+                AND COALESCE((promotion_gate #>> '{halving,epochWeekStartMs}')::bigint, 0) < ${epochWeekStartMs}
               );
     `);
   return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
@@ -2360,6 +2608,188 @@ export function applyPromotionHysteresis(params: {
     hysteresis,
     transition,
   };
+}
+
+type FreshCompletedWeeksTask = Pick<
+  ScalpPromotionTaskLike,
+  | "deploymentId"
+  | "symbol"
+  | "strategyId"
+  | "tuneId"
+  | "status"
+  | "result"
+  | "windowFromTs"
+  | "windowToTs"
+>;
+
+function evaluateFreshCompletedDeploymentWeeksTarget(params: {
+  tasks: FreshCompletedWeeksTask[];
+  nowMs: number;
+  requiredWeeks: number;
+}): {
+  ready: boolean;
+  requiredWeeks: number;
+  completedWeeks: number;
+  missingWeeks: number;
+  missingWeekStarts: number[];
+  windowFromTs: number;
+  windowToTs: number;
+  readyTasks: FreshCompletedWeeksTask[];
+} {
+  const requiredWeeks = Math.max(
+    1,
+    Math.min(52, Math.floor(Number(params.requiredWeeks) || 1)),
+  );
+  const windowToTs = resolveCompletedWeekWindowToUtc(params.nowMs);
+  const windowFromTs = windowToTs - requiredWeeks * ONE_WEEK_MS;
+  const completedTaskByWeekStart = new Map<number, FreshCompletedWeeksTask>();
+  for (const task of params.tasks) {
+    if (task.status !== "completed" || !task.result) continue;
+    const fromTs = Math.floor(Number(task.windowFromTs) || 0);
+    const toTs = Math.floor(Number(task.windowToTs) || 0);
+    if (!Number.isFinite(fromTs) || !Number.isFinite(toTs)) continue;
+    if (toTs - fromTs !== ONE_WEEK_MS) continue;
+    if (toTs > windowToTs) continue;
+    if (fromTs < windowFromTs) continue;
+    completedTaskByWeekStart.set(fromTs, task);
+  }
+  let completedWeeks = 0;
+  const missingWeekStarts: number[] = [];
+  const readyTasks: FreshCompletedWeeksTask[] = [];
+  for (let i = 0; i < requiredWeeks; i += 1) {
+    const weekStart = windowFromTs + i * ONE_WEEK_MS;
+    const task = completedTaskByWeekStart.get(weekStart);
+    if (task) {
+      completedWeeks += 1;
+      readyTasks.push(task);
+    } else {
+      missingWeekStarts.push(weekStart);
+    }
+  }
+  const missingWeeks = missingWeekStarts.length;
+  const ready = missingWeeks === 0 && readyTasks.length === requiredWeeks;
+  return {
+    ready,
+    requiredWeeks,
+    completedWeeks,
+    missingWeeks,
+    missingWeekStarts: ready ? [] : missingWeekStarts,
+    windowFromTs,
+    windowToTs,
+    readyTasks: ready ? readyTasks : [],
+  };
+}
+
+export function resolveStageSurvivorCount(params: {
+  cohortSize: number;
+  keepShare: number;
+  minSurvivors: number;
+}): number {
+  const cohortSize = Math.max(0, Math.floor(params.cohortSize));
+  if (cohortSize <= 0) return 0;
+  const keepShare = Math.max(0, Math.min(1, params.keepShare));
+  const minSurvivors = Math.max(1, Math.floor(params.minSurvivors || 1));
+  return Math.max(minSurvivors, Math.min(cohortSize, Math.ceil(cohortSize * keepShare)));
+}
+
+export function resolveStagedRebucket(params: {
+  completedWeeks: number;
+  stageAWeeks: number;
+  stageBWeeks: number;
+  stageCWeeks: number;
+}): {
+  stage: Exclude<ScalpDeploymentPromotionHalvingStage, "pruned">;
+  targetWeeks: number;
+} {
+  const completedWeeks = Math.max(
+    0,
+    Math.floor(Number(params.completedWeeks) || 0),
+  );
+  const stageAWeeks = Math.max(
+    1,
+    Math.floor(Number(params.stageAWeeks) || STAGED_EVAL_DEFAULT_STAGE_A_WEEKS),
+  );
+  const stageBWeeks = Math.max(
+    stageAWeeks + 1,
+    Math.floor(Number(params.stageBWeeks) || STAGED_EVAL_DEFAULT_STAGE_B_WEEKS),
+  );
+  const stageCWeeks = Math.max(
+    stageBWeeks + 1,
+    Math.floor(Number(params.stageCWeeks) || STAGED_EVAL_DEFAULT_STAGE_C_WEEKS),
+  );
+  if (completedWeeks >= stageCWeeks) {
+    return { stage: "C", targetWeeks: stageCWeeks };
+  }
+  if (completedWeeks >= stageBWeeks) {
+    return { stage: "B", targetWeeks: stageBWeeks };
+  }
+  return { stage: "A", targetWeeks: stageAWeeks };
+}
+
+function hasHalvingChanged(
+  previous: ScalpDeploymentPromotionHalving | null | undefined,
+  next: ScalpDeploymentPromotionHalving | null | undefined,
+): boolean {
+  const prev = previous
+    ? JSON.stringify(
+        normalizeForStableComparison({
+          mode: previous.mode,
+          stage: previous.stage,
+          targetWeeks: previous.targetWeeks,
+          epochWeekStartMs: previous.epochWeekStartMs,
+          score: previous.score,
+          cohortRank: previous.cohortRank,
+          cohortSize: previous.cohortSize,
+        }),
+      )
+    : "null";
+  const nxt = next
+    ? JSON.stringify(
+        normalizeForStableComparison({
+          mode: next.mode,
+          stage: next.stage,
+          targetWeeks: next.targetWeeks,
+          epochWeekStartMs: next.epochWeekStartMs,
+          score: next.score,
+          cohortRank: next.cohortRank,
+          cohortSize: next.cohortSize,
+        }),
+      )
+    : "null";
+  return prev !== nxt;
+}
+
+export function computeStagedEvaluationScoreForTasks(
+  tasks: FreshCompletedWeeksTask[],
+): number {
+  const rows = Array.isArray(tasks) ? tasks : [];
+  if (!rows.length) return Number.NEGATIVE_INFINITY;
+  const expectancyRows: number[] = [];
+  const netRows: number[] = [];
+  const drawdownRows: number[] = [];
+  for (const task of rows) {
+    const result = asJsonObject(task.result);
+    if (!result) continue;
+    expectancyRows.push(toFiniteNumber(result.expectancyR, 0));
+    netRows.push(toFiniteNumber(result.netR, 0));
+    drawdownRows.push(Math.max(0, toFiniteNumber(result.maxDrawdownR, 0)));
+  }
+  if (!expectancyRows.length) return Number.NEGATIVE_INFINITY;
+  const meanExpectancy = mean(expectancyRows);
+  const totalNet = netRows.reduce((acc, row) => acc + row, 0);
+  const profitablePct =
+    (netRows.filter((row) => row > 0).length / netRows.length) * 100;
+  const maxDrawdown = drawdownRows.length ? Math.max(...drawdownRows) : 0;
+  return meanExpectancy * 1_000 + totalNet * 30 + profitablePct - maxDrawdown * 25;
+}
+
+function stagedPendingReasonForStage(
+  stage: ScalpDeploymentPromotionHalvingStage,
+): string {
+  if (stage === "A") return "staged_eval_stage_a_pending";
+  if (stage === "B") return "staged_eval_stage_b_pending";
+  if (stage === "pruned") return "staged_eval_pruned";
+  return "staged_eval_stage_c_pending";
 }
 
 export interface DiscoverSyncExistingRow {
@@ -3708,6 +4138,221 @@ async function ensureWeeklyQueueRowsExistForDeployment(params: {
   return inserted;
 }
 
+interface StagedEvalCutoverMigrationStats {
+  rebucketed: number;
+  rowsTrimmed: number;
+  rowsPreserved: number;
+}
+
+async function runStagedEvalCutoverMigration(params: {
+  cfg: ScalpStagedEvalConfig;
+  nowMs: number;
+  epochWeekStartMs: number;
+}): Promise<StagedEvalCutoverMigrationStats> {
+  if (!params.cfg.enabled) {
+    return {
+      rebucketed: 0,
+      rowsTrimmed: 0,
+      rowsPreserved: 0,
+    };
+  }
+  const db = scalpPrisma();
+  const needsCutoverRows = await db.$queryRaw<
+    Array<{ count: bigint | number | string }>
+  >(sql`
+        SELECT COUNT(*)::bigint AS count
+        FROM scalp_deployments
+        WHERE enabled = FALSE
+          AND COALESCE((promotion_gate #>> '{halving,mode}')::text, '') <> 'staged';
+    `);
+  const needsCutover = Math.max(
+    0,
+    Math.floor(Number(needsCutoverRows[0]?.count || 0)),
+  );
+  if (needsCutover <= 0) {
+    return {
+      rebucketed: 0,
+      rowsTrimmed: 0,
+      rowsPreserved: 0,
+    };
+  }
+  const nonEnabledRows = await db.$queryRaw<
+    Array<{
+      deploymentId: string;
+      symbol: string;
+      strategyId: string;
+      tuneId: string;
+      source: string;
+      configOverride: unknown;
+      promotionGate: unknown;
+      entrySessionProfile: string;
+      enabled: boolean;
+    }>
+  >(sql`
+        SELECT
+            deployment_id AS "deploymentId",
+            symbol,
+            strategy_id AS "strategyId",
+            tune_id AS "tuneId",
+            source,
+            config_override AS "configOverride",
+            promotion_gate AS "promotionGate",
+            entry_session_profile AS "entrySessionProfile",
+            enabled
+        FROM scalp_deployments
+        WHERE enabled = FALSE;
+    `);
+  if (!nonEnabledRows.length) {
+    return {
+      rebucketed: 0,
+      rowsTrimmed: 0,
+      rowsPreserved: 0,
+    };
+  }
+  const deploymentIds = nonEnabledRows.map((row) => row.deploymentId);
+  const maxWindowFromTs =
+    params.epochWeekStartMs - params.cfg.stageCWeeks * ONE_WEEK_MS;
+  const completedWeekRows = await db.$queryRaw<
+    Array<{
+      deploymentId: string;
+      weekStartMs: bigint | number;
+    }>
+  >(sql`
+        SELECT
+            deployment_id AS "deploymentId",
+            (EXTRACT(EPOCH FROM week_start) * 1000)::bigint AS "weekStartMs"
+        FROM scalp_deployment_weekly_metrics
+        WHERE deployment_id IN (${join(deploymentIds)})
+          AND status = 'succeeded'
+          AND week_start >= ${new Date(maxWindowFromTs)}
+          AND week_start < ${new Date(params.epochWeekStartMs)};
+    `);
+  const completedWeeksByDeploymentId = new Map<string, Set<number>>();
+  for (const row of completedWeekRows) {
+    const weekStartMs = Math.floor(Number(row.weekStartMs) || 0);
+    if (!Number.isFinite(weekStartMs) || weekStartMs <= 0) continue;
+    const bucket =
+      completedWeeksByDeploymentId.get(row.deploymentId) || new Set<number>();
+    bucket.add(weekStartMs);
+    completedWeeksByDeploymentId.set(row.deploymentId, bucket);
+  }
+
+  let rebucketed = 0;
+  let rowsTrimmed = 0;
+  let rowsPreserved = 0;
+  const gateUpdates: Array<{
+    deploymentId: string;
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    source: string;
+    configOverride: Record<string, unknown> | null;
+    entrySessionProfile: ScalpEntrySessionProfile;
+    promotionGate: ScalpDeploymentPromotionGate;
+  }> = [];
+
+  for (const row of nonEnabledRows) {
+    const completedWeeks = completedWeeksByDeploymentId.get(row.deploymentId)?.size || 0;
+    const rebucket = resolveStagedRebucket({
+      completedWeeks,
+      stageAWeeks: params.cfg.stageAWeeks,
+      stageBWeeks: params.cfg.stageBWeeks,
+      stageCWeeks: params.cfg.stageCWeeks,
+    });
+    const existingGate =
+      (asJsonObject(row.promotionGate) as ScalpDeploymentPromotionGate | null) ||
+      null;
+    const existingHalving = normalizedStagedHalving(existingGate?.halving);
+    const targetWeeks = rebucket.targetWeeks;
+    const nextHalving: ScalpDeploymentPromotionHalving = {
+      mode: "staged",
+      stage: rebucket.stage,
+      targetWeeks,
+      epochWeekStartMs: params.epochWeekStartMs,
+      score: existingHalving?.score ?? null,
+      cohortRank: null,
+      cohortSize: null,
+      updatedAtMs: params.nowMs,
+    };
+    const nextGate = cloneGateWithHalving({
+      gate: existingGate,
+      halving: nextHalving,
+      nowMs: params.nowMs,
+    });
+    if (hasHalvingChanged(existingHalving, nextHalving)) {
+      rebucketed += 1;
+      gateUpdates.push({
+        deploymentId: row.deploymentId,
+        symbol: row.symbol,
+        strategyId: row.strategyId,
+        tuneId: row.tuneId,
+        source: String(row.source || "matrix"),
+        configOverride: asJsonObject(row.configOverride),
+        entrySessionProfile: normalizeEntrySessionProfileInput(
+          row.entrySessionProfile,
+        ),
+        promotionGate: nextGate,
+      });
+    }
+
+    const windowFromTs = params.epochWeekStartMs - targetWeeks * ONE_WEEK_MS;
+    const preserveRows = await db.$queryRaw<
+      Array<{ count: bigint | number | string }>
+    >(sql`
+            SELECT COUNT(*)::bigint AS count
+            FROM scalp_deployment_weekly_metrics
+            WHERE deployment_id = ${row.deploymentId}
+              AND (
+                status IN ('succeeded', 'running')
+                OR (
+                  status IN ('pending', 'retry_wait')
+                  AND week_start >= ${new Date(windowFromTs)}
+                  AND week_start < ${new Date(params.epochWeekStartMs)}
+                )
+              );
+        `);
+    const preserveCount = Math.max(
+      0,
+      Math.floor(Number(preserveRows[0]?.count || 0)),
+    );
+    rowsPreserved += preserveCount;
+    const trimmed = Number(
+      await db.$executeRaw(sql`
+            DELETE FROM scalp_deployment_weekly_metrics
+            WHERE deployment_id = ${row.deploymentId}
+              AND status IN ('pending', 'retry_wait')
+              AND (
+                week_start < ${new Date(windowFromTs)}
+                OR week_start >= ${new Date(params.epochWeekStartMs)}
+              );
+        `),
+    );
+    rowsTrimmed += Math.max(0, trimmed);
+  }
+
+  if (gateUpdates.length > 0) {
+    await upsertScalpDeploymentRegistryEntriesBulk(
+      gateUpdates.map((row) => ({
+        deploymentId: row.deploymentId,
+        symbol: row.symbol,
+        strategyId: row.strategyId,
+        tuneId: row.tuneId,
+        source: row.source as any,
+        enabled: false,
+        configOverride: row.configOverride,
+        entrySessionProfile: row.entrySessionProfile,
+        promotionGate: row.promotionGate,
+        updatedBy: "pipeline:promotion:staged_cutover",
+      })),
+    );
+  }
+  return {
+    rebucketed,
+    rowsTrimmed,
+    rowsPreserved,
+  };
+}
+
 async function updatePrepareSymbolStatus(params: {
   symbol: string;
   status: ScalpPipelineQueueStatus;
@@ -3770,6 +4415,7 @@ export async function runPreparePipelineJob(
       ),
     );
     const requiredWeeks = resolveRequiredSuccessiveWeeks();
+    const stagedEval = resolveStagedEvalConfig();
     const refreshRecentWeeks = Math.max(
       1,
       Math.min(
@@ -3837,6 +4483,7 @@ export async function runPreparePipelineJob(
       ),
     );
     const nowMs = Date.now();
+    const epochWeekStartMs = resolveCompletedWeekWindowToUtc(nowMs);
     const sundayBackfillMode = isUtcSunday(nowMs);
     const effectiveNewVariantsPerStrategy = sundayBackfillMode
       ? 0
@@ -3857,6 +4504,9 @@ export async function runPreparePipelineJob(
     let queuedWeeklyRows = 0;
     let prunedOverflowDeployments = 0;
     let blockedOverflowByLedger = 0;
+    let stagedHalvingPersisted = 0;
+    let stagedPrunedSkipped = 0;
+    let stagedEpochReopened = 0;
 
     for (let idx = 0; idx < claimed.length; idx += 1) {
       const row = claimed[idx]!;
@@ -3899,6 +4549,10 @@ export async function runPreparePipelineJob(
             queuedWeeklyRows,
             prunedOverflowDeployments,
             blockedOverflowByLedger,
+            stagedEvalEnabled: stagedEval.enabled,
+            stagedHalvingPersisted,
+            stagedPrunedSkipped,
+            stagedEpochReopened,
           },
         });
         continue;
@@ -3973,6 +4627,17 @@ export async function runPreparePipelineJob(
           }
         }
         const preparedIds: string[] = [];
+        const preparedRequiredWeeksByDeploymentId = new Map<string, number>();
+        const stagedGateUpdates: Array<{
+          deploymentId: string;
+          symbol: string;
+          strategyId: string;
+          tuneId: string;
+          source: "manual" | "backtest" | "matrix";
+          enabled: boolean;
+          configOverride: Record<string, unknown> | null;
+          promotionGate: ScalpDeploymentPromotionGate;
+        }> = [];
 
         for (const strategyId of selectedStrategies) {
           const variants = selectPrepareTuneVariantsForStrategy({
@@ -4063,8 +4728,57 @@ export async function runPreparePipelineJob(
                 enabled: entry.enabled,
                 nowMs,
               });
-              if (!entry.enabled || lifecycle.state === "incumbent_refresh") {
+              const shouldPrepare =
+                !entry.enabled || lifecycle.state === "incumbent_refresh";
+              let targetWeeks = requiredWeeks;
+              if (stagedEval.enabled) {
+                const existingHalving = normalizedStagedHalving(
+                  entry.promotionGate?.halving,
+                );
+                const desiredHalving = resolveDesiredHalvingForDeployment({
+                  gate: entry.promotionGate,
+                  enabled: entry.enabled,
+                  cfg: stagedEval,
+                  epochWeekStartMs,
+                  nowMs,
+                });
+                if (desiredHalving) {
+                  targetWeeks = desiredHalving.targetWeeks;
+                  if (
+                    existingHalving?.stage === "pruned" &&
+                    desiredHalving.stage === "A" &&
+                    existingHalving.epochWeekStartMs < epochWeekStartMs
+                  ) {
+                    stagedEpochReopened += 1;
+                  }
+                  if (hasHalvingChanged(existingHalving, desiredHalving)) {
+                    stagedGateUpdates.push({
+                      deploymentId: entry.deploymentId,
+                      symbol: entry.symbol,
+                      strategyId: entry.strategyId,
+                      tuneId: entry.tuneId,
+                      source: entry.source,
+                      enabled: entry.enabled,
+                      configOverride: entry.configOverride,
+                      promotionGate: cloneGateWithHalving({
+                        gate: entry.promotionGate,
+                        halving: desiredHalving,
+                        nowMs,
+                      }),
+                    });
+                  }
+                  if (shouldPrepare && desiredHalving.stage === "pruned") {
+                    stagedPrunedSkipped += 1;
+                    continue;
+                  }
+                }
+              }
+              if (shouldPrepare) {
                 preparedIds.push(entry.deploymentId);
+                preparedRequiredWeeksByDeploymentId.set(
+                  entry.deploymentId,
+                  targetWeeks,
+                );
               }
             }
           }
@@ -4078,6 +4792,24 @@ export async function runPreparePipelineJob(
           });
           prunedOverflowDeployments += pruneOut.pruned;
           blockedOverflowByLedger += pruneOut.blockedByLedger;
+        }
+
+        if (stagedGateUpdates.length > 0) {
+          const persisted = await upsertScalpDeploymentRegistryEntriesBulk(
+            stagedGateUpdates.map((row) => ({
+              deploymentId: row.deploymentId,
+              symbol: row.symbol,
+              strategyId: row.strategyId,
+              tuneId: row.tuneId,
+              source: row.source,
+              enabled: row.enabled,
+              configOverride: row.configOverride,
+              promotionGate: row.promotionGate,
+              entrySessionProfile,
+              updatedBy: "pipeline:prepare",
+            })),
+          );
+          stagedHalvingPersisted += persisted.entries.length;
         }
 
         const uniqPreparedIds = Array.from(new Set(preparedIds));
@@ -4103,6 +4835,18 @@ export async function runPreparePipelineJob(
                           AND deployment_id NOT IN (${join(uniqPreparedIds)})
                           AND enabled = FALSE;
                     `);
+        } else {
+          await db.$executeRaw(sql`
+                        UPDATE scalp_deployments
+                        SET
+                            worker_dirty = FALSE,
+                            promotion_dirty = FALSE,
+                            updated_by = 'pipeline:prepare',
+                            updated_at = NOW()
+                        WHERE symbol = ${symbol}
+                          AND entry_session_profile = ${entrySessionProfile}
+                          AND enabled = FALSE;
+                    `);
         }
 
         for (const deploymentId of uniqPreparedIds) {
@@ -4125,6 +4869,11 @@ export async function runPreparePipelineJob(
                     `);
           const dep = depRows[0];
           if (!dep) continue;
+          const deploymentRequiredWeeks = Math.max(
+            1,
+            preparedRequiredWeeksByDeploymentId.get(dep.deploymentId) ||
+              requiredWeeks,
+          );
           queuedWeeklyRows += await upsertWeeklyQueueRowsForDeployment({
             deploymentId: dep.deploymentId,
             symbol: dep.symbol,
@@ -4132,7 +4881,7 @@ export async function runPreparePipelineJob(
             tuneId: dep.tuneId,
             entrySessionProfile,
             nowMs: Date.now(),
-            requiredWeeks,
+            requiredWeeks: deploymentRequiredWeeks,
             refreshRecentWeeks,
           });
         }
@@ -4183,14 +4932,18 @@ export async function runPreparePipelineJob(
           processed: idx + 1,
           total: claimed.length,
           activeSymbols,
-            succeeded,
-            retried,
-            failed,
-            queuedWeeklyRows,
-            prunedOverflowDeployments,
-            blockedOverflowByLedger,
-          },
-        });
+          succeeded,
+          retried,
+          failed,
+          queuedWeeklyRows,
+          prunedOverflowDeployments,
+          blockedOverflowByLedger,
+          stagedEvalEnabled: stagedEval.enabled,
+          stagedHalvingPersisted,
+          stagedPrunedSkipped,
+          stagedEpochReopened,
+        },
+      });
     }
 
     const pendingAfter = await countPendingPrepareSymbols(
@@ -4207,19 +4960,35 @@ export async function runPreparePipelineJob(
       downstreamRequested: queuedWeeklyRows > 0,
       progressLabel:
         claimed.length > 0 ? `processed ${claimed.length}` : "idle",
-        details: {
-          entrySessionProfile,
-          activeSymbols,
-          claimed: claimed.length,
-          succeeded,
-          retried,
-          failed,
-          queuedWeeklyRows,
-          prunedOverflowDeployments,
-          blockedOverflowByLedger,
-          sundayBackfillMode,
-        },
-      };
+      details: {
+        entrySessionProfile,
+        activeSymbols,
+        claimed: claimed.length,
+        succeeded,
+        retried,
+        failed,
+        queuedWeeklyRows,
+        prunedOverflowDeployments,
+        blockedOverflowByLedger,
+        sundayBackfillMode,
+        stagedEvalEnabled: stagedEval.enabled,
+        stagedConfig: stagedEval.enabled
+          ? {
+              stageAWeeks: stagedEval.stageAWeeks,
+              stageBWeeks: stagedEval.stageBWeeks,
+              stageCWeeks: stagedEval.stageCWeeks,
+              stageAKeepShare: stagedEval.stageAKeepShare,
+              stageBKeepShare: stagedEval.stageBKeepShare,
+              minSurvivors: stagedEval.minSurvivors,
+              reopenOnEpoch: stagedEval.reopenOnEpoch,
+            }
+          : null,
+        stagedHalvingPersisted,
+        stagedPrunedSkipped,
+        stagedEpochReopened,
+        stagedEpochWeekStartMs: epochWeekStartMs,
+      },
+    };
     },
     { entrySessionProfile },
   );
@@ -4271,6 +5040,7 @@ async function claimWorkerRows(
               AND m.entry_session_profile = ${entrySessionProfile}
               AND m.status IN ('pending', 'retry_wait')
               AND m.next_run_at <= NOW()
+              AND COALESCE((d.promotion_gate #>> '{halving,stage}')::text, '') <> 'pruned'
               AND NOT (
                 (
                   COALESCE((d.promotion_gate #>> '{lifecycle,state}')::text, '') = 'suspended'
@@ -4281,7 +5051,16 @@ async function claimWorkerRows(
                   AND COALESCE((d.promotion_gate #>> '{lifecycle,retiredUntilMs}')::bigint, 0) > ${nowMs}
                 )
               )
-            ORDER BY m.next_run_at ASC, m.week_start ASC, m.id ASC
+            ORDER BY
+                CASE COALESCE((d.promotion_gate #>> '{halving,stage}')::text, '')
+                    WHEN 'C' THEN 0
+                    WHEN 'B' THEN 1
+                    WHEN 'A' THEN 2
+                    ELSE 3
+                END ASC,
+                m.next_run_at ASC,
+                m.week_start ASC,
+                m.id ASC
             FOR UPDATE OF m SKIP LOCKED
             LIMIT ${limit}
         )
@@ -4633,6 +5412,7 @@ export async function runPromotionPipelineJob(
       1,
       Math.min(600, toPositiveInt(params.batchSize, 200)),
     );
+    const stagedEval = resolveStagedEvalConfig();
     const policy = resolveWeeklyPolicyDefaults();
     const explorationShare = resolvePromotionExplorationShare();
     const maxLoadNudgeSymbols = resolvePromotionLoadNudgeMaxSymbols();
@@ -4640,12 +5420,20 @@ export async function runPromotionPipelineJob(
       resolvePromotionWorkerNudgeMaxDeployments();
     const nowMs = Date.now();
     const berlinWeekStartMs = startOfBerlinWeekMonday(nowMs);
-    const requiredWeeks = resolvePromotionFreshWeeks();
+    const promotionRequiredWeeks = resolvePromotionFreshWeeks();
     const windowToTs = resolveCompletedWeekWindowToUtc(nowMs);
     const windowFromTs = windowToTs - policy.lookbackDays * ONE_DAY_MS;
     const previousWeekStartTs = windowToTs - ONE_WEEK_MS;
+    const stageCRequiredWeeks = stagedEval.enabled
+      ? stagedEval.stageCWeeks
+      : promotionRequiredWeeks;
 
     const db = scalpPrisma();
+    const stagedCutover = await runStagedEvalCutoverMigration({
+      cfg: stagedEval,
+      nowMs,
+      epochWeekStartMs: windowToTs,
+    });
     const rolloverDueRows = await db.$queryRaw<
       Array<{
         deploymentId: string;
@@ -4689,7 +5477,7 @@ export async function runPromotionPipelineJob(
             row.entrySessionProfile,
           ),
           nowMs,
-          requiredWeeks,
+          requiredWeeks: stageCRequiredWeeks,
         });
         await db.$executeRaw(sql`
                     UPDATE scalp_deployment_weekly_metrics
@@ -4739,6 +5527,13 @@ export async function runPromotionPipelineJob(
                           AND d2.deployment_id <> d.deployment_id
                     )
                   )
+               OR (
+                    ${stagedEval.enabled && stagedEval.reopenOnEpoch}
+                    AND d.enabled = FALSE
+                    AND COALESCE((d.promotion_gate #>> '{halving,mode}')::text, '') = 'staged'
+                    AND COALESCE((d.promotion_gate #>> '{halving,stage}')::text, '') = 'pruned'
+                    AND COALESCE((d.promotion_gate #>> '{halving,epochWeekStartMs}')::bigint, 0) < ${windowToTs}
+                  )
             ORDER BY
                 CASE
                     WHEN d.promotion_dirty = TRUE THEN 0
@@ -4762,6 +5557,8 @@ export async function runPromotionPipelineJob(
         details: {
           reason: "no_promotion_dirty_deployments",
           rolloverIncumbentsQueued,
+          stagedEvalEnabled: stagedEval.enabled,
+          stagedCutover,
         },
       };
     }
@@ -4814,8 +5611,54 @@ export async function runPromotionPipelineJob(
         progressLabel: "idle",
         details: {
           reason: "no_considered_deployments",
+          stagedEvalEnabled: stagedEval.enabled,
+          stagedCutover,
         },
       };
+    }
+
+    const entrySessionProfileByDeploymentId = new Map<
+      string,
+      ScalpEntrySessionProfile
+    >();
+    const stagedHalvingByDeploymentId = new Map<
+      string,
+      ScalpDeploymentPromotionHalving | null
+    >();
+    const stagedReopenedByDeploymentId = new Set<string>();
+    for (const deployment of consideredDeployments) {
+      const rowState = deploymentStateByDeploymentId.get(deployment.deploymentId);
+      const entrySessionProfile = normalizeEntrySessionProfileInput(
+        rowState?.entrySessionProfile,
+      );
+      entrySessionProfileByDeploymentId.set(
+        deployment.deploymentId,
+        entrySessionProfile,
+      );
+      if (!stagedEval.enabled) {
+        stagedHalvingByDeploymentId.set(deployment.deploymentId, null);
+        continue;
+      }
+      const currentlyEnabled = Boolean(rowState?.enabled ?? deployment.enabled);
+      const gate =
+        (asJsonObject(rowState?.promotionGate) as ScalpDeploymentPromotionGate | null) ||
+        deployment.promotionGate;
+      const existingHalving = normalizedStagedHalving(gate?.halving);
+      const desiredHalving = resolveDesiredHalvingForDeployment({
+        gate,
+        enabled: currentlyEnabled,
+        cfg: stagedEval,
+        epochWeekStartMs: windowToTs,
+        nowMs,
+      });
+      stagedHalvingByDeploymentId.set(deployment.deploymentId, desiredHalving);
+      if (
+        existingHalving?.stage === "pruned" &&
+        desiredHalving?.stage === "A" &&
+        existingHalving.epochWeekStartMs < windowToTs
+      ) {
+        stagedReopenedByDeploymentId.add(deployment.deploymentId);
+      }
     }
 
     let weeklyQueueRowsInserted = 0;
@@ -4837,9 +5680,13 @@ export async function runPromotionPipelineJob(
       });
       if (lifecycleIsSuppressed(lifecycle, nowMs)) continue;
       if (currentlyEnabled && lifecycle.state !== "incumbent_refresh") continue;
-      const entrySessionProfile = normalizeEntrySessionProfileInput(
-        rowState?.entrySessionProfile,
-      );
+      const halving = stagedHalvingByDeploymentId.get(deployment.deploymentId);
+      if (halving?.stage === "pruned") continue;
+      const entrySessionProfile =
+        entrySessionProfileByDeploymentId.get(deployment.deploymentId) ||
+        normalizeEntrySessionProfileInput(rowState?.entrySessionProfile);
+      const requiredWeeksForDeployment =
+        halving?.targetWeeks || stageCRequiredWeeks;
       weeklyQueueRowsInserted += await ensureWeeklyQueueRowsExistForDeployment({
         deploymentId: deployment.deploymentId,
         symbol: deployment.symbol,
@@ -4847,10 +5694,14 @@ export async function runPromotionPipelineJob(
         tuneId: deployment.tuneId,
         entrySessionProfile,
         nowMs,
-        requiredWeeks,
+        requiredWeeks: requiredWeeksForDeployment,
       });
     }
 
+    const metricsWindowFromTs = Math.min(
+      windowFromTs,
+      windowToTs - stageCRequiredWeeks * ONE_WEEK_MS,
+    );
     const metricsRows = await db.$queryRaw<
       Array<{
         deploymentId: string;
@@ -4891,7 +5742,7 @@ export async function runPromotionPipelineJob(
             FROM scalp_deployment_weekly_metrics
             WHERE deployment_id IN (${join(consideredIds)})
               AND status = 'succeeded'
-              AND week_start >= ${new Date(windowFromTs)}
+              AND week_start >= ${new Date(metricsWindowFromTs)}
               AND week_start < ${new Date(windowToTs)}
             ORDER BY week_start ASC;
         `);
@@ -4946,8 +5797,181 @@ export async function runPromotionPipelineJob(
     const freshReadyTasks: any[] = [];
     const freshnessByDeploymentId = new Map<
       string,
-      ReturnType<typeof evaluateFreshCompletedDeploymentWeeks>
+      ReturnType<typeof evaluateFreshCompletedDeploymentWeeksTarget>
     >();
+    const stagedReadyRows: Array<{
+      deploymentId: string;
+      stage: "A" | "B";
+      score: number;
+      cohortKey: string;
+    }> = [];
+
+    for (const deployment of consideredDeployments) {
+      const deploymentTasks =
+        tasksByDeploymentId.get(deployment.deploymentId) || [];
+      const halving = stagedHalvingByDeploymentId.get(deployment.deploymentId);
+      const stage = stagedEval.enabled
+        ? halving?.stage || "C"
+        : ("C" as ScalpDeploymentPromotionHalvingStage);
+      const requiredWeeksForDeployment =
+        halving?.targetWeeks || stageCRequiredWeeks;
+      const freshness = evaluateFreshCompletedDeploymentWeeksTarget({
+        tasks: deploymentTasks,
+        nowMs,
+        requiredWeeks: requiredWeeksForDeployment,
+      });
+      freshnessByDeploymentId.set(deployment.deploymentId, freshness);
+      if (!freshness.ready) continue;
+
+      if (!stagedEval.enabled || stage === "C") {
+        for (const task of freshness.readyTasks) {
+          freshReadyTasks.push(task);
+        }
+        continue;
+      }
+      if (stage === "A" || stage === "B") {
+        const cohortSession =
+          entrySessionProfileByDeploymentId.get(deployment.deploymentId) ||
+          "berlin";
+        stagedReadyRows.push({
+          deploymentId: deployment.deploymentId,
+          stage,
+          score: computeStagedEvaluationScoreForTasks(
+            freshness.readyTasks as FreshCompletedWeeksTask[],
+          ),
+          cohortKey: `${normalizeSymbol(deployment.symbol)}::${deployment.strategyId}::${cohortSession}::${halving?.epochWeekStartMs || windowToTs}::${stage}`,
+        });
+      }
+    }
+
+    let stagedAdvancedAToB = 0;
+    let stagedAdvancedBToC = 0;
+    let stagedPruned = 0;
+    let stagedQueueRowsInserted = 0;
+    let stagedPrunedQueueRowsTrimmed = 0;
+    const stagedTransitionWorkerDirty = new Set<string>();
+    const stagedPrunedIds = new Set<string>();
+
+    if (stagedEval.enabled && stagedReadyRows.length > 0) {
+      const cohorts = new Map<string, typeof stagedReadyRows>();
+      for (const row of stagedReadyRows) {
+        const bucket = cohorts.get(row.cohortKey) || [];
+        bucket.push(row);
+        cohorts.set(row.cohortKey, bucket);
+      }
+      for (const cohortRows of cohorts.values()) {
+        if (!cohortRows.length) continue;
+        const stage = cohortRows[0]?.stage || "A";
+        const keepShare =
+          stage === "A" ? stagedEval.stageAKeepShare : stagedEval.stageBKeepShare;
+        const cohortSize = cohortRows.length;
+        const survivorCount = resolveStageSurvivorCount({
+          cohortSize,
+          keepShare,
+          minSurvivors: stagedEval.minSurvivors,
+        });
+        const ranked = cohortRows
+          .slice()
+          .sort((a, b) => {
+            const aScore = Number.isFinite(a.score) ? a.score : Number.NEGATIVE_INFINITY;
+            const bScore = Number.isFinite(b.score) ? b.score : Number.NEGATIVE_INFINITY;
+            if (bScore !== aScore) return bScore - aScore;
+            return a.deploymentId.localeCompare(b.deploymentId);
+          });
+        for (let idx = 0; idx < ranked.length; idx += 1) {
+          const row = ranked[idx]!;
+          const rank = idx + 1;
+          const currentHalving = stagedHalvingByDeploymentId.get(row.deploymentId);
+          if (!currentHalving) continue;
+          const survives = rank <= survivorCount;
+          const nextStage: ScalpDeploymentPromotionHalvingStage = survives
+            ? stage === "A"
+              ? "B"
+              : "C"
+            : "pruned";
+          const nextTargetWeeks =
+            nextStage === "B"
+              ? stagedEval.stageBWeeks
+              : nextStage === "C"
+                ? stagedEval.stageCWeeks
+                : currentHalving.targetWeeks;
+          stagedHalvingByDeploymentId.set(row.deploymentId, {
+            ...currentHalving,
+            stage: nextStage,
+            targetWeeks: nextTargetWeeks,
+            score: Number.isFinite(row.score) ? row.score : null,
+            cohortRank: rank,
+            cohortSize,
+            updatedAtMs: nowMs,
+          });
+          if (survives) {
+            if (stage === "A") stagedAdvancedAToB += 1;
+            else stagedAdvancedBToC += 1;
+            stagedTransitionWorkerDirty.add(row.deploymentId);
+          } else {
+            stagedPruned += 1;
+            stagedPrunedIds.add(row.deploymentId);
+          }
+        }
+      }
+    }
+
+    if (stagedTransitionWorkerDirty.size > 0) {
+      for (const deploymentId of stagedTransitionWorkerDirty) {
+        const deployment = consideredByDeploymentId.get(deploymentId);
+        const halving = stagedHalvingByDeploymentId.get(deploymentId);
+        if (!deployment || !halving || halving.stage === "pruned") continue;
+        const entrySessionProfile =
+          entrySessionProfileByDeploymentId.get(deploymentId) || "berlin";
+        stagedQueueRowsInserted += await ensureWeeklyQueueRowsExistForDeployment({
+          deploymentId,
+          symbol: deployment.symbol,
+          strategyId: deployment.strategyId,
+          tuneId: deployment.tuneId,
+          entrySessionProfile,
+          nowMs,
+          requiredWeeks: halving.targetWeeks,
+        });
+        const refreshed = evaluateFreshCompletedDeploymentWeeksTarget({
+          tasks: (tasksByDeploymentId.get(deploymentId) || []) as FreshCompletedWeeksTask[],
+          nowMs,
+          requiredWeeks: halving.targetWeeks,
+        });
+        freshnessByDeploymentId.set(deploymentId, refreshed);
+        if (halving.stage === "C" && refreshed.ready) {
+          for (const task of refreshed.readyTasks) {
+            freshReadyTasks.push(task);
+          }
+        }
+      }
+      await db.$executeRaw(sql`
+                UPDATE scalp_deployments
+                SET
+                    worker_dirty = TRUE,
+                    updated_by = 'pipeline:promotion',
+                    updated_at = NOW()
+                WHERE deployment_id IN (${join(Array.from(stagedTransitionWorkerDirty))});
+            `);
+    }
+    if (stagedPrunedIds.size > 0) {
+      stagedPrunedQueueRowsTrimmed += Number(
+        await db.$executeRaw(sql`
+                DELETE FROM scalp_deployment_weekly_metrics
+                WHERE deployment_id IN (${join(Array.from(stagedPrunedIds))})
+                  AND status IN ('pending', 'retry_wait');
+            `),
+      );
+      await db.$executeRaw(sql`
+                UPDATE scalp_deployments
+                SET
+                    worker_dirty = FALSE,
+                    promotion_dirty = FALSE,
+                    updated_by = 'pipeline:promotion',
+                    updated_at = NOW()
+                WHERE deployment_id IN (${join(Array.from(stagedPrunedIds))});
+            `);
+    }
+
     const gapSymbols = new Set<string>();
     const gapMissingWeeksBySymbol = new Map<string, number>();
     const gapWindowsByDeploymentId = new Map<
@@ -4960,37 +5984,25 @@ export async function runPromotionPipelineJob(
       }
     >();
     for (const deployment of consideredDeployments) {
-      const deploymentTasks =
-        tasksByDeploymentId.get(deployment.deploymentId) || [];
-      const freshness = evaluateFreshCompletedDeploymentWeeks({
-        tasks: deploymentTasks,
-        nowMs,
-        requiredWeeks,
-      });
-      freshnessByDeploymentId.set(deployment.deploymentId, freshness);
-      if (freshness.ready) {
-        for (const task of freshness.readyTasks) {
-          freshReadyTasks.push(task);
-        }
-      } else if (freshness.missingWeeks > 0) {
-        const symbol = normalizeSymbol(deployment.symbol);
-        if (symbol) {
-          gapSymbols.add(symbol);
-          gapMissingWeeksBySymbol.set(
-            symbol,
-            Math.max(
-              gapMissingWeeksBySymbol.get(symbol) || 0,
-              freshness.missingWeeks,
-            ),
-          );
-        }
-        gapWindowsByDeploymentId.set(deployment.deploymentId, {
-          windowFromTs: freshness.windowFromTs,
-          windowToTs: freshness.windowToTs,
-          missingWeekStarts: freshness.missingWeekStarts || [],
-          missingWeeks: freshness.missingWeeks,
-        });
+      const freshness = freshnessByDeploymentId.get(deployment.deploymentId);
+      if (!freshness || freshness.ready || freshness.missingWeeks <= 0) continue;
+      if (stagedTransitionWorkerDirty.has(deployment.deploymentId)) continue;
+      const halving = stagedHalvingByDeploymentId.get(deployment.deploymentId);
+      if (halving?.stage === "pruned") continue;
+      const symbol = normalizeSymbol(deployment.symbol);
+      if (symbol) {
+        gapSymbols.add(symbol);
+        gapMissingWeeksBySymbol.set(
+          symbol,
+          Math.max(gapMissingWeeksBySymbol.get(symbol) || 0, freshness.missingWeeks),
+        );
       }
+      gapWindowsByDeploymentId.set(deployment.deploymentId, {
+        windowFromTs: freshness.windowFromTs,
+        windowToTs: freshness.windowToTs,
+        missingWeekStarts: freshness.missingWeekStarts || [],
+        missingWeeks: freshness.missingWeeks,
+      });
     }
 
     let nudgedLoadSymbols = 0;
@@ -5079,7 +6091,6 @@ export async function runPromotionPipelineJob(
       ]),
     );
 
-    const weeklyByKey = new Map<string, ScalpWeeklyRobustnessMetrics | null>();
     const weeklyGateReasonByKey = new Map<string, string | null>();
     const weeklyTasksByCandidateKey = new Map<
       string,
@@ -5116,7 +6127,6 @@ export async function runPromotionPipelineJob(
         tasks: weeklyTasksByCandidateKey.get(key) || [],
         nowMs,
       });
-      weeklyByKey.set(key, weeklyMetrics);
       const weeklyGate = evaluateWeeklyRobustnessGate(weeklyMetrics, policy);
       weeklyGateReasonByKey.set(
         key,
@@ -5147,6 +6157,11 @@ export async function runPromotionPipelineJob(
       (deployment) => {
         const key = `${deployment.symbol}::${deployment.strategyId}::${deployment.tuneId}`;
         const candidate = candidateByKey.get(key) || null;
+        const halving = stagedHalvingByDeploymentId.get(deployment.deploymentId);
+        const stage = stagedEval.enabled
+          ? halving?.stage || "C"
+          : ("C" as ScalpDeploymentPromotionHalvingStage);
+        const canEnterFinalGate = !stagedEval.enabled || stage === "C";
         const currentlyEnabled = Boolean(
           deploymentStateByDeploymentId.get(deployment.deploymentId)?.enabled,
         );
@@ -5180,9 +6195,15 @@ export async function runPromotionPipelineJob(
               missingWeekStarts: freshness.missingWeekStarts || [],
             }
           : null;
-        const weeklyFailReason = weeklyGateReasonByKey.get(key) || null;
+        const weeklyFailReason = canEnterFinalGate
+          ? weeklyGateReasonByKey.get(key) || null
+          : null;
         const eligible = Boolean(
-          !suppressed && candidate && freshness?.ready && !weeklyFailReason,
+          canEnterFinalGate &&
+            !suppressed &&
+            candidate &&
+            freshness?.ready &&
+            !weeklyFailReason,
         );
         return {
           deploymentId: deployment.deploymentId,
@@ -5198,6 +6219,8 @@ export async function runPromotionPipelineJob(
                 ? lifecycle.state === "retired"
                   ? "retired_cooldown"
                   : "suspended_cooldown"
+              : !canEnterFinalGate
+                ? stagedPendingReasonForStage(stage)
               : weeklyFailReason ||
                 (!freshness?.ready
                   ? "fresh_weeks_incomplete"
@@ -5212,6 +6235,9 @@ export async function runPromotionPipelineJob(
               )?.thresholds as any) || null,
             freshness: freshnessState,
             lifecycle,
+            halving: stagedEval.enabled
+              ? halving || null
+              : deployment.promotionGate?.halving || null,
           } as ScalpDeploymentPromotionGate,
         };
       },
@@ -5277,6 +6303,11 @@ export async function runPromotionPipelineJob(
     const drafts: PromotionUpdateDraft[] = consideredDeployments.map((deployment) => {
       const key = `${deployment.symbol}::${deployment.strategyId}::${deployment.tuneId}`;
       const candidate = candidateByKey.get(key) || null;
+      const halving = stagedHalvingByDeploymentId.get(deployment.deploymentId);
+      const stage = stagedEval.enabled
+        ? halving?.stage || "C"
+        : ("C" as ScalpDeploymentPromotionHalvingStage);
+      const canEnterFinalGate = !stagedEval.enabled || stage === "C";
       const freshness = freshnessByDeploymentId.get(deployment.deploymentId);
       const freshnessState = freshness
         ? {
@@ -5308,9 +6339,15 @@ export async function runPromotionPipelineJob(
         };
       }
       const suppressed = lifecycleIsSuppressed(lifecycle, nowMs);
-      const weeklyFailReason = weeklyGateReasonByKey.get(key) || null;
+      const weeklyFailReason = canEnterFinalGate
+        ? weeklyGateReasonByKey.get(key) || null
+        : null;
       const eligible = Boolean(
-        !suppressed && candidate && freshness?.ready && !weeklyFailReason,
+        canEnterFinalGate &&
+          !suppressed &&
+          candidate &&
+          freshness?.ready &&
+          !weeklyFailReason,
       );
       const shortlistIncluded = winnerIds.has(deployment.deploymentId);
       const reason = eligible
@@ -5321,6 +6358,8 @@ export async function runPromotionPipelineJob(
           ? lifecycle.state === "retired"
             ? "retired_cooldown"
             : "suspended_cooldown"
+          : !canEnterFinalGate
+            ? stagedPendingReasonForStage(stage)
           : weeklyFailReason ||
             (!freshness?.ready
               ? "fresh_weeks_incomplete"
@@ -5335,6 +6374,9 @@ export async function runPromotionPipelineJob(
         freshness: freshnessState,
         hysteresis: null,
         lifecycle,
+        halving: stagedEval.enabled
+          ? halving || null
+          : deployment.promotionGate?.halving || null,
       };
       const shouldEnableNow = eligible && shortlistIncluded;
       const freshnessLocked = currentlyEnabled && !freshness?.ready;
@@ -5360,6 +6402,7 @@ export async function runPromotionPipelineJob(
 
       const exactLoser = Boolean(
         !hysteresis.enabled &&
+          canEnterFinalGate &&
           !suppressed &&
           freshness?.ready &&
           weeklyFailReason,
@@ -5620,6 +6663,9 @@ export async function runPromotionPipelineJob(
         lifecycleCounts[state as keyof typeof lifecycleCounts] += 1;
       }
     }
+    const stagedReopened = stagedReopenedByDeploymentId.size;
+    const totalWeeklyQueueRowsInserted =
+      weeklyQueueRowsInserted + stagedQueueRowsInserted;
     const pendingAfter = await countPendingPromotionRows();
     await pulsePipelineJobProgress({
       jobKind: "promotion",
@@ -5648,11 +6694,20 @@ export async function runPromotionPipelineJob(
         suspendedExact,
         suspendedNeighbors,
         retiredCount,
-        weeklyQueueRowsInserted,
+        weeklyQueueRowsInserted: totalWeeklyQueueRowsInserted,
+        stageQueueRowsInsertedBaseline: weeklyQueueRowsInserted,
+        stageQueueRowsInsertedTransitions: stagedQueueRowsInserted,
         loadNudgeSymbolsQueued: loadSymbolsToNudge.length,
         workerNudgeDeploymentsQueued: workerDeploymentsToNudge.length,
         nudgedLoadSymbols,
         nudgedWorkerRows,
+        stagedEvalEnabled: stagedEval.enabled,
+        stagedCutover,
+        stagedReopened,
+        stagedAdvancedAToB,
+        stagedAdvancedBToC,
+        stagedPruned,
+        stagedPrunedQueueRowsTrimmed,
         lifecycleCounts,
         pendingAfter,
       },
@@ -5665,7 +6720,10 @@ export async function runPromotionPipelineJob(
       retried: 0,
       failed: 0,
       pendingAfter,
-      downstreamRequested: nudgedLoadSymbols > 0 || nudgedWorkerRows > 0,
+      downstreamRequested:
+        nudgedLoadSymbols > 0 ||
+        nudgedWorkerRows > 0 ||
+        stagedQueueRowsInserted > 0,
       progressLabel: `updated ${updates.length}`,
       details: {
         policy,
@@ -5690,11 +6748,20 @@ export async function runPromotionPipelineJob(
         suspendedExact,
         suspendedNeighbors,
         retiredCount,
-        weeklyQueueRowsInserted,
+        weeklyQueueRowsInserted: totalWeeklyQueueRowsInserted,
+        stageQueueRowsInsertedBaseline: weeklyQueueRowsInserted,
+        stageQueueRowsInsertedTransitions: stagedQueueRowsInserted,
         loadNudgeSymbolsQueued: loadSymbolsToNudge.length,
         workerNudgeDeploymentsQueued: workerDeploymentsToNudge.length,
         nudgedLoadSymbols,
         nudgedWorkerRows,
+        stagedEvalEnabled: stagedEval.enabled,
+        stagedCutover,
+        stagedReopened,
+        stagedAdvancedAToB,
+        stagedAdvancedBToC,
+        stagedPruned,
+        stagedPrunedQueueRowsTrimmed,
         lifecycleCounts,
       },
     };
@@ -5800,6 +6867,7 @@ export async function loadScalpPipelineJobsHealth(params: {
               ON s.symbol = m.symbol
             WHERE (s.symbol IS NOT NULL OR d.enabled = TRUE)
               AND m.entry_session_profile = ${entrySessionProfile}
+              AND COALESCE((d.promotion_gate #>> '{halving,stage}')::text, '') <> 'pruned'
               AND NOT (
                 (
                   COALESCE((d.promotion_gate #>> '{lifecycle,state}')::text, '') = 'suspended'

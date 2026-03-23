@@ -98,6 +98,21 @@ export type ScalpDeploymentLifecycleState =
     | 'suspended'
     | 'retired';
 
+export type ScalpDeploymentPromotionHalvingMode = 'staged' | 'legacy';
+
+export type ScalpDeploymentPromotionHalvingStage = 'A' | 'B' | 'C' | 'pruned';
+
+export interface ScalpDeploymentPromotionHalving {
+    mode: ScalpDeploymentPromotionHalvingMode;
+    stage: ScalpDeploymentPromotionHalvingStage;
+    targetWeeks: number;
+    epochWeekStartMs: number;
+    score: number | null;
+    cohortRank: number | null;
+    cohortSize: number | null;
+    updatedAtMs: number;
+}
+
 export interface ScalpDeploymentPromotionLifecycle {
     state: ScalpDeploymentLifecycleState;
     tuneFamily: string | null;
@@ -119,6 +134,7 @@ export interface ScalpDeploymentPromotionGate {
     freshness?: ScalpDeploymentPromotionFreshness | null;
     hysteresis?: ScalpDeploymentPromotionHysteresis | null;
     lifecycle?: ScalpDeploymentPromotionLifecycle | null;
+    halving?: ScalpDeploymentPromotionHalving | null;
 }
 
 export interface ScalpDeploymentRegistryEntry extends ScalpDeploymentRef {
@@ -629,6 +645,55 @@ function normalizePromotionLifecycle(value: unknown): ScalpDeploymentPromotionLi
     };
 }
 
+function normalizePromotionHalvingMode(
+    value: unknown,
+): ScalpDeploymentPromotionHalvingMode {
+    const normalized = String(value || '')
+        .trim()
+        .toLowerCase();
+    if (normalized === 'staged' || normalized === 'legacy') return normalized;
+    return 'legacy';
+}
+
+function normalizePromotionHalvingStage(
+    value: unknown,
+): ScalpDeploymentPromotionHalvingStage {
+    const normalized = String(value || '').trim();
+    if (normalized === 'A' || normalized === 'B' || normalized === 'C' || normalized === 'pruned') {
+        return normalized;
+    }
+    return 'A';
+}
+
+function normalizePromotionHalving(value: unknown): ScalpDeploymentPromotionHalving | null {
+    if (!isRecord(value)) return null;
+    const targetWeeksRaw = Math.floor(Number(value.targetWeeks));
+    const epochWeekStartMsRaw = normalizePositiveTime(value.epochWeekStartMs);
+    const updatedAtMsRaw = normalizePositiveTime(value.updatedAtMs);
+    if (!Number.isFinite(targetWeeksRaw) || targetWeeksRaw <= 0) return null;
+    if (epochWeekStartMsRaw === null) return null;
+    if (updatedAtMsRaw === null) return null;
+    const score = normalizeFiniteNumber(value.score);
+    const cohortRankRaw = normalizeFiniteNumber(value.cohortRank);
+    const cohortSizeRaw = normalizeFiniteNumber(value.cohortSize);
+    return {
+        mode: normalizePromotionHalvingMode(value.mode),
+        stage: normalizePromotionHalvingStage(value.stage),
+        targetWeeks: targetWeeksRaw,
+        epochWeekStartMs: epochWeekStartMsRaw,
+        score: score !== null ? score : null,
+        cohortRank:
+            cohortRankRaw !== null && cohortRankRaw > 0
+                ? Math.floor(cohortRankRaw)
+                : null,
+        cohortSize:
+            cohortSizeRaw !== null && cohortSizeRaw > 0
+                ? Math.floor(cohortSizeRaw)
+                : null,
+        updatedAtMs: updatedAtMsRaw,
+    };
+}
+
 function normalizePromotionGate(value: unknown): ScalpDeploymentPromotionGate | null {
     if (!isRecord(value)) return null;
     const eligible = normalizeBool(value.eligible, false);
@@ -644,6 +709,7 @@ function normalizePromotionGate(value: unknown): ScalpDeploymentPromotionGate | 
         freshness: normalizePromotionFreshness(value.freshness),
         hysteresis: normalizePromotionHysteresis(value.hysteresis),
         lifecycle: normalizePromotionLifecycle(value.lifecycle),
+        halving: normalizePromotionHalving(value.halving),
     };
 }
 

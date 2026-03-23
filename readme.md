@@ -145,6 +145,14 @@ MARKETAUX_API_KEY=...
 # SCALP_WEEKLY_ROBUSTNESS_MIN_MEDIAN_EXPECTANCY_R=0
 # SCALP_WEEKLY_ROBUSTNESS_MIN_4W_NET_R=8
 # SCALP_WEEKLY_ROBUSTNESS_MAX_TOP_WEEK_PNL_CONCENTRATION_PCT=80
+# SCALP_STAGED_EVAL_ENABLED=true
+# SCALP_STAGED_EVAL_STAGE_A_WEEKS=2
+# SCALP_STAGED_EVAL_STAGE_B_WEEKS=6
+# SCALP_STAGED_EVAL_STAGE_C_WEEKS=12
+# SCALP_STAGED_EVAL_STAGE_A_KEEP_SHARE=0.40
+# SCALP_STAGED_EVAL_STAGE_B_KEEP_SHARE=0.35
+# SCALP_STAGED_EVAL_MIN_SURVIVORS=1
+# SCALP_STAGED_EVAL_REOPEN_ON_EPOCH=true
 # SCALP_DEPLOYMENT_ALLOW_INELIGIBLE_ENABLE=false            # emergency override; avoid enabling unless needed
 # SCALP_SYMBOL_DISCOVERY_POLICY_PATH=data/scalp-symbol-discovery-policy.json
 # SCALP_SYMBOL_UNIVERSE_STORE=auto                           # auto | kv | file
@@ -299,6 +307,7 @@ npm run start
   - Claims rows from `scalp_discovered_symbols`, updates per-symbol load status, and can chain to `prepare`.
 - `GET /api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&session=berlin`
   - Independent async job that creates/updates deployment variants and queues weekly worker rows.
+  - Staged-eval queue seeding (when enabled): Stage A queues 2 fresh weeks, Stage B queues 6, Stage C queues 12, and `pruned` rows remain inert until epoch reopen.
   - Strategy coverage: prepare now iterates all registered scalp strategies per symbol, then promotion/worker metrics filter losers later.
   - Missing-coverage recovery: if a symbol is already `prepare_status=succeeded` but does not yet have deployments for all registered strategies, prepare will re-claim and backfill that symbol automatically.
   - Optional one-off requeue helper (safe dry-run by default):
@@ -311,6 +320,7 @@ npm run start
     - `SCALP_PIPELINE_PREPARE_PROTECT_RECENT_DEMOTED_MS` keeps recently demoted rows out of prepare-cap pruning for a short cooldown window (default `7d`, max `90d`).
 - `GET /api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&session=berlin`
   - Independent async job that claims pending/retry weekly rows in `scalp_deployment_weekly_metrics`, runs replay, and persists weekly metrics.
+  - Claim priority favors staged finalists (`C` then `B` then `A`), and excludes staged `pruned` rows.
   - Candle-count weekly guards are capped to a Monday-Saturday ceiling (`8640` at `1m`) so Sunday non-trading hours do not block fresh-week validation.
   - Worker now loads only the task's target weekly candle range from history (instead of full-symbol 1m history).
   - With `autoSuccessor=true`, worker chains to promotion when the current drain pass leaves no claimable worker rows (`pendingAfter=0`).
@@ -318,6 +328,7 @@ npm run start
   - Session lanes are isolated by explicit `session` parameter and DB session columns.
 - `GET /api/scalp/cron/promotion?batchSize=300&autoSuccessor=true&autoContinue=true`
   - Independent async job that aggregates weekly metrics and applies promotion/enablement policy.
+  - Staged-eval orchestration (when enabled): A->B and B->C successive halving, cohort pruning, epoch reopen for pruned rows, and Stage-C-only final promotion gate/hysteresis.
   - Enforces best tune per symbol+strategy and clears dirty flags when processed.
 - `GET /api/scalp/cron/live-guardrail-monitor`
   - Evaluates enabled deployments against live guardrail thresholds (expectancy, drawdown, drift vs forward, churn proxy) and emits risk journal events.

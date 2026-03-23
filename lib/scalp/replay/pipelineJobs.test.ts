@@ -5,10 +5,13 @@ import {
   applyPromotionHysteresis,
   buildPipelineJobDiagnostics,
   buildDiscoverSymbolSyncPlan,
+  computeStagedEvaluationScoreForTasks,
   enforceSingleEnabledPerSymbolStrategy,
   listScalpDurationTimelineRuns,
   planPrepareOverflowNonEnabledVariants,
   resolveLifecycleTuneFamily,
+  resolveStageSurvivorCount,
+  resolveStagedRebucket,
   selectPrepareTuneVariantsForStrategy,
   selectPromotionWinnerRowsWithExploration,
   startOfBerlinWeekMonday,
@@ -114,6 +117,118 @@ test("applyPromotionHysteresis keeps currently enabled deployment on when lockEn
   assert.equal(out.enabled, true);
   assert.equal(out.transition, "held");
   assert.equal(out.hysteresis.failStreak, 1);
+});
+
+test("resolveStageSurvivorCount keeps configured share with min survivor floor", () => {
+  assert.equal(
+    resolveStageSurvivorCount({
+      cohortSize: 5,
+      keepShare: 0.4,
+      minSurvivors: 1,
+    }),
+    2,
+  );
+  assert.equal(
+    resolveStageSurvivorCount({
+      cohortSize: 3,
+      keepShare: 0.1,
+      minSurvivors: 1,
+    }),
+    1,
+  );
+  assert.equal(
+    resolveStageSurvivorCount({
+      cohortSize: 7,
+      keepShare: 0.35,
+      minSurvivors: 2,
+    }),
+    3,
+  );
+  assert.equal(
+    resolveStageSurvivorCount({
+      cohortSize: 0,
+      keepShare: 0.4,
+      minSurvivors: 1,
+    }),
+    0,
+  );
+});
+
+test("resolveStagedRebucket maps completed-week ranges into A/B/C windows", () => {
+  const cfg = { stageAWeeks: 2, stageBWeeks: 6, stageCWeeks: 12 };
+  assert.deepEqual(
+    resolveStagedRebucket({ completedWeeks: 1, ...cfg }),
+    { stage: "A", targetWeeks: 2 },
+  );
+  assert.deepEqual(
+    resolveStagedRebucket({ completedWeeks: 5, ...cfg }),
+    { stage: "A", targetWeeks: 2 },
+  );
+  assert.deepEqual(
+    resolveStagedRebucket({ completedWeeks: 6, ...cfg }),
+    { stage: "B", targetWeeks: 6 },
+  );
+  assert.deepEqual(
+    resolveStagedRebucket({ completedWeeks: 11, ...cfg }),
+    { stage: "B", targetWeeks: 6 },
+  );
+  assert.deepEqual(
+    resolveStagedRebucket({ completedWeeks: 12, ...cfg }),
+    { stage: "C", targetWeeks: 12 },
+  );
+});
+
+test("computeStagedEvaluationScoreForTasks ranks stronger short-window performance higher", () => {
+  const stronger = computeStagedEvaluationScoreForTasks([
+    {
+      deploymentId: "dep_a",
+      symbol: "BTCUSDT",
+      strategyId: "regime_pullback_m15_m3",
+      tuneId: "default",
+      status: "completed",
+      windowFromTs: 1,
+      windowToTs: 2,
+      result: { expectancyR: 0.12, netR: 0.6, maxDrawdownR: 0.8 },
+    } as any,
+    {
+      deploymentId: "dep_a",
+      symbol: "BTCUSDT",
+      strategyId: "regime_pullback_m15_m3",
+      tuneId: "default",
+      status: "completed",
+      windowFromTs: 2,
+      windowToTs: 3,
+      result: { expectancyR: 0.1, netR: 0.4, maxDrawdownR: 0.9 },
+    } as any,
+  ]);
+  const weaker = computeStagedEvaluationScoreForTasks([
+    {
+      deploymentId: "dep_b",
+      symbol: "BTCUSDT",
+      strategyId: "regime_pullback_m15_m3",
+      tuneId: "default",
+      status: "completed",
+      windowFromTs: 1,
+      windowToTs: 2,
+      result: { expectancyR: -0.02, netR: -0.1, maxDrawdownR: 1.5 },
+    } as any,
+    {
+      deploymentId: "dep_b",
+      symbol: "BTCUSDT",
+      strategyId: "regime_pullback_m15_m3",
+      tuneId: "default",
+      status: "completed",
+      windowFromTs: 2,
+      windowToTs: 3,
+      result: { expectancyR: 0.01, netR: 0.05, maxDrawdownR: 1.4 },
+    } as any,
+  ]);
+  assert.equal(Number.isFinite(stronger), true);
+  assert.equal(stronger > weaker, true);
+  assert.equal(
+    computeStagedEvaluationScoreForTasks([] as any),
+    Number.NEGATIVE_INFINITY,
+  );
 });
 
 test("selectPromotionWinnerRowsWithExploration enforces 40% exploration split when possible", () => {
