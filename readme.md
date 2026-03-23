@@ -299,6 +299,7 @@ npm run start
   - Claims rows from `scalp_discovered_symbols`, updates per-symbol load status, and can chain to `prepare`.
 - `GET /api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&session=berlin`
   - Independent async job that creates/updates deployment variants and queues weekly worker rows.
+  - Strategy coverage: prepare now iterates all registered scalp strategies per symbol, then promotion/worker metrics filter losers later.
   - Sunday backfill mode (UTC): new research variants are not introduced; existing tracks are prepared/queued first.
   - Prepare-cap pruning protects suspended deployments and freshness-incomplete rows (`reason=fresh_weeks_incomplete`) from deletion.
   - Writes deployment state flags (`in_universe`, `worker_dirty`, `promotion_dirty`, `last_prepared_at`).

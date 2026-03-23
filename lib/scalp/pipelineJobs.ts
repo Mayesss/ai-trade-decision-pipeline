@@ -44,9 +44,7 @@ import {
 import { normalizeScalpEntrySessionProfile } from "./sessions";
 import { listScalpStrategies } from "./strategies/registry";
 import {
-  loadScalpSymbolDiscoveryPolicy,
   resolveCompletedWeekCoverageStartMs,
-  resolveRecommendedStrategiesForSymbol,
   runScalpSymbolDiscoveryCycle,
 } from "./symbolDiscovery";
 import {
@@ -3788,8 +3786,7 @@ export async function runPreparePipelineJob(
       ? 0
       : newVariantsPerStrategy;
 
-    const policy = await loadScalpSymbolDiscoveryPolicy();
-    const strategies = new Set(listScalpStrategies().map((row) => row.id));
+    const strategyIds = listScalpStrategies().map((row) => row.id);
     const claimed = await claimPrepareSymbols(batchSize, entrySessionProfile);
     const activeSymbols = await countActivePipelineSymbols();
     const db = scalpPrisma();
@@ -3847,14 +3844,7 @@ export async function runPreparePipelineJob(
         continue;
       }
       try {
-        const strategyIds = resolveRecommendedStrategiesForSymbol(
-          symbol,
-          policy.strategyAllowlist,
-        ).filter((id) => strategies.has(id));
-        const selectedStrategies =
-          strategyIds.length > 0
-            ? strategyIds
-            : Array.from(strategies).slice(0, 1);
+        const selectedStrategies = strategyIds;
         const symbolVenue = await resolvePipelineDeploymentVenue(symbol);
         const existingDeployments = await db.$queryRaw<
           Array<{
