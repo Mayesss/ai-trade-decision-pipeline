@@ -160,18 +160,9 @@ type ScalpSummaryDeploymentLifecycleState =
   | "suspended"
   | "retired";
 
-type ScalpSummaryBonusBacktest12w = {
-  windowFromTs: number;
-  windowToTs: number;
-  selectionWindowDays: number;
-  rollCount: number;
-  totalTrades: number;
-  netR: number | null;
-  meanExpectancyR: number | null;
-  meanProfitFactor: number | null;
-  maxDrawdownR: number | null;
-  profitableWindowPct: number | null;
-};
+type ScalpSummaryWorkerRows = Awaited<
+  ReturnType<typeof listScalpDeploymentWeeklyMetricRows>
+>;
 
 type HistoryDiscoveryRow = {
   symbol: string;
@@ -528,75 +519,68 @@ function normalizeDeploymentLifecycleState(
   return null;
 }
 
-function computeBonusBacktest12w(params: {
+function buildGraduatedPast12wWorkerRows(params: {
   nowMs: number;
-  enabled: boolean;
-  lifecycleState: ScalpSummaryDeploymentLifecycleState | null;
-  selectionWindowDaysRaw: unknown;
-  weeklyRows: Awaited<ReturnType<typeof listScalpDeploymentWeeklyMetricRows>>;
-}): ScalpSummaryBonusBacktest12w | null {
-  if (!params.enabled || params.lifecycleState !== "graduated") return null;
-  const selectionWindowDays = Math.max(
-    1,
-    Math.floor(
-      asFiniteNumber(params.selectionWindowDaysRaw) ?? BONUS_BACKTEST_WINDOW_DAYS,
-    ),
-  );
-  const windowToTs = params.nowMs - selectionWindowDays * DAY_MS;
-  const windowFromTs = windowToTs - BONUS_BACKTEST_WINDOW_MS;
-  const completedRows = params.weeklyRows.filter((row) => {
-    if (row.status !== "completed") return false;
-    return row.weekStartMs >= windowFromTs && row.weekEndMs <= windowToTs;
-  });
+  deploymentRows: Awaited<ReturnType<typeof listScalpDeploymentRegistryEntries>>;
+  workerRowsByDeploymentId: Map<string, ScalpSummaryWorkerRows>;
+  existingWorkerRows: ScalpSummaryWorkerRows;
+}): ScalpSummaryWorkerRows {
+  const existingKeys = new Set<string>();
+  for (const row of params.existingWorkerRows) {
+    const deploymentId = String(row.deploymentId || "").trim();
+    const weekStartMs = Math.floor(Number(row.weekStartMs) || 0);
+    if (!deploymentId || weekStartMs <= 0) continue;
+    existingKeys.add(`${deploymentId}:${weekStartMs}`);
+  }
 
-  const rollCount = completedRows.length;
-  const totalTrades = completedRows.reduce(
-    (acc, row) => acc + Math.max(0, Math.floor(asFiniteNumber(row.trades) ?? 0)),
-    0,
-  );
-  const netRValues = completedRows
-    .map((row) => asFiniteNumber(row.netR))
-    .filter((row): row is number => row !== null);
-  const expectancyValues = completedRows
-    .map((row) => asFiniteNumber(row.expectancyR))
-    .filter((row): row is number => row !== null);
-  const profitFactorValues = completedRows
-    .map((row) => asFiniteNumber(row.profitFactor))
-    .filter((row): row is number => row !== null);
-  const drawdownValues = completedRows
-    .map((row) => asFiniteNumber(row.maxDrawdownR))
-    .filter((row): row is number => row !== null);
+  const syntheticRows: ScalpSummaryWorkerRows = [];
+  for (const deploymentRow of params.deploymentRows) {
+    const deploymentId = String(deploymentRow.deploymentId || "").trim();
+    if (!deploymentId) continue;
+    const lifecycleState = normalizeDeploymentLifecycleState(
+      deploymentRow.promotionGate?.lifecycle?.state,
+    );
+    if (lifecycleState !== "graduated") continue;
 
-  const netRTotal =
-    netRValues.length > 0
-      ? netRValues.reduce((acc, row) => acc + row, 0)
-      : null;
-  const profitableRows = completedRows.filter(
-    (row) => (asFiniteNumber(row.netR) ?? Number.NEGATIVE_INFINITY) > 0,
-  ).length;
-
-  return {
-    windowFromTs,
-    windowToTs,
-    selectionWindowDays: BONUS_BACKTEST_WINDOW_DAYS,
-    rollCount,
-    totalTrades,
-    netR: roundMetric(netRTotal),
-    meanExpectancyR: roundMetric(
-      totalTrades > 0 && netRTotal !== null
-        ? netRTotal / totalTrades
-        : meanValue(expectancyValues),
-      4,
-    ),
-    meanProfitFactor: roundMetric(meanValue(profitFactorValues), 3),
-    maxDrawdownR: roundMetric(
-      drawdownValues.length ? Math.max(...drawdownValues) : null,
-    ),
-    profitableWindowPct: roundMetric(
-      rollCount > 0 ? (profitableRows / rollCount) * 100 : null,
+    const selectionWindowDays = Math.max(
       1,
-    ),
-  };
+      Math.floor(
+        asFiniteNumber(
+          deploymentRow.promotionGate?.forwardValidation?.selectionWindowDays,
+        ) ?? BONUS_BACKTEST_WINDOW_DAYS,
+      ),
+    );
+    const windowToTs = params.nowMs - selectionWindowDays * DAY_MS;
+    const windowFromTs = windowToTs - BONUS_BACKTEST_WINDOW_MS;
+    const sourceRows = (
+      params.workerRowsByDeploymentId.get(deploymentId) || []
+    ).filter((row) => {
+      const status = String(row.status || "")
+        .trim()
+        .toLowerCase();
+      if (status !== "succeeded" && status !== "completed") return false;
+      return row.weekStartMs >= windowFromTs && row.weekEndMs <= windowToTs;
+    });
+    if (!sourceRows.length) continue;
+
+    const sorted = sourceRows
+      .slice()
+      .sort((a, b) => a.weekStartMs - b.weekStartMs)
+      .slice(-BONUS_BACKTEST_WINDOW_WEEKS);
+    for (const row of sorted) {
+      const weekStartMs = Math.floor(Number(row.weekStartMs) || 0);
+      if (weekStartMs <= 0) continue;
+      const dedupeKey = `${deploymentId}:${weekStartMs}`;
+      if (existingKeys.has(dedupeKey)) continue;
+      syntheticRows.push({
+        ...row,
+        status: "succeeded",
+        workerId: null,
+      });
+      existingKeys.add(dedupeKey);
+    }
+  }
+  return syntheticRows;
 }
 
 async function loadHistoryDiscoverySnapshot(params: {
@@ -1081,27 +1065,16 @@ export default async function handler(
       bucket.push(row);
       workerRowsByDeploymentId.set(deploymentId, bucket);
     }
-    const bonusBacktest12wByDeploymentId = new Map<
-      string,
-      ScalpSummaryBonusBacktest12w
-    >();
-    for (const row of allDeploymentRows) {
-      const deploymentId = String(row.deploymentId || "").trim();
-      if (!deploymentId) continue;
-      const lifecycleState = normalizeDeploymentLifecycleState(
-        row.promotionGate?.lifecycle?.state,
-      );
-      const bonusMetrics = computeBonusBacktest12w({
-        nowMs,
-        enabled: row.enabled === true,
-        lifecycleState,
-        selectionWindowDaysRaw:
-          row.promotionGate?.forwardValidation?.selectionWindowDays,
-        weeklyRows: workerRowsByDeploymentId.get(deploymentId) || [],
-      });
-      if (bonusMetrics) {
-        bonusBacktest12wByDeploymentId.set(deploymentId, bonusMetrics);
-      }
+    const graduatedPast12wRows = useDeploymentsEffective
+      ? buildGraduatedPast12wWorkerRows({
+          nowMs,
+          deploymentRows: allDeploymentRows,
+          workerRowsByDeploymentId,
+          existingWorkerRows: workerRows,
+        })
+      : [];
+    if (graduatedPast12wRows.length > 0) {
+      workerRows = workerRows.concat(graduatedPast12wRows);
     }
     logDebug("runtime_loaded", {
       defaultStrategyId: runtime.defaultStrategyId,
@@ -1111,7 +1084,7 @@ export default async function handler(
       useDeploymentsEffective,
       workerRowsFetched: workerRows.length,
       workerRowsFetchLimit,
-      bonusBacktestDeploymentCount: bonusBacktest12wByDeploymentId.size,
+      graduatedPast12wRows: graduatedPast12wRows.length,
       dayKey,
       clockMode: cfg.sessions.clockMode,
       entrySessionProfile,
@@ -1461,10 +1434,6 @@ export default async function handler(
             : null,
         promotionReason: row.promotionGate?.reason || null,
         forwardValidation: row.promotionGate?.forwardValidation || null,
-        bonusBacktest12w:
-          bonusBacktest12wByDeploymentId.get(
-            String(row.deploymentId || "").trim(),
-          ) || null,
         updatedAtMs: row.updatedAtMs,
       })),
       range,
