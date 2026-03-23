@@ -1613,8 +1613,20 @@ async function countActivePipelineSymbols(): Promise<number> {
 
 async function countPendingPrepareSymbols(
   entrySessionProfile: ScalpEntrySessionProfile = "berlin",
+  requiredStrategyIdsRaw?: string[],
 ): Promise<number> {
   const db = scalpPrisma();
+  const requiredStrategyIds = Array.from(
+    new Set(
+      (requiredStrategyIdsRaw && requiredStrategyIdsRaw.length > 0
+        ? requiredStrategyIdsRaw
+        : listScalpStrategies().map((row) => row.id)
+      )
+        .map((row) => String(row || "").trim().toLowerCase())
+        .filter((row) => row.length > 0),
+    ),
+  );
+  const requiredStrategyCount = requiredStrategyIds.length;
   if (entrySessionProfile !== "berlin") {
     const rows = await db.$queryRaw<
       Array<{ count: bigint | number | string }>
@@ -1628,11 +1640,15 @@ async function countPendingPrepareSymbols(
             WHERE d.symbol = s.symbol
               AND d.entry_session_profile = 'berlin'
           )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM scalp_deployments d
-            WHERE d.symbol = s.symbol
-              AND d.entry_session_profile = ${entrySessionProfile}
+          AND (
+            ${requiredStrategyCount} <= 0
+            OR (
+              SELECT COUNT(DISTINCT d.strategy_id)
+              FROM scalp_deployments d
+              WHERE d.symbol = s.symbol
+                AND d.entry_session_profile = ${entrySessionProfile}
+                AND d.strategy_id IN (${join(requiredStrategyIds)})
+            ) < ${requiredStrategyCount}
           );
     `);
     return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
@@ -1643,9 +1659,21 @@ async function countPendingPrepareSymbols(
         SELECT COUNT(*)::bigint AS count
         FROM scalp_discovered_symbols
         WHERE load_status = 'succeeded'
-          AND prepare_status IN ('pending', 'retry_wait')
-          AND COALESCE(prepare_next_run_at, NOW()) <= NOW();
-    `);
+          AND COALESCE(prepare_next_run_at, NOW()) <= NOW()
+          AND (
+            prepare_status IN ('pending', 'retry_wait')
+            OR (
+              ${requiredStrategyCount} > 0
+              AND (
+                SELECT COUNT(DISTINCT d.strategy_id)
+                FROM scalp_deployments d
+                WHERE d.symbol = scalp_discovered_symbols.symbol
+                  AND d.entry_session_profile = ${entrySessionProfile}
+                  AND d.strategy_id IN (${join(requiredStrategyIds)})
+              ) < ${requiredStrategyCount}
+            )
+          );
+  `);
   return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
 }
 
@@ -3432,8 +3460,20 @@ export async function runLoadCandlesPipelineJob(
 async function claimPrepareSymbols(
   limit: number,
   entrySessionProfile: ScalpEntrySessionProfile = "berlin",
+  requiredStrategyIdsRaw?: string[],
 ): Promise<Array<{ symbol: string; attempts: number }>> {
   const db = scalpPrisma();
+  const requiredStrategyIds = Array.from(
+    new Set(
+      (requiredStrategyIdsRaw && requiredStrategyIdsRaw.length > 0
+        ? requiredStrategyIdsRaw
+        : listScalpStrategies().map((row) => row.id)
+      )
+        .map((row) => String(row || "").trim().toLowerCase())
+        .filter((row) => row.length > 0),
+    ),
+  );
+  const requiredStrategyCount = requiredStrategyIds.length;
   if (entrySessionProfile !== "berlin") {
     const rows = await db.$queryRaw<
       Array<{ symbol: string; attempts: number }>
@@ -3448,11 +3488,15 @@ async function claimPrepareSymbols(
                 WHERE d.symbol = scalp_discovered_symbols.symbol
                   AND d.entry_session_profile = 'berlin'
               )
-              AND NOT EXISTS (
-                SELECT 1
-                FROM scalp_deployments d
-                WHERE d.symbol = scalp_discovered_symbols.symbol
-                  AND d.entry_session_profile = ${entrySessionProfile}
+              AND (
+                ${requiredStrategyCount} <= 0
+                OR (
+                  SELECT COUNT(DISTINCT d.strategy_id)
+                  FROM scalp_deployments d
+                  WHERE d.symbol = scalp_discovered_symbols.symbol
+                    AND d.entry_session_profile = ${entrySessionProfile}
+                    AND d.strategy_id IN (${join(requiredStrategyIds)})
+                ) < ${requiredStrategyCount}
               )
             ORDER BY symbol ASC
             FOR UPDATE SKIP LOCKED
@@ -3473,8 +3517,20 @@ async function claimPrepareSymbols(
             SELECT symbol
             FROM scalp_discovered_symbols
             WHERE load_status = 'succeeded'
-              AND prepare_status IN ('pending', 'retry_wait')
               AND COALESCE(prepare_next_run_at, NOW()) <= NOW()
+              AND (
+                prepare_status IN ('pending', 'retry_wait')
+                OR (
+                  ${requiredStrategyCount} > 0
+                  AND (
+                    SELECT COUNT(DISTINCT d.strategy_id)
+                    FROM scalp_deployments d
+                    WHERE d.symbol = scalp_discovered_symbols.symbol
+                      AND d.entry_session_profile = ${entrySessionProfile}
+                      AND d.strategy_id IN (${join(requiredStrategyIds)})
+                  ) < ${requiredStrategyCount}
+                )
+              )
             ORDER BY COALESCE(prepare_next_run_at, NOW()) ASC, symbol ASC
             FOR UPDATE SKIP LOCKED
             LIMIT ${limit}
@@ -3787,7 +3843,11 @@ export async function runPreparePipelineJob(
       : newVariantsPerStrategy;
 
     const strategyIds = listScalpStrategies().map((row) => row.id);
-    const claimed = await claimPrepareSymbols(batchSize, entrySessionProfile);
+    const claimed = await claimPrepareSymbols(
+      batchSize,
+      entrySessionProfile,
+      strategyIds,
+    );
     const activeSymbols = await countActivePipelineSymbols();
     const db = scalpPrisma();
 
@@ -4133,7 +4193,10 @@ export async function runPreparePipelineJob(
         });
     }
 
-    const pendingAfter = await countPendingPrepareSymbols(entrySessionProfile);
+    const pendingAfter = await countPendingPrepareSymbols(
+      entrySessionProfile,
+      strategyIds,
+    );
     return {
       ok: true,
       processed: claimed.length,
@@ -5647,6 +5710,7 @@ export async function loadScalpPipelineJobsHealth(params: {
   const entrySessionProfile = normalizeEntrySessionProfileInput(
     params.entrySessionProfile,
   );
+  const strategyIds = listScalpStrategies().map((row) => row.id);
   const isBerlinSession = entrySessionProfile === "berlin";
   for (const jobKind of SCALP_PIPELINE_JOB_KINDS) {
     await ensurePipelineJobRow(jobKind, entrySessionProfile);
@@ -5765,10 +5829,10 @@ export async function loadScalpPipelineJobsHealth(params: {
             FROM scalp_deployments
             WHERE entry_session_profile = ${entrySessionProfile};
         `),
-    isBerlinSession ? Promise.resolve(null) : countPendingPrepareSymbols(entrySessionProfile),
+    countPendingPrepareSymbols(entrySessionProfile, strategyIds),
   ]);
 
-  const symbolAgg = isBerlinSession
+  const symbolAggBase = isBerlinSession
     ? symbolRows[0] || ({} as any)
     : {
         pendingLoad: 0,
@@ -5776,12 +5840,19 @@ export async function loadScalpPipelineJobsHealth(params: {
         retryLoad: 0,
         failedLoad: 0,
         succeededLoad: 0,
-        pendingPrepare: pendingPrepareForSession ?? 0,
+        pendingPrepare: 0,
         runningPrepare: 0,
         retryPrepare: 0,
         failedPrepare: 0,
         succeededPrepare: 0,
       };
+  const symbolAgg = {
+    ...symbolAggBase,
+    pendingPrepare: Math.max(
+      Math.floor(Number(symbolAggBase.pendingPrepare || 0)),
+      Math.floor(Number(pendingPrepareForSession || 0)),
+    ),
+  };
   const workerAgg = workerRows[0] || ({} as any);
   const promotionAgg = deploymentRows[0] || ({} as any);
   const byJobKind = new Map(jobRows.map((row) => [String(row.jobKind), row]));
