@@ -49,6 +49,12 @@ import {
   resolveRecommendedStrategiesForSymbol,
   runScalpSymbolDiscoveryCycle,
 } from "./symbolDiscovery";
+import {
+  isUtcSunday,
+  resolveCompletedWeekWindowToUtc,
+  resolveLastCompletedWeekBoundsUtc,
+  startOfWeekMondayUtc,
+} from "./weekWindows";
 import { pipSizeForScalpSymbol } from "./marketData";
 import { ensureScalpSymbolMarketMetadata } from "./symbolMarketMetadataSync";
 import type { ScalpCandle, ScalpEntrySessionProfile } from "./types";
@@ -58,6 +64,7 @@ const ONE_MINUTE_MS = 60_000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 const BITGET_HISTORY_CANDLES_MAX_LIMIT = 200;
+const TRADING_WEEK_CANDLES_1M_MAX = 6 * 24 * 60;
 
 export const SCALP_PIPELINE_JOB_KINDS = [
   "discover",
@@ -484,6 +491,35 @@ function resolvePrepareExpansionMinExpectancyR(): number {
   return Math.max(-1, Math.min(1, raw));
 }
 
+function resolvePrepareProtectRecentDemotedMs(): number {
+  const raw = Number(
+    process.env.SCALP_PIPELINE_PREPARE_PROTECT_RECENT_DEMOTED_MS,
+  );
+  if (!Number.isFinite(raw)) return 7 * ONE_DAY_MS;
+  return Math.max(0, Math.min(90 * ONE_DAY_MS, Math.floor(raw)));
+}
+
+function extractLifecycleLastSeatReleaseAtMs(gateRaw: unknown): number | null {
+  const gate = asJsonObject(gateRaw);
+  const lifecycle = asJsonObject(gate?.lifecycle);
+  return asTsMs(lifecycle?.lastSeatReleaseAtMs);
+}
+
+function extractLifecycleState(gateRaw: unknown): string {
+  const gate = asJsonObject(gateRaw);
+  const lifecycle = asJsonObject(gate?.lifecycle);
+  return String(lifecycle?.state || "")
+    .trim()
+    .toLowerCase();
+}
+
+function extractPromotionGateReason(gateRaw: unknown): string {
+  const gate = asJsonObject(gateRaw);
+  return String(gate?.reason || "")
+    .trim()
+    .toLowerCase();
+}
+
 function hasPrepareExpansionAnchor(
   rows: PrepareExistingDeployment[],
 ): boolean {
@@ -577,6 +613,7 @@ export function selectPrepareTuneVariantsForStrategy(params: {
   maxVariantPool: number;
   maxNewPerRun: number;
   winnerNeighborRadius: number;
+  allowNewVariants?: boolean;
   existingByKey: Map<string, PrepareExistingDeployment>;
 }): ScalpResearchTuneVariant[] {
   const maxSelected = Math.max(1, Math.floor(params.maxSelected));
@@ -593,6 +630,7 @@ export function selectPrepareTuneVariantsForStrategy(params: {
     1,
     Math.min(6, Math.floor(params.winnerNeighborRadius)),
   );
+  const allowNewVariants = params.allowNewVariants !== false;
   const rawVariants = buildScalpResearchTuneVariants({
     symbol: params.symbol,
     strategyId: params.strategyId,
@@ -657,11 +695,13 @@ export function selectPrepareTuneVariantsForStrategy(params: {
   const warmupMode = !loserTrackMode && sortedSeenVariants.length < seedTarget;
   const targetSelected = loserTrackMode ? 1 : warmupMode ? seedTarget : maxSelected;
   const warmupNeed = Math.max(0, seedTarget - sortedSeenVariants.length);
-  const maxNewBudget = loserTrackMode
+  const maxNewBudget = !allowNewVariants
     ? 0
-    : warmupMode
-      ? warmupNeed
-      : Math.min(maxNewPerRun, maxSelected);
+    : loserTrackMode
+      ? 0
+      : warmupMode
+        ? warmupNeed
+        : Math.min(maxNewPerRun, maxSelected);
   const neighborUnseen = collectNeighborUnseenVariants({
     orderedVariants: deduped,
     unseenTuneIds,
@@ -722,8 +762,12 @@ export function selectPrepareTuneVariantsForStrategy(params: {
     }
   }
 
-  if (!selected.length && deduped.length) {
-    push(deduped[0]);
+  if (!selected.length) {
+    if (sortedSeenVariants.length) {
+      push(sortedSeenVariants[0]);
+    } else if (allowNewVariants && deduped.length) {
+      push(deduped[0]);
+    }
   }
 
   return selected;
@@ -742,10 +786,19 @@ export function planPrepareOverflowNonEnabledVariants(params: {
   rows: PrepareOverflowCandidate[];
   hardCap: number;
   protectedDeploymentIds?: string[];
+  nowMs?: number;
+  protectRecentDemotedMs?: number;
 }): { keepIds: string[]; pruneIds: string[] } {
   const hardCap = Math.max(1, Math.floor(params.hardCap));
   const rows = Array.isArray(params.rows) ? params.rows.slice() : [];
   if (!rows.length) return { keepIds: [], pruneIds: [] };
+  const nowMs = Number.isFinite(Number(params.nowMs))
+    ? Math.floor(Number(params.nowMs))
+    : Date.now();
+  const protectRecentDemotedMs = Math.max(
+    0,
+    Math.floor(Number(params.protectRecentDemotedMs) || 0),
+  );
 
   const protectedIds = new Set(
     (params.protectedDeploymentIds || [])
@@ -754,7 +807,26 @@ export function planPrepareOverflowNonEnabledVariants(params: {
   );
   const keep = new Set<string>();
   for (const row of rows) {
-    if (row.enabled || protectedIds.has(row.deploymentId)) {
+    const lastSeatReleaseAtMs = extractLifecycleLastSeatReleaseAtMs(
+      row.promotionGate,
+    );
+    const lifecycleState = extractLifecycleState(row.promotionGate);
+    const gateReason = extractPromotionGateReason(row.promotionGate);
+    const recentlyDemoted =
+      protectRecentDemotedMs > 0 &&
+      lastSeatReleaseAtMs !== null &&
+      lastSeatReleaseAtMs > 0 &&
+      nowMs - lastSeatReleaseAtMs <= protectRecentDemotedMs;
+    const protectedByLifecycle =
+      lifecycleState === "suspended" || lifecycleState === "retired";
+    const protectedByFreshnessReason = gateReason === "fresh_weeks_incomplete";
+    if (
+      row.enabled ||
+      protectedIds.has(row.deploymentId) ||
+      recentlyDemoted ||
+      protectedByLifecycle ||
+      protectedByFreshnessReason
+    ) {
       keep.add(row.deploymentId);
     }
   }
@@ -800,6 +872,8 @@ async function prunePrepareOverflowNonEnabledVariants(params: {
   protectedDeploymentIds: string[];
 }): Promise<{ pruned: number; blockedByLedger: number }> {
   const hardCap = Math.max(1, Math.floor(params.hardCap));
+  const nowMs = Date.now();
+  const protectRecentDemotedMs = resolvePrepareProtectRecentDemotedMs();
   const rows = await params.db.$queryRaw<
     Array<{
       deploymentId: string;
@@ -835,6 +909,8 @@ async function prunePrepareOverflowNonEnabledVariants(params: {
     })),
     hardCap,
     protectedDeploymentIds: params.protectedDeploymentIds,
+    nowMs,
+    protectRecentDemotedMs,
   });
   if (!plan.pruneIds.length) return { pruned: 0, blockedByLedger: 0 };
 
@@ -1066,29 +1142,6 @@ export function startOfBerlinWeekMonday(tsMs: number): number {
   return localMidnightMs - daysSinceMonday * ONE_DAY_MS;
 }
 
-function startOfUtcDay(tsMs: number): number {
-  const d = new Date(tsMs);
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-}
-
-function startOfWeekMondayUtc(tsMs: number): number {
-  const dayStartMs = startOfUtcDay(tsMs);
-  const dayOfWeek = new Date(dayStartMs).getUTCDay();
-  const daysSinceMonday = (dayOfWeek + 6) % 7;
-  return dayStartMs - daysSinceMonday * ONE_DAY_MS;
-}
-
-function resolveLastCompletedWeekBoundsUtc(nowMs: number): {
-  startCurrentWeekMondayMs: number;
-  lastSundayEndMs: number;
-} {
-  const startCurrentWeekMondayMs = startOfWeekMondayUtc(nowMs);
-  return {
-    startCurrentWeekMondayMs,
-    lastSundayEndMs: startCurrentWeekMondayMs - 1,
-  };
-}
-
 function resolveRequiredSuccessiveWeeks(): number {
   return Math.max(
     12,
@@ -1141,7 +1194,7 @@ function findEarliestMissingCompletedWeekStartMs(
   requiredWeeks: number,
 ): number | null {
   if (requiredWeeks <= 0) return null;
-  const { startCurrentWeekMondayMs, lastSundayEndMs } =
+  const { startCurrentWeekMondayMs, lastCompletedWeekEndMs } =
     resolveLastCompletedWeekBoundsUtc(nowMs);
   const firstRequiredWeekStartMs =
     startCurrentWeekMondayMs - requiredWeeks * ONE_WEEK_MS;
@@ -1149,7 +1202,7 @@ function findEarliestMissingCompletedWeekStartMs(
   for (const candle of candles) {
     const ts = Number(candle?.[0] || 0);
     if (!Number.isFinite(ts) || ts <= 0) continue;
-    if (ts < firstRequiredWeekStartMs || ts > lastSundayEndMs) continue;
+    if (ts < firstRequiredWeekStartMs || ts > lastCompletedWeekEndMs) continue;
     const index = Math.floor((ts - firstRequiredWeekStartMs) / ONE_WEEK_MS);
     if (index >= 0 && index < requiredWeeks) {
       presentWeekIndexes.add(index);
@@ -1168,7 +1221,7 @@ function countCoveredCompletedWeeks(
   nowMs: number,
   requiredWeeks: number,
 ): { covered: number; latestWeekStartMs: number | null } {
-  const { startCurrentWeekMondayMs, lastSundayEndMs } =
+  const { startCurrentWeekMondayMs, lastCompletedWeekEndMs } =
     resolveLastCompletedWeekBoundsUtc(nowMs);
   const firstRequiredWeekStartMs =
     startCurrentWeekMondayMs - requiredWeeks * ONE_WEEK_MS;
@@ -1177,7 +1230,7 @@ function countCoveredCompletedWeeks(
   for (const candle of candles) {
     const ts = Number(candle?.[0] || 0);
     if (!Number.isFinite(ts) || ts <= 0) continue;
-    if (ts < firstRequiredWeekStartMs || ts > lastSundayEndMs) continue;
+    if (ts < firstRequiredWeekStartMs || ts > lastCompletedWeekEndMs) continue;
     const weekStartMs = startOfWeekMondayUtc(ts);
     const index = Math.floor(
       (weekStartMs - firstRequiredWeekStartMs) / ONE_WEEK_MS,
@@ -1688,9 +1741,12 @@ function resolveWeeklyPolicyDefaults(): SyncResearchWeeklyPolicy {
     ),
     minCandlesPerSlice: Math.max(
       120,
-      toPositiveInt(
-        envNumber("SCALP_WEEKLY_ROBUSTNESS_MIN_CANDLES_PER_SLICE", 180),
-        180,
+      Math.min(
+        TRADING_WEEK_CANDLES_1M_MAX,
+        toPositiveInt(
+          envNumber("SCALP_WEEKLY_ROBUSTNESS_MIN_CANDLES_PER_SLICE", 180),
+          180,
+        ),
       ),
     ),
     requireWinnerShortlist: envBool(
@@ -3451,7 +3507,7 @@ async function upsertWeeklyQueueRowsForDeployment(params: {
   const entrySessionProfile = normalizeEntrySessionProfileInput(
     params.entrySessionProfile,
   );
-  const currentWeekStart = startOfWeekMondayUtc(params.nowMs);
+  const currentWeekStart = resolveCompletedWeekWindowToUtc(params.nowMs);
   const firstWeekStart = currentWeekStart - params.requiredWeeks * ONE_WEEK_MS;
   const refreshStart =
     currentWeekStart - Math.max(1, params.refreshRecentWeeks) * ONE_WEEK_MS;
@@ -3549,7 +3605,7 @@ async function ensureWeeklyQueueRowsExistForDeployment(params: {
   const entrySessionProfile = normalizeEntrySessionProfileInput(
     params.entrySessionProfile,
   );
-  const currentWeekStart = startOfWeekMondayUtc(params.nowMs);
+  const currentWeekStart = resolveCompletedWeekWindowToUtc(params.nowMs);
   const firstWeekStart = currentWeekStart - params.requiredWeeks * ONE_WEEK_MS;
   const db = scalpPrisma();
   let inserted = 0;
@@ -3727,6 +3783,10 @@ export async function runPreparePipelineJob(
       ),
     );
     const nowMs = Date.now();
+    const sundayBackfillMode = isUtcSunday(nowMs);
+    const effectiveNewVariantsPerStrategy = sundayBackfillMode
+      ? 0
+      : newVariantsPerStrategy;
 
     const policy = await loadScalpSymbolDiscoveryPolicy();
     const strategies = new Set(listScalpStrategies().map((row) => row.id));
@@ -3872,8 +3932,9 @@ export async function runPreparePipelineJob(
             maxSelected: variantsPerStrategy,
             seedTarget: seedVariantsPerStrategy,
             maxVariantPool: variantPoolPerStrategy,
-            maxNewPerRun: newVariantsPerStrategy,
+            maxNewPerRun: effectiveNewVariantsPerStrategy,
             winnerNeighborRadius,
+            allowNewVariants: !sundayBackfillMode,
             existingByKey,
           });
           const protectedStrategyDeploymentIds = variants.map((variant) => {
@@ -4103,6 +4164,7 @@ export async function runPreparePipelineJob(
           queuedWeeklyRows,
           prunedOverflowDeployments,
           blockedOverflowByLedger,
+          sundayBackfillMode,
         },
       };
     },
@@ -4286,7 +4348,10 @@ export async function runWorkerPipelineJob(
     );
     const minCandlesPerWeek = Math.max(
       60,
-      Math.min(20_000, toPositiveInt(params.minCandlesPerWeek, 180)),
+      Math.min(
+        TRADING_WEEK_CANDLES_1M_MAX,
+        toPositiveInt(params.minCandlesPerWeek, 180),
+      ),
     );
     const rowTimeoutMs = resolveWorkerRowTimeoutMs(lockMs);
     const replayProgressEveryRuns = resolveWorkerReplayProgressEveryRuns();
@@ -4523,7 +4588,7 @@ export async function runPromotionPipelineJob(
     const nowMs = Date.now();
     const berlinWeekStartMs = startOfBerlinWeekMonday(nowMs);
     const requiredWeeks = resolvePromotionFreshWeeks();
-    const windowToTs = startOfWeekMondayUtc(nowMs);
+    const windowToTs = resolveCompletedWeekWindowToUtc(nowMs);
     const windowFromTs = windowToTs - policy.lookbackDays * ONE_DAY_MS;
     const previousWeekStartTs = windowToTs - ONE_WEEK_MS;
 
@@ -5145,6 +5210,7 @@ export async function runPromotionPipelineJob(
       lifecycle: ScalpDeploymentPromotionLifecycle;
       exactLoser: boolean;
       currentlyEnabled: boolean;
+      freshnessLocked: boolean;
       shortlistIncluded: boolean;
       forcedGraduatedNoSeat: boolean;
     }
@@ -5218,16 +5284,26 @@ export async function runPromotionPipelineJob(
         lifecycle,
       };
       const shouldEnableNow = eligible && shortlistIncluded;
+      const freshnessLocked = currentlyEnabled && !freshness?.ready;
+      const lockEnabled =
+        currentlyEnabled && freshnessLocked;
       const hysteresis = applyPromotionHysteresis({
         currentlyEnabled,
         shouldEnableNow,
         previous: deployment.promotionGate?.hysteresis || null,
         nowMs,
-        lockEnabled: false,
+        lockEnabled,
       });
       promotionGate.hysteresis = hysteresis.hysteresis;
       if (hysteresis.transition === "enabled") enabledByHysteresis += 1;
       if (hysteresis.transition === "disabled") disabledByHysteresis += 1;
+      if (
+        currentlyEnabled &&
+        !hysteresis.enabled &&
+        hysteresis.transition === "disabled"
+      ) {
+        lifecycle.lastSeatReleaseAtMs = nowMs;
+      }
 
       const exactLoser = Boolean(
         !hysteresis.enabled &&
@@ -5274,6 +5350,7 @@ export async function runPromotionPipelineJob(
         lifecycle,
         exactLoser,
         currentlyEnabled,
+        freshnessLocked,
         shortlistIncluded,
         forcedGraduatedNoSeat: false,
       };
@@ -5337,6 +5414,7 @@ export async function runPromotionPipelineJob(
     if (uniquenessResolution.demotedIds.size > 0) {
       for (const row of drafts) {
         if (!uniquenessResolution.demotedIds.has(row.entry.deploymentId)) continue;
+        if (row.freshnessLocked) continue;
         if (!row.entry.enabled) continue;
         row.entry.enabled = false;
         row.shortlistIncluded = false;
@@ -5365,6 +5443,7 @@ export async function runPromotionPipelineJob(
           row.entry.promotionGate.hysteresis = nextHysteresis;
           row.entry.promotionGate.lifecycle = row.lifecycle;
         }
+        row.lifecycle.lastSeatReleaseAtMs = nowMs;
         row.lifecycle.state = "graduated";
         if (row.entry.promotionGate) {
           row.entry.promotionGate.lifecycle = row.lifecycle;

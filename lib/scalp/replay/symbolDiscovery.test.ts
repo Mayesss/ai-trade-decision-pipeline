@@ -388,3 +388,16 @@ test('completed-week coverage helpers extend seed history beyond raw lookback da
     });
     assert.equal(effectiveDays, 93);
 });
+
+test('completed-week coverage rolls on Sunday so Monday-Saturday week is counted as complete', () => {
+    const nowMs = Date.UTC(2026, 2, 22, 12, 0, 0); // Sunday
+    const coverageStartMs = resolveCompletedWeekCoverageStartMs(nowMs, 13);
+    assert.equal(coverageStartMs, Date.UTC(2025, 11, 22, 0, 0, 0));
+
+    const effectiveDays = resolveRequiredHistoryDaysForCompletedWeeks({
+        nowMs,
+        targetHistoryDays: 90,
+        requiredSuccessiveWeeks: 13,
+    });
+    assert.equal(effectiveDays, 91);
+});

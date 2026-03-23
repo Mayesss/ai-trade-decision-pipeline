@@ -280,6 +280,7 @@ npm run start
     - Seed stage now keeps fetching backfill/forward windows until both target span and freshness are met (90d + <=12h lag), or reports `seed_target_unmet`.
 - `GET /api/scalp/cron/v2/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true`
   - Independent async job that ensures each discovered gate-pass symbol has the required completed 1m weekly coverage.
+  - Completed-week rollover now advances on UTC Sunday so Monday-Saturday candles count as the fresh completed week.
   - Loader behavior is progressive by default: prewarms recent candles first, then backfills older weeks in chunks.
   - Load claims are strict gate-only from `scalp_discovered_symbols` (`load_status IN ('pending','retry_wait')`), with no enabled-incumbent or inactive warmup exceptions.
   - Optional env knobs:
@@ -288,9 +289,14 @@ npm run start
   - Claims rows from `scalp_discovered_symbols`, updates per-symbol load status, and can chain to `prepare`.
 - `GET /api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&session=berlin`
   - Independent async job that creates/updates deployment variants and queues weekly worker rows.
+  - Sunday backfill mode (UTC): new research variants are not introduced; existing tracks are prepared/queued first.
+  - Prepare-cap pruning protects suspended deployments and freshness-incomplete rows (`reason=fresh_weeks_incomplete`) from deletion.
   - Writes deployment state flags (`in_universe`, `worker_dirty`, `promotion_dirty`, `last_prepared_at`).
+  - Optional env knob:
+    - `SCALP_PIPELINE_PREPARE_PROTECT_RECENT_DEMOTED_MS` keeps recently demoted rows out of prepare-cap pruning for a short cooldown window (default `7d`, max `90d`).
 - `GET /api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&session=berlin`
   - Independent async job that claims pending/retry weekly rows in `scalp_deployment_weekly_metrics`, runs replay, and persists weekly metrics.
+  - Candle-count weekly guards are capped to a Monday-Saturday ceiling (`8640` at `1m`) so Sunday non-trading hours do not block fresh-week validation.
   - Worker now loads only the task's target weekly candle range from history (instead of full-symbol 1m history).
   - With `autoSuccessor=true`, worker chains to promotion when the current drain pass leaves no claimable worker rows (`pendingAfter=0`).
   - Marks deployments `promotion_dirty=true` when fresh worker output is available.

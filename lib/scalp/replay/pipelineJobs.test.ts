@@ -470,6 +470,54 @@ test("prepare variant selection can expand around anchored tracks", () => {
   assert.equal(out.some((row) => row.tuneId === "default"), true);
 });
 
+test("prepare variant selection can disable new variants for Sunday backfill mode", () => {
+  const outWithoutExisting = selectPrepareTuneVariantsForStrategy({
+    symbol: "FETUSDT",
+    strategyId: "regime_pullback_m15_m3",
+    nowMs: Date.UTC(2026, 2, 22, 9, 0, 0),
+    maxSelected: 4,
+    seedTarget: 2,
+    maxVariantPool: 32,
+    maxNewPerRun: 2,
+    winnerNeighborRadius: 1,
+    allowNewVariants: false,
+    existingByKey: new Map(),
+  } as any);
+  assert.equal(outWithoutExisting.length, 0);
+
+  const existingByKey = new Map([
+    [
+      "regime_pullback_m15_m3::default",
+      {
+        deploymentId: "dep_existing_default",
+        strategyId: "regime_pullback_m15_m3",
+        tuneId: "default",
+        enabled: true,
+        inUniverse: true,
+        promotionGate: null,
+        createdAtMs: 10,
+        updatedAtMs: 10,
+      },
+    ],
+  ]);
+  const outWithExisting = selectPrepareTuneVariantsForStrategy({
+    symbol: "FETUSDT",
+    strategyId: "regime_pullback_m15_m3",
+    nowMs: Date.UTC(2026, 2, 22, 9, 0, 0),
+    maxSelected: 4,
+    seedTarget: 2,
+    maxVariantPool: 32,
+    maxNewPerRun: 2,
+    winnerNeighborRadius: 1,
+    allowNewVariants: false,
+    existingByKey,
+  } as any);
+  assert.deepEqual(
+    outWithExisting.map((row) => row.tuneId),
+    ["default"],
+  );
+});
+
 test("prepare overflow planning keeps protected/enabled rows and prunes oldest non-enabled overflow", () => {
   const out = planPrepareOverflowNonEnabledVariants({
     hardCap: 3,
@@ -521,6 +569,86 @@ test("prepare overflow planning keeps protected/enabled rows and prunes oldest n
   assert.equal(out.keepIds.includes("dep_2"), true);
   assert.equal(out.keepIds.includes("dep_4"), true);
   assert.deepEqual(out.pruneIds, ["dep_1", "dep_5"]);
+});
+
+test("prepare overflow planning protects recently demoted rows from pruning", () => {
+  const nowMs = Date.UTC(2026, 2, 23, 0, 5, 0);
+  const out = planPrepareOverflowNonEnabledVariants({
+    hardCap: 2,
+    nowMs,
+    protectRecentDemotedMs: 7 * 24 * 60 * 60_000,
+    rows: [
+      {
+        deploymentId: "dep_enabled",
+        enabled: true,
+        inUniverse: true,
+        promotionGate: null,
+        createdAtMs: 10,
+        updatedAtMs: 10,
+      },
+      {
+        deploymentId: "dep_recently_demoted",
+        enabled: false,
+        inUniverse: true,
+        promotionGate: {
+          lifecycle: {
+            state: "graduated",
+            lastSeatReleaseAtMs: nowMs - 60_000,
+          },
+        },
+        createdAtMs: 20,
+        updatedAtMs: 20,
+      },
+      {
+        deploymentId: "dep_old_non_enabled",
+        enabled: false,
+        inUniverse: true,
+        promotionGate: null,
+        createdAtMs: 5,
+        updatedAtMs: 5,
+      },
+    ],
+  });
+
+  assert.equal(out.keepIds.includes("dep_enabled"), true);
+  assert.equal(out.keepIds.includes("dep_recently_demoted"), true);
+  assert.deepEqual(out.pruneIds, ["dep_old_non_enabled"]);
+});
+
+test("prepare overflow planning protects suspended and freshness-incomplete rows from pruning", () => {
+  const out = planPrepareOverflowNonEnabledVariants({
+    hardCap: 1,
+    rows: [
+      {
+        deploymentId: "dep_suspended",
+        enabled: false,
+        inUniverse: true,
+        promotionGate: { lifecycle: { state: "suspended" } },
+        createdAtMs: 10,
+        updatedAtMs: 10,
+      },
+      {
+        deploymentId: "dep_freshness_incomplete",
+        enabled: false,
+        inUniverse: true,
+        promotionGate: { reason: "fresh_weeks_incomplete" },
+        createdAtMs: 20,
+        updatedAtMs: 20,
+      },
+      {
+        deploymentId: "dep_regular_old",
+        enabled: false,
+        inUniverse: false,
+        promotionGate: null,
+        createdAtMs: 5,
+        updatedAtMs: 5,
+      },
+    ],
+  });
+
+  assert.equal(out.keepIds.includes("dep_suspended"), true);
+  assert.equal(out.keepIds.includes("dep_freshness_incomplete"), true);
+  assert.deepEqual(out.pruneIds, ["dep_regular_old"]);
 });
 
 test("startOfBerlinWeekMonday resolves Monday boundary in Berlin timezone", () => {

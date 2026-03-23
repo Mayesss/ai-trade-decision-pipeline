@@ -2,6 +2,7 @@ import type {
   ScalpDeploymentRegistryEntry,
   ScalpForwardValidationMetrics,
 } from "./deploymentRegistry";
+import { resolveCompletedWeekWindowToUtc } from "./weekWindows";
 
 const DAY_MS = 24 * 60 * 60_000;
 const WEEK_MS = 7 * DAY_MS;
@@ -114,18 +115,6 @@ function toPositiveInt(value: unknown, fallback: number): number {
   const n = Math.floor(Number(value));
   if (!Number.isFinite(n) || n <= 0) return fallback;
   return n;
-}
-
-function startOfUtcDay(tsMs: number): number {
-  const d = new Date(tsMs);
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-}
-
-function startOfWeekMondayUtc(tsMs: number): number {
-  const dayStartMs = startOfUtcDay(tsMs);
-  const dayOfWeek = new Date(dayStartMs).getUTCDay();
-  const daysSinceMonday = (dayOfWeek + 6) % 7;
-  return dayStartMs - daysSinceMonday * DAY_MS;
 }
 
 function normalizePromotionTriggerWeeks(value: unknown, fallback: number): number {
@@ -569,7 +558,7 @@ export function evaluateFreshCompletedDeploymentWeeks(params: {
   const requiredWeeks = resolveDeploymentPromotionTriggerWeeks(
     params.requiredWeeks,
   );
-  const windowToTs = startOfWeekMondayUtc(params.nowMs);
+  const windowToTs = resolveCompletedWeekWindowToUtc(params.nowMs);
   const windowFromTs = windowToTs - requiredWeeks * WEEK_MS;
   const completedTaskByWeekStart = new Map<
     number,

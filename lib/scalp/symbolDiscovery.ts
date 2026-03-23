@@ -11,6 +11,7 @@ import { pipSizeForScalpSymbol } from './marketData';
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 import { inferScalpAssetCategory, type ScalpAssetCategory } from './symbolInfo';
 import { listScalpStrategies } from './strategies/registry';
+import { resolveCompletedWeekWindowToUtc } from './weekWindows';
 
 type ScalpSymbolDiscoveryCriteriaBase = {
     minHistoryCoveragePct: number;
@@ -410,13 +411,7 @@ function normalizeStrategyIdArray(value: unknown): string[] {
 export function resolveCompletedWeekCoverageStartMs(nowMs: number, requiredWeeks: number): number {
     const safeNowMs = Number.isFinite(Number(nowMs)) ? Math.max(0, Math.floor(Number(nowMs))) : Date.now();
     const normalizedRequiredWeeks = Math.max(1, Math.min(52, Math.floor(Number(requiredWeeks) || 0)));
-    const dayStartMs = (() => {
-        const d = new Date(safeNowMs);
-        return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-    })();
-    const dayOfWeek = new Date(dayStartMs).getUTCDay(); // 0=Sunday ... 6=Saturday
-    const daysSinceMonday = (dayOfWeek + 6) % 7;
-    const startCurrentWeekMondayMs = dayStartMs - daysSinceMonday * ONE_DAY_MS;
+    const startCurrentWeekMondayMs = resolveCompletedWeekWindowToUtc(safeNowMs);
     return Math.max(0, startCurrentWeekMondayMs - normalizedRequiredWeeks * ONE_WEEK_MS);
 }
 
