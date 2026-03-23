@@ -13,6 +13,16 @@ Next.js app that runs an AI-driven trading loop for multiple platforms (Bitget +
 - **Dashboard** (`pages/index.tsx` + `components/ChartPanel.tsx`) showing latest decisions, prompts, aspect ratings, 7D PnL, open positions, live ticker updates, and chart overlays of recent trades.
 - **KV storage** (Upstash-compatible REST) for decision history, evaluations, and cached news (7d TTL for history, 1h for news).
 
+### Scalp Strategy Registry Notes
+
+- Newly available scalp strategy ids (in addition to existing registry ids):
+  - `anchored_vwap_reversion_m15_m3`
+  - `funding_oi_exhaustion_proxy_m15_m3`
+  - `basis_dislocation_reversion_proxy_m15_m3`
+  - `relative_value_spread_proxy_m15_m3`
+  - `session_seasonality_bias_m15_m3`
+- These are proxy implementations designed to run with existing candle/quote inputs (no extra funding/OI feed required).
+
 ## Requirements
 
 - Node.js 18+ (matches Next 16)

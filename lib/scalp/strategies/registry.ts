@@ -1,11 +1,16 @@
 import { compressionBreakoutPullbackM15M3Strategy } from './compressionBreakoutPullbackM15M3';
 import { failedAuctionExtremeReversalM15M1Strategy } from './failedAuctionExtremeReversalM15M1';
+import { anchoredVwapReversionM15M3Strategy } from './anchoredVwapReversionM15M3';
+import { basisDislocationReversionProxyM15M3Strategy } from './basisDislocationReversionProxyM15M3';
+import { fundingOiExhaustionProxyM15M3Strategy } from './fundingOiExhaustionProxyM15M3';
 import { REGIME_PULLBACK_M15_M3_STRATEGY_ID, regimePullbackM15M3Strategy } from './regimePullbackM15M3';
 import { REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID } from './regimePullbackM15M3BtcusdtGuarded';
 import { REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID } from './regimePullbackM15M3XauusdGuarded';
 import { hssIctM15M3GuardedStrategy } from './hssIctM15M3Guarded';
 import { openingRangeBreakoutRetestM5M1Strategy } from './openingRangeBreakoutRetestM5M1';
 import { pdhPdlReclaimM15M3Strategy } from './pdhPdlReclaimM15M3';
+import { relativeValueSpreadProxyM15M3Strategy } from './relativeValueSpreadProxyM15M3';
+import { sessionSeasonalityBiasM15M3Strategy } from './sessionSeasonalityBiasM15M3';
 import { trendDayReaccelerationM15M3Strategy } from './trendDayReaccelerationM15M3';
 import type { ScalpStrategyDefinition } from './types';
 
@@ -19,6 +24,11 @@ const REGISTRY: Record<string, ScalpStrategyDefinition> = Object.freeze({
     [compressionBreakoutPullbackM15M3Strategy.id]: compressionBreakoutPullbackM15M3Strategy,
     [failedAuctionExtremeReversalM15M1Strategy.id]: failedAuctionExtremeReversalM15M1Strategy,
     [trendDayReaccelerationM15M3Strategy.id]: trendDayReaccelerationM15M3Strategy,
+    [anchoredVwapReversionM15M3Strategy.id]: anchoredVwapReversionM15M3Strategy,
+    [fundingOiExhaustionProxyM15M3Strategy.id]: fundingOiExhaustionProxyM15M3Strategy,
+    [basisDislocationReversionProxyM15M3Strategy.id]: basisDislocationReversionProxyM15M3Strategy,
+    [relativeValueSpreadProxyM15M3Strategy.id]: relativeValueSpreadProxyM15M3Strategy,
+    [sessionSeasonalityBiasM15M3Strategy.id]: sessionSeasonalityBiasM15M3Strategy,
 });
 
 const STRATEGY_ID_ALIASES: Record<string, string> = Object.freeze({

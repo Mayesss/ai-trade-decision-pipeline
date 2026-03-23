@@ -1,0 +1,219 @@
+import type { ScalpCandle, ScalpDirectionalBias, ScalpSessionState, ScalpStrategyConfig } from '../types';
+import type { ScalpStrategyEntryIntent, ScalpStrategyPhaseInput, ScalpStrategyPhaseOutput } from './types';
+
+export type SyntheticSignal = {
+    direction: ScalpDirectionalBias;
+    signalTsMs: number;
+    entryPrice: number;
+    stopAnchor: number;
+    zoneLow: number;
+    zoneHigh: number;
+    reasonCodes: string[];
+};
+
+export function ts(candle: ScalpCandle): number {
+    return candle[0];
+}
+
+export function open(candle: ScalpCandle): number {
+    return candle[1];
+}
+
+export function high(candle: ScalpCandle): number {
+    return candle[2];
+}
+
+export function low(candle: ScalpCandle): number {
+    return candle[3];
+}
+
+export function close(candle: ScalpCandle): number {
+    return candle[4];
+}
+
+export function candleRange(candle: ScalpCandle): number {
+    return Math.max(0, high(candle) - low(candle));
+}
+
+export function candleBody(candle: ScalpCandle): number {
+    return Math.abs(close(candle) - open(candle));
+}
+
+export function computeEmaSeries(values: number[], period: number): number[] {
+    const p = Math.max(1, Math.floor(period));
+    if (!values.length) return [];
+    const out: number[] = [];
+    const k = 2 / (p + 1);
+    out[0] = values[0]!;
+    for (let i = 1; i < values.length; i += 1) {
+        out[i] = values[i]! * k + out[i - 1]! * (1 - k);
+    }
+    return out;
+}
+
+export function computeAtrSeries(candles: ScalpCandle[], period: number): number[] {
+    if (!Array.isArray(candles) || candles.length < 2) return [];
+    const p = Math.max(1, Math.floor(period));
+    const tr: number[] = new Array(candles.length).fill(0);
+    for (let i = 1; i < candles.length; i += 1) {
+        const prevClose = close(candles[i - 1]!);
+        tr[i] = Math.max(
+            high(candles[i]!) - low(candles[i]!),
+            Math.abs(high(candles[i]!) - prevClose),
+            Math.abs(low(candles[i]!) - prevClose),
+        );
+    }
+    const out: number[] = new Array(candles.length).fill(0);
+    let rolling = 0;
+    for (let i = 1; i < candles.length; i += 1) {
+        rolling += tr[i]!;
+        if (i > p) rolling -= tr[i - p]!;
+        const divisor = Math.min(i, p);
+        out[i] = divisor > 0 ? rolling / divisor : 0;
+    }
+    out[0] = out[1] ?? 0;
+    return out;
+}
+
+export function mean(values: number[]): number {
+    if (!values.length) return 0;
+    return values.reduce((acc, value) => acc + value, 0) / values.length;
+}
+
+export function median(values: number[]): number {
+    if (!values.length) return 0;
+    const sorted = values.slice().sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    if (sorted.length % 2 === 0) return (sorted[mid - 1]! + sorted[mid]!) / 2;
+    return sorted[mid]!;
+}
+
+export function stddev(values: number[]): number {
+    if (values.length < 2) return 0;
+    const m = mean(values);
+    const variance = values.reduce((acc, value) => {
+        const d = value - m;
+        return acc + d * d;
+    }, 0) / (values.length - 1);
+    return variance > 0 ? Math.sqrt(variance) : 0;
+}
+
+function dedupeReasonCodes(codes: string[]): string[] {
+    return Array.from(new Set(codes.map((code) => String(code || '').trim().toUpperCase()).filter((code) => code.length > 0)));
+}
+
+function latestTs(candles: ScalpCandle[]): number | null {
+    const latest = candles.at(-1)?.[0];
+    return Number.isFinite(Number(latest)) ? Number(latest) : null;
+}
+
+export function withLastProcessed(state: ScalpSessionState, input: ScalpStrategyPhaseInput['market']): ScalpSessionState {
+    const next: ScalpSessionState = {
+        ...state,
+        lastProcessed: {
+            ...state.lastProcessed,
+        },
+    };
+    const baseTs = latestTs(input.baseCandles);
+    const confirmTs = latestTs(input.confirmCandles);
+
+    if (input.baseTf === 'M1') next.lastProcessed.m1ClosedTsMs = baseTs;
+    if (input.baseTf === 'M3') next.lastProcessed.m3ClosedTsMs = baseTs;
+    if (input.baseTf === 'M5') next.lastProcessed.m5ClosedTsMs = baseTs;
+    if (input.baseTf === 'M15') next.lastProcessed.m15ClosedTsMs = baseTs;
+
+    if (input.confirmTf === 'M1') next.lastProcessed.m1ClosedTsMs = confirmTs;
+    if (input.confirmTf === 'M3') next.lastProcessed.m3ClosedTsMs = confirmTs;
+    return next;
+}
+
+export function finalizePhase(params: {
+    state: ScalpSessionState;
+    reasonCodes: string[];
+    entryIntent?: ScalpStrategyEntryIntent | null;
+}): ScalpStrategyPhaseOutput {
+    return {
+        state: params.state,
+        reasonCodes: dedupeReasonCodes(params.reasonCodes),
+        entryIntent: params.entryIntent ?? null,
+    };
+}
+
+export function toSyntheticSignalPhase(params: {
+    state: ScalpSessionState;
+    cfg: ScalpStrategyConfig;
+    signal: SyntheticSignal;
+    extraReasonCodes?: string[];
+}): ScalpStrategyPhaseOutput {
+    const signal = params.signal;
+    const side = signal.direction === 'BULLISH' ? 'SELL_SIDE' : 'BUY_SIDE';
+    const entry = Number(signal.entryPrice);
+    const stop = Number(signal.stopAnchor);
+    const zoneLow = Math.min(signal.zoneLow, signal.zoneHigh);
+    const zoneHigh = Math.max(signal.zoneLow, signal.zoneHigh);
+    if (!(Number.isFinite(entry) && entry > 0 && Number.isFinite(stop) && stop > 0)) {
+        return finalizePhase({
+            state: params.state,
+            reasonCodes: ['SYNTHETIC_SIGNAL_INVALID_PRICES'],
+        });
+    }
+    if (signal.direction === 'BULLISH' && !(stop < entry)) {
+        return finalizePhase({
+            state: params.state,
+            reasonCodes: ['SYNTHETIC_SIGNAL_STOP_NOT_PROTECTIVE_LONG'],
+        });
+    }
+    if (signal.direction === 'BEARISH' && !(stop > entry)) {
+        return finalizePhase({
+            state: params.state,
+            reasonCodes: ['SYNTHETIC_SIGNAL_STOP_NOT_PROTECTIVE_SHORT'],
+        });
+    }
+    if (!(Number.isFinite(zoneLow) && Number.isFinite(zoneHigh) && zoneHigh > zoneLow && zoneLow > 0)) {
+        return finalizePhase({
+            state: params.state,
+            reasonCodes: ['SYNTHETIC_SIGNAL_INVALID_ZONE'],
+        });
+    }
+
+    const next: ScalpSessionState = {
+        ...params.state,
+        state: 'WAITING_RETRACE',
+        sweep: {
+            side,
+            sweepTsMs: signal.signalTsMs,
+            sweepPrice: stop,
+            bufferAbs: Math.max(1e-9, Math.abs(entry - stop) * 0.2),
+            rejected: true,
+            rejectedTsMs: signal.signalTsMs,
+            reasonCodes: ['SYNTHETIC_SWEEP_PROXY'],
+        },
+        ifvg: {
+            direction: signal.direction,
+            low: zoneLow,
+            high: zoneHigh,
+            createdTsMs: signal.signalTsMs,
+            expiresAtMs: signal.signalTsMs + Math.max(1, params.cfg.ifvg.ttlMinutes) * 60_000,
+            entryMode: params.cfg.ifvg.entryMode,
+            touched: true,
+        },
+        confirmation: {
+            displacementDetected: true,
+            displacementTsMs: signal.signalTsMs,
+            structureShiftDetected: true,
+            structureShiftTsMs: signal.signalTsMs,
+            reasonCodes: ['SYNTHETIC_CONFIRM_PROXY'],
+        },
+    };
+
+    return finalizePhase({
+        state: next,
+        reasonCodes: [
+            ...signal.reasonCodes,
+            ...(params.extraReasonCodes || []),
+            'SYNTHETIC_IFVG_READY',
+            'ENTRY_SIGNAL_READY',
+        ],
+        entryIntent: { model: 'ifvg_touch' },
+    });
+}
