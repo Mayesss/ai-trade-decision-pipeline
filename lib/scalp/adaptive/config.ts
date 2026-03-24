@@ -34,7 +34,7 @@ function toFinite(value: unknown, fallback: number): number {
 
 export function resolveScalpAdaptiveRuntimeConfig(): ScalpAdaptiveRuntimeConfig {
   return {
-    enabled: toBool(process.env.SCALP_ADAPTIVE_ENABLED, false),
+    enabled: toBool(process.env.SCALP_ADAPTIVE_ENABLED, true),
     retrainCadenceWeeks: toPositiveInt(process.env.SCALP_ADAPTIVE_RETRAIN_CADENCE_WEEKS, 1, 12),
     lockDays: toPositiveInt(process.env.SCALP_ADAPTIVE_LOCK_DAYS, 14, 90),
     minExpectancyDeltaR: toFinite(process.env.SCALP_ADAPTIVE_MIN_EXPECTANCY_DELTA_R, 0.02),
