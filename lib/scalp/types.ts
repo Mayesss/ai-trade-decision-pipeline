@@ -275,7 +275,7 @@ export interface ScalpStrategyConfig {
     thresholds?: {
       minConfidence?: number | null;
     } | null;
-    catalog?: Record<string, unknown> | null;
+    catalog?: unknown | null;
   };
 }
 

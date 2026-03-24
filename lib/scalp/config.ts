@@ -11,12 +11,14 @@ import { DEFAULT_SCALP_ENTRY_SESSION_PROFILE } from './sessions';
 const DEFAULT_SCALP_SYMBOL = 'EURUSD';
 
 export type DeepPartial<T> = {
-    [K in keyof T]?: T[K] extends any[]
-        ? T[K]
-        : T[K] extends object
-          ? DeepPartial<T[K]>
-          : T[K];
+    [K in keyof T]?: DeepPartialValue<T[K]>;
 };
+
+type DeepPartialValue<T> = T extends (infer U)[]
+    ? DeepPartialValue<U>[]
+    : T extends object
+      ? DeepPartial<T>
+      : T;
 
 export type ScalpStrategyConfigOverride = DeepPartial<ScalpStrategyConfig>;
 
