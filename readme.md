@@ -21,6 +21,7 @@ Next.js app that runs an AI-driven trading loop for multiple platforms (Bitget +
   - `basis_dislocation_reversion_proxy_m15_m3`
   - `relative_value_spread_proxy_m15_m3`
   - `session_seasonality_bias_m15_m3`
+  - `adaptive_meta_selector_m15_m3` (disabled by default, PG-backed snapshots/decisions)
 - These are proxy implementations designed to run with existing candle/quote inputs (no extra funding/OI feed required).
 
 ## Requirements
@@ -153,6 +154,14 @@ MARKETAUX_API_KEY=...
 # SCALP_STAGED_EVAL_STAGE_B_KEEP_SHARE=0.35
 # SCALP_STAGED_EVAL_MIN_SURVIVORS=1
 # SCALP_STAGED_EVAL_REOPEN_ON_EPOCH=true
+# SCALP_ADAPTIVE_ENABLED=false
+# SCALP_ADAPTIVE_RETRAIN_CADENCE_WEEKS=1
+# SCALP_ADAPTIVE_LOCK_DAYS=14
+# SCALP_ADAPTIVE_MIN_EXPECTANCY_DELTA_R=0.02
+# SCALP_ADAPTIVE_MIN_SUPPORT=30
+# SCALP_ADAPTIVE_MIN_CONFIDENCE=0.60
+# SCALP_ADAPTIVE_PILOT_SIZE=6
+# SCALP_ADAPTIVE_PILOT_ROTATE_WEEKS=4
 # SCALP_DEPLOYMENT_ALLOW_INELIGIBLE_ENABLE=false            # emergency override; avoid enabling unless needed
 # SCALP_SYMBOL_DISCOVERY_POLICY_PATH=data/scalp-symbol-discovery-policy.json
 # SCALP_SYMBOL_UNIVERSE_STORE=auto                           # auto | kv | file
@@ -345,6 +354,8 @@ npm run start
 - `GET /api/scalp/dashboard/summary`
   - Scalp dashboard payload for UI tab (policy metadata, per-symbol state snapshot, aggregated counters, recent journal tail, plus pipeline/worker duration fields).
   - Optional query: `strategyId=<id>` to view state/journal for a specific strategy.
+- `GET /api/scalp/adaptive/summary?symbol=<SYMBOL>&session=berlin`
+  - Returns active/candidate adaptive snapshots, lock state, arm-selection stats, and recent adaptive arm decisions for the symbol/session.
 - `GET /api/scalp/ops/durations`
   - Returns recent duration timeline rows for pipeline jobs and worker runs.
   - Query params: `source=all|pipeline|worker`, `jobKind=all|discover|load_candles|prepare|worker|promotion`, `fromMs`, `toMs`, `limit<=500`.

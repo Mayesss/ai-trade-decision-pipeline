@@ -401,3 +401,49 @@ model ScalpDeploymentWeeklyMetric {
   @@index([symbol, strategyId, tuneId, weekStart(sort: Desc)], map: "scalp_deployment_weekly_metrics_symbol_strategy_week_idx")
   @@map("scalp_deployment_weekly_metrics")
 }
+
+model ScalpAdaptiveSelectorSnapshot {
+  snapshotId          String   @id @map("snapshot_id")
+  symbol              String
+  entrySessionProfile String   @default("berlin") @map("entry_session_profile")
+  strategyId          String   @map("strategy_id")
+  status              String   @default("shadow")
+  trainedAt           DateTime @map("trained_at") @db.Timestamptz(3)
+  windowFromTs        BigInt   @map("window_from_ts")
+  windowToTs          BigInt   @map("window_to_ts")
+  catalogJson         Json     @default(dbgenerated("'{}'::jsonb")) @map("catalog_json") @db.JsonB
+  metricsJson         Json     @default(dbgenerated("'{}'::jsonb")) @map("metrics_json") @db.JsonB
+  lockStartedAtMs     BigInt?  @map("lock_started_at_ms")
+  lockUntilMs         BigInt?  @map("lock_until_ms")
+  baselineMaxDrawdownR Decimal? @map("baseline_max_drawdown_r") @db.Decimal(20, 8)
+  updatedBy           String?  @map("updated_by")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@index([symbol, entrySessionProfile, strategyId, status], map: "scalp_adaptive_selector_snapshots_symbol_strategy_status_idx")
+  @@index([status, trainedAt(sort: Desc)], map: "scalp_adaptive_selector_snapshots_status_trained_idx")
+  @@map("scalp_adaptive_selector_snapshots")
+}
+
+model ScalpAdaptiveSelectorDecision {
+  id                  BigInt   @id @default(autoincrement())
+  ts                  DateTime @default(now()) @db.Timestamptz(3)
+  deploymentId        String   @map("deployment_id")
+  symbol              String
+  strategyId          String   @map("strategy_id")
+  entrySessionProfile String   @default("berlin") @map("entry_session_profile")
+  snapshotId          String?  @map("snapshot_id")
+  selectedArmId       String?  @map("selected_arm_id")
+  selectedArmType     String   @default("none") @map("selected_arm_type")
+  confidence          Decimal? @db.Decimal(10, 6)
+  skipReason          String?  @map("skip_reason")
+  reasonCodes         String[] @default([]) @map("reason_codes")
+  featuresHash        String?  @map("features_hash")
+  detailsJson         Json     @default(dbgenerated("'{}'::jsonb")) @map("details_json") @db.JsonB
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([symbol, entrySessionProfile, ts(sort: Desc)], map: "scalp_adaptive_selector_decisions_symbol_session_ts_idx")
+  @@index([deploymentId, ts(sort: Desc)], map: "scalp_adaptive_selector_decisions_deployment_ts_idx")
+  @@index([snapshotId, ts(sort: Desc)], map: "scalp_adaptive_selector_decisions_snapshot_ts_idx")
+  @@map("scalp_adaptive_selector_decisions")
+}

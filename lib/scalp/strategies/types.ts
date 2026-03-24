@@ -23,6 +23,7 @@ export interface ScalpStrategyPhaseOutput {
     state: ScalpSessionState;
     reasonCodes: string[];
     entryIntent?: ScalpStrategyEntryIntent | null;
+    meta?: Record<string, unknown>;
 }
 
 export interface ScalpStrategyDefinition {

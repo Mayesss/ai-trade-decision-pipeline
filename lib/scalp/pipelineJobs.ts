@@ -1,6 +1,13 @@
 import { empty, join, raw, sql, type SqlFragment } from "./pg/sql";
 
 import { bitgetFetch, resolveProductType } from "../bitget";
+import { resolveScalpAdaptiveRuntimeConfig } from "./adaptive/config";
+import { buildAdaptiveTrainingRowsFromMinuteCandles } from "./adaptive/features";
+import { buildAdaptiveSnapshotCatalog } from "./adaptive/snapshot";
+import {
+  ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID,
+  type ScalpAdaptiveSelectorSnapshotRecord,
+} from "./adaptive/types";
 import { fetchBitgetCandlesByEpicDateRange } from "./bitgetHistory";
 import {
   loadScalpCandleHistory,
@@ -39,12 +46,24 @@ import { runScalpReplay } from "./replay/harness";
 import { buildScalpReplayRuntimeFromDeployment } from "./replay/runtimeConfig";
 import { isScalpPgConfigured, scalpPrisma } from "./pg/client";
 import {
+  activateScalpAdaptiveSnapshot,
+  listScalpAdaptiveSelectorSnapshots,
+  upsertScalpAdaptiveSelectorSnapshotsBulk,
+} from "./pg/adaptive";
+import {
   normalizeScalpTuneId,
   resolveScalpDeployment,
   resolveScalpDeploymentVenueFromId,
 } from "./deployments";
-import { normalizeScalpEntrySessionProfile } from "./sessions";
-import { listScalpStrategies } from "./strategies/registry";
+import {
+  inScalpEntrySessionProfileWindow,
+  normalizeScalpEntrySessionProfile,
+} from "./sessions";
+import {
+  getDefaultScalpStrategy,
+  getScalpStrategyPreferredTimeframes,
+  listScalpStrategies,
+} from "./strategies/registry";
 import {
   resolveCompletedWeekCoverageStartMs,
   runScalpSymbolDiscoveryCycle,
@@ -308,6 +327,178 @@ function resolveStagedTargetWeeksForStage(
   if (stage === "A") return cfg.stageAWeeks;
   if (stage === "B") return cfg.stageBWeeks;
   return cfg.stageCWeeks;
+}
+
+type AdaptivePilotSymbolScore = {
+  symbol: string;
+  coveragePct: number;
+  weeklyCompletionPct: number;
+  guardrailPassPct: number;
+  compositeScore: number;
+};
+
+type AdaptivePromotionConstraint = {
+  lockUntilMs: number | null;
+  baselineMaxDrawdownR: number | null;
+  lockBreached: boolean;
+  locked: boolean;
+  reason: string | null;
+  incumbentExpectancyR: number | null;
+  incumbentMaxDrawdownR: number | null;
+  candidateExpectancyR: number | null;
+  candidateMaxDrawdownR: number | null;
+  adaptiveSnapshotId: string | null;
+};
+
+function isAdaptiveStrategyId(value: unknown): boolean {
+  return (
+    String(value || "").trim().toLowerCase() ===
+    ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID
+  );
+}
+
+function floorToSafeInt(value: unknown, fallback = 0): number {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n)) return fallback;
+  return n;
+}
+
+function resolveIsoYearWeek(tsMs: number): string {
+  const date = new Date(Math.max(0, Math.floor(tsMs)));
+  const utcDate = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+  );
+  const dayNum = utcDate.getUTCDay() || 7;
+  utcDate.setUTCDate(utcDate.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(utcDate.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil(
+    ((utcDate.getTime() - yearStart.getTime()) / ONE_DAY_MS + 1) / 7,
+  );
+  const year = utcDate.getUTCFullYear();
+  return `${year}${String(Math.max(1, weekNo)).padStart(2, "0")}`;
+}
+
+function resolveAdaptiveTuneId(params: {
+  windowToTs: number;
+  entrySessionProfile: ScalpEntrySessionProfile;
+}): string {
+  const isoYearWeek = resolveIsoYearWeek(params.windowToTs - 1);
+  return normalizeScalpTuneId(
+    `adaptive_${isoYearWeek}_${params.entrySessionProfile}`,
+    "adaptive_default",
+  );
+}
+
+function resolveAdaptiveTrainingWindow(nowMs: number): {
+  windowFromTs: number;
+  windowToTs: number;
+} {
+  const windowToTs = resolveCompletedWeekWindowToUtc(nowMs);
+  return {
+    windowFromTs: windowToTs - 12 * ONE_WEEK_MS,
+    windowToTs,
+  };
+}
+
+function resolveAdaptivePilotSelectionWindow(params: {
+  nowMs: number;
+  rotateWeeks: number;
+}): {
+  freezeAnchorWeekStartMs: number;
+  windowFromTs: number;
+  windowToTs: number;
+} {
+  const rotateWeeks = Math.max(1, Math.floor(params.rotateWeeks || 4));
+  const completedWeekWindowTo = resolveCompletedWeekWindowToUtc(params.nowMs);
+  const weekIndex = Math.max(
+    1,
+    Math.floor(completedWeekWindowTo / ONE_WEEK_MS),
+  );
+  const frozenEpochIndex = Math.floor(weekIndex / rotateWeeks);
+  const freezeAnchorWeekStartMs = frozenEpochIndex * rotateWeeks * ONE_WEEK_MS;
+  const windowToTs =
+    freezeAnchorWeekStartMs > 0 ? freezeAnchorWeekStartMs : completedWeekWindowTo;
+  return {
+    freezeAnchorWeekStartMs,
+    windowFromTs: windowToTs - 12 * ONE_WEEK_MS,
+    windowToTs,
+  };
+}
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function asAdaptiveSnapshotIdFromConfig(
+  configOverride: unknown,
+): string | null {
+  const root = asObject(configOverride);
+  const adaptive = asObject(root?.adaptive);
+  const snapshotId = String(adaptive?.snapshotId || "").trim();
+  return snapshotId || null;
+}
+
+function resolveAdaptiveConfigOverride(params: {
+  entrySessionProfile: ScalpEntrySessionProfile;
+  existingConfigOverride: Record<string, unknown> | null | undefined;
+  snapshot: ScalpAdaptiveSelectorSnapshotRecord;
+}): Record<string, unknown> {
+  const root = params.existingConfigOverride
+    ? (JSON.parse(
+        JSON.stringify(params.existingConfigOverride),
+      ) as Record<string, unknown>)
+    : {};
+  const sessions = asObject(root.sessions) || {};
+  sessions.entrySessionProfile = params.entrySessionProfile;
+  root.sessions = sessions;
+
+  const adaptive = asObject(root.adaptive) || {};
+  adaptive.snapshotId = params.snapshot.snapshotId;
+  adaptive.incumbentArm = params.snapshot.catalog?.incumbentArm || null;
+  adaptive.thresholds = {
+    ...(asObject(adaptive.thresholds) || {}),
+    minConfidence: Number.isFinite(
+      Number(params.snapshot.catalog?.minConfidence),
+    )
+      ? Number(params.snapshot.catalog?.minConfidence)
+      : null,
+  };
+  adaptive.catalog = params.snapshot.catalog || null;
+  root.adaptive = adaptive;
+  return root;
+}
+
+function extractForwardExpectancyR(
+  forward: ScalpForwardValidationMetrics | null | undefined,
+): number | null {
+  if (!forward) return null;
+  const weekly = Number(forward.weeklyMeanExpectancyR);
+  if (Number.isFinite(weekly)) return weekly;
+  const fallback = Number(forward.meanExpectancyR);
+  return Number.isFinite(fallback) ? fallback : null;
+}
+
+function extractForwardMaxDrawdownR(
+  forward: ScalpForwardValidationMetrics | null | undefined,
+): number | null {
+  if (!forward) return null;
+  const dd = Number(forward.maxDrawdownR);
+  return Number.isFinite(dd) ? dd : null;
+}
+
+function snapshotIsRetrainDue(params: {
+  latestSnapshot: ScalpAdaptiveSelectorSnapshotRecord | null;
+  cadenceWeeks: number;
+  targetWindowToTs: number;
+}): boolean {
+  const cadenceWeeks = Math.max(1, Math.floor(params.cadenceWeeks));
+  if (!params.latestSnapshot) return true;
+  if (params.targetWindowToTs <= params.latestSnapshot.windowToTs) return false;
+  return (
+    params.targetWindowToTs - params.latestSnapshot.windowToTs >=
+    cadenceWeeks * ONE_WEEK_MS
+  );
 }
 
 function normalizedStagedHalving(
@@ -2150,6 +2341,454 @@ function resolveWorkerReplayProgressMinIntervalMs(): number {
       ),
     ),
   );
+}
+
+export function shouldBreakAdaptivePromotionLock(params: {
+  latestWeeklyNetR?: number | null;
+  latestWeeklyMaxDrawdownR?: number | null;
+  baselineMaxDrawdownR?: number | null;
+}): boolean {
+  const latestNetR = Number(params.latestWeeklyNetR);
+  if (Number.isFinite(latestNetR) && latestNetR <= -1.5) return true;
+  const latestMaxDrawdownR = Number(params.latestWeeklyMaxDrawdownR);
+  if (!Number.isFinite(latestMaxDrawdownR)) return false;
+  const baselineMaxDrawdownR = Number(params.baselineMaxDrawdownR);
+  const breachThreshold = Number.isFinite(baselineMaxDrawdownR)
+    ? Math.max(1.5, 1.25 * baselineMaxDrawdownR)
+    : 1.5;
+  return latestMaxDrawdownR >= breachThreshold;
+}
+
+export function evaluateAdaptivePromotionDelta(params: {
+  candidateExpectancyR?: number | null;
+  incumbentExpectancyR?: number | null;
+  candidateMaxDrawdownR?: number | null;
+  incumbentMaxDrawdownR?: number | null;
+  minExpectancyDeltaR: number;
+}): { passed: boolean; reason: string | null } {
+  const candidateExpectancyR = Number(params.candidateExpectancyR);
+  const incumbentExpectancyR = Number(params.incumbentExpectancyR);
+  if (!Number.isFinite(candidateExpectancyR) || !Number.isFinite(incumbentExpectancyR)) {
+    return { passed: false, reason: "adaptive_incumbent_benchmark_missing" };
+  }
+  const minExpectancyDeltaR = Number.isFinite(params.minExpectancyDeltaR)
+    ? Number(params.minExpectancyDeltaR)
+    : 0.02;
+  if (candidateExpectancyR < incumbentExpectancyR + minExpectancyDeltaR) {
+    return { passed: false, reason: "adaptive_expectancy_delta_not_met" };
+  }
+  const candidateMaxDrawdownR = Number(params.candidateMaxDrawdownR);
+  const incumbentMaxDrawdownR = Number(params.incumbentMaxDrawdownR);
+  if (
+    Number.isFinite(candidateMaxDrawdownR) &&
+    Number.isFinite(incumbentMaxDrawdownR) &&
+    candidateMaxDrawdownR > incumbentMaxDrawdownR
+  ) {
+    return { passed: false, reason: "adaptive_drawdown_worse_than_incumbent" };
+  }
+  return { passed: true, reason: null };
+}
+
+async function resolveAdaptivePilotSymbols(params: {
+  nowMs: number;
+  pilotSize: number;
+  pilotRotateWeeks: number;
+}): Promise<{
+  pilotSymbols: string[];
+  scores: AdaptivePilotSymbolScore[];
+  freezeAnchorWeekStartMs: number;
+  windowFromTs: number;
+  windowToTs: number;
+}> {
+  const pilotSize = Math.max(1, Math.min(100, Math.floor(params.pilotSize)));
+  const pilotWindow = resolveAdaptivePilotSelectionWindow({
+    nowMs: params.nowMs,
+    rotateWeeks: params.pilotRotateWeeks,
+  });
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<
+    Array<{
+      symbol: string;
+      weeksCovered: number | null;
+      completionTotal: number | null;
+      completionSucceeded: number | null;
+      guardrailTotal: number | null;
+      guardrailPassed: number | null;
+    }>
+  >(sql`
+    WITH in_universe AS (
+      SELECT DISTINCT symbol
+      FROM scalp_deployments
+      WHERE in_universe = TRUE
+    ),
+    coverage AS (
+      SELECT
+        s.symbol,
+        COALESCE(s.weeks_covered, 0)::int AS "weeksCovered"
+      FROM scalp_discovered_symbols s
+      INNER JOIN in_universe u
+        ON u.symbol = s.symbol
+    ),
+    completion AS (
+      SELECT
+        m.symbol,
+        COUNT(*)::int AS "completionTotal",
+        COUNT(*) FILTER (WHERE m.status = 'succeeded')::int AS "completionSucceeded"
+      FROM scalp_deployment_weekly_metrics m
+      INNER JOIN in_universe u
+        ON u.symbol = m.symbol
+      WHERE m.week_start >= ${new Date(pilotWindow.windowFromTs)}
+        AND m.week_start < ${new Date(pilotWindow.windowToTs)}
+      GROUP BY m.symbol
+    ),
+    guardrails AS (
+      SELECT
+        d.symbol,
+        COUNT(*)::int AS "guardrailTotal",
+        COUNT(*) FILTER (WHERE COALESCE((d.promotion_gate->>'eligible')::boolean, FALSE) = TRUE)::int AS "guardrailPassed"
+      FROM scalp_deployments d
+      INNER JOIN in_universe u
+        ON u.symbol = d.symbol
+      GROUP BY d.symbol
+    )
+    SELECT
+      u.symbol,
+      c."weeksCovered",
+      comp."completionTotal",
+      comp."completionSucceeded",
+      g."guardrailTotal",
+      g."guardrailPassed"
+    FROM in_universe u
+    LEFT JOIN coverage c
+      ON c.symbol = u.symbol
+    LEFT JOIN completion comp
+      ON comp.symbol = u.symbol
+    LEFT JOIN guardrails g
+      ON g.symbol = u.symbol
+    ORDER BY u.symbol ASC;
+  `);
+  const scores: AdaptivePilotSymbolScore[] = rows
+    .map((row) => {
+      const symbol = normalizeSymbol(row.symbol);
+      if (!symbol) return null;
+      const coverageWeeks = Math.max(0, Math.floor(Number(row.weeksCovered) || 0));
+      const completionTotal = Math.max(
+        0,
+        Math.floor(Number(row.completionTotal) || 0),
+      );
+      const completionSucceeded = Math.max(
+        0,
+        Math.floor(Number(row.completionSucceeded) || 0),
+      );
+      const guardrailTotal = Math.max(0, Math.floor(Number(row.guardrailTotal) || 0));
+      const guardrailPassed = Math.max(0, Math.floor(Number(row.guardrailPassed) || 0));
+      const coveragePct = Math.max(0, Math.min(100, (coverageWeeks / 12) * 100));
+      const weeklyCompletionPct =
+        completionTotal > 0 ? (completionSucceeded / completionTotal) * 100 : 0;
+      const guardrailPassPct =
+        guardrailTotal > 0 ? (guardrailPassed / guardrailTotal) * 100 : 0;
+      const compositeScore =
+        0.6 * coveragePct +
+        0.3 * weeklyCompletionPct +
+        0.1 * guardrailPassPct;
+      return {
+        symbol,
+        coveragePct,
+        weeklyCompletionPct,
+        guardrailPassPct,
+        compositeScore,
+      } satisfies AdaptivePilotSymbolScore;
+    })
+    .filter((row): row is AdaptivePilotSymbolScore => Boolean(row))
+    .sort((a, b) => {
+      if (b.compositeScore !== a.compositeScore) return b.compositeScore - a.compositeScore;
+      if (b.coveragePct !== a.coveragePct) return b.coveragePct - a.coveragePct;
+      if (b.weeklyCompletionPct !== a.weeklyCompletionPct) {
+        return b.weeklyCompletionPct - a.weeklyCompletionPct;
+      }
+      if (b.guardrailPassPct !== a.guardrailPassPct) return b.guardrailPassPct - a.guardrailPassPct;
+      return a.symbol.localeCompare(b.symbol);
+    });
+  return {
+    pilotSymbols: scores.slice(0, pilotSize).map((row) => row.symbol),
+    scores,
+    freezeAnchorWeekStartMs: pilotWindow.freezeAnchorWeekStartMs,
+    windowFromTs: pilotWindow.windowFromTs,
+    windowToTs: pilotWindow.windowToTs,
+  };
+}
+
+async function resolveAdaptiveIncumbentStrategyId(params: {
+  symbol: string;
+  entrySessionProfile: ScalpEntrySessionProfile;
+}): Promise<string> {
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{ strategyId: string }>>(sql`
+    SELECT strategy_id AS "strategyId"
+    FROM scalp_deployments
+    WHERE symbol = ${params.symbol}
+      AND entry_session_profile = ${params.entrySessionProfile}
+      AND enabled = TRUE
+      AND strategy_id <> ${ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID}
+    ORDER BY updated_at DESC, strategy_id ASC;
+  `);
+  let fallback: string | null = null;
+  for (const row of rows) {
+    const strategyId = String(row.strategyId || "").trim().toLowerCase();
+    if (!strategyId) continue;
+    const preferred = getScalpStrategyPreferredTimeframes(strategyId);
+    if (preferred?.asiaBaseTf === "M15" && preferred.confirmTf === "M3") {
+      return strategyId;
+    }
+    if (!fallback) fallback = strategyId;
+  }
+  return fallback || getDefaultScalpStrategy().id;
+}
+
+async function runAdaptivePreparePass(params: {
+  nowMs: number;
+  entrySessionProfile: ScalpEntrySessionProfile;
+  requiredWeeks: number;
+  refreshRecentWeeks: number;
+}): Promise<{
+  enabled: boolean;
+  pilotSymbols: string[];
+  pilotScores: AdaptivePilotSymbolScore[];
+  pilotSelectionWindow: { freezeAnchorWeekStartMs: number; windowFromTs: number; windowToTs: number };
+  snapshotsTrained: number;
+  candidateDeploymentsPrepared: number;
+  queuedWeeklyRows: number;
+  trainingRowsBySymbol: Record<string, number>;
+}> {
+  const adaptiveCfg = resolveScalpAdaptiveRuntimeConfig();
+  if (!adaptiveCfg.enabled) {
+    return {
+      enabled: false,
+      pilotSymbols: [],
+      pilotScores: [],
+      pilotSelectionWindow: {
+        freezeAnchorWeekStartMs: 0,
+        windowFromTs: 0,
+        windowToTs: 0,
+      },
+      snapshotsTrained: 0,
+      candidateDeploymentsPrepared: 0,
+      queuedWeeklyRows: 0,
+      trainingRowsBySymbol: {},
+    };
+  }
+
+  const pilot = await resolveAdaptivePilotSymbols({
+    nowMs: params.nowMs,
+    pilotSize: adaptiveCfg.pilotSize,
+    pilotRotateWeeks: adaptiveCfg.pilotRotateWeeks,
+  });
+  if (!pilot.pilotSymbols.length) {
+    return {
+      enabled: true,
+      pilotSymbols: [],
+      pilotScores: pilot.scores,
+      pilotSelectionWindow: {
+        freezeAnchorWeekStartMs: pilot.freezeAnchorWeekStartMs,
+        windowFromTs: pilot.windowFromTs,
+        windowToTs: pilot.windowToTs,
+      },
+      snapshotsTrained: 0,
+      candidateDeploymentsPrepared: 0,
+      queuedWeeklyRows: 0,
+      trainingRowsBySymbol: {},
+    };
+  }
+
+  const trainingWindow = resolveAdaptiveTrainingWindow(params.nowMs);
+  const localRowsBySymbol = new Map<string, ReturnType<typeof buildAdaptiveTrainingRowsFromMinuteCandles>>();
+  const allRowsBySymbol = new Map<string, ReturnType<typeof buildAdaptiveTrainingRowsFromMinuteCandles>>();
+  const sessionRowsAll: ReturnType<typeof buildAdaptiveTrainingRowsFromMinuteCandles> = [];
+  const globalRowsAll: ReturnType<typeof buildAdaptiveTrainingRowsFromMinuteCandles> = [];
+  const trainingRowsBySymbol: Record<string, number> = {};
+  for (const symbol of pilot.pilotSymbols) {
+    try {
+      const history = await loadScalpCandleHistoryInRange(
+        symbol,
+        "1m",
+        trainingWindow.windowFromTs,
+        trainingWindow.windowToTs,
+      );
+      const candles = history.record?.candles || [];
+      const allRows = buildAdaptiveTrainingRowsFromMinuteCandles({
+        candles1m: candles,
+        symbol,
+        entrySessionProfile: params.entrySessionProfile,
+        lookaheadBars: adaptiveCfg.lookaheadBars,
+      });
+      const localRows = allRows.filter((row) =>
+        inScalpEntrySessionProfileWindow(row.tsMs, params.entrySessionProfile),
+      );
+      allRowsBySymbol.set(symbol, allRows);
+      localRowsBySymbol.set(symbol, localRows);
+      trainingRowsBySymbol[symbol] = localRows.length;
+      sessionRowsAll.push(...localRows);
+      globalRowsAll.push(...allRows);
+    } catch {
+      trainingRowsBySymbol[symbol] = 0;
+    }
+  }
+
+  let snapshotsTrained = 0;
+  let candidateDeploymentsPrepared = 0;
+  let queuedWeeklyRows = 0;
+  const db = scalpPrisma();
+  for (const symbol of pilot.pilotSymbols) {
+    try {
+      const latestSnapshots = await listScalpAdaptiveSelectorSnapshots({
+        symbol,
+        entrySessionProfile: params.entrySessionProfile,
+        strategyId: ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID,
+        status: "all",
+        limit: 12,
+      });
+      const latestSnapshot = latestSnapshots[0] || null;
+      const due = snapshotIsRetrainDue({
+        latestSnapshot,
+        cadenceWeeks: adaptiveCfg.retrainCadenceWeeks,
+        targetWindowToTs: trainingWindow.windowToTs,
+      });
+
+      let selectedSnapshot = latestSnapshot;
+      if (due) {
+        const incumbentStrategyId = await resolveAdaptiveIncumbentStrategyId({
+          symbol,
+          entrySessionProfile: params.entrySessionProfile,
+        });
+        const generatedAtMs = params.nowMs;
+        const buildOut = buildAdaptiveSnapshotCatalog({
+          localRows: localRowsBySymbol.get(symbol) || [],
+          sessionRows: sessionRowsAll,
+          globalRows: globalRowsAll,
+          incumbentStrategyId,
+          generatedAtMs,
+        });
+        const snapshotId = normalizeScalpTuneId(
+          `adaptive_${symbol.toLowerCase()}_${params.entrySessionProfile}_${trainingWindow.windowToTs}`,
+          `adaptive_${params.entrySessionProfile}_${trainingWindow.windowToTs}`,
+        );
+        await upsertScalpAdaptiveSelectorSnapshotsBulk([
+          {
+            snapshotId,
+            symbol,
+            entrySessionProfile: params.entrySessionProfile,
+            strategyId: ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID,
+            status: "shadow",
+            trainedAtMs: generatedAtMs,
+            windowFromTs: trainingWindow.windowFromTs,
+            windowToTs: trainingWindow.windowToTs,
+            catalog: buildOut.catalog,
+            metrics: buildOut.metrics,
+            updatedBy: "pipeline:prepare:adaptive",
+          },
+        ]);
+        selectedSnapshot = {
+          snapshotId,
+          symbol,
+          entrySessionProfile: params.entrySessionProfile,
+          strategyId: ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID,
+          status: "shadow",
+          trainedAtMs: generatedAtMs,
+          windowFromTs: trainingWindow.windowFromTs,
+          windowToTs: trainingWindow.windowToTs,
+          catalog: buildOut.catalog,
+          metrics: buildOut.metrics,
+          lockStartedAtMs: null,
+          lockUntilMs: null,
+          baselineMaxDrawdownR: null,
+          updatedBy: "pipeline:prepare:adaptive",
+          createdAtMs: generatedAtMs,
+          updatedAtMs: generatedAtMs,
+        } satisfies ScalpAdaptiveSelectorSnapshotRecord;
+        snapshotsTrained += 1;
+      }
+
+      if (!selectedSnapshot) continue;
+      const tuneId = resolveAdaptiveTuneId({
+        windowToTs: selectedSnapshot.windowToTs,
+        entrySessionProfile: params.entrySessionProfile,
+      });
+      const symbolVenue = await resolvePipelineDeploymentVenue(symbol);
+      const deployment = resolveScalpDeployment({
+        venue: symbolVenue,
+        symbol,
+        strategyId: ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID,
+        tuneId,
+      });
+      const existingRows = await db.$queryRaw<
+        Array<{ configOverride: unknown; enabled: boolean }>
+      >(sql`
+        SELECT
+          config_override AS "configOverride",
+          enabled
+        FROM scalp_deployments
+        WHERE deployment_id = ${deployment.deploymentId}
+        LIMIT 1;
+      `);
+      const existingConfigOverride = asObject(existingRows[0]?.configOverride);
+      const existingEnabled = Boolean(existingRows[0]?.enabled);
+      const configOverride = resolveAdaptiveConfigOverride({
+        entrySessionProfile: params.entrySessionProfile,
+        existingConfigOverride,
+        snapshot: selectedSnapshot,
+      });
+      await upsertScalpDeploymentRegistryEntriesBulk([
+        {
+          deploymentId: deployment.deploymentId,
+          symbol,
+          strategyId: deployment.strategyId,
+          tuneId: deployment.tuneId,
+          source: "matrix",
+          enabled: existingEnabled,
+          configOverride,
+          entrySessionProfile: params.entrySessionProfile,
+          updatedBy: "pipeline:prepare:adaptive",
+        },
+      ]);
+      await db.$executeRaw(sql`
+        UPDATE scalp_deployments
+        SET
+          worker_dirty = TRUE,
+          updated_by = 'pipeline:prepare:adaptive',
+          last_prepared_at = NOW(),
+          updated_at = NOW()
+        WHERE deployment_id = ${deployment.deploymentId};
+      `);
+      queuedWeeklyRows += await upsertWeeklyQueueRowsForDeployment({
+        deploymentId: deployment.deploymentId,
+        symbol: deployment.symbol,
+        strategyId: deployment.strategyId,
+        tuneId: deployment.tuneId,
+        entrySessionProfile: params.entrySessionProfile,
+        nowMs: params.nowMs,
+        requiredWeeks: params.requiredWeeks,
+        refreshRecentWeeks: params.refreshRecentWeeks,
+      });
+      candidateDeploymentsPrepared += 1;
+    } catch {
+      continue;
+    }
+  }
+
+  return {
+    enabled: true,
+    pilotSymbols: pilot.pilotSymbols,
+    pilotScores: pilot.scores,
+    pilotSelectionWindow: {
+      freezeAnchorWeekStartMs: pilot.freezeAnchorWeekStartMs,
+      windowFromTs: pilot.windowFromTs,
+      windowToTs: pilot.windowToTs,
+    },
+    snapshotsTrained,
+    candidateDeploymentsPrepared,
+    queuedWeeklyRows,
+    trainingRowsBySymbol,
+  };
 }
 
 class WorkerRowTimeoutError extends Error {
@@ -4490,10 +5129,13 @@ export async function runPreparePipelineJob(
       : newVariantsPerStrategy;
 
     const strategyIds = listScalpStrategies().map((row) => row.id);
+    const coreStrategyIds = strategyIds.filter(
+      (row) => !isAdaptiveStrategyId(row),
+    );
     const claimed = await claimPrepareSymbols(
       batchSize,
       entrySessionProfile,
-      strategyIds,
+      coreStrategyIds,
     );
     const activeSymbols = await countActivePipelineSymbols();
     const db = scalpPrisma();
@@ -4507,6 +5149,16 @@ export async function runPreparePipelineJob(
     let stagedHalvingPersisted = 0;
     let stagedPrunedSkipped = 0;
     let stagedEpochReopened = 0;
+    let adaptiveSnapshotsTrained = 0;
+    let adaptiveCandidateDeploymentsPrepared = 0;
+    let adaptivePilotSymbols: string[] = [];
+    let adaptivePilotScores: AdaptivePilotSymbolScore[] = [];
+    let adaptivePilotSelectionWindow: {
+      freezeAnchorWeekStartMs: number;
+      windowFromTs: number;
+      windowToTs: number;
+    } | null = null;
+    let adaptiveTrainingRowsBySymbol: Record<string, number> = {};
 
     for (let idx = 0; idx < claimed.length; idx += 1) {
       const row = claimed[idx]!;
@@ -4558,7 +5210,7 @@ export async function runPreparePipelineJob(
         continue;
       }
       try {
-        const selectedStrategies = strategyIds;
+        const selectedStrategies = coreStrategyIds;
         const symbolVenue = await resolvePipelineDeploymentVenue(symbol);
         const existingDeployments = await db.$queryRaw<
           Array<{
@@ -4946,9 +5598,26 @@ export async function runPreparePipelineJob(
       });
     }
 
+    const adaptivePrepare = await runAdaptivePreparePass({
+      nowMs,
+      entrySessionProfile,
+      requiredWeeks,
+      refreshRecentWeeks,
+    });
+    if (adaptivePrepare.enabled) {
+      adaptiveSnapshotsTrained = adaptivePrepare.snapshotsTrained;
+      adaptiveCandidateDeploymentsPrepared =
+        adaptivePrepare.candidateDeploymentsPrepared;
+      adaptivePilotSymbols = adaptivePrepare.pilotSymbols;
+      adaptivePilotScores = adaptivePrepare.pilotScores;
+      adaptivePilotSelectionWindow = adaptivePrepare.pilotSelectionWindow;
+      adaptiveTrainingRowsBySymbol = adaptivePrepare.trainingRowsBySymbol;
+      queuedWeeklyRows += adaptivePrepare.queuedWeeklyRows;
+    }
+
     const pendingAfter = await countPendingPrepareSymbols(
       entrySessionProfile,
-      strategyIds,
+      coreStrategyIds,
     );
     return {
       ok: true,
@@ -4987,6 +5656,16 @@ export async function runPreparePipelineJob(
         stagedPrunedSkipped,
         stagedEpochReopened,
         stagedEpochWeekStartMs: epochWeekStartMs,
+        adaptiveEnabled: adaptivePrepare.enabled,
+        adaptivePilotSymbols,
+        adaptivePilotScores: adaptivePilotScores.slice(
+          0,
+          Math.max(0, adaptivePilotSymbols.length),
+        ),
+        adaptivePilotSelectionWindow,
+        adaptiveSnapshotsTrained,
+        adaptiveCandidateDeploymentsPrepared,
+        adaptiveTrainingRowsBySymbol,
       },
     };
     },
@@ -5413,6 +6092,7 @@ export async function runPromotionPipelineJob(
       Math.min(600, toPositiveInt(params.batchSize, 200)),
     );
     const stagedEval = resolveStagedEvalConfig();
+    const adaptiveCfg = resolveScalpAdaptiveRuntimeConfig();
     const policy = resolveWeeklyPolicyDefaults();
     const explorationShare = resolvePromotionExplorationShare();
     const maxLoadNudgeSymbols = resolvePromotionLoadNudgeMaxSymbols();
@@ -5598,6 +6278,9 @@ export async function runPromotionPipelineJob(
     const consideredByDeploymentId = new Map(
       consideredDeployments.map((row) => [row.deploymentId, row]),
     );
+    const deploymentById = new Map(
+      allDeployments.map((row) => [row.deploymentId, row]),
+    );
     const consideredIds = consideredDeployments.map((row) => row.deploymentId);
     if (!consideredIds.length) {
       return {
@@ -5615,6 +6298,43 @@ export async function runPromotionPipelineJob(
           stagedCutover,
         },
       };
+    }
+
+    const adaptiveActiveSnapshotsBySymbolSession = new Map<
+      string,
+      ScalpAdaptiveSelectorSnapshotRecord
+    >();
+    if (adaptiveCfg.enabled) {
+      const activeSnapshots = await listScalpAdaptiveSelectorSnapshots({
+        strategyId: ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID,
+        status: "active",
+        limit: 2000,
+      });
+      for (const snapshot of activeSnapshots) {
+        const key = `${snapshot.symbol}::${snapshot.entrySessionProfile}`;
+        const current =
+          adaptiveActiveSnapshotsBySymbolSession.get(key) || null;
+        if (!current || snapshot.trainedAtMs > current.trainedAtMs) {
+          adaptiveActiveSnapshotsBySymbolSession.set(key, snapshot);
+        }
+      }
+    }
+    const enabledDeploymentBySymbolSessionStrategy = new Map<
+      string,
+      ScalpDeploymentRegistryEntry
+    >();
+    for (const deployment of allDeployments) {
+      const rowState = deploymentStateByDeploymentId.get(deployment.deploymentId);
+      const currentlyEnabled = Boolean(rowState?.enabled ?? deployment.enabled);
+      if (!currentlyEnabled) continue;
+      const entrySessionProfile = normalizeEntrySessionProfileInput(
+        rowState?.entrySessionProfile,
+      );
+      const key = `${deployment.symbol}::${entrySessionProfile}::${deployment.strategyId}`;
+      const current = enabledDeploymentBySymbolSessionStrategy.get(key) || null;
+      if (!current || deployment.updatedAtMs > current.updatedAtMs) {
+        enabledDeploymentBySymbolSessionStrategy.set(key, deployment);
+      }
     }
 
     const entrySessionProfileByDeploymentId = new Map<
@@ -5792,6 +6512,19 @@ export async function runPromotionPipelineJob(
         },
       });
       tasksByDeploymentId.set(row.deploymentId, bucket);
+    }
+    const latestWeeklyMetricsByDeploymentId = new Map<
+      string,
+      { netR: number | null; maxDrawdownR: number | null; windowFromTs: number }
+    >();
+    for (const [deploymentId, tasks] of tasksByDeploymentId.entries()) {
+      if (!tasks.length) continue;
+      const latest = tasks[tasks.length - 1] as any;
+      latestWeeklyMetricsByDeploymentId.set(deploymentId, {
+        netR: asNullableFiniteNumber(latest?.result?.netR),
+        maxDrawdownR: asNullableFiniteNumber(latest?.result?.maxDrawdownR),
+        windowFromTs: Math.max(0, Math.floor(Number(latest?.windowFromTs) || 0)),
+      });
     }
 
     const freshReadyTasks: any[] = [];
@@ -6153,6 +6886,63 @@ export async function runPromotionPipelineJob(
       candidate.forwardValidation.weeklyEvaluatedAtMs = nowMs;
     }
 
+    const adaptiveLockStateBySymbolSession = new Map<
+      string,
+      {
+        activeDeploymentId: string;
+        adaptiveSnapshotId: string | null;
+        lockUntilMs: number | null;
+        baselineMaxDrawdownR: number | null;
+        lockBreached: boolean;
+        locked: boolean;
+      }
+    >();
+    if (adaptiveCfg.enabled) {
+      for (const [key, deployment] of enabledDeploymentBySymbolSessionStrategy.entries()) {
+        if (!isAdaptiveStrategyId(deployment.strategyId)) continue;
+        const snapshotIdFromConfig = asAdaptiveSnapshotIdFromConfig(
+          deployment.configOverride,
+        );
+        const [symbol, entrySessionProfile] = key.split("::");
+        const snapshot =
+          adaptiveActiveSnapshotsBySymbolSession.get(
+            `${symbol}::${entrySessionProfile}`,
+          ) || null;
+        const latestWeekly = latestWeeklyMetricsByDeploymentId.get(
+          deployment.deploymentId,
+        ) || {
+          netR: null,
+          maxDrawdownR: null,
+          windowFromTs: 0,
+        };
+        const baselineMaxDrawdownR = Number.isFinite(
+          Number(snapshot?.baselineMaxDrawdownR),
+        )
+          ? Number(snapshot?.baselineMaxDrawdownR)
+          : null;
+        const lockBreached = shouldBreakAdaptivePromotionLock({
+          latestWeeklyNetR: latestWeekly.netR,
+          latestWeeklyMaxDrawdownR: latestWeekly.maxDrawdownR,
+          baselineMaxDrawdownR,
+        });
+        const lockUntilMs = Number.isFinite(Number(snapshot?.lockUntilMs))
+          ? Number(snapshot?.lockUntilMs)
+          : null;
+        const locked = Boolean(lockUntilMs && lockUntilMs > nowMs && !lockBreached);
+        adaptiveLockStateBySymbolSession.set(
+          `${symbol}::${entrySessionProfile}`,
+          {
+            activeDeploymentId: deployment.deploymentId,
+            adaptiveSnapshotId: snapshotIdFromConfig || snapshot?.snapshotId || null,
+            lockUntilMs,
+            baselineMaxDrawdownR,
+            lockBreached,
+            locked,
+          },
+        );
+      }
+    }
+
     const tempDeploymentsForWinners = consideredDeployments.map(
       (deployment) => {
         const key = `${deployment.symbol}::${deployment.strategyId}::${deployment.tuneId}`;
@@ -6195,6 +6985,60 @@ export async function runPromotionPipelineJob(
               missingWeekStarts: freshness.missingWeekStarts || [],
             }
           : null;
+        const entrySessionProfile =
+          entrySessionProfileByDeploymentId.get(deployment.deploymentId) ||
+          normalizeEntrySessionProfileInput(
+            deploymentStateByDeploymentId.get(deployment.deploymentId)
+              ?.entrySessionProfile,
+          );
+        let adaptiveFailReason: string | null = null;
+        if (adaptiveCfg.enabled && isAdaptiveStrategyId(deployment.strategyId)) {
+          const symbolSessionKey = `${deployment.symbol}::${entrySessionProfile}`;
+          const lockState =
+            adaptiveLockStateBySymbolSession.get(symbolSessionKey) || null;
+          if (
+            lockState?.locked &&
+            lockState.activeDeploymentId !== deployment.deploymentId
+          ) {
+            adaptiveFailReason = "adaptive_lock_active";
+          } else if (!currentlyEnabled) {
+            const adaptiveConfig = asObject(deployment.configOverride);
+            const incumbentArm = asObject(
+              asObject(adaptiveConfig?.adaptive)?.incumbentArm,
+            );
+            const incumbentStrategyId =
+              String(incumbentArm?.strategyId || "").trim().toLowerCase() ||
+              getDefaultScalpStrategy().id;
+            const incumbentDeployment =
+              enabledDeploymentBySymbolSessionStrategy.get(
+                `${deployment.symbol}::${entrySessionProfile}::${incumbentStrategyId}`,
+              ) || null;
+            const incumbentCandidate =
+              incumbentDeployment
+                ? candidateByKey.get(
+                    `${incumbentDeployment.symbol}::${incumbentDeployment.strategyId}::${incumbentDeployment.tuneId}`,
+                  ) || null
+                : null;
+            const incumbentForward =
+              incumbentCandidate?.forwardValidation ||
+              incumbentDeployment?.promotionGate?.forwardValidation ||
+              null;
+            const candidateForward =
+              candidate?.forwardValidation ||
+              deployment.promotionGate?.forwardValidation ||
+              null;
+            const deltaCheck = evaluateAdaptivePromotionDelta({
+              candidateExpectancyR: extractForwardExpectancyR(candidateForward),
+              incumbentExpectancyR: extractForwardExpectancyR(incumbentForward),
+              candidateMaxDrawdownR: extractForwardMaxDrawdownR(candidateForward),
+              incumbentMaxDrawdownR: extractForwardMaxDrawdownR(incumbentForward),
+              minExpectancyDeltaR: adaptiveCfg.minExpectancyDeltaR,
+            });
+            if (!deltaCheck.passed) {
+              adaptiveFailReason = deltaCheck.reason || "adaptive_delta_gate_failed";
+            }
+          }
+        }
         const weeklyFailReason = canEnterFinalGate
           ? weeklyGateReasonByKey.get(key) || null
           : null;
@@ -6203,7 +7047,8 @@ export async function runPromotionPipelineJob(
             !suppressed &&
             candidate &&
             freshness?.ready &&
-            !weeklyFailReason,
+            !weeklyFailReason &&
+            !adaptiveFailReason,
         );
         return {
           deploymentId: deployment.deploymentId,
@@ -6221,6 +7066,8 @@ export async function runPromotionPipelineJob(
                   : "suspended_cooldown"
               : !canEnterFinalGate
                 ? stagedPendingReasonForStage(stage)
+              : adaptiveFailReason
+                ? adaptiveFailReason
               : weeklyFailReason ||
                 (!freshness?.ready
                   ? "fresh_weeks_incomplete"
@@ -6292,6 +7139,9 @@ export async function runPromotionPipelineJob(
       freshnessLocked: boolean;
       shortlistIncluded: boolean;
       forcedGraduatedNoSeat: boolean;
+      entrySessionProfile: ScalpEntrySessionProfile;
+      adaptiveLockState: AdaptivePromotionConstraint | null;
+      hysteresisTransition: "enabled" | "disabled" | "held" | null;
     }
 
     let enabledByHysteresis = 0;
@@ -6300,6 +7150,8 @@ export async function runPromotionPipelineJob(
     let suspendedExact = 0;
     let suspendedNeighbors = 0;
     let retiredCount = 0;
+    let adaptiveActivations = 0;
+    let adaptiveLockBreaks = 0;
     const drafts: PromotionUpdateDraft[] = consideredDeployments.map((deployment) => {
       const key = `${deployment.symbol}::${deployment.strategyId}::${deployment.tuneId}`;
       const candidate = candidateByKey.get(key) || null;
@@ -6339,6 +7191,68 @@ export async function runPromotionPipelineJob(
         };
       }
       const suppressed = lifecycleIsSuppressed(lifecycle, nowMs);
+      const entrySessionProfile =
+        entrySessionProfileByDeploymentId.get(deployment.deploymentId) ||
+        normalizeEntrySessionProfileInput(rowState?.entrySessionProfile);
+      let adaptiveLockState: AdaptivePromotionConstraint | null = null;
+      let adaptiveFailReason: string | null = null;
+      if (adaptiveCfg.enabled && isAdaptiveStrategyId(deployment.strategyId)) {
+        const symbolSessionKey = `${deployment.symbol}::${entrySessionProfile}`;
+        const activeLock =
+          adaptiveLockStateBySymbolSession.get(symbolSessionKey) || null;
+        const adaptiveConfig = asObject(deployment.configOverride);
+        const incumbentArm = asObject(
+          asObject(adaptiveConfig?.adaptive)?.incumbentArm,
+        );
+        const incumbentStrategyId =
+          String(incumbentArm?.strategyId || "").trim().toLowerCase() ||
+          getDefaultScalpStrategy().id;
+        const incumbentDeployment =
+          enabledDeploymentBySymbolSessionStrategy.get(
+            `${deployment.symbol}::${entrySessionProfile}::${incumbentStrategyId}`,
+          ) || null;
+        const incumbentCandidate =
+          incumbentDeployment
+            ? candidateByKey.get(
+                `${incumbentDeployment.symbol}::${incumbentDeployment.strategyId}::${incumbentDeployment.tuneId}`,
+              ) || null
+            : null;
+        const incumbentForward =
+          incumbentCandidate?.forwardValidation ||
+          incumbentDeployment?.promotionGate?.forwardValidation ||
+          null;
+        const candidateForward =
+          candidate?.forwardValidation ||
+          deployment.promotionGate?.forwardValidation ||
+          null;
+        const deltaCheck = evaluateAdaptivePromotionDelta({
+          candidateExpectancyR: extractForwardExpectancyR(candidateForward),
+          incumbentExpectancyR: extractForwardExpectancyR(incumbentForward),
+          candidateMaxDrawdownR: extractForwardMaxDrawdownR(candidateForward),
+          incumbentMaxDrawdownR: extractForwardMaxDrawdownR(incumbentForward),
+          minExpectancyDeltaR: adaptiveCfg.minExpectancyDeltaR,
+        });
+        if (
+          activeLock?.locked &&
+          activeLock.activeDeploymentId !== deployment.deploymentId
+        ) {
+          adaptiveFailReason = "adaptive_lock_active";
+        } else if (!currentlyEnabled && !deltaCheck.passed) {
+          adaptiveFailReason = deltaCheck.reason || "adaptive_delta_gate_failed";
+        }
+        adaptiveLockState = {
+          lockUntilMs: activeLock?.lockUntilMs ?? null,
+          baselineMaxDrawdownR: activeLock?.baselineMaxDrawdownR ?? null,
+          lockBreached: Boolean(activeLock?.lockBreached),
+          locked: Boolean(activeLock?.locked),
+          reason: adaptiveFailReason,
+          incumbentExpectancyR: extractForwardExpectancyR(incumbentForward),
+          incumbentMaxDrawdownR: extractForwardMaxDrawdownR(incumbentForward),
+          candidateExpectancyR: extractForwardExpectancyR(candidateForward),
+          candidateMaxDrawdownR: extractForwardMaxDrawdownR(candidateForward),
+          adaptiveSnapshotId: activeLock?.adaptiveSnapshotId || null,
+        };
+      }
       const weeklyFailReason = canEnterFinalGate
         ? weeklyGateReasonByKey.get(key) || null
         : null;
@@ -6347,7 +7261,8 @@ export async function runPromotionPipelineJob(
           !suppressed &&
           candidate &&
           freshness?.ready &&
-          !weeklyFailReason,
+          !weeklyFailReason &&
+          !adaptiveFailReason,
       );
       const shortlistIncluded = winnerIds.has(deployment.deploymentId);
       const reason = eligible
@@ -6360,6 +7275,8 @@ export async function runPromotionPipelineJob(
             : "suspended_cooldown"
           : !canEnterFinalGate
             ? stagedPendingReasonForStage(stage)
+          : adaptiveFailReason
+            ? adaptiveFailReason
           : weeklyFailReason ||
             (!freshness?.ready
               ? "fresh_weeks_incomplete"
@@ -6380,8 +7297,12 @@ export async function runPromotionPipelineJob(
       };
       const shouldEnableNow = eligible && shortlistIncluded;
       const freshnessLocked = currentlyEnabled && !freshness?.ready;
-      const lockEnabled =
-        currentlyEnabled && freshnessLocked;
+      const adaptiveLockEnabled = Boolean(
+        currentlyEnabled &&
+          adaptiveLockState?.locked &&
+          !adaptiveLockState.lockBreached,
+      );
+      const lockEnabled = currentlyEnabled && (freshnessLocked || adaptiveLockEnabled);
       const hysteresis = applyPromotionHysteresis({
         currentlyEnabled,
         shouldEnableNow,
@@ -6449,6 +7370,9 @@ export async function runPromotionPipelineJob(
         freshnessLocked,
         shortlistIncluded,
         forcedGraduatedNoSeat: false,
+        entrySessionProfile,
+        adaptiveLockState,
+        hysteresisTransition: hysteresis.transition,
       };
     });
 
@@ -6620,6 +7544,45 @@ export async function runPromotionPipelineJob(
       );
     }
 
+    if (adaptiveCfg.enabled) {
+      for (const row of drafts) {
+        if (!isAdaptiveStrategyId(row.entry.strategyId)) continue;
+        const snapshotId =
+          asAdaptiveSnapshotIdFromConfig(row.entry.configOverride) ||
+          row.adaptiveLockState?.adaptiveSnapshotId ||
+          null;
+        const wasEnabled = row.currentlyEnabled;
+        const nowEnabled = row.entry.enabled;
+        if (snapshotId && wasEnabled && row.adaptiveLockState?.lockBreached) {
+          await activateScalpAdaptiveSnapshot({
+            snapshotId,
+            symbol: row.entry.symbol,
+            entrySessionProfile: row.entrySessionProfile,
+            strategyId: row.entry.strategyId,
+            lockUntilMs: nowMs,
+            updatedBy: "pipeline:promotion:adaptive_lock_break",
+          });
+          adaptiveLockBreaks += 1;
+        }
+        if (!snapshotId || wasEnabled || !nowEnabled) continue;
+        const forwardValidation = row.entry.promotionGate?.forwardValidation || null;
+        const baselineMaxDrawdownR = extractForwardMaxDrawdownR(forwardValidation);
+        const lockStartedAtMs = nowMs;
+        const lockUntilMs = nowMs + adaptiveCfg.lockDays * ONE_DAY_MS;
+        await activateScalpAdaptiveSnapshot({
+          snapshotId,
+          symbol: row.entry.symbol,
+          entrySessionProfile: row.entrySessionProfile,
+          strategyId: row.entry.strategyId,
+          lockStartedAtMs,
+          lockUntilMs,
+          baselineMaxDrawdownR,
+          updatedBy: "pipeline:promotion:adaptive_activate",
+        });
+        adaptiveActivations += 1;
+      }
+    }
+
     if (lifecycleSyncRows.length > 0) {
       for (const row of lifecycleSyncRows) {
         await db.$executeRaw(sql`
@@ -6694,6 +7657,8 @@ export async function runPromotionPipelineJob(
         suspendedExact,
         suspendedNeighbors,
         retiredCount,
+        adaptiveActivations,
+        adaptiveLockBreaks,
         weeklyQueueRowsInserted: totalWeeklyQueueRowsInserted,
         stageQueueRowsInsertedBaseline: weeklyQueueRowsInserted,
         stageQueueRowsInsertedTransitions: stagedQueueRowsInserted,
@@ -6748,6 +7713,8 @@ export async function runPromotionPipelineJob(
         suspendedExact,
         suspendedNeighbors,
         retiredCount,
+        adaptiveActivations,
+        adaptiveLockBreaks,
         weeklyQueueRowsInserted: totalWeeklyQueueRowsInserted,
         stageQueueRowsInsertedBaseline: weeklyQueueRowsInserted,
         stageQueueRowsInsertedTransitions: stagedQueueRowsInserted,
@@ -6777,7 +7744,9 @@ export async function loadScalpPipelineJobsHealth(params: {
   const entrySessionProfile = normalizeEntrySessionProfileInput(
     params.entrySessionProfile,
   );
-  const strategyIds = listScalpStrategies().map((row) => row.id);
+  const strategyIds = listScalpStrategies()
+    .map((row) => row.id)
+    .filter((row) => !isAdaptiveStrategyId(row));
   const isBerlinSession = entrySessionProfile === "berlin";
   for (const jobKind of SCALP_PIPELINE_JOB_KINDS) {
     await ensurePipelineJobRow(jobKind, entrySessionProfile);

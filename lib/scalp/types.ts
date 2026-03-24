@@ -255,6 +255,28 @@ export interface ScalpStrategyConfig {
     minConfirmCandles: number;
     maxCandlesPerRequest: number;
   };
+  adaptive?: {
+    enabled: boolean;
+    retrainCadenceWeeks: number;
+    lockDays: number;
+    minExpectancyDeltaR: number;
+    minSupport: number;
+    pilotSize: number;
+    pilotRotateWeeks: number;
+    minConfidence: number;
+    edgeScoreThreshold: number;
+    maxPatternArms: number;
+    lookaheadBars: number;
+    snapshotId?: string | null;
+    incumbentArm?: {
+      strategyId: string;
+      strategyLabel?: string | null;
+    } | null;
+    thresholds?: {
+      minConfidence?: number | null;
+    } | null;
+    catalog?: Record<string, unknown> | null;
+  };
 }
 
 export interface ScalpStateMachineInput {

@@ -1,5 +1,6 @@
 import { compressionBreakoutPullbackM15M3Strategy } from './compressionBreakoutPullbackM15M3';
 import { failedAuctionExtremeReversalM15M1Strategy } from './failedAuctionExtremeReversalM15M1';
+import { adaptiveMetaSelectorM15M3Strategy } from './adaptiveMetaSelectorM15M3';
 import { anchoredVwapReversionM15M3Strategy } from './anchoredVwapReversionM15M3';
 import { basisDislocationReversionProxyM15M3Strategy } from './basisDislocationReversionProxyM15M3';
 import { fundingOiExhaustionProxyM15M3Strategy } from './fundingOiExhaustionProxyM15M3';
@@ -29,6 +30,7 @@ const REGISTRY: Record<string, ScalpStrategyDefinition> = Object.freeze({
     [basisDislocationReversionProxyM15M3Strategy.id]: basisDislocationReversionProxyM15M3Strategy,
     [relativeValueSpreadProxyM15M3Strategy.id]: relativeValueSpreadProxyM15M3Strategy,
     [sessionSeasonalityBiasM15M3Strategy.id]: sessionSeasonalityBiasM15M3Strategy,
+    [adaptiveMetaSelectorM15M3Strategy.id]: adaptiveMetaSelectorM15M3Strategy,
 });
 
 const STRATEGY_ID_ALIASES: Record<string, string> = Object.freeze({

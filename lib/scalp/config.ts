@@ -5,6 +5,7 @@ import type {
     ScalpFvgEntryMode,
     ScalpStrategyConfig,
 } from './types';
+import { resolveScalpAdaptiveRuntimeConfig } from './adaptive/config';
 import { DEFAULT_SCALP_ENTRY_SESSION_PROFILE } from './sessions';
 
 const DEFAULT_SCALP_SYMBOL = 'EURUSD';
@@ -120,6 +121,7 @@ export function normalizeScalpSymbol(value: string | undefined): string {
 
 export function getScalpStrategyConfig(): ScalpStrategyConfig {
     const sessionTtlDays = toPositiveInt(process.env.SCALP_STATE_TTL_DAYS, 3);
+    const adaptive = resolveScalpAdaptiveRuntimeConfig();
     const maxConfiguredLeverage = Math.max(
         1,
         Math.min(50, toPositiveInt(process.env.SCALP_MAX_LEVERAGE, 5)),
@@ -220,6 +222,15 @@ export function getScalpStrategyConfig(): ScalpStrategyConfig {
             minBaseCandles: toPositiveInt(process.env.SCALP_MIN_BASE_CANDLES, 220),
             minConfirmCandles: toPositiveInt(process.env.SCALP_MIN_CONFIRM_CANDLES, 320),
             maxCandlesPerRequest: Math.max(200, Math.min(1000, toPositiveInt(process.env.SCALP_MAX_CANDLES_PER_REQUEST, 1000))),
+        },
+        adaptive: {
+            ...adaptive,
+            snapshotId: null,
+            incumbentArm: null,
+            thresholds: {
+                minConfidence: adaptive.minConfidence,
+            },
+            catalog: null,
         },
     };
 }
