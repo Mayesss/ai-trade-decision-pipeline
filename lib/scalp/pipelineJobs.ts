@@ -2139,20 +2139,25 @@ async function countPendingWorkerRows(
   return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
 }
 
-async function countPendingPromotionRows(): Promise<number> {
+async function countPendingPromotionRows(
+  entrySessionProfile?: ScalpEntrySessionProfile,
+): Promise<number> {
   const nowMs = Date.now();
   const epochWeekStartMs = resolveCompletedWeekWindowToUtc(nowMs);
   const stagedEval = resolveStagedEvalConfig();
+  const normalizedEntrySessionProfile = entrySessionProfile
+    ? normalizeEntrySessionProfileInput(entrySessionProfile)
+    : "";
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
     Array<{ count: bigint | number | string }>
   >(sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_deployments
-        WHERE (
-                promotion_dirty = TRUE
-              )
-           OR (
+        WHERE (${normalizedEntrySessionProfile} = '' OR entry_session_profile = ${normalizedEntrySessionProfile})
+          AND (
+               promotion_dirty = TRUE
+            OR (
                 COALESCE((promotion_gate #>> '{lifecycle,state}')::text, '') = 'suspended'
                 AND COALESCE((promotion_gate #>> '{lifecycle,suspendedUntilMs}')::bigint, 0) > 0
                 AND COALESCE((promotion_gate #>> '{lifecycle,suspendedUntilMs}')::bigint, 0) <= ${nowMs}
@@ -2168,7 +2173,7 @@ async function countPendingPromotionRows(): Promise<number> {
                 AND COALESCE((promotion_gate #>> '{halving,mode}')::text, '') = 'staged'
                 AND COALESCE((promotion_gate #>> '{halving,stage}')::text, '') = 'pruned'
                 AND COALESCE((promotion_gate #>> '{halving,epochWeekStartMs}')::bigint, 0) < ${epochWeekStartMs}
-              );
+              ));
     `);
   return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
 }
@@ -6084,13 +6089,18 @@ export async function runWorkerPipelineJob(
 export async function runPromotionPipelineJob(
   params: {
     batchSize?: number;
+    entrySessionProfile?: ScalpEntrySessionProfile;
   } = {},
 ): Promise<ScalpPipelineJobExecutionResult> {
+  const entrySessionProfile = params.entrySessionProfile
+    ? normalizeEntrySessionProfileInput(params.entrySessionProfile)
+    : null;
   return runWithPipelineJobLock("promotion", async ({ lockToken, lockMs }) => {
     const batchSize = Math.max(
       1,
       Math.min(600, toPositiveInt(params.batchSize, 200)),
     );
+    const promotionSessionProfile = entrySessionProfile || "";
     const stagedEval = resolveStagedEvalConfig();
     const adaptiveCfg = resolveScalpAdaptiveRuntimeConfig();
     const policy = resolveWeeklyPolicyDefaults();
@@ -6131,6 +6141,7 @@ export async function runPromotionPipelineJob(
                 tune_id AS "tuneId"
             FROM scalp_deployments
             WHERE enabled = TRUE
+              AND (${promotionSessionProfile} = '' OR entry_session_profile = ${promotionSessionProfile})
               AND COALESCE((promotion_gate #>> '{lifecycle,lastRolloverBerlinWeekStartMs}')::bigint, 0) < ${berlinWeekStartMs}
             ORDER BY updated_at ASC, deployment_id ASC
             LIMIT 5000;
@@ -6179,41 +6190,42 @@ export async function runPromotionPipelineJob(
     >(sql`
             SELECT d.deployment_id AS "deploymentId"
             FROM scalp_deployments d
-            WHERE (
+            WHERE (${promotionSessionProfile} = '' OR d.entry_session_profile = ${promotionSessionProfile})
+              AND (
                     d.promotion_dirty = TRUE
                     OR (
                         d.enabled = TRUE
                         AND COALESCE((d.promotion_gate #>> '{freshness,windowToTs}')::bigint, 0) < ${windowToTs}
                     )
-                  )
-               OR (
+                 OR (
                     COALESCE((d.promotion_gate #>> '{lifecycle,state}')::text, '') = 'suspended'
                     AND COALESCE((d.promotion_gate #>> '{lifecycle,suspendedUntilMs}')::bigint, 0) > 0
                     AND COALESCE((d.promotion_gate #>> '{lifecycle,suspendedUntilMs}')::bigint, 0) <= ${nowMs}
                   )
-               OR (
+                 OR (
                     COALESCE((d.promotion_gate #>> '{lifecycle,state}')::text, '') = 'retired'
                     AND COALESCE((d.promotion_gate #>> '{lifecycle,retiredUntilMs}')::bigint, 0) > 0
                     AND COALESCE((d.promotion_gate #>> '{lifecycle,retiredUntilMs}')::bigint, 0) <= ${nowMs}
                   )
-               OR (
+                 OR (
                     d.enabled = TRUE
                     AND EXISTS (
                         SELECT 1
                         FROM scalp_deployments d2
                         WHERE d2.symbol = d.symbol
                           AND d2.strategy_id = d.strategy_id
+                          AND d2.entry_session_profile = d.entry_session_profile
                           AND d2.enabled = TRUE
                           AND d2.deployment_id <> d.deployment_id
                     )
                   )
-               OR (
+                 OR (
                     ${stagedEval.enabled && stagedEval.reopenOnEpoch}
                     AND d.enabled = FALSE
                     AND COALESCE((d.promotion_gate #>> '{halving,mode}')::text, '') = 'staged'
                     AND COALESCE((d.promotion_gate #>> '{halving,stage}')::text, '') = 'pruned'
                     AND COALESCE((d.promotion_gate #>> '{halving,epochWeekStartMs}')::bigint, 0) < ${windowToTs}
-                  )
+                  ))
             ORDER BY
                 CASE
                     WHEN d.promotion_dirty = TRUE THEN 0
@@ -6244,7 +6256,12 @@ export async function runPromotionPipelineJob(
     }
 
     const dirtySet = new Set(dirtyRows.map((row) => row.deploymentId));
-    const allDeployments = await listScalpDeploymentRegistryEntries();
+    const allDeployments = (await listScalpDeploymentRegistryEntries()).filter(
+      (row) =>
+        !entrySessionProfile ||
+        normalizeEntrySessionProfileInput(row.entrySessionProfile) ===
+          entrySessionProfile,
+    );
     const deploymentStateRows = await db.$queryRaw<
       Array<{
         deploymentId: string;
@@ -6258,7 +6275,8 @@ export async function runPromotionPipelineJob(
                 enabled,
                 entry_session_profile AS "entrySessionProfile",
                 promotion_gate AS "promotionGate"
-            FROM scalp_deployments;
+            FROM scalp_deployments
+            WHERE (${promotionSessionProfile} = '' OR entry_session_profile = ${promotionSessionProfile});
         `);
     const deploymentStateByDeploymentId = new Map(
       deploymentStateRows.map((row) => [row.deploymentId, row]),
@@ -6461,6 +6479,7 @@ export async function runPromotionPipelineJob(
                 gross_loss_r AS "grossLossR"
             FROM scalp_deployment_weekly_metrics
             WHERE deployment_id IN (${join(consideredIds)})
+              AND (${promotionSessionProfile} = '' OR entry_session_profile = ${promotionSessionProfile})
               AND status = 'succeeded'
               AND week_start >= ${new Date(metricsWindowFromTs)}
               AND week_start < ${new Date(windowToTs)}
@@ -7629,7 +7648,9 @@ export async function runPromotionPipelineJob(
     const stagedReopened = stagedReopenedByDeploymentId.size;
     const totalWeeklyQueueRowsInserted =
       weeklyQueueRowsInserted + stagedQueueRowsInserted;
-    const pendingAfter = await countPendingPromotionRows();
+    const pendingAfter = await countPendingPromotionRows(
+      entrySessionProfile || undefined,
+    );
     await pulsePipelineJobProgress({
       jobKind: "promotion",
       lockToken,
@@ -7692,6 +7713,7 @@ export async function runPromotionPipelineJob(
       progressLabel: `updated ${updates.length}`,
       details: {
         policy,
+        entrySessionProfile: entrySessionProfile || "all",
         explorationShare,
         dirtyDeployments: dirtyRows.length,
         consideredDeployments: consideredDeployments.length,
@@ -7732,7 +7754,8 @@ export async function runPromotionPipelineJob(
         lifecycleCounts,
       },
     };
-  });
+  },
+  { entrySessionProfile: entrySessionProfile || undefined });
 }
 
 export async function loadScalpPipelineJobsHealth(params: {

@@ -88,6 +88,7 @@ export default async function handler(
 
   const result = await runPromotionPipelineJob({
     batchSize,
+    entrySessionProfile: session || undefined,
   });
 
   let downstreamLoadCandles: CronInvokeResult | null = null;
