@@ -1,4 +1,5 @@
 import type { ScalpEntrySessionProfile } from '../types';
+import type { ScalpStrategyConfigOverride } from '../config';
 
 export interface ScalpReplayInputCandle {
     ts: number | string;
@@ -32,6 +33,7 @@ export interface ScalpReplayRuntimeConfig {
     tuneId: string;
     deploymentId: string;
     tuneLabel: string;
+    configOverride?: ScalpStrategyConfigOverride | null;
     executeMinutes: number;
     defaultSpreadPips: number;
     spreadFactor: number;

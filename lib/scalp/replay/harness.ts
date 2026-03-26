@@ -6,6 +6,11 @@ import {
 } from "../strategies/registry";
 import { applySymbolGuardRiskDefaultsToReplayRuntime } from "../strategies/guardDefaults";
 import {
+  applyScalpStrategyConfigOverride,
+  getScalpStrategyConfig,
+  type ScalpStrategyConfigOverride,
+} from "../config";
+import {
   buildScalpEntryPlan,
   manageScalpOpenTrade,
   resolveLegacyIfvgEntryIntent,
@@ -14,7 +19,6 @@ import { pipSizeForScalpSymbol, timeframeMinutes } from "../marketData";
 import { evaluateScalpReplayMarketGate } from "../marketHours";
 import { buildScalpSessionWindows, isScalpSundayEntryBlocked } from "../sessions";
 import type { ScalpSymbolMarketMetadata } from "../symbolMarketMetadata";
-import { getScalpStrategyConfig } from "../config";
 import { resolveScalpDeployment } from "../deployments";
 import {
   advanceScalpStateMachine,
@@ -104,7 +108,7 @@ function dedupeReasonCodes(codes: string[]): string[] {
 function buildStrategyConfig(
   runtime: ScalpReplayRuntimeConfig,
 ): ScalpStrategyConfig {
-  return {
+  const base: ScalpStrategyConfig = {
     enabled: true,
     defaultSymbol: runtime.symbol,
     dryRunDefault: true,
@@ -184,6 +188,12 @@ function buildStrategyConfig(
       maxCandlesPerRequest: 1000,
     },
   };
+  return applyScalpStrategyConfigOverride(
+    base,
+    (runtime.configOverride || undefined) as
+      | ScalpStrategyConfigOverride
+      | undefined,
+  );
 }
 
 export function defaultScalpReplayConfig(
@@ -207,6 +217,7 @@ export function defaultScalpReplayConfig(
     tuneId: deployment.tuneId,
     deploymentId: deployment.deploymentId,
     tuneLabel: deployment.tuneLabel,
+    configOverride: null,
     executeMinutes: cfg.cadence.executeMinutes,
     defaultSpreadPips: 1.1,
     spreadFactor: 1,

@@ -23,6 +23,9 @@ export function buildScalpReplayRuntimeFromDeployment(params: {
         tuneId: params.deployment.tuneId,
         deploymentId: params.deployment.deploymentId,
         tuneLabel: params.deployment.tuneLabel,
+        configOverride: params.configOverride
+            ? (JSON.parse(JSON.stringify(params.configOverride)) as ScalpStrategyConfigOverride)
+            : null,
         executeMinutes: cfg.cadence.executeMinutes,
         strategy: {
             ...base.strategy,
