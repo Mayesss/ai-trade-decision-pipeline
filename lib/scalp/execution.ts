@@ -69,6 +69,32 @@ const SCALP_LEVERAGE_BY_CATEGORY_BY_VENUE: Record<
   ScalpVenue,
   Record<ScalpAssetCategory, number>
 > = {
+  capital: {
+    forex: toPositiveNumberWithFallback(
+      process.env.SCALP_CAPITAL_LEVERAGE_FOREX,
+      30,
+    ),
+    index: toPositiveNumberWithFallback(
+      process.env.SCALP_CAPITAL_LEVERAGE_INDEX,
+      20,
+    ),
+    commodity: toPositiveNumberWithFallback(
+      process.env.SCALP_CAPITAL_LEVERAGE_COMMODITY,
+      20,
+    ),
+    equity: toPositiveNumberWithFallback(
+      process.env.SCALP_CAPITAL_LEVERAGE_EQUITY,
+      5,
+    ),
+    crypto: toPositiveNumberWithFallback(
+      process.env.SCALP_CAPITAL_LEVERAGE_CRYPTO,
+      2,
+    ),
+    other: toPositiveNumberWithFallback(
+      process.env.SCALP_CAPITAL_LEVERAGE_OTHER,
+      5,
+    ),
+  },
   bitget: {
     forex: toPositiveNumberWithFallback(
       process.env.SCALP_BITGET_LEVERAGE_FOREX,

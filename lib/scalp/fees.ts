@@ -12,6 +12,11 @@ export interface ScalpVenueFeeSchedule {
 
 export const SCALP_VENUE_FEE_SCHEDULE: Record<ScalpVenue, ScalpVenueFeeSchedule> =
   {
+    capital: {
+      model: "embedded_spread_or_broker",
+      takerFeeRate: null,
+      feeCurrency: "USD",
+    },
     bitget: {
       model: "fixed_taker_pct",
       takerFeeRate: 0.0006,

@@ -149,6 +149,7 @@ type ScalpDashboardSymbol = {
   strategyId: string;
   tuneId: string;
   deploymentId: string;
+  enabled?: boolean;
   tune: string;
   cronSchedule?: string | null;
   cronRoute?: "execute-deployments" | string;
@@ -692,6 +693,331 @@ const SCALP_SESSION_TIMELINE_COLORS: ScalpSessionTimelineColorMeta[] = [
 ];
 const SCALP_SESSION_TIMELINE_TICK_MINUTES = [0, 360, 720, 1080, 1440];
 
+function asPlainObject(value: unknown): Record<string, any> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, any>;
+}
+
+function asFiniteOrNull(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function asBoolOrNull(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  return null;
+}
+
+function toDayKeyFromMs(tsMs: number): string {
+  return new Date(tsMs).toISOString().slice(0, 10);
+}
+
+function toUiScalpSummaryFromV2(
+  payloadRaw: unknown,
+  opts: { range: DashboardRangeKey; session: ScalpEntrySessionProfileUi },
+): ScalpSummaryResponse {
+  const payload = asPlainObject(payloadRaw);
+  const runtime = asPlainObject(payload.runtime);
+  const summary = asPlainObject(payload.summary);
+  const deploymentsRaw = Array.isArray(payload.deployments) ? payload.deployments : [];
+  const eventsRaw = Array.isArray(payload.events) ? payload.events : [];
+  const ledgerRaw = Array.isArray(payload.ledger) ? payload.ledger : [];
+  const jobsRaw = Array.isArray(payload.jobs) ? payload.jobs : [];
+  const generatedAtMs = asFiniteOrNull(summary.generatedAtMs) ?? Date.now();
+  const dayKey = toDayKeyFromMs(generatedAtMs);
+
+  const ledgerByDeployment = new Map<
+    string,
+    { trades: number; wins: number; losses: number; netR: number }
+  >();
+  for (const rowRaw of ledgerRaw) {
+    const row = asPlainObject(rowRaw);
+    const deploymentId = String(row.deploymentId || "").trim();
+    if (!deploymentId) continue;
+    const rMultiple = asFiniteOrNull(row.rMultiple) ?? 0;
+    const agg = ledgerByDeployment.get(deploymentId) || {
+      trades: 0,
+      wins: 0,
+      losses: 0,
+      netR: 0,
+    };
+    agg.trades += 1;
+    if (rMultiple > 0) agg.wins += 1;
+    else if (rMultiple < 0) agg.losses += 1;
+    agg.netR += rMultiple;
+    ledgerByDeployment.set(deploymentId, agg);
+  }
+
+  const latestByDeployment = new Map<string, Record<string, any>>();
+  const latestExecutionByDeploymentId: Record<string, Record<string, any>> = {};
+  const latestExecutionBySymbol: Record<string, Record<string, any>> = {};
+  const journal: NonNullable<ScalpSummaryResponse["journal"]> = [];
+
+  for (const eventRaw of eventsRaw) {
+    const event = asPlainObject(eventRaw);
+    const deploymentId = String(event.deploymentId || "").trim();
+    const symbol = String(event.symbol || "")
+      .trim()
+      .toUpperCase();
+    const tsMs = asFiniteOrNull(event.tsMs) ?? Date.now();
+    const eventType = String(event.eventType || "")
+      .trim()
+      .toLowerCase();
+    const reasonCodes = Array.isArray(event.reasonCodes)
+      ? event.reasonCodes
+          .map((code) => String(code || "").trim())
+          .filter((code) => code.length > 0)
+      : [];
+    const rawPayload = asPlainObject(event.rawPayload);
+    const executionPayload = {
+      ...rawPayload,
+      timestampMs: tsMs,
+      eventType,
+      reasonCodes,
+      sourceOfTruth: String(event.sourceOfTruth || "").trim().toLowerCase(),
+    };
+
+    if (deploymentId && !latestByDeployment.has(deploymentId)) {
+      latestByDeployment.set(deploymentId, executionPayload);
+      latestExecutionByDeploymentId[deploymentId] = executionPayload;
+    }
+    if (symbol && !latestExecutionBySymbol[symbol]) {
+      latestExecutionBySymbol[symbol] = executionPayload;
+    }
+
+    const level =
+      eventType === "order_rejected" || eventType === "liquidation"
+        ? "error"
+        : eventType === "stop_loss" || eventType === "reconcile_close"
+          ? "warn"
+          : "info";
+    journal.push({
+      id: String(event.id || ""),
+      timestampMs: tsMs,
+      type: eventType || "event",
+      level,
+      symbol: symbol || null,
+      reasonCodes,
+      payload: executionPayload,
+    });
+  }
+
+  const symbols: ScalpDashboardSymbol[] = deploymentsRaw.map((deploymentRaw) => {
+    const deployment = asPlainObject(deploymentRaw);
+    const deploymentId = String(deployment.deploymentId || "").trim();
+    const symbol = String(deployment.symbol || "")
+      .trim()
+      .toUpperCase();
+    const strategyId = String(deployment.strategyId || "")
+      .trim()
+      .toLowerCase();
+    const tuneId = String(deployment.tuneId || "")
+      .trim()
+      .toLowerCase();
+    const enabled = Boolean(deployment.enabled);
+    const promotionGate = asPlainObject(deployment.promotionGate);
+    const promotionEligible =
+      typeof promotionGate.eligible === "boolean" ? promotionGate.eligible : enabled;
+    const promotionReason =
+      String(promotionGate.reason || "").trim() ||
+      (enabled ? "enabled" : "shadow");
+    const latest = latestByDeployment.get(deploymentId) || {};
+    const latestState = asPlainObject(asPlainObject(latest).state);
+    const latestTrade = asPlainObject(latestState.trade);
+    const sideRaw = String(latestTrade.side || latestState.side || "")
+      .trim()
+      .toUpperCase();
+    const tradeSide: "BUY" | "SELL" | null =
+      sideRaw === "BUY" || sideRaw === "SELL" ? sideRaw : null;
+    const inTrade =
+      asBoolOrNull(latestState.inTrade) === true ||
+      (String(latestTrade.dealReference || "").trim().length > 0 &&
+        tradeSide !== null);
+    const stats = ledgerByDeployment.get(deploymentId) || null;
+    return {
+      symbol,
+      strategyId,
+      tuneId,
+      deploymentId,
+      enabled,
+      tune: tuneId || "default",
+      cronSchedule: null,
+      cronRoute: "execute-deployments",
+      cronPath: "/api/scalp/v2/cron/execute?dryRun=false",
+      dayKey,
+      state:
+        String(latestState.state || "").trim() ||
+        String(asPlainObject(latest).eventType || "").trim() ||
+        null,
+      updatedAtMs: asFiniteOrNull(deployment.updatedAtMs),
+      lastRunAtMs: asFiniteOrNull(asPlainObject(latest).timestampMs),
+      dryRunLast: asBoolOrNull(asPlainObject(latest).dryRun),
+      tradesPlaced: stats?.trades || 0,
+      wins: stats?.wins || 0,
+      losses: stats?.losses || 0,
+      inTrade,
+      tradeSide,
+      dealReference:
+        String(latestTrade.dealReference || "").trim() ||
+        String(asPlainObject(latest).brokerRef || "").trim() ||
+        null,
+      reasonCodes: Array.isArray(asPlainObject(latest).reasonCodes)
+        ? asPlainObject(latest).reasonCodes
+        : [],
+      netR: stats ? stats.netR : null,
+      maxDrawdownR: null,
+      promotionEligible,
+      promotionReason,
+      forwardValidation: null,
+    };
+  });
+
+  const stateCounts = symbols.reduce<Record<string, number>>((acc, row) => {
+    const state = String(row.state || "idle")
+      .trim()
+      .toLowerCase();
+    if (!state) return acc;
+    acc[state] = (acc[state] || 0) + 1;
+    return acc;
+  }, {});
+  const totalTradesPlaced = symbols.reduce(
+    (acc, row) => acc + Math.max(0, Math.floor(Number(row.tradesPlaced || 0))),
+    0,
+  );
+  const openCount = symbols.filter((row) => row.inTrade).length;
+
+  const deployments: ScalpSummaryDeployment[] = deploymentsRaw.map((deploymentRaw) => {
+    const row = asPlainObject(deploymentRaw);
+    const enabled = Boolean(row.enabled);
+    const promotionGate = asPlainObject(row.promotionGate);
+    const promotionEligible =
+      typeof promotionGate.eligible === "boolean" ? promotionGate.eligible : enabled;
+    const promotionReason =
+      String(promotionGate.reason || "").trim() ||
+      (enabled ? "enabled" : "shadow");
+    return {
+      deploymentId: String(row.deploymentId || "").trim(),
+      symbol: String(row.symbol || "")
+        .trim()
+        .toUpperCase(),
+      strategyId: String(row.strategyId || "")
+        .trim()
+        .toLowerCase(),
+      tuneId: String(row.tuneId || "")
+        .trim()
+        .toLowerCase(),
+      source: "scalp_v2",
+      enabled,
+      inUniverse: true,
+      lifecycleState: enabled ? "graduated" : "candidate",
+      promotionEligible,
+      promotionReason,
+      forwardValidation: null,
+      updatedAtMs: asFiniteOrNull(row.updatedAtMs),
+    };
+  });
+
+  const jobs: ScalpPipelineJobSummary[] = (
+    jobsRaw.length
+      ? jobsRaw
+      : [
+          { jobKind: "discover" },
+          { jobKind: "evaluate" },
+          { jobKind: "promote" },
+          { jobKind: "execute" },
+          { jobKind: "reconcile" },
+          { jobKind: "cycle" },
+        ]
+  ).map((jobRaw) => {
+    const row = asPlainObject(jobRaw);
+    const status = String(row.status || "pending")
+      .trim()
+      .toLowerCase();
+    const updatedAtMs = asFiniteOrNull(row.updatedAtMs);
+    const payload = asPlainObject(row.payload);
+    return {
+      jobKind: String(row.jobKind || "").trim().toLowerCase(),
+      status,
+      locked: status === "running" || String(row.lockedBy || "").trim().length > 0,
+      runningSinceAtMs: asFiniteOrNull(row.lockedAtMs),
+      runningDurationMs: null,
+      lastRunAtMs: updatedAtMs,
+      lastDurationMs: null,
+      lastSuccessAtMs: status === "succeeded" ? updatedAtMs : null,
+      nextRunAtMs: asFiniteOrNull(row.nextRunAtMs),
+      lastError: String(payload.error || payload.message || "").trim() || null,
+      progressLabel: null,
+      progress: payload,
+      queue: {
+        pending: status === "pending" ? 1 : 0,
+        running: status === "running" ? 1 : 0,
+        retryWait: 0,
+        failed: status === "failed" ? 1 : 0,
+        succeeded: status === "succeeded" ? 1 : 0,
+      },
+    };
+  });
+
+  const panicStopRaw = asPlainObject(runtime.panicStop);
+  const panicStopEnabled =
+    panicStopRaw.enabled === true ||
+    runtime.enabled === false ||
+    runtime.liveEnabled === false;
+  const panicStopReason =
+    String(panicStopRaw.reason || "").trim() ||
+    (runtime.enabled === false
+      ? "runtime disabled"
+      : runtime.liveEnabled === false
+        ? "live disabled"
+        : null);
+  const panicStopUpdatedAtMs =
+    asFiniteOrNull(panicStopRaw.updatedAtMs) ?? asFiniteOrNull(summary.generatedAtMs);
+  const panicStopUpdatedBy =
+    String(panicStopRaw.updatedBy || "").trim() || null;
+  const panicStop = {
+    enabled: panicStopEnabled,
+    reason: panicStopReason,
+    updatedAtMs: panicStopUpdatedAtMs,
+    updatedBy: panicStopUpdatedBy,
+  };
+
+  return {
+    mode: "scalp",
+    generatedAtMs,
+    range: opts.range,
+    dayKey,
+    entrySessionProfile: opts.session,
+    source: "deployment_registry",
+    strategyId: String(runtime.defaultStrategyId || "").trim().toLowerCase(),
+    defaultStrategyId: String(runtime.defaultStrategyId || "")
+      .trim()
+      .toLowerCase(),
+    summary: {
+      symbols: symbols.length,
+      openCount,
+      runCount: eventsRaw.length,
+      dryRunCount: eventsRaw.filter((row) => asPlainObject(row).rawPayload?.dryRun === true)
+        .length,
+      totalTradesPlaced,
+      stateCounts,
+    },
+    deployments,
+    jobs,
+    workerRows: [],
+    panicStop,
+    pipeline: {
+      panicStop,
+      queue: null,
+      statusPanel: null,
+    },
+    symbols,
+    history: undefined,
+    latestExecutionByDeploymentId,
+    latestExecutionBySymbol,
+    journal,
+  };
+}
+
 type TimeZoneClockParts = {
   y: number;
   m: number;
@@ -817,59 +1143,37 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<
   string,
   ScalpCronPipelineDefinition
 > = {
-  scalp_discover_symbols: {
-    primaryPathname: "/api/scalp/cron/v2/discover",
-    matchPathnames: [
-      "/api/scalp/cron/v2/discover",
-      "/api/scalp/cron/discover-symbols",
-    ],
+  scalp_discover: {
+    primaryPathname: "/api/scalp/v2/cron/discover",
+    matchPathnames: ["/api/scalp/v2/cron/discover", "/api/scalp/cron/v2/discover"],
     fallbackInvokePath:
-      "/api/scalp/cron/v2/discover?dryRun=false&includeLiveQuotes=true&autoSuccessor=true&autoContinue=true&selfMaxHops=4",
+      "/api/scalp/v2/cron/discover?dryRun=false",
   },
-  scalp_load_candles: {
-    primaryPathname: "/api/scalp/cron/v2/load-candles",
-    matchPathnames: [
-      "/api/scalp/cron/v2/load-candles",
-      "/api/scalp/cron/load-candles",
-    ],
-    fallbackInvokePath:
-      "/api/scalp/cron/v2/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&selfMaxHops=8",
+  scalp_evaluate: {
+    primaryPathname: "/api/scalp/v2/cron/evaluate",
+    matchPathnames: ["/api/scalp/v2/cron/evaluate"],
+    fallbackInvokePath: "/api/scalp/v2/cron/evaluate?batchSize=200&dryRun=false",
   },
-  scalp_prepare: {
-    primaryPathname: "/api/scalp/cron/v2/prepare",
-    matchPathnames: ["/api/scalp/cron/v2/prepare", "/api/scalp/cron/prepare"],
-    fallbackInvokePath:
-      "/api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8",
+  scalp_promote: {
+    primaryPathname: "/api/scalp/v2/cron/promote",
+    matchPathnames: ["/api/scalp/v2/cron/promote"],
+    fallbackInvokePath: "/api/scalp/v2/cron/promote?dryRun=false",
   },
-  scalp_worker: {
-    primaryPathname: "/api/scalp/cron/worker",
-    matchPathnames: ["/api/scalp/cron/worker"],
-    fallbackInvokePath:
-      "/api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&selfMaxHops=12",
+  scalp_execute: {
+    primaryPathname: "/api/scalp/v2/cron/execute",
+    matchPathnames: ["/api/scalp/v2/cron/execute"],
+    fallbackInvokePath: "/api/scalp/v2/cron/execute?dryRun=false",
   },
-  scalp_promotion: {
-    primaryPathname: "/api/scalp/cron/promotion",
-    matchPathnames: ["/api/scalp/cron/promotion"],
-    fallbackInvokePath:
-      "/api/scalp/cron/promotion?batchSize=300&autoSuccessor=true&autoContinue=true&selfMaxHops=6",
+  scalp_reconcile: {
+    primaryPathname: "/api/scalp/v2/cron/reconcile",
+    matchPathnames: ["/api/scalp/v2/cron/reconcile"],
+    fallbackInvokePath: "/api/scalp/v2/cron/reconcile",
   },
-  scalp_execute_deployments: {
-    primaryPathname: "/api/scalp/cron/execute-deployments",
-    matchPathnames: ["/api/scalp/cron/execute-deployments"],
+  scalp_cycle: {
+    primaryPathname: "/api/scalp/v2/cron/cycle",
+    matchPathnames: ["/api/scalp/v2/cron/cycle"],
     fallbackInvokePath:
-      "/api/scalp/cron/execute-deployments?all=true&dryRun=false&requirePromotionEligible=true",
-  },
-  scalp_live_guardrail_monitor: {
-    primaryPathname: "/api/scalp/cron/live-guardrail-monitor",
-    matchPathnames: ["/api/scalp/cron/live-guardrail-monitor"],
-    fallbackInvokePath:
-      "/api/scalp/cron/live-guardrail-monitor?dryRun=false&autoPause=true",
-  },
-  scalp_housekeeping: {
-    primaryPathname: "/api/scalp/cron/housekeeping",
-    matchPathnames: ["/api/scalp/cron/housekeeping"],
-    fallbackInvokePath:
-      "/api/scalp/cron/housekeeping?dryRun=false&refreshReport=false",
+      "/api/scalp/v2/cron/cycle?dryRun=false",
   },
 };
 
@@ -914,48 +1218,40 @@ function normalizeInvokePathForScalpCronNow(
   rawInvokePath: string,
   entrySessionProfile: ScalpEntrySessionProfileUi,
 ): string {
+  void entrySessionProfile;
   const value = String(rawInvokePath || "").trim();
   if (!value) return "";
   const pathname = parseCronPathname(value);
   const isDiscoverCron =
-    rowId === "scalp_discover_symbols" ||
-    pathname === "/api/scalp/cron/discover-symbols" ||
+    rowId === "scalp_discover" ||
+    pathname === "/api/scalp/v2/cron/discover" ||
     pathname === "/api/scalp/cron/v2/discover";
-  const isSessionScopedCron =
-    rowId === "scalp_prepare" ||
-    rowId === "scalp_worker" ||
-    rowId === "scalp_execute_deployments" ||
-    pathname === "/api/scalp/cron/prepare" ||
-    pathname === "/api/scalp/cron/v2/prepare" ||
-    pathname === "/api/scalp/cron/worker" ||
-    pathname === "/api/scalp/cron/execute-deployments";
-  if (!isDiscoverCron && !isSessionScopedCron) return value;
+  const isDryRunOverridableCron =
+    rowId === "scalp_discover" ||
+    rowId === "scalp_evaluate" ||
+    rowId === "scalp_promote" ||
+    rowId === "scalp_execute" ||
+    rowId === "scalp_cycle" ||
+    pathname === "/api/scalp/v2/cron/discover" ||
+    pathname === "/api/scalp/v2/cron/evaluate" ||
+    pathname === "/api/scalp/v2/cron/promote" ||
+    pathname === "/api/scalp/v2/cron/execute" ||
+    pathname === "/api/scalp/v2/cron/cycle";
+  if (!isDiscoverCron && !isDryRunOverridableCron) return value;
   try {
     const absolute = /^https?:\/\//i.test(value);
     const parsed = new URL(value, "http://localhost");
-    if (isDiscoverCron) parsed.searchParams.set("dryRun", "false");
-    if (isSessionScopedCron) {
-      parsed.searchParams.set("session", entrySessionProfile);
-    }
+    if (isDiscoverCron || isDryRunOverridableCron)
+      parsed.searchParams.set("dryRun", "false");
     if (absolute) return `${parsed.origin}${parsed.pathname}${parsed.search}`;
     return `${parsed.pathname}${parsed.search}`;
   } catch {
     let next = value;
-    if (isDiscoverCron) {
+    if (isDiscoverCron || isDryRunOverridableCron) {
       if (/([?&])dryRun=/i.test(next)) {
         next = next.replace(/([?&])dryRun=[^&#]*/i, "$1dryRun=false");
       } else {
         next = `${next}${next.includes("?") ? "&" : "?"}dryRun=false`;
-      }
-    }
-    if (isSessionScopedCron) {
-      if (/([?&])session=/i.test(next)) {
-        next = next.replace(
-          /([?&])session=[^&#]*/i,
-          `$1session=${encodeURIComponent(entrySessionProfile)}`,
-        );
-      } else {
-        next = `${next}${next.includes("?") ? "&" : "?"}session=${encodeURIComponent(entrySessionProfile)}`;
       }
     }
     return next;
@@ -1177,10 +1473,7 @@ function buildScalpCronRuntimeMap(
       (row) =>
         row.pathname !== null && def.matchPathnames.includes(row.pathname),
     );
-    const isSessionScopedCron =
-      id === "scalp_prepare" ||
-      id === "scalp_worker" ||
-      id === "scalp_execute_deployments";
+    const isSessionScopedCron = false;
     const rows = isSessionScopedCron
       ? baseRows.filter((row) => {
           const profile = parseEntrySessionProfileFromCronPath(row.path);
@@ -1781,15 +2074,18 @@ export default function Home() {
     if (!silent) setLoading(true);
     try {
       const params = new URLSearchParams({
-        useDeploymentRegistry: "true",
         range: dashboardRange,
         session: scalpSession,
+        eventLimit: "240",
+        ledgerLimit: "300",
+        deploymentLimit: "600",
+        jobLimit: "20",
       });
       if (!silent || force) {
         params.set("fresh", "true");
       }
       const summaryRes = await fetch(
-        `/api/scalp/dashboard/summary?${params.toString()}`,
+        `/api/scalp/v2/dashboard/summary?${params.toString()}`,
         {
           headers: buildAdminHeaders(),
           cache: "no-store",
@@ -1804,7 +2100,14 @@ export default function Home() {
       if (!summaryRes.ok) {
         throw new Error(`Failed to load scalp summary (${summaryRes.status})`);
       }
-      const summaryJson: ScalpSummaryResponse = await summaryRes.json();
+      const summaryRaw = await summaryRes.json();
+      const summaryJson: ScalpSummaryResponse = toUiScalpSummaryFromV2(
+        summaryRaw,
+        {
+          range: dashboardRange,
+          session: scalpSession,
+        },
+      );
       setScalpSummary(summaryJson);
       scalpSummaryFetchedAtMsRef.current = nowMs;
       scalpSummaryErrorCountRef.current = 0;
@@ -1929,19 +2232,24 @@ export default function Home() {
         ? "manual_panic_stop_from_ui"
         : "manual_panic_stop_release_from_ui";
       const updatedBy = "ui:panic-stop";
-      const params = new URLSearchParams({
-        enabled: enabled ? "true" : "false",
-        reason,
-        updatedBy,
-      });
-      const res = await fetch(
-        `/api/scalp/ops/panic-stop?${params.toString()}`,
-        {
-          method: "POST",
-          headers: buildAdminHeaders(),
-          cache: "no-store",
+      const res = await fetch("/api/scalp/v2/control", {
+        method: "POST",
+        headers: {
+          ...(buildAdminHeaders() || {}),
+          "Content-Type": "application/json",
         },
-      );
+        body: JSON.stringify({
+          enabled: !enabled,
+          liveEnabled: !enabled,
+          panicStop: {
+            enabled,
+            reason,
+            updatedBy,
+            updatedAtMs: Date.now(),
+          },
+        }),
+        cache: "no-store",
+      });
       if (res.status === 401) {
         handleAuthExpired(
           "Admin session expired. Re-enter ADMIN_ACCESS_SECRET.",
@@ -2785,7 +3093,7 @@ export default function Home() {
       strategyId: row.strategyId,
       tuneId: String(row.tuneId || row.tune || "default"),
       source: "runtime",
-      enabled: true,
+      enabled: row.enabled === true,
       inUniverse: null,
       lifecycleState: null,
       promotionEligible:
@@ -3549,21 +3857,23 @@ export default function Home() {
       nextRunAtMs: null,
       invokePath: null,
     };
-  const scalpCronRows: ScalpOpsCronRow[] = scalpPipelineJobs.map((job) => {
+  const scalpCronRowsFromJobs: ScalpOpsCronRow[] = scalpPipelineJobs.map((job) => {
         const rawKind = String(job?.jobKind || "")
           .trim()
           .toLowerCase();
         const rowId =
           rawKind === "discover"
-            ? "scalp_discover_symbols"
-            : rawKind === "load_candles"
-              ? "scalp_load_candles"
-              : rawKind === "prepare"
-                ? "scalp_prepare"
-                : rawKind === "worker"
-                  ? "scalp_worker"
-                  : rawKind === "promotion"
-                    ? "scalp_promotion"
+            ? "scalp_discover"
+            : rawKind === "evaluate"
+              ? "scalp_evaluate"
+              : rawKind === "promote"
+                ? "scalp_promote"
+                : rawKind === "execute"
+                  ? "scalp_execute"
+                  : rawKind === "reconcile"
+                    ? "scalp_reconcile"
+                    : rawKind === "cycle"
+                      ? "scalp_cycle"
                     : `scalp_${rawKind || "job"}`;
         const queuePending = Math.max(
           0,
@@ -3725,6 +4035,42 @@ export default function Home() {
           },
         } satisfies ScalpOpsCronRow;
       });
+  const scalpCronRows: ScalpOpsCronRow[] = (() => {
+    const byId = new Map<string, ScalpOpsCronRow>(
+      scalpCronRowsFromJobs.map((row) => [row.id, row] as const),
+    );
+    const rows = [...scalpCronRowsFromJobs];
+    for (const [id] of Object.entries(SCALP_CRON_PIPELINE_DEFINITIONS)) {
+      if (byId.has(id)) continue;
+      const runtimeMeta = scalpCronRuntimeMeta(id);
+      rows.push({
+        id,
+        cadence: "Schedule-driven",
+        cronExpression: runtimeMeta.expressionLabel,
+        nextRunAtMs: runtimeMeta.nextRunAtMs,
+        invokePath: runtimeMeta.invokePath,
+        role: id.replace(/^scalp_/, "").replace(/_/g, " "),
+        status: "unknown",
+        lastRunAtMs: null,
+        lastDurationMs: null,
+        details: [
+          {
+            label: "Status",
+            value: "not observed",
+            tone: "neutral",
+          },
+          {
+            label: "Next Run",
+            value: formatScalpNextRunIn(runtimeMeta.nextRunAtMs, scalpCronNowMs),
+            tone: "neutral",
+          },
+        ],
+        visualMetrics: [],
+        resultPreview: null,
+      });
+    }
+    return rows;
+  })();
   const scalpRunningJobRowIds = new Set(
     scalpPipelineJobs
       .filter((job) => {
@@ -3741,11 +4087,12 @@ export default function Home() {
         const kind = String(job?.jobKind || "")
           .trim()
           .toLowerCase();
-        if (kind === "discover") return "scalp_discover_symbols";
-        if (kind === "load_candles") return "scalp_load_candles";
-        if (kind === "prepare") return "scalp_prepare";
-        if (kind === "worker") return "scalp_worker";
-        if (kind === "promotion") return "scalp_promotion";
+        if (kind === "discover") return "scalp_discover";
+        if (kind === "evaluate") return "scalp_evaluate";
+        if (kind === "promote") return "scalp_promote";
+        if (kind === "execute") return "scalp_execute";
+        if (kind === "reconcile") return "scalp_reconcile";
+        if (kind === "cycle") return "scalp_cycle";
         return `scalp_${kind || "job"}`;
       }),
   );
@@ -3772,31 +4119,19 @@ export default function Home() {
       .toLowerCase();
     if (!normalized) return null;
     if (normalized === "discover")
-      return scalpCronRows.find((row) => row.id.includes("discover")) || null;
-    if (normalized === "load_candles" || normalized.includes("load"))
-      return (
-        scalpCronRows.find((row) => row.id.includes("load_candles")) || null
-      );
-    if (normalized === "prepare")
-      return scalpCronRows.find((row) => row.id.includes("prepare")) || null;
-    if (normalized === "worker")
-      return scalpCronRows.find((row) => row.id.includes("worker")) || null;
-    if (normalized === "promotion")
-      return scalpCronRows.find((row) => row.id.includes("promotion")) || null;
+      return scalpCronRows.find((row) => row.id.includes("scalp_discover")) || null;
+    if (normalized === "evaluate")
+      return scalpCronRows.find((row) => row.id.includes("scalp_evaluate")) || null;
+    if (normalized === "promote" || normalized === "promotion")
+      return scalpCronRows.find((row) => row.id.includes("scalp_promote")) || null;
     if (normalized.includes("execute"))
+      return scalpCronRows.find((row) => row.id.includes("scalp_execute")) || null;
+    if (normalized.includes("reconcile"))
       return (
-        scalpCronRows.find((row) => row.id.includes("execute_deployments")) ||
-        null
+        scalpCronRows.find((row) => row.id.includes("scalp_reconcile")) || null
       );
-    if (normalized.includes("monitor"))
-      return (
-        scalpCronRows.find((row) => row.id.includes("live_guardrail_monitor")) ||
-        null
-      );
-    if (normalized.includes("housekeeping"))
-      return (
-        scalpCronRows.find((row) => row.id.includes("housekeeping")) || null
-      );
+    if (normalized.includes("cycle"))
+      return scalpCronRows.find((row) => row.id.includes("scalp_cycle")) || null;
     return (
       scalpCronRows.find((row) => row.id.includes(normalized)) ||
       scalpCronRows.find((row) => row.role.includes(normalized)) ||

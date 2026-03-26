@@ -1,4 +1,4 @@
-export type ScalpVenue = "bitget";
+export type ScalpVenue = "capital" | "bitget";
 
 export const DEFAULT_SCALP_VENUE: ScalpVenue = "bitget";
 
@@ -9,6 +9,7 @@ export function normalizeScalpVenue(
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
+  if (normalized === "capital") return "capital";
   if (normalized === "bitget") return "bitget";
   return fallback;
 }
@@ -27,7 +28,7 @@ export function parseScalpVenuePrefixedDeploymentId(value: unknown): {
   const prefix = String(match[1] || "")
     .trim()
     .toLowerCase();
-  if (prefix !== "bitget") {
+  if (prefix !== "capital" && prefix !== "bitget") {
     return { venue: DEFAULT_SCALP_VENUE, deploymentKey: raw };
   }
   const venue = normalizeScalpVenue(prefix, DEFAULT_SCALP_VENUE);

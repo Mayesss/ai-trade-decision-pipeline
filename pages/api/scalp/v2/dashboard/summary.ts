@@ -6,11 +6,14 @@ import { requireAdminAccess } from "../../../../../lib/admin";
 import {
   listScalpV2Deployments,
   listScalpV2ExecutionEvents,
+  listScalpV2Jobs,
   listScalpV2RecentLedger,
   loadScalpV2RuntimeConfig,
   loadScalpV2Summary,
 } from "../../../../../lib/scalp-v2/db";
 import {
+  parseSession,
+  parseVenue,
   parseIntBounded,
   setNoStoreHeaders,
 } from "../../../../../lib/scalp-v2/http";
@@ -31,13 +34,17 @@ export default async function handler(
     const eventLimit = parseIntBounded(req.query.eventLimit, 120, 10, 2_000);
     const ledgerLimit = parseIntBounded(req.query.ledgerLimit, 120, 10, 2_000);
     const deploymentLimit = parseIntBounded(req.query.deploymentLimit, 300, 10, 5_000);
+    const jobLimit = parseIntBounded(req.query.jobLimit, 20, 5, 100);
+    const session = parseSession(req.query.session);
+    const venue = parseVenue(req.query.venue);
 
-    const [runtime, summary, deployments, events, ledger] = await Promise.all([
+    const [runtime, summary, deployments, events, ledger, jobs] = await Promise.all([
       loadScalpV2RuntimeConfig(),
       loadScalpV2Summary(),
-      listScalpV2Deployments({ limit: deploymentLimit }),
+      listScalpV2Deployments({ limit: deploymentLimit, session, venue }),
       listScalpV2ExecutionEvents({ limit: eventLimit }),
       listScalpV2RecentLedger({ limit: ledgerLimit }),
+      listScalpV2Jobs({ limit: jobLimit }),
     ]);
 
     return res.status(200).json({
@@ -48,6 +55,7 @@ export default async function handler(
       deployments,
       events,
       ledger,
+      jobs,
     });
   } catch (err: any) {
     return res.status(500).json({

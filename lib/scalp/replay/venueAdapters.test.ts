@@ -14,9 +14,23 @@ test("bitget scalp adapter is registered in venue registry", () => {
   assert.equal(adapter.venue, "bitget");
 });
 
+test("capital scalp adapter is registered in venue registry", () => {
+  assert.equal(isScalpVenueAdapterSupported("capital"), true);
+  assert.ok(supportedScalpVenues().includes("capital"));
+  const adapter = getScalpVenueAdapter("capital");
+  assert.equal(adapter.venue, "capital");
+});
+
 test("bitget scalp adapter exposes fixed 0.06% taker fee metadata", () => {
   const adapter = getScalpVenueAdapter("bitget");
   assert.equal(adapter.fees.model, "fixed_taker_pct");
   assert.equal(adapter.fees.takerFeeRate, 0.0006);
   assert.equal(adapter.fees.feeCurrency, "USDT");
+});
+
+test("capital scalp adapter exposes embedded-spread fee model", () => {
+  const adapter = getScalpVenueAdapter("capital");
+  assert.equal(adapter.fees.model, "embedded_spread_or_broker");
+  assert.equal(adapter.fees.takerFeeRate, null);
+  assert.equal(adapter.fees.feeCurrency, "USD");
 });

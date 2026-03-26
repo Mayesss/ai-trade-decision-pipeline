@@ -19,6 +19,7 @@ import type {
   ScalpV2ExecutionEvent,
   ScalpV2JobKind,
   ScalpV2JobResult,
+  ScalpV2JobStatus,
   ScalpV2LiveMode,
   ScalpV2RuntimeConfig,
   ScalpV2RiskProfile,
@@ -1007,6 +1008,83 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
     ledgerRows30d: Number(row?.ledgerRows30d || 0),
     netR30d: Number.isFinite(Number(row?.netR30d)) ? Number(row?.netR30d) : 0,
   };
+}
+
+export async function listScalpV2Jobs(params: {
+  limit?: number;
+} = {}): Promise<
+  Array<{
+    jobKind: ScalpV2JobKind;
+    status: ScalpV2JobStatus;
+    attempts: number;
+    nextRunAtMs: number;
+    lockedBy: string | null;
+    lockedAtMs: number | null;
+    updatedAtMs: number;
+    payload: Record<string, unknown>;
+  }>
+> {
+  if (!isScalpPgConfigured()) return [];
+  const db = scalpPrisma();
+  const limit = Math.max(1, Math.min(100, Math.floor(params.limit || 20)));
+  const rows = await db.$queryRaw<
+    Array<{
+      jobKind: string;
+      status: string;
+      attempts: number;
+      nextRunAt: Date;
+      lockedBy: string | null;
+      lockedAt: Date | null;
+      updatedAt: Date;
+      payload: unknown;
+    }>
+  >(sql`
+    SELECT
+      job_kind AS "jobKind",
+      status,
+      attempts,
+      next_run_at AS "nextRunAt",
+      locked_by AS "lockedBy",
+      locked_at AS "lockedAt",
+      updated_at AS "updatedAt",
+      payload
+    FROM scalp_v2_jobs
+    ORDER BY updated_at DESC
+    LIMIT ${limit};
+  `);
+
+  return rows.map((row) => {
+    const statusRaw = String(row.status || "")
+      .trim()
+      .toLowerCase();
+    const status: ScalpV2JobStatus =
+      statusRaw === "running"
+        ? "running"
+        : statusRaw === "succeeded"
+          ? "succeeded"
+          : statusRaw === "failed"
+            ? "failed"
+            : "pending";
+    return {
+      jobKind:
+        String(row.jobKind || "").trim().toLowerCase() === "evaluate"
+          ? "evaluate"
+          : String(row.jobKind || "").trim().toLowerCase() === "promote"
+            ? "promote"
+            : String(row.jobKind || "").trim().toLowerCase() === "execute"
+              ? "execute"
+              : String(row.jobKind || "").trim().toLowerCase() === "reconcile"
+                ? "reconcile"
+                : "discover",
+      status,
+      attempts: Math.max(0, Math.floor(Number(row.attempts || 0))),
+      nextRunAtMs: toMs(row.nextRunAt),
+      lockedBy: row.lockedBy || null,
+      lockedAtMs: toOptionalMs(row.lockedAt),
+      updatedAtMs: toMs(row.updatedAt),
+      payload: asRecord(row.payload),
+    };
+  });
 }
 
 export async function importV1LedgerIntoScalpV2(params: {

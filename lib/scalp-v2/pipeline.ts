@@ -80,11 +80,6 @@ function lockOwner(jobKind: string): string {
   return `scalp_v2_${jobKind}_${nowMs()}_${Math.floor(Math.random() * 1_000_000)}`;
 }
 
-function supportsScalpV2LiveExecution(venue: ScalpV2Venue): boolean {
-  // Capital execution adapter is not wired into scalp-v2 yet.
-  return venue === "bitget";
-}
-
 export async function runScalpV2DiscoverJob(): Promise<ScalpV2JobResult> {
   const owner = lockOwner("discover");
   const claimed = await claimScalpV2Job({ jobKind: "discover", lockOwner: owner });
@@ -340,10 +335,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     const rows: Parameters<typeof upsertScalpV2Deployments>[0]["rows"] = [];
     for (const candidate of trimmed.kept) {
       const isSeedLive = (runtime.seedLiveSymbolsByVenue[candidate.venue] || []).includes(candidate.symbol);
-      const enable =
-        isSeedLive &&
-        supportsScalpV2LiveExecution(candidate.venue) &&
-        enabledUsed < enabledSlots;
+      const enable = isSeedLive && enabledUsed < enabledSlots;
       if (enable) enabledUsed += 1;
 
       rows.push({
@@ -506,96 +498,60 @@ export async function runScalpV2ExecuteJob(params: {
     }
 
     const bitgetAdapter = getScalpVenueAdapter("bitget");
-    const bitgetSnapshots = await bitgetAdapter.broker.fetchOpenPositionSnapshots();
-    const capitalSnapshots = await fetchCapitalOpenPositionSnapshots().catch(() => []);
+    const capitalAdapter = getScalpVenueAdapter("capital");
+    const bitgetSnapshots = await bitgetAdapter.broker.fetchOpenPositionSnapshots().catch(() => []);
+    const capitalSnapshots = await capitalAdapter.broker.fetchOpenPositionSnapshots().catch(() => []);
 
     for (const deployment of deployments) {
       processed += 1;
       const deploymentDryRun = effectiveDryRun || !runtime.liveEnabled || deployment.liveMode !== "live";
       try {
-        if (deployment.venue === "bitget") {
-          const result = await runScalpExecuteCycle({
-            venue: "bitget" as any,
+        const result = await runScalpExecuteCycle({
+          venue: deployment.venue,
+          symbol: deployment.symbol,
+          strategyId: deployment.strategyId,
+          tuneId: deployment.tuneId,
+          deploymentId: deployment.deploymentId,
+          dryRun: deploymentDryRun,
+        });
+
+        await appendScalpV2ExecutionEvent(
+          buildEvent({
+            deploymentId: deployment.deploymentId,
+            venue: deployment.venue,
             symbol: deployment.symbol,
             strategyId: deployment.strategyId,
             tuneId: deployment.tuneId,
-            deploymentId: deployment.deploymentId,
-            dryRun: deploymentDryRun,
-          });
+            entrySessionProfile: deployment.entrySessionProfile,
+            eventType: "position_snapshot",
+            reasonCodes: result.reasonCodes,
+            sourceOfTruth: "system",
+            rawPayload: {
+              state: result.state,
+              dryRun: result.dryRun,
+              runLockAcquired: result.runLockAcquired,
+            },
+          }),
+        );
 
-          await appendScalpV2ExecutionEvent(
-            buildEvent({
-              deploymentId: deployment.deploymentId,
-              venue: deployment.venue,
-              symbol: deployment.symbol,
-              strategyId: deployment.strategyId,
-              tuneId: deployment.tuneId,
-              entrySessionProfile: deployment.entrySessionProfile,
-              eventType: "position_snapshot",
-              reasonCodes: result.reasonCodes,
-              sourceOfTruth: "system",
-              rawPayload: {
-                state: result.state,
-                dryRun: result.dryRun,
-                runLockAcquired: result.runLockAcquired,
-              },
-            }),
-          );
-
-          const snapshot = pickBitgetSnapshotBySymbol(bitgetSnapshots, deployment.symbol);
-          await upsertScalpV2PositionSnapshot({
-            deploymentId: deployment.deploymentId,
-            venue: deployment.venue,
-            symbol: deployment.symbol,
-            side: snapshot?.side || null,
-            entryPrice: snapshot?.entryPrice ?? null,
-            leverage: snapshot?.leverage ?? null,
-            size: snapshot?.size ?? null,
-            dealId: snapshot?.dealId ?? null,
-            dealReference: snapshot?.dealReference ?? null,
-            brokerSnapshotAtMs: snapshot?.updatedAtMs ?? nowMs(),
-            status: snapshot?.side ? "open" : "flat",
-            rawPayload: snapshot ? { snapshot } : {},
-          });
-        } else {
-          const snapshot = pickCapitalSnapshotBySymbol(capitalSnapshots, deployment.symbol);
-          await upsertScalpV2PositionSnapshot({
-            deploymentId: deployment.deploymentId,
-            venue: deployment.venue,
-            symbol: deployment.symbol,
-            side: snapshot?.side || null,
-            entryPrice: snapshot?.entryPrice ?? null,
-            leverage: snapshot?.leverage ?? null,
-            size: snapshot?.size ?? null,
-            dealId: snapshot?.dealId ?? null,
-            dealReference: snapshot?.dealReference ?? null,
-            brokerSnapshotAtMs: snapshot?.updatedAtMs ?? nowMs(),
-            status: snapshot?.side ? "open" : "flat",
-            rawPayload: snapshot ? { snapshot } : {},
-          });
-
-          const reasonCodes = deploymentDryRun
-            ? ["SCALP_V2_CAPITAL_SHADOW_ONLY"]
-            : ["SCALP_V2_CAPITAL_EXECUTION_NOT_IMPLEMENTED"];
-
-          await appendScalpV2ExecutionEvent(
-            buildEvent({
-              deploymentId: deployment.deploymentId,
-              venue: deployment.venue,
-              symbol: deployment.symbol,
-              strategyId: deployment.strategyId,
-              tuneId: deployment.tuneId,
-              entrySessionProfile: deployment.entrySessionProfile,
-              eventType: deploymentDryRun ? "position_snapshot" : "order_rejected",
-              reasonCodes,
-              sourceOfTruth: "broker",
-              rawPayload: {
-                dryRun: deploymentDryRun,
-                snapshot,
-              },
-            }),
-          );
-        }
+        const snapshot =
+          deployment.venue === "capital"
+            ? pickCapitalSnapshotBySymbol(capitalSnapshots, deployment.symbol)
+            : pickBitgetSnapshotBySymbol(bitgetSnapshots, deployment.symbol);
+        await upsertScalpV2PositionSnapshot({
+          deploymentId: deployment.deploymentId,
+          venue: deployment.venue,
+          symbol: deployment.symbol,
+          side: snapshot?.side || null,
+          entryPrice: snapshot?.entryPrice ?? null,
+          leverage: snapshot?.leverage ?? null,
+          size: snapshot?.size ?? null,
+          dealId: snapshot?.dealId ?? null,
+          dealReference: snapshot?.dealReference ?? null,
+          brokerSnapshotAtMs: snapshot?.updatedAtMs ?? nowMs(),
+          status: snapshot?.side ? "open" : "flat",
+          rawPayload: snapshot ? { snapshot } : {},
+        });
         succeeded += 1;
       } catch (err: any) {
         failed += 1;
