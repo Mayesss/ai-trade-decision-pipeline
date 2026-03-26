@@ -95,6 +95,20 @@ test("promotion diagnostics route validates scope and session filters", async ()
   assert.equal(asRecord(invalidSessionRes.body).error, "invalid_session");
 });
 
+test("promotion diagnostics route allows omitted session filter", async () => {
+  const req = createReq("/api/scalp/ops/promotion-diagnostics", {
+    scope: "actionable",
+  });
+  const res = createRes();
+  await handler(req as any, res as any);
+  const body = asRecord(res.body);
+  assert.notEqual(body.error, "invalid_session");
+  if (res.statusCode === 200) {
+    assert.equal(body.sessionScope, "all");
+    assert.equal(body.entrySessionProfile, null);
+  }
+});
+
 test("promotion diagnostics route only accepts GET", async () => {
   const req = createReq(
     "/api/scalp/ops/promotion-diagnostics",

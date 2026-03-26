@@ -252,16 +252,19 @@ export default async function handler(
       generatedAtMs,
     });
   }
-  const entrySessionProfile = parseScalpEntrySessionProfileStrict(
-    firstQueryValue(req.query.session),
-  );
-  if (!entrySessionProfile) {
+  const requestedSessionRaw = firstQueryValue(req.query.session);
+  const entrySessionProfile = requestedSessionRaw
+    ? parseScalpEntrySessionProfileStrict(requestedSessionRaw)
+    : null;
+  if (requestedSessionRaw && !entrySessionProfile) {
     return res.status(400).json({
       error: "invalid_session",
       message: `Use session=${listScalpEntrySessionProfiles().join("|")}.`,
       generatedAtMs,
     });
   }
+  const sessionFilter = entrySessionProfile || "";
+  const sessionScope = entrySessionProfile || "all";
 
   const limit = parseLimit(firstQueryValue(req.query.limit));
   const lookbackWeeks = parseLookbackWeeks(firstQueryValue(req.query.lookbackWeeks));
@@ -273,12 +276,21 @@ export default async function handler(
   const windowFromTs = windowToTs - lookbackWeeks * ONE_WEEK_MS;
 
   try {
-    const jobs = await loadScalpPipelineJobsHealth({ entrySessionProfile });
+    const jobs = entrySessionProfile
+      ? await loadScalpPipelineJobsHealth({ entrySessionProfile })
+      : (
+          await Promise.all(
+            listScalpEntrySessionProfiles().map((session) =>
+              loadScalpPipelineJobsHealth({ entrySessionProfile: session }),
+            ),
+          )
+        ).flat();
     if (!isScalpPgConfigured()) {
       return res.status(200).json({
         ok: true,
         generatedAtMs,
-        entrySessionProfile,
+        entrySessionProfile: entrySessionProfile || null,
+        sessionScope,
         scope,
         limit,
         lookbackWeeks,
@@ -323,13 +335,14 @@ export default async function handler(
         COUNT(*) FILTER (WHERE status = 'failed')::bigint AS failed,
         COUNT(*) FILTER (WHERE status = 'succeeded')::bigint AS succeeded
       FROM scalp_deployment_weekly_metrics
-      WHERE entry_session_profile = ${entrySessionProfile}
+      WHERE (${sessionFilter} = '' OR entry_session_profile = ${sessionFilter})
         AND week_start >= ${new Date(windowFromTs)}
         AND week_start < ${new Date(windowToTs)};
     `);
 
     const latestPromotionRunRows = await db.$queryRaw<
       Array<{
+        entrySessionProfile: string;
         status: string;
         startedAtMs: bigint | number | null;
         finishedAtMs: bigint | number | null;
@@ -343,6 +356,7 @@ export default async function handler(
       }>
     >(sql`
       SELECT
+        entry_session_profile AS "entrySessionProfile",
         status,
         (EXTRACT(EPOCH FROM started_at) * 1000)::bigint AS "startedAtMs",
         (EXTRACT(EPOCH FROM finished_at) * 1000)::bigint AS "finishedAtMs",
@@ -355,9 +369,9 @@ export default async function handler(
         error
       FROM scalp_pipeline_job_runs
       WHERE job_kind = 'promotion'
-        AND entry_session_profile = ${entrySessionProfile}
+        AND (${sessionFilter} = '' OR entry_session_profile = ${sessionFilter})
       ORDER BY started_at DESC
-      LIMIT 1;
+      LIMIT ${entrySessionProfile ? 1 : 8};
     `);
 
     const rows = await db.$queryRaw<Array<DiagnosticsRawRow>>(sql`
@@ -410,7 +424,7 @@ export default async function handler(
           AND m.week_start >= ${new Date(windowFromTs)}
           AND m.week_start < ${new Date(windowToTs)}
       ) metrics ON TRUE
-      WHERE d.entry_session_profile = ${entrySessionProfile}
+      WHERE (${sessionFilter} = '' OR d.entry_session_profile = ${sessionFilter})
         AND (${symbol} = '' OR d.symbol = ${symbol})
         AND (${strategyId} = '' OR d.strategy_id = ${strategyId})
         AND (${deploymentId} = '' OR d.deployment_id = ${deploymentId})
@@ -427,23 +441,37 @@ export default async function handler(
       succeeded: Math.max(0, Math.floor(Number(queueRow.succeeded || 0))),
     };
 
+    const latestPromotionRuns = latestPromotionRunRows.map((row) => ({
+      entrySessionProfile: String(row.entrySessionProfile || "").trim() || null,
+      status: String(row.status || "").trim().toLowerCase(),
+      startedAtMs: asTsMs(row.startedAtMs),
+      finishedAtMs: asTsMs(row.finishedAtMs),
+      durationMs:
+        Number.isFinite(Number(row.durationMs)) && Number(row.durationMs) >= 0
+          ? Math.floor(Number(row.durationMs))
+          : null,
+      processed: Math.max(0, Math.floor(Number(row.processed || 0))),
+      succeeded: Math.max(0, Math.floor(Number(row.succeeded || 0))),
+      failed: Math.max(0, Math.floor(Number(row.failed || 0))),
+      pendingAfter: Math.max(0, Math.floor(Number(row.pendingAfter || 0))),
+      progressLabel: String(row.progressLabel || "").trim() || null,
+      error: String(row.error || "").trim() || null,
+    }));
     const latestPromotionRun = (() => {
-      const row = latestPromotionRunRows[0];
+      const row = latestPromotionRuns[0];
       if (!row) return null;
       return {
+        entrySessionProfile: row.entrySessionProfile,
         status: String(row.status || "").trim().toLowerCase(),
-        startedAtMs: asTsMs(row.startedAtMs),
-        finishedAtMs: asTsMs(row.finishedAtMs),
-        durationMs:
-          Number.isFinite(Number(row.durationMs)) && Number(row.durationMs) >= 0
-            ? Math.floor(Number(row.durationMs))
-            : null,
-        processed: Math.max(0, Math.floor(Number(row.processed || 0))),
-        succeeded: Math.max(0, Math.floor(Number(row.succeeded || 0))),
-        failed: Math.max(0, Math.floor(Number(row.failed || 0))),
-        pendingAfter: Math.max(0, Math.floor(Number(row.pendingAfter || 0))),
-        progressLabel: String(row.progressLabel || "").trim() || null,
-        error: String(row.error || "").trim() || null,
+        startedAtMs: row.startedAtMs,
+        finishedAtMs: row.finishedAtMs,
+        durationMs: row.durationMs,
+        processed: row.processed,
+        succeeded: row.succeeded,
+        failed: row.failed,
+        pendingAfter: row.pendingAfter,
+        progressLabel: row.progressLabel,
+        error: row.error,
       };
     })();
 
@@ -658,7 +686,8 @@ export default async function handler(
     return res.status(200).json({
       ok: true,
       generatedAtMs,
-      entrySessionProfile,
+      entrySessionProfile: entrySessionProfile || null,
+      sessionScope,
       scope,
       limit,
       lookbackWeeks,
@@ -670,6 +699,7 @@ export default async function handler(
       pgConfigured: true,
       jobs,
       latestPromotionRun,
+      latestPromotionRuns,
       queue,
       totals,
       reasonCounts,
