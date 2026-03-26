@@ -2,7 +2,6 @@ export const config = { runtime: "nodejs" };
 
 import type { NextApiRequest, NextApiResponse } from "next";
 
-import { requireAdminAccess } from "../../../../lib/admin";
 import {
   isScalpPgConfigured,
   scalpPrisma,
@@ -242,7 +241,6 @@ export default async function handler(
       .status(405)
       .json({ error: "Method Not Allowed", message: "Use GET" });
   }
-  if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
 
   const generatedAtMs = Date.now();

@@ -57,15 +57,18 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-test("promotion diagnostics route enforces admin auth header when configured", async () => {
+test("promotion diagnostics route does not require admin auth header", async () => {
   const originalSecret = process.env.ADMIN_ACCESS_SECRET;
   try {
     process.env.ADMIN_ACCESS_SECRET = "secret_test_value";
-    const req = createReq("/api/scalp/ops/promotion-diagnostics", {});
+    const req = createReq("/api/scalp/ops/promotion-diagnostics", {
+      scope: "actionable",
+      session: "berlin",
+    });
     const res = createRes();
     await handler(req as any, res as any);
-    assert.equal(res.statusCode, 401);
-    assert.equal(asRecord(res.body).error, "Unauthorized");
+    assert.notEqual(res.statusCode, 401);
+    assert.notEqual(asRecord(res.body).error, "Unauthorized");
   } finally {
     if (originalSecret === undefined) delete process.env.ADMIN_ACCESS_SECRET;
     else process.env.ADMIN_ACCESS_SECRET = originalSecret;
