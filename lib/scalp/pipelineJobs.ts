@@ -4844,7 +4844,8 @@ async function runStagedEvalCutoverMigration(params: {
             entry_session_profile AS "entrySessionProfile",
             enabled
         FROM scalp_deployments
-        WHERE enabled = FALSE;
+        WHERE enabled = FALSE
+          AND COALESCE((promotion_gate #>> '{halving,mode}')::text, '') <> 'staged';
     `);
   if (!nonEnabledRows.length) {
     return {
@@ -4940,26 +4941,6 @@ async function runStagedEvalCutoverMigration(params: {
     }
 
     const windowFromTs = params.epochWeekStartMs - targetWeeks * ONE_WEEK_MS;
-    const preserveRows = await db.$queryRaw<
-      Array<{ count: bigint | number | string }>
-    >(sql`
-            SELECT COUNT(*)::bigint AS count
-            FROM scalp_deployment_weekly_metrics
-            WHERE deployment_id = ${row.deploymentId}
-              AND (
-                status IN ('succeeded', 'running')
-                OR (
-                  status IN ('pending', 'retry_wait')
-                  AND week_start >= ${new Date(windowFromTs)}
-                  AND week_start < ${new Date(params.epochWeekStartMs)}
-                )
-              );
-        `);
-    const preserveCount = Math.max(
-      0,
-      Math.floor(Number(preserveRows[0]?.count || 0)),
-    );
-    rowsPreserved += preserveCount;
     const trimmed = Number(
       await db.$executeRaw(sql`
             DELETE FROM scalp_deployment_weekly_metrics
@@ -6117,13 +6098,21 @@ export async function runPromotionPipelineJob(
     const stageCRequiredWeeks = stagedEval.enabled
       ? stagedEval.stageCWeeks
       : promotionRequiredWeeks;
+    const shouldRunStagedCutover =
+      !entrySessionProfile || entrySessionProfile === "berlin";
 
     const db = scalpPrisma();
-    const stagedCutover = await runStagedEvalCutoverMigration({
-      cfg: stagedEval,
-      nowMs,
-      epochWeekStartMs: windowToTs,
-    });
+    const stagedCutover = shouldRunStagedCutover
+      ? await runStagedEvalCutoverMigration({
+          cfg: stagedEval,
+          nowMs,
+          epochWeekStartMs: windowToTs,
+        })
+      : {
+          rebucketed: 0,
+          rowsTrimmed: 0,
+          rowsPreserved: 0,
+        };
     const rolloverDueRows = await db.$queryRaw<
       Array<{
         deploymentId: string;
