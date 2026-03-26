@@ -757,6 +757,59 @@ export async function appendScalpV2LedgerRow(row: {
   `);
 }
 
+export async function listScalpV2LedgerRows(params: {
+  deploymentIds: string[];
+  fromTsMs: number;
+  toTsMs: number;
+  limit?: number;
+}): Promise<
+  Array<{
+    deploymentId: string;
+    tsExitMs: number;
+    rMultiple: number;
+  }>
+> {
+  if (!isScalpPgConfigured()) return [];
+  const deploymentIds = Array.from(
+    new Set(
+      (params.deploymentIds || [])
+        .map((row) => String(row || "").trim())
+        .filter(Boolean),
+    ),
+  );
+  if (!deploymentIds.length) return [];
+
+  const fromTsMs = Math.max(0, Math.floor(Number(params.fromTsMs) || 0));
+  const toTsMs = Math.max(fromTsMs + 1, Math.floor(Number(params.toTsMs) || 0));
+  const limit = Math.max(1, Math.min(1_000_000, Math.floor(params.limit || 250_000)));
+
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<
+    Array<{
+      deploymentId: string;
+      tsExitMs: bigint;
+      rMultiple: number;
+    }>
+  >(sql`
+    SELECT
+      deployment_id AS "deploymentId",
+      (EXTRACT(EPOCH FROM ts_exit) * 1000.0)::bigint AS "tsExitMs",
+      r_multiple::double precision AS "rMultiple"
+    FROM scalp_v2_ledger
+    WHERE deployment_id IN (${join(deploymentIds)})
+      AND ts_exit >= TO_TIMESTAMP(${fromTsMs} / 1000.0)
+      AND ts_exit < TO_TIMESTAMP(${toTsMs} / 1000.0)
+    ORDER BY ts_exit ASC
+    LIMIT ${limit};
+  `);
+
+  return rows.map((row) => ({
+    deploymentId: String(row.deploymentId || "").trim(),
+    tsExitMs: Number(row.tsExitMs || 0),
+    rMultiple: Number.isFinite(Number(row.rMultiple)) ? Number(row.rMultiple) : 0,
+  }));
+}
+
 export async function upsertScalpV2PositionSnapshot(params: {
   deploymentId: string;
   venue: ScalpV2Venue;

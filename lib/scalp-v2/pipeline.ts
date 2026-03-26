@@ -3,6 +3,10 @@ import crypto from "crypto";
 import { fetchCapitalOpenPositionSnapshots } from "../capital";
 import { getScalpVenueAdapter } from "../scalp/adapters";
 import { runScalpExecuteCycle } from "../scalp/engine";
+import {
+  resolveCompletedWeekWindowToUtc,
+  startOfWeekMondayUtc,
+} from "../scalp/weekWindows";
 
 import { getScalpV2RuntimeConfig } from "./config";
 import {
@@ -13,6 +17,7 @@ import {
   finalizeScalpV2Job,
   listScalpV2Candidates,
   listScalpV2Deployments,
+  listScalpV2LedgerRows,
   listScalpV2OpenPositions,
   loadScalpV2RuntimeConfig,
   snapshotScalpV2DailyMetrics,
@@ -44,6 +49,536 @@ function hashScoreSeed(value: string): number {
 
 function nowMs(): number {
   return Date.now();
+}
+
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const ONE_WEEK_MS = 7 * ONE_DAY_MS;
+const LIFECYCLE_SUSPEND_WINDOW_MS = 180 * ONE_DAY_MS;
+
+type V2LifecycleState = "candidate" | "graduated" | "suspended" | "retired";
+
+interface V2PromotionLifecycle {
+  state: V2LifecycleState;
+  tuneFamily: string;
+  suspendedUntilMs: number | null;
+  retiredUntilMs: number | null;
+  suspensionEventsMs: number[];
+  suspensionCount180d: number;
+  lastSeatReleaseAtMs: number | null;
+}
+
+interface ScalpV2PromotionPolicy {
+  minCompletedWeeks: number;
+  minTradesPerWeek: number;
+  minTotalTrades: number;
+  minSlices: number;
+  minProfitablePct: number;
+  minMedianExpectancyR: number;
+  minP25ExpectancyR: number;
+  minWorstNetR: number;
+  maxTopWeekPnlConcentrationPct: number;
+  minFourWeekNetR: number;
+  fourWeekGroupCount: number;
+  fourWeekGroupSize: number;
+  exactLoserSuspendMs: number;
+  neighborSuspendMs: number;
+  retireMs: number;
+  retireOnSuspensionCount: number;
+}
+
+type PromotionFreshness = {
+  ready: boolean;
+  requiredWeeks: number;
+  completedWeeks: number;
+  missingWeeks: number;
+  windowFromTs: number;
+  windowToTs: number;
+  missingWeekStarts: number[];
+};
+
+type WeeklyAggregationRow = {
+  weekStartTs: number;
+  trades: number;
+  netR: number;
+  expectancyR: number;
+};
+
+type WeeklyRobustnessMetrics = {
+  slices: number;
+  profitableSlices: number;
+  profitablePct: number;
+  meanExpectancyR: number;
+  trimmedMeanExpectancyR: number;
+  p25ExpectancyR: number;
+  medianExpectancyR: number;
+  worstNetR: number;
+  topWeekPnlConcentrationPct: number;
+  totalNetR: number;
+  fourWeekGroupNetR: number[];
+  fourWeekGroupsEvaluated: number;
+  fourWeekMinNetR: number | null;
+  minTradesPerWeekObserved: number;
+  totalTrades: number;
+  evaluatedAtMs: number;
+};
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+function envBool(name: string, fallback: boolean): boolean {
+  const raw = String(process.env[name] || "")
+    .trim()
+    .toLowerCase();
+  if (!raw) return fallback;
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  return fallback;
+}
+
+function toFinite(value: unknown, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return n;
+}
+
+function toBoundedPercent(value: unknown, fallback: number): number {
+  const n = toFinite(value, fallback);
+  return Math.max(0, Math.min(100, n));
+}
+
+function toPositiveInt(value: unknown, fallback: number, max = 100_000): number {
+  const n = Math.floor(toFinite(value, fallback));
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.max(1, Math.min(max, n));
+}
+
+function resolvePromotionPolicy(): ScalpV2PromotionPolicy {
+  const minCompletedWeeks = Math.max(
+    12,
+    Math.min(
+      52,
+      toPositiveInt(process.env.SCALP_V2_PROMOTION_MIN_COMPLETED_WEEKS, 12, 52),
+    ),
+  );
+  const minTradesPerWeek = Math.max(
+    0,
+    Math.min(
+      500,
+      Math.floor(
+        toFinite(
+          process.env.SCALP_V2_PROMOTION_MIN_TRADES_PER_WEEK,
+          2,
+        ),
+      ),
+    ),
+  );
+  const minTotalTradesDefault = Math.max(0, minCompletedWeeks * minTradesPerWeek);
+  return {
+    minCompletedWeeks,
+    minTradesPerWeek,
+    minTotalTrades: Math.max(
+      0,
+      Math.floor(
+        toFinite(
+          process.env.SCALP_V2_PROMOTION_MIN_TOTAL_TRADES,
+          minTotalTradesDefault,
+        ),
+      ),
+    ),
+    minSlices: Math.max(
+      2,
+      Math.min(
+        104,
+        toPositiveInt(process.env.SCALP_V2_PROMOTION_MIN_SLICES, 8, 104),
+      ),
+    ),
+    minProfitablePct: toBoundedPercent(
+      process.env.SCALP_V2_PROMOTION_MIN_PROFITABLE_PCT,
+      55,
+    ),
+    minMedianExpectancyR: toFinite(
+      process.env.SCALP_V2_PROMOTION_MIN_MEDIAN_EXPECTANCY_R,
+      0.02,
+    ),
+    minP25ExpectancyR: toFinite(
+      process.env.SCALP_V2_PROMOTION_MIN_P25_EXPECTANCY_R,
+      -0.02,
+    ),
+    minWorstNetR: toFinite(
+      process.env.SCALP_V2_PROMOTION_MIN_WORST_NET_R,
+      -1.5,
+    ),
+    maxTopWeekPnlConcentrationPct: toBoundedPercent(
+      process.env.SCALP_V2_PROMOTION_MAX_TOP_WEEK_PNL_CONCENTRATION_PCT,
+      55,
+    ),
+    minFourWeekNetR: toFinite(process.env.SCALP_V2_PROMOTION_MIN_4W_NET_R, 8),
+    fourWeekGroupCount: Math.max(
+      1,
+      Math.min(
+        13,
+        toPositiveInt(process.env.SCALP_V2_PROMOTION_4W_GROUP_COUNT, 3, 13),
+      ),
+    ),
+    fourWeekGroupSize: Math.max(
+      2,
+      Math.min(
+        8,
+        toPositiveInt(process.env.SCALP_V2_PROMOTION_4W_GROUP_SIZE, 4, 8),
+      ),
+    ),
+    exactLoserSuspendMs:
+      Math.max(
+        1,
+        Math.min(
+          52,
+          toPositiveInt(
+            process.env.SCALP_V2_PROMOTION_EXACT_LOSER_SUSPEND_WEEKS,
+            12,
+            52,
+          ),
+        ),
+      ) * ONE_WEEK_MS,
+    neighborSuspendMs:
+      Math.max(
+        1,
+        Math.min(
+          52,
+          toPositiveInt(
+            process.env.SCALP_V2_PROMOTION_NEIGHBOR_SUSPEND_WEEKS,
+            8,
+            52,
+          ),
+        ),
+      ) * ONE_WEEK_MS,
+    retireMs:
+      Math.max(
+        7,
+        Math.min(
+          365,
+          toPositiveInt(process.env.SCALP_V2_PROMOTION_RETIRE_DAYS, 180, 365),
+        ),
+      ) * ONE_DAY_MS,
+    retireOnSuspensionCount: Math.max(
+      2,
+      Math.min(
+        10,
+        toPositiveInt(
+          process.env.SCALP_V2_PROMOTION_RETIRE_ON_SUSPENSION_COUNT,
+          3,
+          10,
+        ),
+      ),
+    ),
+  };
+}
+
+function normalizeTuneFamily(tuneIdRaw: unknown): string {
+  const tuneId = String(tuneIdRaw || "")
+    .trim()
+    .toLowerCase();
+  if (!tuneId || tuneId === "default" || tuneId === "base") return "base";
+  if (tuneId.startsWith("auto_mix")) return "auto_mix";
+  if (tuneId.startsWith("auto_tr")) return "auto_tr";
+  if (tuneId.startsWith("auto_ts")) return "auto_ts";
+  if (tuneId.startsWith("auto_tp")) return "auto_tp";
+  if (tuneId.startsWith("auto_sw")) return "auto_sw";
+  if (tuneId.startsWith("auto_bh")) return "auto_bh";
+  if (tuneId.startsWith("auto_sp")) return "auto_sp";
+  const split = tuneId.split("_").filter(Boolean);
+  return split[0] || "base";
+}
+
+function normalizeLifecycleState(
+  value: unknown,
+  fallback: V2LifecycleState,
+): V2LifecycleState {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "candidate") return "candidate";
+  if (normalized === "graduated") return "graduated";
+  if (normalized === "suspended") return "suspended";
+  if (normalized === "retired") return "retired";
+  return fallback;
+}
+
+function asTsMs(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.floor(n);
+}
+
+function normalizeLifecycle(params: {
+  promotionGate: Record<string, unknown> | null;
+  tuneId: string;
+  enabled: boolean;
+  nowTs: number;
+}): V2PromotionLifecycle {
+  const fallbackState: V2LifecycleState = params.enabled
+    ? "graduated"
+    : "candidate";
+  const lifecycleRaw = asRecord(asRecord(params.promotionGate).lifecycle);
+  const state = normalizeLifecycleState(lifecycleRaw.state, fallbackState);
+  const suspendedUntilMs = asTsMs(lifecycleRaw.suspendedUntilMs);
+  const retiredUntilMs = asTsMs(lifecycleRaw.retiredUntilMs);
+  const eventsRaw = Array.isArray(lifecycleRaw.suspensionEventsMs)
+    ? lifecycleRaw.suspensionEventsMs
+    : [];
+  const events = eventsRaw
+    .map((row) => asTsMs(row))
+    .filter((row): row is number => row !== null)
+    .sort((a, b) => a - b)
+    .filter((row) => row >= params.nowTs - LIFECYCLE_SUSPEND_WINDOW_MS);
+  const suspensionCount180d = Math.max(
+    events.length,
+    Math.max(0, Math.floor(Number(lifecycleRaw.suspensionCount180d) || 0)),
+  );
+  const lifecycle: V2PromotionLifecycle = {
+    state,
+    tuneFamily:
+      String(lifecycleRaw.tuneFamily || "").trim().toLowerCase() ||
+      normalizeTuneFamily(params.tuneId),
+    suspendedUntilMs,
+    retiredUntilMs,
+    suspensionEventsMs: events,
+    suspensionCount180d,
+    lastSeatReleaseAtMs: asTsMs(lifecycleRaw.lastSeatReleaseAtMs),
+  };
+  if (
+    lifecycle.state === "suspended" &&
+    lifecycle.suspendedUntilMs !== null &&
+    lifecycle.suspendedUntilMs <= params.nowTs
+  ) {
+    lifecycle.state = params.enabled ? "graduated" : "candidate";
+    lifecycle.suspendedUntilMs = null;
+  }
+  if (
+    lifecycle.state === "retired" &&
+    lifecycle.retiredUntilMs !== null &&
+    lifecycle.retiredUntilMs <= params.nowTs
+  ) {
+    lifecycle.state = params.enabled ? "graduated" : "candidate";
+    lifecycle.retiredUntilMs = null;
+  }
+  return lifecycle;
+}
+
+function lifecycleIsSuppressed(
+  lifecycle: V2PromotionLifecycle,
+  nowTs: number,
+): boolean {
+  if (lifecycle.state === "retired") {
+    return lifecycle.retiredUntilMs === null || lifecycle.retiredUntilMs > nowTs;
+  }
+  if (lifecycle.state === "suspended") {
+    return (
+      lifecycle.suspendedUntilMs === null || lifecycle.suspendedUntilMs > nowTs
+    );
+  }
+  return false;
+}
+
+function applyLifecycleSuspension(params: {
+  lifecycle: V2PromotionLifecycle;
+  nowTs: number;
+  durationMs: number;
+  retireMs: number;
+  retireOnSuspensionCount: number;
+}): V2PromotionLifecycle {
+  const events = params.lifecycle.suspensionEventsMs
+    .filter((row) => row >= params.nowTs - LIFECYCLE_SUSPEND_WINDOW_MS)
+    .concat(params.nowTs)
+    .sort((a, b) => a - b);
+  const suspensionCount180d = events.length;
+  if (suspensionCount180d >= params.retireOnSuspensionCount) {
+    return {
+      ...params.lifecycle,
+      state: "retired",
+      suspendedUntilMs: null,
+      retiredUntilMs: params.nowTs + params.retireMs,
+      suspensionEventsMs: events,
+      suspensionCount180d,
+    };
+  }
+  return {
+    ...params.lifecycle,
+    state: "suspended",
+    suspendedUntilMs: params.nowTs + Math.max(ONE_DAY_MS, params.durationMs),
+    retiredUntilMs: null,
+    suspensionEventsMs: events,
+    suspensionCount180d,
+  };
+}
+
+function median(values: number[]): number {
+  if (!values.length) return 0;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[mid] || 0;
+  const left = sorted[mid - 1] || 0;
+  const right = sorted[mid] || 0;
+  return (left + right) / 2;
+}
+
+function quantile(values: number[], p: number): number {
+  if (!values.length) return 0;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const clampedP = Math.max(0, Math.min(1, p));
+  const index = (sorted.length - 1) * clampedP;
+  const low = Math.floor(index);
+  const high = Math.ceil(index);
+  const lowValue = sorted[low] || 0;
+  const highValue = sorted[high] || 0;
+  if (low === high) return lowValue;
+  const weight = index - low;
+  return lowValue + (highValue - lowValue) * weight;
+}
+
+function mean(values: number[]): number {
+  if (!values.length) return 0;
+  return values.reduce((acc, row) => acc + row, 0) / values.length;
+}
+
+function trimmedMean(values: number[], trimRatio: number): number {
+  if (!values.length) return 0;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const clampedTrim = Math.max(0, Math.min(0.49, trimRatio));
+  const trimCount = Math.floor(sorted.length * clampedTrim);
+  if (trimCount * 2 >= sorted.length) return mean(sorted);
+  const trimmed = sorted.slice(trimCount, sorted.length - trimCount);
+  return mean(trimmed.length ? trimmed : sorted);
+}
+
+function topPositiveNetConcentrationPct(values: number[]): number {
+  const positiveNet = values.map((value) => Math.max(0, value));
+  const totalPositive = positiveNet.reduce((acc, value) => acc + value, 0);
+  if (totalPositive <= 0) return 100;
+  const topPositive = positiveNet.length ? Math.max(...positiveNet) : 0;
+  return (topPositive / totalPositive) * 100;
+}
+
+function buildFreshness(params: {
+  weeklyByWeekStart: Map<number, { trades: number; netR: number }>;
+  requiredWeeks: number;
+  nowTs: number;
+}): PromotionFreshness {
+  const requiredWeeks = Math.max(1, Math.min(52, params.requiredWeeks));
+  const windowToTs = resolveCompletedWeekWindowToUtc(params.nowTs);
+  const windowFromTs = windowToTs - requiredWeeks * ONE_WEEK_MS;
+  let completedWeeks = 0;
+  const missingWeekStarts: number[] = [];
+
+  for (let i = 0; i < requiredWeeks; i += 1) {
+    const weekStart = windowFromTs + i * ONE_WEEK_MS;
+    if (params.weeklyByWeekStart.has(weekStart)) completedWeeks += 1;
+    else missingWeekStarts.push(weekStart);
+  }
+
+  const missingWeeks = missingWeekStarts.length;
+  return {
+    ready: missingWeeks === 0 && completedWeeks === requiredWeeks,
+    requiredWeeks,
+    completedWeeks,
+    missingWeeks,
+    windowFromTs,
+    windowToTs,
+    missingWeekStarts: missingWeeks > 0 ? missingWeekStarts : [],
+  };
+}
+
+function computeWeeklyMetrics(params: {
+  weeklyRows: WeeklyAggregationRow[];
+  nowTs: number;
+  fourWeekGroupSize: number;
+  fourWeekGroupCount: number;
+}): WeeklyRobustnessMetrics | null {
+  if (!params.weeklyRows.length) return null;
+  const orderedRows = params.weeklyRows
+    .slice()
+    .sort((a, b) => a.weekStartTs - b.weekStartTs);
+  const profitableSlices = orderedRows.filter((row) => row.netR > 0).length;
+  const expectancyRows = orderedRows.map((row) => row.expectancyR);
+  const netRows = orderedRows.map((row) => row.netR);
+  const tradesRows = orderedRows.map((row) => row.trades);
+  const slices = orderedRows.length;
+  const recentNetRows = netRows.slice(
+    -params.fourWeekGroupSize * params.fourWeekGroupCount,
+  );
+  const fourWeekGroupNetR: number[] = [];
+  for (let idx = 0; idx < params.fourWeekGroupCount; idx += 1) {
+    const start = idx * params.fourWeekGroupSize;
+    const end = start + params.fourWeekGroupSize;
+    if (end > recentNetRows.length) break;
+    fourWeekGroupNetR.push(
+      recentNetRows.slice(start, end).reduce((acc, row) => acc + row, 0),
+    );
+  }
+  const totalTrades = tradesRows.reduce((acc, row) => acc + row, 0);
+  return {
+    slices,
+    profitableSlices,
+    profitablePct: (profitableSlices / slices) * 100,
+    meanExpectancyR: mean(expectancyRows),
+    trimmedMeanExpectancyR: trimmedMean(expectancyRows, 0.15),
+    p25ExpectancyR: quantile(expectancyRows, 0.25),
+    medianExpectancyR: median(expectancyRows),
+    worstNetR: netRows.reduce(
+      (acc, row) => Math.min(acc, row),
+      Number.POSITIVE_INFINITY,
+    ),
+    topWeekPnlConcentrationPct: topPositiveNetConcentrationPct(netRows),
+    totalNetR: netRows.reduce((acc, row) => acc + row, 0),
+    fourWeekGroupNetR,
+    fourWeekGroupsEvaluated: fourWeekGroupNetR.length,
+    fourWeekMinNetR: fourWeekGroupNetR.length ? Math.min(...fourWeekGroupNetR) : null,
+    minTradesPerWeekObserved: tradesRows.length ? Math.min(...tradesRows) : 0,
+    totalTrades,
+    evaluatedAtMs: params.nowTs,
+  };
+}
+
+function evaluateWeeklyGate(params: {
+  metrics: WeeklyRobustnessMetrics | null;
+  policy: ScalpV2PromotionPolicy;
+}): { passed: boolean; reason: string | null } {
+  const metrics = params.metrics;
+  const policy = params.policy;
+  if (!metrics) return { passed: false, reason: "weekly_robustness_missing" };
+  if (metrics.slices < policy.minSlices) {
+    return { passed: false, reason: "weekly_slice_count_below_threshold" };
+  }
+  if (metrics.fourWeekGroupsEvaluated < policy.fourWeekGroupCount) {
+    return { passed: false, reason: "weekly_four_week_groups_missing" };
+  }
+  if (
+    (metrics.fourWeekMinNetR ?? Number.NEGATIVE_INFINITY) < policy.minFourWeekNetR
+  ) {
+    return { passed: false, reason: "weekly_four_week_net_r_below_threshold" };
+  }
+  if (metrics.profitablePct < policy.minProfitablePct) {
+    return { passed: false, reason: "weekly_profitable_pct_below_threshold" };
+  }
+  if (metrics.medianExpectancyR < policy.minMedianExpectancyR) {
+    return { passed: false, reason: "weekly_median_expectancy_below_threshold" };
+  }
+  if (metrics.p25ExpectancyR < policy.minP25ExpectancyR) {
+    return { passed: false, reason: "weekly_p25_expectancy_below_threshold" };
+  }
+  if (metrics.worstNetR < policy.minWorstNetR) {
+    return { passed: false, reason: "weekly_worst_net_r_below_threshold" };
+  }
+  if (
+    metrics.topWeekPnlConcentrationPct > policy.maxTopWeekPnlConcentrationPct
+  ) {
+    return {
+      passed: false,
+      reason: "weekly_top_week_concentration_above_threshold",
+    };
+  }
+  return { passed: true, reason: null };
 }
 
 function buildEvent(params: {
@@ -311,9 +846,21 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 
   try {
     const runtime = await loadScalpV2RuntimeConfig();
-    const allEvaluated = await listScalpV2Candidates({ status: "evaluated", limit: 10_000 });
-    if (!allEvaluated.length) {
-      details = { promoted: 0, reason: "no_evaluated_candidates" };
+    const policy = resolvePromotionPolicy();
+    const requireWinnerShortlist = envBool(
+      "SCALP_V2_REQUIRE_WINNER_SHORTLIST",
+      true,
+    );
+    const allCandidates = await listScalpV2Candidates({ limit: 10_000 });
+    const promotionPool = allCandidates.filter(
+      (row) =>
+        row.status === "evaluated" ||
+        row.status === "promoted" ||
+        row.status === "shadow",
+    );
+    const existingDeployments = await listScalpV2Deployments({ limit: 10_000 });
+    if (!promotionPool.length && !existingDeployments.length) {
+      details = { promoted: 0, reason: "no_promotable_candidates" };
       return buildScalpV2JobResult({
         jobKind: "promote",
         processed: 0,
@@ -325,63 +872,464 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     }
 
     const trimmed = enforceCandidateBudgets({
-      candidates: allEvaluated,
+      candidates: promotionPool,
       budgets: runtime.budgets,
     });
 
-    const enabledSlots = runtime.budgets.maxEnabledDeployments;
-    let enabledUsed = 0;
-
-    const rows: Parameters<typeof upsertScalpV2Deployments>[0]["rows"] = [];
-    for (const candidate of trimmed.kept) {
-      const isSeedLive = (runtime.seedLiveSymbolsByVenue[candidate.venue] || []).includes(candidate.symbol);
-      const enable = isSeedLive && enabledUsed < enabledSlots;
-      if (enable) enabledUsed += 1;
-
-      rows.push({
-        candidateId: candidate.id,
+    const candidateByDeploymentId = new Map(trimmed.kept.map((candidate) => [
+      toDeploymentId({
         venue: candidate.venue,
         symbol: candidate.symbol,
         strategyId: candidate.strategyId,
         tuneId: candidate.tuneId,
-        entrySessionProfile: candidate.entrySessionProfile,
-        enabled: enable,
-        liveMode: enable && runtime.liveEnabled ? "live" : "shadow",
-        promotionGate: {
-          eligible: true,
-          reason: null,
-          source: "v2_budgeted_auto",
-          promotedAtMs: nowMs(),
-          score: candidate.score,
-        },
-        riskProfile: runtime.riskProfile,
+        session: candidate.entrySessionProfile,
+      }),
+      candidate,
+    ]));
+    const droppedDeploymentIds = new Set(
+      trimmed.dropped.map((candidate) =>
+        toDeploymentId({
+          venue: candidate.venue,
+          symbol: candidate.symbol,
+          strategyId: candidate.strategyId,
+          tuneId: candidate.tuneId,
+          session: candidate.entrySessionProfile,
+        }),
+      ),
+    );
+    const existingByDeploymentId = new Map(
+      existingDeployments.map((row) => [row.deploymentId, row]),
+    );
+    const consideredDeploymentIds = Array.from(
+      new Set([
+        ...Array.from(existingByDeploymentId.keys()),
+        ...Array.from(candidateByDeploymentId.keys()),
+      ]),
+    );
+    if (!consideredDeploymentIds.length) {
+      details = { promoted: 0, reason: "no_considered_deployments" };
+      return buildScalpV2JobResult({
+        jobKind: "promote",
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        pendingAfter: 0,
+        details,
       });
     }
 
+    const nowTs = nowMs();
+    const windowToTs = resolveCompletedWeekWindowToUtc(nowTs);
+    const windowFromTs = windowToTs - policy.minCompletedWeeks * ONE_WEEK_MS;
+    const ledgerRows = await listScalpV2LedgerRows({
+      deploymentIds: consideredDeploymentIds,
+      fromTsMs: windowFromTs,
+      toTsMs: windowToTs,
+      limit: Math.max(50_000, consideredDeploymentIds.length * 5_000),
+    });
+    const weeklyByDeploymentId = new Map<
+      string,
+      Map<number, { trades: number; netR: number }>
+    >();
+    for (const row of ledgerRows) {
+      const deploymentId = String(row.deploymentId || "").trim();
+      if (!deploymentId) continue;
+      const tsExitMs = Math.floor(Number(row.tsExitMs) || 0);
+      if (!Number.isFinite(tsExitMs) || tsExitMs <= 0) continue;
+      const weekStartTs = startOfWeekMondayUtc(tsExitMs);
+      if (weekStartTs < windowFromTs || weekStartTs >= windowToTs) continue;
+      const weekly = weeklyByDeploymentId.get(deploymentId) || new Map();
+      const current = weekly.get(weekStartTs) || { trades: 0, netR: 0 };
+      current.trades += 1;
+      current.netR += Number.isFinite(Number(row.rMultiple))
+        ? Number(row.rMultiple)
+        : 0;
+      weekly.set(weekStartTs, current);
+      weeklyByDeploymentId.set(deploymentId, weekly);
+    }
+
+    type PromotionDraft = {
+      deploymentId: string;
+      candidateId: number | null;
+      venue: ScalpV2Venue;
+      symbol: string;
+      strategyId: string;
+      tuneId: string;
+      entrySessionProfile: ScalpV2Session;
+      score: number;
+      currentlyEnabled: boolean;
+      droppedByBudget: boolean;
+      lifecycle: V2PromotionLifecycle;
+      suppressed: boolean;
+      freshness: PromotionFreshness;
+      weeklyMetrics: WeeklyRobustnessMetrics | null;
+      weeklyGateReason: string | null;
+      eligible: boolean;
+      reason: string;
+      enabled: boolean;
+      shortlistIncluded: boolean;
+      exactLoser: boolean;
+      riskProfile: typeof runtime.riskProfile;
+      promotedAtMs: number | null;
+    };
+
+    const drafts: PromotionDraft[] = [];
+    for (const deploymentId of consideredDeploymentIds) {
+      const candidate = candidateByDeploymentId.get(deploymentId) || null;
+      const existing = existingByDeploymentId.get(deploymentId) || null;
+      const venue = (candidate?.venue || existing?.venue) as ScalpV2Venue | undefined;
+      const symbol = String(candidate?.symbol || existing?.symbol || "")
+        .trim()
+        .toUpperCase();
+      const strategyId = String(
+        candidate?.strategyId || existing?.strategyId || "",
+      )
+        .trim()
+        .toLowerCase();
+      const tuneId = String(candidate?.tuneId || existing?.tuneId || "default")
+        .trim()
+        .toLowerCase();
+      const entrySessionProfile = (candidate?.entrySessionProfile ||
+        existing?.entrySessionProfile ||
+        "berlin") as ScalpV2Session;
+      if (
+        !venue ||
+        !symbol ||
+        !strategyId ||
+        !entrySessionProfile
+      ) {
+        continue;
+      }
+      const currentlyEnabled = Boolean(existing?.enabled);
+      const lifecycle = normalizeLifecycle({
+        promotionGate: existing?.promotionGate || null,
+        tuneId,
+        enabled: currentlyEnabled,
+        nowTs,
+      });
+      const suppressed = lifecycleIsSuppressed(lifecycle, nowTs);
+      const weeklyByWeekStart = weeklyByDeploymentId.get(deploymentId) || new Map();
+      const freshness = buildFreshness({
+        weeklyByWeekStart,
+        requiredWeeks: policy.minCompletedWeeks,
+        nowTs,
+      });
+      const weeklyRows: WeeklyAggregationRow[] = [];
+      for (let idx = 0; idx < freshness.requiredWeeks; idx += 1) {
+        const weekStartTs = freshness.windowFromTs + idx * ONE_WEEK_MS;
+        const bucket = weeklyByWeekStart.get(weekStartTs);
+        if (!bucket) continue;
+        const trades = Math.max(0, Math.floor(bucket.trades));
+        weeklyRows.push({
+          weekStartTs,
+          trades,
+          netR: bucket.netR,
+          expectancyR: trades > 0 ? bucket.netR / trades : 0,
+        });
+      }
+      const weeklyMetrics = computeWeeklyMetrics({
+        weeklyRows,
+        nowTs,
+        fourWeekGroupSize: policy.fourWeekGroupSize,
+        fourWeekGroupCount: policy.fourWeekGroupCount,
+      });
+      const weeklyGate = evaluateWeeklyGate({
+        metrics: weeklyMetrics,
+        policy,
+      });
+      const hasPerWeekTradesDeficit =
+        policy.minTradesPerWeek > 0 &&
+        freshness.ready &&
+        weeklyRows.some((row) => row.trades < policy.minTradesPerWeek);
+      const totalTrades =
+        weeklyMetrics?.totalTrades ||
+        weeklyRows.reduce((acc, row) => acc + row.trades, 0);
+
+      let reason = "promotion_not_eligible";
+      let eligible = false;
+      if (suppressed) {
+        reason =
+          lifecycle.state === "retired"
+            ? "retired_cooldown"
+            : "suspended_cooldown";
+      } else if (!candidate) {
+        reason = droppedDeploymentIds.has(deploymentId)
+          ? "budget_cap_rejected"
+          : "candidate_missing";
+      } else if (!freshness.ready) {
+        reason = "fresh_weeks_incomplete";
+      } else if (hasPerWeekTradesDeficit) {
+        reason = "forward_min_trades_per_window_below_threshold";
+      } else if (totalTrades < policy.minTotalTrades) {
+        reason = "forward_total_trades_below_threshold";
+      } else if (!weeklyGate.passed) {
+        reason = weeklyGate.reason || "weekly_robustness_failed";
+      } else {
+        eligible = true;
+        reason = "weekly_robustness_passed";
+      }
+
+      const promotedAtMs = Number(
+        asRecord(existing?.promotionGate || {}).promotedAtMs,
+      );
+
+      drafts.push({
+        deploymentId,
+        candidateId: candidate?.id ?? existing?.candidateId ?? null,
+        venue,
+        symbol,
+        strategyId,
+        tuneId,
+        entrySessionProfile,
+        score: candidate?.score ?? Number.NEGATIVE_INFINITY,
+        currentlyEnabled,
+        droppedByBudget: droppedDeploymentIds.has(deploymentId),
+        lifecycle,
+        suppressed,
+        freshness,
+        weeklyMetrics,
+        weeklyGateReason: weeklyGate.reason,
+        eligible,
+        reason,
+        enabled: false,
+        shortlistIncluded: false,
+        exactLoser: false,
+        riskProfile: existing?.riskProfile || runtime.riskProfile,
+        promotedAtMs: Number.isFinite(promotedAtMs) ? promotedAtMs : null,
+      });
+    }
+
+    const winnerBySymbolStrategySession = new Map<string, PromotionDraft>();
+    for (const row of drafts) {
+      if (!row.eligible) continue;
+      const key = `${row.venue}:${row.symbol}:${row.strategyId}:${row.entrySessionProfile}`;
+      const current = winnerBySymbolStrategySession.get(key) || null;
+      if (!current || row.score > current.score) {
+        winnerBySymbolStrategySession.set(key, row);
+      }
+    }
+    const shortlistRows = Array.from(winnerBySymbolStrategySession.values()).sort(
+      (a, b) => b.score - a.score,
+    );
+    const winnerIds = new Set(
+      shortlistRows
+        .slice(
+          0,
+          Math.max(1, Math.floor(runtime.budgets.maxEnabledDeployments || 1)),
+        )
+        .map((row) => row.deploymentId),
+    );
+    for (const row of drafts) {
+      row.shortlistIncluded = winnerIds.has(row.deploymentId);
+      row.enabled =
+        row.eligible &&
+        (requireWinnerShortlist ? row.shortlistIncluded : true);
+      if (row.eligible && requireWinnerShortlist && !row.shortlistIncluded) {
+        row.reason = "winner_shortlist_excluded";
+      }
+      if (row.enabled) row.promotedAtMs = nowTs;
+    }
+
+    const loserFailReasons = new Set([
+      "weekly_slice_count_below_threshold",
+      "weekly_four_week_groups_missing",
+      "weekly_four_week_net_r_below_threshold",
+      "weekly_profitable_pct_below_threshold",
+      "weekly_median_expectancy_below_threshold",
+      "weekly_p25_expectancy_below_threshold",
+      "weekly_worst_net_r_below_threshold",
+      "weekly_top_week_concentration_above_threshold",
+      "forward_min_trades_per_window_below_threshold",
+      "forward_total_trades_below_threshold",
+    ]);
+    for (const row of drafts) {
+      row.exactLoser = Boolean(
+        row.currentlyEnabled &&
+          !row.enabled &&
+          row.freshness.ready &&
+          !row.suppressed &&
+          loserFailReasons.has(row.reason),
+      );
+      if (!row.exactLoser) continue;
+      row.lifecycle = applyLifecycleSuspension({
+        lifecycle: row.lifecycle,
+        nowTs,
+        durationMs: policy.exactLoserSuspendMs,
+        retireMs: policy.retireMs,
+        retireOnSuspensionCount: policy.retireOnSuspensionCount,
+      });
+      row.reason =
+        row.lifecycle.state === "retired"
+          ? "retired_cooldown"
+          : "suspended_exact_loser";
+    }
+
+    const neighborSuspended = new Set<string>();
+    for (const loser of drafts.filter((row) => row.exactLoser)) {
+      const loserFamily = loser.lifecycle.tuneFamily || normalizeTuneFamily(loser.tuneId);
+      for (const row of drafts) {
+        if (row.deploymentId === loser.deploymentId) continue;
+        if (row.enabled) continue;
+        if (neighborSuspended.has(row.deploymentId)) continue;
+        if (row.venue !== loser.venue) continue;
+        if (row.symbol !== loser.symbol) continue;
+        if (row.strategyId !== loser.strategyId) continue;
+        if (row.entrySessionProfile !== loser.entrySessionProfile) continue;
+        const family = row.lifecycle.tuneFamily || normalizeTuneFamily(row.tuneId);
+        if (family !== loserFamily) continue;
+        if (lifecycleIsSuppressed(row.lifecycle, nowTs)) continue;
+        row.lifecycle = applyLifecycleSuspension({
+          lifecycle: row.lifecycle,
+          nowTs,
+          durationMs: policy.neighborSuspendMs,
+          retireMs: policy.retireMs,
+          retireOnSuspensionCount: policy.retireOnSuspensionCount,
+        });
+        row.reason =
+          row.lifecycle.state === "retired"
+            ? "retired_cooldown"
+            : "suspended_neighbor_family";
+        neighborSuspended.add(row.deploymentId);
+      }
+    }
+
+    const enabledByUniquenessKey = new Map<string, PromotionDraft[]>();
+    for (const row of drafts.filter((draft) => draft.enabled)) {
+      const key = `${row.venue}:${row.symbol}:${row.strategyId}:${row.entrySessionProfile}`;
+      const bucket = enabledByUniquenessKey.get(key) || [];
+      bucket.push(row);
+      enabledByUniquenessKey.set(key, bucket);
+    }
+    let demotedByUniqueness = 0;
+    for (const bucket of enabledByUniquenessKey.values()) {
+      if (bucket.length <= 1) continue;
+      bucket.sort((a, b) => b.score - a.score);
+      for (let idx = 1; idx < bucket.length; idx += 1) {
+        const row = bucket[idx]!;
+        row.enabled = false;
+        row.reason = "symbol_strategy_uniqueness_demoted";
+        row.lifecycle.state = "candidate";
+        row.lifecycle.lastSeatReleaseAtMs = nowTs;
+        demotedByUniqueness += 1;
+      }
+    }
+
+    for (const row of drafts) {
+      if (!row.enabled && row.currentlyEnabled) {
+        row.lifecycle.lastSeatReleaseAtMs = row.lifecycle.lastSeatReleaseAtMs || nowTs;
+      }
+      if (!lifecycleIsSuppressed(row.lifecycle, nowTs)) {
+        row.lifecycle.state = row.enabled ? "graduated" : "candidate";
+      }
+    }
+
+    const rows: Parameters<typeof upsertScalpV2Deployments>[0]["rows"] = drafts.map(
+      (row) => ({
+        candidateId: row.candidateId,
+        venue: row.venue,
+        symbol: row.symbol,
+        strategyId: row.strategyId,
+        tuneId: row.tuneId,
+        entrySessionProfile: row.entrySessionProfile,
+        enabled: row.enabled,
+        liveMode: row.enabled && runtime.liveEnabled ? "live" : "shadow",
+        promotionGate: {
+          eligible: row.eligible,
+          reason: row.reason,
+          source: "v2_forward_evidence",
+          evaluatedAtMs: nowTs,
+          promotedAtMs: row.promotedAtMs,
+          score: Number.isFinite(row.score) ? row.score : null,
+          droppedByBudget: row.droppedByBudget,
+          freshness: row.freshness,
+          weekly: row.weeklyMetrics,
+          lifecycle: row.lifecycle,
+          thresholds: {
+            minCompletedWeeks: policy.minCompletedWeeks,
+            minTradesPerWeek: policy.minTradesPerWeek,
+            minTotalTrades: policy.minTotalTrades,
+            minSlices: policy.minSlices,
+            minProfitablePct: policy.minProfitablePct,
+            minMedianExpectancyR: policy.minMedianExpectancyR,
+            minP25ExpectancyR: policy.minP25ExpectancyR,
+            minWorstNetR: policy.minWorstNetR,
+            maxTopWeekPnlConcentrationPct:
+              policy.maxTopWeekPnlConcentrationPct,
+            minFourWeekNetR: policy.minFourWeekNetR,
+            fourWeekGroupCount: policy.fourWeekGroupCount,
+            fourWeekGroupSize: policy.fourWeekGroupSize,
+          },
+          shortlistIncluded: row.shortlistIncluded,
+        },
+        riskProfile: row.riskProfile,
+      }),
+    );
+
     await upsertScalpV2Deployments({ rows });
-    await updateScalpV2CandidateStatuses({
-      ids: trimmed.kept.map((row) => row.id),
-      status: "promoted",
-      metadataPatch: { promotedAtMs: nowMs() },
-    });
-    await updateScalpV2CandidateStatuses({
-      ids: trimmed.dropped.map((row) => row.id),
-      status: "rejected",
-      metadataPatch: { rejectedAtMs: nowMs(), reason: "BUDGET_CAP" },
-    });
+
+    const promotedIds = drafts
+      .filter((row) => row.candidateId !== null && row.enabled)
+      .map((row) => Number(row.candidateId));
+    const shadowIds = drafts
+      .filter((row) => row.candidateId !== null && !row.enabled)
+      .map((row) => Number(row.candidateId));
+    const rejectedIds = trimmed.dropped.map((row) => row.id);
+    if (promotedIds.length > 0) {
+      await updateScalpV2CandidateStatuses({
+        ids: promotedIds,
+        status: "promoted",
+        metadataPatch: { promotedAtMs: nowTs },
+      });
+    }
+    if (shadowIds.length > 0) {
+      await updateScalpV2CandidateStatuses({
+        ids: shadowIds,
+        status: "shadow",
+        metadataPatch: { shadowedAtMs: nowTs },
+      });
+    }
+    if (rejectedIds.length > 0) {
+      await updateScalpV2CandidateStatuses({
+        ids: rejectedIds,
+        status: "rejected",
+        metadataPatch: { rejectedAtMs: nowTs, reason: "BUDGET_CAP" },
+      });
+    }
 
     const capOut = await enforceScalpV2EnabledCap({
       maxEnabledDeployments: runtime.budgets.maxEnabledDeployments,
     });
 
-    processed = allEvaluated.length;
+    const reasonCounts = drafts.reduce<Record<string, number>>((acc, row) => {
+      const key = row.reason || "unknown";
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    const suppressedCount = drafts.filter((row) =>
+      lifecycleIsSuppressed(row.lifecycle, nowTs),
+    ).length;
+    const enabledCount = drafts.filter((row) => row.enabled).length;
+
+    processed = promotionPool.length;
     succeeded = rows.length;
     details = {
-      considered: allEvaluated.length,
-      promoted: trimmed.kept.length,
+      considered: promotionPool.length,
+      deploymentsConsidered: drafts.length,
+      promoted: promotedIds.length,
+      shadowed: shadowIds.length,
       rejectedByBudget: trimmed.dropped.length,
+      suppressedCount,
+      enabledCount,
+      requireWinnerShortlist,
+      demotedByUniqueness,
       demotedByEnabledCap: capOut.demoted,
-      enabledSlots,
+      exactLosers: drafts.filter((row) => row.exactLoser).length,
+      neighborSuspended: neighborSuspended.size,
+      freshnessWindowWeeks: policy.minCompletedWeeks,
+      minTradesPerWeek: policy.minTradesPerWeek,
+      minTotalTrades: policy.minTotalTrades,
+      enabledSlots: runtime.budgets.maxEnabledDeployments,
+      reasonCounts,
       liveEnabled: runtime.liveEnabled,
     };
 
