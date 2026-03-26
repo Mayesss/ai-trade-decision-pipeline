@@ -174,6 +174,21 @@ MARKETAUX_API_KEY=...
 # SCALP_RESEARCH_WORKER_CONCURRENCY=4
 # SCALP_RESEARCH_WORKER_MAX_CONCURRENCY=16
 # SCALP_RESEARCH_WORKER_MAX_RUNS_CAP=200
+# SCALP_V1_RESEARCH_PAUSED=true                          # cost brake: pause legacy discover/load/prepare/worker/promotion loops
+# SCALP_V1_RESEARCH_ALLOW_FORCE_RUN=false               # only when true can ?forceRun=1 bypass pause
+# SCALP_V1_RESEARCH_MAX_CANDIDATES_CAP=80
+# SCALP_V1_RESEARCH_MAX_SELF_HOPS_CAP=3
+# SCALP_V2_ENABLED=true
+# SCALP_V2_LIVE_ENABLED=false                           # fail-closed by default
+# SCALP_V2_DRY_RUN_DEFAULT=true
+# SCALP_V2_DEFAULT_STRATEGY_ID=compression_breakout_pullback_m15_m3
+# SCALP_V2_SEED_SYMBOLS_BITGET=BTCUSDT
+# SCALP_V2_SEED_SYMBOLS_CAPITAL=EURUSD
+# SCALP_V2_SEED_LIVE_SYMBOLS_BITGET=BTCUSDT
+# SCALP_V2_SEED_LIVE_SYMBOLS_CAPITAL=EURUSD
+# SCALP_V2_MAX_CANDIDATES_TOTAL=200
+# SCALP_V2_MAX_CANDIDATES_PER_SYMBOL=4
+# SCALP_V2_MAX_ENABLED_DEPLOYMENTS=12
 # SCALP_SYMBOL_DISCOVERY_SEED_ALLOW_BOOTSTRAP_SYMBOLS=false
 # SCALP_GUARDRAIL_AUTO_PAUSE=true
 # SCALP_GUARDRAIL_MIN_TRADES_30D=8
@@ -272,7 +287,7 @@ npm run start
   - Body: `{ "secret": "..." }` to validate admin access when `ADMIN_ACCESS_SECRET` is set.
 - Admin protection policy
   - All API routes except `/api/admin-auth` require `x-admin-access-secret: <ADMIN_ACCESS_SECRET>` (or `Authorization: Bearer <ADMIN_ACCESS_SECRET>`) when `ADMIN_ACCESS_SECRET` is set.
-  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/scalp/cron/execute-deployments`, `/api/scalp/cron/v2/discover`, `/api/scalp/cron/v2/load-candles`, `/api/scalp/cron/v2/prepare`, `/api/scalp/cron/worker`, `/api/scalp/cron/promotion`, `/api/scalp/cron/live-guardrail-monitor`, `/api/scalp/cron/housekeeping` (legacy `/api/scalp/cron/discover-symbols|load-candles|prepare` are deprecated).
+  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/scalp/cron/execute-deployments`, `/api/scalp/cron/v2/discover`, `/api/scalp/cron/v2/load-candles`, `/api/scalp/cron/v2/prepare`, `/api/scalp/cron/worker`, `/api/scalp/cron/promotion`, `/api/scalp/cron/live-guardrail-monitor`, `/api/scalp/cron/housekeeping`, `/api/scalp/v2/cron/discover`, `/api/scalp/v2/cron/evaluate`, `/api/scalp/v2/cron/promote`, `/api/scalp/v2/cron/execute`, `/api/scalp/v2/cron/reconcile`, `/api/scalp/v2/cron/cycle` (legacy `/api/scalp/cron/discover-symbols|load-candles|prepare` remain deprecated).
 - `GET /api/forex/*`
   - Forex mode routes are deprecated and currently return `410` with `error=forex_mode_deprecated`.
 - `GET /api/scalp/cron/execute-deployments?all=true&dryRun=true&session=berlin`
@@ -339,6 +354,19 @@ npm run start
   - Independent async job that aggregates weekly metrics and applies promotion/enablement policy.
   - Staged-eval orchestration (when enabled): A->B and B->C successive halving, cohort pruning, epoch reopen for pruned rows, and Stage-C-only final promotion gate/hysteresis.
   - Enforces best tune per symbol+strategy and clears dirty flags when processed.
+- Legacy scalp-v1 research cost brake
+  - `/api/scalp/cron/v2/discover`, `/api/scalp/cron/v2/load-candles`, `/api/scalp/cron/v2/prepare`, `/api/scalp/cron/worker`, and `/api/scalp/cron/promotion` are treated as legacy v1 research loops.
+  - With `SCALP_V1_RESEARCH_PAUSED=true` (default), they return paused no-op responses and do not consume research budget.
+- `GET/POST /api/scalp/v2/control`
+  - Runtime control for scalp-v2 (`enabled`, `liveEnabled`, budgets, risk profile, seed symbols).
+- `GET /api/scalp/v2/cron/cycle?dryRun=true|false`
+  - Full v2 auto loop in one run: discover -> evaluate -> promote -> execute -> reconcile.
+- `GET /api/scalp/v2/dashboard/summary`
+  - V2 monitoring payload: runtime config, summary counters, deployments, events, and recent ledger rows.
+- `GET /api/scalp/v2/ops/state`
+  - V2 ops state + parity aggregates (`v1` vs `v2` trade count/net R over a window).
+- `POST /api/scalp/v2/ops/migrate-v1-ledger?limit=50000&parityDays=30`
+  - Imports canonical v1 ledger rows into `scalp_v2_ledger` and returns parity metrics.
 - `GET /api/scalp/cron/live-guardrail-monitor`
   - Evaluates enabled deployments against live guardrail thresholds (expectancy, drawdown, drift vs forward, churn proxy) and emits risk journal events.
   - Can auto-pause breached deployments when `autoPause=true`.
@@ -559,14 +587,12 @@ node --import tsx scripts/scalp-replay-matrix.ts \
 - KV REST endpoint/token must be reachable from the runtime; Bitget/AI/News calls require outbound network access.
 - Current cron entries include:
   - `/api/swing/analyze?...&dryRun=false` hourly (live-trading mode).
-  - `/api/scalp/cron/v2/discover?dryRun=false&includeLiveQuotes=true&autoSuccessor=true&autoContinue=true&selfMaxHops=4` every 3 hours.
-  - `/api/scalp/cron/v2/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&selfMaxHops=8` every 10 minutes.
-  - `/api/scalp/cron/v2/prepare?...&session=berlin|tokyo|newyork|sydney` on separate cron rows per session.
-  - `/api/scalp/cron/worker?...&session=berlin|tokyo|newyork|sydney` on separate cron rows per session.
-  - `/api/scalp/cron/promotion?batchSize=300&autoSuccessor=true&autoContinue=true&selfMaxHops=6` every 15 minutes.
-  - `/api/scalp/cron/live-guardrail-monitor?dryRun=false&autoPause=true` every 15 minutes (detects live drift and auto-pauses breached deployments).
-  - `/api/scalp/cron/housekeeping?dryRun=false&refreshReport=false&cycleRetentionDays=1095` hourly (stale row recovery + retention cleanup + list compaction).
-  - `/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true&session=berlin|tokyo|newyork|sydney` on separate cron rows per session.
+  - `/api/scalp/v2/cron/discover` every 3 hours.
+  - `/api/scalp/v2/cron/evaluate?batchSize=200` every 5 minutes.
+  - `/api/scalp/v2/cron/promote` every 10 minutes.
+  - `/api/scalp/v2/cron/reconcile` every 2 minutes.
+  - `/api/scalp/v2/cron/execute?dryRun=false` every minute (live v2 execution loop).
+  - `/api/scalp/v2/cron/cycle?dryRun=false` every 15 minutes (full-loop safety net).
   - Symbol-specific scalp tuning is pinned by deployment row (`strategyId` + `tuneId`) in `data/scalp-deployments.json`.
 - Cron-declared routes are intentionally allowed without admin secret; non-cron routes remain protected when `ADMIN_ACCESS_SECRET` is set.
 

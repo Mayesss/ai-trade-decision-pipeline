@@ -8,6 +8,11 @@ import {
   type CronInvokeResult,
 } from "../../../../../lib/scalp/cronChaining";
 import { runDiscoverPipelineJob } from "../../../../../lib/scalp/pipelineJobs";
+import {
+  clampScalpV1HardCap,
+  maybeRespondScalpV1ResearchPaused,
+  resolveScalpV1ResearchHardCaps,
+} from "../../../../../lib/scalp/v1CostBrake";
 
 function firstQueryValue(
   value: string | string[] | undefined,
@@ -62,19 +67,30 @@ export default async function handler(
   }
   if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
+  if (
+    maybeRespondScalpV1ResearchPaused({
+      req,
+      res,
+      routeId: "discover-v2",
+    })
+  ) {
+    return;
+  }
 
+  const hardCaps = resolveScalpV1ResearchHardCaps();
   const includeLiveQuotes = parseBool(req.query.includeLiveQuotes, true);
   const dryRun = parseBool(req.query.dryRun, false);
-  const maxCandidates = parseIntBounded(
-    req.query.maxCandidates,
-    250,
-    20,
-    2_000,
+  const maxCandidates = clampScalpV1HardCap(
+    parseIntBounded(req.query.maxCandidates, 250, 20, 2_000),
+    hardCaps.maxCandidates,
   );
   const autoSuccessor = parseBool(req.query.autoSuccessor, true);
   const autoContinue = parseBool(req.query.autoContinue, true);
   const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 20);
-  const selfMaxHops = parseIntBounded(req.query.selfMaxHops, 6, 0, 50);
+  const selfMaxHops = Math.min(
+    parseIntBounded(req.query.selfMaxHops, 6, 0, 50),
+    hardCaps.maxSelfHops,
+  );
 
   const result = await runDiscoverPipelineJob({
     dryRun,

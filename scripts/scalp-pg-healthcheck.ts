@@ -14,6 +14,18 @@ async function countTable(table: string): Promise<number> {
     return toNumber(rows?.[0]?.count);
 }
 
+async function countTableOptional(table: string): Promise<number | null> {
+    try {
+        return await countTable(table);
+    } catch (err: any) {
+        const message = String(err?.message || '').toLowerCase();
+        if (message.includes('does not exist') || message.includes('undefined_table')) {
+            return null;
+        }
+        throw err;
+    }
+}
+
 async function main() {
     const db = scalpPrisma();
     const ping = await db.$queryRaw<Array<{ ok: number }>>`SELECT 1::int AS ok`;
@@ -29,7 +41,6 @@ async function main() {
         weeklyMetrics,
         cooldowns,
         jobs,
-        shadowJobRuns,
     ] =
         await Promise.all([
             countTable('scalp_deployments'),
@@ -42,8 +53,8 @@ async function main() {
             countTable('scalp_deployment_weekly_metrics'),
             countTable('scalp_symbol_cooldowns'),
             countTable('scalp_jobs'),
-            countTable('scalp_shadow_job_runs'),
         ]);
+    const deprecatedShadowJobRuns = await countTableOptional('scalp_shadow_job_runs');
 
     console.log(
         JSON.stringify(
@@ -61,7 +72,10 @@ async function main() {
                     deploymentWeeklyMetrics: weeklyMetrics,
                     symbolCooldowns: cooldowns,
                     jobs,
-                    shadowJobRuns,
+                },
+                deprecated: {
+                    // Deprecated research-era table retained only for transition diagnostics.
+                    scalpShadowJobRuns: deprecatedShadowJobRuns,
                 },
             },
             null,

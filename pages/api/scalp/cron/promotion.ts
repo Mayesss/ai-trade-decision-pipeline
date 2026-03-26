@@ -12,6 +12,11 @@ import {
   listScalpEntrySessionProfiles,
   parseScalpEntrySessionProfileStrict,
 } from "../../../../lib/scalp/sessions";
+import {
+  clampScalpV1HardCap,
+  maybeRespondScalpV1ResearchPaused,
+  resolveScalpV1ResearchHardCaps,
+} from "../../../../lib/scalp/v1CostBrake";
 
 function firstQueryValue(
   value: string | string[] | undefined,
@@ -66,12 +71,28 @@ export default async function handler(
   }
   if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
+  if (
+    maybeRespondScalpV1ResearchPaused({
+      req,
+      res,
+      routeId: "promotion",
+    })
+  ) {
+    return;
+  }
 
-  const batchSize = parseIntBounded(req.query.batchSize, 200, 1, 1_500);
+  const hardCaps = resolveScalpV1ResearchHardCaps();
+  const batchSize = clampScalpV1HardCap(
+    parseIntBounded(req.query.batchSize, 200, 1, 1_500),
+    hardCaps.maxBatchSizePromotion,
+  );
   const autoSuccessor = parseBool(req.query.autoSuccessor, true);
   const autoContinue = parseBool(req.query.autoContinue, true);
   const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 50);
-  const selfMaxHops = parseIntBounded(req.query.selfMaxHops, 6, 0, 50);
+  const selfMaxHops = Math.min(
+    parseIntBounded(req.query.selfMaxHops, 6, 0, 50),
+    hardCaps.maxSelfHops,
+  );
   const requestedSessionRaw = firstQueryValue(req.query.session);
   const session = requestedSessionRaw
     ? parseScalpEntrySessionProfileStrict(requestedSessionRaw)

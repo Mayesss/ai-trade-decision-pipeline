@@ -12,7 +12,7 @@ async function exists(filePath: string): Promise<boolean> {
   }
 }
 
-test("async-job scalp cron routes exist and cycle routes stay unscheduled", async () => {
+test("scalp scheduling uses v2 namespace cron routes", async () => {
   const root = process.cwd();
   const expectedRouteFiles = [
     "pages/api/scalp/cron/discover-symbols.ts",
@@ -45,11 +45,12 @@ test("async-job scalp cron routes exist and cycle routes stay unscheduled", asyn
     .filter(Boolean);
 
   const requiredCronPrefixes = [
-    "/api/scalp/cron/v2/discover",
-    "/api/scalp/cron/v2/load-candles",
-    "/api/scalp/cron/v2/prepare",
-    "/api/scalp/cron/worker",
-    "/api/scalp/cron/promotion",
+    "/api/scalp/v2/cron/discover",
+    "/api/scalp/v2/cron/evaluate",
+    "/api/scalp/v2/cron/promote",
+    "/api/scalp/v2/cron/execute",
+    "/api/scalp/v2/cron/reconcile",
+    "/api/scalp/v2/cron/cycle",
   ];
   for (const prefix of requiredCronPrefixes) {
     assert.equal(
@@ -60,6 +61,12 @@ test("async-job scalp cron routes exist and cycle routes stay unscheduled", asyn
   }
 
   const forbiddenCronPrefixes = [
+    "/api/scalp/cron/execute-deployments",
+    "/api/scalp/cron/worker",
+    "/api/scalp/cron/promotion",
+    "/api/scalp/cron/v2/discover",
+    "/api/scalp/cron/v2/load-candles",
+    "/api/scalp/cron/v2/prepare",
     "/api/scalp/cron/discover-symbols",
     "/api/scalp/cron/load-candles",
     "/api/scalp/cron/prepare",

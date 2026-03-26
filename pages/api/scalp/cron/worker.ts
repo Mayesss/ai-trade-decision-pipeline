@@ -12,6 +12,11 @@ import {
   listScalpEntrySessionProfiles,
   parseScalpEntrySessionProfileStrict,
 } from "../../../../lib/scalp/sessions";
+import {
+  clampScalpV1HardCap,
+  maybeRespondScalpV1ResearchPaused,
+  resolveScalpV1ResearchHardCaps,
+} from "../../../../lib/scalp/v1CostBrake";
 
 function firstQueryValue(
   value: string | string[] | undefined,
@@ -70,19 +75,36 @@ export default async function handler(
   }
   if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
+  if (
+    maybeRespondScalpV1ResearchPaused({
+      req,
+      res,
+      routeId: "worker",
+    })
+  ) {
+    return;
+  }
 
-  const batchSize = parseIntBounded(req.query.batchSize, 80, 1, 600);
-  const maxAttempts = parseIntBounded(req.query.maxAttempts, 5, 1, 20);
-  const minCandlesPerWeek = parseIntBounded(
-    req.query.minCandlesPerWeek,
-    180,
-    20,
-    20_000,
+  const hardCaps = resolveScalpV1ResearchHardCaps();
+  const batchSize = clampScalpV1HardCap(
+    parseIntBounded(req.query.batchSize, 80, 1, 600),
+    hardCaps.maxBatchSizeWorker,
+  );
+  const maxAttempts = clampScalpV1HardCap(
+    parseIntBounded(req.query.maxAttempts, 5, 1, 20),
+    hardCaps.maxAttempts,
+  );
+  const minCandlesPerWeek = Math.min(
+    parseIntBounded(req.query.minCandlesPerWeek, 180, 20, 20_000),
+    hardCaps.maxMinCandlesPerWeek,
   );
   const autoSuccessor = parseBool(req.query.autoSuccessor, true);
   const autoContinue = parseBool(req.query.autoContinue, true);
   const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 50);
-  const selfMaxHops = parseIntBounded(req.query.selfMaxHops, 10, 0, 100);
+  const selfMaxHops = Math.min(
+    parseIntBounded(req.query.selfMaxHops, 10, 0, 100),
+    hardCaps.maxSelfHops,
+  );
   const session = parseEntrySessionProfile(req.query.session);
   if (!session) {
     return res.status(400).json({

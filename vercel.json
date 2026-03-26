@@ -20,72 +20,28 @@
       "schedule": "0 * * * *"
     },
     {
-      "path": "/api/scalp/cron/v2/discover?dryRun=false&includeLiveQuotes=true&autoSuccessor=true&autoContinue=true&selfMaxHops=4",
+      "path": "/api/scalp/v2/cron/discover",
       "schedule": "15 */3 * * *"
     },
     {
-      "path": "/api/scalp/cron/v2/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&selfMaxHops=8",
+      "path": "/api/scalp/v2/cron/evaluate?batchSize=200",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/scalp/v2/cron/promote",
       "schedule": "*/10 * * * *"
     },
     {
-      "path": "/api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8&session=berlin",
-      "schedule": "2 * * * *"
-    },
-    {
-      "path": "/api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8&session=tokyo",
-      "schedule": "2 * * * *"
-    },
-    {
-      "path": "/api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8&session=newyork",
-      "schedule": "2 * * * *"
-    },
-    {
-      "path": "/api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&selfMaxHops=8&session=sydney",
-      "schedule": "2 * * * *"
-    },
-    {
-      "path": "/api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&selfMaxHops=12&session=berlin",
+      "path": "/api/scalp/v2/cron/reconcile",
       "schedule": "*/2 * * * *"
     },
     {
-      "path": "/api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&selfMaxHops=12&session=tokyo",
-      "schedule": "*/2 * * * *"
+      "path": "/api/scalp/v2/cron/execute?dryRun=false",
+      "schedule": "* * * * *"
     },
     {
-      "path": "/api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&selfMaxHops=12&session=newyork",
-      "schedule": "*/2 * * * *"
-    },
-    {
-      "path": "/api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&selfMaxHops=12&session=sydney",
-      "schedule": "*/2 * * * *"
-    },
-    {
-      "path": "/api/scalp/cron/promotion?batchSize=300&autoSuccessor=true&autoContinue=true&selfMaxHops=6",
+      "path": "/api/scalp/v2/cron/cycle?dryRun=false",
       "schedule": "*/15 * * * *"
-    },
-    {
-      "path": "/api/scalp/cron/live-guardrail-monitor?dryRun=false&autoPause=true",
-      "schedule": "*/15 * * * *"
-    },
-    {
-      "path": "/api/scalp/cron/housekeeping?dryRun=false&refreshReport=false&cycleRetentionDays=1095&candleHistoryKeepWeeks=14",
-      "schedule": "5 * * * *"
-    },
-    {
-      "path": "/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true&session=berlin",
-      "schedule": "* * * * *"
-    },
-    {
-      "path": "/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true&session=tokyo",
-      "schedule": "* * * * *"
-    },
-    {
-      "path": "/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true&session=newyork",
-      "schedule": "* * * * *"
-    },
-    {
-      "path": "/api/scalp/cron/execute-deployments?all=true&venue=bitget&dryRun=false&requirePromotionEligible=true&session=sydney",
-      "schedule": "* * * * *"
     }
   ]
 }
