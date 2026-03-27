@@ -1286,7 +1286,7 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<
 > = {
   scalp_discover: {
     primaryPathname: "/api/scalp/v2/cron/discover",
-    matchPathnames: ["/api/scalp/v2/cron/discover", "/api/scalp/cron/v2/discover"],
+    matchPathnames: ["/api/scalp/v2/cron/discover"],
     fallbackInvokePath:
       "/api/scalp/v2/cron/discover?dryRun=false",
   },
@@ -1297,7 +1297,7 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<
   },
   scalp_worker: {
     primaryPathname: "/api/scalp/v2/cron/worker",
-    matchPathnames: ["/api/scalp/v2/cron/worker", "/api/scalp/cron/v2/worker"],
+    matchPathnames: ["/api/scalp/v2/cron/worker"],
     fallbackInvokePath: "/api/scalp/v2/cron/worker?batchSize=12",
   },
   scalp_promote: {
@@ -1370,8 +1370,7 @@ function normalizeInvokePathForScalpCronNow(
   const pathname = parseCronPathname(value);
   const isDiscoverCron =
     rowId === "scalp_discover" ||
-    pathname === "/api/scalp/v2/cron/discover" ||
-    pathname === "/api/scalp/cron/v2/discover";
+    pathname === "/api/scalp/v2/cron/discover";
   const isDryRunOverridableCron =
     rowId === "scalp_discover" ||
     rowId === "scalp_evaluate" ||

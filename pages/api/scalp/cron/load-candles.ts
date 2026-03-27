@@ -122,7 +122,7 @@ export default async function handler(
       downstreamSessions.map((entrySessionProfile) =>
         invokeCronEndpointDetached(
           req,
-          "/api/scalp/cron/v2/prepare",
+          "/api/scalp/v2/cron/evaluate",
           {
             autoContinue: 1,
             autoSuccessor: 1,
@@ -147,7 +147,7 @@ export default async function handler(
   ) {
     selfRecall = await invokeCronEndpointDetached(
       req,
-      "/api/scalp/cron/v2/load-candles",
+      "/api/scalp/v2/cron/load-candles",
       {
         batchSize,
         maxAttempts,

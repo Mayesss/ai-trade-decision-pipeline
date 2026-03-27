@@ -114,7 +114,7 @@ export default async function handler(
   ) {
     downstreamLoadCandles = await invokeCronEndpointDetached(
       req,
-      "/api/scalp/cron/v2/load-candles",
+      "/api/scalp/v2/cron/load-candles",
       {
         autoContinue: 1,
         autoSuccessor: 1,

@@ -101,7 +101,7 @@ export default async function handler(
   ) {
     downstream = await invokeCronEndpointDetached(
       req,
-      "/api/scalp/cron/v2/load-candles",
+      "/api/scalp/v2/cron/load-candles",
       {
         autoContinue: 1,
         autoSuccessor: 1,
@@ -122,7 +122,7 @@ export default async function handler(
   ) {
     selfRecall = await invokeCronEndpointDetached(
       req,
-      "/api/scalp/cron/v2/discover",
+      "/api/scalp/v2/cron/discover",
       {
         includeLiveQuotes: includeLiveQuotes ? 1 : 0,
         dryRun: dryRun ? 1 : 0,

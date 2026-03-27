@@ -36,7 +36,6 @@ import {
   loadScalpV2RuntimeConfig,
   snapshotScalpV2DailyMetrics,
   toDeploymentId,
-  trimScalpV2CandidatesByBudget,
   updateScalpV2CandidateStatuses,
   upsertScalpV2Candidates,
   upsertScalpV2Deployments,
@@ -1068,12 +1067,46 @@ async function updateResearchCursorSafe(params: {
   }).catch(() => undefined);
 }
 
+/**
+ * Discover is now a thin delegate to the evaluate job. The old discover job
+ * generated the same composer grid as evaluate but with a weaker scoring model
+ * and an env-gated persistence toggle (SCALP_V2_DISCOVER_PERSIST_CANDIDATES)
+ * that defaulted to false — making it a no-op in production. Evaluate already
+ * does cursor-based windowing, better scoring, and always persists.
+ *
+ * Kept as a named export so the /api/scalp/v2/cron/discover endpoint and
+ * runScalpV2FullAutoCycle continue to work without changes.
+ */
 export async function runScalpV2DiscoverJob(): Promise<ScalpV2JobResult> {
-  const owner = lockOwner("discover");
-  const claimed = await claimScalpV2Job({ jobKind: "discover", lockOwner: owner });
+  const result = await runScalpV2EvaluateJob();
+  return {
+    ...result,
+    jobKind: "discover",
+    details: { ...result.details, delegatedTo: "evaluate" },
+  };
+}
+
+/**
+ * Unified research job: generates candidates in-memory from the deterministic
+ * composer grid, backtests each one through stages A/B/C, and **only persists
+ * candidates that pass the configured minimum stage gate** (default: stage A).
+ *
+ * This replaces the old evaluate→worker two-step that persisted ALL candidates
+ * to the DB (expensive on Neon GB-month) just so the worker could read them
+ * back. Because the grid is deterministic, we can regenerate it in-memory and
+ * backtest inline — saving hundreds of DB rows per run.
+ *
+ * Cursor tracking via `scalp_v2_research_cursor` is preserved so successive
+ * runs walk through the full search space over time.
+ */
+export async function runScalpV2ResearchJob(params: {
+  batchSize?: number;
+} = {}): Promise<ScalpV2JobResult> {
+  const owner = lockOwner("research");
+  const claimed = await claimScalpV2Job({ jobKind: "research", lockOwner: owner });
   if (!claimed) {
     return buildScalpV2JobResult({
-      jobKind: "discover",
+      jobKind: "research",
       processed: 0,
       succeeded: 0,
       failed: 0,
@@ -1094,7 +1127,7 @@ export async function runScalpV2DiscoverJob(): Promise<ScalpV2JobResult> {
     if (!runtime.enabled) {
       details = { skipped: true, reason: "SCALP_V2_DISABLED" };
       return buildScalpV2JobResult({
-        jobKind: "discover",
+        jobKind: "research",
         processed,
         succeeded,
         failed,
@@ -1103,11 +1136,24 @@ export async function runScalpV2DiscoverJob(): Promise<ScalpV2JobResult> {
       });
     }
 
-    const persistCandidates = envBool(
-      "SCALP_V2_DISCOVER_PERSIST_CANDIDATES",
-      false,
+    const workerPolicy = resolveWorkerPolicy();
+    const nowTs = nowMs();
+    if (!workerPolicy.allowSunday && isScalpV2SundayUtc(nowTs)) {
+      details = { skipped: true, reason: "sunday_utc_research_blocked" };
+      return buildScalpV2JobResult({
+        jobKind: "research",
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        pendingAfter: 0,
+        details,
+      });
+    }
+
+    const batchSize = Math.max(
+      1,
+      Math.min(workerPolicy.maxBatchSize, Math.floor(params.batchSize || workerPolicy.maxBatchSize)),
     );
-    const rows: Parameters<typeof upsertScalpV2Candidates>[0]["rows"] = [];
     const maxCandidatesPerSession = Math.max(
       1,
       Math.min(
@@ -1119,133 +1165,478 @@ export async function runScalpV2DiscoverJob(): Promise<ScalpV2JobResult> {
         ),
       ),
     );
+    // Minimum stage gate: "a" means persist stage-A passes and above,
+    // "c" means only persist stage-C passes. Default "a" to keep promising
+    // candidates visible for diagnostics without storing hundreds of failures.
+    const minPersistStageRaw = String(
+      process.env.SCALP_V2_RESEARCH_MIN_PERSIST_STAGE || "a",
+    ).trim().toLowerCase();
+    const minPersistStage: ScalpV2WorkerStageId =
+      minPersistStageRaw === "c" ? "c" : minPersistStageRaw === "b" ? "b" : "a";
+
+    // --- Build scopes (same as evaluate) ---
+    const scopes: Array<{
+      venue: ScalpV2Venue;
+      symbol: string;
+      session: ScalpV2Session;
+    }> = [];
     let droppedByVenuePolicy = 0;
-    let discoveredByComposer = 0;
-    let scopesInspected = 0;
-    const countsByCursor = new Map<
-      string,
-      {
-        venue: ScalpV2Venue;
-        symbol: string;
-        session: ScalpV2Session;
-        count: number;
-      }
-    >();
     for (const venue of runtime.supportedVenues) {
       const symbols = runtime.seedSymbolsByVenue[venue] || [];
-      for (const symbol of symbols) {
+      for (const symbolRaw of symbols) {
+        const symbol = String(symbolRaw || "").trim().toUpperCase();
+        if (!symbol) continue;
         if (!isScalpV2DiscoverSymbolAllowed(venue, symbol)) {
           droppedByVenuePolicy += 1;
           continue;
         }
+        if (!isScalpV2RuntimeSymbolInScope({ runtime, venue, symbol })) continue;
         for (const session of runtime.supportedSessions) {
-          scopesInspected += 1;
-          const composerCandidates = buildScalpV2ModelGuidedComposerGrid({
-            venue,
-            symbol,
-            entrySessionProfile: session,
-            maxCandidates: maxCandidatesPerSession,
-          });
-          const normalizedSymbol = String(symbol || "").trim().toUpperCase();
-          const cursorKey = `${venue}:${normalizedSymbol}:${session}`;
-          const current = countsByCursor.get(cursorKey) || {
-            venue,
-            symbol: normalizedSymbol,
-            session,
-            count: 0,
-          };
-          current.count += composerCandidates.length;
-          countsByCursor.set(cursorKey, current);
-          discoveredByComposer += composerCandidates.length;
-
-          if (!persistCandidates) continue;
-          for (const candidateDsl of composerCandidates) {
-            const model = candidateDsl.model;
-            const executionPlan =
-              resolveModelGuidedComposerExecutionPlanFromBlocks(
-                candidateDsl.blocksByFamily,
-              );
-            const supportScore = Number.isFinite(Number(candidateDsl.supportScore))
-              ? Number(candidateDsl.supportScore)
-              : 0;
-            const score =
-              20 +
-              model.compositeScore * 65 +
-              model.confidence * 12 +
-              Math.min(12, supportScore) * 0.9 +
-              hashScoreSeed(
-                `${venue}:${symbol}:${session}:${candidateDsl.candidateId}`,
-              ) /
-                1000;
-            rows.push({
-              venue,
-              symbol,
-              strategyId: MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
-              tuneId: candidateDsl.tuneId,
-              entrySessionProfile: session,
-              score,
-              status: "discovered",
-              reasonCodes: ["SCALP_V2_DISCOVERY_MODEL_COMPOSER"],
-              metadata: {
-                discoveredAtMs: nowMs(),
-                source: "model_guided_composer",
-                researchCandidateId: candidateDsl.candidateId,
-                researchDsl: candidateDsl.blocksByFamily,
-                researchReferences: candidateDsl.referenceStrategyIds,
-                researchSupportScore: supportScore,
-                composerModel: candidateDsl.model,
-                composerExecutionPlan: executionPlan,
-              },
-            });
-          }
+          scopes.push({ venue, symbol, session });
         }
       }
     }
 
-    const insertedOrUpdated = rows.length;
-    let trimmed = 0;
-    if (persistCandidates && rows.length > 0) {
-      await upsertScalpV2Candidates({ rows });
-      const trim = await trimScalpV2CandidatesByBudget({
-        maxCandidatesTotal: runtime.budgets.maxCandidatesTotal,
-        maxCandidatesPerSymbol: runtime.budgets.maxCandidatesPerSymbol,
+    if (!scopes.length) {
+      details = { reason: "no_runtime_seed_scopes", droppedByVenuePolicy };
+      return buildScalpV2JobResult({
+        jobKind: "research",
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        pendingAfter: 0,
+        details,
       });
-      trimmed = trim.deleted;
     }
-    processed = persistCandidates ? rows.length : discoveredByComposer;
-    succeeded = processed;
-    details = {
-      insertedOrUpdated,
-      trimmed,
-      droppedByVenuePolicy,
-      discoveredByComposer,
-      scannedOnly: !persistCandidates,
-      persistedCandidates: persistCandidates,
-      scopesInspected,
-      maxCandidatesPerSession,
-      budgets: runtime.budgets,
+
+    // --- Cursor-based candidate selection (in-memory, no DB persist) ---
+    const windowToTs = resolveScalpV2CompletedWeekWindowToUtc(nowTs);
+    const stagePolicies = [
+      workerPolicy.stageA,
+      workerPolicy.stageB,
+      workerPolicy.stageC,
+    ] as const;
+    const minWindowFromTs = windowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS;
+
+    type InMemoryCandidate = {
+      venue: ScalpV2Venue;
+      symbol: string;
+      session: ScalpV2Session;
+      strategyId: string;
+      tuneId: string;
+      candidateId: string;
+      score: number;
+      dsl: ReturnType<typeof buildScalpV2ModelGuidedComposerGrid>[number];
     };
 
+    const selected: InMemoryCandidate[] = [];
+    let selectedTotal = 0;
+    let poolSizeTotal = 0;
+    const cursorUpdates: Array<{
+      venue: ScalpV2Venue;
+      symbol: string;
+      session: ScalpV2Session;
+      poolSize: number;
+      selectedCount: number;
+      startOffset: number;
+      nextOffset: number;
+    }> = [];
+
+    for (let idx = 0; idx < scopes.length; idx += 1) {
+      if (selectedTotal >= batchSize) break;
+      const scope = scopes[idx]!;
+      const remainingScopes = scopes.length - idx;
+      const remainingBudget = Math.max(1, batchSize - selectedTotal);
+      const perScopeCap = Math.max(
+        1,
+        Math.min(
+          workerPolicy.maxCandidatesPerSession,
+          Math.ceil(remainingBudget / remainingScopes),
+        ),
+      );
+
+      const composerCandidates = buildScalpV2ModelGuidedComposerGrid({
+        venue: scope.venue,
+        symbol: scope.symbol,
+        entrySessionProfile: scope.session,
+        maxCandidates: maxCandidatesPerSession,
+      });
+      poolSizeTotal += composerCandidates.length;
+
+      const cursorKey = toScalpV2ResearchCursorKey({
+        venue: scope.venue,
+        symbol: scope.symbol,
+        entrySessionProfile: scope.session,
+      });
+      const existingCursor = await loadScalpV2ResearchCursor({ cursorKey }).catch(() => null);
+      const window = resolveScalpV2CandidateEvaluationWindow({
+        candidates: composerCandidates,
+        maxCandidates: perScopeCap,
+        startOffset: existingCursor?.lastCandidateOffset || 0,
+      });
+
+      cursorUpdates.push({
+        venue: scope.venue,
+        symbol: scope.symbol,
+        session: scope.session,
+        poolSize: window.poolSize,
+        selectedCount: window.evaluatedCount,
+        startOffset: window.startOffset,
+        nextOffset: window.nextOffset,
+      });
+
+      for (const dsl of window.selectedCandidates) {
+        const model = dsl.model;
+        const supportScore = Number.isFinite(Number(dsl.supportScore))
+          ? Number(dsl.supportScore)
+          : 0;
+        const supportNorm = Math.max(0, Math.min(12, supportScore)) / 12;
+        const score =
+          12 +
+          model.compositeScore * 66 +
+          model.confidence * 14 +
+          supportNorm * 8 +
+          hashScoreSeed(
+            `${scope.venue}:${scope.symbol}:${scope.session}:${dsl.tuneId}`,
+          ) / 1000;
+
+        selected.push({
+          venue: scope.venue,
+          symbol: scope.symbol,
+          session: scope.session,
+          strategyId: MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
+          tuneId: dsl.tuneId,
+          candidateId: dsl.candidateId,
+          score,
+          dsl,
+        });
+        selectedTotal += 1;
+      }
+    }
+
+    if (!selected.length) {
+      details = {
+        reason: "no_candidates_selected",
+        batchSize,
+        scopeCount: scopes.length,
+        poolSizeTotal,
+      };
+      return buildScalpV2JobResult({
+        jobKind: "research",
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        pendingAfter: 0,
+        details,
+      });
+    }
+
+    // --- Inline backtest (same replay logic as worker, no DB round-trip) ---
+    const candleCache = new Map<string, ScalpReplayCandle[]>();
+    const persistRows: Parameters<typeof upsertScalpV2Candidates>[0]["rows"] = [];
+    const highlightRows: Parameters<typeof upsertScalpV2ResearchHighlights>[0]["rows"] = [];
+    let stageAPass = 0;
+    let stageAFail = 0;
+    let stageBPass = 0;
+    let stageBFail = 0;
+    let stageCPass = 0;
+    let stageCFail = 0;
+    let replayErrors = 0;
+    let droppedBelowMinStage = 0;
+
+    for (let candidateIdx = 0; candidateIdx < selected.length; candidateIdx += 1) {
+      const candidate = selected[candidateIdx]!;
+
+      try {
+        let symbolCandles = candleCache.get(candidate.symbol) || null;
+        if (!symbolCandles) {
+          const history = await loadScalpCandleHistoryInRange(
+            candidate.symbol,
+            "1m",
+            minWindowFromTs,
+            windowToTs,
+          );
+          const baseReplayConfig = defaultScalpReplayConfig(candidate.symbol);
+          symbolCandles = filterSundayReplayCandles(
+            toReplayCandlesFromHistory(
+              (history.record?.candles || []) as Array<
+                [number, number, number, number, number, number]
+              >,
+              baseReplayConfig.defaultSpreadPips,
+            ),
+          );
+          candleCache.set(candidate.symbol, symbolCandles);
+        }
+
+        let blockedStages = false;
+        const stageResults: Record<ScalpV2WorkerStageId, ScalpV2WorkerStageResult> = {
+          a: buildWorkerStageSkeleton({ stage: workerPolicy.stageA, fromTs: windowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS, toTs: windowToTs, reason: "stage_not_started" }),
+          b: buildWorkerStageSkeleton({ stage: workerPolicy.stageB, fromTs: windowToTs - workerPolicy.stageB.weeks * ONE_WEEK_MS, toTs: windowToTs, reason: "stage_not_started" }),
+          c: buildWorkerStageSkeleton({ stage: workerPolicy.stageC, fromTs: windowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS, toTs: windowToTs, reason: "stage_not_started" }),
+        };
+
+        for (const stage of stagePolicies) {
+          const fromTs = windowToTs - stage.weeks * ONE_WEEK_MS;
+          if (blockedStages) {
+            stageResults[stage.id] = buildWorkerStageSkeleton({ stage, fromTs, toTs: windowToTs, reason: "blocked_prior_stage_failed" });
+            continue;
+          }
+          const stageCandles = symbolCandles.filter((row) => row.ts >= fromTs && row.ts < windowToTs);
+          if (stageCandles.length < workerPolicy.minCandles) {
+            stageResults[stage.id] = buildWorkerStageSkeleton({ stage, fromTs, toTs: windowToTs, reason: "insufficient_candles" });
+            blockedStages = true;
+            continue;
+          }
+
+          const stageStartedAtMs = nowMs();
+          const replayBaseConfig = defaultScalpReplayConfig(candidate.symbol);
+          const deploymentId = toDeploymentId({
+            venue: candidate.venue,
+            symbol: candidate.symbol,
+            strategyId: candidate.strategyId,
+            tuneId: candidate.tuneId,
+            session: candidate.session,
+          });
+          const replayConfig = {
+            ...replayBaseConfig,
+            symbol: candidate.symbol,
+            strategyId: candidate.strategyId,
+            tuneId: candidate.tuneId,
+            deploymentId,
+            tuneLabel: candidate.tuneId,
+            strategy: {
+              ...replayBaseConfig.strategy,
+              entrySessionProfile: candidate.session,
+            },
+          };
+          const replay = await runScalpReplay({
+            candles: stageCandles,
+            pipSize: pipSizeForScalpSymbol(candidate.symbol),
+            config: replayConfig,
+            captureTimeline: false,
+          });
+          const weeklyStats = countWinningWeekStreak({ trades: replay.trades, fromTs, toTs: windowToTs });
+          const profitFactorForGate = normalizeProfitFactorForGate({
+            profitFactor: replay.summary.profitFactor,
+            grossProfitR: replay.summary.grossProfitR,
+            grossLossR: replay.summary.grossLossR,
+          });
+          const stageResult: ScalpV2WorkerStageResult = {
+            id: stage.id,
+            weeks: stage.weeks,
+            fromTs,
+            toTs: windowToTs,
+            executed: true,
+            passed: false,
+            reason: "stage_pending_gate",
+            candles: stageCandles.length,
+            trades: replay.summary.trades,
+            netR: replay.summary.netR,
+            expectancyR: replay.summary.expectancyR,
+            winRatePct: replay.summary.winRatePct,
+            maxDrawdownR: replay.summary.maxDrawdownR,
+            profitFactor: Number.isFinite(Number(replay.summary.profitFactor))
+              ? Number(replay.summary.profitFactor)
+              : Number.isFinite(profitFactorForGate) ? profitFactorForGate : null,
+            winningWeeks: weeklyStats.winningWeeks,
+            consecutiveWinningWeeks: weeklyStats.consecutiveWinningWeeks,
+            durationMs: Math.max(0, nowMs() - stageStartedAtMs),
+          };
+          const gate = evaluateWorkerStageGate({ stage, stageResult });
+          stageResult.passed = gate.passed;
+          stageResult.reason = gate.reason || "stage_passed";
+          stageResults[stage.id] = stageResult;
+          if (!gate.passed) blockedStages = true;
+        }
+
+        const stageAResult = stageResults.a;
+        const stageBResult = stageResults.b;
+        const stageCResult = stageResults.c;
+        const finalPass = stageCResult.passed;
+
+        if (stageAResult.passed) stageAPass += 1; else stageAFail += 1;
+        if (stageBResult.executed && stageBResult.passed) stageBPass += 1;
+        else if (stageBResult.executed) stageBFail += 1;
+        if (stageCResult.executed && stageCResult.passed) stageCPass += 1;
+        else if (stageCResult.executed) stageCFail += 1;
+
+        // Determine if this candidate passes the minimum persist gate
+        const meetsMinStage =
+          minPersistStage === "a" ? stageAResult.passed :
+          minPersistStage === "b" ? stageBResult.passed :
+          stageCResult.passed;
+
+        if (!meetsMinStage) {
+          droppedBelowMinStage += 1;
+          processed += 1;
+          continue;
+        }
+
+        // Build metadata with worker results embedded
+        const executionPlan = resolveModelGuidedComposerExecutionPlanFromBlocks(
+          candidate.dsl.blocksByFamily,
+        );
+        const metadata: Record<string, unknown> = {
+          discoveredAtMs: candidate.dsl.generatedAtMs,
+          source: "model_guided_composer",
+          researchCandidateId: candidate.candidateId,
+          researchDsl: candidate.dsl.blocksByFamily,
+          researchReferences: candidate.dsl.referenceStrategyIds,
+          researchSupportScore: candidate.dsl.supportScore,
+          composerModel: candidate.dsl.model,
+          composerExecutionPlan: executionPlan,
+          evaluatedAtMs: nowTs,
+          evaluator: "v2_research_inline",
+          worker: {
+            version: "v2_research_inline_r1",
+            evaluatedAtMs: nowTs,
+            policy: {
+              stageA: workerPolicy.stageA,
+              stageB: workerPolicy.stageB,
+              stageC: workerPolicy.stageC,
+              minCandles: workerPolicy.minCandles,
+            },
+            windowToTs,
+            stageA: stageAResult,
+            stageB: stageBResult,
+            stageC: stageCResult,
+            finalPass,
+          },
+        };
+
+        persistRows.push({
+          venue: candidate.venue,
+          symbol: candidate.symbol,
+          strategyId: candidate.strategyId,
+          tuneId: candidate.tuneId,
+          entrySessionProfile: candidate.session,
+          score: candidate.score,
+          status: "evaluated",
+          reasonCodes: [
+            "SCALP_V2_RESEARCH_INLINE",
+            finalPass ? "SCALP_V2_WORKER_STAGE_C_PASS" : "SCALP_V2_WORKER_STAGE_C_FAIL",
+          ],
+          metadata,
+        });
+
+        if (finalPass) {
+          const deploymentId = toDeploymentId({
+            venue: candidate.venue,
+            symbol: candidate.symbol,
+            strategyId: candidate.strategyId,
+            tuneId: candidate.tuneId,
+            session: candidate.session,
+          });
+          highlightRows.push({
+            candidateId: deploymentId,
+            venue: candidate.venue,
+            symbol: candidate.symbol,
+            entrySessionProfile: candidate.session,
+            score: candidate.score,
+            trades12w: stageCResult.trades,
+            winningWeeks12w: stageCResult.winningWeeks,
+            consecutiveWinningWeeks: stageCResult.consecutiveWinningWeeks,
+            robustness: {
+              source: "v2_research_inline",
+              stageA: stageAResult,
+              stageB: stageBResult,
+              stageC: stageCResult,
+            },
+            dsl: asRecord(candidate.dsl.blocksByFamily || {}),
+            notes: "research_stage_c_pass",
+            remarkable: true,
+          });
+        }
+
+        processed += 1;
+        succeeded += 1;
+      } catch (err: any) {
+        replayErrors += 1;
+        processed += 1;
+      }
+
+      // Heartbeat every few candidates to keep the lock alive
+      if ((candidateIdx + 1) % 3 === 0 || candidateIdx + 1 === selected.length) {
+        await heartbeatScalpV2Job({
+          jobKind: "research",
+          lockOwner: owner,
+          details: {
+            progress: {
+              processedSoFar: candidateIdx + 1,
+              totalSelected: selected.length,
+              stageCPass,
+              persisted: persistRows.length,
+              replayErrors,
+            },
+          },
+        }).catch(() => undefined);
+      }
+    }
+
+    // --- Persist only the candidates that passed the minimum stage gate ---
+    let persistedCount = 0;
+    if (persistRows.length > 0) {
+      await upsertScalpV2Candidates({ rows: persistRows });
+      persistedCount = persistRows.length;
+    }
+    let highlightsUpserted = 0;
+    if (highlightRows.length > 0) {
+      highlightsUpserted = await upsertScalpV2ResearchHighlights({ rows: highlightRows }).catch(() => 0);
+    }
+
+    // --- Update cursors ---
     await Promise.all(
-      Array.from(countsByCursor.values()).map((row) =>
+      cursorUpdates.map((row) =>
         updateResearchCursorSafe({
           venue: row.venue,
           symbol: row.symbol,
           entrySessionProfile: row.session,
-          phase: "scan",
+          phase: "validate",
+          lastCandidateOffset: row.nextOffset,
+          lastWeekStartMs: minWindowFromTs,
           progress: {
-            discoveredCandidates: row.count,
-            droppedByVenuePolicy,
-            trimmedByBudget: trimmed,
-            persistedCandidates: persistCandidates,
+            researchProcessed: processed,
+            researchStageCPass: stageCPass,
+            researchPersisted: persistedCount,
+            poolSize: row.poolSize,
+            selectedCount: row.selectedCount,
+            startOffset: row.startOffset,
+            nextOffset: row.nextOffset,
             updatedAtMs: nowMs(),
           },
         }),
       ),
     );
 
+    details = {
+      batchSize,
+      scopeCount: scopes.length,
+      poolSizeTotal,
+      selectedCandidates: selected.length,
+      processedCandidates: processed,
+      minPersistStage,
+      droppedBelowMinStage,
+      persistedCount,
+      stageAPass,
+      stageAFail,
+      stageBPass,
+      stageBFail,
+      stageCPass,
+      stageCFail,
+      replayErrors,
+      highlightsUpserted,
+      droppedByVenuePolicy,
+      cursorUpdatedScopes: cursorUpdates.length,
+      policy: {
+        stageA: workerPolicy.stageA,
+        stageB: workerPolicy.stageB,
+        stageC: workerPolicy.stageC,
+        minCandles: workerPolicy.minCandles,
+      },
+    };
+
     return buildScalpV2JobResult({
-      jobKind: "discover",
+      jobKind: "research",
       processed,
       succeeded,
       failed,
@@ -1257,7 +1648,7 @@ export async function runScalpV2DiscoverJob(): Promise<ScalpV2JobResult> {
     failed = Math.max(1, failed);
     details = { error: err?.message || String(err) };
     return buildScalpV2JobResult({
-      jobKind: "discover",
+      jobKind: "research",
       processed,
       succeeded,
       failed,
@@ -1266,7 +1657,7 @@ export async function runScalpV2DiscoverJob(): Promise<ScalpV2JobResult> {
     });
   } finally {
     await finalizeScalpV2Job({
-      jobKind: "discover",
+      jobKind: "research",
       lockOwner: owner,
       ok,
       details,
@@ -2525,6 +2916,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       workerStageCPass: boolean;
       workerStageReason: string | null;
       eligible: boolean;
+      shadowEligible: boolean;
       reason: string;
       enabled: boolean;
       shortlistIncluded: boolean;
@@ -2533,6 +2925,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       promotedAtMs: number | null;
     };
 
+    let skippedWorkerMissing = 0;
     const drafts: PromotionDraft[] = [];
     for (const deploymentId of consideredDeploymentIds) {
       const candidate = candidateByDeploymentId.get(deploymentId) || null;
@@ -2560,6 +2953,16 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       ) {
         continue;
       }
+
+      // Phase 3: skip candidates where the worker has never run — no point
+      // creating disabled deployments for them. Only process candidates that
+      // either (a) already have a deployment row, or (b) have worker results.
+      const workerGate = resolveWorkerStageCPass(candidate?.metadata || null);
+      if (!existing && !workerGate.hasWorkerState) {
+        skippedWorkerMissing += 1;
+        continue;
+      }
+
       const currentlyEnabled = Boolean(existing?.enabled);
       const lifecycle = normalizeLifecycle({
         promotionGate: existing?.promotionGate || null,
@@ -2592,7 +2995,6 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         mismatchedTrades,
         mismatchedSessions,
       };
-      const workerGate = resolveWorkerStageCPass(candidate?.metadata || null);
       const hasMixedSessionEvidence =
         strictSessionEvidence.mismatchedTrades > 0 ||
         strictSessionEvidence.mismatchedSessions.length > 0;
@@ -2634,8 +3036,14 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         weeklyMetrics?.totalTrades ||
         weeklyRows.reduce((acc, row) => acc + row.trades, 0);
 
+      // Phase 1 (Option A) — two-tier promotion:
+      //   Tier 1 "shadowEligible": worker stage C pass is enough to deploy
+      //     in shadow mode so the execute job can run and accumulate ledger data.
+      //   Tier 2 "eligible": full forward evidence gate (12w, session purity,
+      //     weekly robustness) required for live promotion.
       let reason = "promotion_not_eligible";
       let eligible = false;
+      let shadowEligible = false;
       if (suppressed) {
         reason =
           lifecycle.state === "retired"
@@ -2648,17 +3056,26 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       } else if (!workerGate.stageCPass) {
         reason = workerGate.reason || "worker_stage_c_failed";
       } else if (hasMixedSessionEvidence) {
+        // Worker passed but forward evidence has session mix — shadow-eligible
+        // so we can keep collecting data, but not live-eligible.
+        shadowEligible = true;
         reason = "forward_session_evidence_mixed";
       } else if (!freshness.ready) {
+        // Worker passed but not enough forward weeks yet — shadow-eligible.
+        shadowEligible = true;
         reason = "forward_session_12w_incomplete";
       } else if (hasPerWeekTradesDeficit) {
+        shadowEligible = true;
         reason = "forward_session_min_trades_per_window_below_threshold";
       } else if (totalTrades < policy.minTotalTrades) {
+        shadowEligible = true;
         reason = "forward_session_total_trades_below_threshold";
       } else if (!weeklyGate.passed) {
+        shadowEligible = true;
         reason = weeklyGate.reason || "weekly_robustness_failed";
       } else {
         eligible = true;
+        shadowEligible = true;
         reason = "weekly_robustness_passed";
       }
 
@@ -2688,6 +3105,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         workerStageCPass: workerGate.stageCPass,
         workerStageReason: workerGate.reason,
         eligible,
+        shadowEligible,
         reason,
         enabled: false,
         shortlistIncluded: false,
@@ -2697,6 +3115,8 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       });
     }
 
+    // Winner shortlist: pick the best fully-eligible candidate per scope key,
+    // then cap to maxEnabledDeployments for live slots.
     const winnerBySymbolStrategySession = new Map<string, PromotionDraft>();
     for (const row of drafts) {
       if (!row.eligible) continue;
@@ -2719,12 +3139,20 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     );
     for (const row of drafts) {
       row.shortlistIncluded = winnerIds.has(row.deploymentId);
-      row.enabled =
-        row.eligible &&
-        (requireWinnerShortlist ? row.shortlistIncluded : true);
-      if (row.eligible && requireWinnerShortlist && !row.shortlistIncluded) {
-        row.reason = "winner_shortlist_excluded";
+
+      if (row.eligible) {
+        // Tier 2: fully eligible (forward evidence passed) — enable, respect shortlist
+        row.enabled =
+          requireWinnerShortlist ? row.shortlistIncluded : true;
+        if (requireWinnerShortlist && !row.shortlistIncluded) {
+          row.reason = "winner_shortlist_excluded";
+        }
+      } else if (row.shadowEligible) {
+        // Tier 1: worker passed but forward evidence insufficient — enable
+        // in shadow mode so execute can run and accumulate ledger data.
+        row.enabled = true;
       }
+
       if (row.enabled) row.promotedAtMs = nowTs;
     }
 
@@ -2830,9 +3258,10 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         tuneId: row.tuneId,
         entrySessionProfile: row.entrySessionProfile,
         enabled: row.enabled,
-        liveMode: row.enabled && runtime.liveEnabled ? "live" : "shadow",
+        liveMode: row.eligible && row.enabled && runtime.liveEnabled ? "live" : "shadow",
         promotionGate: {
           eligible: row.eligible,
+          shadowEligible: row.shadowEligible,
           reason: row.reason,
           source: "v2_forward_evidence",
           evaluatedAtMs: nowTs,
@@ -3004,6 +3433,12 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       lifecycleIsSuppressed(row.lifecycle, nowTs),
     ).length;
     const enabledCount = drafts.filter((row) => row.enabled).length;
+    const shadowEnabledCount = drafts.filter(
+      (row) => row.enabled && row.shadowEligible && !row.eligible,
+    ).length;
+    const liveEnabledCount = drafts.filter(
+      (row) => row.enabled && row.eligible,
+    ).length;
 
     processed = promotionPool.length;
     succeeded = rows.length;
@@ -3015,6 +3450,9 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       rejectedByBudget: trimmed.dropped.length,
       suppressedCount,
       enabledCount,
+      shadowEnabledCount,
+      liveEnabledCount,
+      skippedWorkerMissing,
       requireWinnerShortlist,
       demotedByUniqueness,
       demotedByEnabledCap: capOut.demoted,
@@ -3032,9 +3470,6 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       minTotalTrades: policy.minTotalTrades,
       enabledSlots: runtime.budgets.maxEnabledDeployments,
       highlightsUpserted,
-      workerStageMissingCount: drafts.filter(
-        (row) => row.reason === "worker_stage_c_missing",
-      ).length,
       workerStageFailedCount: drafts.filter(
         (row) => row.reason === "worker_stage_c_failed",
       ).length,
@@ -3484,9 +3919,23 @@ export async function runScalpV2FullAutoCycle(params: {
   execute: ScalpV2JobResult;
   reconcile: ScalpV2JobResult;
 }> {
-  const discover = await runScalpV2DiscoverJob();
-  const evaluate = await runScalpV2EvaluateJob();
-  const worker = await runScalpV2WorkerJob();
+  // research replaces both evaluate + worker in a single in-memory pass
+  const research = await runScalpV2ResearchJob();
+  const discover: ScalpV2JobResult = {
+    ...research,
+    jobKind: "discover",
+    details: { ...research.details, delegatedTo: "research" },
+  };
+  const evaluate: ScalpV2JobResult = {
+    ...research,
+    jobKind: "evaluate",
+    details: { ...research.details, delegatedTo: "research" },
+  };
+  const worker: ScalpV2JobResult = {
+    ...research,
+    jobKind: "worker",
+    details: { ...research.details, delegatedTo: "research" },
+  };
   const promote = await runScalpV2PromoteJob();
   const execute = await runScalpV2ExecuteJob({
     dryRun: params.executeDryRun,

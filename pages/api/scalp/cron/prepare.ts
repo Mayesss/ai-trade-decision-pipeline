@@ -140,7 +140,7 @@ export default async function handler(
   ) {
     selfRecall = await invokeCronEndpointDetached(
       req,
-      "/api/scalp/cron/v2/prepare",
+      "/api/scalp/v2/cron/evaluate",
       {
         batchSize,
         maxAttempts,

@@ -34,6 +34,7 @@ export type ScalpV2JobKind =
   | "discover"
   | "evaluate"
   | "worker"
+  | "research"
   | "promote"
   | "execute"
   | "reconcile";

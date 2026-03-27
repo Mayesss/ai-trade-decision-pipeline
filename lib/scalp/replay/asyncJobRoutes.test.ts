@@ -19,6 +19,7 @@ test("scalp v2 cron coverage uses native split jobs", async () => {
     "pages/api/scalp/v2/cron/load-candles.ts",
     "pages/api/scalp/v2/cron/evaluate.ts",
     "pages/api/scalp/v2/cron/worker.ts",
+    "pages/api/scalp/v2/cron/research.ts",
     "pages/api/scalp/v2/cron/promote.ts",
     "pages/api/scalp/v2/cron/execute.ts",
     "pages/api/scalp/v2/cron/reconcile.ts",
@@ -44,13 +45,11 @@ test("scalp v2 cron coverage uses native split jobs", async () => {
     .filter(Boolean);
 
   const requiredCronPrefixes = [
-    "/api/scalp/v2/cron/discover",
-    "/api/scalp/v2/cron/load-candles",
-    "/api/scalp/v2/cron/evaluate",
-    "/api/scalp/v2/cron/worker",
+    "/api/scalp/v2/cron/research",
     "/api/scalp/v2/cron/promote",
     "/api/scalp/v2/cron/execute",
     "/api/scalp/v2/cron/reconcile",
+    "/api/scalp/v2/cron/load-candles",
   ];
   for (const prefix of requiredCronPrefixes) {
     assert.equal(
@@ -64,9 +63,9 @@ test("scalp v2 cron coverage uses native split jobs", async () => {
     "/api/scalp/cron/execute-deployments",
     "/api/scalp/cron/worker",
     "/api/scalp/cron/promotion",
-    "/api/scalp/cron/v2/discover",
-    "/api/scalp/cron/v2/load-candles",
-    "/api/scalp/cron/v2/prepare",
+    "/api/scalp/v2/cron/discover",
+    "/api/scalp/v2/cron/evaluate",
+    "/api/scalp/v2/cron/worker",
     "/api/scalp/cron/discover-symbols",
     "/api/scalp/cron/load-candles",
     "/api/scalp/cron/prepare",
