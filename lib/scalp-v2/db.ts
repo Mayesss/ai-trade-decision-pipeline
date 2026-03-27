@@ -1,9 +1,8 @@
 import crypto from "crypto";
 
-import { isScalpPgConfigured, scalpPrisma } from "../scalp/pg/client";
-import { join, sql } from "../scalp/pg/sql";
+import { isScalpPgConfigured, join, scalpPrisma, sql } from "./pg";
 
-import { getScalpV2RuntimeConfig } from "./config";
+import { applyScalpV2FixedSeedScope, getScalpV2RuntimeConfig } from "./config";
 import {
   deriveCloseTypeFromReasonCodes,
   normalizeReasonCodes,
@@ -21,6 +20,8 @@ import type {
   ScalpV2JobResult,
   ScalpV2JobStatus,
   ScalpV2LiveMode,
+  ScalpV2ResearchCursor,
+  ScalpV2ResearchHighlight,
   ScalpV2RuntimeConfig,
   ScalpV2RiskProfile,
   ScalpV2Session,
@@ -67,6 +68,16 @@ function normalizeSession(value: unknown): ScalpV2Session {
 
 function normalizeLiveMode(value: unknown): ScalpV2LiveMode {
   return String(value || "").trim().toLowerCase() === "live" ? "live" : "shadow";
+}
+
+function normalizeResearchPhase(value: unknown): ScalpV2ResearchCursor["phase"] {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "score") return "score";
+  if (normalized === "validate") return "validate";
+  if (normalized === "promote") return "promote";
+  return "scan";
 }
 
 function normalizeCandidateStatus(value: unknown): ScalpV2CandidateStatus {
@@ -148,12 +159,13 @@ function parseRuntimeConfigRow(raw: unknown): ScalpV2RuntimeConfig | null {
     } as ScalpV2RuntimeConfig["seedLiveSymbolsByVenue"],
   };
 
-  return {
+  const runtime: ScalpV2RuntimeConfig = {
     ...merged,
     enabled: Boolean(merged.enabled),
     liveEnabled: Boolean(merged.liveEnabled),
     dryRunDefault: Boolean(merged.dryRunDefault),
   };
+  return applyScalpV2FixedSeedScope(runtime);
 }
 
 export async function loadScalpV2RuntimeConfig(): Promise<ScalpV2RuntimeConfig> {
@@ -766,6 +778,7 @@ export async function listScalpV2LedgerRows(params: {
   Array<{
     deploymentId: string;
     tsExitMs: number;
+    entrySessionProfile: ScalpV2Session;
     rMultiple: number;
   }>
 > {
@@ -788,12 +801,14 @@ export async function listScalpV2LedgerRows(params: {
     Array<{
       deploymentId: string;
       tsExitMs: bigint;
+      entrySessionProfile: string;
       rMultiple: number;
     }>
   >(sql`
     SELECT
       deployment_id AS "deploymentId",
       (EXTRACT(EPOCH FROM ts_exit) * 1000.0)::bigint AS "tsExitMs",
+      entry_session_profile AS "entrySessionProfile",
       r_multiple::double precision AS "rMultiple"
     FROM scalp_v2_ledger
     WHERE deployment_id IN (${join(deploymentIds)})
@@ -806,6 +821,7 @@ export async function listScalpV2LedgerRows(params: {
   return rows.map((row) => ({
     deploymentId: String(row.deploymentId || "").trim(),
     tsExitMs: Number(row.tsExitMs || 0),
+    entrySessionProfile: normalizeSession(row.entrySessionProfile),
     rMultiple: Number.isFinite(Number(row.rMultiple)) ? Number(row.rMultiple) : 0,
   }));
 }
@@ -1138,6 +1154,386 @@ export async function listScalpV2Jobs(params: {
       payload: asRecord(row.payload),
     };
   });
+}
+
+export async function loadScalpV2ResearchCursor(params: {
+  cursorKey: string;
+}): Promise<ScalpV2ResearchCursor | null> {
+  const cursorKey = String(params.cursorKey || "").trim();
+  if (!cursorKey || !isScalpPgConfigured()) return null;
+  const db = scalpPrisma();
+  const [row] = await db.$queryRaw<
+    Array<{
+      cursorKey: string;
+      venue: string;
+      symbol: string;
+      entrySessionProfile: string;
+      phase: string;
+      lastCandidateOffset: number;
+      lastWeekStartMs: number | null;
+      progressJson: unknown;
+      updatedAt: Date;
+    }>
+  >(sql`
+    SELECT
+      cursor_key AS "cursorKey",
+      venue,
+      symbol,
+      entry_session_profile AS "entrySessionProfile",
+      phase,
+      last_candidate_offset AS "lastCandidateOffset",
+      CASE
+        WHEN last_week_start IS NULL THEN NULL
+        ELSE (EXTRACT(EPOCH FROM last_week_start) * 1000.0)::bigint
+      END AS "lastWeekStartMs",
+      progress_json AS "progressJson",
+      updated_at AS "updatedAt"
+    FROM scalp_v2_research_cursor
+    WHERE cursor_key = ${cursorKey}
+    LIMIT 1;
+  `);
+  if (!row) return null;
+  return {
+    cursorKey: String(row.cursorKey || "").trim(),
+    venue: normalizeVenue(row.venue),
+    symbol: String(row.symbol || "").trim().toUpperCase(),
+    entrySessionProfile: normalizeSession(row.entrySessionProfile),
+    phase: normalizeResearchPhase(row.phase),
+    lastCandidateOffset: Math.max(
+      0,
+      Math.floor(Number(row.lastCandidateOffset || 0)),
+    ),
+    lastWeekStartMs: toOptionalMs(row.lastWeekStartMs),
+    progress: asRecord(row.progressJson),
+    updatedAtMs: toMs(row.updatedAt),
+  };
+}
+
+export async function upsertScalpV2ResearchCursor(params: {
+  cursorKey: string;
+  venue: ScalpV2Venue;
+  symbol: string;
+  entrySessionProfile: ScalpV2Session;
+  phase?: ScalpV2ResearchCursor["phase"];
+  lastCandidateOffset?: number;
+  lastWeekStartMs?: number | null;
+  progress?: Record<string, unknown>;
+}): Promise<ScalpV2ResearchCursor | null> {
+  const cursorKey = String(params.cursorKey || "").trim();
+  if (!cursorKey || !isScalpPgConfigured()) return null;
+  const db = scalpPrisma();
+  await db.$executeRaw(sql`
+    INSERT INTO scalp_v2_research_cursor(
+      cursor_key,
+      venue,
+      symbol,
+      entry_session_profile,
+      phase,
+      last_candidate_offset,
+      last_week_start,
+      progress_json,
+      updated_at
+    ) VALUES (
+      ${cursorKey},
+      ${params.venue},
+      ${String(params.symbol || "").trim().toUpperCase()},
+      ${params.entrySessionProfile},
+      ${normalizeResearchPhase(params.phase)},
+      ${Math.max(0, Math.floor(Number(params.lastCandidateOffset || 0)))},
+      ${
+        Number.isFinite(Number(params.lastWeekStartMs))
+          ? sql`TO_TIMESTAMP(${Math.floor(Number(params.lastWeekStartMs))} / 1000.0)`
+          : sql`NULL`
+      },
+      ${JSON.stringify(params.progress || {})}::jsonb,
+      NOW()
+    )
+    ON CONFLICT(cursor_key)
+    DO UPDATE SET
+      venue = EXCLUDED.venue,
+      symbol = EXCLUDED.symbol,
+      entry_session_profile = EXCLUDED.entry_session_profile,
+      phase = EXCLUDED.phase,
+      last_candidate_offset = EXCLUDED.last_candidate_offset,
+      last_week_start = EXCLUDED.last_week_start,
+      progress_json = EXCLUDED.progress_json,
+      updated_at = NOW();
+  `);
+  return loadScalpV2ResearchCursor({ cursorKey });
+}
+
+export async function listScalpV2ResearchCursors(params: {
+  venue?: ScalpV2Venue;
+  symbol?: string;
+  entrySessionProfile?: ScalpV2Session;
+  limit?: number;
+} = {}): Promise<ScalpV2ResearchCursor[]> {
+  if (!isScalpPgConfigured()) return [];
+  const db = scalpPrisma();
+  const limit = Math.max(1, Math.min(5_000, Math.floor(params.limit || 200)));
+  const where: string[] = [];
+  const values: unknown[] = [];
+
+  if (params.venue) {
+    values.push(params.venue);
+    where.push(`venue = $${values.length}`);
+  }
+  const symbol = String(params.symbol || "")
+    .trim()
+    .toUpperCase();
+  if (symbol) {
+    values.push(symbol);
+    where.push(`symbol = $${values.length}`);
+  }
+  if (params.entrySessionProfile) {
+    values.push(params.entrySessionProfile);
+    where.push(`entry_session_profile = $${values.length}`);
+  }
+
+  values.push(limit);
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const rows = await db.$queryRawUnsafe<
+    Array<{
+      cursorKey: string;
+      venue: string;
+      symbol: string;
+      entrySessionProfile: string;
+      phase: string;
+      lastCandidateOffset: number;
+      lastWeekStartMs: number | null;
+      progressJson: unknown;
+      updatedAt: Date;
+    }>
+  >(
+    `
+      SELECT
+        cursor_key AS "cursorKey",
+        venue,
+        symbol,
+        entry_session_profile AS "entrySessionProfile",
+        phase,
+        last_candidate_offset AS "lastCandidateOffset",
+        CASE
+          WHEN last_week_start IS NULL THEN NULL
+          ELSE (EXTRACT(EPOCH FROM last_week_start) * 1000.0)::bigint
+        END AS "lastWeekStartMs",
+        progress_json AS "progressJson",
+        updated_at AS "updatedAt"
+      FROM scalp_v2_research_cursor
+      ${whereSql}
+      ORDER BY updated_at DESC
+      LIMIT $${values.length};
+    `,
+    ...values,
+  );
+
+  return rows.map((row) => ({
+    cursorKey: String(row.cursorKey || "").trim(),
+    venue: normalizeVenue(row.venue),
+    symbol: String(row.symbol || "").trim().toUpperCase(),
+    entrySessionProfile: normalizeSession(row.entrySessionProfile),
+    phase: normalizeResearchPhase(row.phase),
+    lastCandidateOffset: Math.max(
+      0,
+      Math.floor(Number(row.lastCandidateOffset || 0)),
+    ),
+    lastWeekStartMs: toOptionalMs(row.lastWeekStartMs),
+    progress: asRecord(row.progressJson),
+    updatedAtMs: toMs(row.updatedAt),
+  }));
+}
+
+export async function upsertScalpV2ResearchHighlights(params: {
+  rows: Array<{
+    candidateId: string;
+    venue: ScalpV2Venue;
+    symbol: string;
+    entrySessionProfile: ScalpV2Session;
+    score: number;
+    trades12w?: number;
+    winningWeeks12w?: number;
+    consecutiveWinningWeeks?: number;
+    robustness?: Record<string, unknown>;
+    dsl?: Record<string, unknown>;
+    notes?: string | null;
+    remarkable?: boolean;
+  }>;
+}): Promise<number> {
+  if (!isScalpPgConfigured() || params.rows.length === 0) return 0;
+  const db = scalpPrisma();
+  const values = params.rows
+    .map((row) => ({
+      candidateId: String(row.candidateId || "").trim(),
+      symbol: String(row.symbol || "").trim().toUpperCase(),
+      score: Number.isFinite(Number(row.score)) ? Number(row.score) : 0,
+      trades12w: Math.max(0, Math.floor(Number(row.trades12w || 0))),
+      winningWeeks12w: Math.max(0, Math.floor(Number(row.winningWeeks12w || 0))),
+      consecutiveWinningWeeks: Math.max(
+        0,
+        Math.floor(Number(row.consecutiveWinningWeeks || 0)),
+      ),
+      robustness: JSON.stringify(row.robustness || {}),
+      dsl: JSON.stringify(row.dsl || {}),
+      notes: row.notes === undefined ? null : row.notes,
+      remarkable: row.remarkable !== false,
+      venue: row.venue,
+      entrySessionProfile: row.entrySessionProfile,
+    }))
+    .filter((row) => row.candidateId && row.symbol);
+  if (!values.length) return 0;
+
+  await db.$executeRaw(sql`
+    INSERT INTO scalp_v2_research_highlights(
+      candidate_id,
+      venue,
+      symbol,
+      entry_session_profile,
+      score,
+      trades_12w,
+      winning_weeks_12w,
+      consecutive_winning_weeks,
+      robustness_json,
+      dsl_json,
+      notes,
+      remarkable,
+      created_at,
+      updated_at
+    ) VALUES ${join(
+      values.map(
+        (row) => sql`(
+          ${row.candidateId},
+          ${row.venue},
+          ${row.symbol},
+          ${row.entrySessionProfile},
+          ${row.score},
+          ${row.trades12w},
+          ${row.winningWeeks12w},
+          ${row.consecutiveWinningWeeks},
+          ${row.robustness}::jsonb,
+          ${row.dsl}::jsonb,
+          ${row.notes},
+          ${row.remarkable},
+          NOW(),
+          NOW()
+        )`,
+      ),
+      ",",
+    )}
+    ON CONFLICT(candidate_id, venue, symbol, entry_session_profile)
+    DO UPDATE SET
+      score = EXCLUDED.score,
+      trades_12w = EXCLUDED.trades_12w,
+      winning_weeks_12w = EXCLUDED.winning_weeks_12w,
+      consecutive_winning_weeks = EXCLUDED.consecutive_winning_weeks,
+      robustness_json = EXCLUDED.robustness_json,
+      dsl_json = EXCLUDED.dsl_json,
+      notes = EXCLUDED.notes,
+      remarkable = EXCLUDED.remarkable,
+      updated_at = NOW();
+  `);
+
+  return values.length;
+}
+
+export async function listScalpV2ResearchHighlights(params: {
+  venue?: ScalpV2Venue;
+  symbol?: string;
+  entrySessionProfile?: ScalpV2Session;
+  remarkableOnly?: boolean;
+  limit?: number;
+} = {}): Promise<ScalpV2ResearchHighlight[]> {
+  if (!isScalpPgConfigured()) return [];
+  const db = scalpPrisma();
+  const limit = Math.max(1, Math.min(5_000, Math.floor(params.limit || 200)));
+  const where: string[] = [];
+  const values: unknown[] = [];
+
+  if (params.venue) {
+    values.push(params.venue);
+    where.push(`venue = $${values.length}`);
+  }
+  const symbol = String(params.symbol || "")
+    .trim()
+    .toUpperCase();
+  if (symbol) {
+    values.push(symbol);
+    where.push(`symbol = $${values.length}`);
+  }
+  if (params.entrySessionProfile) {
+    values.push(params.entrySessionProfile);
+    where.push(`entry_session_profile = $${values.length}`);
+  }
+  if (params.remarkableOnly !== false) {
+    values.push(true);
+    where.push(`remarkable = $${values.length}`);
+  }
+
+  values.push(limit);
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const rows = await db.$queryRawUnsafe<
+    Array<{
+      id: bigint;
+      candidateId: string;
+      venue: string;
+      symbol: string;
+      entrySessionProfile: string;
+      score: number;
+      trades12w: number;
+      winningWeeks12w: number;
+      consecutiveWinningWeeks: number;
+      robustnessJson: unknown;
+      dslJson: unknown;
+      notes: string | null;
+      remarkable: boolean;
+      createdAt: Date;
+      updatedAt: Date;
+    }>
+  >(
+    `
+      SELECT
+        id,
+        candidate_id AS "candidateId",
+        venue,
+        symbol,
+        entry_session_profile AS "entrySessionProfile",
+        score::double precision AS score,
+        trades_12w AS "trades12w",
+        winning_weeks_12w AS "winningWeeks12w",
+        consecutive_winning_weeks AS "consecutiveWinningWeeks",
+        robustness_json AS "robustnessJson",
+        dsl_json AS "dslJson",
+        notes,
+        remarkable,
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM scalp_v2_research_highlights
+      ${whereSql}
+      ORDER BY score DESC, updated_at DESC
+      LIMIT $${values.length};
+    `,
+    ...values,
+  );
+
+  return rows.map((row) => ({
+    id: Number(row.id || 0),
+    candidateId: String(row.candidateId || "").trim(),
+    venue: normalizeVenue(row.venue),
+    symbol: String(row.symbol || "").trim().toUpperCase(),
+    entrySessionProfile: normalizeSession(row.entrySessionProfile),
+    score: Number.isFinite(Number(row.score)) ? Number(row.score) : 0,
+    trades12w: Math.max(0, Math.floor(Number(row.trades12w || 0))),
+    winningWeeks12w: Math.max(0, Math.floor(Number(row.winningWeeks12w || 0))),
+    consecutiveWinningWeeks: Math.max(
+      0,
+      Math.floor(Number(row.consecutiveWinningWeeks || 0)),
+    ),
+    robustness: asRecord(row.robustnessJson),
+    dsl: asRecord(row.dslJson),
+    notes: row.notes || null,
+    remarkable: Boolean(row.remarkable),
+    createdAtMs: toMs(row.createdAt),
+    updatedAtMs: toMs(row.updatedAt),
+  }));
 }
 
 export async function importV1LedgerIntoScalpV2(params: {

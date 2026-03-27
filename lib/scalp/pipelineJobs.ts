@@ -85,6 +85,30 @@ const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 const BITGET_HISTORY_CANDLES_MAX_LIMIT = 200;
 const TRADING_WEEK_CANDLES_1M_MAX = 6 * 24 * 60;
 
+function startOfUtcDayMs(tsMs: number): number {
+  const d = new Date(tsMs);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+
+function isUtcSundayCandle(tsMs: number): boolean {
+  return new Date(startOfUtcDayMs(tsMs)).getUTCDay() === 0;
+}
+
+export function filterScalpSundayCandles(candles: ScalpCandle[]): ScalpCandle[] {
+  return candles.filter((row) => {
+    const ts = Number(row?.[0] || 0);
+    if (!Number.isFinite(ts) || ts <= 0) return false;
+    return !isUtcSundayCandle(ts);
+  });
+}
+
+export function resolveLoadCandlesFetchUpperBoundMs(nowMs: number): number {
+  const safeNowMs = Math.max(0, Math.floor(Number(nowMs) || 0));
+  const dayStartMs = startOfUtcDayMs(safeNowMs);
+  if (new Date(dayStartMs).getUTCDay() !== 0) return safeNowMs;
+  return Math.max(0, dayStartMs - 1);
+}
+
 const STAGED_EVAL_MIN_WEEKS = 1;
 const STAGED_EVAL_MAX_WEEKS = 52;
 const STAGED_EVAL_DEFAULT_STAGE_A_WEEKS = 2;
@@ -667,6 +691,17 @@ function normalizeSymbol(value: unknown): string {
     .trim()
     .toUpperCase()
     .replace(/[^A-Z0-9._-]/g, "");
+}
+
+function normalizeSymbolScope(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  return Array.from(
+    new Set(
+      values
+        .map((row) => normalizeSymbol(row))
+        .filter((row) => row.length > 0),
+    ),
+  );
 }
 
 function isBitgetPipelineSymbol(symbolRaw: string): boolean {
@@ -1674,7 +1709,7 @@ function countCoveredCompletedWeeks(
 }
 
 function normalizeFetchedCandles(rows: unknown[]): ScalpCandle[] {
-  return rows
+  const normalized = rows
     .map((row) => {
       const value = Array.isArray(row) ? row : [];
       const ts = Number(value[0]);
@@ -1698,6 +1733,7 @@ function normalizeFetchedCandles(rows: unknown[]): ScalpCandle[] {
     })
     .filter((row): row is ScalpCandle => Boolean(row))
     .sort((a, b) => a[0] - b[0]);
+  return filterScalpSundayCandles(normalized);
 }
 
 function toReplayCandles(
@@ -2016,25 +2052,41 @@ async function runWithPipelineJobLock(
   }
 }
 
-async function countPendingLoadSymbols(): Promise<number> {
+async function countPendingLoadSymbols(
+  symbolScopeRaw?: string[],
+): Promise<number> {
   const db = scalpPrisma();
+  const symbolScope = normalizeSymbolScope(symbolScopeRaw);
+  const scopeFilter =
+    symbolScope.length > 0
+      ? sql`AND symbol IN (${join(symbolScope)})`
+      : empty;
   const rows = await db.$queryRaw<
     Array<{ count: bigint | number | string }>
   >(sql`
         SELECT COUNT(*)::bigint AS count
         FROM scalp_discovered_symbols
         WHERE load_status IN ('pending', 'retry_wait')
+          ${scopeFilter}
           AND COALESCE(load_next_run_at, NOW()) <= NOW();
     `);
   return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
 }
 
-async function countActivePipelineSymbols(): Promise<number> {
+async function countActivePipelineSymbols(
+  symbolScopeRaw?: string[],
+): Promise<number> {
   const db = scalpPrisma();
+  const symbolScope = normalizeSymbolScope(symbolScopeRaw);
+  const scopeFilter =
+    symbolScope.length > 0
+      ? sql`WHERE symbol IN (${join(symbolScope)})`
+      : empty;
   const rows = await db.$queryRaw<Array<{ count: bigint | number | string }>>(
     sql`
         SELECT COUNT(*)::bigint AS count
-        FROM scalp_discovered_symbols;
+        FROM scalp_discovered_symbols
+        ${scopeFilter};
     `,
   );
   return Math.max(0, Math.floor(Number(rows[0]?.count || 0)));
@@ -4070,6 +4122,7 @@ export async function runDiscoverPipelineJob(
 
 async function claimLoadSymbols(
   limit: number,
+  symbolScopeRaw?: string[],
 ): Promise<
   Array<{
     symbol: string;
@@ -4077,6 +4130,11 @@ async function claimLoadSymbols(
   }>
 > {
   const db = scalpPrisma();
+  const symbolScope = normalizeSymbolScope(symbolScopeRaw);
+  const scopeFilter =
+    symbolScope.length > 0
+      ? sql`AND p.symbol IN (${join(symbolScope)})`
+      : empty;
   const rows = await db.$queryRaw<
     Array<{
       symbol: string;
@@ -4089,6 +4147,7 @@ async function claimLoadSymbols(
                 symbol
             FROM scalp_discovered_symbols p
             WHERE p.load_status IN ('pending', 'retry_wait')
+              ${scopeFilter}
               AND COALESCE(p.load_next_run_at, NOW()) <= NOW()
             ORDER BY COALESCE(p.load_next_run_at, NOW()) ASC, p.symbol ASC
             FOR UPDATE SKIP LOCKED
@@ -4109,11 +4168,67 @@ async function claimLoadSymbols(
   return rows;
 }
 
+async function seedLoadSymbolsFromWorkingDeployments(
+  symbolScopeRaw?: string[],
+): Promise<number> {
+  const db = scalpPrisma();
+  const symbolScope = normalizeSymbolScope(symbolScopeRaw);
+  const scopeFilter =
+    symbolScope.length > 0
+      ? sql`AND d.symbol IN (${join(symbolScope)})`
+      : empty;
+  const seeded = await db.$executeRaw(sql`
+        INSERT INTO scalp_discovered_symbols(
+            symbol,
+            last_discovered_at,
+            load_status,
+            load_attempts,
+            load_next_run_at,
+            load_error,
+            prepare_status,
+            prepare_attempts,
+            prepare_next_run_at,
+            prepare_error,
+            updated_at
+        )
+        SELECT DISTINCT
+            d.symbol,
+            NOW(),
+            'pending',
+            0,
+            NOW(),
+            NULL,
+            'pending',
+            0,
+            NOW(),
+            NULL,
+            NOW()
+        FROM scalp_deployments d
+        WHERE d.symbol IS NOT NULL
+          AND d.symbol <> ''
+          ${scopeFilter}
+          AND (
+            COALESCE(d.enabled, FALSE) = TRUE
+            OR COALESCE(d.in_universe, FALSE) = TRUE
+            OR COALESCE(d.worker_dirty, FALSE) = TRUE
+            OR COALESCE(d.promotion_dirty, FALSE) = TRUE
+          )
+        ON CONFLICT(symbol) DO NOTHING;
+    `);
+  return Math.max(0, Number(seeded || 0));
+}
+
 async function nudgeLoadSymbolsForCoverageFloor(params: {
   requiredWeeks: number;
   nowMs: number;
+  symbols?: string[];
 }): Promise<number> {
   const db = scalpPrisma();
+  const symbolScope = normalizeSymbolScope(params.symbols);
+  const scopeFilter =
+    symbolScope.length > 0
+      ? sql`AND symbol IN (${join(symbolScope)})`
+      : empty;
   const { startCurrentWeekMondayMs } = resolveLastCompletedWeekBoundsUtc(
     params.nowMs,
   );
@@ -4127,6 +4242,7 @@ async function nudgeLoadSymbolsForCoverageFloor(params: {
             load_error = NULL,
             updated_at = NOW()
         WHERE load_status IN ('succeeded', 'failed')
+          ${scopeFilter}
           AND (
             COALESCE(weeks_covered, 0) < ${Math.max(1, Math.floor(params.requiredWeeks))}
             OR latest_week_start IS NULL
@@ -4195,7 +4311,9 @@ async function ensureSymbolWeeklyCoverage(params: {
   error: string | null;
 }> {
   const history = await loadScalpCandleHistory(params.symbol, "1m");
-  const existing = history.record?.candles || [];
+  const existingRaw = history.record?.candles || [];
+  const existing = filterScalpSundayCandles(existingRaw);
+  const existingHadSundayCandles = existing.length !== existingRaw.length;
   const bitgetOnly = isScalpPipelineBitgetOnlyEnabled();
   if (bitgetOnly && !isBitgetPipelineSymbol(params.symbol)) {
     const coverage = countCoveredCompletedWeeks(
@@ -4245,6 +4363,15 @@ async function ensureSymbolWeeklyCoverage(params: {
     earliestMissingWeekStartMs === null && coverage.covered >= params.requiredWeeks;
 
   if (hasCoverage) {
+    if (existingHadSundayCandles) {
+      await saveScalpCandleHistory({
+        symbol: params.symbol,
+        timeframe: "1m",
+        epic: history.record?.epic || params.symbol,
+        source: history.record?.source || "bitget",
+        candles: existing,
+      });
+    }
     return {
       ok: true,
       weeksCovered: coverage.covered,
@@ -4256,6 +4383,7 @@ async function ensureSymbolWeeklyCoverage(params: {
     };
   }
 
+  const fetchUpperBoundMs = resolveLoadCandlesFetchUpperBoundMs(params.nowMs);
   const fetchWindow = (() => {
     // First-touch symbols: warm recent history first so load jobs don't stall on deep backfill.
     if (
@@ -4263,8 +4391,11 @@ async function ensureSymbolWeeklyCoverage(params: {
       !Number.isFinite(oldestExistingTs) ||
       oldestExistingTs <= 0
     ) {
-      const fromMs = Math.max(requiredCoverageStartMs, params.nowMs - prewarmSpanMs);
-      const toMs = params.nowMs;
+      const fromMs = Math.max(
+        requiredCoverageStartMs,
+        fetchUpperBoundMs - prewarmSpanMs,
+      );
+      const toMs = fetchUpperBoundMs;
       return { fromMs, toMs };
     }
 
@@ -4274,7 +4405,7 @@ async function ensureSymbolWeeklyCoverage(params: {
       earliestMissingWeekStartMs < oldestExistingTs
     ) {
       const toMs = Math.min(
-        params.nowMs,
+        fetchUpperBoundMs,
         Math.max(requiredCoverageStartMs + seedTfMs, oldestExistingTs + seedTfMs * 2),
       );
       const fromMs = Math.max(requiredCoverageStartMs, toMs - backfillChunkMs);
@@ -4286,10 +4417,10 @@ async function ensureSymbolWeeklyCoverage(params: {
       requiredCoverageStartMs,
       earliestMissingWeekStartMs ?? requiredCoverageStartMs,
     );
-    const toMs = Math.min(params.nowMs, fromMs + backfillChunkMs - seedTfMs);
+    const toMs = Math.min(fetchUpperBoundMs, fromMs + backfillChunkMs - seedTfMs);
     return {
       fromMs,
-      toMs: toMs > fromMs ? toMs : Math.min(params.nowMs, fromMs + seedTfMs),
+      toMs: toMs > fromMs ? toMs : Math.min(fetchUpperBoundMs, fromMs + seedTfMs),
     };
   })();
 
@@ -4331,7 +4462,7 @@ async function ensureSymbolWeeklyCoverage(params: {
   const fetched = normalizeFetchedCandles(fetchedRaw);
   const merged = mergeScalpCandleHistory(existing, fetched);
 
-  if (merged.length > existing.length) {
+  if (existingHadSundayCandles || merged.length > existing.length) {
     await saveScalpCandleHistory({
       symbol: params.symbol,
       timeframe: "1m",
@@ -4369,13 +4500,18 @@ export async function runLoadCandlesPipelineJob(
   params: {
     batchSize?: number;
     maxAttempts?: number;
+    symbols?: string[];
   } = {},
 ): Promise<ScalpPipelineJobExecutionResult> {
   return runWithPipelineJobLock(
     "load_candles",
     async ({ lockToken, lockMs }) => {
+      const symbolScope = normalizeSymbolScope(params.symbols);
       const requiredWeeks = resolveRequiredSuccessiveWeeks();
       const nowMs = Date.now();
+      const fetchUpperBoundMs = resolveLoadCandlesFetchUpperBoundMs(nowMs);
+      const seededFromDeployments =
+        await seedLoadSymbolsFromWorkingDeployments(symbolScope);
       const prewarmWeeks = resolveLoadPrewarmWeeks(requiredWeeks);
       const backfillChunkWeeks = resolveLoadBackfillChunkWeeks(
         requiredWeeks,
@@ -4409,10 +4545,11 @@ export async function runLoadCandlesPipelineJob(
       const coverageNudged = await nudgeLoadSymbolsForCoverageFloor({
         requiredWeeks,
         nowMs,
+        symbols: symbolScope,
       });
 
-      const claimed = await claimLoadSymbols(batchSize);
-      const activeSymbols = await countActivePipelineSymbols();
+      const claimed = await claimLoadSymbols(batchSize, symbolScope);
+      const activeSymbols = await countActivePipelineSymbols(symbolScope);
       let succeeded = 0;
       let retried = 0;
       let failed = 0;
@@ -4424,7 +4561,7 @@ export async function runLoadCandlesPipelineJob(
         try {
           const coverage = await ensureSymbolWeeklyCoverage({
             symbol,
-            nowMs: Date.now(),
+            nowMs,
             requiredWeeks,
             prewarmWeeks,
             backfillChunkWeeks,
@@ -4495,6 +4632,7 @@ export async function runLoadCandlesPipelineJob(
             processed: idx + 1,
             total: claimed.length,
             activeSymbols,
+            seededFromDeployments,
             coverageNudged,
             succeeded,
             retried,
@@ -4503,7 +4641,7 @@ export async function runLoadCandlesPipelineJob(
         });
       }
 
-      const pendingAfter = await countPendingLoadSymbols();
+      const pendingAfter = await countPendingLoadSymbols(symbolScope);
       return {
         ok: true,
         processed: claimed.length,
@@ -4516,10 +4654,13 @@ export async function runLoadCandlesPipelineJob(
           claimed.length > 0 ? `processed ${claimed.length}` : "idle",
         details: {
           requiredWeeks,
+          symbolScope,
           prewarmWeeks,
           backfillChunkWeeks,
+          fetchUpperBoundMs,
           strictGateOnly: true,
           activeSymbols,
+          seededFromDeployments,
           coverageNudged,
           claimed: claimed.length,
           succeeded,
@@ -5827,6 +5968,8 @@ export async function runWorkerPipelineJob(
     "worker",
     async ({ lockToken, lockMs }) => {
     const workerId = lockToken;
+    const nowMs = Date.now();
+    const allowSundayReplay = envBool("SCALP_ALLOW_SUNDAY_REPLAY", false);
     const requestedBatchSize = Math.max(
       1,
       Math.min(400, toPositiveInt(params.batchSize, 80)),
@@ -5853,6 +5996,30 @@ export async function runWorkerPipelineJob(
     const rowTimeoutMs = resolveWorkerRowTimeoutMs(lockMs);
     const replayProgressEveryRuns = resolveWorkerReplayProgressEveryRuns();
     const replayProgressMinIntervalMs = resolveWorkerReplayProgressMinIntervalMs();
+    if (isUtcSunday(nowMs) && !allowSundayReplay) {
+      const pendingAfter = await countPendingWorkerRows(entrySessionProfile);
+      const activeSymbols = await countActivePipelineSymbols();
+      return {
+        ok: true,
+        processed: 0,
+        succeeded: 0,
+        retried: 0,
+        failed: 0,
+        pendingAfter,
+        downstreamRequested: false,
+        progressLabel: "sunday_replay_blocked_utc",
+        details: {
+          entrySessionProfile,
+          activeSymbols,
+          requestedBatchSize,
+          effectiveBatchSize: batchSize,
+          rowTimeoutMs,
+          sundayReplayBlocked: true,
+          allowSundayReplay,
+          reason: "sunday_utc_replay_blocked",
+        },
+      };
+    }
 
     const claimed = await claimWorkerRows(
       batchSize,

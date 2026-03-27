@@ -1,14 +1,16 @@
 import crypto from "crypto";
 
 import { fetchCapitalOpenPositionSnapshots } from "../capital";
-import { getScalpVenueAdapter } from "../scalp/adapters";
-import { runScalpExecuteCycle } from "../scalp/engine";
-import {
-  resolveCompletedWeekWindowToUtc,
-  startOfWeekMondayUtc,
-} from "../scalp/weekWindows";
 
-import { getScalpV2RuntimeConfig } from "./config";
+import {
+  getScalpV2RuntimeConfig,
+  isScalpV2RuntimeSymbolInScope,
+} from "./config";
+import {
+  MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
+  resolveModelGuidedComposerExecutionPlanFromBlocks,
+} from "./composerExecution";
+import { runScalpV2ExecuteCycle } from "./executeAdapter";
 import {
   appendScalpV2ExecutionEvent,
   buildScalpV2JobResult,
@@ -19,6 +21,7 @@ import {
   listScalpV2Deployments,
   listScalpV2LedgerRows,
   listScalpV2OpenPositions,
+  loadScalpV2ResearchCursor,
   loadScalpV2RuntimeConfig,
   snapshotScalpV2DailyMetrics,
   toDeploymentId,
@@ -27,8 +30,24 @@ import {
   upsertScalpV2Candidates,
   upsertScalpV2Deployments,
   upsertScalpV2PositionSnapshot,
+  upsertScalpV2ResearchCursor,
+  upsertScalpV2ResearchHighlights,
 } from "./db";
-import { enforceCandidateBudgets, isScalpV2DiscoverSymbolAllowed } from "./logic";
+import {
+  enforceCandidateBudgets,
+  isScalpV2DiscoverSymbolAllowed,
+  isScalpV2SundayUtc,
+} from "./logic";
+import {
+  buildScalpV2ModelGuidedComposerGrid,
+  resolveScalpV2CandidateEvaluationWindow,
+  toScalpV2ResearchCursorKey,
+} from "./research";
+import { getScalpV2VenueAdapter } from "./venueAdapter";
+import {
+  resolveScalpV2CompletedWeekWindowToUtc,
+  startOfScalpV2WeekMondayUtc,
+} from "./weekWindows";
 import type {
   ScalpV2ExecutionEvent,
   ScalpV2JobResult,
@@ -466,7 +485,7 @@ function buildFreshness(params: {
   nowTs: number;
 }): PromotionFreshness {
   const requiredWeeks = Math.max(1, Math.min(52, params.requiredWeeks));
-  const windowToTs = resolveCompletedWeekWindowToUtc(params.nowTs);
+  const windowToTs = resolveScalpV2CompletedWeekWindowToUtc(params.nowTs);
   const windowFromTs = windowToTs - requiredWeeks * ONE_WEEK_MS;
   let completedWeeks = 0;
   const missingWeekStarts: number[] = [];
@@ -538,6 +557,21 @@ function computeWeeklyMetrics(params: {
     totalTrades,
     evaluatedAtMs: params.nowTs,
   };
+}
+
+function longestConsecutiveWinningWeeks(rows: WeeklyAggregationRow[]): number {
+  if (!rows.length) return 0;
+  let current = 0;
+  let longest = 0;
+  for (const row of rows) {
+    if (row.netR > 0) {
+      current += 1;
+      if (current > longest) longest = current;
+    } else {
+      current = 0;
+    }
+  }
+  return longest;
 }
 
 function evaluateWeeklyGate(params: {
@@ -615,6 +649,50 @@ function lockOwner(jobKind: string): string {
   return `scalp_v2_${jobKind}_${nowMs()}_${Math.floor(Math.random() * 1_000_000)}`;
 }
 
+function toDeploymentSessionKey(
+  deploymentId: string,
+  entrySessionProfile: ScalpV2Session,
+): string {
+  return `${deploymentId}::${entrySessionProfile}`;
+}
+
+async function updateResearchCursorSafe(params: {
+  venue: ScalpV2Venue;
+  symbol: string;
+  entrySessionProfile: ScalpV2Session;
+  phase: "scan" | "score" | "validate" | "promote";
+  lastCandidateOffset?: number;
+  lastWeekStartMs?: number | null;
+  progress?: Record<string, unknown>;
+}): Promise<void> {
+  const cursorKey = toScalpV2ResearchCursorKey({
+    venue: params.venue,
+    symbol: params.symbol,
+    entrySessionProfile: params.entrySessionProfile,
+  });
+  const existingCursor =
+    params.lastCandidateOffset === undefined || params.lastWeekStartMs === undefined
+      ? await loadScalpV2ResearchCursor({ cursorKey }).catch(() => null)
+      : null;
+
+  await upsertScalpV2ResearchCursor({
+    cursorKey,
+    venue: params.venue,
+    symbol: params.symbol,
+    entrySessionProfile: params.entrySessionProfile,
+    phase: params.phase,
+    lastCandidateOffset:
+      params.lastCandidateOffset === undefined
+        ? existingCursor?.lastCandidateOffset || 0
+        : params.lastCandidateOffset,
+    lastWeekStartMs:
+      params.lastWeekStartMs === undefined
+        ? existingCursor?.lastWeekStartMs ?? null
+        : params.lastWeekStartMs,
+    progress: params.progress || {},
+  }).catch(() => undefined);
+}
+
 export async function runScalpV2DiscoverJob(): Promise<ScalpV2JobResult> {
   const owner = lockOwner("discover");
   const claimed = await claimScalpV2Job({ jobKind: "discover", lockOwner: owner });
@@ -650,9 +728,34 @@ export async function runScalpV2DiscoverJob(): Promise<ScalpV2JobResult> {
       });
     }
 
+    const persistCandidates = envBool(
+      "SCALP_V2_DISCOVER_PERSIST_CANDIDATES",
+      false,
+    );
     const rows: Parameters<typeof upsertScalpV2Candidates>[0]["rows"] = [];
-
+    const maxCandidatesPerSession = Math.max(
+      1,
+      Math.min(
+        96,
+        toPositiveInt(
+          process.env.SCALP_V2_COMPOSER_MAX_CANDIDATES_PER_SESSION,
+          24,
+          96,
+        ),
+      ),
+    );
     let droppedByVenuePolicy = 0;
+    let discoveredByComposer = 0;
+    let scopesInspected = 0;
+    const countsByCursor = new Map<
+      string,
+      {
+        venue: ScalpV2Venue;
+        symbol: string;
+        session: ScalpV2Session;
+        count: number;
+      }
+    >();
     for (const venue of runtime.supportedVenues) {
       const symbols = runtime.seedSymbolsByVenue[venue] || [];
       for (const symbol of symbols) {
@@ -661,38 +764,110 @@ export async function runScalpV2DiscoverJob(): Promise<ScalpV2JobResult> {
           continue;
         }
         for (const session of runtime.supportedSessions) {
-          const score = 50 + hashScoreSeed(`${venue}:${symbol}:${session}`) / 100;
-          rows.push({
+          scopesInspected += 1;
+          const composerCandidates = buildScalpV2ModelGuidedComposerGrid({
             venue,
             symbol,
-            strategyId: runtime.defaultStrategyId,
-            tuneId: runtime.defaultTuneId,
             entrySessionProfile: session,
-            score,
-            status: "discovered",
-            reasonCodes: ["SCALP_V2_DISCOVERY_SEED"],
-            metadata: {
-              discoveredAtMs: nowMs(),
-              source: "seed_universe",
-            },
+            maxCandidates: maxCandidatesPerSession,
           });
+          const normalizedSymbol = String(symbol || "").trim().toUpperCase();
+          const cursorKey = `${venue}:${normalizedSymbol}:${session}`;
+          const current = countsByCursor.get(cursorKey) || {
+            venue,
+            symbol: normalizedSymbol,
+            session,
+            count: 0,
+          };
+          current.count += composerCandidates.length;
+          countsByCursor.set(cursorKey, current);
+          discoveredByComposer += composerCandidates.length;
+
+          if (!persistCandidates) continue;
+          for (const candidateDsl of composerCandidates) {
+            const model = candidateDsl.model;
+            const executionPlan =
+              resolveModelGuidedComposerExecutionPlanFromBlocks(
+                candidateDsl.blocksByFamily,
+              );
+            const supportScore = Number.isFinite(Number(candidateDsl.supportScore))
+              ? Number(candidateDsl.supportScore)
+              : 0;
+            const score =
+              20 +
+              model.compositeScore * 65 +
+              model.confidence * 12 +
+              Math.min(12, supportScore) * 0.9 +
+              hashScoreSeed(
+                `${venue}:${symbol}:${session}:${candidateDsl.candidateId}`,
+              ) /
+                1000;
+            rows.push({
+              venue,
+              symbol,
+              strategyId: MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
+              tuneId: candidateDsl.tuneId,
+              entrySessionProfile: session,
+              score,
+              status: "discovered",
+              reasonCodes: ["SCALP_V2_DISCOVERY_MODEL_COMPOSER"],
+              metadata: {
+                discoveredAtMs: nowMs(),
+                source: "model_guided_composer",
+                researchCandidateId: candidateDsl.candidateId,
+                researchDsl: candidateDsl.blocksByFamily,
+                researchReferences: candidateDsl.referenceStrategyIds,
+                researchSupportScore: supportScore,
+                composerModel: candidateDsl.model,
+                composerExecutionPlan: executionPlan,
+              },
+            });
+          }
         }
       }
     }
 
-    processed = rows.length;
-    await upsertScalpV2Candidates({ rows });
-    const trim = await trimScalpV2CandidatesByBudget({
-      maxCandidatesTotal: runtime.budgets.maxCandidatesTotal,
-      maxCandidatesPerSymbol: runtime.budgets.maxCandidatesPerSymbol,
-    });
-    succeeded = rows.length;
+    const insertedOrUpdated = rows.length;
+    let trimmed = 0;
+    if (persistCandidates && rows.length > 0) {
+      await upsertScalpV2Candidates({ rows });
+      const trim = await trimScalpV2CandidatesByBudget({
+        maxCandidatesTotal: runtime.budgets.maxCandidatesTotal,
+        maxCandidatesPerSymbol: runtime.budgets.maxCandidatesPerSymbol,
+      });
+      trimmed = trim.deleted;
+    }
+    processed = persistCandidates ? rows.length : discoveredByComposer;
+    succeeded = processed;
     details = {
-      insertedOrUpdated: rows.length,
-      trimmed: trim.deleted,
+      insertedOrUpdated,
+      trimmed,
       droppedByVenuePolicy,
+      discoveredByComposer,
+      scannedOnly: !persistCandidates,
+      persistedCandidates: persistCandidates,
+      scopesInspected,
+      maxCandidatesPerSession,
       budgets: runtime.budgets,
     };
+
+    await Promise.all(
+      Array.from(countsByCursor.values()).map((row) =>
+        updateResearchCursorSafe({
+          venue: row.venue,
+          symbol: row.symbol,
+          entrySessionProfile: row.session,
+          phase: "scan",
+          progress: {
+            discoveredCandidates: row.count,
+            droppedByVenuePolicy,
+            trimmedByBudget: trimmed,
+            persistedCandidates: persistCandidates,
+            updatedAtMs: nowMs(),
+          },
+        }),
+      ),
+    );
 
     return buildScalpV2JobResult({
       jobKind: "discover",
@@ -749,10 +924,70 @@ export async function runScalpV2EvaluateJob(params: {
 
   try {
     const runtime = await loadScalpV2RuntimeConfig();
-    const batchSize = Math.max(1, Math.min(2_000, Math.floor(params.batchSize || 200)));
-    const candidates = await listScalpV2Candidates({ status: "discovered", limit: batchSize });
-    if (!candidates.length) {
-      details = { evaluated: 0, reason: "no_discovered_candidates" };
+    if (!runtime.enabled) {
+      details = { skipped: true, reason: "SCALP_V2_DISABLED" };
+      return buildScalpV2JobResult({
+        jobKind: "evaluate",
+        processed,
+        succeeded,
+        failed,
+        pendingAfter: 0,
+        details,
+      });
+    }
+
+    const batchSize = Math.max(
+      1,
+      Math.min(2_000, Math.floor(params.batchSize || 200)),
+    );
+    const maxCandidatesPerSession = Math.max(
+      1,
+      Math.min(
+        96,
+        toPositiveInt(
+          process.env.SCALP_V2_COMPOSER_MAX_CANDIDATES_PER_SESSION,
+          24,
+          96,
+        ),
+      ),
+    );
+
+    const scopes: Array<{
+      venue: ScalpV2Venue;
+      symbol: string;
+      session: ScalpV2Session;
+    }> = [];
+    let droppedByVenuePolicy = 0;
+    for (const venue of runtime.supportedVenues) {
+      const symbols = runtime.seedSymbolsByVenue[venue] || [];
+      for (const symbolRaw of symbols) {
+        const symbol = String(symbolRaw || "").trim().toUpperCase();
+        if (!symbol) continue;
+        if (!isScalpV2DiscoverSymbolAllowed(venue, symbol)) {
+          droppedByVenuePolicy += 1;
+          continue;
+        }
+        if (
+          !isScalpV2RuntimeSymbolInScope({
+            runtime,
+            venue,
+            symbol,
+          })
+        ) {
+          continue;
+        }
+        for (const session of runtime.supportedSessions) {
+          scopes.push({ venue, symbol, session });
+        }
+      }
+    }
+
+    if (!scopes.length) {
+      details = {
+        evaluated: 0,
+        reason: "no_runtime_seed_scopes",
+        droppedByVenuePolicy,
+      };
       return buildScalpV2JobResult({
         jobKind: "evaluate",
         processed: 0,
@@ -763,35 +998,164 @@ export async function runScalpV2EvaluateJob(params: {
       });
     }
 
-    const evaluatedRows: Parameters<typeof upsertScalpV2Candidates>[0]["rows"] = candidates.map((candidate) => ({
-      venue: candidate.venue,
-      symbol: candidate.symbol,
-      strategyId: candidate.strategyId,
-      tuneId: candidate.tuneId,
-      entrySessionProfile: candidate.entrySessionProfile,
-      score:
-        candidate.score +
-        hashScoreSeed(
-          `${candidate.venue}:${candidate.symbol}:${candidate.entrySessionProfile}:${candidate.strategyId}`,
-        ) /
-          100,
-      status: "evaluated",
-      reasonCodes: ["SCALP_V2_EVALUATED"],
-      metadata: {
-        evaluatedAtMs: nowMs(),
-        evaluator: "v2_alpha",
-        liveEnabled: runtime.liveEnabled,
-      },
-    }));
+    const evaluatedRows: Parameters<typeof upsertScalpV2Candidates>[0]["rows"] = [];
+    const cursorUpdates: Array<{
+      venue: ScalpV2Venue;
+      symbol: string;
+      session: ScalpV2Session;
+      poolSize: number;
+      selectedCount: number;
+      startOffset: number;
+      nextOffset: number;
+      perScopeCap: number;
+    }> = [];
+    let selectedTotal = 0;
+    let poolSizeTotal = 0;
+
+    for (let idx = 0; idx < scopes.length; idx += 1) {
+      if (selectedTotal >= batchSize) break;
+      const scope = scopes[idx]!;
+      const remainingScopes = scopes.length - idx;
+      const remainingBudget = Math.max(1, batchSize - selectedTotal);
+      const perScopeCap = Math.max(
+        1,
+        Math.min(maxCandidatesPerSession, Math.ceil(remainingBudget / remainingScopes)),
+      );
+      const composerCandidates = buildScalpV2ModelGuidedComposerGrid({
+        venue: scope.venue,
+        symbol: scope.symbol,
+        entrySessionProfile: scope.session,
+        maxCandidates: maxCandidatesPerSession,
+      });
+      poolSizeTotal += composerCandidates.length;
+
+      const cursorKey = toScalpV2ResearchCursorKey({
+        venue: scope.venue,
+        symbol: scope.symbol,
+        entrySessionProfile: scope.session,
+      });
+      const existingCursor = await loadScalpV2ResearchCursor({
+        cursorKey,
+      }).catch(() => null);
+      const window = resolveScalpV2CandidateEvaluationWindow({
+        candidates: composerCandidates,
+        maxCandidates: perScopeCap,
+        startOffset: existingCursor?.lastCandidateOffset || 0,
+      });
+
+      cursorUpdates.push({
+        venue: scope.venue,
+        symbol: scope.symbol,
+        session: scope.session,
+        poolSize: window.poolSize,
+        selectedCount: window.evaluatedCount,
+        startOffset: window.startOffset,
+        nextOffset: window.nextOffset,
+        perScopeCap,
+      });
+
+      if (!window.selectedCandidates.length) continue;
+      selectedTotal += window.selectedCandidates.length;
+      const evaluatedAtMs = nowMs();
+      for (const candidateDsl of window.selectedCandidates) {
+        const model = candidateDsl.model;
+        const executionPlan = resolveModelGuidedComposerExecutionPlanFromBlocks(
+          candidateDsl.blocksByFamily,
+        );
+        const supportScore = Number.isFinite(Number(candidateDsl.supportScore))
+          ? Number(candidateDsl.supportScore)
+          : 0;
+        const previousScore =
+          20 +
+          model.compositeScore * 65 +
+          model.confidence * 12 +
+          Math.min(12, supportScore) * 0.9 +
+          hashScoreSeed(
+            `${scope.venue}:${scope.symbol}:${scope.session}:${candidateDsl.candidateId}`,
+          ) /
+            1000;
+        const supportNorm = Math.max(0, Math.min(12, supportScore)) / 12;
+        const score =
+          12 +
+          Math.max(0, previousScore) * 0.12 +
+          model.compositeScore * 66 +
+          model.confidence * 14 +
+          supportNorm * 8 +
+          hashScoreSeed(
+            `${scope.venue}:${scope.symbol}:${scope.session}:${candidateDsl.tuneId}`,
+          ) /
+            1000;
+        evaluatedRows.push({
+          venue: scope.venue,
+          symbol: scope.symbol,
+          strategyId: MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
+          tuneId: candidateDsl.tuneId,
+          entrySessionProfile: scope.session,
+          score,
+          status: "evaluated",
+          reasonCodes: ["SCALP_V2_MODEL_GUIDED_EVALUATED"],
+          metadata: {
+            discoveredAtMs: candidateDsl.generatedAtMs,
+            source: "model_guided_composer",
+            researchCandidateId: candidateDsl.candidateId,
+            researchDsl: candidateDsl.blocksByFamily,
+            researchReferences: candidateDsl.referenceStrategyIds,
+            researchSupportScore: supportScore,
+            composerModel: candidateDsl.model,
+            composerExecutionPlan: executionPlan,
+            evaluatedAtMs,
+            evaluator: "v2_model_guided_composer",
+            liveEnabled: runtime.liveEnabled,
+            scoreBreakdown: {
+              previousScore,
+              modelComposite: model.compositeScore,
+              modelConfidence: model.confidence,
+              modelFamily: model.family,
+              supportScore,
+              startOffset: window.startOffset,
+              nextOffset: window.nextOffset,
+              perScopeCap,
+            },
+          },
+        });
+      }
+    }
 
     await upsertScalpV2Candidates({ rows: evaluatedRows });
-    processed = candidates.length;
-    succeeded = candidates.length;
+    processed = evaluatedRows.length;
+    succeeded = evaluatedRows.length;
 
     details = {
-      evaluated: candidates.length,
+      evaluated: evaluatedRows.length,
       batchSize,
+      maxCandidatesPerSession,
+      scopeCount: scopes.length,
+      droppedByVenuePolicy,
+      poolSizeTotal,
+      cursorUpdatedScopes: cursorUpdates.length,
+      requestedBudgetReached: selectedTotal >= batchSize,
     };
+
+    await Promise.all(
+      cursorUpdates.map((row) =>
+        updateResearchCursorSafe({
+          venue: row.venue,
+          symbol: row.symbol,
+          entrySessionProfile: row.session,
+          phase: "score",
+          lastCandidateOffset: row.nextOffset,
+          progress: {
+            evaluatedCandidates: row.selectedCount,
+            poolSize: row.poolSize,
+            startOffset: row.startOffset,
+            nextOffset: row.nextOffset,
+            perScopeCap: row.perScopeCap,
+            batchSize,
+            updatedAtMs: nowMs(),
+          },
+        }),
+      ),
+    );
 
     return buildScalpV2JobResult({
       jobKind: "evaluate",
@@ -846,21 +1210,83 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 
   try {
     const runtime = await loadScalpV2RuntimeConfig();
+    const nowTs = nowMs();
     const policy = resolvePromotionPolicy();
     const requireWinnerShortlist = envBool(
       "SCALP_V2_REQUIRE_WINNER_SHORTLIST",
       true,
     );
-    const allCandidates = await listScalpV2Candidates({ limit: 10_000 });
+    const allCandidatesRaw = await listScalpV2Candidates({ limit: 10_000 });
+    const allCandidates = allCandidatesRaw.filter((row) =>
+      isScalpV2RuntimeSymbolInScope({
+        runtime,
+        venue: row.venue,
+        symbol: row.symbol,
+      }),
+    );
+    const filteredCandidatesOutOfScope = Math.max(
+      0,
+      allCandidatesRaw.length - allCandidates.length,
+    );
     const promotionPool = allCandidates.filter(
       (row) =>
         row.status === "evaluated" ||
         row.status === "promoted" ||
         row.status === "shadow",
     );
-    const existingDeployments = await listScalpV2Deployments({ limit: 10_000 });
+    const existingDeploymentsRaw = await listScalpV2Deployments({ limit: 10_000 });
+    const existingDeployments = existingDeploymentsRaw.filter((row) =>
+      isScalpV2RuntimeSymbolInScope({
+        runtime,
+        venue: row.venue,
+        symbol: row.symbol,
+        includeLiveSeeds: true,
+      }),
+    );
+    const filteredDeploymentsOutOfScope = Math.max(
+      0,
+      existingDeploymentsRaw.length - existingDeployments.length,
+    );
+    const offScopeEnabledDeployments = existingDeploymentsRaw.filter(
+      (row) =>
+        row.enabled &&
+        !isScalpV2RuntimeSymbolInScope({
+          runtime,
+          venue: row.venue,
+          symbol: row.symbol,
+          includeLiveSeeds: true,
+        }),
+    );
+    if (offScopeEnabledDeployments.length > 0) {
+      await upsertScalpV2Deployments({
+        rows: offScopeEnabledDeployments.map((row) => ({
+          candidateId: row.candidateId,
+          venue: row.venue,
+          symbol: row.symbol,
+          strategyId: row.strategyId,
+          tuneId: row.tuneId,
+          entrySessionProfile: row.entrySessionProfile,
+          enabled: false,
+          liveMode: "shadow",
+          promotionGate: {
+            ...asRecord(row.promotionGate || {}),
+            eligible: false,
+            reason: "outside_runtime_symbol_scope",
+            source: "v2_scope_guard",
+            evaluatedAtMs: nowTs,
+          },
+          riskProfile: row.riskProfile,
+        })),
+      });
+    }
     if (!promotionPool.length && !existingDeployments.length) {
-      details = { promoted: 0, reason: "no_promotable_candidates" };
+      details = {
+        promoted: 0,
+        reason: "no_promotable_candidates",
+        filteredCandidatesOutOfScope,
+        filteredDeploymentsOutOfScope,
+        demotedOutOfScopeEnabled: offScopeEnabledDeployments.length,
+      };
       return buildScalpV2JobResult({
         jobKind: "promote",
         processed: 0,
@@ -918,8 +1344,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       });
     }
 
-    const nowTs = nowMs();
-    const windowToTs = resolveCompletedWeekWindowToUtc(nowTs);
+    const windowToTs = resolveScalpV2CompletedWeekWindowToUtc(nowTs);
     const windowFromTs = windowToTs - policy.minCompletedWeeks * ONE_WEEK_MS;
     const ledgerRows = await listScalpV2LedgerRows({
       deploymentIds: consideredDeploymentIds,
@@ -927,25 +1352,38 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       toTsMs: windowToTs,
       limit: Math.max(50_000, consideredDeploymentIds.length * 5_000),
     });
-    const weeklyByDeploymentId = new Map<
+    const weeklyByDeploymentSession = new Map<
       string,
       Map<number, { trades: number; netR: number }>
+    >();
+    const sessionEvidenceByDeployment = new Map<
+      string,
+      Map<ScalpV2Session, number>
     >();
     for (const row of ledgerRows) {
       const deploymentId = String(row.deploymentId || "").trim();
       if (!deploymentId) continue;
       const tsExitMs = Math.floor(Number(row.tsExitMs) || 0);
       if (!Number.isFinite(tsExitMs) || tsExitMs <= 0) continue;
-      const weekStartTs = startOfWeekMondayUtc(tsExitMs);
+      const weekStartTs = startOfScalpV2WeekMondayUtc(tsExitMs);
       if (weekStartTs < windowFromTs || weekStartTs >= windowToTs) continue;
-      const weekly = weeklyByDeploymentId.get(deploymentId) || new Map();
+      const entrySessionProfile = row.entrySessionProfile;
+      const sessionKey = toDeploymentSessionKey(deploymentId, entrySessionProfile);
+      const weekly = weeklyByDeploymentSession.get(sessionKey) || new Map();
       const current = weekly.get(weekStartTs) || { trades: 0, netR: 0 };
       current.trades += 1;
       current.netR += Number.isFinite(Number(row.rMultiple))
         ? Number(row.rMultiple)
         : 0;
       weekly.set(weekStartTs, current);
-      weeklyByDeploymentId.set(deploymentId, weekly);
+      weeklyByDeploymentSession.set(sessionKey, weekly);
+
+      const bySession = sessionEvidenceByDeployment.get(deploymentId) || new Map();
+      bySession.set(
+        entrySessionProfile,
+        (bySession.get(entrySessionProfile) || 0) + 1,
+      );
+      sessionEvidenceByDeployment.set(deploymentId, bySession);
     }
 
     type PromotionDraft = {
@@ -961,8 +1399,16 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       droppedByBudget: boolean;
       lifecycle: V2PromotionLifecycle;
       suppressed: boolean;
+      strictSessionEvidence: {
+        expected: ScalpV2Session;
+        matchedTrades: number;
+        mismatchedTrades: number;
+        mismatchedSessions: ScalpV2Session[];
+      };
       freshness: PromotionFreshness;
       weeklyMetrics: WeeklyRobustnessMetrics | null;
+      winningWeeks12w: number;
+      consecutiveWinningWeeks: number;
       weeklyGateReason: string | null;
       eligible: boolean;
       reason: string;
@@ -1008,7 +1454,33 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         nowTs,
       });
       const suppressed = lifecycleIsSuppressed(lifecycle, nowTs);
-      const weeklyByWeekStart = weeklyByDeploymentId.get(deploymentId) || new Map();
+      const weeklyByWeekStart =
+        weeklyByDeploymentSession.get(
+          toDeploymentSessionKey(deploymentId, entrySessionProfile),
+        ) || new Map();
+      const sessionEvidenceBySession =
+        sessionEvidenceByDeployment.get(deploymentId) || new Map();
+      const matchedSessionTrades = sessionEvidenceBySession.get(entrySessionProfile) || 0;
+      const mismatchedSessions = Array.from(
+        new Set(
+          Array.from(sessionEvidenceBySession.keys()).filter(
+            (session) => session !== entrySessionProfile,
+          ),
+        ),
+      ).sort();
+      const mismatchedTrades = mismatchedSessions.reduce(
+        (acc, session) => acc + (sessionEvidenceBySession.get(session) || 0),
+        0,
+      );
+      const strictSessionEvidence = {
+        expected: entrySessionProfile,
+        matchedTrades: matchedSessionTrades,
+        mismatchedTrades,
+        mismatchedSessions,
+      };
+      const hasMixedSessionEvidence =
+        strictSessionEvidence.mismatchedTrades > 0 ||
+        strictSessionEvidence.mismatchedSessions.length > 0;
       const freshness = buildFreshness({
         weeklyByWeekStart,
         requiredWeeks: policy.minCompletedWeeks,
@@ -1033,6 +1505,8 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         fourWeekGroupSize: policy.fourWeekGroupSize,
         fourWeekGroupCount: policy.fourWeekGroupCount,
       });
+      const winningWeeks12w = weeklyRows.filter((row) => row.netR > 0).length;
+      const consecutiveWinningWeeks = longestConsecutiveWinningWeeks(weeklyRows);
       const weeklyGate = evaluateWeeklyGate({
         metrics: weeklyMetrics,
         policy,
@@ -1056,12 +1530,14 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         reason = droppedDeploymentIds.has(deploymentId)
           ? "budget_cap_rejected"
           : "candidate_missing";
+      } else if (hasMixedSessionEvidence) {
+        reason = "forward_session_evidence_mixed";
       } else if (!freshness.ready) {
-        reason = "fresh_weeks_incomplete";
+        reason = "forward_session_12w_incomplete";
       } else if (hasPerWeekTradesDeficit) {
-        reason = "forward_min_trades_per_window_below_threshold";
+        reason = "forward_session_min_trades_per_window_below_threshold";
       } else if (totalTrades < policy.minTotalTrades) {
-        reason = "forward_total_trades_below_threshold";
+        reason = "forward_session_total_trades_below_threshold";
       } else if (!weeklyGate.passed) {
         reason = weeklyGate.reason || "weekly_robustness_failed";
       } else {
@@ -1086,8 +1562,11 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         droppedByBudget: droppedDeploymentIds.has(deploymentId),
         lifecycle,
         suppressed,
+        strictSessionEvidence,
         freshness,
         weeklyMetrics,
+        winningWeeks12w,
+        consecutiveWinningWeeks,
         weeklyGateReason: weeklyGate.reason,
         eligible,
         reason,
@@ -1139,8 +1618,8 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       "weekly_p25_expectancy_below_threshold",
       "weekly_worst_net_r_below_threshold",
       "weekly_top_week_concentration_above_threshold",
-      "forward_min_trades_per_window_below_threshold",
-      "forward_total_trades_below_threshold",
+      "forward_session_min_trades_per_window_below_threshold",
+      "forward_session_total_trades_below_threshold",
     ]);
     for (const row of drafts) {
       row.exactLoser = Boolean(
@@ -1241,11 +1720,13 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
           promotedAtMs: row.promotedAtMs,
           score: Number.isFinite(row.score) ? row.score : null,
           droppedByBudget: row.droppedByBudget,
+          strictSessionEvidence: row.strictSessionEvidence,
           freshness: row.freshness,
           weekly: row.weeklyMetrics,
           lifecycle: row.lifecycle,
           thresholds: {
             minCompletedWeeks: policy.minCompletedWeeks,
+            strictPerSession: true,
             minTradesPerWeek: policy.minTradesPerWeek,
             minTotalTrades: policy.minTotalTrades,
             minSlices: policy.minSlices,
@@ -1300,6 +1781,101 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       maxEnabledDeployments: runtime.budgets.maxEnabledDeployments,
     });
 
+    const highlightRows = drafts
+      .filter((row) => row.freshness.ready && row.weeklyMetrics && row.eligible)
+      .sort((a, b) => (b.score || 0) - (a.score || 0))
+      .slice(0, 200)
+      .map((row) => {
+        const candidate = candidateByDeploymentId.get(row.deploymentId) || null;
+        const candidateMeta = asRecord(candidate?.metadata || {});
+        return {
+          candidateId: row.deploymentId,
+          venue: row.venue,
+          symbol: row.symbol,
+          entrySessionProfile: row.entrySessionProfile,
+          score: Number.isFinite(row.score) ? row.score : 0,
+          trades12w: row.weeklyMetrics?.totalTrades || 0,
+          winningWeeks12w: row.winningWeeks12w,
+          consecutiveWinningWeeks: row.consecutiveWinningWeeks,
+          robustness: {
+            reason: row.reason,
+            strictSessionEvidence: row.strictSessionEvidence,
+            freshness: row.freshness,
+            weekly: row.weeklyMetrics,
+            thresholds: {
+              minCompletedWeeks: policy.minCompletedWeeks,
+              strictPerSession: true,
+              minTradesPerWeek: policy.minTradesPerWeek,
+              minTotalTrades: policy.minTotalTrades,
+              minProfitablePct: policy.minProfitablePct,
+              minMedianExpectancyR: policy.minMedianExpectancyR,
+              minP25ExpectancyR: policy.minP25ExpectancyR,
+              minWorstNetR: policy.minWorstNetR,
+              minFourWeekNetR: policy.minFourWeekNetR,
+            },
+          },
+          dsl: asRecord(candidateMeta.researchDsl || candidateMeta.dsl || {}),
+          notes: row.enabled
+            ? "eligible_and_enabled"
+            : "eligible_not_shortlisted_or_capped",
+          remarkable: true,
+        };
+      });
+    const highlightsUpserted = await upsertScalpV2ResearchHighlights({
+      rows: highlightRows,
+    }).catch(() => 0);
+
+    const cursorAggregates = new Map<
+      string,
+      {
+        venue: ScalpV2Venue;
+        symbol: string;
+        entrySessionProfile: ScalpV2Session;
+        considered: number;
+        eligible: number;
+        enabled: number;
+        highlighted: number;
+      }
+    >();
+    for (const row of drafts) {
+      const key = `${row.venue}:${row.symbol}:${row.entrySessionProfile}`;
+      const current = cursorAggregates.get(key) || {
+        venue: row.venue,
+        symbol: row.symbol,
+        entrySessionProfile: row.entrySessionProfile,
+        considered: 0,
+        eligible: 0,
+        enabled: 0,
+        highlighted: 0,
+      };
+      current.considered += 1;
+      if (row.eligible) current.eligible += 1;
+      if (row.enabled) current.enabled += 1;
+      if (row.freshness.ready && row.weeklyMetrics && row.eligible) {
+        current.highlighted += 1;
+      }
+      cursorAggregates.set(key, current);
+    }
+    await Promise.all(
+      Array.from(cursorAggregates.values()).map((row) =>
+        updateResearchCursorSafe({
+          venue: row.venue,
+          symbol: row.symbol,
+          entrySessionProfile: row.entrySessionProfile,
+          phase: row.enabled > 0 ? "promote" : "validate",
+          lastWeekStartMs: windowFromTs,
+          progress: {
+            considered: row.considered,
+            eligible: row.eligible,
+            enabled: row.enabled,
+            highlighted: row.highlighted,
+            policyWeeks: policy.minCompletedWeeks,
+            updatedAtMs: nowMs(),
+          },
+        }),
+      ),
+    );
+
     const reasonCounts = drafts.reduce<Record<string, number>>((acc, row) => {
       const key = row.reason || "unknown";
       acc[key] = (acc[key] || 0) + 1;
@@ -1326,9 +1902,17 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       exactLosers: drafts.filter((row) => row.exactLoser).length,
       neighborSuspended: neighborSuspended.size,
       freshnessWindowWeeks: policy.minCompletedWeeks,
+      strictPerSessionForwardGate: true,
+      filteredCandidatesOutOfScope,
+      filteredDeploymentsOutOfScope,
+      demotedOutOfScopeEnabled: offScopeEnabledDeployments.length,
+      sessionEvidenceMixedCount: drafts.filter(
+        (row) => row.reason === "forward_session_evidence_mixed",
+      ).length,
       minTradesPerWeek: policy.minTradesPerWeek,
       minTotalTrades: policy.minTotalTrades,
       enabledSlots: runtime.budgets.maxEnabledDeployments,
+      highlightsUpserted,
       reasonCounts,
       liveEnabled: runtime.liveEnabled,
     };
@@ -1425,16 +2009,16 @@ export async function runScalpV2ExecuteJob(params: {
   try {
     const runtime = await loadScalpV2RuntimeConfig();
     const effectiveDryRun = params.dryRun ?? runtime.dryRunDefault;
-
-    const deployments = await listScalpV2Deployments({
-      enabledOnly: true,
-      venue: params.venue,
-      session: params.session,
-      limit: 500,
-    });
-
-    if (!deployments.length) {
-      details = { executed: 0, reason: "no_enabled_deployments" };
+    const nowTs = nowMs();
+    const allowSundayExecute = envBool("SCALP_V2_ALLOW_SUNDAY_EXECUTE", false);
+    if (!allowSundayExecute && isScalpV2SundayUtc(nowTs)) {
+      details = {
+        executedDeployments: 0,
+        skipped: true,
+        reason: "sunday_utc_execution_blocked",
+        sundayUtc: true,
+        allowSundayExecute,
+      };
       return buildScalpV2JobResult({
         jobKind: "execute",
         processed: 0,
@@ -1445,16 +2029,51 @@ export async function runScalpV2ExecuteJob(params: {
       });
     }
 
-    const bitgetAdapter = getScalpVenueAdapter("bitget");
-    const capitalAdapter = getScalpVenueAdapter("capital");
+    const deployments = await listScalpV2Deployments({
+      enabledOnly: true,
+      venue: params.venue,
+      session: params.session,
+      limit: 500,
+    });
+    const scopedDeployments = deployments.filter((deployment) =>
+      isScalpV2RuntimeSymbolInScope({
+        runtime,
+        venue: deployment.venue,
+        symbol: deployment.symbol,
+        includeLiveSeeds: true,
+      }),
+    );
+    const filteredOutOfScope = Math.max(0, deployments.length - scopedDeployments.length);
+
+    if (!scopedDeployments.length) {
+      details = {
+        executed: 0,
+        reason:
+          deployments.length > 0
+            ? "no_enabled_deployments_in_runtime_scope"
+            : "no_enabled_deployments",
+        filteredOutOfScope,
+      };
+      return buildScalpV2JobResult({
+        jobKind: "execute",
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        pendingAfter: 0,
+        details,
+      });
+    }
+
+    const bitgetAdapter = getScalpV2VenueAdapter("bitget");
+    const capitalAdapter = getScalpV2VenueAdapter("capital");
     const bitgetSnapshots = await bitgetAdapter.broker.fetchOpenPositionSnapshots().catch(() => []);
     const capitalSnapshots = await capitalAdapter.broker.fetchOpenPositionSnapshots().catch(() => []);
 
-    for (const deployment of deployments) {
+    for (const deployment of scopedDeployments) {
       processed += 1;
       const deploymentDryRun = effectiveDryRun || !runtime.liveEnabled || deployment.liveMode !== "live";
       try {
-        const result = await runScalpExecuteCycle({
+        const result = await runScalpV2ExecuteCycle({
           venue: deployment.venue,
           symbol: deployment.symbol,
           strategyId: deployment.strategyId,
@@ -1524,9 +2143,10 @@ export async function runScalpV2ExecuteJob(params: {
     }
 
     details = {
-      executedDeployments: deployments.length,
+      executedDeployments: scopedDeployments.length,
       dryRun: effectiveDryRun,
       liveEnabled: runtime.liveEnabled,
+      filteredOutOfScope,
     };
 
     return buildScalpV2JobResult({
@@ -1624,7 +2244,7 @@ export async function runScalpV2ReconcileJob(): Promise<ScalpV2JobResult> {
 
   try {
     const openPositions = await listScalpV2OpenPositions();
-    const bitgetAdapter = getScalpVenueAdapter("bitget");
+    const bitgetAdapter = getScalpV2VenueAdapter("bitget");
     const bitgetSnapshots = await bitgetAdapter.broker.fetchOpenPositionSnapshots();
     const capitalSnapshots = await fetchCapitalOpenPositionSnapshots().catch(() => []);
 

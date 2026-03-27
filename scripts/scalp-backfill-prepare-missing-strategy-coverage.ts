@@ -213,7 +213,7 @@ async function main() {
         missingByStrategy: summarizeMissingStrategyCounts(rows),
         sample,
         nextStep: args.apply
-          ? "Run /api/scalp/cron/v2/prepare for this session."
+          ? "Run /api/scalp/v2/cron/prepare for this session."
           : "Re-run with --apply to set prepare_status=pending for eligible symbols.",
       },
       null,
@@ -230,4 +230,3 @@ main()
   .finally(async () => {
     await scalpPrisma().$disconnect();
   });
-

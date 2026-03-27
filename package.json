@@ -39,6 +39,7 @@
     "replay:scalp:matrix": "node --import tsx scripts/scalp-replay-matrix.ts --fixtures core --fixturesIndex data/scalp-replay/fixtures/index.json --outDir /tmp/scalp-replay-matrix",
     "backtest:scalp:profiles": "node --import tsx scripts/scalp-backtest-profiles.ts",
     "backtest:scalp:deployments": "node --import tsx scripts/scalp-deployment-matrix.ts",
+    "smoke:scalp:v2": "bash scripts/scalp-v2-smoke.sh",
     "scalp:sync-candles-kv": "node --import tsx scripts/scalp-sync-candles-kv.ts",
     "scalp:purge-capital-traces": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-purge-capital-traces.ts"
   },

@@ -13,6 +13,7 @@ import { pdhPdlReclaimM15M3Strategy } from './pdhPdlReclaimM15M3';
 import { relativeValueSpreadProxyM15M3Strategy } from './relativeValueSpreadProxyM15M3';
 import { sessionSeasonalityBiasM15M3Strategy } from './sessionSeasonalityBiasM15M3';
 import { trendDayReaccelerationM15M3Strategy } from './trendDayReaccelerationM15M3';
+import { modelGuidedComposerV2Strategy } from './modelGuidedComposerV2';
 import type { ScalpStrategyDefinition } from './types';
 
 export const DEFAULT_SCALP_STRATEGY_ID = REGIME_PULLBACK_M15_M3_STRATEGY_ID;
@@ -31,6 +32,7 @@ const REGISTRY: Record<string, ScalpStrategyDefinition> = Object.freeze({
     [relativeValueSpreadProxyM15M3Strategy.id]: relativeValueSpreadProxyM15M3Strategy,
     [sessionSeasonalityBiasM15M3Strategy.id]: sessionSeasonalityBiasM15M3Strategy,
     [adaptiveMetaSelectorM15M3Strategy.id]: adaptiveMetaSelectorM15M3Strategy,
+    [modelGuidedComposerV2Strategy.id]: modelGuidedComposerV2Strategy,
 });
 
 const STRATEGY_ID_ALIASES: Record<string, string> = Object.freeze({

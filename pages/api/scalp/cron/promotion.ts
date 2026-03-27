@@ -14,7 +14,6 @@ import {
 } from "../../../../lib/scalp/sessions";
 import {
   clampScalpV1HardCap,
-  maybeRespondScalpV1ResearchPaused,
   resolveScalpV1ResearchHardCaps,
 } from "../../../../lib/scalp/v1CostBrake";
 
@@ -71,15 +70,6 @@ export default async function handler(
   }
   if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
-  if (
-    maybeRespondScalpV1ResearchPaused({
-      req,
-      res,
-      routeId: "promotion",
-    })
-  ) {
-    return;
-  }
 
   const hardCaps = resolveScalpV1ResearchHardCaps();
   const batchSize = clampScalpV1HardCap(

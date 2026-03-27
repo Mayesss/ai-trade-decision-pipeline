@@ -1,5 +1,3 @@
-import { DEFAULT_SCALP_TUNE_ID } from "../scalp/deployments";
-
 import type {
   ScalpV2BudgetConfig,
   ScalpV2RiskProfile,
@@ -7,8 +5,11 @@ import type {
   ScalpV2Session,
   ScalpV2Venue,
 } from "./types";
+import {
+  DEFAULT_SCALP_V2_STRATEGY_ID,
+  DEFAULT_SCALP_V2_TUNE_ID,
+} from "./constants";
 
-const DEFAULT_STRATEGY_ID = "compression_breakout_pullback_m15_m3";
 const DEFAULT_SESSIONS: ScalpV2Session[] = [
   "tokyo",
   "berlin",
@@ -16,6 +17,11 @@ const DEFAULT_SESSIONS: ScalpV2Session[] = [
   "sydney",
 ];
 const DEFAULT_VENUES: ScalpV2Venue[] = ["bitget", "capital"];
+const FIXED_SCOPE_SYMBOLS_BY_VENUE: Record<ScalpV2Venue, string[]> =
+  Object.freeze({
+    bitget: ["BTCUSDT"],
+    capital: ["EURUSD"],
+  });
 
 function toBool(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
@@ -120,6 +126,75 @@ function parseSeedLiveSymbols(
   return ["EURUSD"];
 }
 
+function clampVenueSeedSymbols(params: {
+  venue: ScalpV2Venue;
+  symbols: string[];
+  enforceFixedScope: boolean;
+}): string[] {
+  const normalized = normalizeSymbols(params.symbols);
+  if (!params.enforceFixedScope) return normalized;
+  const allowed = FIXED_SCOPE_SYMBOLS_BY_VENUE[params.venue] || [];
+  const allowedSet = new Set(allowed);
+  const intersected = normalized.filter((symbol) => allowedSet.has(symbol));
+  return intersected.length > 0 ? intersected : allowed.slice();
+}
+
+export function isScalpV2FixedSeedScopeEnabled(): boolean {
+  return toBool(process.env.SCALP_V2_FORCE_FIXED_SEED_SCOPE, true);
+}
+
+export function applyScalpV2FixedSeedScope(
+  runtime: ScalpV2RuntimeConfig,
+): ScalpV2RuntimeConfig {
+  const enforceFixedScope = isScalpV2FixedSeedScopeEnabled();
+  if (!enforceFixedScope) return runtime;
+  return {
+    ...runtime,
+    seedSymbolsByVenue: {
+      bitget: clampVenueSeedSymbols({
+        venue: "bitget",
+        symbols: runtime.seedSymbolsByVenue.bitget || [],
+        enforceFixedScope,
+      }),
+      capital: clampVenueSeedSymbols({
+        venue: "capital",
+        symbols: runtime.seedSymbolsByVenue.capital || [],
+        enforceFixedScope,
+      }),
+    },
+    seedLiveSymbolsByVenue: {
+      bitget: clampVenueSeedSymbols({
+        venue: "bitget",
+        symbols: runtime.seedLiveSymbolsByVenue.bitget || [],
+        enforceFixedScope,
+      }),
+      capital: clampVenueSeedSymbols({
+        venue: "capital",
+        symbols: runtime.seedLiveSymbolsByVenue.capital || [],
+        enforceFixedScope,
+      }),
+    },
+  };
+}
+
+export function isScalpV2RuntimeSymbolInScope(params: {
+  runtime: ScalpV2RuntimeConfig;
+  venue: ScalpV2Venue;
+  symbol: string;
+  includeLiveSeeds?: boolean;
+}): boolean {
+  const symbol = String(params.symbol || "").trim().toUpperCase();
+  if (!symbol) return false;
+  const seedSymbols = new Set(
+    normalizeSymbols(params.runtime.seedSymbolsByVenue[params.venue] || []),
+  );
+  const liveSymbols = params.includeLiveSeeds
+    ? normalizeSymbols(params.runtime.seedLiveSymbolsByVenue[params.venue] || [])
+    : [];
+  for (const row of liveSymbols) seedSymbols.add(row);
+  return seedSymbols.has(symbol);
+}
+
 export function getScalpV2DefaultBudgets(): ScalpV2BudgetConfig {
   return {
     maxCandidatesTotal: Math.max(
@@ -171,16 +246,18 @@ export function getScalpV2RuntimeConfig(): ScalpV2RuntimeConfig {
     ),
   };
 
-  return {
+  const runtime: ScalpV2RuntimeConfig = {
     enabled: toBool(process.env.SCALP_V2_ENABLED, true),
     liveEnabled: toBool(process.env.SCALP_V2_LIVE_ENABLED, false),
     dryRunDefault: toBool(process.env.SCALP_V2_DRY_RUN_DEFAULT, true),
     defaultStrategyId: String(
-      process.env.SCALP_V2_DEFAULT_STRATEGY_ID || DEFAULT_STRATEGY_ID,
+      process.env.SCALP_V2_DEFAULT_STRATEGY_ID || DEFAULT_SCALP_V2_STRATEGY_ID,
     )
       .trim()
       .toLowerCase(),
-    defaultTuneId: String(process.env.SCALP_V2_DEFAULT_TUNE_ID || DEFAULT_SCALP_TUNE_ID)
+    defaultTuneId: String(
+      process.env.SCALP_V2_DEFAULT_TUNE_ID || DEFAULT_SCALP_V2_TUNE_ID,
+    )
       .trim()
       .toLowerCase(),
     supportedVenues,
@@ -190,4 +267,5 @@ export function getScalpV2RuntimeConfig(): ScalpV2RuntimeConfig {
     budgets: getScalpV2DefaultBudgets(),
     riskProfile: getScalpV2DefaultRiskProfile(),
   };
+  return applyScalpV2FixedSeedScope(runtime);
 }

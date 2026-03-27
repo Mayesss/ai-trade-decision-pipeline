@@ -7,8 +7,10 @@ import {
   buildDiscoverSymbolSyncPlan,
   computeStagedEvaluationScoreForTasks,
   enforceSingleEnabledPerSymbolStrategy,
+  filterScalpSundayCandles,
   listScalpDurationTimelineRuns,
   planPrepareOverflowNonEnabledVariants,
+  resolveLoadCandlesFetchUpperBoundMs,
   resolveLifecycleTuneFamily,
   resolveStageSurvivorCount,
   resolveStagedRebucket,
@@ -630,6 +632,31 @@ test("prepare variant selection can disable new variants for Sunday backfill mod
   assert.deepEqual(
     outWithExisting.map((row) => row.tuneId),
     ["default"],
+  );
+});
+
+test("resolveLoadCandlesFetchUpperBoundMs clamps Sunday UTC to Saturday close", () => {
+  const sundayNoonUtc = Date.UTC(2026, 2, 22, 12, 0, 0); // Sunday
+  const outSunday = resolveLoadCandlesFetchUpperBoundMs(sundayNoonUtc);
+  assert.equal(outSunday, Date.UTC(2026, 2, 22, 0, 0, 0) - 1);
+
+  const mondayMorningUtc = Date.UTC(2026, 2, 23, 8, 15, 0); // Monday
+  const outMonday = resolveLoadCandlesFetchUpperBoundMs(mondayMorningUtc);
+  assert.equal(outMonday, mondayMorningUtc);
+});
+
+test("filterScalpSundayCandles removes UTC Sunday candles", () => {
+  const saturday = Date.UTC(2026, 2, 21, 23, 59, 0);
+  const sunday = Date.UTC(2026, 2, 22, 10, 0, 0);
+  const monday = Date.UTC(2026, 2, 23, 0, 1, 0);
+  const out = filterScalpSundayCandles([
+    [saturday, 1, 2, 1, 1.5, 10],
+    [sunday, 1, 2, 1, 1.5, 11],
+    [monday, 1, 2, 1, 1.5, 12],
+  ] as any);
+  assert.deepEqual(
+    out.map((row) => Number(row[0])),
+    [saturday, monday],
   );
 });
 

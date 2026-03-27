@@ -12,17 +12,15 @@ async function exists(filePath: string): Promise<boolean> {
   }
 }
 
-test("scalp scheduling uses v2 namespace cron routes", async () => {
+test("scalp v2 cron coverage uses native split jobs", async () => {
   const root = process.cwd();
   const expectedRouteFiles = [
-    "pages/api/scalp/cron/discover-symbols.ts",
-    "pages/api/scalp/cron/load-candles.ts",
-    "pages/api/scalp/cron/prepare.ts",
-    "pages/api/scalp/cron/v2/discover.ts",
-    "pages/api/scalp/cron/v2/load-candles.ts",
-    "pages/api/scalp/cron/v2/prepare.ts",
-    "pages/api/scalp/cron/worker.ts",
-    "pages/api/scalp/cron/promotion.ts",
+    "pages/api/scalp/v2/cron/discover.ts",
+    "pages/api/scalp/v2/cron/load-candles.ts",
+    "pages/api/scalp/v2/cron/evaluate.ts",
+    "pages/api/scalp/v2/cron/promote.ts",
+    "pages/api/scalp/v2/cron/execute.ts",
+    "pages/api/scalp/v2/cron/reconcile.ts",
   ];
 
   for (const relativePath of expectedRouteFiles) {
@@ -46,11 +44,11 @@ test("scalp scheduling uses v2 namespace cron routes", async () => {
 
   const requiredCronPrefixes = [
     "/api/scalp/v2/cron/discover",
+    "/api/scalp/v2/cron/load-candles",
     "/api/scalp/v2/cron/evaluate",
     "/api/scalp/v2/cron/promote",
     "/api/scalp/v2/cron/execute",
     "/api/scalp/v2/cron/reconcile",
-    "/api/scalp/v2/cron/cycle",
   ];
   for (const prefix of requiredCronPrefixes) {
     assert.equal(
@@ -78,6 +76,7 @@ test("scalp scheduling uses v2 namespace cron routes", async () => {
     "/api/scalp/cron/research-cycle-sync-gates",
     "/api/scalp/cron/research-preflight",
     "/api/scalp/cron/research-report",
+    "/api/scalp/v2/cron/cycle",
   ];
   for (const prefix of forbiddenCronPrefixes) {
     assert.equal(

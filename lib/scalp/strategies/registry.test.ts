@@ -16,6 +16,7 @@ import { REGIME_PULLBACK_M15_M3_XAUUSD_STRATEGY_ID } from './regimePullbackM15M3
 import { RELATIVE_VALUE_SPREAD_PROXY_M15_M3_STRATEGY_ID } from './relativeValueSpreadProxyM15M3';
 import { SESSION_SEASONALITY_BIAS_M15_M3_STRATEGY_ID } from './sessionSeasonalityBiasM15M3';
 import { TREND_DAY_REACCELERATION_M15_M3_STRATEGY_ID } from './trendDayReaccelerationM15M3';
+import { modelGuidedComposerV2Strategy } from './modelGuidedComposerV2';
 import {
     DEFAULT_SCALP_STRATEGY_ID,
     getDefaultScalpStrategy,
@@ -51,6 +52,7 @@ test('strategy registry exposes unique ids and supports lookup', () => {
     assert.ok(ids.includes(RELATIVE_VALUE_SPREAD_PROXY_M15_M3_STRATEGY_ID), 'expected relative-value proxy strategy in registry');
     assert.ok(ids.includes(SESSION_SEASONALITY_BIAS_M15_M3_STRATEGY_ID), 'expected session-seasonality strategy in registry');
     assert.ok(ids.includes(ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID), 'expected adaptive meta-selector strategy in registry');
+    assert.ok(ids.includes(modelGuidedComposerV2Strategy.id), 'expected model-guided composer strategy in registry');
     const uniqueIds = new Set(ids);
     assert.equal(ids.length, uniqueIds.size, 'strategy IDs must be unique');
     for (const id of ids) {

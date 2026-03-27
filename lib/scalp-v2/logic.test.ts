@@ -5,6 +5,7 @@ import {
   deriveCloseTypeFromReasonCodes,
   enforceCandidateBudgets,
   enforceDeploymentBudget,
+  isScalpV2SundayUtc,
   isScalpV2DiscoverSymbolAllowed,
   mapV1LedgerRowToV2,
   toLedgerCloseTypeFromEvent,
@@ -151,4 +152,11 @@ test("v2 discovery enforces bitget crypto-only and capital non-crypto", () => {
   assert.equal(isScalpV2DiscoverSymbolAllowed("capital", "EURUSD"), true);
   assert.equal(isScalpV2DiscoverSymbolAllowed("capital", "BTCUSD"), false);
   assert.equal(isScalpV2DiscoverSymbolAllowed("capital", "ETHUSD"), false);
+});
+
+test("sunday guard uses UTC day", () => {
+  const sundayUtc = Date.UTC(2026, 2, 29, 9, 0, 0); // Sunday, March 29, 2026 UTC
+  const mondayUtc = Date.UTC(2026, 2, 30, 9, 0, 0); // Monday, March 30, 2026 UTC
+  assert.equal(isScalpV2SundayUtc(sundayUtc), true);
+  assert.equal(isScalpV2SundayUtc(mondayUtc), false);
 });

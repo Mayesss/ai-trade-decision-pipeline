@@ -14,7 +14,6 @@ import {
 } from "../../../../lib/scalp/sessions";
 import {
   clampScalpV1HardCap,
-  maybeRespondScalpV1ResearchPaused,
   resolveScalpV1ResearchHardCaps,
 } from "../../../../lib/scalp/v1CostBrake";
 
@@ -75,15 +74,6 @@ export default async function handler(
   }
   if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
-  if (
-    maybeRespondScalpV1ResearchPaused({
-      req,
-      res,
-      routeId: "worker",
-    })
-  ) {
-    return;
-  }
 
   const hardCaps = resolveScalpV1ResearchHardCaps();
   const batchSize = clampScalpV1HardCap(
@@ -119,6 +109,10 @@ export default async function handler(
     minCandlesPerWeek,
     entrySessionProfile: session,
   });
+  const sundayReplayBlocked = Boolean(
+    (result.details as { sundayReplayBlocked?: unknown } | undefined)
+      ?.sundayReplayBlocked,
+  );
 
   let downstream: CronInvokeResult | null = null;
   let selfRecall: CronInvokeResult | null = null;
@@ -126,6 +120,7 @@ export default async function handler(
   if (
     result.ok &&
     !result.busy &&
+    !sundayReplayBlocked &&
     autoSuccessor &&
     result.downstreamRequested
   ) {
@@ -147,6 +142,7 @@ export default async function handler(
   if (
     result.ok &&
     !result.busy &&
+    !sundayReplayBlocked &&
     autoContinue &&
     result.pendingAfter > 0 &&
     selfHop < selfMaxHops
@@ -178,6 +174,7 @@ export default async function handler(
       selfHop,
       selfMaxHops,
       session,
+      sundayReplayBlocked,
       downstream,
       selfRecall,
     },

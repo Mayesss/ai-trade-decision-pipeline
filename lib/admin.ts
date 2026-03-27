@@ -15,6 +15,8 @@ const UNAUTHENTICATED_CRON_ROUTES = new Set<string>([
   "/api/scalp/cron/live-guardrail-monitor",
   "/api/scalp/cron/housekeeping",
   "/api/scalp/v2/cron/discover",
+  "/api/scalp/v2/cron/load-candles",
+  "/api/scalp/v2/cron/prepare",
   "/api/scalp/v2/cron/evaluate",
   "/api/scalp/v2/cron/promote",
   "/api/scalp/v2/cron/execute",

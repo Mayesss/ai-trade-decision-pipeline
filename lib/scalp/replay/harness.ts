@@ -4,6 +4,7 @@ import {
   getScalpStrategyPreferredTimeframes,
   resolveScalpStrategyIdForSymbol,
 } from "../strategies/registry";
+import { resolveScalpExecutionStrategyId } from "../../scalp-v2/composerExecution";
 import { applySymbolGuardRiskDefaultsToReplayRuntime } from "../strategies/guardDefaults";
 import {
   applyScalpStrategyConfigOverride,
@@ -603,16 +604,23 @@ export async function runScalpReplay(params: {
 }): Promise<ScalpReplayResult> {
   const candles = params.candles.slice().sort((a, b) => a.ts - b.ts);
   if (!candles.length) throw new Error("Replay requires candles");
-  const strategyDef =
-    getScalpStrategyById(params.config.strategyId) || getDefaultScalpStrategy();
   const deployment = resolveScalpDeployment({
     symbol: params.config.symbol,
-    strategyId: strategyDef.id,
+    strategyId: params.config.strategyId,
     tuneId: params.config.tuneId,
     deploymentId: params.config.deploymentId,
   });
+  const executionStrategyId =
+    resolveScalpExecutionStrategyId({
+      strategyId: deployment.strategyId,
+      tuneId: deployment.tuneId,
+    }) || deployment.strategyId;
+  const strategyDef =
+    getScalpStrategyById(executionStrategyId) ||
+    getScalpStrategyById(deployment.strategyId) ||
+    getDefaultScalpStrategy();
   const preferredTimeframes = getScalpStrategyPreferredTimeframes(
-    strategyDef.id,
+    executionStrategyId,
   );
   const shouldApplyPreferredTimeframes =
     Boolean(preferredTimeframes) &&

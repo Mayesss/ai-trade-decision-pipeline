@@ -103,6 +103,7 @@ MARKETAUX_API_KEY=...
 # SCALP_DEFAULT_SYMBOL=EURUSD
 # SCALP_SESSION_CLOCK_MODE=LONDON_TZ    # or UTC_FIXED
 # SCALP_BLOCK_SUNDAY_ENTRIES=true       # global entry gate (default true): block new entries on Sunday by session clock
+# SCALP_ALLOW_SUNDAY_REPLAY=false       # default false: block replay/backtest jobs on Sunday UTC (override only when explicitly needed)
 # Entry session profile env is no longer used; canonical baseline session id is berlin.
 # Use `?session=berlin|tokyo|newyork|sydney` on scalp planner/worker/executor routes.
 # SCALP_ENTRY_ORDER_TYPE=MARKET         # or LIMIT
@@ -174,18 +175,19 @@ MARKETAUX_API_KEY=...
 # SCALP_RESEARCH_WORKER_CONCURRENCY=4
 # SCALP_RESEARCH_WORKER_MAX_CONCURRENCY=16
 # SCALP_RESEARCH_WORKER_MAX_RUNS_CAP=200
-# SCALP_V1_RESEARCH_PAUSED=true                          # cost brake: pause legacy discover/load/prepare/worker/promotion loops
-# SCALP_V1_RESEARCH_ALLOW_FORCE_RUN=false               # only when true can ?forceRun=1 bypass pause
 # SCALP_V1_RESEARCH_MAX_CANDIDATES_CAP=80
 # SCALP_V1_RESEARCH_MAX_SELF_HOPS_CAP=3
 # SCALP_V2_ENABLED=true
 # SCALP_V2_LIVE_ENABLED=false                           # fail-closed by default
 # SCALP_V2_DRY_RUN_DEFAULT=true
-# SCALP_V2_DEFAULT_STRATEGY_ID=compression_breakout_pullback_m15_m3
+# SCALP_V2_DEFAULT_STRATEGY_ID=model_guided_composer_v2
 # SCALP_V2_SEED_SYMBOLS_BITGET=BTCUSDT
 # SCALP_V2_SEED_SYMBOLS_CAPITAL=EURUSD
 # SCALP_V2_SEED_LIVE_SYMBOLS_BITGET=BTCUSDT
 # SCALP_V2_SEED_LIVE_SYMBOLS_CAPITAL=EURUSD
+# SCALP_V2_FORCE_FIXED_SEED_SCOPE=true                  # default true: clamp v2 scope to BTCUSDT(bitget) + EURUSD(capital)
+# SCALP_V2_COMPOSER_MAX_CANDIDATES_PER_SESSION=24       # bounded candidate pool generated per venue+symbol+session scope
+# SCALP_V2_DISCOVER_PERSIST_CANDIDATES=false            # default false: discover updates cursors only; evaluate persists rotated slice
 # SCALP_V2_MAX_CANDIDATES_TOTAL=200
 # SCALP_V2_MAX_CANDIDATES_PER_SYMBOL=4
 # SCALP_V2_MAX_ENABLED_DEPLOYMENTS=12
@@ -287,7 +289,7 @@ npm run start
   - Body: `{ "secret": "..." }` to validate admin access when `ADMIN_ACCESS_SECRET` is set.
 - Admin protection policy
   - All API routes except `/api/admin-auth` require `x-admin-access-secret: <ADMIN_ACCESS_SECRET>` (or `Authorization: Bearer <ADMIN_ACCESS_SECRET>`) when `ADMIN_ACCESS_SECRET` is set.
-  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/scalp/cron/execute-deployments`, `/api/scalp/cron/v2/discover`, `/api/scalp/cron/v2/load-candles`, `/api/scalp/cron/v2/prepare`, `/api/scalp/cron/worker`, `/api/scalp/cron/promotion`, `/api/scalp/cron/live-guardrail-monitor`, `/api/scalp/cron/housekeeping`, `/api/scalp/v2/cron/discover`, `/api/scalp/v2/cron/evaluate`, `/api/scalp/v2/cron/promote`, `/api/scalp/v2/cron/execute`, `/api/scalp/v2/cron/reconcile`, `/api/scalp/v2/cron/cycle` (legacy `/api/scalp/cron/discover-symbols|load-candles|prepare` remain deprecated).
+  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/scalp/cron/execute-deployments`, `/api/scalp/cron/v2/discover`, `/api/scalp/cron/v2/load-candles`, `/api/scalp/cron/v2/prepare`, `/api/scalp/cron/worker`, `/api/scalp/cron/promotion`, `/api/scalp/cron/live-guardrail-monitor`, `/api/scalp/cron/housekeeping`, `/api/scalp/v2/cron/discover`, `/api/scalp/v2/cron/load-candles`, `/api/scalp/v2/cron/prepare`, `/api/scalp/v2/cron/evaluate`, `/api/scalp/v2/cron/promote`, `/api/scalp/v2/cron/execute`, `/api/scalp/v2/cron/reconcile`, `/api/scalp/v2/cron/cycle` (legacy `/api/scalp/cron/discover-symbols|load-candles|prepare` remain deprecated).
 - `GET /api/forex/*`
   - Forex mode routes are deprecated and currently return `410` with `error=forex_mode_deprecated`.
 - `GET /api/scalp/cron/execute-deployments?all=true&dryRun=true&session=berlin`
@@ -297,53 +299,59 @@ npm run start
   - When `venue` is omitted and both venues are present, execution is split by venue and processed in parallel with venue-scoped mutex locks.
   - Required for session lanes: `session=berlin|tokyo|newyork|sydney`.
   - Optional query: `requirePromotionEligible=true` to execute only deployments with `promotionGate.eligible=true`.
-- `GET /api/scalp/cron/v2/discover?dryRun=false&includeLiveQuotes=true`
-  - Weekly symbol-discovery cron. Scores symbols using policy + history quality + optional live quote checks, then writes the selected universe snapshot.
-  - Policy file: `data/scalp-symbol-discovery-policy.json`.
-  - Candidate pool can be sourced from Bitget contracts (`sources.includeBitgetMarketsApi=true`) and/or Capital market search (`sources.includeCapitalMarketsApi=true`).
-  - When both sources are enabled, Bitget symbols are ingested first (preferred source ordering).
-  - Capital discovery now uses a full `/markets` scan first (local ranking/filtering), then falls back to term search only if full scan fails.
-  - Optional env: `CAPITAL_MARKET_DISCOVERY_TERMS=USD,USDT,EUR,...` to control market-search terms.
-  - Response includes `diagnostics` with source counts and Capital-market discovery error (if any).
-  - Response includes `seedSummary` when pre-discovery history seeding is enabled.
-  - `requireTradableQuote` is only enforced when `includeLiveQuotes=true` (quote gate disabled for `includeLiveQuotes=false`).
-  - Weekend behavior (Berlin time): quote/tradability gates are relaxed on Saturday/Sunday so discovery still evaluates.
-  - `sources.requireHistoryPresence=true` keeps capital candidates limited to symbols with known candle-history presence.
-  - Optional query: `maxCandidates=<int>` to cap processed candidates for one run.
-  - Optional pre-seed query params:
-    - `seedTopSymbols=<int>` enable seed stage for top ranked Capital symbols before discovery.
-    - `seedTargetHistoryDays=<int>` target historical span (default 90).
-    - `seedChunkDays=<int>` per-run incremental backfill/forward window (default 10).
-    - `seedMaxRequestsPerSymbol=<int>` Capital candle fetch cap per symbol (default 40).
-    - `seedMaxSymbolsPerRun=<int>` hard cap for seeded symbols in one run.
-    - `seedTimeframe=1m` timeframe for seed storage/checks.
-    - `seedOnDryRun=true` allow seeding during `dryRun=true` (for diagnostics only; no writes when dry run).
-    - `seedAllowBootstrapSymbols=true|false` allow/disallow seeding symbols without existing candle history (`false` default).
-    - Seed stage now keeps fetching backfill/forward windows until both target span and freshness are met (90d + <=12h lag), or reports `seed_target_unmet`.
-- `GET /api/scalp/cron/v2/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true`
-  - Independent async job that ensures each discovered gate-pass symbol has the required completed 1m weekly coverage.
+- `GET /api/scalp/v2/cron/discover`
+  - Legacy alias kept for compatibility: `/api/scalp/cron/v2/discover`.
+  - Native scalp-v2 candidate discovery (model-guided composer primitives), not legacy v1 symbol-discovery pipeline.
+  - Scans model-guided candidate pools only from scalp-v2 runtime seed symbols (`seedSymbolsByVenue`) and supported sessions.
+  - Default mode is sparse/scan-only (`SCALP_V2_DISCOVER_PERSIST_CANDIDATES=false`): updates research cursors without bulk candidate persistence.
+  - Optional persistence mode (`SCALP_V2_DISCOVER_PERSIST_CANDIDATES=true`) upserts discovered candidates and applies runtime candidate-budget trimming.
+  - By default, runtime seed scope is fixed to:
+    - Bitget: `BTCUSDT`
+    - Capital: `EURUSD`
+  - `SCALP_V2_FORCE_FIXED_SEED_SCOPE=true` (default) enforces this clamp even if runtime/DB config contains wider seeds.
+  - Candidate pool size per scope is bounded by `SCALP_V2_COMPOSER_MAX_CANDIDATES_PER_SESSION` (default `24`, max `96`).
+  - Optional orchestration query params:
+    - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/v2/cron/evaluate`.
+    - `evaluateBatchSize=<int>` batch size for downstream evaluate (default `200`).
+    - `autoContinue=true|false` + `selfHop/selfMaxHops` for bounded detached recalls.
+  - Legacy discover params (`dryRun`, `includeLiveQuotes`, `maxCandidates`) are accepted but ignored by native v2 discover.
+- `GET /api/scalp/v2/cron/evaluate?batchSize=200`
+  - Native model-guided scoring pass over deterministic candidate pools for each venue+symbol+session scope.
+  - Uses research cursor offsets (`scalp_v2_research_cursor.last_candidate_offset`) to rotate evaluation windows instead of rescoring full pools every run.
+  - Persists only the selected window slice as `evaluated` candidates, keeping DB writes bounded while maintaining broad candidate coverage over successive runs.
+  - Cursor offsets are advanced per scope and preserved across discover/promote updates.
+- `GET /api/scalp/v2/cron/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&successor=cycle`
+  - Legacy alias kept for compatibility: `/api/scalp/cron/v2/load-candles`.
+  - Legacy-backed candle-maintenance job kept for Sunday data refresh/backfill only.
+  - Processing scope is hard-filtered to scalp-v2 runtime symbols (seed + live-seed union, currently BTCUSDT/EURUSD under fixed scope).
   - Completed-week rollover now advances on UTC Sunday so Monday-Saturday candles count as the fresh completed week.
+  - Sunday candles are excluded from storage ingest; on Sunday UTC, fetch windows are clamped to Saturday close.
+  - Success criterion is strict by default: at least `12` completed Monday-Saturday weeks of 1m candles.
+  - Symbols that cannot reach the required completed-week floor (for example newly listed instruments) are marked `load_status=failed` with `load_error=insufficient_completed_week_coverage`.
   - Loader behavior is progressive by default: prewarms recent candles first, then backfills older weeks in chunks.
-  - Load claims are strict gate-only from `scalp_discovered_symbols` (`load_status IN ('pending','retry_wait')`), with no enabled-incumbent or inactive warmup exceptions.
+  - Symbol source is `scalp_discovered_symbols` plus active deployment symbols seeded into that queue (`enabled` or `in_universe` or dirty flags), so active tracks keep 12-week freshness even if discovery churns.
   - Optional env knobs:
     - `SCALP_PIPELINE_LOAD_PREWARM_WEEKS` (default `1`)
     - `SCALP_PIPELINE_LOAD_BACKFILL_CHUNK_WEEKS` (default matches prewarm)
-  - Claims rows from `scalp_discovered_symbols`, updates per-symbol load status, and can chain to `prepare`.
-- `GET /api/scalp/cron/v2/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&session=berlin`
-  - Independent async job that creates/updates deployment variants and queues weekly worker rows.
-  - Staged-eval queue seeding (when enabled): Stage A queues 2 fresh weeks, Stage B queues 6, Stage C queues 12, and `pruned` rows remain inert until epoch reopen.
-  - Strategy coverage: prepare now iterates all registered scalp strategies per symbol, then promotion/worker metrics filter losers later.
-  - Missing-coverage recovery: if a symbol is already `prepare_status=succeeded` but does not yet have deployments for all registered strategies, prepare will re-claim and backfill that symbol automatically.
-  - Optional one-off requeue helper (safe dry-run by default):
-    - `npm run db:pg:backfill:prepare-missing-coverage -- --session=berlin`
-    - Add `--apply` to persist `prepare_status='pending'` for eligible symbols before running prepare.
-  - Sunday backfill mode (UTC): new research variants are not introduced; existing tracks are prepared/queued first.
-  - Prepare-cap pruning protects suspended deployments and freshness-incomplete rows (`reason=fresh_weeks_incomplete`) from deletion.
-  - Writes deployment state flags (`in_universe`, `worker_dirty`, `promotion_dirty`, `last_prepared_at`).
-  - Optional env knob:
-    - `SCALP_PIPELINE_PREPARE_PROTECT_RECENT_DEMOTED_MS` keeps recently demoted rows out of prepare-cap pruning for a short cooldown window (default `7d`, max `90d`).
+  - Claims rows from `scalp_discovered_symbols` and updates per-symbol load status.
+  - Successor chaining (after drain, `pendingAfter=0`):
+    - `successor=cycle` (default) triggers `/api/scalp/v2/cron/cycle`.
+    - `successor=discover` triggers `/api/scalp/v2/cron/discover?autoSuccessor=1`.
+    - `successorDryRun=true|false` controls `cycle?dryRun=...` handoff (default `false`).
+  - No downstream chaining to v1-style `prepare/worker`; handoff is native v2 only.
+- `GET /api/scalp/v2/cron/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&session=berlin`
+  - Legacy alias kept for compatibility: `/api/scalp/cron/v2/prepare`.
+  - Deprecated compatibility no-op in scalp-v2 mode.
+  - Returns `ok=true` with `details.reason=legacy_prepare_deprecated_for_v2`.
+  - Replacement path is native v2 loop: `discover -> evaluate -> promote -> execute -> reconcile`.
 - `GET /api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&session=berlin`
   - Independent async job that claims pending/retry weekly rows in `scalp_deployment_weekly_metrics`, runs replay, and persists weekly metrics.
+  - Stage contract:
+    - Claims `pending/retry_wait` weekly rows by session for deployments that are enabled or still tracked in the discovered-symbol queue.
+    - Excludes staged `pruned` rows and lifecycle-suppressed deployments (suspended/retired cooldown windows).
+    - Runs replay on the exact target week range and writes weekly metrics (`trades`, `netR`, `expectancyR`, `profitFactor`, `maxDrawdownR`, ...).
+    - On success marks deployment `promotion_dirty=true` and `worker_dirty=false`.
+  - Sunday UTC safeguard: replay execution is skipped by default (`reason=sunday_utc_replay_blocked`); override only with `SCALP_ALLOW_SUNDAY_REPLAY=true`.
   - Claim priority favors staged finalists (`C` then `B` then `A`), and excludes staged `pruned` rows.
   - Candle-count weekly guards are capped to a Monday-Saturday ceiling (`8640` at `1m`) so Sunday non-trading hours do not block fresh-week validation.
   - Worker now loads only the task's target weekly candle range from history (instead of full-symbol 1m history).
@@ -352,19 +360,34 @@ npm run start
   - Session lanes are isolated by explicit `session` parameter and DB session columns.
 - `GET /api/scalp/cron/promotion?batchSize=300&autoSuccessor=true&autoContinue=true`
   - Independent async job that aggregates weekly metrics and applies promotion/enablement policy.
+  - Stage contract:
+    - Processes promotion-dirty rows plus eligible incumbents/rollover rows, then rebuilds forward-validation candidates from completed weekly metrics.
+    - Applies weekly robustness, staged-halving transitions (A->B->C/pruned), winner selection, uniqueness, hysteresis, and lifecycle state updates.
+    - Persists promotion gate + enabled state, then clears `promotion_dirty=false` on processed dirty rows.
+    - If freshness gaps are detected, re-nudges upstream work:
+      - queues `load_status='pending'` for affected symbols,
+      - queues pending worker weekly rows for affected deployments,
+      - marks `worker_dirty=true` where needed.
   - Staged-eval orchestration (when enabled): A->B and B->C successive halving, cohort pruning, epoch reopen for pruned rows, and Stage-C-only final promotion gate/hysteresis.
   - Enforces best tune per symbol+strategy and clears dirty flags when processed.
-- Legacy scalp-v1 research cost brake
-  - `/api/scalp/cron/v2/discover`, `/api/scalp/cron/v2/load-candles`, `/api/scalp/cron/v2/prepare`, `/api/scalp/cron/worker`, and `/api/scalp/cron/promotion` are treated as legacy v1 research loops.
-  - With `SCALP_V1_RESEARCH_PAUSED=true` (default), they return paused no-op responses and do not consume research budget.
+- Legacy scalp-v2 route aliases
+  - `/api/scalp/cron/v2/discover`, `/api/scalp/cron/v2/load-candles`, and `/api/scalp/cron/v2/prepare` are compatibility aliases that forward to `/api/scalp/v2/cron/*`.
 - `GET/POST /api/scalp/v2/control`
   - Runtime control for scalp-v2 (`enabled`, `liveEnabled`, budgets, risk profile, seed symbols).
 - `GET /api/scalp/v2/cron/cycle?dryRun=true|false`
   - Full v2 auto loop in one run: discover -> evaluate -> promote -> execute -> reconcile.
+  - Sunday UTC safeguard: execution step is skipped by default (`reason=sunday_utc_execution_blocked`); override only with `SCALP_V2_ALLOW_SUNDAY_EXECUTE=true`.
 - `GET /api/scalp/v2/dashboard/summary`
   - V2 monitoring payload: runtime config, summary counters, deployments, events, and recent ledger rows.
 - `GET /api/scalp/v2/ops/state`
-  - V2 ops state + parity aggregates (`v1` vs `v2` trade count/net R over a window).
+  - V2 ops state + parity aggregates (`v1` vs `v2` trade count/net R over a window) plus phase-1 research cursor/highlight snapshots.
+- `GET /api/scalp/v2/ops/research-primitives`
+  - Phase-1 strategy decomposition payload: interpretable primitive catalog, per-strategy primitive references, and bounded candidate DSL preview for a venue/symbol/session.
+- `GET/POST /api/scalp/v2/ops/research-state`
+  - Phase-1 sparse research persistence surface:
+    - Cursor/checkpoint rows in `scalp_v2_research_cursor`.
+    - Remarkable outcomes only in `scalp_v2_research_highlights`.
+  - Supports cursor updates and highlight upserts without storing full sweep traces.
 - `POST /api/scalp/v2/ops/migrate-v1-ledger?limit=50000&parityDays=30`
   - Imports canonical v1 ledger rows into `scalp_v2_ledger` and returns parity metrics.
 - `GET /api/scalp/cron/live-guardrail-monitor`
@@ -403,6 +426,7 @@ npm run start
   - Returns Capital backtest symbol choices (merged default map + optional env overrides), grouped by inferred category.
 - `POST /api/scalp/backtest/run`
   - Runs offline scalp replay on fetched Capital candles with parameter overrides.
+  - Sunday UTC safeguard: blocked by default (`error=sunday_utc_replay_blocked`); override only with `SCALP_ALLOW_SUNDAY_REPLAY=true`.
   - Backtest runtime enforces the same TF pair as live: `M15` base and `M3` confirmation.
   - Supports optional `strategyId` to select a registered scalp strategy (default: runtime default strategy).
   - `/scalp-backtest` UI exposes a strategy selector sourced from `/api/scalp/strategy/control` and sends the selected `strategyId` on each run.
@@ -592,7 +616,7 @@ node --import tsx scripts/scalp-replay-matrix.ts \
   - `/api/scalp/v2/cron/promote` every 10 minutes.
   - `/api/scalp/v2/cron/reconcile` every 2 minutes.
   - `/api/scalp/v2/cron/execute?dryRun=false` every minute (live v2 execution loop).
-  - `/api/scalp/v2/cron/cycle?dryRun=false` every 15 minutes (full-loop safety net).
+  - `/api/scalp/v2/cron/load-candles?batchSize=40&autoSuccessor=true&autoContinue=true&successor=discover` hourly on Sunday (`10 * * * 0`) to backfill/refresh 1m candle coverage, then hand off into native discover/evaluate path.
   - Symbol-specific scalp tuning is pinned by deployment row (`strategyId` + `tuneId`) in `data/scalp-deployments.json`.
 - Cron-declared routes are intentionally allowed without admin secret; non-cron routes remain protected when `ADMIN_ACCESS_SECRET` is set.
 

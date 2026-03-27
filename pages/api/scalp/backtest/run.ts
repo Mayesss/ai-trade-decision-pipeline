@@ -11,6 +11,7 @@ import {
   normalizeHistoryTimeframe,
 } from "../../../../lib/scalp/candleHistory";
 import {
+  parseScalpDeploymentId,
   resolveScalpDeployment,
   resolveScalpDeploymentVenueFromId,
 } from "../../../../lib/scalp/deployments";
@@ -30,6 +31,7 @@ import {
 } from "../../../../lib/scalp/strategies/registry";
 import { applySymbolGuardRiskDefaultsToReplayRuntime } from "../../../../lib/scalp/strategies/guardDefaults";
 import { pipSizeForScalpSymbol } from "../../../../lib/scalp/marketData";
+import { isUtcSunday } from "../../../../lib/scalp/weekWindows";
 import type {
   ScalpReplayInputFile,
   ScalpReplayRuntimeConfig,
@@ -145,6 +147,10 @@ function toBool(value: unknown, fallback: boolean): boolean {
       return false;
   }
   return fallback;
+}
+
+function scalpAllowSundayReplay(): boolean {
+  return toBool(process.env.SCALP_ALLOW_SUNDAY_REPLAY, false);
 }
 
 function logBacktest(
@@ -809,6 +815,17 @@ export default async function handler(
   if (!requireAdminAccess(req, res)) return;
 
   try {
+    const nowMs = Date.now();
+    const allowSundayReplay = scalpAllowSundayReplay();
+    if (isUtcSunday(nowMs) && !allowSundayReplay) {
+      return res.status(409).json({
+        error: "sunday_utc_replay_blocked",
+        message:
+          "Backtest replay is blocked on Sunday UTC by default. Set SCALP_ALLOW_SUNDAY_REPLAY=true to override.",
+        nowMs,
+        nowIsoUtc: new Date(nowMs).toISOString(),
+      });
+    }
     const body = (req.body || {}) as BacktestRequestBody;
     const debugEnabled = toBool(
       body.debug,
@@ -841,7 +858,7 @@ export default async function handler(
     const requestedMode: "DATE_RANGE" | "LOOKBACK" = hasDateRange
       ? "DATE_RANGE"
       : "LOOKBACK";
-    const nowTsMs = Math.floor(Date.now() / ONE_MINUTE_MS) * ONE_MINUTE_MS;
+    const nowTsMs = Math.floor(nowMs / ONE_MINUTE_MS) * ONE_MINUTE_MS;
     const computedLookbackMs = lookbackPastValue * unitToMs(lookbackPastUnit);
     const hasLookbackDuration =
       Number.isFinite(computedLookbackMs) && computedLookbackMs > 0;
@@ -868,13 +885,19 @@ export default async function handler(
         ? "DATE_RANGE"
         : "LOOKBACK_DURATION"
       : "LOOKBACK_CANDLES";
+    const parsedDeployment = body.deploymentId
+      ? parseScalpDeploymentId(body.deploymentId)
+      : null;
+    const fallbackStrategyId =
+      parsedDeployment?.strategyId || getDefaultScalpStrategy().id;
     const requestedStrategyId = body.strategyId
-      ? parseStrategyId(body.strategyId, getDefaultScalpStrategy().id)
-      : getDefaultScalpStrategy().id;
+      ? parseStrategyId(body.strategyId, fallbackStrategyId)
+      : fallbackStrategyId;
+    const requestedTuneId = body.tuneId ?? parsedDeployment?.tuneId;
     const deployment = resolveScalpDeployment({
       symbol,
       strategyId: requestedStrategyId,
-      tuneId: body.tuneId,
+      tuneId: requestedTuneId,
       deploymentId: body.deploymentId,
     });
     logBacktest(

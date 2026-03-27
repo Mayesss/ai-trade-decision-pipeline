@@ -17,6 +17,7 @@ import { buildScalpSessionWindows, isScalpSundayEntryBlocked } from './sessions'
 import { getDefaultScalpStrategy, getScalpStrategyById, getScalpStrategyPreferredTimeframes } from './strategies/registry';
 import { applySymbolGuardRiskDefaultsToStrategyConfig } from './strategies/guardDefaults';
 import { advanceScalpStateMachine, createInitialScalpSessionState, deriveScalpDayKey } from './stateMachine';
+import { resolveScalpExecutionStrategyId } from '../scalp-v2/composerExecution';
 import {
     appendScalpTradeLedgerEntry,
     appendScalpJournal,
@@ -198,12 +199,24 @@ export async function runScalpExecuteCycle(opts: {
         deploymentId: opts.deploymentId,
     });
     const venueAdapter = getScalpVenueAdapter(deployment.venue);
+    const executionStrategyId =
+        resolveScalpExecutionStrategyId({
+            strategyId: deployment.strategyId,
+            tuneId: deployment.tuneId,
+        }) || deployment.strategyId;
     const strategyDef =
+        getScalpStrategyById(executionStrategyId) ||
         getScalpStrategyById(deployment.strategyId) ||
         getScalpStrategyById(runtime.defaultStrategyId) ||
         getDefaultScalpStrategy();
-    const preferredTimeframes = getScalpStrategyPreferredTimeframes(strategyDef.id);
-    cfg = applySymbolGuardRiskDefaultsToStrategyConfig({ cfg, symbol: deployment.symbol, strategyId: deployment.strategyId });
+    const preferredTimeframes = getScalpStrategyPreferredTimeframes(
+        executionStrategyId,
+    );
+    cfg = applySymbolGuardRiskDefaultsToStrategyConfig({
+        cfg,
+        symbol: deployment.symbol,
+        strategyId: executionStrategyId,
+    });
     if (preferredTimeframes) {
         cfg = {
             ...cfg,
@@ -217,11 +230,11 @@ export async function runScalpExecuteCycle(opts: {
     if (opts.configOverride) {
         cfg = applyScalpStrategyConfigOverride(cfg, opts.configOverride);
     }
-    if (deployment.strategyId === ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID) {
+    if (executionStrategyId === ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID) {
         const adaptiveSnapshot = await getScalpAdaptiveActiveSnapshot({
             symbol: deployment.symbol,
             entrySessionProfile: cfg.sessions.entrySessionProfile,
-            strategyId: deployment.strategyId,
+            strategyId: executionStrategyId,
         });
         if (adaptiveSnapshot) {
             cfg = applyScalpStrategyConfigOverride(cfg, {

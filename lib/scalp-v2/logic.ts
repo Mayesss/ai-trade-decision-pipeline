@@ -7,7 +7,10 @@ import type {
   ScalpV2RiskProfile,
   ScalpV2Venue,
 } from "./types";
-import { inferScalpAssetCategory, isPreciousMetalFamilySymbol } from "../scalp/symbolInfo";
+import {
+  inferScalpV2AssetCategory,
+  isScalpV2PreciousMetalFamilySymbol,
+} from "./symbolInfo";
 
 const STOCK_OR_INDEX_BASES = new Set([
   "AAPL",
@@ -100,7 +103,7 @@ function isLikelyCryptoSymbol(symbolRaw: string): boolean {
   if (symbol.endsWith("USDT") || symbol.endsWith("USDC") || symbol.endsWith("BUSD")) {
     return true;
   }
-  if (inferScalpAssetCategory(symbol) === "crypto") return true;
+  if (inferScalpV2AssetCategory(symbol) === "crypto") return true;
 
   const base = stripKnownQuoteSuffix(symbol);
   if (!base) return false;
@@ -111,7 +114,7 @@ function isBitgetCryptoOnlyAllowed(symbolRaw: string): boolean {
   const symbol = normalizeSymbol(symbolRaw);
   if (!symbol) return false;
   if (!symbol.endsWith("USDT")) return false;
-  if (isPreciousMetalFamilySymbol(symbol)) return false;
+  if (isScalpV2PreciousMetalFamilySymbol(symbol)) return false;
   if (symbol.includes("OIL") || symbol.includes("GAS")) return false;
 
   const base = stripKnownQuoteSuffix(symbol);
@@ -272,6 +275,12 @@ export function defaultRiskProfile(): ScalpV2RiskProfile {
     autoPauseDailyR: -3,
     autoPause30dR: -8,
   };
+}
+
+export function isScalpV2SundayUtc(tsMs: number): boolean {
+  const ts = Math.floor(Number(tsMs));
+  if (!Number.isFinite(ts) || ts <= 0) return false;
+  return new Date(ts).getUTCDay() === 0;
 }
 
 export type V1LedgerLikeRow = {

@@ -7,6 +7,8 @@ import {
   aggregateScalpV2ParityWindow,
   listScalpV2Candidates,
   listScalpV2Deployments,
+  listScalpV2ResearchCursors,
+  listScalpV2ResearchHighlights,
   loadScalpV2RuntimeConfig,
   loadScalpV2Summary,
 } from "../../../../../lib/scalp-v2/db";
@@ -31,12 +33,14 @@ export default async function handler(
     const limit = parseIntBounded(req.query.limit, 500, 20, 5_000);
     const parityDays = parseIntBounded(req.query.parityDays, 30, 1, 3650);
 
-    const [runtime, summary, candidates, deployments, parity] = await Promise.all([
+    const [runtime, summary, candidates, deployments, parity, researchCursors, researchHighlights] = await Promise.all([
       loadScalpV2RuntimeConfig(),
       loadScalpV2Summary(),
       listScalpV2Candidates({ limit }),
       listScalpV2Deployments({ limit }),
       aggregateScalpV2ParityWindow({ sinceDays: parityDays }),
+      listScalpV2ResearchCursors({ limit: Math.min(limit, 500) }),
+      listScalpV2ResearchHighlights({ limit: Math.min(limit, 500) }),
     ]);
 
     return res.status(200).json({
@@ -48,8 +52,14 @@ export default async function handler(
         candidates: candidates.length,
         deployments: deployments.length,
         enabledDeployments: deployments.filter((row) => row.enabled).length,
+        researchCursors: researchCursors.length,
+        researchHighlights: researchHighlights.length,
       },
       parity,
+      research: {
+        cursors: researchCursors,
+        highlights: researchHighlights.slice(0, 50),
+      },
     });
   } catch (err: any) {
     return res.status(500).json({

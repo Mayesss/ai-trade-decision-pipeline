@@ -1,31 +1,7 @@
-import type { NextApiRequest, NextApiResponse } from "next";
-
-function parseBoolLike(value: unknown, fallback: boolean): boolean {
-  const normalized = String(value ?? "")
-    .trim()
-    .toLowerCase();
-  if (!normalized) return fallback;
-  if (["1", "true", "yes", "on"].includes(normalized)) return true;
-  if (["0", "false", "no", "off"].includes(normalized)) return false;
-  return fallback;
-}
-
-function envBool(name: string, fallback: boolean): boolean {
-  return parseBoolLike(process.env[name], fallback);
-}
-
 function envInt(name: string, fallback: number, min: number, max: number): number {
   const n = Math.floor(Number(process.env[name]));
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, n));
-}
-
-function firstQueryValue(value: string | string[] | undefined): string | undefined {
-  if (typeof value === "string") return value.trim() || undefined;
-  if (Array.isArray(value) && value.length > 0) {
-    return String(value[0] || "").trim() || undefined;
-  }
-  return undefined;
 }
 
 export type ScalpV1ResearchHardCaps = {
@@ -61,28 +37,4 @@ export function resolveScalpV1ResearchHardCaps(): ScalpV1ResearchHardCaps {
 
 export function clampScalpV1HardCap(value: number, hardCap: number): number {
   return Math.max(1, Math.min(Math.floor(value), hardCap));
-}
-
-export function maybeRespondScalpV1ResearchPaused(params: {
-  req: NextApiRequest;
-  res: NextApiResponse;
-  routeId: string;
-}): boolean {
-  const paused = envBool("SCALP_V1_RESEARCH_PAUSED", true);
-  if (!paused) return false;
-
-  const forceRun = parseBoolLike(firstQueryValue(params.req.query.forceRun), false);
-  const forceAllowed = envBool("SCALP_V1_RESEARCH_ALLOW_FORCE_RUN", false);
-  if (forceRun && forceAllowed) return false;
-
-  params.res.status(200).json({
-    ok: true,
-    paused: true,
-    routeId: params.routeId,
-    reason: "SCALP_V1_RESEARCH_PAUSED",
-    message:
-      "Legacy scalp-v1 research loop is paused by cost brake. Execution, guardrail, and housekeeping remain active.",
-    forceRunAllowed: forceAllowed,
-  });
-  return true;
 }

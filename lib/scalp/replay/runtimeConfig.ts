@@ -1,6 +1,7 @@
 import { applyScalpStrategyConfigOverride, getScalpStrategyConfig, type ScalpStrategyConfigOverride } from '../config';
 import type { ScalpDeploymentRef } from '../types';
 import { getScalpStrategyPreferredTimeframes } from '../strategies/registry';
+import { resolveScalpExecutionStrategyId } from '../../scalp-v2/composerExecution';
 import { defaultScalpReplayConfig } from './harness';
 import type { ScalpReplayRuntimeConfig } from './types';
 
@@ -10,7 +11,13 @@ export function buildScalpReplayRuntimeFromDeployment(params: {
     baseRuntime?: ScalpReplayRuntimeConfig;
 }): ScalpReplayRuntimeConfig {
     const base = params.baseRuntime || defaultScalpReplayConfig(params.deployment.symbol);
-    const preferredTimeframes = getScalpStrategyPreferredTimeframes(params.deployment.strategyId);
+    const executionStrategyId = resolveScalpExecutionStrategyId({
+        strategyId: params.deployment.strategyId,
+        tuneId: params.deployment.tuneId,
+    });
+    const preferredTimeframes = getScalpStrategyPreferredTimeframes(
+        executionStrategyId || params.deployment.strategyId,
+    );
     const cfg = applyScalpStrategyConfigOverride(
         getScalpStrategyConfig(),
         (params.configOverride || undefined) as ScalpStrategyConfigOverride | undefined,
