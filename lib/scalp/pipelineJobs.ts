@@ -1,6 +1,10 @@
 import { empty, join, raw, sql, type SqlFragment } from "./pg/sql";
 
 import { bitgetFetch, resolveProductType } from "../bitget";
+import {
+  fetchCapitalCandlesByEpicDateRange,
+  resolveCapitalEpicRuntime,
+} from "../capital";
 import { resolveScalpAdaptiveRuntimeConfig } from "./adaptive/config";
 import { buildAdaptiveTrainingRowsFromMinuteCandles } from "./adaptive/features";
 import { buildAdaptiveSnapshotCatalog } from "./adaptive/snapshot";
@@ -83,6 +87,7 @@ const ONE_MINUTE_MS = 60_000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 const BITGET_HISTORY_CANDLES_MAX_LIMIT = 200;
+const CAPITAL_HISTORY_CANDLES_MAX_LIMIT = 1_000;
 const TRADING_WEEK_CANDLES_1M_MAX = 6 * 24 * 60;
 
 function startOfUtcDayMs(tsMs: number): number {
@@ -4218,6 +4223,49 @@ async function seedLoadSymbolsFromWorkingDeployments(
   return Math.max(0, Number(seeded || 0));
 }
 
+async function seedLoadSymbolsFromScope(
+  symbolScopeRaw?: string[],
+): Promise<number> {
+  const db = scalpPrisma();
+  const symbolScope = normalizeSymbolScope(symbolScopeRaw);
+  if (symbolScope.length <= 0) return 0;
+  const seeded = await db.$executeRaw(sql`
+        INSERT INTO scalp_discovered_symbols(
+            symbol,
+            last_discovered_at,
+            load_status,
+            load_attempts,
+            load_next_run_at,
+            load_error,
+            prepare_status,
+            prepare_attempts,
+            prepare_next_run_at,
+            prepare_error,
+            updated_at
+        )
+        SELECT DISTINCT
+            symbol_scope.symbol,
+            NOW(),
+            'pending',
+            0,
+            NOW(),
+            NULL,
+            'pending',
+            0,
+            NOW(),
+            NULL,
+            NOW()
+        FROM (
+            SELECT
+                UNNEST(ARRAY[${join(symbolScope)}]::text[]) AS symbol
+        ) symbol_scope
+        WHERE symbol_scope.symbol IS NOT NULL
+          AND symbol_scope.symbol <> ''
+        ON CONFLICT(symbol) DO NOTHING;
+    `);
+  return Math.max(0, Number(seeded || 0));
+}
+
 async function nudgeLoadSymbolsForCoverageFloor(params: {
   requiredWeeks: number;
   nowMs: number;
@@ -4301,6 +4349,7 @@ async function ensureSymbolWeeklyCoverage(params: {
   prewarmWeeks: number;
   backfillChunkWeeks: number;
   maxRequestsPerSymbol: number;
+  allowNonBitgetSymbols: boolean;
 }): Promise<{
   ok: boolean;
   weeksCovered: number;
@@ -4315,7 +4364,9 @@ async function ensureSymbolWeeklyCoverage(params: {
   const existing = filterScalpSundayCandles(existingRaw);
   const existingHadSundayCandles = existing.length !== existingRaw.length;
   const bitgetOnly = isScalpPipelineBitgetOnlyEnabled();
-  if (bitgetOnly && !isBitgetPipelineSymbol(params.symbol)) {
+  const symbolIsBitget = isBitgetPipelineSymbol(params.symbol);
+  const useCapitalVenue = params.allowNonBitgetSymbols && !symbolIsBitget;
+  if (!useCapitalVenue && bitgetOnly && !symbolIsBitget) {
     const coverage = countCoveredCompletedWeeks(
       existing,
       params.nowMs,
@@ -4440,25 +4491,41 @@ async function ensureSymbolWeeklyCoverage(params: {
     };
   }
 
-  const marketMetadata = await ensureScalpSymbolMarketMetadata(params.symbol, {
-    fetchIfMissing: true,
-    venue: "bitget",
-  });
-  const marketSource: "bitget" = "bitget";
-  const epic = marketMetadata?.epic || params.symbol;
   const fetchFromMs = Math.floor(fetchWindow.fromMs);
   const fetchToMs = Math.floor(fetchWindow.toMs);
+  let epic = params.symbol;
+  let fetchedRaw: unknown[] = [];
 
-  const fetchedRaw = await fetchBitgetCandlesByEpicDateRange(
-    epic,
-    "1m",
-    fetchFromMs,
-    fetchToMs,
-    {
-      maxPerRequest: BITGET_HISTORY_CANDLES_MAX_LIMIT,
-      maxRequests: params.maxRequestsPerSymbol,
-    },
-  );
+  if (useCapitalVenue) {
+    const resolved = await resolveCapitalEpicRuntime(params.symbol);
+    epic = resolved.epic;
+    fetchedRaw = await fetchCapitalCandlesByEpicDateRange(
+      epic,
+      "1m",
+      fetchFromMs,
+      fetchToMs,
+      {
+        maxPerRequest: CAPITAL_HISTORY_CANDLES_MAX_LIMIT,
+        maxRequests: params.maxRequestsPerSymbol,
+      },
+    );
+  } else {
+    const marketMetadata = await ensureScalpSymbolMarketMetadata(params.symbol, {
+      fetchIfMissing: true,
+      venue: "bitget",
+    });
+    epic = marketMetadata?.epic || params.symbol;
+    fetchedRaw = await fetchBitgetCandlesByEpicDateRange(
+      epic,
+      "1m",
+      fetchFromMs,
+      fetchToMs,
+      {
+        maxPerRequest: BITGET_HISTORY_CANDLES_MAX_LIMIT,
+        maxRequests: params.maxRequestsPerSymbol,
+      },
+    );
+  }
   const fetched = normalizeFetchedCandles(fetchedRaw);
   const merged = mergeScalpCandleHistory(existing, fetched);
 
@@ -4467,7 +4534,7 @@ async function ensureSymbolWeeklyCoverage(params: {
       symbol: params.symbol,
       timeframe: "1m",
       epic,
-      source: marketSource,
+      source: history.record?.source || "bitget",
       candles: merged,
     });
   }
@@ -4501,15 +4568,18 @@ export async function runLoadCandlesPipelineJob(
     batchSize?: number;
     maxAttempts?: number;
     symbols?: string[];
+    allowNonBitgetSymbols?: boolean;
   } = {},
 ): Promise<ScalpPipelineJobExecutionResult> {
   return runWithPipelineJobLock(
     "load_candles",
     async ({ lockToken, lockMs }) => {
       const symbolScope = normalizeSymbolScope(params.symbols);
+      const allowNonBitgetSymbols = params.allowNonBitgetSymbols === true;
       const requiredWeeks = resolveRequiredSuccessiveWeeks();
       const nowMs = Date.now();
       const fetchUpperBoundMs = resolveLoadCandlesFetchUpperBoundMs(nowMs);
+      const seededFromScope = await seedLoadSymbolsFromScope(symbolScope);
       const seededFromDeployments =
         await seedLoadSymbolsFromWorkingDeployments(symbolScope);
       const prewarmWeeks = resolveLoadPrewarmWeeks(requiredWeeks);
@@ -4566,6 +4636,7 @@ export async function runLoadCandlesPipelineJob(
             prewarmWeeks,
             backfillChunkWeeks,
             maxRequestsPerSymbol,
+            allowNonBitgetSymbols,
           });
           if (coverage.ok) {
             await updateLoadSymbolStatus({
@@ -4632,6 +4703,8 @@ export async function runLoadCandlesPipelineJob(
             processed: idx + 1,
             total: claimed.length,
             activeSymbols,
+            allowNonBitgetSymbols,
+            seededFromScope,
             seededFromDeployments,
             coverageNudged,
             succeeded,
@@ -4660,6 +4733,8 @@ export async function runLoadCandlesPipelineJob(
           fetchUpperBoundMs,
           strictGateOnly: true,
           activeSymbols,
+          allowNonBitgetSymbols,
+          seededFromScope,
           seededFromDeployments,
           coverageNudged,
           claimed: claimed.length,

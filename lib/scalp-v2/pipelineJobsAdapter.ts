@@ -4,5 +4,8 @@ import { runLoadCandlesPipelineJob } from "../scalp/pipelineJobs";
 export async function runScalpV2LoadCandlesPipelineJob(
   params: Parameters<typeof runLoadCandlesPipelineJob>[0],
 ) {
-  return runLoadCandlesPipelineJob(params);
+  return runLoadCandlesPipelineJob({
+    ...(params || {}),
+    allowNonBitgetSymbols: true,
+  });
 }
