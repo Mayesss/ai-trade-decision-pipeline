@@ -414,7 +414,7 @@ export async function listScalpV2Candidates(params: {
           updated_at AS "updatedAt"
         FROM scalp_v2_candidates
         WHERE status = ${params.status}
-        ORDER BY score DESC, updated_at DESC
+        ORDER BY updated_at DESC, score DESC
         LIMIT ${limit};
       `)
     : await db.$queryRaw<
@@ -447,7 +447,7 @@ export async function listScalpV2Candidates(params: {
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM scalp_v2_candidates
-        ORDER BY score DESC, updated_at DESC
+        ORDER BY updated_at DESC, score DESC
         LIMIT ${limit};
       `);
 

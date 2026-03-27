@@ -511,6 +511,7 @@ type ScalpWorkerSortState = {
 type ScalpWorkerJobGridRow = {
   rowId: string;
   deploymentId: string | null;
+  workerOnly?: boolean;
   symbol: string;
   strategyId: string;
   tuneId: string;
@@ -4604,6 +4605,7 @@ export default function Home() {
         byKey.set(key, {
           rowId: key,
           deploymentId: row.deploymentId || null,
+          workerOnly: false,
           symbol: row.symbol,
           strategyId: row.strategyId,
           tuneId: row.tuneId,
@@ -4758,6 +4760,9 @@ export default function Home() {
           Boolean(entry),
         ),
     );
+    const registryDeploymentIds = new Set(
+      scalpRegistryDeployments.map((deployment) => deployment.deploymentId),
+    );
     const out = scalpRegistryDeployments.map((deployment) => {
       const workerMetrics = workerMetricsByDeploymentId.get(
         deployment.deploymentId,
@@ -4767,6 +4772,7 @@ export default function Home() {
           ...workerMetrics,
           rowId: `deployment:${deployment.deploymentId}`,
           deploymentId: deployment.deploymentId,
+          workerOnly: false,
           forwardValidation:
             deployment.forwardValidation || workerMetrics.forwardValidation,
           deployed: workerMetrics.deployed || deployment.enabled,
@@ -4783,6 +4789,7 @@ export default function Home() {
       return {
         rowId: `deployment:${deployment.deploymentId}`,
         deploymentId: deployment.deploymentId,
+        workerOnly: false,
         symbol: deployment.symbol,
         strategyId: deployment.strategyId,
         tuneId: deployment.tuneId,
@@ -4809,16 +4816,47 @@ export default function Home() {
         errorCodes: null,
       } satisfies ScalpWorkerJobGridRow;
     });
-    return out.sort(compareScalpWorkerJobGridRows);
+
+    const workerOnlyRows = scalpWorkerJobsGridRows
+      .filter((row) => {
+        const deploymentId = String(row.deploymentId || "").trim();
+        if (!deploymentId) return true;
+        return !registryDeploymentIds.has(deploymentId);
+      })
+      .map((row) => ({
+        ...row,
+        rowId: row.rowId.startsWith("worker:") ? row.rowId : `worker:${row.rowId}`,
+        workerOnly: true,
+        deploymentEnabled:
+          typeof row.deploymentEnabled === "boolean"
+            ? row.deploymentEnabled
+            : false,
+        reason: String(row.reason || "").trim() || "not_deployed",
+      }));
+
+    return [...out, ...workerOnlyRows].sort(compareScalpWorkerJobGridRows);
   }, [scalpRegistryDeployments, scalpWorkerJobsGridRows]);
   const scalpSelectedWorkerGridRows = useMemo<ScalpWorkerJobGridRow[]>(() => {
     return scalpAllDeploymentsGridRows.filter((row) => {
       if (scalpEnabledFilter === "enabled") {
         return row.deploymentEnabled === true;
       }
-      return row.deploymentEnabled === false;
+      return row.deploymentEnabled !== true;
     });
   }, [scalpAllDeploymentsGridRows, scalpEnabledFilter]);
+  useEffect(() => {
+    if (scalpEnabledFilter !== "enabled") return;
+    const hasEnabledRows = scalpAllDeploymentsGridRows.some(
+      (row) => row.deploymentEnabled === true,
+    );
+    if (hasEnabledRows) return;
+    const hasNonEnabledRows = scalpAllDeploymentsGridRows.some(
+      (row) => row.deploymentEnabled !== true,
+    );
+    if (hasNonEnabledRows) {
+      setScalpEnabledFilter("disabled");
+    }
+  }, [scalpEnabledFilter, scalpAllDeploymentsGridRows]);
   useEffect(() => {
     const total = scalpSelectedWorkerGridRows.length;
     setScalpGridLoadedRows(
@@ -4883,13 +4921,34 @@ export default function Home() {
         initialWidth: scalpIsMobileViewport ? 168 : 480,
         cellRenderer: (params: any) => {
           const deploymentId = String(params?.value || "").trim();
+          const row = params?.data || {};
+          const workerOnly = row?.workerOnly === true;
+          const fallbackLabel =
+            [String(row?.symbol || "").trim(), String(row?.strategyId || "").trim(), String(row?.tuneId || "").trim()]
+              .filter((part) => Boolean(part))
+              .join(" · ") || "—";
+          const workerOnlyBadge = workerOnly ? (
+            <span
+              className={`inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${
+                scalpDarkMode
+                  ? "border-amber-500/50 bg-amber-500/15 text-amber-200"
+                  : "border-amber-300 bg-amber-50 text-amber-700"
+              }`}
+            >
+              worker-only
+            </span>
+          ) : null;
           if (!deploymentId) {
             return (
-              <span
-                className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}
-              >
-                —
-              </span>
+              <div className="flex min-w-0 items-center gap-2">
+                <span
+                  className={scalpDarkMode ? "text-zinc-300" : "text-slate-600"}
+                  title={fallbackLabel}
+                >
+                  {fallbackLabel}
+                </span>
+                {workerOnlyBadge}
+              </div>
             );
           }
           const venue = resolveScalpVenueUiFromDeploymentId(deploymentId);
@@ -4933,6 +4992,7 @@ export default function Home() {
                   <Copy className="h-3.5 w-3.5 opacity-70" />
                 )}
               </button>
+              {workerOnlyBadge}
             </div>
           );
         },
