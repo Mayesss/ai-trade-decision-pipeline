@@ -1003,40 +1003,16 @@ function toUiScalpSummaryFromV2(
         .toLowerCase();
       return !candidateSession || candidateSession === selectedSession;
     })
-    .map((candidateRaw) => {
+    .flatMap((candidateRaw) => {
       const candidate = asPlainObject(candidateRaw);
       const metadata = asPlainObject(candidate.metadata);
       const worker = asPlainObject(metadata.worker);
-      if (!Object.keys(worker).length) return null;
+      if (!Object.keys(worker).length) return [];
 
-      const stageA = asPlainObject(worker.stageA);
-      const stageB = asPlainObject(worker.stageB);
-      const stageC = asPlainObject(worker.stageC);
-      const finalPass = worker.finalPass === true || stageC.passed === true;
       const evaluatedAtMs =
         asFiniteOrNull(worker.evaluatedAtMs) ??
         asFiniteOrNull(candidate.updatedAtMs) ??
         Date.now();
-
-      const windowFromTs =
-        asFiniteOrNull(stageC.fromTs) ??
-        asFiniteOrNull(stageB.fromTs) ??
-        asFiniteOrNull(stageA.fromTs);
-      const windowToTs =
-        asFiniteOrNull(stageC.toTs) ??
-        asFiniteOrNull(stageB.toTs) ??
-        asFiniteOrNull(stageA.toTs);
-      if (windowFromTs === null || windowToTs === null) return null;
-
-      const stageADuration = asFiniteOrNull(stageA.durationMs) ?? 0;
-      const stageBDuration = asFiniteOrNull(stageB.durationMs) ?? 0;
-      const stageCDuration = asFiniteOrNull(stageC.durationMs) ?? 0;
-      const durationMs = Math.max(
-        0,
-        Math.floor(stageADuration + stageBDuration + stageCDuration),
-      );
-      const finishedAtMs = evaluatedAtMs;
-      const startedAtMs = Math.max(0, finishedAtMs - durationMs);
 
       const symbol = String(candidate.symbol || "")
         .trim()
@@ -1055,36 +1031,48 @@ function toUiScalpSummaryFromV2(
           `${symbol}~${strategyId}~${tuneId}~${entrySessionProfile}`,
         ) || "";
 
-      return {
-        deploymentId,
-        symbol,
-        strategyId,
-        tuneId,
-        workerId: `v2_worker_${Math.floor(evaluatedAtMs / 60_000)}`,
-        weekStartMs: windowFromTs,
-        weekEndMs: windowToTs,
-        status: finalPass ? "succeeded" : "failed",
-        attempts: 1,
-        startedAtMs,
-        finishedAtMs,
-        durationMs,
-        errorCode:
-          finalPass === true
+      // Emit one row per executed stage (A, B, C) so the grid shows each window
+      const stages = [
+        { id: "a", data: asPlainObject(worker.stageA) },
+        { id: "b", data: asPlainObject(worker.stageB) },
+        { id: "c", data: asPlainObject(worker.stageC) },
+      ] as const;
+      const rows: ScalpSummaryWorkerRow[] = [];
+      for (const stage of stages) {
+        if (!stage.data.executed) continue;
+        const fromTs = asFiniteOrNull(stage.data.fromTs);
+        const toTs = asFiniteOrNull(stage.data.toTs);
+        if (fromTs === null || toTs === null) continue;
+        const passed = stage.data.passed === true;
+        const durationMs = Math.max(0, Math.floor(asFiniteOrNull(stage.data.durationMs) ?? 0));
+        rows.push({
+          deploymentId,
+          symbol,
+          strategyId,
+          tuneId,
+          workerId: `v2_research_stage_${stage.id}`,
+          weekStartMs: fromTs,
+          weekEndMs: toTs,
+          status: passed ? "succeeded" : "failed",
+          attempts: 1,
+          startedAtMs: Math.max(0, evaluatedAtMs - durationMs),
+          finishedAtMs: evaluatedAtMs,
+          durationMs,
+          errorCode: passed
             ? null
-            : String(stageC.reason || worker.error || "worker_stage_c_failed")
-                .trim() || "worker_stage_c_failed",
-        errorMessage:
-          finalPass === true
+            : String(stage.data.reason || "").trim() || `stage_${stage.id}_failed`,
+          errorMessage: passed
             ? null
-            : String(worker.error || stageC.reason || "").trim() || null,
-        trades: asFiniteOrNull(stageC.trades),
-        netR: asFiniteOrNull(stageC.netR),
-        expectancyR: asFiniteOrNull(stageC.expectancyR),
-        profitFactor: asFiniteOrNull(stageC.profitFactor),
-        maxDrawdownR: asFiniteOrNull(stageC.maxDrawdownR),
-      } satisfies ScalpSummaryWorkerRow;
+            : String(stage.data.reason || "").trim() || null,
+          trades: asFiniteOrNull(stage.data.trades),
+          netR: asFiniteOrNull(stage.data.netR),
+          expectancyR: asFiniteOrNull(stage.data.expectancyR),
+          profitFactor: asFiniteOrNull(stage.data.profitFactor),
+          maxDrawdownR: asFiniteOrNull(stage.data.maxDrawdownR),
+        });
+      }
+      return rows;
     })
-    .filter((row) => row !== null)
     .sort((a, b) => {
       const aTs = asFiniteOrNull(a.finishedAtMs) ?? asFiniteOrNull(a.weekEndMs) ?? 0;
       const bTs = asFiniteOrNull(b.finishedAtMs) ?? asFiniteOrNull(b.weekEndMs) ?? 0;
