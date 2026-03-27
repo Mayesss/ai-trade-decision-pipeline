@@ -931,8 +931,7 @@ function toUiScalpSummaryFromV2(
     jobsRaw.length
       ? jobsRaw
       : [
-          { jobKind: "discover" },
-          { jobKind: "evaluate" },
+          { jobKind: "research" },
           { jobKind: "promote" },
           { jobKind: "execute" },
           { jobKind: "reconcile" },
@@ -1284,21 +1283,10 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<
   string,
   ScalpCronPipelineDefinition
 > = {
-  scalp_discover: {
-    primaryPathname: "/api/scalp/v2/cron/discover",
-    matchPathnames: ["/api/scalp/v2/cron/discover"],
-    fallbackInvokePath:
-      "/api/scalp/v2/cron/discover?dryRun=false",
-  },
-  scalp_evaluate: {
-    primaryPathname: "/api/scalp/v2/cron/evaluate",
-    matchPathnames: ["/api/scalp/v2/cron/evaluate"],
-    fallbackInvokePath: "/api/scalp/v2/cron/evaluate?batchSize=200&dryRun=false",
-  },
-  scalp_worker: {
-    primaryPathname: "/api/scalp/v2/cron/worker",
-    matchPathnames: ["/api/scalp/v2/cron/worker"],
-    fallbackInvokePath: "/api/scalp/v2/cron/worker?batchSize=12",
+  scalp_research: {
+    primaryPathname: "/api/scalp/v2/cron/research",
+    matchPathnames: ["/api/scalp/v2/cron/research"],
+    fallbackInvokePath: "/api/scalp/v2/cron/research?batchSize=50",
   },
   scalp_promote: {
     primaryPathname: "/api/scalp/v2/cron/promote",
@@ -3356,9 +3344,9 @@ export default function Home() {
   const scalpPipelineStatusPanel = (() => {
     const explicit = scalpSummary?.pipeline?.statusPanel || null;
     if (explicit) return explicit;
-    const orderedKinds = ["worker"];
+    const orderedKinds = ["research"];
     const labelsByKind: Record<string, string> = {
-      worker: "Run worker",
+      research: "Research",
     };
     const byKind = new Map(
       scalpPipelineJobs.map((job) => [
@@ -4011,20 +3999,16 @@ export default function Home() {
           .trim()
           .toLowerCase();
         const rowId =
-          rawKind === "discover"
-            ? "scalp_discover"
-            : rawKind === "evaluate"
-              ? "scalp_evaluate"
-              : rawKind === "worker"
-                ? "scalp_worker"
-              : rawKind === "promote"
-                ? "scalp_promote"
-                : rawKind === "execute"
-                  ? "scalp_execute"
-                  : rawKind === "reconcile"
-                    ? "scalp_reconcile"
-                    : rawKind === "cycle"
-                      ? "scalp_cycle"
+          rawKind === "research"
+            ? "scalp_research"
+            : rawKind === "promote"
+              ? "scalp_promote"
+              : rawKind === "execute"
+                ? "scalp_execute"
+                : rawKind === "reconcile"
+                  ? "scalp_reconcile"
+                  : rawKind === "cycle"
+                    ? "scalp_cycle"
                     : `scalp_${rawKind || "job"}`;
         const queuePending = Math.max(
           0,
@@ -4270,12 +4254,8 @@ export default function Home() {
       .trim()
       .toLowerCase();
     if (!normalized) return null;
-    if (normalized === "discover")
-      return scalpCronRows.find((row) => row.id.includes("scalp_discover")) || null;
-    if (normalized === "evaluate")
-      return scalpCronRows.find((row) => row.id.includes("scalp_evaluate")) || null;
-    if (normalized === "worker")
-      return scalpCronRows.find((row) => row.id.includes("scalp_worker")) || null;
+    if (normalized === "research")
+      return scalpCronRows.find((row) => row.id.includes("scalp_research")) || null;
     if (normalized === "promote" || normalized === "promotion")
       return scalpCronRows.find((row) => row.id.includes("scalp_promote")) || null;
     if (normalized.includes("execute"))
@@ -4392,9 +4372,8 @@ export default function Home() {
     const normalized = String(id || "")
       .trim()
       .toLowerCase();
-    if (normalized.includes("discover")) return Radar;
+    if (normalized.includes("research")) return Radar;
     if (normalized.includes("load")) return Globe2;
-    if (normalized.includes("worker")) return Bot;
     if (normalized.includes("execute")) return CandlestickChart;
     if (normalized.includes("monitor")) return Activity;
     if (normalized.includes("panic") || normalized.includes("stop"))
@@ -4411,6 +4390,8 @@ export default function Home() {
       .toLowerCase();
     return (
       id !== "discover" &&
+      id !== "evaluate" &&
+      id !== "worker" &&
       id !== "load_candles" &&
       id !== "prepare" &&
       id !== "promotion"
@@ -6276,8 +6257,8 @@ export default function Home() {
                                   .trim()
                                   .toLowerCase();
                                 const isWorkerStep =
-                                  normalizedStepId === "worker" ||
-                                  normalizedStepId.includes("worker");
+                                  normalizedStepId === "research" ||
+                                  normalizedStepId.includes("research");
                                 const row = scalpCronRowForStep(step.id);
                                 const rowInProgress = row
                                   ? scalpIsCronRowInProgress(row.id)
