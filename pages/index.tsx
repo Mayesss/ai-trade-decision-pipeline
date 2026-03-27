@@ -1031,44 +1031,93 @@ function toUiScalpSummaryFromV2(
           `${symbol}~${strategyId}~${tuneId}~${entrySessionProfile}`,
         ) || "";
 
-      // Emit one row per executed stage (A, B, C) so the grid shows each window
-      const stages = [
-        { id: "a", data: asPlainObject(worker.stageA) },
-        { id: "b", data: asPlainObject(worker.stageB) },
-        { id: "c", data: asPlainObject(worker.stageC) },
-      ] as const;
+      // Emit one row per week from the longest executed stage's weeklyNetR.
+      // This gives the grid individual weekly sticks instead of one per stage.
+      const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
+      const stageC = asPlainObject(worker.stageC);
+      const stageB = asPlainObject(worker.stageB);
+      const stageA = asPlainObject(worker.stageA);
+      const finalPass = worker.finalPass === true || stageC.passed === true;
+
+      // Pick the longest executed stage for the weekly breakdown
+      const primaryStage = stageC.executed ? stageC : stageB.executed ? stageB : stageA;
+      const weeklyNetR = asPlainObject(primaryStage.weeklyNetR);
+      const stageFromTs = asFiniteOrNull(primaryStage.fromTs);
+      const stageToTs = asFiniteOrNull(primaryStage.toTs);
+      if (stageFromTs === null || stageToTs === null) return [];
+
+      const weekKeys = Object.keys(weeklyNetR)
+        .map((k) => Number(k))
+        .filter((v) => Number.isFinite(v))
+        .sort((a, b) => a - b);
+
+      // If weeklyNetR is missing (old data), fall back to one row per stage
+      if (!weekKeys.length) {
+        const stages = [
+          { id: "a", data: stageA },
+          { id: "b", data: stageB },
+          { id: "c", data: stageC },
+        ] as const;
+        const fallbackRows: ScalpSummaryWorkerRow[] = [];
+        for (const stage of stages) {
+          if (!stage.data.executed) continue;
+          const fromTs = asFiniteOrNull(stage.data.fromTs);
+          const toTs = asFiniteOrNull(stage.data.toTs);
+          if (fromTs === null || toTs === null) continue;
+          const passed = stage.data.passed === true;
+          fallbackRows.push({
+            deploymentId,
+            symbol,
+            strategyId,
+            tuneId,
+            workerId: `v2_research_stage_${stage.id}`,
+            weekStartMs: fromTs,
+            weekEndMs: toTs,
+            status: passed ? "succeeded" : "failed",
+            attempts: 1,
+            startedAtMs: evaluatedAtMs,
+            finishedAtMs: evaluatedAtMs,
+            durationMs: 0,
+            errorCode: passed
+              ? null
+              : String(stage.data.reason || "").trim() || `stage_${stage.id}_failed`,
+            errorMessage: passed
+              ? null
+              : String(stage.data.reason || "").trim() || null,
+            trades: asFiniteOrNull(stage.data.trades),
+            netR: asFiniteOrNull(stage.data.netR),
+            expectancyR: asFiniteOrNull(stage.data.expectancyR),
+            profitFactor: asFiniteOrNull(stage.data.profitFactor),
+            maxDrawdownR: asFiniteOrNull(stage.data.maxDrawdownR),
+          });
+        }
+        return fallbackRows;
+      }
+
       const rows: ScalpSummaryWorkerRow[] = [];
-      for (const stage of stages) {
-        if (!stage.data.executed) continue;
-        const fromTs = asFiniteOrNull(stage.data.fromTs);
-        const toTs = asFiniteOrNull(stage.data.toTs);
-        if (fromTs === null || toTs === null) continue;
-        const passed = stage.data.passed === true;
-        const durationMs = Math.max(0, Math.floor(asFiniteOrNull(stage.data.durationMs) ?? 0));
+      for (const weekStart of weekKeys) {
+        const netR = Number(weeklyNetR[String(weekStart)] || 0);
+        const weekEnd = weekStart + ONE_WEEK;
         rows.push({
           deploymentId,
           symbol,
           strategyId,
           tuneId,
-          workerId: `v2_research_stage_${stage.id}`,
-          weekStartMs: fromTs,
-          weekEndMs: toTs,
-          status: passed ? "succeeded" : "failed",
+          workerId: `v2_research_week`,
+          weekStartMs: weekStart,
+          weekEndMs: weekEnd,
+          status: finalPass ? "succeeded" : "failed",
           attempts: 1,
-          startedAtMs: Math.max(0, evaluatedAtMs - durationMs),
+          startedAtMs: evaluatedAtMs,
           finishedAtMs: evaluatedAtMs,
-          durationMs,
-          errorCode: passed
-            ? null
-            : String(stage.data.reason || "").trim() || `stage_${stage.id}_failed`,
-          errorMessage: passed
-            ? null
-            : String(stage.data.reason || "").trim() || null,
-          trades: asFiniteOrNull(stage.data.trades),
-          netR: asFiniteOrNull(stage.data.netR),
-          expectancyR: asFiniteOrNull(stage.data.expectancyR),
-          profitFactor: asFiniteOrNull(stage.data.profitFactor),
-          maxDrawdownR: asFiniteOrNull(stage.data.maxDrawdownR),
+          durationMs: 0,
+          errorCode: null,
+          errorMessage: null,
+          trades: null,
+          netR,
+          expectancyR: null,
+          profitFactor: null,
+          maxDrawdownR: null,
         });
       }
       return rows;

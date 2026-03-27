@@ -192,6 +192,8 @@ type ScalpV2WorkerStageResult = {
   winningWeeks: number;
   consecutiveWinningWeeks: number;
   durationMs: number;
+  /** Per-week netR keyed by Monday-UTC start timestamp. */
+  weeklyNetR?: Record<string, number>;
 };
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -565,6 +567,37 @@ function countWinningWeekStreak(params: {
     }
   }
   return { winningWeeks, consecutiveWinningWeeks };
+}
+
+function computeWeeklyNetR(params: {
+  trades: ScalpReplayTrade[];
+  fromTs: number;
+  toTs: number;
+}): Record<string, number> {
+  const fromTs = Math.floor(Number(params.fromTs) || 0);
+  const toTs = Math.floor(Number(params.toTs) || 0);
+  if (!Number.isFinite(fromTs) || !Number.isFinite(toTs) || toTs <= fromTs) {
+    return {};
+  }
+  const weekNetByStart = new Map<number, number>();
+  // Initialize all week buckets to 0 so weeks with no trades still appear
+  for (let weekStart = fromTs; weekStart < toTs; weekStart += ONE_WEEK_MS) {
+    weekNetByStart.set(weekStart, 0);
+  }
+  for (const trade of params.trades || []) {
+    const ts = Math.floor(Number(trade.exitTs || 0));
+    if (!Number.isFinite(ts) || ts < fromTs || ts >= toTs) continue;
+    const weekStart = startOfScalpV2WeekMondayUtc(ts);
+    weekNetByStart.set(
+      weekStart,
+      (weekNetByStart.get(weekStart) || 0) + Number(trade.rMultiple || 0),
+    );
+  }
+  const out: Record<string, number> = {};
+  for (const [weekStart, netR] of weekNetByStart) {
+    out[String(weekStart)] = netR;
+  }
+  return out;
 }
 
 function normalizeProfitFactorForGate(params: {
@@ -1416,6 +1449,7 @@ export async function runScalpV2ResearchJob(params: {
             captureTimeline: false,
           });
           const weeklyStats = countWinningWeekStreak({ trades: replay.trades, fromTs, toTs: windowToTs });
+          const weeklyNetR = computeWeeklyNetR({ trades: replay.trades, fromTs, toTs: windowToTs });
           const profitFactorForGate = normalizeProfitFactorForGate({
             profitFactor: replay.summary.profitFactor,
             grossProfitR: replay.summary.grossProfitR,
@@ -1441,6 +1475,7 @@ export async function runScalpV2ResearchJob(params: {
             winningWeeks: weeklyStats.winningWeeks,
             consecutiveWinningWeeks: weeklyStats.consecutiveWinningWeeks,
             durationMs: Math.max(0, nowMs() - stageStartedAtMs),
+            weeklyNetR,
           };
           const gate = evaluateWorkerStageGate({ stage, stageResult });
           stageResult.passed = gate.passed;
@@ -2398,6 +2433,7 @@ export async function runScalpV2WorkerJob(params: {
             fromTs,
             toTs: windowToTs,
           });
+          const weeklyNetRWorker = computeWeeklyNetR({ trades: replay.trades, fromTs, toTs: windowToTs });
           const profitFactorForGate = normalizeProfitFactorForGate({
             profitFactor: replay.summary.profitFactor,
             grossProfitR: replay.summary.grossProfitR,
@@ -2425,6 +2461,7 @@ export async function runScalpV2WorkerJob(params: {
             winningWeeks: weeklyStats.winningWeeks,
             consecutiveWinningWeeks: weeklyStats.consecutiveWinningWeeks,
             durationMs: Math.max(0, nowMs() - stageStartedAtMs),
+            weeklyNetR: weeklyNetRWorker,
           };
           const gate = evaluateWorkerStageGate({
             stage,
