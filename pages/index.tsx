@@ -643,7 +643,15 @@ function stripScalpVenuePrefixFromDeploymentId(
 ): string {
   const raw = String(deploymentId || "").trim();
   if (!raw) return "";
-  return raw.replace(/^(bitget|capital):/i, "").trim();
+  const withoutVenue = raw.replace(/^(bitget|capital):/i, "").trim();
+  const sessionMatch = withoutVenue.match(/__sp_([a-z0-9_-]+)$/i);
+  if (!sessionMatch) return withoutVenue;
+  const session = String(sessionMatch[1] || "")
+    .trim()
+    .toLowerCase();
+  const base = withoutVenue.slice(0, sessionMatch.index).trim();
+  if (!session) return base || withoutVenue;
+  return base ? `${base} · ${session}` : session;
 }
 
 const ADMIN_SECRET_STORAGE_KEY = "admin_access_secret";

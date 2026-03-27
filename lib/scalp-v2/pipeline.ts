@@ -1774,6 +1774,21 @@ export async function runScalpV2WorkerJob(params: {
       }
     }
 
+    let fallbackSelected = 0;
+    if (selectedById.size < batchSize) {
+      const remainingBudget = Math.max(0, batchSize - selectedById.size);
+      if (remainingBudget > 0) {
+        const fallbackPool = allCandidates
+          .filter((row) => !selectedById.has(row.id))
+          .sort((a, b) => b.score - a.score || a.id - b.id)
+          .slice(0, remainingBudget);
+        for (const row of fallbackPool) {
+          selectedById.set(row.id, row);
+        }
+        fallbackSelected = fallbackPool.length;
+      }
+    }
+
     const selectedCandidates = Array.from(selectedById.values());
     if (!selectedCandidates.length) {
       details = {
@@ -2243,6 +2258,8 @@ export async function runScalpV2WorkerJob(params: {
       flushSize,
       scopeCount: scopes.length,
       cursorUpdatedScopes: scopeCursorUpdates.length,
+      fallbackSelected,
+      requestedBatchReached: selectedCandidates.length >= batchSize,
       filteredCandidatesOutOfScope,
       policy: {
         stageA: workerPolicy.stageA,
