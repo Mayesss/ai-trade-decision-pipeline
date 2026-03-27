@@ -3480,16 +3480,20 @@ export default function Home() {
   const scalpWorkerTasks = useMemo<ScalpWorkerTask[]>(() => {
     const tasks: ScalpWorkerTask[] = [];
     for (const row of scalpSummaryWorkerRows) {
-      const deploymentId = String(row?.deploymentId || "").trim() || null;
       const symbol = String(row?.symbol || "")
         .trim()
         .toUpperCase();
       const strategyId = String(row?.strategyId || "").trim();
-      if (!deploymentId || !symbol || !strategyId) continue;
+      if (!symbol || !strategyId) continue;
       const tuneId = String(row?.tuneId || "").trim() || "default";
       const windowFromTs = asFiniteNumber(row?.weekStartMs);
       const windowToTs = asFiniteNumber(row?.weekEndMs);
       if (windowFromTs === null || windowToTs === null) continue;
+      const deploymentIdRaw = String(row?.deploymentId || "").trim();
+      const deploymentId =
+        deploymentIdRaw ||
+        `${symbol}~${strategyId.toLowerCase()}~${tuneId.toLowerCase()}`;
+      if (!symbol || !strategyId) continue;
       const rawStatus = String(row?.status || "pending")
         .trim()
         .toLowerCase();

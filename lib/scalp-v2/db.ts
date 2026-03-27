@@ -367,7 +367,7 @@ export async function upsertScalpV2Candidates(params: {
       score = EXCLUDED.score,
       status = EXCLUDED.status,
       reason_codes = EXCLUDED.reason_codes,
-      metadata_json = EXCLUDED.metadata_json,
+      metadata_json = COALESCE(scalp_v2_candidates.metadata_json, '{}'::jsonb) || EXCLUDED.metadata_json,
       updated_at = NOW();
   `);
 
