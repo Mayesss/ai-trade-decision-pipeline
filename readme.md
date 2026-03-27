@@ -289,7 +289,7 @@ npm run start
   - Body: `{ "secret": "..." }` to validate admin access when `ADMIN_ACCESS_SECRET` is set.
 - Admin protection policy
   - All API routes except `/api/admin-auth` require `x-admin-access-secret: <ADMIN_ACCESS_SECRET>` (or `Authorization: Bearer <ADMIN_ACCESS_SECRET>`) when `ADMIN_ACCESS_SECRET` is set.
-  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/scalp/cron/execute-deployments`, `/api/scalp/cron/v2/discover`, `/api/scalp/cron/v2/load-candles`, `/api/scalp/cron/v2/prepare`, `/api/scalp/cron/worker`, `/api/scalp/cron/promotion`, `/api/scalp/cron/live-guardrail-monitor`, `/api/scalp/cron/housekeeping`, `/api/scalp/v2/cron/discover`, `/api/scalp/v2/cron/load-candles`, `/api/scalp/v2/cron/prepare`, `/api/scalp/v2/cron/evaluate`, `/api/scalp/v2/cron/promote`, `/api/scalp/v2/cron/execute`, `/api/scalp/v2/cron/reconcile`, `/api/scalp/v2/cron/cycle` (legacy `/api/scalp/cron/discover-symbols|load-candles|prepare` remain deprecated).
+  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/scalp/cron/execute-deployments`, `/api/scalp/cron/v2/discover`, `/api/scalp/cron/v2/load-candles`, `/api/scalp/cron/v2/prepare`, `/api/scalp/cron/v2/worker`, `/api/scalp/cron/worker`, `/api/scalp/cron/promotion`, `/api/scalp/cron/live-guardrail-monitor`, `/api/scalp/cron/housekeeping`, `/api/scalp/v2/cron/discover`, `/api/scalp/v2/cron/load-candles`, `/api/scalp/v2/cron/prepare`, `/api/scalp/v2/cron/evaluate`, `/api/scalp/v2/cron/worker`, `/api/scalp/v2/cron/promote`, `/api/scalp/v2/cron/execute`, `/api/scalp/v2/cron/reconcile`, `/api/scalp/v2/cron/cycle` (legacy `/api/scalp/cron/discover-symbols|load-candles|prepare` remain deprecated).
 - `GET /api/forex/*`
   - Forex mode routes are deprecated and currently return `410` with `error=forex_mode_deprecated`.
 - `GET /api/scalp/cron/execute-deployments?all=true&dryRun=true&session=berlin`
@@ -320,6 +320,23 @@ npm run start
   - Uses research cursor offsets (`scalp_v2_research_cursor.last_candidate_offset`) to rotate evaluation windows instead of rescoring full pools every run.
   - Persists only the selected window slice as `evaluated` candidates, keeping DB writes bounded while maintaining broad candidate coverage over successive runs.
   - Cursor offsets are advanced per scope and preserved across discover/promote updates.
+  - Optional orchestration query params:
+    - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/v2/cron/worker`.
+    - `workerBatchSize=<int>` for downstream worker batch size (default `60`).
+- `GET /api/scalp/v2/cron/worker?batchSize=60`
+  - Legacy alias kept for compatibility: `/api/scalp/cron/v2/worker`.
+  - Native staged replay worker over `evaluated|shadow|promoted` candidates in runtime scope.
+  - Runs phased validation with early cutoff:
+    - Stage A: last 4 completed weeks.
+    - Stage B: last 6 completed weeks.
+    - Stage C: last 12 completed weeks.
+  - Each stage enforces gates on min trades, netR, consecutive winning weeks, profit factor, and max drawdown.
+  - If a stage fails, later stages are blocked to save compute.
+  - Stores only compact stage metadata on each candidate (`metadata.worker.*`) and persists remarkable highlights for Stage-C passes.
+  - Promotion now fail-closes on worker evidence: candidates missing Stage-C pass are rejected (`worker_stage_c_missing|worker_stage_c_failed`).
+  - Sunday UTC safeguard: worker replay is blocked by default (`reason=sunday_utc_worker_blocked`); override only with `SCALP_V2_ALLOW_SUNDAY_WORKER=true`.
+  - Optional orchestration query params:
+    - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/v2/cron/promote`.
 - `GET /api/scalp/v2/cron/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&successor=cycle`
   - Legacy alias kept for compatibility: `/api/scalp/cron/v2/load-candles`.
   - Legacy-backed candle-maintenance job kept for Sunday data refresh/backfill only.
@@ -343,7 +360,7 @@ npm run start
   - Legacy alias kept for compatibility: `/api/scalp/cron/v2/prepare`.
   - Deprecated compatibility no-op in scalp-v2 mode.
   - Returns `ok=true` with `details.reason=legacy_prepare_deprecated_for_v2`.
-  - Replacement path is native v2 loop: `discover -> evaluate -> promote -> execute -> reconcile`.
+  - Replacement path is native v2 loop: `discover -> evaluate -> worker -> promote -> execute -> reconcile`.
 - `GET /api/scalp/cron/worker?batchSize=140&autoSuccessor=true&autoContinue=true&session=berlin`
   - Independent async job that claims pending/retry weekly rows in `scalp_deployment_weekly_metrics`, runs replay, and persists weekly metrics.
   - Stage contract:
@@ -375,7 +392,7 @@ npm run start
 - `GET/POST /api/scalp/v2/control`
   - Runtime control for scalp-v2 (`enabled`, `liveEnabled`, budgets, risk profile, seed symbols).
 - `GET /api/scalp/v2/cron/cycle?dryRun=true|false`
-  - Full v2 auto loop in one run: discover -> evaluate -> promote -> execute -> reconcile.
+  - Full v2 auto loop in one run: discover -> evaluate -> worker -> promote -> execute -> reconcile.
   - Sunday UTC safeguard: execution step is skipped by default (`reason=sunday_utc_execution_blocked`); override only with `SCALP_V2_ALLOW_SUNDAY_EXECUTE=true`.
 - `GET /api/scalp/v2/dashboard/summary`
   - V2 monitoring payload: runtime config, summary counters, deployments, events, and recent ledger rows.
@@ -612,7 +629,8 @@ node --import tsx scripts/scalp-replay-matrix.ts \
 - Current cron entries include:
   - `/api/swing/analyze?...&dryRun=false` hourly (live-trading mode).
   - `/api/scalp/v2/cron/discover` every 3 hours.
-  - `/api/scalp/v2/cron/evaluate?batchSize=200` every 5 minutes.
+  - `/api/scalp/v2/cron/evaluate?batchSize=200&autoSuccessor=false` every 5 minutes.
+  - `/api/scalp/v2/cron/worker?batchSize=60&autoSuccessor=false` every 5 minutes (offset at minute `2`).
   - `/api/scalp/v2/cron/promote` every 10 minutes.
   - `/api/scalp/v2/cron/reconcile` every 2 minutes.
   - `/api/scalp/v2/cron/execute?dryRun=false` every minute (live v2 execution loop).

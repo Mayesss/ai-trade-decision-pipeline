@@ -37,6 +37,7 @@ export default async function handler(
     ok:
       out.discover.ok &&
       out.evaluate.ok &&
+      out.worker.ok &&
       out.promote.ok &&
       out.execute.ok &&
       out.reconcile.ok,

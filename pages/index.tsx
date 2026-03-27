@@ -1154,6 +1154,11 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<
     matchPathnames: ["/api/scalp/v2/cron/evaluate"],
     fallbackInvokePath: "/api/scalp/v2/cron/evaluate?batchSize=200&dryRun=false",
   },
+  scalp_worker: {
+    primaryPathname: "/api/scalp/v2/cron/worker",
+    matchPathnames: ["/api/scalp/v2/cron/worker", "/api/scalp/cron/v2/worker"],
+    fallbackInvokePath: "/api/scalp/v2/cron/worker?batchSize=60",
+  },
   scalp_promote: {
     primaryPathname: "/api/scalp/v2/cron/promote",
     matchPathnames: ["/api/scalp/v2/cron/promote"],
@@ -3866,6 +3871,8 @@ export default function Home() {
             ? "scalp_discover"
             : rawKind === "evaluate"
               ? "scalp_evaluate"
+              : rawKind === "worker"
+                ? "scalp_worker"
               : rawKind === "promote"
                 ? "scalp_promote"
                 : rawKind === "execute"
@@ -4089,6 +4096,7 @@ export default function Home() {
           .toLowerCase();
         if (kind === "discover") return "scalp_discover";
         if (kind === "evaluate") return "scalp_evaluate";
+        if (kind === "worker") return "scalp_worker";
         if (kind === "promote") return "scalp_promote";
         if (kind === "execute") return "scalp_execute";
         if (kind === "reconcile") return "scalp_reconcile";
@@ -4122,6 +4130,8 @@ export default function Home() {
       return scalpCronRows.find((row) => row.id.includes("scalp_discover")) || null;
     if (normalized === "evaluate")
       return scalpCronRows.find((row) => row.id.includes("scalp_evaluate")) || null;
+    if (normalized === "worker")
+      return scalpCronRows.find((row) => row.id.includes("scalp_worker")) || null;
     if (normalized === "promote" || normalized === "promotion")
       return scalpCronRows.find((row) => row.id.includes("scalp_promote")) || null;
     if (normalized.includes("execute"))

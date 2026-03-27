@@ -20,6 +20,10 @@ test("vercel scalp cron scheduling is v2 split-jobs without cycle cron", async (
     true,
   );
   assert.equal(
+    cronPaths.some((row) => row.startsWith("/api/scalp/v2/cron/worker")),
+    true,
+  );
+  assert.equal(
     cronPaths.some((row) => row.startsWith("/api/scalp/v2/cron/cycle")),
     false,
   );

@@ -6,6 +6,7 @@ ADMIN_SECRET="${ADMIN_ACCESS_SECRET:-}"
 DISCOVER_MAX_CANDIDATES="${DISCOVER_MAX_CANDIDATES:-120}"
 LOAD_BATCH_SIZE="${LOAD_BATCH_SIZE:-10}"
 EVALUATE_BATCH_SIZE="${EVALUATE_BATCH_SIZE:-200}"
+WORKER_BATCH_SIZE="${WORKER_BATCH_SIZE:-60}"
 STATE_LIMIT="${STATE_LIMIT:-300}"
 PARITY_DAYS="${PARITY_DAYS:-30}"
 CURL_MAX_TIME="${CURL_MAX_TIME:-120}"
@@ -32,6 +33,7 @@ Environment overrides:
   DISCOVER_MAX_CANDIDATES
   LOAD_BATCH_SIZE
   EVALUATE_BATCH_SIZE
+  WORKER_BATCH_SIZE
   STATE_LIMIT
   PARITY_DAYS
   CURL_MAX_TIME
@@ -235,7 +237,10 @@ if [[ "$RUN_LOAD_MAINTENANCE" == "1" ]]; then
 fi
 
 step "Evaluate"
-run_cron_job "evaluate" "/api/scalp/v2/cron/evaluate?batchSize=${EVALUATE_BATCH_SIZE}"
+run_cron_job "evaluate" "/api/scalp/v2/cron/evaluate?batchSize=${EVALUATE_BATCH_SIZE}&autoSuccessor=false"
+
+step "Worker (staged replay A/B/C)"
+run_cron_job "worker" "/api/scalp/v2/cron/worker?batchSize=${WORKER_BATCH_SIZE}&autoSuccessor=false"
 
 step "Promote"
 run_cron_job "promote" "/api/scalp/v2/cron/promote"
@@ -253,6 +258,7 @@ echo "$cycle_json" | jq -c '{
   ok,
   discover: .out.discover.ok,
   evaluate: .out.evaluate.ok,
+  worker: .out.worker.ok,
   promote: .out.promote.ok,
   execute: .out.execute.ok,
   reconcile: .out.reconcile.ok

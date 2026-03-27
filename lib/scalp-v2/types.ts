@@ -33,6 +33,7 @@ export type ScalpV2SourceOfTruth = "broker" | "reconciler" | "system" | "legacy_
 export type ScalpV2JobKind =
   | "discover"
   | "evaluate"
+  | "worker"
   | "promote"
   | "execute"
   | "reconcile";

@@ -16,7 +16,7 @@ import {
   parseIntBounded,
   setNoStoreHeaders,
 } from "../../../../../lib/scalp-v2/http";
-import { runScalpV2EvaluateJob } from "../../../../../lib/scalp-v2/pipeline";
+import { runScalpV2WorkerJob } from "../../../../../lib/scalp-v2/pipeline";
 
 export default async function handler(
   req: NextApiRequest,
@@ -31,22 +31,21 @@ export default async function handler(
   setNoStoreHeaders(res);
 
   const hardCaps = resolveScalpV2ResearchHardCaps();
-  const batchSize = parseIntBounded(req.query.batchSize, 200, 1, 2_000);
-  const workerBatchSize = clampScalpV2HardCap(
-    parseIntBounded(req.query.workerBatchSize, 60, 1, 600),
+  const batchSize = clampScalpV2HardCap(
+    parseIntBounded(req.query.batchSize, 60, 1, 600),
     hardCaps.maxBatchSizeWorker,
   );
   const autoSuccessor = parseBool(req.query.autoSuccessor, true);
-  const job = await runScalpV2EvaluateJob({ batchSize });
+
+  const job = await runScalpV2WorkerJob({ batchSize });
 
   let downstream: ScalpV2CronInvokeResult | null = null;
   if (job.ok && !job.busy && autoSuccessor) {
     downstream = await invokeScalpV2CronEndpointDetached(
       req,
-      "/api/scalp/v2/cron/worker",
+      "/api/scalp/v2/cron/promote",
       {
-        batchSize: workerBatchSize,
-        triggeredBy: "evaluate-v2",
+        triggeredBy: "worker-v2",
       },
       850,
     );
@@ -58,7 +57,6 @@ export default async function handler(
     job,
     chaining: {
       autoSuccessor,
-      workerBatchSize,
       downstream,
     },
   });

@@ -1138,7 +1138,9 @@ export async function listScalpV2Jobs(params: {
       jobKind:
         String(row.jobKind || "").trim().toLowerCase() === "evaluate"
           ? "evaluate"
-          : String(row.jobKind || "").trim().toLowerCase() === "promote"
+          : String(row.jobKind || "").trim().toLowerCase() === "worker"
+            ? "worker"
+            : String(row.jobKind || "").trim().toLowerCase() === "promote"
             ? "promote"
             : String(row.jobKind || "").trim().toLowerCase() === "execute"
               ? "execute"

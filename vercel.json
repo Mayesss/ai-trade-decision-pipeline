@@ -24,8 +24,12 @@
       "schedule": "15 */3 * * *"
     },
     {
-      "path": "/api/scalp/v2/cron/evaluate?batchSize=200",
+      "path": "/api/scalp/v2/cron/evaluate?batchSize=200&autoSuccessor=false",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/scalp/v2/cron/worker?batchSize=60&autoSuccessor=false",
+      "schedule": "2-59/5 * * * *"
     },
     {
       "path": "/api/scalp/v2/cron/promote",
