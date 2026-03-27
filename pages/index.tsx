@@ -984,7 +984,18 @@ function toUiScalpSummaryFromV2(
     );
   }
 
+  const selectedSession = String(opts.session || "")
+    .trim()
+    .toLowerCase();
   const workerRows = candidatesRaw
+    .filter((candidateRaw) => {
+      if (!selectedSession) return true;
+      const candidate = asPlainObject(candidateRaw);
+      const candidateSession = String(candidate.entrySessionProfile || "")
+        .trim()
+        .toLowerCase();
+      return !candidateSession || candidateSession === selectedSession;
+    })
     .map((candidateRaw) => {
       const candidate = asPlainObject(candidateRaw);
       const metadata = asPlainObject(candidate.metadata);
@@ -4775,7 +4786,7 @@ export default function Home() {
           workerOnly: false,
           forwardValidation:
             deployment.forwardValidation || workerMetrics.forwardValidation,
-          deployed: workerMetrics.deployed || deployment.enabled,
+          deployed: true,
           deploymentEnabled: deployment.enabled,
           inUniverse: deployment.inUniverse,
           lifecycleState: deployment.lifecycleState,
@@ -4794,7 +4805,7 @@ export default function Home() {
         strategyId: deployment.strategyId,
         tuneId: deployment.tuneId,
         forwardValidation,
-        deployed: deployment.enabled,
+        deployed: true,
         deploymentEnabled: deployment.enabled,
         inUniverse: deployment.inUniverse,
         lifecycleState: deployment.lifecycleState,

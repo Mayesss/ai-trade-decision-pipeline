@@ -52,7 +52,7 @@ export default async function handler(
       listScalpV2ExecutionEvents({ limit: eventLimit }),
       listScalpV2RecentLedger({ limit: ledgerLimit }),
       listScalpV2Jobs({ limit: jobLimit }),
-      listScalpV2Candidates({ limit: candidateLimit }),
+      listScalpV2Candidates({ limit: candidateLimit, session, venue }),
     ]);
 
     return res.status(200).json({
