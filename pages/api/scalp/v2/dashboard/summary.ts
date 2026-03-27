@@ -4,6 +4,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
 import {
+  listScalpV2Candidates,
   listScalpV2Deployments,
   listScalpV2ExecutionEvents,
   listScalpV2Jobs,
@@ -35,16 +36,23 @@ export default async function handler(
     const ledgerLimit = parseIntBounded(req.query.ledgerLimit, 120, 10, 2_000);
     const deploymentLimit = parseIntBounded(req.query.deploymentLimit, 300, 10, 5_000);
     const jobLimit = parseIntBounded(req.query.jobLimit, 20, 5, 100);
+    const candidateLimit = parseIntBounded(
+      req.query.candidateLimit,
+      2_000,
+      100,
+      10_000,
+    );
     const session = parseSession(req.query.session);
     const venue = parseVenue(req.query.venue);
 
-    const [runtime, summary, deployments, events, ledger, jobs] = await Promise.all([
+    const [runtime, summary, deployments, events, ledger, jobs, candidates] = await Promise.all([
       loadScalpV2RuntimeConfig(),
       loadScalpV2Summary(),
       listScalpV2Deployments({ limit: deploymentLimit, session, venue }),
       listScalpV2ExecutionEvents({ limit: eventLimit }),
       listScalpV2RecentLedger({ limit: ledgerLimit }),
       listScalpV2Jobs({ limit: jobLimit }),
+      listScalpV2Candidates({ limit: candidateLimit }),
     ]);
 
     return res.status(200).json({
@@ -56,6 +64,7 @@ export default async function handler(
       events,
       ledger,
       jobs,
+      candidates,
     });
   } catch (err: any) {
     return res.status(500).json({

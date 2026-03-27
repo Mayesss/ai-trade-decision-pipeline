@@ -723,6 +723,7 @@ function toUiScalpSummaryFromV2(
   const eventsRaw = Array.isArray(payload.events) ? payload.events : [];
   const ledgerRaw = Array.isArray(payload.ledger) ? payload.ledger : [];
   const jobsRaw = Array.isArray(payload.jobs) ? payload.jobs : [];
+  const candidatesRaw = Array.isArray(payload.candidates) ? payload.candidates : [];
   const generatedAtMs = asFiniteOrNull(summary.generatedAtMs) ?? Date.now();
   const dayKey = toDayKeyFromMs(generatedAtMs);
 
@@ -958,6 +959,126 @@ function toUiScalpSummaryFromV2(
     };
   });
 
+  const deploymentIdByCandidateKey = new Map<string, string>();
+  for (const deploymentRaw of deploymentsRaw) {
+    const row = asPlainObject(deploymentRaw);
+    const deploymentId = String(row.deploymentId || "").trim();
+    const symbol = String(row.symbol || "")
+      .trim()
+      .toUpperCase();
+    const strategyId = String(row.strategyId || "")
+      .trim()
+      .toLowerCase();
+    const tuneId = String(row.tuneId || "")
+      .trim()
+      .toLowerCase();
+    const entrySessionProfile = String(row.entrySessionProfile || "")
+      .trim()
+      .toLowerCase();
+    if (!deploymentId || !symbol || !strategyId || !tuneId || !entrySessionProfile)
+      continue;
+    deploymentIdByCandidateKey.set(
+      `${symbol}~${strategyId}~${tuneId}~${entrySessionProfile}`,
+      deploymentId,
+    );
+  }
+
+  const workerRows = candidatesRaw
+    .map((candidateRaw) => {
+      const candidate = asPlainObject(candidateRaw);
+      const metadata = asPlainObject(candidate.metadata);
+      const worker = asPlainObject(metadata.worker);
+      if (!Object.keys(worker).length) return null;
+
+      const stageA = asPlainObject(worker.stageA);
+      const stageB = asPlainObject(worker.stageB);
+      const stageC = asPlainObject(worker.stageC);
+      const finalPass = worker.finalPass === true || stageC.passed === true;
+      const evaluatedAtMs =
+        asFiniteOrNull(worker.evaluatedAtMs) ??
+        asFiniteOrNull(candidate.updatedAtMs) ??
+        Date.now();
+
+      const windowFromTs =
+        asFiniteOrNull(stageC.fromTs) ??
+        asFiniteOrNull(stageB.fromTs) ??
+        asFiniteOrNull(stageA.fromTs);
+      const windowToTs =
+        asFiniteOrNull(stageC.toTs) ??
+        asFiniteOrNull(stageB.toTs) ??
+        asFiniteOrNull(stageA.toTs);
+      if (windowFromTs === null || windowToTs === null) return null;
+
+      const stageADuration = asFiniteOrNull(stageA.durationMs) ?? 0;
+      const stageBDuration = asFiniteOrNull(stageB.durationMs) ?? 0;
+      const stageCDuration = asFiniteOrNull(stageC.durationMs) ?? 0;
+      const durationMs = Math.max(
+        0,
+        Math.floor(stageADuration + stageBDuration + stageCDuration),
+      );
+      const finishedAtMs = evaluatedAtMs;
+      const startedAtMs = Math.max(0, finishedAtMs - durationMs);
+
+      const symbol = String(candidate.symbol || "")
+        .trim()
+        .toUpperCase();
+      const strategyId = String(candidate.strategyId || "")
+        .trim()
+        .toLowerCase();
+      const tuneId = String(candidate.tuneId || "")
+        .trim()
+        .toLowerCase();
+      const entrySessionProfile = String(candidate.entrySessionProfile || "")
+        .trim()
+        .toLowerCase();
+      const deploymentId =
+        deploymentIdByCandidateKey.get(
+          `${symbol}~${strategyId}~${tuneId}~${entrySessionProfile}`,
+        ) || "";
+
+      return {
+        deploymentId,
+        symbol,
+        strategyId,
+        tuneId,
+        workerId: `v2_worker_${Math.floor(evaluatedAtMs / 60_000)}`,
+        weekStartMs: windowFromTs,
+        weekEndMs: windowToTs,
+        status: finalPass ? "succeeded" : "failed",
+        attempts: 1,
+        startedAtMs,
+        finishedAtMs,
+        durationMs,
+        errorCode:
+          finalPass === true
+            ? null
+            : String(stageC.reason || worker.error || "worker_stage_c_failed")
+                .trim() || "worker_stage_c_failed",
+        errorMessage:
+          finalPass === true
+            ? null
+            : String(worker.error || stageC.reason || "").trim() || null,
+        trades: asFiniteOrNull(stageC.trades),
+        netR: asFiniteOrNull(stageC.netR),
+        expectancyR: asFiniteOrNull(stageC.expectancyR),
+        profitFactor: asFiniteOrNull(stageC.profitFactor),
+        maxDrawdownR: asFiniteOrNull(stageC.maxDrawdownR),
+      } satisfies ScalpSummaryWorkerRow;
+    })
+    .filter((row) => row !== null)
+    .sort((a, b) => {
+      const aTs = asFiniteOrNull(a.finishedAtMs) ?? asFiniteOrNull(a.weekEndMs) ?? 0;
+      const bTs = asFiniteOrNull(b.finishedAtMs) ?? asFiniteOrNull(b.weekEndMs) ?? 0;
+      if (bTs !== aTs) return bTs - aTs;
+      const aSymbol = String(a.symbol || "");
+      const bSymbol = String(b.symbol || "");
+      if (aSymbol !== bSymbol) return aSymbol.localeCompare(bSymbol);
+      const aStrategy = String(a.strategyId || "");
+      const bStrategy = String(b.strategyId || "");
+      if (aStrategy !== bStrategy) return aStrategy.localeCompare(bStrategy);
+      return String(a.tuneId || "").localeCompare(String(b.tuneId || ""));
+    }) as ScalpSummaryWorkerRow[];
+
   const panicStopRaw = asPlainObject(runtime.panicStop);
   const panicStopEnabled =
     panicStopRaw.enabled === true ||
@@ -1003,7 +1124,7 @@ function toUiScalpSummaryFromV2(
     },
     deployments,
     jobs,
-    workerRows: [],
+    workerRows,
     panicStop,
     pipeline: {
       panicStop,
