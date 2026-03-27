@@ -32,7 +32,7 @@ export default async function handler(
 
   const hardCaps = resolveScalpV2ResearchHardCaps();
   const batchSize = clampScalpV2HardCap(
-    parseIntBounded(req.query.batchSize, 60, 1, 600),
+    parseIntBounded(req.query.batchSize, 12, 1, 600),
     hardCaps.maxBatchSizeWorker,
   );
   const autoSuccessor = parseBool(req.query.autoSuccessor, true);

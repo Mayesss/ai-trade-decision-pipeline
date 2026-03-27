@@ -28,7 +28,7 @@
       "schedule": "*/5 * * * *"
     },
     {
-      "path": "/api/scalp/v2/cron/worker?batchSize=60&autoSuccessor=false",
+      "path": "/api/scalp/v2/cron/worker?batchSize=12&autoSuccessor=false",
       "schedule": "2-59/5 * * * *"
     },
     {

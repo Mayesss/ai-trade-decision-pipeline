@@ -49,6 +49,22 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function toPositiveInt(value: unknown, fallback: number, max = 10_000): number {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.max(1, Math.min(max, n));
+}
+
+function resolveScalpV2JobLockStaleMinutes(): number {
+  return Math.max(
+    2,
+    Math.min(
+      120,
+      toPositiveInt(process.env.SCALP_V2_JOB_LOCK_STALE_MINUTES, 10, 120),
+    ),
+  );
+}
+
 function normalizeVenue(value: unknown): ScalpV2Venue {
   const normalized = String(value || "")
     .trim()
@@ -209,6 +225,7 @@ export async function claimScalpV2Job(params: {
   if (!isScalpPgConfigured()) return true;
   const db = scalpPrisma();
   const dedupeKey = `${params.jobKind}:singleton`;
+  const staleLockMinutes = resolveScalpV2JobLockStaleMinutes();
   await db.$executeRaw(sql`
     INSERT INTO scalp_v2_jobs(
       job_kind,
@@ -242,7 +259,34 @@ export async function claimScalpV2Job(params: {
       updated_at = NOW()
     WHERE job_kind = ${params.jobKind}
       AND dedupe_key = ${dedupeKey}
-      AND (status <> 'running' OR locked_at < NOW() - INTERVAL '20 minutes' OR locked_by = ${params.lockOwner})
+      AND (
+        status <> 'running'
+        OR locked_at < NOW() - (${staleLockMinutes} * INTERVAL '1 minute')
+        OR locked_by = ${params.lockOwner}
+      )
+    RETURNING id;
+  `);
+  return rows.length > 0;
+}
+
+export async function heartbeatScalpV2Job(params: {
+  jobKind: ScalpV2JobKind;
+  lockOwner: string;
+  details?: Record<string, unknown>;
+}): Promise<boolean> {
+  if (!isScalpPgConfigured()) return true;
+  const db = scalpPrisma();
+  const dedupeKey = `${params.jobKind}:singleton`;
+  const rows = await db.$queryRaw<Array<{ id: bigint }>>(sql`
+    UPDATE scalp_v2_jobs
+    SET
+      payload = COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(params.details || {})}::jsonb,
+      locked_at = NOW(),
+      updated_at = NOW()
+    WHERE job_kind = ${params.jobKind}
+      AND dedupe_key = ${dedupeKey}
+      AND status = 'running'
+      AND locked_by = ${params.lockOwner}
     RETURNING id;
   `);
   return rows.length > 0;

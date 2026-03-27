@@ -322,8 +322,8 @@ npm run start
   - Cursor offsets are advanced per scope and preserved across discover/promote updates.
   - Optional orchestration query params:
     - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/v2/cron/worker`.
-    - `workerBatchSize=<int>` for downstream worker batch size (default `60`).
-- `GET /api/scalp/v2/cron/worker?batchSize=60`
+    - `workerBatchSize=<int>` for downstream worker batch size (default `12`).
+- `GET /api/scalp/v2/cron/worker?batchSize=12`
   - Legacy alias kept for compatibility: `/api/scalp/cron/v2/worker`.
   - Native staged replay worker over `evaluated|shadow|promoted` candidates in runtime scope.
   - Runs phased validation with early cutoff:
@@ -630,7 +630,7 @@ node --import tsx scripts/scalp-replay-matrix.ts \
   - `/api/swing/analyze?...&dryRun=false` hourly (live-trading mode).
   - `/api/scalp/v2/cron/discover` every 3 hours.
   - `/api/scalp/v2/cron/evaluate?batchSize=200&autoSuccessor=false` every 5 minutes.
-  - `/api/scalp/v2/cron/worker?batchSize=60&autoSuccessor=false` every 5 minutes (offset at minute `2`).
+  - `/api/scalp/v2/cron/worker?batchSize=12&autoSuccessor=false` every 5 minutes (offset at minute `2`).
   - `/api/scalp/v2/cron/promote` every 10 minutes.
   - `/api/scalp/v2/cron/reconcile` every 2 minutes.
   - `/api/scalp/v2/cron/execute?dryRun=false` every minute (live v2 execution loop).

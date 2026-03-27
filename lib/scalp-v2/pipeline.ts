@@ -27,6 +27,7 @@ import {
   claimScalpV2Job,
   enforceScalpV2EnabledCap,
   finalizeScalpV2Job,
+  heartbeatScalpV2Job,
   listScalpV2Candidates,
   listScalpV2Deployments,
   listScalpV2LedgerRows,
@@ -354,7 +355,7 @@ function resolveWorkerPolicy(): ScalpV2WorkerPolicy {
       1,
       Math.min(
         600,
-        toPositiveInt(process.env.SCALP_V2_WORKER_BATCH_SIZE, 60, 600),
+        toPositiveInt(process.env.SCALP_V2_WORKER_BATCH_SIZE, 12, 600),
       ),
     ),
     maxCandidatesPerSession: Math.max(
@@ -1810,8 +1811,73 @@ export async function runScalpV2WorkerJob(params: {
     let stageCPass = 0;
     let stageCFail = 0;
     let replayErrors = 0;
+    let highlightsUpserted = 0;
+    let highlightsDroppedByBudget = 0;
+    let heartbeatWrites = 0;
+    let heartbeatErrors = 0;
+    let flushWrites = 0;
+    let persistedCandidateRows = 0;
+    const heartbeatEvery = Math.max(
+      1,
+      Math.min(
+        batchSize,
+        toPositiveInt(process.env.SCALP_V2_WORKER_HEARTBEAT_EVERY, 1, 200),
+      ),
+    );
+    const flushSize = Math.max(
+      1,
+      Math.min(
+        batchSize,
+        toPositiveInt(process.env.SCALP_V2_WORKER_FLUSH_SIZE, 2, 200),
+      ),
+    );
+    let remainingHighlightBudget = Math.max(0, workerPolicy.maxHighlightsPerRun);
 
-    for (const candidate of selectedCandidates) {
+    const flushWorkerBuffers = async () => {
+      const pendingCandidateRows = candidateRows.length;
+      const pendingHighlightRows = highlightRows.length;
+      if (pendingCandidateRows <= 0 && pendingHighlightRows <= 0) return;
+      if (pendingCandidateRows > 0) {
+        await upsertScalpV2Candidates({ rows: candidateRows });
+        persistedCandidateRows += pendingCandidateRows;
+        candidateRows.length = 0;
+      }
+      if (pendingHighlightRows > 0) {
+        const inserted = await upsertScalpV2ResearchHighlights({
+          rows: highlightRows,
+        }).catch(() => 0);
+        highlightsUpserted += Math.max(0, Math.floor(Number(inserted || 0)));
+        highlightRows.length = 0;
+      }
+      flushWrites += 1;
+    };
+
+    const heartbeatWorker = async (processedSoFar: number) => {
+      try {
+        await heartbeatScalpV2Job({
+          jobKind: "worker",
+          lockOwner: owner,
+          details: {
+            progress: {
+              processedSoFar,
+              selectedCandidates: selectedCandidates.length,
+              stageCPass,
+              stageCFail,
+              replayErrors,
+              flushWrites,
+              persistedCandidateRows,
+              heartbeatAtMs: nowMs(),
+            },
+          },
+        });
+        heartbeatWrites += 1;
+      } catch {
+        heartbeatErrors += 1;
+      }
+    };
+
+    for (let candidateIdx = 0; candidateIdx < selectedCandidates.length; candidateIdx += 1) {
+      const candidate = selectedCandidates[candidateIdx]!;
       const scopeKey = `${candidate.venue}:${candidate.symbol}:${candidate.entrySessionProfile}`;
       const existingScopeStats = scopeStats.get(scopeKey) || {
         processed: 0,
@@ -2024,25 +2090,30 @@ export async function runScalpV2WorkerJob(params: {
             session: candidate.entrySessionProfile,
           });
           const candidateMeta = asRecord(candidate.metadata || {});
-          highlightRows.push({
-            candidateId: deploymentId,
-            venue: candidate.venue,
-            symbol: candidate.symbol,
-            entrySessionProfile: candidate.entrySessionProfile,
-            score: candidate.score,
-            trades12w: stageCResult.trades,
-            winningWeeks12w: stageCResult.winningWeeks,
-            consecutiveWinningWeeks: stageCResult.consecutiveWinningWeeks,
-            robustness: {
-              source: "v2_worker_stage_c",
-              stageA: stageAResult,
-              stageB: stageBResult,
-              stageC: stageCResult,
-            },
-            dsl: asRecord(candidateMeta.researchDsl || {}),
-            notes: "worker_stage_c_pass",
-            remarkable: true,
-          });
+          if (remainingHighlightBudget > 0) {
+            highlightRows.push({
+              candidateId: deploymentId,
+              venue: candidate.venue,
+              symbol: candidate.symbol,
+              entrySessionProfile: candidate.entrySessionProfile,
+              score: candidate.score,
+              trades12w: stageCResult.trades,
+              winningWeeks12w: stageCResult.winningWeeks,
+              consecutiveWinningWeeks: stageCResult.consecutiveWinningWeeks,
+              robustness: {
+                source: "v2_worker_stage_c",
+                stageA: stageAResult,
+                stageB: stageBResult,
+                stageC: stageCResult,
+              },
+              dsl: asRecord(candidateMeta.researchDsl || {}),
+              notes: "worker_stage_c_pass",
+              remarkable: true,
+            });
+            remainingHighlightBudget -= 1;
+          } else {
+            highlightsDroppedByBudget += 1;
+          }
         } else {
           existingScopeStats.stageCFail += 1;
         }
@@ -2104,14 +2175,20 @@ export async function runScalpV2WorkerJob(params: {
       }
 
       scopeStats.set(scopeKey, existingScopeStats);
+
+      const processedSoFar = candidateIdx + 1;
+      if (candidateRows.length >= flushSize || highlightRows.length >= flushSize) {
+        await flushWorkerBuffers();
+      }
+      if (
+        processedSoFar === selectedCandidates.length ||
+        processedSoFar % heartbeatEvery === 0
+      ) {
+        await heartbeatWorker(processedSoFar);
+      }
     }
 
-    if (candidateRows.length > 0) {
-      await upsertScalpV2Candidates({ rows: candidateRows });
-    }
-    const highlightsUpserted = await upsertScalpV2ResearchHighlights({
-      rows: highlightRows.slice(0, workerPolicy.maxHighlightsPerRun),
-    }).catch(() => 0);
+    await flushWorkerBuffers();
 
     await Promise.all(
       scopeCursorUpdates.map((row) => {
@@ -2157,6 +2234,13 @@ export async function runScalpV2WorkerJob(params: {
       stageCPass,
       stageCFail,
       highlightsUpserted,
+      highlightsDroppedByBudget,
+      persistedCandidateRows,
+      flushWrites,
+      heartbeatWrites,
+      heartbeatErrors,
+      heartbeatEvery,
+      flushSize,
       scopeCount: scopes.length,
       cursorUpdatedScopes: scopeCursorUpdates.length,
       filteredCandidatesOutOfScope,

@@ -1157,7 +1157,7 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<
   scalp_worker: {
     primaryPathname: "/api/scalp/v2/cron/worker",
     matchPathnames: ["/api/scalp/v2/cron/worker", "/api/scalp/cron/v2/worker"],
-    fallbackInvokePath: "/api/scalp/v2/cron/worker?batchSize=60",
+    fallbackInvokePath: "/api/scalp/v2/cron/worker?batchSize=12",
   },
   scalp_promote: {
     primaryPathname: "/api/scalp/v2/cron/promote",
