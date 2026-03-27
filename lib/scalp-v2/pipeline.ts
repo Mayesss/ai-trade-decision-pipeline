@@ -675,6 +675,8 @@ function resolveWorkerStageCPass(metadata: unknown): {
   stageCPass: boolean;
   hasWorkerState: boolean;
   reason: "worker_stage_c_missing" | "worker_stage_c_failed" | null;
+  /** Minimum 4-week rolling netR from the backtest's stage C weeklyNetR. */
+  backtestMin4wNetR: number | null;
 } {
   const meta = asRecord(metadata);
   const worker = asRecord(meta.worker);
@@ -687,17 +689,39 @@ function resolveWorkerStageCPass(metadata: unknown): {
     isFiniteNumber(worker.evaluatedAtMs);
   const stageCPass =
     finalPassRaw === true || stageCPassRaw === true;
+
+  // Extract min 4-week rolling netR from backtest weeklyNetR
+  const weeklyNetR = asRecord(stageC.weeklyNetR);
+  const weekKeys = Object.keys(weeklyNetR)
+    .map((k) => Number(k))
+    .filter((v) => Number.isFinite(v))
+    .sort((a, b) => a - b);
+  let backtestMin4wNetR: number | null = null;
+  if (weekKeys.length >= 4) {
+    for (let i = 0; i <= weekKeys.length - 4; i += 1) {
+      let sum = 0;
+      for (let j = 0; j < 4; j += 1) {
+        sum += Number(weeklyNetR[String(weekKeys[i + j])] || 0);
+      }
+      if (backtestMin4wNetR === null || sum < backtestMin4wNetR) {
+        backtestMin4wNetR = sum;
+      }
+    }
+  }
+
   if (stageCPass) {
     return {
       stageCPass: true,
       hasWorkerState,
       reason: null,
+      backtestMin4wNetR,
     };
   }
   return {
     stageCPass: false,
     hasWorkerState,
     reason: hasWorkerState ? "worker_stage_c_failed" : "worker_stage_c_missing",
+    backtestMin4wNetR,
   };
 }
 
@@ -3081,6 +3105,13 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       let reason = "promotion_not_eligible";
       let eligible = false;
       let shadowEligible = false;
+      // Check backtest 4-week rolling netR against promotion threshold.
+      // Even for shadow-eligibility we require the backtest to meet the
+      // same minFourWeekNetR bar used for full forward promotion.
+      const backtestFourWeekGateFailed =
+        workerGate.backtestMin4wNetR !== null &&
+        workerGate.backtestMin4wNetR < policy.minFourWeekNetR;
+
       if (suppressed) {
         reason =
           lifecycle.state === "retired"
@@ -3092,6 +3123,8 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
           : "candidate_missing";
       } else if (!workerGate.stageCPass) {
         reason = workerGate.reason || "worker_stage_c_failed";
+      } else if (backtestFourWeekGateFailed) {
+        reason = "backtest_4w_net_r_below_threshold";
       } else if (hasMixedSessionEvidence) {
         // Worker passed but forward evidence has session mix — shadow-eligible
         // so we can keep collecting data, but not live-eligible.

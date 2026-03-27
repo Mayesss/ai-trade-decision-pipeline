@@ -370,6 +370,17 @@ type ScalpSummaryResponse = {
     reasonCodes?: string[];
     payload?: Record<string, any>;
   }>;
+  researchSummary?: {
+    totalCandidates: number;
+    stageCPass: number;
+    stageCFail: number;
+    stageBPass: number;
+    stageAPass: number;
+    uniqueSymbols: number;
+    uniqueSessions: string[];
+    avgNetR: number | null;
+    avgExpR: number | null;
+  } | null;
   researchCursors?: Array<{
     cursorKey?: string;
     venue?: string;
@@ -1160,6 +1171,54 @@ function toUiScalpSummaryFromV2(
       return String(a.tuneId || "").localeCompare(String(b.tuneId || ""));
     }) as ScalpSummaryWorkerRow[];
 
+  // Research summary from candidates
+  const researchSummary = (() => {
+    if (!candidatesRaw.length) return null;
+    let totalCandidates = 0;
+    let stageCPass = 0;
+    let stageCFail = 0;
+    let stageBPass = 0;
+    let stageAPass = 0;
+    let netRSum = 0;
+    let netRCount = 0;
+    let expSum = 0;
+    let expCount = 0;
+    const symbolSet = new Set<string>();
+    const sessionSet = new Set<string>();
+    for (const raw of candidatesRaw) {
+      const c = asPlainObject(raw);
+      const worker = asPlainObject(asPlainObject(c.metadata).worker);
+      if (!Object.keys(worker).length) continue;
+      totalCandidates += 1;
+      const sym = String(c.symbol || "").trim().toUpperCase();
+      const sess = String(c.entrySessionProfile || "").trim().toLowerCase();
+      if (sym) symbolSet.add(sym);
+      if (sess) sessionSet.add(sess);
+      const sA = asPlainObject(worker.stageA);
+      const sB = asPlainObject(worker.stageB);
+      const sC = asPlainObject(worker.stageC);
+      if (sA.passed === true) stageAPass += 1;
+      if (sB.passed === true) stageBPass += 1;
+      if (sC.passed === true) stageCPass += 1;
+      else if (sC.executed === true) stageCFail += 1;
+      const nr = asFiniteOrNull(sC.netR) ?? asFiniteOrNull(sB.netR) ?? asFiniteOrNull(sA.netR);
+      if (nr !== null) { netRSum += nr; netRCount += 1; }
+      const er = asFiniteOrNull(sC.expectancyR) ?? asFiniteOrNull(sB.expectancyR) ?? asFiniteOrNull(sA.expectancyR);
+      if (er !== null) { expSum += er; expCount += 1; }
+    }
+    return {
+      totalCandidates,
+      stageCPass,
+      stageCFail,
+      stageBPass,
+      stageAPass,
+      uniqueSymbols: symbolSet.size,
+      uniqueSessions: Array.from(sessionSet).sort(),
+      avgNetR: netRCount > 0 ? netRSum / netRCount : null,
+      avgExpR: expCount > 0 ? expSum / expCount : null,
+    };
+  })();
+
   const panicStopRaw = asPlainObject(runtime.panicStop);
   const panicStopEnabled =
     panicStopRaw.enabled === true ||
@@ -1217,6 +1276,7 @@ function toUiScalpSummaryFromV2(
     latestExecutionByDeploymentId,
     latestExecutionBySymbol,
     journal,
+    researchSummary,
     researchCursors: researchCursorsRaw.map((raw: unknown) => {
       const c = asPlainObject(raw);
       return {
@@ -6677,6 +6737,199 @@ export default function Home() {
                         </article>
                       ) : null}
                     </article>
+                  </section>
+
+                  {/* Research Overview */}
+                  <section className={`${scalpSectionShellClass} p-4`}>
+                    <h3
+                      className={`text-lg font-semibold ${scalpTextPrimaryClass}`}
+                    >
+                      Research Overview
+                    </h3>
+                    <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+                      {[
+                        {
+                          label: "Candidates",
+                          value: scalpSummary?.researchSummary?.totalCandidates ?? 0,
+                        },
+                        {
+                          label: "Stage A pass",
+                          value: scalpSummary?.researchSummary?.stageAPass ?? 0,
+                        },
+                        {
+                          label: "Stage B pass",
+                          value: scalpSummary?.researchSummary?.stageBPass ?? 0,
+                        },
+                        {
+                          label: "Stage C pass",
+                          value: scalpSummary?.researchSummary?.stageCPass ?? 0,
+                          tone: (scalpSummary?.researchSummary?.stageCPass ?? 0) > 0
+                            ? "positive" as const
+                            : "neutral" as const,
+                        },
+                        {
+                          label: "Stage C fail",
+                          value: scalpSummary?.researchSummary?.stageCFail ?? 0,
+                          tone: (scalpSummary?.researchSummary?.stageCFail ?? 0) > 0
+                            ? "critical" as const
+                            : "neutral" as const,
+                        },
+                        {
+                          label: "Symbols",
+                          value: scalpSummary?.researchSummary?.uniqueSymbols ?? 0,
+                        },
+                        {
+                          label: "Sessions",
+                          value: (scalpSummary?.researchSummary?.uniqueSessions ?? []).join(", ") || "—",
+                        },
+                        {
+                          label: "Avg netR",
+                          value:
+                            scalpSummary?.researchSummary?.avgNetR != null
+                              ? `${scalpSummary.researchSummary.avgNetR >= 0 ? "+" : ""}${scalpSummary.researchSummary.avgNetR.toFixed(2)}R`
+                              : "—",
+                        },
+                        {
+                          label: "Avg expectancy",
+                          value:
+                            scalpSummary?.researchSummary?.avgExpR != null
+                              ? `${scalpSummary.researchSummary.avgExpR >= 0 ? "+" : ""}${scalpSummary.researchSummary.avgExpR.toFixed(3)}R`
+                              : "—",
+                        },
+                        {
+                          label: "Highlights",
+                          value: scalpResearchHighlightCount,
+                          tone: scalpResearchHighlightCount > 0
+                            ? "positive" as const
+                            : "neutral" as const,
+                        },
+                      ].map((stat) => (
+                        <div
+                          key={`research-stat-${stat.label}`}
+                          className={`rounded-lg border px-2.5 py-2 ${
+                            scalpDarkMode
+                              ? "border-zinc-700/80 bg-zinc-900/60"
+                              : "border-slate-200 bg-slate-50"
+                          }`}
+                        >
+                          <div
+                            className={`text-[10px] uppercase tracking-[0.12em] ${scalpTextMutedClass}`}
+                          >
+                            {stat.label}
+                          </div>
+                          <div
+                            className={`mt-0.5 text-sm font-semibold ${
+                              "tone" in stat && stat.tone === "positive"
+                                ? scalpDarkMode
+                                  ? "text-emerald-300"
+                                  : "text-emerald-600"
+                                : "tone" in stat && stat.tone === "critical"
+                                  ? scalpDarkMode
+                                    ? "text-rose-300"
+                                    : "text-rose-600"
+                                  : scalpTextPrimaryClass
+                            }`}
+                          >
+                            {stat.value}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {scalpResearchCursors.length > 0 ? (
+                      <div className="mt-4">
+                        <h4
+                          className={`text-sm font-semibold ${scalpTextPrimaryClass}`}
+                        >
+                          {`Cursors (${scalpResearchCursors.length})`}
+                        </h4>
+                        <div
+                          className={`mt-2 overflow-x-auto rounded-lg border ${
+                            scalpDarkMode
+                              ? "border-zinc-700/80"
+                              : "border-slate-200"
+                          }`}
+                        >
+                          <table
+                            className={`w-full text-xs ${
+                              scalpDarkMode ? "text-zinc-200" : "text-slate-700"
+                            }`}
+                          >
+                            <thead>
+                              <tr
+                                className={
+                                  scalpDarkMode
+                                    ? "bg-zinc-800/80"
+                                    : "bg-slate-50"
+                                }
+                              >
+                                <th className="px-2 py-1.5 text-left font-semibold">
+                                  Symbol
+                                </th>
+                                <th className="px-2 py-1.5 text-left font-semibold">
+                                  Session
+                                </th>
+                                <th className="px-2 py-1.5 text-right font-semibold">
+                                  Offset
+                                </th>
+                                <th className="px-2 py-1.5 text-left font-semibold">
+                                  Phase
+                                </th>
+                                <th className="px-2 py-1.5 text-left font-semibold">
+                                  Updated
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {scalpResearchCursors.map((cursor) => (
+                                <tr
+                                  key={`cursor-${cursor.cursorKey || cursor.symbol}`}
+                                  className={
+                                    scalpDarkMode
+                                      ? "border-t border-zinc-700/60"
+                                      : "border-t border-slate-100"
+                                  }
+                                >
+                                  <td className="px-2 py-1 font-medium">
+                                    {cursor.symbol || "—"}
+                                  </td>
+                                  <td className="px-2 py-1">
+                                    {cursor.entrySessionProfile || "—"}
+                                  </td>
+                                  <td className="px-2 py-1 text-right tabular-nums">
+                                    {cursor.lastCandidateOffset ?? 0}
+                                  </td>
+                                  <td className="px-2 py-1">
+                                    <span
+                                      className={`inline-flex rounded-full border px-1.5 py-0.5 text-[10px] ${
+                                        cursor.phase === "promote"
+                                          ? scalpDarkMode
+                                            ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300"
+                                            : "border-emerald-300 bg-emerald-50 text-emerald-700"
+                                          : scalpDarkMode
+                                            ? "border-zinc-600 bg-zinc-800 text-zinc-300"
+                                            : "border-slate-300 bg-slate-100 text-slate-600"
+                                      }`}
+                                    >
+                                      {cursor.phase || "scan"}
+                                    </span>
+                                  </td>
+                                  <td
+                                    className={`px-2 py-1 ${scalpTextMutedClass}`}
+                                  >
+                                    {cursor.updatedAtMs
+                                      ? new Date(cursor.updatedAtMs)
+                                          .toISOString()
+                                          .slice(0, 16)
+                                          .replace("T", " ")
+                                      : "—"}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ) : null}
                   </section>
 
                   <section className={`${scalpSectionShellClass} p-4`}>
