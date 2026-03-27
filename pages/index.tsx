@@ -370,6 +370,29 @@ type ScalpSummaryResponse = {
     reasonCodes?: string[];
     payload?: Record<string, any>;
   }>;
+  researchCursors?: Array<{
+    cursorKey?: string;
+    venue?: string;
+    symbol?: string;
+    entrySessionProfile?: string;
+    phase?: string;
+    lastCandidateOffset?: number;
+    progress?: Record<string, unknown>;
+    updatedAtMs?: number;
+  }>;
+  researchHighlights?: Array<{
+    id?: number;
+    candidateId?: string;
+    venue?: string;
+    symbol?: string;
+    entrySessionProfile?: string;
+    score?: number;
+    trades12w?: number;
+    winningWeeks12w?: number;
+    consecutiveWinningWeeks?: number;
+    remarkable?: boolean;
+    createdAtMs?: number;
+  }>;
 };
 
 type ScalpJournalRow = NonNullable<ScalpSummaryResponse["journal"]>[number];
@@ -731,6 +754,8 @@ function toUiScalpSummaryFromV2(
   const deploymentsRaw = Array.isArray(payload.deployments) ? payload.deployments : [];
   const eventsRaw = Array.isArray(payload.events) ? payload.events : [];
   const ledgerRaw = Array.isArray(payload.ledger) ? payload.ledger : [];
+  const researchCursorsRaw = Array.isArray(payload.researchCursors) ? payload.researchCursors : [];
+  const researchHighlightsRaw = Array.isArray(payload.researchHighlights) ? payload.researchHighlights : [];
   const jobsRaw = Array.isArray(payload.jobs) ? payload.jobs : [];
   const candidatesRaw = Array.isArray(payload.candidates) ? payload.candidates : [];
   const generatedAtMs = asFiniteOrNull(summary.generatedAtMs) ?? Date.now();
@@ -1192,6 +1217,35 @@ function toUiScalpSummaryFromV2(
     latestExecutionByDeploymentId,
     latestExecutionBySymbol,
     journal,
+    researchCursors: researchCursorsRaw.map((raw: unknown) => {
+      const c = asPlainObject(raw);
+      return {
+        cursorKey: String(c.cursorKey || ""),
+        venue: String(c.venue || ""),
+        symbol: String(c.symbol || ""),
+        entrySessionProfile: String(c.entrySessionProfile || ""),
+        phase: String(c.phase || "scan"),
+        lastCandidateOffset: Math.max(0, Math.floor(Number(c.lastCandidateOffset || 0))),
+        progress: asPlainObject(c.progress),
+        updatedAtMs: asFiniteOrNull(c.updatedAtMs) ?? 0,
+      };
+    }),
+    researchHighlights: researchHighlightsRaw.map((raw: unknown) => {
+      const h = asPlainObject(raw);
+      return {
+        id: Math.floor(Number(h.id || 0)),
+        candidateId: String(h.candidateId || ""),
+        venue: String(h.venue || ""),
+        symbol: String(h.symbol || ""),
+        entrySessionProfile: String(h.entrySessionProfile || ""),
+        score: asFiniteOrNull(h.score) ?? 0,
+        trades12w: Math.floor(Number(h.trades12w || 0)),
+        winningWeeks12w: Math.floor(Number(h.winningWeeks12w || 0)),
+        consecutiveWinningWeeks: Math.floor(Number(h.consecutiveWinningWeeks || 0)),
+        remarkable: h.remarkable === true,
+        createdAtMs: asFiniteOrNull(h.createdAtMs) ?? 0,
+      };
+    }),
   };
 }
 
@@ -3367,6 +3421,8 @@ export default function Home() {
       .toLowerCase();
     return (
       kind !== "discover" &&
+      kind !== "evaluate" &&
+      kind !== "worker" &&
       kind !== "load_candles" &&
       kind !== "prepare" &&
       kind !== "promotion"
@@ -3962,34 +4018,49 @@ export default function Home() {
         expectancyCount > 0 ? expectancySum / expectancyCount : null,
     };
   }, [scalpWorkerTaskRows]);
+  const scalpResearchCursors = Array.isArray(scalpSummary?.researchCursors)
+    ? scalpSummary.researchCursors
+    : [];
+  const scalpResearchHighlights = Array.isArray(scalpSummary?.researchHighlights)
+    ? scalpSummary.researchHighlights
+    : [];
+  const scalpResearchCursorTotalOffset = scalpResearchCursors.reduce(
+    (sum, c) => sum + Math.max(0, Math.floor(Number(c?.lastCandidateOffset || 0))),
+    0,
+  );
+  const scalpResearchCursorCount = scalpResearchCursors.length;
+  const scalpResearchHighlightCount = scalpResearchHighlights.filter(
+    (h) => h?.remarkable === true,
+  ).length;
+  const scalpResearchLatestCursorAtMs = scalpResearchCursors.reduce(
+    (max, c) => Math.max(max, Number(c?.updatedAtMs || 0)),
+    0,
+  ) || null;
   const scalpWorkerCompactStats = [
     {
-      id: "symbols",
-      label: "symbols",
+      id: "cursors",
+      label: "scopes",
+      value: formatScalpCount(scalpResearchCursorCount),
+    },
+    {
+      id: "explored",
+      label: "explored",
+      value: formatScalpCount(scalpResearchCursorTotalOffset),
+    },
+    {
+      id: "candidates",
+      label: "candidates",
       value: formatScalpCount(scalpWorkerPerformanceSummary.processedSymbolCount),
     },
     {
-      id: "progress",
-      label: "progress",
-      value: formatScalpPct(scalpCycleProgressPct, 0),
-    },
-    {
-      id: "success",
-      label: "success",
+      id: "stageC",
+      label: "stage C pass",
       value: formatScalpPct(scalpWorkerSuccessRatePct, 0),
     },
     {
-      id: "run",
-      label: "last run",
-      value: formatScalpDuration(scalpWorkerLastDurationFromTasksMs),
-    },
-    {
-      id: "throughput",
-      label: "throughput",
-      value:
-        scalpWorkerLatestThroughputTasksPerMin === null
-          ? "—"
-          : `${scalpWorkerLatestThroughputTasksPerMin.toFixed(1)} tasks/min`,
+      id: "highlights",
+      label: "highlights",
+      value: formatScalpCount(scalpResearchHighlightCount),
     },
     {
       id: "netr",
@@ -4006,13 +4077,13 @@ export default function Home() {
       ),
     },
   ] as const;
-  const scalpWorkerCompactStatusLine = `finished ${formatScalpCount(
-    scalpWorkerFinishedTasks,
-  )} · completed ${formatScalpCount(
-    scalpCycleCompleted,
-  )} · failed ${formatScalpCount(scalpCycleFailed)} · running ${formatScalpCount(
-    scalpCycleRunning,
-  )} · pending ${formatScalpCount(scalpCyclePending)}`;
+  const scalpWorkerCompactStatusLine = `scopes ${formatScalpCount(
+    scalpResearchCursorCount,
+  )} · explored ${formatScalpCount(
+    scalpResearchCursorTotalOffset,
+  )} · highlights ${formatScalpCount(scalpResearchHighlightCount)} · weeks ${formatScalpCount(
+    scalpWorkerTaskStatusTotals.completed,
+  )} pass / ${formatScalpCount(scalpWorkerTaskStatusTotals.failed)} fail`;
   const formatScalpWindowIso = (
     fromTs: number | null,
     toTs: number | null,
@@ -4208,10 +4279,14 @@ export default function Home() {
         } satisfies ScalpOpsCronRow;
       });
   const scalpCronRows: ScalpOpsCronRow[] = (() => {
-    const byId = new Map<string, ScalpOpsCronRow>(
-      scalpCronRowsFromJobs.map((row) => [row.id, row] as const),
+    // Filter out legacy job kinds that no longer have pipeline definitions
+    const activeJobRows = scalpCronRowsFromJobs.filter(
+      (row) => row.id in SCALP_CRON_PIPELINE_DEFINITIONS,
     );
-    const rows = [...scalpCronRowsFromJobs];
+    const byId = new Map<string, ScalpOpsCronRow>(
+      activeJobRows.map((row) => [row.id, row] as const),
+    );
+    const rows = [...activeJobRows];
     for (const [id] of Object.entries(SCALP_CRON_PIPELINE_DEFINITIONS)) {
       if (byId.has(id)) continue;
       const runtimeMeta = scalpCronRuntimeMeta(id);
@@ -4259,9 +4334,7 @@ export default function Home() {
         const kind = String(job?.jobKind || "")
           .trim()
           .toLowerCase();
-        if (kind === "discover") return "scalp_discover";
-        if (kind === "evaluate") return "scalp_evaluate";
-        if (kind === "worker") return "scalp_worker";
+        if (kind === "research") return "scalp_research";
         if (kind === "promote") return "scalp_promote";
         if (kind === "execute") return "scalp_execute";
         if (kind === "reconcile") return "scalp_reconcile";
@@ -6492,8 +6565,8 @@ export default function Home() {
                                             : "border-slate-200 text-slate-500"
                                         }`}
                                       >
-                                        {`${scalpWorkerCompactStatusLine} · last finish ${formatScalpTime(
-                                          scalpWorkerLatestRunSummary?.finishedAtMs ?? null,
+                                        {`${scalpWorkerCompactStatusLine} · last scan ${formatScalpTime(
+                                          scalpResearchLatestCursorAtMs,
                                         )}`}
                                       </div>
                                     ) : null}

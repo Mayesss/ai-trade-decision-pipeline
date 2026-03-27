@@ -9,6 +9,8 @@ import {
   listScalpV2ExecutionEvents,
   listScalpV2Jobs,
   listScalpV2RecentLedger,
+  listScalpV2ResearchCursors,
+  listScalpV2ResearchHighlights,
   loadScalpV2RuntimeConfig,
   loadScalpV2Summary,
 } from "../../../../../lib/scalp-v2/db";
@@ -45,7 +47,7 @@ export default async function handler(
     const session = parseSession(req.query.session);
     const venue = parseVenue(req.query.venue);
 
-    const [runtime, summary, deployments, events, ledger, jobs, candidates] = await Promise.all([
+    const [runtime, summary, deployments, events, ledger, jobs, candidates, researchCursors, researchHighlights] = await Promise.all([
       loadScalpV2RuntimeConfig(),
       loadScalpV2Summary(),
       listScalpV2Deployments({ limit: deploymentLimit, session, venue }),
@@ -53,6 +55,8 @@ export default async function handler(
       listScalpV2RecentLedger({ limit: ledgerLimit }),
       listScalpV2Jobs({ limit: jobLimit }),
       listScalpV2Candidates({ limit: candidateLimit, session, venue }),
+      listScalpV2ResearchCursors({ venue, entrySessionProfile: session }),
+      listScalpV2ResearchHighlights({ venue, entrySessionProfile: session }),
     ]);
 
     return res.status(200).json({
@@ -65,6 +69,8 @@ export default async function handler(
       ledger,
       jobs,
       candidates,
+      researchCursors,
+      researchHighlights,
     });
   } catch (err: any) {
     return res.status(500).json({
