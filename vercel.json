@@ -20,20 +20,16 @@
       "schedule": "0 * * * *"
     },
     {
-      "path": "/api/scalp/v2/cron/research?batchSize=50&autoSuccessor=true",
+      "path": "/api/scalp/v2/cron/cycle?dryRun=false",
       "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/scalp/v2/cron/promote",
-      "schedule": "*/10 * * * *"
-    },
-    {
-      "path": "/api/scalp/v2/cron/reconcile",
-      "schedule": "*/2 * * * *"
     },
     {
       "path": "/api/scalp/v2/cron/execute?dryRun=false",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/scalp/v2/cron/reconcile",
+      "schedule": "*/2 * * * *"
     },
     {
       "path": "/api/scalp/v2/cron/load-candles?batchSize=40&autoSuccessor=true&autoContinue=true&successor=discover",

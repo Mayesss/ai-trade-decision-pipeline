@@ -1,4 +1,4 @@
-export const config = { runtime: "nodejs" };
+export const config = { runtime: "nodejs", maxDuration: 800 };
 
 import type { NextApiRequest, NextApiResponse } from "next";
 

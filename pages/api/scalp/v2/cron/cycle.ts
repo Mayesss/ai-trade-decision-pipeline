@@ -1,14 +1,9 @@
-export const config = { runtime: "nodejs" };
+export const config = { runtime: "nodejs", maxDuration: 800 };
 
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
-import {
-  parseBool,
-  parseSession,
-  parseVenue,
-  setNoStoreHeaders,
-} from "../../../../../lib/scalp-v2/http";
+import { setNoStoreHeaders } from "../../../../../lib/scalp-v2/http";
 import { runScalpV2FullAutoCycle } from "../../../../../lib/scalp-v2/pipeline";
 
 export default async function handler(
@@ -23,24 +18,14 @@ export default async function handler(
   if (!requireAdminAccess(req, res)) return;
   setNoStoreHeaders(res);
 
-  const dryRun = parseBool(req.query.dryRun, true);
-  const venue = parseVenue(req.query.venue);
-  const session = parseSession(req.query.session);
-
-  const out = await runScalpV2FullAutoCycle({
-    executeDryRun: dryRun,
-    venue,
-    session,
-  });
+  const out = await runScalpV2FullAutoCycle();
 
   return res.status(200).json({
     ok:
       out.discover.ok &&
       out.evaluate.ok &&
       out.worker.ok &&
-      out.promote.ok &&
-      out.execute.ok &&
-      out.reconcile.ok,
+      out.promote.ok,
     out,
   });
 }

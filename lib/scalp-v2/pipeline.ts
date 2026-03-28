@@ -60,6 +60,7 @@ import {
 } from "./weekWindows";
 import type {
   ScalpV2ExecutionEvent,
+  ScalpV2JobKind,
   ScalpV2JobResult,
   ScalpV2Session,
   ScalpV2Venue,
@@ -378,11 +379,11 @@ function resolveWorkerPolicy(): ScalpV2WorkerPolicy {
         Math.min(
           10_000,
           Math.floor(
-            toFinite(process.env.SCALP_V2_WORKER_STAGE_A_MIN_TRADES, 8),
+            toFinite(process.env.SCALP_V2_WORKER_STAGE_A_MIN_TRADES, 4),
           ),
         ),
       ),
-      minNetR: toFinite(process.env.SCALP_V2_WORKER_STAGE_A_MIN_NET_R, 0.5),
+      minNetR: toFinite(process.env.SCALP_V2_WORKER_STAGE_A_MIN_NET_R, 0.2),
       minConsecutiveWinningWeeks: Math.max(
         0,
         Math.min(
@@ -390,7 +391,7 @@ function resolveWorkerPolicy(): ScalpV2WorkerPolicy {
           Math.floor(
             toFinite(
               process.env.SCALP_V2_WORKER_STAGE_A_MIN_CONSEC_WIN_WEEKS,
-              2,
+              1,
             ),
           ),
         ),
@@ -3097,17 +3098,13 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         weeklyMetrics?.totalTrades ||
         weeklyRows.reduce((acc, row) => acc + row.trades, 0);
 
-      // Phase 1 (Option A) — two-tier promotion:
-      //   Tier 1 "shadowEligible": worker stage C pass is enough to deploy
-      //     in shadow mode so the execute job can run and accumulate ledger data.
-      //   Tier 2 "eligible": full forward evidence gate (12w, session purity,
-      //     weekly robustness) required for live promotion.
+      // Direct promotion: backtest stage C pass is sufficient for live
+      // deployment. Backtests mirror live conditions so no shadow probation
+      // period is needed — stage C already validates 12 weeks of data.
       let reason = "promotion_not_eligible";
       let eligible = false;
       let shadowEligible = false;
       // Check backtest 4-week rolling netR against promotion threshold.
-      // Even for shadow-eligibility we require the backtest to meet the
-      // same minFourWeekNetR bar used for full forward promotion.
       const backtestFourWeekGateFailed =
         workerGate.backtestMin4wNetR !== null &&
         workerGate.backtestMin4wNetR < policy.minFourWeekNetR;
@@ -3125,28 +3122,12 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         reason = workerGate.reason || "worker_stage_c_failed";
       } else if (backtestFourWeekGateFailed) {
         reason = "backtest_4w_net_r_below_threshold";
-      } else if (hasMixedSessionEvidence) {
-        // Worker passed but forward evidence has session mix — shadow-eligible
-        // so we can keep collecting data, but not live-eligible.
-        shadowEligible = true;
-        reason = "forward_session_evidence_mixed";
-      } else if (!freshness.ready) {
-        // Worker passed but not enough forward weeks yet — shadow-eligible.
-        shadowEligible = true;
-        reason = "forward_session_12w_incomplete";
-      } else if (hasPerWeekTradesDeficit) {
-        shadowEligible = true;
-        reason = "forward_session_min_trades_per_window_below_threshold";
-      } else if (totalTrades < policy.minTotalTrades) {
-        shadowEligible = true;
-        reason = "forward_session_total_trades_below_threshold";
-      } else if (!weeklyGate.passed) {
-        shadowEligible = true;
-        reason = weeklyGate.reason || "weekly_robustness_failed";
       } else {
+        // Stage C passed with acceptable 4-week rolling netR —
+        // promote directly to live.
         eligible = true;
         shadowEligible = true;
-        reason = "weekly_robustness_passed";
+        reason = "stage_c_passed";
       }
 
       const promotedAtMs = Number(
@@ -3217,10 +3198,6 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         if (requireWinnerShortlist && !row.shortlistIncluded) {
           row.reason = "winner_shortlist_excluded";
         }
-      } else if (row.shadowEligible) {
-        // Tier 1: worker passed but forward evidence insufficient — enable
-        // in shadow mode so execute can run and accumulate ledger data.
-        row.enabled = true;
       }
 
       if (row.enabled) row.promotedAtMs = nowTs;
@@ -3328,7 +3305,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         tuneId: row.tuneId,
         entrySessionProfile: row.entrySessionProfile,
         enabled: row.enabled,
-        liveMode: row.eligible && row.enabled && runtime.liveEnabled ? "live" : "shadow",
+        liveMode: row.enabled && runtime.liveEnabled ? "live" : "shadow",
         promotionGate: {
           eligible: row.eligible,
           shadowEligible: row.shadowEligible,
@@ -3369,7 +3346,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     const promotedIds = drafts
       .filter((row) => row.candidateId !== null && row.enabled)
       .map((row) => Number(row.candidateId));
-    const shadowIds = drafts
+    const notPromotedIds = drafts
       .filter((row) => row.candidateId !== null && !row.enabled)
       .map((row) => Number(row.candidateId));
     const rejectedIds = trimmed.dropped.map((row) => row.id);
@@ -3380,11 +3357,11 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         metadataPatch: { promotedAtMs: nowTs },
       });
     }
-    if (shadowIds.length > 0) {
+    if (notPromotedIds.length > 0) {
       await updateScalpV2CandidateStatuses({
-        ids: shadowIds,
-        status: "shadow",
-        metadataPatch: { shadowedAtMs: nowTs },
+        ids: notPromotedIds,
+        status: "evaluated",
+        metadataPatch: { evaluatedAtMs: nowTs },
       });
     }
     if (rejectedIds.length > 0) {
@@ -3400,7 +3377,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     });
 
     const highlightRows = drafts
-      .filter((row) => row.freshness.ready && row.weeklyMetrics && row.eligible)
+      .filter((row) => row.eligible)
       .sort((a, b) => (b.score || 0) - (a.score || 0))
       .slice(0, 200)
       .map((row) => {
@@ -3503,9 +3480,6 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       lifecycleIsSuppressed(row.lifecycle, nowTs),
     ).length;
     const enabledCount = drafts.filter((row) => row.enabled).length;
-    const shadowEnabledCount = drafts.filter(
-      (row) => row.enabled && row.shadowEligible && !row.eligible,
-    ).length;
     const liveEnabledCount = drafts.filter(
       (row) => row.enabled && row.eligible,
     ).length;
@@ -3516,11 +3490,10 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       considered: promotionPool.length,
       deploymentsConsidered: drafts.length,
       promoted: promotedIds.length,
-      shadowed: shadowIds.length,
+      notPromoted: notPromotedIds.length,
       rejectedByBudget: trimmed.dropped.length,
       suppressedCount,
       enabledCount,
-      shadowEnabledCount,
       liveEnabledCount,
       skippedWorkerMissing,
       requireWinnerShortlist,
@@ -3529,15 +3502,9 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       exactLosers: drafts.filter((row) => row.exactLoser).length,
       neighborSuspended: neighborSuspended.size,
       freshnessWindowWeeks: policy.minCompletedWeeks,
-      strictPerSessionForwardGate: true,
       filteredCandidatesOutOfScope,
       filteredDeploymentsOutOfScope,
       demotedOutOfScopeEnabled: offScopeEnabledDeployments.length,
-      sessionEvidenceMixedCount: drafts.filter(
-        (row) => row.reason === "forward_session_evidence_mixed",
-      ).length,
-      minTradesPerWeek: policy.minTradesPerWeek,
-      minTotalTrades: policy.minTotalTrades,
       enabledSlots: runtime.budgets.maxEnabledDeployments,
       highlightsUpserted,
       workerStageFailedCount: drafts.filter(
@@ -4007,11 +3974,22 @@ export async function runScalpV2FullAutoCycle(params: {
     details: { ...research.details, delegatedTo: "research" },
   };
   const promote = await runScalpV2PromoteJob();
-  const execute = await runScalpV2ExecuteJob({
-    dryRun: params.executeDryRun,
-    venue: params.venue,
-    session: params.session,
+
+  // Execute and reconcile run on their own dedicated crons (every 1m and 2m
+  // respectively) to match live market takt. The cycle cron only handles
+  // research + promote. Return skipped stubs for API compatibility.
+  const skippedStub = (jobKind: ScalpV2JobKind): ScalpV2JobResult => ({
+    ok: true,
+    busy: false,
+    jobKind,
+    processed: 0,
+    succeeded: 0,
+    failed: 0,
+    pendingAfter: 0,
+    details: { skipped: true, reason: "handled_by_dedicated_cron" },
   });
-  const reconcile = await runScalpV2ReconcileJob();
+  const execute = skippedStub("execute");
+  const reconcile = skippedStub("reconcile");
+
   return { discover, evaluate, worker, promote, execute, reconcile };
 }
