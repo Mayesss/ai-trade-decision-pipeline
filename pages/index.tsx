@@ -936,11 +936,17 @@ function toUiScalpSummaryFromV2(
     const row = asPlainObject(deploymentRaw);
     const enabled = Boolean(row.enabled);
     const promotionGate = asPlainObject(row.promotionGate);
+    const lifecycle = asPlainObject(promotionGate.lifecycle);
     const promotionEligible =
       typeof promotionGate.eligible === "boolean" ? promotionGate.eligible : enabled;
     const promotionReason =
       String(promotionGate.reason || "").trim() ||
-      (enabled ? "enabled" : "shadow");
+      (enabled ? "enabled" : "not_promoted");
+    const lifecycleStateRaw = String(lifecycle.state || "").trim().toLowerCase();
+    const lifecycleState =
+      lifecycleStateRaw === "graduated" || lifecycleStateRaw === "suspended" || lifecycleStateRaw === "retired"
+        ? lifecycleStateRaw
+        : enabled ? "graduated" : "candidate";
     return {
       deploymentId: String(row.deploymentId || "").trim(),
       symbol: String(row.symbol || "")
@@ -955,7 +961,7 @@ function toUiScalpSummaryFromV2(
       source: "scalp_v2",
       enabled,
       inUniverse: true,
-      lifecycleState: enabled ? "graduated" : "candidate",
+      lifecycleState,
       promotionEligible,
       promotionReason,
       forwardValidation: null,
@@ -1075,8 +1081,17 @@ function toUiScalpSummaryFromV2(
       const stageA = asPlainObject(worker.stageA);
       const finalPass = worker.finalPass === true || stageC.passed === true;
 
-      // Pick the longest executed stage for the weekly breakdown
-      const primaryStage = stageC.executed ? stageC : stageB.executed ? stageB : stageA;
+      // Pick the longest executed stage for the weekly breakdown.
+      // Prefer the stage with weeklyNetR data — weekly bars are more
+      // informative than per-stage aggregates.
+      const bestStageWithWeekly = (
+        [stageC, stageB, stageA] as Record<string, unknown>[]
+      ).find(
+        (s) =>
+          s.executed &&
+          Object.keys(asPlainObject(s.weeklyNetR)).length > 0,
+      );
+      const primaryStage = bestStageWithWeekly || (stageC.executed ? stageC : stageB.executed ? stageB : stageA);
       const weeklyNetR = asPlainObject(primaryStage.weeklyNetR);
       const stageFromTs = asFiniteOrNull(primaryStage.fromTs);
       const stageToTs = asFiniteOrNull(primaryStage.toTs);
@@ -1130,6 +1145,12 @@ function toUiScalpSummaryFromV2(
         return fallbackRows;
       }
 
+      // Distribute aggregate stage trades evenly across weeks for display
+      const stageTrades = asFiniteOrNull(primaryStage.trades);
+      const tradesPerWeek = stageTrades !== null && weekKeys.length > 0
+        ? Math.round(stageTrades / weekKeys.length)
+        : null;
+
       const rows: ScalpSummaryWorkerRow[] = [];
       for (const weekStart of weekKeys) {
         const netR = Number(weeklyNetR[String(weekStart)] || 0);
@@ -1149,7 +1170,7 @@ function toUiScalpSummaryFromV2(
           durationMs: 0,
           errorCode: null,
           errorMessage: null,
-          trades: null,
+          trades: tradesPerWeek,
           netR,
           expectancyR: null,
           profitFactor: null,
