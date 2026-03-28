@@ -1363,7 +1363,7 @@ export function buildScalpV2ModelGuidedComposerGrid(params: {
     })
     .slice(0, maxCandidates);
 
-  return scored.map((row) => {
+  const withPlans = scored.map((row) => {
     const executionPlan = resolveModelGuidedComposerExecutionPlanFromBlocks(
       row.blocksByFamily,
     );
@@ -1372,9 +1372,8 @@ export function buildScalpV2ModelGuidedComposerGrid(params: {
         row.venue,
         row.symbol,
         row.entrySessionProfile,
-        JSON.stringify(row.blocksByFamily),
+        executionPlan.armId,
         row.model.version,
-        row.model.compositeScore.toFixed(6),
       ].join(":"),
     );
     return {
@@ -1384,7 +1383,18 @@ export function buildScalpV2ModelGuidedComposerGrid(params: {
         armId: executionPlan.armId,
         digest,
       }),
+      _armId: executionPlan.armId,
     };
+  });
+
+  // Deduplicate by armId — candidates with the same arm execute identically
+  // at runtime (only the arm prefix in tuneId determines the delegate strategy).
+  // Already sorted by score, so first occurrence per arm is the best.
+  const seenArms = new Set<string>();
+  return withPlans.filter((row) => {
+    if (seenArms.has(row._armId)) return false;
+    seenArms.add(row._armId);
+    return true;
   });
 }
 

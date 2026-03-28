@@ -81,8 +81,11 @@ test("model-guided composer grid is deterministic and bounded", () => {
     maxCandidates: 16,
   });
 
-  assert.equal(a.length, 16);
-  assert.equal(b.length, 16);
+  // After arm-level dedup, count is bounded by the number of distinct arms
+  // (max 12) rather than maxCandidates.
+  assert.equal(a.length > 0, true);
+  assert.equal(a.length <= 12, true);
+  assert.equal(b.length, a.length);
   assert.deepEqual(
     a.map((row) => row.candidateId),
     b.map((row) => row.candidateId),
@@ -100,7 +103,9 @@ test("model-guided composer scores stay in [0,1] and preserve session filter int
     entrySessionProfile: "newyork",
     maxCandidates: 20,
   });
-  assert.equal(rows.length, 20);
+  // After arm-level dedup, count is bounded by distinct arms (max 12).
+  assert.equal(rows.length > 0, true);
+  assert.equal(rows.length <= 12, true);
   for (const row of rows) {
     assert.equal(
       row.blocksByFamily.session_filter.includes("session_newyork_window"),
