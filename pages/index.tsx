@@ -4998,6 +4998,31 @@ export default function Home() {
       const gateExpR = asFiniteNumber(gateStageC?.expectancyR);
       const gatePF = asFiniteNumber(gateStageC?.profitFactor);
       const gateDD = asFiniteNumber(gateStageC?.maxDrawdownR);
+
+      // Build weekly window bars from stage C weeklyNetR stored on deployment
+      const gateWeeklyNetR = (gateStageC?.weeklyNetR || {}) as Record<string, unknown>;
+      const gateWeekKeys = Object.keys(gateWeeklyNetR)
+        .map((k) => Number(k))
+        .filter((v) => Number.isFinite(v))
+        .sort((a, b) => a - b);
+      const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+      const gateWindowNetRs = gateWeekKeys.map((weekStart) => {
+        const netRValue = Number(gateWeeklyNetR[String(weekStart)] || 0);
+        const netRDisplay = `${netRValue >= 0 ? "+" : ""}${netRValue.toFixed(2)}R`;
+        const weekEnd = weekStart + ONE_WEEK_MS;
+        const windowLabel = `${new Date(weekStart).toISOString().slice(0, 10)} → ${new Date(Math.max(weekStart, weekEnd - 1)).toISOString().slice(0, 10)}`;
+        return {
+          sortTs: weekEnd,
+          value: netRValue,
+          display: netRDisplay,
+          tooltip: `Window:${windowLabel} | Net:${netRDisplay}`,
+        };
+      });
+      const gateWindowTotalNetR = gateWindowNetRs.reduce(
+        (acc, w) => acc + (w.value || 0),
+        0,
+      );
+
       return {
         rowId: `deployment:${deployment.deploymentId}`,
         deploymentId: deployment.deploymentId,
@@ -5014,13 +5039,15 @@ export default function Home() {
         reason:
           deployment.promotionReason ||
           (deployment.promotionEligible ? "eligible" : "not_evaluated"),
-        status: "registry",
-        windowCount: 0,
-        windowsResults: "—",
-        windowNetRs: [],
+        status: gateWindowNetRs.length > 0 ? `C:${gateWindowNetRs.length}` : "registry",
+        windowCount: gateWindowNetRs.length,
+        windowsResults: gateWindowNetRs.length > 0
+          ? gateWindowNetRs.map((w) => w.display).join(" | ")
+          : "—",
+        windowNetRs: gateWindowNetRs,
         trades: gateTrades,
-        netR: gateNetR,
-        totalNetR: gateNetR,
+        netR: gateWindowNetRs.length > 0 ? gateWindowTotalNetR : gateNetR,
+        totalNetR: gateWindowNetRs.length > 0 ? gateWindowTotalNetR : gateNetR,
         expectancyR: gateExpR ?? asFiniteNumber(forwardValidation?.meanExpectancyR),
         profitFactor: gatePF ?? asFiniteNumber(forwardValidation?.meanProfitFactor),
         maxDrawdownR: gateDD,
@@ -5029,24 +5056,7 @@ export default function Home() {
       } satisfies ScalpWorkerJobGridRow;
     });
 
-    const workerOnlyRows = scalpWorkerJobsGridRows
-      .filter((row) => {
-        const deploymentId = String(row.deploymentId || "").trim();
-        if (!deploymentId) return true;
-        return !registryDeploymentIds.has(deploymentId);
-      })
-      .map((row) => ({
-        ...row,
-        rowId: row.rowId.startsWith("worker:") ? row.rowId : `worker:${row.rowId}`,
-        workerOnly: true,
-        deploymentEnabled:
-          typeof row.deploymentEnabled === "boolean"
-            ? row.deploymentEnabled
-            : false,
-        reason: String(row.reason || "").trim() || "not_deployed",
-      }));
-
-    return [...out, ...workerOnlyRows].sort(compareScalpWorkerJobGridRows);
+    return out.sort(compareScalpWorkerJobGridRows);
   }, [scalpRegistryDeployments, scalpWorkerJobsGridRows]);
   const scalpSelectedWorkerGridRows = useMemo<ScalpWorkerJobGridRow[]>(() => {
     return scalpAllDeploymentsGridRows.filter((row) => {
@@ -5134,22 +5144,10 @@ export default function Home() {
         cellRenderer: (params: any) => {
           const deploymentId = String(params?.value || "").trim();
           const row = params?.data || {};
-          const workerOnly = row?.workerOnly === true;
           const fallbackLabel =
             [String(row?.symbol || "").trim(), String(row?.strategyId || "").trim(), String(row?.tuneId || "").trim()]
               .filter((part) => Boolean(part))
               .join(" · ") || "—";
-          const workerOnlyBadge = workerOnly ? (
-            <span
-              className={`inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${
-                scalpDarkMode
-                  ? "border-amber-500/50 bg-amber-500/15 text-amber-200"
-                  : "border-amber-300 bg-amber-50 text-amber-700"
-              }`}
-            >
-              worker-only
-            </span>
-          ) : null;
           if (!deploymentId) {
             return (
               <div className="flex min-w-0 items-center gap-2">
@@ -5159,7 +5157,6 @@ export default function Home() {
                 >
                   {fallbackLabel}
                 </span>
-                {workerOnlyBadge}
               </div>
             );
           }
@@ -5204,7 +5201,6 @@ export default function Home() {
                   <Copy className="h-3.5 w-3.5 opacity-70" />
                 )}
               </button>
-              {workerOnlyBadge}
             </div>
           );
         },

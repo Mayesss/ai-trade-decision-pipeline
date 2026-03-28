@@ -678,6 +678,8 @@ function resolveWorkerStageCPass(metadata: unknown): {
   reason: "worker_stage_c_missing" | "worker_stage_c_failed" | null;
   /** Minimum 4-week rolling netR from the backtest's stage C weeklyNetR. */
   backtestMin4wNetR: number | null;
+  /** Full worker stage data extracted from candidate metadata for deployment storage. */
+  workerStages: Record<string, unknown> | null;
 } {
   const meta = asRecord(metadata);
   const worker = asRecord(meta.worker);
@@ -710,12 +712,24 @@ function resolveWorkerStageCPass(metadata: unknown): {
     }
   }
 
+  // Build worker stages snapshot for deployment storage
+  const workerStages = hasWorkerState
+    ? {
+        stageA: asRecord(worker.stageA),
+        stageB: asRecord(worker.stageB),
+        stageC,
+        finalPass: stageCPass,
+        evaluatedAtMs: worker.evaluatedAtMs,
+      }
+    : null;
+
   if (stageCPass) {
     return {
       stageCPass: true,
       hasWorkerState,
       reason: null,
       backtestMin4wNetR,
+      workerStages,
     };
   }
   return {
@@ -723,6 +737,7 @@ function resolveWorkerStageCPass(metadata: unknown): {
     hasWorkerState,
     reason: hasWorkerState ? "worker_stage_c_failed" : "worker_stage_c_missing",
     backtestMin4wNetR,
+    workerStages,
   };
 }
 
@@ -1392,7 +1407,6 @@ export async function runScalpV2ResearchJob(params: {
     // --- Inline backtest (same replay logic as worker, no DB round-trip) ---
     const candleCache = new Map<string, ScalpReplayCandle[]>();
     const persistRows: Parameters<typeof upsertScalpV2Candidates>[0]["rows"] = [];
-    const highlightRows: Parameters<typeof upsertScalpV2ResearchHighlights>[0]["rows"] = [];
     let stageAPass = 0;
     let stageAFail = 0;
     let stageBPass = 0;
@@ -1579,35 +1593,6 @@ export async function runScalpV2ResearchJob(params: {
           metadata,
         });
 
-        if (finalPass) {
-          const deploymentId = toDeploymentId({
-            venue: candidate.venue,
-            symbol: candidate.symbol,
-            strategyId: candidate.strategyId,
-            tuneId: candidate.tuneId,
-            session: candidate.session,
-          });
-          highlightRows.push({
-            candidateId: deploymentId,
-            venue: candidate.venue,
-            symbol: candidate.symbol,
-            entrySessionProfile: candidate.session,
-            score: candidate.score,
-            trades12w: stageCResult.trades,
-            winningWeeks12w: stageCResult.winningWeeks,
-            consecutiveWinningWeeks: stageCResult.consecutiveWinningWeeks,
-            robustness: {
-              source: "v2_research_inline",
-              stageA: stageAResult,
-              stageB: stageBResult,
-              stageC: stageCResult,
-            },
-            dsl: asRecord(candidate.dsl.blocksByFamily || {}),
-            notes: "research_stage_c_pass",
-            remarkable: true,
-          });
-        }
-
         processed += 1;
         succeeded += 1;
       } catch (err: any) {
@@ -1639,11 +1624,6 @@ export async function runScalpV2ResearchJob(params: {
       await upsertScalpV2Candidates({ rows: persistRows });
       persistedCount = persistRows.length;
     }
-    let highlightsUpserted = 0;
-    if (highlightRows.length > 0) {
-      highlightsUpserted = await upsertScalpV2ResearchHighlights({ rows: highlightRows }).catch(() => 0);
-    }
-
     // --- Update cursors ---
     await Promise.all(
       cursorUpdates.map((row) =>
@@ -1684,7 +1664,6 @@ export async function runScalpV2ResearchJob(params: {
       stageCPass,
       stageCFail,
       replayErrors,
-      highlightsUpserted,
       droppedByVenuePolicy,
       cursorUpdatedScopes: cursorUpdates.length,
       policy: {
@@ -2977,6 +2956,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       weeklyGateReason: string | null;
       workerStageCPass: boolean;
       workerStageReason: string | null;
+      workerStages: Record<string, unknown> | null;
       eligible: boolean;
       shadowEligible: boolean;
       reason: string;
@@ -3155,6 +3135,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         weeklyGateReason: weeklyGate.reason,
         workerStageCPass: workerGate.stageCPass,
         workerStageReason: workerGate.reason,
+        workerStages: workerGate.workerStages,
         eligible,
         shadowEligible,
         reason,
@@ -3318,6 +3299,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
           strictSessionEvidence: row.strictSessionEvidence,
           freshness: row.freshness,
           weekly: row.weeklyMetrics,
+          worker: row.workerStages,
           lifecycle: row.lifecycle,
           thresholds: {
             minCompletedWeeks: policy.minCompletedWeeks,
