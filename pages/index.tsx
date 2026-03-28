@@ -288,6 +288,7 @@ type ScalpSummaryDeployment = {
   promotionEligible?: boolean | null;
   promotionReason?: string | null;
   forwardValidation?: ScalpForwardValidation | null;
+  promotionGate?: Record<string, any> | null;
   updatedAtMs?: number | null;
 };
 
@@ -492,6 +493,8 @@ type ScalpOpsDeploymentRow = {
   perf30dNetR: number | null;
   perf30dMaxDrawdownR: number | null;
   runtime: ScalpDashboardSymbol | null;
+  /** Raw v2 promotion gate — carries stage-C backtest metrics. */
+  promotionGate: Record<string, any> | null;
 };
 
 type ScalpOpsCronStatus = "healthy" | "lagging" | "unknown";
@@ -669,6 +672,10 @@ function resolveScalpVenueUiFromDeploymentId(
     .trim()
     .toLowerCase();
   if (raw.startsWith("bitget:")) return "bitget";
+  if (raw.startsWith("capital:")) return "capital";
+  // Infer from symbol: crypto pairs (ending in USDT/BUSD/BTC) are Bitget
+  const symbolPart = raw.split("~")[0] || raw.split(":")[0] || "";
+  if (/usdt|busd|btc$/i.test(symbolPart)) return "bitget";
   return "capital";
 }
 
@@ -964,6 +971,7 @@ function toUiScalpSummaryFromV2(
       lifecycleState,
       promotionEligible,
       promotionReason,
+      promotionGate: Object.keys(promotionGate).length ? promotionGate : null,
       forwardValidation: null,
       updatedAtMs: asFiniteOrNull(row.updatedAtMs),
     };
@@ -1068,10 +1076,13 @@ function toUiScalpSummaryFromV2(
       const entrySessionProfile = String(candidate.entrySessionProfile || "")
         .trim()
         .toLowerCase();
+      const venue = String(candidate.venue || "").trim().toLowerCase();
       const deploymentId =
         deploymentIdByCandidateKey.get(
           `${symbol}~${strategyId}~${tuneId}~${entrySessionProfile}`,
-        ) || "";
+        ) || (venue && symbol && strategyId && tuneId && entrySessionProfile
+          ? `${venue}:${symbol}~${strategyId}~${tuneId}__sp_${entrySessionProfile}`
+          : "");
 
       // Emit one row per week from the longest executed stage's weeklyNetR.
       // This gives the grid individual weekly sticks instead of one per stage.
@@ -1095,7 +1106,6 @@ function toUiScalpSummaryFromV2(
       const weeklyNetR = asPlainObject(primaryStage.weeklyNetR);
       const stageFromTs = asFiniteOrNull(primaryStage.fromTs);
       const stageToTs = asFiniteOrNull(primaryStage.toTs);
-      if (stageFromTs === null || stageToTs === null) return [];
 
       const weekKeys = Object.keys(weeklyNetR)
         .map((k) => Number(k))
@@ -3412,6 +3422,7 @@ export default function Home() {
       perf30dNetR: asFiniteNumber(row.netR),
       perf30dMaxDrawdownR: asFiniteNumber(row.maxDrawdownR),
       runtime: row,
+      promotionGate: null,
     };
   });
   const scalpRegistryDeployments = useMemo<ScalpOpsDeploymentRow[]>(() => {
@@ -3445,6 +3456,7 @@ export default function Home() {
         perf30dNetR: null,
         perf30dMaxDrawdownR: null,
         runtime: null,
+        promotionGate: row?.promotionGate || null,
       });
       return out;
     }, []);
@@ -4976,6 +4988,16 @@ export default function Home() {
         } satisfies ScalpWorkerJobGridRow;
       }
       const forwardValidation = deployment.forwardValidation || null;
+      // Extract stage-C metrics from promotionGate when worker rows are absent
+      const gate = deployment.promotionGate || {};
+      const gateWorker = (gate.worker || gate) as Record<string, any>;
+      const gateStageCRaw = (gateWorker.stageC || {}) as Record<string, any>;
+      const gateStageC = gateStageCRaw.executed ? gateStageCRaw : null;
+      const gateTrades = asFiniteNumber(gateStageC?.trades);
+      const gateNetR = asFiniteNumber(gateStageC?.netR);
+      const gateExpR = asFiniteNumber(gateStageC?.expectancyR);
+      const gatePF = asFiniteNumber(gateStageC?.profitFactor);
+      const gateDD = asFiniteNumber(gateStageC?.maxDrawdownR);
       return {
         rowId: `deployment:${deployment.deploymentId}`,
         deploymentId: deployment.deploymentId,
@@ -4996,13 +5018,13 @@ export default function Home() {
         windowCount: 0,
         windowsResults: "—",
         windowNetRs: [],
-        trades: null,
-        netR: null,
-        totalNetR: null,
-        expectancyR: asFiniteNumber(forwardValidation?.meanExpectancyR),
-        profitFactor: asFiniteNumber(forwardValidation?.meanProfitFactor),
-        maxDrawdownR: null,
-        totalMaxDrawdownR: null,
+        trades: gateTrades,
+        netR: gateNetR,
+        totalNetR: gateNetR,
+        expectancyR: gateExpR ?? asFiniteNumber(forwardValidation?.meanExpectancyR),
+        profitFactor: gatePF ?? asFiniteNumber(forwardValidation?.meanProfitFactor),
+        maxDrawdownR: gateDD,
+        totalMaxDrawdownR: gateDD,
         errorCodes: null,
       } satisfies ScalpWorkerJobGridRow;
     });
