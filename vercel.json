@@ -33,7 +33,7 @@
     },
     {
       "path": "/api/scalp/v2/cron/load-candles?batchSize=40&autoSuccessor=true&autoContinue=true&successor=discover",
-      "schedule": "10 * * * 0"
+      "schedule": "10 3 * * *"
     }
   ]
 }

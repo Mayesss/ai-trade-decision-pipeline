@@ -1639,7 +1639,7 @@ function resolveLoadBackfillChunkWeeks(
       requiredWeeks,
       toPositiveInt(
         process.env.SCALP_PIPELINE_LOAD_BACKFILL_CHUNK_WEEKS,
-        prewarmWeeks,
+        Math.max(4, prewarmWeeks),
       ),
     ),
   );
@@ -4286,6 +4286,7 @@ async function nudgeLoadSymbolsForCoverageFloor(params: {
         UPDATE scalp_discovered_symbols
         SET
             load_status = 'pending',
+            load_attempts = 0,
             load_next_run_at = NOW(),
             load_error = NULL,
             updated_at = NOW()
