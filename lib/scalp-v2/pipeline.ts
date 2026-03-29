@@ -1207,26 +1207,17 @@ export async function runScalpV2ResearchJob(params: {
 
     const workerPolicy = resolveWorkerPolicy();
     const nowTs = nowMs();
-    if (!workerPolicy.allowSunday && isScalpV2SundayUtc(nowTs)) {
-      details = { skipped: true, reason: "sunday_utc_research_blocked" };
-      return buildScalpV2JobResult({
-        jobKind: "research",
-        processed: 0,
-        succeeded: 0,
-        failed: 0,
-        pendingAfter: 0,
-        details,
-      });
-    }
+    // Research runs on Sundays (after new week candles are loaded).
+    // Only execution is blocked on Sunday UTC.
 
     const maxCandidatesPerSession = Math.max(
       1,
       Math.min(
-        96,
+        2000,
         toPositiveInt(
           process.env.SCALP_V2_COMPOSER_MAX_CANDIDATES_PER_SESSION,
-          48,
-          96,
+          250,
+          2000,
         ),
       ),
     );

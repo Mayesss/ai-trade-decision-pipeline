@@ -1194,7 +1194,7 @@ export function buildScalpV2CandidateDslGrid(params: {
   const symbol = normalizeSymbol(params.symbol);
   const maxCandidates = Math.max(
     1,
-    Math.min(250, Math.floor(params.maxCandidates || 48)),
+    Math.min(2000, Math.floor(params.maxCandidates || 250)),
   );
   const references = listScalpV2StrategyPrimitiveReferences();
   const blockMap = blockByIdMap();
@@ -1260,7 +1260,18 @@ export function buildScalpV2CandidateDslGrid(params: {
     6,
   );
 
-  const out: ScalpV2CandidateDslSpec[] = [];
+  // Phase 3: Deep exploration — iterate exit, state, and risk as independent
+  // dimensions for each pattern×entry pair. This explores the full curated
+  // block space (~14×10×7×6×7 = thousands) instead of the old ~48 combos.
+  // Candidates are collected unsorted, then ranked by supportScore so the
+  // best-supported combos survive the maxCandidates cap.
+  type RawCandidate = {
+    blocksByFamily: ScalpV2PrimitiveBlockMap;
+    referenceStrategyIds: string[];
+    supportScore: number;
+    patternBlock: string;
+  };
+  const rawCandidates: RawCandidate[] = [];
   const seenSignatures = new Set<string>();
   const generatedAtMs = Date.now();
 
@@ -1268,54 +1279,70 @@ export function buildScalpV2CandidateDslGrid(params: {
     const patternBlock = patternPool[p]!;
     for (let e = 0; e < entryPool.length; e += 1) {
       const entryBlock = entryPool[e]!;
-      const exitBlock = exitPool[(p + e) % exitPool.length]!;
-      const stateBlock = statePool[(p * 2 + e) % statePool.length]!;
-      const riskBlock = riskPool[(p + e * 2) % riskPool.length]!;
-      const sessionSecondary =
-        sessionPool[(p + e) % sessionPool.length] || primarySessionBlock;
+      for (let x = 0; x < exitPool.length; x += 1) {
+        const exitBlock = exitPool[x]!;
+        for (let s = 0; s < statePool.length; s += 1) {
+          const stateBlock = statePool[s]!;
+          for (let r = 0; r < riskPool.length; r += 1) {
+            const riskBlock = riskPool[r]!;
+            const sessionSecondary =
+              sessionPool[(p + e) % sessionPool.length] || primarySessionBlock;
 
-      const blocksByFamily = toBlockMap({
-        pattern: [patternBlock],
-        session_filter: uniqueStrings([primarySessionBlock, sessionSecondary]),
-        state_machine: [stateBlock],
-        entry_trigger: [entryBlock],
-        exit_rule: [exitBlock],
-        risk_rule: [riskBlock],
-      });
+            const blocksByFamily = toBlockMap({
+              pattern: [patternBlock],
+              session_filter: uniqueStrings([primarySessionBlock, sessionSecondary]),
+              state_machine: [stateBlock],
+              entry_trigger: [entryBlock],
+              exit_rule: [exitBlock],
+              risk_rule: [riskBlock],
+            });
 
-      const signature = JSON.stringify(blocksByFamily);
-      if (seenSignatures.has(signature)) continue;
-      seenSignatures.add(signature);
+            const signature = JSON.stringify(blocksByFamily);
+            if (seenSignatures.has(signature)) continue;
+            seenSignatures.add(signature);
 
-      const referenceStrategyIds = uniqueStrings(
-        PRIMITIVE_FAMILIES.flatMap((family) =>
-          blocksByFamily[family].flatMap((blockId) => strategyIdsForBlock(blockId)),
-        ),
-      );
-      const usageSupport = referenceStrategyIds.length;
-      const supportScore =
-        usageSupport +
-        (patternBlock === "pattern_adaptive_pattern_router" ? 0.5 : 0);
-      const digest = candidateHash(
-        `${params.venue}:${symbol}:${params.entrySessionProfile}:${signature}`,
-      );
+            const referenceStrategyIds = uniqueStrings(
+              PRIMITIVE_FAMILIES.flatMap((family) =>
+                blocksByFamily[family].flatMap((blockId) => strategyIdsForBlock(blockId)),
+              ),
+            );
+            const usageSupport = referenceStrategyIds.length;
+            const supportScore =
+              usageSupport +
+              (patternBlock === "pattern_adaptive_pattern_router" ? 0.5 : 0);
 
-      out.push({
-        candidateId: `dsl_${digest.slice(0, 16)}`,
-        tuneId: `dsl_${digest.slice(0, 12)}`,
-        venue: params.venue,
-        symbol,
-        entrySessionProfile: params.entrySessionProfile,
-        blocksByFamily,
-        referenceStrategyIds,
-        supportScore,
-        generatedAtMs,
-      });
-
-      if (out.length >= maxCandidates) {
-        return out;
+            rawCandidates.push({
+              blocksByFamily,
+              referenceStrategyIds,
+              supportScore,
+              patternBlock,
+            });
+          }
+        }
       }
     }
+  }
+
+  // Rank by support score (most v1 strategy backing first), then cap.
+  rawCandidates.sort((a, b) => b.supportScore - a.supportScore);
+  const capped = rawCandidates.slice(0, maxCandidates);
+
+  const out: ScalpV2CandidateDslSpec[] = [];
+  for (const raw of capped) {
+    const digest = candidateHash(
+      `${params.venue}:${symbol}:${params.entrySessionProfile}:${JSON.stringify(raw.blocksByFamily)}`,
+    );
+    out.push({
+      candidateId: `dsl_${digest.slice(0, 16)}`,
+      tuneId: `dsl_${digest.slice(0, 12)}`,
+      venue: params.venue,
+      symbol,
+      entrySessionProfile: params.entrySessionProfile,
+      blocksByFamily: raw.blocksByFamily,
+      referenceStrategyIds: raw.referenceStrategyIds,
+      supportScore: raw.supportScore,
+      generatedAtMs,
+    });
   }
 
   return out;
@@ -1329,11 +1356,11 @@ export function buildScalpV2ModelGuidedComposerGrid(params: {
 }): ScalpV2ModelGuidedCandidateDslSpec[] {
   const maxCandidates = Math.max(
     1,
-    Math.min(250, Math.floor(params.maxCandidates || 48)),
+    Math.min(2000, Math.floor(params.maxCandidates || 250)),
   );
   const preselectPoolSize = Math.max(
     maxCandidates,
-    Math.min(250, Math.floor(maxCandidates * 3)),
+    Math.min(2000, Math.floor(maxCandidates * 2)),
   );
   const blockMap = blockByIdMap();
   const baseGrid = buildScalpV2CandidateDslGrid({
