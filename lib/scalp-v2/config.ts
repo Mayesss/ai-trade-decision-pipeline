@@ -203,7 +203,7 @@ export function getScalpV2DefaultBudgets(): ScalpV2BudgetConfig {
     ),
     maxCandidatesPerSymbol: Math.max(
       1,
-      Math.min(50, toPositiveInt(process.env.SCALP_V2_MAX_CANDIDATES_PER_SYMBOL, 4)),
+      Math.min(50, toPositiveInt(process.env.SCALP_V2_MAX_CANDIDATES_PER_SYMBOL, 16)),
     ),
     maxEnabledDeployments: Math.max(
       1,

@@ -211,6 +211,31 @@ export function toDeploymentId(params: {
   return `${venue}:${symbol}~${strategyId}~${tuneId}__sp_${session}`;
 }
 
+/**
+ * Compute an effective score for budget ranking that blends in actual
+ * backtest evidence when available. Candidates with a passing stage C
+ * get a significant boost; candidates with positive netR get a smaller
+ * boost proportional to their backtest performance.
+ */
+function effectiveBudgetScore(candidate: ScalpV2Candidate): number {
+  const base = candidate.score;
+  const worker = candidate.metadata?.worker as Record<string, unknown> | undefined;
+  if (!worker) return base;
+  const stageC = worker.stageC as Record<string, unknown> | undefined;
+  if (!stageC) return base;
+  const passed = stageC.passed === true;
+  const netR = Number(stageC.netR);
+  if (passed) {
+    // Stage C pass: large boost (100 points) + netR contribution
+    return base + 100 + (Number.isFinite(netR) ? Math.max(0, netR) * 5 : 0);
+  }
+  if (Number.isFinite(netR) && netR > 0) {
+    // Positive netR but didn't fully pass: moderate boost
+    return base + netR * 3;
+  }
+  return base;
+}
+
 export function enforceCandidateBudgets(params: {
   candidates: ScalpV2Candidate[];
   budgets: ScalpV2BudgetConfig;
@@ -221,7 +246,7 @@ export function enforceCandidateBudgets(params: {
   const { candidates, budgets } = params;
   const sorted = candidates
     .slice()
-    .sort((a, b) => b.score - a.score || a.updatedAtMs - b.updatedAtMs);
+    .sort((a, b) => effectiveBudgetScore(b) - effectiveBudgetScore(a) || a.updatedAtMs - b.updatedAtMs);
 
   const kept: ScalpV2Candidate[] = [];
   const dropped: ScalpV2Candidate[] = [];

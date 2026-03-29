@@ -453,6 +453,37 @@ export async function listScalpV2Candidates(params: {
   }));
 }
 
+/**
+ * Returns a set of "venue:symbol:tuneId:session" keys for candidates
+ * that were already backtested for the given windowToTs this week.
+ * Used by the research job to skip re-backtesting.
+ */
+export async function loadScalpV2EvaluatedCandidateKeys(params: {
+  windowToTs: number;
+}): Promise<Set<string>> {
+  if (!isScalpPgConfigured()) return new Set();
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<
+    Array<{ venue: string; symbol: string; tuneId: string; session: string }>
+  >(sql`
+    SELECT
+      venue,
+      symbol,
+      tune_id AS "tuneId",
+      entry_session_profile AS "session"
+    FROM scalp_v2_candidates
+    WHERE status IN ('evaluated', 'promoted', 'shadow')
+      AND (metadata_json->'worker'->>'windowToTs')::bigint = ${params.windowToTs}
+  `);
+  const keys = new Set<string>();
+  for (const row of rows) {
+    keys.add(
+      `${row.venue}:${row.symbol}:${row.tuneId}:${row.session}`.toLowerCase(),
+    );
+  }
+  return keys;
+}
+
 export async function updateScalpV2CandidateStatuses(params: {
   ids: number[];
   status: ScalpV2CandidateStatus;

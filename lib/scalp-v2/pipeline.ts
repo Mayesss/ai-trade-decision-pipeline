@@ -29,6 +29,7 @@ import {
   finalizeScalpV2Job,
   heartbeatScalpV2Job,
   listScalpV2Candidates,
+  loadScalpV2EvaluatedCandidateKeys,
   listScalpV2Deployments,
   listScalpV2LedgerRows,
   listScalpV2OpenPositions,
@@ -1404,6 +1405,36 @@ export async function runScalpV2ResearchJob(params: {
       });
     }
 
+    // --- Skip candidates already backtested for this week window ---
+    const evaluatedKeys = await loadScalpV2EvaluatedCandidateKeys({ windowToTs }).catch(() => new Set<string>());
+    const beforeFilterCount = selected.length;
+    const filteredSelected = selected.filter((c) => {
+      const key = `${c.venue}:${c.symbol}:${c.tuneId}:${c.session}`.toLowerCase();
+      return !evaluatedKeys.has(key);
+    });
+    const skippedByCache = beforeFilterCount - filteredSelected.length;
+    // Replace selected with only new candidates
+    selected.length = 0;
+    selected.push(...filteredSelected);
+
+    if (!selected.length) {
+      details = {
+        reason: "all_candidates_already_evaluated_this_week",
+        batchSize,
+        scopeCount: scopes.length,
+        poolSizeTotal,
+        skippedByCache,
+      };
+      return buildScalpV2JobResult({
+        jobKind: "research",
+        processed: skippedByCache,
+        succeeded: 0,
+        failed: 0,
+        pendingAfter: 0,
+        details,
+      });
+    }
+
     // --- Inline backtest (same replay logic as worker, no DB round-trip) ---
     const candleCache = new Map<string, ScalpReplayCandle[]>();
     const persistRows: Parameters<typeof upsertScalpV2Candidates>[0]["rows"] = [];
@@ -1664,6 +1695,7 @@ export async function runScalpV2ResearchJob(params: {
       stageCPass,
       stageCFail,
       replayErrors,
+      skippedByCache,
       droppedByVenuePolicy,
       cursorUpdatedScopes: cursorUpdates.length,
       policy: {
