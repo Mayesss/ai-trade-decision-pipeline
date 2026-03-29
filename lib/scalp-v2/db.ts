@@ -472,7 +472,7 @@ export async function loadScalpV2EvaluatedCandidateKeys(params: {
       tune_id AS "tuneId",
       entry_session_profile AS "session"
     FROM scalp_v2_candidates
-    WHERE status IN ('evaluated', 'promoted', 'shadow')
+    WHERE status IN ('evaluated', 'promoted', 'shadow', 'rejected')
       AND (metadata_json->'worker'->>'windowToTs')::bigint = ${params.windowToTs}
   `);
   const keys = new Set<string>();
@@ -530,7 +530,7 @@ export async function loadScalpV2PreviousWeekResults(params: {
       (metadata_json->'worker'->'stageC'->>'passed') AS "stageCPassed",
       (metadata_json->'worker'->'stageC'->>'netR') AS "stageCNetR"
     FROM scalp_v2_candidates
-    WHERE status IN ('evaluated', 'promoted', 'shadow')
+    WHERE status IN ('evaluated', 'promoted', 'shadow', 'rejected')
       AND (metadata_json->'worker'->>'windowToTs')::bigint != ${params.currentWindowToTs}
       AND metadata_json->'worker'->'stageA' IS NOT NULL
   `);

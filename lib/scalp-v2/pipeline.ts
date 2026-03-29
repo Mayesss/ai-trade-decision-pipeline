@@ -1208,6 +1208,18 @@ export async function runScalpV2ResearchJob(params: {
 
     const workerPolicy = resolveWorkerPolicy();
     const nowTs = nowMs();
+    const jobStartMs = nowMs();
+    const timeBudgetMs = Math.max(
+      60_000,
+      Math.min(
+        780_000,
+        toPositiveInt(
+          process.env.SCALP_V2_RESEARCH_TIME_BUDGET_MS,
+          650_000,
+          780_000,
+        ),
+      ),
+    );
     // Research runs on Sundays (after new week candles are loaded).
     // Only execution is blocked on Sunday UTC.
 
@@ -1428,7 +1440,7 @@ export async function runScalpV2ResearchJob(params: {
 
     // --- Backtest remaining candidates in one pass ---
     const candleCache = new Map<string, ScalpReplayCandle[]>();
-    const persistRows: Parameters<typeof upsertScalpV2Candidates>[0]["rows"] = [];
+    let persistedCount = 0;
     let stageAPass = 0;
     let stageAFail = 0;
     let stageBPass = 0;
@@ -1438,7 +1450,15 @@ export async function runScalpV2ResearchJob(params: {
     let replayErrors = 0;
     let droppedBelowMinStage = 0;
 
+    let timeBudgetExhausted = false;
+
     for (let candidateIdx = 0; candidateIdx < selected.length; candidateIdx += 1) {
+      const elapsedMs = nowMs() - jobStartMs;
+      if (elapsedMs >= timeBudgetMs) {
+        timeBudgetExhausted = true;
+        break;
+      }
+
       const candidate = selected[candidateIdx]!;
 
       try {
@@ -1561,8 +1581,46 @@ export async function runScalpV2ResearchJob(params: {
           minPersistStage === "b" ? stageBResult.passed :
           stageCResult.passed;
 
+        const workerMeta = {
+          version: "v2_research_inline_r2",
+          evaluatedAtMs: nowTs,
+          policy: {
+            stageA: workerPolicy.stageA,
+            stageB: workerPolicy.stageB,
+            stageC: workerPolicy.stageC,
+            minCandles: workerPolicy.minCandles,
+          },
+          windowToTs,
+          stageA: stageAResult,
+          stageB: stageBResult,
+          stageC: stageCResult,
+          finalPass,
+        };
+
         if (!meetsMinStage) {
           droppedBelowMinStage += 1;
+          // Persist as 'rejected' so the cache skips it on next cycle
+          await upsertScalpV2Candidates({
+            rows: [{
+              venue: candidate.venue,
+              symbol: candidate.symbol,
+              strategyId: candidate.strategyId,
+              tuneId: candidate.tuneId,
+              entrySessionProfile: candidate.session,
+              score: candidate.score,
+              status: "rejected",
+              reasonCodes: [
+                "SCALP_V2_RESEARCH_INLINE",
+                `SCALP_V2_BELOW_MIN_STAGE_${minPersistStage.toUpperCase()}`,
+              ],
+              metadata: {
+                evaluatedAtMs: nowTs,
+                evaluator: "v2_research_inline",
+                worker: workerMeta,
+              },
+            }],
+          }).catch(() => undefined); // non-fatal: next cycle will retry
+          persistedCount += 1;
           processed += 1;
           continue;
         }
@@ -1581,37 +1639,26 @@ export async function runScalpV2ResearchJob(params: {
           composerExecutionPlan: executionPlan,
           evaluatedAtMs: nowTs,
           evaluator: "v2_research_inline",
-          worker: {
-            version: "v2_research_inline_r2",
-            evaluatedAtMs: nowTs,
-            policy: {
-              stageA: workerPolicy.stageA,
-              stageB: workerPolicy.stageB,
-              stageC: workerPolicy.stageC,
-              minCandles: workerPolicy.minCandles,
-            },
-            windowToTs,
-            stageA: stageAResult,
-            stageB: stageBResult,
-            stageC: stageCResult,
-            finalPass,
-          },
+          worker: workerMeta,
         };
 
-        persistRows.push({
-          venue: candidate.venue,
-          symbol: candidate.symbol,
-          strategyId: candidate.strategyId,
-          tuneId: candidate.tuneId,
-          entrySessionProfile: candidate.session,
-          score: candidate.score,
-          status: "evaluated",
-          reasonCodes: [
-            "SCALP_V2_RESEARCH_INLINE",
-            finalPass ? "SCALP_V2_WORKER_STAGE_C_PASS" : "SCALP_V2_WORKER_STAGE_C_FAIL",
-          ],
-          metadata,
+        await upsertScalpV2Candidates({
+          rows: [{
+            venue: candidate.venue,
+            symbol: candidate.symbol,
+            strategyId: candidate.strategyId,
+            tuneId: candidate.tuneId,
+            entrySessionProfile: candidate.session,
+            score: candidate.score,
+            status: "evaluated",
+            reasonCodes: [
+              "SCALP_V2_RESEARCH_INLINE",
+              finalPass ? "SCALP_V2_WORKER_STAGE_C_PASS" : "SCALP_V2_WORKER_STAGE_C_FAIL",
+            ],
+            metadata,
+          }],
         });
+        persistedCount += 1;
 
         processed += 1;
         succeeded += 1;
@@ -1630,7 +1677,7 @@ export async function runScalpV2ResearchJob(params: {
               processedSoFar: candidateIdx + 1,
               totalSelected: selected.length,
               stageCPass,
-              persisted: persistRows.length,
+              persisted: persistedCount,
               replayErrors,
             },
           },
@@ -1638,12 +1685,7 @@ export async function runScalpV2ResearchJob(params: {
       }
     }
 
-    // --- Persist candidates that passed the minimum stage gate ---
-    let persistedCount = 0;
-    if (persistRows.length > 0) {
-      await upsertScalpV2Candidates({ rows: persistRows });
-      persistedCount = persistRows.length;
-    }
+    const remaining = Math.max(0, selected.length - processed);
 
     details = {
       scopeCount: scopes.length,
@@ -1665,6 +1707,10 @@ export async function runScalpV2ResearchJob(params: {
       stageCFail,
       replayErrors,
       droppedByVenuePolicy,
+      timeBudgetExhausted,
+      timeBudgetMs,
+      elapsedMs: nowMs() - jobStartMs,
+      remaining,
       policy: {
         stageA: workerPolicy.stageA,
         stageB: workerPolicy.stageB,
@@ -1678,7 +1724,7 @@ export async function runScalpV2ResearchJob(params: {
       processed,
       succeeded,
       failed,
-      pendingAfter: Math.max(0, allCandidates.length - skippedByCache - selected.length),
+      pendingAfter: remaining,
       details,
     });
   } catch (err: any) {
