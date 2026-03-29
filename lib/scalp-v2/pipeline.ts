@@ -30,6 +30,7 @@ import {
   heartbeatScalpV2Job,
   listScalpV2Candidates,
   loadScalpV2EvaluatedCandidateKeys,
+  loadScalpV2PreviousWeekResults,
   listScalpV2Deployments,
   listScalpV2LedgerRows,
   listScalpV2OpenPositions,
@@ -1338,15 +1339,15 @@ export async function runScalpV2ResearchJob(params: {
       });
     }
 
-    // --- Filter out candidates already backtested this week ---
+    // --- Filter: exact cache (same windowToTs = already done this week) ---
     const evaluatedKeys = await loadScalpV2EvaluatedCandidateKeys({ windowToTs }).catch(() => new Set<string>());
-    const selected = allCandidates.filter((c) => {
+    const notYetEvaluated = allCandidates.filter((c) => {
       const key = `${c.venue}:${c.symbol}:${c.tuneId}:${c.session}`.toLowerCase();
       return !evaluatedKeys.has(key);
     });
-    const skippedByCache = allCandidates.length - selected.length;
+    const skippedByCache = allCandidates.length - notYetEvaluated.length;
 
-    if (!selected.length) {
+    if (!notYetEvaluated.length) {
       details = {
         reason: "all_candidates_already_evaluated_this_week",
         scopeCount: scopes.length,
@@ -1364,7 +1365,68 @@ export async function runScalpV2ResearchJob(params: {
       });
     }
 
-    // --- Backtest all new candidates in one pass ---
+    // --- Smart skip: use previous week's results to avoid re-running
+    // candidates that clearly failed and won't flip with 1 new week. ---
+    const previousResults = await loadScalpV2PreviousWeekResults({
+      currentWindowToTs: windowToTs,
+    }).catch(() => new Map<string, { stageAPassed: boolean; stageANetR: number | null; stageATrades: number | null; stageCPassed: boolean; stageCNetR: number | null; windowToTs: number }>());
+
+    // Thresholds for "clear fail" — well below stage A gates, won't flip.
+    const clearFailNetR = workerPolicy.stageA.minNetR * -2; // e.g. -0.4 if gate is 0.2
+    const clearFailMinTrades = Math.floor(workerPolicy.stageA.minTrades * 0.3); // e.g. 1 if gate is 4
+
+    let skippedByClearFail = 0;
+    const selected = notYetEvaluated.filter((c) => {
+      const key = `${c.venue}:${c.symbol}:${c.tuneId}:${c.session}`.toLowerCase();
+      const prev = previousResults.get(key);
+      if (!prev) return true; // Never tested — must run
+
+      // Previous stage C passed — must re-verify with new window
+      if (prev.stageCPassed) return true;
+
+      // Previous stage A passed but C failed — worth re-running
+      // (the shifted window might help stage B/C)
+      if (prev.stageAPassed) return true;
+
+      // Stage A failed: check if it was a clear fail or marginal
+      const netR = prev.stageANetR;
+      const trades = prev.stageATrades;
+
+      // Clear fail: deeply negative netR or barely any trades
+      if (netR !== null && netR < clearFailNetR) {
+        skippedByClearFail += 1;
+        return false;
+      }
+      if (trades !== null && trades < clearFailMinTrades) {
+        skippedByClearFail += 1;
+        return false;
+      }
+
+      // Marginal fail — re-run, new week might tip it
+      return true;
+    });
+
+    if (!selected.length) {
+      details = {
+        reason: "all_candidates_skipped",
+        scopeCount: scopes.length,
+        poolSizeTotal,
+        totalCandidates: allCandidates.length,
+        skippedByCache,
+        skippedByClearFail,
+        candidatesWithPreviousResults: previousResults.size,
+      };
+      return buildScalpV2JobResult({
+        jobKind: "research",
+        processed: skippedByCache + skippedByClearFail,
+        succeeded: 0,
+        failed: 0,
+        pendingAfter: 0,
+        details,
+      });
+    }
+
+    // --- Backtest remaining candidates in one pass ---
     const candleCache = new Map<string, ScalpReplayCandle[]>();
     const persistRows: Parameters<typeof upsertScalpV2Candidates>[0]["rows"] = [];
     let stageAPass = 0;
@@ -1588,6 +1650,8 @@ export async function runScalpV2ResearchJob(params: {
       poolSizeTotal,
       totalCandidates: allCandidates.length,
       skippedByCache,
+      skippedByClearFail,
+      candidatesWithPreviousResults: previousResults.size,
       backtested: selected.length,
       processedCandidates: processed,
       minPersistStage,

@@ -455,8 +455,8 @@ export async function listScalpV2Candidates(params: {
 
 /**
  * Returns a set of "venue:symbol:tuneId:session" keys for candidates
- * that were already backtested for the given windowToTs this week.
- * Used by the research job to skip re-backtesting.
+ * that were already backtested for the CURRENT windowToTs this week.
+ * These are exact cache hits — no need to re-run at all.
  */
 export async function loadScalpV2EvaluatedCandidateKeys(params: {
   windowToTs: number;
@@ -482,6 +482,71 @@ export async function loadScalpV2EvaluatedCandidateKeys(params: {
     );
   }
   return keys;
+}
+
+/** Previous week's stage results for smart-skip decisions. */
+export interface PreviousStageResult {
+  windowToTs: number;
+  stageAPassed: boolean;
+  stageANetR: number | null;
+  stageATrades: number | null;
+  stageCPassed: boolean;
+  stageCNetR: number | null;
+}
+
+/**
+ * Loads previous week's backtest results for candidates evaluated with a
+ * DIFFERENT windowToTs (prior week). Used to decide which candidates can
+ * be skipped vs need re-evaluation when a new week rolls in.
+ */
+export async function loadScalpV2PreviousWeekResults(params: {
+  currentWindowToTs: number;
+}): Promise<Map<string, PreviousStageResult>> {
+  if (!isScalpPgConfigured()) return new Map();
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<
+    Array<{
+      venue: string;
+      symbol: string;
+      tuneId: string;
+      session: string;
+      windowToTs: string;
+      stageAPassed: string | null;
+      stageANetR: string | null;
+      stageATrades: string | null;
+      stageCPassed: string | null;
+      stageCNetR: string | null;
+    }>
+  >(sql`
+    SELECT
+      venue,
+      symbol,
+      tune_id AS "tuneId",
+      entry_session_profile AS "session",
+      (metadata_json->'worker'->>'windowToTs') AS "windowToTs",
+      (metadata_json->'worker'->'stageA'->>'passed') AS "stageAPassed",
+      (metadata_json->'worker'->'stageA'->>'netR') AS "stageANetR",
+      (metadata_json->'worker'->'stageA'->>'trades') AS "stageATrades",
+      (metadata_json->'worker'->'stageC'->>'passed') AS "stageCPassed",
+      (metadata_json->'worker'->'stageC'->>'netR') AS "stageCNetR"
+    FROM scalp_v2_candidates
+    WHERE status IN ('evaluated', 'promoted', 'shadow')
+      AND (metadata_json->'worker'->>'windowToTs')::bigint != ${params.currentWindowToTs}
+      AND metadata_json->'worker'->'stageA' IS NOT NULL
+  `);
+  const results = new Map<string, PreviousStageResult>();
+  for (const row of rows) {
+    const key = `${row.venue}:${row.symbol}:${row.tuneId}:${row.session}`.toLowerCase();
+    results.set(key, {
+      windowToTs: Number(row.windowToTs) || 0,
+      stageAPassed: row.stageAPassed === "true",
+      stageANetR: row.stageANetR !== null ? Number(row.stageANetR) : null,
+      stageATrades: row.stageATrades !== null ? Number(row.stageATrades) : null,
+      stageCPassed: row.stageCPassed === "true",
+      stageCNetR: row.stageCNetR !== null ? Number(row.stageCNetR) : null,
+    });
+  }
+  return results;
 }
 
 export async function updateScalpV2CandidateStatuses(params: {
