@@ -46,7 +46,6 @@ import {
   upsertScalpV2ResearchHighlights,
 } from "./db";
 import {
-  enforceCandidateBudgets,
   isScalpV2DiscoverSymbolAllowed,
   isScalpV2SundayUtc,
 } from "./logic";
@@ -1909,13 +1908,8 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       });
     }
 
-    const trimmed = enforceCandidateBudgets({
-      candidates: promotionPool,
-      budgets: runtime.budgets,
-    });
-
     const candidateByDeploymentId = new Map(
-      [...trimmed.kept, ...trimmed.dropped].map((candidate) => [
+      promotionPool.map((candidate) => [
         toDeploymentId({
           venue: candidate.venue,
           symbol: candidate.symbol,
@@ -1925,17 +1919,6 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         }),
         candidate,
       ]),
-    );
-    const droppedDeploymentIds = new Set(
-      trimmed.dropped.map((candidate) =>
-        toDeploymentId({
-          venue: candidate.venue,
-          symbol: candidate.symbol,
-          strategyId: candidate.strategyId,
-          tuneId: candidate.tuneId,
-          session: candidate.entrySessionProfile,
-        }),
-      ),
     );
     const existingByDeploymentId = new Map(
       existingDeployments.map((row) => [row.deploymentId, row]),
@@ -2166,8 +2149,6 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
             : "suspended_cooldown";
       } else if (!candidate) {
         reason = "candidate_missing";
-      } else if (droppedDeploymentIds.has(deploymentId)) {
-        reason = "budget_cap_rejected";
       } else if (!workerGate.stageCPass) {
         reason = workerGate.reason || "worker_stage_c_failed";
       } else if (backtestFourWeekGateFailed) {
@@ -2194,7 +2175,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         entrySessionProfile,
         score: candidate?.score ?? Number.NEGATIVE_INFINITY,
         currentlyEnabled,
-        droppedByBudget: droppedDeploymentIds.has(deploymentId),
+        droppedByBudget: false,
         lifecycle,
         suppressed,
         strictSessionEvidence,
@@ -2401,7 +2382,6 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     const notPromotedIds = drafts
       .filter((row) => row.candidateId !== null && !row.enabled)
       .map((row) => Number(row.candidateId));
-    const rejectedIds = trimmed.dropped.map((row) => row.id);
     if (promotedIds.length > 0) {
       await updateScalpV2CandidateStatuses({
         ids: promotedIds,
@@ -2414,13 +2394,6 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         ids: notPromotedIds,
         status: "evaluated",
         metadataPatch: { evaluatedAtMs: nowTs },
-      });
-    }
-    if (rejectedIds.length > 0) {
-      await updateScalpV2CandidateStatuses({
-        ids: rejectedIds,
-        status: "rejected",
-        metadataPatch: { rejectedAtMs: nowTs, reason: "BUDGET_CAP" },
       });
     }
 
@@ -2543,7 +2516,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       deploymentsConsidered: drafts.length,
       promoted: promotedIds.length,
       notPromoted: notPromotedIds.length,
-      rejectedByBudget: trimmed.dropped.length,
+      rejectedByBudget: 0,
       suppressedCount,
       enabledCount,
       liveEnabledCount,

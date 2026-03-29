@@ -3875,7 +3875,7 @@ export default function Home() {
         const status = String(task?.status || "pending")
           .trim()
           .toLowerCase();
-        const hasCompletedResult = status === "completed";
+        const hasCompletedResult = status === "completed" || status === "failed";
         const fromTs =
           asFiniteNumber(task?.windowFromTs) ??
           asFiniteNumber(task?.result?.windowFromTs);
