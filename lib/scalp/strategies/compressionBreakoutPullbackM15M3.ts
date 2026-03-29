@@ -1,4 +1,4 @@
-import type { ScalpCandle, ScalpDirectionalBias, ScalpSessionState } from '../types';
+import type { ScalpBaseTimeframe, ScalpCandle, ScalpConfirmTimeframe, ScalpDirectionalBias, ScalpSessionState } from '../types';
 import { inScalpEntrySessionProfileWindow, normalizeScalpEntrySessionProfile } from '../sessions';
 import type { ScalpStrategyDefinition, ScalpStrategyEntryIntent, ScalpStrategyPhaseInput, ScalpStrategyPhaseOutput } from './types';
 
@@ -6,6 +6,8 @@ type CompressionBreakoutStrategyOptions = {
     id: string;
     shortName: string;
     longName: string;
+    requiredBaseTf: ScalpBaseTimeframe;
+    requiredConfirmTf: ScalpConfirmTimeframe;
 };
 
 type CompressionSetup = {
@@ -242,7 +244,7 @@ function detectCompressionBreakoutSetup(params: {
 
 function applyPhaseDetectorsWithOptions(
     input: ScalpStrategyPhaseInput,
-    _options: CompressionBreakoutStrategyOptions,
+    options: CompressionBreakoutStrategyOptions,
 ): ScalpStrategyPhaseOutput {
     let next = withLastProcessed(input.state, input.market);
     const reasonCodes: string[] = [];
@@ -260,11 +262,11 @@ function applyPhaseDetectorsWithOptions(
         });
     }
 
-    if (input.market.baseTf !== 'M15' || input.market.confirmTf !== 'M3') {
+    if (input.market.baseTf !== options.requiredBaseTf || input.market.confirmTf !== options.requiredConfirmTf) {
         next.state = 'DONE';
         return finalizePhase({
             state: next,
-            reasonCodes: ['STRATEGY_REQUIRES_M15_M3_TIMEFRAMES'],
+            reasonCodes: [`STRATEGY_REQUIRES_${options.requiredBaseTf}_${options.requiredConfirmTf}_TIMEFRAMES`],
         });
     }
 
@@ -345,12 +347,16 @@ export function buildCompressionBreakoutPullbackM15M3Strategy(
         id: COMPRESSION_BREAKOUT_PULLBACK_M15_M3_STRATEGY_ID,
         shortName: 'Compression Breakout',
         longName: 'Compression Breakout Pullback Continuation (M15/M3)',
+        requiredBaseTf: 'M15',
+        requiredConfirmTf: 'M3',
         ...overrides,
     };
     return {
         id: options.id,
         shortName: options.shortName,
         longName: options.longName,
+        preferredBaseTf: options.requiredBaseTf,
+        preferredConfirmTf: options.requiredConfirmTf,
         applyPhaseDetectors(input: ScalpStrategyPhaseInput): ScalpStrategyPhaseOutput {
             return applyPhaseDetectorsWithOptions(input, options);
         },

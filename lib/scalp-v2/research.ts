@@ -2,7 +2,12 @@ import crypto from "crypto";
 
 import {
   buildModelGuidedComposerTuneId,
+  COMPOSER_TIMEFRAME_VARIANTS,
+  resolveBaseArmFromPatternBlock,
   resolveModelGuidedComposerExecutionPlanFromBlocks,
+  type ModelGuidedComposerArmId,
+  type ModelGuidedComposerBaseArm,
+  type ModelGuidedComposerTimeframeVariant,
 } from "./composerExecution";
 import { listScalpV2CatalogStrategies } from "./strategyCatalog";
 
@@ -1390,39 +1395,57 @@ export function buildScalpV2ModelGuidedComposerGrid(params: {
     })
     .slice(0, maxCandidates);
 
-  const withPlans = scored.map((row) => {
-    const executionPlan = resolveModelGuidedComposerExecutionPlanFromBlocks(
-      row.blocksByFamily,
-    );
-    const digest = candidateHash(
-      [
-        row.venue,
-        row.symbol,
-        row.entrySessionProfile,
-        executionPlan.armId,
-        row.model.version,
-      ].join(":"),
-    );
-    return {
-      ...row,
-      candidateId: `mdl_${digest.slice(0, 16)}`,
-      tuneId: buildModelGuidedComposerTuneId({
-        armId: executionPlan.armId,
-        digest,
-      }),
-      _armId: executionPlan.armId,
-    };
-  });
+  // Resolve base arm for each candidate and dedup by base arm first.
+  // Then multiply each surviving candidate by all timeframe variants.
+  const withBaseArm = scored.map((row) => ({
+    ...row,
+    _baseArm: resolveBaseArmFromPatternBlock(row.blocksByFamily),
+  }));
 
-  // Deduplicate by armId — candidates with the same arm execute identically
-  // at runtime (only the arm prefix in tuneId determines the delegate strategy).
-  // Already sorted by score, so first occurrence per arm is the best.
-  const seenArms = new Set<string>();
-  return withPlans.filter((row) => {
-    if (seenArms.has(row._armId)) return false;
-    seenArms.add(row._armId);
+  const seenBaseArms = new Set<ModelGuidedComposerBaseArm>();
+  const dedupedByBaseArm = withBaseArm.filter((row) => {
+    if (seenBaseArms.has(row._baseArm)) return false;
+    seenBaseArms.add(row._baseArm);
     return true;
   });
+
+  // Multiply each surviving base-arm candidate by all TF variants.
+  const expanded: ScalpV2ModelGuidedCandidateDslSpec[] = [];
+  for (const row of dedupedByBaseArm) {
+    for (const tfVariant of COMPOSER_TIMEFRAME_VARIANTS) {
+      const armId = `${row._baseArm}_${tfVariant.label}` as ModelGuidedComposerArmId;
+      const executionPlan = resolveModelGuidedComposerExecutionPlanFromBlocks(
+        row.blocksByFamily,
+        tfVariant.label,
+      );
+      const digest = candidateHash(
+        [
+          row.venue,
+          row.symbol,
+          row.entrySessionProfile,
+          armId,
+          row.model.version,
+        ].join(":"),
+      );
+      expanded.push({
+        candidateId: `mdl_${digest.slice(0, 16)}`,
+        tuneId: buildModelGuidedComposerTuneId({
+          armId: executionPlan.armId,
+          digest,
+        }),
+        venue: row.venue,
+        symbol: row.symbol,
+        entrySessionProfile: row.entrySessionProfile,
+        blocksByFamily: row.blocksByFamily,
+        referenceStrategyIds: row.referenceStrategyIds,
+        supportScore: row.supportScore,
+        generatedAtMs: row.generatedAtMs,
+        model: row.model,
+      });
+    }
+  }
+
+  return expanded;
 }
 
 export function buildScalpV2SessionCandidateDslGrid(params: {

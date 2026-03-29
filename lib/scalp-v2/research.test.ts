@@ -81,10 +81,10 @@ test("model-guided composer grid is deterministic and bounded", () => {
     maxCandidates: 16,
   });
 
-  // After arm-level dedup, count is bounded by the number of distinct arms
-  // (max 12) rather than maxCandidates.
+  // After base-arm dedup × 3 timeframe variants, count is bounded by
+  // distinct base arms × 3 (max 12 × 3 = 36) rather than maxCandidates.
   assert.equal(a.length > 0, true);
-  assert.equal(a.length <= 12, true);
+  assert.equal(a.length <= 36, true);
   assert.equal(b.length, a.length);
   assert.deepEqual(
     a.map((row) => row.candidateId),

@@ -1,4 +1,4 @@
-import type { ScalpCandle, ScalpDirectionalBias, ScalpSessionState } from '../types';
+import type { ScalpBaseTimeframe, ScalpCandle, ScalpConfirmTimeframe, ScalpDirectionalBias, ScalpSessionState } from '../types';
 import {
     inScalpEntrySessionProfileWindow,
     minuteOfDayInTimeZone,
@@ -43,6 +43,8 @@ type RegimePullbackStrategyOptions = {
     longName: string;
     allowPullbackSwingBreakTrigger: boolean;
     blockedBerlinEntryHours: number[];
+    requiredBaseTf: ScalpBaseTimeframe;
+    requiredConfirmTf: ScalpConfirmTimeframe;
 };
 
 const STRATEGY_CONST = {
@@ -579,11 +581,11 @@ function applyPhaseDetectorsWithOptions(
         });
     }
 
-    if (input.market.baseTf !== 'M15' || input.market.confirmTf !== 'M3') {
+    if (input.market.baseTf !== options.requiredBaseTf || input.market.confirmTf !== options.requiredConfirmTf) {
         next.state = 'DONE';
         return finalizePhase({
             state: next,
-            reasonCodes: ['STRATEGY_REQUIRES_M15_M3_TIMEFRAMES'],
+            reasonCodes: [`STRATEGY_REQUIRES_${options.requiredBaseTf}_${options.requiredConfirmTf}_TIMEFRAMES`],
         });
     }
 
@@ -739,6 +741,8 @@ export function buildRegimePullbackM15M3Strategy(
         shortName: 'Regime Pullback',
         longName: 'Regime-Filtered Trend Pullback Continuation (M15/M3)',
         allowPullbackSwingBreakTrigger: true,
+        requiredBaseTf: 'M15',
+        requiredConfirmTf: 'M3',
         ...overrides,
         blockedBerlinEntryHours,
     };
@@ -746,6 +750,8 @@ export function buildRegimePullbackM15M3Strategy(
         id: options.id,
         shortName: options.shortName,
         longName: options.longName,
+        preferredBaseTf: options.requiredBaseTf,
+        preferredConfirmTf: options.requiredConfirmTf,
         applyPhaseDetectors(input: ScalpStrategyPhaseInput): ScalpStrategyPhaseOutput {
             return applyPhaseDetectorsWithOptions(input, options);
         },

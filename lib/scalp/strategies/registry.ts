@@ -14,11 +14,12 @@ import { relativeValueSpreadProxyM15M3Strategy } from './relativeValueSpreadProx
 import { sessionSeasonalityBiasM15M3Strategy } from './sessionSeasonalityBiasM15M3';
 import { trendDayReaccelerationM15M3Strategy } from './trendDayReaccelerationM15M3';
 import { modelGuidedComposerV2Strategy } from './modelGuidedComposerV2';
+import { TIMEFRAME_VARIANT_STRATEGIES } from './timeframeVariants';
 import type { ScalpStrategyDefinition } from './types';
 
 export const DEFAULT_SCALP_STRATEGY_ID = REGIME_PULLBACK_M15_M3_STRATEGY_ID;
 
-const REGISTRY: Record<string, ScalpStrategyDefinition> = Object.freeze({
+const BASE_REGISTRY: Record<string, ScalpStrategyDefinition> = {
     [regimePullbackM15M3Strategy.id]: regimePullbackM15M3Strategy,
     [hssIctM15M3GuardedStrategy.id]: hssIctM15M3GuardedStrategy,
     [openingRangeBreakoutRetestM5M1Strategy.id]: openingRangeBreakoutRetestM5M1Strategy,
@@ -33,7 +34,16 @@ const REGISTRY: Record<string, ScalpStrategyDefinition> = Object.freeze({
     [sessionSeasonalityBiasM15M3Strategy.id]: sessionSeasonalityBiasM15M3Strategy,
     [adaptiveMetaSelectorM15M3Strategy.id]: adaptiveMetaSelectorM15M3Strategy,
     [modelGuidedComposerV2Strategy.id]: modelGuidedComposerV2Strategy,
-});
+};
+
+// Merge timeframe-variant strategies into the registry
+for (const variant of TIMEFRAME_VARIANT_STRATEGIES) {
+    if (!BASE_REGISTRY[variant.id]) {
+        BASE_REGISTRY[variant.id] = variant;
+    }
+}
+
+const REGISTRY: Record<string, ScalpStrategyDefinition> = Object.freeze(BASE_REGISTRY);
 
 const STRATEGY_ID_ALIASES: Record<string, string> = Object.freeze({
     [REGIME_PULLBACK_M15_M3_BTCUSDT_STRATEGY_ID]: REGIME_PULLBACK_M15_M3_STRATEGY_ID,
