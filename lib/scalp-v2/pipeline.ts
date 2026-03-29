@@ -51,7 +51,6 @@ import {
 } from "./logic";
 import {
   buildScalpV2ModelGuidedComposerGrid,
-  resolveScalpV2CandidateEvaluationWindow,
   toScalpV2ResearchCursorKey,
 } from "./research";
 import { getScalpV2VenueAdapter } from "./venueAdapter";
@@ -1152,26 +1151,22 @@ async function updateResearchCursorSafe(params: {
  * runScalpV2FullAutoCycle continue to work without changes.
  */
 export async function runScalpV2DiscoverJob(): Promise<ScalpV2JobResult> {
-  const result = await runScalpV2EvaluateJob();
+  const result = await runScalpV2ResearchJob();
   return {
     ...result,
     jobKind: "discover",
-    details: { ...result.details, delegatedTo: "evaluate" },
+    details: { ...result.details, delegatedTo: "research" },
   };
 }
 
 /**
- * Unified research job: generates candidates in-memory from the deterministic
- * composer grid, backtests each one through stages A/B/C, and **only persists
- * candidates that pass the configured minimum stage gate** (default: stage A).
+ * Unified research job: generates ALL candidates from the deterministic
+ * composer grid across all scopes, skips any already backtested this week
+ * (via DB cache), then backtests the rest through stages A/B/C in one pass.
  *
- * This replaces the old evaluate→worker two-step that persisted ALL candidates
- * to the DB (expensive on Neon GB-month) just so the worker could read them
- * back. Because the grid is deterministic, we can regenerate it in-memory and
- * backtest inline — saving hundreds of DB rows per run.
- *
- * Cursor tracking via `scalp_v2_research_cursor` is preserved so successive
- * runs walk through the full search space over time.
+ * Only persists candidates that pass the configured minimum stage gate
+ * (default: stage A). No cursor or batch-size throttling — the cache
+ * ensures each candidate is only backtested once per week window.
  */
 export async function runScalpV2ResearchJob(params: {
   batchSize?: number;
@@ -1224,31 +1219,24 @@ export async function runScalpV2ResearchJob(params: {
       });
     }
 
-    const batchSize = Math.max(
-      1,
-      Math.min(workerPolicy.maxBatchSize, Math.floor(params.batchSize || workerPolicy.maxBatchSize)),
-    );
     const maxCandidatesPerSession = Math.max(
       1,
       Math.min(
         96,
         toPositiveInt(
           process.env.SCALP_V2_COMPOSER_MAX_CANDIDATES_PER_SESSION,
-          24,
+          48,
           96,
         ),
       ),
     );
-    // Minimum stage gate: "a" means persist stage-A passes and above,
-    // "c" means only persist stage-C passes. Default "a" to keep promising
-    // candidates visible for diagnostics without storing hundreds of failures.
     const minPersistStageRaw = String(
       process.env.SCALP_V2_RESEARCH_MIN_PERSIST_STAGE || "a",
     ).trim().toLowerCase();
     const minPersistStage: ScalpV2WorkerStageId =
       minPersistStageRaw === "c" ? "c" : minPersistStageRaw === "b" ? "b" : "a";
 
-    // --- Build scopes (same as evaluate) ---
+    // --- Build scopes ---
     const scopes: Array<{
       venue: ScalpV2Venue;
       symbol: string;
@@ -1283,7 +1271,7 @@ export async function runScalpV2ResearchJob(params: {
       });
     }
 
-    // --- Cursor-based candidate selection (in-memory, no DB persist) ---
+    // --- Generate ALL candidates for all scopes (no cursor, no batch cap) ---
     const windowToTs = resolveScalpV2CompletedWeekWindowToUtc(nowTs);
     const stagePolicies = [
       workerPolicy.stageA,
@@ -1303,32 +1291,10 @@ export async function runScalpV2ResearchJob(params: {
       dsl: ReturnType<typeof buildScalpV2ModelGuidedComposerGrid>[number];
     };
 
-    const selected: InMemoryCandidate[] = [];
-    let selectedTotal = 0;
+    const allCandidates: InMemoryCandidate[] = [];
     let poolSizeTotal = 0;
-    const cursorUpdates: Array<{
-      venue: ScalpV2Venue;
-      symbol: string;
-      session: ScalpV2Session;
-      poolSize: number;
-      selectedCount: number;
-      startOffset: number;
-      nextOffset: number;
-    }> = [];
 
-    for (let idx = 0; idx < scopes.length; idx += 1) {
-      if (selectedTotal >= batchSize) break;
-      const scope = scopes[idx]!;
-      const remainingScopes = scopes.length - idx;
-      const remainingBudget = Math.max(1, batchSize - selectedTotal);
-      const perScopeCap = Math.max(
-        1,
-        Math.min(
-          workerPolicy.maxCandidatesPerSession,
-          Math.ceil(remainingBudget / remainingScopes),
-        ),
-      );
-
+    for (const scope of scopes) {
       const composerCandidates = buildScalpV2ModelGuidedComposerGrid({
         venue: scope.venue,
         symbol: scope.symbol,
@@ -1337,29 +1303,7 @@ export async function runScalpV2ResearchJob(params: {
       });
       poolSizeTotal += composerCandidates.length;
 
-      const cursorKey = toScalpV2ResearchCursorKey({
-        venue: scope.venue,
-        symbol: scope.symbol,
-        entrySessionProfile: scope.session,
-      });
-      const existingCursor = await loadScalpV2ResearchCursor({ cursorKey }).catch(() => null);
-      const window = resolveScalpV2CandidateEvaluationWindow({
-        candidates: composerCandidates,
-        maxCandidates: perScopeCap,
-        startOffset: existingCursor?.lastCandidateOffset || 0,
-      });
-
-      cursorUpdates.push({
-        venue: scope.venue,
-        symbol: scope.symbol,
-        session: scope.session,
-        poolSize: window.poolSize,
-        selectedCount: window.evaluatedCount,
-        startOffset: window.startOffset,
-        nextOffset: window.nextOffset,
-      });
-
-      for (const dsl of window.selectedCandidates) {
+      for (const dsl of composerCandidates) {
         const model = dsl.model;
         const supportScore = Number.isFinite(Number(dsl.supportScore))
           ? Number(dsl.supportScore)
@@ -1374,7 +1318,7 @@ export async function runScalpV2ResearchJob(params: {
             `${scope.venue}:${scope.symbol}:${scope.session}:${dsl.tuneId}`,
           ) / 1000;
 
-        selected.push({
+        allCandidates.push({
           venue: scope.venue,
           symbol: scope.symbol,
           session: scope.session,
@@ -1384,14 +1328,12 @@ export async function runScalpV2ResearchJob(params: {
           score,
           dsl,
         });
-        selectedTotal += 1;
       }
     }
 
-    if (!selected.length) {
+    if (!allCandidates.length) {
       details = {
-        reason: "no_candidates_selected",
-        batchSize,
+        reason: "no_candidates_generated",
         scopeCount: scopes.length,
         poolSizeTotal,
       };
@@ -1405,24 +1347,20 @@ export async function runScalpV2ResearchJob(params: {
       });
     }
 
-    // --- Skip candidates already backtested for this week window ---
+    // --- Filter out candidates already backtested this week ---
     const evaluatedKeys = await loadScalpV2EvaluatedCandidateKeys({ windowToTs }).catch(() => new Set<string>());
-    const beforeFilterCount = selected.length;
-    const filteredSelected = selected.filter((c) => {
+    const selected = allCandidates.filter((c) => {
       const key = `${c.venue}:${c.symbol}:${c.tuneId}:${c.session}`.toLowerCase();
       return !evaluatedKeys.has(key);
     });
-    const skippedByCache = beforeFilterCount - filteredSelected.length;
-    // Replace selected with only new candidates
-    selected.length = 0;
-    selected.push(...filteredSelected);
+    const skippedByCache = allCandidates.length - selected.length;
 
     if (!selected.length) {
       details = {
         reason: "all_candidates_already_evaluated_this_week",
-        batchSize,
         scopeCount: scopes.length,
         poolSizeTotal,
+        totalCandidates: allCandidates.length,
         skippedByCache,
       };
       return buildScalpV2JobResult({
@@ -1435,7 +1373,7 @@ export async function runScalpV2ResearchJob(params: {
       });
     }
 
-    // --- Inline backtest (same replay logic as worker, no DB round-trip) ---
+    // --- Backtest all new candidates in one pass ---
     const candleCache = new Map<string, ScalpReplayCandle[]>();
     const persistRows: Parameters<typeof upsertScalpV2Candidates>[0]["rows"] = [];
     let stageAPass = 0;
@@ -1565,7 +1503,6 @@ export async function runScalpV2ResearchJob(params: {
         if (stageCResult.executed && stageCResult.passed) stageCPass += 1;
         else if (stageCResult.executed) stageCFail += 1;
 
-        // Determine if this candidate passes the minimum persist gate
         const meetsMinStage =
           minPersistStage === "a" ? stageAResult.passed :
           minPersistStage === "b" ? stageBResult.passed :
@@ -1577,7 +1514,6 @@ export async function runScalpV2ResearchJob(params: {
           continue;
         }
 
-        // Build metadata with worker results embedded
         const executionPlan = resolveModelGuidedComposerExecutionPlanFromBlocks(
           candidate.dsl.blocksByFamily,
         );
@@ -1593,7 +1529,7 @@ export async function runScalpV2ResearchJob(params: {
           evaluatedAtMs: nowTs,
           evaluator: "v2_research_inline",
           worker: {
-            version: "v2_research_inline_r1",
+            version: "v2_research_inline_r2",
             evaluatedAtMs: nowTs,
             policy: {
               stageA: workerPolicy.stageA,
@@ -1632,7 +1568,7 @@ export async function runScalpV2ResearchJob(params: {
       }
 
       // Heartbeat every few candidates to keep the lock alive
-      if ((candidateIdx + 1) % 3 === 0 || candidateIdx + 1 === selected.length) {
+      if ((candidateIdx + 1) % 5 === 0 || candidateIdx + 1 === selected.length) {
         await heartbeatScalpV2Job({
           jobKind: "research",
           lockOwner: owner,
@@ -1649,41 +1585,19 @@ export async function runScalpV2ResearchJob(params: {
       }
     }
 
-    // --- Persist only the candidates that passed the minimum stage gate ---
+    // --- Persist candidates that passed the minimum stage gate ---
     let persistedCount = 0;
     if (persistRows.length > 0) {
       await upsertScalpV2Candidates({ rows: persistRows });
       persistedCount = persistRows.length;
     }
-    // --- Update cursors ---
-    await Promise.all(
-      cursorUpdates.map((row) =>
-        updateResearchCursorSafe({
-          venue: row.venue,
-          symbol: row.symbol,
-          entrySessionProfile: row.session,
-          phase: "validate",
-          lastCandidateOffset: row.nextOffset,
-          lastWeekStartMs: minWindowFromTs,
-          progress: {
-            researchProcessed: processed,
-            researchStageCPass: stageCPass,
-            researchPersisted: persistedCount,
-            poolSize: row.poolSize,
-            selectedCount: row.selectedCount,
-            startOffset: row.startOffset,
-            nextOffset: row.nextOffset,
-            updatedAtMs: nowMs(),
-          },
-        }),
-      ),
-    );
 
     details = {
-      batchSize,
       scopeCount: scopes.length,
       poolSizeTotal,
-      selectedCandidates: selected.length,
+      totalCandidates: allCandidates.length,
+      skippedByCache,
+      backtested: selected.length,
       processedCandidates: processed,
       minPersistStage,
       droppedBelowMinStage,
@@ -1695,9 +1609,7 @@ export async function runScalpV2ResearchJob(params: {
       stageCPass,
       stageCFail,
       replayErrors,
-      skippedByCache,
       droppedByVenuePolicy,
-      cursorUpdatedScopes: cursorUpdates.length,
       policy: {
         stageA: workerPolicy.stageA,
         stageB: workerPolicy.stageB,
@@ -1711,7 +1623,7 @@ export async function runScalpV2ResearchJob(params: {
       processed,
       succeeded,
       failed,
-      pendingAfter: 0,
+      pendingAfter: Math.max(0, allCandidates.length - skippedByCache - selected.length),
       details,
     });
   } catch (err: any) {
@@ -1736,1033 +1648,55 @@ export async function runScalpV2ResearchJob(params: {
   }
 }
 
+/**
+ * Evaluate is now a thin delegate to the unified research job.
+ * Kept for backward compatibility with cron routes and FullAutoCycle.
+ */
 export async function runScalpV2EvaluateJob(params: {
   batchSize?: number;
 } = {}): Promise<ScalpV2JobResult> {
-  const owner = lockOwner("evaluate");
-  const claimed = await claimScalpV2Job({ jobKind: "evaluate", lockOwner: owner });
-  if (!claimed) {
-    return buildScalpV2JobResult({
-      jobKind: "evaluate",
-      processed: 0,
-      succeeded: 0,
-      failed: 0,
-      busy: true,
-      pendingAfter: 0,
-      details: { reason: "job_locked" },
-    });
-  }
-
-  let ok = true;
-  let processed = 0;
-  let succeeded = 0;
-  let failed = 0;
-  let details: Record<string, unknown> = {};
-
-  try {
-    const runtime = await loadScalpV2RuntimeConfig();
-    if (!runtime.enabled) {
-      details = { skipped: true, reason: "SCALP_V2_DISABLED" };
-      return buildScalpV2JobResult({
-        jobKind: "evaluate",
-        processed,
-        succeeded,
-        failed,
-        pendingAfter: 0,
-        details,
-      });
-    }
-
-    const batchSize = Math.max(
-      1,
-      Math.min(2_000, Math.floor(params.batchSize || 200)),
-    );
-    const maxCandidatesPerSession = Math.max(
-      1,
-      Math.min(
-        96,
-        toPositiveInt(
-          process.env.SCALP_V2_COMPOSER_MAX_CANDIDATES_PER_SESSION,
-          24,
-          96,
-        ),
-      ),
-    );
-
-    const scopes: Array<{
-      venue: ScalpV2Venue;
-      symbol: string;
-      session: ScalpV2Session;
-    }> = [];
-    let droppedByVenuePolicy = 0;
-    for (const venue of runtime.supportedVenues) {
-      const symbols = runtime.seedSymbolsByVenue[venue] || [];
-      for (const symbolRaw of symbols) {
-        const symbol = String(symbolRaw || "").trim().toUpperCase();
-        if (!symbol) continue;
-        if (!isScalpV2DiscoverSymbolAllowed(venue, symbol)) {
-          droppedByVenuePolicy += 1;
-          continue;
-        }
-        if (
-          !isScalpV2RuntimeSymbolInScope({
-            runtime,
-            venue,
-            symbol,
-          })
-        ) {
-          continue;
-        }
-        for (const session of runtime.supportedSessions) {
-          scopes.push({ venue, symbol, session });
-        }
-      }
-    }
-
-    if (!scopes.length) {
-      details = {
-        evaluated: 0,
-        reason: "no_runtime_seed_scopes",
-        droppedByVenuePolicy,
-      };
-      return buildScalpV2JobResult({
-        jobKind: "evaluate",
-        processed: 0,
-        succeeded: 0,
-        failed: 0,
-        pendingAfter: 0,
-        details,
-      });
-    }
-
-    const evaluatedRows: Parameters<typeof upsertScalpV2Candidates>[0]["rows"] = [];
-    const cursorUpdates: Array<{
-      venue: ScalpV2Venue;
-      symbol: string;
-      session: ScalpV2Session;
-      poolSize: number;
-      selectedCount: number;
-      startOffset: number;
-      nextOffset: number;
-      perScopeCap: number;
-    }> = [];
-    let selectedTotal = 0;
-    let poolSizeTotal = 0;
-
-    for (let idx = 0; idx < scopes.length; idx += 1) {
-      if (selectedTotal >= batchSize) break;
-      const scope = scopes[idx]!;
-      const remainingScopes = scopes.length - idx;
-      const remainingBudget = Math.max(1, batchSize - selectedTotal);
-      const perScopeCap = Math.max(
-        1,
-        Math.min(maxCandidatesPerSession, Math.ceil(remainingBudget / remainingScopes)),
-      );
-      const composerCandidates = buildScalpV2ModelGuidedComposerGrid({
-        venue: scope.venue,
-        symbol: scope.symbol,
-        entrySessionProfile: scope.session,
-        maxCandidates: maxCandidatesPerSession,
-      });
-      poolSizeTotal += composerCandidates.length;
-
-      const cursorKey = toScalpV2ResearchCursorKey({
-        venue: scope.venue,
-        symbol: scope.symbol,
-        entrySessionProfile: scope.session,
-      });
-      const existingCursor = await loadScalpV2ResearchCursor({
-        cursorKey,
-      }).catch(() => null);
-      const window = resolveScalpV2CandidateEvaluationWindow({
-        candidates: composerCandidates,
-        maxCandidates: perScopeCap,
-        startOffset: existingCursor?.lastCandidateOffset || 0,
-      });
-
-      cursorUpdates.push({
-        venue: scope.venue,
-        symbol: scope.symbol,
-        session: scope.session,
-        poolSize: window.poolSize,
-        selectedCount: window.evaluatedCount,
-        startOffset: window.startOffset,
-        nextOffset: window.nextOffset,
-        perScopeCap,
-      });
-
-      if (!window.selectedCandidates.length) continue;
-      selectedTotal += window.selectedCandidates.length;
-      const evaluatedAtMs = nowMs();
-      for (const candidateDsl of window.selectedCandidates) {
-        const model = candidateDsl.model;
-        const executionPlan = resolveModelGuidedComposerExecutionPlanFromBlocks(
-          candidateDsl.blocksByFamily,
-        );
-        const supportScore = Number.isFinite(Number(candidateDsl.supportScore))
-          ? Number(candidateDsl.supportScore)
-          : 0;
-        const previousScore =
-          20 +
-          model.compositeScore * 65 +
-          model.confidence * 12 +
-          Math.min(12, supportScore) * 0.9 +
-          hashScoreSeed(
-            `${scope.venue}:${scope.symbol}:${scope.session}:${candidateDsl.candidateId}`,
-          ) /
-            1000;
-        const supportNorm = Math.max(0, Math.min(12, supportScore)) / 12;
-        const score =
-          12 +
-          Math.max(0, previousScore) * 0.12 +
-          model.compositeScore * 66 +
-          model.confidence * 14 +
-          supportNorm * 8 +
-          hashScoreSeed(
-            `${scope.venue}:${scope.symbol}:${scope.session}:${candidateDsl.tuneId}`,
-          ) /
-            1000;
-        evaluatedRows.push({
-          venue: scope.venue,
-          symbol: scope.symbol,
-          strategyId: MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
-          tuneId: candidateDsl.tuneId,
-          entrySessionProfile: scope.session,
-          score,
-          status: "evaluated",
-          reasonCodes: ["SCALP_V2_MODEL_GUIDED_EVALUATED"],
-          metadata: {
-            discoveredAtMs: candidateDsl.generatedAtMs,
-            source: "model_guided_composer",
-            researchCandidateId: candidateDsl.candidateId,
-            researchDsl: candidateDsl.blocksByFamily,
-            researchReferences: candidateDsl.referenceStrategyIds,
-            researchSupportScore: supportScore,
-            composerModel: candidateDsl.model,
-            composerExecutionPlan: executionPlan,
-            evaluatedAtMs,
-            evaluator: "v2_model_guided_composer",
-            liveEnabled: runtime.liveEnabled,
-            scoreBreakdown: {
-              previousScore,
-              modelComposite: model.compositeScore,
-              modelConfidence: model.confidence,
-              modelFamily: model.family,
-              supportScore,
-              startOffset: window.startOffset,
-              nextOffset: window.nextOffset,
-              perScopeCap,
-            },
-          },
-        });
-      }
-    }
-
-    await upsertScalpV2Candidates({ rows: evaluatedRows });
-    processed = evaluatedRows.length;
-    succeeded = evaluatedRows.length;
-
-    details = {
-      evaluated: evaluatedRows.length,
-      batchSize,
-      maxCandidatesPerSession,
-      scopeCount: scopes.length,
-      droppedByVenuePolicy,
-      poolSizeTotal,
-      cursorUpdatedScopes: cursorUpdates.length,
-      requestedBudgetReached: selectedTotal >= batchSize,
-    };
-
-    await Promise.all(
-      cursorUpdates.map((row) =>
-        updateResearchCursorSafe({
-          venue: row.venue,
-          symbol: row.symbol,
-          entrySessionProfile: row.session,
-          phase: "score",
-          lastCandidateOffset: row.nextOffset,
-          progress: {
-            evaluatedCandidates: row.selectedCount,
-            poolSize: row.poolSize,
-            startOffset: row.startOffset,
-            nextOffset: row.nextOffset,
-            perScopeCap: row.perScopeCap,
-            batchSize,
-            updatedAtMs: nowMs(),
-          },
-        }),
-      ),
-    );
-
-    return buildScalpV2JobResult({
-      jobKind: "evaluate",
-      processed,
-      succeeded,
-      failed,
-      pendingAfter: 0,
-      details,
-    });
-  } catch (err: any) {
-    ok = false;
-    failed = Math.max(1, failed);
-    details = { error: err?.message || String(err) };
-    return buildScalpV2JobResult({
-      jobKind: "evaluate",
-      processed,
-      succeeded,
-      failed,
-      pendingAfter: 0,
-      details,
-    });
-  } finally {
-    await finalizeScalpV2Job({
-      jobKind: "evaluate",
-      lockOwner: owner,
-      ok,
-      details,
-    });
-  }
+  const result = await runScalpV2ResearchJob({ batchSize: params.batchSize });
+  return {
+    ...result,
+    jobKind: "evaluate",
+    details: { ...result.details, delegatedTo: "research" },
+  };
 }
 
+/**
+ * Worker is now a thin delegate to the unified research job.
+ * Kept for backward compatibility with cron routes and FullAutoCycle.
+ */
 export async function runScalpV2WorkerJob(params: {
   batchSize?: number;
 } = {}): Promise<ScalpV2JobResult> {
-  const owner = lockOwner("worker");
-  const claimed = await claimScalpV2Job({ jobKind: "worker", lockOwner: owner });
-  if (!claimed) {
-    return buildScalpV2JobResult({
-      jobKind: "worker",
-      processed: 0,
-      succeeded: 0,
-      failed: 0,
-      busy: true,
-      pendingAfter: 0,
-      details: { reason: "job_locked" },
-    });
-  }
-
-  let ok = true;
-  let processed = 0;
-  let succeeded = 0;
-  let failed = 0;
-  let details: Record<string, unknown> = {};
-
-  try {
-    const runtime = await loadScalpV2RuntimeConfig();
-    if (!runtime.enabled) {
-      details = { skipped: true, reason: "SCALP_V2_DISABLED" };
-      return buildScalpV2JobResult({
-        jobKind: "worker",
-        processed,
-        succeeded,
-        failed,
-        pendingAfter: 0,
-        details,
-      });
-    }
-
-    const workerPolicy = resolveWorkerPolicy();
-    const nowTs = nowMs();
-    if (!workerPolicy.allowSunday && isScalpV2SundayUtc(nowTs)) {
-      details = {
-        skipped: true,
-        reason: "sunday_utc_worker_blocked",
-        sundayUtc: true,
-        allowSundayWorker: workerPolicy.allowSunday,
-      };
-      return buildScalpV2JobResult({
-        jobKind: "worker",
-        processed: 0,
-        succeeded: 0,
-        failed: 0,
-        pendingAfter: 0,
-        details,
-      });
-    }
-
-    const batchSize = Math.max(
-      1,
-      Math.min(
-        workerPolicy.maxBatchSize,
-        Math.floor(params.batchSize || workerPolicy.maxBatchSize),
-      ),
-    );
-    const windowToTs = resolveScalpV2CompletedWeekWindowToUtc(nowTs);
-    const stagePolicies = [
-      workerPolicy.stageA,
-      workerPolicy.stageB,
-      workerPolicy.stageC,
-    ] as const;
-    const minWindowFromTs = windowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS;
-
-    const allCandidatesRaw = await listScalpV2Candidates({ limit: 10_000 });
-    const allCandidates = allCandidatesRaw.filter((row) => {
-      if (
-        row.status !== "evaluated" &&
-        row.status !== "promoted" &&
-        row.status !== "shadow"
-      ) {
-        return false;
-      }
-      return isScalpV2RuntimeSymbolInScope({
-        runtime,
-        venue: row.venue,
-        symbol: row.symbol,
-      });
-    });
-    const filteredCandidatesOutOfScope = Math.max(
-      0,
-      allCandidatesRaw.length - allCandidates.length,
-    );
-
-    if (!allCandidates.length) {
-      details = {
-        reason: "no_evaluated_candidates",
-        workerBatchSize: batchSize,
-        filteredCandidatesOutOfScope,
-      };
-      return buildScalpV2JobResult({
-        jobKind: "worker",
-        processed: 0,
-        succeeded: 0,
-        failed: 0,
-        pendingAfter: 0,
-        details,
-      });
-    }
-
-    const scopes: Array<{
-      venue: ScalpV2Venue;
-      symbol: string;
-      session: ScalpV2Session;
-    }> = [];
-    for (const venue of runtime.supportedVenues) {
-      const symbols = runtime.seedSymbolsByVenue[venue] || [];
-      for (const symbolRaw of symbols) {
-        const symbol = String(symbolRaw || "").trim().toUpperCase();
-        if (!symbol) continue;
-        if (!isScalpV2DiscoverSymbolAllowed(venue, symbol)) continue;
-        if (
-          !isScalpV2RuntimeSymbolInScope({
-            runtime,
-            venue,
-            symbol,
-          })
-        ) {
-          continue;
-        }
-        for (const session of runtime.supportedSessions) {
-          scopes.push({ venue, symbol, session });
-        }
-      }
-    }
-
-    if (!scopes.length) {
-      details = {
-        reason: "no_runtime_seed_scopes",
-        workerBatchSize: batchSize,
-      };
-      return buildScalpV2JobResult({
-        jobKind: "worker",
-        processed: 0,
-        succeeded: 0,
-        failed: 0,
-        pendingAfter: 0,
-        details,
-      });
-    }
-
-    const selectedById = new Map<number, (typeof allCandidates)[number]>();
-    const scopeCursorUpdates: Array<{
-      venue: ScalpV2Venue;
-      symbol: string;
-      session: ScalpV2Session;
-      poolSize: number;
-      selectedCount: number;
-      startOffset: number;
-      nextOffset: number;
-      perScopeCap: number;
-    }> = [];
-    let selectedTotal = 0;
-
-    for (let idx = 0; idx < scopes.length; idx += 1) {
-      if (selectedTotal >= batchSize) break;
-      const scope = scopes[idx]!;
-      const scopeCandidates = allCandidates
-        .filter(
-          (row) =>
-            row.venue === scope.venue &&
-            row.symbol === scope.symbol &&
-            row.entrySessionProfile === scope.session,
-        )
-        .sort((a, b) => b.score - a.score || a.id - b.id);
-      if (!scopeCandidates.length) continue;
-
-      const remainingScopes = scopes.length - idx;
-      const remainingBudget = Math.max(1, batchSize - selectedTotal);
-      const perScopeCap = Math.max(
-        1,
-        Math.min(
-          workerPolicy.maxCandidatesPerSession,
-          Math.ceil(remainingBudget / remainingScopes),
-        ),
-      );
-      const cursorKey = toScalpV2ResearchCursorKey({
-        venue: scope.venue,
-        symbol: scope.symbol,
-        entrySessionProfile: scope.session,
-      });
-      const existingCursor = await loadScalpV2ResearchCursor({
-        cursorKey,
-      }).catch(() => null);
-      const window = resolveScalpV2CandidateEvaluationWindow({
-        candidates: scopeCandidates,
-        maxCandidates: perScopeCap,
-        startOffset: existingCursor?.lastCandidateOffset || 0,
-      });
-      scopeCursorUpdates.push({
-        venue: scope.venue,
-        symbol: scope.symbol,
-        session: scope.session,
-        poolSize: window.poolSize,
-        selectedCount: window.evaluatedCount,
-        startOffset: window.startOffset,
-        nextOffset: window.nextOffset,
-        perScopeCap,
-      });
-      selectedTotal += window.selectedCandidates.length;
-      for (const row of window.selectedCandidates) {
-        selectedById.set(row.id, row);
-      }
-    }
-
-    let fallbackSelected = 0;
-    if (selectedById.size < batchSize) {
-      const remainingBudget = Math.max(0, batchSize - selectedById.size);
-      if (remainingBudget > 0) {
-        const fallbackPool = allCandidates
-          .filter((row) => !selectedById.has(row.id))
-          .sort((a, b) => b.score - a.score || a.id - b.id)
-          .slice(0, remainingBudget);
-        for (const row of fallbackPool) {
-          selectedById.set(row.id, row);
-        }
-        fallbackSelected = fallbackPool.length;
-      }
-    }
-
-    const selectedCandidates = Array.from(selectedById.values());
-    if (!selectedCandidates.length) {
-      details = {
-        reason: "no_candidates_selected_for_worker",
-        workerBatchSize: batchSize,
-        scopeCount: scopes.length,
-        cursorUpdatedScopes: scopeCursorUpdates.length,
-      };
-      return buildScalpV2JobResult({
-        jobKind: "worker",
-        processed: 0,
-        succeeded: 0,
-        failed: 0,
-        pendingAfter: 0,
-        details,
-      });
-    }
-
-    const candidateRows: Parameters<typeof upsertScalpV2Candidates>[0]["rows"] = [];
-    const highlightRows: Parameters<typeof upsertScalpV2ResearchHighlights>[0]["rows"] = [];
-    const candleCache = new Map<string, ScalpReplayCandle[]>();
-    const scopeStats = new Map<
-      string,
-      {
-        processed: number;
-        stageCPass: number;
-        stageCFail: number;
-      }
-    >();
-
-    let stageAPass = 0;
-    let stageAFail = 0;
-    let stageBPass = 0;
-    let stageBFail = 0;
-    let stageCPass = 0;
-    let stageCFail = 0;
-    let replayErrors = 0;
-    let highlightsUpserted = 0;
-    let highlightsDroppedByBudget = 0;
-    let heartbeatWrites = 0;
-    let heartbeatErrors = 0;
-    let flushWrites = 0;
-    let persistedCandidateRows = 0;
-    const heartbeatEvery = Math.max(
-      1,
-      Math.min(
-        batchSize,
-        toPositiveInt(process.env.SCALP_V2_WORKER_HEARTBEAT_EVERY, 1, 200),
-      ),
-    );
-    const flushSize = Math.max(
-      1,
-      Math.min(
-        batchSize,
-        toPositiveInt(process.env.SCALP_V2_WORKER_FLUSH_SIZE, 2, 200),
-      ),
-    );
-    let remainingHighlightBudget = Math.max(0, workerPolicy.maxHighlightsPerRun);
-
-    const flushWorkerBuffers = async () => {
-      const pendingCandidateRows = candidateRows.length;
-      const pendingHighlightRows = highlightRows.length;
-      if (pendingCandidateRows <= 0 && pendingHighlightRows <= 0) return;
-      if (pendingCandidateRows > 0) {
-        await upsertScalpV2Candidates({ rows: candidateRows });
-        persistedCandidateRows += pendingCandidateRows;
-        candidateRows.length = 0;
-      }
-      if (pendingHighlightRows > 0) {
-        const inserted = await upsertScalpV2ResearchHighlights({
-          rows: highlightRows,
-        }).catch(() => 0);
-        highlightsUpserted += Math.max(0, Math.floor(Number(inserted || 0)));
-        highlightRows.length = 0;
-      }
-      flushWrites += 1;
-    };
-
-    const heartbeatWorker = async (processedSoFar: number) => {
-      try {
-        await heartbeatScalpV2Job({
-          jobKind: "worker",
-          lockOwner: owner,
-          details: {
-            progress: {
-              processedSoFar,
-              selectedCandidates: selectedCandidates.length,
-              stageCPass,
-              stageCFail,
-              replayErrors,
-              flushWrites,
-              persistedCandidateRows,
-              heartbeatAtMs: nowMs(),
-            },
-          },
-        });
-        heartbeatWrites += 1;
-      } catch {
-        heartbeatErrors += 1;
-      }
-    };
-
-    for (let candidateIdx = 0; candidateIdx < selectedCandidates.length; candidateIdx += 1) {
-      const candidate = selectedCandidates[candidateIdx]!;
-      const scopeKey = `${candidate.venue}:${candidate.symbol}:${candidate.entrySessionProfile}`;
-      const existingScopeStats = scopeStats.get(scopeKey) || {
-        processed: 0,
-        stageCPass: 0,
-        stageCFail: 0,
-      };
-      existingScopeStats.processed += 1;
-
-      const stageAFromTs = windowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS;
-      const stageBFromTs = windowToTs - workerPolicy.stageB.weeks * ONE_WEEK_MS;
-      const stageCFromTs = windowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS;
-
-      try {
-        let symbolCandles = candleCache.get(candidate.symbol) || null;
-        if (!symbolCandles) {
-          const history = await loadScalpCandleHistoryInRange(
-            candidate.symbol,
-            "1m",
-            minWindowFromTs,
-            windowToTs,
-          );
-          const baseReplayConfig = defaultScalpReplayConfig(candidate.symbol);
-          const replayCandles = filterSundayReplayCandles(
-            toReplayCandlesFromHistory(
-              (history.record?.candles || []) as Array<
-                [number, number, number, number, number, number]
-              >,
-              baseReplayConfig.defaultSpreadPips,
-            ),
-          );
-          symbolCandles = replayCandles;
-          candleCache.set(candidate.symbol, replayCandles);
-        }
-
-        let blockedStages = false;
-        const stageResults: Record<ScalpV2WorkerStageId, ScalpV2WorkerStageResult> = {
-          a: buildWorkerStageSkeleton({
-            stage: workerPolicy.stageA,
-            fromTs: stageAFromTs,
-            toTs: windowToTs,
-            reason: "stage_not_started",
-          }),
-          b: buildWorkerStageSkeleton({
-            stage: workerPolicy.stageB,
-            fromTs: stageBFromTs,
-            toTs: windowToTs,
-            reason: "stage_not_started",
-          }),
-          c: buildWorkerStageSkeleton({
-            stage: workerPolicy.stageC,
-            fromTs: stageCFromTs,
-            toTs: windowToTs,
-            reason: "stage_not_started",
-          }),
-        };
-
-        for (const stage of stagePolicies) {
-          const fromTs = windowToTs - stage.weeks * ONE_WEEK_MS;
-          if (blockedStages) {
-            stageResults[stage.id] = buildWorkerStageSkeleton({
-              stage,
-              fromTs,
-              toTs: windowToTs,
-              reason: "blocked_prior_stage_failed",
-            });
-            continue;
-          }
-
-          const stageCandles = symbolCandles.filter(
-            (row) => row.ts >= fromTs && row.ts < windowToTs,
-          );
-          if (stageCandles.length < workerPolicy.minCandles) {
-            const failedResult = buildWorkerStageSkeleton({
-              stage,
-              fromTs,
-              toTs: windowToTs,
-              reason: "insufficient_candles",
-            });
-            stageResults[stage.id] = failedResult;
-            blockedStages = true;
-            continue;
-          }
-
-          const stageStartedAtMs = nowMs();
-          const replayBaseConfig = defaultScalpReplayConfig(candidate.symbol);
-          const replayConfig = {
-            ...replayBaseConfig,
-            symbol: candidate.symbol,
-            strategyId: candidate.strategyId,
-            tuneId: candidate.tuneId,
-            deploymentId: toDeploymentId({
-              venue: candidate.venue,
-              symbol: candidate.symbol,
-              strategyId: candidate.strategyId,
-              tuneId: candidate.tuneId,
-              session: candidate.entrySessionProfile,
-            }),
-            tuneLabel: candidate.tuneId,
-            strategy: {
-              ...replayBaseConfig.strategy,
-              entrySessionProfile: candidate.entrySessionProfile,
-            },
-          };
-          const replay = await runScalpReplay({
-            candles: stageCandles,
-            pipSize: pipSizeForScalpSymbol(candidate.symbol),
-            config: replayConfig,
-            captureTimeline: false,
-          });
-          const weeklyStats = countWinningWeekStreak({
-            trades: replay.trades,
-            fromTs,
-            toTs: windowToTs,
-          });
-          const weeklyNetRWorker = computeWeeklyNetR({ trades: replay.trades, fromTs, toTs: windowToTs });
-          const profitFactorForGate = normalizeProfitFactorForGate({
-            profitFactor: replay.summary.profitFactor,
-            grossProfitR: replay.summary.grossProfitR,
-            grossLossR: replay.summary.grossLossR,
-          });
-          const stageResult: ScalpV2WorkerStageResult = {
-            id: stage.id,
-            weeks: stage.weeks,
-            fromTs,
-            toTs: windowToTs,
-            executed: true,
-            passed: false,
-            reason: "stage_pending_gate",
-            candles: stageCandles.length,
-            trades: replay.summary.trades,
-            netR: replay.summary.netR,
-            expectancyR: replay.summary.expectancyR,
-            winRatePct: replay.summary.winRatePct,
-            maxDrawdownR: replay.summary.maxDrawdownR,
-            profitFactor: Number.isFinite(Number(replay.summary.profitFactor))
-              ? Number(replay.summary.profitFactor)
-              : Number.isFinite(profitFactorForGate)
-                ? Number(profitFactorForGate)
-                : null,
-            winningWeeks: weeklyStats.winningWeeks,
-            consecutiveWinningWeeks: weeklyStats.consecutiveWinningWeeks,
-            durationMs: Math.max(0, nowMs() - stageStartedAtMs),
-            weeklyNetR: weeklyNetRWorker,
-          };
-          const gate = evaluateWorkerStageGate({
-            stage,
-            stageResult,
-          });
-          stageResult.passed = gate.passed;
-          stageResult.reason = gate.reason || "stage_passed";
-          stageResults[stage.id] = stageResult;
-          if (!gate.passed) {
-            blockedStages = true;
-          }
-        }
-
-        const stageAResult = stageResults.a;
-        const stageBResult = stageResults.b;
-        const stageCResult = stageResults.c;
-        const finalPass = stageCResult.passed;
-
-        if (stageAResult.passed) stageAPass += 1;
-        else stageAFail += 1;
-        if (stageBResult.executed && stageBResult.passed) stageBPass += 1;
-        else if (stageBResult.executed) stageBFail += 1;
-        if (stageCResult.executed && stageCResult.passed) stageCPass += 1;
-        else if (stageCResult.executed) stageCFail += 1;
-
-        const metadata = {
-          ...asRecord(candidate.metadata || {}),
-          worker: {
-            version: "v2_worker_stage_replay_r1",
-            evaluatedAtMs: nowMs(),
-            policy: {
-              stageA: workerPolicy.stageA,
-              stageB: workerPolicy.stageB,
-              stageC: workerPolicy.stageC,
-              minCandles: workerPolicy.minCandles,
-            },
-            windowToTs,
-            stageA: stageAResult,
-            stageB: stageBResult,
-            stageC: stageCResult,
-            finalPass,
-          },
-        };
-
-        candidateRows.push({
-          venue: candidate.venue,
-          symbol: candidate.symbol,
-          strategyId: candidate.strategyId,
-          tuneId: candidate.tuneId,
-          entrySessionProfile: candidate.entrySessionProfile,
-          score: candidate.score,
-          status: candidate.status,
-          reasonCodes: [
-            ...(candidate.reasonCodes || []),
-            finalPass
-              ? "SCALP_V2_WORKER_STAGE_C_PASS"
-              : "SCALP_V2_WORKER_STAGE_C_FAIL",
-          ],
-          metadata,
-        });
-
-        if (finalPass) {
-          existingScopeStats.stageCPass += 1;
-          const deploymentId = toDeploymentId({
-            venue: candidate.venue,
-            symbol: candidate.symbol,
-            strategyId: candidate.strategyId,
-            tuneId: candidate.tuneId,
-            session: candidate.entrySessionProfile,
-          });
-          const candidateMeta = asRecord(candidate.metadata || {});
-          if (remainingHighlightBudget > 0) {
-            highlightRows.push({
-              candidateId: deploymentId,
-              venue: candidate.venue,
-              symbol: candidate.symbol,
-              entrySessionProfile: candidate.entrySessionProfile,
-              score: candidate.score,
-              trades12w: stageCResult.trades,
-              winningWeeks12w: stageCResult.winningWeeks,
-              consecutiveWinningWeeks: stageCResult.consecutiveWinningWeeks,
-              robustness: {
-                source: "v2_worker_stage_c",
-                stageA: stageAResult,
-                stageB: stageBResult,
-                stageC: stageCResult,
-              },
-              dsl: asRecord(candidateMeta.researchDsl || {}),
-              notes: "worker_stage_c_pass",
-              remarkable: true,
-            });
-            remainingHighlightBudget -= 1;
-          } else {
-            highlightsDroppedByBudget += 1;
-          }
-        } else {
-          existingScopeStats.stageCFail += 1;
-        }
-      } catch (err: any) {
-        replayErrors += 1;
-        existingScopeStats.stageCFail += 1;
-        const message = String(err?.message || err || "worker_replay_failed").slice(
-          0,
-          300,
-        );
-        const metadata = {
-          ...asRecord(candidate.metadata || {}),
-          worker: {
-            version: "v2_worker_stage_replay_r1",
-            evaluatedAtMs: nowMs(),
-            policy: {
-              stageA: workerPolicy.stageA,
-              stageB: workerPolicy.stageB,
-              stageC: workerPolicy.stageC,
-              minCandles: workerPolicy.minCandles,
-            },
-            windowToTs,
-            stageA: buildWorkerStageSkeleton({
-              stage: workerPolicy.stageA,
-              fromTs: stageAFromTs,
-              toTs: windowToTs,
-              reason: "worker_replay_exception",
-            }),
-            stageB: buildWorkerStageSkeleton({
-              stage: workerPolicy.stageB,
-              fromTs: stageBFromTs,
-              toTs: windowToTs,
-              reason: "blocked_prior_stage_failed",
-            }),
-            stageC: buildWorkerStageSkeleton({
-              stage: workerPolicy.stageC,
-              fromTs: stageCFromTs,
-              toTs: windowToTs,
-              reason: "blocked_prior_stage_failed",
-            }),
-            finalPass: false,
-            error: message,
-          },
-        };
-        candidateRows.push({
-          venue: candidate.venue,
-          symbol: candidate.symbol,
-          strategyId: candidate.strategyId,
-          tuneId: candidate.tuneId,
-          entrySessionProfile: candidate.entrySessionProfile,
-          score: candidate.score,
-          status: candidate.status,
-          reasonCodes: [
-            ...(candidate.reasonCodes || []),
-            "SCALP_V2_WORKER_STAGE_C_FAIL",
-          ],
-          metadata,
-        });
-      }
-
-      scopeStats.set(scopeKey, existingScopeStats);
-
-      const processedSoFar = candidateIdx + 1;
-      if (candidateRows.length >= flushSize || highlightRows.length >= flushSize) {
-        await flushWorkerBuffers();
-      }
-      if (
-        processedSoFar === selectedCandidates.length ||
-        processedSoFar % heartbeatEvery === 0
-      ) {
-        await heartbeatWorker(processedSoFar);
-      }
-    }
-
-    await flushWorkerBuffers();
-
-    await Promise.all(
-      scopeCursorUpdates.map((row) => {
-        const key = `${row.venue}:${row.symbol}:${row.session}`;
-        const stats = scopeStats.get(key) || {
-          processed: 0,
-          stageCPass: 0,
-          stageCFail: 0,
-        };
-        return updateResearchCursorSafe({
-          venue: row.venue,
-          symbol: row.symbol,
-          entrySessionProfile: row.session,
-          phase: "validate",
-          lastCandidateOffset: row.nextOffset,
-          lastWeekStartMs: minWindowFromTs,
-          progress: {
-            workerProcessed: stats.processed,
-            workerStageCPass: stats.stageCPass,
-            workerStageCFail: stats.stageCFail,
-            poolSize: row.poolSize,
-            selectedCount: row.selectedCount,
-            startOffset: row.startOffset,
-            nextOffset: row.nextOffset,
-            workerBatchSize: batchSize,
-            updatedAtMs: nowMs(),
-          },
-        });
-      }),
-    );
-
-    processed = selectedCandidates.length;
-    succeeded = Math.max(0, processed - replayErrors);
-    failed = 0;
-    details = {
-      workerBatchSize: batchSize,
-      processedCandidates: selectedCandidates.length,
-      replayErrors,
-      stageAPass,
-      stageAFail,
-      stageBPass,
-      stageBFail,
-      stageCPass,
-      stageCFail,
-      highlightsUpserted,
-      highlightsDroppedByBudget,
-      persistedCandidateRows,
-      flushWrites,
-      heartbeatWrites,
-      heartbeatErrors,
-      heartbeatEvery,
-      flushSize,
-      scopeCount: scopes.length,
-      cursorUpdatedScopes: scopeCursorUpdates.length,
-      fallbackSelected,
-      requestedBatchReached: selectedCandidates.length >= batchSize,
-      filteredCandidatesOutOfScope,
-      policy: {
-        stageA: workerPolicy.stageA,
-        stageB: workerPolicy.stageB,
-        stageC: workerPolicy.stageC,
-        minCandles: workerPolicy.minCandles,
-      },
-    };
-
-    return buildScalpV2JobResult({
-      jobKind: "worker",
-      processed,
-      succeeded,
-      failed,
-      pendingAfter: 0,
-      details,
-    });
-  } catch (err: any) {
-    ok = false;
-    failed = Math.max(1, failed);
-    details = { error: err?.message || String(err) };
-    return buildScalpV2JobResult({
-      jobKind: "worker",
-      processed,
-      succeeded,
-      failed,
-      pendingAfter: 0,
-      details,
-    });
-  } finally {
-    await finalizeScalpV2Job({
-      jobKind: "worker",
-      lockOwner: owner,
-      ok,
-      details,
-    });
-  }
+  const result = await runScalpV2ResearchJob({ batchSize: params.batchSize });
+  return {
+    ...result,
+    jobKind: "worker",
+    details: { ...result.details, delegatedTo: "research" },
+  };
 }
 
+// --- Legacy evaluate/worker implementations removed ---
+// Both now delegate to runScalpV2ResearchJob which handles
+// candidate generation, cache-based dedup, and inline backtesting
+// in a single pass with no cursor or batch-size throttling.
+
+function _legacyEvaluateRemoved(): never {
+  // The old runScalpV2EvaluateJob (cursor-based, no backtest) and
+  // runScalpV2WorkerJob (DB-loaded candidates, separate backtest)
+  // have been replaced by the unified research job above.
+  throw new Error("Legacy evaluate/worker removed — use runScalpV2ResearchJob");
+}
+// Marker to prevent accidental re-addition. If TypeScript shows this as
+// unused, that's expected — it exists purely as a code-archaeology marker.
+void _legacyEvaluateRemoved;
+
+// Old evaluate/worker implementations were here (1000+ lines).
+// Removed in Phase 2 simplification — both now delegate to research.
+
+const _legacyCodeRemoved = true; void _legacyCodeRemoved;
 export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
   const owner = lockOwner("promote");
   const claimed = await claimScalpV2Job({ jobKind: "promote", lockOwner: owner });
