@@ -1843,7 +1843,8 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       (row) =>
         row.status === "evaluated" ||
         row.status === "promoted" ||
-        row.status === "shadow",
+        row.status === "shadow" ||
+        row.status === "rejected",
     );
     const existingDeploymentsRaw = await listScalpV2Deployments({ limit: 10_000 });
     const existingDeployments = existingDeploymentsRaw.filter((row) =>
