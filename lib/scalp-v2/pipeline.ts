@@ -1914,16 +1914,18 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       budgets: runtime.budgets,
     });
 
-    const candidateByDeploymentId = new Map(trimmed.kept.map((candidate) => [
-      toDeploymentId({
-        venue: candidate.venue,
-        symbol: candidate.symbol,
-        strategyId: candidate.strategyId,
-        tuneId: candidate.tuneId,
-        session: candidate.entrySessionProfile,
-      }),
-      candidate,
-    ]));
+    const candidateByDeploymentId = new Map(
+      [...trimmed.kept, ...trimmed.dropped].map((candidate) => [
+        toDeploymentId({
+          venue: candidate.venue,
+          symbol: candidate.symbol,
+          strategyId: candidate.strategyId,
+          tuneId: candidate.tuneId,
+          session: candidate.entrySessionProfile,
+        }),
+        candidate,
+      ]),
+    );
     const droppedDeploymentIds = new Set(
       trimmed.dropped.map((candidate) =>
         toDeploymentId({
@@ -2163,9 +2165,9 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
             ? "retired_cooldown"
             : "suspended_cooldown";
       } else if (!candidate) {
-        reason = droppedDeploymentIds.has(deploymentId)
-          ? "budget_cap_rejected"
-          : "candidate_missing";
+        reason = "candidate_missing";
+      } else if (droppedDeploymentIds.has(deploymentId)) {
+        reason = "budget_cap_rejected";
       } else if (!workerGate.stageCPass) {
         reason = workerGate.reason || "worker_stage_c_failed";
       } else if (backtestFourWeekGateFailed) {

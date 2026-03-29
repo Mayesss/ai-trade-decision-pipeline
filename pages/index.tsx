@@ -4988,11 +4988,19 @@ export default function Home() {
         } satisfies ScalpWorkerJobGridRow;
       }
       const forwardValidation = deployment.forwardValidation || null;
-      // Extract stage-C metrics from promotionGate when worker rows are absent
+      // Extract best-available stage metrics from promotionGate when worker rows are absent.
+      // Prefer stage C, fall back to B then A when prior stages blocked execution.
       const gate = deployment.promotionGate || {};
       const gateWorker = (gate.worker || gate) as Record<string, any>;
-      const gateStageCRaw = (gateWorker.stageC || {}) as Record<string, any>;
-      const gateStageC = gateStageCRaw.executed ? gateStageCRaw : null;
+      const gateBestStage = (() => {
+        for (const key of ["stageC", "stageB", "stageA"] as const) {
+          const raw = (gateWorker[key] || {}) as Record<string, any>;
+          if (raw.executed) return { data: raw, label: key.replace("stage", "").toUpperCase() };
+        }
+        return null;
+      })();
+      const gateStageC = gateBestStage?.data ?? null;
+      const gateStageLabel = gateBestStage?.label ?? "C";
       const gateTrades = asFiniteNumber(gateStageC?.trades);
       const gateNetR = asFiniteNumber(gateStageC?.netR);
       const gateExpR = asFiniteNumber(gateStageC?.expectancyR);
@@ -5039,7 +5047,7 @@ export default function Home() {
         reason:
           deployment.promotionReason ||
           (deployment.promotionEligible ? "eligible" : "not_evaluated"),
-        status: gateWindowNetRs.length > 0 ? `C:${gateWindowNetRs.length}` : "registry",
+        status: gateWindowNetRs.length > 0 ? `${gateStageLabel}:${gateWindowNetRs.length}` : "registry",
         windowCount: gateWindowNetRs.length,
         windowsResults: gateWindowNetRs.length > 0
           ? gateWindowNetRs.map((w) => w.display).join(" | ")
