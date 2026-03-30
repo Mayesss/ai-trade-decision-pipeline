@@ -2,6 +2,10 @@ import {
   resolveModelGuidedComposerExecutionPlanFromTuneId,
   MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
 } from "../../scalp-v2/composerExecution";
+import {
+  inScalpEntrySessionProfileWindow,
+  normalizeScalpEntrySessionProfile,
+} from "../sessions";
 
 import { adaptiveMetaSelectorM15M3Strategy } from "./adaptiveMetaSelectorM15M3";
 import { anchoredVwapReversionM15M3Strategy } from "./anchoredVwapReversionM15M3";
@@ -73,6 +77,37 @@ function resolveDelegate(
 
 function applyDelegate(input: ScalpStrategyPhaseInput): ScalpStrategyPhaseOutput {
   const { plan, strategy } = resolveDelegate(input);
+
+  // Central session gate: ensure ALL delegate strategies respect the assigned
+  // session window. Some delegates already check this themselves — the
+  // redundancy is harmless and guarantees no strategy can trade outside its
+  // assigned session.
+  const entrySessionProfile = normalizeScalpEntrySessionProfile(
+    input.cfg.sessions.entrySessionProfile,
+    "berlin",
+  );
+  if (!inScalpEntrySessionProfileWindow(input.nowMs, entrySessionProfile)) {
+    return {
+      state: { ...input.state, state: "IDLE" },
+      reasonCodes: dedupeReasonCodes([
+        "MODEL_GUIDED_COMPOSER_ACTIVE",
+        `MODEL_GUIDED_ARM_${plan.armId.toUpperCase()}`,
+        `MODEL_GUIDED_DELEGATE_${strategy.id.toUpperCase()}`,
+        "SESSION_FILTER_OUTSIDE_ENTRY_PROFILE",
+        `SESSION_PROFILE_${entrySessionProfile.toUpperCase()}`,
+      ]),
+      entryIntent: null,
+      meta: {
+        modelGuidedComposer: {
+          armId: plan.armId,
+          delegateStrategyId: strategy.id,
+          source: plan.source,
+          sessionGated: true,
+        },
+      },
+    };
+  }
+
   const phase = strategy.applyPhaseDetectors(input);
   return {
     ...phase,
