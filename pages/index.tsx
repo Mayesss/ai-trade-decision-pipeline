@@ -149,6 +149,7 @@ type ScalpDashboardSymbol = {
   strategyId: string;
   tuneId: string;
   deploymentId: string;
+  entrySessionProfile?: ScalpEntrySessionProfileUi | string;
   enabled?: boolean;
   tune: string;
   cronSchedule?: string | null;
@@ -275,6 +276,7 @@ type ScalpSummaryDeployment = {
   symbol?: string;
   strategyId?: string;
   tuneId?: string;
+  entrySessionProfile?: ScalpEntrySessionProfileUi | string;
   source?: string;
   enabled?: boolean;
   inUniverse?: boolean | null;
@@ -297,6 +299,7 @@ type ScalpSummaryWorkerRow = {
   symbol?: string;
   strategyId?: string;
   tuneId?: string;
+  entrySessionProfile?: ScalpEntrySessionProfileUi | string;
   workerId?: string | null;
   weekStartMs?: number | null;
   weekEndMs?: number | null;
@@ -453,6 +456,7 @@ type ScalpWorkerTask = {
   symbol?: string;
   strategyId?: string;
   tuneId?: string;
+  entrySessionProfile?: ScalpEntrySessionProfileUi | null;
   deploymentId?: string | null;
   workerId?: string | null;
   windowFromTs?: number;
@@ -475,6 +479,7 @@ type ScalpOpsDeploymentRow = {
   symbol: string;
   strategyId: string;
   tuneId: string;
+  entrySessionProfile: ScalpEntrySessionProfileUi | null;
   source: string;
   enabled: boolean;
   inUniverse: boolean | null;
@@ -548,6 +553,7 @@ type ScalpWorkerSortState = {
 type ScalpWorkerJobGridRow = {
   rowId: string;
   deploymentId: string | null;
+  entrySessionProfile?: ScalpEntrySessionProfileUi | null;
   workerOnly?: boolean;
   symbol: string;
   strategyId: string;
@@ -693,6 +699,54 @@ function stripScalpVenuePrefixFromDeploymentId(
   const base = withoutVenue.slice(0, sessionMatch.index).trim();
   if (!session) return base || withoutVenue;
   return base ? `${base} · ${session}` : session;
+}
+
+function normalizeScalpEntrySessionProfileUi(
+  value: unknown,
+): ScalpEntrySessionProfileUi | null {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (
+    normalized === "berlin" ||
+    normalized === "tokyo" ||
+    normalized === "newyork" ||
+    normalized === "sydney"
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function extractScalpEntrySessionProfileFromDeploymentId(
+  deploymentId: string | null | undefined,
+): ScalpEntrySessionProfileUi | null {
+  const raw = String(deploymentId || "").trim();
+  if (!raw) return null;
+  const withoutVenue = raw.replace(/^(bitget|capital):/i, "").trim();
+  const sessionMatch = withoutVenue.match(/__sp_([a-z0-9_-]+)$/i);
+  if (!sessionMatch) return null;
+  return normalizeScalpEntrySessionProfileUi(sessionMatch[1]);
+}
+
+function buildScalpCandidateSessionKey(params: {
+  symbol: string;
+  strategyId: string;
+  tuneId: string;
+  entrySessionProfile: ScalpEntrySessionProfileUi | null;
+}): string {
+  const symbol = String(params.symbol || "")
+    .trim()
+    .toUpperCase();
+  const strategyId = String(params.strategyId || "")
+    .trim()
+    .toLowerCase();
+  const tuneId = String(params.tuneId || "")
+    .trim()
+    .toLowerCase();
+  const session =
+    normalizeScalpEntrySessionProfileUi(params.entrySessionProfile) || "unknown";
+  return `${symbol}~${strategyId}~${tuneId}~${session}`;
 }
 
 const ADMIN_SECRET_STORAGE_KEY = "admin_access_secret";
@@ -868,6 +922,9 @@ function toUiScalpSummaryFromV2(
       .trim()
       .toLowerCase();
     const enabled = Boolean(deployment.enabled);
+    const entrySessionProfile = normalizeScalpEntrySessionProfileUi(
+      deployment.entrySessionProfile,
+    );
     const promotionGate = asPlainObject(deployment.promotionGate);
     const promotionEligible =
       typeof promotionGate.eligible === "boolean" ? promotionGate.eligible : enabled;
@@ -892,6 +949,7 @@ function toUiScalpSummaryFromV2(
       strategyId,
       tuneId,
       deploymentId,
+      entrySessionProfile,
       enabled,
       tune: tuneId || "default",
       cronSchedule: null,
@@ -965,6 +1023,9 @@ function toUiScalpSummaryFromV2(
       tuneId: String(row.tuneId || "")
         .trim()
         .toLowerCase(),
+      entrySessionProfile: normalizeScalpEntrySessionProfileUi(
+        row.entrySessionProfile,
+      ),
       source: "scalp_v2",
       enabled,
       inUniverse: true,
@@ -1030,13 +1091,18 @@ function toUiScalpSummaryFromV2(
     const tuneId = String(row.tuneId || "")
       .trim()
       .toLowerCase();
-    const entrySessionProfile = String(row.entrySessionProfile || "")
-      .trim()
-      .toLowerCase();
+    const entrySessionProfile = normalizeScalpEntrySessionProfileUi(
+      row.entrySessionProfile,
+    );
     if (!deploymentId || !symbol || !strategyId || !tuneId || !entrySessionProfile)
       continue;
     deploymentIdByCandidateKey.set(
-      `${symbol}~${strategyId}~${tuneId}~${entrySessionProfile}`,
+      buildScalpCandidateSessionKey({
+        symbol,
+        strategyId,
+        tuneId,
+        entrySessionProfile,
+      }),
       deploymentId,
     );
   }
@@ -1073,13 +1139,18 @@ function toUiScalpSummaryFromV2(
       const tuneId = String(candidate.tuneId || "")
         .trim()
         .toLowerCase();
-      const entrySessionProfile = String(candidate.entrySessionProfile || "")
-        .trim()
-        .toLowerCase();
+      const entrySessionProfile = normalizeScalpEntrySessionProfileUi(
+        candidate.entrySessionProfile,
+      );
       const venue = String(candidate.venue || "").trim().toLowerCase();
       const deploymentId =
         deploymentIdByCandidateKey.get(
-          `${symbol}~${strategyId}~${tuneId}~${entrySessionProfile}`,
+          buildScalpCandidateSessionKey({
+            symbol,
+            strategyId,
+            tuneId,
+            entrySessionProfile,
+          }),
         ) || (venue && symbol && strategyId && tuneId && entrySessionProfile
           ? `${venue}:${symbol}~${strategyId}~${tuneId}__sp_${entrySessionProfile}`
           : "");
@@ -1131,6 +1202,8 @@ function toUiScalpSummaryFromV2(
             symbol,
             strategyId,
             tuneId,
+            entrySessionProfile:
+              normalizeScalpEntrySessionProfileUi(entrySessionProfile),
             workerId: `v2_research_stage_${stage.id}`,
             weekStartMs: fromTs,
             weekEndMs: toTs,
@@ -1170,6 +1243,8 @@ function toUiScalpSummaryFromV2(
           symbol,
           strategyId,
           tuneId,
+          entrySessionProfile:
+            normalizeScalpEntrySessionProfileUi(entrySessionProfile),
           workerId: `v2_research_week`,
           weekStartMs: weekStart,
           weekEndMs: weekEnd,
@@ -3401,12 +3476,18 @@ export default function Home() {
       Number.isFinite(row.netR)
         ? row.netR / row.tradesPlaced
         : null;
+    const entrySessionProfile =
+      normalizeScalpEntrySessionProfileUi(row.entrySessionProfile) ||
+      extractScalpEntrySessionProfileFromDeploymentId(row.deploymentId) ||
+      normalizeScalpEntrySessionProfileUi(scalpSummary?.entrySessionProfile) ||
+      null;
 
     return {
       deploymentId: row.deploymentId,
       symbol: row.symbol,
       strategyId: row.strategyId,
       tuneId: String(row.tuneId || row.tune || "default"),
+      entrySessionProfile,
       source: "runtime",
       enabled: row.enabled === true,
       inUniverse: null,
@@ -3435,12 +3516,17 @@ export default function Home() {
         .toUpperCase();
       const strategyId = String(row?.strategyId || "").trim();
       if (!deploymentId || !symbol || !strategyId) return out;
+      const entrySessionProfile =
+        normalizeScalpEntrySessionProfileUi(row?.entrySessionProfile) ||
+        extractScalpEntrySessionProfileFromDeploymentId(deploymentId) ||
+        null;
       out.push({
         deploymentId,
         symbol,
         strategyId,
         lifecycleState: normalizeScalpLifecycleState(row?.lifecycleState),
         tuneId: String(row?.tuneId || "").trim() || "default",
+        entrySessionProfile,
         source: String(row?.source || "").trim() || "registry",
         enabled: row?.enabled === true,
         inUniverse:
@@ -3497,13 +3583,33 @@ export default function Home() {
       scalpForwardProfitablePctRows.length
     : null;
   const scalpOpsByCandidateKey = useMemo(
-    () =>
-      new Map<string, ScalpOpsDeploymentRow>(
-        scalpOpsDeployments.map(
-          (row) =>
-          [`${row.symbol}~${row.strategyId}~${row.tuneId}`, row] as const,
-        ),
-      ),
+    () => {
+      const map = new Map<string, ScalpOpsDeploymentRow>();
+      for (const row of scalpOpsDeployments) {
+        const entrySessionProfile =
+          row.entrySessionProfile ||
+          extractScalpEntrySessionProfileFromDeploymentId(row.deploymentId) ||
+          null;
+        map.set(
+          buildScalpCandidateSessionKey({
+            symbol: row.symbol,
+            strategyId: row.strategyId,
+            tuneId: row.tuneId,
+            entrySessionProfile,
+          }),
+          row,
+        );
+        const legacyKey = `${String(row.symbol || "")
+          .trim()
+          .toUpperCase()}~${String(row.strategyId || "")
+          .trim()
+          .toLowerCase()}~${String(row.tuneId || "")
+          .trim()
+          .toLowerCase()}`;
+        if (!map.has(legacyKey)) map.set(legacyKey, row);
+      }
+      return map;
+    },
     [scalpOpsDeployments],
   );
   const scalpPipelineJobs = (
@@ -3683,9 +3789,17 @@ export default function Home() {
       const windowToTs = asFiniteNumber(row?.weekEndMs);
       if (windowFromTs === null || windowToTs === null) continue;
       const deploymentIdRaw = String(row?.deploymentId || "").trim();
+      const entrySessionProfile =
+        normalizeScalpEntrySessionProfileUi(row?.entrySessionProfile) ||
+        extractScalpEntrySessionProfileFromDeploymentId(deploymentIdRaw) ||
+        normalizeScalpEntrySessionProfileUi(scalpSummary?.entrySessionProfile) ||
+        normalizeScalpEntrySessionProfileUi(scalpSession) ||
+        null;
       const deploymentId =
         deploymentIdRaw ||
-        `${symbol}~${strategyId.toLowerCase()}~${tuneId.toLowerCase()}`;
+        (entrySessionProfile
+          ? `${symbol}~${strategyId.toLowerCase()}~${tuneId.toLowerCase()}__sp_${entrySessionProfile}`
+          : `${symbol}~${strategyId.toLowerCase()}~${tuneId.toLowerCase()}`);
       if (!symbol || !strategyId) continue;
       const rawStatus = String(row?.status || "pending")
         .trim()
@@ -3701,6 +3815,7 @@ export default function Home() {
         symbol,
         strategyId,
         tuneId,
+        entrySessionProfile,
         deploymentId,
         workerId: String(row?.workerId || "").trim() || null,
         windowFromTs,
@@ -3723,7 +3838,7 @@ export default function Home() {
       });
     }
     return tasks;
-  }, [scalpSummaryWorkerRows]);
+  }, [scalpSummaryWorkerRows, scalpSummary?.entrySessionProfile, scalpSession]);
   const scalpWorkerGridTasks = scalpWorkerTasks;
   const scalpWorkerRunningStaleAfterMs = 20 * 60_000;
   const scalpWorkerNowMs = Date.now();
@@ -3882,8 +3997,22 @@ export default function Home() {
         const toTs =
           asFiniteNumber(task?.windowToTs) ??
           asFiniteNumber(task?.result?.windowToTs);
-        const candidateKey = `${symbol}~${strategyId}~${tuneId}`;
-        const deploymentRow = scalpOpsByCandidateKey.get(candidateKey) || null;
+        const entrySessionProfile =
+          normalizeScalpEntrySessionProfileUi(task?.entrySessionProfile) ||
+          extractScalpEntrySessionProfileFromDeploymentId(taskDeploymentId) ||
+          normalizeScalpEntrySessionProfileUi(scalpSession) ||
+          null;
+        const candidateSessionKey = buildScalpCandidateSessionKey({
+          symbol,
+          strategyId,
+          tuneId,
+          entrySessionProfile,
+        });
+        const legacyCandidateKey = `${symbol}~${strategyId}~${tuneId}`;
+        const deploymentRow =
+          scalpOpsByCandidateKey.get(candidateSessionKey) ||
+          scalpOpsByCandidateKey.get(legacyCandidateKey) ||
+          null;
         const forwardValidation = deploymentRow?.forwardValidation || null;
         const deploymentId =
           taskDeploymentId || deploymentRow?.deploymentId || null;
@@ -3906,6 +4035,7 @@ export default function Home() {
           symbol,
           strategyId,
           tuneId,
+          entrySessionProfile,
           deploymentId,
           forwardValidation,
           deployed,
@@ -3993,6 +4123,7 @@ export default function Home() {
   }, [
     scalpWorkerGridTasks,
     scalpOpsByCandidateKey,
+    scalpSession,
     scalpWorkerSort.key,
     scalpWorkerSort.direction,
   ]);
@@ -4755,8 +4886,25 @@ export default function Home() {
 
     const byKey = new Map<string, MutableGridRow>();
     for (const row of scalpWorkerTaskRows) {
-      const candidateKey = `${row.symbol}~${row.strategyId}~${row.tuneId}`;
-      const key = row.deploymentId || candidateKey;
+      const entrySessionProfile =
+        normalizeScalpEntrySessionProfileUi(row.entrySessionProfile) ||
+        extractScalpEntrySessionProfileFromDeploymentId(row.deploymentId) ||
+        normalizeScalpEntrySessionProfileUi(scalpSession) ||
+        null;
+      const candidateSessionKey = buildScalpCandidateSessionKey({
+        symbol: row.symbol,
+        strategyId: row.strategyId,
+        tuneId: row.tuneId,
+        entrySessionProfile,
+      });
+      const legacyCandidateKey = `${String(row.symbol || "")
+        .trim()
+        .toUpperCase()}~${String(row.strategyId || "")
+        .trim()
+        .toLowerCase()}~${String(row.tuneId || "")
+        .trim()
+        .toLowerCase()}`;
+      const key = row.deploymentId || candidateSessionKey || legacyCandidateKey;
       const windowLabel =
         row.windowFromTs === null || row.windowToTs === null
           ? "—"
@@ -4807,6 +4955,7 @@ export default function Home() {
         byKey.set(key, {
           rowId: key,
           deploymentId: row.deploymentId || null,
+          entrySessionProfile,
           workerOnly: false,
           symbol: row.symbol,
           strategyId: row.strategyId,
@@ -4855,6 +5004,8 @@ export default function Home() {
       current.deployed = current.deployed || row.deployed;
       if (!current.deploymentId && row.deploymentId)
         current.deploymentId = row.deploymentId;
+      if (!current.entrySessionProfile && entrySessionProfile)
+        current.entrySessionProfile = entrySessionProfile;
       if (!current.forwardValidation && row.forwardValidation)
         current.forwardValidation = row.forwardValidation;
       if (current.deploymentEnabled === null && row.deploymentEnabled !== null)
@@ -4918,6 +5069,7 @@ export default function Home() {
       out.push({
         rowId: row.rowId,
         deploymentId: row.deploymentId,
+        entrySessionProfile: row.entrySessionProfile,
         symbol: row.symbol,
         strategyId: row.strategyId,
         tuneId: row.tuneId,
@@ -4951,7 +5103,7 @@ export default function Home() {
       });
     }
     return out.sort(compareScalpWorkerJobGridRows);
-  }, [scalpWorkerTaskRows]);
+  }, [scalpWorkerTaskRows, scalpSession]);
   const scalpAllDeploymentsGridRows = useMemo<ScalpWorkerJobGridRow[]>(() => {
     const workerMetricsByDeploymentId = new Map(
       scalpWorkerJobsGridRows
@@ -4974,6 +5126,10 @@ export default function Home() {
           ...workerMetrics,
           rowId: `deployment:${deployment.deploymentId}`,
           deploymentId: deployment.deploymentId,
+          entrySessionProfile:
+            deployment.entrySessionProfile ||
+            workerMetrics.entrySessionProfile ||
+            null,
           workerOnly: false,
           forwardValidation:
             deployment.forwardValidation || workerMetrics.forwardValidation,
@@ -5034,6 +5190,7 @@ export default function Home() {
       return {
         rowId: `deployment:${deployment.deploymentId}`,
         deploymentId: deployment.deploymentId,
+        entrySessionProfile: deployment.entrySessionProfile || null,
         workerOnly: false,
         symbol: deployment.symbol,
         strategyId: deployment.strategyId,
