@@ -149,7 +149,7 @@ type ScalpDashboardSymbol = {
   strategyId: string;
   tuneId: string;
   deploymentId: string;
-  entrySessionProfile?: ScalpEntrySessionProfileUi | string;
+  entrySessionProfile?: ScalpEntrySessionProfileUi | string | null;
   enabled?: boolean;
   tune: string;
   cronSchedule?: string | null;
@@ -276,7 +276,7 @@ type ScalpSummaryDeployment = {
   symbol?: string;
   strategyId?: string;
   tuneId?: string;
-  entrySessionProfile?: ScalpEntrySessionProfileUi | string;
+  entrySessionProfile?: ScalpEntrySessionProfileUi | string | null;
   source?: string;
   enabled?: boolean;
   inUniverse?: boolean | null;
@@ -299,7 +299,7 @@ type ScalpSummaryWorkerRow = {
   symbol?: string;
   strategyId?: string;
   tuneId?: string;
-  entrySessionProfile?: ScalpEntrySessionProfileUi | string;
+  entrySessionProfile?: ScalpEntrySessionProfileUi | string | null;
   workerId?: string | null;
   weekStartMs?: number | null;
   weekEndMs?: number | null;
