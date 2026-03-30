@@ -1,3 +1,23 @@
+import {
+  ENTRY_TRIGGER_SHORT_CODES,
+  resolveEntryTriggerBlockFromShortCode,
+  type EntryTriggerBlockId,
+} from "./entryTriggerPresets";
+import {
+  EXIT_RULE_SHORT_CODES,
+  resolveExitRuleBlockFromShortCode,
+  type ExitRuleBlockId,
+} from "./exitRulePresets";
+import {
+  RISK_RULE_SHORT_CODES,
+  resolveRiskRuleBlockFromShortCode,
+  type RiskRuleBlockId,
+} from "./riskRulePresets";
+import {
+  STATE_MACHINE_SHORT_CODES,
+  resolveStateMachineBlockFromShortCode,
+  type StateMachineBlockId,
+} from "./stateMachinePresets";
 import type { ScalpV2PrimitiveBlockMap } from "./types";
 
 export const MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID =
@@ -36,6 +56,10 @@ export interface ModelGuidedComposerExecutionPlan {
   armId: ModelGuidedComposerArmId;
   baseArm: ModelGuidedComposerBaseArm;
   tfVariant: ModelGuidedComposerTimeframeVariant;
+  exitRuleBlockId: ExitRuleBlockId | null;
+  entryTriggerBlockId: EntryTriggerBlockId | null;
+  riskRuleBlockId: RiskRuleBlockId | null;
+  stateMachineBlockId: StateMachineBlockId | null;
   strategyId: string;
   source: "pattern_block" | "tune_prefix" | "fallback";
   patternBlockId: string | null;
@@ -206,12 +230,20 @@ function buildPlan(
   armId: ModelGuidedComposerArmId,
   source: ModelGuidedComposerExecutionPlan["source"],
   patternBlockId: string | null,
+  exitRuleBlockId: ExitRuleBlockId | null = null,
+  entryTriggerBlockId: EntryTriggerBlockId | null = null,
+  riskRuleBlockId: RiskRuleBlockId | null = null,
+  stateMachineBlockId: StateMachineBlockId | null = null,
 ): ModelGuidedComposerExecutionPlan {
   const { baseArm, tfVariant } = splitArm(armId);
   return {
     armId,
     baseArm,
     tfVariant,
+    exitRuleBlockId,
+    entryTriggerBlockId,
+    riskRuleBlockId,
+    stateMachineBlockId,
     strategyId: ARM_TO_STRATEGY_ID[armId] || strategyIdForArm(baseArm, tfVariant),
     source,
     patternBlockId,
@@ -231,30 +263,100 @@ export function isModelGuidedComposerStrategyId(value: unknown): boolean {
   );
 }
 
-export function parseModelGuidedComposerArmFromTuneId(
-  tuneId: unknown,
-): ModelGuidedComposerArmId | null {
+/**
+ * Parse arm, exit, entry, risk, and state machine codes from a tuneId.
+ *
+ * Codes are identified by prefix: x=exit, e=entry, r=risk, s=state machine.
+ * They appear between the TF variant and the hex digest token.
+ */
+function parseTuneIdSegments(tuneId: unknown): {
+  baseArm: ModelGuidedComposerBaseArm | null;
+  tfVariant: ModelGuidedComposerTimeframeVariant | null;
+  exitCode: string | null;
+  entryCode: string | null;
+  riskCode: string | null;
+  smCode: string | null;
+} {
+  const empty = { baseArm: null, tfVariant: null, exitCode: null, entryCode: null, riskCode: null, smCode: null };
   const normalized = String(tuneId || "").trim().toLowerCase();
-  if (!normalized) return null;
-  // New format: mdl_{baseArm}_{tfVariant}_{digest} e.g. mdl_regime_m15_m3_a1b2c3d4e5
-  const fullMatch = normalized.match(/^mdl_([a-z]+)_(m\d+_m\d+)(?:_|$)/);
-  if (fullMatch) {
-    const baseArm = normalizeBaseArm(fullMatch[1]);
-    const tfVar = normalizeTfVariant(fullMatch[2]);
-    if (baseArm && tfVar) return `${baseArm}_${tfVar}`;
+  if (!normalized) return empty;
+
+  // Extract arm and TF first
+  const baseMatch = normalized.match(/^mdl_([a-z]+)_(m\d+_m\d+)(?:_(.+))?$/);
+  if (baseMatch) {
+    const baseArm = normalizeBaseArm(baseMatch[1]);
+    const tfVar = normalizeTfVariant(baseMatch[2]);
+    if (baseArm && tfVar) {
+      const rest = baseMatch[3] || "";
+      const segments = rest ? rest.split("_") : [];
+      let exitCode: string | null = null;
+      let entryCode: string | null = null;
+      let riskCode: string | null = null;
+      let smCode: string | null = null;
+      for (const seg of segments) {
+        if (!exitCode && seg.startsWith("x")) { exitCode = seg; continue; }
+        if (!entryCode && seg.startsWith("e")) { entryCode = seg; continue; }
+        if (!riskCode && seg.startsWith("r")) { riskCode = seg; continue; }
+        if (!smCode && seg.startsWith("s")) { smCode = seg; continue; }
+        break;
+      }
+      return { baseArm, tfVariant: tfVar, exitCode, entryCode, riskCode, smCode };
+    }
   }
-  // Backward compat: mdl_{baseArm}_{digest} e.g. mdl_regime_abc123
+
+  // Legacy: mdl_{arm}_{digest}
   const legacyMatch = normalized.match(/^mdl_([a-z]+)(?:_|$)/);
   if (legacyMatch) {
     const baseArm = normalizeBaseArm(legacyMatch[1]);
-    if (baseArm) return `${baseArm}_${BASE_ARM_DEFAULT_TF[baseArm]}`;
+    if (baseArm) return { ...empty, baseArm, tfVariant: BASE_ARM_DEFAULT_TF[baseArm] };
   }
-  return null;
+
+  return empty;
+}
+
+export function parseModelGuidedComposerArmFromTuneId(
+  tuneId: unknown,
+): ModelGuidedComposerArmId | null {
+  const { baseArm, tfVariant } = parseTuneIdSegments(tuneId);
+  if (!baseArm || !tfVariant) return null;
+  return `${baseArm}_${tfVariant}`;
+}
+
+export function parseExitRuleFromTuneId(
+  tuneId: unknown,
+): ExitRuleBlockId | null {
+  const { exitCode } = parseTuneIdSegments(tuneId);
+  return resolveExitRuleBlockFromShortCode(exitCode);
+}
+
+export function parseEntryTriggerFromTuneId(
+  tuneId: unknown,
+): EntryTriggerBlockId | null {
+  const { entryCode } = parseTuneIdSegments(tuneId);
+  return resolveEntryTriggerBlockFromShortCode(entryCode);
+}
+
+export function parseRiskRuleFromTuneId(
+  tuneId: unknown,
+): RiskRuleBlockId | null {
+  const { riskCode } = parseTuneIdSegments(tuneId);
+  return resolveRiskRuleBlockFromShortCode(riskCode);
+}
+
+export function parseStateMachineFromTuneId(
+  tuneId: unknown,
+): StateMachineBlockId | null {
+  const { smCode } = parseTuneIdSegments(tuneId);
+  return resolveStateMachineBlockFromShortCode(smCode);
 }
 
 export function buildModelGuidedComposerTuneId(params: {
   armId: ModelGuidedComposerArmId;
   digest: string;
+  exitRuleId?: string | null;
+  entryTriggerId?: string | null;
+  riskRuleId?: string | null;
+  stateMachineId?: string | null;
 }): string {
   const armId = normalizeArm(params.armId) || DEFAULT_ARM;
   const { baseArm, tfVariant } = splitArm(armId);
@@ -263,6 +365,22 @@ export function buildModelGuidedComposerTuneId(params: {
     .toLowerCase()
     .replace(/[^a-f0-9]/g, "");
   const token = (digest || "seed00000000").slice(0, 10);
+  const exitCode = params.exitRuleId
+    ? EXIT_RULE_SHORT_CODES[params.exitRuleId] || null
+    : null;
+  const entryCode = params.entryTriggerId
+    ? ENTRY_TRIGGER_SHORT_CODES[params.entryTriggerId] || null
+    : null;
+  const riskCode = params.riskRuleId
+    ? RISK_RULE_SHORT_CODES[params.riskRuleId] || null
+    : null;
+  const smCode = params.stateMachineId
+    ? STATE_MACHINE_SHORT_CODES[params.stateMachineId] || null
+    : null;
+  const codes = [exitCode, entryCode, riskCode, smCode].filter(Boolean);
+  if (codes.length) {
+    return `mdl_${baseArm}_${tfVariant}_${codes.join("_")}_${token}`;
+  }
   return `mdl_${baseArm}_${tfVariant}_${token}`;
 }
 
@@ -271,7 +389,11 @@ export function resolveModelGuidedComposerExecutionPlanFromTuneId(
 ): ModelGuidedComposerExecutionPlan {
   const armId = parseModelGuidedComposerArmFromTuneId(tuneId);
   if (!armId) return fallbackPlan();
-  return buildPlan(armId, "tune_prefix", null);
+  const exitRuleBlockId = parseExitRuleFromTuneId(tuneId);
+  const entryTriggerBlockId = parseEntryTriggerFromTuneId(tuneId);
+  const riskRuleBlockId = parseRiskRuleFromTuneId(tuneId);
+  const stateMachineBlockId = parseStateMachineFromTuneId(tuneId);
+  return buildPlan(armId, "tune_prefix", null, exitRuleBlockId, entryTriggerBlockId, riskRuleBlockId, stateMachineBlockId);
 }
 
 export function resolveModelGuidedComposerExecutionPlanFromBlocks(

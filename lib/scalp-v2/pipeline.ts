@@ -18,8 +18,25 @@ import {
 } from "./config";
 import {
   MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
+  buildModelGuidedComposerTuneId,
+  parseEntryTriggerFromTuneId,
+  parseExitRuleFromTuneId,
+  parseRiskRuleFromTuneId,
   resolveModelGuidedComposerExecutionPlanFromBlocks,
+  resolveModelGuidedComposerExecutionPlanFromTuneId,
 } from "./composerExecution";
+import { resolveEntryTriggerOverrides } from "./entryTriggerPresets";
+import { resolveExitRuleOverrides } from "./exitRulePresets";
+import {
+  mergeRiskProfileWithOverrides,
+  resolveRiskRuleOverrides,
+  resolveRiskRuleReplayOverrides,
+} from "./riskRulePresets";
+import {
+  resolveStateMachineOverrides,
+  resolveStateMachineReplayOverrides,
+  STATE_MACHINE_RESEARCH_PROFILES,
+} from "./stateMachinePresets";
 import { runScalpV2ExecuteCycle } from "./executeAdapter";
 import {
   appendScalpV2ExecutionEvent,
@@ -1334,11 +1351,83 @@ export async function runScalpV2ResearchJob(params: {
       }
     }
 
+    // --- State machine variants for enabled (graduated) deployments ---
+    let smVariantsGenerated = 0;
+    try {
+      const enabledDeployments = await listScalpV2Deployments({ enabledOnly: true, limit: 500 });
+      for (const dep of enabledDeployments) {
+        if (!isScalpV2RuntimeSymbolInScope({ runtime, venue: dep.venue, symbol: dep.symbol })) continue;
+        const session = dep.entrySessionProfile;
+        const plan = resolveModelGuidedComposerExecutionPlanFromTuneId(dep.tuneId);
+        const depDsl = asRecord(asRecord(dep.promotionGate).dsl || {});
+        const baseBlocksByFamily = {
+          pattern: Array.isArray(depDsl.pattern) ? depDsl.pattern as string[] : [],
+          session_filter: Array.isArray(depDsl.session_filter) ? depDsl.session_filter as string[] : [],
+          state_machine: Array.isArray(depDsl.state_machine) ? depDsl.state_machine as string[] : [],
+          entry_trigger: Array.isArray(depDsl.entry_trigger) ? depDsl.entry_trigger as string[] : [],
+          exit_rule: Array.isArray(depDsl.exit_rule) ? depDsl.exit_rule as string[] : [],
+          risk_rule: Array.isArray(depDsl.risk_rule) ? depDsl.risk_rule as string[] : [],
+        };
+
+        for (const smId of STATE_MACHINE_RESEARCH_PROFILES) {
+          const variantTuneId = buildModelGuidedComposerTuneId({
+            armId: plan.armId,
+            digest: `${dep.deploymentId}:${smId}`,
+            exitRuleId: parseExitRuleFromTuneId(dep.tuneId)?.toString() || undefined,
+            entryTriggerId: parseEntryTriggerFromTuneId(dep.tuneId)?.toString() || undefined,
+            riskRuleId: parseRiskRuleFromTuneId(dep.tuneId)?.toString() || undefined,
+            stateMachineId: smId,
+          });
+          // Skip if this variant already exists as a candidate
+          const existsInGrid = allCandidates.some((c) => c.tuneId === variantTuneId);
+          if (existsInGrid) continue;
+
+          const variantScore = 90 + hashScoreSeed(`${dep.deploymentId}:${smId}`) / 1000;
+          allCandidates.push({
+            venue: dep.venue as ScalpV2Venue,
+            symbol: dep.symbol,
+            session,
+            strategyId: dep.strategyId,
+            tuneId: variantTuneId,
+            candidateId: variantTuneId,
+            score: variantScore,
+            dsl: {
+              candidateId: variantTuneId,
+              tuneId: variantTuneId,
+              venue: dep.venue as ScalpV2Venue,
+              symbol: dep.symbol,
+              entrySessionProfile: session,
+              blocksByFamily: {
+                ...baseBlocksByFamily,
+                state_machine: [smId],
+              },
+              referenceStrategyIds: [],
+              supportScore: 0,
+              generatedAtMs: Date.now(),
+              model: {
+                family: "interpretable_pattern_blend",
+                version: "sm_variant_v1",
+                interpretableScore: 0,
+                treeScore: 0,
+                sequenceScore: 0,
+                compositeScore: 0.5,
+                confidence: 0.5,
+              },
+            },
+          });
+          smVariantsGenerated += 1;
+        }
+      }
+    } catch {
+      // Non-fatal: SM variants are an optimization, not a requirement
+    }
+
     if (!allCandidates.length) {
       details = {
         reason: "no_candidates_generated",
         scopeCount: scopes.length,
         poolSizeTotal,
+        smVariantsGenerated,
       };
       return buildScalpV2JobResult({
         jobKind: "research",
@@ -1510,6 +1599,18 @@ export async function runScalpV2ResearchJob(params: {
             tuneId: candidate.tuneId,
             session: candidate.session,
           });
+          const exitOverrides = resolveExitRuleOverrides(
+            candidate.dsl.blocksByFamily.exit_rule,
+          );
+          const entryOverrides = resolveEntryTriggerOverrides(
+            candidate.dsl.blocksByFamily.entry_trigger,
+          );
+          const riskReplayOverrides = resolveRiskRuleReplayOverrides(
+            candidate.dsl.blocksByFamily.risk_rule,
+          );
+          const smReplayOverrides = resolveStateMachineReplayOverrides(
+            candidate.dsl.blocksByFamily.state_machine,
+          );
           const replayConfig = {
             ...replayBaseConfig,
             symbol: candidate.symbol,
@@ -1520,6 +1621,10 @@ export async function runScalpV2ResearchJob(params: {
             strategy: {
               ...replayBaseConfig.strategy,
               entrySessionProfile: candidate.session,
+              ...exitOverrides,
+              ...entryOverrides,
+              ...riskReplayOverrides,
+              ...smReplayOverrides,
             },
           };
           const replay = await runScalpReplay({
@@ -1689,6 +1794,7 @@ export async function runScalpV2ResearchJob(params: {
     details = {
       scopeCount: scopes.length,
       poolSizeTotal,
+      smVariantsGenerated,
       totalCandidates: allCandidates.length,
       skippedByCache,
       skippedByClearFail,
@@ -2193,7 +2299,14 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         enabled: false,
         shortlistIncluded: false,
         exactLoser: false,
-        riskProfile: existing?.riskProfile || runtime.riskProfile,
+        riskProfile: mergeRiskProfileWithOverrides(
+          existing?.riskProfile || runtime.riskProfile,
+          resolveRiskRuleOverrides(
+            Array.isArray(asRecord(candidate?.metadata?.researchDsl || {}).risk_rule)
+              ? (asRecord(candidate?.metadata?.researchDsl || {}).risk_rule as string[])
+              : null,
+          ),
+        ),
         promotedAtMs: Number.isFinite(promotedAtMs) ? promotedAtMs : null,
       });
     }
@@ -2369,6 +2482,19 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
             fourWeekGroupSize: policy.fourWeekGroupSize,
           },
           shortlistIncluded: row.shortlistIncluded,
+          dsl: asRecord(
+            asRecord(
+              candidateByDeploymentId.get(
+                toDeploymentId({
+                  venue: row.venue,
+                  symbol: row.symbol,
+                  strategyId: row.strategyId,
+                  tuneId: row.tuneId,
+                  session: row.entrySessionProfile,
+                }),
+              )?.metadata || {},
+            ).researchDsl || {},
+          ),
         },
         riskProfile: row.riskProfile,
       }),
@@ -2695,6 +2821,11 @@ export async function runScalpV2ExecuteJob(params: {
       processed += 1;
       const deploymentDryRun = effectiveDryRun || !runtime.liveEnabled || deployment.liveMode !== "live";
       try {
+        const rp = deployment.riskProfile;
+        const dslFromGate = asRecord(asRecord(deployment.promotionGate).dsl || {});
+        const smOverrides = resolveStateMachineOverrides(
+          Array.isArray(dslFromGate.state_machine) ? (dslFromGate.state_machine as string[]) : null,
+        );
         const result = await runScalpV2ExecuteCycle({
           venue: deployment.venue,
           symbol: deployment.symbol,
@@ -2702,6 +2833,34 @@ export async function runScalpV2ExecuteJob(params: {
           tuneId: deployment.tuneId,
           deploymentId: deployment.deploymentId,
           dryRun: deploymentDryRun,
+          configOverride: {
+            risk: {
+              riskPerTradePct: rp.riskPerTradePct,
+              maxOpenPositionsPerSymbol: rp.maxOpenPositionsPerSymbol,
+              ...(smOverrides.consecutiveLossPauseThreshold !== undefined && {
+                consecutiveLossPauseThreshold: smOverrides.consecutiveLossPauseThreshold,
+              }),
+              ...(smOverrides.consecutiveLossCooldownBars !== undefined && {
+                consecutiveLossCooldownBars: smOverrides.consecutiveLossCooldownBars,
+              }),
+              ...(smOverrides.dailyLossLimitR !== undefined && {
+                dailyLossLimitR: smOverrides.dailyLossLimitR,
+              }),
+              ...(smOverrides.maxTradesPerSymbolPerDay !== undefined && {
+                maxTradesPerSymbolPerDay: smOverrides.maxTradesPerSymbolPerDay,
+              }),
+            },
+            confirm: {
+              ...(smOverrides.confirmTtlMinutes !== undefined && {
+                ttlMinutes: smOverrides.confirmTtlMinutes,
+              }),
+            },
+            sweep: {
+              ...(smOverrides.sweepRejectMaxBars !== undefined && {
+                rejectMaxBars: smOverrides.sweepRejectMaxBars,
+              }),
+            },
+          },
         });
 
         await appendScalpV2ExecutionEvent(

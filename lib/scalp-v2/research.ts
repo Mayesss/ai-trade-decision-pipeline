@@ -7,8 +7,10 @@ import {
   resolveModelGuidedComposerExecutionPlanFromBlocks,
   type ModelGuidedComposerArmId,
   type ModelGuidedComposerBaseArm,
-  type ModelGuidedComposerTimeframeVariant,
 } from "./composerExecution";
+import { ENTRY_TRIGGER_COMPAT } from "./entryTriggerPresets";
+import { EXIT_RULE_RESEARCH_PROFILES } from "./exitRulePresets";
+import { RISK_RULE_RESEARCH_PROFILES } from "./riskRulePresets";
 import { listScalpV2CatalogStrategies } from "./strategyCatalog";
 
 import type {
@@ -1409,39 +1411,57 @@ export function buildScalpV2ModelGuidedComposerGrid(params: {
     return true;
   });
 
-  // Multiply each surviving base-arm candidate by all TF variants.
+  // Multiply each surviving base-arm candidate by TF variants × exit rule profiles.
   const expanded: ScalpV2ModelGuidedCandidateDslSpec[] = [];
   for (const row of dedupedByBaseArm) {
+    const compatEntries = ENTRY_TRIGGER_COMPAT[row._baseArm] || [];
     for (const tfVariant of COMPOSER_TIMEFRAME_VARIANTS) {
-      const armId = `${row._baseArm}_${tfVariant.label}` as ModelGuidedComposerArmId;
-      const executionPlan = resolveModelGuidedComposerExecutionPlanFromBlocks(
-        row.blocksByFamily,
-        tfVariant.label,
-      );
-      const digest = candidateHash(
-        [
-          row.venue,
-          row.symbol,
-          row.entrySessionProfile,
-          armId,
-          row.model.version,
-        ].join(":"),
-      );
-      expanded.push({
-        candidateId: `mdl_${digest.slice(0, 16)}`,
-        tuneId: buildModelGuidedComposerTuneId({
-          armId: executionPlan.armId,
-          digest,
-        }),
-        venue: row.venue,
-        symbol: row.symbol,
-        entrySessionProfile: row.entrySessionProfile,
-        blocksByFamily: row.blocksByFamily,
-        referenceStrategyIds: row.referenceStrategyIds,
-        supportScore: row.supportScore,
-        generatedAtMs: row.generatedAtMs,
-        model: row.model,
-      });
+      for (const exitRuleId of EXIT_RULE_RESEARCH_PROFILES) {
+        for (const entryTriggerId of compatEntries) {
+          for (const riskRuleId of RISK_RULE_RESEARCH_PROFILES) {
+            const armId = `${row._baseArm}_${tfVariant.label}` as ModelGuidedComposerArmId;
+            const executionPlan = resolveModelGuidedComposerExecutionPlanFromBlocks(
+              row.blocksByFamily,
+              tfVariant.label,
+            );
+            const digest = candidateHash(
+              [
+                row.venue,
+                row.symbol,
+                row.entrySessionProfile,
+                armId,
+                exitRuleId,
+                entryTriggerId,
+                riskRuleId || "default",
+                row.model.version,
+              ].join(":"),
+            );
+            expanded.push({
+              candidateId: `mdl_${digest.slice(0, 16)}`,
+              tuneId: buildModelGuidedComposerTuneId({
+                armId: executionPlan.armId,
+                digest,
+                exitRuleId,
+                entryTriggerId,
+                riskRuleId,
+              }),
+              venue: row.venue,
+              symbol: row.symbol,
+              entrySessionProfile: row.entrySessionProfile,
+              blocksByFamily: {
+                ...row.blocksByFamily,
+                exit_rule: [exitRuleId],
+                entry_trigger: [entryTriggerId],
+                risk_rule: riskRuleId ? [riskRuleId] : row.blocksByFamily.risk_rule,
+              },
+              referenceStrategyIds: row.referenceStrategyIds,
+              supportScore: row.supportScore,
+              generatedAtMs: row.generatedAtMs,
+              model: row.model,
+            });
+          }
+        }
+      }
     }
   }
 
