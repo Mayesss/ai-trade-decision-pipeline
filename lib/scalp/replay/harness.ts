@@ -4,7 +4,7 @@ import {
   getScalpStrategyPreferredTimeframes,
   resolveScalpStrategyIdForSymbol,
 } from "../strategies/registry";
-import { resolveScalpExecutionStrategyId } from "../../scalp-v2/composerExecution";
+import { isModelGuidedComposerStrategyId, resolveScalpExecutionStrategyId } from "../../scalp-v2/composerExecution";
 import { applySymbolGuardRiskDefaultsToReplayRuntime } from "../strategies/guardDefaults";
 import {
   applyScalpStrategyConfigOverride,
@@ -616,10 +616,16 @@ export async function runScalpReplay(params: {
       strategyId: deployment.strategyId,
       tuneId: deployment.tuneId,
     }) || deployment.strategyId;
-  const strategyDef =
-    getScalpStrategyById(executionStrategyId) ||
-    getScalpStrategyById(deployment.strategyId) ||
-    getDefaultScalpStrategy();
+  // When the original strategy is the model-guided composer, keep using the
+  // composer as the phase detector — it applies the central session gate and
+  // then delegates internally via tuneId.  Only resolve the delegate strategy
+  // for timeframe preferences, not for phase detection.
+  const isComposer = isModelGuidedComposerStrategyId(deployment.strategyId);
+  const strategyDef = isComposer
+    ? (getScalpStrategyById(deployment.strategyId) || getDefaultScalpStrategy())
+    : (getScalpStrategyById(executionStrategyId) ||
+       getScalpStrategyById(deployment.strategyId) ||
+       getDefaultScalpStrategy());
   const preferredTimeframes = getScalpStrategyPreferredTimeframes(
     executionStrategyId,
   );

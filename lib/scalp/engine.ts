@@ -17,7 +17,7 @@ import { buildScalpSessionWindows, isScalpSundayEntryBlocked } from './sessions'
 import { getDefaultScalpStrategy, getScalpStrategyById, getScalpStrategyPreferredTimeframes } from './strategies/registry';
 import { applySymbolGuardRiskDefaultsToStrategyConfig } from './strategies/guardDefaults';
 import { advanceScalpStateMachine, createInitialScalpSessionState, deriveScalpDayKey } from './stateMachine';
-import { resolveScalpExecutionStrategyId } from '../scalp-v2/composerExecution';
+import { isModelGuidedComposerStrategyId, resolveScalpExecutionStrategyId } from '../scalp-v2/composerExecution';
 import {
     appendScalpTradeLedgerEntry,
     appendScalpJournal,
@@ -204,11 +204,13 @@ export async function runScalpExecuteCycle(opts: {
             strategyId: deployment.strategyId,
             tuneId: deployment.tuneId,
         }) || deployment.strategyId;
-    const strategyDef =
-        getScalpStrategyById(executionStrategyId) ||
-        getScalpStrategyById(deployment.strategyId) ||
-        getScalpStrategyById(runtime.defaultStrategyId) ||
-        getDefaultScalpStrategy();
+    const isComposer = isModelGuidedComposerStrategyId(deployment.strategyId);
+    const strategyDef = isComposer
+        ? (getScalpStrategyById(deployment.strategyId) || getDefaultScalpStrategy())
+        : (getScalpStrategyById(executionStrategyId) ||
+           getScalpStrategyById(deployment.strategyId) ||
+           getScalpStrategyById(runtime.defaultStrategyId) ||
+           getDefaultScalpStrategy());
     const preferredTimeframes = getScalpStrategyPreferredTimeframes(
         executionStrategyId,
     );
