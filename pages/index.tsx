@@ -587,6 +587,9 @@ type ScalpWorkerJobGridRow = {
   profitFactor: number | null;
   maxDrawdownR: number | null;
   totalMaxDrawdownR: number | null;
+  maxWeeklyNetR: number | null;
+  largestTradeR: number | null;
+  exitReasons: { stop: number; tp: number; timeStop: number; forceClose: number } | null;
   errorCodes: string | null;
 };
 
@@ -4976,6 +4979,9 @@ export default function Home() {
           profitFactor: row.profitFactor,
           maxDrawdownR: row.maxDrawdownR,
           totalMaxDrawdownR: row.maxDrawdownR,
+          maxWeeklyNetR: null,
+          largestTradeR: null,
+          exitReasons: null,
           errorCodes: null,
           statusCounts,
           windows: [
@@ -5097,6 +5103,9 @@ export default function Home() {
             : null,
         maxDrawdownR: row.maxDrawdownR,
         totalMaxDrawdownR: row.maxDrawdownR,
+        maxWeeklyNetR: null,
+        largestTradeR: null,
+        exitReasons: null,
         errorCodes: row.errorCodeSet.size
           ? Array.from(row.errorCodeSet).join(", ")
           : null,
@@ -5217,6 +5226,16 @@ export default function Home() {
         profitFactor: gatePF ?? asFiniteNumber(forwardValidation?.meanProfitFactor),
         maxDrawdownR: gateDD,
         totalMaxDrawdownR: gateDD,
+        maxWeeklyNetR: asFiniteNumber(gateStageC?.maxWeeklyNetR),
+        largestTradeR: asFiniteNumber(gateStageC?.largestTradeR),
+        exitReasons: gateStageC?.exitReasons && typeof gateStageC.exitReasons === "object"
+          ? {
+              stop: Number(gateStageC.exitReasons.stop || 0),
+              tp: Number(gateStageC.exitReasons.tp || 0),
+              timeStop: Number(gateStageC.exitReasons.timeStop || 0),
+              forceClose: Number(gateStageC.exitReasons.forceClose || 0),
+            }
+          : null,
         errorCodes: null,
       } satisfies ScalpWorkerJobGridRow;
     });
@@ -5655,6 +5674,44 @@ export default function Home() {
           typeof params.value === "number" && Number.isFinite(params.value)
             ? `${params.value.toFixed(2)}R`
             : "—",
+      },
+      {
+        headerName: "Max Week R",
+        field: "maxWeeklyNetR",
+        width: 60,
+        cellRenderer: (params: any) => {
+          const value = typeof params?.value === "number" && Number.isFinite(params.value) ? params.value : null;
+          if (value === null) return <span className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}>—</span>;
+          return (
+            <span className={value >= 0 ? "text-emerald-500" : scalpDarkMode ? "text-rose-400" : "text-rose-700"}>
+              {`${value >= 0 ? "+" : ""}${value.toFixed(2)}`}
+            </span>
+          );
+        },
+      },
+      {
+        headerName: "Largest R",
+        field: "largestTradeR",
+        width: 55,
+        valueFormatter: (params) =>
+          typeof params.value === "number" && Number.isFinite(params.value)
+            ? `${params.value.toFixed(2)}R`
+            : "—",
+      },
+      {
+        headerName: "Exits",
+        field: "exitReasons",
+        width: 100,
+        valueFormatter: (params) => {
+          const v = params.value;
+          if (!v || typeof v !== "object") return "—";
+          const parts: string[] = [];
+          if (v.stop) parts.push(`SL:${v.stop}`);
+          if (v.tp) parts.push(`TP:${v.tp}`);
+          if (v.timeStop) parts.push(`TS:${v.timeStop}`);
+          if (v.forceClose) parts.push(`FC:${v.forceClose}`);
+          return parts.length ? parts.join(" ") : "—";
+        },
       },
       {
         headerName: "Errors",

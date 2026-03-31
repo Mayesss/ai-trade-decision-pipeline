@@ -214,6 +214,12 @@ type ScalpV2WorkerStageResult = {
   durationMs: number;
   /** Per-week netR keyed by Monday-UTC start timestamp. */
   weeklyNetR?: Record<string, number>;
+  /** Max single-week netR across the stage window. */
+  maxWeeklyNetR?: number | null;
+  /** Largest single-trade R-multiple (absolute). */
+  largestTradeR?: number | null;
+  /** Exit reason counts. */
+  exitReasons?: { stop: number; tp: number; timeStop: number; forceClose: number } | null;
 };
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -1661,6 +1667,19 @@ export async function runScalpV2ResearchJob(params: {
             grossProfitR: replay.summary.grossProfitR,
             grossLossR: replay.summary.grossLossR,
           });
+          // Compute new per-trade metrics
+          const weeklyNetRValues = Object.values(weeklyNetR).filter(Number.isFinite);
+          const maxWeeklyNetR = weeklyNetRValues.length > 0 ? Math.max(...weeklyNetRValues) : null;
+          let largestTradeR: number | null = null;
+          const exitReasons = { stop: 0, tp: 0, timeStop: 0, forceClose: 0 };
+          for (const t of replay.trades) {
+            const absR = Math.abs(t.rMultiple);
+            if (largestTradeR === null || absR > largestTradeR) largestTradeR = absR;
+            if (t.exitReason === "STOP") exitReasons.stop += 1;
+            else if (t.exitReason === "TP") exitReasons.tp += 1;
+            else if (t.exitReason === "TIME_STOP") exitReasons.timeStop += 1;
+            else if (t.exitReason === "FORCE_CLOSE") exitReasons.forceClose += 1;
+          }
           const stageResult: ScalpV2WorkerStageResult = {
             id: stage.id,
             weeks: stage.weeks,
@@ -1682,6 +1701,9 @@ export async function runScalpV2ResearchJob(params: {
             consecutiveWinningWeeks: weeklyStats.consecutiveWinningWeeks,
             durationMs: Math.max(0, nowMs() - stageStartedAtMs),
             weeklyNetR,
+            maxWeeklyNetR,
+            largestTradeR,
+            exitReasons,
           };
           const gate = evaluateWorkerStageGate({ stage, stageResult });
           stageResult.passed = gate.passed;
