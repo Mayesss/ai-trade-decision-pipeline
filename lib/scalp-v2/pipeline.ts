@@ -19,15 +19,17 @@ import {
 import {
   MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
   buildModelGuidedComposerTuneId,
-  parseEntryTriggerFromTuneId,
   parseExitRuleFromTuneId,
-  parseRiskRuleFromTuneId,
   resolveModelGuidedComposerExecutionPlanFromBlocks,
   resolveModelGuidedComposerExecutionPlanFromTuneId,
 } from "./composerExecution";
-import { resolveEntryTriggerOverrides } from "./entryTriggerPresets";
+import {
+  ENTRY_TRIGGER_COMPAT,
+  resolveEntryTriggerOverrides,
+} from "./entryTriggerPresets";
 import { resolveExitRuleOverrides } from "./exitRulePresets";
 import {
+  RISK_RULE_RESEARCH_PROFILES,
   mergeRiskProfileWithOverrides,
   resolveRiskRuleOverrides,
   resolveRiskRuleReplayOverrides,
@@ -1351,75 +1353,94 @@ export async function runScalpV2ResearchJob(params: {
       }
     }
 
-    // --- State machine variants for enabled (graduated) deployments ---
-    let smVariantsGenerated = 0;
+    // --- Optimization variants for enabled (graduated) deployments ---
+    // Entry trigger, risk rule, and state machine variants are only generated
+    // for deployments that already passed all stage gates and got promoted.
+    // This focuses the combinatorial search on proven strategies.
+    let deploymentVariantsGenerated = 0;
     try {
       const enabledDeployments = await listScalpV2Deployments({ enabledOnly: true, limit: 500 });
+      const existingTuneIds = new Set(allCandidates.map((c) => c.tuneId));
+
       for (const dep of enabledDeployments) {
         if (!isScalpV2RuntimeSymbolInScope({ runtime, venue: dep.venue, symbol: dep.symbol })) continue;
         const session = dep.entrySessionProfile;
         const plan = resolveModelGuidedComposerExecutionPlanFromTuneId(dep.tuneId);
         const depDsl = asRecord(asRecord(dep.promotionGate).dsl || {});
+        const toStrArr = (v: unknown): string[] => Array.isArray(v) ? v as string[] : [];
         const baseBlocksByFamily = {
-          pattern: Array.isArray(depDsl.pattern) ? depDsl.pattern as string[] : [],
-          session_filter: Array.isArray(depDsl.session_filter) ? depDsl.session_filter as string[] : [],
-          state_machine: Array.isArray(depDsl.state_machine) ? depDsl.state_machine as string[] : [],
-          entry_trigger: Array.isArray(depDsl.entry_trigger) ? depDsl.entry_trigger as string[] : [],
-          exit_rule: Array.isArray(depDsl.exit_rule) ? depDsl.exit_rule as string[] : [],
-          risk_rule: Array.isArray(depDsl.risk_rule) ? depDsl.risk_rule as string[] : [],
+          pattern: toStrArr(depDsl.pattern),
+          session_filter: toStrArr(depDsl.session_filter),
+          state_machine: toStrArr(depDsl.state_machine),
+          entry_trigger: toStrArr(depDsl.entry_trigger),
+          exit_rule: toStrArr(depDsl.exit_rule),
+          risk_rule: toStrArr(depDsl.risk_rule),
+        };
+        const baseExitId = parseExitRuleFromTuneId(dep.tuneId)?.toString() || undefined;
+        const baseModel = {
+          family: "interpretable_pattern_blend" as const,
+          version: "deployment_variant_v1",
+          interpretableScore: 0,
+          treeScore: 0,
+          sequenceScore: 0,
+          compositeScore: 0.5,
+          confidence: 0.5,
         };
 
-        for (const smId of STATE_MACHINE_RESEARCH_PROFILES) {
-          const variantTuneId = buildModelGuidedComposerTuneId({
-            armId: plan.armId,
-            digest: `${dep.deploymentId}:${smId}`,
-            exitRuleId: parseExitRuleFromTuneId(dep.tuneId)?.toString() || undefined,
-            entryTriggerId: parseEntryTriggerFromTuneId(dep.tuneId)?.toString() || undefined,
-            riskRuleId: parseRiskRuleFromTuneId(dep.tuneId)?.toString() || undefined,
-            stateMachineId: smId,
-          });
-          // Skip if this variant already exists as a candidate
-          const existsInGrid = allCandidates.some((c) => c.tuneId === variantTuneId);
-          if (existsInGrid) continue;
+        // Collect all variant dimensions for this deployment
+        const compatEntries = ENTRY_TRIGGER_COMPAT[plan.baseArm] || [];
+        const riskProfiles = RISK_RULE_RESEARCH_PROFILES;
+        const smProfiles = STATE_MACHINE_RESEARCH_PROFILES;
 
-          const variantScore = 90 + hashScoreSeed(`${dep.deploymentId}:${smId}`) / 1000;
-          allCandidates.push({
-            venue: dep.venue as ScalpV2Venue,
-            symbol: dep.symbol,
-            session,
-            strategyId: dep.strategyId,
-            tuneId: variantTuneId,
-            candidateId: variantTuneId,
-            score: variantScore,
-            dsl: {
-              candidateId: variantTuneId,
-              tuneId: variantTuneId,
-              venue: dep.venue as ScalpV2Venue,
-              symbol: dep.symbol,
-              entrySessionProfile: session,
-              blocksByFamily: {
-                ...baseBlocksByFamily,
-                state_machine: [smId],
-              },
-              referenceStrategyIds: [],
-              supportScore: 0,
-              generatedAtMs: Date.now(),
-              model: {
-                family: "interpretable_pattern_blend",
-                version: "sm_variant_v1",
-                interpretableScore: 0,
-                treeScore: 0,
-                sequenceScore: 0,
-                compositeScore: 0.5,
-                confidence: 0.5,
-              },
-            },
-          });
-          smVariantsGenerated += 1;
+        // Generate: entry trigger variants
+        for (const entryId of compatEntries) {
+          for (const riskId of riskProfiles) {
+            for (const smId of [null, ...smProfiles]) {
+              const variantTuneId = buildModelGuidedComposerTuneId({
+                armId: plan.armId,
+                digest: `${dep.deploymentId}:${entryId}:${riskId || "d"}:${smId || "d"}`,
+                exitRuleId: baseExitId,
+                entryTriggerId: entryId,
+                riskRuleId: riskId,
+                stateMachineId: smId,
+              });
+              if (existingTuneIds.has(variantTuneId)) continue;
+              existingTuneIds.add(variantTuneId);
+
+              const variantScore = 90 + hashScoreSeed(variantTuneId) / 1000;
+              allCandidates.push({
+                venue: dep.venue as ScalpV2Venue,
+                symbol: dep.symbol,
+                session,
+                strategyId: dep.strategyId,
+                tuneId: variantTuneId,
+                candidateId: variantTuneId,
+                score: variantScore,
+                dsl: {
+                  candidateId: variantTuneId,
+                  tuneId: variantTuneId,
+                  venue: dep.venue as ScalpV2Venue,
+                  symbol: dep.symbol,
+                  entrySessionProfile: session,
+                  blocksByFamily: {
+                    ...baseBlocksByFamily,
+                    entry_trigger: [entryId],
+                    risk_rule: riskId ? [riskId] : baseBlocksByFamily.risk_rule,
+                    state_machine: smId ? [smId] : baseBlocksByFamily.state_machine,
+                  },
+                  referenceStrategyIds: [],
+                  supportScore: 0,
+                  generatedAtMs: Date.now(),
+                  model: baseModel,
+                },
+              });
+              deploymentVariantsGenerated += 1;
+            }
+          }
         }
       }
     } catch {
-      // Non-fatal: SM variants are an optimization, not a requirement
+      // Non-fatal: deployment variants are an optimization, not a requirement
     }
 
     if (!allCandidates.length) {
@@ -1427,7 +1448,7 @@ export async function runScalpV2ResearchJob(params: {
         reason: "no_candidates_generated",
         scopeCount: scopes.length,
         poolSizeTotal,
-        smVariantsGenerated,
+        deploymentVariantsGenerated,
       };
       return buildScalpV2JobResult({
         jobKind: "research",
@@ -1794,7 +1815,7 @@ export async function runScalpV2ResearchJob(params: {
     details = {
       scopeCount: scopes.length,
       poolSizeTotal,
-      smVariantsGenerated,
+      deploymentVariantsGenerated,
       totalCandidates: allCandidates.length,
       skippedByCache,
       skippedByClearFail,
