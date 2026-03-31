@@ -783,7 +783,7 @@ export async function manageScalpOpenTrade(params: {
   closedTrade: {
     exitPrice: number;
     totalTradeR: number;
-    exitReason: "STOP" | "TIME_STOP";
+    exitReason: "STOP" | "TP" | "TIME_STOP";
   } | null;
 }> {
   const next: ScalpSessionState = {
@@ -944,10 +944,18 @@ export async function manageScalpOpenTrade(params: {
     }
   }
 
+  // Use intra-bar high/low for stop/TP checks: if the bar's extreme crossed
+  // the level at any point, the order would have filled — regardless of close.
+  const barLow = lastCandle ? toFinite(low(lastCandle), price) : price;
+  const barHigh = lastCandle ? toFinite(high(lastCandle), price) : price;
   const stopHit =
-    trade.side === "BUY" ? price <= trade.stopPrice : price >= trade.stopPrice;
+    trade.side === "BUY" ? barLow <= trade.stopPrice : barHigh >= trade.stopPrice;
+  const tpPrice = toFinite(trade.takeProfitPrice, 0);
+  const tpHit =
+    tpPrice > 0 &&
+    (trade.side === "BUY" ? barHigh >= tpPrice : barLow <= tpPrice);
   const timeStopHit = barsHeld >= Math.max(1, params.cfg.risk.timeStopBars);
-  if (!stopHit && !timeStopHit) {
+  if (!stopHit && !tpHit && !timeStopHit) {
     return {
       state: next,
       reasonCodes: reasonCodes.length ? reasonCodes : ["TRADE_MANAGE_ACTIVE"],
@@ -955,11 +963,13 @@ export async function manageScalpOpenTrade(params: {
     };
   }
 
+  // When both SL and TP are hit in the same bar, assume stop was hit first (conservative).
+  const closeReason = stopHit ? "stop_exit" : tpHit ? "tp_exit" : "time_stop_exit";
   const closeRes = await closeScalpTradePortion({
     trade,
     closePct: 100,
     dryRun: params.dryRun,
-    reason: stopHit ? "stop_exit" : "time_stop_exit",
+    reason: closeReason,
     adapter: params.adapter,
   });
   reasonCodes.push(...closeRes.reasonCodes);
@@ -978,7 +988,11 @@ export async function manageScalpOpenTrade(params: {
   }
 
   const remaining = clamp(toFinite(trade.remainingSizePct, 1), 0, 1);
-  const exitPrice = stopHit ? toFinite(trade.stopPrice, price) : price;
+  const exitPrice = stopHit
+    ? toFinite(trade.stopPrice, price)
+    : tpHit
+      ? toFinite(tpPrice, price)
+      : price;
   const exitR = currentRForTrade(trade, exitPrice, riskAbs);
   const totalTradeR = toFinite(trade.realizedR, 0) + remaining * exitR;
   next.stats.realizedR = toFinite(next.stats.realizedR, 0) + totalTradeR;
@@ -1021,14 +1035,16 @@ export async function manageScalpOpenTrade(params: {
     reasonCodes.push("TRADE_EXITED_READY_NEXT_SETUP");
   }
 
-  reasonCodes.push(stopHit ? "TRADE_EXIT_STOP_HIT" : "TRADE_EXIT_TIME_STOP");
+  const exitReasonCode = stopHit ? "TRADE_EXIT_STOP_HIT" : tpHit ? "TRADE_EXIT_TP_HIT" : "TRADE_EXIT_TIME_STOP";
+  const exitReason: "STOP" | "TP" | "TIME_STOP" = stopHit ? "STOP" : tpHit ? "TP" : "TIME_STOP";
+  reasonCodes.push(exitReasonCode);
   return {
     state: next,
     reasonCodes,
     closedTrade: {
       exitPrice,
       totalTradeR,
-      exitReason: stopHit ? "STOP" : "TIME_STOP",
+      exitReason,
     },
   };
 }

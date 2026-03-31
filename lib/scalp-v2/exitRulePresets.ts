@@ -30,6 +30,7 @@ export interface ExitRuleOverrides {
 const EXIT_RULE_PRESETS: Record<ExitRuleBlockId, ExitRuleOverrides> =
   Object.freeze({
     // Simple fixed R:R take profit — no partials, no trail.
+    // Time stop at 60 bars prevents runaway holds on missed TPs.
     exit_fixed_r_take_profit: {
       takeProfitR: 1.0,
       tp1R: 999,
@@ -37,7 +38,7 @@ const EXIT_RULE_PRESETS: Record<ExitRuleBlockId, ExitRuleOverrides> =
       breakEvenOffsetR: 0,
       trailStartR: 999,
       trailAtrMult: 0,
-      timeStopBars: 999,
+      timeStopBars: 60,
     },
 
     // Partial at TP1, trail the rest (mirrors current defaults).
@@ -52,6 +53,7 @@ const EXIT_RULE_PRESETS: Record<ExitRuleBlockId, ExitRuleOverrides> =
     },
 
     // Pure ATR trail — no partial close, trail from early R.
+    // Time stop at 120 bars as a safety net; trail should exit first.
     exit_trailing_atr: {
       takeProfitR: 3.0,
       tp1R: 999,
@@ -59,7 +61,7 @@ const EXIT_RULE_PRESETS: Record<ExitRuleBlockId, ExitRuleOverrides> =
       breakEvenOffsetR: 0,
       trailStartR: 0.3,
       trailAtrMult: 1.5,
-      timeStopBars: 999,
+      timeStopBars: 120,
     },
 
     // Aggressive time-limited exit — quick in, quick out.
@@ -85,7 +87,7 @@ const EXIT_RULE_PRESETS: Record<ExitRuleBlockId, ExitRuleOverrides> =
     },
 
     // Invalidation stop — rely on strategy's own invalidation logic.
-    // Minimal exit intervention: wide TP, no trail, no time stop.
+    // Minimal exit intervention: wide TP, time stop at 90 bars as safety net.
     exit_invalidation_stop: {
       takeProfitR: 2.5,
       tp1R: 999,
@@ -93,7 +95,7 @@ const EXIT_RULE_PRESETS: Record<ExitRuleBlockId, ExitRuleOverrides> =
       breakEvenOffsetR: 0,
       trailStartR: 999,
       trailAtrMult: 0,
-      timeStopBars: 999,
+      timeStopBars: 90,
     },
 
     // Session cutoff — moderate time stop aligned with session end.

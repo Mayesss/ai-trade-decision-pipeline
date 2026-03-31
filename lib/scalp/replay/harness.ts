@@ -451,8 +451,9 @@ function appendTimeline(
   });
 }
 
-function inferExitReasonFromManageCodes(codes: string[]): "STOP" | "TIME_STOP" {
+function inferExitReasonFromManageCodes(codes: string[]): "STOP" | "TP" | "TIME_STOP" {
   const normalized = dedupeReasonCodes(codes);
+  if (normalized.includes("TRADE_EXIT_TP_HIT")) return "TP";
   if (normalized.includes("TRADE_EXIT_TIME_STOP")) return "TIME_STOP";
   return "STOP";
 }
@@ -461,7 +462,7 @@ function closePositionAsTrade(params: {
   position: ReplayPosition;
   exitTs: number;
   exitPrice: number;
-  exitReason: "STOP" | "TIME_STOP" | "FORCE_CLOSE";
+  exitReason: "STOP" | "TP" | "TIME_STOP" | "FORCE_CLOSE";
   totalTradeR: number;
   tradeBeforeExit: NonNullable<ScalpSessionState["trade"]> | null;
 }): ScalpReplayTrade {
@@ -906,7 +907,9 @@ export async function runScalpReplay(params: {
             : toFinite(
                 exitReason === "STOP"
                   ? tradeBeforeManage.stopPrice
-                  : market.quote.price,
+                  : exitReason === "TP"
+                    ? tradeBeforeManage.takeProfitPrice
+                    : market.quote.price,
                 tradeBeforeManage.stopPrice,
               );
           const trade = closePositionAsTrade({
@@ -926,7 +929,7 @@ export async function runScalpReplay(params: {
               state: state.state,
               reasonCodes: [
                 ...managedCodes,
-                exitReason === "TIME_STOP" ? "EXIT_TIME_STOP" : "EXIT_STOP",
+                exitReason === "TP" ? "EXIT_TP" : exitReason === "TIME_STOP" ? "EXIT_TIME_STOP" : "EXIT_STOP",
               ],
               payload: {
                 tradeId: trade.id,
