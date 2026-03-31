@@ -1037,8 +1037,12 @@ export async function runScalpReplay(params: {
           const adverse =
             planRes.plan.side === "BUY" ? slippageAbs : -slippageAbs;
           const fillPrice = planRes.plan.entryReferencePrice + adverse;
+          // Reject if slippage pushed the fill past the stop (stop no longer protective)
+          const stopProtective = planRes.plan.side === "BUY"
+            ? planRes.plan.stopPrice < fillPrice
+            : planRes.plan.stopPrice > fillPrice;
           const riskAbs = Math.abs(fillPrice - planRes.plan.stopPrice);
-          if (riskAbs > 0) {
+          if (riskAbs > 0 && stopProtective) {
             position = {
               tradeId: planRes.plan.setupId,
               dayKey: state.dayKey,

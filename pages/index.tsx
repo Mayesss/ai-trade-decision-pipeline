@@ -5479,57 +5479,57 @@ export default function Home() {
         valueFormatter: (params) =>
           String(params.value || "unknown").replace(/_/g, " "),
       },
-      {
-        headerName: "Lifecycle",
-        field: "lifecycleState",
-        minWidth: 150,
-        valueFormatter: (params) => {
-          const value = String(params.value || "")
-            .trim()
-            .toLowerCase();
-          if (!value) return "unknown";
-          return value.replace(/_/g, " ");
-        },
-        cellRenderer: (params: any) => {
-          const value = String(params?.value || "")
-            .trim()
-            .toLowerCase();
-          if (!value) {
-            return (
-              <span className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}>
-                unknown
-              </span>
-            );
-          }
-          const toneClass =
-            value === "graduated"
-              ? scalpDarkMode
-                ? "text-emerald-300"
-                : "text-emerald-700"
-              : value === "incumbent_refresh"
-                ? scalpDarkMode
-                  ? "text-sky-300"
-                  : "text-sky-700"
-                : value === "candidate"
-                  ? scalpDarkMode
-                    ? "text-zinc-300"
-                    : "text-slate-700"
-                  : value === "suspended"
-                    ? scalpDarkMode
-                      ? "text-amber-300"
-                      : "text-amber-700"
-                    : value === "retired"
-                      ? scalpDarkMode
-                        ? "text-rose-300"
-                        : "text-rose-700"
-                      : scalpDarkMode
-                        ? "text-zinc-300"
-                        : "text-slate-700";
-          return (
-            <span className={toneClass}>{value.replace(/_/g, " ")}</span>
-          );
-        },
-      },
+      // {
+      //   headerName: "Lifecycle",
+      //   field: "lifecycleState",
+      //   minWidth: 150,
+      //   valueFormatter: (params) => {
+      //     const value = String(params.value || "")
+      //       .trim()
+      //       .toLowerCase();
+      //     if (!value) return "unknown";
+      //     return value.replace(/_/g, " ");
+      //   },
+      //   cellRenderer: (params: any) => {
+      //     const value = String(params?.value || "")
+      //       .trim()
+      //       .toLowerCase();
+      //     if (!value) {
+      //       return (
+      //         <span className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}>
+      //           unknown
+      //         </span>
+      //       );
+      //     }
+      //     const toneClass =
+      //       value === "graduated"
+      //         ? scalpDarkMode
+      //           ? "text-emerald-300"
+      //           : "text-emerald-700"
+      //         : value === "incumbent_refresh"
+      //           ? scalpDarkMode
+      //             ? "text-sky-300"
+      //             : "text-sky-700"
+      //           : value === "candidate"
+      //             ? scalpDarkMode
+      //               ? "text-zinc-300"
+      //               : "text-slate-700"
+      //             : value === "suspended"
+      //               ? scalpDarkMode
+      //                 ? "text-amber-300"
+      //                 : "text-amber-700"
+      //               : value === "retired"
+      //                 ? scalpDarkMode
+      //                   ? "text-rose-300"
+      //                   : "text-rose-700"
+      //                 : scalpDarkMode
+      //                   ? "text-zinc-300"
+      //                   : "text-slate-700";
+      //     return (
+      //       <span className={toneClass}>{value.replace(/_/g, " ")}</span>
+      //     );
+      //   },
+      // },
       {
         headerName: "Trades",
         field: "trades",
@@ -5570,15 +5570,15 @@ export default function Home() {
           );
         },
       },
-      {
-        headerName: "Expectancy",
-        field: "expectancyR",
-        width: 50,
-        valueFormatter: (params) =>
-          typeof params.value === "number" && Number.isFinite(params.value)
-            ? `${params.value >= 0 ? "+" : ""}${params.value.toFixed(3)}`
-            : "—",
-      },
+      // {
+      //   headerName: "Expectancy",
+      //   field: "expectancyR",
+      //   width: 50,
+      //   valueFormatter: (params) =>
+      //     typeof params.value === "number" && Number.isFinite(params.value)
+      //       ? `${params.value >= 0 ? "+" : ""}${params.value.toFixed(3)}`
+      //       : "—",
+      // },
       {
         headerName: "PF",
         field: "profitFactor",
@@ -5642,38 +5642,38 @@ export default function Home() {
         minWidth: 220,
         valueFormatter: (params) => String(params.value || "—"),
       },
-      {
-        headerName: "Universe",
-        field: "inUniverse",
-        hide: scalpEnabledFilter === "enabled",
-        minWidth: 140,
-        cellRenderer: (params: any) => {
-          const value =
-            typeof params?.value === "boolean" ? params.value : null;
-          if (value === null) {
-            return (
-              <span className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}>
-                unknown
-              </span>
-            );
-          }
-          return (
-            <span
-              className={
-                value
-                  ? scalpDarkMode
-                    ? "text-emerald-300"
-                    : "text-emerald-700"
-                  : scalpDarkMode
-                    ? "text-amber-300"
-                    : "text-amber-700"
-              }
-            >
-              {value ? "active" : "inactive"}
-            </span>
-          );
-        },
-      },
+      // {
+      //   headerName: "Universe",
+      //   field: "inUniverse",
+      //   hide: scalpEnabledFilter === "enabled",
+      //   minWidth: 140,
+      //   cellRenderer: (params: any) => {
+      //     const value =
+      //       typeof params?.value === "boolean" ? params.value : null;
+      //     if (value === null) {
+      //       return (
+      //         <span className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}>
+      //           unknown
+      //         </span>
+      //       );
+      //     }
+      //     return (
+      //       <span
+      //         className={
+      //           value
+      //             ? scalpDarkMode
+      //               ? "text-emerald-300"
+      //               : "text-emerald-700"
+      //             : scalpDarkMode
+      //               ? "text-amber-300"
+      //               : "text-amber-700"
+      //         }
+      //       >
+      //         {value ? "active" : "inactive"}
+      //       </span>
+      //     );
+      //   },
+      // },
     ],
     [
       scalpDarkMode,

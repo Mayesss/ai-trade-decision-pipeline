@@ -931,14 +931,19 @@ export async function manageScalpOpenTrade(params: {
         ? trailAnchor - params.cfg.risk.trailAtrMult * atrAbs
         : trailAnchor + params.cfg.risk.trailAtrMult * atrAbs;
     if (Number.isFinite(candidateStop) && candidateStop > 0) {
-      if (trade.side === "BUY" && candidateStop > trade.stopPrice) {
-        trade.stopPrice = candidateStop;
-        trade.trailStopPrice = candidateStop;
+      // Never move the trailing stop past the entry price (would invert the trade).
+      const candidateClamped =
+        trade.side === "BUY"
+          ? Math.min(candidateStop, entry - 1)
+          : Math.max(candidateStop, entry + 1);
+      if (trade.side === "BUY" && candidateClamped > trade.stopPrice) {
+        trade.stopPrice = candidateClamped;
+        trade.trailStopPrice = candidateClamped;
         reasonCodes.push("TRAIL_STOP_UPDATED");
       }
-      if (trade.side === "SELL" && candidateStop < trade.stopPrice) {
-        trade.stopPrice = candidateStop;
-        trade.trailStopPrice = candidateStop;
+      if (trade.side === "SELL" && candidateClamped < trade.stopPrice) {
+        trade.stopPrice = candidateClamped;
+        trade.trailStopPrice = candidateClamped;
         reasonCodes.push("TRAIL_STOP_UPDATED");
       }
     }
