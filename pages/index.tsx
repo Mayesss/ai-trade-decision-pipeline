@@ -3940,16 +3940,6 @@ export default function Home() {
     value === null ? "—" : `${value.toFixed(digits)}%`;
   const formatScalpSignedR = (value: number | null): string =>
     value === null ? "—" : `${value >= 0 ? "+" : ""}${value.toFixed(2)}R`;
-  const formatScalpHorizonLabel = (value?: number | null): string => {
-    const days =
-      typeof value === "number" && Number.isFinite(value)
-        ? Math.max(1, Math.round(value))
-        : null;
-    if (days === null) return "—";
-    if (days % 7 === 0 && days / 7 <= 52)
-      return `${Math.max(1, Math.round(days / 7))}w`;
-    return `${days}d`;
-  };
   const compareScalpWorkerOptionalNumber = (
     a: number | null | undefined,
     b: number | null | undefined,
@@ -4762,29 +4752,6 @@ export default function Home() {
       label: "wait",
     };
   };
-  const scalpMiniBarTone = (
-    value: number | null,
-    opts?: { reverse?: boolean },
-  ) => {
-    if (value === null || !Number.isFinite(value))
-      return scalpDarkMode ? "bg-zinc-500/80" : "bg-slate-400";
-    if (opts?.reverse) {
-      return value <= 0
-        ? scalpDarkMode
-          ? "bg-emerald-400/90"
-          : "bg-emerald-500"
-        : scalpDarkMode
-          ? "bg-rose-400/90"
-          : "bg-rose-500";
-    }
-    return value >= 0
-      ? scalpDarkMode
-        ? "bg-emerald-400/90"
-        : "bg-emerald-500"
-      : scalpDarkMode
-        ? "bg-rose-400/90"
-        : "bg-rose-500";
-  };
   const scalpWorkerJobRankScore = (row: ScalpWorkerJobGridRow): number => {
     const forwardValidation = row.forwardValidation || null;
     const primaryExpectancy =
@@ -5385,81 +5352,6 @@ export default function Home() {
                   <Copy className="h-3.5 w-3.5 opacity-70" />
                 )}
               </button>
-            </div>
-          );
-        },
-      },
-      {
-        headerName: "Forward Validation",
-        field: "forwardValidation",
-        minWidth: 180,
-        sortable: false,
-        filter: false,
-        cellRenderer: (params: any) => {
-          const forwardValidation = params?.data?.forwardValidation || null;
-          if (!forwardValidation) {
-            return (
-              <span
-                className={scalpDarkMode ? "text-zinc-500" : "text-slate-400"}
-              >
-                —
-              </span>
-            );
-          }
-          const primaryExpectancyR = asFiniteNumber(
-            forwardValidation?.meanExpectancyR,
-          );
-          const primaryProfitablePct = asFiniteNumber(
-            forwardValidation?.profitableWindowPct,
-          );
-          const primaryRollCount = asFiniteNumber(forwardValidation?.rollCount);
-          const primaryLabel = formatScalpHorizonLabel(
-            asFiniteNumber(forwardValidation?.selectionWindowDays),
-          );
-          const primaryToneClass =
-            primaryExpectancyR === null || primaryExpectancyR === 0
-              ? scalpDarkMode
-                ? "text-zinc-200"
-                : "text-slate-700"
-              : primaryExpectancyR > 0
-                ? "text-emerald-500"
-                : "text-red-500";
-          const primaryTitle = [
-            `Horizon: ${primaryLabel}`,
-            `Expectancy: ${formatScalpSignedR(primaryExpectancyR)}`,
-            `Profitable: ${formatScalpPct(primaryProfitablePct, 0)}`,
-            `Windows: ${formatScalpCount(primaryRollCount)}`,
-          ].join(" | ");
-          const primaryPct = Math.max(
-            0,
-            Math.min(100, primaryProfitablePct ?? 0),
-          );
-          const trackClass = scalpDarkMode ? "bg-zinc-800" : "bg-slate-200";
-
-          return (
-            <div className="flex min-w-[170px] flex-col gap-1 py-1 leading-tight">
-              <div title={primaryTitle}>
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className={scalpDarkMode ? "text-zinc-400" : "text-slate-500"}>
-                    {primaryLabel}
-                  </span>
-                  <span className={primaryToneClass}>
-                    {formatScalpSignedR(primaryExpectancyR)}
-                  </span>
-                </div>
-                <div className={`mt-0.5 h-1.5 overflow-hidden rounded-full ${trackClass}`}>
-                  <div
-                    className={`h-full ${scalpMiniBarTone(primaryExpectancyR)}`}
-                    style={{ width: `${Math.max(6, primaryPct)}%` }}
-                  />
-                </div>
-              </div>
-              <div
-                className={`flex items-center justify-between text-[10px] ${scalpDarkMode ? "text-zinc-500" : "text-slate-500"}`}
-              >
-                <span>{formatScalpPct(primaryProfitablePct, 0)} profitable</span>
-                <span>{formatScalpCount(primaryRollCount)} windows</span>
-              </div>
             </div>
           );
         },
@@ -6997,119 +6889,114 @@ export default function Home() {
                           ) : null}
                         </article>
                       ) : null}
-                    </article>
-                  </section>
-
-                  {/* Research Overview */}
-                  <section className={`${scalpSectionShellClass} p-4`}>
-                    <h3
-                      className={`text-lg font-semibold ${scalpTextPrimaryClass}`}
-                    >
-                      Research Overview
-                    </h3>
-                    <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-                      {[
-                        {
-                          label: "Candidates",
-                          value: scalpSummary?.researchSummary?.totalCandidates ?? 0,
-                        },
-                        {
-                          label: "Stage A pass",
-                          value: scalpSummary?.researchSummary?.stageAPass ?? 0,
-                        },
-                        {
-                          label: "Stage B pass",
-                          value: scalpSummary?.researchSummary?.stageBPass ?? 0,
-                        },
-                        {
-                          label: "Stage C pass",
-                          value: scalpSummary?.researchSummary?.stageCPass ?? 0,
-                          tone: (scalpSummary?.researchSummary?.stageCPass ?? 0) > 0
-                            ? "positive" as const
-                            : "neutral" as const,
-                        },
-                        {
-                          label: "Stage C fail",
-                          value: scalpSummary?.researchSummary?.stageCFail ?? 0,
-                          tone: (scalpSummary?.researchSummary?.stageCFail ?? 0) > 0
-                            ? "critical" as const
-                            : "neutral" as const,
-                        },
-                        {
-                          label: "Symbols",
-                          value: scalpSummary?.researchSummary?.uniqueSymbols ?? 0,
-                        },
-                        {
-                          label: "Sessions",
-                          value: (scalpSummary?.researchSummary?.uniqueSessions ?? []).join(", ") || "—",
-                        },
-                        {
-                          label: "Avg netR",
-                          value:
-                            scalpSummary?.researchSummary?.avgNetR != null
-                              ? `${scalpSummary.researchSummary.avgNetR >= 0 ? "+" : ""}${scalpSummary.researchSummary.avgNetR.toFixed(2)}R`
-                              : "—",
-                        },
-                        {
-                          label: "Avg expectancy",
-                          value:
-                            scalpSummary?.researchSummary?.avgExpR != null
-                              ? `${scalpSummary.researchSummary.avgExpR >= 0 ? "+" : ""}${scalpSummary.researchSummary.avgExpR.toFixed(3)}R`
-                              : "—",
-                        },
-                        {
-                          label: "Highlights",
-                          value: scalpResearchHighlightCount,
-                          tone: scalpResearchHighlightCount > 0
-                            ? "positive" as const
-                            : "neutral" as const,
-                        },
-                      ].map((stat) => (
-                        <div
-                          key={`research-stat-${stat.label}`}
-                          className={`rounded-lg border px-2.5 py-2 ${
-                            scalpDarkMode
-                              ? "border-zinc-700/80 bg-zinc-900/60"
-                              : "border-slate-200 bg-slate-50"
-                          }`}
-                        >
-                          <div
-                            className={`text-[10px] uppercase tracking-[0.12em] ${scalpTextMutedClass}`}
-                          >
-                            {stat.label}
+                      {scalpExpandedCronId ? (
+                        <div className="mt-4">
+                          <h4 className={`text-sm font-semibold ${scalpTextPrimaryClass}`}>
+                            Research Overview
+                          </h4>
+                          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+                            {[
+                              {
+                                label: "Candidates",
+                                value: scalpSummary?.researchSummary?.totalCandidates ?? 0,
+                              },
+                              {
+                                label: "Stage A pass",
+                                value: scalpSummary?.researchSummary?.stageAPass ?? 0,
+                              },
+                              {
+                                label: "Stage B pass",
+                                value: scalpSummary?.researchSummary?.stageBPass ?? 0,
+                              },
+                              {
+                                label: "Stage C pass",
+                                value: scalpSummary?.researchSummary?.stageCPass ?? 0,
+                                tone: (scalpSummary?.researchSummary?.stageCPass ?? 0) > 0
+                                  ? "positive" as const
+                                  : "neutral" as const,
+                              },
+                              {
+                                label: "Stage C fail",
+                                value: scalpSummary?.researchSummary?.stageCFail ?? 0,
+                                tone: (scalpSummary?.researchSummary?.stageCFail ?? 0) > 0
+                                  ? "critical" as const
+                                  : "neutral" as const,
+                              },
+                              {
+                                label: "Symbols",
+                                value: scalpSummary?.researchSummary?.uniqueSymbols ?? 0,
+                              },
+                              {
+                                label: "Sessions",
+                                value: (scalpSummary?.researchSummary?.uniqueSessions ?? []).join(", ") || "—",
+                              },
+                              {
+                                label: "Avg netR",
+                                value:
+                                  scalpSummary?.researchSummary?.avgNetR != null
+                                    ? `${scalpSummary.researchSummary.avgNetR >= 0 ? "+" : ""}${scalpSummary.researchSummary.avgNetR.toFixed(2)}R`
+                                    : "—",
+                              },
+                              {
+                                label: "Avg expectancy",
+                                value:
+                                  scalpSummary?.researchSummary?.avgExpR != null
+                                    ? `${scalpSummary.researchSummary.avgExpR >= 0 ? "+" : ""}${scalpSummary.researchSummary.avgExpR.toFixed(3)}R`
+                                    : "—",
+                              },
+                              {
+                                label: "Highlights",
+                                value: scalpResearchHighlightCount,
+                                tone: scalpResearchHighlightCount > 0
+                                  ? "positive" as const
+                                  : "neutral" as const,
+                              },
+                            ].map((stat) => (
+                              <div
+                                key={`research-stat-${stat.label}`}
+                                className={`rounded-lg border px-2.5 py-2 ${
+                                  scalpDarkMode
+                                    ? "border-zinc-700/80 bg-zinc-900/60"
+                                    : "border-slate-200 bg-slate-50"
+                                }`}
+                              >
+                                <div
+                                  className={`text-[10px] uppercase tracking-[0.12em] ${scalpTextMutedClass}`}
+                                >
+                                  {stat.label}
+                                </div>
+                                <div
+                                  className={`mt-0.5 text-sm font-semibold ${
+                                    "tone" in stat && stat.tone === "positive"
+                                      ? scalpDarkMode
+                                        ? "text-emerald-300"
+                                        : "text-emerald-600"
+                                      : "tone" in stat && stat.tone === "critical"
+                                        ? scalpDarkMode
+                                          ? "text-rose-300"
+                                          : "text-rose-600"
+                                        : scalpTextPrimaryClass
+                                  }`}
+                                >
+                                  {stat.value}
+                                </div>
+                              </div>
+                            ))}
                           </div>
-                          <div
-                            className={`mt-0.5 text-sm font-semibold ${
-                              "tone" in stat && stat.tone === "positive"
-                                ? scalpDarkMode
-                                  ? "text-emerald-300"
-                                  : "text-emerald-600"
-                                : "tone" in stat && stat.tone === "critical"
-                                  ? scalpDarkMode
-                                    ? "text-rose-300"
-                                    : "text-rose-600"
-                                  : scalpTextPrimaryClass
-                            }`}
-                          >
-                            {stat.value}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    {scalpResearchCursors.length > 0 ? (
-                      <div className="mt-4">
-                        <h4
-                          className={`text-sm font-semibold ${scalpTextPrimaryClass}`}
-                        >
-                          {`Cursors (${scalpResearchCursors.length})`}
-                        </h4>
-                        <div
-                          className={`mt-2 overflow-x-auto rounded-lg border ${
-                            scalpDarkMode
-                              ? "border-zinc-700/80"
-                              : "border-slate-200"
-                          }`}
-                        >
+                          {scalpResearchCursors.length > 0 ? (
+                            <div className="mt-3">
+                              <h4
+                                className={`text-sm font-semibold ${scalpTextPrimaryClass}`}
+                              >
+                                {`Cursors (${scalpResearchCursors.length})`}
+                              </h4>
+                              <div
+                                className={`mt-2 overflow-x-auto rounded-lg border ${
+                                  scalpDarkMode
+                                    ? "border-zinc-700/80"
+                                    : "border-slate-200"
+                                }`}
+                              >
                           <table
                             className={`w-full text-xs ${
                               scalpDarkMode ? "text-zinc-200" : "text-slate-700"
@@ -7191,6 +7078,9 @@ export default function Home() {
                         </div>
                       </div>
                     ) : null}
+                        </div>
+                      ) : null}
+                    </article>
                   </section>
 
                   <section className={`${scalpSectionShellClass} p-4`}>
