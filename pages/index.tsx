@@ -2092,7 +2092,7 @@ export default function Home() {
   useEffect(() => {
     const timerId = window.setInterval(() => {
       setScalpCronNowMs(Date.now());
-    }, 1_000);
+    }, 10_000);
     return () => window.clearInterval(timerId);
   }, []);
 
