@@ -5467,7 +5467,7 @@ export default function Home() {
       {
         headerName: "Windows Results",
         field: "windowsResults",
-        minWidth: 280,
+        minWidth: 180,
         cellStyle: {
           paddingTop: "0px",
           paddingBottom: "0px",
