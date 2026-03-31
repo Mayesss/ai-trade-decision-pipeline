@@ -3446,6 +3446,7 @@ export default function Home() {
       ? scalpActiveRow.maxDrawdownR
       : null;
   const asFiniteNumber = (value: unknown): number | null => {
+    if (value === null || value === undefined) return null;
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
   };
@@ -5098,6 +5099,19 @@ export default function Home() {
         deployment.deploymentId,
       );
       if (workerMetrics) {
+        // Backfill new metrics from promotionGate when the worker row
+        // doesn't have them (worker rows are built from weekly breakdowns
+        // that don't carry per-stage aggregate metrics).
+        const pg = asPlainObject(deployment.promotionGate);
+        const pgWorker = asPlainObject(pg.worker || pg);
+        const pgBestStage = (() => {
+          for (const key of ["stageC", "stageB", "stageA"] as const) {
+            const s = asPlainObject(pgWorker[key]);
+            if (s.executed) return s;
+          }
+          return {};
+        })();
+        const pgStageC = pgBestStage;
         return {
           ...workerMetrics,
           rowId: `deployment:${deployment.deploymentId}`,
@@ -5117,6 +5131,22 @@ export default function Home() {
           reason:
             deployment.promotionReason ||
             (deployment.promotionEligible ? "eligible" : workerMetrics.reason),
+          expectancyR: workerMetrics.expectancyR ?? asFiniteNumber(pgStageC.expectancyR),
+          profitFactor: workerMetrics.profitFactor ?? asFiniteNumber(pgStageC.profitFactor),
+          maxDrawdownR: workerMetrics.maxDrawdownR ?? asFiniteNumber(pgStageC.maxDrawdownR),
+          totalMaxDrawdownR: workerMetrics.totalMaxDrawdownR ?? asFiniteNumber(pgStageC.maxDrawdownR),
+          maxWeeklyNetR: workerMetrics.maxWeeklyNetR ?? asFiniteNumber(pgStageC.maxWeeklyNetR),
+          largestTradeR: workerMetrics.largestTradeR ?? asFiniteNumber(pgStageC.largestTradeR),
+          exitReasons: workerMetrics.exitReasons ?? (
+            pgStageC.exitReasons && typeof pgStageC.exitReasons === "object"
+              ? {
+                  stop: Number((pgStageC.exitReasons as any).stop || 0),
+                  tp: Number((pgStageC.exitReasons as any).tp || 0),
+                  timeStop: Number((pgStageC.exitReasons as any).timeStop || 0),
+                  forceClose: Number((pgStageC.exitReasons as any).forceClose || 0),
+                }
+              : null
+          ),
         } satisfies ScalpWorkerJobGridRow;
       }
       const forwardValidation = deployment.forwardValidation || null;
