@@ -800,13 +800,6 @@ export async function manageScalpOpenTrade(params: {
   }
 
   const trade = next.trade;
-  if (trade.dryRun && next.state !== "IN_TRADE") {
-    return {
-      state: next,
-      reasonCodes: ["TRADE_MANAGE_SKIPPED_DRYRUN_NON_LIVE_STATE"],
-      closedTrade: null,
-    };
-  }
   const reasonCodes: string[] = [];
   const entry = toFinite(trade.entryPrice);
   const price = toFinite(params.market.quote.price);
