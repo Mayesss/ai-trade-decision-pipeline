@@ -5542,6 +5542,7 @@ export default function Home() {
       {
         headerName: "Total Net R",
         field: "totalNetR",
+        sort: "desc",
         width: 80,
         cellRenderer: (params: any) => {
           const value =
