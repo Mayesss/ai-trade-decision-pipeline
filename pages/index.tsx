@@ -5624,7 +5624,7 @@ export default function Home() {
       {
         headerName: "Exits",
         field: "exitReasons",
-        width: 100,
+        minWidth: 180,
         valueFormatter: (params) => {
           const v = params.value;
           if (!v || typeof v !== "object") return "—";
