@@ -87,6 +87,23 @@ export function isScalpV2PreciousMetalFamilySymbol(symbol: string): boolean {
   );
 }
 
+/**
+ * Minimum spread in pips per asset category.
+ * Crypto tick sizes are tiny relative to price so 1.1 forex pips is unrealistic.
+ */
+const MIN_SPREAD_PIPS_BY_CATEGORY: Record<ScalpV2AssetCategory, number> = {
+  forex: 1.1,
+  crypto: 5,
+  commodity: 3,
+  index: 2,
+  equity: 5,
+  other: 2,
+};
+
+export function minSpreadPipsForCategory(category: ScalpV2AssetCategory): number {
+  return MIN_SPREAD_PIPS_BY_CATEGORY[category] ?? 2;
+}
+
 export function inferScalpV2AssetCategory(symbol: string): ScalpV2AssetCategory {
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return "other";

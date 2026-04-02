@@ -3,6 +3,8 @@ import crypto from "crypto";
 import { fetchCapitalOpenPositionSnapshots } from "../capital";
 import { loadScalpCandleHistoryInRange } from "../scalp/candleHistory";
 import { pipSizeForScalpSymbol } from "../scalp/marketData";
+import { loadScalpSymbolMarketMetadataBulk } from "../scalp/symbolMarketMetadataStore";
+import type { ScalpSymbolMarketMetadata } from "../scalp/symbolMarketMetadata";
 import {
   defaultScalpReplayConfig,
   runScalpReplay,
@@ -72,6 +74,7 @@ import {
   buildScalpV2ModelGuidedComposerGrid,
   toScalpV2ResearchCursorKey,
 } from "./research";
+import { inferScalpV2AssetCategory, minSpreadPipsForCategory } from "./symbolInfo";
 import { getScalpV2VenueAdapter } from "./venueAdapter";
 import {
   resolveScalpV2CompletedWeekWindowToUtc,
@@ -1554,6 +1557,10 @@ export async function runScalpV2ResearchJob(params: {
     }
 
     // --- Backtest remaining candidates in one pass ---
+    const uniqueSymbols = Array.from(new Set(selected.map((c) => c.symbol)));
+    const symbolMetadataMap = await loadScalpSymbolMarketMetadataBulk(uniqueSymbols).catch(
+      () => new Map<string, ScalpSymbolMarketMetadata | null>(),
+    );
     const candleCache = new Map<string, ScalpReplayCandle[]>();
     let persistedCount = 0;
     let stageAPass = 0;
@@ -1585,13 +1592,19 @@ export async function runScalpV2ResearchJob(params: {
             minWindowFromTs,
             windowToTs,
           );
+          const meta = symbolMetadataMap.get(candidate.symbol) ?? null;
+          const symbolPipSize = pipSizeForScalpSymbol(candidate.symbol, meta ?? undefined);
+          const category = inferScalpV2AssetCategory(candidate.symbol);
+          const categoryFloor = minSpreadPipsForCategory(category);
           const baseReplayConfig = defaultScalpReplayConfig(candidate.symbol);
+          const tickSpreadPips = meta?.tickSize ? meta.tickSize / symbolPipSize : 0;
+          const spreadPips = Math.max(baseReplayConfig.defaultSpreadPips, categoryFloor, tickSpreadPips);
           symbolCandles = filterSundayReplayCandles(
             toReplayCandlesFromHistory(
               (history.record?.candles || []) as Array<
                 [number, number, number, number, number, number]
               >,
-              baseReplayConfig.defaultSpreadPips,
+              spreadPips,
             ),
           );
           candleCache.set(candidate.symbol, symbolCandles);
@@ -1654,9 +1667,10 @@ export async function runScalpV2ResearchJob(params: {
               ...smReplayOverrides,
             },
           };
+          const candidateMeta = symbolMetadataMap.get(candidate.symbol) ?? null;
           const replay = await runScalpReplay({
             candles: stageCandles,
-            pipSize: pipSizeForScalpSymbol(candidate.symbol),
+            pipSize: pipSizeForScalpSymbol(candidate.symbol, candidateMeta ?? undefined),
             config: replayConfig,
             captureTimeline: false,
           });
