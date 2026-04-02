@@ -1584,7 +1584,7 @@ export async function runScalpV2ResearchJob(params: {
       const candidate = selected[candidateIdx]!;
 
       try {
-        let symbolCandles = candleCache.get(candidate.symbol) || null;
+        let symbolCandles = candleCache.get(candidate.symbol) ?? null;
         if (!symbolCandles) {
           const history = await loadScalpCandleHistoryInRange(
             candidate.symbol,
@@ -1608,6 +1608,13 @@ export async function runScalpV2ResearchJob(params: {
             ),
           );
           candleCache.set(candidate.symbol, symbolCandles);
+        }
+
+        // Skip candidates whose symbol has insufficient candles — don't persist
+        // a failure so they get retried after candles are loaded.
+        if (symbolCandles.length < workerPolicy.minCandles) {
+          processed += 1;
+          continue;
         }
 
         let blockedStages = false;

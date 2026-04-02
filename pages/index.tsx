@@ -2471,7 +2471,7 @@ export default function Home() {
         session: scalpSession,
         eventLimit: "240",
         ledgerLimit: "300",
-        deploymentLimit: "600",
+        deploymentLimit: "2000",
         jobLimit: "20",
       });
       if (!silent || force) {
