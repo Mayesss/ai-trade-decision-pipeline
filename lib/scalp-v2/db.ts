@@ -165,14 +165,8 @@ function parseRuntimeConfigRow(raw: unknown): ScalpV2RuntimeConfig | null {
       ...defaults.riskProfile,
       ...asRecord(config.riskProfile),
     },
-    seedSymbolsByVenue: {
-      ...defaults.seedSymbolsByVenue,
-      ...asRecord(config.seedSymbolsByVenue),
-    } as ScalpV2RuntimeConfig["seedSymbolsByVenue"],
-    seedLiveSymbolsByVenue: {
-      ...defaults.seedLiveSymbolsByVenue,
-      ...asRecord(config.seedLiveSymbolsByVenue),
-    } as ScalpV2RuntimeConfig["seedLiveSymbolsByVenue"],
+    seedSymbolsByVenue: defaults.seedSymbolsByVenue,
+    seedLiveSymbolsByVenue: defaults.seedLiveSymbolsByVenue,
   };
 
   const runtime: ScalpV2RuntimeConfig = {
