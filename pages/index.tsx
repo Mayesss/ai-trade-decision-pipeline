@@ -5237,7 +5237,11 @@ export default function Home() {
       } satisfies ScalpWorkerJobGridRow;
     });
 
-    return out.sort(compareScalpWorkerJobGridRows);
+    return out.sort((a, b) => {
+      const aNetR = a.totalNetR ?? Number.NEGATIVE_INFINITY;
+      const bNetR = b.totalNetR ?? Number.NEGATIVE_INFINITY;
+      return bNetR - aNetR;
+    });
   }, [scalpRegistryDeployments, scalpWorkerJobsGridRows]);
   const scalpSelectedWorkerGridRows = useMemo<ScalpWorkerJobGridRow[]>(() => {
     return scalpAllDeploymentsGridRows.filter((row) => {
