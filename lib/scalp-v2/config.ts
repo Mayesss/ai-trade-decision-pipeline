@@ -112,8 +112,7 @@ function parseSeedSymbols(
 ): string[] {
   const fromEnv = normalizeSymbols(parseCsvUnique(value));
   if (fromEnv.length > 0) return fromEnv;
-  if (venue === "bitget") return ["BTCUSDT"];
-  return ["EURUSD"];
+  return FIXED_SCOPE_SYMBOLS_BY_VENUE[venue].slice();
 }
 
 function parseSeedLiveSymbols(
@@ -122,8 +121,7 @@ function parseSeedLiveSymbols(
 ): string[] {
   const fromEnv = normalizeSymbols(parseCsvUnique(value));
   if (fromEnv.length > 0) return fromEnv;
-  if (venue === "bitget") return ["BTCUSDT"];
-  return ["EURUSD"];
+  return FIXED_SCOPE_SYMBOLS_BY_VENUE[venue].slice();
 }
 
 function clampVenueSeedSymbols(params: {
