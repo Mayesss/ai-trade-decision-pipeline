@@ -425,7 +425,7 @@ export async function listScalpV2Candidates(params: {
         updated_at AS "updatedAt"
       FROM scalp_v2_candidates
       ${whereSql}
-      ORDER BY updated_at DESC, score DESC
+      ORDER BY COALESCE((metadata_json->'worker'->'stageC'->>'netR')::double precision, -999) DESC, score DESC
       LIMIT $${values.length};
     `,
     ...values,
@@ -715,7 +715,7 @@ export async function listScalpV2Deployments(params: {
         updated_at AS "updatedAt"
       FROM scalp_v2_deployments
       ${whereSql}
-      ORDER BY enabled DESC, updated_at DESC
+      ORDER BY enabled DESC, COALESCE((promotion_gate->'worker'->'stageC'->>'netR')::double precision, -999) DESC
       LIMIT $${values.length};
     `,
     ...values,
