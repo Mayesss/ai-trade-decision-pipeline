@@ -4624,12 +4624,14 @@ export async function runLoadCandlesPipelineJob(
       let succeeded = 0;
       let retried = 0;
       let failed = 0;
+      const symbolResults: Array<{ symbol: string; status: string; weeksCovered?: number; error?: string | null }> = [];
 
       for (let idx = 0; idx < claimed.length; idx += 1) {
         const row = claimed[idx]!;
         const symbol = normalizeSymbol(row.symbol);
         if (!symbol) continue;
         try {
+          console.info(`[load-candles] ${symbol} starting (attempt ${row.attempts + 1}/${maxAttempts})`);
           const coverage = await ensureSymbolWeeklyCoverage({
             symbol,
             nowMs,
@@ -4640,6 +4642,8 @@ export async function runLoadCandlesPipelineJob(
             allowNonBitgetSymbols,
           });
           if (coverage.ok) {
+            console.info(`[load-candles] ${symbol} succeeded — ${coverage.weeksCovered} weeks, ${coverage.fetchedCount} fetched, ${coverage.addedCount} added`);
+            symbolResults.push({ symbol, status: "succeeded", weeksCovered: coverage.weeksCovered });
             await updateLoadSymbolStatus({
               symbol,
               status: "succeeded",
@@ -4651,6 +4655,8 @@ export async function runLoadCandlesPipelineJob(
             });
             succeeded += 1;
           } else if (row.attempts >= maxAttempts) {
+            console.error(`[load-candles] ${symbol} failed permanently — ${coverage.error} (${coverage.weeksCovered} weeks covered)`);
+            symbolResults.push({ symbol, status: "failed", weeksCovered: coverage.weeksCovered, error: coverage.error });
             await updateLoadSymbolStatus({
               symbol,
               status: "failed",
@@ -4661,6 +4667,8 @@ export async function runLoadCandlesPipelineJob(
             });
             failed += 1;
           } else {
+            console.warn(`[load-candles] ${symbol} retry — ${coverage.error} (attempt ${row.attempts + 1}, ${coverage.weeksCovered} weeks covered)`);
+            symbolResults.push({ symbol, status: "retry", weeksCovered: coverage.weeksCovered, error: coverage.error });
             await updateLoadSymbolStatus({
               symbol,
               status: "retry_wait",
@@ -4676,6 +4684,8 @@ export async function runLoadCandlesPipelineJob(
           const message = String(
             err?.message || err || "load_symbol_failed",
           ).slice(0, 500);
+          console.error(`[load-candles] ${symbol} exception — ${message}`);
+          symbolResults.push({ symbol, status: row.attempts >= maxAttempts ? "failed" : "retry", error: message });
           if (row.attempts >= maxAttempts) {
             await updateLoadSymbolStatus({
               symbol,
@@ -4742,6 +4752,7 @@ export async function runLoadCandlesPipelineJob(
           succeeded,
           retried,
           failed,
+          symbolResults,
         },
       };
     },
