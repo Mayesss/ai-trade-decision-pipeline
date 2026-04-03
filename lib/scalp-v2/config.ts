@@ -19,8 +19,8 @@ const DEFAULT_SESSIONS: ScalpV2Session[] = [
 const DEFAULT_VENUES: ScalpV2Venue[] = ["bitget", "capital"];
 const FIXED_SCOPE_SYMBOLS_BY_VENUE: Record<ScalpV2Venue, string[]> =
   Object.freeze({
-    bitget: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
-    capital: ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"],
+    bitget: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "LINKUSDT", "DOTUSDT", "ADAUSDT", "LTCUSDT", "AVAXUSDT"],
+    capital: ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD", "AUDUSD", "USDCAD", "XAGUSD", "EURGBP", "NZDUSD", "USDCHF"],
   });
 
 function toBool(value: string | undefined, fallback: boolean): boolean {
