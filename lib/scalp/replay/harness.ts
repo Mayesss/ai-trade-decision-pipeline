@@ -451,10 +451,13 @@ function appendTimeline(
   });
 }
 
-function inferExitReasonFromManageCodes(codes: string[]): "STOP" | "TP" | "TIME_STOP" {
+function inferExitReasonFromManageCodes(codes: string[]): "STOP" | "STOP_LOSS" | "STOP_BE" | "STOP_TRAIL" | "TP" | "TIME_STOP" {
   const normalized = dedupeReasonCodes(codes);
   if (normalized.includes("TRADE_EXIT_TP_HIT")) return "TP";
   if (normalized.includes("TRADE_EXIT_TIME_STOP")) return "TIME_STOP";
+  // Can't distinguish stop sub-type from reason codes alone — return generic STOP.
+  // The primary code path uses managed.closedTrade.exitReason which carries the
+  // specific STOP_LOSS / STOP_BE / STOP_TRAIL classification from execution.ts.
   return "STOP";
 }
 
@@ -462,7 +465,7 @@ function closePositionAsTrade(params: {
   position: ReplayPosition;
   exitTs: number;
   exitPrice: number;
-  exitReason: "STOP" | "TP" | "TIME_STOP" | "FORCE_CLOSE";
+  exitReason: "STOP" | "STOP_LOSS" | "STOP_BE" | "STOP_TRAIL" | "TP" | "TIME_STOP" | "FORCE_CLOSE";
   totalTradeR: number;
   tradeBeforeExit: NonNullable<ScalpSessionState["trade"]> | null;
 }): ScalpReplayTrade {
@@ -908,10 +911,11 @@ export async function runScalpReplay(params: {
           const totalTradeR = Number.isFinite(managed.closedTrade?.totalTradeR)
             ? Number(managed.closedTrade!.totalTradeR)
             : toFinite(state.stats.realizedR, 0) - priorRealizedR;
+          const isStopExit = exitReason === "STOP" || exitReason === "STOP_LOSS" || exitReason === "STOP_BE" || exitReason === "STOP_TRAIL";
           const exitPrice = Number.isFinite(managed.closedTrade?.exitPrice)
             ? Number(managed.closedTrade!.exitPrice)
             : toFinite(
-                exitReason === "STOP"
+                isStopExit
                   ? tradeBeforeManage.stopPrice
                   : exitReason === "TP"
                     ? tradeBeforeManage.takeProfitPrice

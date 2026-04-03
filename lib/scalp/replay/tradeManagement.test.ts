@@ -100,7 +100,7 @@ test("manageScalpOpenTrade closes position on stop hit and records loss stats", 
   assert.ok(Math.abs((managed.state.stats.realizedR ?? 0) + 1) < 1e-9);
   assert.equal(managed.state.state, "IDLE");
   assert.ok(managed.reasonCodes.includes("TRADE_EXIT_STOP_HIT"));
-  assert.equal(managed.closedTrade?.exitReason, "STOP");
+  assert.equal(managed.closedTrade?.exitReason, "STOP_LOSS");
   assert.equal(managed.closedTrade?.exitPrice, 0.99);
   assert.ok(Math.abs((managed.closedTrade?.totalTradeR ?? 0) + 1) < 1e-9);
 });
@@ -155,7 +155,7 @@ test("manageScalpOpenTrade does not overstate stop loss when market price oversh
 
   assert.equal(managed.state.trade, null);
   assert.equal(managed.state.stats.realizedR, -1);
-  assert.equal(managed.closedTrade?.exitReason, "STOP");
+  assert.equal(managed.closedTrade?.exitReason, "STOP_LOSS");
   assert.equal(managed.closedTrade?.exitPrice, 99);
   assert.equal(managed.closedTrade?.totalTradeR, -1);
 });
@@ -307,7 +307,7 @@ test("manageScalpOpenTrade treats missing owned broker position as already close
   assert.ok(managed.reasonCodes.includes("TRADE_EXIT_ASSUMED_BROKER_CLOSED"));
   assert.ok(managed.reasonCodes.includes("TRADE_EXIT_STOP_HIT"));
   assert.equal(managed.reasonCodes.includes("TRADE_EXIT_NOT_CONFIRMED"), false);
-  assert.equal(managed.closedTrade?.exitReason, "STOP");
+  assert.equal(managed.closedTrade?.exitReason, "STOP_LOSS");
   assert.equal(managed.closedTrade?.exitPrice, 0.99);
   assert.ok(Math.abs((managed.closedTrade?.totalTradeR ?? 0) + 1) < 1e-9);
 });

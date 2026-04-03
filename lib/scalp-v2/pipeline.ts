@@ -1692,11 +1692,14 @@ export async function runScalpV2ResearchJob(params: {
           const weeklyNetRValues = Object.values(weeklyNetR).filter(Number.isFinite);
           const maxWeeklyNetR = weeklyNetRValues.length > 0 ? Math.max(...weeklyNetRValues) : null;
           let largestTradeR: number | null = null;
-          const exitReasons = { stop: 0, tp: 0, timeStop: 0, forceClose: 0 };
+          const exitReasons = { stop: 0, stopLoss: 0, stopBe: 0, stopTrail: 0, tp: 0, timeStop: 0, forceClose: 0 };
           for (const t of replay.trades) {
             const absR = Math.abs(t.rMultiple);
             if (largestTradeR === null || absR > largestTradeR) largestTradeR = absR;
-            if (t.exitReason === "STOP") exitReasons.stop += 1;
+            if (t.exitReason === "STOP_LOSS") { exitReasons.stopLoss += 1; exitReasons.stop += 1; }
+            else if (t.exitReason === "STOP_BE") { exitReasons.stopBe += 1; exitReasons.stop += 1; }
+            else if (t.exitReason === "STOP_TRAIL") { exitReasons.stopTrail += 1; exitReasons.stop += 1; }
+            else if (t.exitReason === "STOP") { exitReasons.stop += 1; }
             else if (t.exitReason === "TP") exitReasons.tp += 1;
             else if (t.exitReason === "TIME_STOP") exitReasons.timeStop += 1;
             else if (t.exitReason === "FORCE_CLOSE") exitReasons.forceClose += 1;

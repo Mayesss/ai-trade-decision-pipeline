@@ -783,7 +783,7 @@ export async function manageScalpOpenTrade(params: {
   closedTrade: {
     exitPrice: number;
     totalTradeR: number;
-    exitReason: "STOP" | "TP" | "TIME_STOP";
+    exitReason: "STOP" | "STOP_LOSS" | "STOP_BE" | "STOP_TRAIL" | "TP" | "TIME_STOP";
   } | null;
 }> {
   const next: ScalpSessionState = {
@@ -1029,7 +1029,9 @@ export async function manageScalpOpenTrade(params: {
   }
 
   const exitReasonCode = stopHit ? "TRADE_EXIT_STOP_HIT" : tpHit ? "TRADE_EXIT_TP_HIT" : "TRADE_EXIT_TIME_STOP";
-  const exitReason: "STOP" | "TP" | "TIME_STOP" = stopHit ? "STOP" : tpHit ? "TP" : "TIME_STOP";
+  const exitReason: "STOP" | "STOP_LOSS" | "STOP_BE" | "STOP_TRAIL" | "TP" | "TIME_STOP" = stopHit
+    ? (trade.trailActive ? "STOP_TRAIL" : trade.tp1Done ? "STOP_BE" : "STOP_LOSS")
+    : tpHit ? "TP" : "TIME_STOP";
   reasonCodes.push(exitReasonCode);
   return {
     state: next,

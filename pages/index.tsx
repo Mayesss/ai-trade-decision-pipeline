@@ -589,7 +589,7 @@ type ScalpWorkerJobGridRow = {
   totalMaxDrawdownR: number | null;
   maxWeeklyNetR: number | null;
   largestTradeR: number | null;
-  exitReasons: { stop: number; tp: number; timeStop: number; forceClose: number } | null;
+  exitReasons: { stop: number; stopLoss: number; stopBe: number; stopTrail: number; tp: number; timeStop: number; forceClose: number } | null;
   errorCodes: string | null;
 };
 
@@ -5051,6 +5051,9 @@ export default function Home() {
             pgStageC.exitReasons && typeof pgStageC.exitReasons === "object"
               ? {
                   stop: Number((pgStageC.exitReasons as any).stop || 0),
+                  stopLoss: Number((pgStageC.exitReasons as any).stopLoss || 0),
+                  stopBe: Number((pgStageC.exitReasons as any).stopBe || 0),
+                  stopTrail: Number((pgStageC.exitReasons as any).stopTrail || 0),
                   tp: Number((pgStageC.exitReasons as any).tp || 0),
                   timeStop: Number((pgStageC.exitReasons as any).timeStop || 0),
                   forceClose: Number((pgStageC.exitReasons as any).forceClose || 0),
@@ -5138,6 +5141,9 @@ export default function Home() {
         exitReasons: gateStageC?.exitReasons && typeof gateStageC.exitReasons === "object"
           ? {
               stop: Number(gateStageC.exitReasons.stop || 0),
+              stopLoss: Number((gateStageC.exitReasons as any).stopLoss || 0),
+              stopBe: Number((gateStageC.exitReasons as any).stopBe || 0),
+              stopTrail: Number((gateStageC.exitReasons as any).stopTrail || 0),
               tp: Number(gateStageC.exitReasons.tp || 0),
               timeStop: Number(gateStageC.exitReasons.timeStop || 0),
               forceClose: Number(gateStageC.exitReasons.forceClose || 0),
@@ -5543,7 +5549,10 @@ export default function Home() {
           const v = params.value;
           if (!v || typeof v !== "object") return "—";
           const parts: string[] = [];
-          if (v.stop) parts.push(`SL:${v.stop}`);
+          if (v.stopLoss) parts.push(`SL:${v.stopLoss}`);
+          if (v.stopBe) parts.push(`BE:${v.stopBe}`);
+          if (v.stopTrail) parts.push(`TR:${v.stopTrail}`);
+          if (v.stop && !v.stopLoss && !v.stopBe && !v.stopTrail) parts.push(`SL:${v.stop}`);
           if (v.tp) parts.push(`TP:${v.tp}`);
           if (v.timeStop) parts.push(`TS:${v.timeStop}`);
           if (v.forceClose) parts.push(`FC:${v.forceClose}`);

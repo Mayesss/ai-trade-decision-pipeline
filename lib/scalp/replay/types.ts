@@ -102,7 +102,7 @@ export interface ScalpReplayTrade {
     stopPrice: number;
     takeProfitPrice: number;
     exitPrice: number;
-    exitReason: 'STOP' | 'TP' | 'TIME_STOP' | 'FORCE_CLOSE';
+    exitReason: 'STOP' | 'STOP_LOSS' | 'STOP_BE' | 'STOP_TRAIL' | 'TP' | 'TIME_STOP' | 'FORCE_CLOSE';
     riskAbs: number;
     riskUsd: number;
     notionalUsd: number;
