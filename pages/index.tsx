@@ -6542,68 +6542,11 @@ export default function Home() {
                       cron telemetry are still available below.
                     </div>
                   ) : null}
-                  <section className="grid grid-cols-1 gap-5">
+                  {/* Pipeline Flow panel removed */}
+                  <section className="hidden">
                     <article className={`${scalpSectionShellClass} p-4`}>
                       <div className="flex flex-wrap items-start gap-3">
                         <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <h3
-                              className={`text-lg font-semibold ${scalpTextPrimaryClass}`}
-                            >
-                              Pipeline Flow
-                            </h3>
-                            <span className={scalpTagNeutralClass}>
-                              {`${scalpCronRows.length} jobs`}
-                            </span>
-                            <span className={scalpTagNeutralClass}>
-                              {`session: ${scalpSession}`}
-                            </span>
-                            <span
-                              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${
-                                scalpInProgressCronRows.length
-                                  ? scalpCronDetailToneMeta("warning")
-                                  : scalpCronDetailToneMeta("neutral")
-                              }`}
-                            >
-                              {scalpInProgressCronRows.length ? (
-                                <Repeat className="h-3.5 w-3.5 animate-spin" />
-                              ) : (
-                                <Circle className="h-3.5 w-3.5" />
-                              )}
-                              {`In progress: ${scalpInProgressCronLabel}`}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                void setScalpPanicStop(!scalpPanicStopEnabled);
-                              }}
-                              disabled={scalpPanicStopUpdating}
-                              className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
-                                scalpPanicStopEnabled
-                                  ? scalpDarkMode
-                                    ? "border-rose-500/70 bg-rose-500/15 text-rose-200 hover:bg-rose-500/25"
-                                    : "border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100"
-                                  : scalpDarkMode
-                                    ? "border-emerald-500/60 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20"
-                                    : "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
-                              } ${scalpPanicStopUpdating ? "cursor-not-allowed opacity-60" : ""}`}
-                              title={
-                                scalpPanicStopEnabled
-                                  ? "Disable panic stop and allow cron pipeline execution"
-                                  : "Enable panic stop to block pipeline jobs"
-                              }
-                            >
-                              {scalpPanicStopUpdating
-                                ? "updating..."
-                                : scalpPanicStopEnabled
-                                  ? "Panic Stop: ON"
-                                  : "Panic Stop: OFF"}
-                            </button>
-                          </div>
-                          <p className={`mt-2 text-sm ${scalpTextSecondaryClass}`}>
-                            Visual lane view for active worker stages. Each
-                            lane keeps detailed cron metrics below.
-                          </p>
                           {scalpPipelineFlowSteps.length ? (
                             <div className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
                               {scalpPipelineFlowSteps.map((step) => {
