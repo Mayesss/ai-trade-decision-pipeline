@@ -135,6 +135,7 @@ function percentileRank(values: number[], current: number): number {
 function profileTimeZone(profile: ScalpEntrySessionProfile): string {
   if (profile === 'tokyo') return 'Asia/Tokyo';
   if (profile === 'newyork') return 'America/New_York';
+  if (profile === 'pacific') return 'America/Los_Angeles';
   if (profile === 'sydney') return 'Australia/Sydney';
   return 'Europe/Berlin';
 }

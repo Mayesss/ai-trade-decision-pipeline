@@ -14,6 +14,7 @@ const DEFAULT_SESSIONS: ScalpV2Session[] = [
   "tokyo",
   "berlin",
   "newyork",
+  "pacific",
   "sydney",
 ];
 const DEFAULT_VENUES: ScalpV2Venue[] = ["bitget", "capital"];
@@ -60,6 +61,7 @@ function parseSession(value: unknown): ScalpV2Session | null {
     normalized === "tokyo" ||
     normalized === "berlin" ||
     normalized === "newyork" ||
+    normalized === "pacific" ||
     normalized === "sydney"
   ) {
     return normalized;

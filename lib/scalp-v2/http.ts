@@ -51,6 +51,7 @@ export function parseSession(value: string | string[] | undefined): ScalpV2Sessi
   if (normalized === "tokyo") return "tokyo";
   if (normalized === "berlin") return "berlin";
   if (normalized === "newyork") return "newyork";
+  if (normalized === "pacific") return "pacific";
   if (normalized === "sydney") return "sydney";
   return undefined;
 }

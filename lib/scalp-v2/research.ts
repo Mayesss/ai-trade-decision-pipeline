@@ -787,6 +787,7 @@ const SESSION_PRIMARY_BLOCK_BY_PROFILE: Record<ScalpV2Session, string> = {
   tokyo: "session_tokyo_window",
   berlin: "session_berlin_window",
   newyork: "session_newyork_window",
+  pacific: "session_pacific_window",
   sydney: "session_sydney_window",
 };
 
@@ -1466,6 +1467,7 @@ export function buildScalpV2SessionCandidateDslGrid(params: {
       row === "tokyo" ||
       row === "berlin" ||
       row === "newyork" ||
+      row === "pacific" ||
       row === "sydney",
   );
   const out: ScalpV2CandidateDslSpec[] = [];

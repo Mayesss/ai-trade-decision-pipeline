@@ -78,7 +78,7 @@ async function safeAppendAdaptiveDecision(params: {
     deploymentId: string;
     symbol: string;
     strategyId: string;
-    entrySessionProfile: 'tokyo' | 'berlin' | 'newyork' | 'sydney';
+    entrySessionProfile: 'tokyo' | 'berlin' | 'newyork' | 'pacific' | 'sydney';
     nowMs: number;
     selectedArmType: 'pattern' | 'incumbent' | 'none';
     selectedArmId?: string | null;

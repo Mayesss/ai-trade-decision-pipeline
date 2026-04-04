@@ -78,6 +78,7 @@ function normalizeSession(value: unknown): ScalpV2Session {
     .toLowerCase();
   if (normalized === "tokyo") return "tokyo";
   if (normalized === "newyork") return "newyork";
+  if (normalized === "pacific") return "pacific";
   if (normalized === "sydney") return "sydney";
   return "berlin";
 }

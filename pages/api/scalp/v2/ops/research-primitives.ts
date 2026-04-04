@@ -38,6 +38,7 @@ function fallbackSession(value: unknown): ScalpV2Session {
     normalized === "tokyo" ||
     normalized === "berlin" ||
     normalized === "newyork" ||
+    normalized === "pacific" ||
     normalized === "sydney"
   ) {
     return normalized;

@@ -640,6 +640,7 @@ type ScalpEntrySessionProfileUi =
   | "berlin"
   | "tokyo"
   | "newyork"
+  | "pacific"
   | "sydney";
 
 const CURRENCY_SYMBOL = "₮"; // Tether-style symbol
@@ -714,6 +715,7 @@ function normalizeScalpEntrySessionProfileUi(
     normalized === "berlin" ||
     normalized === "tokyo" ||
     normalized === "newyork" ||
+    normalized === "pacific" ||
     normalized === "sydney"
   ) {
     return normalized;
@@ -788,6 +790,14 @@ const SCALP_SESSION_TIMELINE_COLORS: ScalpSessionTimelineColorMeta[] = [
     darkFill: "rgba(251, 113, 133, 0.24)",
     lightBorder: "rgba(225, 29, 72, 0.7)",
     darkBorder: "rgba(251, 113, 133, 0.56)",
+  },
+  {
+    id: "pacific",
+    label: "Pacific",
+    lightFill: "rgba(139, 92, 246, 0.28)",
+    darkFill: "rgba(167, 139, 250, 0.24)",
+    lightBorder: "rgba(124, 58, 237, 0.7)",
+    darkBorder: "rgba(167, 139, 250, 0.56)",
   },
   {
     id: "sydney",
@@ -1597,6 +1607,7 @@ function parseEntrySessionProfileFromCronPath(
       raw === "berlin" ||
       raw === "tokyo" ||
       raw === "newyork" ||
+      raw === "pacific" ||
       raw === "sydney"
     ) {
       return raw;
@@ -2859,6 +2870,7 @@ export default function Home() {
       stored === "berlin" ||
       stored === "tokyo" ||
       stored === "newyork" ||
+      stored === "pacific" ||
       stored === "sydney"
     ) {
       setScalpSession(stored);

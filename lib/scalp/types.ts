@@ -6,6 +6,7 @@ export type ScalpEntrySessionProfile =
   | "tokyo"
   | "berlin"
   | "newyork"
+  | "pacific"
   | "sydney";
 export type ScalpBaseTimeframe = "M1" | "M3" | "M5" | "M15";
 export type ScalpConfirmTimeframe = "M1" | "M3";

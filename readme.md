@@ -105,7 +105,7 @@ MARKETAUX_API_KEY=...
 # SCALP_BLOCK_SUNDAY_ENTRIES=true       # global entry gate (default true): block new entries on Sunday by session clock
 # SCALP_ALLOW_SUNDAY_REPLAY=false       # default false: block replay/backtest jobs on Sunday UTC (override only when explicitly needed)
 # Entry session profile env is no longer used; canonical baseline session id is berlin.
-# Use `?session=berlin|tokyo|newyork|sydney` on scalp planner/worker/executor routes.
+# Use `?session=berlin|tokyo|newyork|pacific|sydney` on scalp planner/worker/executor routes.
 # SCALP_ENTRY_ORDER_TYPE=MARKET         # or LIMIT
 # SCALP_RISK_PER_TRADE_PCT=0.35
 # SCALP_REFERENCE_EQUITY_USD=10000
@@ -297,7 +297,7 @@ npm run start
   - Use `all=true` for one cron pass across all enabled deployment rows, or `symbol=<SYMBOL>` to target one symbol.
   - Optional query: `venue=capital|bitget` to scope execution to a single venue.
   - When `venue` is omitted and both venues are present, execution is split by venue and processed in parallel with venue-scoped mutex locks.
-  - Required for session lanes: `session=berlin|tokyo|newyork|sydney`.
+  - Required for session lanes: `session=berlin|tokyo|newyork|pacific|sydney`.
   - Optional query: `requirePromotionEligible=true` to execute only deployments with `promotionGate.eligible=true`.
 - `GET /api/scalp/v2/cron/discover`
   - Legacy alias kept for compatibility: `/api/scalp/cron/v2/discover`.

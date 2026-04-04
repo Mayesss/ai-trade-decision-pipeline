@@ -53,6 +53,7 @@ function parseSessionLoose(value: unknown): ScalpV2Session | null {
     normalized === "tokyo" ||
     normalized === "berlin" ||
     normalized === "newyork" ||
+    normalized === "pacific" ||
     normalized === "sydney"
   ) {
     return normalized;

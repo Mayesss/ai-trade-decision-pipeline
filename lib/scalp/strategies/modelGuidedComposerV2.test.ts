@@ -24,16 +24,21 @@ const TOKYO_OUTSIDE = Date.UTC(2026, 0, 5, 5, 0, 0, 0); // 14:00 JST
 const NEWYORK_INSIDE = Date.UTC(2026, 0, 5, 14, 0, 0, 0); // 09:00 EST
 const NEWYORK_OUTSIDE = Date.UTC(2026, 0, 5, 18, 0, 0, 0); // 13:00 EST
 
+// Pacific: 10:00–14:00 America/Los_Angeles (PST = UTC-8)
+const PACIFIC_INSIDE = Date.UTC(2026, 0, 5, 19, 0, 0, 0); // 11:00 PST
+const PACIFIC_OUTSIDE = Date.UTC(2026, 0, 5, 23, 0, 0, 0); // 15:00 PST
+
 // Sydney: 08:00–12:00 Australia/Sydney (AEDT = UTC+11)
 const SYDNEY_INSIDE = Date.UTC(2026, 0, 4, 22, 0, 0, 0); // 09:00 AEDT
 const SYDNEY_OUTSIDE = Date.UTC(2026, 0, 5, 2, 0, 0, 0); // 13:00 AEDT
 
-const SESSIONS: ScalpEntrySessionProfile[] = ["tokyo", "berlin", "newyork", "sydney"];
+const SESSIONS: ScalpEntrySessionProfile[] = ["tokyo", "berlin", "newyork", "pacific", "sydney"];
 
 const INSIDE_TS: Record<ScalpEntrySessionProfile, number> = {
   tokyo: TOKYO_INSIDE,
   berlin: BERLIN_INSIDE,
   newyork: NEWYORK_INSIDE,
+  pacific: PACIFIC_INSIDE,
   sydney: SYDNEY_INSIDE,
 };
 
@@ -41,6 +46,7 @@ const OUTSIDE_TS: Record<ScalpEntrySessionProfile, number> = {
   tokyo: TOKYO_OUTSIDE,
   berlin: BERLIN_OUTSIDE,
   newyork: NEWYORK_OUTSIDE,
+  pacific: PACIFIC_OUTSIDE,
   sydney: SYDNEY_OUTSIDE,
 };
 

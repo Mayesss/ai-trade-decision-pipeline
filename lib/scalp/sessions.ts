@@ -4,6 +4,7 @@ const SCALP_ENTRY_SESSION_PROFILE_ORDER: ScalpEntrySessionProfile[] = [
     'tokyo',
     'berlin',
     'newyork',
+    'pacific',
     'sydney',
 ];
 
@@ -31,6 +32,11 @@ const SCALP_ENTRY_SESSION_PROFILES: Record<ScalpEntrySessionProfile, ScalpEntryS
         timeZone: 'America/New_York',
         windowsLocal: [['08:00', '12:00']],
     },
+    pacific: {
+        profile: 'pacific',
+        timeZone: 'America/Los_Angeles',
+        windowsLocal: [['10:00', '14:00']],
+    },
     sydney: {
         profile: 'sydney',
         timeZone: 'Australia/Sydney',
@@ -42,6 +48,7 @@ const SCALP_ENTRY_SESSION_PROFILE_ALIASES: Record<string, ScalpEntrySessionProfi
     tokyo: 'tokyo',
     berlin: 'berlin',
     newyork: 'newyork',
+    pacific: 'pacific',
     sydney: 'sydney',
 };
 

@@ -1,6 +1,6 @@
 export type ScalpV2Venue = "bitget" | "capital";
 
-export type ScalpV2Session = "tokyo" | "berlin" | "newyork" | "sydney";
+export type ScalpV2Session = "tokyo" | "berlin" | "newyork" | "pacific" | "sydney";
 
 export type ScalpV2CandidateStatus =
   | "discovered"

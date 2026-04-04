@@ -10,9 +10,9 @@ import {
     scalpEntrySessionProfileDistance,
 } from '../sessions';
 
-test('entry session profiles include tokyo/berlin/newyork/sydney', () => {
+test('entry session profiles include tokyo/berlin/newyork/pacific/sydney', () => {
     const profiles = listScalpEntrySessionProfiles();
-    assert.deepEqual(profiles, ['tokyo', 'berlin', 'newyork', 'sydney']);
+    assert.deepEqual(profiles, ['tokyo', 'berlin', 'newyork', 'pacific', 'sydney']);
 });
 
 test('entry session profile normalization falls back to berlin for unknown values', () => {
