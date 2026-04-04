@@ -231,6 +231,14 @@ const PRIMITIVE_BLOCKS: ScalpV2PrimitiveBlock[] = [
     sourceStrategyIds: ["opening_range_breakout_retest_m5_m1"],
   },
   {
+    id: "session_pacific_window",
+    family: "session_filter",
+    label: "Pacific Window",
+    description: "Session-local trading window with Pacific constraints.",
+    tags: ["session", "pacific"],
+    sourceStrategyIds: ["session_seasonality_bias_m15_m3"],
+  },
+  {
     id: "session_sydney_window",
     family: "session_filter",
     label: "Sydney Window",
