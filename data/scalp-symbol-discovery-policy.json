@@ -3,7 +3,7 @@
   "updatedAt": "2026-03-07T00:00:00.000Z",
   "notes": "Weekly symbol discovery policy for scalp universe maintenance. Uses hard limits to avoid churn and overfitting.",
   "limits": {
-    "maxUniverseSymbols": 21,
+    "maxUniverseSymbols": 40,
     "minUniverseSymbols": 4,
     "maxWeeklyAdds": 2,
     "maxWeeklyRemoves": 2,
