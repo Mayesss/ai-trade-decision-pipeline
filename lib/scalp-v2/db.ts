@@ -311,6 +311,8 @@ export async function finalizeScalpV2Job(params: {
   `);
 }
 
+const UPSERT_CANDIDATE_BATCH_SIZE = 500;
+
 export async function upsertScalpV2Candidates(params: {
   rows: Array<{
     venue: ScalpV2Venue;
@@ -327,44 +329,47 @@ export async function upsertScalpV2Candidates(params: {
   if (!isScalpPgConfigured() || params.rows.length === 0) return 0;
   const db = scalpPrisma();
 
-  const values = params.rows.map((row) =>
-    sql`(
-      ${row.venue},
-      ${row.symbol},
-      ${row.strategyId},
-      ${row.tuneId},
-      ${row.entrySessionProfile},
-      ${Number.isFinite(row.score) ? row.score : 0},
-      ${row.status},
-      ${normalizeReasonCodes(row.reasonCodes || [])},
-      ${JSON.stringify(row.metadata || {})}::jsonb,
-      NOW(),
-      NOW()
-    )`,
-  );
+  for (let offset = 0; offset < params.rows.length; offset += UPSERT_CANDIDATE_BATCH_SIZE) {
+    const batch = params.rows.slice(offset, offset + UPSERT_CANDIDATE_BATCH_SIZE);
+    const values = batch.map((row) =>
+      sql`(
+        ${row.venue},
+        ${row.symbol},
+        ${row.strategyId},
+        ${row.tuneId},
+        ${row.entrySessionProfile},
+        ${Number.isFinite(row.score) ? row.score : 0},
+        ${row.status},
+        ${normalizeReasonCodes(row.reasonCodes || [])},
+        ${JSON.stringify(row.metadata || {})}::jsonb,
+        NOW(),
+        NOW()
+      )`,
+    );
 
-  await db.$executeRaw(sql`
-    INSERT INTO scalp_v2_candidates(
-      venue,
-      symbol,
-      strategy_id,
-      tune_id,
-      entry_session_profile,
-      score,
-      status,
-      reason_codes,
-      metadata_json,
-      created_at,
-      updated_at
-    ) VALUES ${join(values, ",")}
-    ON CONFLICT(venue, symbol, strategy_id, tune_id, entry_session_profile)
-    DO UPDATE SET
-      score = EXCLUDED.score,
-      status = EXCLUDED.status,
-      reason_codes = EXCLUDED.reason_codes,
-      metadata_json = COALESCE(scalp_v2_candidates.metadata_json, '{}'::jsonb) || EXCLUDED.metadata_json,
-      updated_at = NOW();
-  `);
+    await db.$executeRaw(sql`
+      INSERT INTO scalp_v2_candidates(
+        venue,
+        symbol,
+        strategy_id,
+        tune_id,
+        entry_session_profile,
+        score,
+        status,
+        reason_codes,
+        metadata_json,
+        created_at,
+        updated_at
+      ) VALUES ${join(values, ",")}
+      ON CONFLICT(venue, symbol, strategy_id, tune_id, entry_session_profile)
+      DO UPDATE SET
+        score = EXCLUDED.score,
+        status = EXCLUDED.status,
+        reason_codes = EXCLUDED.reason_codes,
+        metadata_json = COALESCE(scalp_v2_candidates.metadata_json, '{}'::jsonb) || EXCLUDED.metadata_json,
+        updated_at = NOW();
+    `);
+  }
 
   return params.rows.length;
 }
@@ -561,7 +566,7 @@ export async function updateScalpV2CandidateStatuses(params: {
         status = ${params.status},
         metadata_json = COALESCE(metadata_json, '{}'::jsonb) || ${JSON.stringify(params.metadataPatch)}::jsonb,
         updated_at = NOW()
-      WHERE id IN (${join(ids, ",")});
+      WHERE id = ANY(${ids}::int[]);
     `);
   } else {
     await db.$executeRaw(sql`
@@ -569,11 +574,13 @@ export async function updateScalpV2CandidateStatuses(params: {
       SET
         status = ${params.status},
         updated_at = NOW()
-      WHERE id IN (${join(ids, ",")});
+      WHERE id = ANY(${ids}::int[]);
     `);
   }
   return ids.length;
 }
+
+const UPSERT_DEPLOYMENT_BATCH_SIZE = 400;
 
 export async function upsertScalpV2Deployments(params: {
   rows: Array<{
@@ -592,59 +599,62 @@ export async function upsertScalpV2Deployments(params: {
   if (!isScalpPgConfigured() || params.rows.length === 0) return 0;
   const db = scalpPrisma();
 
-  const values = params.rows.map((row) => {
-    const deploymentId = toDeploymentId({
-      venue: row.venue,
-      symbol: row.symbol,
-      strategyId: row.strategyId,
-      tuneId: row.tuneId,
-      session: row.entrySessionProfile,
+  for (let offset = 0; offset < params.rows.length; offset += UPSERT_DEPLOYMENT_BATCH_SIZE) {
+    const batch = params.rows.slice(offset, offset + UPSERT_DEPLOYMENT_BATCH_SIZE);
+    const values = batch.map((row) => {
+      const deploymentId = toDeploymentId({
+        venue: row.venue,
+        symbol: row.symbol,
+        strategyId: row.strategyId,
+        tuneId: row.tuneId,
+        session: row.entrySessionProfile,
+      });
+      return sql`(
+        ${deploymentId},
+        ${row.candidateId},
+        ${row.venue},
+        ${row.symbol},
+        ${row.strategyId},
+        ${row.tuneId},
+        ${row.entrySessionProfile},
+        ${row.enabled},
+        ${row.liveMode},
+        ${JSON.stringify(row.promotionGate || {})}::jsonb,
+        ${JSON.stringify(row.riskProfile || {})}::jsonb,
+        NOW(),
+        NOW(),
+        CASE WHEN ${row.enabled} THEN NOW() ELSE NULL END
+      )`;
     });
-    return sql`(
-      ${deploymentId},
-      ${row.candidateId},
-      ${row.venue},
-      ${row.symbol},
-      ${row.strategyId},
-      ${row.tuneId},
-      ${row.entrySessionProfile},
-      ${row.enabled},
-      ${row.liveMode},
-      ${JSON.stringify(row.promotionGate || {})}::jsonb,
-      ${JSON.stringify(row.riskProfile || {})}::jsonb,
-      NOW(),
-      NOW(),
-      CASE WHEN ${row.enabled} THEN NOW() ELSE NULL END
-    )`;
-  });
 
-  await db.$executeRaw(sql`
-    INSERT INTO scalp_v2_deployments(
-      deployment_id,
-      candidate_id,
-      venue,
-      symbol,
-      strategy_id,
-      tune_id,
-      entry_session_profile,
-      enabled,
-      live_mode,
-      promotion_gate,
-      risk_profile,
-      created_at,
-      updated_at,
-      last_promoted_at
-    ) VALUES ${join(values, ",")}
-    ON CONFLICT(deployment_id)
-    DO UPDATE SET
-      candidate_id = EXCLUDED.candidate_id,
-      enabled = EXCLUDED.enabled,
-      live_mode = EXCLUDED.live_mode,
-      promotion_gate = EXCLUDED.promotion_gate,
-      risk_profile = EXCLUDED.risk_profile,
-      updated_at = NOW(),
-      last_promoted_at = CASE WHEN EXCLUDED.enabled THEN NOW() ELSE scalp_v2_deployments.last_promoted_at END;
-  `);
+    await db.$executeRaw(sql`
+      INSERT INTO scalp_v2_deployments(
+        deployment_id,
+        candidate_id,
+        venue,
+        symbol,
+        strategy_id,
+        tune_id,
+        entry_session_profile,
+        enabled,
+        live_mode,
+        promotion_gate,
+        risk_profile,
+        created_at,
+        updated_at,
+        last_promoted_at
+      ) VALUES ${join(values, ",")}
+      ON CONFLICT(deployment_id)
+      DO UPDATE SET
+        candidate_id = EXCLUDED.candidate_id,
+        enabled = EXCLUDED.enabled,
+        live_mode = EXCLUDED.live_mode,
+        promotion_gate = EXCLUDED.promotion_gate,
+        risk_profile = EXCLUDED.risk_profile,
+        updated_at = NOW(),
+        last_promoted_at = CASE WHEN EXCLUDED.enabled THEN NOW() ELSE scalp_v2_deployments.last_promoted_at END;
+    `);
+  }
 
   return params.rows.length;
 }
@@ -932,7 +942,7 @@ export async function listScalpV2LedgerRows(params: {
       entry_session_profile AS "entrySessionProfile",
       r_multiple::double precision AS "rMultiple"
     FROM scalp_v2_ledger
-    WHERE deployment_id IN (${join(deploymentIds)})
+    WHERE deployment_id = ANY(${deploymentIds}::text[])
       AND ts_exit >= TO_TIMESTAMP(${fromTsMs} / 1000.0)
       AND ts_exit < TO_TIMESTAMP(${toTsMs} / 1000.0)
     ORDER BY ts_exit ASC
