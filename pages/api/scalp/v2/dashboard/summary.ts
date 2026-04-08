@@ -40,9 +40,9 @@ export default async function handler(
     const jobLimit = parseIntBounded(req.query.jobLimit, 20, 5, 100);
     const candidateLimit = parseIntBounded(
       req.query.candidateLimit,
-      2_000,
+      6_000,
       100,
-      10_000,
+      12_000,
     );
     const session = parseSession(req.query.session);
     const venue = parseVenue(req.query.venue);

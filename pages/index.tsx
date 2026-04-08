@@ -2479,7 +2479,7 @@ export default function Home() {
         session: scalpSession,
         eventLimit: "240",
         ledgerLimit: "300",
-        deploymentLimit: "2000",
+        deploymentLimit: "6000",
         jobLimit: "20",
       });
       if (!silent || force) {
