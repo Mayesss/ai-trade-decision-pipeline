@@ -208,7 +208,7 @@ export function getScalpV2DefaultBudgets(): ScalpV2BudgetConfig {
   return {
     maxCandidatesTotal: Math.max(
       1,
-      Math.min(2_000, toPositiveInt(process.env.SCALP_V2_MAX_CANDIDATES_TOTAL, 200)),
+      Math.min(6_000, toPositiveInt(process.env.SCALP_V2_MAX_CANDIDATES_TOTAL, 6_000)),
     ),
     maxCandidatesPerSymbol: Math.max(
       1,

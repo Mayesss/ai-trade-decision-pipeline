@@ -1210,7 +1210,7 @@ export function buildScalpV2CandidateDslGrid(params: {
   const symbol = normalizeSymbol(params.symbol);
   const maxCandidates = Math.max(
     1,
-    Math.min(2000, Math.floor(params.maxCandidates || 250)),
+    Math.min(6000, Math.floor(params.maxCandidates || 360)),
   );
   const references = listScalpV2StrategyPrimitiveReferences();
   const blockMap = blockByIdMap();
@@ -1372,11 +1372,11 @@ export function buildScalpV2ModelGuidedComposerGrid(params: {
 }): ScalpV2ModelGuidedCandidateDslSpec[] {
   const maxCandidates = Math.max(
     1,
-    Math.min(2000, Math.floor(params.maxCandidates || 250)),
+    Math.min(6000, Math.floor(params.maxCandidates || 360)),
   );
   const preselectPoolSize = Math.max(
     maxCandidates,
-    Math.min(2000, Math.floor(maxCandidates * 2)),
+    Math.min(6000, Math.floor(maxCandidates * 2)),
   );
   const blockMap = blockByIdMap();
   const baseGrid = buildScalpV2CandidateDslGrid({
