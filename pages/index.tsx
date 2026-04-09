@@ -336,6 +336,8 @@ type ScalpSummaryResponse = {
     dryRunCount?: number;
     totalTradesPlaced?: number;
     stateCounts?: Record<string, number>;
+    totalDeployments?: number;
+    totalCandidates?: number;
   };
   deployments?: ScalpSummaryDeployment[];
   jobs?: ScalpPipelineJobSummary[];
@@ -1380,6 +1382,8 @@ function toUiScalpSummaryFromV2(
         .length,
       totalTradesPlaced,
       stateCounts,
+      totalDeployments: asFiniteOrNull(summary.deployments) ?? deploymentsRaw.length,
+      totalCandidates: asFiniteOrNull(summary.candidates) ?? candidatesRaw.length,
     },
     deployments,
     jobs,
@@ -2479,7 +2483,7 @@ export default function Home() {
         session: scalpSession,
         eventLimit: "240",
         ledgerLimit: "300",
-        deploymentLimit: "6000",
+        deploymentLimit: "2500",
         jobLimit: "20",
       });
       if (!silent || force) {
@@ -4260,6 +4264,53 @@ export default function Home() {
     (max, c) => Math.max(max, Number(c?.updatedAtMs || 0)),
     0,
   ) || null;
+
+  // --- Research progress bar data ---
+  const scalpResearchProgress = (() => {
+    const researchJob = scalpPipelineJobs.find(
+      (j) => String(j?.jobKind || "").trim().toLowerCase() === "research",
+    );
+    const p = researchJob?.progress || {};
+    const totalCandidates = Math.max(0, Math.floor(Number(p.totalCandidates) || 0));
+    const skippedByCache = Math.max(0, Math.floor(Number(p.skippedByCache) || 0));
+    const skippedByClearFail = Math.max(0, Math.floor(Number(p.skippedByClearFail) || 0));
+    const processedCandidates = Math.max(0, Math.floor(Number(p.processedCandidates) || 0));
+    const elapsedMs = Math.max(0, Number(p.elapsedMs) || 0);
+    const timeBudgetExhausted = p.timeBudgetExhausted === true;
+    const done = skippedByCache + skippedByClearFail + processedCandidates;
+    const pct = totalCandidates > 0 ? Math.min(100, (done / totalCandidates) * 100) : 0;
+    const remaining = Math.max(0, totalCandidates - done);
+
+    // Estimate time left: use avg ms per processed candidate (backtested ones only)
+    let etaLabel: string | null = null;
+    if (remaining > 0 && processedCandidates > 0 && elapsedMs > 0) {
+      const msPerCandidate = elapsedMs / processedCandidates;
+      // Each run processes up to ~timeBudget worth, so estimate runs left
+      const timeBudgetMs = Math.max(1, Number(p.timeBudgetMs) || 650_000);
+      const candidatesPerRun = Math.max(1, Math.floor(timeBudgetMs / msPerCandidate));
+      const runsLeft = Math.ceil(remaining / candidatesPerRun);
+      // Each run interval is ~3 min (cron) + timeBudget
+      const runIntervalMs = timeBudgetMs + 180_000;
+      const totalRemainingMs = runsLeft * runIntervalMs;
+      const hours = Math.floor(totalRemainingMs / 3_600_000);
+      const minutes = Math.ceil((totalRemainingMs % 3_600_000) / 60_000);
+      if (hours > 0) etaLabel = `~${hours}h ${minutes}m left`;
+      else if (minutes > 0) etaLabel = `~${minutes}m left`;
+    } else if (remaining === 0 && totalCandidates > 0) {
+      etaLabel = "done this week";
+    }
+
+    return {
+      totalCandidates,
+      done,
+      remaining,
+      pct,
+      etaLabel,
+      isRunning: researchJob?.status === "running",
+      timeBudgetExhausted,
+    };
+  })();
+
   const scalpWorkerCompactStats = [
     {
       id: "cursors",
@@ -6474,8 +6525,38 @@ export default function Home() {
                     </div>
                   ) : null}
 
-                  <section className={`${scalpSectionShellClass} p-4`}>
-                    <div className="flex items-center justify-between">
+                  <section className={`${scalpSectionShellClass} overflow-hidden`}>
+                    {/* Research progress bar — thin strip at top of panel */}
+                    {scalpResearchProgress.totalCandidates > 0 && (
+                      <div className="relative">
+                        <div
+                          className={`h-1 w-full ${scalpDarkMode ? "bg-zinc-800" : "bg-slate-100"}`}
+                        >
+                          <div
+                            className="h-full bg-emerald-500 transition-all duration-700 ease-out"
+                            style={{ width: `${scalpResearchProgress.pct}%` }}
+                          />
+                        </div>
+                        <div
+                          className={`flex items-center justify-between px-4 pt-1.5 pb-0 text-[11px] ${scalpTextMutedClass}`}
+                        >
+                          <span>
+                            Research{" "}
+                            <span className={scalpTextSecondaryClass}>
+                              {scalpResearchProgress.done}/{scalpResearchProgress.totalCandidates}
+                            </span>
+                            {" "}
+                            <span className="opacity-60">
+                              ({Math.round(scalpResearchProgress.pct)}%)
+                            </span>
+                          </span>
+                          {scalpResearchProgress.etaLabel && (
+                            <span className="opacity-70">{scalpResearchProgress.etaLabel}</span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between p-4 pt-2">
                       <h3
                         className={`text-lg font-semibold ${scalpTextPrimaryClass}`}
                       >
@@ -6531,11 +6612,11 @@ export default function Home() {
                           {scalpEnabledFilter === "enabled" ? "yes" : "no"}
                         </span>
                         <span className={scalpTagNeutralClass}>
-                          {`${scalpSelectedWorkerGridRows.length}/${scalpAllDeploymentsGridRows.length}`}
+                          {`${scalpSelectedWorkerGridRows.length}/${scalpSummary?.summary?.totalCandidates ?? scalpAllDeploymentsGridRows.length}`}
                         </span>
                       </div>
                     </div>
-                    <div className={`mt-2 text-xs ${scalpTextSecondaryClass}`}>
+                    <div className={`mt-2 px-4 text-xs ${scalpTextSecondaryClass}`}>
                       One row per deployment in the registry. Weekly windows
                       are shown when worker history exists for that deployment;
                       otherwise the row still appears with registry-level
@@ -6543,7 +6624,7 @@ export default function Home() {
                     </div>
                     {scalpSelectedWorkerGridRows.length ? (
                       <div
-                        className={`mt-4 h-[420px] w-full overflow-hidden rounded-xl border ${
+                        className={`mt-4 mx-4 mb-4 h-[420px] overflow-hidden rounded-xl border ${
                           scalpDarkMode
                             ? "border-zinc-700/60"
                             : "border-slate-200"
@@ -6577,7 +6658,7 @@ export default function Home() {
                           : "No deployment registry rows are available yet."}
                       </div>
                     )}
-                    <div className={`mt-2 text-xs ${scalpTextMutedClass}`}>
+                    <div className={`mt-2 px-4 pb-4 text-xs ${scalpTextMutedClass}`}>
                       {`loaded ${scalpVisibleWorkerGridRows.length} rows of ${scalpSelectedWorkerGridRows.length}`}
                     </div>
                   </section>
