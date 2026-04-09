@@ -475,6 +475,10 @@ type ScalpWorkerTask = {
   errorCode?: string | null;
   errorMessage?: string | null;
   result?: ScalpWorkerTaskResult | null;
+  _stageMaxWeeklyNetR?: number | null;
+  _stageLargestR?: number | null;
+  _stageExitReasons?: Record<string, unknown> | null;
+  _stageReason?: string | null;
 };
 
 type ScalpOpsDeploymentRow = {
@@ -666,10 +670,10 @@ const BITGET_PUBLIC_WS_URL = "wss://ws.bitget.com/v2/ws/public";
 const WS_RECONNECT_MS = 1500;
 const WS_PING_MS = 25_000;
 const CAPITAL_LIVE_POLL_MS = 3000;
-const SCALP_LIVE_POLL_VISIBLE_MS = 10_000;
-const SCALP_LIVE_POLL_HIDDEN_MS = 60_000;
-const SCALP_LIVE_POLL_ERROR_BACKOFF_MS = 120_000;
-const SCALP_MIN_REFRESH_GAP_MS = 8_000;
+const SCALP_LIVE_POLL_VISIBLE_MS = 30_000;
+const SCALP_LIVE_POLL_HIDDEN_MS = 120_000;
+const SCALP_LIVE_POLL_ERROR_BACKOFF_MS = 180_000;
+const SCALP_MIN_REFRESH_GAP_MS = 25_000;
 const SCALP_WORKER_TASK_LIMIT_FULL = 5_000;
 const SCALP_GRID_LOAD_BATCH = 60;
 type ScalpVenueUi = "capital" | "bitget";
@@ -4146,6 +4150,10 @@ export default function Home() {
             : null,
           errorCode: String(task?.errorCode || "").trim() || null,
           errorMessage: String(task?.errorMessage || "").trim() || null,
+          _stageMaxWeeklyNetR: asFiniteNumber(task?._stageMaxWeeklyNetR),
+          _stageLargestR: asFiniteNumber(task?._stageLargestR),
+          _stageExitReasons: task?._stageExitReasons || null,
+          _stageReason: String(task?._stageReason || "").trim() || null,
         };
       })
       .filter((row) => row.symbol && row.strategyId);
@@ -6778,7 +6786,7 @@ export default function Home() {
                         </span>
                       </div>
                     </div>
-                    {scalpSelectedWorkerGridRows.length ? (
+                    {scalpSelectedWorkerGridRows.length && scalpPaginatedCandidates.length > 0 ? (
                       <div
                         className={`mt-4 mx-4 mb-4 h-[420px] overflow-hidden rounded-xl border ${
                           scalpDarkMode

@@ -10,11 +10,16 @@ import {
   loadScalpV2Summary,
 } from "../../../../../lib/scalp-v2/db";
 import {
+  parseBool,
   parseSession,
   parseVenue,
   parseIntBounded,
   setNoStoreHeaders,
 } from "../../../../../lib/scalp-v2/http";
+
+// In-memory cache — avoids hammering Neon on every dashboard refresh
+let summaryCache: { data: Record<string, unknown>; ts: number; key: string } | null = null;
+const CACHE_TTL_MS = 30_000; // 30 seconds
 
 export default async function handler(
   req: NextApiRequest,
@@ -29,18 +34,24 @@ export default async function handler(
   setNoStoreHeaders(res);
 
   try {
-    const deploymentLimit = parseIntBounded(req.query.deploymentLimit, 500, 10, 5_000);
+    const deploymentLimit = parseIntBounded(req.query.deploymentLimit, 10, 1, 500);
     const jobLimit = parseIntBounded(req.query.jobLimit, 20, 5, 100);
     const session = parseSession(req.query.session);
     const venue = parseVenue(req.query.venue);
+    const fresh = parseBool(req.query.fresh, false);
 
-    // Single sequential chain — Neon serverless can't handle parallel queries reliably
+    const cacheKey = `${session || "all"}:${venue || "all"}:${deploymentLimit}`;
+    if (!fresh && summaryCache && summaryCache.key === cacheKey && Date.now() - summaryCache.ts < CACHE_TTL_MS) {
+      return res.status(200).json(summaryCache.data);
+    }
+
+    // Sequential queries — Neon serverless can't handle parallel reliably
     const runtime = await loadScalpV2RuntimeConfig();
     const summary = await loadScalpV2Summary();
     const jobs = await listScalpV2Jobs({ limit: jobLimit });
     const deployments = await listScalpV2Deployments({ limit: deploymentLimit, session, venue });
 
-    return res.status(200).json({
+    const payload = {
       ok: true,
       mode: "scalp_v2",
       runtime,
@@ -52,7 +63,10 @@ export default async function handler(
       candidates: [],
       researchCursors: [],
       researchHighlights: [],
-    });
+    };
+
+    summaryCache = { data: payload, ts: Date.now(), key: cacheKey };
+    return res.status(200).json(payload);
   } catch (err: any) {
     return res.status(500).json({
       error: "scalp_v2_dashboard_summary_failed",

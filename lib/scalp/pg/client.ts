@@ -388,9 +388,9 @@ export function createScalpPrismaClient(): ScalpPgClient {
     const pool = new Pool({
         connectionString: resolved.url,
         ssl: sslEnabled ? { rejectUnauthorized: false } : undefined,
-        max: toPositiveInt(readEnv('SCALP_PG_POOL_MAX'), 10),
-        idleTimeoutMillis: toPositiveInt(readEnv('SCALP_PG_POOL_IDLE_MS'), 30_000),
-        connectionTimeoutMillis: toPositiveInt(readEnv('SCALP_PG_POOL_CONNECT_TIMEOUT_MS'), 10_000),
+        max: toPositiveInt(readEnv('SCALP_PG_POOL_MAX'), 5),
+        idleTimeoutMillis: toPositiveInt(readEnv('SCALP_PG_POOL_IDLE_MS'), 15_000),
+        connectionTimeoutMillis: toPositiveInt(readEnv('SCALP_PG_POOL_CONNECT_TIMEOUT_MS'), 20_000),
         allowExitOnIdle: true,
     });
 
