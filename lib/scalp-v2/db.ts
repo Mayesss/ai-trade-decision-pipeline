@@ -1293,7 +1293,13 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
       (SELECT COALESCE(jsonb_agg(jsonb_build_object('symbol', g.symbol, 'candidates', g.c, 'deployments', g.d)), '[]'::jsonb)
        FROM (
          SELECT c.symbol, c.cnt AS c, COALESCE(d.cnt, 0) AS d
-         FROM (SELECT symbol, COUNT(*)::bigint AS cnt FROM scalp_v2_candidates GROUP BY symbol) c
+         FROM (
+           SELECT symbol, COUNT(*)::bigint AS cnt
+           FROM scalp_v2_candidates
+           WHERE (metadata_json->'worker'->'stageC'->>'passed') IS NULL
+             AND status NOT IN ('rejected')
+           GROUP BY symbol
+         ) c
          LEFT JOIN (SELECT symbol, COUNT(*)::bigint AS cnt FROM scalp_v2_deployments GROUP BY symbol) d ON c.symbol = d.symbol
          WHERE c.cnt > COALESCE(d.cnt, 0)
          ORDER BY c.symbol
