@@ -1250,6 +1250,17 @@ function toUiScalpSummaryFromV2(
         ? Math.round(stageTrades / weekKeys.length)
         : null;
 
+      // Extract stage aggregates for grid columns
+      const stageExpR = asFiniteOrNull(primaryStage.expectancyR);
+      const stagePF = asFiniteOrNull(primaryStage.profitFactor);
+      const stageMDD = asFiniteOrNull(primaryStage.maxDrawdownR);
+      const stageMaxWeeklyNetR = asFiniteOrNull(primaryStage.maxWeeklyNetR);
+      const stageLargestR = asFiniteOrNull(primaryStage.largestTradeR);
+      const stageExitReasons = asPlainObject(primaryStage.exitReasons);
+      const stageReason = String(
+        worker.reason || primaryStage.reason || (finalPass ? "stage_c_passed" : "worker_stage_c_failed"),
+      ).trim();
+
       const rows: ScalpSummaryWorkerRow[] = [];
       for (const weekStart of weekKeys) {
         const netR = Number(weeklyNetR[String(weekStart)] || 0);
@@ -1273,10 +1284,15 @@ function toUiScalpSummaryFromV2(
           errorMessage: null,
           trades: tradesPerWeek,
           netR,
-          expectancyR: null,
-          profitFactor: null,
-          maxDrawdownR: null,
-        });
+          expectancyR: stageExpR,
+          profitFactor: stagePF,
+          maxDrawdownR: stageMDD,
+          // Extra stage fields attached for grid builder
+          _stageMaxWeeklyNetR: stageMaxWeeklyNetR,
+          _stageLargestR: stageLargestR,
+          _stageExitReasons: stageExitReasons,
+          _stageReason: stageReason,
+        } as ScalpSummaryWorkerRow);
       }
       return rows;
     })
@@ -1996,6 +2012,12 @@ export default function Home() {
   const [scalpSummary, setScalpSummary] = useState<ScalpSummaryResponse | null>(
     null,
   );
+  const [scalpPaginatedCandidates, setScalpPaginatedCandidates] = useState<
+    Array<Record<string, unknown>>
+  >([]);
+  const [scalpCandidatesTotal, setScalpCandidatesTotal] = useState(0);
+  const scalpCandidatesLoadingRef = useRef(false);
+  const scalpSummaryRawRef = useRef<Record<string, unknown> | null>(null);
   const [scalpActiveDeploymentId, setScalpActiveDeploymentId] = useState<
     string | null
   >(null);
@@ -2471,6 +2493,36 @@ export default function Home() {
     }
   };
 
+  const loadScalpCandidatesPage = async (
+    offset: number,
+    session: ScalpEntrySessionProfileUi,
+    reset?: boolean,
+  ) => {
+    if (scalpCandidatesLoadingRef.current) return;
+    scalpCandidatesLoadingRef.current = true;
+    try {
+      const params = new URLSearchParams({
+        session,
+        offset: String(offset),
+        limit: "100",
+      });
+      const res = await fetch(
+        `/api/scalp/v2/dashboard/candidates?${params.toString()}`,
+        { headers: buildAdminHeaders(), cache: "no-store" },
+      );
+      if (!res.ok) return;
+      const json = await res.json();
+      const rows = Array.isArray(json.rows) ? json.rows : [];
+      const total = Math.max(0, Math.floor(Number(json.total) || 0));
+      setScalpCandidatesTotal(total);
+      setScalpPaginatedCandidates((prev) => (reset ? rows : [...prev, ...rows]));
+    } catch {
+      // Non-fatal — grid just shows fewer rows
+    } finally {
+      scalpCandidatesLoadingRef.current = false;
+    }
+  };
+
   const loadScalpDashboard = async (
     opts: { silent?: boolean; force?: boolean } = {},
   ) => {
@@ -2491,7 +2543,7 @@ export default function Home() {
         session: scalpSession,
         eventLimit: "240",
         ledgerLimit: "300",
-        deploymentLimit: "500",
+        deploymentLimit: "10",
         jobLimit: "20",
       });
       if (!silent || force) {
@@ -2514,6 +2566,7 @@ export default function Home() {
         throw new Error(`Failed to load scalp summary (${summaryRes.status})`);
       }
       const summaryRaw = await summaryRes.json();
+      scalpSummaryRawRef.current = summaryRaw;
       const summaryJson: ScalpSummaryResponse = toUiScalpSummaryFromV2(
         summaryRaw,
         {
@@ -2525,6 +2578,10 @@ export default function Home() {
       scalpSummaryFetchedAtMsRef.current = nowMs;
       scalpSummaryErrorCountRef.current = 0;
       setError(null);
+      // Load first page of candidates
+      setScalpPaginatedCandidates([]);
+      setScalpCandidatesTotal(0);
+      loadScalpCandidatesPage(0, scalpSession, true);
     } catch (err: any) {
       scalpSummaryErrorCountRef.current += 1;
       setError(err?.message || "Failed to load scalp dashboard");
@@ -2532,6 +2589,19 @@ export default function Home() {
       if (!silent) setLoading(false);
     }
   };
+
+  // Re-map summary whenever paginated candidates arrive
+  useEffect(() => {
+    const raw = scalpSummaryRawRef.current;
+    if (!raw || !scalpPaginatedCandidates.length) return;
+    const patched = { ...raw, candidates: scalpPaginatedCandidates };
+    const remapped = toUiScalpSummaryFromV2(patched, {
+      range: dashboardRange,
+      session: scalpSession,
+    });
+    setScalpSummary(remapped);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scalpPaginatedCandidates]);
 
   const invokeScalpCronNow = async (row: ScalpOpsCronRow) => {
     const invokePath = normalizeInvokePathForScalpCronNow(
@@ -3857,7 +3927,11 @@ export default function Home() {
           profitFactor: asFiniteNumber(row?.profitFactor),
           maxDrawdownR: asFiniteNumber(row?.maxDrawdownR),
         },
-      });
+        _stageMaxWeeklyNetR: asFiniteNumber((row as any)?._stageMaxWeeklyNetR),
+        _stageLargestR: asFiniteNumber((row as any)?._stageLargestR),
+        _stageExitReasons: (row as any)?._stageExitReasons ?? null,
+        _stageReason: (row as any)?._stageReason ?? null,
+      } as ScalpWorkerTask);
     }
     return tasks;
   }, [scalpSummaryWorkerRows, scalpSummary?.entrySessionProfile, scalpSession]);
@@ -4833,6 +4907,9 @@ export default function Home() {
       expectancyCount: number;
       profitFactorSum: number;
       profitFactorCount: number;
+      maxWeeklyNetR: number | null;
+      largestTradeR: number | null;
+      exitReasons: ScalpWorkerJobGridRow["exitReasons"];
       errorCodeSet: Set<string>;
     };
 
@@ -4928,9 +5005,21 @@ export default function Home() {
           profitFactor: row.profitFactor,
           maxDrawdownR: row.maxDrawdownR,
           totalMaxDrawdownR: row.maxDrawdownR,
-          maxWeeklyNetR: null,
-          largestTradeR: null,
-          exitReasons: null,
+          maxWeeklyNetR: asFiniteNumber((row as any)._stageMaxWeeklyNetR),
+          largestTradeR: asFiniteNumber((row as any)._stageLargestR),
+          exitReasons: (() => {
+            const er = (row as any)._stageExitReasons;
+            if (!er || typeof er !== "object") return null;
+            return {
+              stop: Number(er.stop || 0),
+              stopLoss: Number(er.stopLoss || 0),
+              stopBe: Number(er.stopBe || 0),
+              stopTrail: Number(er.stopTrail || 0),
+              tp: Number(er.tp || 0),
+              timeStop: Number(er.timeStop || 0),
+              forceClose: Number(er.forceClose || 0),
+            };
+          })(),
           errorCodes: null,
           statusCounts,
           windows: [
@@ -5007,6 +5096,26 @@ export default function Home() {
             : Math.max(current.maxDrawdownR, row.maxDrawdownR);
       }
       if (row.errorCode) current.errorCodeSet.add(row.errorCode);
+      // Pick up stage aggregates from first row that has them
+      const stageMaxW = asFiniteNumber((row as any)._stageMaxWeeklyNetR);
+      if (current.maxWeeklyNetR === null && stageMaxW !== null) current.maxWeeklyNetR = stageMaxW;
+      const stageLR = asFiniteNumber((row as any)._stageLargestR);
+      if (current.largestTradeR === null && stageLR !== null) current.largestTradeR = stageLR;
+      if (current.exitReasons === null) {
+        const er = (row as any)._stageExitReasons;
+        if (er && typeof er === "object") {
+          current.exitReasons = {
+            stop: Number(er.stop || 0), stopLoss: Number(er.stopLoss || 0),
+            stopBe: Number(er.stopBe || 0), stopTrail: Number(er.stopTrail || 0),
+            tp: Number(er.tp || 0), timeStop: Number(er.timeStop || 0),
+            forceClose: Number(er.forceClose || 0),
+          };
+        }
+      }
+      if (current.reason === "eligible" || current.reason === "promotion unknown") {
+        const sr = (row as any)._stageReason;
+        if (sr && typeof sr === "string" && sr !== "eligible") current.reason = sr;
+      }
     }
 
     const out: ScalpWorkerJobGridRow[] = [];
@@ -5052,9 +5161,9 @@ export default function Home() {
             : null,
         maxDrawdownR: row.maxDrawdownR,
         totalMaxDrawdownR: row.maxDrawdownR,
-        maxWeeklyNetR: null,
-        largestTradeR: null,
-        exitReasons: null,
+        maxWeeklyNetR: row.maxWeeklyNetR ?? null,
+        largestTradeR: row.largestTradeR ?? null,
+        exitReasons: row.exitReasons ?? null,
         errorCodes: row.errorCodeSet.size
           ? Array.from(row.errorCodeSet).join(", ")
           : null,
@@ -5223,6 +5332,14 @@ export default function Home() {
         errorCodes: null,
       } satisfies ScalpWorkerJobGridRow;
     });
+
+    // Add candidate-only rows not covered by fetched deployments
+    for (const workerRow of scalpWorkerJobsGridRows) {
+      const wdId = workerRow.deploymentId;
+      if (!wdId) continue;
+      if (registryDeploymentIds.has(wdId)) continue;
+      out.push({ ...workerRow, deploymentId: wdId } as typeof out[number]);
+    }
 
     return out.sort((a, b) => {
       const aNetR = a.totalNetR ?? Number.NEGATIVE_INFINITY;
@@ -5702,8 +5819,22 @@ export default function Home() {
       setScalpGridLoadedRows((prev) =>
         Math.min(totalRows, prev + SCALP_GRID_LOAD_BATCH),
       );
+      // Fetch next server page when approaching end of loaded candidates
+      const fetchedCount = scalpPaginatedCandidates.length;
+      if (
+        fetchedCount < scalpCandidatesTotal &&
+        loadedRows >= fetchedCount - SCALP_GRID_LOAD_BATCH * 2
+      ) {
+        loadScalpCandidatesPage(fetchedCount, scalpSession);
+      }
     },
-    [scalpSelectedWorkerGridRows.length, scalpVisibleWorkerGridRows.length],
+    [
+      scalpSelectedWorkerGridRows.length,
+      scalpVisibleWorkerGridRows.length,
+      scalpPaginatedCandidates.length,
+      scalpCandidatesTotal,
+      scalpSession,
+    ],
   );
   const handleScalpGridRowClicked = useCallback((event: any) => {
     const deploymentId = String(event?.data?.deploymentId || "").trim();
@@ -6643,7 +6774,7 @@ export default function Home() {
                           {scalpEnabledFilter === "enabled" ? "yes" : "no"}
                         </span>
                         <span className={scalpTagNeutralClass}>
-                          {`${scalpSelectedWorkerGridRows.length}/${scalpSummary?.summary?.totalCandidates ?? scalpAllDeploymentsGridRows.length}`}
+                          {`${scalpVisibleWorkerGridRows.length}/${scalpCandidatesTotal || scalpSummary?.summary?.totalCandidates || scalpSelectedWorkerGridRows.length}`}
                         </span>
                       </div>
                     </div>
@@ -6684,7 +6815,7 @@ export default function Home() {
                       </div>
                     )}
                     <div className={`mt-2 px-4 pb-4 text-xs ${scalpTextMutedClass}`}>
-                      {`loaded ${scalpVisibleWorkerGridRows.length} rows of ${scalpSelectedWorkerGridRows.length}`}
+                      {`loaded ${scalpVisibleWorkerGridRows.length} of ${scalpCandidatesTotal || scalpSelectedWorkerGridRows.length}`}
                     </div>
                   </section>
 

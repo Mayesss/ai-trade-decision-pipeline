@@ -4,13 +4,8 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
 import {
-  listScalpV2Candidates,
   listScalpV2Deployments,
-  listScalpV2ExecutionEvents,
   listScalpV2Jobs,
-  listScalpV2RecentLedger,
-  listScalpV2ResearchCursors,
-  listScalpV2ResearchHighlights,
   loadScalpV2RuntimeConfig,
   loadScalpV2Summary,
 } from "../../../../../lib/scalp-v2/db";
@@ -34,30 +29,16 @@ export default async function handler(
   setNoStoreHeaders(res);
 
   try {
-    const eventLimit = parseIntBounded(req.query.eventLimit, 120, 10, 2_000);
-    const ledgerLimit = parseIntBounded(req.query.ledgerLimit, 120, 10, 2_000);
     const deploymentLimit = parseIntBounded(req.query.deploymentLimit, 500, 10, 5_000);
     const jobLimit = parseIntBounded(req.query.jobLimit, 20, 5, 100);
-    const candidateLimit = parseIntBounded(
-      req.query.candidateLimit,
-      500,
-      100,
-      5_000,
-    );
     const session = parseSession(req.query.session);
     const venue = parseVenue(req.query.venue);
 
-    const [runtime, summary, deployments, events, ledger, jobs, candidates, researchCursors, researchHighlights] = await Promise.all([
-      loadScalpV2RuntimeConfig(),
-      loadScalpV2Summary(),
-      listScalpV2Deployments({ limit: deploymentLimit, session, venue }),
-      listScalpV2ExecutionEvents({ limit: eventLimit }),
-      listScalpV2RecentLedger({ limit: ledgerLimit }),
-      listScalpV2Jobs({ limit: jobLimit }),
-      listScalpV2Candidates({ limit: candidateLimit, session, venue }),
-      listScalpV2ResearchCursors({ venue, entrySessionProfile: session }),
-      listScalpV2ResearchHighlights({ venue, entrySessionProfile: session }),
-    ]);
+    // Single sequential chain — Neon serverless can't handle parallel queries reliably
+    const runtime = await loadScalpV2RuntimeConfig();
+    const summary = await loadScalpV2Summary();
+    const jobs = await listScalpV2Jobs({ limit: jobLimit });
+    const deployments = await listScalpV2Deployments({ limit: deploymentLimit, session, venue });
 
     return res.status(200).json({
       ok: true,
@@ -65,12 +46,12 @@ export default async function handler(
       runtime,
       summary,
       deployments,
-      events,
-      ledger,
+      events: [],
+      ledger: [],
       jobs,
-      candidates,
-      researchCursors,
-      researchHighlights,
+      candidates: [],
+      researchCursors: [],
+      researchHighlights: [],
     });
   } catch (err: any) {
     return res.status(500).json({

@@ -453,6 +453,95 @@ export async function listScalpV2Candidates(params: {
   }));
 }
 
+export async function paginateScalpV2Candidates(params: {
+  session?: ScalpV2Session;
+  venue?: ScalpV2Venue;
+  offset?: number;
+  limit?: number;
+}): Promise<{ rows: ScalpV2Candidate[]; total: number }> {
+  if (!isScalpPgConfigured()) return { rows: [], total: 0 };
+  const db = scalpPrisma();
+  const limit = Math.max(1, Math.min(500, Math.floor(params.limit || 100)));
+  const offset = Math.max(0, Math.floor(params.offset || 0));
+  const where: string[] = [];
+  const values: unknown[] = [];
+  if (params.session) {
+    values.push(params.session);
+    where.push(`entry_session_profile = $${values.length}`);
+  }
+  if (params.venue) {
+    values.push(params.venue);
+    where.push(`venue = $${values.length}`);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+  const [countRow] = await db.$queryRawUnsafe<Array<{ cnt: bigint }>>(
+    `SELECT COUNT(*)::bigint AS cnt FROM scalp_v2_candidates ${whereSql}`,
+    ...values,
+  );
+  const total = Number(countRow?.cnt || 0);
+
+  values.push(limit, offset);
+  const limitIdx = values.length - 1;
+  const offsetIdx = values.length;
+
+  const rows = await db.$queryRawUnsafe<
+    Array<{
+      id: number;
+      venue: string;
+      symbol: string;
+      strategyId: string;
+      tuneId: string;
+      entrySessionProfile: string;
+      score: number;
+      status: string;
+      reasonCodes: string[];
+      metadataJson: unknown;
+      createdAt: Date;
+      updatedAt: Date;
+    }>
+  >(
+    `
+      SELECT
+        id,
+        venue,
+        symbol,
+        strategy_id AS "strategyId",
+        tune_id AS "tuneId",
+        entry_session_profile AS "entrySessionProfile",
+        score::double precision AS score,
+        status,
+        reason_codes AS "reasonCodes",
+        metadata_json AS "metadataJson",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM scalp_v2_candidates
+      ${whereSql}
+      ORDER BY COALESCE((metadata_json->'worker'->'stageC'->>'netR')::double precision, -999) DESC, score DESC
+      LIMIT $${limitIdx} OFFSET $${offsetIdx};
+    `,
+    ...values,
+  );
+
+  return {
+    total,
+    rows: rows.map((row) => ({
+      id: Number(row.id),
+      venue: normalizeVenue(row.venue),
+      symbol: String(row.symbol || "").trim().toUpperCase(),
+      strategyId: String(row.strategyId || "").trim().toLowerCase(),
+      tuneId: String(row.tuneId || "").trim().toLowerCase(),
+      entrySessionProfile: normalizeSession(row.entrySessionProfile),
+      score: Number.isFinite(Number(row.score)) ? Number(row.score) : 0,
+      status: normalizeCandidateStatus(row.status),
+      reasonCodes: normalizeReasonCodes(row.reasonCodes || []),
+      metadata: asRecord(row.metadataJson),
+      createdAtMs: toMs(row.createdAt),
+      updatedAtMs: toMs(row.updatedAt),
+    })),
+  };
+}
+
 /**
  * Returns a set of "venue:symbol:tuneId:session" keys for candidates
  * that were already backtested for the CURRENT windowToTs this week.
@@ -720,13 +809,17 @@ export async function listScalpV2Deployments(params: {
         entry_session_profile AS "entrySessionProfile",
         enabled,
         live_mode AS "liveMode",
-        promotion_gate AS "promotionGate",
-        risk_profile AS "riskProfile",
+        jsonb_build_object(
+          'eligible', promotion_gate->'eligible',
+          'reason', promotion_gate->'reason',
+          'lifecycle', promotion_gate->'lifecycle'
+        ) AS "promotionGate",
+        '{}'::jsonb AS "riskProfile",
         created_at AS "createdAt",
         updated_at AS "updatedAt"
       FROM scalp_v2_deployments
       ${whereSql}
-      ORDER BY enabled DESC, COALESCE((promotion_gate->'worker'->'stageC'->>'netR')::double precision, -999) DESC
+      ORDER BY enabled DESC, updated_at DESC
       LIMIT $${values.length};
     `,
     ...values,
@@ -1187,42 +1280,32 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
       events24h: bigint;
       ledgerRows30d: bigint;
       netR30d: number | null;
+      coverageJson: unknown;
     }>
   >(sql`
     SELECT
       (SELECT COUNT(*)::bigint FROM scalp_v2_candidates) AS candidates,
       (SELECT COUNT(*)::bigint FROM scalp_v2_deployments) AS deployments,
       (SELECT COUNT(*)::bigint FROM scalp_v2_deployments WHERE enabled = TRUE) AS "enabledDeployments",
-      (SELECT COUNT(*)::bigint FROM scalp_v2_execution_events WHERE ts >= NOW() - INTERVAL '24 hours') AS "events24h",
-      (SELECT COUNT(*)::bigint FROM scalp_v2_ledger WHERE ts_exit >= NOW() - INTERVAL '30 days') AS "ledgerRows30d",
-      (SELECT SUM(r_multiple)::double precision FROM scalp_v2_ledger WHERE ts_exit >= NOW() - INTERVAL '30 days') AS "netR30d";
+      0::bigint AS "events24h",
+      0::bigint AS "ledgerRows30d",
+      0::double precision AS "netR30d",
+      (SELECT COALESCE(jsonb_agg(jsonb_build_object('symbol', g.symbol, 'candidates', g.c, 'deployments', g.d)), '[]'::jsonb)
+       FROM (
+         SELECT c.symbol, c.cnt AS c, COALESCE(d.cnt, 0) AS d
+         FROM (SELECT symbol, COUNT(*)::bigint AS cnt FROM scalp_v2_candidates GROUP BY symbol) c
+         LEFT JOIN (SELECT symbol, COUNT(*)::bigint AS cnt FROM scalp_v2_deployments GROUP BY symbol) d ON c.symbol = d.symbol
+         WHERE c.cnt > COALESCE(d.cnt, 0)
+         ORDER BY c.symbol
+       ) g
+      ) AS "coverageJson";
   `);
 
-  const symbolCoverage = await db.$queryRaw<
-    Array<{ symbol: string; candidates: bigint; deployments: bigint }>
-  >(sql`
-    SELECT
-      c.symbol,
-      c.cnt AS candidates,
-      COALESCE(d.cnt, 0) AS deployments
-    FROM (
-      SELECT symbol, COUNT(*)::bigint AS cnt
-      FROM scalp_v2_candidates GROUP BY symbol
-    ) c
-    LEFT JOIN (
-      SELECT symbol, COUNT(*)::bigint AS cnt
-      FROM scalp_v2_deployments GROUP BY symbol
-    ) d ON c.symbol = d.symbol
-    WHERE c.cnt > COALESCE(d.cnt, 0)
-    ORDER BY c.symbol;
-  `).then(
-    (rows) => rows.map((r) => ({
-      symbol: String(r.symbol || ""),
-      candidates: Number(r.candidates || 0),
-      deployments: Number(r.deployments || 0),
-    })),
-    () => [] as Array<{ symbol: string; candidates: number; deployments: number }>,
-  );
+  const symbolCoverage = (Array.isArray(row?.coverageJson) ? row.coverageJson : []).map((r: any) => ({
+    symbol: String(r?.symbol || ""),
+    candidates: Number(r?.candidates || 0),
+    deployments: Number(r?.deployments || 0),
+  }));
 
   return {
     pgConfigured: true,
