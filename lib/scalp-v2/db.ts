@@ -1198,6 +1198,32 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
       (SELECT SUM(r_multiple)::double precision FROM scalp_v2_ledger WHERE ts_exit >= NOW() - INTERVAL '30 days') AS "netR30d";
   `);
 
+  const symbolCoverage = await db.$queryRaw<
+    Array<{ symbol: string; candidates: bigint; deployments: bigint }>
+  >(sql`
+    SELECT
+      c.symbol,
+      c.cnt AS candidates,
+      COALESCE(d.cnt, 0) AS deployments
+    FROM (
+      SELECT symbol, COUNT(*)::bigint AS cnt
+      FROM scalp_v2_candidates GROUP BY symbol
+    ) c
+    LEFT JOIN (
+      SELECT symbol, COUNT(*)::bigint AS cnt
+      FROM scalp_v2_deployments GROUP BY symbol
+    ) d ON c.symbol = d.symbol
+    WHERE c.cnt > COALESCE(d.cnt, 0)
+    ORDER BY c.symbol;
+  `).then(
+    (rows) => rows.map((r) => ({
+      symbol: String(r.symbol || ""),
+      candidates: Number(r.candidates || 0),
+      deployments: Number(r.deployments || 0),
+    })),
+    () => [] as Array<{ symbol: string; candidates: number; deployments: number }>,
+  );
+
   return {
     pgConfigured: true,
     generatedAtMs: Date.now(),
@@ -1207,6 +1233,7 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
     events24h: Number(row?.events24h || 0),
     ledgerRows30d: Number(row?.ledgerRows30d || 0),
     netR30d: Number.isFinite(Number(row?.netR30d)) ? Number(row?.netR30d) : 0,
+    symbolCoverage,
   };
 }
 

@@ -36,11 +36,11 @@ export default async function handler(
   try {
     const eventLimit = parseIntBounded(req.query.eventLimit, 120, 10, 2_000);
     const ledgerLimit = parseIntBounded(req.query.ledgerLimit, 120, 10, 2_000);
-    const deploymentLimit = parseIntBounded(req.query.deploymentLimit, 300, 10, 5_000);
+    const deploymentLimit = parseIntBounded(req.query.deploymentLimit, 500, 10, 5_000);
     const jobLimit = parseIntBounded(req.query.jobLimit, 20, 5, 100);
     const candidateLimit = parseIntBounded(
       req.query.candidateLimit,
-      2_000,
+      500,
       100,
       5_000,
     );

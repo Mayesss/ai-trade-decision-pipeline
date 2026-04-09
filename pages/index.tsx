@@ -338,6 +338,7 @@ type ScalpSummaryResponse = {
     stateCounts?: Record<string, number>;
     totalDeployments?: number;
     totalCandidates?: number;
+    symbolCoverage?: Array<{ symbol: string; candidates: number; deployments: number }>;
   };
   deployments?: ScalpSummaryDeployment[];
   jobs?: ScalpPipelineJobSummary[];
@@ -1384,6 +1385,13 @@ function toUiScalpSummaryFromV2(
       stateCounts,
       totalDeployments: asFiniteOrNull(summary.deployments) ?? deploymentsRaw.length,
       totalCandidates: asFiniteOrNull(summary.candidates) ?? candidatesRaw.length,
+      symbolCoverage: Array.isArray(summary.symbolCoverage)
+        ? (summary.symbolCoverage as Array<Record<string, unknown>>).map((r) => ({
+            symbol: String(r.symbol || ""),
+            candidates: Math.max(0, Math.floor(Number(r.candidates) || 0)),
+            deployments: Math.max(0, Math.floor(Number(r.deployments) || 0)),
+          }))
+        : undefined,
     },
     deployments,
     jobs,
@@ -2483,7 +2491,7 @@ export default function Home() {
         session: scalpSession,
         eventLimit: "240",
         ledgerLimit: "300",
-        deploymentLimit: "2500",
+        deploymentLimit: "500",
         jobLimit: "20",
       });
       if (!silent || force) {
@@ -6556,6 +6564,29 @@ export default function Home() {
                         </div>
                       </div>
                     )}
+                    {/* Per-symbol coverage gaps — only show incomplete symbols */}
+                    {(() => {
+                      const gaps = (scalpSummary?.summary?.symbolCoverage || [])
+                        .filter((s) => s.candidates > s.deployments)
+                        .sort((a, b) => (a.deployments / a.candidates) - (b.deployments / b.candidates));
+                      if (!gaps.length) return null;
+                      return (
+                        <div className={`flex flex-wrap items-center gap-1.5 px-4 pt-1.5 pb-1 text-[10px] ${scalpTextMutedClass}`}>
+                          {gaps.map((s) => (
+                            <span
+                              key={s.symbol}
+                              className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 font-mono ${
+                                scalpDarkMode ? "bg-zinc-800" : "bg-slate-100"
+                              }`}
+                            >
+                              <span className={scalpTextSecondaryClass}>{s.symbol}</span>
+                              {" "}
+                              {s.deployments}/{s.candidates}
+                            </span>
+                          ))}
+                        </div>
+                      );
+                    })()}
                     <div className="flex items-center justify-between p-4 pt-2">
                       <h3
                         className={`text-lg font-semibold ${scalpTextPrimaryClass}`}
@@ -6615,12 +6646,6 @@ export default function Home() {
                           {`${scalpSelectedWorkerGridRows.length}/${scalpSummary?.summary?.totalCandidates ?? scalpAllDeploymentsGridRows.length}`}
                         </span>
                       </div>
-                    </div>
-                    <div className={`mt-2 px-4 text-xs ${scalpTextSecondaryClass}`}>
-                      One row per deployment in the registry. Weekly windows
-                      are shown when worker history exists for that deployment;
-                      otherwise the row still appears with registry-level
-                      status and forward-validation state.
                     </div>
                     {scalpSelectedWorkerGridRows.length ? (
                       <div
