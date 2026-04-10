@@ -5120,10 +5120,8 @@ export default function Home() {
           };
         }
       }
-      if (current.reason === "eligible" || current.reason === "promotion unknown") {
-        const sr = (row as any)._stageReason;
-        if (sr && typeof sr === "string" && sr !== "eligible") current.reason = sr;
-      }
+      const sr = (row as any)._stageReason;
+      if (sr && typeof sr === "string") current.reason = sr;
     }
 
     const out: ScalpWorkerJobGridRow[] = [];
