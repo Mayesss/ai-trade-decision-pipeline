@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { buildModelGuidedComposerTuneId } from "../../scalp-v2/composerExecution";
 import { getScalpStrategyConfig } from "../config";
 import { buildScalpSessionWindows } from "../sessions";
 import { createInitialScalpSessionState, deriveScalpDayKey } from "../stateMachine";
@@ -102,6 +103,13 @@ function buildInput(params: {
   session: ScalpEntrySessionProfile;
   nowMs: number;
   armId: string;
+  tuneId?: string;
+  symbol?: string;
+  baseTf?: "M15" | "M5";
+  confirmTf?: "M3" | "M1";
+  baseCandles?: ScalpCandle[];
+  confirmCandles?: ScalpCandle[];
+  quotePrice?: number;
 }): ScalpStrategyPhaseInput {
   const cfg: ScalpStrategyConfig = {
     ...getScalpStrategyConfig(),
@@ -118,53 +126,135 @@ function buildInput(params: {
     raidWindowLocal: cfg.sessions.raidWindowLocal,
   });
   const state = createInitialScalpSessionState({
-    symbol: "BTCUSDT",
+    symbol: params.symbol || "BTCUSDT",
     strategyId: "model_guided_composer_v2",
-    tuneId: `mdl_${params.armId}_abc1234567`,
+    tuneId: params.tuneId || `mdl_${params.armId}_abc1234567`,
     dayKey,
     nowMs: params.nowMs,
     killSwitchActive: false,
   });
-  const base = buildLinearCandles({
-    startTsMs: params.nowMs - 220 * 15 * 60_000,
-    count: 220,
-    stepMs: 15 * 60_000,
-    startPrice: 100,
-    driftPerBar: 0.02,
-    rangeAbs: 0.05,
-    volume: 120,
-  });
-  const confirm = buildLinearCandles({
-    startTsMs: params.nowMs - 220 * 3 * 60_000,
-    count: 220,
-    stepMs: 3 * 60_000,
-    startPrice: 100,
-    driftPerBar: 0.001,
-    rangeAbs: 0.015,
-    volume: 80,
-  });
+  const baseTf = params.baseTf || "M15";
+  const confirmTf = params.confirmTf || "M3";
+  const base =
+    params.baseCandles ||
+    buildLinearCandles({
+      startTsMs: params.nowMs - 220 * 15 * 60_000,
+      count: 220,
+      stepMs: 15 * 60_000,
+      startPrice: 100,
+      driftPerBar: 0.02,
+      rangeAbs: 0.05,
+      volume: 120,
+    });
+  const confirm =
+    params.confirmCandles ||
+    buildLinearCandles({
+      startTsMs: params.nowMs - 220 * 3 * 60_000,
+      count: 220,
+      stepMs: 3 * 60_000,
+      startPrice: 100,
+      driftPerBar: 0.001,
+      rangeAbs: 0.015,
+      volume: 80,
+    });
+  const quotePrice =
+    params.quotePrice ??
+    (confirm.at(-1)?.[4] || base.at(-1)?.[4] || 100);
   return {
     state,
     market: {
-      symbol: "BTCUSDT",
-      epic: "REPLAY:BTCUSDT",
+      symbol: params.symbol || "BTCUSDT",
+      epic: `REPLAY:${params.symbol || "BTCUSDT"}`,
       nowMs: params.nowMs,
       quote: {
-        price: 100,
-        bid: 99.99,
-        offer: 100.01,
-        spreadAbs: 0.02,
+        price: quotePrice,
+        bid: quotePrice - 0.0001,
+        offer: quotePrice + 0.0001,
+        spreadAbs: 0.0002,
         spreadPips: 2,
         tsMs: params.nowMs,
       },
-      baseTf: "M15",
-      confirmTf: "M3",
+      baseTf,
+      confirmTf,
       baseCandles: base,
       confirmCandles: confirm,
     },
     windows,
     nowMs: params.nowMs,
     cfg,
+  };
+}
+
+function prependLowVolHistory(
+  candles: ScalpCandle[],
+  stepMs: number,
+  bars: number,
+): ScalpCandle[] {
+  if (!candles.length || bars <= 0) return candles.slice();
+  const first = candles[0] as ScalpCandle;
+  const out: ScalpCandle[] = [];
+  let price = first[1] - bars * 0.00002;
+  for (let i = bars; i >= 1; i -= 1) {
+    const ts = first[0] - i * stepMs;
+    const open = price;
+    const close = open + 0.00002;
+    const high = Math.max(open, close) + 0.00006;
+    const low = Math.min(open, close) - 0.00006;
+    out.push([ts, open, high, low, close, first[5]]);
+    price = close;
+  }
+  return [...out, ...candles];
+}
+
+function buildOrbEntryFixture(): {
+  nowMs: number;
+  baseCandles: ScalpCandle[];
+  confirmCandles: ScalpCandle[];
+  quotePrice: number;
+} {
+  const nowMs = Date.UTC(2026, 0, 6, 7, 32, 0, 0);
+  const baseCore: ScalpCandle[] = [
+    [Date.UTC(2026, 0, 6, 5, 55, 0, 0), 1.0989, 1.0993, 1.0987, 1.0991, 100],
+    [Date.UTC(2026, 0, 6, 6, 0, 0, 0), 1.0991, 1.0995, 1.0989, 1.0992, 100],
+    [Date.UTC(2026, 0, 6, 6, 5, 0, 0), 1.0992, 1.0996, 1.099, 1.0993, 100],
+    [Date.UTC(2026, 0, 6, 6, 10, 0, 0), 1.0993, 1.0997, 1.0991, 1.09935, 100],
+    [Date.UTC(2026, 0, 6, 6, 15, 0, 0), 1.09935, 1.09975, 1.09915, 1.0994, 100],
+    [Date.UTC(2026, 0, 6, 6, 20, 0, 0), 1.0994, 1.0998, 1.0992, 1.09945, 100],
+    [Date.UTC(2026, 0, 6, 6, 25, 0, 0), 1.09945, 1.09985, 1.09925, 1.0995, 100],
+    [Date.UTC(2026, 0, 6, 6, 30, 0, 0), 1.0995, 1.0999, 1.0993, 1.09955, 100],
+    [Date.UTC(2026, 0, 6, 6, 35, 0, 0), 1.09955, 1.09995, 1.09935, 1.0996, 100],
+    [Date.UTC(2026, 0, 6, 6, 40, 0, 0), 1.0996, 1.1, 1.0994, 1.09965, 100],
+    [Date.UTC(2026, 0, 6, 6, 45, 0, 0), 1.09965, 1.10005, 1.09945, 1.0997, 100],
+    [Date.UTC(2026, 0, 6, 6, 50, 0, 0), 1.0997, 1.1001, 1.0995, 1.09975, 100],
+    [Date.UTC(2026, 0, 6, 6, 55, 0, 0), 1.09975, 1.10015, 1.09955, 1.0998, 100],
+    [Date.UTC(2026, 0, 6, 7, 0, 0, 0), 1.09995, 1.10025, 1.09985, 1.10005, 100],
+    [Date.UTC(2026, 0, 6, 7, 5, 0, 0), 1.10005, 1.1003, 1.09995, 1.10015, 100],
+    [Date.UTC(2026, 0, 6, 7, 10, 0, 0), 1.10015, 1.10035, 1.1, 1.1002, 100],
+    [Date.UTC(2026, 0, 6, 7, 15, 0, 0), 1.1002, 1.1003, 1.10008, 1.10022, 100],
+    [Date.UTC(2026, 0, 6, 7, 20, 0, 0), 1.10022, 1.10135, 1.10018, 1.10122, 100],
+    [Date.UTC(2026, 0, 6, 7, 25, 0, 0), 1.10122, 1.10128, 1.101, 1.10112, 100],
+    [Date.UTC(2026, 0, 6, 7, 30, 0, 0), 1.10112, 1.1013, 1.10102, 1.1012, 100],
+  ];
+  const confirmCore: ScalpCandle[] = [
+    [Date.UTC(2026, 0, 6, 7, 21, 0, 0), 1.10122, 1.10125, 1.10105, 1.1011, 50],
+    [Date.UTC(2026, 0, 6, 7, 22, 0, 0), 1.1011, 1.10112, 1.10065, 1.10078, 50],
+    [Date.UTC(2026, 0, 6, 7, 23, 0, 0), 1.10078, 1.10092, 1.10028, 1.10042, 50],
+    [Date.UTC(2026, 0, 6, 7, 24, 0, 0), 1.10042, 1.10058, 1.10018, 1.10048, 50],
+    [Date.UTC(2026, 0, 6, 7, 25, 0, 0), 1.10048, 1.10088, 1.10036, 1.10072, 50],
+    [Date.UTC(2026, 0, 6, 7, 26, 0, 0), 1.10072, 1.10102, 1.1006, 1.10092, 50],
+    [Date.UTC(2026, 0, 6, 7, 27, 0, 0), 1.10092, 1.10112, 1.10082, 1.101, 50],
+    [Date.UTC(2026, 0, 6, 7, 28, 0, 0), 1.101, 1.10116, 1.10088, 1.10105, 50],
+    [Date.UTC(2026, 0, 6, 7, 29, 0, 0), 1.10105, 1.10118, 1.10092, 1.10108, 50],
+    [Date.UTC(2026, 0, 6, 7, 30, 0, 0), 1.10108, 1.10122, 1.10098, 1.10112, 50],
+    [Date.UTC(2026, 0, 6, 7, 31, 0, 0), 1.10112, 1.10124, 1.101, 1.10116, 50],
+    [Date.UTC(2026, 0, 6, 7, 32, 0, 0), 1.10116, 1.10128, 1.10104, 1.1012, 50],
+  ];
+
+  return {
+    nowMs,
+    baseCandles: prependLowVolHistory(baseCore, 5 * 60_000, 220),
+    confirmCandles: prependLowVolHistory(confirmCore, 60_000, 220),
+    quotePrice: 1.1012,
   };
 }
 
@@ -243,4 +333,75 @@ test("composer session gate: same UTC timestamp is inside one session but outsid
     tokyoPhase.reasonCodes.includes("SESSION_FILTER_OUTSIDE_ENTRY_PROFILE"),
     "Tokyo should be outside session at this UTC time",
   );
+});
+
+test("composer regime gate suppresses only entries when out of regime", () => {
+  const fixture = buildOrbEntryFixture();
+  const armId = "orb_m5_m1";
+
+  const baseTune = buildModelGuidedComposerTuneId({
+    armId,
+    digest: "1111111111",
+  });
+  const compressionTune = buildModelGuidedComposerTuneId({
+    armId,
+    digest: "2222222222",
+    regimeGateId: "regime_vol_compression",
+  });
+  const expansionTune = buildModelGuidedComposerTuneId({
+    armId,
+    digest: "3333333333",
+    regimeGateId: "regime_vol_expansion",
+  });
+
+  const basePhase = modelGuidedComposerV2Strategy.applyPhaseDetectors(
+    buildInput({
+      session: "berlin",
+      nowMs: fixture.nowMs,
+      armId,
+      tuneId: baseTune,
+      symbol: "EURUSD",
+      baseTf: "M5",
+      confirmTf: "M1",
+      baseCandles: fixture.baseCandles,
+      confirmCandles: fixture.confirmCandles,
+      quotePrice: fixture.quotePrice,
+    }),
+  );
+  assert.deepEqual(basePhase.entryIntent, { model: "ifvg_touch" });
+
+  const compressionPhase = modelGuidedComposerV2Strategy.applyPhaseDetectors(
+    buildInput({
+      session: "berlin",
+      nowMs: fixture.nowMs,
+      armId,
+      tuneId: compressionTune,
+      symbol: "EURUSD",
+      baseTf: "M5",
+      confirmTf: "M1",
+      baseCandles: fixture.baseCandles,
+      confirmCandles: fixture.confirmCandles,
+      quotePrice: fixture.quotePrice,
+    }),
+  );
+  assert.equal(compressionPhase.entryIntent, null);
+  assert.ok(compressionPhase.reasonCodes.includes("REGIME_GATE_ENTRY_BLOCKED"));
+  assert.ok(compressionPhase.reasonCodes.includes("REGIME_GATE_OUT_OF_RANGE"));
+
+  const expansionPhase = modelGuidedComposerV2Strategy.applyPhaseDetectors(
+    buildInput({
+      session: "berlin",
+      nowMs: fixture.nowMs,
+      armId,
+      tuneId: expansionTune,
+      symbol: "EURUSD",
+      baseTf: "M5",
+      confirmTf: "M1",
+      baseCandles: fixture.baseCandles,
+      confirmCandles: fixture.confirmCandles,
+      quotePrice: fixture.quotePrice,
+    }),
+  );
+  assert.deepEqual(expansionPhase.entryIntent, { model: "ifvg_touch" });
+  assert.equal(expansionPhase.reasonCodes.includes("REGIME_GATE_ENTRY_BLOCKED"), false);
 });

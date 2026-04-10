@@ -58,6 +58,29 @@ export interface ScalpV2BudgetConfig {
   maxEnabledDeployments: number;
 }
 
+export interface ScalpV2RuntimePrunedScopeEntry {
+  venue: ScalpV2Venue;
+  symbol: string;
+  session: ScalpV2Session;
+  prunedAtMs: number;
+  expiresAtMs: number;
+  source: string;
+  reason: string;
+  thresholds: {
+    minCandidatesPerWindow: number;
+    minStageAFailPct: number;
+    requiredWindows: number;
+  };
+  windows: number[];
+}
+
+export interface ScalpV2RuntimeScopePruneMeta {
+  lastPruneWindowToTs: number | null;
+  lastPrunedAtMs: number | null;
+  lastActiveScopeCount: number;
+  lastNewlyPrunedScopeCount: number;
+}
+
 export interface ScalpV2RuntimeConfig {
   enabled: boolean;
   liveEnabled: boolean;
@@ -70,6 +93,8 @@ export interface ScalpV2RuntimeConfig {
   seedLiveSymbolsByVenue: Record<ScalpV2Venue, string[]>;
   budgets: ScalpV2BudgetConfig;
   riskProfile: ScalpV2RiskProfile;
+  prunedScopes?: Record<string, ScalpV2RuntimePrunedScopeEntry>;
+  scopePruneMeta?: ScalpV2RuntimeScopePruneMeta;
 }
 
 export interface ScalpV2Candidate {
@@ -204,6 +229,7 @@ export interface ScalpV2ComposerModelScore {
 export interface ScalpV2ModelGuidedCandidateDslSpec
   extends ScalpV2CandidateDslSpec {
   model: ScalpV2ComposerModelScore;
+  regimeGateId?: string | null;
 }
 
 export interface ScalpV2ResearchCursor {

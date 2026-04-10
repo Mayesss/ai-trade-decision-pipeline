@@ -7,6 +7,7 @@ import {
   isModelGuidedComposerStrategyId,
   parseEntryTriggerFromTuneId,
   parseExitRuleFromTuneId,
+  parseRegimeGateFromTuneId,
   parseRiskRuleFromTuneId,
   parseStateMachineFromTuneId,
   resolveModelGuidedComposerExecutionPlan,
@@ -306,6 +307,19 @@ test("state machine code round-trips independently", () => {
   assert.equal(parseExitRuleFromTuneId(tuneId), "exit_trailing_atr");
   assert.equal(parseEntryTriggerFromTuneId(tuneId), null);
   assert.equal(parseRiskRuleFromTuneId(tuneId), null);
+});
+
+test("regime gate code encodes and parses correctly", () => {
+  const tuneId = buildModelGuidedComposerTuneId({
+    armId: "regime_m15_m3",
+    digest: "abcdef1234567890",
+    exitRuleId: "exit_tp1_then_trail",
+    regimeGateId: "regime_vol_expansion",
+  });
+  assert.equal(tuneId, "mdl_regime_m15_m3_xtt_gre_abcdef1234");
+  assert.equal(parseRegimeGateFromTuneId(tuneId), "regime_vol_expansion");
+  const plan = resolveModelGuidedComposerExecutionPlanFromTuneId(tuneId);
+  assert.equal(plan.regimeGateBlockId, "regime_vol_expansion");
 });
 
 test("tune id without state machine parses stateMachineBlockId as null", () => {

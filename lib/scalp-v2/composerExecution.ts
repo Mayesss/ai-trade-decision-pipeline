@@ -14,6 +14,11 @@ import {
   type RiskRuleBlockId,
 } from "./riskRulePresets";
 import {
+  REGIME_GATE_SHORT_CODES,
+  resolveRegimeGateBlockFromShortCode,
+  type RegimeGateBlockId,
+} from "./regimeGatePresets";
+import {
   STATE_MACHINE_SHORT_CODES,
   resolveStateMachineBlockFromShortCode,
   type StateMachineBlockId,
@@ -60,6 +65,7 @@ export interface ModelGuidedComposerExecutionPlan {
   entryTriggerBlockId: EntryTriggerBlockId | null;
   riskRuleBlockId: RiskRuleBlockId | null;
   stateMachineBlockId: StateMachineBlockId | null;
+  regimeGateBlockId: RegimeGateBlockId | null;
   strategyId: string;
   source: "pattern_block" | "tune_prefix" | "fallback";
   patternBlockId: string | null;
@@ -234,6 +240,7 @@ function buildPlan(
   entryTriggerBlockId: EntryTriggerBlockId | null = null,
   riskRuleBlockId: RiskRuleBlockId | null = null,
   stateMachineBlockId: StateMachineBlockId | null = null,
+  regimeGateBlockId: RegimeGateBlockId | null = null,
 ): ModelGuidedComposerExecutionPlan {
   const { baseArm, tfVariant } = splitArm(armId);
   return {
@@ -244,6 +251,7 @@ function buildPlan(
     entryTriggerBlockId,
     riskRuleBlockId,
     stateMachineBlockId,
+    regimeGateBlockId,
     strategyId: ARM_TO_STRATEGY_ID[armId] || strategyIdForArm(baseArm, tfVariant),
     source,
     patternBlockId,
@@ -266,7 +274,8 @@ export function isModelGuidedComposerStrategyId(value: unknown): boolean {
 /**
  * Parse arm, exit, entry, risk, and state machine codes from a tuneId.
  *
- * Codes are identified by prefix: x=exit, e=entry, r=risk, s=state machine.
+ * Codes are identified by prefix:
+ * x=exit, e=entry, r=risk, s=state machine, g=regime gate.
  * They appear between the TF variant and the hex digest token.
  */
 function parseTuneIdSegments(tuneId: unknown): {
@@ -276,8 +285,17 @@ function parseTuneIdSegments(tuneId: unknown): {
   entryCode: string | null;
   riskCode: string | null;
   smCode: string | null;
+  regimeCode: string | null;
 } {
-  const empty = { baseArm: null, tfVariant: null, exitCode: null, entryCode: null, riskCode: null, smCode: null };
+  const empty = {
+    baseArm: null,
+    tfVariant: null,
+    exitCode: null,
+    entryCode: null,
+    riskCode: null,
+    smCode: null,
+    regimeCode: null,
+  };
   const normalized = String(tuneId || "").trim().toLowerCase();
   if (!normalized) return empty;
 
@@ -293,14 +311,24 @@ function parseTuneIdSegments(tuneId: unknown): {
       let entryCode: string | null = null;
       let riskCode: string | null = null;
       let smCode: string | null = null;
+      let regimeCode: string | null = null;
       for (const seg of segments) {
         if (!exitCode && seg.startsWith("x")) { exitCode = seg; continue; }
         if (!entryCode && seg.startsWith("e")) { entryCode = seg; continue; }
         if (!riskCode && seg.startsWith("r")) { riskCode = seg; continue; }
         if (!smCode && seg.startsWith("s")) { smCode = seg; continue; }
+        if (!regimeCode && seg.startsWith("g")) { regimeCode = seg; continue; }
         break;
       }
-      return { baseArm, tfVariant: tfVar, exitCode, entryCode, riskCode, smCode };
+      return {
+        baseArm,
+        tfVariant: tfVar,
+        exitCode,
+        entryCode,
+        riskCode,
+        smCode,
+        regimeCode,
+      };
     }
   }
 
@@ -350,6 +378,13 @@ export function parseStateMachineFromTuneId(
   return resolveStateMachineBlockFromShortCode(smCode);
 }
 
+export function parseRegimeGateFromTuneId(
+  tuneId: unknown,
+): RegimeGateBlockId | null {
+  const { regimeCode } = parseTuneIdSegments(tuneId);
+  return resolveRegimeGateBlockFromShortCode(regimeCode);
+}
+
 export function buildModelGuidedComposerTuneId(params: {
   armId: ModelGuidedComposerArmId;
   digest: string;
@@ -357,6 +392,7 @@ export function buildModelGuidedComposerTuneId(params: {
   entryTriggerId?: string | null;
   riskRuleId?: string | null;
   stateMachineId?: string | null;
+  regimeGateId?: string | null;
 }): string {
   const armId = normalizeArm(params.armId) || DEFAULT_ARM;
   const { baseArm, tfVariant } = splitArm(armId);
@@ -377,7 +413,10 @@ export function buildModelGuidedComposerTuneId(params: {
   const smCode = params.stateMachineId
     ? STATE_MACHINE_SHORT_CODES[params.stateMachineId] || null
     : null;
-  const codes = [exitCode, entryCode, riskCode, smCode].filter(Boolean);
+  const regimeCode = params.regimeGateId
+    ? REGIME_GATE_SHORT_CODES[params.regimeGateId] || null
+    : null;
+  const codes = [exitCode, entryCode, riskCode, smCode, regimeCode].filter(Boolean);
   if (codes.length) {
     return `mdl_${baseArm}_${tfVariant}_${codes.join("_")}_${token}`;
   }
@@ -393,7 +432,17 @@ export function resolveModelGuidedComposerExecutionPlanFromTuneId(
   const entryTriggerBlockId = parseEntryTriggerFromTuneId(tuneId);
   const riskRuleBlockId = parseRiskRuleFromTuneId(tuneId);
   const stateMachineBlockId = parseStateMachineFromTuneId(tuneId);
-  return buildPlan(armId, "tune_prefix", null, exitRuleBlockId, entryTriggerBlockId, riskRuleBlockId, stateMachineBlockId);
+  const regimeGateBlockId = parseRegimeGateFromTuneId(tuneId);
+  return buildPlan(
+    armId,
+    "tune_prefix",
+    null,
+    exitRuleBlockId,
+    entryTriggerBlockId,
+    riskRuleBlockId,
+    stateMachineBlockId,
+    regimeGateBlockId,
+  );
 }
 
 export function resolveModelGuidedComposerExecutionPlanFromBlocks(

@@ -275,6 +275,13 @@ export function getScalpV2RuntimeConfig(): ScalpV2RuntimeConfig {
     seedLiveSymbolsByVenue,
     budgets: getScalpV2DefaultBudgets(),
     riskProfile: getScalpV2DefaultRiskProfile(),
+    prunedScopes: {},
+    scopePruneMeta: {
+      lastPruneWindowToTs: null,
+      lastPrunedAtMs: null,
+      lastActiveScopeCount: 0,
+      lastNewlyPrunedScopeCount: 0,
+    },
   };
   return applyScalpV2FixedSeedScope(runtime);
 }

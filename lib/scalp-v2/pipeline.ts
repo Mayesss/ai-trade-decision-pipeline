@@ -22,6 +22,7 @@ import {
   MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
   buildModelGuidedComposerTuneId,
   parseExitRuleFromTuneId,
+  parseRegimeGateFromTuneId,
   resolveModelGuidedComposerExecutionPlanFromBlocks,
   resolveModelGuidedComposerExecutionPlanFromTuneId,
 } from "./composerExecution";
@@ -52,6 +53,7 @@ import {
   listScalpV2Candidates,
   loadScalpV2EvaluatedCandidateKeys,
   loadScalpV2PreviousWeekResults,
+  loadScalpV2ScopeWindowStageStats,
   listScalpV2Deployments,
   listScalpV2LedgerRows,
   listScalpV2OpenPositions,
@@ -65,6 +67,7 @@ import {
   upsertScalpV2PositionSnapshot,
   upsertScalpV2ResearchCursor,
   upsertScalpV2ResearchHighlights,
+  upsertScalpV2RuntimeConfig,
 } from "./db";
 import {
   isScalpV2DiscoverSymbolAllowed,
@@ -84,6 +87,8 @@ import type {
   ScalpV2ExecutionEvent,
   ScalpV2JobKind,
   ScalpV2JobResult,
+  ScalpV2RuntimeConfig,
+  ScalpV2RuntimePrunedScopeEntry,
   ScalpV2Session,
   ScalpV2Venue,
 } from "./types";
@@ -106,6 +111,308 @@ function nowMs(): number {
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 const LIFECYCLE_SUSPEND_WINDOW_MS = 180 * ONE_DAY_MS;
+const DEFAULT_SCOPE_PRUNE_TTL_DAYS = 28;
+
+type ScalpV2ScopePrunePolicy = {
+  enabled: boolean;
+  ttlMs: number;
+  ttlDays: number;
+  minCandidatesPerWindow: number;
+  minStageAFailPct: number;
+  requiredWindows: number;
+};
+
+function toScalpV2ScopeKey(params: {
+  venue: ScalpV2Venue;
+  symbol: string;
+  session: ScalpV2Session;
+}): string {
+  const venue = String(params.venue || "bitget").trim().toLowerCase();
+  const symbol = String(params.symbol || "").trim().toUpperCase();
+  const session = String(params.session || "berlin").trim().toLowerCase();
+  return `${venue}:${symbol}:${session}`;
+}
+
+function normalizeScopeVenue(value: unknown): ScalpV2Venue | null {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "bitget") return "bitget";
+  if (normalized === "capital") return "capital";
+  return null;
+}
+
+function normalizeScopeSession(value: unknown): ScalpV2Session | null {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "tokyo") return "tokyo";
+  if (normalized === "berlin") return "berlin";
+  if (normalized === "newyork") return "newyork";
+  if (normalized === "pacific") return "pacific";
+  if (normalized === "sydney") return "sydney";
+  return null;
+}
+
+function normalizeActivePrunedScopes(
+  runtime: ScalpV2RuntimeConfig,
+  nowTs: number,
+): Record<string, ScalpV2RuntimePrunedScopeEntry> {
+  const raw = asRecord(runtime.prunedScopes);
+  const out: Record<string, ScalpV2RuntimePrunedScopeEntry> = {};
+  for (const value of Object.values(raw)) {
+    const row = asRecord(value);
+    const venue = normalizeScopeVenue(row.venue);
+    const session = normalizeScopeSession(row.session);
+    const symbol = String(row.symbol || "")
+      .trim()
+      .toUpperCase();
+    const expiresAtMs = Math.floor(Number(row.expiresAtMs));
+    if (!venue || !session || !symbol || !Number.isFinite(expiresAtMs)) continue;
+    if (expiresAtMs <= nowTs) continue;
+    const prunedAtMs = Math.floor(Number(row.prunedAtMs));
+    const windows = Array.isArray(row.windows)
+      ? row.windows
+          .map((entry) => Math.floor(Number(entry)))
+          .filter((entry) => Number.isFinite(entry) && entry > 0)
+      : [];
+    const thresholdsRow = asRecord(row.thresholds);
+    const key = toScalpV2ScopeKey({ venue, symbol, session });
+    out[key] = {
+      venue,
+      symbol,
+      session,
+      prunedAtMs: Number.isFinite(prunedAtMs) && prunedAtMs > 0 ? prunedAtMs : nowTs,
+      expiresAtMs,
+      source: String(row.source || "v2_scope_prune").trim() || "v2_scope_prune",
+      reason:
+        String(row.reason || "chronic_stage_a_fail").trim() ||
+        "chronic_stage_a_fail",
+      thresholds: {
+        minCandidatesPerWindow: Math.max(
+          1,
+          Math.floor(Number(thresholdsRow.minCandidatesPerWindow) || 60),
+        ),
+        minStageAFailPct: Math.max(
+          0,
+          Math.min(100, Number(thresholdsRow.minStageAFailPct) || 85),
+        ),
+        requiredWindows: Math.max(
+          2,
+          Math.min(6, Math.floor(Number(thresholdsRow.requiredWindows) || 2)),
+        ),
+      },
+      windows: Array.from(new Set(windows)).sort((a, b) => b - a),
+    };
+  }
+  return out;
+}
+
+function resolveScalpV2ScopePrunePolicy(): ScalpV2ScopePrunePolicy {
+  const ttlDays = Math.max(
+    7,
+    Math.min(
+      180,
+      toPositiveInt(
+        process.env.SCALP_V2_SCOPE_PRUNE_TTL_DAYS,
+        DEFAULT_SCOPE_PRUNE_TTL_DAYS,
+        180,
+      ),
+    ),
+  );
+  return {
+    enabled: envBool("SCALP_V2_SCOPE_PRUNE_ENABLED", true),
+    ttlMs: ttlDays * ONE_DAY_MS,
+    ttlDays,
+    minCandidatesPerWindow: Math.max(
+      1,
+      Math.min(
+        1_000,
+        toPositiveInt(
+          process.env.SCALP_V2_SCOPE_PRUNE_MIN_CANDIDATES_PER_WINDOW,
+          60,
+          1_000,
+        ),
+      ),
+    ),
+    minStageAFailPct: Math.max(
+      0,
+      Math.min(
+        100,
+        toFinite(process.env.SCALP_V2_SCOPE_PRUNE_MIN_STAGE_A_FAIL_PCT, 85),
+      ),
+    ),
+    requiredWindows: Math.max(
+      2,
+      Math.min(
+        4,
+        toPositiveInt(process.env.SCALP_V2_SCOPE_PRUNE_REQUIRED_WINDOWS, 2, 4),
+      ),
+    ),
+  };
+}
+
+async function runScalpV2ScopePrunePass(params: {
+  runtime: ScalpV2RuntimeConfig;
+  windowToTs: number;
+  nowTs: number;
+}): Promise<{
+  runtime: ScalpV2RuntimeConfig;
+  details: Record<string, unknown>;
+}> {
+  const policy = resolveScalpV2ScopePrunePolicy();
+  const activeScopes = normalizeActivePrunedScopes(params.runtime, params.nowTs);
+  const meta = asRecord(params.runtime.scopePruneMeta);
+  const lastPruneWindowToTs = Math.floor(Number(meta.lastPruneWindowToTs));
+  const alreadyPrunedThisWindow =
+    Number.isFinite(lastPruneWindowToTs) &&
+    lastPruneWindowToTs === params.windowToTs;
+  if (!policy.enabled) {
+    return {
+      runtime: {
+        ...params.runtime,
+        prunedScopes: activeScopes,
+      },
+      details: {
+        enabled: false,
+        skipped: true,
+        reason: "scope_prune_disabled",
+        activeScopeCount: Object.keys(activeScopes).length,
+      },
+    };
+  }
+  if (alreadyPrunedThisWindow) {
+    return {
+      runtime: {
+        ...params.runtime,
+        prunedScopes: activeScopes,
+      },
+      details: {
+        enabled: true,
+        skipped: true,
+        reason: "already_pruned_for_window",
+        lastPruneWindowToTs: params.windowToTs,
+        activeScopeCount: Object.keys(activeScopes).length,
+      },
+    };
+  }
+
+  const snapshots = await loadScalpV2ScopeWindowStageStats({
+    latestWindowCount: policy.requiredWindows,
+  });
+  const windows = Array.from(
+    new Set(
+      snapshots
+        .map((row) => Math.floor(Number(row.windowToTs)))
+        .filter((row) => Number.isFinite(row) && row > 0),
+    ),
+  ).sort((a, b) => b - a);
+  const requiredWindows = windows.slice(0, policy.requiredWindows);
+
+  const byScope = new Map<string, Map<number, (typeof snapshots)[number]>>();
+  for (const row of snapshots) {
+    if (!requiredWindows.includes(row.windowToTs)) continue;
+    const key = toScalpV2ScopeKey({
+      venue: row.venue,
+      symbol: row.symbol,
+      session: row.session,
+    });
+    const perWindow = byScope.get(key) || new Map();
+    perWindow.set(row.windowToTs, row);
+    byScope.set(key, perWindow);
+  }
+
+  const nextPrunedScopes: Record<string, ScalpV2RuntimePrunedScopeEntry> = {
+    ...activeScopes,
+  };
+  const candidateScopeCount = byScope.size;
+  const newlyPrunedScopeKeys: string[] = [];
+  let skippedInsufficientWindowHistory = false;
+
+  if (requiredWindows.length < policy.requiredWindows) {
+    skippedInsufficientWindowHistory = true;
+  } else {
+    for (const [scopeKey, perWindow] of byScope.entries()) {
+      let shouldPrune = true;
+      for (const windowToTs of requiredWindows) {
+        const row = perWindow.get(windowToTs);
+        if (!row) {
+          shouldPrune = false;
+          break;
+        }
+        const total = Number(row.total) || 0;
+        const stageAPass = Number(row.stageAPass) || 0;
+        const stageCPass = Number(row.stageCPass) || 0;
+        const stageAFailPct = total > 0 ? ((total - stageAPass) / total) * 100 : 0;
+        if (total < policy.minCandidatesPerWindow) {
+          shouldPrune = false;
+          break;
+        }
+        if (stageAFailPct < policy.minStageAFailPct) {
+          shouldPrune = false;
+          break;
+        }
+        if (stageCPass > 0) {
+          shouldPrune = false;
+          break;
+        }
+      }
+      if (!shouldPrune) continue;
+      const [venueRaw, symbolRaw, sessionRaw] = scopeKey.split(":");
+      const venue = normalizeScopeVenue(venueRaw);
+      const session = normalizeScopeSession(sessionRaw);
+      const symbol = String(symbolRaw || "").trim().toUpperCase();
+      if (!venue || !session || !symbol) continue;
+      const previouslyPruned = Boolean(nextPrunedScopes[scopeKey]);
+      nextPrunedScopes[scopeKey] = {
+        venue,
+        symbol,
+        session,
+        prunedAtMs: params.nowTs,
+        expiresAtMs: params.nowTs + policy.ttlMs,
+        source: "v2_scope_prune",
+        reason: "chronic_stage_a_fail",
+        thresholds: {
+          minCandidatesPerWindow: policy.minCandidatesPerWindow,
+          minStageAFailPct: policy.minStageAFailPct,
+          requiredWindows: policy.requiredWindows,
+        },
+        windows: requiredWindows.slice(),
+      };
+      if (!previouslyPruned) newlyPrunedScopeKeys.push(scopeKey);
+    }
+  }
+
+  const updatedRuntime = await upsertScalpV2RuntimeConfig({
+    ...params.runtime,
+    prunedScopes: nextPrunedScopes,
+    scopePruneMeta: {
+      lastPruneWindowToTs: params.windowToTs,
+      lastPrunedAtMs: params.nowTs,
+      lastActiveScopeCount: Object.keys(nextPrunedScopes).length,
+      lastNewlyPrunedScopeCount: newlyPrunedScopeKeys.length,
+    },
+  });
+
+  return {
+    runtime: updatedRuntime,
+    details: {
+      enabled: true,
+      skipped: false,
+      reason: skippedInsufficientWindowHistory
+        ? "insufficient_window_history"
+        : "scope_prune_completed",
+      windowToTs: params.windowToTs,
+      ttlDays: policy.ttlDays,
+      requiredWindows,
+      policy: {
+        minCandidatesPerWindow: policy.minCandidatesPerWindow,
+        minStageAFailPct: policy.minStageAFailPct,
+        requiredWindows: policy.requiredWindows,
+      },
+      candidateScopeCount,
+      activeScopeCount: Object.keys(nextPrunedScopes).length,
+      newlyPrunedScopeCount: newlyPrunedScopeKeys.length,
+      newlyPrunedScopes: newlyPrunedScopeKeys,
+    },
+  };
+}
 
 type V2LifecycleState = "candidate" | "graduated" | "suspended" | "retired";
 
@@ -1220,7 +1527,7 @@ export async function runScalpV2ResearchJob(params: {
   let details: Record<string, unknown> = {};
 
   try {
-    const runtime = await loadScalpV2RuntimeConfig();
+    let runtime = await loadScalpV2RuntimeConfig();
     if (!runtime.enabled) {
       details = { skipped: true, reason: "SCALP_V2_DISABLED" };
       return buildScalpV2JobResult({
@@ -1235,6 +1542,14 @@ export async function runScalpV2ResearchJob(params: {
 
     const workerPolicy = resolveWorkerPolicy();
     const nowTs = nowMs();
+    const windowToTs = resolveScalpV2CompletedWeekWindowToUtc(nowTs);
+    const scopePrune = await runScalpV2ScopePrunePass({
+      runtime,
+      windowToTs,
+      nowTs,
+    });
+    runtime = scopePrune.runtime;
+    const activePrunedScopes = normalizeActivePrunedScopes(runtime, nowTs);
     const jobStartMs = nowMs();
     const timeBudgetMs = Math.max(
       60_000,
@@ -1264,6 +1579,7 @@ export async function runScalpV2ResearchJob(params: {
       session: ScalpV2Session;
     }> = [];
     let droppedByVenuePolicy = 0;
+    let droppedByScopePrune = 0;
     for (const venue of runtime.supportedVenues) {
       const symbols = runtime.seedSymbolsByVenue[venue] || [];
       for (const symbolRaw of symbols) {
@@ -1275,13 +1591,23 @@ export async function runScalpV2ResearchJob(params: {
         }
         if (!isScalpV2RuntimeSymbolInScope({ runtime, venue, symbol })) continue;
         for (const session of runtime.supportedSessions) {
+          const scopeKey = toScalpV2ScopeKey({ venue, symbol, session });
+          if (activePrunedScopes[scopeKey]) {
+            droppedByScopePrune += 1;
+            continue;
+          }
           scopes.push({ venue, symbol, session });
         }
       }
     }
 
     if (!scopes.length) {
-      details = { reason: "no_runtime_seed_scopes", droppedByVenuePolicy };
+      details = {
+        reason: "no_runtime_seed_scopes",
+        droppedByVenuePolicy,
+        droppedByScopePrune,
+        scopePrune: scopePrune.details,
+      };
       return buildScalpV2JobResult({
         jobKind: "research",
         processed: 0,
@@ -1293,7 +1619,6 @@ export async function runScalpV2ResearchJob(params: {
     }
 
     // --- Generate ALL candidates for all scopes (no cursor, no batch cap) ---
-    const windowToTs = resolveScalpV2CompletedWeekWindowToUtc(nowTs);
     const stagePolicies = [
       workerPolicy.stageA,
       workerPolicy.stageB,
@@ -1376,6 +1701,7 @@ export async function runScalpV2ResearchJob(params: {
           risk_rule: toStrArr(depDsl.risk_rule),
         };
         const baseExitId = parseExitRuleFromTuneId(dep.tuneId)?.toString() || undefined;
+        const baseRegimeGateId = parseRegimeGateFromTuneId(dep.tuneId) || undefined;
         const baseModel = {
           family: "interpretable_pattern_blend" as const,
           version: "deployment_variant_v1",
@@ -1402,6 +1728,7 @@ export async function runScalpV2ResearchJob(params: {
                 entryTriggerId: entryId,
                 riskRuleId: riskId,
                 stateMachineId: smId,
+                regimeGateId: baseRegimeGateId,
               });
               if (existingTuneIds.has(variantTuneId)) continue;
               existingTuneIds.add(variantTuneId);
@@ -1431,6 +1758,7 @@ export async function runScalpV2ResearchJob(params: {
                   supportScore: 0,
                   generatedAtMs: Date.now(),
                   model: baseModel,
+                  regimeGateId: baseRegimeGateId,
                 },
               });
               deploymentVariantsGenerated += 1;
@@ -1446,8 +1774,10 @@ export async function runScalpV2ResearchJob(params: {
       details = {
         reason: "no_candidates_generated",
         scopeCount: scopes.length,
+        droppedByScopePrune,
         poolSizeTotal,
         deploymentVariantsGenerated,
+        scopePrune: scopePrune.details,
       };
       return buildScalpV2JobResult({
         jobKind: "research",
@@ -1471,9 +1801,11 @@ export async function runScalpV2ResearchJob(params: {
       details = {
         reason: "all_candidates_already_evaluated_this_week",
         scopeCount: scopes.length,
+        droppedByScopePrune,
         poolSizeTotal,
         totalCandidates: allCandidates.length,
         skippedByCache,
+        scopePrune: scopePrune.details,
       };
       return buildScalpV2JobResult({
         jobKind: "research",
@@ -1530,11 +1862,13 @@ export async function runScalpV2ResearchJob(params: {
       details = {
         reason: "all_candidates_skipped",
         scopeCount: scopes.length,
+        droppedByScopePrune,
         poolSizeTotal,
         totalCandidates: allCandidates.length,
         skippedByCache,
         skippedByClearFail,
         candidatesWithPreviousResults: previousResults.size,
+        scopePrune: scopePrune.details,
       };
       return buildScalpV2JobResult({
         jobKind: "research",
@@ -1796,6 +2130,7 @@ export async function runScalpV2ResearchJob(params: {
           researchDsl: candidate.dsl.blocksByFamily,
           researchReferences: candidate.dsl.referenceStrategyIds,
           researchSupportScore: candidate.dsl.supportScore,
+          researchRegimeGateId: candidate.dsl.regimeGateId || null,
           composerModel: candidate.dsl.model,
           composerExecutionPlan: executionPlan,
           evaluatedAtMs: nowTs,
@@ -1869,10 +2204,12 @@ export async function runScalpV2ResearchJob(params: {
       stageCFail,
       replayErrors,
       droppedByVenuePolicy,
+      droppedByScopePrune,
       timeBudgetExhausted,
       timeBudgetMs,
       elapsedMs: nowMs() - jobStartMs,
       remaining,
+      scopePrune: scopePrune.details,
       policy: {
         stageA: workerPolicy.stageA,
         stageB: workerPolicy.stageB,
@@ -1984,23 +2321,43 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
   try {
     const runtime = await loadScalpV2RuntimeConfig();
     const nowTs = nowMs();
+    const activePrunedScopes = normalizeActivePrunedScopes(runtime, nowTs);
     const policy = resolvePromotionPolicy();
     const requireWinnerShortlist = envBool(
       "SCALP_V2_REQUIRE_WINNER_SHORTLIST",
       true,
     );
     const allCandidatesRaw = await listScalpV2Candidates({ limit: 10_000 });
-    const allCandidates = allCandidatesRaw.filter((row) =>
-      isScalpV2RuntimeSymbolInScope({
-        runtime,
+    const allCandidates = allCandidatesRaw.filter((row) => {
+      if (
+        !isScalpV2RuntimeSymbolInScope({
+          runtime,
+          venue: row.venue,
+          symbol: row.symbol,
+        })
+      ) {
+        return false;
+      }
+      const scopeKey = toScalpV2ScopeKey({
         venue: row.venue,
         symbol: row.symbol,
-      }),
-    );
+        session: row.entrySessionProfile,
+      });
+      if (activePrunedScopes[scopeKey]) return false;
+      return true;
+    });
     const filteredCandidatesOutOfScope = Math.max(
       0,
       allCandidatesRaw.length - allCandidates.length,
     );
+    const filteredCandidatesByScopePrune = allCandidatesRaw.filter((row) => {
+      const scopeKey = toScalpV2ScopeKey({
+        venue: row.venue,
+        symbol: row.symbol,
+        session: row.entrySessionProfile,
+      });
+      return Boolean(activePrunedScopes[scopeKey]);
+    }).length;
     const promotionPool = allCandidates.filter(
       (row) =>
         row.status === "evaluated" ||
@@ -2058,6 +2415,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         promoted: 0,
         reason: "no_promotable_candidates",
         filteredCandidatesOutOfScope,
+        filteredCandidatesByScopePrune,
         filteredDeploymentsOutOfScope,
         demotedOutOfScopeEnabled: offScopeEnabledDeployments.length,
       };
@@ -2711,6 +3069,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       neighborSuspended: neighborSuspended.size,
       freshnessWindowWeeks: policy.minCompletedWeeks,
       filteredCandidatesOutOfScope,
+      filteredCandidatesByScopePrune,
       filteredDeploymentsOutOfScope,
       demotedOutOfScopeEnabled: offScopeEnabledDeployments.length,
       enabledSlots: runtime.budgets.maxEnabledDeployments,

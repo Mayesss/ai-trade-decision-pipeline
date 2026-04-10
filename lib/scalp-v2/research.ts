@@ -9,6 +9,7 @@ import {
   type ModelGuidedComposerBaseArm,
 } from "./composerExecution";
 import { EXIT_RULE_RESEARCH_PROFILES } from "./exitRulePresets";
+import { REGIME_GATE_RESEARCH_PROFILES } from "./regimeGatePresets";
 import { listScalpV2CatalogStrategies } from "./strategyCatalog";
 
 import type {
@@ -72,6 +73,44 @@ function normalizeSymbol(value: string): string {
     .trim()
     .toUpperCase()
     .replace(/[^A-Z0-9._-]/g, "");
+}
+
+const DEFAULT_PATTERN_POOL_SIZE = 8;
+const DEFAULT_PATTERN_NOVELTY_QUOTA_PCT = 0.25;
+const DEFAULT_PATTERN_NOVELTY_MIN_SLOTS = 2;
+const DEFAULT_REGIME_GATE_TOP_BASE_ARMS = 4;
+
+function envInt(
+  key: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const raw = process.env[key];
+  const value = Math.floor(Number(raw));
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
+}
+
+function envNumber(
+  key: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const raw = Number(process.env[key]);
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.max(min, Math.min(max, raw));
+}
+
+function envBool(key: string, fallback: boolean): boolean {
+  const raw = String(process.env[key] || "")
+    .trim()
+    .toLowerCase();
+  if (!raw) return fallback;
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  return fallback;
 }
 
 const PRIMITIVE_BLOCKS: ScalpV2PrimitiveBlock[] = [
@@ -937,6 +976,75 @@ function sortedBlockPool(params: {
   return sorted.slice(0, Math.max(1, Math.floor(params.maxSize)));
 }
 
+function deterministicOffsetFromSeed(seed: string, mod: number): number {
+  if (!(mod > 0)) return 0;
+  const digest = candidateHash(seed).slice(0, 8);
+  const n = Number.parseInt(digest, 16);
+  if (!Number.isFinite(n)) return 0;
+  return n % mod;
+}
+
+function deterministicSpreadPick(
+  values: string[],
+  pickCount: number,
+  seed: string,
+): string[] {
+  const count = Math.max(0, Math.floor(pickCount));
+  if (count === 0 || values.length === 0) return [];
+  const unique = uniqueStrings(values);
+  const offset = deterministicOffsetFromSeed(seed, unique.length);
+  const rotated = unique.slice(offset).concat(unique.slice(0, offset));
+  const step = Math.max(1, Math.floor(rotated.length / count));
+  const out: string[] = [];
+  for (let idx = 0; idx < rotated.length && out.length < count; idx += step) {
+    out.push(rotated[idx] as string);
+  }
+  for (const blockId of rotated) {
+    if (out.length >= count) break;
+    if (out.includes(blockId)) continue;
+    out.push(blockId);
+  }
+  return uniqueStrings(out).slice(0, count);
+}
+
+function buildPatternPoolWithNovelty(params: {
+  rankedBlocks: string[];
+  poolSize: number;
+  noveltyQuotaPct: number;
+  noveltyMinSlots: number;
+  scopeSeed: string;
+}): string[] {
+  const ranked = uniqueStrings(params.rankedBlocks);
+  const poolSize = Math.max(1, Math.floor(params.poolSize));
+  if (ranked.length <= poolSize) return ranked;
+
+  const noveltyQuotaPct = Math.max(0, Math.min(1, params.noveltyQuotaPct));
+  const noveltyMinSlots = Math.max(0, Math.floor(params.noveltyMinSlots));
+  let noveltySlots = Math.floor(poolSize * noveltyQuotaPct);
+  if (noveltyQuotaPct > 0 && noveltyMinSlots > 0) {
+    noveltySlots = Math.max(noveltySlots, noveltyMinSlots);
+  }
+  noveltySlots = Math.max(0, Math.min(poolSize - 1, noveltySlots));
+  const exploitSlots = Math.max(1, poolSize - noveltySlots);
+
+  const exploit = ranked.slice(0, exploitSlots);
+  const noveltySource = ranked.slice(exploitSlots);
+  const novelty = deterministicSpreadPick(
+    noveltySource,
+    noveltySlots,
+    `${params.scopeSeed}:pattern_novelty`,
+  );
+
+  const out = uniqueStrings([...exploit, ...novelty]);
+  if (out.length >= poolSize) return out.slice(0, poolSize);
+  for (const blockId of ranked) {
+    if (out.length >= poolSize) break;
+    if (out.includes(blockId)) continue;
+    out.push(blockId);
+  }
+  return out.slice(0, poolSize);
+}
+
 function candidateHash(input: string): string {
   return crypto.createHash("sha1").update(input).digest("hex");
 }
@@ -1215,14 +1323,39 @@ export function buildScalpV2CandidateDslGrid(params: {
   const references = listScalpV2StrategyPrimitiveReferences();
   const blockMap = blockByIdMap();
 
-  const patternPool = sortedBlockPool({
+  const patternPoolSize = envInt(
+    "SCALP_V2_NOVELTY_PATTERN_POOL_SIZE",
+    DEFAULT_PATTERN_POOL_SIZE,
+    1,
+    20,
+  );
+  const patternNoveltyQuotaPct = envNumber(
+    "SCALP_V2_NOVELTY_QUOTA_PCT",
+    DEFAULT_PATTERN_NOVELTY_QUOTA_PCT,
+    0,
+    1,
+  );
+  const patternNoveltyMinSlots = envInt(
+    "SCALP_V2_NOVELTY_MIN_SLOTS",
+    DEFAULT_PATTERN_NOVELTY_MIN_SLOTS,
+    0,
+    patternPoolSize,
+  );
+  const rankedPatternBlocks = sortedBlockPool({
     family: "pattern",
     references,
     symbol,
     venue: params.venue,
     entrySessionProfile: params.entrySessionProfile,
-    maxSize: 8,
+    maxSize: 64,
     blockMap,
+  });
+  const patternPool = buildPatternPoolWithNovelty({
+    rankedBlocks: rankedPatternBlocks,
+    poolSize: patternPoolSize,
+    noveltyQuotaPct: patternNoveltyQuotaPct,
+    noveltyMinSlots: patternNoveltyMinSlots,
+    scopeSeed: `${params.venue}:${symbol}:${params.entrySessionProfile}`,
   });
   const entryPool = sortedBlockPool({
     family: "entry_trigger",
@@ -1379,6 +1512,15 @@ export function buildScalpV2ModelGuidedComposerGrid(params: {
     Math.min(6000, Math.floor(maxCandidates * 2)),
   );
   const blockMap = blockByIdMap();
+  const regimeGateEnabled = envBool("SCALP_V2_REGIME_GATE_ENABLED", true);
+  const regimeGateTopBaseArms = regimeGateEnabled
+    ? envInt(
+        "SCALP_V2_REGIME_GATE_TOP_BASE_ARMS",
+        DEFAULT_REGIME_GATE_TOP_BASE_ARMS,
+        0,
+        24,
+      )
+    : 0;
   const baseGrid = buildScalpV2CandidateDslGrid({
     venue: params.venue,
     symbol: params.symbol,
@@ -1422,43 +1564,53 @@ export function buildScalpV2ModelGuidedComposerGrid(params: {
 
   // Multiply each surviving base-arm candidate by TF variants × exit rule profiles.
   const expanded: ScalpV2ModelGuidedCandidateDslSpec[] = [];
-  for (const row of dedupedByBaseArm) {
+  for (let rowIdx = 0; rowIdx < dedupedByBaseArm.length; rowIdx += 1) {
+    const row = dedupedByBaseArm[rowIdx]!;
+    const regimeGateVariants =
+      rowIdx < regimeGateTopBaseArms
+        ? [null, ...REGIME_GATE_RESEARCH_PROFILES]
+        : [null];
     for (const tfVariant of COMPOSER_TIMEFRAME_VARIANTS) {
       for (const exitRuleId of EXIT_RULE_RESEARCH_PROFILES) {
-        const armId = `${row._baseArm}_${tfVariant.label}` as ModelGuidedComposerArmId;
-        const executionPlan = resolveModelGuidedComposerExecutionPlanFromBlocks(
-          row.blocksByFamily,
-          tfVariant.label,
-        );
-        const digest = candidateHash(
-          [
-            row.venue,
-            row.symbol,
-            row.entrySessionProfile,
-            armId,
-            exitRuleId,
-            row.model.version,
-          ].join(":"),
-        );
-        expanded.push({
-          candidateId: `mdl_${digest.slice(0, 16)}`,
-          tuneId: buildModelGuidedComposerTuneId({
-            armId: executionPlan.armId,
-            digest,
-            exitRuleId,
-          }),
-          venue: row.venue,
-          symbol: row.symbol,
-          entrySessionProfile: row.entrySessionProfile,
-          blocksByFamily: {
-            ...row.blocksByFamily,
-            exit_rule: [exitRuleId],
-          },
-          referenceStrategyIds: row.referenceStrategyIds,
-          supportScore: row.supportScore,
-          generatedAtMs: row.generatedAtMs,
-          model: row.model,
-        });
+        for (const regimeGateId of regimeGateVariants) {
+          const armId = `${row._baseArm}_${tfVariant.label}` as ModelGuidedComposerArmId;
+          const executionPlan = resolveModelGuidedComposerExecutionPlanFromBlocks(
+            row.blocksByFamily,
+            tfVariant.label,
+          );
+          const digest = candidateHash(
+            [
+              row.venue,
+              row.symbol,
+              row.entrySessionProfile,
+              armId,
+              exitRuleId,
+              regimeGateId || "goff",
+              row.model.version,
+            ].join(":"),
+          );
+          expanded.push({
+            candidateId: `mdl_${digest.slice(0, 16)}`,
+            tuneId: buildModelGuidedComposerTuneId({
+              armId: executionPlan.armId,
+              digest,
+              exitRuleId,
+              regimeGateId,
+            }),
+            venue: row.venue,
+            symbol: row.symbol,
+            entrySessionProfile: row.entrySessionProfile,
+            blocksByFamily: {
+              ...row.blocksByFamily,
+              exit_rule: [exitRuleId],
+            },
+            referenceStrategyIds: row.referenceStrategyIds,
+            supportScore: row.supportScore,
+            generatedAtMs: row.generatedAtMs,
+            model: row.model,
+            regimeGateId,
+          });
+        }
       }
     }
   }

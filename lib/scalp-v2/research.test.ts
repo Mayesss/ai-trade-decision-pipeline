@@ -9,7 +9,31 @@ import {
   strategyPrimitiveCoverageSummary,
   toScalpV2ResearchCursorKey,
 } from "./research";
+import {
+  parseRegimeGateFromTuneId,
+  resolveModelGuidedComposerExecutionPlanFromTuneId,
+} from "./composerExecution";
 import { listScalpV2CatalogStrategyIds } from "./strategyCatalog";
+
+function withEnv<T>(
+  patch: Record<string, string | null>,
+  run: () => T,
+): T {
+  const prev: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(patch)) {
+    prev[key] = process.env[key];
+    if (value === null) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return run();
+  } finally {
+    for (const [key, value] of Object.entries(prev)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
 
 test("strategy primitive references cover all v2 catalog strategy ids", () => {
   const strategyIds = new Set(listScalpV2CatalogStrategyIds());
@@ -49,6 +73,44 @@ test("candidate DSL grid is bounded and deterministic for same context", () => {
   assert.deepEqual(
     a.map((row) => row.blocksByFamily.session_filter),
     b.map((row) => row.blocksByFamily.session_filter),
+  );
+});
+
+test("candidate DSL grid novelty quota changes candidate mix deterministically", () => {
+  const noNovelty = withEnv(
+    {
+      SCALP_V2_NOVELTY_PATTERN_POOL_SIZE: "4",
+      SCALP_V2_NOVELTY_QUOTA_PCT: "0",
+      SCALP_V2_NOVELTY_MIN_SLOTS: "0",
+    },
+    () =>
+      buildScalpV2CandidateDslGrid({
+        venue: "bitget",
+        symbol: "BTCUSDT",
+        entrySessionProfile: "berlin",
+        maxCandidates: 40,
+      }),
+  );
+  const withNovelty = withEnv(
+    {
+      SCALP_V2_NOVELTY_PATTERN_POOL_SIZE: "4",
+      SCALP_V2_NOVELTY_QUOTA_PCT: "0.5",
+      SCALP_V2_NOVELTY_MIN_SLOTS: "2",
+    },
+    () =>
+      buildScalpV2CandidateDslGrid({
+        venue: "bitget",
+        symbol: "BTCUSDT",
+        entrySessionProfile: "berlin",
+        maxCandidates: 40,
+      }),
+  );
+
+  assert.equal(noNovelty.length, 40);
+  assert.equal(withNovelty.length, 40);
+  assert.notDeepEqual(
+    noNovelty.map((row) => row.candidateId),
+    withNovelty.map((row) => row.candidateId),
   );
 });
 
@@ -122,6 +184,54 @@ test("model-guided composer scores stay in [0,1] and preserve session filter int
     assert.equal(row.model.confidence >= 0, true);
     assert.equal(row.model.confidence <= 1, true);
     assert.equal(row.model.version.startsWith("composer_v2_"), true);
+  }
+});
+
+test("model-guided composer regime gate variants are quota-bounded by top base arms", () => {
+  const rows = withEnv(
+    {
+      SCALP_V2_REGIME_GATE_ENABLED: "true",
+      SCALP_V2_REGIME_GATE_TOP_BASE_ARMS: "1",
+    },
+    () =>
+      buildScalpV2ModelGuidedComposerGrid({
+        venue: "bitget",
+        symbol: "BTCUSDT",
+        entrySessionProfile: "berlin",
+        maxCandidates: 24,
+      }),
+  );
+  const gatedRows = rows.filter((row) => Boolean(row.regimeGateId));
+  assert.equal(gatedRows.length > 0, true);
+  const baseArms = new Set(
+    gatedRows.map((row) =>
+      resolveModelGuidedComposerExecutionPlanFromTuneId(row.tuneId).baseArm,
+    ),
+  );
+  assert.equal(baseArms.size, 1);
+  for (const row of gatedRows) {
+    assert.equal(parseRegimeGateFromTuneId(row.tuneId) !== null, true);
+  }
+});
+
+test("model-guided composer can disable regime gate variants entirely", () => {
+  const rows = withEnv(
+    {
+      SCALP_V2_REGIME_GATE_ENABLED: "false",
+      SCALP_V2_REGIME_GATE_TOP_BASE_ARMS: "12",
+    },
+    () =>
+      buildScalpV2ModelGuidedComposerGrid({
+        venue: "capital",
+        symbol: "EURUSD",
+        entrySessionProfile: "newyork",
+        maxCandidates: 24,
+      }),
+  );
+  assert.equal(rows.length > 0, true);
+  for (const row of rows) {
+    assert.equal(row.regimeGateId ?? null, null);
+    assert.equal(parseRegimeGateFromTuneId(row.tuneId), null);
   }
 });
 

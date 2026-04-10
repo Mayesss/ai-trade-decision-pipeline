@@ -583,6 +583,16 @@ export interface PreviousStageResult {
   stageCNetR: number | null;
 }
 
+export interface ScalpV2ScopeWindowStageStats {
+  windowToTs: number;
+  venue: ScalpV2Venue;
+  symbol: string;
+  session: ScalpV2Session;
+  total: number;
+  stageAPass: number;
+  stageCPass: number;
+}
+
 /**
  * Loads previous week's backtest results for candidates evaluated with a
  * DIFFERENT windowToTs (prior week). Used to decide which candidates can
@@ -636,6 +646,66 @@ export async function loadScalpV2PreviousWeekResults(params: {
     });
   }
   return results;
+}
+
+export async function loadScalpV2ScopeWindowStageStats(params: {
+  latestWindowCount?: number;
+} = {}): Promise<ScalpV2ScopeWindowStageStats[]> {
+  if (!isScalpPgConfigured()) return [];
+  const db = scalpPrisma();
+  const latestWindowCount = Math.max(
+    2,
+    Math.min(8, toPositiveInt(params.latestWindowCount, 2, 8)),
+  );
+  const rows = await db.$queryRaw<
+    Array<{
+      windowToTs: string | number;
+      venue: string;
+      symbol: string;
+      session: string;
+      total: string | number;
+      stageAPass: string | number;
+      stageCPass: string | number;
+    }>
+  >(sql`
+    WITH windows AS (
+      SELECT DISTINCT
+        (metadata_json->'worker'->>'windowToTs')::bigint AS window_to_ts
+      FROM scalp_v2_candidates
+      WHERE metadata_json ? 'worker'
+        AND metadata_json->'worker'->>'windowToTs' IS NOT NULL
+      ORDER BY window_to_ts DESC
+      LIMIT ${latestWindowCount}
+    )
+    SELECT
+      (metadata_json->'worker'->>'windowToTs')::bigint AS "windowToTs",
+      venue,
+      symbol,
+      entry_session_profile AS "session",
+      COUNT(*)::bigint AS total,
+      COUNT(*) FILTER (
+        WHERE COALESCE((metadata_json->'worker'->'stageA'->>'passed')::boolean, false)
+      )::bigint AS "stageAPass",
+      COUNT(*) FILTER (
+        WHERE COALESCE((metadata_json->'worker'->'stageC'->>'passed')::boolean, false)
+      )::bigint AS "stageCPass"
+    FROM scalp_v2_candidates
+    WHERE (metadata_json->'worker'->>'windowToTs')::bigint IN (
+      SELECT window_to_ts FROM windows
+    )
+    GROUP BY 1, 2, 3, 4
+    ORDER BY "windowToTs" DESC, venue, symbol, "session";
+  `);
+
+  return rows.map((row) => ({
+    windowToTs: Number(row.windowToTs) || 0,
+    venue: normalizeVenue(row.venue),
+    symbol: String(row.symbol || "").trim().toUpperCase(),
+    session: normalizeSession(row.session),
+    total: Number(row.total) || 0,
+    stageAPass: Number(row.stageAPass) || 0,
+    stageCPass: Number(row.stageCPass) || 0,
+  }));
 }
 
 export async function updateScalpV2CandidateStatuses(params: {
