@@ -317,7 +317,7 @@ function resolvePromotionPolicy(): ScalpV2PromotionPolicy {
       process.env.SCALP_V2_PROMOTION_MAX_TOP_WEEK_PNL_CONCENTRATION_PCT,
       55,
     ),
-    minFourWeekNetR: toFinite(process.env.SCALP_V2_PROMOTION_MIN_4W_NET_R, 6),
+    minFourWeekNetR: toFinite(process.env.SCALP_V2_PROMOTION_MIN_4W_NET_R, 4),
     fourWeekGroupCount: Math.max(
       1,
       Math.min(
