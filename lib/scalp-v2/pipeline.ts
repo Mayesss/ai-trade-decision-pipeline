@@ -42,6 +42,7 @@ import {
   resolveStateMachineReplayOverrides,
   STATE_MACHINE_RESEARCH_PROFILES,
 } from "./stateMachinePresets";
+import { buildScalpV2ExecuteConfigOverride } from "./executeConfigOverride";
 import { runScalpV2ExecuteCycle } from "./executeAdapter";
 import {
   appendScalpV2ExecutionEvent,
@@ -3242,6 +3243,11 @@ export async function runScalpV2ExecuteJob(params: {
         const smOverrides = resolveStateMachineOverrides(
           Array.isArray(dslFromGate.state_machine) ? (dslFromGate.state_machine as string[]) : null,
         );
+        const configOverride = buildScalpV2ExecuteConfigOverride({
+          entrySessionProfile: deployment.entrySessionProfile,
+          riskProfile: rp,
+          stateMachineOverrides: smOverrides,
+        });
         const result = await runScalpV2ExecuteCycle({
           venue: deployment.venue,
           symbol: deployment.symbol,
@@ -3249,34 +3255,7 @@ export async function runScalpV2ExecuteJob(params: {
           tuneId: deployment.tuneId,
           deploymentId: deployment.deploymentId,
           dryRun: deploymentDryRun,
-          configOverride: {
-            risk: {
-              riskPerTradePct: rp.riskPerTradePct,
-              maxOpenPositionsPerSymbol: rp.maxOpenPositionsPerSymbol,
-              ...(smOverrides.consecutiveLossPauseThreshold !== undefined && {
-                consecutiveLossPauseThreshold: smOverrides.consecutiveLossPauseThreshold,
-              }),
-              ...(smOverrides.consecutiveLossCooldownBars !== undefined && {
-                consecutiveLossCooldownBars: smOverrides.consecutiveLossCooldownBars,
-              }),
-              ...(smOverrides.dailyLossLimitR !== undefined && {
-                dailyLossLimitR: smOverrides.dailyLossLimitR,
-              }),
-              ...(smOverrides.maxTradesPerSymbolPerDay !== undefined && {
-                maxTradesPerSymbolPerDay: smOverrides.maxTradesPerSymbolPerDay,
-              }),
-            },
-            confirm: {
-              ...(smOverrides.confirmTtlMinutes !== undefined && {
-                ttlMinutes: smOverrides.confirmTtlMinutes,
-              }),
-            },
-            sweep: {
-              ...(smOverrides.sweepRejectMaxBars !== undefined && {
-                rejectMaxBars: smOverrides.sweepRejectMaxBars,
-              }),
-            },
-          },
+          configOverride,
         });
 
         await appendScalpV2ExecutionEvent(
