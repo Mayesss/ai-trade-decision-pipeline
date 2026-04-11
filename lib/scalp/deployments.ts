@@ -92,7 +92,10 @@ export function resolveScalpDeployment(params: {
         params.strategyId ?? parsed?.strategyId,
         resolveStrategyId(params.fallbackStrategyId, getDefaultScalpStrategy().id),
     );
-    const tuneId = normalizeScalpTuneId(params.tuneId ?? parsed?.tuneId, normalizeScalpTuneId(params.fallbackTuneId));
+    // When a full deployment id is provided (for example v2 ids with session-scoped
+    // tune suffixes), treat its tune segment as authoritative so we don't collapse
+    // identity back to an unscoped tune id.
+    const tuneId = normalizeScalpTuneId(parsed?.tuneId ?? params.tuneId, normalizeScalpTuneId(params.fallbackTuneId));
 
     return {
         venue,

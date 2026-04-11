@@ -55,6 +55,21 @@ test('buildScalpDeploymentId always prefixes venue to avoid legacy collisions', 
     assert.equal(parsed?.symbol, 'BTCUSDT');
 });
 
+test('resolveScalpDeployment keeps deployment-id tune suffix when tuneId also provided', () => {
+    const strategyId = getDefaultScalpStrategy().id;
+    const deploymentId = `bitget:LINKUSDT~${strategyId}~mdl_basis_m5_m3_xftp_2a87b3bea4__sp_sydney`;
+
+    const resolved = resolveScalpDeployment({
+        deploymentId,
+        symbol: 'LINKUSDT',
+        strategyId,
+        tuneId: 'mdl_basis_m5_m3_xftp_2a87b3bea4',
+    });
+
+    assert.equal(resolved.deploymentId, deploymentId);
+    assert.equal(resolved.tuneId, 'mdl_basis_m5_m3_xftp_2a87b3bea4__sp_sydney');
+});
+
 test('parseScalpDeploymentId treats unprefixed ids as default venue ids', () => {
     const strategyId = getDefaultScalpStrategy().id;
     const parsed = parseScalpDeploymentId(`EURUSD~${strategyId}~default`);
