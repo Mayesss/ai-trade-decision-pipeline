@@ -140,6 +140,9 @@ function applyDelegate(input: ScalpStrategyPhaseInput): ScalpStrategyPhaseOutput
   let atrPercentile: number | null = null;
 
   if (regimeRule) {
+    const regimeGateReasonCode = regimeGateId
+      ? `REGIME_GATE_${regimeGateId.toUpperCase()}`
+      : "REGIME_GATE_UNSPECIFIED";
     atrPercentile = computeAtrPercentileRank(
       input.market.baseCandles,
       regimeRule.atrLookback,
@@ -151,7 +154,7 @@ function applyDelegate(input: ScalpStrategyPhaseInput): ScalpStrategyPhaseOutput
         regimeReasonCodes = [
           "REGIME_GATE_ENTRY_BLOCKED",
           "REGIME_GATE_INSUFFICIENT_HISTORY",
-          `REGIME_GATE_${regimeGateId.toUpperCase()}`,
+          regimeGateReasonCode,
         ];
       } else if (
         atrPercentile < regimeRule.minPercentile ||
@@ -161,7 +164,7 @@ function applyDelegate(input: ScalpStrategyPhaseInput): ScalpStrategyPhaseOutput
         regimeReasonCodes = [
           "REGIME_GATE_ENTRY_BLOCKED",
           "REGIME_GATE_OUT_OF_RANGE",
-          `REGIME_GATE_${regimeGateId.toUpperCase()}`,
+          regimeGateReasonCode,
           `REGIME_ATR_PCTL_${Math.round(atrPercentile)}`,
         ];
       }
