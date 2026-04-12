@@ -18,8 +18,10 @@ export function buildCronAuthHeaders(req?: NextApiRequest): Record<string, strin
     const headers: Record<string, string> = {};
     const envAdminSecret = String(process.env.ADMIN_ACCESS_SECRET || '').trim();
     const vercelBypassSecret = String(process.env.VERCEL_AUTOMATION_BYPASS_SECRET || '').trim();
+    const forwardedVercelBypass = firstHeaderValue(req?.headers['x-vercel-protection-bypass']);
     const forwardedAdminSecret = firstHeaderValue(req?.headers['x-admin-access-secret']);
     const forwardedAuthorization = firstHeaderValue(req?.headers.authorization);
+    const forwardedCookie = firstHeaderValue(req?.headers.cookie);
     if (envAdminSecret) {
         headers['x-admin-access-secret'] = envAdminSecret;
     } else if (forwardedAdminSecret) {
@@ -29,6 +31,11 @@ export function buildCronAuthHeaders(req?: NextApiRequest): Record<string, strin
     }
     if (vercelBypassSecret) {
         headers['x-vercel-protection-bypass'] = vercelBypassSecret;
+    } else if (forwardedVercelBypass) {
+        headers['x-vercel-protection-bypass'] = forwardedVercelBypass;
+    }
+    if (forwardedCookie) {
+        headers.cookie = forwardedCookie;
     }
     return headers;
 }

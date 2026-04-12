@@ -163,6 +163,18 @@ export default async function handler(
     1_000,
     120_000,
   );
+  const selfRecallTimeoutMs = envIntBounded(
+    "SCALP_V2_LOAD_CANDLES_SELF_RECALL_TIMEOUT_MS",
+    1_500,
+    300,
+    20_000,
+  );
+  const downstreamInvokeTimeoutMs = envIntBounded(
+    "SCALP_V2_LOAD_CANDLES_DOWNSTREAM_TIMEOUT_MS",
+    1_500,
+    300,
+    20_000,
+  );
   const selfMaxHops = Math.min(
     parseIntBounded(req.query.selfMaxHops, 40, 0, 120),
     maxSelfHopsCap,
@@ -210,6 +222,8 @@ export default async function handler(
         selfMaxHops,
         offset,
         maxSelfHopsCap,
+        selfRecallTimeoutMs,
+        downstreamInvokeTimeoutMs,
       },
     });
   }
@@ -241,7 +255,7 @@ export default async function handler(
         selfHop: selfHop + 1,
         selfMaxHops,
       },
-      700,
+      selfRecallTimeoutMs,
     );
   }
 
@@ -259,7 +273,7 @@ export default async function handler(
           autoSuccessor: 1,
           triggeredBy: "load-candles-v2",
         },
-        850,
+        downstreamInvokeTimeoutMs,
       );
     } else {
       downstream = await invokeScalpV2CronEndpointDetached(
@@ -269,7 +283,7 @@ export default async function handler(
           dryRun: successorDryRun ? 1 : 0,
           triggeredBy: "load-candles-v2",
         },
-        850,
+        downstreamInvokeTimeoutMs,
       );
     }
   }
@@ -290,6 +304,8 @@ export default async function handler(
       offset,
       nextOffset,
       maxSelfHopsCap,
+      selfRecallTimeoutMs,
+      downstreamInvokeTimeoutMs,
       maintenanceOnly: !autoSuccessor,
       downstream,
       selfRecall,

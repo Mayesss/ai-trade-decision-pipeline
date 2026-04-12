@@ -59,3 +59,25 @@ test('buildCronAuthHeaders forwards request auth when env admin secret is absent
         },
     );
 });
+
+test('buildCronAuthHeaders forwards deployment protection context from request when bypass env is absent', { concurrency: false }, () => {
+    withEnv(
+        {
+            ADMIN_ACCESS_SECRET: undefined,
+            VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
+        },
+        () => {
+            const req = {
+                headers: {
+                    authorization: 'Bearer forwarded-token',
+                    cookie: '__vercel_jwt=abc123; foo=bar',
+                    'x-vercel-protection-bypass': 'forwarded-bypass',
+                },
+            } as NextApiRequest;
+            const headers = buildCronAuthHeaders(req);
+            assert.equal(headers.authorization, 'Bearer forwarded-token');
+            assert.equal(headers.cookie, '__vercel_jwt=abc123; foo=bar');
+            assert.equal(headers['x-vercel-protection-bypass'], 'forwarded-bypass');
+        },
+    );
+});
