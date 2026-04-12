@@ -129,6 +129,7 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
     symbol: string;
     fetchFromTsMs: number;
     fetchToTsMs: number;
+    coldStartBootstrap: boolean;
     existingCount: number;
     incomingCount: number;
     mergedCount: number;
@@ -157,19 +158,25 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
     processed += 1;
     try {
       const stats = statsBySymbol.get(scope.symbol);
+      const existingCount = Math.max(
+        0,
+        Math.floor(Number(stats?.candleCount) || 0),
+      );
       const existingLatestTsMsRaw = Number(stats?.toTsMs || 0);
       const existingLatestTsMs =
         Number.isFinite(existingLatestTsMsRaw) && existingLatestTsMsRaw > 0
           ? Math.floor(existingLatestTsMsRaw)
           : null;
+      const coldStartBootstrap = !existingLatestTsMs || existingCount <= 0;
       const fetchWindowFromTsMs = Math.max(
         fromTsMs,
         toTsMs - fetchWindowMinutes * 60 * 1000,
       );
-      const fetchFromTsMs =
-        existingLatestTsMs && existingLatestTsMs > 0
-          ? Math.max(fetchWindowFromTsMs, existingLatestTsMs - incrementalOverlapMs)
-          : fetchWindowFromTsMs;
+      // Cold-start scopes need a full lookback bootstrap; incremental windows
+      // are used only after at least one valid latest candle is present.
+      const fetchFromTsMs = coldStartBootstrap
+        ? fromTsMs
+        : Math.max(fetchWindowFromTsMs, existingLatestTsMs - incrementalOverlapMs);
       const fetchToTsMs = toTsMs;
       let epic = scope.symbol;
       let incoming: Array<[number, number, number, number, number, number]> = [];
@@ -212,7 +219,8 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
         symbol: scope.symbol,
         fetchFromTsMs,
         fetchToTsMs,
-        existingCount: Math.max(0, Math.floor(Number(stats?.candleCount) || 0)),
+        coldStartBootstrap,
+        existingCount,
         incomingCount: incoming.length,
         mergedCount: incoming.length,
         existingLatestTsMs,
