@@ -497,7 +497,7 @@ export default function ScalpBacktestPage() {
     setStrategyLoading(true);
     setStrategyError(null);
     try {
-      const res = await fetch('/api/scalp/strategy/control', {
+      const res = await fetch('/api/scalp/v2/ops/strategy-catalog', {
         headers: secret ? { 'x-admin-access-secret': secret } : undefined,
       });
       const payload = (await res.json().catch(() => ({}))) as {

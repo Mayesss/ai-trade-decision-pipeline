@@ -4,6 +4,17 @@ import test from "node:test";
 import { runScalpExecuteCycle } from "../engine";
 import { getDefaultScalpStrategy } from "../strategies/registry";
 
+test("runScalpExecuteCycle requires persistence adapter after v2 cutover", async () => {
+  await assert.rejects(
+    async () =>
+      runScalpExecuteCycle({
+        symbol: "EURUSD",
+        dryRun: true,
+      }),
+    /scalp_execute_persistence_adapter_required_after_v2_cutover/,
+  );
+});
+
 test("runScalpExecuteCycle uses injected persistence adapter", async () => {
   const strategyId = getDefaultScalpStrategy().id;
   const calls = {

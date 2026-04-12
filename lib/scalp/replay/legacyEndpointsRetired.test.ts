@@ -11,10 +11,14 @@ import loadCandlesHandler from "../../../pages/api/scalp/cron/load-candles";
 import prepareHandler from "../../../pages/api/scalp/cron/prepare";
 import promotionHandler from "../../../pages/api/scalp/cron/promotion";
 import workerHandler from "../../../pages/api/scalp/cron/worker";
+import dashboardSummaryHandler from "../../../pages/api/scalp/dashboard/summary";
+import deploymentsRegistryHandler from "../../../pages/api/scalp/deployments/registry";
 import durationsHandler from "../../../pages/api/scalp/ops/durations";
 import panicStopHandler from "../../../pages/api/scalp/ops/panic-stop";
 import pipelineStateV2Handler from "../../../pages/api/scalp/ops/pipeline-state-v2";
 import promotionDiagnosticsHandler from "../../../pages/api/scalp/ops/promotion-diagnostics";
+import researchUniverseHandler from "../../../pages/api/scalp/research/universe";
+import strategyControlHandler from "../../../pages/api/scalp/strategy/control";
 
 type MockReq = {
   method: string;
@@ -65,7 +69,7 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-test("all legacy scalp cron/ops routes return 410 after v2 cutover", async () => {
+test("all legacy scalp v1 routes return 410 after v2 cutover", async () => {
   const routes: Array<{
     path: string;
     handler: (req: any, res: any) => Promise<any>;
@@ -96,6 +100,13 @@ test("all legacy scalp cron/ops routes return 410 after v2 cutover", async () =>
       path: "/api/scalp/ops/promotion-diagnostics",
       handler: promotionDiagnosticsHandler,
     },
+    { path: "/api/scalp/strategy/control", handler: strategyControlHandler },
+    { path: "/api/scalp/dashboard/summary", handler: dashboardSummaryHandler },
+    {
+      path: "/api/scalp/deployments/registry",
+      handler: deploymentsRegistryHandler,
+    },
+    { path: "/api/scalp/research/universe", handler: researchUniverseHandler },
   ];
 
   for (const route of routes) {

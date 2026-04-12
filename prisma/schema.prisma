@@ -67,6 +67,7 @@ model ScalpDeployment {
   @@index([inUniverse], map: "scalp_deployments_in_universe_idx")
   @@index([workerDirty], map: "scalp_deployments_worker_dirty_idx")
   @@index([promotionDirty], map: "scalp_deployments_promotion_dirty_idx")
+  @@ignore
   @@map("scalp_deployments")
 }
 
@@ -77,6 +78,7 @@ model ScalpRuntimeSetting {
   updatedBy         String?  @map("updated_by")
   updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
 
+  @@ignore
   @@map("scalp_runtime_settings")
 }
 
@@ -86,6 +88,7 @@ model ScalpStrategyOverride {
   updatedBy  String?  @map("updated_by")
   updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
 
+  @@ignore
   @@map("scalp_strategy_overrides")
 }
 
@@ -100,6 +103,7 @@ model ScalpSession {
 
   @@id([deploymentId, dayKey])
   @@index([updatedAt], map: "scalp_sessions_updated_at_idx")
+  @@ignore
   @@map("scalp_sessions")
 }
 
@@ -118,6 +122,7 @@ model ScalpExecutionRun {
 
   @@unique([deploymentId, scheduledMinute], map: "scalp_execution_runs_unique_deployment_minute")
   @@index([scheduledMinute], map: "scalp_execution_runs_scheduled_idx")
+  @@ignore
   @@map("scalp_execution_runs")
 }
 
@@ -134,6 +139,7 @@ model ScalpJournal {
 
   @@index([ts(sort: Desc)], map: "scalp_journal_ts_idx")
   @@index([deploymentId, ts(sort: Desc)], map: "scalp_journal_deployment_idx")
+  @@ignore
   @@map("scalp_journal")
 }
 
@@ -154,6 +160,7 @@ model ScalpTradeLedger {
 
   @@index([exitAt(sort: Desc)], map: "scalp_trade_ledger_exit_idx")
   @@index([deploymentId, exitAt(sort: Desc)], map: "scalp_trade_ledger_deployment_idx")
+  @@ignore
   @@map("scalp_trade_ledger")
 }
 
@@ -168,6 +175,7 @@ model ScalpSymbolCooldown {
   updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
 
   @@index([blockedUntil], map: "scalp_symbol_cooldowns_blocked_idx")
+  @@ignore
   @@map("scalp_symbol_cooldowns")
 }
 
@@ -204,6 +212,7 @@ model ScalpSymbolUniverseSnapshot {
   updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
 
   @@index([updatedAt(sort: Desc)], map: "scalp_symbol_universe_snapshots_updated_idx")
+  @@ignore
   @@map("scalp_symbol_universe_snapshots")
 }
 
@@ -225,6 +234,7 @@ model ScalpJob {
 
   @@unique([kind, dedupeKey], map: "scalp_jobs_unique_kind_dedupe")
   @@index([status, nextRunAt, scheduledFor], map: "scalp_jobs_claim_idx")
+  @@ignore
   @@map("scalp_jobs")
 }
 
@@ -251,6 +261,7 @@ model ScalpShadowJobRun {
   @@index([success, createdAt(sort: Desc)], map: "scalp_shadow_job_runs_success_created_idx")
   @@index([workerId, createdAt(sort: Desc)], map: "scalp_shadow_job_runs_worker_created_idx")
   @@index([createdAt(sort: Desc)], map: "scalp_shadow_job_runs_created_idx")
+  @@ignore
   @@map("scalp_shadow_job_runs")
 }
 
@@ -277,6 +288,7 @@ model ScalpPipelineJob {
   @@index([nextRunAt], map: "scalp_pipeline_jobs_next_run_idx")
   @@index([entrySessionProfile, status], map: "scalp_pipeline_jobs_session_status_idx")
   @@index([entrySessionProfile, nextRunAt], map: "scalp_pipeline_jobs_session_next_run_idx")
+  @@ignore
   @@map("scalp_pipeline_jobs")
 }
 
@@ -303,6 +315,7 @@ model ScalpPipelineJobRun {
   @@index([finishedAt(sort: Desc)], map: "scalp_pipeline_job_runs_finished_idx")
   @@index([entrySessionProfile, jobKind, startedAt(sort: Desc)], map: "scalp_pipeline_job_runs_session_kind_started_idx")
   @@index([entrySessionProfile, finishedAt(sort: Desc)], map: "scalp_pipeline_job_runs_session_finished_idx")
+  @@ignore
   @@map("scalp_pipeline_job_runs")
 }
 
@@ -333,6 +346,7 @@ model ScalpPipelineSymbol {
   @@index([active], map: "scalp_pipeline_symbols_active_idx")
   @@index([loadStatus, loadNextRunAt], map: "scalp_pipeline_symbols_load_claim_idx")
   @@index([prepareStatus, prepareNextRunAt], map: "scalp_pipeline_symbols_prepare_claim_idx")
+  @@ignore
   @@map("scalp_pipeline_symbols")
 }
 
@@ -357,6 +371,7 @@ model ScalpDiscoveredSymbol {
 
   @@index([loadStatus, loadNextRunAt], map: "scalp_discovered_symbols_load_claim_idx")
   @@index([prepareStatus, prepareNextRunAt], map: "scalp_discovered_symbols_prepare_claim_idx")
+  @@ignore
   @@map("scalp_discovered_symbols")
 }
 
@@ -399,6 +414,7 @@ model ScalpDeploymentWeeklyMetric {
   @@index([entrySessionProfile, deploymentId, weekStart(sort: Desc)], map: "scalp_deployment_weekly_metrics_session_deployment_week_idx")
   @@index([deploymentId, weekStart(sort: Desc)], map: "scalp_deployment_weekly_metrics_deployment_week_idx")
   @@index([symbol, strategyId, tuneId, weekStart(sort: Desc)], map: "scalp_deployment_weekly_metrics_symbol_strategy_week_idx")
+  @@ignore
   @@map("scalp_deployment_weekly_metrics")
 }
 

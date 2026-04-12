@@ -18,7 +18,7 @@ import { getDefaultScalpStrategy, getScalpStrategyById, getScalpStrategyPreferre
 import { applySymbolGuardRiskDefaultsToStrategyConfig } from './strategies/guardDefaults';
 import { advanceScalpStateMachine, createInitialScalpSessionState, deriveScalpDayKey } from './stateMachine';
 import { isModelGuidedComposerStrategyId, resolveScalpExecutionStrategyId } from '../scalp-v2/composerExecution';
-import { defaultScalpExecutionPersistenceAdapter, type ScalpExecutionPersistenceAdapter } from './persistence';
+import type { ScalpExecutionPersistenceAdapter } from './persistence';
 import { appendScalpAdaptiveSelectorDecisions, getScalpAdaptiveActiveSnapshot } from './pg/adaptive';
 import type { ScalpStrategyRuntimeSnapshot } from './store';
 import type {
@@ -171,7 +171,10 @@ export async function runScalpExecuteCycle(opts: {
     const dayKey = deriveScalpDayKey(nowMs, cfg.sessions.clockMode);
     const runId = crypto.randomUUID();
     const debug = Boolean(opts.debug);
-    const persistence = opts.persistence || defaultScalpExecutionPersistenceAdapter;
+    if (!opts.persistence) {
+        throw new Error('scalp_execute_persistence_adapter_required_after_v2_cutover');
+    }
+    const persistence = opts.persistence;
     const runtime = opts.runtimeSnapshot || (await persistence.loadRuntimeSnapshot(cfg.enabled, opts.strategyId));
     const requestedStrategyId = String(opts.strategyId || '')
         .trim()

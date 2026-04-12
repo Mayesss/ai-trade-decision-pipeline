@@ -56,6 +56,30 @@ function toPositiveInt(value: unknown, fallback: number, max = 10_000): number {
   return Math.max(1, Math.min(max, n));
 }
 
+const SCALP_TABLE_NAME_PATTERN = /^scalp_[a-z0-9_]+$/;
+
+async function scalpTableExists(tableName: string): Promise<boolean> {
+  if (!isScalpPgConfigured()) return false;
+  const normalized = String(tableName || "")
+    .trim()
+    .toLowerCase();
+  if (!SCALP_TABLE_NAME_PATTERN.test(normalized)) return false;
+  try {
+    const db = scalpPrisma();
+    const [row] = await db.$queryRaw<Array<{ exists: boolean }>>(sql`
+      SELECT EXISTS(
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = ANY(current_schemas(FALSE))
+          AND table_name = ${normalized}
+      ) AS "exists";
+    `);
+    return Boolean(row?.exists);
+  } catch {
+    return false;
+  }
+}
+
 function resolveScalpV2JobLockStaleMinutes(): number {
   return Math.max(
     2,
@@ -2066,6 +2090,9 @@ export async function importV1LedgerIntoScalpV2(params: {
     return { processed: 0, inserted: 0, updated: 0, skipped: 0 };
   }
   const db = scalpPrisma();
+  if (!(await scalpTableExists("scalp_trade_ledger"))) {
+    return { processed: 0, inserted: 0, updated: 0, skipped: 0 };
+  }
   const limit = Math.max(1, Math.min(200_000, Math.floor(params.limit || 50_000)));
 
   const rows = await db.$queryRaw<
@@ -2296,6 +2323,9 @@ export async function importV1SessionsIntoScalpV2(params: {
     return { processed: 0, inserted: 0, updated: 0, skipped: 0 };
   }
   const db = scalpPrisma();
+  if (!(await scalpTableExists("scalp_sessions"))) {
+    return { processed: 0, inserted: 0, updated: 0, skipped: 0 };
+  }
   const limit = Math.max(1, Math.min(200_000, Math.floor(params.limit || 50_000)));
   const deploymentMap = await loadScalpV2DeploymentIdentityMap();
 
@@ -2409,6 +2439,9 @@ export async function importV1JournalIntoScalpV2(params: {
     return { processed: 0, inserted: 0, updated: 0, skipped: 0 };
   }
   const db = scalpPrisma();
+  if (!(await scalpTableExists("scalp_journal"))) {
+    return { processed: 0, inserted: 0, updated: 0, skipped: 0 };
+  }
   const limit = Math.max(1, Math.min(500_000, Math.floor(params.limit || 100_000)));
   const deploymentMap = await loadScalpV2DeploymentIdentityMap();
 
@@ -2870,113 +2903,161 @@ export async function aggregateScalpV2CutoverParityWindow(params: {
     };
   }
   const db = scalpPrisma();
+  const [hasV1Ledger, hasV1Sessions, hasV1Journal] = await Promise.all([
+    scalpTableExists("scalp_trade_ledger"),
+    scalpTableExists("scalp_sessions"),
+    scalpTableExists("scalp_journal"),
+  ]);
+  const [ledgerTotals] = hasV1Ledger
+    ? await db.$queryRaw<
+        Array<{
+          v1Trades: bigint;
+          v1NetR: number | null;
+          v2Trades: bigint;
+          v2NetR: number | null;
+        }>
+      >(sql`
+        SELECT
+          (SELECT COUNT(*)::bigint FROM scalp_trade_ledger WHERE exit_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v1Trades",
+          (SELECT SUM(r_multiple)::double precision FROM scalp_trade_ledger WHERE exit_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v1NetR",
+          (SELECT COUNT(*)::bigint FROM scalp_v2_ledger WHERE ts_exit >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v2Trades",
+          (SELECT SUM(r_multiple)::double precision FROM scalp_v2_ledger WHERE ts_exit >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v2NetR";
+      `)
+    : await db.$queryRaw<
+        Array<{
+          v1Trades: bigint;
+          v1NetR: number | null;
+          v2Trades: bigint;
+          v2NetR: number | null;
+        }>
+      >(sql`
+        SELECT
+          0::bigint AS "v1Trades",
+          0::double precision AS "v1NetR",
+          (SELECT COUNT(*)::bigint FROM scalp_v2_ledger WHERE ts_exit >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v2Trades",
+          (SELECT SUM(r_multiple)::double precision FROM scalp_v2_ledger WHERE ts_exit >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v2NetR";
+      `);
 
-  const [ledgerTotals] = await db.$queryRaw<
-    Array<{
-      v1Trades: bigint;
-      v1NetR: number | null;
-      v2Trades: bigint;
-      v2NetR: number | null;
-    }>
-  >(sql`
-    SELECT
-      (SELECT COUNT(*)::bigint FROM scalp_trade_ledger WHERE exit_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v1Trades",
-      (SELECT SUM(r_multiple)::double precision FROM scalp_trade_ledger WHERE exit_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v1NetR",
-      (SELECT COUNT(*)::bigint FROM scalp_v2_ledger WHERE ts_exit >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v2Trades",
-      (SELECT SUM(r_multiple)::double precision FROM scalp_v2_ledger WHERE ts_exit >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v2NetR";
-  `);
+  const deploymentMismatches = hasV1Ledger
+    ? await db.$queryRaw<
+        Array<{
+          deploymentId: string;
+          v1Trades: bigint;
+          v1NetR: number | null;
+          v2Trades: bigint;
+          v2NetR: number | null;
+        }>
+      >(sql`
+        WITH v1 AS (
+          SELECT
+            deployment_id AS deployment_id,
+            COUNT(*)::bigint AS trades,
+            COALESCE(SUM(r_multiple), 0)::double precision AS net_r
+          FROM scalp_trade_ledger
+          WHERE exit_at >= NOW() - (${sinceDays} * INTERVAL '1 day')
+          GROUP BY deployment_id
+        ),
+        v2 AS (
+          SELECT
+            deployment_id AS deployment_id,
+            COUNT(*)::bigint AS trades,
+            COALESCE(SUM(r_multiple), 0)::double precision AS net_r
+          FROM scalp_v2_ledger
+          WHERE ts_exit >= NOW() - (${sinceDays} * INTERVAL '1 day')
+          GROUP BY deployment_id
+        )
+        SELECT
+          COALESCE(v1.deployment_id, v2.deployment_id) AS "deploymentId",
+          COALESCE(v1.trades, 0)::bigint AS "v1Trades",
+          COALESCE(v1.net_r, 0)::double precision AS "v1NetR",
+          COALESCE(v2.trades, 0)::bigint AS "v2Trades",
+          COALESCE(v2.net_r, 0)::double precision AS "v2NetR"
+        FROM v1
+        FULL OUTER JOIN v2
+          ON v1.deployment_id = v2.deployment_id
+        WHERE
+          COALESCE(v1.trades, 0) <> COALESCE(v2.trades, 0)
+          OR ABS(COALESCE(v1.net_r, 0) - COALESCE(v2.net_r, 0)) > 1e-9
+        ORDER BY
+          ABS(COALESCE(v1.net_r, 0) - COALESCE(v2.net_r, 0)) DESC,
+          ABS(COALESCE(v1.trades, 0) - COALESCE(v2.trades, 0)) DESC
+        LIMIT ${mismatchLimit};
+      `)
+    : [];
 
-  const deploymentMismatches = await db.$queryRaw<
-    Array<{
-      deploymentId: string;
-      v1Trades: bigint;
-      v1NetR: number | null;
-      v2Trades: bigint;
-      v2NetR: number | null;
-    }>
-  >(sql`
-    WITH v1 AS (
-      SELECT
-        deployment_id AS deployment_id,
-        COUNT(*)::bigint AS trades,
-        COALESCE(SUM(r_multiple), 0)::double precision AS net_r
-      FROM scalp_trade_ledger
-      WHERE exit_at >= NOW() - (${sinceDays} * INTERVAL '1 day')
-      GROUP BY deployment_id
-    ),
-    v2 AS (
-      SELECT
-        deployment_id AS deployment_id,
-        COUNT(*)::bigint AS trades,
-        COALESCE(SUM(r_multiple), 0)::double precision AS net_r
-      FROM scalp_v2_ledger
-      WHERE ts_exit >= NOW() - (${sinceDays} * INTERVAL '1 day')
-      GROUP BY deployment_id
-    )
-    SELECT
-      COALESCE(v1.deployment_id, v2.deployment_id) AS "deploymentId",
-      COALESCE(v1.trades, 0)::bigint AS "v1Trades",
-      COALESCE(v1.net_r, 0)::double precision AS "v1NetR",
-      COALESCE(v2.trades, 0)::bigint AS "v2Trades",
-      COALESCE(v2.net_r, 0)::double precision AS "v2NetR"
-    FROM v1
-    FULL OUTER JOIN v2
-      ON v1.deployment_id = v2.deployment_id
-    WHERE
-      COALESCE(v1.trades, 0) <> COALESCE(v2.trades, 0)
-      OR ABS(COALESCE(v1.net_r, 0) - COALESCE(v2.net_r, 0)) > 1e-9
-    ORDER BY
-      ABS(COALESCE(v1.net_r, 0) - COALESCE(v2.net_r, 0)) DESC,
-      ABS(COALESCE(v1.trades, 0) - COALESCE(v2.trades, 0)) DESC
-    LIMIT ${mismatchLimit};
-  `);
+  const [sessionsTotals] = hasV1Sessions
+    ? await db.$queryRaw<
+        Array<{
+          v1Rows: bigint;
+          v2Rows: bigint;
+          v1LatestUpdatedAtMs: bigint | null;
+          v2LatestUpdatedAtMs: bigint | null;
+          v1EnabledRows: bigint;
+          v2EnabledRows: bigint;
+        }>
+      >(sql`
+        SELECT
+          (SELECT COUNT(*)::bigint FROM scalp_sessions WHERE updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v1Rows",
+          (SELECT COUNT(*)::bigint FROM scalp_v2_sessions WHERE updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v2Rows",
+          (SELECT (EXTRACT(EPOCH FROM MAX(updated_at)) * 1000.0)::bigint FROM scalp_sessions WHERE updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v1LatestUpdatedAtMs",
+          (SELECT (EXTRACT(EPOCH FROM MAX(updated_at)) * 1000.0)::bigint FROM scalp_v2_sessions WHERE updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v2LatestUpdatedAtMs",
+          (
+            SELECT COUNT(*)::bigint
+            FROM scalp_sessions s
+            INNER JOIN scalp_v2_deployments d ON d.deployment_id = s.deployment_id
+            WHERE d.enabled = TRUE
+              AND s.updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')
+          ) AS "v1EnabledRows",
+          (
+            SELECT COUNT(*)::bigint
+            FROM scalp_v2_sessions s
+            INNER JOIN scalp_v2_deployments d ON d.deployment_id = s.deployment_id
+            WHERE d.enabled = TRUE
+              AND s.updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')
+          ) AS "v2EnabledRows";
+      `)
+    : await db.$queryRaw<
+        Array<{
+          v1Rows: bigint;
+          v2Rows: bigint;
+          v1LatestUpdatedAtMs: bigint | null;
+          v2LatestUpdatedAtMs: bigint | null;
+          v1EnabledRows: bigint;
+          v2EnabledRows: bigint;
+        }>
+      >(sql`
+        SELECT
+          0::bigint AS "v1Rows",
+          (SELECT COUNT(*)::bigint FROM scalp_v2_sessions WHERE updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v2Rows",
+          NULL::bigint AS "v1LatestUpdatedAtMs",
+          (SELECT (EXTRACT(EPOCH FROM MAX(updated_at)) * 1000.0)::bigint FROM scalp_v2_sessions WHERE updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v2LatestUpdatedAtMs",
+          0::bigint AS "v1EnabledRows",
+          (
+            SELECT COUNT(*)::bigint
+            FROM scalp_v2_sessions s
+            INNER JOIN scalp_v2_deployments d ON d.deployment_id = s.deployment_id
+            WHERE d.enabled = TRUE
+              AND s.updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')
+          ) AS "v2EnabledRows";
+      `);
 
-  const [sessionsTotals] = await db.$queryRaw<
-    Array<{
-      v1Rows: bigint;
-      v2Rows: bigint;
-      v1LatestUpdatedAtMs: bigint | null;
-      v2LatestUpdatedAtMs: bigint | null;
-      v1EnabledRows: bigint;
-      v2EnabledRows: bigint;
-    }>
-  >(sql`
-    SELECT
-      (SELECT COUNT(*)::bigint FROM scalp_sessions WHERE updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v1Rows",
-      (SELECT COUNT(*)::bigint FROM scalp_v2_sessions WHERE updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v2Rows",
-      (SELECT (EXTRACT(EPOCH FROM MAX(updated_at)) * 1000.0)::bigint FROM scalp_sessions WHERE updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v1LatestUpdatedAtMs",
-      (SELECT (EXTRACT(EPOCH FROM MAX(updated_at)) * 1000.0)::bigint FROM scalp_v2_sessions WHERE updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v2LatestUpdatedAtMs",
-      (
-        SELECT COUNT(*)::bigint
-        FROM scalp_sessions s
-        INNER JOIN scalp_v2_deployments d ON d.deployment_id = s.deployment_id
-        WHERE d.enabled = TRUE
-          AND s.updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')
-      ) AS "v1EnabledRows",
-      (
-        SELECT COUNT(*)::bigint
-        FROM scalp_v2_sessions s
-        INNER JOIN scalp_v2_deployments d ON d.deployment_id = s.deployment_id
-        WHERE d.enabled = TRUE
-          AND s.updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')
-      ) AS "v2EnabledRows";
-  `);
-
-  const [v1JournalEnvelope] = await db.$queryRaw<
-    Array<{ rows: bigint; oldestTsMs: bigint | null; newestTsMs: bigint | null }>
-  >(sql`
-    WITH sample AS (
-      SELECT ts
-      FROM scalp_journal
-      ORDER BY ts DESC
-      LIMIT ${journalLimit}
-    )
-    SELECT
-      COUNT(*)::bigint AS rows,
-      (EXTRACT(EPOCH FROM MIN(ts)) * 1000.0)::bigint AS "oldestTsMs",
-      (EXTRACT(EPOCH FROM MAX(ts)) * 1000.0)::bigint AS "newestTsMs"
-    FROM sample;
-  `);
+  const [v1JournalEnvelope] = hasV1Journal
+    ? await db.$queryRaw<
+        Array<{ rows: bigint; oldestTsMs: bigint | null; newestTsMs: bigint | null }>
+      >(sql`
+        WITH sample AS (
+          SELECT ts
+          FROM scalp_journal
+          ORDER BY ts DESC
+          LIMIT ${journalLimit}
+        )
+        SELECT
+          COUNT(*)::bigint AS rows,
+          (EXTRACT(EPOCH FROM MIN(ts)) * 1000.0)::bigint AS "oldestTsMs",
+          (EXTRACT(EPOCH FROM MAX(ts)) * 1000.0)::bigint AS "newestTsMs"
+        FROM sample;
+      `)
+    : [{ rows: BigInt(0), oldestTsMs: null, newestTsMs: null }];
   const [v2JournalEnvelope] = await db.$queryRaw<
     Array<{ rows: bigint; oldestTsMs: bigint | null; newestTsMs: bigint | null }>
   >(sql`
