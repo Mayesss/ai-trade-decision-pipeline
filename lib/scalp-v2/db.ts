@@ -108,6 +108,27 @@ function normalizeSession(value: unknown): ScalpV2Session {
   return "berlin";
 }
 
+function normalizeOptionalSession(value: unknown): ScalpV2Session | null {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "tokyo") return "tokyo";
+  if (normalized === "berlin") return "berlin";
+  if (normalized === "newyork") return "newyork";
+  if (normalized === "pacific") return "pacific";
+  if (normalized === "sydney") return "sydney";
+  return null;
+}
+
+function normalizeOptionalVenue(value: unknown): ScalpV2Venue | null {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "bitget") return "bitget";
+  if (normalized === "capital") return "capital";
+  return null;
+}
+
 function normalizeLiveMode(value: unknown): ScalpV2LiveMode {
   return String(value || "").trim().toLowerCase() === "live" ? "live" : "shadow";
 }
@@ -914,12 +935,8 @@ export async function listScalpV2Deployments(params: {
         entry_session_profile AS "entrySessionProfile",
         enabled,
         live_mode AS "liveMode",
-        jsonb_build_object(
-          'eligible', promotion_gate->'eligible',
-          'reason', promotion_gate->'reason',
-          'lifecycle', promotion_gate->'lifecycle'
-        ) AS "promotionGate",
-        '{}'::jsonb AS "riskProfile",
+        promotion_gate AS "promotionGate",
+        risk_profile AS "riskProfile",
         created_at AS "createdAt",
         updated_at AS "updatedAt"
       FROM scalp_v2_deployments
@@ -1332,83 +1349,69 @@ export async function listScalpV2OpenPositions(): Promise<
 export async function listScalpV2ExecutionEvents(params: {
   limit?: number;
   deploymentId?: string;
+  venue?: ScalpV2Venue;
+  session?: ScalpV2Session;
 } = {}): Promise<ScalpV2ExecutionEvent[]> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
   const limit = Math.max(1, Math.min(5_000, Math.floor(params.limit || 300)));
+  const where: string[] = [];
+  const values: unknown[] = [];
+  const deploymentId = String(params.deploymentId || "").trim();
+  if (deploymentId) {
+    values.push(deploymentId);
+    where.push(`deployment_id = $${values.length}`);
+  }
+  if (params.venue) {
+    values.push(params.venue);
+    where.push(`venue = $${values.length}`);
+  }
+  if (params.session) {
+    values.push(params.session);
+    where.push(`entry_session_profile = $${values.length}`);
+  }
+  values.push(limit);
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-  const rows = params.deploymentId
-    ? await db.$queryRaw<
-        Array<{
-          id: string;
-          tsMs: number;
-          deploymentId: string;
-          venue: string;
-          symbol: string;
-          strategyId: string;
-          tuneId: string;
-          entrySessionProfile: string;
-          eventType: string;
-          brokerRef: string | null;
-          reasonCodes: string[];
-          sourceOfTruth: string;
-          rawPayload: unknown;
-        }>
-      >(sql`
-        SELECT
-          id,
-          (EXTRACT(EPOCH FROM ts) * 1000.0)::bigint AS "tsMs",
-          deployment_id AS "deploymentId",
-          venue,
-          symbol,
-          strategy_id AS "strategyId",
-          tune_id AS "tuneId",
-          entry_session_profile AS "entrySessionProfile",
-          event_type AS "eventType",
-          broker_ref AS "brokerRef",
-          reason_codes AS "reasonCodes",
-          source_of_truth AS "sourceOfTruth",
-          raw_payload AS "rawPayload"
-        FROM scalp_v2_execution_events
-        WHERE deployment_id = ${params.deploymentId}
-        ORDER BY ts DESC
-        LIMIT ${limit};
-      `)
-    : await db.$queryRaw<
-        Array<{
-          id: string;
-          tsMs: number;
-          deploymentId: string;
-          venue: string;
-          symbol: string;
-          strategyId: string;
-          tuneId: string;
-          entrySessionProfile: string;
-          eventType: string;
-          brokerRef: string | null;
-          reasonCodes: string[];
-          sourceOfTruth: string;
-          rawPayload: unknown;
-        }>
-      >(sql`
-        SELECT
-          id,
-          (EXTRACT(EPOCH FROM ts) * 1000.0)::bigint AS "tsMs",
-          deployment_id AS "deploymentId",
-          venue,
-          symbol,
-          strategy_id AS "strategyId",
-          tune_id AS "tuneId",
-          entry_session_profile AS "entrySessionProfile",
-          event_type AS "eventType",
-          broker_ref AS "brokerRef",
-          reason_codes AS "reasonCodes",
-          source_of_truth AS "sourceOfTruth",
-          raw_payload AS "rawPayload"
-        FROM scalp_v2_execution_events
-        ORDER BY ts DESC
-        LIMIT ${limit};
-      `);
+  const rows = await db.$queryRawUnsafe<
+    Array<{
+      id: string;
+      tsMs: number;
+      deploymentId: string;
+      venue: string;
+      symbol: string;
+      strategyId: string;
+      tuneId: string;
+      entrySessionProfile: string;
+      eventType: string;
+      brokerRef: string | null;
+      reasonCodes: string[];
+      sourceOfTruth: string;
+      rawPayload: unknown;
+    }>
+  >(
+    `
+      SELECT
+        id,
+        (EXTRACT(EPOCH FROM ts) * 1000.0)::bigint AS "tsMs",
+        deployment_id AS "deploymentId",
+        venue,
+        symbol,
+        strategy_id AS "strategyId",
+        tune_id AS "tuneId",
+        entry_session_profile AS "entrySessionProfile",
+        event_type AS "eventType",
+        broker_ref AS "brokerRef",
+        reason_codes AS "reasonCodes",
+        source_of_truth AS "sourceOfTruth",
+        raw_payload AS "rawPayload"
+      FROM scalp_v2_execution_events
+      ${whereSql}
+      ORDER BY ts DESC
+      LIMIT $${values.length};
+    `,
+    ...values,
+  );
 
   return rows.map((row) => ({
     id: String(row.id || ""),
@@ -1424,6 +1427,211 @@ export async function listScalpV2ExecutionEvents(params: {
     reasonCodes: normalizeReasonCodes(row.reasonCodes || []),
     sourceOfTruth: normalizeSourceOfTruth(row.sourceOfTruth),
     rawPayload: asRecord(row.rawPayload),
+  }));
+}
+
+export async function listScalpV2SessionSnapshots(params: {
+  deploymentIds?: string[];
+  venue?: ScalpV2Venue;
+  session?: ScalpV2Session;
+  limit?: number;
+} = {}): Promise<
+  Array<{
+    deploymentId: string;
+    venue: ScalpV2Venue;
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    entrySessionProfile: ScalpV2Session;
+    dayKey: string;
+    state: ScalpSessionState | null;
+    lastReasonCodes: string[];
+    updatedAtMs: number;
+  }>
+> {
+  if (!isScalpPgConfigured()) return [];
+  const db = scalpPrisma();
+  const limit = Math.max(1, Math.min(10_000, Math.floor(params.limit || 500)));
+  const where: string[] = [];
+  const values: unknown[] = [];
+
+  const deploymentIds = Array.from(
+    new Set(
+      (params.deploymentIds || [])
+        .map((row) => String(row || "").trim())
+        .filter(Boolean),
+    ),
+  );
+  if (deploymentIds.length) {
+    values.push(deploymentIds);
+    where.push(`s.deployment_id = ANY($${values.length}::text[])`);
+  }
+  if (params.venue) {
+    values.push(params.venue);
+    where.push(`d.venue = $${values.length}`);
+  }
+  if (params.session) {
+    values.push(params.session);
+    where.push(`d.entry_session_profile = $${values.length}`);
+  }
+
+  values.push(limit);
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const rows = await db.$queryRawUnsafe<
+    Array<{
+      deploymentId: string;
+      venue: string;
+      symbol: string;
+      strategyId: string;
+      tuneId: string;
+      entrySessionProfile: string;
+      dayKey: string;
+      stateJson: unknown;
+      lastReasonCodes: string[] | null;
+      updatedAt: Date;
+    }>
+  >(
+    `
+      SELECT DISTINCT ON (s.deployment_id)
+        s.deployment_id AS "deploymentId",
+        d.venue AS "venue",
+        d.symbol AS "symbol",
+        d.strategy_id AS "strategyId",
+        d.tune_id AS "tuneId",
+        d.entry_session_profile AS "entrySessionProfile",
+        TO_CHAR(s.day_key, 'YYYY-MM-DD') AS "dayKey",
+        s.state_json AS "stateJson",
+        s.last_reason_codes AS "lastReasonCodes",
+        s.updated_at AS "updatedAt"
+      FROM scalp_v2_sessions s
+      INNER JOIN scalp_v2_deployments d
+        ON d.deployment_id = s.deployment_id
+      ${whereSql}
+      ORDER BY s.deployment_id, s.updated_at DESC
+      LIMIT $${values.length};
+    `,
+    ...values,
+  );
+
+  return rows.map((row) => {
+    const stateRaw = asRecord(row.stateJson);
+    const state = stateRaw && Object.keys(stateRaw).length
+      ? ({ ...stateRaw, version: 2 } as unknown as ScalpSessionState)
+      : null;
+    return {
+      deploymentId: String(row.deploymentId || "").trim(),
+      venue: normalizeVenue(row.venue),
+      symbol: String(row.symbol || "").trim().toUpperCase(),
+      strategyId: String(row.strategyId || "").trim().toLowerCase(),
+      tuneId: String(row.tuneId || "").trim().toLowerCase(),
+      entrySessionProfile: normalizeSession(row.entrySessionProfile),
+      dayKey: String(row.dayKey || "").trim(),
+      state,
+      lastReasonCodes: normalizeReasonCodes(row.lastReasonCodes || []),
+      updatedAtMs: toMs(row.updatedAt),
+    };
+  });
+}
+
+export async function listScalpV2JournalRows(params: {
+  limit?: number;
+  venue?: ScalpV2Venue;
+  session?: ScalpV2Session;
+} = {}): Promise<
+  Array<{
+    id: string;
+    tsMs: number;
+    deploymentId: string | null;
+    venue: ScalpV2Venue | null;
+    symbol: string | null;
+    strategyId: string | null;
+    tuneId: string | null;
+    entrySessionProfile: ScalpV2Session | null;
+    dayKey: string | null;
+    level: "info" | "warn" | "error";
+    type: "execution" | "state" | "risk" | "error";
+    reasonCodes: string[];
+    payload: Record<string, unknown>;
+  }>
+> {
+  if (!isScalpPgConfigured()) return [];
+  const db = scalpPrisma();
+  const limit = Math.max(1, Math.min(5_000, Math.floor(params.limit || 300)));
+  const where: string[] = [];
+  const values: unknown[] = [];
+
+  if (params.venue) {
+    values.push(params.venue);
+    where.push(`venue = $${values.length}`);
+  }
+  if (params.session) {
+    values.push(params.session);
+    where.push(`entry_session_profile = $${values.length}`);
+  }
+
+  values.push(limit);
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const rows = await db.$queryRawUnsafe<
+    Array<{
+      id: string;
+      tsMs: bigint;
+      deploymentId: string | null;
+      venue: string | null;
+      symbol: string | null;
+      strategyId: string | null;
+      tuneId: string | null;
+      entrySessionProfile: string | null;
+      dayKey: string | null;
+      level: string;
+      type: string;
+      reasonCodes: string[] | null;
+      payload: unknown;
+    }>
+  >(
+    `
+      SELECT
+        id,
+        (EXTRACT(EPOCH FROM ts) * 1000.0)::bigint AS "tsMs",
+        deployment_id AS "deploymentId",
+        venue,
+        symbol,
+        strategy_id AS "strategyId",
+        tune_id AS "tuneId",
+        entry_session_profile AS "entrySessionProfile",
+        TO_CHAR(day_key, 'YYYY-MM-DD') AS "dayKey",
+        level,
+        type,
+        reason_codes AS "reasonCodes",
+        payload
+      FROM scalp_v2_journal
+      ${whereSql}
+      ORDER BY ts DESC
+      LIMIT $${values.length};
+    `,
+    ...values,
+  );
+
+  return rows.map((row) => ({
+    id: String(row.id || "").trim(),
+    tsMs: Number(row.tsMs || Date.now()),
+    deploymentId: String(row.deploymentId || "").trim() || null,
+    venue: normalizeOptionalVenue(row.venue),
+    symbol: row.symbol ? String(row.symbol).trim().toUpperCase() : null,
+    strategyId: row.strategyId
+      ? String(row.strategyId).trim().toLowerCase()
+      : null,
+    tuneId: row.tuneId ? String(row.tuneId).trim().toLowerCase() : null,
+    entrySessionProfile: normalizeOptionalSession(row.entrySessionProfile),
+    dayKey: String(row.dayKey || "").trim() || null,
+    level: row.level === "warn" || row.level === "error" ? row.level : "info",
+    type:
+      row.type === "state" ||
+      row.type === "risk" ||
+      row.type === "error"
+        ? row.type
+        : "execution",
+    reasonCodes: normalizeReasonCodes(row.reasonCodes || []),
+    payload: asRecord(row.payload),
   }));
 }
 

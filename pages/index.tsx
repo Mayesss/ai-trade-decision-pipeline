@@ -845,6 +845,8 @@ function toUiScalpSummaryFromV2(
   const summary = asPlainObject(payload.summary);
   const deploymentsRaw = Array.isArray(payload.deployments) ? payload.deployments : [];
   const eventsRaw = Array.isArray(payload.events) ? payload.events : [];
+  const sessionsRaw = Array.isArray(payload.sessions) ? payload.sessions : [];
+  const journalRaw = Array.isArray(payload.journal) ? payload.journal : [];
   const ledgerRaw = Array.isArray(payload.ledger) ? payload.ledger : [];
   const researchCursorsRaw = Array.isArray(payload.researchCursors) ? payload.researchCursors : [];
   const researchHighlightsRaw = Array.isArray(payload.researchHighlights) ? payload.researchHighlights : [];
@@ -875,10 +877,75 @@ function toUiScalpSummaryFromV2(
     ledgerByDeployment.set(deploymentId, agg);
   }
 
+  const latestSessionByDeploymentId = new Map<
+    string,
+    {
+      state: Record<string, any>;
+      lastReasonCodes: string[];
+      updatedAtMs: number | null;
+      dayKey: string | null;
+    }
+  >();
+  for (const rowRaw of sessionsRaw) {
+    const row = asPlainObject(rowRaw);
+    const deploymentId = String(row.deploymentId || "").trim();
+    if (!deploymentId || latestSessionByDeploymentId.has(deploymentId)) continue;
+    const state = asPlainObject(row.state);
+    const lastReasonCodes = Array.isArray(row.lastReasonCodes)
+      ? row.lastReasonCodes
+          .map((code: unknown) => String(code || "").trim())
+          .filter((code: string) => code.length > 0)
+      : [];
+    latestSessionByDeploymentId.set(deploymentId, {
+      state,
+      lastReasonCodes,
+      updatedAtMs: asFiniteOrNull(row.updatedAtMs),
+      dayKey: String(row.dayKey || "").trim() || null,
+    });
+  }
+
   const latestByDeployment = new Map<string, Record<string, any>>();
   const latestExecutionByDeploymentId: Record<string, Record<string, any>> = {};
   const latestExecutionBySymbol: Record<string, Record<string, any>> = {};
-  const journal: NonNullable<ScalpSummaryResponse["journal"]> = [];
+  const journalFromEvents: NonNullable<ScalpSummaryResponse["journal"]> = [];
+  const journalFromPayload: NonNullable<ScalpSummaryResponse["journal"]> =
+    journalRaw
+      .map((rowRaw, index) => {
+        const row = asPlainObject(rowRaw);
+        const tsMs =
+          asFiniteOrNull(row.tsMs) ??
+          asFiniteOrNull(row.timestampMs) ??
+          null;
+        if (tsMs === null) return null;
+        const type =
+          String(row.type || row.eventType || "")
+            .trim()
+            .toLowerCase() || "event";
+        const levelRaw = String(row.level || "")
+          .trim()
+          .toLowerCase();
+        const level =
+          levelRaw === "warn" || levelRaw === "error" ? levelRaw : "info";
+        const reasonCodes = Array.isArray(row.reasonCodes)
+          ? row.reasonCodes
+              .map((code: unknown) => String(code || "").trim())
+              .filter((code: string) => code.length > 0)
+          : [];
+        const symbol = String(row.symbol || "")
+          .trim()
+          .toUpperCase();
+        return {
+          id: String(row.id || `${type}_${tsMs}_${index}`),
+          timestampMs: tsMs,
+          type,
+          level,
+          symbol: symbol || null,
+          dayKey: String(row.dayKey || "").trim() || null,
+          reasonCodes,
+          payload: asPlainObject(row.payload),
+        } as ScalpJournalRow;
+      })
+      .filter((row): row is ScalpJournalRow => row !== null);
 
   for (const eventRaw of eventsRaw) {
     const event = asPlainObject(eventRaw);
@@ -892,8 +959,8 @@ function toUiScalpSummaryFromV2(
       .toLowerCase();
     const reasonCodes = Array.isArray(event.reasonCodes)
       ? event.reasonCodes
-          .map((code) => String(code || "").trim())
-          .filter((code) => code.length > 0)
+          .map((code: unknown) => String(code || "").trim())
+          .filter((code: string) => code.length > 0)
       : [];
     const rawPayload = asPlainObject(event.rawPayload);
     const executionPayload = {
@@ -918,7 +985,7 @@ function toUiScalpSummaryFromV2(
         : eventType === "stop_loss" || eventType === "reconcile_close"
           ? "warn"
           : "info";
-    journal.push({
+    journalFromEvents.push({
       id: String(event.id || ""),
       timestampMs: tsMs,
       type: eventType || "event",
@@ -951,19 +1018,52 @@ function toUiScalpSummaryFromV2(
     const promotionReason =
       String(promotionGate.reason || "").trim() ||
       (enabled ? "enabled" : "shadow");
+    const sessionSnapshot = latestSessionByDeploymentId.get(deploymentId) || null;
+    const sessionState = asPlainObject(sessionSnapshot?.state);
+    const sessionRun = asPlainObject(sessionState.run);
+    const sessionStats = asPlainObject(sessionState.stats);
+    const sessionTrade = asPlainObject(sessionState.trade);
     const latest = latestByDeployment.get(deploymentId) || {};
     const latestState = asPlainObject(asPlainObject(latest).state);
     const latestTrade = asPlainObject(latestState.trade);
-    const sideRaw = String(latestTrade.side || latestState.side || "")
+    const sideRaw = String(
+      sessionTrade.side || latestTrade.side || sessionState.side || latestState.side || "",
+    )
       .trim()
       .toUpperCase();
     const tradeSide: "BUY" | "SELL" | null =
       sideRaw === "BUY" || sideRaw === "SELL" ? sideRaw : null;
+    const sessionStateRaw = String(sessionState.state || "")
+      .trim()
+      .toUpperCase();
     const inTrade =
+      sessionStateRaw === "IN_TRADE" ||
       asBoolOrNull(latestState.inTrade) === true ||
+      (String(sessionTrade.dealReference || "").trim().length > 0 &&
+        tradeSide !== null) ||
       (String(latestTrade.dealReference || "").trim().length > 0 &&
         tradeSide !== null);
     const stats = ledgerByDeployment.get(deploymentId) || null;
+    const sessionTrades = asFiniteOrNull(sessionStats.tradesPlaced);
+    const sessionWins = asFiniteOrNull(sessionStats.wins);
+    const sessionLosses = asFiniteOrNull(sessionStats.losses);
+    const sessionNetR = asFiniteOrNull(sessionStats.realizedR);
+    const reasonCodesFromSessionRun = Array.isArray(sessionRun.lastReasonCodes)
+      ? sessionRun.lastReasonCodes
+          .map((code: unknown) => String(code || "").trim())
+          .filter((code: string) => code.length > 0)
+      : [];
+    const reasonCodesFromLatest = Array.isArray(asPlainObject(latest).reasonCodes)
+      ? asPlainObject(latest).reasonCodes
+          .map((code: unknown) => String(code || "").trim())
+          .filter((code: string) => code.length > 0)
+      : [];
+    const forwardValidationRaw = asPlainObject(
+      deployment.forwardValidation || promotionGate.forwardValidation,
+    );
+    const forwardValidation = Object.keys(forwardValidationRaw).length
+      ? (forwardValidationRaw as ScalpForwardValidation)
+      : null;
     return {
       symbol,
       strategyId,
@@ -977,29 +1077,46 @@ function toUiScalpSummaryFromV2(
       cronPath: "/api/scalp/v2/cron/execute?dryRun=false",
       dayKey,
       state:
+        String(sessionState.state || "").trim() ||
         String(latestState.state || "").trim() ||
         String(asPlainObject(latest).eventType || "").trim() ||
         null,
-      updatedAtMs: asFiniteOrNull(deployment.updatedAtMs),
-      lastRunAtMs: asFiniteOrNull(asPlainObject(latest).timestampMs),
-      dryRunLast: asBoolOrNull(asPlainObject(latest).dryRun),
-      tradesPlaced: stats?.trades || 0,
-      wins: stats?.wins || 0,
-      losses: stats?.losses || 0,
+      updatedAtMs:
+        sessionSnapshot?.updatedAtMs ??
+        asFiniteOrNull(deployment.updatedAtMs),
+      lastRunAtMs:
+        asFiniteOrNull(sessionRun.lastRunAtMs) ??
+        asFiniteOrNull(asPlainObject(latest).timestampMs),
+      dryRunLast:
+        asBoolOrNull(sessionRun.dryRunLast) ??
+        asBoolOrNull(asPlainObject(latest).dryRun),
+      tradesPlaced:
+        stats?.trades ??
+        (sessionTrades !== null ? Math.max(0, Math.floor(sessionTrades)) : 0),
+      wins:
+        stats?.wins ??
+        (sessionWins !== null ? Math.max(0, Math.floor(sessionWins)) : 0),
+      losses:
+        stats?.losses ??
+        (sessionLosses !== null ? Math.max(0, Math.floor(sessionLosses)) : 0),
       inTrade,
       tradeSide,
       dealReference:
+        String(sessionTrade.dealReference || "").trim() ||
         String(latestTrade.dealReference || "").trim() ||
         String(asPlainObject(latest).brokerRef || "").trim() ||
         null,
-      reasonCodes: Array.isArray(asPlainObject(latest).reasonCodes)
-        ? asPlainObject(latest).reasonCodes
-        : [],
-      netR: stats ? stats.netR : null,
+      reasonCodes:
+        reasonCodesFromSessionRun.length
+          ? reasonCodesFromSessionRun
+          : sessionSnapshot?.lastReasonCodes?.length
+            ? sessionSnapshot.lastReasonCodes
+            : reasonCodesFromLatest,
+      netR: stats ? stats.netR : sessionNetR,
       maxDrawdownR: null,
       promotionEligible,
       promotionReason,
-      forwardValidation: null,
+      forwardValidation,
     };
   });
 
@@ -1027,6 +1144,12 @@ function toUiScalpSummaryFromV2(
     const promotionReason =
       String(promotionGate.reason || "").trim() ||
       (enabled ? "enabled" : "not_promoted");
+    const forwardValidationRaw = asPlainObject(
+      row.forwardValidation || promotionGate.forwardValidation,
+    );
+    const forwardValidation = Object.keys(forwardValidationRaw).length
+      ? (forwardValidationRaw as ScalpForwardValidation)
+      : null;
     const lifecycleStateRaw = String(lifecycle.state || "").trim().toLowerCase();
     const lifecycleState =
       lifecycleStateRaw === "graduated" || lifecycleStateRaw === "suspended" || lifecycleStateRaw === "retired"
@@ -1053,7 +1176,7 @@ function toUiScalpSummaryFromV2(
       promotionEligible,
       promotionReason,
       promotionGate: Object.keys(promotionGate).length ? promotionGate : null,
-      forwardValidation: null,
+      forwardValidation,
       updatedAtMs: asFiniteOrNull(row.updatedAtMs),
     };
   });
@@ -1383,6 +1506,8 @@ function toUiScalpSummaryFromV2(
     updatedAtMs: panicStopUpdatedAtMs,
     updatedBy: panicStopUpdatedBy,
   };
+  const journal =
+    journalFromPayload.length > 0 ? journalFromPayload : journalFromEvents;
 
   return {
     mode: "scalp",
@@ -3698,14 +3823,6 @@ export default function Home() {
           }),
           row,
         );
-        const legacyKey = `${String(row.symbol || "")
-          .trim()
-          .toUpperCase()}~${String(row.strategyId || "")
-          .trim()
-          .toLowerCase()}~${String(row.tuneId || "")
-          .trim()
-          .toLowerCase()}`;
-        if (!map.has(legacyKey)) map.set(legacyKey, row);
       }
       return map;
     },
@@ -4098,11 +4215,7 @@ export default function Home() {
           tuneId,
           entrySessionProfile,
         });
-        const legacyCandidateKey = `${symbol}~${strategyId}~${tuneId}`;
-        const deploymentRow =
-          scalpOpsByCandidateKey.get(candidateSessionKey) ||
-          scalpOpsByCandidateKey.get(legacyCandidateKey) ||
-          null;
+        const deploymentRow = scalpOpsByCandidateKey.get(candidateSessionKey) || null;
         const forwardValidation = deploymentRow?.forwardValidation || null;
         const deploymentId =
           taskDeploymentId || deploymentRow?.deploymentId || null;
@@ -4934,14 +5047,7 @@ export default function Home() {
         tuneId: row.tuneId,
         entrySessionProfile,
       });
-      const legacyCandidateKey = `${String(row.symbol || "")
-        .trim()
-        .toUpperCase()}~${String(row.strategyId || "")
-        .trim()
-        .toLowerCase()}~${String(row.tuneId || "")
-        .trim()
-        .toLowerCase()}`;
-      const key = row.deploymentId || candidateSessionKey || legacyCandidateKey;
+      const key = row.deploymentId || candidateSessionKey;
       const windowLabel =
         row.windowFromTs === null || row.windowToTs === null
           ? "—"

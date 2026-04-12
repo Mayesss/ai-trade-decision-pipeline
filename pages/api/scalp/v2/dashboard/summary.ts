@@ -4,8 +4,12 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
 import {
+  listScalpV2ExecutionEvents,
   listScalpV2Deployments,
+  listScalpV2JournalRows,
   listScalpV2Jobs,
+  listScalpV2LedgerRows,
+  listScalpV2SessionSnapshots,
   loadScalpV2RuntimeConfig,
   loadScalpV2Summary,
 } from "../../../../../lib/scalp-v2/db";
@@ -36,11 +40,13 @@ export default async function handler(
   try {
     const deploymentLimit = parseIntBounded(req.query.deploymentLimit, 10, 1, 500);
     const jobLimit = parseIntBounded(req.query.jobLimit, 20, 5, 100);
+    const eventLimit = parseIntBounded(req.query.eventLimit, 240, 20, 2_000);
+    const ledgerLimit = parseIntBounded(req.query.ledgerLimit, 300, 20, 5_000);
     const session = parseSession(req.query.session);
     const venue = parseVenue(req.query.venue);
     const fresh = parseBool(req.query.fresh, false);
 
-    const cacheKey = `${session || "all"}:${venue || "all"}:${deploymentLimit}`;
+    const cacheKey = `${session || "all"}:${venue || "all"}:${deploymentLimit}:${jobLimit}:${eventLimit}:${ledgerLimit}`;
     if (!fresh && summaryCache && summaryCache.key === cacheKey && Date.now() - summaryCache.ts < CACHE_TTL_MS) {
       return res.status(200).json(summaryCache.data);
     }
@@ -50,15 +56,52 @@ export default async function handler(
     const summary = await loadScalpV2Summary();
     const jobs = await listScalpV2Jobs({ limit: jobLimit });
     const deployments = await listScalpV2Deployments({ limit: deploymentLimit, session, venue });
+    const deploymentIds = deployments
+      .map((row) => String(row.deploymentId || "").trim())
+      .filter(Boolean);
+    const events = await listScalpV2ExecutionEvents({
+      limit: eventLimit,
+      venue,
+      session,
+    });
+    const sessions = await listScalpV2SessionSnapshots({
+      deploymentIds,
+      limit: Math.max(deploymentLimit * 4, 100),
+    });
+    const journal = await listScalpV2JournalRows({
+      limit: eventLimit,
+      venue,
+      session,
+    });
+    const nowMs = Date.now();
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    const fromTsMs = Math.max(0, nowMs - THIRTY_DAYS_MS);
+    const ledger = deploymentIds.length
+      ? await listScalpV2LedgerRows({
+          deploymentIds,
+          fromTsMs,
+          toTsMs: nowMs + 1,
+          limit: ledgerLimit,
+        })
+      : [];
+    const scopedSummary = {
+      ...summary,
+      events24h: events.filter((row) => row.tsMs >= nowMs - 24 * 60 * 60 * 1000)
+        .length,
+      ledgerRows30d: ledger.length,
+      netR30d: ledger.reduce((acc, row) => acc + (Number(row.rMultiple) || 0), 0),
+    };
 
     const payload = {
       ok: true,
       mode: "scalp_v2",
       runtime,
-      summary,
+      summary: scopedSummary,
       deployments,
-      events: [],
-      ledger: [],
+      events,
+      sessions,
+      journal,
+      ledger,
       jobs,
       candidates: [],
       researchCursors: [],

@@ -3,6 +3,37 @@
   "builds": [{ "src": "package.json", "use": "@vercel/next" }],
   "routes": [{ "src": "/api/(.*)", "dest": "/api/$1" }],
   "crons": [
-   
+    {
+      "path": "/api/swing/analyze?symbol=BTCUSDT&platform=bitget&newsSource=coindesk&category=crypto&dryRun=false&decisionPolicy=balanced",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/swing/analyze?symbol=GOLD&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/swing/analyze?symbol=OIL_CRUDE&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/swing/analyze?symbol=COFFEEARABICA&platform=capital&newsSource=marketaux&category=commodity&dryRun=false&decisionPolicy=balanced",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/scalp/v2/cron/cycle?dryRun=false",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/scalp/v2/cron/execute?dryRun=false",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/scalp/v2/cron/reconcile",
+      "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/scalp/v2/cron/load-candles?batchSize=40&autoSuccessor=true&autoContinue=true&successor=discover",
+      "schedule": "10 3 * * *"
+    }
   ]
 }
