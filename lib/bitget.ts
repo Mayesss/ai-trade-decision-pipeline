@@ -45,6 +45,7 @@ export interface BitgetFetchRetryOptions {
 export interface BitgetFetchOptions {
   retry?: BitgetFetchRetryOptions;
   minIntervalMs?: number;
+  timeoutMs?: number;
 }
 
 export class BitgetApiError extends Error {
@@ -141,6 +142,8 @@ function shouldRetryBitgetFetch(
     message.includes('network') ||
     message.includes('socket') ||
     message.includes('timeout') ||
+    message.includes('aborted') ||
+    message.includes('abort') ||
     message.includes('econnreset') ||
     message.includes('econnrefused')
   );
@@ -161,6 +164,12 @@ function resolveRetryOptions(
     retryOnRateLimit: raw.retryOnRateLimit !== false,
     retryOn5xx: raw.retryOn5xx !== false,
   };
+}
+
+function resolveFetchTimeoutMs(options: BitgetFetchOptions | undefined): number {
+  const fallback = envInt('BITGET_HTTP_TIMEOUT_MS', 12_000);
+  const timeoutMs = Math.floor(Number(options?.timeoutMs ?? fallback) || fallback);
+  return Math.max(1_000, Math.min(120_000, timeoutMs));
 }
 
 function computeBackoffMs(
@@ -215,6 +224,7 @@ export async function bitgetFetch(
   const url = `https://api.bitget.com${path}${query ? `?${query}` : ''}`;
   const retry = resolveRetryOptions(method, options);
   const minIntervalMs = Math.max(0, Math.min(2_000, Math.floor(Number(options?.minIntervalMs ?? envInt('BITGET_MARKET_MIN_INTERVAL_MS', 60)) || 0)));
+  const timeoutMs = resolveFetchTimeoutMs(options);
 
   for (let attempt = 1; attempt <= retry.maxAttempts; attempt += 1) {
     try {
@@ -230,7 +240,27 @@ export async function bitgetFetch(
         locale: 'en-US',
       };
 
-      const res = await fetch(url, { method, headers, body: body || undefined });
+      const controller = new AbortController();
+      let timedOut = false;
+      const timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs);
+      const res = await fetch(url, {
+        method,
+        headers,
+        body: body || undefined,
+        signal: controller.signal,
+      })
+        .catch((err: unknown) => {
+          if (timedOut) {
+            throw new Error(`bitget_fetch_timeout_${timeoutMs}ms:${method}:${path}`);
+          }
+          throw err;
+        })
+        .finally(() => {
+          clearTimeout(timeoutHandle);
+        });
       const text = await res.text();
       let parsed: any = null;
       if (text) {

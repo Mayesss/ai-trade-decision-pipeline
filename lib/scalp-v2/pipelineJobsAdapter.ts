@@ -80,12 +80,20 @@ function normalizeScopes(params: {
 export async function runScalpV2LoadCandlesPipelineJob(params: {
   batchSize?: number;
   maxAttempts?: number;
+  offset?: number;
   scopes?: ScalpV2LoadCandlesScope[];
   symbols?: string[];
 }): Promise<ScalpV2LoadCandlesResult> {
   const scopes = normalizeScopes(params);
   const batchSize = toPositiveInt(params.batchSize, 6, 200);
   const maxAttempts = toPositiveInt(params.maxAttempts, 5, 30);
+  const offset = Math.max(
+    0,
+    Math.min(
+      scopes.length,
+      Math.floor(Number(params.offset) || 0),
+    ),
+  );
   const lookbackDays = toPositiveInt(
     process.env.SCALP_V2_LOAD_CANDLES_LOOKBACK_DAYS,
     35,
@@ -93,7 +101,7 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
   );
   const toTsMs = resolveLoadCandlesFetchUpperBoundMs(Date.now());
   const fromTsMs = Math.max(0, toTsMs - lookbackDays * ONE_DAY_MS);
-  const selected = scopes.slice(0, batchSize);
+  const selected = scopes.slice(offset, offset + batchSize);
 
   let processed = 0;
   let succeeded = 0;
@@ -156,6 +164,7 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
     }
   }
 
+  const nextOffset = offset + processed;
   return {
     ok: failed <= 0,
     busy: false,
@@ -164,7 +173,7 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
     succeeded,
     retried: 0,
     failed,
-    pendingAfter: Math.max(0, scopes.length - processed),
+    pendingAfter: Math.max(0, scopes.length - nextOffset),
     downstreamRequested: false,
     progressLabel: `v2_native_load_candles:${succeeded}/${processed}`,
     details: {
@@ -173,6 +182,9 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
       fromTsMs,
       toTsMs,
       maxAttempts,
+      batchSize,
+      offset,
+      nextOffset,
       scopeCount: scopes.length,
       errors,
     },

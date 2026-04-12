@@ -57,6 +57,17 @@ function parseSuccessorMode(
   return first === "discover" ? "discover" : "cycle";
 }
 
+function envIntBounded(
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const n = Math.floor(Number(process.env[name]));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
 function normalizeSymbol(value: unknown): string {
   return String(value || "")
     .trim()
@@ -105,21 +116,28 @@ export default async function handler(
 
   const hardCaps = resolveScalpV2ResearchHardCaps();
   const batchSize = clampScalpV2HardCap(
-    parseIntBounded(req.query.batchSize, 6, 1, 120),
+    parseIntBounded(req.query.batchSize, 4, 1, 120),
     hardCaps.maxBatchSizeLoad,
   );
   const maxAttempts = clampScalpV2HardCap(
     parseIntBounded(req.query.maxAttempts, 5, 1, 20),
     hardCaps.maxAttempts,
   );
+  const offset = parseIntBounded(req.query.offset, 0, 0, 200_000);
   const autoSuccessor = parseBool(req.query.autoSuccessor, true);
   const autoContinue = parseBool(req.query.autoContinue, true);
   const successor = parseSuccessorMode(req.query.successor);
   const successorDryRun = parseBool(req.query.successorDryRun, false);
   const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 40);
+  const maxSelfHopsCap = envIntBounded(
+    "SCALP_V2_LOAD_CANDLES_MAX_SELF_HOPS",
+    24,
+    0,
+    120,
+  );
   const selfMaxHops = Math.min(
-    parseIntBounded(req.query.selfMaxHops, 8, 0, 50),
-    hardCaps.maxSelfHops,
+    parseIntBounded(req.query.selfMaxHops, 12, 0, 120),
+    maxSelfHopsCap,
   );
   const runtime = await loadScalpV2RuntimeConfig();
   const scope = collectRuntimeScopes({
@@ -131,8 +149,14 @@ export default async function handler(
   const result = await runScalpV2LoadCandlesPipelineJob({
     batchSize,
     maxAttempts,
+    offset,
     scopes: scope,
   });
+  const details = (result.details || {}) as Record<string, unknown>;
+  const nextOffset = Math.max(
+    0,
+    Math.floor(Number(details.nextOffset) || offset + result.processed),
+  );
 
   let downstream: ScalpV2CronInvokeResult | null = null;
   let selfRecall: ScalpV2CronInvokeResult | null = null;
@@ -150,6 +174,7 @@ export default async function handler(
       {
         batchSize,
         maxAttempts,
+        offset: nextOffset,
         autoContinue: 1,
         autoSuccessor: autoSuccessor ? 1 : 0,
         selfHop: selfHop + 1,
@@ -201,6 +226,9 @@ export default async function handler(
       symbolScope: scope.map((row) => `${row.venue}:${row.symbol}`),
       selfHop,
       selfMaxHops,
+      offset,
+      nextOffset,
+      maxSelfHopsCap,
       maintenanceOnly: !autoSuccessor,
       downstream,
       selfRecall,

@@ -80,6 +80,7 @@ import {
   buildScalpV2ModelGuidedComposerGrid,
   toScalpV2ResearchCursorKey,
 } from "./research";
+import { runScalpV2LoadCandlesPipelineJob } from "./pipelineJobsAdapter";
 import { inferScalpV2AssetCategory, minSpreadPipsForCategory } from "./symbolInfo";
 import { getScalpV2VenueAdapter } from "./venueAdapter";
 import {
@@ -112,6 +113,7 @@ function nowMs(): number {
 }
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 const LIFECYCLE_SUSPEND_WINDOW_MS = 180 * ONE_DAY_MS;
 const DEFAULT_SCOPE_PRUNE_TTL_DAYS = 28;
@@ -565,6 +567,12 @@ function toPositiveInt(value: unknown, fallback: number, max = 100_000): number 
   const n = Math.floor(toFinite(value, fallback));
   if (!Number.isFinite(n) || n <= 0) return fallback;
   return Math.max(1, Math.min(max, n));
+}
+
+function toNonNegativeInt(value: unknown, fallback: number, max = 100_000): number {
+  const n = Math.floor(toFinite(value, fallback));
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.max(0, Math.min(max, n));
 }
 
 function resolvePromotionPolicy(): ScalpV2PromotionPolicy {
@@ -1478,6 +1486,457 @@ async function updateResearchCursorSafe(params: {
   }).catch(() => undefined);
 }
 
+type ScalpV2RuntimeLoadScope = {
+  venue: ScalpV2Venue;
+  symbol: string;
+};
+
+type ScalpV2ResearchFreshnessPolicy = {
+  enabled: boolean;
+  retries: number;
+  loadBatchSize: number;
+  loadMaxAttempts: number;
+  maxHopsPerRetry: number;
+  maxLagBitgetMs: number;
+  maxLagCapitalMs: number;
+  minWindowCandlesBitget: number;
+  minWindowCandlesCapital: number;
+  stalePreviewLimit: number;
+};
+
+type ScalpV2ResearchFreshnessRow = {
+  venue: ScalpV2Venue;
+  symbol: string;
+  ready: boolean;
+  latestCandleTsMs: number | null;
+  lagMs: number | null;
+  candlesInWindow: number;
+  reason: string | null;
+};
+
+type ScalpV2ResearchFreshnessAttempt = {
+  retryIndex: number;
+  staleBefore: number;
+  staleAfter: number;
+  loadRuns: number;
+  loadFailedRuns: number;
+  loadFailedScopes: number;
+  loadedScopes: number;
+};
+
+type ScalpV2ResearchFreshnessGateResult = {
+  applied: boolean;
+  ready: boolean;
+  reason: string | null;
+  scopeCount: number;
+  staleCount: number;
+  retriesConfigured: number;
+  retriesUsed: number;
+  attempts: ScalpV2ResearchFreshnessAttempt[];
+  stalePreview: Array<{
+    venue: ScalpV2Venue;
+    symbol: string;
+    reason: string | null;
+    latestCandleTsMs: number | null;
+    lagHours: number | null;
+    candlesInWindow: number;
+  }>;
+  policy: {
+    retries: number;
+    loadBatchSize: number;
+    loadMaxAttempts: number;
+    maxHopsPerRetry: number;
+    maxLagBitgetHours: number;
+    maxLagCapitalHours: number;
+    minWindowCandlesBitget: number;
+    minWindowCandlesCapital: number;
+  };
+};
+
+function normalizeRuntimeScopeSymbol(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9._-]/g, "");
+}
+
+function collectRuntimeLoadScopes(
+  runtime: ScalpV2RuntimeConfig,
+): ScalpV2RuntimeLoadScope[] {
+  const out = new Map<string, ScalpV2RuntimeLoadScope>();
+  for (const venue of runtime.supportedVenues) {
+    const seedSymbols = runtime.seedSymbolsByVenue[venue] || [];
+    const liveSymbols = runtime.seedLiveSymbolsByVenue[venue] || [];
+    for (const rawSymbol of [...seedSymbols, ...liveSymbols]) {
+      const symbol = normalizeRuntimeScopeSymbol(rawSymbol);
+      if (!symbol) continue;
+      if (!isScalpV2DiscoverSymbolAllowed(venue, symbol)) continue;
+      if (!isScalpV2RuntimeSymbolInScope({ runtime, venue, symbol })) continue;
+      out.set(`${venue}:${symbol}`, { venue, symbol });
+    }
+  }
+  return Array.from(out.values());
+}
+
+function resolveResearchFreshnessPolicy(): ScalpV2ResearchFreshnessPolicy {
+  const bitgetLagHours = Math.max(
+    1,
+    Math.min(
+      24 * 7,
+      toPositiveInt(
+        process.env.SCALP_V2_RESEARCH_FRESHNESS_MAX_LAG_HOURS_BITGET,
+        36,
+        24 * 7,
+      ),
+    ),
+  );
+  const capitalLagHours = Math.max(
+    1,
+    Math.min(
+      24 * 7,
+      toPositiveInt(
+        process.env.SCALP_V2_RESEARCH_FRESHNESS_MAX_LAG_HOURS_CAPITAL,
+        84,
+        24 * 7,
+      ),
+    ),
+  );
+  return {
+    enabled: envBool("SCALP_V2_RESEARCH_FRESHNESS_GATE_ENABLED", true),
+    retries: toNonNegativeInt(
+      process.env.SCALP_V2_RESEARCH_FRESHNESS_RETRIES,
+      2,
+      12,
+    ),
+    loadBatchSize: Math.max(
+      1,
+      Math.min(
+        120,
+        toPositiveInt(
+          process.env.SCALP_V2_RESEARCH_FRESHNESS_LOAD_BATCH_SIZE,
+          4,
+          120,
+        ),
+      ),
+    ),
+    loadMaxAttempts: Math.max(
+      1,
+      Math.min(
+        20,
+        toPositiveInt(
+          process.env.SCALP_V2_RESEARCH_FRESHNESS_LOAD_MAX_ATTEMPTS,
+          5,
+          20,
+        ),
+      ),
+    ),
+    maxHopsPerRetry: Math.max(
+      1,
+      Math.min(
+        120,
+        toPositiveInt(
+          process.env.SCALP_V2_RESEARCH_FRESHNESS_MAX_HOPS_PER_RETRY,
+          24,
+          120,
+        ),
+      ),
+    ),
+    maxLagBitgetMs: bitgetLagHours * ONE_HOUR_MS,
+    maxLagCapitalMs: capitalLagHours * ONE_HOUR_MS,
+    minWindowCandlesBitget: Math.max(
+      0,
+      Math.min(
+        20_000,
+        toNonNegativeInt(
+          process.env.SCALP_V2_RESEARCH_FRESHNESS_MIN_WEEK_CANDLES_BITGET,
+          1_200,
+          20_000,
+        ),
+      ),
+    ),
+    minWindowCandlesCapital: Math.max(
+      0,
+      Math.min(
+        20_000,
+        toNonNegativeInt(
+          process.env.SCALP_V2_RESEARCH_FRESHNESS_MIN_WEEK_CANDLES_CAPITAL,
+          600,
+          20_000,
+        ),
+      ),
+    ),
+    stalePreviewLimit: Math.max(
+      1,
+      Math.min(
+        100,
+        toPositiveInt(
+          process.env.SCALP_V2_RESEARCH_FRESHNESS_STALE_PREVIEW_LIMIT,
+          20,
+          100,
+        ),
+      ),
+    ),
+  };
+}
+
+async function evaluateResearchFreshnessRow(params: {
+  scope: ScalpV2RuntimeLoadScope;
+  windowToTs: number;
+  policy: ScalpV2ResearchFreshnessPolicy;
+}): Promise<ScalpV2ResearchFreshnessRow> {
+  const fromTs = params.windowToTs - ONE_WEEK_MS;
+  const minWindowCandles =
+    params.scope.venue === "capital"
+      ? params.policy.minWindowCandlesCapital
+      : params.policy.minWindowCandlesBitget;
+  const maxLagMs =
+    params.scope.venue === "capital"
+      ? params.policy.maxLagCapitalMs
+      : params.policy.maxLagBitgetMs;
+
+  const history = await loadScalpCandleHistoryInRange(
+    params.scope.symbol,
+    "1m",
+    fromTs,
+    params.windowToTs,
+  ).catch(() => null);
+
+  const candles = Array.isArray(history?.record?.candles)
+    ? history.record.candles
+    : [];
+  let latestCandleTsMs: number | null = null;
+  let candlesInWindow = 0;
+
+  for (const candle of candles) {
+    const ts = Math.floor(Number(candle?.[0] || 0));
+    if (!Number.isFinite(ts)) continue;
+    if (ts < fromTs || ts >= params.windowToTs) continue;
+    candlesInWindow += 1;
+    if (latestCandleTsMs === null || ts > latestCandleTsMs) {
+      latestCandleTsMs = ts;
+    }
+  }
+
+  if (latestCandleTsMs === null) {
+    return {
+      venue: params.scope.venue,
+      symbol: params.scope.symbol,
+      ready: false,
+      latestCandleTsMs: null,
+      lagMs: null,
+      candlesInWindow,
+      reason: "missing_recent_candles",
+    };
+  }
+
+  const lagMs = Math.max(0, params.windowToTs - latestCandleTsMs);
+  if (lagMs > maxLagMs) {
+    return {
+      venue: params.scope.venue,
+      symbol: params.scope.symbol,
+      ready: false,
+      latestCandleTsMs,
+      lagMs,
+      candlesInWindow,
+      reason: "latest_candle_too_old",
+    };
+  }
+  if (candlesInWindow < minWindowCandles) {
+    return {
+      venue: params.scope.venue,
+      symbol: params.scope.symbol,
+      ready: false,
+      latestCandleTsMs,
+      lagMs,
+      candlesInWindow,
+      reason: "insufficient_window_candles",
+    };
+  }
+  return {
+    venue: params.scope.venue,
+    symbol: params.scope.symbol,
+    ready: true,
+    latestCandleTsMs,
+    lagMs,
+    candlesInWindow,
+    reason: null,
+  };
+}
+
+async function evaluateResearchFreshness(params: {
+  scopes: ScalpV2RuntimeLoadScope[];
+  windowToTs: number;
+  policy: ScalpV2ResearchFreshnessPolicy;
+}): Promise<ScalpV2ResearchFreshnessRow[]> {
+  const rows: ScalpV2ResearchFreshnessRow[] = [];
+  for (const scope of params.scopes) {
+    rows.push(
+      await evaluateResearchFreshnessRow({
+        scope,
+        windowToTs: params.windowToTs,
+        policy: params.policy,
+      }),
+    );
+  }
+  return rows;
+}
+
+async function refreshResearchFreshnessScopes(params: {
+  scopes: ScalpV2RuntimeLoadScope[];
+  policy: ScalpV2ResearchFreshnessPolicy;
+}): Promise<{
+  runs: number;
+  failedRuns: number;
+  failedScopes: number;
+  loadedScopes: number;
+}> {
+  if (!params.scopes.length) {
+    return { runs: 0, failedRuns: 0, failedScopes: 0, loadedScopes: 0 };
+  }
+
+  let runs = 0;
+  let failedRuns = 0;
+  let failedScopes = 0;
+  let loadedScopes = 0;
+  let offset = 0;
+
+  while (offset < params.scopes.length && runs < params.policy.maxHopsPerRetry) {
+    const result = await runScalpV2LoadCandlesPipelineJob({
+      scopes: params.scopes,
+      batchSize: params.policy.loadBatchSize,
+      maxAttempts: params.policy.loadMaxAttempts,
+      offset,
+    });
+    runs += 1;
+    loadedScopes += result.processed;
+    failedScopes += result.failed;
+    if (!result.ok) failedRuns += 1;
+    const details = asRecord(result.details);
+    const nextOffsetRaw = Math.floor(Number(details.nextOffset));
+    const fallbackNextOffset = offset + result.processed;
+    const nextOffset =
+      Number.isFinite(nextOffsetRaw) && nextOffsetRaw > offset
+        ? nextOffsetRaw
+        : fallbackNextOffset;
+    if (result.pendingAfter <= 0 || nextOffset <= offset) break;
+    offset = nextOffset;
+  }
+
+  return { runs, failedRuns, failedScopes, loadedScopes };
+}
+
+async function runScalpV2SundayResearchFreshnessGate(params: {
+  runtime: ScalpV2RuntimeConfig;
+  nowTs: number;
+  windowToTs: number;
+}): Promise<ScalpV2ResearchFreshnessGateResult> {
+  const policy = resolveResearchFreshnessPolicy();
+  const policySummary = {
+    retries: policy.retries,
+    loadBatchSize: policy.loadBatchSize,
+    loadMaxAttempts: policy.loadMaxAttempts,
+    maxHopsPerRetry: policy.maxHopsPerRetry,
+    maxLagBitgetHours: Math.floor(policy.maxLagBitgetMs / ONE_HOUR_MS),
+    maxLagCapitalHours: Math.floor(policy.maxLagCapitalMs / ONE_HOUR_MS),
+    minWindowCandlesBitget: policy.minWindowCandlesBitget,
+    minWindowCandlesCapital: policy.minWindowCandlesCapital,
+  };
+  if (!policy.enabled || !isScalpV2SundayUtc(params.nowTs)) {
+    return {
+      applied: false,
+      ready: true,
+      reason: null,
+      scopeCount: 0,
+      staleCount: 0,
+      retriesConfigured: policy.retries,
+      retriesUsed: 0,
+      attempts: [],
+      stalePreview: [],
+      policy: policySummary,
+    };
+  }
+
+  const scopes = collectRuntimeLoadScopes(params.runtime);
+  if (!scopes.length) {
+    return {
+      applied: true,
+      ready: true,
+      reason: null,
+      scopeCount: 0,
+      staleCount: 0,
+      retriesConfigured: policy.retries,
+      retriesUsed: 0,
+      attempts: [],
+      stalePreview: [],
+      policy: policySummary,
+    };
+  }
+
+  let rows = await evaluateResearchFreshness({
+    scopes,
+    windowToTs: params.windowToTs,
+    policy,
+  });
+  let stale = rows.filter((row) => !row.ready);
+  const attempts: ScalpV2ResearchFreshnessAttempt[] = [];
+  let retriesUsed = 0;
+
+  for (
+    let retryIndex = 1;
+    stale.length > 0 && retryIndex <= policy.retries;
+    retryIndex += 1
+  ) {
+    const staleBefore = stale.length;
+    retriesUsed = retryIndex;
+    const refresh = await refreshResearchFreshnessScopes({
+      scopes: stale.map((row) => ({ venue: row.venue, symbol: row.symbol })),
+      policy,
+    });
+    rows = await evaluateResearchFreshness({
+      scopes,
+      windowToTs: params.windowToTs,
+      policy,
+    });
+    stale = rows.filter((row) => !row.ready);
+    attempts.push({
+      retryIndex,
+      staleBefore,
+      staleAfter: stale.length,
+      loadRuns: refresh.runs,
+      loadFailedRuns: refresh.failedRuns,
+      loadFailedScopes: refresh.failedScopes,
+      loadedScopes: refresh.loadedScopes,
+    });
+    if (!stale.length) break;
+  }
+
+  const stalePreview = stale.slice(0, policy.stalePreviewLimit).map((row) => ({
+    venue: row.venue,
+    symbol: row.symbol,
+    reason: row.reason,
+    latestCandleTsMs: row.latestCandleTsMs,
+    lagHours:
+      row.lagMs === null
+        ? null
+        : Number((row.lagMs / ONE_HOUR_MS).toFixed(2)),
+    candlesInWindow: row.candlesInWindow,
+  }));
+  const ready = stale.length <= 0;
+
+  return {
+    applied: true,
+    ready,
+    reason: ready ? null : "research_candle_freshness_gate_failed",
+    scopeCount: scopes.length,
+    staleCount: stale.length,
+    retriesConfigured: policy.retries,
+    retriesUsed,
+    attempts,
+    stalePreview,
+    policy: policySummary,
+  };
+}
+
 /**
  * Discover is now a thin delegate to the evaluate job. The old discover job
  * generated the same composer grid as evaluate but with a weaker scoring model
@@ -1546,6 +2005,29 @@ export async function runScalpV2ResearchJob(params: {
     const workerPolicy = resolveWorkerPolicy();
     const nowTs = nowMs();
     const windowToTs = resolveScalpV2CompletedWeekWindowToUtc(nowTs);
+    const freshnessGate = await runScalpV2SundayResearchFreshnessGate({
+      runtime,
+      nowTs,
+      windowToTs,
+    });
+    if (!freshnessGate.ready) {
+      ok = false;
+      failed = Math.max(1, freshnessGate.staleCount);
+      details = {
+        skipped: true,
+        reason:
+          freshnessGate.reason || "research_candle_freshness_gate_failed",
+        freshnessGate,
+      };
+      return buildScalpV2JobResult({
+        jobKind: "research",
+        processed,
+        succeeded,
+        failed,
+        pendingAfter: freshnessGate.staleCount,
+        details,
+      });
+    }
     const scopePrune = await runScalpV2ScopePrunePass({
       runtime,
       windowToTs,
@@ -1609,6 +2091,7 @@ export async function runScalpV2ResearchJob(params: {
         reason: "no_runtime_seed_scopes",
         droppedByVenuePolicy,
         droppedByScopePrune,
+        freshnessGate,
         scopePrune: scopePrune.details,
       };
       return buildScalpV2JobResult({
@@ -2208,6 +2691,7 @@ export async function runScalpV2ResearchJob(params: {
       replayErrors,
       droppedByVenuePolicy,
       droppedByScopePrune,
+      freshnessGate,
       timeBudgetExhausted,
       timeBudgetMs,
       elapsedMs: nowMs() - jobStartMs,
