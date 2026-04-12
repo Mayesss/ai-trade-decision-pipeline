@@ -134,8 +134,7 @@ export async function fetchBitgetCandlesByEpicDateRange(
     40,
     Math.min(BITGET_HISTORY_MAX_REQUESTS_HARD_CAP, adaptiveMaxRequests),
   );
-  const requestSpanBars = Math.max(220, requestLimit + 20);
-  const requestSpanMs = requestSpanBars * timeframeMs;
+  const requestSpanMs = requestLimit * timeframeMs;
   const productType = String(resolveProductType() || "usdt-futures")
     .trim()
     .toUpperCase();
@@ -149,22 +148,27 @@ export async function fetchBitgetCandlesByEpicDateRange(
         `bitget_history_max_requests_reached_for_${symbol}:max=${maxRequests}:requestedBars=${requestedBars}:limit=${requestLimit}`,
       );
     }
-    const startTime = Math.max(
-      startMs,
-      cursorEnd - requestSpanMs + timeframeMs,
-    );
-    const rows = await bitgetFetch(
-      "GET",
-      "/api/v2/mix/market/history-candles",
-      {
-        symbol,
-        productType,
-        granularity,
-        limit: requestLimit,
-        startTime,
-        endTime: cursorEnd,
-      },
-    );
+    const alignedEndTime = cursorEnd - (cursorEnd % timeframeMs);
+    const endTime = Math.max(startMs, alignedEndTime);
+    let rows: unknown;
+    try {
+      rows = await bitgetFetch(
+        "GET",
+        "/api/v2/mix/market/history-candles",
+        {
+          symbol,
+          productType,
+          granularity,
+          limit: requestLimit,
+          endTime,
+        },
+      );
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      throw new Error(
+        `bitget_history_request_failed:${symbol}:granularity=${granularity}:endTime=${endTime}:limit=${requestLimit}:${msg}`,
+      );
+    }
     requests += 1;
 
     const parsedRows = Array.isArray(rows)
@@ -173,8 +177,8 @@ export async function fetchBitgetCandlesByEpicDateRange(
         )
       : [];
     if (!parsedRows.length) {
-      if (startTime <= startMs) break;
-      cursorEnd = startTime - timeframeMs;
+      if (endTime <= startMs) break;
+      cursorEnd = endTime - requestSpanMs;
       continue;
     }
 
