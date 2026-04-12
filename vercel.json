@@ -32,7 +32,7 @@
       "schedule": "*/2 * * * *"
     },
     {
-      "path": "/api/scalp/v2/cron/load-candles?batchSize=1&autoSuccessor=true&autoContinue=true&selfMaxHops=24&successor=discover",
+      "path": "/api/scalp/v2/cron/load-candles?batchSize=10&autoSuccessor=true&autoContinue=true&selfMaxHops=24&successor=discover",
       "schedule": "10 3 * * *"
     }
   ]
