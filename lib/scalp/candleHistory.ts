@@ -453,6 +453,11 @@ async function saveToPgBulk(records: ScalpCandleHistoryRecord[]): Promise<ScalpC
         return { backend: 'pg', saved: 0, storageRef: 'scalp_candle_history_weeks:bulk' };
     }
     const db = scalpPrisma();
+    const fullReplaceEnabled = ['1', 'true', 'yes', 'on'].includes(
+        String(process.env.SCALP_CANDLE_HISTORY_FULL_REPLACE || '')
+            .trim()
+            .toLowerCase(),
+    );
     const chunkSize = Math.max(
         1,
         Math.min(10, Math.floor(Number(process.env.SCALP_CANDLE_HISTORY_BULK_SAVE_RECORD_CHUNK) || 1)),
@@ -462,12 +467,39 @@ async function saveToPgBulk(records: ScalpCandleHistoryRecord[]): Promise<ScalpC
         if (!slice.length) continue;
         for (const record of slice) {
             const weekRows = candlesToWeeklyRows(record);
-            await db.$executeRaw(sql`
-                DELETE FROM scalp_candle_history_weeks
-                WHERE symbol = ${record.symbol}
-                  AND timeframe = ${record.timeframe};
-            `);
+            if (fullReplaceEnabled) {
+                await db.$executeRaw(sql`
+                    DELETE FROM scalp_candle_history_weeks
+                    WHERE symbol = ${record.symbol}
+                      AND timeframe = ${record.timeframe};
+                `);
+            }
             for (const row of weekRows) {
+                let candlesForWrite = row.candles;
+                if (!fullReplaceEnabled) {
+                    const existingWeekRows = await db.$queryRaw<
+                        Array<{ candles: unknown }>
+                    >(sql`
+                        SELECT candles_json AS candles
+                        FROM scalp_candle_history_weeks
+                        WHERE symbol = ${row.symbol}
+                          AND timeframe = ${row.timeframe}
+                          AND week_start = to_timestamp(${row.weekStartMs} / 1000.0)
+                        LIMIT 1;
+                    `);
+                    const existingWeekCandlesRaw = Array.isArray(existingWeekRows?.[0]?.candles)
+                        ? (existingWeekRows[0].candles as unknown[])
+                        : [];
+                    if (existingWeekCandlesRaw.length > 0) {
+                        const existingWeekCandles = existingWeekCandlesRaw
+                            .map((entry) => normalizeCandleRow(entry))
+                            .filter((entry): entry is ScalpCandle => Boolean(entry));
+                        candlesForWrite = dedupeSortCandles([
+                            ...existingWeekCandles,
+                            ...row.candles,
+                        ]);
+                    }
+                }
                 await db.$executeRaw(
                     sql`
                         INSERT INTO scalp_candle_history_weeks(
@@ -485,7 +517,7 @@ async function saveToPgBulk(records: ScalpCandleHistoryRecord[]): Promise<ScalpC
                             to_timestamp(${row.weekStartMs} / 1000.0),
                             ${row.epic},
                             ${row.source},
-                            ${JSON.stringify(row.candles)}::jsonb,
+                            ${JSON.stringify(candlesForWrite)}::jsonb,
                             NOW()
                         )
                         ON CONFLICT(symbol, timeframe, week_start)

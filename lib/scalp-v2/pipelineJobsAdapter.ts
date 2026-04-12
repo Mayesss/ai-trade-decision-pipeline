@@ -3,8 +3,7 @@ import {
   resolveCapitalEpicRuntime,
 } from "../capital";
 import {
-  loadScalpCandleHistoryInRange,
-  mergeScalpCandleHistory,
+  loadScalpCandleHistoryStatsBulk,
   saveScalpCandleHistory,
 } from "../scalp/candleHistory";
 import { fetchBitgetCandlesByEpicDateRange } from "../scalp/bitgetHistory";
@@ -99,6 +98,17 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
     35,
     365,
   );
+  const fetchWindowMinutes = toPositiveInt(
+    process.env.SCALP_V2_LOAD_CANDLES_FETCH_WINDOW_MINUTES,
+    360,
+    525_600,
+  );
+  const incrementalOverlapMinutes = toPositiveInt(
+    process.env.SCALP_V2_LOAD_CANDLES_INCREMENTAL_OVERLAP_MINUTES,
+    180,
+    10_080,
+  );
+  const incrementalOverlapMs = incrementalOverlapMinutes * 60 * 1000;
   const toTsMs = resolveLoadCandlesFetchUpperBoundMs(Date.now());
   const fromTsMs = Math.max(0, toTsMs - lookbackDays * ONE_DAY_MS);
   const selected = scopes.slice(offset, offset + batchSize);
@@ -106,52 +116,106 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
   let processed = 0;
   let succeeded = 0;
   let failed = 0;
-  const errors: Array<{ venue: string; symbol: string; message: string }> = [];
+  const errors: Array<{
+    venue: string;
+    symbol: string;
+    message: string;
+    fetchFromTsMs?: number;
+    fetchToTsMs?: number;
+    existingLatestTsMs?: number | null;
+  }> = [];
+  const perScope: Array<{
+    venue: string;
+    symbol: string;
+    fetchFromTsMs: number;
+    fetchToTsMs: number;
+    existingCount: number;
+    incomingCount: number;
+    mergedCount: number;
+    existingLatestTsMs: number | null;
+  }> = [];
+  const statsRows = await loadScalpCandleHistoryStatsBulk(
+    Array.from(new Set(selected.map((scope) => scope.symbol))),
+    "1m",
+  ).catch(() => []);
+  const statsBySymbol = new Map<
+    string,
+    { toTsMs: number | null; candleCount: number }
+  >();
+  for (const row of statsRows || []) {
+    const symbol = normalizeSymbol(row.symbol);
+    if (!symbol) continue;
+    statsBySymbol.set(symbol, {
+      toTsMs: Number.isFinite(Number(row.toTsMs))
+        ? Math.floor(Number(row.toTsMs))
+        : null,
+      candleCount: Math.max(0, Math.floor(Number(row.candleCount) || 0)),
+    });
+  }
 
   for (const scope of selected) {
     processed += 1;
     try {
+      const stats = statsBySymbol.get(scope.symbol);
+      const existingLatestTsMsRaw = Number(stats?.toTsMs || 0);
+      const existingLatestTsMs =
+        Number.isFinite(existingLatestTsMsRaw) && existingLatestTsMsRaw > 0
+          ? Math.floor(existingLatestTsMsRaw)
+          : null;
+      const fetchWindowFromTsMs = Math.max(
+        fromTsMs,
+        toTsMs - fetchWindowMinutes * 60 * 1000,
+      );
+      const fetchFromTsMs =
+        existingLatestTsMs && existingLatestTsMs > 0
+          ? Math.max(fetchWindowFromTsMs, existingLatestTsMs - incrementalOverlapMs)
+          : fetchWindowFromTsMs;
+      const fetchToTsMs = toTsMs;
       let epic = scope.symbol;
       let incoming: Array<[number, number, number, number, number, number]> = [];
-      if (scope.venue === "capital") {
-        const resolved = await resolveCapitalEpicRuntime(scope.symbol);
-        epic = String(resolved.epic || scope.symbol).trim().toUpperCase();
-        incoming = (await fetchCapitalCandlesByEpicDateRange(
-          epic,
-          "1m",
-          fromTsMs,
-          toTsMs,
-          {
-            maxRequests: Math.max(40, maxAttempts * 30),
-          },
-        )) as Array<[number, number, number, number, number, number]>;
-      } else {
-        incoming = await fetchBitgetCandlesByEpicDateRange(
-          scope.symbol,
-          "1m",
-          fromTsMs,
-          toTsMs,
-          {
-            maxRequests: Math.max(60, maxAttempts * 80),
-          },
-        );
+      if (fetchToTsMs > fetchFromTsMs) {
+        if (scope.venue === "capital") {
+          const resolved = await resolveCapitalEpicRuntime(scope.symbol);
+          epic = String(resolved.epic || scope.symbol).trim().toUpperCase();
+          incoming = (await fetchCapitalCandlesByEpicDateRange(
+            epic,
+            "1m",
+            fetchFromTsMs,
+            fetchToTsMs,
+            {
+              maxRequests: Math.max(40, maxAttempts * 30),
+            },
+          )) as Array<[number, number, number, number, number, number]>;
+        } else {
+          incoming = await fetchBitgetCandlesByEpicDateRange(
+            scope.symbol,
+            "1m",
+            fetchFromTsMs,
+            fetchToTsMs,
+            {
+              maxRequests: Math.max(60, maxAttempts * 80),
+            },
+          );
+        }
       }
-      const existing = await loadScalpCandleHistoryInRange(
-        scope.symbol,
-        "1m",
-        fromTsMs,
-        toTsMs,
-      ).catch(() => null);
-      const merged = mergeScalpCandleHistory(
-        existing?.record?.candles || [],
-        incoming || [],
-      );
-      await saveScalpCandleHistory({
+      if (incoming.length > 0) {
+        await saveScalpCandleHistory({
+          symbol: scope.symbol,
+          timeframe: "1m",
+          epic,
+          source: "bitget",
+          candles: incoming,
+        });
+      }
+      perScope.push({
+        venue: scope.venue,
         symbol: scope.symbol,
-        timeframe: "1m",
-        epic,
-        source: "bitget",
-        candles: merged,
+        fetchFromTsMs,
+        fetchToTsMs,
+        existingCount: Math.max(0, Math.floor(Number(stats?.candleCount) || 0)),
+        incomingCount: incoming.length,
+        mergedCount: incoming.length,
+        existingLatestTsMs,
       });
       succeeded += 1;
     } catch (err: any) {
@@ -181,11 +245,14 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
       timeframe: "1m",
       fromTsMs,
       toTsMs,
+      fetchWindowMinutes,
+      incrementalOverlapMinutes,
       maxAttempts,
       batchSize,
       offset,
       nextOffset,
       scopeCount: scopes.length,
+      perScope,
       errors,
     },
   };

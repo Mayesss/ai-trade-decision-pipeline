@@ -68,6 +68,28 @@ function envIntBounded(
   return Math.max(min, Math.min(max, n));
 }
 
+function withTimeout<T>(
+  task: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label}_timeout_${timeoutMs}ms`));
+    }, timeoutMs);
+    task.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 function normalizeSymbol(value: unknown): string {
   return String(value || "")
     .trim()
@@ -116,7 +138,7 @@ export default async function handler(
 
   const hardCaps = resolveScalpV2ResearchHardCaps();
   const batchSize = clampScalpV2HardCap(
-    parseIntBounded(req.query.batchSize, 4, 1, 120),
+    parseIntBounded(req.query.batchSize, 1, 1, 120),
     hardCaps.maxBatchSizeLoad,
   );
   const maxAttempts = clampScalpV2HardCap(
@@ -135,23 +157,62 @@ export default async function handler(
     0,
     120,
   );
+  const routeTimeoutMs = envIntBounded(
+    "SCALP_V2_LOAD_CANDLES_ROUTE_TIMEOUT_MS",
+    7_500,
+    1_000,
+    120_000,
+  );
   const selfMaxHops = Math.min(
     parseIntBounded(req.query.selfMaxHops, 12, 0, 120),
     maxSelfHopsCap,
   );
-  const runtime = await loadScalpV2RuntimeConfig();
+  const handlerStartedAtMs = Date.now();
+  const runtime = await withTimeout(
+    loadScalpV2RuntimeConfig(),
+    Math.max(1_000, Math.min(20_000, Math.floor(routeTimeoutMs * 0.35))),
+    "load_runtime_config",
+  );
   const scope = collectRuntimeScopes({
     supportedVenues: runtime.supportedVenues,
     seedSymbolsByVenue: runtime.seedSymbolsByVenue,
     seedLiveSymbolsByVenue: runtime.seedLiveSymbolsByVenue,
   });
 
-  const result = await runScalpV2LoadCandlesPipelineJob({
-    batchSize,
-    maxAttempts,
-    offset,
-    scopes: scope,
-  });
+  let result: Awaited<ReturnType<typeof runScalpV2LoadCandlesPipelineJob>>;
+  try {
+    result = await withTimeout(
+      runScalpV2LoadCandlesPipelineJob({
+        batchSize,
+        maxAttempts,
+        offset,
+        scopes: scope,
+      }),
+      routeTimeoutMs,
+      "load_candles_job",
+    );
+  } catch (err: any) {
+    return res.status(504).json({
+      ok: false,
+      busy: false,
+      v2: true,
+      error: "load_candles_timeout",
+      message: err?.message || String(err),
+      timeoutMs: routeTimeoutMs,
+      elapsedMs: Date.now() - handlerStartedAtMs,
+      chaining: {
+        autoSuccessor,
+        autoContinue,
+        successor,
+        successorDryRun,
+        symbolScopeCount: scope.length,
+        selfHop,
+        selfMaxHops,
+        offset,
+        maxSelfHopsCap,
+      },
+    });
+  }
   const details = (result.details || {}) as Record<string, unknown>;
   const nextOffset = Math.max(
     0,
