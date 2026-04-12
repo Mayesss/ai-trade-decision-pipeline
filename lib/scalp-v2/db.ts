@@ -9,6 +9,7 @@ import {
   toDeploymentId,
   toLedgerCloseTypeFromEvent,
 } from "./logic";
+import type { ScalpJournalEntry, ScalpSessionState } from "../scalp/types";
 import type {
   ScalpV2Candidate,
   ScalpV2CandidateStatus,
@@ -131,6 +132,16 @@ function normalizeSourceOfTruth(value: unknown): ScalpV2SourceOfTruth {
   if (normalized === "reconciler") return "reconciler";
   if (normalized === "legacy_v1_import") return "legacy_v1_import";
   return "system";
+}
+
+function normalizeJournalType(value: unknown): ScalpJournalEntry["type"] {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "state") return "state";
+  if (normalized === "risk") return "risk";
+  if (normalized === "error") return "error";
+  return "execution";
 }
 
 function normalizeRiskProfile(value: unknown): ScalpV2RiskProfile {
@@ -915,6 +926,68 @@ export async function listScalpV2Deployments(params: {
   }));
 }
 
+export async function loadScalpV2DeploymentById(
+  deploymentIdRaw: string,
+): Promise<ScalpV2Deployment | null> {
+  const deploymentId = String(deploymentIdRaw || "").trim();
+  if (!deploymentId || !isScalpPgConfigured()) return null;
+  const db = scalpPrisma();
+  const [row] = await db.$queryRaw<
+    Array<{
+      deploymentId: string;
+      candidateId: number | null;
+      venue: string;
+      symbol: string;
+      strategyId: string;
+      tuneId: string;
+      entrySessionProfile: string;
+      enabled: boolean;
+      liveMode: string;
+      promotionGate: unknown;
+      riskProfile: unknown;
+      createdAt: Date;
+      updatedAt: Date;
+    }>
+  >(sql`
+    SELECT
+      deployment_id AS "deploymentId",
+      candidate_id AS "candidateId",
+      venue,
+      symbol,
+      strategy_id AS "strategyId",
+      tune_id AS "tuneId",
+      entry_session_profile AS "entrySessionProfile",
+      enabled,
+      live_mode AS "liveMode",
+      promotion_gate AS "promotionGate",
+      risk_profile AS "riskProfile",
+      created_at AS "createdAt",
+      updated_at AS "updatedAt"
+    FROM scalp_v2_deployments
+    WHERE deployment_id = ${deploymentId}
+    LIMIT 1;
+  `);
+  if (!row) return null;
+  return {
+    deploymentId: String(row.deploymentId || "").trim(),
+    candidateId:
+      row.candidateId === null || row.candidateId === undefined
+        ? null
+        : Number(row.candidateId),
+    venue: normalizeVenue(row.venue),
+    symbol: String(row.symbol || "").trim().toUpperCase(),
+    strategyId: String(row.strategyId || "").trim().toLowerCase(),
+    tuneId: String(row.tuneId || "").trim().toLowerCase(),
+    entrySessionProfile: normalizeSession(row.entrySessionProfile),
+    enabled: Boolean(row.enabled),
+    liveMode: normalizeLiveMode(row.liveMode),
+    promotionGate: asRecord(row.promotionGate),
+    riskProfile: normalizeRiskProfile(row.riskProfile),
+    createdAtMs: toMs(row.createdAt),
+    updatedAtMs: toMs(row.updatedAt),
+  };
+}
+
 export async function setScalpV2DeploymentEnabled(params: {
   deploymentId: string;
   enabled: boolean;
@@ -1017,10 +1090,10 @@ export async function appendScalpV2LedgerRow(row: {
   sourceOfTruth: ScalpV2SourceOfTruth;
   reasonCodes: string[];
   rawPayload: Record<string, unknown>;
-}): Promise<void> {
-  if (!isScalpPgConfigured()) return;
+}): Promise<boolean> {
+  if (!isScalpPgConfigured()) return false;
   const db = scalpPrisma();
-  await db.$executeRaw(sql`
+  const inserted = await db.$queryRaw<Array<{ id: string }>>(sql`
     INSERT INTO scalp_v2_ledger(
       id,
       ts_exit,
@@ -1059,8 +1132,10 @@ export async function appendScalpV2LedgerRow(row: {
       NOW()
     )
     ON CONFLICT(id)
-    DO NOTHING;
+    DO NOTHING
+    RETURNING id;
   `);
+  return inserted.length > 0;
 }
 
 export async function listScalpV2LedgerRows(params: {
@@ -1326,6 +1401,130 @@ export async function listScalpV2ExecutionEvents(params: {
     sourceOfTruth: normalizeSourceOfTruth(row.sourceOfTruth),
     rawPayload: asRecord(row.rawPayload),
   }));
+}
+
+export async function loadScalpV2SessionState(params: {
+  deploymentId: string;
+  dayKey: string;
+}): Promise<ScalpSessionState | null> {
+  const deploymentId = String(params.deploymentId || "").trim();
+  const dayKey = String(params.dayKey || "").trim();
+  if (!deploymentId || !dayKey || !isScalpPgConfigured()) return null;
+  const db = scalpPrisma();
+  const [row] = await db.$queryRaw<
+    Array<{
+      stateJson: unknown;
+    }>
+  >(sql`
+    SELECT state_json AS "stateJson"
+    FROM scalp_v2_sessions
+    WHERE deployment_id = ${deploymentId}
+      AND day_key = ${dayKey}::date
+    LIMIT 1;
+  `);
+  if (!row || !row.stateJson || typeof row.stateJson !== "object") return null;
+  const state = row.stateJson as ScalpSessionState;
+  return {
+    ...state,
+    version: 2,
+  };
+}
+
+export async function upsertScalpV2SessionState(
+  state: ScalpSessionState,
+): Promise<void> {
+  if (!isScalpPgConfigured()) return;
+  const deploymentId = String(state.deploymentId || "").trim();
+  const dayKey = String(state.dayKey || "").trim();
+  if (!deploymentId || !dayKey) return;
+  const db = scalpPrisma();
+  const lastReasonCodes = normalizeReasonCodes(state.run?.lastReasonCodes || []);
+  await db.$executeRaw(sql`
+    INSERT INTO scalp_v2_sessions(
+      deployment_id,
+      day_key,
+      state_json,
+      last_reason_codes,
+      updated_at
+    ) VALUES (
+      ${deploymentId},
+      ${dayKey}::date,
+      ${JSON.stringify({ ...state, version: 2 })}::jsonb,
+      ${lastReasonCodes},
+      NOW()
+    )
+    ON CONFLICT(deployment_id, day_key)
+    DO UPDATE SET
+      state_json = EXCLUDED.state_json,
+      last_reason_codes = EXCLUDED.last_reason_codes,
+      updated_at = NOW();
+  `);
+}
+
+export async function appendScalpV2JournalEntry(params: {
+  entry: ScalpJournalEntry;
+  deploymentId?: string | null;
+  venue?: ScalpV2Venue | null;
+  strategyId?: string | null;
+  tuneId?: string | null;
+  entrySessionProfile?: ScalpV2Session | null;
+}): Promise<boolean> {
+  if (!isScalpPgConfigured()) return false;
+  const entry = params.entry;
+  const id = String(entry?.id || "").trim();
+  if (!id) return false;
+  const levelRaw = String(entry?.level || "info")
+    .trim()
+    .toLowerCase();
+  const level = levelRaw === "warn" || levelRaw === "error" ? levelRaw : "info";
+  const tsMs = Math.floor(
+    Number.isFinite(Number(entry?.timestampMs))
+      ? Number(entry.timestampMs)
+      : Date.now(),
+  );
+  const symbol = entry?.symbol ? String(entry.symbol).trim().toUpperCase() : null;
+  const dayKey = entry?.dayKey ? String(entry.dayKey).trim() : null;
+  const deploymentId = String(params.deploymentId || "").trim() || null;
+  const payload = asRecord(entry?.payload);
+  const [row] = await scalpPrisma().$queryRaw<
+    Array<{ id: string }>
+  >(sql`
+    INSERT INTO scalp_v2_journal(
+      id,
+      ts,
+      deployment_id,
+      venue,
+      symbol,
+      strategy_id,
+      tune_id,
+      entry_session_profile,
+      day_key,
+      level,
+      type,
+      reason_codes,
+      payload,
+      created_at
+    ) VALUES (
+      ${id},
+      TO_TIMESTAMP(${tsMs} / 1000.0),
+      ${deploymentId},
+      ${params.venue || null},
+      ${symbol},
+      ${params.strategyId || null},
+      ${params.tuneId || null},
+      ${params.entrySessionProfile || null},
+      ${dayKey ? sql`${dayKey}::date` : sql`NULL`},
+      ${level},
+      ${normalizeJournalType(entry?.type)},
+      ${normalizeReasonCodes(entry?.reasonCodes || [])},
+      ${JSON.stringify(payload)}::jsonb,
+      NOW()
+    )
+    ON CONFLICT(id)
+    DO NOTHING
+    RETURNING id;
+  `);
+  return Boolean(row?.id);
 }
 
 export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
@@ -1858,10 +2057,14 @@ export async function listScalpV2ResearchHighlights(params: {
 export async function importV1LedgerIntoScalpV2(params: {
   limit?: number;
 } = {}): Promise<{
-  imported: number;
+  processed: number;
+  inserted: number;
+  updated: number;
   skipped: number;
 }> {
-  if (!isScalpPgConfigured()) return { imported: 0, skipped: 0 };
+  if (!isScalpPgConfigured()) {
+    return { processed: 0, inserted: 0, updated: 0, skipped: 0 };
+  }
   const db = scalpPrisma();
   const limit = Math.max(1, Math.min(200_000, Math.floor(params.limit || 50_000)));
 
@@ -1891,35 +2094,66 @@ export async function importV1LedgerIntoScalpV2(params: {
     LIMIT ${limit};
   `);
 
-  let imported = 0;
-  let skipped = 0;
-
-  for (const row of rows) {
-    const deployment = await db.$queryRaw<
-      Array<{ venue: string; entrySessionProfile: string }>
+  const deploymentIds = Array.from(
+    new Set(
+      rows
+        .map((row) => String(row.deploymentId || "").trim())
+        .filter(Boolean),
+    ),
+  );
+  const deploymentById = new Map<
+    string,
+    { venue: ScalpV2Venue; entrySessionProfile: ScalpV2Session }
+  >();
+  if (deploymentIds.length) {
+    const deploymentRows = await db.$queryRaw<
+      Array<{ deploymentId: string; venue: string; entrySessionProfile: string }>
     >(sql`
       SELECT
+        deployment_id AS "deploymentId",
         venue,
         entry_session_profile AS "entrySessionProfile"
       FROM scalp_v2_deployments
-      WHERE deployment_id = ${row.deploymentId}
-      LIMIT 1;
+      WHERE deployment_id = ANY(${deploymentIds}::text[]);
     `);
+    for (const row of deploymentRows) {
+      const deploymentId = String(row.deploymentId || "").trim();
+      if (!deploymentId) continue;
+      deploymentById.set(deploymentId, {
+        venue: normalizeVenue(row.venue),
+        entrySessionProfile: normalizeSession(row.entrySessionProfile),
+      });
+    }
+  }
 
-    const venue = deployment[0]?.venue
-      ? normalizeVenue(deployment[0].venue)
+  const inferSessionFromDeploymentId = (deploymentIdRaw: string): ScalpV2Session => {
+    const deploymentId = String(deploymentIdRaw || "").trim().toLowerCase();
+    const match = deploymentId.match(/__sp_([a-z]+)/);
+    if (!match?.[1]) return "berlin";
+    return normalizeSession(match[1]);
+  };
+
+  let inserted = 0;
+  let skipped = 0;
+
+  for (const row of rows) {
+    const deploymentId = String(row.deploymentId || "").trim();
+    const deployment = deploymentById.get(deploymentId);
+    const venue = deployment?.venue
+      ? deployment.venue
       : String(row.deploymentId || "").toLowerCase().startsWith("capital:")
         ? "capital"
         : "bitget";
-    const entrySessionProfile = normalizeSession(deployment[0]?.entrySessionProfile || "berlin");
+    const entrySessionProfile =
+      deployment?.entrySessionProfile || inferSessionFromDeploymentId(deploymentId);
     const reasonCodes = normalizeReasonCodes(row.reasonCodes || []);
     const closeType = deriveCloseTypeFromReasonCodes(reasonCodes);
 
     try {
-      await appendScalpV2LedgerRow({
+      const wasInserted = await appendScalpV2LedgerRow({
         id: row.id,
         tsExitMs: Number(row.exitAtMs || Date.now()),
-        deploymentId: String(row.deploymentId || "").trim(),
+        deploymentId,
         venue,
         symbol: String(row.symbol || "").trim().toUpperCase(),
         strategyId: String(row.strategyId || "").trim().toLowerCase(),
@@ -1934,13 +2168,354 @@ export async function importV1LedgerIntoScalpV2(params: {
         reasonCodes,
         rawPayload: { importedFrom: "scalp_trade_ledger" },
       });
-      imported += 1;
+      if (wasInserted) inserted += 1;
+      else skipped += 1;
     } catch {
       skipped += 1;
     }
   }
 
-  return { imported, skipped };
+  return {
+    processed: rows.length,
+    inserted,
+    updated: 0,
+    skipped,
+  };
+}
+
+type ScalpV2DeploymentIdentity = {
+  deploymentId: string;
+  venue: ScalpV2Venue;
+  symbol: string;
+  strategyId: string;
+  tuneId: string;
+  entrySessionProfile: ScalpV2Session;
+};
+
+async function loadScalpV2DeploymentIdentityMap(): Promise<
+  Map<string, ScalpV2DeploymentIdentity>
+> {
+  const map = new Map<string, ScalpV2DeploymentIdentity>();
+  if (!isScalpPgConfigured()) return map;
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<
+    Array<{
+      deploymentId: string;
+      venue: string;
+      symbol: string;
+      strategyId: string;
+      tuneId: string;
+      entrySessionProfile: string;
+    }>
+  >(sql`
+    SELECT
+      deployment_id AS "deploymentId",
+      venue,
+      symbol,
+      strategy_id AS "strategyId",
+      tune_id AS "tuneId",
+      entry_session_profile AS "entrySessionProfile"
+    FROM scalp_v2_deployments;
+  `);
+  for (const row of rows) {
+    const deploymentId = String(row.deploymentId || "").trim();
+    if (!deploymentId) continue;
+    map.set(deploymentId, {
+      deploymentId,
+      venue: normalizeVenue(row.venue),
+      symbol: String(row.symbol || "").trim().toUpperCase(),
+      strategyId: String(row.strategyId || "").trim().toLowerCase(),
+      tuneId: String(row.tuneId || "").trim().toLowerCase(),
+      entrySessionProfile: normalizeSession(row.entrySessionProfile),
+    });
+  }
+  return map;
+}
+
+function inferSessionFromTuneOrDeploymentId(value: unknown): ScalpV2Session {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (!raw) return "berlin";
+  const match = raw.match(/__sp_([a-z]+)/);
+  if (!match?.[1]) return "berlin";
+  return normalizeSession(match[1]);
+}
+
+function resolveMappedDeploymentId(params: {
+  candidates: string[];
+  deploymentMap: Map<string, ScalpV2DeploymentIdentity>;
+  venueHint?: unknown;
+  symbolHint?: unknown;
+  strategyIdHint?: unknown;
+  tuneIdHint?: unknown;
+  sessionHint?: unknown;
+}): string | null {
+  for (const candidate of params.candidates) {
+    const deploymentId = String(candidate || "").trim();
+    if (!deploymentId) continue;
+    if (params.deploymentMap.has(deploymentId)) return deploymentId;
+  }
+
+  const symbol = String(params.symbolHint || "")
+    .trim()
+    .toUpperCase();
+  const strategyId = String(params.strategyIdHint || "")
+    .trim()
+    .toLowerCase();
+  const tuneId = String(params.tuneIdHint || "")
+    .trim()
+    .toLowerCase();
+  if (!symbol || !strategyId || !tuneId) return null;
+  const venueHint = String(params.venueHint || "")
+    .trim()
+    .toLowerCase();
+  const venue: ScalpV2Venue = venueHint === "capital" ? "capital" : "bitget";
+  const session = normalizeSession(
+    params.sessionHint || inferSessionFromTuneOrDeploymentId(tuneId),
+  );
+  const inferred = toDeploymentId({
+    venue,
+    symbol,
+    strategyId,
+    tuneId,
+    session,
+  });
+  return params.deploymentMap.has(inferred) ? inferred : null;
+}
+
+export async function importV1SessionsIntoScalpV2(params: {
+  limit?: number;
+} = {}): Promise<{
+  processed: number;
+  inserted: number;
+  updated: number;
+  skipped: number;
+}> {
+  if (!isScalpPgConfigured()) {
+    return { processed: 0, inserted: 0, updated: 0, skipped: 0 };
+  }
+  const db = scalpPrisma();
+  const limit = Math.max(1, Math.min(200_000, Math.floor(params.limit || 50_000)));
+  const deploymentMap = await loadScalpV2DeploymentIdentityMap();
+
+  const rows = await db.$queryRaw<
+    Array<{
+      deploymentId: string;
+      dayKey: string;
+      stateJson: unknown;
+      lastReasonCodes: string[];
+      updatedAtMs: bigint;
+    }>
+  >(sql`
+    SELECT
+      deployment_id AS "deploymentId",
+      TO_CHAR(day_key, 'YYYY-MM-DD') AS "dayKey",
+      state_json AS "stateJson",
+      last_reason_codes AS "lastReasonCodes",
+      (EXTRACT(EPOCH FROM updated_at) * 1000.0)::bigint AS "updatedAtMs"
+    FROM scalp_sessions
+    ORDER BY updated_at DESC
+    LIMIT ${limit};
+  `);
+
+  let inserted = 0;
+  let updated = 0;
+  let skipped = 0;
+
+  for (const row of rows) {
+    const stateJson = asRecord(row.stateJson);
+    const mappedDeploymentId = resolveMappedDeploymentId({
+      candidates: [
+        row.deploymentId,
+        String(stateJson.deploymentId || ""),
+      ],
+      deploymentMap,
+      venueHint: stateJson.venue,
+      symbolHint: stateJson.symbol,
+      strategyIdHint: stateJson.strategyId,
+      tuneIdHint: stateJson.tuneId,
+      sessionHint:
+        stateJson.entrySessionProfile || inferSessionFromTuneOrDeploymentId(stateJson.tuneId),
+    });
+    if (!mappedDeploymentId) {
+      skipped += 1;
+      continue;
+    }
+    const persistedState = {
+      ...stateJson,
+      version: 2,
+      deploymentId: mappedDeploymentId,
+    };
+    const dayKey = String(row.dayKey || "").trim();
+    if (!dayKey) {
+      skipped += 1;
+      continue;
+    }
+    const updatedAtMs = Number.isFinite(Number(row.updatedAtMs))
+      ? Number(row.updatedAtMs)
+      : Date.now();
+    const [result] = await db.$queryRaw<Array<{ inserted: boolean }>>(sql`
+      INSERT INTO scalp_v2_sessions(
+        deployment_id,
+        day_key,
+        state_json,
+        last_reason_codes,
+        updated_at
+      ) VALUES (
+        ${mappedDeploymentId},
+        ${dayKey}::date,
+        ${JSON.stringify(persistedState)}::jsonb,
+        ${normalizeReasonCodes(row.lastReasonCodes || [])},
+        TO_TIMESTAMP(${Math.floor(updatedAtMs)} / 1000.0)
+      )
+      ON CONFLICT(deployment_id, day_key)
+      DO UPDATE SET
+        state_json = EXCLUDED.state_json,
+        last_reason_codes = EXCLUDED.last_reason_codes,
+        updated_at = EXCLUDED.updated_at
+      WHERE
+        scalp_v2_sessions.state_json IS DISTINCT FROM EXCLUDED.state_json
+        OR scalp_v2_sessions.last_reason_codes IS DISTINCT FROM EXCLUDED.last_reason_codes
+        OR scalp_v2_sessions.updated_at IS DISTINCT FROM EXCLUDED.updated_at
+      RETURNING (xmax = 0) AS inserted;
+    `);
+    if (!result) {
+      skipped += 1;
+    } else if (result.inserted) {
+      inserted += 1;
+    } else {
+      updated += 1;
+    }
+  }
+
+  return {
+    processed: rows.length,
+    inserted,
+    updated,
+    skipped,
+  };
+}
+
+export async function importV1JournalIntoScalpV2(params: {
+  limit?: number;
+} = {}): Promise<{
+  processed: number;
+  inserted: number;
+  updated: number;
+  skipped: number;
+}> {
+  if (!isScalpPgConfigured()) {
+    return { processed: 0, inserted: 0, updated: 0, skipped: 0 };
+  }
+  const db = scalpPrisma();
+  const limit = Math.max(1, Math.min(500_000, Math.floor(params.limit || 100_000)));
+  const deploymentMap = await loadScalpV2DeploymentIdentityMap();
+
+  const rows = await db.$queryRaw<
+    Array<{
+      id: string;
+      tsMs: bigint;
+      deploymentId: string | null;
+      symbol: string | null;
+      dayKey: string | null;
+      level: string;
+      type: string;
+      reasonCodes: string[];
+      payload: unknown;
+    }>
+  >(sql`
+    SELECT
+      id::text AS id,
+      (EXTRACT(EPOCH FROM ts) * 1000.0)::bigint AS "tsMs",
+      deployment_id AS "deploymentId",
+      symbol,
+      TO_CHAR(day_key, 'YYYY-MM-DD') AS "dayKey",
+      level,
+      type,
+      reason_codes AS "reasonCodes",
+      payload
+    FROM scalp_journal
+    ORDER BY ts DESC
+    LIMIT ${limit};
+  `);
+
+  let inserted = 0;
+  let skipped = 0;
+
+  for (const row of rows) {
+    const payload = asRecord(row.payload);
+    const mappedDeploymentId = resolveMappedDeploymentId({
+      candidates: [
+        String(row.deploymentId || ""),
+        String(payload.deploymentId || ""),
+      ],
+      deploymentMap,
+      venueHint: payload.venue,
+      symbolHint: payload.symbol || row.symbol,
+      strategyIdHint: payload.strategyId,
+      tuneIdHint: payload.tuneId,
+      sessionHint:
+        payload.entrySessionProfile || inferSessionFromTuneOrDeploymentId(payload.tuneId),
+    });
+    const deployment = mappedDeploymentId
+      ? deploymentMap.get(mappedDeploymentId) || null
+      : null;
+    const tsMs = Number.isFinite(Number(row.tsMs)) ? Number(row.tsMs) : Date.now();
+    const symbol = String(row.symbol || payload.symbol || deployment?.symbol || "")
+      .trim()
+      .toUpperCase();
+    const [insertedRow] = await db.$queryRaw<Array<{ id: string }>>(sql`
+      INSERT INTO scalp_v2_journal(
+        id,
+        ts,
+        deployment_id,
+        venue,
+        symbol,
+        strategy_id,
+        tune_id,
+        entry_session_profile,
+        day_key,
+        level,
+        type,
+        reason_codes,
+        payload,
+        created_at
+      ) VALUES (
+        ${String(row.id || "").trim()},
+        TO_TIMESTAMP(${Math.floor(tsMs)} / 1000.0),
+        ${mappedDeploymentId || null},
+        ${deployment?.venue || null},
+        ${symbol || null},
+        ${deployment?.strategyId || null},
+        ${deployment?.tuneId || null},
+        ${deployment?.entrySessionProfile || null},
+        ${row.dayKey ? sql`${row.dayKey}::date` : sql`NULL`},
+        ${
+          String(row.level || "").trim().toLowerCase() === "warn" ||
+          String(row.level || "").trim().toLowerCase() === "error"
+            ? String(row.level || "").trim().toLowerCase()
+            : "info"
+        },
+        ${normalizeJournalType(row.type)},
+        ${normalizeReasonCodes(row.reasonCodes || [])},
+        ${JSON.stringify(payload)}::jsonb,
+        NOW()
+      )
+      ON CONFLICT(id)
+      DO NOTHING
+      RETURNING id;
+    `);
+    if (insertedRow?.id) inserted += 1;
+    else skipped += 1;
+  }
+
+  return {
+    processed: rows.length,
+    inserted,
+    updated: 0,
+    skipped,
+  };
 }
 
 export function buildScalpV2JobResult(params: {
@@ -2209,20 +2784,94 @@ export async function listScalpV2RecentLedger(params: {
   }));
 }
 
-export async function aggregateScalpV2ParityWindow(params: {
+export async function aggregateScalpV2CutoverParityWindow(params: {
   sinceDays: number;
+  journalLimit?: number;
+  mismatchLimit?: number;
 }): Promise<{
-  v1Trades: number;
-  v1NetR: number;
-  v2Trades: number;
-  v2NetR: number;
+  windowDays: number;
+  ledger: {
+    v1Trades: number;
+    v1NetR: number;
+    v2Trades: number;
+    v2NetR: number;
+    tradeDelta: number;
+    netRDelta: number;
+    deploymentMismatches: Array<{
+      deploymentId: string;
+      v1Trades: number;
+      v1NetR: number;
+      v2Trades: number;
+      v2NetR: number;
+      tradeDelta: number;
+      netRDelta: number;
+    }>;
+  };
+  sessions: {
+    v1Rows: number;
+    v2Rows: number;
+    rowDelta: number;
+    v1LatestUpdatedAtMs: number | null;
+    v2LatestUpdatedAtMs: number | null;
+    v1EnabledRows: number;
+    v2EnabledRows: number;
+  };
+  journal: {
+    sampleLimit: number;
+    v1Rows: number;
+    v2Rows: number;
+    rowDelta: number;
+    v1OldestTsMs: number | null;
+    v1NewestTsMs: number | null;
+    v2OldestTsMs: number | null;
+    v2NewestTsMs: number | null;
+  };
 }> {
+  const sinceDays = Math.max(1, Math.min(3650, Math.floor(params.sinceDays || 30)));
+  const journalLimit = Math.max(
+    100,
+    Math.min(50_000, Math.floor(params.journalLimit || 2_000)),
+  );
+  const mismatchLimit = Math.max(
+    10,
+    Math.min(2_000, Math.floor(params.mismatchLimit || 200)),
+  );
   if (!isScalpPgConfigured()) {
-    return { v1Trades: 0, v1NetR: 0, v2Trades: 0, v2NetR: 0 };
+    return {
+      windowDays: sinceDays,
+      ledger: {
+        v1Trades: 0,
+        v1NetR: 0,
+        v2Trades: 0,
+        v2NetR: 0,
+        tradeDelta: 0,
+        netRDelta: 0,
+        deploymentMismatches: [],
+      },
+      sessions: {
+        v1Rows: 0,
+        v2Rows: 0,
+        rowDelta: 0,
+        v1LatestUpdatedAtMs: null,
+        v2LatestUpdatedAtMs: null,
+        v1EnabledRows: 0,
+        v2EnabledRows: 0,
+      },
+      journal: {
+        sampleLimit: journalLimit,
+        v1Rows: 0,
+        v2Rows: 0,
+        rowDelta: 0,
+        v1OldestTsMs: null,
+        v1NewestTsMs: null,
+        v2OldestTsMs: null,
+        v2NewestTsMs: null,
+      },
+    };
   }
   const db = scalpPrisma();
-  const sinceDays = Math.max(1, Math.min(3650, Math.floor(params.sinceDays || 30)));
-  const [row] = await db.$queryRaw<
+
+  const [ledgerTotals] = await db.$queryRaw<
     Array<{
       v1Trades: bigint;
       v1NetR: number | null;
@@ -2237,11 +2886,203 @@ export async function aggregateScalpV2ParityWindow(params: {
       (SELECT SUM(r_multiple)::double precision FROM scalp_v2_ledger WHERE ts_exit >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v2NetR";
   `);
 
+  const deploymentMismatches = await db.$queryRaw<
+    Array<{
+      deploymentId: string;
+      v1Trades: bigint;
+      v1NetR: number | null;
+      v2Trades: bigint;
+      v2NetR: number | null;
+    }>
+  >(sql`
+    WITH v1 AS (
+      SELECT
+        deployment_id AS deployment_id,
+        COUNT(*)::bigint AS trades,
+        COALESCE(SUM(r_multiple), 0)::double precision AS net_r
+      FROM scalp_trade_ledger
+      WHERE exit_at >= NOW() - (${sinceDays} * INTERVAL '1 day')
+      GROUP BY deployment_id
+    ),
+    v2 AS (
+      SELECT
+        deployment_id AS deployment_id,
+        COUNT(*)::bigint AS trades,
+        COALESCE(SUM(r_multiple), 0)::double precision AS net_r
+      FROM scalp_v2_ledger
+      WHERE ts_exit >= NOW() - (${sinceDays} * INTERVAL '1 day')
+      GROUP BY deployment_id
+    )
+    SELECT
+      COALESCE(v1.deployment_id, v2.deployment_id) AS "deploymentId",
+      COALESCE(v1.trades, 0)::bigint AS "v1Trades",
+      COALESCE(v1.net_r, 0)::double precision AS "v1NetR",
+      COALESCE(v2.trades, 0)::bigint AS "v2Trades",
+      COALESCE(v2.net_r, 0)::double precision AS "v2NetR"
+    FROM v1
+    FULL OUTER JOIN v2
+      ON v1.deployment_id = v2.deployment_id
+    WHERE
+      COALESCE(v1.trades, 0) <> COALESCE(v2.trades, 0)
+      OR ABS(COALESCE(v1.net_r, 0) - COALESCE(v2.net_r, 0)) > 1e-9
+    ORDER BY
+      ABS(COALESCE(v1.net_r, 0) - COALESCE(v2.net_r, 0)) DESC,
+      ABS(COALESCE(v1.trades, 0) - COALESCE(v2.trades, 0)) DESC
+    LIMIT ${mismatchLimit};
+  `);
+
+  const [sessionsTotals] = await db.$queryRaw<
+    Array<{
+      v1Rows: bigint;
+      v2Rows: bigint;
+      v1LatestUpdatedAtMs: bigint | null;
+      v2LatestUpdatedAtMs: bigint | null;
+      v1EnabledRows: bigint;
+      v2EnabledRows: bigint;
+    }>
+  >(sql`
+    SELECT
+      (SELECT COUNT(*)::bigint FROM scalp_sessions WHERE updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v1Rows",
+      (SELECT COUNT(*)::bigint FROM scalp_v2_sessions WHERE updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v2Rows",
+      (SELECT (EXTRACT(EPOCH FROM MAX(updated_at)) * 1000.0)::bigint FROM scalp_sessions WHERE updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v1LatestUpdatedAtMs",
+      (SELECT (EXTRACT(EPOCH FROM MAX(updated_at)) * 1000.0)::bigint FROM scalp_v2_sessions WHERE updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')) AS "v2LatestUpdatedAtMs",
+      (
+        SELECT COUNT(*)::bigint
+        FROM scalp_sessions s
+        INNER JOIN scalp_v2_deployments d ON d.deployment_id = s.deployment_id
+        WHERE d.enabled = TRUE
+          AND s.updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')
+      ) AS "v1EnabledRows",
+      (
+        SELECT COUNT(*)::bigint
+        FROM scalp_v2_sessions s
+        INNER JOIN scalp_v2_deployments d ON d.deployment_id = s.deployment_id
+        WHERE d.enabled = TRUE
+          AND s.updated_at >= NOW() - (${sinceDays} * INTERVAL '1 day')
+      ) AS "v2EnabledRows";
+  `);
+
+  const [v1JournalEnvelope] = await db.$queryRaw<
+    Array<{ rows: bigint; oldestTsMs: bigint | null; newestTsMs: bigint | null }>
+  >(sql`
+    WITH sample AS (
+      SELECT ts
+      FROM scalp_journal
+      ORDER BY ts DESC
+      LIMIT ${journalLimit}
+    )
+    SELECT
+      COUNT(*)::bigint AS rows,
+      (EXTRACT(EPOCH FROM MIN(ts)) * 1000.0)::bigint AS "oldestTsMs",
+      (EXTRACT(EPOCH FROM MAX(ts)) * 1000.0)::bigint AS "newestTsMs"
+    FROM sample;
+  `);
+  const [v2JournalEnvelope] = await db.$queryRaw<
+    Array<{ rows: bigint; oldestTsMs: bigint | null; newestTsMs: bigint | null }>
+  >(sql`
+    WITH sample AS (
+      SELECT ts
+      FROM scalp_v2_journal
+      ORDER BY ts DESC
+      LIMIT ${journalLimit}
+    )
+    SELECT
+      COUNT(*)::bigint AS rows,
+      (EXTRACT(EPOCH FROM MIN(ts)) * 1000.0)::bigint AS "oldestTsMs",
+      (EXTRACT(EPOCH FROM MAX(ts)) * 1000.0)::bigint AS "newestTsMs"
+    FROM sample;
+  `);
+
+  const v1Trades = Number(ledgerTotals?.v1Trades || 0);
+  const v1NetR = Number.isFinite(Number(ledgerTotals?.v1NetR))
+    ? Number(ledgerTotals?.v1NetR)
+    : 0;
+  const v2Trades = Number(ledgerTotals?.v2Trades || 0);
+  const v2NetR = Number.isFinite(Number(ledgerTotals?.v2NetR))
+    ? Number(ledgerTotals?.v2NetR)
+    : 0;
+
   return {
-    v1Trades: Number(row?.v1Trades || 0),
-    v1NetR: Number.isFinite(Number(row?.v1NetR)) ? Number(row?.v1NetR) : 0,
-    v2Trades: Number(row?.v2Trades || 0),
-    v2NetR: Number.isFinite(Number(row?.v2NetR)) ? Number(row?.v2NetR) : 0,
+    windowDays: sinceDays,
+    ledger: {
+      v1Trades,
+      v1NetR,
+      v2Trades,
+      v2NetR,
+      tradeDelta: v2Trades - v1Trades,
+      netRDelta: v2NetR - v1NetR,
+      deploymentMismatches: deploymentMismatches.map((row) => {
+        const perV1Trades = Number(row.v1Trades || 0);
+        const perV2Trades = Number(row.v2Trades || 0);
+        const perV1NetR = Number.isFinite(Number(row.v1NetR))
+          ? Number(row.v1NetR)
+          : 0;
+        const perV2NetR = Number.isFinite(Number(row.v2NetR))
+          ? Number(row.v2NetR)
+          : 0;
+        return {
+          deploymentId: String(row.deploymentId || "").trim(),
+          v1Trades: perV1Trades,
+          v1NetR: perV1NetR,
+          v2Trades: perV2Trades,
+          v2NetR: perV2NetR,
+          tradeDelta: perV2Trades - perV1Trades,
+          netRDelta: perV2NetR - perV1NetR,
+        };
+      }),
+    },
+    sessions: {
+      v1Rows: Number(sessionsTotals?.v1Rows || 0),
+      v2Rows: Number(sessionsTotals?.v2Rows || 0),
+      rowDelta: Number(sessionsTotals?.v2Rows || 0) - Number(sessionsTotals?.v1Rows || 0),
+      v1LatestUpdatedAtMs: sessionsTotals?.v1LatestUpdatedAtMs
+        ? Number(sessionsTotals.v1LatestUpdatedAtMs)
+        : null,
+      v2LatestUpdatedAtMs: sessionsTotals?.v2LatestUpdatedAtMs
+        ? Number(sessionsTotals.v2LatestUpdatedAtMs)
+        : null,
+      v1EnabledRows: Number(sessionsTotals?.v1EnabledRows || 0),
+      v2EnabledRows: Number(sessionsTotals?.v2EnabledRows || 0),
+    },
+    journal: {
+      sampleLimit: journalLimit,
+      v1Rows: Number(v1JournalEnvelope?.rows || 0),
+      v2Rows: Number(v2JournalEnvelope?.rows || 0),
+      rowDelta: Number(v2JournalEnvelope?.rows || 0) - Number(v1JournalEnvelope?.rows || 0),
+      v1OldestTsMs: v1JournalEnvelope?.oldestTsMs
+        ? Number(v1JournalEnvelope.oldestTsMs)
+        : null,
+      v1NewestTsMs: v1JournalEnvelope?.newestTsMs
+        ? Number(v1JournalEnvelope.newestTsMs)
+        : null,
+      v2OldestTsMs: v2JournalEnvelope?.oldestTsMs
+        ? Number(v2JournalEnvelope.oldestTsMs)
+        : null,
+      v2NewestTsMs: v2JournalEnvelope?.newestTsMs
+        ? Number(v2JournalEnvelope.newestTsMs)
+        : null,
+    },
+  };
+}
+
+export async function aggregateScalpV2ParityWindow(params: {
+  sinceDays: number;
+}): Promise<{
+  v1Trades: number;
+  v1NetR: number;
+  v2Trades: number;
+  v2NetR: number;
+}> {
+  const parity = await aggregateScalpV2CutoverParityWindow({
+    sinceDays: params.sinceDays,
+    journalLimit: 100,
+    mismatchLimit: 20,
+  });
+  return {
+    v1Trades: parity.ledger.v1Trades,
+    v1NetR: parity.ledger.v1NetR,
+    v2Trades: parity.ledger.v2Trades,
+    v2NetR: parity.ledger.v2NetR,
   };
 }
 

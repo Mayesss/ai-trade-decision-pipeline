@@ -5,6 +5,7 @@ import { loadScalpCandleHistoryInRange } from "../scalp/candleHistory";
 import { pipSizeForScalpSymbol } from "../scalp/marketData";
 import { loadScalpSymbolMarketMetadataBulk } from "../scalp/symbolMarketMetadataStore";
 import type { ScalpSymbolMarketMetadata } from "../scalp/symbolMarketMetadata";
+import type { ScalpStrategyRuntimeSnapshot } from "../scalp/store";
 import {
   defaultScalpReplayConfig,
   runScalpReplay,
@@ -44,6 +45,7 @@ import {
 } from "./stateMachinePresets";
 import { buildScalpV2ExecuteConfigOverride } from "./executeConfigOverride";
 import { runScalpV2ExecuteCycle } from "./executeAdapter";
+import { createScalpV2ExecutionPersistenceAdapter } from "./executionPersistence";
 import {
   appendScalpV2ExecutionEvent,
   buildScalpV2JobResult,
@@ -3146,6 +3148,29 @@ function pickCapitalSnapshotBySymbol(
   return snapshots.find((row) => String(row.epic || "").trim().toUpperCase() === target) || null;
 }
 
+function buildScalpV2RuntimeSnapshotForDeployment(params: {
+  strategyId: string;
+}): ScalpStrategyRuntimeSnapshot {
+  const strategyId = String(params.strategyId || "").trim().toLowerCase();
+  const now = Date.now();
+  const strategy = {
+    strategyId,
+    shortName: strategyId || "scalp_v2",
+    longName: strategyId || "scalp_v2",
+    enabled: true,
+    envEnabled: true,
+    kvEnabled: true,
+    updatedAtMs: now,
+    updatedBy: "scalp_v2_runtime",
+  };
+  return {
+    defaultStrategyId: strategyId,
+    strategyId,
+    strategy,
+    strategies: [strategy],
+  };
+}
+
 export async function runScalpV2ExecuteJob(params: {
   dryRun?: boolean;
   session?: ScalpV2Session;
@@ -3248,6 +3273,12 @@ export async function runScalpV2ExecuteJob(params: {
           riskProfile: rp,
           stateMachineOverrides: smOverrides,
         });
+        const runtimeSnapshot = buildScalpV2RuntimeSnapshotForDeployment({
+          strategyId: deployment.strategyId,
+        });
+        const persistence = createScalpV2ExecutionPersistenceAdapter({
+          runtimeSnapshot,
+        });
         const result = await runScalpV2ExecuteCycle({
           venue: deployment.venue,
           symbol: deployment.symbol,
@@ -3256,6 +3287,8 @@ export async function runScalpV2ExecuteJob(params: {
           deploymentId: deployment.deploymentId,
           dryRun: deploymentDryRun,
           configOverride,
+          runtimeSnapshot,
+          persistence,
         });
 
         await appendScalpV2ExecutionEvent(

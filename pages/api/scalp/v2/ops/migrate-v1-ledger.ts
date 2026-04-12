@@ -7,7 +7,7 @@ import {
   parseIntBounded,
   setNoStoreHeaders,
 } from "../../../../../lib/scalp-v2/http";
-import { runScalpV2LedgerMigration } from "../../../../../lib/scalp-v2/migration";
+import { runScalpV2CutoverMigration } from "../../../../../lib/scalp-v2/migration";
 
 export default async function handler(
   req: NextApiRequest,
@@ -24,15 +24,26 @@ export default async function handler(
   try {
     const limit = parseIntBounded(req.query.limit, 50_000, 100, 500_000);
     const parityWindowDays = parseIntBounded(req.query.parityDays, 30, 1, 3650);
-    const out = await runScalpV2LedgerMigration({
+    const journalParityLimit = parseIntBounded(
+      req.query.journalParityLimit,
+      2_000,
+      100,
+      50_000,
+    );
+    const out = await runScalpV2CutoverMigration({
       limit,
       parityWindowDays,
+      journalParityLimit,
     });
 
-    return res.status(200).json({ ok: true, ...out });
+    return res.status(200).json({
+      ok: true,
+      operation: "v2_cutover_migration",
+      ...out,
+    });
   } catch (err: any) {
     return res.status(500).json({
-      error: "scalp_v2_migrate_v1_ledger_failed",
+      error: "scalp_v2_cutover_migration_failed",
       message: err?.message || String(err),
     });
   }

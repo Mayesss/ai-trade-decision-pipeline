@@ -18,15 +18,7 @@ import { getDefaultScalpStrategy, getScalpStrategyById, getScalpStrategyPreferre
 import { applySymbolGuardRiskDefaultsToStrategyConfig } from './strategies/guardDefaults';
 import { advanceScalpStateMachine, createInitialScalpSessionState, deriveScalpDayKey } from './stateMachine';
 import { isModelGuidedComposerStrategyId, resolveScalpExecutionStrategyId } from '../scalp-v2/composerExecution';
-import {
-    appendScalpTradeLedgerEntry,
-    appendScalpJournal,
-    loadScalpSessionState,
-    loadScalpStrategyRuntimeSnapshot,
-    releaseScalpRunLock,
-    saveScalpSessionState,
-    tryAcquireScalpRunLock,
-} from './store';
+import { defaultScalpExecutionPersistenceAdapter, type ScalpExecutionPersistenceAdapter } from './persistence';
 import { appendScalpAdaptiveSelectorDecisions, getScalpAdaptiveActiveSnapshot } from './pg/adaptive';
 import type { ScalpStrategyRuntimeSnapshot } from './store';
 import type {
@@ -58,17 +50,24 @@ function journalEntry(params: {
     };
 }
 
-async function safeAppendJournal(entry: ScalpJournalEntry, maxRows: number): Promise<void> {
+async function safeAppendJournal(
+    persistence: ScalpExecutionPersistenceAdapter,
+    entry: ScalpJournalEntry,
+    maxRows: number,
+): Promise<void> {
     try {
-        await appendScalpJournal(entry, maxRows);
+        await persistence.appendJournal(entry, maxRows);
     } catch (err) {
         console.warn('Failed to append scalp journal:', err);
     }
 }
 
-async function safeAppendTradeLedgerEntry(entry: ScalpTradeLedgerEntry): Promise<void> {
+async function safeAppendTradeLedgerEntry(
+    persistence: ScalpExecutionPersistenceAdapter,
+    entry: ScalpTradeLedgerEntry,
+): Promise<void> {
     try {
-        await appendScalpTradeLedgerEntry(entry);
+        await persistence.appendTradeLedgerEntry(entry);
     } catch (err) {
         console.warn('Failed to append scalp trade ledger entry:', err);
     }
@@ -160,6 +159,7 @@ export async function runScalpExecuteCycle(opts: {
     debug?: boolean;
     marketSnapshotCache?: Map<string, ScalpMarketSnapshot>;
     runtimeSnapshot?: ScalpStrategyRuntimeSnapshot;
+    persistence?: ScalpExecutionPersistenceAdapter;
     brokerPositionSnapshots?: ScalpBrokerPositionSnapshot[];
     skipBrokerSnapshotFetch?: boolean;
 } = {}): Promise<ScalpExecuteCycleResult> {
@@ -171,7 +171,8 @@ export async function runScalpExecuteCycle(opts: {
     const dayKey = deriveScalpDayKey(nowMs, cfg.sessions.clockMode);
     const runId = crypto.randomUUID();
     const debug = Boolean(opts.debug);
-    const runtime = opts.runtimeSnapshot || (await loadScalpStrategyRuntimeSnapshot(cfg.enabled, opts.strategyId));
+    const persistence = opts.persistence || defaultScalpExecutionPersistenceAdapter;
+    const runtime = opts.runtimeSnapshot || (await persistence.loadRuntimeSnapshot(cfg.enabled, opts.strategyId));
     const requestedStrategyId = String(opts.strategyId || '')
         .trim()
         .toLowerCase();
@@ -259,6 +260,7 @@ export async function runScalpExecuteCycle(opts: {
             ? ['SCALP_ENGINE_DISABLED', 'SCALP_STRATEGY_DISABLED_BY_KV']
             : ['SCALP_ENGINE_DISABLED', 'SCALP_ENGINE_DISABLED_BY_ENV'];
         await safeAppendJournal(
+            persistence,
             journalEntry({
                 type: 'execution',
                 symbol,
@@ -294,7 +296,7 @@ export async function runScalpExecuteCycle(opts: {
         };
     }
 
-    const runLockAcquired = await tryAcquireScalpRunLock(symbol, runId, cfg.idempotency.runLockSeconds, strategyId, {
+    const runLockAcquired = await persistence.tryAcquireRunLock(symbol, runId, cfg.idempotency.runLockSeconds, strategyId, {
         venue: deployment.venue,
         tuneId: deployment.tuneId,
         deploymentId: deployment.deploymentId,
@@ -303,6 +305,7 @@ export async function runScalpExecuteCycle(opts: {
     if (!runLockAcquired) {
         const reasonCodes = ['SCALP_RUN_LOCK_ACTIVE'];
         await safeAppendJournal(
+            persistence,
             journalEntry({
                 type: 'execution',
                 symbol,
@@ -336,7 +339,7 @@ export async function runScalpExecuteCycle(opts: {
     }
 
     try {
-        const loadedState = await loadScalpSessionState(symbol, dayKey, strategyId, {
+        const loadedState = await persistence.loadSessionState(symbol, dayKey, strategyId, {
             venue: deployment.venue,
             tuneId: deployment.tuneId,
             deploymentId: deployment.deploymentId,
@@ -529,7 +532,7 @@ export async function runScalpExecuteCycle(opts: {
                     tradeEventOccurred = true;
                     const nextRealizedR = Number.isFinite(Number(nextState.stats.realizedR)) ? Number(nextState.stats.realizedR) : priorRealizedR;
                     const totalTradeR = nextRealizedR - priorRealizedR;
-                    await safeAppendTradeLedgerEntry({
+                    await safeAppendTradeLedgerEntry(persistence, {
                         id: crypto.randomUUID(),
                         timestampMs: nowMs,
                         exitAtMs: Number.isFinite(Number(nextState.stats.lastExitAtMs))
@@ -637,6 +640,7 @@ export async function runScalpExecuteCycle(opts: {
             } catch (err: any) {
                 phaseReasonCodes.push('MARKET_DATA_UNAVAILABLE');
                 await safeAppendJournal(
+                    persistence,
                     journalEntry({
                         type: 'risk',
                         symbol,
@@ -685,7 +689,7 @@ export async function runScalpExecuteCycle(opts: {
         const shouldPersistJournal = !persistableNoop;
 
         if (shouldPersistState) {
-            await saveScalpSessionState(nextState, cfg.storage.sessionTtlSeconds, strategyId, {
+            await persistence.saveSessionState(nextState, cfg.storage.sessionTtlSeconds, strategyId, {
                 venue: deployment.venue,
                 tuneId: deployment.tuneId,
                 deploymentId: deployment.deploymentId,
@@ -694,6 +698,7 @@ export async function runScalpExecuteCycle(opts: {
 
         if (shouldPersistJournal) {
             await safeAppendJournal(
+                persistence,
                 journalEntry({
                     type: transition.transitioned ? 'state' : 'execution',
                     symbol: deployment.symbol,
@@ -754,6 +759,7 @@ export async function runScalpExecuteCycle(opts: {
         };
     } catch (err: any) {
         await safeAppendJournal(
+            persistence,
             journalEntry({
                 type: 'error',
                 symbol,
@@ -774,7 +780,7 @@ export async function runScalpExecuteCycle(opts: {
         );
         throw err;
     } finally {
-        await releaseScalpRunLock(symbol, runId, strategyId, {
+        await persistence.releaseRunLock(symbol, runId, strategyId, {
             venue: deployment.venue,
             tuneId: deployment.tuneId,
             deploymentId: deployment.deploymentId,

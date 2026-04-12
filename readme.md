@@ -397,7 +397,7 @@ npm run start
 - `GET /api/scalp/v2/dashboard/summary`
   - V2 monitoring payload: runtime config, summary counters, deployments, events, and recent ledger rows.
 - `GET /api/scalp/v2/ops/state`
-  - V2 ops state + parity aggregates (`v1` vs `v2` trade count/net R over a window) plus phase-1 research cursor/highlight snapshots.
+  - V2 ops state plus phase-1 research cursor/highlight snapshots.
 - `GET /api/scalp/v2/ops/research-primitives`
   - Phase-1 strategy decomposition payload: interpretable primitive catalog, per-strategy primitive references, and bounded candidate DSL preview for a venue/symbol/session.
 - `GET/POST /api/scalp/v2/ops/research-state`
@@ -406,17 +406,9 @@ npm run start
     - Remarkable outcomes only in `scalp_v2_research_highlights`.
   - Supports cursor updates and highlight upserts without storing full sweep traces.
 - `POST /api/scalp/v2/ops/migrate-v1-ledger?limit=50000&parityDays=30`
-  - Imports canonical v1 ledger rows into `scalp_v2_ledger` and returns parity metrics.
-- `GET /api/scalp/cron/live-guardrail-monitor`
-  - Evaluates enabled deployments against live guardrail thresholds (expectancy, drawdown, drift vs forward, churn proxy) and emits risk journal events.
-  - Can auto-pause breached deployments when `autoPause=true`.
-  - Optional query params: `dryRun=true|false`, `autoPause=true|false`, `tradeLimit`, `monthlyMonths`.
-- `GET /api/scalp/cron/housekeeping`
-  - Recovers stale pipeline job rows/locks, prunes old weekly metrics, compacts journal/trade-ledger lists, and prunes orphaned retired deployments.
-  - Optional query params: `dryRun=true|false`, `lockMaxAgeMinutes`, `maxScanKeys`, `cleanupOrphanDeployments=true|false`, `candleHistoryKeepWeeks`, `candleHistoryTimeframe`.
-- `GET /api/scalp/cron/canonicalize-deployments`
-  - One-time/manual canonicalization pass for deployment registry storage (file/KV): rewrites legacy suffixed strategy IDs to root strategy IDs, applies legacy guard tune overrides, and dedupes collisions by latest `updatedAtMs`.
-  - Defaults to `dryRun=true`; use `dryRun=false` to persist the canonical snapshot.
+  - Runs cutover backfill from legacy `scalp_trade_ledger`, `scalp_sessions`, and `scalp_journal` into v2 tables and returns table-level migration counters + parity summary.
+- `GET /api/scalp/cron/*` and `GET /api/scalp/ops/*` (legacy v1)
+  - Retired after full v2 cutover; endpoints return `410 Gone` and migration guidance to `/api/scalp/v2/*`.
 - `GET /api/scalp/research/universe`
   - Returns the latest persisted symbol-discovery snapshot (selected symbols, adds/removes, candidate diagnostics).
 - `GET /api/scalp/dashboard/summary`

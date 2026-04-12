@@ -64,22 +64,22 @@ function normalizeSymbol(value: unknown): string {
     .replace(/[^A-Z0-9._-]/g, "");
 }
 
-function collectRuntimeScopeSymbols(params: {
+function collectRuntimeScopes(params: {
   supportedVenues: ScalpV2Venue[];
   seedSymbolsByVenue: Record<ScalpV2Venue, string[]>;
   seedLiveSymbolsByVenue: Record<ScalpV2Venue, string[]>;
-}): string[] {
-  const out = new Set<string>();
+}): Array<{ venue: ScalpV2Venue; symbol: string }> {
+  const out = new Map<string, { venue: ScalpV2Venue; symbol: string }>();
   for (const venue of params.supportedVenues) {
     const seedSymbols = params.seedSymbolsByVenue[venue] || [];
     const liveSymbols = params.seedLiveSymbolsByVenue[venue] || [];
     for (const symbol of [...seedSymbols, ...liveSymbols]) {
       const normalized = normalizeSymbol(symbol);
       if (!normalized) continue;
-      out.add(normalized);
+      out.set(`${venue}:${normalized}`, { venue, symbol: normalized });
     }
   }
-  return Array.from(out);
+  return Array.from(out.values());
 }
 
 function setNoStoreHeaders(res: NextApiResponse): void {
@@ -122,7 +122,7 @@ export default async function handler(
     hardCaps.maxSelfHops,
   );
   const runtime = await loadScalpV2RuntimeConfig();
-  const symbolScope = collectRuntimeScopeSymbols({
+  const scope = collectRuntimeScopes({
     supportedVenues: runtime.supportedVenues,
     seedSymbolsByVenue: runtime.seedSymbolsByVenue,
     seedLiveSymbolsByVenue: runtime.seedLiveSymbolsByVenue,
@@ -131,7 +131,7 @@ export default async function handler(
   const result = await runScalpV2LoadCandlesPipelineJob({
     batchSize,
     maxAttempts,
-    symbols: symbolScope,
+    scopes: scope,
   });
 
   let downstream: ScalpV2CronInvokeResult | null = null;
@@ -198,7 +198,7 @@ export default async function handler(
       autoContinue,
       successor,
       successorDryRun,
-      symbolScope,
+      symbolScope: scope.map((row) => `${row.venue}:${row.symbol}`),
       selfHop,
       selfMaxHops,
       maintenanceOnly: !autoSuccessor,

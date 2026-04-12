@@ -1,11 +1,12 @@
-export const config = { runtime: 'nodejs' };
+export const config = { runtime: "nodejs" };
 
-import type { NextApiRequest, NextApiResponse } from 'next';
+import type { NextApiRequest, NextApiResponse } from "next";
 
-import { runExecuteDeploymentsPg } from '../../../../lib/scalp/executeDeploymentsPg';
+import { respondScalpLegacyRetired } from "../../../../lib/scalp-v2/legacyRetired";
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-    return runExecuteDeploymentsPg(req, res, {
-        strictPgRequired: true,
-    });
+export default async function handler(
+  _req: NextApiRequest,
+  res: NextApiResponse,
+) {
+  return respondScalpLegacyRetired(res, "/api/scalp/cron/execute-deployments");
 }

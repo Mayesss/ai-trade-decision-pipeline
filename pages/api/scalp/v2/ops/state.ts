@@ -4,7 +4,6 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
 import {
-  aggregateScalpV2ParityWindow,
   listScalpV2Candidates,
   listScalpV2Deployments,
   listScalpV2ResearchCursors,
@@ -31,14 +30,12 @@ export default async function handler(
 
   try {
     const limit = parseIntBounded(req.query.limit, 500, 20, 5_000);
-    const parityDays = parseIntBounded(req.query.parityDays, 30, 1, 3650);
 
-    const [runtime, summary, candidates, deployments, parity, researchCursors, researchHighlights] = await Promise.all([
+    const [runtime, summary, candidates, deployments, researchCursors, researchHighlights] = await Promise.all([
       loadScalpV2RuntimeConfig(),
       loadScalpV2Summary(),
       listScalpV2Candidates({ limit }),
       listScalpV2Deployments({ limit }),
-      aggregateScalpV2ParityWindow({ sinceDays: parityDays }),
       listScalpV2ResearchCursors({ limit: Math.min(limit, 500) }),
       listScalpV2ResearchHighlights({ limit: Math.min(limit, 500) }),
     ]);
@@ -55,7 +52,6 @@ export default async function handler(
         researchCursors: researchCursors.length,
         researchHighlights: researchHighlights.length,
       },
-      parity,
       research: {
         cursors: researchCursors,
         highlights: researchHighlights.slice(0, 50),

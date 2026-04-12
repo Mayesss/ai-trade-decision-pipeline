@@ -19,17 +19,12 @@ type MockRes = {
   json: (payload: unknown) => MockRes;
 };
 
-function createReq(
-  pathname: string,
-  query: Record<string, string>,
-  opts: { method?: string; headers?: Record<string, string> } = {},
-): MockReq {
-  const search = new URLSearchParams(query).toString();
+function createReq(pathname: string): MockReq {
   return {
-    method: opts.method || "GET",
-    url: search ? `${pathname}?${search}` : pathname,
-    headers: opts.headers || {},
-    query,
+    method: "GET",
+    url: pathname,
+    headers: {},
+    query: {},
   };
 }
 
@@ -57,65 +52,12 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-test("promotion diagnostics route does not require admin auth header", async () => {
-  const originalSecret = process.env.ADMIN_ACCESS_SECRET;
-  try {
-    process.env.ADMIN_ACCESS_SECRET = "secret_test_value";
-    const req = createReq("/api/scalp/ops/promotion-diagnostics", {
-      scope: "actionable",
-      session: "berlin",
-    });
-    const res = createRes();
-    await handler(req as any, res as any);
-    assert.notEqual(res.statusCode, 401);
-    assert.notEqual(asRecord(res.body).error, "Unauthorized");
-  } finally {
-    if (originalSecret === undefined) delete process.env.ADMIN_ACCESS_SECRET;
-    else process.env.ADMIN_ACCESS_SECRET = originalSecret;
-  }
-});
-
-test("promotion diagnostics route validates scope and session filters", async () => {
-  const invalidScopeReq = createReq("/api/scalp/ops/promotion-diagnostics", {
-    scope: "bad",
-    session: "berlin",
-  });
-  const invalidScopeRes = createRes();
-  await handler(invalidScopeReq as any, invalidScopeRes as any);
-  assert.equal(invalidScopeRes.statusCode, 400);
-  assert.equal(asRecord(invalidScopeRes.body).error, "invalid_scope");
-
-  const invalidSessionReq = createReq("/api/scalp/ops/promotion-diagnostics", {
-    scope: "actionable",
-    session: "invalid",
-  });
-  const invalidSessionRes = createRes();
-  await handler(invalidSessionReq as any, invalidSessionRes as any);
-  assert.equal(invalidSessionRes.statusCode, 400);
-  assert.equal(asRecord(invalidSessionRes.body).error, "invalid_session");
-});
-
-test("promotion diagnostics route allows omitted session filter", async () => {
-  const req = createReq("/api/scalp/ops/promotion-diagnostics", {
-    scope: "actionable",
-  });
+test("legacy promotion diagnostics ops route is retired in v2 cutover", async () => {
+  const req = createReq("/api/scalp/ops/promotion-diagnostics");
   const res = createRes();
   await handler(req as any, res as any);
   const body = asRecord(res.body);
-  assert.notEqual(body.error, "invalid_session");
-  if (res.statusCode === 200) {
-    assert.equal(body.sessionScope, "all");
-    assert.equal(body.entrySessionProfile, null);
-  }
-});
-
-test("promotion diagnostics route only accepts GET", async () => {
-  const req = createReq(
-    "/api/scalp/ops/promotion-diagnostics",
-    {},
-    { method: "POST" },
-  );
-  const res = createRes();
-  await handler(req as any, res as any);
-  assert.equal(res.statusCode, 405);
+  assert.equal(res.statusCode, 410);
+  assert.equal(body.error, "scalp_legacy_retired");
+  assert.equal(body.migrationPath, "/api/scalp/v2/*");
 });

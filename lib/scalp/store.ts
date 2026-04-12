@@ -73,7 +73,7 @@ export interface ScalpStrategyRuntimeSnapshot {
     strategies: ScalpStrategyControlSnapshot[];
 }
 
-type ScalpDeploymentKeyOptions = {
+export type ScalpDeploymentKeyOptions = {
     venue?: ScalpVenue;
     tuneId?: string;
     deploymentId?: string;
