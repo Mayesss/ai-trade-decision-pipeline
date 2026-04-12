@@ -153,7 +153,7 @@ export default async function handler(
   const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 40);
   const maxSelfHopsCap = envIntBounded(
     "SCALP_V2_LOAD_CANDLES_MAX_SELF_HOPS",
-    24,
+    80,
     0,
     120,
   );
@@ -164,7 +164,7 @@ export default async function handler(
     120_000,
   );
   const selfMaxHops = Math.min(
-    parseIntBounded(req.query.selfMaxHops, 12, 0, 120),
+    parseIntBounded(req.query.selfMaxHops, 40, 0, 120),
     maxSelfHopsCap,
   );
   const handlerStartedAtMs = Date.now();
