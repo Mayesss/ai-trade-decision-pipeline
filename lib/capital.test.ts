@@ -21,6 +21,24 @@ test("resolveCapitalEpic maps internal gold symbols to classic Capital gold CFD"
   });
 });
 
+test("resolveCapitalEpic maps internal silver symbols to classic Capital silver CFD", () => {
+  assert.deepEqual(resolveCapitalEpic("XAGUSDT"), {
+    ticker: "XAGUSDT",
+    epic: "SILVER",
+    source: "default",
+  });
+  assert.deepEqual(resolveCapitalEpic("XAGUSD"), {
+    ticker: "XAGUSD",
+    epic: "SILVER",
+    source: "default",
+  });
+  assert.deepEqual(resolveCapitalEpic("SILVER"), {
+    ticker: "SILVER",
+    epic: "SILVER",
+    source: "default",
+  });
+});
+
 test("resolveCapitalEpic preserves existing crypto CFD mapping", () => {
   assert.deepEqual(resolveCapitalEpic("BTCUSDT"), {
     ticker: "BTCUSDT",

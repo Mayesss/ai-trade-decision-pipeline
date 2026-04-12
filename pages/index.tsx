@@ -666,13 +666,6 @@ const formatSignedR = (value: number): string =>
   `${value >= 0 ? "+" : ""}${value.toFixed(2)}R`;
 
 const BERLIN_TZ = "Europe/Berlin";
-const BITGET_PUBLIC_WS_URL = "wss://ws.bitget.com/v2/ws/public";
-const WS_RECONNECT_MS = 1500;
-const WS_PING_MS = 25_000;
-const CAPITAL_LIVE_POLL_MS = 3000;
-const SCALP_LIVE_POLL_VISIBLE_MS = 30_000;
-const SCALP_LIVE_POLL_HIDDEN_MS = 120_000;
-const SCALP_LIVE_POLL_ERROR_BACKOFF_MS = 180_000;
 const SCALP_MIN_REFRESH_GAP_MS = 25_000;
 const SCALP_WORKER_TASK_LIMIT_FULL = 5_000;
 const SCALP_GRID_LOAD_BATCH = 60;
@@ -2264,10 +2257,7 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const timerId = window.setInterval(() => {
-      setScalpCronNowMs(Date.now());
-    }, 10_000);
-    return () => window.clearInterval(timerId);
+    setScalpCronNowMs(Date.now());
   }, []);
 
   useEffect(() => {
@@ -3125,35 +3115,6 @@ export default function Home() {
   }, [adminGranted, dashboardRange, strategyMode, scalpSession]);
 
   useEffect(() => {
-    if (!adminGranted || strategyMode !== "scalp") return;
-    let cancelled = false;
-    let timerId: number | null = null;
-
-    const scheduleNextPoll = () => {
-      if (cancelled) return;
-      const hidden =
-        typeof document !== "undefined" &&
-        document.visibilityState !== "visible";
-      const hadRecentErrors = scalpSummaryErrorCountRef.current > 0;
-      const intervalMs = hadRecentErrors
-        ? SCALP_LIVE_POLL_ERROR_BACKOFF_MS
-        : hidden
-          ? SCALP_LIVE_POLL_HIDDEN_MS
-          : SCALP_LIVE_POLL_VISIBLE_MS;
-      timerId = window.setTimeout(async () => {
-        await loadScalpDashboard({ silent: true });
-        scheduleNextPoll();
-      }, intervalMs);
-    };
-
-    scheduleNextPoll();
-    return () => {
-      cancelled = true;
-      if (timerId) window.clearTimeout(timerId);
-    };
-  }, [adminGranted, strategyMode, adminSecret, dashboardRange, scalpSession]);
-
-  useEffect(() => {
     const rows = Array.isArray(scalpSummary?.symbols)
       ? scalpSummary.symbols
       : [];
@@ -3203,223 +3164,6 @@ export default function Home() {
     setShowRawEvaluation(false);
     setShowPrompt(false);
   }, [active, symbols]);
-
-  useEffect(() => {
-    if (strategyMode !== "swing") {
-      setLivePriceNow(null);
-      setLivePriceTs(null);
-      setLivePriceConnected(false);
-      return;
-    }
-    const symbol = symbols[active] || null;
-    const platform = symbol
-      ? String(tabData[symbol]?.lastPlatform || "").toLowerCase()
-      : "";
-    if (!adminGranted || !symbol) {
-      setLivePriceNow(null);
-      setLivePriceTs(null);
-      setLivePriceConnected(false);
-      return;
-    }
-
-    if (platform === "capital") {
-      let closed = false;
-      let pollTimer: number | null = null;
-      let inFlight: AbortController | null = null;
-
-      const clearPoll = () => {
-        if (pollTimer) {
-          window.clearTimeout(pollTimer);
-          pollTimer = null;
-        }
-        if (inFlight) {
-          inFlight.abort();
-          inFlight = null;
-        }
-      };
-
-      const schedulePoll = () => {
-        if (closed) return;
-        pollTimer = window.setTimeout(() => {
-          if (closed) return;
-          void poll();
-        }, CAPITAL_LIVE_POLL_MS);
-      };
-
-      const poll = async () => {
-        if (closed) return;
-        inFlight = new AbortController();
-        try {
-          const params = new URLSearchParams({
-            symbol,
-            platform: "capital",
-            t: String(Date.now()),
-          });
-          const res = await fetch(
-            `/api/swing/dashboard/live-price?${params.toString()}`,
-            {
-              headers: buildAdminHeaders(),
-              cache: "no-store",
-              signal: inFlight.signal,
-            },
-          );
-          if (res.status === 401) {
-            closed = true;
-            clearPoll();
-            setLivePriceConnected(false);
-            handleAuthExpired(
-              "Admin session expired. Re-enter ADMIN_ACCESS_SECRET.",
-            );
-            return;
-          }
-          if (!res.ok) {
-            throw new Error(`Capital live price failed (${res.status})`);
-          }
-          const payload = await res.json();
-          const px = Number(payload?.price);
-          const ts = Number(payload?.ts);
-          if (Number.isFinite(px) && px > 0) {
-            setLivePriceNow(px);
-            setLivePriceTs(Number.isFinite(ts) ? ts : Date.now());
-            setLivePriceConnected(true);
-          } else {
-            setLivePriceConnected(false);
-          }
-        } catch (err: any) {
-          if (err?.name !== "AbortError") {
-            setLivePriceConnected(false);
-          }
-        } finally {
-          inFlight = null;
-          schedulePoll();
-        }
-      };
-
-      setLivePriceNow(null);
-      setLivePriceTs(null);
-      setLivePriceConnected(false);
-      void poll();
-
-      return () => {
-        closed = true;
-        clearPoll();
-        setLivePriceConnected(false);
-      };
-    }
-
-    if (platform && platform !== "bitget") {
-      setLivePriceNow(null);
-      setLivePriceTs(null);
-      setLivePriceConnected(false);
-      return;
-    }
-
-    let closed = false;
-    let ws: WebSocket | null = null;
-    let pingTimer: number | null = null;
-    let reconnectTimer: number | null = null;
-
-    const clearTimers = () => {
-      if (pingTimer) {
-        window.clearInterval(pingTimer);
-        pingTimer = null;
-      }
-      if (reconnectTimer) {
-        window.clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-    };
-
-    const scheduleReconnect = () => {
-      if (closed) return;
-      if (reconnectTimer) window.clearTimeout(reconnectTimer);
-      reconnectTimer = window.setTimeout(() => {
-        if (closed) return;
-        connect();
-      }, WS_RECONNECT_MS);
-    };
-
-    const connect = () => {
-      try {
-        ws = new WebSocket(BITGET_PUBLIC_WS_URL);
-      } catch {
-        scheduleReconnect();
-        return;
-      }
-
-      ws.onopen = () => {
-        if (closed || !ws) return;
-        setLivePriceConnected(true);
-        try {
-          ws.send(
-            JSON.stringify({
-              op: "subscribe",
-              args: [
-                { instType: "USDT-FUTURES", channel: "ticker", instId: symbol },
-              ],
-            }),
-          );
-        } catch {}
-
-        pingTimer = window.setInterval(() => {
-          if (!ws || ws.readyState !== WebSocket.OPEN) return;
-          try {
-            ws.send("ping");
-          } catch {}
-        }, WS_PING_MS);
-      };
-
-      ws.onmessage = (event) => {
-        if (closed) return;
-        const raw = String(event.data ?? "");
-        if (!raw || raw === "pong" || raw === "ping") return;
-        let parsed: any = null;
-        try {
-          parsed = JSON.parse(raw);
-        } catch {
-          return;
-        }
-        const rows = Array.isArray(parsed?.data) ? parsed.data : [];
-        for (const row of rows) {
-          const px = Number(row?.lastPr ?? row?.last ?? row?.price);
-          if (!Number.isFinite(px) || px <= 0) continue;
-          const ts = Number(row?.ts ?? parsed?.ts ?? Date.now());
-          setLivePriceNow(px);
-          setLivePriceTs(Number.isFinite(ts) ? ts : Date.now());
-          break;
-        }
-      };
-
-      ws.onerror = () => {
-        if (closed) return;
-        setLivePriceConnected(false);
-      };
-
-      ws.onclose = () => {
-        if (closed) return;
-        setLivePriceConnected(false);
-        clearTimers();
-        scheduleReconnect();
-      };
-    };
-
-    setLivePriceNow(null);
-    setLivePriceTs(null);
-    setLivePriceConnected(false);
-    connect();
-
-    return () => {
-      closed = true;
-      clearTimers();
-      setLivePriceConnected(false);
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        try {
-          ws.close();
-        } catch {}
-      }
-      ws = null;
-    };
-  }, [adminGranted, symbols, active, tabData, adminSecret, strategyMode]);
 
   const formatDecisionTime = (ts?: number | null) => {
     if (!ts) return "";

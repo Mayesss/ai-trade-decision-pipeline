@@ -276,8 +276,6 @@ export default function ScalpUiRedesignPage() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 30_000);
-    return () => clearInterval(interval);
   }, [fetchData]);
 
   // Derived metrics
