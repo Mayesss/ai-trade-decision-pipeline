@@ -751,6 +751,8 @@ export interface PreviousStageResult {
   stageAWeeklyMetrics: Record<string, Record<string, number>>;
   stageBWeeklyMetrics: Record<string, Record<string, number>>;
   stageCWeeklyMetrics: Record<string, Record<string, number>>;
+  /** Per-week netR from previous stage A — used as a fast pre-filter. */
+  stageAWeeklyNetR: Record<string, number>;
 }
 
 export interface ScalpV2ScopeWindowStageStats {
@@ -831,6 +833,16 @@ export async function loadScalpV2PreviousWeekResults(params: {
       AND (metadata_json->'worker'->>'windowToTs')::bigint != ${params.currentWindowToTs}
       AND metadata_json->'worker'->'stageA' IS NOT NULL
   `);
+  const extractWeeklyNetR = (value: unknown): Record<string, number> => {
+    const out: Record<string, number> = {};
+    const root = asRecord(value);
+    const raw = asRecord(root.weeklyNetR);
+    for (const [k, v] of Object.entries(raw)) {
+      const n = Number(v);
+      if (Number.isFinite(n)) out[String(k)] = n;
+    }
+    return out;
+  };
   const results = new Map<string, PreviousStageResult>();
   for (const row of rows) {
     const key = `${row.venue}:${row.symbol}:${row.tuneId}:${row.session}`.toLowerCase();
@@ -844,6 +856,7 @@ export async function loadScalpV2PreviousWeekResults(params: {
       stageAWeeklyMetrics: normalizeWeeklyMetricsByWeek(row.stageAJson),
       stageBWeeklyMetrics: normalizeWeeklyMetricsByWeek(row.stageBJson),
       stageCWeeklyMetrics: normalizeWeeklyMetricsByWeek(row.stageCJson),
+      stageAWeeklyNetR: extractWeeklyNetR(row.stageAJson),
     });
   }
   return results;

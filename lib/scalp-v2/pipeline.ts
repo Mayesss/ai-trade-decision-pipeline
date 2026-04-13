@@ -2628,6 +2628,7 @@ export async function runScalpV2ResearchJob(params: {
             stageAWeeklyMetrics: Record<string, Record<string, number>>;
             stageBWeeklyMetrics: Record<string, Record<string, number>>;
             stageCWeeklyMetrics: Record<string, Record<string, number>>;
+            stageAWeeklyNetR: Record<string, number>;
           }
         >(),
     );
@@ -2637,10 +2638,35 @@ export async function runScalpV2ResearchJob(params: {
     const clearFailMinTrades = Math.floor(workerPolicy.stageA.minTrades * 0.3); // e.g. 1 if gate is 4
 
     let skippedByClearFail = 0;
+    let skippedByNetRPreFilter = 0;
+
+    // Pre-compute stage A week starts for the weeklyNetR pre-filter.
+    const stageAFromTs = windowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS;
+    const stageAPriorWeekStarts = listWeekStarts({ fromTs: stageAFromTs, toTs: windowToTs }).slice(0, -1);
+
     const selected = notYetEvaluated.filter((c) => {
       const key = `${c.venue}:${c.symbol}:${c.tuneId}:${c.session}`.toLowerCase();
       const prev = previousResults.get(key);
       if (!prev) return true; // Never tested — must run
+
+      // weeklyNetR pre-filter: sum the prior weeks' netR from the previous
+      // stage A result (the weeks that overlap with the current window).
+      // If the sum is already below minNetR, the newest week alone can't
+      // realistically save it — skip the full replay.
+      const prevWeeklyNetR = prev.stageAWeeklyNetR;
+      if (prevWeeklyNetR && stageAPriorWeekStarts.length > 0) {
+        let projectedNetR = 0;
+        let hasAllPrior = true;
+        for (const ws of stageAPriorWeekStarts) {
+          const nr = prevWeeklyNetR[String(ws)];
+          if (nr === undefined) { hasAllPrior = false; break; }
+          projectedNetR += nr;
+        }
+        if (hasAllPrior && projectedNetR < workerPolicy.stageA.minNetR) {
+          skippedByNetRPreFilter += 1;
+          return false;
+        }
+      }
 
       // Previous stage C passed — must re-verify with new window
       if (prev.stageCPassed) return true;
@@ -2676,12 +2702,13 @@ export async function runScalpV2ResearchJob(params: {
         totalCandidates: allCandidates.length,
         skippedByCache,
         skippedByClearFail,
+        skippedByNetRPreFilter,
         candidatesWithPreviousResults: previousResults.size,
         scopePrune: scopePrune.details,
       };
       return buildScalpV2JobResult({
         jobKind: "research",
-        processed: skippedByCache + skippedByClearFail,
+        processed: skippedByCache + skippedByClearFail + skippedByNetRPreFilter,
         succeeded: 0,
         failed: 0,
         pendingAfter: 0,
@@ -3093,6 +3120,7 @@ export async function runScalpV2ResearchJob(params: {
       totalCandidates: allCandidates.length,
       skippedByCache,
       skippedByClearFail,
+      skippedByNetRPreFilter,
       candidatesWithPreviousResults: previousResults.size,
       backtested: selected.length,
       processedCandidates: processed,
