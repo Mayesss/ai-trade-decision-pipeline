@@ -2678,7 +2678,23 @@ export async function runScalpV2ResearchJob(params: {
         skippedByClearFail,
       },
     });
-    const uniqueSymbols = Array.from(new Set(selected.map((c) => c.symbol)));
+    // Chunk: limit each invocation to a bounded number of unique symbols.
+    // This keeps candle loading and backtesting within the serverless time budget.
+    // Already-evaluated candidates are filtered out by evaluatedKeys on next run,
+    // so we naturally advance through the full symbol set across invocations.
+    const maxSymbolsPerRun = Math.max(
+      1,
+      Math.min(
+        50,
+        toPositiveInt(process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN, 1, 50),
+      ),
+    );
+    const allUniqueSymbols = Array.from(new Set(selected.map((c) => c.symbol)));
+    const symbolsThisRun = new Set(allUniqueSymbols.slice(0, maxSymbolsPerRun));
+    const chunked = selected.filter((c) => symbolsThisRun.has(c.symbol));
+    const deferredCount = selected.length - chunked.length;
+
+    const uniqueSymbols = Array.from(symbolsThisRun);
     const symbolMetadataMap = await loadScalpSymbolMarketMetadataBulk(uniqueSymbols).catch(
       () => new Map<string, ScalpSymbolMarketMetadata | null>(),
     );
@@ -2707,7 +2723,7 @@ export async function runScalpV2ResearchJob(params: {
       stageId: ScalpV2WorkerStageId;
     }> = [];
     const seenCacheKeys = new Set<string>();
-    for (const c of selected) {
+    for (const c of chunked) {
       for (const stage of stagePolicies) {
         const k = `${c.venue}:${c.symbol}:${c.strategyId}:${c.tuneId}:${c.session}:${stage.id}`.toLowerCase();
         if (seenCacheKeys.has(k)) continue;
@@ -2722,32 +2738,38 @@ export async function runScalpV2ResearchJob(params: {
         });
       }
     }
-    const workerStageWeeklyCache = await loadScalpV2WeeklyCache({
-      keys: weeklyCacheKeys,
-      fromWeekStartTs: minWindowFromTs,
-      toWeekStartTs: windowToTs,
-    }).catch(() => new Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>());
+    // Skip the heavy cache load if the table is empty (first run after deploy).
+    // This avoids 56+ DB round-trips that return nothing.
+    const workerStageWeeklyCache = weeklyCacheKeys.length > 0
+      ? await loadScalpV2WeeklyCache({
+          keys: weeklyCacheKeys,
+          fromWeekStartTs: minWindowFromTs,
+          toWeekStartTs: windowToTs,
+        }).catch(() => new Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>())
+      : new Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>();
     await emitResearchHeartbeat({ phase: "prepare_backtest", force: true, progress: { step: "cache_loaded", cacheKeys: weeklyCacheKeys.length, cacheHits: workerStageWeeklyCache.size } });
 
     // Pre-scan: determine which symbols need the full 12-week candle range
-    // vs just the newest week. If every candidate×stage for a symbol has a
-    // full cache hit on prior weeks, only the newest week's candles are needed.
+    // vs just the newest week. Skip entirely when cache is empty (all need full range).
     const newestWeekStart = startOfScalpV2WeekMondayUtc(windowToTs - ONE_WEEK_MS);
+    const cacheIsPopulated = workerStageWeeklyCache.size > 0;
     const symbolsNeedingFullRange = new Set<string>();
-    for (const c of selected) {
-      if (symbolsNeedingFullRange.has(c.symbol)) continue;
-      for (const stage of stagePolicies) {
-        const ck = `${c.venue}:${c.symbol}:${c.strategyId}:${c.tuneId}:${c.session}:${stage.id}`.toLowerCase();
-        const cached = workerStageWeeklyCache.get(ck);
-        const fromTs = windowToTs - stage.weeks * ONE_WEEK_MS;
-        const priorStarts = listWeekStarts({ fromTs, toTs: windowToTs }).slice(0, -1);
-        for (const ws of priorStarts) {
-          if (!cached?.has(ws)) {
-            symbolsNeedingFullRange.add(c.symbol);
-            break;
+    if (cacheIsPopulated) {
+      for (const c of chunked) {
+        if (symbolsNeedingFullRange.has(c.symbol)) continue;
+        for (const stage of stagePolicies) {
+          const ck = `${c.venue}:${c.symbol}:${c.strategyId}:${c.tuneId}:${c.session}:${stage.id}`.toLowerCase();
+          const cached = workerStageWeeklyCache.get(ck);
+          const fromTs = windowToTs - stage.weeks * ONE_WEEK_MS;
+          const priorStarts = listWeekStarts({ fromTs, toTs: windowToTs }).slice(0, -1);
+          for (const ws of priorStarts) {
+            if (!cached?.has(ws)) {
+              symbolsNeedingFullRange.add(c.symbol);
+              break;
+            }
           }
+          if (symbolsNeedingFullRange.has(c.symbol)) break;
         }
-        if (symbolsNeedingFullRange.has(c.symbol)) break;
       }
     }
 
@@ -2763,19 +2785,19 @@ export async function runScalpV2ResearchJob(params: {
       metrics: ScalpV2WorkerStageWeeklyMetrics;
     }> = [];
 
-    for (let candidateIdx = 0; candidateIdx < selected.length; candidateIdx += 1) {
+    for (let candidateIdx = 0; candidateIdx < chunked.length; candidateIdx += 1) {
       const elapsedMs = nowMs() - jobStartMs;
       if (elapsedMs >= timeBudgetMs) {
         timeBudgetExhausted = true;
         break;
       }
 
-      const candidate = selected[candidateIdx]!;
+      const candidate = chunked[candidateIdx]!;
       await emitResearchHeartbeat({
         phase: "backtest_candidates",
         progress: {
           candidateIndex: candidateIdx + 1,
-          totalSelected: selected.length,
+          totalSelected: chunked.length,
           stageCPass,
           persisted: persistedCount,
           replayErrors,
@@ -2785,7 +2807,7 @@ export async function runScalpV2ResearchJob(params: {
       try {
         let symbolCandles = candleCache.get(candidate.symbol) ?? null;
         if (!symbolCandles) {
-          const candleFromTs = symbolsNeedingFullRange.has(candidate.symbol)
+          const candleFromTs = !cacheIsPopulated || symbolsNeedingFullRange.has(candidate.symbol)
             ? minWindowFromTs
             : newestWeekStart;
           const history = await loadScalpCandleHistoryInRange(
@@ -2815,7 +2837,7 @@ export async function runScalpV2ResearchJob(params: {
             phase: "loading_candles",
             progress: {
               candidateIndex: candidateIdx + 1,
-              totalSelected: selected.length,
+              totalSelected: chunked.length,
               symbolsLoaded: candleCache.size,
               symbolsTotal: uniqueSymbols.length,
             },
@@ -3140,13 +3162,13 @@ export async function runScalpV2ResearchJob(params: {
       }
 
       // Heartbeat every few candidates to keep the lock alive
-      if ((candidateIdx + 1) % 5 === 0 || candidateIdx + 1 === selected.length) {
+      if ((candidateIdx + 1) % 5 === 0 || candidateIdx + 1 === chunked.length) {
         await emitResearchHeartbeat({
           phase: "backtest_candidates",
           force: true,
           progress: {
             processedSoFar: candidateIdx + 1,
-            totalSelected: selected.length,
+            totalSelected: chunked.length,
             stageCPass,
             persisted: persistedCount,
             replayErrors,
@@ -3169,7 +3191,7 @@ export async function runScalpV2ResearchJob(params: {
     const cacheRetentionTs = windowToTs - (workerPolicy.stageC.weeks + 2) * ONE_WEEK_MS;
     await pruneScalpV2WeeklyCache({ olderThanTs: cacheRetentionTs }).catch(() => 0);
 
-    const remaining = Math.max(0, selected.length - processed);
+    const remaining = Math.max(0, chunked.length - processed);
 
     details = {
       scopeCount: scopes.length,
@@ -3180,7 +3202,10 @@ export async function runScalpV2ResearchJob(params: {
       skippedByClearFail,
       skippedByNetRPreFilter,
       candidatesWithPreviousResults: previousResults.size,
-      backtested: selected.length,
+      backtested: chunked.length,
+      deferredToNextRun: deferredCount,
+      symbolsThisRun: uniqueSymbols.length,
+      symbolsTotal: allUniqueSymbols.length,
       processedCandidates: processed,
       minPersistStage,
       droppedBelowMinStage,

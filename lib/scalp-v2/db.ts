@@ -897,6 +897,13 @@ export async function loadScalpV2WeeklyCache(params: {
   if (toTs <= fromTs) return out;
 
   const db = scalpPrisma();
+
+  // Fast-path: skip batched key queries if the cache table is empty
+  const [{ cnt }] = await db.$queryRaw<[{ cnt: bigint }]>(sql`
+    SELECT count(*) AS cnt FROM scalp_v2_worker_stage_weekly_cache LIMIT 1
+  `);
+  if (Number(cnt) === 0) return out;
+
   const BATCH = 1500;
   for (let offset = 0; offset < params.keys.length; offset += BATCH) {
     const batch = params.keys.slice(offset, offset + BATCH);
