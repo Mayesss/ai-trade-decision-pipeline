@@ -56,6 +56,9 @@ import {
   listScalpV2Candidates,
   loadScalpV2EvaluatedCandidateKeys,
   loadScalpV2PreviousWeekResults,
+  loadScalpV2WeeklyCache,
+  upsertScalpV2WeeklyCache,
+  pruneScalpV2WeeklyCache,
   loadScalpV2ScopeWindowStageStats,
   listScalpV2Deployments,
   listScalpV2LedgerRows,
@@ -118,7 +121,7 @@ const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 const LIFECYCLE_SUSPEND_WINDOW_MS = 180 * ONE_DAY_MS;
 const DEFAULT_SCOPE_PRUNE_TTL_DAYS = 28;
-const WORKER_INCREMENTAL_WEEKLY_ONLY = true;
+
 
 type ScalpV2ScopePrunePolicy = {
   enabled: boolean;
@@ -531,8 +534,6 @@ type ScalpV2WorkerStageResult = {
   durationMs: number;
   /** Per-week netR keyed by Monday-UTC start timestamp. */
   weeklyNetR?: Record<string, number>;
-  /** Per-week full metrics keyed by Monday-UTC start timestamp. */
-  weeklyMetrics?: Record<string, ScalpV2WorkerStageWeeklyMetrics>;
   /** Max single-week netR across the stage window. */
   maxWeeklyNetR?: number | null;
   /** Largest single-trade R-multiple (absolute). */
@@ -994,53 +995,7 @@ function buildWorkerStageWeeklyMetricsMap(params: {
   return out;
 }
 
-function normalizeStageWeeklyMetrics(
-  value: Record<string, unknown>,
-): ScalpV2WorkerStageWeeklyMetrics | null {
-  const required = [
-    "trades",
-    "wins",
-    "netR",
-    "grossProfitR",
-    "grossLossR",
-    "maxDrawdownR",
-    "maxPrefixR",
-    "minPrefixR",
-    "largestTradeR",
-    "exitStop",
-    "exitTp",
-    "exitTimeStop",
-    "exitForceClose",
-  ] as const;
-  for (const key of required) {
-    if (!Number.isFinite(Number(value[key]))) return null;
-  }
-  return {
-    trades: Math.max(0, Math.floor(Number(value.trades))),
-    wins: Math.max(0, Math.floor(Number(value.wins))),
-    netR: Number(value.netR),
-    grossProfitR: Number(value.grossProfitR),
-    grossLossR: Number(value.grossLossR),
-    maxDrawdownR: Number(value.maxDrawdownR),
-    maxPrefixR: Number(value.maxPrefixR),
-    minPrefixR: Number(value.minPrefixR),
-    largestTradeR: Number(value.largestTradeR),
-    exitStop: Math.max(0, Math.floor(Number(value.exitStop))),
-    exitTp: Math.max(0, Math.floor(Number(value.exitTp))),
-    exitTimeStop: Math.max(0, Math.floor(Number(value.exitTimeStop))),
-    exitForceClose: Math.max(0, Math.floor(Number(value.exitForceClose))),
-  };
-}
 
-function serializeStageWeeklyMetrics(
-  weeklyByStart: Map<number, ScalpV2WorkerStageWeeklyMetrics>,
-): Record<string, ScalpV2WorkerStageWeeklyMetrics> {
-  const out: Record<string, ScalpV2WorkerStageWeeklyMetrics> = {};
-  for (const [weekStart, metrics] of weeklyByStart.entries()) {
-    out[String(weekStart)] = metrics;
-  }
-  return out;
-}
 
 function aggregateStageFromWeeklyMetrics(params: {
   fromTs: number;
@@ -2625,9 +2580,6 @@ export async function runScalpV2ResearchJob(params: {
             stageCPassed: boolean;
             stageCNetR: number | null;
             windowToTs: number;
-            stageAWeeklyMetrics: Record<string, Record<string, number>>;
-            stageBWeeklyMetrics: Record<string, Record<string, number>>;
-            stageCWeeklyMetrics: Record<string, Record<string, number>>;
             stageAWeeklyNetR: Record<string, number>;
           }
         >(),
@@ -2745,6 +2697,71 @@ export async function runScalpV2ResearchJob(params: {
 
     let timeBudgetExhausted = false;
 
+    // --- Load weekly cache for incremental replays ---
+    const weeklyCacheKeys: Array<{
+      venue: ScalpV2Venue;
+      symbol: string;
+      strategyId: string;
+      tuneId: string;
+      session: ScalpV2Session;
+      stageId: ScalpV2WorkerStageId;
+    }> = [];
+    const seenCacheKeys = new Set<string>();
+    for (const c of selected) {
+      for (const stage of stagePolicies) {
+        const k = `${c.venue}:${c.symbol}:${c.strategyId}:${c.tuneId}:${c.session}:${stage.id}`.toLowerCase();
+        if (seenCacheKeys.has(k)) continue;
+        seenCacheKeys.add(k);
+        weeklyCacheKeys.push({
+          venue: c.venue,
+          symbol: c.symbol,
+          strategyId: c.strategyId,
+          tuneId: c.tuneId,
+          session: c.session,
+          stageId: stage.id,
+        });
+      }
+    }
+    const workerStageWeeklyCache = await loadScalpV2WeeklyCache({
+      keys: weeklyCacheKeys,
+      fromWeekStartTs: minWindowFromTs,
+      toWeekStartTs: windowToTs,
+    }).catch(() => new Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>());
+
+    // Pre-scan: determine which symbols need the full 12-week candle range
+    // vs just the newest week. If every candidate×stage for a symbol has a
+    // full cache hit on prior weeks, only the newest week's candles are needed.
+    const newestWeekStart = startOfScalpV2WeekMondayUtc(windowToTs - ONE_WEEK_MS);
+    const symbolsNeedingFullRange = new Set<string>();
+    for (const c of selected) {
+      if (symbolsNeedingFullRange.has(c.symbol)) continue;
+      for (const stage of stagePolicies) {
+        const ck = `${c.venue}:${c.symbol}:${c.strategyId}:${c.tuneId}:${c.session}:${stage.id}`.toLowerCase();
+        const cached = workerStageWeeklyCache.get(ck);
+        const fromTs = windowToTs - stage.weeks * ONE_WEEK_MS;
+        const priorStarts = listWeekStarts({ fromTs, toTs: windowToTs }).slice(0, -1);
+        for (const ws of priorStarts) {
+          if (!cached?.has(ws)) {
+            symbolsNeedingFullRange.add(c.symbol);
+            break;
+          }
+        }
+        if (symbolsNeedingFullRange.has(c.symbol)) break;
+      }
+    }
+
+    const pendingCacheWrites: Array<{
+      venue: ScalpV2Venue;
+      symbol: string;
+      strategyId: string;
+      tuneId: string;
+      session: ScalpV2Session;
+      stageId: ScalpV2WorkerStageId;
+      weekStartTs: number;
+      weekToTs: number;
+      metrics: ScalpV2WorkerStageWeeklyMetrics;
+    }> = [];
+
     for (let candidateIdx = 0; candidateIdx < selected.length; candidateIdx += 1) {
       const elapsedMs = nowMs() - jobStartMs;
       if (elapsedMs >= timeBudgetMs) {
@@ -2767,10 +2784,13 @@ export async function runScalpV2ResearchJob(params: {
       try {
         let symbolCandles = candleCache.get(candidate.symbol) ?? null;
         if (!symbolCandles) {
+          const candleFromTs = symbolsNeedingFullRange.has(candidate.symbol)
+            ? minWindowFromTs
+            : newestWeekStart;
           const history = await loadScalpCandleHistoryInRange(
             candidate.symbol,
             "1m",
-            minWindowFromTs,
+            candleFromTs,
             windowToTs,
           );
           const meta = symbolMetadataMap.get(candidate.symbol) ?? null;
@@ -2804,18 +2824,6 @@ export async function runScalpV2ResearchJob(params: {
           b: buildWorkerStageSkeleton({ stage: workerPolicy.stageB, fromTs: windowToTs - workerPolicy.stageB.weeks * ONE_WEEK_MS, toTs: windowToTs, reason: "stage_not_started" }),
           c: buildWorkerStageSkeleton({ stage: workerPolicy.stageC, fromTs: windowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS, toTs: windowToTs, reason: "stage_not_started" }),
         };
-        const candidateHistoryKey =
-          `${candidate.venue}:${candidate.symbol}:${candidate.tuneId}:${candidate.session}`.toLowerCase();
-        const previousCandidate = previousResults.get(candidateHistoryKey) || null;
-        const previousStageWeeklyMetrics: Record<
-          ScalpV2WorkerStageId,
-          Record<string, Record<string, number>>
-        > = {
-          a: previousCandidate?.stageAWeeklyMetrics || {},
-          b: previousCandidate?.stageBWeeklyMetrics || {},
-          c: previousCandidate?.stageCWeeklyMetrics || {},
-        };
-
         const replayBaseConfig = defaultScalpReplayConfig(candidate.symbol);
         const deploymentId = toDeploymentId({
           venue: candidate.venue,
@@ -2892,21 +2900,21 @@ export async function runScalpV2ResearchJob(params: {
             stageWeekStarts.length > 1
               ? stageWeekStarts.slice(0, stageWeekStarts.length - 1)
               : [];
-          const priorWeeklySource = previousStageWeeklyMetrics[stage.id];
+          // Check the weekly cache for prior weeks' full metrics.
+          const cacheKey = `${candidate.venue}:${candidate.symbol}:${candidate.strategyId}:${candidate.tuneId}:${candidate.session}:${stage.id}`.toLowerCase();
+          const cachedWeeks = workerStageWeeklyCache.get(cacheKey) || new Map<number, ScalpV2WorkerStageWeeklyMetrics>();
           let weeklyByStart = new Map<number, ScalpV2WorkerStageWeeklyMetrics>();
-          let missingPriorMetrics = false;
+          let missingPriorWeeks = false;
           for (const weekStart of priorWeekStarts) {
-            const priorMetrics = normalizeStageWeeklyMetrics(
-              asRecord(priorWeeklySource[String(weekStart)]),
-            );
-            if (!priorMetrics) {
-              missingPriorMetrics = true;
-              break;
-            }
-            weeklyByStart.set(weekStart, priorMetrics);
+            const cached = cachedWeeks.get(weekStart);
+            if (!cached) { missingPriorWeeks = true; break; }
+            weeklyByStart.set(weekStart, cached);
           }
+
           let aggregate: ReturnType<typeof aggregateStageFromWeeklyMetrics>;
-          if (missingPriorMetrics) {
+
+          if (missingPriorWeeks) {
+            // Cache miss — full replay, then persist all weeks to cache
             const fullReplay = await runScalpReplay({
               candles: stageCandles,
               pipSize: symbolPipSize,
@@ -2924,22 +2932,36 @@ export async function runScalpV2ResearchJob(params: {
               toTs: windowToTs,
               weeklyByStart,
             });
+            // Persist to cache for next week's incremental replay
+            const cacheRows: typeof pendingCacheWrites = [];
+            for (const [ws, metrics] of weeklyByStart.entries()) {
+              cacheRows.push({
+                venue: candidate.venue,
+                symbol: candidate.symbol,
+                strategyId: candidate.strategyId,
+                tuneId: candidate.tuneId,
+                session: candidate.session,
+                stageId: stage.id,
+                weekStartTs: ws,
+                weekToTs: ws + ONE_WEEK_MS,
+                metrics,
+              });
+            }
+            pendingCacheWrites.push(...cacheRows);
           } else {
+            // Cache hit — replay only the newest week
             const newestWeekToTs = newestWeekStart + ONE_WEEK_MS;
             const newestWeekCandles = symbolCandles.filter(
               (row) => row.ts >= newestWeekStart && row.ts < newestWeekToTs,
             );
             if (newestWeekCandles.length < workerPolicy.minCandles) {
               stageResults[stage.id] = buildWorkerStageSkeleton({
-                stage,
-                fromTs,
-                toTs: windowToTs,
+                stage, fromTs, toTs: windowToTs,
                 reason: "insufficient_latest_week_candles",
               });
               blockedStages = true;
               continue;
             }
-
             const newestWeekReplay = await runScalpReplay({
               candles: newestWeekCandles,
               pipSize: symbolPipSize,
@@ -2957,6 +2979,18 @@ export async function runScalpV2ResearchJob(params: {
               fromTs,
               toTs: windowToTs,
               weeklyByStart,
+            });
+            // Persist the newest week to cache
+            pendingCacheWrites.push({
+              venue: candidate.venue,
+              symbol: candidate.symbol,
+              strategyId: candidate.strategyId,
+              tuneId: candidate.tuneId,
+              session: candidate.session,
+              stageId: stage.id,
+              weekStartTs: newestWeekStart,
+              weekToTs: newestWeekToTs,
+              metrics: newestWeekMetrics,
             });
           }
 
@@ -2979,7 +3013,6 @@ export async function runScalpV2ResearchJob(params: {
             consecutiveWinningWeeks: aggregate.consecutiveWinningWeeks,
             durationMs: Math.max(0, nowMs() - stageStartedAtMs),
             weeklyNetR: aggregate.weeklyNetR,
-            weeklyMetrics: serializeStageWeeklyMetrics(weeklyByStart),
             maxWeeklyNetR: aggregate.maxWeeklyNetR,
             largestTradeR: aggregate.largestTradeR,
             exitReasons: aggregate.exitReasons,
@@ -3015,7 +3048,7 @@ export async function runScalpV2ResearchJob(params: {
             stageB: workerPolicy.stageB,
             stageC: workerPolicy.stageC,
             minCandles: workerPolicy.minCandles,
-            weeklyIncrementalOnly: WORKER_INCREMENTAL_WEEKLY_ONLY,
+            weeklyCacheEnabled: true,
           },
           windowToTs,
           stageA: stageAResult,
@@ -3109,7 +3142,21 @@ export async function runScalpV2ResearchJob(params: {
           },
         });
       }
+
+      // Flush cache writes periodically so they survive timeouts
+      if (pendingCacheWrites.length >= 50) {
+        await upsertScalpV2WeeklyCache({ rows: pendingCacheWrites }).catch(() => 0);
+        pendingCacheWrites.length = 0;
+      }
     }
+
+    // Flush remaining cache writes
+    if (pendingCacheWrites.length > 0) {
+      await upsertScalpV2WeeklyCache({ rows: pendingCacheWrites }).catch(() => 0);
+    }
+    // Prune cache rows older than stage C window + 2 week margin
+    const cacheRetentionTs = windowToTs - (workerPolicy.stageC.weeks + 2) * ONE_WEEK_MS;
+    await pruneScalpV2WeeklyCache({ olderThanTs: cacheRetentionTs }).catch(() => 0);
 
     const remaining = Math.max(0, selected.length - processed);
 
@@ -3149,7 +3196,7 @@ export async function runScalpV2ResearchJob(params: {
         stageB: workerPolicy.stageB,
         stageC: workerPolicy.stageC,
         minCandles: workerPolicy.minCandles,
-        weeklyIncrementalOnly: WORKER_INCREMENTAL_WEEKLY_ONLY,
+        weeklyCacheEnabled: true,
       },
     };
 
