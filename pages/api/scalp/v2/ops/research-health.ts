@@ -227,8 +227,11 @@ export default async function handler(
           ),
           totalSelected: Math.max(
             0,
-            Math.floor(Number(progress.totalSelected || 0)),
+            Math.floor(Number(progress.selectedCandidates || progress.totalSelected || 0)),
           ),
+          skippedByCache: Math.max(0, Math.floor(Number(progress.skippedByCache || 0))),
+          skippedByClearFail: Math.max(0, Math.floor(Number(progress.skippedByClearFail || 0))),
+          skippedByNetRPreFilter: Math.max(0, Math.floor(Number(progress.skippedByNetRPreFilter || 0))),
           stageCPass: Math.max(0, Math.floor(Number(progress.stageCPass || 0))),
           persisted: Math.max(0, Math.floor(Number(progress.persisted || 0))),
           replayErrors: Math.max(

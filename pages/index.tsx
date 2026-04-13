@@ -4275,69 +4275,47 @@ export default function Home() {
       (j) => String(j?.jobKind || "").trim().toLowerCase() === "research",
     );
     const p = researchJob?.progress || {};
-    // The payload has two shapes:
-    //  - While running (heartbeat): { phase, progress: { processedSoFar, totalSelected, stageCPass, ... } }
-    //  - After completion (result):  { totalCandidates, skippedByCache, processedCandidates, elapsedMs, ... }
-    const heartbeat = asPlainObject((p as any)?.progress);
+    const hb = asPlainObject((p as any)?.progress);
     const isRunning = researchJob?.status === "running";
-
-    // Prefer heartbeat fields when running, fall back to final result fields
-    const totalCandidates = Math.max(0, Math.floor(
-      Number(isRunning ? (heartbeat.selectedCandidates || heartbeat.totalSelected || p.totalCandidates) : p.totalCandidates) || 0
-    ));
-    const skippedByCache = Math.max(0, Math.floor(Number(
-      isRunning ? (heartbeat.skippedByCache || p.skippedByCache) : p.skippedByCache
-    ) || 0));
-    const skippedByClearFail = Math.max(0, Math.floor(Number(
-      isRunning ? (heartbeat.skippedByClearFail || p.skippedByClearFail) : p.skippedByClearFail
-    ) || 0));
-    const skippedByNetRPreFilter = Math.max(0, Math.floor(Number(
-      isRunning ? (heartbeat.skippedByNetRPreFilter || p.skippedByNetRPreFilter) : p.skippedByNetRPreFilter
-    ) || 0));
-    const processedCandidates = Math.max(0, Math.floor(Number(
-      isRunning ? (heartbeat.processedSoFar || p.processedCandidates) : p.processedCandidates
-    ) || 0));
-    const stageCPass = Math.max(0, Math.floor(Number(
-      isRunning ? heartbeat.stageCPass : p.stageCPass
-    ) || 0));
-    const elapsedMs = Math.max(0, Number(p.elapsedMs) || 0);
-    const timeBudgetExhausted = p.timeBudgetExhausted === true;
     const phase = String((p as any)?.phase || "").replace(/_/g, " ").trim() || null;
 
-    const done = skippedByCache + skippedByClearFail + skippedByNetRPreFilter + processedCandidates;
-    const total = isRunning
-      ? skippedByCache + skippedByClearFail + skippedByNetRPreFilter + totalCandidates
-      : totalCandidates;
-    const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
-    const remaining = Math.max(0, total - done);
+    // Collect numbers from whichever source has them (heartbeat fields, result fields, or health API)
+    const healthJob = scalpResearchHealth?.job || null;
+    const healthProg = healthJob?.progress || {};
+    const n = (a: unknown, b: unknown, c: unknown) => {
+      const v = Number(a) || Number(b) || Number(c) || 0;
+      return Math.max(0, Math.floor(v));
+    };
 
-    // Estimate time left: use avg ms per processed candidate (backtested ones only)
-    let etaLabel: string | null = null;
-    if (remaining > 0 && processedCandidates > 0 && elapsedMs > 0) {
-      const msPerCandidate = elapsedMs / processedCandidates;
-      const timeBudgetMs = Math.max(1, Number(p.timeBudgetMs) || 650_000);
-      const candidatesPerRun = Math.max(1, Math.floor(timeBudgetMs / msPerCandidate));
-      const runsLeft = Math.ceil(remaining / candidatesPerRun);
-      const runIntervalMs = timeBudgetMs + 180_000;
-      const totalRemainingMs = runsLeft * runIntervalMs;
-      const hours = Math.floor(totalRemainingMs / 3_600_000);
-      const minutes = Math.ceil((totalRemainingMs % 3_600_000) / 60_000);
-      if (hours > 0) etaLabel = `~${hours}h ${minutes}m left`;
-      else if (minutes > 0) etaLabel = `~${minutes}m left`;
-    } else if (remaining === 0 && total > 0) {
-      etaLabel = "done this week";
+    const totalSelected = n(hb.selectedCandidates, hb.totalSelected, p.totalCandidates);
+    const skippedByCache = n(hb.skippedByCache, p.skippedByCache, null);
+    const skippedByClearFail = n(hb.skippedByClearFail, p.skippedByClearFail, null);
+    const skippedByNetRPreFilter = n(hb.skippedByNetRPreFilter, p.skippedByNetRPreFilter, null);
+    const processedSoFar = n(hb.processedSoFar, healthProg.processedSoFar, p.processedCandidates);
+    const stageCPass = n(hb.stageCPass, healthProg.stageCPass, p.stageCPass);
+    const symbolsThisRun = n(p.symbolsThisRun, null, null);
+    const symbolsTotal = n(p.symbolsTotal, null, null);
+
+    const done = skippedByCache + skippedByClearFail + skippedByNetRPreFilter + processedSoFar;
+    const total = totalSelected > 0
+      ? skippedByCache + skippedByClearFail + skippedByNetRPreFilter + totalSelected
+      : 0;
+    const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
+
+    // For the label, show symbol progress if available (e.g. "sym 3/33")
+    let statusLabel: string | null = null;
+    if (symbolsThisRun > 0 && symbolsTotal > 0) {
+      statusLabel = `sym ${symbolsThisRun}/${symbolsTotal}`;
     }
 
     return {
       totalCandidates: total,
       done,
-      remaining,
       pct,
-      etaLabel,
       phase,
+      statusLabel,
       stageCPass,
       isRunning,
-      timeBudgetExhausted,
     };
   })();
   const scalpResearchHealthHint = (() => {
@@ -6625,7 +6603,7 @@ export default function Home() {
 
                   <section className={`${scalpSectionShellClass} overflow-hidden`}>
                     {/* Research progress bar — thin strip at top of panel */}
-                    {scalpResearchProgress.totalCandidates > 0 && (
+                    {(scalpResearchProgress.totalCandidates > 0 || scalpResearchProgress.isRunning) && (
                       <div className="relative">
                         <div
                           className={`h-2 w-full rounded-full ${scalpDarkMode ? "bg-zinc-700" : "bg-slate-200"}`}
@@ -6657,8 +6635,8 @@ export default function Home() {
                             )}
                           </span>
                           <span className="flex items-center gap-2">
-                            {scalpResearchProgress.etaLabel && (
-                              <span className="opacity-70">{scalpResearchProgress.etaLabel}</span>
+                            {scalpResearchProgress.statusLabel && (
+                              <span className="opacity-70">{scalpResearchProgress.statusLabel}</span>
                             )}
                             {scalpResearchHealthHint && (
                               <span className="relative group">

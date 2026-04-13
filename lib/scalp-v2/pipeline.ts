@@ -2669,14 +2669,17 @@ export async function runScalpV2ResearchJob(params: {
     }
 
     // --- Backtest remaining candidates in one pass ---
+    // Base progress fields included in every heartbeat so JSONB merge doesn't lose them.
+    const baseProgress = {
+      selectedCandidates: selected.length,
+      skippedByCache,
+      skippedByClearFail,
+      skippedByNetRPreFilter,
+    };
     await emitResearchHeartbeat({
       phase: "prepare_backtest",
       force: true,
-      progress: {
-        selectedCandidates: selected.length,
-        skippedByCache,
-        skippedByClearFail,
-      },
+      progress: { ...baseProgress },
     });
     // Chunk: limit each invocation to a bounded number of unique symbols.
     // This keeps candle loading and backtesting within the serverless time budget.
@@ -2747,7 +2750,7 @@ export async function runScalpV2ResearchJob(params: {
           toWeekStartTs: windowToTs,
         }).catch(() => new Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>())
       : new Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>();
-    await emitResearchHeartbeat({ phase: "prepare_backtest", force: true, progress: { step: "cache_loaded", cacheKeys: weeklyCacheKeys.length, cacheHits: workerStageWeeklyCache.size } });
+    await emitResearchHeartbeat({ phase: "prepare_backtest", force: true, progress: { ...baseProgress, step: "cache_loaded", cacheKeys: weeklyCacheKeys.length, cacheHits: workerStageWeeklyCache.size } });
 
     // Pre-scan: determine which symbols need the full 12-week candle range
     // vs just the newest week. Skip entirely when cache is empty (all need full range).
@@ -2796,6 +2799,7 @@ export async function runScalpV2ResearchJob(params: {
       await emitResearchHeartbeat({
         phase: "backtest_candidates",
         progress: {
+          ...baseProgress,
           candidateIndex: candidateIdx + 1,
           totalSelected: chunked.length,
           stageCPass,
@@ -2836,6 +2840,7 @@ export async function runScalpV2ResearchJob(params: {
           await emitResearchHeartbeat({
             phase: "loading_candles",
             progress: {
+              ...baseProgress,
               candidateIndex: candidateIdx + 1,
               totalSelected: chunked.length,
               symbolsLoaded: candleCache.size,
@@ -3167,6 +3172,7 @@ export async function runScalpV2ResearchJob(params: {
           phase: "backtest_candidates",
           force: true,
           progress: {
+            ...baseProgress,
             processedSoFar: candidateIdx + 1,
             totalSelected: chunked.length,
             stageCPass,
