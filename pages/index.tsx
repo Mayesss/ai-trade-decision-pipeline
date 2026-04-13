@@ -4275,42 +4275,68 @@ export default function Home() {
       (j) => String(j?.jobKind || "").trim().toLowerCase() === "research",
     );
     const p = researchJob?.progress || {};
-    const totalCandidates = Math.max(0, Math.floor(Number(p.totalCandidates) || 0));
-    const skippedByCache = Math.max(0, Math.floor(Number(p.skippedByCache) || 0));
-    const skippedByClearFail = Math.max(0, Math.floor(Number(p.skippedByClearFail) || 0));
-    const processedCandidates = Math.max(0, Math.floor(Number(p.processedCandidates) || 0));
+    // The payload has two shapes:
+    //  - While running (heartbeat): { phase, progress: { processedSoFar, totalSelected, stageCPass, ... } }
+    //  - After completion (result):  { totalCandidates, skippedByCache, processedCandidates, elapsedMs, ... }
+    const heartbeat = asPlainObject((p as any)?.progress);
+    const isRunning = researchJob?.status === "running";
+
+    // Prefer heartbeat fields when running, fall back to final result fields
+    const totalCandidates = Math.max(0, Math.floor(
+      Number(isRunning ? (heartbeat.selectedCandidates || heartbeat.totalSelected || p.totalCandidates) : p.totalCandidates) || 0
+    ));
+    const skippedByCache = Math.max(0, Math.floor(Number(
+      isRunning ? (heartbeat.skippedByCache || p.skippedByCache) : p.skippedByCache
+    ) || 0));
+    const skippedByClearFail = Math.max(0, Math.floor(Number(
+      isRunning ? (heartbeat.skippedByClearFail || p.skippedByClearFail) : p.skippedByClearFail
+    ) || 0));
+    const skippedByNetRPreFilter = Math.max(0, Math.floor(Number(
+      isRunning ? (heartbeat.skippedByNetRPreFilter || p.skippedByNetRPreFilter) : p.skippedByNetRPreFilter
+    ) || 0));
+    const processedCandidates = Math.max(0, Math.floor(Number(
+      isRunning ? (heartbeat.processedSoFar || p.processedCandidates) : p.processedCandidates
+    ) || 0));
+    const stageCPass = Math.max(0, Math.floor(Number(
+      isRunning ? heartbeat.stageCPass : p.stageCPass
+    ) || 0));
     const elapsedMs = Math.max(0, Number(p.elapsedMs) || 0);
     const timeBudgetExhausted = p.timeBudgetExhausted === true;
-    const done = skippedByCache + skippedByClearFail + processedCandidates;
-    const pct = totalCandidates > 0 ? Math.min(100, (done / totalCandidates) * 100) : 0;
-    const remaining = Math.max(0, totalCandidates - done);
+    const phase = String((p as any)?.phase || "").replace(/_/g, " ").trim() || null;
+
+    const done = skippedByCache + skippedByClearFail + skippedByNetRPreFilter + processedCandidates;
+    const total = isRunning
+      ? skippedByCache + skippedByClearFail + skippedByNetRPreFilter + totalCandidates
+      : totalCandidates;
+    const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
+    const remaining = Math.max(0, total - done);
 
     // Estimate time left: use avg ms per processed candidate (backtested ones only)
     let etaLabel: string | null = null;
     if (remaining > 0 && processedCandidates > 0 && elapsedMs > 0) {
       const msPerCandidate = elapsedMs / processedCandidates;
-      // Each run processes up to ~timeBudget worth, so estimate runs left
       const timeBudgetMs = Math.max(1, Number(p.timeBudgetMs) || 650_000);
       const candidatesPerRun = Math.max(1, Math.floor(timeBudgetMs / msPerCandidate));
       const runsLeft = Math.ceil(remaining / candidatesPerRun);
-      // Each run interval is ~3 min (cron) + timeBudget
       const runIntervalMs = timeBudgetMs + 180_000;
       const totalRemainingMs = runsLeft * runIntervalMs;
       const hours = Math.floor(totalRemainingMs / 3_600_000);
       const minutes = Math.ceil((totalRemainingMs % 3_600_000) / 60_000);
       if (hours > 0) etaLabel = `~${hours}h ${minutes}m left`;
       else if (minutes > 0) etaLabel = `~${minutes}m left`;
-    } else if (remaining === 0 && totalCandidates > 0) {
+    } else if (remaining === 0 && total > 0) {
       etaLabel = "done this week";
     }
 
     return {
-      totalCandidates,
+      totalCandidates: total,
       done,
       remaining,
       pct,
       etaLabel,
-      isRunning: researchJob?.status === "running",
+      phase,
+      stageCPass,
+      isRunning,
       timeBudgetExhausted,
     };
   })();
@@ -6602,69 +6628,63 @@ export default function Home() {
                     {scalpResearchProgress.totalCandidates > 0 && (
                       <div className="relative">
                         <div
-                          className={`h-1 w-full ${scalpDarkMode ? "bg-zinc-800" : "bg-slate-100"}`}
+                          className={`h-2 w-full rounded-full ${scalpDarkMode ? "bg-zinc-700" : "bg-slate-200"}`}
                         >
                           <div
-                            className="h-full bg-emerald-500 transition-all duration-700 ease-out"
-                            style={{ width: `${scalpResearchProgress.pct}%` }}
+                            className={`h-full rounded-full transition-all duration-700 ease-out ${scalpResearchProgress.isRunning ? "bg-amber-400" : "bg-emerald-500"}`}
+                            style={{ width: `${Math.max(scalpResearchProgress.pct, scalpResearchProgress.done > 0 ? 1 : 0)}%`, minWidth: scalpResearchProgress.done > 0 ? 6 : 0 }}
                           />
                         </div>
                         <div
                           className={`flex items-center justify-between px-4 pt-1.5 pb-0 text-[11px] ${scalpTextMutedClass}`}
                         >
-                          <span>
-                            Research{" "}
-                            <span className={scalpTextSecondaryClass}>
-                              {scalpResearchProgress.done}/{scalpResearchProgress.totalCandidates}
+                          <span className="flex items-center gap-2">
+                            <span>
+                              Research{" "}
+                              <span className={scalpTextSecondaryClass}>
+                                {scalpResearchProgress.done}/{scalpResearchProgress.totalCandidates}
+                              </span>
+                              {" "}
+                              <span className="opacity-60">
+                                ({scalpResearchProgress.pct < 1 && scalpResearchProgress.pct > 0 ? scalpResearchProgress.pct.toFixed(1) : Math.round(scalpResearchProgress.pct)}%)
+                              </span>
                             </span>
-                            {" "}
-                            <span className="opacity-60">
-                              ({Math.round(scalpResearchProgress.pct)}%)
-                            </span>
+                            {scalpResearchProgress.stageCPass > 0 && (
+                              <span className="text-emerald-400">{scalpResearchProgress.stageCPass} stageC</span>
+                            )}
+                            {scalpResearchProgress.phase && scalpResearchProgress.isRunning && (
+                              <span className="opacity-50">{scalpResearchProgress.phase}</span>
+                            )}
                           </span>
-                          {scalpResearchProgress.etaLabel && (
-                            <span className="opacity-70">{scalpResearchProgress.etaLabel}</span>
-                          )}
+                          <span className="flex items-center gap-2">
+                            {scalpResearchProgress.etaLabel && (
+                              <span className="opacity-70">{scalpResearchProgress.etaLabel}</span>
+                            )}
+                            {scalpResearchHealthHint && (
+                              <span className="relative group">
+                                <span className={`inline-block h-2.5 w-2.5 rounded-full cursor-help ${
+                                  scalpResearchHealthHint.tone === "critical" ? "bg-rose-500" :
+                                  scalpResearchHealthHint.tone === "warn" ? "bg-amber-400" :
+                                  scalpResearchHealthHint.tone === "ok" ? "bg-emerald-400" :
+                                  "bg-slate-400"
+                                }`} />
+                                <span className={`pointer-events-none absolute right-0 top-full mt-2 z-50 w-64 rounded-lg border px-3 py-2 text-[10px] leading-relaxed opacity-0 shadow-xl transition-opacity group-hover:opacity-100 ${
+                                  scalpDarkMode
+                                    ? "border-zinc-600 bg-zinc-800 text-zinc-200"
+                                    : "border-slate-200 bg-white text-slate-700"
+                                }`}>
+                                  <div className="font-medium">{scalpResearchHealthHint.label}</div>
+                                  {scalpResearchHealthHint.detail && (
+                                    <div className="mt-0.5 opacity-70">{scalpResearchHealthHint.detail}</div>
+                                  )}
+                                </span>
+                              </span>
+                            )}
+                          </span>
                         </div>
                       </div>
                     )}
-                    {scalpResearchHealthHint && (
-                      <div
-                        className={`mx-4 mt-1 mb-1 flex items-center justify-between rounded-lg border px-2.5 py-1 text-[11px] ${
-                          scalpResearchHealthHint.tone === "critical"
-                            ? scalpDarkMode
-                              ? "border-rose-800/80 bg-rose-950/40 text-rose-200"
-                              : "border-rose-200 bg-rose-50 text-rose-700"
-                            : scalpResearchHealthHint.tone === "warn"
-                              ? scalpDarkMode
-                                ? "border-amber-800/80 bg-amber-950/30 text-amber-200"
-                                : "border-amber-200 bg-amber-50 text-amber-700"
-                              : scalpResearchHealthHint.tone === "ok"
-                                ? scalpDarkMode
-                                  ? "border-emerald-800/80 bg-emerald-950/30 text-emerald-200"
-                                  : "border-emerald-200 bg-emerald-50 text-emerald-700"
-                                : scalpDarkMode
-                                  ? "border-zinc-700 bg-zinc-900/70 text-zinc-300"
-                                  : "border-slate-200 bg-slate-50 text-slate-600"
-                        }`}
-                      >
-                        <div className="min-w-0 truncate">
-                          <span className="font-medium">
-                            {scalpResearchHealthHint.label}
-                          </span>
-                          {scalpResearchHealthHint.phase ? (
-                            <span className="ml-1 opacity-70">
-                              ({scalpResearchHealthHint.phase})
-                            </span>
-                          ) : null}
-                        </div>
-                        {scalpResearchHealthHint.detail ? (
-                          <div className="ml-3 truncate opacity-80">
-                            {scalpResearchHealthHint.detail}
-                          </div>
-                        ) : null}
-                      </div>
-                    )}
+                    {/* Health hint is shown as a dot inside the progress row — see below */}
                     {/* Per-symbol coverage gaps — only show incomplete symbols */}
                     {(() => {
                       const gaps = (scalpSummary?.summary?.symbolCoverage || [])

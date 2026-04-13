@@ -2727,6 +2727,7 @@ export async function runScalpV2ResearchJob(params: {
       fromWeekStartTs: minWindowFromTs,
       toWeekStartTs: windowToTs,
     }).catch(() => new Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>());
+    await emitResearchHeartbeat({ phase: "prepare_backtest", force: true, progress: { step: "cache_loaded", cacheKeys: weeklyCacheKeys.length, cacheHits: workerStageWeeklyCache.size } });
 
     // Pre-scan: determine which symbols need the full 12-week candle range
     // vs just the newest week. If every candidate×stage for a symbol has a
@@ -2809,6 +2810,16 @@ export async function runScalpV2ResearchJob(params: {
             ),
           );
           candleCache.set(candidate.symbol, symbolCandles);
+          // Heartbeat after each candle load to keep the lock alive
+          await emitResearchHeartbeat({
+            phase: "loading_candles",
+            progress: {
+              candidateIndex: candidateIdx + 1,
+              totalSelected: selected.length,
+              symbolsLoaded: candleCache.size,
+              symbolsTotal: uniqueSymbols.length,
+            },
+          });
         }
 
         // Skip candidates whose symbol has insufficient candles — don't persist
