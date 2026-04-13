@@ -6603,7 +6603,7 @@ export default function Home() {
 
                   <section className={`${scalpSectionShellClass} overflow-hidden`}>
                     {/* Research progress bar — thin strip at top of panel */}
-                    {(scalpResearchProgress.totalCandidates > 0 || scalpResearchProgress.isRunning) && (
+                    {(scalpResearchProgress.totalCandidates > 0 || scalpResearchProgress.isRunning || scalpResearchHealthHint) && (
                       <div className="relative">
                         <div
                           className={`h-2 w-full rounded-full ${scalpDarkMode ? "bg-zinc-700" : "bg-slate-200"}`}

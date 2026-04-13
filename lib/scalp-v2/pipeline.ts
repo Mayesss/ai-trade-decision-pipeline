@@ -2669,6 +2669,16 @@ export async function runScalpV2ResearchJob(params: {
     }
 
     // --- Backtest remaining candidates in one pass ---
+    await emitResearchHeartbeat({
+      phase: "selection_complete",
+      force: true,
+      progress: {
+        selected: selected.length,
+        skippedByCache,
+        skippedByClearFail,
+        skippedByNetRPreFilter,
+      },
+    });
     // Base progress fields included in every heartbeat so JSONB merge doesn't lose them.
     const baseProgress = {
       selectedCandidates: selected.length,
@@ -2811,9 +2821,12 @@ export async function runScalpV2ResearchJob(params: {
       try {
         let symbolCandles = candleCache.get(candidate.symbol) ?? null;
         if (!symbolCandles) {
-          const candleFromTs = !cacheIsPopulated || symbolsNeedingFullRange.has(candidate.symbol)
-            ? minWindowFromTs
-            : newestWeekStart;
+          // Load only stage A window initially (4 weeks). If a candidate
+          // passes stage A, we extend to the full range on demand.
+          const stageAFromTs = windowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS;
+          const candleFromTs = cacheIsPopulated && !symbolsNeedingFullRange.has(candidate.symbol)
+            ? newestWeekStart
+            : stageAFromTs;
           const history = await loadScalpCandleHistoryInRange(
             candidate.symbol,
             "1m",
@@ -2910,7 +2923,32 @@ export async function runScalpV2ResearchJob(params: {
             stageResults[stage.id] = buildWorkerStageSkeleton({ stage, fromTs, toTs: windowToTs, reason: "blocked_prior_stage_failed" });
             continue;
           }
-          const stageCandles = symbolCandles.filter((row) => row.ts >= fromTs && row.ts < windowToTs);
+          let stageCandles = symbolCandles.filter((row) => row.ts >= fromTs && row.ts < windowToTs);
+          // Lazy candle extension: if this stage needs a wider range than
+          // what we initially loaded (e.g. stage B/C after stage A passed),
+          // reload with the full range.
+          if (stageCandles.length < workerPolicy.minCandles && symbolCandles[0] && symbolCandles[0].ts > fromTs) {
+            const extended = await loadScalpCandleHistoryInRange(
+              candidate.symbol, "1m", fromTs, windowToTs,
+            ).catch(() => null);
+            if (extended?.record?.candles) {
+              const meta = symbolMetadataMap.get(candidate.symbol) ?? null;
+              const pip = pipSizeForScalpSymbol(candidate.symbol, meta ?? undefined);
+              const cat = inferScalpV2AssetCategory(candidate.symbol);
+              const floor = minSpreadPipsForCategory(cat);
+              const base = defaultScalpReplayConfig(candidate.symbol);
+              const tick = meta?.tickSize ? meta.tickSize / pip : 0;
+              const spread = Math.max(base.defaultSpreadPips, floor, tick);
+              symbolCandles = filterSundayReplayCandles(
+                toReplayCandlesFromHistory(
+                  extended.record.candles as Array<[number, number, number, number, number, number]>,
+                  spread,
+                ),
+              );
+              candleCache.set(candidate.symbol, symbolCandles);
+              stageCandles = symbolCandles.filter((row) => row.ts >= fromTs && row.ts < windowToTs);
+            }
+          }
           if (stageCandles.length < workerPolicy.minCandles) {
             stageResults[stage.id] = buildWorkerStageSkeleton({ stage, fromTs, toTs: windowToTs, reason: "insufficient_candles" });
             blockedStages = true;
