@@ -45,6 +45,24 @@ export type ScalpV2JobStatus =
   | "succeeded"
   | "failed";
 
+export type ScalpV2WorkerStageId = "a" | "b" | "c";
+
+export interface ScalpV2WorkerStageWeeklyMetrics {
+  trades: number;
+  wins: number;
+  netR: number;
+  grossProfitR: number;
+  grossLossR: number;
+  maxDrawdownR: number;
+  maxPrefixR: number;
+  minPrefixR: number;
+  largestTradeR: number;
+  exitStop: number;
+  exitTp: number;
+  exitTimeStop: number;
+  exitForceClose: number;
+}
+
 export interface ScalpV2RiskProfile {
   riskPerTradePct: number;
   maxOpenPositionsPerSymbol: number;

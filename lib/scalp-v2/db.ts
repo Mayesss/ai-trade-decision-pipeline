@@ -28,6 +28,8 @@ import type {
   ScalpV2Session,
   ScalpV2SourceOfTruth,
   ScalpV2Venue,
+  ScalpV2WorkerStageId,
+  ScalpV2WorkerStageWeeklyMetrics,
 } from "./types";
 
 function toMs(value: unknown): number {
@@ -57,6 +59,8 @@ function toPositiveInt(value: unknown, fallback: number, max = 10_000): number {
 }
 
 const SCALP_TABLE_NAME_PATTERN = /^scalp_[a-z0-9_]+$/;
+const SCALP_V2_WORKER_STAGE_WEEKLY_TABLE = "scalp_v2_worker_stage_weekly_stats";
+let workerStageWeeklyTableExistsCache: boolean | null = null;
 
 async function scalpTableExists(tableName: string): Promise<boolean> {
   if (!isScalpPgConfigured()) return false;
@@ -78,6 +82,15 @@ async function scalpTableExists(tableName: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function scalpV2WorkerStageWeeklyTableExists(): Promise<boolean> {
+  if (workerStageWeeklyTableExistsCache !== null) {
+    return workerStageWeeklyTableExistsCache;
+  }
+  const exists = await scalpTableExists(SCALP_V2_WORKER_STAGE_WEEKLY_TABLE);
+  workerStageWeeklyTableExistsCache = exists;
+  return exists;
 }
 
 function resolveScalpV2JobLockStaleMinutes(): number {
@@ -126,6 +139,16 @@ function normalizeOptionalVenue(value: unknown): ScalpV2Venue | null {
     .toLowerCase();
   if (normalized === "bitget") return "bitget";
   if (normalized === "capital") return "capital";
+  return null;
+}
+
+function normalizeWorkerStageId(value: unknown): ScalpV2WorkerStageId | null {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "a") return "a";
+  if (normalized === "b") return "b";
+  if (normalized === "c") return "c";
   return null;
 }
 
@@ -639,6 +662,24 @@ export interface PreviousStageResult {
   stageCNetR: number | null;
 }
 
+export interface ScalpV2WorkerStageWeeklyCacheKey {
+  venue: ScalpV2Venue;
+  symbol: string;
+  strategyId: string;
+  tuneId: string;
+  entrySessionProfile: ScalpV2Session;
+  stageId: ScalpV2WorkerStageId;
+}
+
+export interface ScalpV2WorkerStageWeeklyCacheRow
+  extends ScalpV2WorkerStageWeeklyCacheKey {
+  weekStartTs: number;
+  weekToTs: number;
+  cacheVersion: string;
+  metrics: ScalpV2WorkerStageWeeklyMetrics;
+  updatedAtMs: number;
+}
+
 export interface ScalpV2ScopeWindowStageStats {
   windowToTs: number;
   venue: ScalpV2Venue;
@@ -702,6 +743,233 @@ export async function loadScalpV2PreviousWeekResults(params: {
     });
   }
   return results;
+}
+
+function normalizeWorkerStageWeeklyMetrics(
+  value: unknown,
+): ScalpV2WorkerStageWeeklyMetrics {
+  const row = asRecord(value);
+  const asFinite = (raw: unknown, fallback = 0): number => {
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : fallback;
+  };
+  const asInt = (raw: unknown, fallback = 0): number => {
+    const value = Math.floor(asFinite(raw, fallback));
+    if (!Number.isFinite(value)) return fallback;
+    return Math.max(0, value);
+  };
+  return {
+    trades: asInt(row.trades),
+    wins: asInt(row.wins),
+    netR: asFinite(row.netR),
+    grossProfitR: Math.max(0, asFinite(row.grossProfitR)),
+    grossLossR: Math.min(0, asFinite(row.grossLossR)),
+    maxDrawdownR: Math.max(0, asFinite(row.maxDrawdownR)),
+    maxPrefixR: asFinite(row.maxPrefixR),
+    minPrefixR: asFinite(row.minPrefixR),
+    largestTradeR: Math.max(0, asFinite(row.largestTradeR)),
+    exitStop: asInt(row.exitStop),
+    exitTp: asInt(row.exitTp),
+    exitTimeStop: asInt(row.exitTimeStop),
+    exitForceClose: asInt(row.exitForceClose),
+  };
+}
+
+function toWorkerStageWeeklyCacheKey(
+  params: ScalpV2WorkerStageWeeklyCacheKey,
+): string {
+  const venue = normalizeVenue(params.venue);
+  const symbol = String(params.symbol || "")
+    .trim()
+    .toUpperCase();
+  const strategyId = String(params.strategyId || "")
+    .trim()
+    .toLowerCase();
+  const tuneId = String(params.tuneId || "")
+    .trim()
+    .toLowerCase();
+  const session = normalizeSession(params.entrySessionProfile);
+  const stageId = normalizeWorkerStageId(params.stageId) || "a";
+  return `${venue}:${symbol}:${strategyId}:${tuneId}:${session}:${stageId}`;
+}
+
+const UPSERT_WORKER_STAGE_WEEKLY_CACHE_BATCH_SIZE = 600;
+const LOAD_WORKER_STAGE_WEEKLY_CACHE_KEY_BATCH_SIZE = 300;
+
+export async function upsertScalpV2WorkerStageWeeklyCache(params: {
+  rows: ScalpV2WorkerStageWeeklyCacheRow[];
+}): Promise<number> {
+  if (!isScalpPgConfigured() || params.rows.length === 0) return 0;
+  if (!(await scalpV2WorkerStageWeeklyTableExists())) return 0;
+  const db = scalpPrisma();
+  let written = 0;
+  for (
+    let offset = 0;
+    offset < params.rows.length;
+    offset += UPSERT_WORKER_STAGE_WEEKLY_CACHE_BATCH_SIZE
+  ) {
+    const batch = params.rows.slice(
+      offset,
+      offset + UPSERT_WORKER_STAGE_WEEKLY_CACHE_BATCH_SIZE,
+    );
+    if (!batch.length) continue;
+    const values = batch.map((row) =>
+      sql`(
+        ${normalizeVenue(row.venue)},
+        ${String(row.symbol || "").trim().toUpperCase()},
+        ${String(row.strategyId || "").trim().toLowerCase()},
+        ${String(row.tuneId || "").trim().toLowerCase()},
+        ${normalizeSession(row.entrySessionProfile)},
+        ${normalizeWorkerStageId(row.stageId) || "a"},
+        ${Math.floor(Number(row.weekStartTs) || 0)},
+        ${Math.floor(Number(row.weekToTs) || 0)},
+        ${String(row.cacheVersion || "").trim() || "v1"},
+        ${JSON.stringify(normalizeWorkerStageWeeklyMetrics(row.metrics))}::jsonb,
+        NOW()
+      )`,
+    );
+    await db.$executeRaw(sql`
+      INSERT INTO scalp_v2_worker_stage_weekly_stats(
+        venue,
+        symbol,
+        strategy_id,
+        tune_id,
+        entry_session_profile,
+        stage_id,
+        week_start_ts,
+        week_to_ts,
+        cache_version,
+        metrics_json,
+        updated_at
+      ) VALUES ${join(values, ",")}
+      ON CONFLICT(
+        venue,
+        symbol,
+        strategy_id,
+        tune_id,
+        entry_session_profile,
+        stage_id,
+        week_start_ts
+      )
+      DO UPDATE SET
+        week_to_ts = EXCLUDED.week_to_ts,
+        cache_version = EXCLUDED.cache_version,
+        metrics_json = EXCLUDED.metrics_json,
+        updated_at = NOW();
+    `);
+    written += batch.length;
+  }
+
+  return written;
+}
+
+export async function loadScalpV2WorkerStageWeeklyCache(params: {
+  keys: ScalpV2WorkerStageWeeklyCacheKey[];
+  fromWeekStartTs: number;
+  toWeekStartTs: number;
+  cacheVersion: string;
+}): Promise<Map<string, Map<number, ScalpV2WorkerStageWeeklyCacheRow>>> {
+  const out = new Map<string, Map<number, ScalpV2WorkerStageWeeklyCacheRow>>();
+  if (!isScalpPgConfigured() || params.keys.length === 0) return out;
+  if (!(await scalpV2WorkerStageWeeklyTableExists())) return out;
+
+  const fromWeekStartTs = Math.floor(Number(params.fromWeekStartTs) || 0);
+  const toWeekStartTs = Math.floor(Number(params.toWeekStartTs) || 0);
+  if (!Number.isFinite(fromWeekStartTs) || !Number.isFinite(toWeekStartTs)) {
+    return out;
+  }
+  if (toWeekStartTs <= fromWeekStartTs) return out;
+  const cacheVersion = String(params.cacheVersion || "").trim() || "v1";
+  const db = scalpPrisma();
+
+  for (
+    let offset = 0;
+    offset < params.keys.length;
+    offset += LOAD_WORKER_STAGE_WEEKLY_CACHE_KEY_BATCH_SIZE
+  ) {
+    const batch = params.keys.slice(
+      offset,
+      offset + LOAD_WORKER_STAGE_WEEKLY_CACHE_KEY_BATCH_SIZE,
+    );
+    if (!batch.length) continue;
+    const keyRows = batch.map((row) =>
+      sql`(
+        ${normalizeVenue(row.venue)},
+        ${String(row.symbol || "").trim().toUpperCase()},
+        ${String(row.strategyId || "").trim().toLowerCase()},
+        ${String(row.tuneId || "").trim().toLowerCase()},
+        ${normalizeSession(row.entrySessionProfile)},
+        ${normalizeWorkerStageId(row.stageId) || "a"}
+      )`,
+    );
+    const rows = await db.$queryRaw<
+      Array<{
+        venue: string;
+        symbol: string;
+        strategyId: string;
+        tuneId: string;
+        entrySessionProfile: string;
+        stageId: string;
+        weekStartTs: string | number;
+        weekToTs: string | number;
+        cacheVersion: string;
+        metricsJson: unknown;
+        updatedAt: Date;
+      }>
+    >(sql`
+      WITH keys(venue, symbol, strategy_id, tune_id, entry_session_profile, stage_id) AS (
+        VALUES ${join(keyRows, ",")}
+      )
+      SELECT
+        s.venue,
+        s.symbol,
+        s.strategy_id AS "strategyId",
+        s.tune_id AS "tuneId",
+        s.entry_session_profile AS "entrySessionProfile",
+        s.stage_id AS "stageId",
+        s.week_start_ts AS "weekStartTs",
+        s.week_to_ts AS "weekToTs",
+        s.cache_version AS "cacheVersion",
+        s.metrics_json AS "metricsJson",
+        s.updated_at AS "updatedAt"
+      FROM scalp_v2_worker_stage_weekly_stats s
+      INNER JOIN keys k
+        ON s.venue = k.venue
+       AND s.symbol = k.symbol
+       AND s.strategy_id = k.strategy_id
+       AND s.tune_id = k.tune_id
+       AND s.entry_session_profile = k.entry_session_profile
+       AND s.stage_id = k.stage_id
+      WHERE s.cache_version = ${cacheVersion}
+        AND s.week_start_ts >= ${fromWeekStartTs}
+        AND s.week_start_ts < ${toWeekStartTs}
+      ORDER BY s.week_start_ts ASC;
+    `);
+    for (const row of rows) {
+      const stageId = normalizeWorkerStageId(row.stageId);
+      if (!stageId) continue;
+      const normalized: ScalpV2WorkerStageWeeklyCacheRow = {
+        venue: normalizeVenue(row.venue),
+        symbol: String(row.symbol || "").trim().toUpperCase(),
+        strategyId: String(row.strategyId || "").trim().toLowerCase(),
+        tuneId: String(row.tuneId || "").trim().toLowerCase(),
+        entrySessionProfile: normalizeSession(row.entrySessionProfile),
+        stageId,
+        weekStartTs: Math.floor(Number(row.weekStartTs) || 0),
+        weekToTs: Math.floor(Number(row.weekToTs) || 0),
+        cacheVersion: String(row.cacheVersion || "").trim() || cacheVersion,
+        metrics: normalizeWorkerStageWeeklyMetrics(row.metricsJson),
+        updatedAtMs: toMs(row.updatedAt),
+      };
+      if (normalized.weekStartTs <= 0) continue;
+      const key = toWorkerStageWeeklyCacheKey(normalized);
+      const perWeek =
+        out.get(key) || new Map<number, ScalpV2WorkerStageWeeklyCacheRow>();
+      perWeek.set(normalized.weekStartTs, normalized);
+      out.set(key, perWeek);
+    }
+  }
+  return out;
 }
 
 export async function loadScalpV2ScopeWindowStageStats(params: {

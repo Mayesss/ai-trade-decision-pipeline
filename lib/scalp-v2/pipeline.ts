@@ -53,6 +53,7 @@ import {
   enforceScalpV2EnabledCap,
   finalizeScalpV2Job,
   heartbeatScalpV2Job,
+  loadScalpV2WorkerStageWeeklyCache,
   listScalpV2Candidates,
   loadScalpV2EvaluatedCandidateKeys,
   loadScalpV2PreviousWeekResults,
@@ -67,6 +68,7 @@ import {
   updateScalpV2CandidateStatuses,
   upsertScalpV2Candidates,
   upsertScalpV2Deployments,
+  upsertScalpV2WorkerStageWeeklyCache,
   upsertScalpV2PositionSnapshot,
   upsertScalpV2ResearchCursor,
   upsertScalpV2ResearchHighlights,
@@ -95,6 +97,7 @@ import type {
   ScalpV2RuntimePrunedScopeEntry,
   ScalpV2Session,
   ScalpV2Venue,
+  ScalpV2WorkerStageWeeklyMetrics,
 } from "./types";
 
 function hashScoreSeed(value: string): number {
@@ -117,6 +120,12 @@ const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 const LIFECYCLE_SUSPEND_WINDOW_MS = 180 * ONE_DAY_MS;
 const DEFAULT_SCOPE_PRUNE_TTL_DAYS = 28;
+const WORKER_WEEKLY_CACHE_VERSION =
+  String(process.env.SCALP_V2_WORKER_WEEKLY_CACHE_VERSION || "v1").trim() || "v1";
+const WORKER_INCREMENTAL_WEEKLY_ENABLED = envBool(
+  "SCALP_V2_WORKER_INCREMENTAL_WEEKLY_ENABLED",
+  true,
+);
 
 type ScalpV2ScopePrunePolicy = {
   enabled: boolean;
@@ -136,6 +145,23 @@ function toScalpV2ScopeKey(params: {
   const symbol = String(params.symbol || "").trim().toUpperCase();
   const session = String(params.session || "berlin").trim().toLowerCase();
   return `${venue}:${symbol}:${session}`;
+}
+
+function toWorkerStageCacheKey(params: {
+  venue: ScalpV2Venue;
+  symbol: string;
+  strategyId: string;
+  tuneId: string;
+  session: ScalpV2Session;
+  stageId: ScalpV2WorkerStageId;
+}): string {
+  const venue = String(params.venue || "bitget").trim().toLowerCase();
+  const symbol = String(params.symbol || "").trim().toUpperCase();
+  const strategyId = String(params.strategyId || "").trim().toLowerCase();
+  const tuneId = String(params.tuneId || "").trim().toLowerCase();
+  const session = String(params.session || "berlin").trim().toLowerCase();
+  const stageId = String(params.stageId || "a").trim().toLowerCase();
+  return `${venue}:${symbol}:${strategyId}:${tuneId}:${session}:${stageId}`;
 }
 
 function normalizeScopeVenue(value: unknown): ScalpV2Venue | null {
@@ -878,88 +904,227 @@ function filterSundayReplayCandles(candles: ScalpReplayCandle[]): ScalpReplayCan
   );
 }
 
-function countWinningWeekStreak(params: {
-  trades: ScalpReplayTrade[];
-  fromTs: number;
-  toTs: number;
-}): { winningWeeks: number; consecutiveWinningWeeks: number } {
+function listWeekStarts(params: { fromTs: number; toTs: number }): number[] {
   const fromTs = Math.floor(Number(params.fromTs) || 0);
   const toTs = Math.floor(Number(params.toTs) || 0);
   if (!Number.isFinite(fromTs) || !Number.isFinite(toTs) || toTs <= fromTs) {
-    return { winningWeeks: 0, consecutiveWinningWeeks: 0 };
+    return [];
   }
-
-  const weekNetByStart = new Map<number, number>();
-  for (const trade of params.trades || []) {
-    const ts = Math.floor(Number(trade.exitTs || 0));
-    if (!Number.isFinite(ts) || ts < fromTs || ts >= toTs) continue;
-    const weekStart = startOfScalpV2WeekMondayUtc(ts);
-    weekNetByStart.set(
-      weekStart,
-      (weekNetByStart.get(weekStart) || 0) + Number(trade.rMultiple || 0),
-    );
-  }
-
-  let winningWeeks = 0;
-  let consecutiveWinningWeeks = 0;
-  let currentStreak = 0;
+  const out: number[] = [];
   for (let weekStart = fromTs; weekStart < toTs; weekStart += ONE_WEEK_MS) {
-    const netR = weekNetByStart.get(weekStart) || 0;
-    if (netR > 0) {
-      winningWeeks += 1;
-      currentStreak += 1;
-      consecutiveWinningWeeks = Math.max(consecutiveWinningWeeks, currentStreak);
-    } else {
-      currentStreak = 0;
-    }
-  }
-  return { winningWeeks, consecutiveWinningWeeks };
-}
-
-function computeWeeklyNetR(params: {
-  trades: ScalpReplayTrade[];
-  fromTs: number;
-  toTs: number;
-}): Record<string, number> {
-  const fromTs = Math.floor(Number(params.fromTs) || 0);
-  const toTs = Math.floor(Number(params.toTs) || 0);
-  if (!Number.isFinite(fromTs) || !Number.isFinite(toTs) || toTs <= fromTs) {
-    return {};
-  }
-  const weekNetByStart = new Map<number, number>();
-  // Initialize all week buckets to 0 so weeks with no trades still appear
-  for (let weekStart = fromTs; weekStart < toTs; weekStart += ONE_WEEK_MS) {
-    weekNetByStart.set(weekStart, 0);
-  }
-  for (const trade of params.trades || []) {
-    const ts = Math.floor(Number(trade.exitTs || 0));
-    if (!Number.isFinite(ts) || ts < fromTs || ts >= toTs) continue;
-    const weekStart = startOfScalpV2WeekMondayUtc(ts);
-    weekNetByStart.set(
-      weekStart,
-      (weekNetByStart.get(weekStart) || 0) + Number(trade.rMultiple || 0),
-    );
-  }
-  const out: Record<string, number> = {};
-  for (const [weekStart, netR] of weekNetByStart) {
-    out[String(weekStart)] = netR;
+    out.push(weekStart);
   }
   return out;
 }
 
-function normalizeProfitFactorForGate(params: {
-  profitFactor: number | null;
-  grossProfitR: number;
-  grossLossR: number;
-}): number {
-  const profitFactor = Number(params.profitFactor);
-  if (Number.isFinite(profitFactor)) return profitFactor;
-  const grossProfitR = Number(params.grossProfitR || 0);
-  const grossLossR = Number(params.grossLossR || 0);
-  if (grossProfitR > 0 && Math.abs(grossLossR) <= 1e-9) {
-    return Number.POSITIVE_INFINITY;
+function buildWorkerStageWeeklyMetrics(params: {
+  trades: ScalpReplayTrade[];
+  weekStartTs: number;
+  weekToTs: number;
+}): ScalpV2WorkerStageWeeklyMetrics {
+  const weekStartTs = Math.floor(Number(params.weekStartTs) || 0);
+  const weekToTs = Math.floor(Number(params.weekToTs) || 0);
+  const sortedTrades = [...(params.trades || [])].sort(
+    (a, b) =>
+      Math.floor(Number(a.exitTs || 0)) - Math.floor(Number(b.exitTs || 0)),
+  );
+  let trades = 0;
+  let wins = 0;
+  let netR = 0;
+  let grossProfitR = 0;
+  let grossLossR = 0;
+  let equity = 0;
+  let peak = 0;
+  let minPrefix = 0;
+  let maxDrawdownR = 0;
+  let largestTradeR = 0;
+  let exitStop = 0;
+  let exitTp = 0;
+  let exitTimeStop = 0;
+  let exitForceClose = 0;
+
+  for (const trade of sortedTrades) {
+    const ts = Math.floor(Number(trade.exitTs || 0));
+    if (!Number.isFinite(ts) || ts < weekStartTs || ts >= weekToTs) continue;
+    const r = Number(trade.rMultiple || 0);
+    if (!Number.isFinite(r)) continue;
+    trades += 1;
+    if (r > 0) wins += 1;
+    netR += r;
+    if (r > 0) grossProfitR += r;
+    if (r < 0) grossLossR += r;
+    equity += r;
+    if (equity > peak) peak = equity;
+    if (equity < minPrefix) minPrefix = equity;
+    const drawdown = Math.max(0, peak - equity);
+    if (drawdown > maxDrawdownR) maxDrawdownR = drawdown;
+    const absR = Math.abs(r);
+    if (absR > largestTradeR) largestTradeR = absR;
+    if (
+      trade.exitReason === "STOP" ||
+      trade.exitReason === "STOP_LOSS" ||
+      trade.exitReason === "STOP_BE" ||
+      trade.exitReason === "STOP_TRAIL"
+    ) {
+      exitStop += 1;
+    } else if (trade.exitReason === "TP") {
+      exitTp += 1;
+    } else if (trade.exitReason === "TIME_STOP") {
+      exitTimeStop += 1;
+    } else if (trade.exitReason === "FORCE_CLOSE") {
+      exitForceClose += 1;
+    }
   }
-  return 0;
+
+  return {
+    trades,
+    wins,
+    netR,
+    grossProfitR,
+    grossLossR,
+    maxDrawdownR,
+    maxPrefixR: peak,
+    minPrefixR: minPrefix,
+    largestTradeR,
+    exitStop,
+    exitTp,
+    exitTimeStop,
+    exitForceClose,
+  };
+}
+
+function buildWorkerStageWeeklyMetricsMap(params: {
+  trades: ScalpReplayTrade[];
+  fromTs: number;
+  toTs: number;
+}): Map<number, ScalpV2WorkerStageWeeklyMetrics> {
+  const out = new Map<number, ScalpV2WorkerStageWeeklyMetrics>();
+  const weekStarts = listWeekStarts({
+    fromTs: params.fromTs,
+    toTs: params.toTs,
+  });
+  for (const weekStart of weekStarts) {
+    out.set(
+      weekStart,
+      buildWorkerStageWeeklyMetrics({
+        trades: params.trades,
+        weekStartTs: weekStart,
+        weekToTs: weekStart + ONE_WEEK_MS,
+      }),
+    );
+  }
+  return out;
+}
+
+function aggregateStageFromWeeklyMetrics(params: {
+  fromTs: number;
+  toTs: number;
+  weeklyByStart: Map<number, ScalpV2WorkerStageWeeklyMetrics>;
+}): {
+  trades: number;
+  netR: number;
+  expectancyR: number;
+  winRatePct: number;
+  maxDrawdownR: number;
+  profitFactor: number | null;
+  winningWeeks: number;
+  consecutiveWinningWeeks: number;
+  weeklyNetR: Record<string, number>;
+  maxWeeklyNetR: number | null;
+  largestTradeR: number | null;
+  exitReasons: { stop: number; tp: number; timeStop: number; forceClose: number };
+} {
+  const weekStarts = listWeekStarts({ fromTs: params.fromTs, toTs: params.toTs });
+  let trades = 0;
+  let wins = 0;
+  let netR = 0;
+  let grossProfitR = 0;
+  let grossLossR = 0;
+  let maxDrawdownR = 0;
+  let equity = 0;
+  let peak = 0;
+  let winningWeeks = 0;
+  let consecutiveWinningWeeks = 0;
+  let streak = 0;
+  let maxWeeklyNetR: number | null = null;
+  let largestTradeR = 0;
+  const weeklyNetR: Record<string, number> = {};
+  const exitReasons = { stop: 0, tp: 0, timeStop: 0, forceClose: 0 };
+
+  for (const weekStart of weekStarts) {
+    const metrics = params.weeklyByStart.get(weekStart) || {
+      trades: 0,
+      wins: 0,
+      netR: 0,
+      grossProfitR: 0,
+      grossLossR: 0,
+      maxDrawdownR: 0,
+      maxPrefixR: 0,
+      minPrefixR: 0,
+      largestTradeR: 0,
+      exitStop: 0,
+      exitTp: 0,
+      exitTimeStop: 0,
+      exitForceClose: 0,
+    };
+    const crossWeekDrawdown = Math.max(0, peak - (equity + metrics.minPrefixR));
+    maxDrawdownR = Math.max(
+      maxDrawdownR,
+      metrics.maxDrawdownR,
+      crossWeekDrawdown,
+    );
+    peak = Math.max(peak, equity + metrics.maxPrefixR);
+    equity += metrics.netR;
+    trades += metrics.trades;
+    wins += metrics.wins;
+    netR += metrics.netR;
+    grossProfitR += metrics.grossProfitR;
+    grossLossR += metrics.grossLossR;
+    largestTradeR = Math.max(largestTradeR, metrics.largestTradeR);
+    exitReasons.stop += metrics.exitStop;
+    exitReasons.tp += metrics.exitTp;
+    exitReasons.timeStop += metrics.exitTimeStop;
+    exitReasons.forceClose += metrics.exitForceClose;
+    weeklyNetR[String(weekStart)] = metrics.netR;
+    if (maxWeeklyNetR === null || metrics.netR > maxWeeklyNetR) {
+      maxWeeklyNetR = metrics.netR;
+    }
+    if (metrics.netR > 0) {
+      winningWeeks += 1;
+      streak += 1;
+      if (streak > consecutiveWinningWeeks) {
+        consecutiveWinningWeeks = streak;
+      }
+    } else {
+      streak = 0;
+    }
+  }
+
+  const expectancyR = trades > 0 ? netR / trades : 0;
+  const winRatePct = trades > 0 ? (wins / trades) * 100 : 0;
+  let profitFactor: number | null = null;
+  if (grossProfitR > 0 && Math.abs(grossLossR) <= 1e-9) {
+    profitFactor = Number.POSITIVE_INFINITY;
+  } else if (Math.abs(grossLossR) > 1e-9) {
+    profitFactor = grossProfitR / Math.abs(grossLossR);
+  } else {
+    profitFactor = 0;
+  }
+
+  return {
+    trades,
+    netR,
+    expectancyR,
+    winRatePct,
+    maxDrawdownR,
+    profitFactor,
+    winningWeeks,
+    consecutiveWinningWeeks,
+    weeklyNetR,
+    maxWeeklyNetR,
+    largestTradeR: trades > 0 ? largestTradeR : null,
+    exitReasons,
+  };
 }
 
 function evaluateWorkerStageGate(params: {
@@ -2381,6 +2546,57 @@ export async function runScalpV2ResearchJob(params: {
     let stageCFail = 0;
     let replayErrors = 0;
     let droppedBelowMinStage = 0;
+    let fullStageReplays = 0;
+    let incrementalStageReplays = 0;
+    let stageCacheHits = 0;
+    let stageCacheMisses = 0;
+    let stageCacheFallbacks = 0;
+    let stageCacheRowsUpserted = 0;
+
+    const workerStageCacheKeys = WORKER_INCREMENTAL_WEEKLY_ENABLED
+      ? (() => {
+          const out: Array<{
+            venue: ScalpV2Venue;
+            symbol: string;
+            strategyId: string;
+            tuneId: string;
+            entrySessionProfile: ScalpV2Session;
+            stageId: ScalpV2WorkerStageId;
+          }> = [];
+          const seen = new Set<string>();
+          for (const candidate of selected) {
+            for (const stage of stagePolicies) {
+              const cacheKey = toWorkerStageCacheKey({
+                venue: candidate.venue,
+                symbol: candidate.symbol,
+                strategyId: candidate.strategyId,
+                tuneId: candidate.tuneId,
+                session: candidate.session,
+                stageId: stage.id,
+              });
+              if (seen.has(cacheKey)) continue;
+              seen.add(cacheKey);
+              out.push({
+                venue: candidate.venue,
+                symbol: candidate.symbol,
+                strategyId: candidate.strategyId,
+                tuneId: candidate.tuneId,
+                entrySessionProfile: candidate.session,
+                stageId: stage.id,
+              });
+            }
+          }
+          return out;
+        })()
+      : [];
+    const workerStageWeeklyCache = workerStageCacheKeys.length
+      ? await loadScalpV2WorkerStageWeeklyCache({
+          keys: workerStageCacheKeys,
+          fromWeekStartTs: minWindowFromTs,
+          toWeekStartTs: windowToTs,
+          cacheVersion: WORKER_WEEKLY_CACHE_VERSION,
+        }).catch(() => new Map())
+      : new Map();
 
     let timeBudgetExhausted = false;
 
@@ -2433,6 +2649,51 @@ export async function runScalpV2ResearchJob(params: {
           b: buildWorkerStageSkeleton({ stage: workerPolicy.stageB, fromTs: windowToTs - workerPolicy.stageB.weeks * ONE_WEEK_MS, toTs: windowToTs, reason: "stage_not_started" }),
           c: buildWorkerStageSkeleton({ stage: workerPolicy.stageC, fromTs: windowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS, toTs: windowToTs, reason: "stage_not_started" }),
         };
+        const candidateWeeklyCacheWrites: Parameters<
+          typeof upsertScalpV2WorkerStageWeeklyCache
+        >[0]["rows"] = [];
+
+        const replayBaseConfig = defaultScalpReplayConfig(candidate.symbol);
+        const deploymentId = toDeploymentId({
+          venue: candidate.venue,
+          symbol: candidate.symbol,
+          strategyId: candidate.strategyId,
+          tuneId: candidate.tuneId,
+          session: candidate.session,
+        });
+        const exitOverrides = resolveExitRuleOverrides(
+          candidate.dsl.blocksByFamily.exit_rule,
+        );
+        const entryOverrides = resolveEntryTriggerOverrides(
+          candidate.dsl.blocksByFamily.entry_trigger,
+        );
+        const riskReplayOverrides = resolveRiskRuleReplayOverrides(
+          candidate.dsl.blocksByFamily.risk_rule,
+        );
+        const smReplayOverrides = resolveStateMachineReplayOverrides(
+          candidate.dsl.blocksByFamily.state_machine,
+        );
+        const replayConfig = {
+          ...replayBaseConfig,
+          symbol: candidate.symbol,
+          strategyId: candidate.strategyId,
+          tuneId: candidate.tuneId,
+          deploymentId,
+          tuneLabel: candidate.tuneId,
+          strategy: {
+            ...replayBaseConfig.strategy,
+            entrySessionProfile: candidate.session,
+            ...exitOverrides,
+            ...entryOverrides,
+            ...riskReplayOverrides,
+            ...smReplayOverrides,
+          },
+        };
+        const candidateMeta = symbolMetadataMap.get(candidate.symbol) ?? null;
+        const symbolPipSize = pipSizeForScalpSymbol(
+          candidate.symbol,
+          candidateMeta ?? undefined,
+        );
 
         for (const stage of stagePolicies) {
           const fromTs = windowToTs - stage.weeks * ONE_WEEK_MS;
@@ -2448,72 +2709,138 @@ export async function runScalpV2ResearchJob(params: {
           }
 
           const stageStartedAtMs = nowMs();
-          const replayBaseConfig = defaultScalpReplayConfig(candidate.symbol);
-          const deploymentId = toDeploymentId({
+          const stageWeekStarts = listWeekStarts({ fromTs, toTs: windowToTs });
+          const newestWeekStart =
+            stageWeekStarts.length > 0
+              ? stageWeekStarts[stageWeekStarts.length - 1]!
+              : null;
+          const stageCacheKey = toWorkerStageCacheKey({
             venue: candidate.venue,
             symbol: candidate.symbol,
             strategyId: candidate.strategyId,
             tuneId: candidate.tuneId,
             session: candidate.session,
+            stageId: stage.id,
           });
-          const exitOverrides = resolveExitRuleOverrides(
-            candidate.dsl.blocksByFamily.exit_rule,
-          );
-          const entryOverrides = resolveEntryTriggerOverrides(
-            candidate.dsl.blocksByFamily.entry_trigger,
-          );
-          const riskReplayOverrides = resolveRiskRuleReplayOverrides(
-            candidate.dsl.blocksByFamily.risk_rule,
-          );
-          const smReplayOverrides = resolveStateMachineReplayOverrides(
-            candidate.dsl.blocksByFamily.state_machine,
-          );
-          const replayConfig = {
-            ...replayBaseConfig,
-            symbol: candidate.symbol,
-            strategyId: candidate.strategyId,
-            tuneId: candidate.tuneId,
-            deploymentId,
-            tuneLabel: candidate.tuneId,
-            strategy: {
-              ...replayBaseConfig.strategy,
-              entrySessionProfile: candidate.session,
-              ...exitOverrides,
-              ...entryOverrides,
-              ...riskReplayOverrides,
-              ...smReplayOverrides,
-            },
-          };
-          const candidateMeta = symbolMetadataMap.get(candidate.symbol) ?? null;
-          const replay = await runScalpReplay({
-            candles: stageCandles,
-            pipSize: pipSizeForScalpSymbol(candidate.symbol, candidateMeta ?? undefined),
-            config: replayConfig,
-            captureTimeline: false,
-          });
-          const weeklyStats = countWinningWeekStreak({ trades: replay.trades, fromTs, toTs: windowToTs });
-          const weeklyNetR = computeWeeklyNetR({ trades: replay.trades, fromTs, toTs: windowToTs });
-          const profitFactorForGate = normalizeProfitFactorForGate({
-            profitFactor: replay.summary.profitFactor,
-            grossProfitR: replay.summary.grossProfitR,
-            grossLossR: replay.summary.grossLossR,
-          });
-          // Compute new per-trade metrics
-          const weeklyNetRValues = Object.values(weeklyNetR).filter(Number.isFinite);
-          const maxWeeklyNetR = weeklyNetRValues.length > 0 ? Math.max(...weeklyNetRValues) : null;
-          let largestTradeR: number | null = null;
-          const exitReasons = { stop: 0, stopLoss: 0, stopBe: 0, stopTrail: 0, tp: 0, timeStop: 0, forceClose: 0 };
-          for (const t of replay.trades) {
-            const absR = Math.abs(t.rMultiple);
-            if (largestTradeR === null || absR > largestTradeR) largestTradeR = absR;
-            if (t.exitReason === "STOP_LOSS") { exitReasons.stopLoss += 1; exitReasons.stop += 1; }
-            else if (t.exitReason === "STOP_BE") { exitReasons.stopBe += 1; exitReasons.stop += 1; }
-            else if (t.exitReason === "STOP_TRAIL") { exitReasons.stopTrail += 1; exitReasons.stop += 1; }
-            else if (t.exitReason === "STOP") { exitReasons.stop += 1; }
-            else if (t.exitReason === "TP") exitReasons.tp += 1;
-            else if (t.exitReason === "TIME_STOP") exitReasons.timeStop += 1;
-            else if (t.exitReason === "FORCE_CLOSE") exitReasons.forceClose += 1;
+          const cachedWeeklyRows =
+            workerStageWeeklyCache.get(stageCacheKey) ||
+            new Map<number, {
+              metrics: ScalpV2WorkerStageWeeklyMetrics;
+            }>();
+          const priorWeekStarts =
+            stageWeekStarts.length > 1
+              ? stageWeekStarts.slice(0, stageWeekStarts.length - 1)
+              : [];
+          const hasAllPriorWeeks =
+            priorWeekStarts.length > 0
+              ? priorWeekStarts.every((weekStart) =>
+                  cachedWeeklyRows.has(weekStart),
+                )
+              : false;
+
+          let aggregate = null as null | ReturnType<typeof aggregateStageFromWeeklyMetrics>;
+          let usedIncrementalReplay = false;
+
+          if (
+            WORKER_INCREMENTAL_WEEKLY_ENABLED &&
+            newestWeekStart !== null &&
+            hasAllPriorWeeks
+          ) {
+            const weekToTs = newestWeekStart + ONE_WEEK_MS;
+            const newestWeekCandles = symbolCandles.filter(
+              (row) => row.ts >= newestWeekStart && row.ts < weekToTs,
+            );
+            if (newestWeekCandles.length >= workerPolicy.minCandles) {
+              const newestWeekReplay = await runScalpReplay({
+                candles: newestWeekCandles,
+                pipSize: symbolPipSize,
+                config: replayConfig,
+                captureTimeline: false,
+              });
+              const weeklyByStart = new Map<
+                number,
+                ScalpV2WorkerStageWeeklyMetrics
+              >();
+              for (const weekStart of priorWeekStarts) {
+                const cached = cachedWeeklyRows.get(weekStart);
+                if (cached) weeklyByStart.set(weekStart, cached.metrics);
+              }
+              const newestWeekMetrics = buildWorkerStageWeeklyMetrics({
+                trades: newestWeekReplay.trades,
+                weekStartTs: newestWeekStart,
+                weekToTs,
+              });
+              const newestWeekCacheRow = {
+                venue: candidate.venue,
+                symbol: candidate.symbol,
+                strategyId: candidate.strategyId,
+                tuneId: candidate.tuneId,
+                entrySessionProfile: candidate.session,
+                stageId: stage.id,
+                weekStartTs: newestWeekStart,
+                weekToTs,
+                cacheVersion: WORKER_WEEKLY_CACHE_VERSION,
+                metrics: newestWeekMetrics,
+                updatedAtMs: nowTs,
+              };
+              weeklyByStart.set(newestWeekStart, newestWeekMetrics);
+              aggregate = aggregateStageFromWeeklyMetrics({
+                fromTs,
+                toTs: windowToTs,
+                weeklyByStart,
+              });
+              candidateWeeklyCacheWrites.push(newestWeekCacheRow);
+              cachedWeeklyRows.set(newestWeekStart, newestWeekCacheRow);
+              workerStageWeeklyCache.set(stageCacheKey, cachedWeeklyRows);
+              usedIncrementalReplay = true;
+              stageCacheHits += 1;
+              incrementalStageReplays += 1;
+            }
+          } else {
+            stageCacheMisses += 1;
           }
+
+          if (!aggregate) {
+            const replay = await runScalpReplay({
+              candles: stageCandles,
+              pipSize: symbolPipSize,
+              config: replayConfig,
+              captureTimeline: false,
+            });
+            const weeklyByStart = buildWorkerStageWeeklyMetricsMap({
+              trades: replay.trades,
+              fromTs,
+              toTs: windowToTs,
+            });
+            aggregate = aggregateStageFromWeeklyMetrics({
+              fromTs,
+              toTs: windowToTs,
+              weeklyByStart,
+            });
+            for (const [weekStart, metrics] of weeklyByStart.entries()) {
+              const cacheRow = {
+                venue: candidate.venue,
+                symbol: candidate.symbol,
+                strategyId: candidate.strategyId,
+                tuneId: candidate.tuneId,
+                entrySessionProfile: candidate.session,
+                stageId: stage.id,
+                weekStartTs: weekStart,
+                weekToTs: weekStart + ONE_WEEK_MS,
+                cacheVersion: WORKER_WEEKLY_CACHE_VERSION,
+                metrics,
+                updatedAtMs: nowTs,
+              };
+              candidateWeeklyCacheWrites.push(cacheRow);
+              cachedWeeklyRows.set(weekStart, cacheRow);
+            }
+            workerStageWeeklyCache.set(stageCacheKey, cachedWeeklyRows);
+            fullStageReplays += 1;
+            if (!usedIncrementalReplay && newestWeekStart !== null && hasAllPriorWeeks) {
+              stageCacheFallbacks += 1;
+            }
+          }
+
           const stageResult: ScalpV2WorkerStageResult = {
             id: stage.id,
             weeks: stage.weeks,
@@ -2523,27 +2850,32 @@ export async function runScalpV2ResearchJob(params: {
             passed: false,
             reason: "stage_pending_gate",
             candles: stageCandles.length,
-            trades: replay.summary.trades,
-            netR: replay.summary.netR,
-            expectancyR: replay.summary.expectancyR,
-            winRatePct: replay.summary.winRatePct,
-            maxDrawdownR: replay.summary.maxDrawdownR,
-            profitFactor: Number.isFinite(Number(replay.summary.profitFactor))
-              ? Number(replay.summary.profitFactor)
-              : Number.isFinite(profitFactorForGate) ? profitFactorForGate : null,
-            winningWeeks: weeklyStats.winningWeeks,
-            consecutiveWinningWeeks: weeklyStats.consecutiveWinningWeeks,
+            trades: aggregate.trades,
+            netR: aggregate.netR,
+            expectancyR: aggregate.expectancyR,
+            winRatePct: aggregate.winRatePct,
+            maxDrawdownR: aggregate.maxDrawdownR,
+            profitFactor: aggregate.profitFactor,
+            winningWeeks: aggregate.winningWeeks,
+            consecutiveWinningWeeks: aggregate.consecutiveWinningWeeks,
             durationMs: Math.max(0, nowMs() - stageStartedAtMs),
-            weeklyNetR,
-            maxWeeklyNetR,
-            largestTradeR,
-            exitReasons,
+            weeklyNetR: aggregate.weeklyNetR,
+            maxWeeklyNetR: aggregate.maxWeeklyNetR,
+            largestTradeR: aggregate.largestTradeR,
+            exitReasons: aggregate.exitReasons,
           };
           const gate = evaluateWorkerStageGate({ stage, stageResult });
           stageResult.passed = gate.passed;
           stageResult.reason = gate.reason || "stage_passed";
           stageResults[stage.id] = stageResult;
           if (!gate.passed) blockedStages = true;
+        }
+
+        if (candidateWeeklyCacheWrites.length > 0) {
+          const upserted = await upsertScalpV2WorkerStageWeeklyCache({
+            rows: candidateWeeklyCacheWrites,
+          }).catch(() => 0);
+          stageCacheRowsUpserted += upserted;
         }
 
         const stageAResult = stageResults.a;
@@ -2563,13 +2895,15 @@ export async function runScalpV2ResearchJob(params: {
           stageCResult.passed;
 
         const workerMeta = {
-          version: "v2_research_inline_r2",
+          version: "v2_research_inline_r3",
           evaluatedAtMs: nowTs,
           policy: {
             stageA: workerPolicy.stageA,
             stageB: workerPolicy.stageB,
             stageC: workerPolicy.stageC,
             minCandles: workerPolicy.minCandles,
+            incrementalWeeklyEnabled: WORKER_INCREMENTAL_WEEKLY_ENABLED,
+            weeklyCacheVersion: WORKER_WEEKLY_CACHE_VERSION,
           },
           windowToTs,
           stageA: stageAResult,
@@ -2689,6 +3023,12 @@ export async function runScalpV2ResearchJob(params: {
       stageCPass,
       stageCFail,
       replayErrors,
+      fullStageReplays,
+      incrementalStageReplays,
+      stageCacheHits,
+      stageCacheMisses,
+      stageCacheFallbacks,
+      stageCacheRowsUpserted,
       droppedByVenuePolicy,
       droppedByScopePrune,
       freshnessGate,
@@ -2702,6 +3042,8 @@ export async function runScalpV2ResearchJob(params: {
         stageB: workerPolicy.stageB,
         stageC: workerPolicy.stageC,
         minCandles: workerPolicy.minCandles,
+        incrementalWeeklyEnabled: WORKER_INCREMENTAL_WEEKLY_ENABLED,
+        weeklyCacheVersion: WORKER_WEEKLY_CACHE_VERSION,
       },
     };
 
