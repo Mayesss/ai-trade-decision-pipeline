@@ -53,7 +53,6 @@ import {
   enforceScalpV2EnabledCap,
   finalizeScalpV2Job,
   heartbeatScalpV2Job,
-  loadScalpV2WorkerStageWeeklyCache,
   listScalpV2Candidates,
   loadScalpV2EvaluatedCandidateKeys,
   loadScalpV2PreviousWeekResults,
@@ -68,7 +67,6 @@ import {
   updateScalpV2CandidateStatuses,
   upsertScalpV2Candidates,
   upsertScalpV2Deployments,
-  upsertScalpV2WorkerStageWeeklyCache,
   upsertScalpV2PositionSnapshot,
   upsertScalpV2ResearchCursor,
   upsertScalpV2ResearchHighlights,
@@ -120,12 +118,7 @@ const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 const LIFECYCLE_SUSPEND_WINDOW_MS = 180 * ONE_DAY_MS;
 const DEFAULT_SCOPE_PRUNE_TTL_DAYS = 28;
-const WORKER_WEEKLY_CACHE_VERSION =
-  String(process.env.SCALP_V2_WORKER_WEEKLY_CACHE_VERSION || "v1").trim() || "v1";
-const WORKER_INCREMENTAL_WEEKLY_ENABLED = envBool(
-  "SCALP_V2_WORKER_INCREMENTAL_WEEKLY_ENABLED",
-  true,
-);
+const WORKER_INCREMENTAL_WEEKLY_ONLY = true;
 
 type ScalpV2ScopePrunePolicy = {
   enabled: boolean;
@@ -145,23 +138,6 @@ function toScalpV2ScopeKey(params: {
   const symbol = String(params.symbol || "").trim().toUpperCase();
   const session = String(params.session || "berlin").trim().toLowerCase();
   return `${venue}:${symbol}:${session}`;
-}
-
-function toWorkerStageCacheKey(params: {
-  venue: ScalpV2Venue;
-  symbol: string;
-  strategyId: string;
-  tuneId: string;
-  session: ScalpV2Session;
-  stageId: ScalpV2WorkerStageId;
-}): string {
-  const venue = String(params.venue || "bitget").trim().toLowerCase();
-  const symbol = String(params.symbol || "").trim().toUpperCase();
-  const strategyId = String(params.strategyId || "").trim().toLowerCase();
-  const tuneId = String(params.tuneId || "").trim().toLowerCase();
-  const session = String(params.session || "berlin").trim().toLowerCase();
-  const stageId = String(params.stageId || "a").trim().toLowerCase();
-  return `${venue}:${symbol}:${strategyId}:${tuneId}:${session}:${stageId}`;
 }
 
 function normalizeScopeVenue(value: unknown): ScalpV2Venue | null {
@@ -555,6 +531,8 @@ type ScalpV2WorkerStageResult = {
   durationMs: number;
   /** Per-week netR keyed by Monday-UTC start timestamp. */
   weeklyNetR?: Record<string, number>;
+  /** Per-week full metrics keyed by Monday-UTC start timestamp. */
+  weeklyMetrics?: Record<string, ScalpV2WorkerStageWeeklyMetrics>;
   /** Max single-week netR across the stage window. */
   maxWeeklyNetR?: number | null;
   /** Largest single-trade R-multiple (absolute). */
@@ -1012,6 +990,54 @@ function buildWorkerStageWeeklyMetricsMap(params: {
         weekToTs: weekStart + ONE_WEEK_MS,
       }),
     );
+  }
+  return out;
+}
+
+function normalizeStageWeeklyMetrics(
+  value: Record<string, unknown>,
+): ScalpV2WorkerStageWeeklyMetrics | null {
+  const required = [
+    "trades",
+    "wins",
+    "netR",
+    "grossProfitR",
+    "grossLossR",
+    "maxDrawdownR",
+    "maxPrefixR",
+    "minPrefixR",
+    "largestTradeR",
+    "exitStop",
+    "exitTp",
+    "exitTimeStop",
+    "exitForceClose",
+  ] as const;
+  for (const key of required) {
+    if (!Number.isFinite(Number(value[key]))) return null;
+  }
+  return {
+    trades: Math.max(0, Math.floor(Number(value.trades))),
+    wins: Math.max(0, Math.floor(Number(value.wins))),
+    netR: Number(value.netR),
+    grossProfitR: Number(value.grossProfitR),
+    grossLossR: Number(value.grossLossR),
+    maxDrawdownR: Number(value.maxDrawdownR),
+    maxPrefixR: Number(value.maxPrefixR),
+    minPrefixR: Number(value.minPrefixR),
+    largestTradeR: Number(value.largestTradeR),
+    exitStop: Math.max(0, Math.floor(Number(value.exitStop))),
+    exitTp: Math.max(0, Math.floor(Number(value.exitTp))),
+    exitTimeStop: Math.max(0, Math.floor(Number(value.exitTimeStop))),
+    exitForceClose: Math.max(0, Math.floor(Number(value.exitForceClose))),
+  };
+}
+
+function serializeStageWeeklyMetrics(
+  weeklyByStart: Map<number, ScalpV2WorkerStageWeeklyMetrics>,
+): Record<string, ScalpV2WorkerStageWeeklyMetrics> {
+  const out: Record<string, ScalpV2WorkerStageWeeklyMetrics> = {};
+  for (const [weekStart, metrics] of weeklyByStart.entries()) {
+    out[String(weekStart)] = metrics;
   }
   return out;
 }
@@ -2472,7 +2498,23 @@ export async function runScalpV2ResearchJob(params: {
     // candidates that clearly failed and won't flip with 1 new week. ---
     const previousResults = await loadScalpV2PreviousWeekResults({
       currentWindowToTs: windowToTs,
-    }).catch(() => new Map<string, { stageAPassed: boolean; stageANetR: number | null; stageATrades: number | null; stageCPassed: boolean; stageCNetR: number | null; windowToTs: number }>());
+    }).catch(
+      () =>
+        new Map<
+          string,
+          {
+            stageAPassed: boolean;
+            stageANetR: number | null;
+            stageATrades: number | null;
+            stageCPassed: boolean;
+            stageCNetR: number | null;
+            windowToTs: number;
+            stageAWeeklyMetrics: Record<string, Record<string, number>>;
+            stageBWeeklyMetrics: Record<string, Record<string, number>>;
+            stageCWeeklyMetrics: Record<string, Record<string, number>>;
+          }
+        >(),
+    );
 
     // Thresholds for "clear fail" — well below stage A gates, won't flip.
     const clearFailNetR = workerPolicy.stageA.minNetR * -2; // e.g. -0.4 if gate is 0.2
@@ -2546,57 +2588,8 @@ export async function runScalpV2ResearchJob(params: {
     let stageCFail = 0;
     let replayErrors = 0;
     let droppedBelowMinStage = 0;
-    let fullStageReplays = 0;
     let incrementalStageReplays = 0;
-    let stageCacheHits = 0;
-    let stageCacheMisses = 0;
-    let stageCacheFallbacks = 0;
-    let stageCacheRowsUpserted = 0;
-
-    const workerStageCacheKeys = WORKER_INCREMENTAL_WEEKLY_ENABLED
-      ? (() => {
-          const out: Array<{
-            venue: ScalpV2Venue;
-            symbol: string;
-            strategyId: string;
-            tuneId: string;
-            entrySessionProfile: ScalpV2Session;
-            stageId: ScalpV2WorkerStageId;
-          }> = [];
-          const seen = new Set<string>();
-          for (const candidate of selected) {
-            for (const stage of stagePolicies) {
-              const cacheKey = toWorkerStageCacheKey({
-                venue: candidate.venue,
-                symbol: candidate.symbol,
-                strategyId: candidate.strategyId,
-                tuneId: candidate.tuneId,
-                session: candidate.session,
-                stageId: stage.id,
-              });
-              if (seen.has(cacheKey)) continue;
-              seen.add(cacheKey);
-              out.push({
-                venue: candidate.venue,
-                symbol: candidate.symbol,
-                strategyId: candidate.strategyId,
-                tuneId: candidate.tuneId,
-                entrySessionProfile: candidate.session,
-                stageId: stage.id,
-              });
-            }
-          }
-          return out;
-        })()
-      : [];
-    const workerStageWeeklyCache = workerStageCacheKeys.length
-      ? await loadScalpV2WorkerStageWeeklyCache({
-          keys: workerStageCacheKeys,
-          fromWeekStartTs: minWindowFromTs,
-          toWeekStartTs: windowToTs,
-          cacheVersion: WORKER_WEEKLY_CACHE_VERSION,
-        }).catch(() => new Map())
-      : new Map();
+    let fullStageReplays = 0;
 
     let timeBudgetExhausted = false;
 
@@ -2649,9 +2642,17 @@ export async function runScalpV2ResearchJob(params: {
           b: buildWorkerStageSkeleton({ stage: workerPolicy.stageB, fromTs: windowToTs - workerPolicy.stageB.weeks * ONE_WEEK_MS, toTs: windowToTs, reason: "stage_not_started" }),
           c: buildWorkerStageSkeleton({ stage: workerPolicy.stageC, fromTs: windowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS, toTs: windowToTs, reason: "stage_not_started" }),
         };
-        const candidateWeeklyCacheWrites: Parameters<
-          typeof upsertScalpV2WorkerStageWeeklyCache
-        >[0]["rows"] = [];
+        const candidateHistoryKey =
+          `${candidate.venue}:${candidate.symbol}:${candidate.tuneId}:${candidate.session}`.toLowerCase();
+        const previousCandidate = previousResults.get(candidateHistoryKey) || null;
+        const previousStageWeeklyMetrics: Record<
+          ScalpV2WorkerStageId,
+          Record<string, Record<string, number>>
+        > = {
+          a: previousCandidate?.stageAWeeklyMetrics || {},
+          b: previousCandidate?.stageBWeeklyMetrics || {},
+          c: previousCandidate?.stageCWeeklyMetrics || {},
+        };
 
         const replayBaseConfig = defaultScalpReplayConfig(candidate.symbol);
         const deploymentId = toDeploymentId({
@@ -2714,101 +2715,45 @@ export async function runScalpV2ResearchJob(params: {
             stageWeekStarts.length > 0
               ? stageWeekStarts[stageWeekStarts.length - 1]!
               : null;
-          const stageCacheKey = toWorkerStageCacheKey({
-            venue: candidate.venue,
-            symbol: candidate.symbol,
-            strategyId: candidate.strategyId,
-            tuneId: candidate.tuneId,
-            session: candidate.session,
-            stageId: stage.id,
-          });
-          const cachedWeeklyRows =
-            workerStageWeeklyCache.get(stageCacheKey) ||
-            new Map<number, {
-              metrics: ScalpV2WorkerStageWeeklyMetrics;
-            }>();
+          if (newestWeekStart === null) {
+            stageResults[stage.id] = buildWorkerStageSkeleton({
+              stage,
+              fromTs,
+              toTs: windowToTs,
+              reason: "stage_no_weeks",
+            });
+            blockedStages = true;
+            continue;
+          }
+
           const priorWeekStarts =
             stageWeekStarts.length > 1
               ? stageWeekStarts.slice(0, stageWeekStarts.length - 1)
               : [];
-          const hasAllPriorWeeks =
-            priorWeekStarts.length > 0
-              ? priorWeekStarts.every((weekStart) =>
-                  cachedWeeklyRows.has(weekStart),
-                )
-              : false;
-
-          let aggregate = null as null | ReturnType<typeof aggregateStageFromWeeklyMetrics>;
-          let usedIncrementalReplay = false;
-
-          if (
-            WORKER_INCREMENTAL_WEEKLY_ENABLED &&
-            newestWeekStart !== null &&
-            hasAllPriorWeeks
-          ) {
-            const weekToTs = newestWeekStart + ONE_WEEK_MS;
-            const newestWeekCandles = symbolCandles.filter(
-              (row) => row.ts >= newestWeekStart && row.ts < weekToTs,
+          const priorWeeklySource = previousStageWeeklyMetrics[stage.id];
+          let weeklyByStart = new Map<number, ScalpV2WorkerStageWeeklyMetrics>();
+          let missingPriorMetrics = false;
+          for (const weekStart of priorWeekStarts) {
+            const priorMetrics = normalizeStageWeeklyMetrics(
+              asRecord(priorWeeklySource[String(weekStart)]),
             );
-            if (newestWeekCandles.length >= workerPolicy.minCandles) {
-              const newestWeekReplay = await runScalpReplay({
-                candles: newestWeekCandles,
-                pipSize: symbolPipSize,
-                config: replayConfig,
-                captureTimeline: false,
-              });
-              const weeklyByStart = new Map<
-                number,
-                ScalpV2WorkerStageWeeklyMetrics
-              >();
-              for (const weekStart of priorWeekStarts) {
-                const cached = cachedWeeklyRows.get(weekStart);
-                if (cached) weeklyByStart.set(weekStart, cached.metrics);
-              }
-              const newestWeekMetrics = buildWorkerStageWeeklyMetrics({
-                trades: newestWeekReplay.trades,
-                weekStartTs: newestWeekStart,
-                weekToTs,
-              });
-              const newestWeekCacheRow = {
-                venue: candidate.venue,
-                symbol: candidate.symbol,
-                strategyId: candidate.strategyId,
-                tuneId: candidate.tuneId,
-                entrySessionProfile: candidate.session,
-                stageId: stage.id,
-                weekStartTs: newestWeekStart,
-                weekToTs,
-                cacheVersion: WORKER_WEEKLY_CACHE_VERSION,
-                metrics: newestWeekMetrics,
-                updatedAtMs: nowTs,
-              };
-              weeklyByStart.set(newestWeekStart, newestWeekMetrics);
-              aggregate = aggregateStageFromWeeklyMetrics({
-                fromTs,
-                toTs: windowToTs,
-                weeklyByStart,
-              });
-              candidateWeeklyCacheWrites.push(newestWeekCacheRow);
-              cachedWeeklyRows.set(newestWeekStart, newestWeekCacheRow);
-              workerStageWeeklyCache.set(stageCacheKey, cachedWeeklyRows);
-              usedIncrementalReplay = true;
-              stageCacheHits += 1;
-              incrementalStageReplays += 1;
+            if (!priorMetrics) {
+              missingPriorMetrics = true;
+              break;
             }
-          } else {
-            stageCacheMisses += 1;
+            weeklyByStart.set(weekStart, priorMetrics);
           }
-
-          if (!aggregate) {
-            const replay = await runScalpReplay({
+          let aggregate: ReturnType<typeof aggregateStageFromWeeklyMetrics>;
+          if (missingPriorMetrics) {
+            const fullReplay = await runScalpReplay({
               candles: stageCandles,
               pipSize: symbolPipSize,
               config: replayConfig,
               captureTimeline: false,
             });
-            const weeklyByStart = buildWorkerStageWeeklyMetricsMap({
-              trades: replay.trades,
+            fullStageReplays += 1;
+            weeklyByStart = buildWorkerStageWeeklyMetricsMap({
+              trades: fullReplay.trades,
               fromTs,
               toTs: windowToTs,
             });
@@ -2817,28 +2762,40 @@ export async function runScalpV2ResearchJob(params: {
               toTs: windowToTs,
               weeklyByStart,
             });
-            for (const [weekStart, metrics] of weeklyByStart.entries()) {
-              const cacheRow = {
-                venue: candidate.venue,
-                symbol: candidate.symbol,
-                strategyId: candidate.strategyId,
-                tuneId: candidate.tuneId,
-                entrySessionProfile: candidate.session,
-                stageId: stage.id,
-                weekStartTs: weekStart,
-                weekToTs: weekStart + ONE_WEEK_MS,
-                cacheVersion: WORKER_WEEKLY_CACHE_VERSION,
-                metrics,
-                updatedAtMs: nowTs,
-              };
-              candidateWeeklyCacheWrites.push(cacheRow);
-              cachedWeeklyRows.set(weekStart, cacheRow);
+          } else {
+            const newestWeekToTs = newestWeekStart + ONE_WEEK_MS;
+            const newestWeekCandles = symbolCandles.filter(
+              (row) => row.ts >= newestWeekStart && row.ts < newestWeekToTs,
+            );
+            if (newestWeekCandles.length < workerPolicy.minCandles) {
+              stageResults[stage.id] = buildWorkerStageSkeleton({
+                stage,
+                fromTs,
+                toTs: windowToTs,
+                reason: "insufficient_latest_week_candles",
+              });
+              blockedStages = true;
+              continue;
             }
-            workerStageWeeklyCache.set(stageCacheKey, cachedWeeklyRows);
-            fullStageReplays += 1;
-            if (!usedIncrementalReplay && newestWeekStart !== null && hasAllPriorWeeks) {
-              stageCacheFallbacks += 1;
-            }
+
+            const newestWeekReplay = await runScalpReplay({
+              candles: newestWeekCandles,
+              pipSize: symbolPipSize,
+              config: replayConfig,
+              captureTimeline: false,
+            });
+            incrementalStageReplays += 1;
+            const newestWeekMetrics = buildWorkerStageWeeklyMetrics({
+              trades: newestWeekReplay.trades,
+              weekStartTs: newestWeekStart,
+              weekToTs: newestWeekToTs,
+            });
+            weeklyByStart.set(newestWeekStart, newestWeekMetrics);
+            aggregate = aggregateStageFromWeeklyMetrics({
+              fromTs,
+              toTs: windowToTs,
+              weeklyByStart,
+            });
           }
 
           const stageResult: ScalpV2WorkerStageResult = {
@@ -2860,6 +2817,7 @@ export async function runScalpV2ResearchJob(params: {
             consecutiveWinningWeeks: aggregate.consecutiveWinningWeeks,
             durationMs: Math.max(0, nowMs() - stageStartedAtMs),
             weeklyNetR: aggregate.weeklyNetR,
+            weeklyMetrics: serializeStageWeeklyMetrics(weeklyByStart),
             maxWeeklyNetR: aggregate.maxWeeklyNetR,
             largestTradeR: aggregate.largestTradeR,
             exitReasons: aggregate.exitReasons,
@@ -2869,13 +2827,6 @@ export async function runScalpV2ResearchJob(params: {
           stageResult.reason = gate.reason || "stage_passed";
           stageResults[stage.id] = stageResult;
           if (!gate.passed) blockedStages = true;
-        }
-
-        if (candidateWeeklyCacheWrites.length > 0) {
-          const upserted = await upsertScalpV2WorkerStageWeeklyCache({
-            rows: candidateWeeklyCacheWrites,
-          }).catch(() => 0);
-          stageCacheRowsUpserted += upserted;
         }
 
         const stageAResult = stageResults.a;
@@ -2902,8 +2853,7 @@ export async function runScalpV2ResearchJob(params: {
             stageB: workerPolicy.stageB,
             stageC: workerPolicy.stageC,
             minCandles: workerPolicy.minCandles,
-            incrementalWeeklyEnabled: WORKER_INCREMENTAL_WEEKLY_ENABLED,
-            weeklyCacheVersion: WORKER_WEEKLY_CACHE_VERSION,
+            weeklyIncrementalOnly: WORKER_INCREMENTAL_WEEKLY_ONLY,
           },
           windowToTs,
           stageA: stageAResult,
@@ -3023,12 +2973,8 @@ export async function runScalpV2ResearchJob(params: {
       stageCPass,
       stageCFail,
       replayErrors,
-      fullStageReplays,
       incrementalStageReplays,
-      stageCacheHits,
-      stageCacheMisses,
-      stageCacheFallbacks,
-      stageCacheRowsUpserted,
+      fullStageReplays,
       droppedByVenuePolicy,
       droppedByScopePrune,
       freshnessGate,
@@ -3042,8 +2988,7 @@ export async function runScalpV2ResearchJob(params: {
         stageB: workerPolicy.stageB,
         stageC: workerPolicy.stageC,
         minCandles: workerPolicy.minCandles,
-        incrementalWeeklyEnabled: WORKER_INCREMENTAL_WEEKLY_ENABLED,
-        weeklyCacheVersion: WORKER_WEEKLY_CACHE_VERSION,
+        weeklyIncrementalOnly: WORKER_INCREMENTAL_WEEKLY_ONLY,
       },
     };
 
