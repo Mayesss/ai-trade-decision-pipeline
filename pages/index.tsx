@@ -317,6 +317,36 @@ type ScalpSummaryWorkerRow = {
   maxDrawdownR?: number | null;
 };
 
+type ScalpResearchHealthResponse = {
+  ok?: boolean;
+  mode?: "scalp_v2" | string;
+  nowMs?: number | null;
+  staleLockMinutes?: number | null;
+  health?: {
+    staleThresholdMs?: number | null;
+    stale?: boolean;
+    approachingStale?: boolean;
+    lockAgeMs?: number | null;
+    heartbeatAgeMs?: number | null;
+  } | null;
+  job?: {
+    status?: string;
+    attempts?: number | null;
+    locked?: boolean;
+    lockedAtMs?: number | null;
+    updatedAtMs?: number | null;
+    nextRunAtMs?: number | null;
+    phase?: string | null;
+    reason?: string | null;
+    progress?: Record<string, unknown> | null;
+  } | null;
+  hint?: {
+    tone?: "ok" | "warn" | "critical" | "info" | string;
+    label?: string;
+    detail?: string | null;
+  } | null;
+};
+
 type ScalpSummaryResponse = {
   mode?: "scalp";
   generatedAtMs?: number;
@@ -2134,6 +2164,8 @@ export default function Home() {
   const [scalpSummary, setScalpSummary] = useState<ScalpSummaryResponse | null>(
     null,
   );
+  const [scalpResearchHealth, setScalpResearchHealth] =
+    useState<ScalpResearchHealthResponse | null>(null);
   const [scalpPaginatedCandidates, setScalpPaginatedCandidates] = useState<
     Array<Record<string, unknown>>
   >([]);
@@ -2694,6 +2726,31 @@ export default function Home() {
         },
       );
       setScalpSummary(summaryJson);
+      try {
+        const researchHealthRes = await fetch(
+          "/api/scalp/v2/ops/research-health",
+          {
+            headers: buildAdminHeaders(),
+            cache: "no-store",
+          },
+        );
+        if (researchHealthRes.status === 401) {
+          handleAuthExpired(
+            "Admin session expired. Re-enter ADMIN_ACCESS_SECRET.",
+          );
+          throw new Error("Unauthorized");
+        }
+        if (researchHealthRes.ok) {
+          const researchHealthRaw = await researchHealthRes.json();
+          setScalpResearchHealth(
+            researchHealthRaw as ScalpResearchHealthResponse,
+          );
+        } else {
+          setScalpResearchHealth(null);
+        }
+      } catch {
+        setScalpResearchHealth(null);
+      }
       scalpSummaryFetchedAtMsRef.current = nowMs;
       scalpSummaryErrorCountRef.current = 0;
       setError(null);
@@ -4255,6 +4312,26 @@ export default function Home() {
       etaLabel,
       isRunning: researchJob?.status === "running",
       timeBudgetExhausted,
+    };
+  })();
+  const scalpResearchHealthHint = (() => {
+    const hint = scalpResearchHealth?.hint || null;
+    const label = String(hint?.label || "").trim();
+    if (!label) return null;
+    const toneRaw = String(hint?.tone || "info")
+      .trim()
+      .toLowerCase();
+    const tone: "ok" | "warn" | "critical" | "info" =
+      toneRaw === "ok" || toneRaw === "warn" || toneRaw === "critical"
+        ? toneRaw
+        : "info";
+    const detail = String(hint?.detail || "").trim() || null;
+    const phase = String(scalpResearchHealth?.job?.phase || "").trim() || null;
+    return {
+      tone,
+      label,
+      detail,
+      phase,
     };
   })();
 
@@ -6549,6 +6626,43 @@ export default function Home() {
                             <span className="opacity-70">{scalpResearchProgress.etaLabel}</span>
                           )}
                         </div>
+                      </div>
+                    )}
+                    {scalpResearchHealthHint && (
+                      <div
+                        className={`mx-4 mt-1 mb-1 flex items-center justify-between rounded-lg border px-2.5 py-1 text-[11px] ${
+                          scalpResearchHealthHint.tone === "critical"
+                            ? scalpDarkMode
+                              ? "border-rose-800/80 bg-rose-950/40 text-rose-200"
+                              : "border-rose-200 bg-rose-50 text-rose-700"
+                            : scalpResearchHealthHint.tone === "warn"
+                              ? scalpDarkMode
+                                ? "border-amber-800/80 bg-amber-950/30 text-amber-200"
+                                : "border-amber-200 bg-amber-50 text-amber-700"
+                              : scalpResearchHealthHint.tone === "ok"
+                                ? scalpDarkMode
+                                  ? "border-emerald-800/80 bg-emerald-950/30 text-emerald-200"
+                                  : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                : scalpDarkMode
+                                  ? "border-zinc-700 bg-zinc-900/70 text-zinc-300"
+                                  : "border-slate-200 bg-slate-50 text-slate-600"
+                        }`}
+                      >
+                        <div className="min-w-0 truncate">
+                          <span className="font-medium">
+                            {scalpResearchHealthHint.label}
+                          </span>
+                          {scalpResearchHealthHint.phase ? (
+                            <span className="ml-1 opacity-70">
+                              ({scalpResearchHealthHint.phase})
+                            </span>
+                          ) : null}
+                        </div>
+                        {scalpResearchHealthHint.detail ? (
+                          <div className="ml-3 truncate opacity-80">
+                            {scalpResearchHealthHint.detail}
+                          </div>
+                        ) : null}
                       </div>
                     )}
                     {/* Per-symbol coverage gaps — only show incomplete symbols */}

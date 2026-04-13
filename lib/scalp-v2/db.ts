@@ -303,6 +303,7 @@ export async function claimScalpV2Job(params: {
   const rows = await db.$queryRaw<Array<{ id: bigint }>>(sql`
     UPDATE scalp_v2_jobs
     SET
+      payload = '{}'::jsonb,
       status = 'running',
       locked_by = ${params.lockOwner},
       locked_at = NOW(),
@@ -2030,11 +2031,13 @@ export async function listScalpV2Jobs(params: {
       jobKind:
         String(row.jobKind || "").trim().toLowerCase() === "evaluate"
           ? "evaluate"
-          : String(row.jobKind || "").trim().toLowerCase() === "worker"
+        : String(row.jobKind || "").trim().toLowerCase() === "worker"
             ? "worker"
-            : String(row.jobKind || "").trim().toLowerCase() === "promote"
+        : String(row.jobKind || "").trim().toLowerCase() === "research"
+            ? "research"
+        : String(row.jobKind || "").trim().toLowerCase() === "promote"
             ? "promote"
-            : String(row.jobKind || "").trim().toLowerCase() === "execute"
+        : String(row.jobKind || "").trim().toLowerCase() === "execute"
               ? "execute"
               : String(row.jobKind || "").trim().toLowerCase() === "reconcile"
                 ? "reconcile"

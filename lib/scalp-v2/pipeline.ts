@@ -2178,9 +2178,65 @@ export async function runScalpV2ResearchJob(params: {
   let succeeded = 0;
   let failed = 0;
   let details: Record<string, unknown> = {};
+  const heartbeatMinIntervalMs = Math.max(
+    5_000,
+    Math.min(
+      120_000,
+      toPositiveInt(
+        process.env.SCALP_V2_RESEARCH_HEARTBEAT_MIN_INTERVAL_MS,
+        15_000,
+        120_000,
+      ),
+    ),
+  );
+  let lastHeartbeatAtMs = 0;
+  async function emitResearchHeartbeat(params: {
+    phase: string;
+    force?: boolean;
+    progress?: Record<string, unknown>;
+    extra?: Record<string, unknown>;
+  }): Promise<void> {
+    const now = nowMs();
+    if (!params.force && now - lastHeartbeatAtMs < heartbeatMinIntervalMs) {
+      return;
+    }
+    lastHeartbeatAtMs = now;
+    await heartbeatScalpV2Job({
+      jobKind: "research",
+      lockOwner: owner,
+      details: {
+        phase: params.phase,
+        heartbeatAtMs: now,
+        progress: {
+          processedSoFar: processed,
+          succeededSoFar: succeeded,
+          failedSoFar: failed,
+          ...(params.progress || {}),
+        },
+        ...(params.extra || {}),
+      },
+    }).catch(() => undefined);
+  }
+
+  await emitResearchHeartbeat({
+    phase: "claimed",
+    force: true,
+    progress: {
+      requestedBatchSize: Number.isFinite(Number(params.batchSize))
+        ? Math.floor(Number(params.batchSize))
+        : null,
+    },
+  });
 
   try {
     let runtime = await loadScalpV2RuntimeConfig();
+    await emitResearchHeartbeat({
+      phase: "runtime_loaded",
+      force: true,
+      progress: {
+        runtimeEnabled: runtime.enabled,
+      },
+    });
     if (!runtime.enabled) {
       details = { skipped: true, reason: "SCALP_V2_DISABLED" };
       return buildScalpV2JobResult({
@@ -2200,6 +2256,15 @@ export async function runScalpV2ResearchJob(params: {
       runtime,
       nowTs,
       windowToTs,
+    });
+    await emitResearchHeartbeat({
+      phase: "freshness_gate",
+      force: true,
+      progress: {
+        freshnessReady: freshnessGate.ready,
+        freshnessStaleCount: freshnessGate.staleCount,
+        freshnessRetriesUsed: freshnessGate.retriesUsed,
+      },
     });
     if (!freshnessGate.ready) {
       ok = false;
@@ -2223,6 +2288,13 @@ export async function runScalpV2ResearchJob(params: {
       runtime,
       windowToTs,
       nowTs,
+    });
+    await emitResearchHeartbeat({
+      phase: "scope_prune",
+      force: true,
+      progress: {
+        scopePruneSkipped: Boolean(asRecord(scopePrune.details || {}).skipped),
+      },
     });
     runtime = scopePrune.runtime;
     const activePrunedScopes = normalizeActivePrunedScopes(runtime, nowTs);
@@ -2254,11 +2326,20 @@ export async function runScalpV2ResearchJob(params: {
       symbol: string;
       session: ScalpV2Session;
     }> = [];
+    let scopeSymbolsVisited = 0;
     let droppedByVenuePolicy = 0;
     let droppedByScopePrune = 0;
     for (const venue of runtime.supportedVenues) {
       const symbols = runtime.seedSymbolsByVenue[venue] || [];
       for (const symbolRaw of symbols) {
+        scopeSymbolsVisited += 1;
+        await emitResearchHeartbeat({
+          phase: "build_scopes",
+          progress: {
+            scopeSymbolsVisited,
+            scopeCountSoFar: scopes.length,
+          },
+        });
         const symbol = String(symbolRaw || "").trim().toUpperCase();
         if (!symbol) continue;
         if (!isScalpV2DiscoverSymbolAllowed(venue, symbol)) {
@@ -2316,8 +2397,10 @@ export async function runScalpV2ResearchJob(params: {
 
     const allCandidates: InMemoryCandidate[] = [];
     let poolSizeTotal = 0;
+    let generatedScopeCount = 0;
 
     for (const scope of scopes) {
+      generatedScopeCount += 1;
       const composerCandidates = buildScalpV2ModelGuidedComposerGrid({
         venue: scope.venue,
         symbol: scope.symbol,
@@ -2352,6 +2435,15 @@ export async function runScalpV2ResearchJob(params: {
           dsl,
         });
       }
+      await emitResearchHeartbeat({
+        phase: "generate_candidates",
+        progress: {
+          generatedScopeCount,
+          totalScopes: scopes.length,
+          generatedCandidates: allCandidates.length,
+          poolSizeTotal,
+        },
+      });
     }
 
     // --- Optimization variants for enabled (graduated) deployments ---
@@ -2362,8 +2454,18 @@ export async function runScalpV2ResearchJob(params: {
     try {
       const enabledDeployments = await listScalpV2Deployments({ enabledOnly: true, limit: 500 });
       const existingTuneIds = new Set(allCandidates.map((c) => c.tuneId));
+      let enabledDeploymentIdx = 0;
 
       for (const dep of enabledDeployments) {
+        enabledDeploymentIdx += 1;
+        await emitResearchHeartbeat({
+          phase: "deployment_variants",
+          progress: {
+            enabledDeploymentIdx,
+            enabledDeploymentCount: enabledDeployments.length,
+            deploymentVariantsGenerated,
+          },
+        });
         if (!isScalpV2RuntimeSymbolInScope({ runtime, venue: dep.venue, symbol: dep.symbol })) continue;
         const session = dep.entrySessionProfile;
         const plan = resolveModelGuidedComposerExecutionPlanFromTuneId(dep.tuneId);
@@ -2467,6 +2569,13 @@ export async function runScalpV2ResearchJob(params: {
     }
 
     // --- Filter: exact cache (same windowToTs = already done this week) ---
+    await emitResearchHeartbeat({
+      phase: "load_cache_keys",
+      force: true,
+      progress: {
+        generatedCandidates: allCandidates.length,
+      },
+    });
     const evaluatedKeys = await loadScalpV2EvaluatedCandidateKeys({ windowToTs }).catch(() => new Set<string>());
     const notYetEvaluated = allCandidates.filter((c) => {
       const key = `${c.venue}:${c.symbol}:${c.tuneId}:${c.session}`.toLowerCase();
@@ -2496,6 +2605,13 @@ export async function runScalpV2ResearchJob(params: {
 
     // --- Smart skip: use previous week's results to avoid re-running
     // candidates that clearly failed and won't flip with 1 new week. ---
+    await emitResearchHeartbeat({
+      phase: "load_previous_results",
+      force: true,
+      progress: {
+        notYetEvaluated: notYetEvaluated.length,
+      },
+    });
     const previousResults = await loadScalpV2PreviousWeekResults({
       currentWindowToTs: windowToTs,
     }).catch(
@@ -2574,6 +2690,15 @@ export async function runScalpV2ResearchJob(params: {
     }
 
     // --- Backtest remaining candidates in one pass ---
+    await emitResearchHeartbeat({
+      phase: "prepare_backtest",
+      force: true,
+      progress: {
+        selectedCandidates: selected.length,
+        skippedByCache,
+        skippedByClearFail,
+      },
+    });
     const uniqueSymbols = Array.from(new Set(selected.map((c) => c.symbol)));
     const symbolMetadataMap = await loadScalpSymbolMarketMetadataBulk(uniqueSymbols).catch(
       () => new Map<string, ScalpSymbolMarketMetadata | null>(),
@@ -2601,6 +2726,16 @@ export async function runScalpV2ResearchJob(params: {
       }
 
       const candidate = selected[candidateIdx]!;
+      await emitResearchHeartbeat({
+        phase: "backtest_candidates",
+        progress: {
+          candidateIndex: candidateIdx + 1,
+          totalSelected: selected.length,
+          stageCPass,
+          persisted: persistedCount,
+          replayErrors,
+        },
+      });
 
       try {
         let symbolCandles = candleCache.get(candidate.symbol) ?? null;
@@ -2935,19 +3070,17 @@ export async function runScalpV2ResearchJob(params: {
 
       // Heartbeat every few candidates to keep the lock alive
       if ((candidateIdx + 1) % 5 === 0 || candidateIdx + 1 === selected.length) {
-        await heartbeatScalpV2Job({
-          jobKind: "research",
-          lockOwner: owner,
-          details: {
-            progress: {
-              processedSoFar: candidateIdx + 1,
-              totalSelected: selected.length,
-              stageCPass,
-              persisted: persistedCount,
-              replayErrors,
-            },
+        await emitResearchHeartbeat({
+          phase: "backtest_candidates",
+          force: true,
+          progress: {
+            processedSoFar: candidateIdx + 1,
+            totalSelected: selected.length,
+            stageCPass,
+            persisted: persistedCount,
+            replayErrors,
           },
-        }).catch(() => undefined);
+        });
       }
     }
 
