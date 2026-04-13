@@ -621,6 +621,116 @@ export async function paginateScalpV2Candidates(params: {
   };
 }
 
+export async function paginateScalpV2CandidatesForBackfill(params: {
+  statuses: ScalpV2CandidateStatus[];
+  symbols?: string[];
+  session?: ScalpV2Session | null;
+  venue?: ScalpV2Venue | null;
+  offset?: number;
+  limit?: number;
+}): Promise<{ rows: ScalpV2Candidate[]; total: number }> {
+  if (!isScalpPgConfigured()) return { rows: [], total: 0 };
+  const db = scalpPrisma();
+  const statuses = Array.from(
+    new Set(
+      (params.statuses || [])
+        .map((row) => normalizeCandidateStatus(row))
+        .filter(Boolean),
+    ),
+  );
+  if (!statuses.length) return { rows: [], total: 0 };
+  const symbols = Array.from(
+    new Set(
+      (params.symbols || [])
+        .map((row) => String(row || "").trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  );
+  const limit = Math.max(1, Math.min(2_000, Math.floor(params.limit || 100)));
+  const offset = Math.max(0, Math.floor(params.offset || 0));
+  const where: string[] = [];
+  const values: unknown[] = [];
+  values.push(statuses);
+  where.push(`status = ANY($${values.length}::text[])`);
+  if (params.venue) {
+    values.push(params.venue);
+    where.push(`venue = $${values.length}`);
+  }
+  if (params.session) {
+    values.push(params.session);
+    where.push(`entry_session_profile = $${values.length}`);
+  }
+  if (symbols.length) {
+    values.push(symbols);
+    where.push(`symbol = ANY($${values.length}::text[])`);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const [countRow] = await db.$queryRawUnsafe<Array<{ cnt: bigint }>>(
+    `SELECT COUNT(*)::bigint AS cnt FROM scalp_v2_candidates ${whereSql}`,
+    ...values,
+  );
+  const total = Number(countRow?.cnt || 0);
+
+  values.push(limit, offset);
+  const limitIdx = values.length - 1;
+  const offsetIdx = values.length;
+  const rows = await db.$queryRawUnsafe<
+    Array<{
+      id: number;
+      venue: string;
+      symbol: string;
+      strategyId: string;
+      tuneId: string;
+      entrySessionProfile: string;
+      score: number;
+      status: string;
+      reasonCodes: string[];
+      metadataJson: unknown;
+      createdAt: Date;
+      updatedAt: Date;
+    }>
+  >(
+    `
+      SELECT
+        id,
+        venue,
+        symbol,
+        strategy_id AS "strategyId",
+        tune_id AS "tuneId",
+        entry_session_profile AS "entrySessionProfile",
+        score::double precision AS score,
+        status,
+        reason_codes AS "reasonCodes",
+        metadata_json AS "metadataJson",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM scalp_v2_candidates
+      ${whereSql}
+      ORDER BY id ASC
+      LIMIT $${limitIdx} OFFSET $${offsetIdx};
+    `,
+    ...values,
+  );
+
+  return {
+    total,
+    rows: rows.map((row) => ({
+      id: Number(row.id),
+      venue: normalizeVenue(row.venue),
+      symbol: String(row.symbol || "").trim().toUpperCase(),
+      strategyId: String(row.strategyId || "").trim().toLowerCase(),
+      tuneId: String(row.tuneId || "").trim().toLowerCase(),
+      entrySessionProfile: normalizeSession(row.entrySessionProfile),
+      score: Number.isFinite(Number(row.score)) ? Number(row.score) : 0,
+      status: normalizeCandidateStatus(row.status),
+      reasonCodes: normalizeReasonCodes(row.reasonCodes || []),
+      metadata: asRecord(row.metadataJson),
+      createdAtMs: toMs(row.createdAt),
+      updatedAtMs: toMs(row.updatedAt),
+    })),
+  };
+}
+
 /**
  * Returns a set of "venue:symbol:tuneId:session" keys for candidates
  * that were already backtested for the CURRENT windowToTs this week.

@@ -18,7 +18,10 @@ import {
   parseRiskRuleFromTuneId,
   parseStateMachineFromTuneId,
 } from "./composerExecution";
-import { upsertScalpV2WorkerStageWeeklyCache, paginateScalpV2Candidates } from "./db";
+import {
+  paginateScalpV2CandidatesForBackfill,
+  upsertScalpV2WorkerStageWeeklyCache,
+} from "./db";
 import {
   resolveEntryTriggerOverrides,
   type EntryTriggerBlockId,
@@ -46,7 +49,6 @@ import type {
 import { resolveScalpV2CompletedWeekWindowToUtc } from "./weekWindows";
 
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-const PAGE_SIZE = 500;
 
 export type ScalpV2WorkerWeeklyCacheBackfillOptions = {
   dryRun: boolean;
@@ -76,6 +78,16 @@ export type ScalpV2WorkerWeeklyCacheBackfillStats = {
   replayRuns: number;
   stageRowsPrepared: number;
   stageRowsUpserted: number;
+};
+
+export type ScalpV2WorkerWeeklyCacheBackfillChunkResult = {
+  stats: ScalpV2WorkerWeeklyCacheBackfillStats;
+  offset: number;
+  limit: number;
+  nextOffset: number;
+  pendingAfter: number;
+  hasMore: boolean;
+  totalMatched: number;
 };
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -373,47 +385,36 @@ function normalizeCandidateBlocks(params: {
   return { exitRule, entryTrigger, riskRule, stateMachine };
 }
 
-async function loadMatchingCandidates(
+async function loadMatchingCandidatesChunk(
   opts: ScalpV2WorkerWeeklyCacheBackfillOptions,
 ): Promise<{
-  totalScanned: number;
   totalMatched: number;
-  selected: Awaited<ReturnType<typeof paginateScalpV2Candidates>>["rows"];
+  selected: Awaited<ReturnType<typeof paginateScalpV2CandidatesForBackfill>>["rows"];
 }> {
-  const selected: Awaited<ReturnType<typeof paginateScalpV2Candidates>>["rows"] = [];
-  let totalMatched = 0;
-  let totalScanned = 0;
-  let pageOffset = 0;
-
-  while (true) {
-    const page = await paginateScalpV2Candidates({
-      limit: PAGE_SIZE,
-      offset: pageOffset,
-      venue: opts.venue || undefined,
-      session: opts.session || undefined,
-    });
-
-    if (!page.rows.length) break;
-    totalScanned += page.rows.length;
-
-    for (const candidate of page.rows) {
-      if (!opts.statuses.has(candidate.status)) continue;
-      if (opts.symbolFilter.size && !opts.symbolFilter.has(candidate.symbol)) continue;
-      totalMatched += 1;
-      if (totalMatched <= opts.offset) continue;
-      if (selected.length < opts.limit) selected.push(candidate);
-    }
-
-    if (page.rows.length < PAGE_SIZE) break;
-    pageOffset += PAGE_SIZE;
-  }
-
-  return { totalScanned, totalMatched, selected };
+  const page = await paginateScalpV2CandidatesForBackfill({
+    statuses: Array.from(opts.statuses),
+    symbols: opts.symbolFilter.size ? Array.from(opts.symbolFilter) : undefined,
+    venue: opts.venue,
+    session: opts.session,
+    offset: opts.offset,
+    limit: opts.limit,
+  });
+  return {
+    totalMatched: page.total,
+    selected: page.rows,
+  };
 }
 
 export async function runScalpV2WorkerWeeklyCacheBackfill(
   opts: ScalpV2WorkerWeeklyCacheBackfillOptions,
 ): Promise<ScalpV2WorkerWeeklyCacheBackfillStats> {
+  const chunk = await runScalpV2WorkerWeeklyCacheBackfillChunk(opts);
+  return chunk.stats;
+}
+
+export async function runScalpV2WorkerWeeklyCacheBackfillChunk(
+  opts: ScalpV2WorkerWeeklyCacheBackfillOptions,
+): Promise<ScalpV2WorkerWeeklyCacheBackfillChunkResult> {
   const stats: ScalpV2WorkerWeeklyCacheBackfillStats = {
     scannedCandidates: 0,
     matchedCandidates: 0,
@@ -432,12 +433,26 @@ export async function runScalpV2WorkerWeeklyCacheBackfill(
     { id: "c", weeks: opts.stageCWeeks },
   ];
 
-  const loadResult = await loadMatchingCandidates(opts);
-  stats.scannedCandidates = loadResult.totalScanned;
+  const loadResult = await loadMatchingCandidatesChunk(opts);
+  stats.scannedCandidates = loadResult.selected.length;
   stats.matchedCandidates = loadResult.totalMatched;
   stats.selectedCandidates = loadResult.selected.length;
+  const selectedCount = loadResult.selected.length;
+  const nextOffset = opts.offset + selectedCount;
+  const pendingAfter = Math.max(0, loadResult.totalMatched - nextOffset);
+  const hasMore = pendingAfter > 0;
 
-  if (!loadResult.selected.length) return stats;
+  if (!selectedCount) {
+    return {
+      stats,
+      offset: opts.offset,
+      limit: opts.limit,
+      nextOffset,
+      pendingAfter,
+      hasMore,
+      totalMatched: loadResult.totalMatched,
+    };
+  }
 
   const minWindowFromTs = opts.windowToTs - opts.stageCWeeks * ONE_WEEK_MS;
   const uniqueSymbols = Array.from(new Set(loadResult.selected.map((row) => row.symbol)));
@@ -587,5 +602,13 @@ export async function runScalpV2WorkerWeeklyCacheBackfill(
   }
 
   await flush();
-  return stats;
+  return {
+    stats,
+    offset: opts.offset,
+    limit: opts.limit,
+    nextOffset,
+    pendingAfter,
+    hasMore,
+    totalMatched: loadResult.totalMatched,
+  };
 }
