@@ -1237,6 +1237,84 @@ function resolveWorkerStageCPass(metadata: unknown): {
   };
 }
 
+function resolveWorkerStageCFreshness(params: {
+  workerStages: Record<string, unknown> | null;
+  requiredWeeks: number;
+  nowTs: number;
+}): {
+  freshness: PromotionFreshness;
+  ready: boolean;
+  reason:
+    | "worker_stage_c_missing"
+    | "worker_stage_c_weekly_netr_missing"
+    | "worker_stage_c_freshness_incomplete"
+    | "worker_stage_c_not_latest_week"
+    | null;
+} {
+  const emptyFreshness = buildFreshness({
+    weeklyByWeekStart: new Map<number, { trades: number; netR: number }>(),
+    requiredWeeks: params.requiredWeeks,
+    nowTs: params.nowTs,
+  });
+  const workerStages = asRecord(params.workerStages);
+  const stageC = asRecord(workerStages.stageC);
+  if (!Object.keys(stageC).length) {
+    return {
+      freshness: emptyFreshness,
+      ready: false,
+      reason: "worker_stage_c_missing",
+    };
+  }
+  const weeklyNetR = asRecord(stageC.weeklyNetR);
+  const weekStarts = Array.from(
+    new Set(
+      Object.keys(weeklyNetR)
+        .map((key) => Number(key))
+        .filter((weekStart) => Number.isFinite(weekStart)),
+    ),
+  ).sort((a, b) => a - b);
+  if (!weekStarts.length) {
+    return {
+      freshness: emptyFreshness,
+      ready: false,
+      reason: "worker_stage_c_weekly_netr_missing",
+    };
+  }
+  const weeklyByWeekStart = new Map<number, { trades: number; netR: number }>();
+  for (const weekStart of weekStarts) {
+    const netR = Number(weeklyNetR[String(weekStart)] || 0);
+    weeklyByWeekStart.set(weekStart, {
+      trades: 0,
+      netR: Number.isFinite(netR) ? netR : 0,
+    });
+  }
+  const freshness = buildFreshness({
+    weeklyByWeekStart,
+    requiredWeeks: params.requiredWeeks,
+    nowTs: params.nowTs,
+  });
+  if (!freshness.ready) {
+    return {
+      freshness,
+      ready: false,
+      reason: "worker_stage_c_freshness_incomplete",
+    };
+  }
+  const stageCToTs = Math.floor(Number(stageC.toTs) || 0);
+  if (stageCToTs > 0 && stageCToTs !== freshness.windowToTs) {
+    return {
+      freshness: { ...freshness, ready: false },
+      ready: false,
+      reason: "worker_stage_c_not_latest_week",
+    };
+  }
+  return {
+    freshness,
+    ready: true,
+    reason: null,
+  };
+}
+
 function normalizeTuneFamily(tuneIdRaw: unknown): string {
   const tuneId = String(tuneIdRaw || "")
     .trim()
@@ -3780,11 +3858,12 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       const hasMixedSessionEvidence =
         strictSessionEvidence.mismatchedTrades > 0 ||
         strictSessionEvidence.mismatchedSessions.length > 0;
-      const freshness = buildFreshness({
-        weeklyByWeekStart,
+      const workerFreshness = resolveWorkerStageCFreshness({
+        workerStages: workerGate.workerStages,
         requiredWeeks: policy.minCompletedWeeks,
         nowTs,
       });
+      const freshness = workerFreshness.freshness;
       const weeklyRows: WeeklyAggregationRow[] = [];
       for (let idx = 0; idx < freshness.requiredWeeks; idx += 1) {
         const weekStartTs = freshness.windowFromTs + idx * ONE_WEEK_MS;
@@ -3838,6 +3917,8 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         reason = "candidate_missing";
       } else if (!workerGate.stageCPass) {
         reason = workerGate.reason || "worker_stage_c_failed";
+      } else if (!workerFreshness.ready) {
+        reason = workerFreshness.reason || "worker_stage_c_freshness_incomplete";
       } else if (backtestFourWeekGateFailed) {
         reason = "backtest_4w_net_r_below_threshold";
       } else {
