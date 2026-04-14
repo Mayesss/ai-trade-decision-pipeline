@@ -2747,9 +2747,13 @@ export async function runScalpV2ResearchJob(params: {
         skippedByNetRPreFilter,
       },
     });
-    // Base progress fields included in every heartbeat so JSONB merge doesn't lose them.
+    // Base progress: include overall weekly totals so the UI shows global progress
+    const weeklyTotal = warmUpState?.candidateCount || selected.length;
+    const weeklyEvaluated = evaluatedKeys.size;
     const baseProgress = {
       selectedCandidates: selected.length,
+      weeklyTotal,
+      weeklyEvaluated,
       skippedByCache,
       skippedByClearFail,
       skippedByNetRPreFilter,

@@ -4287,25 +4287,21 @@ export default function Home() {
       return Math.max(0, Math.floor(v));
     };
 
-    const totalSelected = n(hb.selectedCandidates, hb.totalSelected, p.totalCandidates);
-    const skippedByCache = n(hb.skippedByCache, p.skippedByCache, null);
-    const skippedByClearFail = n(hb.skippedByClearFail, p.skippedByClearFail, null);
-    const skippedByNetRPreFilter = n(hb.skippedByNetRPreFilter, p.skippedByNetRPreFilter, null);
-    const processedSoFar = n(hb.processedSoFar, healthProg.processedSoFar, p.processedCandidates);
+    // Prefer overall weekly totals from heartbeat (weeklyTotal / weeklyEvaluated)
+    const weeklyTotal = n(hb.weeklyTotal, p.weeklyTotal, null);
+    const weeklyEvaluated = n(hb.weeklyEvaluated, p.weeklyEvaluated, null);
     const stageCPass = n(hb.stageCPass, healthProg.stageCPass, p.stageCPass);
     const symbolsThisRun = n(p.symbolsThisRun, null, null);
     const symbolsTotal = n(p.symbolsTotal, null, null);
 
-    const done = skippedByCache + skippedByClearFail + skippedByNetRPreFilter + processedSoFar;
-    const total = totalSelected > 0
-      ? skippedByCache + skippedByClearFail + skippedByNetRPreFilter + totalSelected
-      : 0;
+    const total = weeklyTotal;
+    const done = weeklyEvaluated;
     const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
 
-    // For the label, show symbol progress if available (e.g. "sym 3/33")
     let statusLabel: string | null = null;
-    if (symbolsThisRun > 0 && symbolsTotal > 0) {
-      statusLabel = `sym ${symbolsThisRun}/${symbolsTotal}`;
+    if (symbolsTotal > 0) {
+      const symsDone = symbolsTotal - (n(null, null, (p as any)?.discoveredSymbols) || symbolsTotal);
+      statusLabel = symsDone > 0 ? `${symsDone}/${symbolsTotal} symbols` : `${symbolsTotal} symbols`;
     }
 
     return {
