@@ -2699,7 +2699,7 @@ export async function runScalpV2ResearchJob(params: {
       1,
       Math.min(
         50,
-        toPositiveInt(process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN, 1, 50),
+        toPositiveInt(process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN, 4, 50),
       ),
     );
     const allUniqueSymbols = Array.from(new Set(selected.map((c) => c.symbol)));
