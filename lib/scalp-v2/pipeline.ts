@@ -2554,7 +2554,7 @@ export async function runScalpV2ResearchJob(params: {
     // Find the next symbol(s) that still have "discovered" candidates, load only those.
     await emitResearchHeartbeat({ phase: "load_backtest_chunk", force: true });
     const maxSymbolsPerRun = Math.max(1, Math.min(50,
-      toPositiveInt(process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN, 1, 50)));
+      toPositiveInt(process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN, 4, 50)));
     const discoveredSymbols = await listScalpV2DiscoveredSymbols().catch(() => [] as string[]);
     const symbolsThisRun = discoveredSymbols.slice(0, maxSymbolsPerRun);
 
@@ -3062,6 +3062,9 @@ export async function runScalpV2ResearchJob(params: {
               pipSize: symbolPipSize,
               config: replayConfig,
               captureTimeline: false,
+              // Early-abort: if netR is deeply negative after 50% of candles, stop
+              earlyAbortNetR: stage.minNetR * -2,
+              earlyAbortAfterPct: 50,
             });
             fullStageReplays += 1;
             weeklyByStart = buildWorkerStageWeeklyMetricsMap({

@@ -142,8 +142,8 @@ function candleBody(candle: ScalpCandle): number {
     return Math.abs(close(candle) - open(candle));
 }
 
-// EMA/ATR imported from syntheticSignal with incremental caching
-import { computeEmaSeries, computeAtrSeries } from './syntheticSignal';
+// EMA/ATR/ADX imported from syntheticSignal with incremental caching
+import { computeEmaSeries, computeAtrSeries, computeAdx, extractCloses } from './syntheticSignal';
 
 function percentile(values: number[], p: number): number | null {
     if (!values.length) return null;
@@ -169,54 +169,7 @@ function percentileRank(values: number[], current: number): number | null {
     return (count / sorted.length) * 100;
 }
 
-function computeAdx(candles: ScalpCandle[], period: number): number {
-    const p = Math.max(2, Math.floor(period));
-    if (!Array.isArray(candles) || candles.length < p + 2) return 0;
-
-    const tr: number[] = new Array(candles.length).fill(0);
-    const plusDm: number[] = new Array(candles.length).fill(0);
-    const minusDm: number[] = new Array(candles.length).fill(0);
-
-    for (let i = 1; i < candles.length; i += 1) {
-        const upMove = high(candles[i]!) - high(candles[i - 1]!);
-        const downMove = low(candles[i - 1]!) - low(candles[i]!);
-
-        plusDm[i] = upMove > downMove && upMove > 0 ? upMove : 0;
-        minusDm[i] = downMove > upMove && downMove > 0 ? downMove : 0;
-        tr[i] = Math.max(
-            high(candles[i]!) - low(candles[i]!),
-            Math.abs(high(candles[i]!) - close(candles[i - 1]!)),
-            Math.abs(low(candles[i]!) - close(candles[i - 1]!)),
-        );
-    }
-
-    let trSmooth = 0;
-    let plusSmooth = 0;
-    let minusSmooth = 0;
-    for (let i = 1; i <= p && i < candles.length; i += 1) {
-        trSmooth += tr[i]!;
-        plusSmooth += plusDm[i]!;
-        minusSmooth += minusDm[i]!;
-    }
-    if (!(trSmooth > 0)) return 0;
-
-    const dxValues: number[] = [];
-    for (let i = p + 1; i < candles.length; i += 1) {
-        trSmooth = trSmooth - trSmooth / p + tr[i]!;
-        plusSmooth = plusSmooth - plusSmooth / p + plusDm[i]!;
-        minusSmooth = minusSmooth - minusSmooth / p + minusDm[i]!;
-        if (!(trSmooth > 0)) continue;
-        const plusDi = (100 * plusSmooth) / trSmooth;
-        const minusDi = (100 * minusSmooth) / trSmooth;
-        const diSum = plusDi + minusDi;
-        if (!(diSum > 0)) continue;
-        const dx = (100 * Math.abs(plusDi - minusDi)) / diSum;
-        if (Number.isFinite(dx)) dxValues.push(dx);
-    }
-    if (!dxValues.length) return 0;
-    const take = Math.min(p, dxValues.length);
-    return dxValues.slice(-take).reduce((acc, value) => acc + value, 0) / take;
-}
+// computeAdx imported from syntheticSignal with incremental caching
 
 function normalizeBerlinEntryHours(values: number[] | undefined): number[] {
     if (!Array.isArray(values) || values.length === 0) return [];
@@ -252,7 +205,7 @@ function scanRegime(baseCandles: ScalpCandle[]): RegimeScan {
         };
     }
 
-    const closes = baseCandles.map(close);
+    const closes = extractCloses(baseCandles);
     const emaFastSeries = computeEmaSeries(closes, STRATEGY_CONST.emaFast15);
     const emaSlowSeries = computeEmaSeries(closes, STRATEGY_CONST.emaSlow15);
     const idx = baseCandles.length - 1;
@@ -604,7 +557,7 @@ function applyPhaseDetectorsWithOptions(
         return finalizePhase({ state: next, reasonCodes });
     }
 
-    const confirmCloses = input.market.confirmCandles.map(close);
+    const confirmCloses = extractCloses(input.market.confirmCandles);
     const ema20 = computeEmaSeries(confirmCloses, STRATEGY_CONST.emaPullback3);
     const ema50 = computeEmaSeries(confirmCloses, STRATEGY_CONST.emaTrend3);
     const atr = computeAtrSeries(input.market.confirmCandles, STRATEGY_CONST.atrLen3);

@@ -43,6 +43,21 @@ export function candleBody(candle: ScalpCandle): number {
 // We cache the previous result and extend from where we left off.
 // This turns O(n) per tick into O(new candles) — typically O(1).
 
+// Cache close-value extraction so the same array reference is reused across ticks.
+// This allows the EMA WeakMap to hit on subsequent calls with the growing candle array.
+const closesCache = new WeakMap<ScalpCandle[], number[]>();
+
+export function extractCloses(candles: ScalpCandle[]): number[] {
+    let cached = closesCache.get(candles);
+    if (cached && cached.length === candles.length) return cached;
+    if (!cached) cached = [];
+    for (let i = cached.length; i < candles.length; i += 1) {
+        cached[i] = close(candles[i]!);
+    }
+    closesCache.set(candles, cached);
+    return cached;
+}
+
 const emaCache = new WeakMap<number[], { period: number; out: number[] }>();
 
 export function computeEmaSeries(values: number[], period: number): number[] {
@@ -103,6 +118,93 @@ export function computeAtrSeries(candles: ScalpCandle[], period: number): number
     if (out.length > 1 && out[0] === 0) out[0] = out[1] ?? 0;
     atrCache.set(candles, { period: p, out, tr, rolling });
     return out;
+}
+
+// Incremental ADX with WeakMap cache — avoids O(n) recomputation per tick.
+const adxCache = new WeakMap<ScalpCandle[], {
+  period: number;
+  processedLen: number;
+  trSmooth: number;
+  plusSmooth: number;
+  minusSmooth: number;
+  initCount: number;
+  dxRing: number[];
+  dxRingIdx: number;
+  value: number;
+  prevCandle: ScalpCandle | null;
+}>();
+
+export function computeAdx(candles: ScalpCandle[], period: number): number {
+    const p = Math.max(2, Math.floor(period));
+    if (!Array.isArray(candles) || candles.length < p + 2) return 0;
+
+    let state = adxCache.get(candles);
+    let startIdx: number;
+
+    if (state && state.period === p && state.processedLen <= candles.length) {
+        startIdx = state.processedLen;
+    } else {
+        state = {
+            period: p,
+            processedLen: 0,
+            trSmooth: 0,
+            plusSmooth: 0,
+            minusSmooth: 0,
+            initCount: 0,
+            dxRing: new Array(p).fill(0),
+            dxRingIdx: 0,
+            value: 0,
+            prevCandle: null,
+        };
+        startIdx = 0;
+    }
+
+    for (let i = startIdx; i < candles.length; i += 1) {
+        const candle = candles[i]!;
+        if (state.prevCandle) {
+            const upMove = high(candle) - high(state.prevCandle);
+            const downMove = low(state.prevCandle) - low(candle);
+            const pDm = upMove > downMove && upMove > 0 ? upMove : 0;
+            const mDm = downMove > upMove && downMove > 0 ? downMove : 0;
+            const trVal = Math.max(
+                high(candle) - low(candle),
+                Math.abs(high(candle) - close(state.prevCandle)),
+                Math.abs(low(candle) - close(state.prevCandle)),
+            );
+
+            state.initCount += 1;
+            if (state.initCount <= p) {
+                state.trSmooth += trVal;
+                state.plusSmooth += pDm;
+                state.minusSmooth += mDm;
+            } else {
+                state.trSmooth = state.trSmooth - state.trSmooth / p + trVal;
+                state.plusSmooth = state.plusSmooth - state.plusSmooth / p + pDm;
+                state.minusSmooth = state.minusSmooth - state.minusSmooth / p + mDm;
+
+                if (state.trSmooth > 0) {
+                    const plusDi = (100 * state.plusSmooth) / state.trSmooth;
+                    const minusDi = (100 * state.minusSmooth) / state.trSmooth;
+                    const diSum = plusDi + minusDi;
+                    if (diSum > 0) {
+                        const dx = (100 * Math.abs(plusDi - minusDi)) / diSum;
+                        if (Number.isFinite(dx)) {
+                            state.dxRing[state.dxRingIdx % p] = dx;
+                            state.dxRingIdx += 1;
+                            const count = Math.min(state.dxRingIdx, p);
+                            let sum = 0;
+                            for (let j = 0; j < count; j += 1) sum += state.dxRing[j]!;
+                            state.value = sum / count;
+                        }
+                    }
+                }
+            }
+        }
+        state.prevCandle = candle;
+    }
+    state.processedLen = candles.length;
+    adxCache.set(candles, state);
+    return state.value;
 }
 
 export function mean(values: number[]): number {

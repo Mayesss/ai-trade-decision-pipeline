@@ -605,6 +605,10 @@ export async function runScalpReplay(params: {
   progress?: ScalpReplayProgressOptions;
   marketData?: ScalpReplayMarketDataSources;
   symbolMeta?: ScalpSymbolMarketMetadata | null;
+  /** Early-abort: if netR drops below this threshold after processing
+   *  earlyAbortAfterPct% of candles, stop the replay early. */
+  earlyAbortNetR?: number;
+  earlyAbortAfterPct?: number;
 }): Promise<ScalpReplayResult> {
   const candles = params.candles.slice().sort((a, b) => a.ts - b.ts);
   if (!candles.length) throw new Error("Replay requires candles");
@@ -720,7 +724,21 @@ export async function runScalpReplay(params: {
   const baseClosedCandles: ScalpCandle[] = [];
   const confirmClosedCandles: ScalpCandle[] = [];
 
+  // Early-abort: track running netR and abort if hopeless
+  const earlyAbortNetR = params.earlyAbortNetR ?? null;
+  const earlyAbortAfterPct = params.earlyAbortAfterPct ?? 50;
+  const earlyAbortAfterIdx = earlyAbortNetR !== null
+    ? Math.floor(driverCandles.length * (earlyAbortAfterPct / 100))
+    : -1;
+  let runningNetR = 0;
+  let earlyAborted = false;
+
   for (let i = 0; i < driverCandles.length; i += 1) {
+    // Early-abort check: if past the threshold and netR is hopeless, stop
+    if (earlyAbortAfterIdx > 0 && i >= earlyAbortAfterIdx && !position && runningNetR < earlyAbortNetR!) {
+      earlyAborted = true;
+      break;
+    }
     const candle = driverCandles[i]!;
     if (candle.ts < nextRunTs) continue;
     while (nextRunTs <= candle.ts) {
@@ -808,7 +826,7 @@ export async function runScalpReplay(params: {
           totalTradeR,
           tradeBeforeExit: { ...state.trade },
         });
-        trades.push(trade);
+        trades.push(trade); runningNetR += trade.rMultiple || 0;
         appendTimeline(
           timeline,
           {
@@ -930,7 +948,7 @@ export async function runScalpReplay(params: {
             totalTradeR,
             tradeBeforeExit: tradeBeforeManage,
           });
-          trades.push(trade);
+          trades.push(trade); runningNetR += trade.rMultiple || 0;
           appendTimeline(
             timeline,
             {
