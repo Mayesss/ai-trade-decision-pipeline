@@ -766,6 +766,37 @@ export async function listScalpV2DiscoveredSymbols(): Promise<string[]> {
   return rows.map((r) => r.symbol);
 }
 
+export async function countScalpV2CandidatesByStatus(params: {
+  status: ScalpV2CandidateStatus;
+  symbols?: string[];
+}): Promise<number> {
+  if (!isScalpPgConfigured()) return 0;
+  const db = scalpPrisma();
+  const status = normalizeCandidateStatus(params.status);
+  const symbols = Array.from(
+    new Set(
+      (params.symbols || [])
+        .map((row) => String(row || "").trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  );
+  if (symbols.length > 0) {
+    const [row] = await db.$queryRaw<Array<{ cnt: bigint | number }>>(sql`
+      SELECT COUNT(*)::bigint AS cnt
+      FROM scalp_v2_candidates
+      WHERE status = ${status}
+        AND symbol IN (${join(symbols)});
+    `);
+    return Math.max(0, Math.floor(Number(row?.cnt || 0)));
+  }
+  const [row] = await db.$queryRaw<Array<{ cnt: bigint | number }>>(sql`
+    SELECT COUNT(*)::bigint AS cnt
+    FROM scalp_v2_candidates
+    WHERE status = ${status};
+  `);
+  return Math.max(0, Math.floor(Number(row?.cnt || 0)));
+}
+
 export async function loadScalpV2EvaluatedCandidateKeys(params: {
   windowToTs: number;
 }): Promise<Set<string>> {

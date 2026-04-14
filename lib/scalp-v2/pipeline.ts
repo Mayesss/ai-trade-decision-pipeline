@@ -50,6 +50,7 @@ import {
   appendScalpV2ExecutionEvent,
   buildScalpV2JobResult,
   claimScalpV2Job,
+  countScalpV2CandidatesByStatus,
   enforceScalpV2EnabledCap,
   finalizeScalpV2Job,
   heartbeatScalpV2Job,
@@ -2573,6 +2574,15 @@ export async function runScalpV2ResearchJob(params: {
       toPositiveInt(process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN, 4, 50)));
     const discoveredSymbols = await listScalpV2DiscoveredSymbols().catch(() => [] as string[]);
     const symbolsThisRun = discoveredSymbols.slice(0, maxSymbolsPerRun);
+    async function resolvePendingAfterBacklog(fallback: number): Promise<number> {
+      const discoveredCount = await countScalpV2CandidatesByStatus({
+        status: "discovered",
+      }).catch(() => -1);
+      if (Number.isFinite(Number(discoveredCount)) && Number(discoveredCount) >= 0) {
+        return Math.max(0, Math.floor(Number(discoveredCount)));
+      }
+      return Math.max(0, Math.floor(Number(fallback) || 0));
+    }
 
     if (symbolsThisRun.length > 0) {
       const chunkRows = await listScalpV2Candidates({
@@ -2623,6 +2633,7 @@ export async function runScalpV2ResearchJob(params: {
     });
 
     if (!notYetEvaluated.length) {
+      const pendingAfter = await resolvePendingAfterBacklog(0);
       details = {
         reason: "all_candidates_already_evaluated_this_week",
         scopeCount: scopes.length,
@@ -2630,6 +2641,7 @@ export async function runScalpV2ResearchJob(params: {
         poolSizeTotal,
         totalCandidates: allCandidates.length,
         skippedByCache,
+        pendingAfter,
         scopePrune: scopePrune.details,
       };
       return buildScalpV2JobResult({
@@ -2637,7 +2649,7 @@ export async function runScalpV2ResearchJob(params: {
         processed: skippedByCache,
         succeeded: 0,
         failed: 0,
-        pendingAfter: 0,
+        pendingAfter,
         details,
       });
     }
@@ -2730,6 +2742,9 @@ export async function runScalpV2ResearchJob(params: {
     });
 
     if (!selected.length) {
+      const pendingAfter = await resolvePendingAfterBacklog(
+        skippedByClearFail + skippedByNetRPreFilter,
+      );
       details = {
         reason: "all_candidates_skipped",
         scopeCount: scopes.length,
@@ -2740,6 +2755,7 @@ export async function runScalpV2ResearchJob(params: {
         skippedByClearFail,
         skippedByNetRPreFilter,
         candidatesWithPreviousResults: previousResults.size,
+        pendingAfter,
         scopePrune: scopePrune.details,
       };
       return buildScalpV2JobResult({
@@ -2747,7 +2763,7 @@ export async function runScalpV2ResearchJob(params: {
         processed: skippedByCache + skippedByClearFail + skippedByNetRPreFilter,
         succeeded: 0,
         failed: 0,
-        pendingAfter: 0,
+        pendingAfter,
         details,
       });
     }
@@ -3320,6 +3336,7 @@ export async function runScalpV2ResearchJob(params: {
     await pruneScalpV2WeeklyCache({ olderThanTs: cacheRetentionTs }).catch(() => 0);
 
     const remaining = Math.max(0, chunked.length - processed);
+    const pendingAfter = await resolvePendingAfterBacklog(remaining + deferredCount);
 
     details = {
       scopeCount: scopes.length,
@@ -3356,6 +3373,7 @@ export async function runScalpV2ResearchJob(params: {
       timeBudgetMs,
       elapsedMs: nowMs() - jobStartMs,
       remaining,
+      pendingAfter,
       scopePrune: scopePrune.details,
       policy: {
         stageA: workerPolicy.stageA,
@@ -3371,7 +3389,7 @@ export async function runScalpV2ResearchJob(params: {
       processed,
       succeeded,
       failed,
-      pendingAfter: remaining,
+      pendingAfter,
       details,
     });
   } catch (err: any) {
