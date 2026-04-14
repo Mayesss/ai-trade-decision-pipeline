@@ -6666,7 +6666,7 @@ export default function Home() {
                                   scalpResearchHealthHint.tone === "ok" ? "bg-emerald-400" :
                                   "bg-slate-400"
                                 }`} />
-                                <span className={`pointer-events-none absolute right-0 top-full mt-2 z-50 w-64 rounded-lg border px-3 py-2 text-[10px] leading-relaxed opacity-0 shadow-xl transition-opacity group-hover:opacity-100 ${
+                                <span className={`pointer-events-none absolute right-0 top-full mt-2 z-50 w-80 rounded-lg border px-3 py-2 text-[10px] leading-relaxed opacity-0 shadow-xl transition-opacity group-hover:opacity-100 ${
                                   scalpDarkMode
                                     ? "border-zinc-600 bg-zinc-800 text-zinc-200"
                                     : "border-slate-200 bg-white text-slate-700"
@@ -6679,7 +6679,7 @@ export default function Home() {
                                     const log = (scalpResearchHealth?.job as any)?.log;
                                     if (!Array.isArray(log) || !log.length) return null;
                                     return (
-                                      <div className="mt-1.5 border-t border-current/20 pt-1.5 max-h-32 overflow-y-auto font-mono">
+                                      <div className="mt-1.5 border-t border-current/20 pt-1.5 max-h-48 overflow-y-auto font-mono">
                                         {log.slice(-10).map((entry: any, i: number) => (
                                           <div key={i} className="opacity-60">{entry.t}s {entry.p}{entry.d ? ` · ${entry.d}` : ''}</div>
                                         ))}
