@@ -239,6 +239,7 @@ export default async function handler(
             Math.floor(Number(progress.replayErrors || 0)),
           ),
         },
+        log: Array.isArray(payload.log) ? payload.log.slice(-30) : [],
       },
       hint,
     });

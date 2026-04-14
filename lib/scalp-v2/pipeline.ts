@@ -2227,6 +2227,18 @@ export async function runScalpV2ResearchJob(params: {
     ),
   );
   let lastHeartbeatAtMs = 0;
+  const jobStartMs = nowMs();
+  const researchLog: Array<{ t: number; p: string; d?: string }> = [];
+  const MAX_LOG_ENTRIES = 60;
+
+  function logResearch(phase: string, detail?: string): void {
+    const elapsed = Math.round((nowMs() - jobStartMs) / 1000);
+    researchLog.push({ t: elapsed, p: phase, d: detail });
+    if (researchLog.length > MAX_LOG_ENTRIES) {
+      researchLog.splice(0, researchLog.length - MAX_LOG_ENTRIES);
+    }
+  }
+
   async function emitResearchHeartbeat(params: {
     phase: string;
     force?: boolean;
@@ -2238,6 +2250,7 @@ export async function runScalpV2ResearchJob(params: {
       return;
     }
     lastHeartbeatAtMs = now;
+    logResearch(params.phase, params.progress?.step as string || undefined);
     await heartbeatScalpV2Job({
       jobKind: "research",
       lockOwner: owner,
@@ -2250,6 +2263,7 @@ export async function runScalpV2ResearchJob(params: {
           failedSoFar: failed,
           ...(params.progress || {}),
         },
+        log: researchLog,
         ...(params.extra || {}),
       },
     }).catch(() => undefined);

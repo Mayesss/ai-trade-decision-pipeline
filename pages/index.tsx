@@ -6675,6 +6675,17 @@ export default function Home() {
                                   {scalpResearchHealthHint.detail && (
                                     <div className="mt-0.5 opacity-70">{scalpResearchHealthHint.detail}</div>
                                   )}
+                                  {(() => {
+                                    const log = (scalpResearchHealth?.job as any)?.log;
+                                    if (!Array.isArray(log) || !log.length) return null;
+                                    return (
+                                      <div className="mt-1.5 border-t border-current/20 pt-1.5 max-h-32 overflow-y-auto font-mono">
+                                        {log.slice(-10).map((entry: any, i: number) => (
+                                          <div key={i} className="opacity-60">{entry.t}s {entry.p}{entry.d ? ` · ${entry.d}` : ''}</div>
+                                        ))}
+                                      </div>
+                                    );
+                                  })()}
                                 </span>
                               </span>
                             )}
