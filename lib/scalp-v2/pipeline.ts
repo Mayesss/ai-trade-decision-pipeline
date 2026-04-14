@@ -2984,7 +2984,7 @@ export async function runScalpV2ResearchJob(params: {
     }> = [];
 
     const BACKTEST_CONCURRENCY = Math.max(1, Math.min(4,
-      toPositiveInt(process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY, 2, 4)));
+      toPositiveInt(process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY, 1, 4)));
 
     for (let candidateIdx = 0; candidateIdx < chunked.length; candidateIdx += BACKTEST_CONCURRENCY) {
       const elapsedMs = nowMs() - jobStartMs;
@@ -3107,6 +3107,8 @@ export async function runScalpV2ResearchJob(params: {
           candidateMeta ?? undefined,
         );
 
+        logResearch("replay_start", `${candidate.symbol}:${candidate.tuneId.slice(0, 20)}:${candidate.session}`);
+
         for (const stage of stagePolicies) {
           const fromTs = windowToTs - stage.weeks * ONE_WEEK_MS;
           if (blockedStages) {
@@ -3191,6 +3193,7 @@ export async function runScalpV2ResearchJob(params: {
               earlyAbortAfterPct: 50,
             });
             fullStageReplays += 1;
+            logResearch("replay_done", `${stage.id}:full:${candidate.symbol}`);
             weeklyByStart = buildWorkerStageWeeklyMetricsMap({
               trades: fullReplay.trades,
               fromTs,
@@ -3238,6 +3241,7 @@ export async function runScalpV2ResearchJob(params: {
               captureTimeline: false,
             });
             incrementalStageReplays += 1;
+            logResearch("replay_done", `${stage.id}:incr:${candidate.symbol}`);
             const newestWeekMetrics = buildWorkerStageWeeklyMetrics({
               trades: newestWeekReplay.trades,
               weekStartTs: newestWeekStart,
