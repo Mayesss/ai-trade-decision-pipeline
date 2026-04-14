@@ -553,7 +553,9 @@ export async function runScalpExecuteCycle(opts: {
                 }
 
                 const strategyEntryIntent = phase.entryIntent ?? null;
-                const legacyEntryIntent = strategyEntryIntent ? null : resolveLegacyIfvgEntryIntent(nextState);
+                // Skip legacy fallback for model-guided composer — it manages
+                // its own entry intents via delegate strategies.
+                const legacyEntryIntent = strategyEntryIntent || isComposer ? null : resolveLegacyIfvgEntryIntent(nextState);
                 if (!strategyEntryIntent && legacyEntryIntent) {
                     phaseReasonCodes.push('ENTRY_INTENT_LEGACY_FALLBACK');
                 }
