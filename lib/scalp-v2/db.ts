@@ -716,6 +716,23 @@ export async function paginateScalpV2CandidatesForBackfill(params: {
  * that were already backtested for the CURRENT windowToTs this week.
  * These are exact cache hits — no need to re-run at all.
  */
+/** All candidate keys in DB (any status) — used for warm-up completeness check. */
+export async function loadScalpV2AllCandidateKeys(): Promise<Set<string>> {
+  if (!isScalpPgConfigured()) return new Set();
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<
+    Array<{ venue: string; symbol: string; tuneId: string; session: string }>
+  >(sql`
+    SELECT venue, symbol, tune_id AS "tuneId", entry_session_profile AS "session"
+    FROM scalp_v2_candidates
+  `);
+  const keys = new Set<string>();
+  for (const row of rows) {
+    keys.add(`${row.venue}:${row.symbol}:${row.tuneId}:${row.session}`.toLowerCase());
+  }
+  return keys;
+}
+
 export async function loadScalpV2EvaluatedCandidateKeys(params: {
   windowToTs: number;
 }): Promise<Set<string>> {

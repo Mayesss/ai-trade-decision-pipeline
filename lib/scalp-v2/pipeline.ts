@@ -54,6 +54,7 @@ import {
   finalizeScalpV2Job,
   heartbeatScalpV2Job,
   listScalpV2Candidates,
+  loadScalpV2AllCandidateKeys,
   loadScalpV2EvaluatedCandidateKeys,
   loadScalpV2PreviousWeekResults,
   loadScalpV2WeeklyCache,
@@ -2331,7 +2332,11 @@ export async function runScalpV2ResearchJob(params: {
       });
     }
 
-    // --- Generate ALL candidates for all scopes (no cursor, no batch cap) ---
+    // --- Generate candidates and ensure they are persisted (warm-up) ---
+    // Candidate generation is deterministic. We generate all candidates in
+    // memory (fast, ~10s), then compare against what's already in the DB.
+    // If the DB is missing candidates, we persist them and return — the next
+    // run will find them and proceed straight to backtesting.
     const stagePolicies = [
       workerPolicy.stageA,
       workerPolicy.stageB,
@@ -2390,15 +2395,17 @@ export async function runScalpV2ResearchJob(params: {
           dsl,
         });
       }
-      await emitResearchHeartbeat({
-        phase: "generate_candidates",
-        progress: {
-          generatedScopeCount,
-          totalScopes: scopes.length,
-          generatedCandidates: allCandidates.length,
-          poolSizeTotal,
-        },
-      });
+      if (generatedScopeCount % 10 === 0 || generatedScopeCount === scopes.length) {
+        await emitResearchHeartbeat({
+          phase: "generate_candidates",
+          progress: {
+            generatedScopeCount,
+            totalScopes: scopes.length,
+            generatedCandidates: allCandidates.length,
+            poolSizeTotal,
+          },
+        });
+      }
     }
 
     // --- Optimization variants for enabled (graduated) deployments ---
@@ -2523,14 +2530,61 @@ export async function runScalpV2ResearchJob(params: {
       });
     }
 
-    // --- Filter: exact cache (same windowToTs = already done this week) ---
-    await emitResearchHeartbeat({
-      phase: "load_cache_keys",
-      force: true,
-      progress: {
-        generatedCandidates: allCandidates.length,
-      },
+    // --- Warm-up: ensure all generated candidates are persisted in DB ---
+    // Two-tier key check:
+    //   allDbKeys  = every candidate in DB (any status) — for warm-up completeness
+    //   evaluatedKeys = candidates backtested for current window — for backtest skip
+    await emitResearchHeartbeat({ phase: "warm_up_check", force: true, progress: { generatedCandidates: allCandidates.length } });
+    const allDbKeys = await loadScalpV2AllCandidateKeys().catch(() => new Set<string>());
+    const missingFromDb = allCandidates.filter((c) => {
+      const key = `${c.venue}:${c.symbol}:${c.tuneId}:${c.session}`.toLowerCase();
+      return !allDbKeys.has(key);
     });
+
+    if (missingFromDb.length > 0) {
+      // Persist missing candidates as "discovered" — they'll be backtested in subsequent runs
+      await emitResearchHeartbeat({ phase: "warm_up_persist", force: true, progress: { missing: missingFromDb.length, total: allCandidates.length, existing: allDbKeys.size } });
+      const rows = missingFromDb.map((c) => ({
+        venue: c.venue,
+        symbol: c.symbol,
+        strategyId: c.strategyId,
+        tuneId: c.tuneId,
+        entrySessionProfile: c.session,
+        score: c.score,
+        status: "discovered" as const,
+        reasonCodes: ["SCALP_V2_WARM_UP"],
+        metadata: {
+          discoveredAtMs: nowTs,
+          source: "model_guided_composer",
+          researchCandidateId: c.candidateId,
+          researchDsl: c.dsl.blocksByFamily,
+          researchReferences: c.dsl.referenceStrategyIds,
+          researchSupportScore: c.dsl.supportScore,
+          researchRegimeGateId: c.dsl.regimeGateId || null,
+          composerModel: c.dsl.model,
+        },
+      }));
+      await upsertScalpV2Candidates({ rows });
+      details = {
+        reason: "warm_up_persisted",
+        scopeCount: scopes.length,
+        poolSizeTotal,
+        generatedCandidates: allCandidates.length,
+        existingInDb: allDbKeys.size,
+        persisted: missingFromDb.length,
+        deploymentVariantsGenerated,
+      };
+      return buildScalpV2JobResult({
+        jobKind: "research",
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        pendingAfter: missingFromDb.length,
+        details,
+      });
+    }
+
+    // --- All candidates exist in DB — filter to those needing backtest this week ---
     const evaluatedKeys = await loadScalpV2EvaluatedCandidateKeys({ windowToTs }).catch(() => new Set<string>());
     const notYetEvaluated = allCandidates.filter((c) => {
       const key = `${c.venue}:${c.symbol}:${c.tuneId}:${c.session}`.toLowerCase();
