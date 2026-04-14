@@ -54,8 +54,10 @@ import {
   finalizeScalpV2Job,
   heartbeatScalpV2Job,
   listScalpV2Candidates,
-  loadScalpV2AllCandidateKeys,
   loadScalpV2EvaluatedCandidateKeys,
+  listScalpV2DiscoveredSymbols,
+  loadScalpV2WarmUpState,
+  upsertScalpV2WarmUpState,
   loadScalpV2PreviousWeekResults,
   loadScalpV2WeeklyCache,
   upsertScalpV2WeeklyCache,
@@ -2332,17 +2334,20 @@ export async function runScalpV2ResearchJob(params: {
       });
     }
 
-    // --- Generate candidates and ensure they are persisted (warm-up) ---
-    // Candidate generation is deterministic. We generate all candidates in
-    // memory (fast, ~10s), then compare against what's already in the DB.
-    // If the DB is missing candidates, we persist them and return — the next
-    // run will find them and proceed straight to backtesting.
+    // --- Warm-up: generate and persist candidates once per week ---
+    // The scope hash fingerprints the current (scopes × maxCandidatesPerSession).
+    // If it matches the DB, generation is skipped entirely — straight to backtest.
     const stagePolicies = [
       workerPolicy.stageA,
       workerPolicy.stageB,
       workerPolicy.stageC,
     ] as const;
     const minWindowFromTs = windowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS;
+    const scopeHash = hashScoreSeed(
+      scopes.map((s) => `${s.venue}:${s.symbol}:${s.session}`).sort().join("|") + `|mc=${maxCandidatesPerSession}`,
+    ).toString();
+    const warmUpState = await loadScalpV2WarmUpState({ windowToTs }).catch(() => null);
+    const warmUpComplete = warmUpState !== null && warmUpState.scopeHash === scopeHash;
 
     type InMemoryCandidate = {
       venue: ScalpV2Venue;
@@ -2355,196 +2360,154 @@ export async function runScalpV2ResearchJob(params: {
       dsl: ReturnType<typeof buildScalpV2ModelGuidedComposerGrid>[number];
     };
 
-    const allCandidates: InMemoryCandidate[] = [];
+    let allCandidates: InMemoryCandidate[] = [];
     let poolSizeTotal = 0;
-    let generatedScopeCount = 0;
+    let deploymentVariantsGenerated = 0;
 
-    for (const scope of scopes) {
-      generatedScopeCount += 1;
-      const composerCandidates = buildScalpV2ModelGuidedComposerGrid({
-        venue: scope.venue,
-        symbol: scope.symbol,
-        entrySessionProfile: scope.session,
-        maxCandidates: maxCandidatesPerSession,
-      });
-      poolSizeTotal += composerCandidates.length;
+    if (!warmUpComplete) {
+      // --- WARM-UP RUN: generate all candidates, persist, save fingerprint ---
+      await emitResearchHeartbeat({ phase: "warm_up_generate", force: true });
+      let generatedScopeCount = 0;
 
-      for (const dsl of composerCandidates) {
-        const model = dsl.model;
-        const supportScore = Number.isFinite(Number(dsl.supportScore))
-          ? Number(dsl.supportScore)
-          : 0;
-        const supportNorm = Math.max(0, Math.min(12, supportScore)) / 12;
-        const score =
-          12 +
-          model.compositeScore * 66 +
-          model.confidence * 14 +
-          supportNorm * 8 +
-          hashScoreSeed(
-            `${scope.venue}:${scope.symbol}:${scope.session}:${dsl.tuneId}`,
-          ) / 1000;
-
-        allCandidates.push({
+      for (const scope of scopes) {
+        generatedScopeCount += 1;
+        const composerCandidates = buildScalpV2ModelGuidedComposerGrid({
           venue: scope.venue,
           symbol: scope.symbol,
-          session: scope.session,
-          strategyId: MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
-          tuneId: dsl.tuneId,
-          candidateId: dsl.candidateId,
-          score,
-          dsl,
+          entrySessionProfile: scope.session,
+          maxCandidates: maxCandidatesPerSession,
         });
+        poolSizeTotal += composerCandidates.length;
+
+        for (const dsl of composerCandidates) {
+          const model = dsl.model;
+          const supportScore = Number.isFinite(Number(dsl.supportScore))
+            ? Number(dsl.supportScore)
+            : 0;
+          const supportNorm = Math.max(0, Math.min(12, supportScore)) / 12;
+          const score =
+            12 +
+            model.compositeScore * 66 +
+            model.confidence * 14 +
+            supportNorm * 8 +
+            hashScoreSeed(
+              `${scope.venue}:${scope.symbol}:${scope.session}:${dsl.tuneId}`,
+            ) / 1000;
+
+          allCandidates.push({
+            venue: scope.venue,
+            symbol: scope.symbol,
+            session: scope.session,
+            strategyId: MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
+            tuneId: dsl.tuneId,
+            candidateId: dsl.candidateId,
+            score,
+            dsl,
+          });
+        }
+        if (generatedScopeCount % 10 === 0 || generatedScopeCount === scopes.length) {
+          await emitResearchHeartbeat({
+            phase: "warm_up_generate",
+            progress: {
+              generatedScopeCount,
+              totalScopes: scopes.length,
+              generatedCandidates: allCandidates.length,
+            },
+          });
+        }
       }
-      if (generatedScopeCount % 10 === 0 || generatedScopeCount === scopes.length) {
-        await emitResearchHeartbeat({
-          phase: "generate_candidates",
-          progress: {
-            generatedScopeCount,
-            totalScopes: scopes.length,
-            generatedCandidates: allCandidates.length,
-            poolSizeTotal,
-          },
-        });
-      }
-    }
 
-    // --- Optimization variants for enabled (graduated) deployments ---
-    // Entry trigger, risk rule, and state machine variants are only generated
-    // for deployments that already passed all stage gates and got promoted.
-    // This focuses the combinatorial search on proven strategies.
-    let deploymentVariantsGenerated = 0;
-    try {
-      const enabledDeployments = await listScalpV2Deployments({ enabledOnly: true, limit: 500 });
-      const existingTuneIds = new Set(allCandidates.map((c) => c.tuneId));
-      let enabledDeploymentIdx = 0;
-
-      for (const dep of enabledDeployments) {
-        enabledDeploymentIdx += 1;
-        await emitResearchHeartbeat({
-          phase: "deployment_variants",
-          progress: {
-            enabledDeploymentIdx,
-            enabledDeploymentCount: enabledDeployments.length,
-            deploymentVariantsGenerated,
-          },
-        });
-        if (!isScalpV2RuntimeSymbolInScope({ runtime, venue: dep.venue, symbol: dep.symbol })) continue;
-        const session = dep.entrySessionProfile;
-        const plan = resolveModelGuidedComposerExecutionPlanFromTuneId(dep.tuneId);
-        const depDsl = asRecord(asRecord(dep.promotionGate).dsl || {});
-        const toStrArr = (v: unknown): string[] => Array.isArray(v) ? v as string[] : [];
-        const baseBlocksByFamily = {
-          pattern: toStrArr(depDsl.pattern),
-          session_filter: toStrArr(depDsl.session_filter),
-          state_machine: toStrArr(depDsl.state_machine),
-          entry_trigger: toStrArr(depDsl.entry_trigger),
-          exit_rule: toStrArr(depDsl.exit_rule),
-          risk_rule: toStrArr(depDsl.risk_rule),
-        };
-        const baseExitId = parseExitRuleFromTuneId(dep.tuneId)?.toString() || undefined;
-        const baseRegimeGateId = parseRegimeGateFromTuneId(dep.tuneId) || undefined;
-        const baseModel = {
-          family: "interpretable_pattern_blend" as const,
-          version: "deployment_variant_v1",
-          interpretableScore: 0,
-          treeScore: 0,
-          sequenceScore: 0,
-          compositeScore: 0.5,
-          confidence: 0.5,
-        };
-
-        // Collect all variant dimensions for this deployment
-        const compatEntries = ENTRY_TRIGGER_COMPAT[plan.baseArm] || [];
-        const riskProfiles = RISK_RULE_RESEARCH_PROFILES;
-        const smProfiles = STATE_MACHINE_RESEARCH_PROFILES;
-
-        // Generate: entry trigger variants
-        for (const entryId of compatEntries) {
-          for (const riskId of riskProfiles) {
-            for (const smId of [null, ...smProfiles]) {
-              const variantTuneId = buildModelGuidedComposerTuneId({
-                armId: plan.armId,
-                digest: `${dep.deploymentId}:${entryId}:${riskId || "d"}:${smId || "d"}`,
-                exitRuleId: baseExitId,
-                entryTriggerId: entryId,
-                riskRuleId: riskId,
-                stateMachineId: smId,
-                regimeGateId: baseRegimeGateId,
-              });
-              if (existingTuneIds.has(variantTuneId)) continue;
-              existingTuneIds.add(variantTuneId);
-
-              const variantScore = 90 + hashScoreSeed(variantTuneId) / 1000;
-              allCandidates.push({
-                venue: dep.venue as ScalpV2Venue,
-                symbol: dep.symbol,
-                session,
-                strategyId: dep.strategyId,
-                tuneId: variantTuneId,
-                candidateId: variantTuneId,
-                score: variantScore,
-                dsl: {
-                  candidateId: variantTuneId,
-                  tuneId: variantTuneId,
+      // Deployment variants
+      try {
+        const enabledDeployments = await listScalpV2Deployments({ enabledOnly: true, limit: 500 });
+        const existingTuneIds = new Set(allCandidates.map((c) => c.tuneId));
+        for (const dep of enabledDeployments) {
+          if (!isScalpV2RuntimeSymbolInScope({ runtime, venue: dep.venue, symbol: dep.symbol })) continue;
+          const session = dep.entrySessionProfile;
+          const plan = resolveModelGuidedComposerExecutionPlanFromTuneId(dep.tuneId);
+          const depDsl = asRecord(asRecord(dep.promotionGate).dsl || {});
+          const toStrArr = (v: unknown): string[] => Array.isArray(v) ? v as string[] : [];
+          const baseBlocksByFamily = {
+            pattern: toStrArr(depDsl.pattern),
+            session_filter: toStrArr(depDsl.session_filter),
+            state_machine: toStrArr(depDsl.state_machine),
+            entry_trigger: toStrArr(depDsl.entry_trigger),
+            exit_rule: toStrArr(depDsl.exit_rule),
+            risk_rule: toStrArr(depDsl.risk_rule),
+          };
+          const baseExitId = parseExitRuleFromTuneId(dep.tuneId)?.toString() || undefined;
+          const baseRegimeGateId = parseRegimeGateFromTuneId(dep.tuneId) || undefined;
+          const baseModel = {
+            family: "interpretable_pattern_blend" as const,
+            version: "deployment_variant_v1",
+            interpretableScore: 0,
+            treeScore: 0,
+            sequenceScore: 0,
+            compositeScore: 0.5,
+            confidence: 0.5,
+          };
+          const compatEntries = ENTRY_TRIGGER_COMPAT[plan.baseArm] || [];
+          const riskProfiles = RISK_RULE_RESEARCH_PROFILES;
+          const smProfiles = STATE_MACHINE_RESEARCH_PROFILES;
+          for (const entryId of compatEntries) {
+            for (const riskId of riskProfiles) {
+              for (const smId of [null, ...smProfiles]) {
+                const variantTuneId = buildModelGuidedComposerTuneId({
+                  armId: plan.armId,
+                  digest: `${dep.deploymentId}:${entryId}:${riskId || "d"}:${smId || "d"}`,
+                  exitRuleId: baseExitId,
+                  entryTriggerId: entryId,
+                  riskRuleId: riskId,
+                  stateMachineId: smId,
+                  regimeGateId: baseRegimeGateId,
+                });
+                if (existingTuneIds.has(variantTuneId)) continue;
+                existingTuneIds.add(variantTuneId);
+                const variantScore = 90 + hashScoreSeed(variantTuneId) / 1000;
+                allCandidates.push({
                   venue: dep.venue as ScalpV2Venue,
                   symbol: dep.symbol,
-                  entrySessionProfile: session,
-                  blocksByFamily: {
-                    ...baseBlocksByFamily,
-                    entry_trigger: [entryId],
-                    risk_rule: riskId ? [riskId] : baseBlocksByFamily.risk_rule,
-                    state_machine: smId ? [smId] : baseBlocksByFamily.state_machine,
+                  session,
+                  strategyId: dep.strategyId,
+                  tuneId: variantTuneId,
+                  candidateId: variantTuneId,
+                  score: variantScore,
+                  dsl: {
+                    candidateId: variantTuneId,
+                    tuneId: variantTuneId,
+                    venue: dep.venue as ScalpV2Venue,
+                    symbol: dep.symbol,
+                    entrySessionProfile: session,
+                    blocksByFamily: {
+                      ...baseBlocksByFamily,
+                      entry_trigger: [entryId],
+                      risk_rule: riskId ? [riskId] : baseBlocksByFamily.risk_rule,
+                      state_machine: smId ? [smId] : baseBlocksByFamily.state_machine,
+                    },
+                    referenceStrategyIds: [],
+                    supportScore: 0,
+                    generatedAtMs: Date.now(),
+                    model: baseModel,
+                    regimeGateId: baseRegimeGateId,
                   },
-                  referenceStrategyIds: [],
-                  supportScore: 0,
-                  generatedAtMs: Date.now(),
-                  model: baseModel,
-                  regimeGateId: baseRegimeGateId,
-                },
-              });
-              deploymentVariantsGenerated += 1;
+                });
+                deploymentVariantsGenerated += 1;
+              }
             }
           }
         }
+      } catch {
+        // Non-fatal
       }
-    } catch {
-      // Non-fatal: deployment variants are an optimization, not a requirement
-    }
 
-    if (!allCandidates.length) {
-      details = {
-        reason: "no_candidates_generated",
-        scopeCount: scopes.length,
-        droppedByScopePrune,
-        poolSizeTotal,
-        deploymentVariantsGenerated,
-        scopePrune: scopePrune.details,
-      };
-      return buildScalpV2JobResult({
-        jobKind: "research",
-        processed: 0,
-        succeeded: 0,
-        failed: 0,
-        pendingAfter: 0,
-        details,
-      });
-    }
+      if (!allCandidates.length) {
+        details = { reason: "no_candidates_generated", scopeCount: scopes.length, droppedByScopePrune, poolSizeTotal, scopePrune: scopePrune.details };
+        return buildScalpV2JobResult({ jobKind: "research", processed: 0, succeeded: 0, failed: 0, pendingAfter: 0, details });
+      }
 
-    // --- Warm-up: ensure all generated candidates are persisted in DB ---
-    // Two-tier key check:
-    //   allDbKeys  = every candidate in DB (any status) — for warm-up completeness
-    //   evaluatedKeys = candidates backtested for current window — for backtest skip
-    await emitResearchHeartbeat({ phase: "warm_up_check", force: true, progress: { generatedCandidates: allCandidates.length } });
-    const allDbKeys = await loadScalpV2AllCandidateKeys().catch(() => new Set<string>());
-    const missingFromDb = allCandidates.filter((c) => {
-      const key = `${c.venue}:${c.symbol}:${c.tuneId}:${c.session}`.toLowerCase();
-      return !allDbKeys.has(key);
-    });
-
-    if (missingFromDb.length > 0) {
-      // Persist missing candidates as "discovered" — they'll be backtested in subsequent runs
-      await emitResearchHeartbeat({ phase: "warm_up_persist", force: true, progress: { missing: missingFromDb.length, total: allCandidates.length, existing: allDbKeys.size } });
-      const rows = missingFromDb.map((c) => ({
+      // Persist all candidates as "discovered" (upsert — safe for partial reruns)
+      await emitResearchHeartbeat({ phase: "warm_up_persist", force: true, progress: { total: allCandidates.length } });
+      const rows = allCandidates.map((c) => ({
         venue: c.venue,
         symbol: c.symbol,
         strategyId: c.strategyId,
@@ -2565,32 +2528,83 @@ export async function runScalpV2ResearchJob(params: {
         },
       }));
       await upsertScalpV2Candidates({ rows });
+
+      // Save fingerprint so subsequent runs skip generation entirely
+      await upsertScalpV2WarmUpState({ windowToTs, scopeHash, candidateCount: allCandidates.length });
+
       details = {
-        reason: "warm_up_persisted",
+        reason: "warm_up_complete",
         scopeCount: scopes.length,
         poolSizeTotal,
-        generatedCandidates: allCandidates.length,
-        existingInDb: allDbKeys.size,
-        persisted: missingFromDb.length,
+        persisted: allCandidates.length,
         deploymentVariantsGenerated,
+        scopeHash,
       };
       return buildScalpV2JobResult({
         jobKind: "research",
         processed: 0,
         succeeded: 0,
         failed: 0,
-        pendingAfter: missingFromDb.length,
+        pendingAfter: allCandidates.length,
         details,
       });
     }
 
-    // --- All candidates exist in DB — filter to those needing backtest this week ---
+    // --- BACKTEST RUN: warm-up complete, skip generation entirely ---
+    // Find the next symbol(s) that still have "discovered" candidates, load only those.
+    await emitResearchHeartbeat({ phase: "load_backtest_chunk", force: true });
+    const maxSymbolsPerRun = Math.max(1, Math.min(50,
+      toPositiveInt(process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN, 1, 50)));
+    const discoveredSymbols = await listScalpV2DiscoveredSymbols().catch(() => [] as string[]);
+    const symbolsThisRun = discoveredSymbols.slice(0, maxSymbolsPerRun);
+
+    if (symbolsThisRun.length > 0) {
+      const chunkRows = await listScalpV2Candidates({
+        status: "discovered",
+        symbols: symbolsThisRun,
+        limit: 5_000,
+      }).catch(() => [] as Awaited<ReturnType<typeof listScalpV2Candidates>>);
+
+      for (const row of chunkRows) {
+        const meta = row.metadata || {};
+        const dslRaw = (meta.researchDsl || {}) as Record<string, string[]>;
+        allCandidates.push({
+          venue: row.venue as ScalpV2Venue,
+          symbol: row.symbol,
+          session: row.entrySessionProfile as ScalpV2Session,
+          strategyId: row.strategyId,
+          tuneId: row.tuneId,
+          candidateId: String(meta.researchCandidateId || row.tuneId),
+          score: row.score,
+          dsl: {
+            candidateId: String(meta.researchCandidateId || row.tuneId),
+            tuneId: row.tuneId,
+            venue: row.venue as ScalpV2Venue,
+            symbol: row.symbol,
+            entrySessionProfile: row.entrySessionProfile as ScalpV2Session,
+            blocksByFamily: {
+              pattern: dslRaw.pattern || [],
+              session_filter: dslRaw.session_filter || [],
+              state_machine: dslRaw.state_machine || [],
+              entry_trigger: dslRaw.entry_trigger || [],
+              exit_rule: dslRaw.exit_rule || [],
+              risk_rule: dslRaw.risk_rule || [],
+            },
+            referenceStrategyIds: (meta.researchReferences || []) as string[],
+            supportScore: Number(meta.researchSupportScore) || 0,
+            generatedAtMs: Number(meta.discoveredAtMs) || nowTs,
+            model: (meta.composerModel || {}) as any,
+            regimeGateId: (meta.researchRegimeGateId as string) || undefined,
+          },
+        });
+      }
+    }
     const evaluatedKeys = await loadScalpV2EvaluatedCandidateKeys({ windowToTs }).catch(() => new Set<string>());
+    const skippedByCache = evaluatedKeys.size;
     const notYetEvaluated = allCandidates.filter((c) => {
       const key = `${c.venue}:${c.symbol}:${c.tuneId}:${c.session}`.toLowerCase();
       return !evaluatedKeys.has(key);
     });
-    const skippedByCache = allCandidates.length - notYetEvaluated.length;
 
     if (!notYetEvaluated.length) {
       details = {
@@ -2745,23 +2759,12 @@ export async function runScalpV2ResearchJob(params: {
       force: true,
       progress: { ...baseProgress },
     });
-    // Chunk: limit each invocation to a bounded number of unique symbols.
-    // This keeps candle loading and backtesting within the serverless time budget.
-    // Already-evaluated candidates are filtered out by evaluatedKeys on next run,
-    // so we naturally advance through the full symbol set across invocations.
-    const maxSymbolsPerRun = Math.max(
-      1,
-      Math.min(
-        50,
-        toPositiveInt(process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN, 4, 50),
-      ),
-    );
-    const allUniqueSymbols = Array.from(new Set(selected.map((c) => c.symbol)));
-    const symbolsThisRun = new Set(allUniqueSymbols.slice(0, maxSymbolsPerRun));
-    const chunked = selected.filter((c) => symbolsThisRun.has(c.symbol));
-    const deferredCount = selected.length - chunked.length;
+    // Candidates are already chunked by the DB query (only discovered candidates
+    // for the target symbol(s) were loaded). No further chunking needed.
+    const chunked = selected;
+    const deferredCount = 0;
 
-    const uniqueSymbols = Array.from(symbolsThisRun);
+    const uniqueSymbols = Array.from(new Set(chunked.map((c) => c.symbol)));
     const symbolMetadataMap = await loadScalpSymbolMarketMetadataBulk(uniqueSymbols).catch(
       () => new Map<string, ScalpSymbolMarketMetadata | null>(),
     );
@@ -2852,25 +2855,30 @@ export async function runScalpV2ResearchJob(params: {
       metrics: ScalpV2WorkerStageWeeklyMetrics;
     }> = [];
 
-    for (let candidateIdx = 0; candidateIdx < chunked.length; candidateIdx += 1) {
+    const BACKTEST_CONCURRENCY = Math.max(1, Math.min(4,
+      toPositiveInt(process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY, 2, 4)));
+
+    for (let candidateIdx = 0; candidateIdx < chunked.length; candidateIdx += BACKTEST_CONCURRENCY) {
       const elapsedMs = nowMs() - jobStartMs;
       if (elapsedMs >= timeBudgetMs) {
         timeBudgetExhausted = true;
         break;
       }
 
-      const candidate = chunked[candidateIdx]!;
+      const batch = chunked.slice(candidateIdx, candidateIdx + BACKTEST_CONCURRENCY);
       await emitResearchHeartbeat({
         phase: "backtest_candidates",
         progress: {
           ...baseProgress,
-          candidateIndex: candidateIdx + 1,
+          candidateIndex: candidateIdx + batch.length,
           totalSelected: chunked.length,
           stageCPass,
           persisted: persistedCount,
           replayErrors,
         },
       });
+
+      await Promise.all(batch.map(async (candidate) => {
 
       try {
         let symbolCandles = candleCache.get(candidate.symbol) ?? null;
@@ -2920,7 +2928,7 @@ export async function runScalpV2ResearchJob(params: {
         // a failure so they get retried after candles are loaded.
         if (symbolCandles.length < workerPolicy.minCandles) {
           processed += 1;
-          continue;
+          return;
         }
 
         let blockedStages = false;
@@ -3212,7 +3220,7 @@ export async function runScalpV2ResearchJob(params: {
           }).catch(() => undefined); // non-fatal: next cycle will retry
           persistedCount += 1;
           processed += 1;
-          continue;
+          return;
         }
 
         const executionPlan = resolveModelGuidedComposerExecutionPlanFromBlocks(
@@ -3257,22 +3265,21 @@ export async function runScalpV2ResearchJob(params: {
         replayErrors += 1;
         processed += 1;
       }
+      })); // end Promise.all(batch.map)
 
-      // Heartbeat every few candidates to keep the lock alive
-      if ((candidateIdx + 1) % 5 === 0 || candidateIdx + 1 === chunked.length) {
-        await emitResearchHeartbeat({
-          phase: "backtest_candidates",
-          force: true,
-          progress: {
-            ...baseProgress,
-            processedSoFar: candidateIdx + 1,
-            totalSelected: chunked.length,
-            stageCPass,
-            persisted: persistedCount,
-            replayErrors,
-          },
-        });
-      }
+      // Heartbeat after each batch to keep the lock alive
+      await emitResearchHeartbeat({
+        phase: "backtest_candidates",
+        force: true,
+        progress: {
+          ...baseProgress,
+          processedSoFar: Math.min(candidateIdx + BACKTEST_CONCURRENCY, chunked.length),
+          totalSelected: chunked.length,
+          stageCPass,
+          persisted: persistedCount,
+          replayErrors,
+        },
+      });
 
       // Flush cache writes periodically so they survive timeouts
       if (pendingCacheWrites.length >= 50) {
@@ -3303,7 +3310,7 @@ export async function runScalpV2ResearchJob(params: {
       backtested: chunked.length,
       deferredToNextRun: deferredCount,
       symbolsThisRun: uniqueSymbols.length,
-      symbolsTotal: allUniqueSymbols.length,
+      symbolsTotal: discoveredSymbols.length || uniqueSymbols.length,
       processedCandidates: processed,
       minPersistStage,
       droppedBelowMinStage,

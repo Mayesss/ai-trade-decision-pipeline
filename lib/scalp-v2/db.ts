@@ -437,6 +437,7 @@ export async function listScalpV2Candidates(params: {
   status?: ScalpV2CandidateStatus;
   venue?: ScalpV2Venue;
   session?: ScalpV2Session;
+  symbols?: string[];
   limit?: number;
 } = {}): Promise<ScalpV2Candidate[]> {
   if (!isScalpPgConfigured()) return [];
@@ -455,6 +456,10 @@ export async function listScalpV2Candidates(params: {
   if (params.session) {
     values.push(params.session);
     where.push(`entry_session_profile = $${values.length}`);
+  }
+  if (params.symbols && params.symbols.length > 0) {
+    values.push(params.symbols);
+    where.push(`symbol = ANY($${values.length})`);
   }
   values.push(limit);
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
@@ -716,21 +721,49 @@ export async function paginateScalpV2CandidatesForBackfill(params: {
  * that were already backtested for the CURRENT windowToTs this week.
  * These are exact cache hits — no need to re-run at all.
  */
-/** All candidate keys in DB (any status) — used for warm-up completeness check. */
-export async function loadScalpV2AllCandidateKeys(): Promise<Set<string>> {
-  if (!isScalpPgConfigured()) return new Set();
+/** Check if warm-up was completed for the given window. */
+export async function loadScalpV2WarmUpState(params: {
+  windowToTs: number;
+}): Promise<{ scopeHash: string; candidateCount: number } | null> {
+  if (!isScalpPgConfigured()) return null;
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
-    Array<{ venue: string; symbol: string; tuneId: string; session: string }>
+    Array<{ scopeHash: string; candidateCount: number }>
   >(sql`
-    SELECT venue, symbol, tune_id AS "tuneId", entry_session_profile AS "session"
-    FROM scalp_v2_candidates
+    SELECT scope_hash AS "scopeHash", candidate_count AS "candidateCount"
+    FROM scalp_v2_research_warm_up
+    WHERE window_to_ts = ${params.windowToTs}
+    LIMIT 1
   `);
-  const keys = new Set<string>();
-  for (const row of rows) {
-    keys.add(`${row.venue}:${row.symbol}:${row.tuneId}:${row.session}`.toLowerCase());
-  }
-  return keys;
+  return rows[0] || null;
+}
+
+/** Persist warm-up completion state. */
+export async function upsertScalpV2WarmUpState(params: {
+  windowToTs: number;
+  scopeHash: string;
+  candidateCount: number;
+}): Promise<void> {
+  if (!isScalpPgConfigured()) return;
+  const db = scalpPrisma();
+  await db.$executeRaw(sql`
+    INSERT INTO scalp_v2_research_warm_up(window_to_ts, scope_hash, candidate_count, created_at)
+    VALUES (${params.windowToTs}, ${params.scopeHash}, ${params.candidateCount}, NOW())
+    ON CONFLICT(window_to_ts)
+    DO UPDATE SET scope_hash = EXCLUDED.scope_hash, candidate_count = EXCLUDED.candidate_count
+  `);
+}
+
+/** Distinct symbols that still have "discovered" candidates (not yet backtested). */
+export async function listScalpV2DiscoveredSymbols(): Promise<string[]> {
+  if (!isScalpPgConfigured()) return [];
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{ symbol: string }>>(sql`
+    SELECT DISTINCT symbol FROM scalp_v2_candidates
+    WHERE status = 'discovered'
+    ORDER BY symbol
+  `);
+  return rows.map((r) => r.symbol);
 }
 
 export async function loadScalpV2EvaluatedCandidateKeys(params: {
