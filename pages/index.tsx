@@ -1736,7 +1736,7 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<
   scalp_research: {
     primaryPathname: "/api/scalp/v2/cron/research",
     matchPathnames: ["/api/scalp/v2/cron/research"],
-    fallbackInvokePath: "/api/scalp/v2/cron/research?batchSize=50",
+    fallbackInvokePath: "/api/scalp/v2/cron/research?batchSize=100",
   },
   scalp_promote: {
     primaryPathname: "/api/scalp/v2/cron/promote",
@@ -4295,8 +4295,23 @@ export default function Home() {
     const symbolsTotal = n(p.symbolsTotal, null, null);
 
     const total = weeklyTotal;
-    const done = weeklyEvaluated;
-    const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
+    const doneConfirmed = weeklyEvaluated;
+    const processedSoFar = n(
+      hb.processedSoFar,
+      (p as any)?.processedSoFar,
+      (healthProg as any)?.processedSoFar,
+    );
+    const doneLive =
+      total > 0
+        ? Math.min(
+            total,
+            Math.max(
+              doneConfirmed,
+              doneConfirmed + (isRunning ? processedSoFar : 0),
+            ),
+          )
+        : doneConfirmed;
+    const pct = total > 0 ? Math.min(100, (doneLive / total) * 100) : 0;
 
     let statusLabel: string | null = null;
     if (symbolsTotal > 0) {
@@ -4306,7 +4321,9 @@ export default function Home() {
 
     return {
       totalCandidates: total,
-      done,
+      done: doneLive,
+      doneConfirmed,
+      processedSoFar,
       pct,
       phase,
       statusLabel,
@@ -6623,6 +6640,13 @@ export default function Home() {
                                 ({scalpResearchProgress.pct < 1 && scalpResearchProgress.pct > 0 ? scalpResearchProgress.pct.toFixed(1) : Math.round(scalpResearchProgress.pct)}%)
                               </span>
                             </span>
+                            {scalpResearchProgress.isRunning &&
+                              scalpResearchProgress.doneConfirmed <
+                                scalpResearchProgress.done && (
+                                <span className="opacity-60">
+                                  confirmed {scalpResearchProgress.doneConfirmed}
+                                </span>
+                              )}
                             {scalpResearchProgress.stageCPass > 0 && (
                               <span className="text-emerald-400">{scalpResearchProgress.stageCPass} stageC</span>
                             )}

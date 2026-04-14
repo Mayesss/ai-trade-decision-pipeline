@@ -176,7 +176,7 @@ MARKETAUX_API_KEY=...
 # SCALP_RESEARCH_WORKER_MAX_CONCURRENCY=16
 # SCALP_RESEARCH_WORKER_MAX_RUNS_CAP=200
 # SCALP_V1_RESEARCH_MAX_CANDIDATES_CAP=80
-# SCALP_V1_RESEARCH_MAX_SELF_HOPS_CAP=3
+# SCALP_V1_RESEARCH_MAX_SELF_HOPS_CAP=8               # must be >= cron selfMaxHops for v2 cycle/research auto-continue
 # SCALP_V2_ENABLED=true
 # SCALP_V2_LIVE_ENABLED=false                           # fail-closed by default
 # SCALP_V2_DRY_RUN_DEFAULT=true
@@ -310,6 +310,12 @@ npm run start
     - `evaluateBatchSize=<int>` batch size for downstream evaluate (default `200`).
     - `autoContinue=true|false` + `selfHop/selfMaxHops` for bounded detached recalls.
   - Legacy discover params (`dryRun`, `includeLiveQuotes`, `maxCandidates`) are accepted but ignored by native v2 discover.
+- `GET /api/scalp/v2/cron/research?batchSize=100`
+  - Unified v2 research pass (replaces legacy evaluate+worker split internally).
+  - `batchSize` bounds how many selected candidates are backtested per invocation (default `100`).
+  - Optional orchestration query params:
+    - `autoContinue=true|false` + `selfHop/selfMaxHops` for bounded detached self-recalls when `pendingAfter > 0`.
+    - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/v2/cron/promote` only after `pendingAfter` reaches `0`.
 - `GET /api/scalp/v2/cron/evaluate?batchSize=200`
   - Native model-guided scoring pass over deterministic candidate pools for each venue+symbol+session scope.
   - Uses research cursor offsets (`scalp_v2_research_cursor.last_candidate_offset`) to rotate evaluation windows instead of rescoring full pools every run.
@@ -361,6 +367,10 @@ npm run start
 - `GET/POST /api/scalp/v2/control`
   - Runtime control for scalp-v2 (`enabled`, `liveEnabled`, budgets, risk profile, seed symbols).
 - `GET /api/scalp/v2/cron/cycle?dryRun=true|false`
+  - Recommended production tuning for sustained research draining:
+    - `batchSize=100`
+    - `autoContinue=true`
+    - `selfMaxHops=8` (ensure `SCALP_V1_RESEARCH_MAX_SELF_HOPS_CAP>=8` or route-level value will be clamped)
   - Full v2 auto loop in one run: discover -> evaluate -> worker -> promote -> execute -> reconcile.
   - Sunday UTC safeguard: execution step is skipped by default (`reason=sunday_utc_execution_blocked`); override only with `SCALP_V2_ALLOW_SUNDAY_EXECUTE=true`.
 - `GET /api/scalp/v2/dashboard/summary`

@@ -2277,6 +2277,20 @@ export async function runScalpV2ResearchJob(params: {
     ).trim().toLowerCase();
     const minPersistStage: ScalpV2WorkerStageId =
       minPersistStageRaw === "c" ? "c" : minPersistStageRaw === "b" ? "b" : "a";
+    const configuredBatchSize = Math.max(
+      1,
+      Math.min(
+        10_000,
+        toPositiveInt(process.env.SCALP_V2_RESEARCH_BATCH_SIZE, 100, 10_000),
+      ),
+    );
+    const effectiveBatchSize = Math.max(
+      1,
+      Math.min(
+        10_000,
+        toPositiveInt(params.batchSize, configuredBatchSize, 10_000),
+      ),
+    );
 
     // --- Build scopes ---
     const scopes: Array<{
@@ -2539,6 +2553,8 @@ export async function runScalpV2ResearchJob(params: {
         persisted: allCandidates.length,
         deploymentVariantsGenerated,
         scopeHash,
+        configuredBatchSize,
+        effectiveBatchSize,
       };
       return buildScalpV2JobResult({
         jobKind: "research",
@@ -2742,16 +2758,21 @@ export async function runScalpV2ResearchJob(params: {
       force: true,
       progress: {
         selected: selected.length,
+        selectedThisRun: Math.min(selected.length, effectiveBatchSize),
         skippedByCache,
         skippedByClearFail,
         skippedByNetRPreFilter,
       },
     });
+    const chunked = selected.slice(0, effectiveBatchSize);
+    const deferredCount = Math.max(0, selected.length - chunked.length);
+
     // Base progress: include overall weekly totals so the UI shows global progress
     const weeklyTotal = warmUpState?.candidateCount || selected.length;
     const weeklyEvaluated = evaluatedKeys.size;
     const baseProgress = {
-      selectedCandidates: selected.length,
+      selectedCandidates: chunked.length,
+      selectedTotal: selected.length,
       weeklyTotal,
       weeklyEvaluated,
       skippedByCache,
@@ -2763,11 +2784,6 @@ export async function runScalpV2ResearchJob(params: {
       force: true,
       progress: { ...baseProgress },
     });
-    // Candidates are already chunked by the DB query (only discovered candidates
-    // for the target symbol(s) were loaded). No further chunking needed.
-    const chunked = selected;
-    const deferredCount = 0;
-
     const uniqueSymbols = Array.from(new Set(chunked.map((c) => c.symbol)));
     const symbolMetadataMap = await loadScalpSymbolMarketMetadataBulk(uniqueSymbols).catch(
       () => new Map<string, ScalpSymbolMarketMetadata | null>(),
@@ -3319,6 +3335,8 @@ export async function runScalpV2ResearchJob(params: {
       symbolsThisRun: uniqueSymbols.length,
       symbolsTotal: discoveredSymbols.length || uniqueSymbols.length,
       processedCandidates: processed,
+      configuredBatchSize,
+      effectiveBatchSize,
       minPersistStage,
       droppedBelowMinStage,
       persistedCount,
@@ -4687,6 +4705,7 @@ export async function runScalpV2FullAutoCycle(params: {
   executeDryRun?: boolean;
   venue?: ScalpV2Venue;
   session?: ScalpV2Session;
+  researchBatchSize?: number;
 } = {}): Promise<{
   discover: ScalpV2JobResult;
   evaluate: ScalpV2JobResult;
@@ -4696,7 +4715,33 @@ export async function runScalpV2FullAutoCycle(params: {
   reconcile: ScalpV2JobResult;
 }> {
   // research replaces both evaluate + worker in a single in-memory pass
-  const research = await runScalpV2ResearchJob();
+  const skippedStub = (
+    jobKind: ScalpV2JobKind,
+    reason = "handled_by_dedicated_cron",
+  ): ScalpV2JobResult => ({
+    ok: true,
+    busy: false,
+    jobKind,
+    processed: 0,
+    succeeded: 0,
+    failed: 0,
+    pendingAfter: 0,
+    details: { skipped: true, reason },
+  });
+  const cycleResearchBatchSize = Math.max(
+    1,
+    Math.min(
+      10_000,
+      toPositiveInt(
+        params.researchBatchSize,
+        toPositiveInt(process.env.SCALP_V2_RESEARCH_BATCH_SIZE, 100, 10_000),
+        10_000,
+      ),
+    ),
+  );
+  const research = await runScalpV2ResearchJob({
+    batchSize: cycleResearchBatchSize,
+  });
   const discover: ScalpV2JobResult = {
     ...research,
     jobKind: "discover",
@@ -4712,21 +4757,14 @@ export async function runScalpV2FullAutoCycle(params: {
     jobKind: "worker",
     details: { ...research.details, delegatedTo: "research" },
   };
-  const promote = await runScalpV2PromoteJob();
+  const promote =
+    research.ok && !research.busy && research.pendingAfter <= 0
+      ? await runScalpV2PromoteJob()
+      : skippedStub("promote", "research_pending");
 
   // Execute and reconcile run on their own dedicated crons (every 1m and 2m
   // respectively) to match live market takt. The cycle cron only handles
   // research + promote. Return skipped stubs for API compatibility.
-  const skippedStub = (jobKind: ScalpV2JobKind): ScalpV2JobResult => ({
-    ok: true,
-    busy: false,
-    jobKind,
-    processed: 0,
-    succeeded: 0,
-    failed: 0,
-    pendingAfter: 0,
-    details: { skipped: true, reason: "handled_by_dedicated_cron" },
-  });
   const execute = skippedStub("execute");
   const reconcile = skippedStub("reconcile");
 

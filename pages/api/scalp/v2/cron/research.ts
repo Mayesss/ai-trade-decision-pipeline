@@ -31,16 +31,45 @@ export default async function handler(
   setNoStoreHeaders(res);
 
   const hardCaps = resolveScalpV2ResearchHardCaps();
+  const batchSizeHardCap = Math.max(100, hardCaps.maxBatchSizeWorker);
   const batchSize = clampScalpV2HardCap(
-    parseIntBounded(req.query.batchSize, 50, 1, 600),
-    hardCaps.maxBatchSizeWorker,
+    parseIntBounded(req.query.batchSize, 100, 1, 600),
+    batchSizeHardCap,
   );
   const autoSuccessor = parseBool(req.query.autoSuccessor, true);
+  const autoContinue = parseBool(req.query.autoContinue, true);
+  const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 20);
+  const selfMaxHops = Math.min(
+    parseIntBounded(req.query.selfMaxHops, 6, 0, 50),
+    hardCaps.maxSelfHops,
+  );
 
   const job = await runScalpV2ResearchJob({ batchSize });
 
   let downstream: ScalpV2CronInvokeResult | null = null;
-  if (job.ok && !job.busy && autoSuccessor) {
+  let selfRecall: ScalpV2CronInvokeResult | null = null;
+  if (
+    job.ok &&
+    !job.busy &&
+    autoContinue &&
+    job.pendingAfter > 0 &&
+    selfHop < selfMaxHops
+  ) {
+    selfRecall = await invokeScalpV2CronEndpointDetached(
+      req,
+      "/api/scalp/v2/cron/research",
+      {
+        batchSize,
+        autoSuccessor: autoSuccessor ? 1 : 0,
+        autoContinue: 1,
+        selfHop: selfHop + 1,
+        selfMaxHops,
+        triggeredBy: "research-v2-self",
+      },
+      700,
+    );
+  }
+  if (job.ok && !job.busy && autoSuccessor && job.pendingAfter <= 0) {
     downstream = await invokeScalpV2CronEndpointDetached(
       req,
       "/api/scalp/v2/cron/promote",
@@ -57,7 +86,13 @@ export default async function handler(
     job,
     chaining: {
       autoSuccessor,
+      autoContinue,
+      selfHop,
+      selfMaxHops,
+      batchSize,
+      batchSizeHardCap,
       downstream,
+      selfRecall,
     },
   });
 }

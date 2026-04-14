@@ -20,7 +20,7 @@
       "schedule": "0 * * * *"
     },
     {
-      "path": "/api/scalp/v2/cron/cycle?dryRun=false",
+      "path": "/api/scalp/v2/cron/cycle?dryRun=false&batchSize=100&autoContinue=true&selfMaxHops=8",
       "schedule": "*/5 * * * *"
     },
     {
