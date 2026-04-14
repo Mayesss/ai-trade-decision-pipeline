@@ -2271,7 +2271,7 @@ export async function runScalpV2ResearchJob(params: {
     // Research runs on Sundays (after new week candles are loaded).
     // Only execution is blocked on Sunday UTC.
 
-    const maxCandidatesPerSession = 360;
+    const maxCandidatesPerSession = 840;
     const minPersistStageRaw = String(
       process.env.SCALP_V2_RESEARCH_MIN_PERSIST_STAGE || "a",
     ).trim().toLowerCase();
