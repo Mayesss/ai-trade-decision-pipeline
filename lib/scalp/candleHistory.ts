@@ -150,6 +150,9 @@ function candlesToWeeklyRows(record: ScalpCandleHistoryRecord): Array<{
     epic: string | null;
     source: ScalpCandleHistoryRecord['source'];
     candles: ScalpCandle[];
+    candleCount: number;
+    firstTsMs: number | null;
+    lastTsMs: number | null;
 }> {
     const byWeek = new Map<number, ScalpCandle[]>();
     for (const candle of record.candles) {
@@ -162,14 +165,23 @@ function candlesToWeeklyRows(record: ScalpCandleHistoryRecord): Array<{
     }
     return Array.from(byWeek.entries())
         .sort((a, b) => a[0] - b[0])
-        .map(([weekStartMs, candles]) => ({
-            symbol: record.symbol,
-            timeframe: record.timeframe,
-            weekStartMs,
-            epic: record.epic,
-            source: record.source,
-            candles: dedupeSortCandles(candles),
-        }));
+        .map(([weekStartMs, candles]) => {
+            const weeklyCandles = dedupeSortCandles(candles);
+            const candleCount = weeklyCandles.length;
+            const firstTsMs = candleCount > 0 ? Number(weeklyCandles[0]?.[0]) : null;
+            const lastTsMs = candleCount > 0 ? Number(weeklyCandles[candleCount - 1]?.[0]) : null;
+            return {
+                symbol: record.symbol,
+                timeframe: record.timeframe,
+                weekStartMs,
+                epic: record.epic,
+                source: record.source,
+                candles: weeklyCandles,
+                candleCount,
+                firstTsMs: Number.isFinite(Number(firstTsMs)) ? Math.floor(Number(firstTsMs)) : null,
+                lastTsMs: Number.isFinite(Number(lastTsMs)) ? Math.floor(Number(lastTsMs)) : null,
+            };
+        });
 }
 
 function rowsToRecord(params: {
@@ -388,23 +400,9 @@ async function loadFromPgStatsBulk(symbols: string[], timeframe: string): Promis
                 symbol,
                 NULLIF(MAX(TRIM(COALESCE(epic, ''))), '') AS epic,
                 MAX((EXTRACT(EPOCH FROM updated_at) * 1000)::bigint) AS "updatedAtMs",
-                COALESCE(SUM(jsonb_array_length(candles_json)), 0)::bigint AS "candleCount",
-                MIN(
-                    CASE
-                        WHEN jsonb_array_length(candles_json) > 0
-                             AND (candles_json -> 0 ->> 0) ~ '^[0-9]+$'
-                        THEN (candles_json -> 0 ->> 0)::bigint
-                        ELSE NULL
-                    END
-                ) AS "fromTsMs",
-                MAX(
-                    CASE
-                        WHEN jsonb_array_length(candles_json) > 0
-                             AND (candles_json -> (jsonb_array_length(candles_json) - 1) ->> 0) ~ '^[0-9]+$'
-                        THEN (candles_json -> (jsonb_array_length(candles_json) - 1) ->> 0)::bigint
-                        ELSE NULL
-                    END
-                ) AS "toTsMs"
+                COALESCE(SUM(candle_count), 0)::bigint AS "candleCount",
+                MIN(first_ts_ms) AS "fromTsMs",
+                MAX(last_ts_ms) AS "toTsMs"
             FROM scalp_candle_history_weeks
             WHERE timeframe = ${timeframe}
               AND symbol IN (${join(slice)})
@@ -500,6 +498,10 @@ async function saveToPgBulk(records: ScalpCandleHistoryRecord[]): Promise<ScalpC
                         ]);
                     }
                 }
+                const candleCountForWrite = candlesForWrite.length;
+                const firstTsMsForWrite = candleCountForWrite > 0 ? Number(candlesForWrite[0]?.[0]) : null;
+                const lastTsMsForWrite =
+                    candleCountForWrite > 0 ? Number(candlesForWrite[candleCountForWrite - 1]?.[0]) : null;
                 await db.$executeRaw(
                     sql`
                         INSERT INTO scalp_candle_history_weeks(
@@ -509,6 +511,9 @@ async function saveToPgBulk(records: ScalpCandleHistoryRecord[]): Promise<ScalpC
                             epic,
                             source,
                             candles_json,
+                            candle_count,
+                            first_ts_ms,
+                            last_ts_ms,
                             updated_at
                         )
                         VALUES(
@@ -518,6 +523,9 @@ async function saveToPgBulk(records: ScalpCandleHistoryRecord[]): Promise<ScalpC
                             ${row.epic},
                             ${row.source},
                             ${JSON.stringify(candlesForWrite)}::jsonb,
+                            ${candleCountForWrite},
+                            ${Number.isFinite(Number(firstTsMsForWrite)) ? Math.floor(Number(firstTsMsForWrite)) : null},
+                            ${Number.isFinite(Number(lastTsMsForWrite)) ? Math.floor(Number(lastTsMsForWrite)) : null},
                             NOW()
                         )
                         ON CONFLICT(symbol, timeframe, week_start)
@@ -525,6 +533,9 @@ async function saveToPgBulk(records: ScalpCandleHistoryRecord[]): Promise<ScalpC
                             epic = EXCLUDED.epic,
                             source = EXCLUDED.source,
                             candles_json = EXCLUDED.candles_json,
+                            candle_count = EXCLUDED.candle_count,
+                            first_ts_ms = EXCLUDED.first_ts_ms,
+                            last_ts_ms = EXCLUDED.last_ts_ms,
                             updated_at = NOW();
                     `,
                 );

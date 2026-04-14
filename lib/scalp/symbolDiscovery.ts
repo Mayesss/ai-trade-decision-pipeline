@@ -702,17 +702,17 @@ async function loadSymbolHistoryStats(symbol: string, nowMs: number): Promise<Sy
         const rows = await db.$queryRaw<
             Array<{
                 totalBars: bigint | number | null;
-                minWeekStartMs: bigint | number | null;
-                maxWeekStartMs: bigint | number | null;
+                minFromTsMs: bigint | number | null;
+                maxToTsMs: bigint | number | null;
                 recentBars7d: bigint | number | null;
                 medianRangePct: number | null;
             }>
         >(sql`
             WITH agg AS (
                 SELECT
-                    COALESCE(SUM(jsonb_array_length(candles_json)), 0)::bigint AS "totalBars",
-                    MIN((EXTRACT(EPOCH FROM week_start) * 1000)::bigint) AS "minWeekStartMs",
-                    MAX((EXTRACT(EPOCH FROM week_start) * 1000)::bigint) AS "maxWeekStartMs"
+                    COALESCE(SUM(candle_count), 0)::bigint AS "totalBars",
+                    MIN(first_ts_ms) AS "minFromTsMs",
+                    MAX(last_ts_ms) AS "maxToTsMs"
                 FROM scalp_candle_history_weeks
                 WHERE symbol = ${normalized}
                   AND timeframe = '1m'
@@ -748,8 +748,8 @@ async function loadSymbolHistoryStats(symbol: string, nowMs: number): Promise<Sy
             )
             SELECT
                 a."totalBars",
-                a."minWeekStartMs",
-                a."maxWeekStartMs",
+                a."minFromTsMs",
+                a."maxToTsMs",
                 r."recentBars7d",
                 (
                     SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY range_pct)
@@ -760,12 +760,12 @@ async function loadSymbolHistoryStats(symbol: string, nowMs: number): Promise<Sy
         `);
         const row = rows[0];
         const bars1m = Math.max(0, Math.floor(Number(row?.totalBars || 0)));
-        const minWeekStartMs = Math.floor(Number(row?.minWeekStartMs || 0));
-        const maxWeekStartMs = Math.floor(Number(row?.maxWeekStartMs || 0));
+        const minFromTsMs = Math.floor(Number(row?.minFromTsMs || 0));
+        const maxToTsMs = Math.floor(Number(row?.maxToTsMs || 0));
         return {
             bars1m,
-            fromTs: Number.isFinite(minWeekStartMs) && minWeekStartMs > 0 ? minWeekStartMs : null,
-            toTs: Number.isFinite(maxWeekStartMs) && maxWeekStartMs > 0 ? maxWeekStartMs + 7 * 24 * 60 * 60_000 - 1 : null,
+            fromTs: Number.isFinite(minFromTsMs) && minFromTsMs > 0 ? minFromTsMs : null,
+            toTs: Number.isFinite(maxToTsMs) && maxToTsMs > 0 ? maxToTsMs : null,
             recentBars7d: Math.max(0, Math.floor(Number(row?.recentBars7d || 0))),
             medianRangePct: Number.isFinite(Number(row?.medianRangePct)) ? Number(row?.medianRangePct) : 0,
         };
