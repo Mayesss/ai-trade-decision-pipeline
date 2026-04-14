@@ -1,5 +1,6 @@
 import type { ScalpBaseTimeframe, ScalpCandle, ScalpConfirmTimeframe, ScalpDirectionalBias, ScalpSessionState, ScalpSessionWindows } from '../types';
 import type { ScalpStrategyDefinition, ScalpStrategyEntryIntent, ScalpStrategyPhaseInput, ScalpStrategyPhaseOutput } from './types';
+import { computeAtrSeries } from './syntheticSignal';
 
 type OpeningRangeBreakoutStrategyOptions = {
     id: string;
@@ -107,31 +108,6 @@ function finalizePhase(params: {
         reasonCodes: dedupeReasonCodes(params.reasonCodes),
         entryIntent: params.entryIntent ?? null,
     };
-}
-
-function computeAtrSeries(candles: ScalpCandle[], period: number): number[] {
-    if (!Array.isArray(candles) || candles.length < 2) return [];
-    const p = Math.max(1, Math.floor(period));
-    const tr: number[] = new Array(candles.length).fill(0);
-    for (let i = 1; i < candles.length; i += 1) {
-        const prevClose = close(candles[i - 1]!);
-        tr[i] = Math.max(
-            high(candles[i]!) - low(candles[i]!),
-            Math.abs(high(candles[i]!) - prevClose),
-            Math.abs(low(candles[i]!) - prevClose),
-        );
-    }
-
-    const out: number[] = new Array(candles.length).fill(0);
-    let rolling = 0;
-    for (let i = 1; i < candles.length; i += 1) {
-        rolling += tr[i]!;
-        if (i > p) rolling -= tr[i - p]!;
-        const divisor = Math.min(i, p);
-        out[i] = divisor > 0 ? rolling / divisor : 0;
-    }
-    out[0] = out[1] ?? 0;
-    return out;
 }
 
 function buildOpeningRange(windows: ScalpSessionWindows, baseCandles: ScalpCandle[]): {

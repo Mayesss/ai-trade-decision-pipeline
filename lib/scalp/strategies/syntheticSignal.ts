@@ -39,39 +39,69 @@ export function candleBody(candle: ScalpCandle): number {
     return Math.abs(close(candle) - open(candle));
 }
 
+// Incremental EMA/ATR: during replay, candle arrays only grow (push-only).
+// We cache the previous result and extend from where we left off.
+// This turns O(n) per tick into O(new candles) — typically O(1).
+
+const emaCache = new WeakMap<number[], { period: number; out: number[] }>();
+
 export function computeEmaSeries(values: number[], period: number): number[] {
     const p = Math.max(1, Math.floor(period));
     if (!values.length) return [];
-    const out: number[] = [];
+    const cached = emaCache.get(values);
+    let out: number[];
+    let startIdx: number;
+    if (cached && cached.period === p && cached.out.length <= values.length) {
+        out = cached.out;
+        startIdx = out.length;
+    } else {
+        out = [values[0]!];
+        startIdx = 1;
+    }
     const k = 2 / (p + 1);
-    out[0] = values[0]!;
-    for (let i = 1; i < values.length; i += 1) {
+    for (let i = startIdx; i < values.length; i += 1) {
         out[i] = values[i]! * k + out[i - 1]! * (1 - k);
     }
+    emaCache.set(values, { period: p, out });
     return out;
 }
+
+const atrCache = new WeakMap<ScalpCandle[], { period: number; out: number[]; tr: number[]; rolling: number }>();
 
 export function computeAtrSeries(candles: ScalpCandle[], period: number): number[] {
     if (!Array.isArray(candles) || candles.length < 2) return [];
     const p = Math.max(1, Math.floor(period));
-    const tr: number[] = new Array(candles.length).fill(0);
-    for (let i = 1; i < candles.length; i += 1) {
+    const cached = atrCache.get(candles);
+    let out: number[];
+    let tr: number[];
+    let rolling: number;
+    let startIdx: number;
+    if (cached && cached.period === p && cached.out.length <= candles.length) {
+        out = cached.out;
+        tr = cached.tr;
+        rolling = cached.rolling;
+        startIdx = out.length;
+    } else {
+        out = [0];
+        tr = [0];
+        rolling = 0;
+        startIdx = 1;
+    }
+    for (let i = startIdx; i < candles.length; i += 1) {
         const prevClose = close(candles[i - 1]!);
-        tr[i] = Math.max(
+        const trVal = Math.max(
             high(candles[i]!) - low(candles[i]!),
             Math.abs(high(candles[i]!) - prevClose),
             Math.abs(low(candles[i]!) - prevClose),
         );
-    }
-    const out: number[] = new Array(candles.length).fill(0);
-    let rolling = 0;
-    for (let i = 1; i < candles.length; i += 1) {
-        rolling += tr[i]!;
+        tr[i] = trVal;
+        rolling += trVal;
         if (i > p) rolling -= tr[i - p]!;
         const divisor = Math.min(i, p);
         out[i] = divisor > 0 ? rolling / divisor : 0;
     }
-    out[0] = out[1] ?? 0;
+    if (out.length > 1 && out[0] === 0) out[0] = out[1] ?? 0;
+    atrCache.set(candles, { period: p, out, tr, rolling });
     return out;
 }
 

@@ -142,42 +142,8 @@ function candleBody(candle: ScalpCandle): number {
     return Math.abs(close(candle) - open(candle));
 }
 
-function computeEmaSeries(values: number[], period: number): number[] {
-    const p = Math.max(1, Math.floor(period));
-    if (!values.length) return [];
-    const out: number[] = [];
-    const k = 2 / (p + 1);
-    out[0] = values[0]!;
-    for (let i = 1; i < values.length; i += 1) {
-        out[i] = values[i]! * k + out[i - 1]! * (1 - k);
-    }
-    return out;
-}
-
-function computeAtrSeries(candles: ScalpCandle[], period: number): number[] {
-    if (!Array.isArray(candles) || candles.length < 2) return [];
-    const p = Math.max(1, Math.floor(period));
-    const tr: number[] = new Array(candles.length).fill(0);
-    for (let i = 1; i < candles.length; i += 1) {
-        const prevClose = close(candles[i - 1]!);
-        tr[i] = Math.max(
-            high(candles[i]!) - low(candles[i]!),
-            Math.abs(high(candles[i]!) - prevClose),
-            Math.abs(low(candles[i]!) - prevClose),
-        );
-    }
-
-    const out: number[] = new Array(candles.length).fill(0);
-    let rolling = 0;
-    for (let i = 1; i < candles.length; i += 1) {
-        rolling += tr[i]!;
-        if (i > p) rolling -= tr[i - p]!;
-        const divisor = Math.min(i, p);
-        out[i] = divisor > 0 ? rolling / divisor : 0;
-    }
-    out[0] = out[1] ?? 0;
-    return out;
-}
+// EMA/ATR imported from syntheticSignal with incremental caching
+import { computeEmaSeries, computeAtrSeries } from './syntheticSignal';
 
 function percentile(values: number[], p: number): number | null {
     if (!values.length) return null;

@@ -1,4 +1,4 @@
-import { deriveAdaptiveFeatureContext } from '../adaptive/features';
+import { createIncrementalFeatureState, deriveAdaptiveFeatureContext, type IncrementalFeatureState } from '../adaptive/features';
 import { selectAdaptivePatternArm } from '../adaptive/snapshot';
 import {
   ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID,
@@ -158,6 +158,9 @@ function selectArm(params: {
   };
 }
 
+// Per-session incremental feature state — avoids O(n) EMA/ADX/ATR recomputation per tick.
+const incrementalStateCache = new WeakMap<object, IncrementalFeatureState>();
+
 export const adaptiveMetaSelectorM15M3Strategy: ScalpStrategyDefinition = {
   id: ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID,
   shortName: 'Adaptive Meta',
@@ -169,11 +172,17 @@ export const adaptiveMetaSelectorM15M3Strategy: ScalpStrategyDefinition = {
     const incumbentStrategyId = resolveIncumbentStrategyId(input, catalog);
     const incumbentStrategy = resolveIncumbentStrategyDefinition(incumbentStrategyId);
     const incumbentPhase = evaluateIncumbentPhase(incumbentStrategy.strategy, input);
+    let incState = incrementalStateCache.get(input.state);
+    if (!incState) {
+      incState = createIncrementalFeatureState();
+      incrementalStateCache.set(input.state, incState);
+    }
     const context = deriveAdaptiveFeatureContext({
       baseCandles: input.market.baseCandles,
       confirmCandles: input.market.confirmCandles,
       nowMs: input.nowMs,
       entrySessionProfile: input.cfg.sessions.entrySessionProfile,
+      incrementalState: incState,
     });
     const patternSelection = selectAdaptivePatternArm(context, catalog);
     const minConfidenceRaw =

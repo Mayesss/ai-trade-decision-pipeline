@@ -37,40 +37,69 @@ function clip(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+// Incremental EMA/ATR: candle arrays only grow during replay.
+// Cache by array identity + length so repeated calls with the same
+// (growing) array extend from the previous result instead of recomputing.
+
+const emaCacheMap = new WeakMap<number[], { period: number; out: number[] }>();
+
 function computeEmaSeries(values: number[], period: number): number[] {
   if (!values.length) return [];
   const p = Math.max(1, Math.floor(period));
+  const cached = emaCacheMap.get(values);
+  let out: number[];
+  let startIdx: number;
+  if (cached && cached.period === p && cached.out.length <= values.length) {
+    out = cached.out;
+    startIdx = out.length;
+  } else {
+    out = [values[0] as number];
+    startIdx = 1;
+  }
   const k = 2 / (p + 1);
-  const out = new Array<number>(values.length);
-  out[0] = values[0] as number;
-  for (let i = 1; i < values.length; i += 1) {
+  for (let i = startIdx; i < values.length; i += 1) {
     out[i] = (values[i] as number) * k + (out[i - 1] as number) * (1 - k);
   }
+  emaCacheMap.set(values, { period: p, out });
   return out;
 }
+
+const atrCacheMap = new WeakMap<ScalpCandle[], { period: number; out: number[]; tr: number[]; rolling: number }>();
 
 function computeAtrSeries(candles: ScalpCandle[], period: number): number[] {
   if (candles.length < 2) return [];
   const p = Math.max(1, Math.floor(period));
-  const tr = new Array<number>(candles.length).fill(0);
-  for (let i = 1; i < candles.length; i += 1) {
+  const cached = atrCacheMap.get(candles);
+  let out: number[];
+  let tr: number[];
+  let rolling: number;
+  let startIdx: number;
+  if (cached && cached.period === p && cached.out.length <= candles.length) {
+    out = cached.out;
+    tr = cached.tr;
+    rolling = cached.rolling;
+    startIdx = out.length;
+  } else {
+    out = [0];
+    tr = [0];
+    rolling = 0;
+    startIdx = 1;
+  }
+  for (let i = startIdx; i < candles.length; i += 1) {
     const prevClose = close(candles[i - 1] as ScalpCandle);
-    tr[i] = Math.max(
+    const trVal = Math.max(
       high(candles[i] as ScalpCandle) - low(candles[i] as ScalpCandle),
       Math.abs(high(candles[i] as ScalpCandle) - prevClose),
       Math.abs(low(candles[i] as ScalpCandle) - prevClose),
     );
-  }
-
-  const out = new Array<number>(candles.length).fill(0);
-  let rolling = 0;
-  for (let i = 1; i < candles.length; i += 1) {
-    rolling += tr[i] as number;
+    tr[i] = trVal;
+    rolling += trVal;
     if (i > p) rolling -= tr[i - p] as number;
     const divisor = Math.min(i, p);
     out[i] = divisor > 0 ? rolling / divisor : 0;
   }
-  out[0] = out[1] || 0;
+  if (out.length > 1 && out[0] === 0) out[0] = out[1] || 0;
+  atrCacheMap.set(candles, { period: p, out, tr, rolling });
   return out;
 }
 
@@ -198,31 +227,224 @@ export function aggregateCandlesToTimeframe(candles: ScalpCandle[], timeframeMin
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Incremental feature state — avoids O(n) recomputation on every tick.
+// EMA updates are O(1), ADX/ATR maintain rolling smoothed values.
+// ---------------------------------------------------------------------------
+
+export interface IncrementalFeatureState {
+  // Base candle tracking
+  baseCandlesProcessed: number;
+  ema50: number;
+  ema200: number;
+  // ADX Wilder smoothing state
+  adxTrSmooth: number;
+  adxPlusSmooth: number;
+  adxMinusSmooth: number;
+  adxDxRing: number[];       // ring buffer of recent DX values
+  adxDxRingIdx: number;
+  adxInitCount: number;      // candles processed during ADX init phase
+  adxPeriod: number;
+  adxValue: number;
+  prevBaseCandle: ScalpCandle | null;
+  // Confirm candle ATR tracking
+  confirmCandlesProcessed: number;
+  atrRollingSum: number;
+  atrTrRing: number[];       // ring buffer of TR values for SMA
+  atrTrRingIdx: number;
+  atrPeriod: number;
+  atrCurrent: number;
+  atrRecentRing: number[];   // ring buffer of recent ATR values for percentile
+  atrRecentRingIdx: number;
+  atrRecentCount: number;
+  prevConfirmCandle: ScalpCandle | null;
+}
+
+export function createIncrementalFeatureState(): IncrementalFeatureState {
+  const adxPeriod = 14;
+  const atrPeriod = 14;
+  const atrLookback = 200;
+  return {
+    baseCandlesProcessed: 0,
+    ema50: 0,
+    ema200: 0,
+    adxTrSmooth: 0,
+    adxPlusSmooth: 0,
+    adxMinusSmooth: 0,
+    adxDxRing: new Array(adxPeriod).fill(0),
+    adxDxRingIdx: 0,
+    adxInitCount: 0,
+    adxPeriod,
+    adxValue: 0,
+    prevBaseCandle: null,
+    confirmCandlesProcessed: 0,
+    atrRollingSum: 0,
+    atrTrRing: new Array(atrPeriod).fill(0),
+    atrTrRingIdx: 0,
+    atrPeriod,
+    atrCurrent: 0,
+    atrRecentRing: new Array(atrLookback).fill(0),
+    atrRecentRingIdx: 0,
+    atrRecentCount: 0,
+    prevConfirmCandle: null,
+  };
+}
+
+function updateBaseIndicators(state: IncrementalFeatureState, baseCandles: ScalpCandle[]): void {
+  const k50 = 2 / 51;
+  const k200 = 2 / 201;
+  const p = state.adxPeriod;
+
+  for (let i = state.baseCandlesProcessed; i < baseCandles.length; i += 1) {
+    const candle = baseCandles[i]!;
+    const c = close(candle);
+
+    // EMA update
+    if (i === 0) {
+      state.ema50 = c;
+      state.ema200 = c;
+    } else {
+      state.ema50 = c * k50 + state.ema50 * (1 - k50);
+      state.ema200 = c * k200 + state.ema200 * (1 - k200);
+    }
+
+    // ADX update
+    if (state.prevBaseCandle) {
+      const upMove = high(candle) - high(state.prevBaseCandle);
+      const downMove = low(state.prevBaseCandle) - low(candle);
+      const pDm = upMove > downMove && upMove > 0 ? upMove : 0;
+      const mDm = downMove > upMove && downMove > 0 ? downMove : 0;
+      const tr = Math.max(
+        high(candle) - low(candle),
+        Math.abs(high(candle) - close(state.prevBaseCandle)),
+        Math.abs(low(candle) - close(state.prevBaseCandle)),
+      );
+
+      state.adxInitCount += 1;
+      if (state.adxInitCount <= p) {
+        // Accumulating initial sums
+        state.adxTrSmooth += tr;
+        state.adxPlusSmooth += pDm;
+        state.adxMinusSmooth += mDm;
+      } else {
+        // Wilder smoothing
+        state.adxTrSmooth = state.adxTrSmooth - state.adxTrSmooth / p + tr;
+        state.adxPlusSmooth = state.adxPlusSmooth - state.adxPlusSmooth / p + pDm;
+        state.adxMinusSmooth = state.adxMinusSmooth - state.adxMinusSmooth / p + mDm;
+
+        if (state.adxTrSmooth > 0) {
+          const plusDi = (100 * state.adxPlusSmooth) / state.adxTrSmooth;
+          const minusDi = (100 * state.adxMinusSmooth) / state.adxTrSmooth;
+          const diSum = plusDi + minusDi;
+          if (diSum > 0) {
+            const dx = (100 * Math.abs(plusDi - minusDi)) / diSum;
+            if (Number.isFinite(dx)) {
+              state.adxDxRing[state.adxDxRingIdx % p] = dx;
+              state.adxDxRingIdx += 1;
+              const count = Math.min(state.adxDxRingIdx, p);
+              let sum = 0;
+              for (let j = 0; j < count; j += 1) sum += state.adxDxRing[j]!;
+              state.adxValue = sum / count;
+            }
+          }
+        }
+      }
+    }
+    state.prevBaseCandle = candle;
+  }
+  state.baseCandlesProcessed = baseCandles.length;
+}
+
+function updateConfirmIndicators(state: IncrementalFeatureState, confirmCandles: ScalpCandle[]): void {
+  const p = state.atrPeriod;
+
+  for (let i = state.confirmCandlesProcessed; i < confirmCandles.length; i += 1) {
+    const candle = confirmCandles[i]!;
+    if (state.prevConfirmCandle) {
+      const prevC = close(state.prevConfirmCandle);
+      const tr = Math.max(
+        high(candle) - low(candle),
+        Math.abs(high(candle) - prevC),
+        Math.abs(low(candle) - prevC),
+      );
+
+      // SMA-based ATR using ring buffer
+      const oldTr = state.atrTrRing[state.atrTrRingIdx % p]!;
+      state.atrTrRing[state.atrTrRingIdx % p] = tr;
+      state.atrTrRingIdx += 1;
+      const filled = Math.min(state.atrTrRingIdx, p);
+      if (state.atrTrRingIdx <= p) {
+        state.atrRollingSum += tr;
+      } else {
+        state.atrRollingSum += tr - oldTr;
+      }
+      state.atrCurrent = filled > 0 ? state.atrRollingSum / filled : 0;
+
+      // Track recent ATR values for percentile rank
+      state.atrRecentRing[state.atrRecentRingIdx % state.atrRecentRing.length] = state.atrCurrent;
+      state.atrRecentRingIdx += 1;
+      state.atrRecentCount = Math.min(state.atrRecentCount + 1, state.atrRecentRing.length);
+    }
+    state.prevConfirmCandle = candle;
+  }
+  state.confirmCandlesProcessed = confirmCandles.length;
+}
+
+function incrementalPercentileRank(ring: number[], count: number, current: number): number {
+  if (count === 0 || !Number.isFinite(current)) return 0;
+  let below = 0;
+  for (let i = 0; i < count; i += 1) {
+    if (ring[i]! <= current) below += 1;
+  }
+  return (below / count) * 100;
+}
+
 export function deriveAdaptiveFeatureContext(params: {
   baseCandles: ScalpCandle[];
   confirmCandles: ScalpCandle[];
   nowMs: number;
   entrySessionProfile: ScalpEntrySessionProfile;
+  incrementalState?: IncrementalFeatureState;
 }): ScalpAdaptiveFeatureContext {
   const baseCandles = params.baseCandles;
   const confirmCandles = params.confirmCandles;
+  const inc = params.incrementalState;
 
-  const closes = baseCandles.map(close);
-  const ema50 = computeEmaSeries(closes, 50);
-  const ema200 = computeEmaSeries(closes, 200);
-  const lastBase = baseCandles[baseCandles.length - 1] || null;
-  const lastClose = lastBase ? close(lastBase) : 0;
-  const e50 = ema50.length ? (ema50[ema50.length - 1] as number) : lastClose;
-  const e200 = ema200.length ? (ema200[ema200.length - 1] as number) : lastClose;
-  const adx = computeAdx(baseCandles, 14);
+  let e50: number;
+  let e200: number;
+  let adx: number;
+  let atrCurrent: number;
+  let atrRank: number;
+
+  if (inc) {
+    // Incremental path — O(new candles) instead of O(all candles)
+    updateBaseIndicators(inc, baseCandles);
+    updateConfirmIndicators(inc, confirmCandles);
+    e50 = inc.ema50;
+    e200 = inc.ema200;
+    adx = inc.adxValue;
+    atrCurrent = inc.atrCurrent;
+    atrRank = incrementalPercentileRank(inc.atrRecentRing, inc.atrRecentCount, atrCurrent);
+  } else {
+    // Original full-recomputation path (used by training, tests, etc.)
+    const closes = baseCandles.map(close);
+    const ema50 = computeEmaSeries(closes, 50);
+    const ema200 = computeEmaSeries(closes, 200);
+    const lastBase = baseCandles[baseCandles.length - 1] || null;
+    const lastClose = lastBase ? close(lastBase) : 0;
+    e50 = ema50.length ? (ema50[ema50.length - 1] as number) : lastClose;
+    e200 = ema200.length ? (ema200[ema200.length - 1] as number) : lastClose;
+    adx = computeAdx(baseCandles, 14);
+    const confirmAtr = computeAtrSeries(confirmCandles, 14);
+    atrCurrent = confirmAtr.length ? (confirmAtr[confirmAtr.length - 1] as number) : 0;
+    const atrLookback = confirmAtr.slice(Math.max(0, confirmAtr.length - 200));
+    atrRank = percentileRank(atrLookback, atrCurrent);
+  }
+
   const regimeRelation = e50 > e200 * 1.0001 ? 'BULL' : e50 < e200 * 0.9999 ? 'BEAR' : 'FLAT';
   const adxBucket = adx < 18 ? 'LOW' : adx < 25 ? 'MID' : 'HIGH';
   const regimeToken = `REGIME:${regimeRelation}:ADX_${adxBucket}`;
 
-  const confirmAtr = computeAtrSeries(confirmCandles, 14);
-  const atrCurrent = confirmAtr.length ? (confirmAtr[confirmAtr.length - 1] as number) : 0;
-  const atrLookback = confirmAtr.slice(Math.max(0, confirmAtr.length - 200));
-  const atrRank = percentileRank(atrLookback, atrCurrent);
   const volBucket = atrRank < 33 ? 'LOW' : atrRank < 66 ? 'MID' : 'HIGH';
   const volToken = `VOL:ATR_PCTL_${volBucket}`;
 
