@@ -311,3 +311,141 @@ test("manageScalpOpenTrade treats missing owned broker position as already close
   assert.equal(managed.closedTrade?.exitPrice, 0.99);
   assert.ok(Math.abs((managed.closedTrade?.totalTradeR ?? 0) + 1) < 1e-9);
 });
+
+test("manageScalpOpenTrade exits at TP when trailing stop is above TP (BUY)", async () => {
+  // Scenario: BUY trade at 100, riskAbs=1, TP=103 (3R).
+  // Trail has ratcheted stop up to 107 (7R) — well above TP.
+  // A wide candle touches both the trail stop (low=106.5) and TP (high=108).
+  // The TP should take priority because price passed through 103 before 107.
+  const nowMs = Date.UTC(2026, 0, 5, 14, 0, 0, 0);
+  const state = createInitialScalpSessionState({
+    symbol: "AVAXUSDT",
+    dayKey: "2026-01-05",
+    nowMs,
+    killSwitchActive: false,
+  });
+  state.state = "IN_TRADE";
+  state.trade = {
+    setupId: "trail-above-tp",
+    dealReference: "trail-above-tp-ref",
+    side: "BUY",
+    entryPrice: 100,
+    stopPrice: 107,           // trail stop ratcheted to 7R
+    takeProfitPrice: 103,     // TP at 3R
+    riskR: 1,
+    riskAbs: 1,
+    initialStopPrice: 99,
+    remainingSizePct: 1,
+    realizedR: 0,
+    tp1Done: true,
+    tp1Price: null,
+    trailActive: true,
+    trailStopPrice: 107,
+    favorableExtremePrice: 108.5,
+    barsHeld: 30,
+    openedAtMs: nowMs - 90 * 60_000,
+    brokerOrderId: null,
+    dryRun: true,
+  };
+
+  const cfg = applyScalpStrategyConfigOverride(getScalpStrategyConfig(), {
+    risk: {
+      takeProfitR: 3,
+      trailStartR: 0.3,
+      trailAtrMult: 1.5,
+      timeStopBars: 120,
+    },
+  });
+
+  // Candle: high=108 (above TP), low=106.5 (below trail stop 107)
+  const confirmCandles = [
+    candle(nowMs - 6 * 60_000, 107.5, 108.2, 107.3, 108),
+    candle(nowMs - 3 * 60_000, 108, 108, 106.5, 107),
+  ];
+
+  const managed = await manageScalpOpenTrade({
+    state,
+    market: marketSnapshot({
+      nowMs,
+      price: 107,
+      confirmCandles,
+    }),
+    cfg,
+    dryRun: true,
+    nowMs,
+  });
+
+  assert.equal(managed.state.trade, null);
+  assert.ok(managed.reasonCodes.includes("TRADE_EXIT_TP_HIT"));
+  assert.equal(managed.closedTrade?.exitReason, "TP");
+  assert.equal(managed.closedTrade?.exitPrice, 103);
+  assert.equal(managed.closedTrade?.totalTradeR, 3);
+});
+
+test("manageScalpOpenTrade exits at TP when trailing stop is above TP (SELL)", async () => {
+  // SELL trade at 100, riskAbs=1, TP=97 (3R down). Trail stop at 93 (7R in profit).
+  // Candle: low=92 (below TP=97, triggers tpHit), high=93.5 (above trail stop=93, triggers stopHit).
+  const nowMs = Date.UTC(2026, 0, 5, 15, 0, 0, 0);
+  const state = createInitialScalpSessionState({
+    symbol: "ETHUSDT",
+    dayKey: "2026-01-05",
+    nowMs,
+    killSwitchActive: false,
+  });
+  state.state = "IN_TRADE";
+  state.trade = {
+    setupId: "trail-above-tp-sell",
+    dealReference: "trail-above-tp-sell-ref",
+    side: "SELL",
+    entryPrice: 100,
+    stopPrice: 93,            // trail stop at 7R profit (below entry for SELL)
+    takeProfitPrice: 97,      // TP at 3R
+    riskR: 1,
+    riskAbs: 1,
+    initialStopPrice: 101,
+    remainingSizePct: 1,
+    realizedR: 0,
+    tp1Done: true,
+    tp1Price: null,
+    trailActive: true,
+    trailStopPrice: 93,
+    favorableExtremePrice: 91.5,
+    barsHeld: 30,
+    openedAtMs: nowMs - 90 * 60_000,
+    brokerOrderId: null,
+    dryRun: true,
+  };
+
+  const cfg = applyScalpStrategyConfigOverride(getScalpStrategyConfig(), {
+    risk: {
+      takeProfitR: 3,
+      trailStartR: 0.3,
+      trailAtrMult: 1.5,
+      timeStopBars: 120,
+    },
+  });
+
+  // Candle: low=92 (below TP=97, triggers tpHit), high=93.5 (above trail stop=93, triggers stopHit)
+  const confirmCandles = [
+    candle(nowMs - 6 * 60_000, 92.5, 92.8, 91.8, 92),
+    candle(nowMs - 3 * 60_000, 92, 93.5, 92, 93),
+  ];
+
+  const managed = await manageScalpOpenTrade({
+    state,
+    market: marketSnapshot({
+      nowMs,
+      price: 93,
+      confirmCandles,
+    }),
+    cfg,
+    dryRun: true,
+    nowMs,
+  });
+
+  assert.equal(managed.state.trade, null);
+  assert.ok(managed.reasonCodes.includes("TRADE_EXIT_TP_HIT"));
+  assert.equal(managed.closedTrade?.exitReason, "TP");
+  assert.equal(managed.closedTrade?.exitPrice, 97);
+  assert.equal(managed.closedTrade?.totalTradeR, 3);
+});

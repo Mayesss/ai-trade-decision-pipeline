@@ -956,8 +956,18 @@ export async function manageScalpOpenTrade(params: {
     };
   }
 
-  // When both SL and TP are hit in the same bar, assume stop was hit first (conservative).
-  const closeReason = stopHit ? "stop_exit" : tpHit ? "tp_exit" : "time_stop_exit";
+  // When both SL and TP are hit in the same bar:
+  // - If stop is BELOW TP (losing stop or early trail): assume stop first (conservative).
+  // - If stop is ABOVE TP (winning trail past TP level): TP was reached first in
+  //   real execution — price must pass through TP on the way up to the trail level.
+  const trailAboveTp =
+    stopHit &&
+    tpHit &&
+    tpPrice > 0 &&
+    (trade.side === "BUY"
+      ? trade.stopPrice > tpPrice
+      : trade.stopPrice < tpPrice);
+  const closeReason = stopHit && !trailAboveTp ? "stop_exit" : tpHit ? "tp_exit" : "time_stop_exit";
   const closeRes = await closeScalpTradePortion({
     trade,
     closePct: 100,
@@ -981,7 +991,7 @@ export async function manageScalpOpenTrade(params: {
   }
 
   const remaining = clamp(toFinite(trade.remainingSizePct, 1), 0, 1);
-  const exitPrice = stopHit
+  const exitPrice = stopHit && !trailAboveTp
     ? toFinite(trade.stopPrice, price)
     : tpHit
       ? toFinite(tpPrice, price)
@@ -1028,8 +1038,9 @@ export async function manageScalpOpenTrade(params: {
     reasonCodes.push("TRADE_EXITED_READY_NEXT_SETUP");
   }
 
-  const exitReasonCode = stopHit ? "TRADE_EXIT_STOP_HIT" : tpHit ? "TRADE_EXIT_TP_HIT" : "TRADE_EXIT_TIME_STOP";
-  const exitReason: "STOP" | "STOP_LOSS" | "STOP_BE" | "STOP_TRAIL" | "TP" | "TIME_STOP" = stopHit
+  const effectiveStopHit = stopHit && !trailAboveTp;
+  const exitReasonCode = effectiveStopHit ? "TRADE_EXIT_STOP_HIT" : tpHit ? "TRADE_EXIT_TP_HIT" : "TRADE_EXIT_TIME_STOP";
+  const exitReason: "STOP" | "STOP_LOSS" | "STOP_BE" | "STOP_TRAIL" | "TP" | "TIME_STOP" = effectiveStopHit
     ? (trade.trailActive ? "STOP_TRAIL" : trade.tp1Done ? "STOP_BE" : "STOP_LOSS")
     : tpHit ? "TP" : "TIME_STOP";
   reasonCodes.push(exitReasonCode);
