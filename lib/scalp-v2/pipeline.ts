@@ -2898,7 +2898,47 @@ export async function runScalpV2ResearchJob(params: {
     const symbolMetadataMap = await loadScalpSymbolMarketMetadataBulk(uniqueSymbols).catch(
       () => new Map<string, ScalpSymbolMarketMetadata | null>(),
     );
+    const windowSliceCacheEnabled = envBool(
+      "SCALP_V2_RESEARCH_WINDOW_SLICE_CACHE_ENABLED",
+      true,
+    );
     const candleCache = new Map<string, ScalpReplayCandle[]>();
+    type SymbolWindowSliceCache = {
+      candlesRef: ScalpReplayCandle[];
+      windows: Map<string, ScalpReplayCandle[]>;
+    };
+    const symbolWindowSliceCache = new Map<string, SymbolWindowSliceCache>();
+    function getCachedCandleWindow(params: {
+      symbol: string;
+      candles: ScalpReplayCandle[];
+      fromTs: number;
+      toTs: number;
+    }): ScalpReplayCandle[] {
+      if (!windowSliceCacheEnabled) {
+        return params.candles.filter(
+          (row) => row.ts >= params.fromTs && row.ts < params.toTs,
+        );
+      }
+      const key = `${params.fromTs}:${params.toTs}`;
+      const existing = symbolWindowSliceCache.get(params.symbol);
+      if (existing && existing.candlesRef === params.candles) {
+        const cached = existing.windows.get(key);
+        if (cached) return cached;
+        const computed = params.candles.filter(
+          (row) => row.ts >= params.fromTs && row.ts < params.toTs,
+        );
+        existing.windows.set(key, computed);
+        return computed;
+      }
+      const computed = params.candles.filter(
+        (row) => row.ts >= params.fromTs && row.ts < params.toTs,
+      );
+      symbolWindowSliceCache.set(params.symbol, {
+        candlesRef: params.candles,
+        windows: new Map([[key, computed]]),
+      });
+      return computed;
+    }
     let persistedCount = 0;
     let stageAPass = 0;
     let stageAFail = 0;
@@ -3181,7 +3221,12 @@ export async function runScalpV2ResearchJob(params: {
             stageResults[stage.id] = buildWorkerStageSkeleton({ stage, fromTs, toTs: windowToTs, reason: "blocked_prior_stage_failed" });
             continue;
           }
-          let stageCandles = symbolCandles.filter((row) => row.ts >= fromTs && row.ts < windowToTs);
+          let stageCandles = getCachedCandleWindow({
+            symbol: candidate.symbol,
+            candles: symbolCandles,
+            fromTs,
+            toTs: windowToTs,
+          });
           // Lazy candle extension: if this stage needs a wider range than
           // what we initially loaded (e.g. stage B/C after stage A passed),
           // reload with the full range.
@@ -3204,7 +3249,12 @@ export async function runScalpV2ResearchJob(params: {
                 ),
               );
               candleCache.set(candidate.symbol, symbolCandles);
-              stageCandles = symbolCandles.filter((row) => row.ts >= fromTs && row.ts < windowToTs);
+              stageCandles = getCachedCandleWindow({
+                symbol: candidate.symbol,
+                candles: symbolCandles,
+                fromTs,
+                toTs: windowToTs,
+              });
             }
           }
           if (stageCandles.length < workerPolicy.minCandles) {
@@ -3289,9 +3339,12 @@ export async function runScalpV2ResearchJob(params: {
           } else {
             // Cache hit — replay only the newest week
             const newestWeekToTs = newestWeekStart + ONE_WEEK_MS;
-            const newestWeekCandles = symbolCandles.filter(
-              (row) => row.ts >= newestWeekStart && row.ts < newestWeekToTs,
-            );
+            const newestWeekCandles = getCachedCandleWindow({
+              symbol: candidate.symbol,
+              candles: symbolCandles,
+              fromTs: newestWeekStart,
+              toTs: newestWeekToTs,
+            });
             if (newestWeekCandles.length < workerPolicy.minCandles) {
               stageResults[stage.id] = buildWorkerStageSkeleton({
                 stage, fromTs, toTs: windowToTs,
@@ -3388,6 +3441,7 @@ export async function runScalpV2ResearchJob(params: {
             stageC: workerPolicy.stageC,
             minCandles: workerPolicy.minCandles,
             weeklyCacheEnabled: true,
+            windowSliceCacheEnabled,
           },
           windowToTs,
           stageA: stageAResult,
