@@ -423,8 +423,18 @@ export async function upsertScalpV2Candidates(params: {
       ON CONFLICT(venue, symbol, strategy_id, tune_id, entry_session_profile)
       DO UPDATE SET
         score = EXCLUDED.score,
-        status = EXCLUDED.status,
-        reason_codes = EXCLUDED.reason_codes,
+        status = CASE
+          WHEN EXCLUDED.status = 'discovered'
+            AND scalp_v2_candidates.status IN ('evaluated', 'promoted', 'shadow', 'rejected')
+            THEN scalp_v2_candidates.status
+          ELSE EXCLUDED.status
+        END,
+        reason_codes = CASE
+          WHEN EXCLUDED.status = 'discovered'
+            AND scalp_v2_candidates.status IN ('evaluated', 'promoted', 'shadow', 'rejected')
+            THEN scalp_v2_candidates.reason_codes
+          ELSE EXCLUDED.reason_codes
+        END,
         metadata_json = COALESCE(scalp_v2_candidates.metadata_json, '{}'::jsonb) || EXCLUDED.metadata_json,
         updated_at = NOW();
     `);
@@ -462,6 +472,10 @@ export async function listScalpV2Candidates(params: {
     where.push(`symbol = ANY($${values.length})`);
   }
   values.push(limit);
+  const discoveredOnly = normalizeCandidateStatus(params.status) === "discovered";
+  const orderBySql = discoveredOnly
+    ? `ORDER BY score DESC, updated_at DESC`
+    : `ORDER BY COALESCE((metadata_json->'worker'->'stageC'->>'netR')::double precision, -999) DESC, score DESC`;
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const rows = await db.$queryRawUnsafe<
     Array<{
@@ -495,7 +509,7 @@ export async function listScalpV2Candidates(params: {
         updated_at AS "updatedAt"
       FROM scalp_v2_candidates
       ${whereSql}
-      ORDER BY COALESCE((metadata_json->'worker'->'stageC'->>'netR')::double precision, -999) DESC, score DESC
+      ${orderBySql}
       LIMIT $${values.length};
     `,
     ...values,
@@ -732,7 +746,7 @@ export async function loadScalpV2WarmUpState(params: {
   >(sql`
     SELECT scope_hash AS "scopeHash", candidate_count AS "candidateCount"
     FROM scalp_v2_research_warm_up
-    WHERE window_to_ts = ${params.windowToTs}
+    WHERE window_to_ts = ${String(params.windowToTs)}::bigint
     LIMIT 1
   `);
   return rows[0] || null;
@@ -748,7 +762,7 @@ export async function upsertScalpV2WarmUpState(params: {
   const db = scalpPrisma();
   await db.$executeRaw(sql`
     INSERT INTO scalp_v2_research_warm_up(window_to_ts, scope_hash, candidate_count, created_at)
-    VALUES (${params.windowToTs}, ${params.scopeHash}, ${params.candidateCount}, NOW())
+    VALUES (${String(params.windowToTs)}::bigint, ${params.scopeHash}, ${params.candidateCount}, NOW())
     ON CONFLICT(window_to_ts)
     DO UPDATE SET scope_hash = EXCLUDED.scope_hash, candidate_count = EXCLUDED.candidate_count
   `);
@@ -852,9 +866,29 @@ export interface ScalpV2ScopeWindowStageStats {
  */
 export async function loadScalpV2PreviousWeekResults(params: {
   currentWindowToTs: number;
+  symbols?: string[];
+  tuneIds?: string[];
 }): Promise<Map<string, PreviousStageResult>> {
   if (!isScalpPgConfigured()) return new Map();
   const db = scalpPrisma();
+  const symbols = Array.from(
+    new Set(
+      (params.symbols || [])
+        .map((row) => String(row || "").trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  );
+  const symbolFilter =
+    symbols.length > 0 ? sql`AND symbol IN (${join(symbols)})` : sql``;
+  const tuneIds = Array.from(
+    new Set(
+      (params.tuneIds || [])
+        .map((row) => String(row || "").trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  );
+  const tuneFilter =
+    tuneIds.length > 0 ? sql`AND tune_id IN (${join(tuneIds)})` : sql``;
   const rows = await db.$queryRaw<
     Array<{
       venue: string;
@@ -870,22 +904,44 @@ export async function loadScalpV2PreviousWeekResults(params: {
       stageAWeeklyNetR: unknown;
     }>
   >(sql`
+    WITH ranked AS (
+      SELECT
+        venue,
+        symbol,
+        tune_id AS "tuneId",
+        entry_session_profile AS "session",
+        (metadata_json->'worker'->>'windowToTs') AS "windowToTs",
+        (metadata_json->'worker'->'stageA'->>'passed') AS "stageAPassed",
+        (metadata_json->'worker'->'stageA'->>'netR') AS "stageANetR",
+        (metadata_json->'worker'->'stageA'->>'trades') AS "stageATrades",
+        (metadata_json->'worker'->'stageC'->>'passed') AS "stageCPassed",
+        (metadata_json->'worker'->'stageC'->>'netR') AS "stageCNetR",
+        (metadata_json->'worker'->'stageA'->'weeklyNetR') AS "stageAWeeklyNetR",
+        ROW_NUMBER() OVER (
+          PARTITION BY venue, symbol, tune_id, entry_session_profile
+          ORDER BY (metadata_json->'worker'->>'windowToTs')::bigint DESC, updated_at DESC
+        ) AS rn
+      FROM scalp_v2_candidates
+      WHERE status IN ('evaluated', 'promoted', 'shadow', 'rejected')
+        AND (metadata_json->'worker'->>'windowToTs')::bigint != ${params.currentWindowToTs}
+        AND metadata_json->'worker'->'stageA' IS NOT NULL
+        ${symbolFilter}
+        ${tuneFilter}
+    )
     SELECT
       venue,
       symbol,
-      tune_id AS "tuneId",
-      entry_session_profile AS "session",
-      (metadata_json->'worker'->>'windowToTs') AS "windowToTs",
-      (metadata_json->'worker'->'stageA'->>'passed') AS "stageAPassed",
-      (metadata_json->'worker'->'stageA'->>'netR') AS "stageANetR",
-      (metadata_json->'worker'->'stageA'->>'trades') AS "stageATrades",
-      (metadata_json->'worker'->'stageC'->>'passed') AS "stageCPassed",
-      (metadata_json->'worker'->'stageC'->>'netR') AS "stageCNetR",
-      (metadata_json->'worker'->'stageA'->'weeklyNetR') AS "stageAWeeklyNetR"
-    FROM scalp_v2_candidates
-    WHERE status IN ('evaluated', 'promoted', 'shadow', 'rejected')
-      AND (metadata_json->'worker'->>'windowToTs')::bigint != ${params.currentWindowToTs}
-      AND metadata_json->'worker'->'stageA' IS NOT NULL
+      "tuneId",
+      "session",
+      "windowToTs",
+      "stageAPassed",
+      "stageANetR",
+      "stageATrades",
+      "stageCPassed",
+      "stageCNetR",
+      "stageAWeeklyNetR"
+    FROM ranked
+    WHERE rn = 1
   `);
   const results = new Map<string, PreviousStageResult>();
   for (const row of rows) {

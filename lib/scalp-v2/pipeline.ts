@@ -2757,6 +2757,8 @@ export async function runScalpV2ResearchJob(params: {
     });
     const previousResults = await loadScalpV2PreviousWeekResults({
       currentWindowToTs: windowToTs,
+      symbols: Array.from(new Set(notYetEvaluated.map((row) => row.symbol))),
+      tuneIds: Array.from(new Set(notYetEvaluated.map((row) => row.tuneId))),
     }).catch(
       () =>
         new Map<
@@ -2982,9 +2984,73 @@ export async function runScalpV2ResearchJob(params: {
       weekToTs: number;
       metrics: ScalpV2WorkerStageWeeklyMetrics;
     }> = [];
+    type CandidateUpsertRow = Parameters<typeof upsertScalpV2Candidates>[0]["rows"][number];
+    type PendingCandidateUpsert = {
+      mode: "evaluated" | "rejected";
+      row: CandidateUpsertRow;
+    };
+    const pendingCandidateUpserts: PendingCandidateUpsert[] = [];
+    async function flushPendingCandidateUpserts(): Promise<void> {
+      if (!pendingCandidateUpserts.length) return;
+      const rows = pendingCandidateUpserts.splice(0, pendingCandidateUpserts.length);
 
-    const BACKTEST_CONCURRENCY = Math.max(1, Math.min(4,
-      toPositiveInt(process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY, 1, 4)));
+      function applyPersistSuccess(entry: PendingCandidateUpsert) {
+        persistedCount += 1;
+        processed += 1;
+        if (entry.mode === "evaluated") {
+          succeeded += 1;
+        }
+      }
+
+      try {
+        await upsertScalpV2Candidates({
+          rows: rows.map((entry) => entry.row),
+        });
+        for (const entry of rows) {
+          applyPersistSuccess(entry);
+        }
+      } catch {
+        // Preserve old behavior if the batch write fails:
+        // - evaluated persist failure increments replayErrors
+        // - rejected persist failure is non-fatal (still processed)
+        for (const entry of rows) {
+          try {
+            await upsertScalpV2Candidates({
+              rows: [entry.row],
+            });
+            applyPersistSuccess(entry);
+          } catch {
+            processed += 1;
+            if (entry.mode === "evaluated") {
+              replayErrors += 1;
+            }
+          }
+        }
+      }
+    }
+
+    const backtestConcurrencyMax = Math.max(
+      1,
+      Math.min(
+        16,
+        toPositiveInt(
+          process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY_MAX,
+          4,
+          16,
+        ),
+      ),
+    );
+    const BACKTEST_CONCURRENCY = Math.max(
+      1,
+      Math.min(
+        backtestConcurrencyMax,
+        toPositiveInt(
+          process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY,
+          1,
+          backtestConcurrencyMax,
+        ),
+      ),
+    );
 
     for (let candidateIdx = 0; candidateIdx < chunked.length; candidateIdx += BACKTEST_CONCURRENCY) {
       const elapsedMs = nowMs() - jobStartMs;
@@ -3332,9 +3398,10 @@ export async function runScalpV2ResearchJob(params: {
 
         if (!meetsMinStage) {
           droppedBelowMinStage += 1;
-          // Persist as 'rejected' so the cache skips it on next cycle
-          await upsertScalpV2Candidates({
-            rows: [{
+          // Persist as 'rejected' so the cache skips it on next cycle.
+          pendingCandidateUpserts.push({
+            mode: "rejected",
+            row: {
               venue: candidate.venue,
               symbol: candidate.symbol,
               strategyId: candidate.strategyId,
@@ -3351,10 +3418,8 @@ export async function runScalpV2ResearchJob(params: {
                 evaluator: "v2_research_inline",
                 worker: workerMeta,
               },
-            }],
-          }).catch(() => undefined); // non-fatal: next cycle will retry
-          persistedCount += 1;
-          processed += 1;
+            },
+          });
           return;
         }
 
@@ -3376,8 +3441,9 @@ export async function runScalpV2ResearchJob(params: {
           worker: workerMeta,
         };
 
-        await upsertScalpV2Candidates({
-          rows: [{
+        pendingCandidateUpserts.push({
+          mode: "evaluated",
+          row: {
             venue: candidate.venue,
             symbol: candidate.symbol,
             strategyId: candidate.strategyId,
@@ -3390,17 +3456,15 @@ export async function runScalpV2ResearchJob(params: {
               finalPass ? "SCALP_V2_WORKER_STAGE_C_PASS" : "SCALP_V2_WORKER_STAGE_C_FAIL",
             ],
             metadata,
-          }],
+          },
         });
-        persistedCount += 1;
-
-        processed += 1;
-        succeeded += 1;
       } catch (err: any) {
         replayErrors += 1;
         processed += 1;
       }
       })); // end Promise.all(batch.map)
+
+      await flushPendingCandidateUpserts();
 
       // Heartbeat after each batch to keep the lock alive
       await emitResearchHeartbeat({
@@ -3422,6 +3486,8 @@ export async function runScalpV2ResearchJob(params: {
         pendingCacheWrites.length = 0;
       }
     }
+
+    await flushPendingCandidateUpserts();
 
     // Flush remaining cache writes
     if (pendingCacheWrites.length > 0) {
