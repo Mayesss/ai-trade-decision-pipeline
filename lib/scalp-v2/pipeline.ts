@@ -1112,6 +1112,14 @@ function aggregateStageFromWeeklyMetrics(params: {
   };
 }
 
+function hasReusableNonZeroWeeklyCacheMetrics(
+  metrics: ScalpV2WorkerStageWeeklyMetrics | null | undefined,
+): boolean {
+  if (!metrics) return false;
+  const netR = Number(metrics.netR);
+  return Number.isFinite(netR) && Math.abs(netR) > 1e-9;
+}
+
 function evaluateWorkerStageGate(params: {
   stage: ScalpV2WorkerStagePolicy;
   stageResult: ScalpV2WorkerStageResult;
@@ -2950,6 +2958,7 @@ export async function runScalpV2ResearchJob(params: {
     let droppedBelowMinStage = 0;
     let incrementalStageReplays = 0;
     let fullStageReplays = 0;
+    let cachedStageReuses = 0;
 
     let timeBudgetExhausted = false;
 
@@ -3003,7 +3012,8 @@ export async function runScalpV2ResearchJob(params: {
           const fromTs = windowToTs - stage.weeks * ONE_WEEK_MS;
           const priorStarts = listWeekStarts({ fromTs, toTs: windowToTs }).slice(0, -1);
           for (const ws of priorStarts) {
-            if (!cached?.has(ws)) {
+            const metrics = cached?.get(ws);
+            if (!hasReusableNonZeroWeeklyCacheMetrics(metrics)) {
               symbolsNeedingFullRange.add(c.symbol);
               break;
             }
@@ -3091,87 +3101,441 @@ export async function runScalpV2ResearchJob(params: {
         ),
       ),
     );
+    type StageCandidateRuntime = {
+      candidate: (typeof chunked)[number];
+      selectedIndex: number;
+      deploymentId: string;
+      replayConfig: any;
+      symbolPipSize: number;
+      stageResults: Record<ScalpV2WorkerStageId, ScalpV2WorkerStageResult>;
+      finalized: boolean;
+    };
 
-    for (let candidateIdx = 0; candidateIdx < chunked.length; candidateIdx += BACKTEST_CONCURRENCY) {
-      const elapsedMs = nowMs() - jobStartMs;
-      if (elapsedMs >= timeBudgetMs) {
-        timeBudgetExhausted = true;
-        break;
-      }
+    const stagePolicyById = new Map(
+      stagePolicies.map((stage) => [stage.id, stage] as const),
+    );
 
-      const batch = chunked.slice(candidateIdx, candidateIdx + BACKTEST_CONCURRENCY);
-      await emitResearchHeartbeat({
-        phase: "backtest_candidates",
-        progress: {
-          ...baseProgress,
-          candidateIndex: candidateIdx + batch.length,
-          totalSelected: chunked.length,
-          stageCPass,
-          persisted: persistedCount,
-          replayErrors,
-        },
+    function buildBlockedStageResult(
+      stageId: ScalpV2WorkerStageId,
+    ): ScalpV2WorkerStageResult {
+      const stage = stagePolicyById.get(stageId)!;
+      const fromTs = windowToTs - stage.weeks * ONE_WEEK_MS;
+      return buildWorkerStageSkeleton({
+        stage,
+        fromTs,
+        toTs: windowToTs,
+        reason: "blocked_prior_stage_failed",
       });
+    }
 
-      await Promise.all(batch.map(async (candidate) => {
+    function markDownstreamBlocked(
+      runtime: StageCandidateRuntime,
+      fromStageId: ScalpV2WorkerStageId,
+    ) {
+      if (fromStageId === "a") {
+        runtime.stageResults.b = buildBlockedStageResult("b");
+        runtime.stageResults.c = buildBlockedStageResult("c");
+      } else if (fromStageId === "b") {
+        runtime.stageResults.c = buildBlockedStageResult("c");
+      }
+    }
 
-      try {
-        let symbolCandles = candleCache.get(candidate.symbol) ?? null;
-        if (!symbolCandles) {
-          // Load only stage A window initially (4 weeks). If a candidate
-          // passes stage A, we extend to the full range on demand.
-          const stageAFromTs = windowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS;
-          const candleFromTs = cacheIsPopulated && !symbolsNeedingFullRange.has(candidate.symbol)
+    function updateStageCounters(
+      stageId: ScalpV2WorkerStageId,
+      stageResult: ScalpV2WorkerStageResult,
+    ) {
+      if (stageId === "a") {
+        if (stageResult.passed) stageAPass += 1;
+        else stageAFail += 1;
+        return;
+      }
+      if (stageId === "b") {
+        if (!stageResult.executed) return;
+        if (stageResult.passed) stageBPass += 1;
+        else stageBFail += 1;
+        return;
+      }
+      if (!stageResult.executed) return;
+      if (stageResult.passed) stageCPass += 1;
+      else stageCFail += 1;
+    }
+
+    async function ensureCandidateSymbolCandles(
+      runtime: StageCandidateRuntime,
+    ): Promise<ScalpReplayCandle[] | null> {
+      const candidate = runtime.candidate;
+      let symbolCandles = candleCache.get(candidate.symbol) ?? null;
+      if (!symbolCandles) {
+        // Load only stage A window initially (4 weeks). If later stages need
+        // a wider range, stage evaluation lazily extends to the full window.
+        const stageAFromTs = windowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS;
+        const candleFromTs =
+          cacheIsPopulated && !symbolsNeedingFullRange.has(candidate.symbol)
             ? newestWeekStart
             : stageAFromTs;
-          const history = await loadScalpCandleHistoryInRange(
-            candidate.symbol,
-            "1m",
-            candleFromTs,
-            windowToTs,
-          );
+        const history = await loadScalpCandleHistoryInRange(
+          candidate.symbol,
+          "1m",
+          candleFromTs,
+          windowToTs,
+        );
+        const meta = symbolMetadataMap.get(candidate.symbol) ?? null;
+        const symbolPipSize = pipSizeForScalpSymbol(
+          candidate.symbol,
+          meta ?? undefined,
+        );
+        const category = inferScalpV2AssetCategory(candidate.symbol);
+        const categoryFloor = minSpreadPipsForCategory(category);
+        const baseReplayConfig = defaultScalpReplayConfig(candidate.symbol);
+        const tickSpreadPips = meta?.tickSize ? meta.tickSize / symbolPipSize : 0;
+        const spreadPips = Math.max(
+          baseReplayConfig.defaultSpreadPips,
+          categoryFloor,
+          tickSpreadPips,
+        );
+        symbolCandles = filterSundayReplayCandles(
+          toReplayCandlesFromHistory(
+            (history.record?.candles || []) as Array<
+              [number, number, number, number, number, number]
+            >,
+            spreadPips,
+          ),
+        );
+        candleCache.set(candidate.symbol, symbolCandles);
+        await emitResearchHeartbeat({
+          phase: "loading_candles",
+          progress: {
+            ...baseProgress,
+            candidateIndex: runtime.selectedIndex + 1,
+            totalSelected: chunked.length,
+            symbolsLoaded: candleCache.size,
+            symbolsTotal: uniqueSymbols.length,
+          },
+        });
+      }
+      if (symbolCandles.length < workerPolicy.minCandles) return null;
+      return symbolCandles;
+    }
+
+    async function evaluateCandidateStage(
+      runtime: StageCandidateRuntime,
+      stage: ScalpV2WorkerStagePolicy,
+    ): Promise<ScalpV2WorkerStageResult> {
+      const candidate = runtime.candidate;
+      let symbolCandles = candleCache.get(candidate.symbol) ?? [];
+      const fromTs = windowToTs - stage.weeks * ONE_WEEK_MS;
+      let stageCandles = getCachedCandleWindow({
+        symbol: candidate.symbol,
+        candles: symbolCandles,
+        fromTs,
+        toTs: windowToTs,
+      });
+      const stageStartedAtMs = nowMs();
+      const stageWeekStarts = listWeekStarts({ fromTs, toTs: windowToTs });
+      const newestWeekStartForStage =
+        stageWeekStarts.length > 0
+          ? stageWeekStarts[stageWeekStarts.length - 1]!
+          : null;
+      if (newestWeekStartForStage === null) {
+        return buildWorkerStageSkeleton({
+          stage,
+          fromTs,
+          toTs: windowToTs,
+          reason: "stage_no_weeks",
+        });
+      }
+
+      const priorWeekStarts =
+        stageWeekStarts.length > 1
+          ? stageWeekStarts.slice(0, stageWeekStarts.length - 1)
+          : [];
+      const cacheKey = `${candidate.venue}:${candidate.symbol}:${candidate.strategyId}:${candidate.tuneId}:${candidate.session}:${stage.id}`.toLowerCase();
+      const cachedWeeks =
+        workerStageWeeklyCache.get(cacheKey) ||
+        new Map<number, ScalpV2WorkerStageWeeklyMetrics>();
+      let weeklyByStart = new Map<number, ScalpV2WorkerStageWeeklyMetrics>();
+      let missingPriorWeeks = false;
+      for (const weekStart of priorWeekStarts) {
+        const cached = cachedWeeks.get(weekStart);
+        if (!hasReusableNonZeroWeeklyCacheMetrics(cached)) {
+          missingPriorWeeks = true;
+          break;
+        }
+        weeklyByStart.set(weekStart, cached);
+      }
+      const newestWeekCached = cachedWeeks.get(newestWeekStartForStage);
+      const canReuseCachedNewestWeek =
+        !missingPriorWeeks &&
+        hasReusableNonZeroWeeklyCacheMetrics(newestWeekCached);
+
+      if (
+        missingPriorWeeks &&
+        symbolCandles[0] &&
+        symbolCandles[0].ts > fromTs
+      ) {
+        const extended = await loadScalpCandleHistoryInRange(
+          candidate.symbol,
+          "1m",
+          fromTs,
+          windowToTs,
+        ).catch(() => null);
+        if (extended?.record?.candles) {
           const meta = symbolMetadataMap.get(candidate.symbol) ?? null;
-          const symbolPipSize = pipSizeForScalpSymbol(candidate.symbol, meta ?? undefined);
-          const category = inferScalpV2AssetCategory(candidate.symbol);
-          const categoryFloor = minSpreadPipsForCategory(category);
-          const baseReplayConfig = defaultScalpReplayConfig(candidate.symbol);
-          const tickSpreadPips = meta?.tickSize ? meta.tickSize / symbolPipSize : 0;
-          const spreadPips = Math.max(baseReplayConfig.defaultSpreadPips, categoryFloor, tickSpreadPips);
+          const pip = pipSizeForScalpSymbol(candidate.symbol, meta ?? undefined);
+          const cat = inferScalpV2AssetCategory(candidate.symbol);
+          const floor = minSpreadPipsForCategory(cat);
+          const base = defaultScalpReplayConfig(candidate.symbol);
+          const tick = meta?.tickSize ? meta.tickSize / pip : 0;
+          const spread = Math.max(base.defaultSpreadPips, floor, tick);
           symbolCandles = filterSundayReplayCandles(
             toReplayCandlesFromHistory(
-              (history.record?.candles || []) as Array<
+              extended.record.candles as Array<
                 [number, number, number, number, number, number]
               >,
-              spreadPips,
+              spread,
             ),
           );
           candleCache.set(candidate.symbol, symbolCandles);
-          // Heartbeat after each candle load to keep the lock alive
-          await emitResearchHeartbeat({
-            phase: "loading_candles",
-            progress: {
-              ...baseProgress,
-              candidateIndex: candidateIdx + 1,
-              totalSelected: chunked.length,
-              symbolsLoaded: candleCache.size,
-              symbolsTotal: uniqueSymbols.length,
-            },
+          stageCandles = getCachedCandleWindow({
+            symbol: candidate.symbol,
+            candles: symbolCandles,
+            fromTs,
+            toTs: windowToTs,
           });
         }
+      }
 
-        // Skip candidates whose symbol has insufficient candles — don't persist
-        // a failure so they get retried after candles are loaded.
-        if (symbolCandles.length < workerPolicy.minCandles) {
-          processed += 1;
-          return;
+      let aggregate: ReturnType<typeof aggregateStageFromWeeklyMetrics>;
+
+      if (missingPriorWeeks) {
+        if (stageCandles.length < workerPolicy.minCandles) {
+          return buildWorkerStageSkeleton({
+            stage,
+            fromTs,
+            toTs: windowToTs,
+            reason: "insufficient_candles",
+          });
         }
+        const fullReplay = await runScalpReplay({
+          candles: stageCandles,
+          pipSize: runtime.symbolPipSize,
+          config: runtime.replayConfig,
+          captureTimeline: false,
+          earlyAbortNetR: stage.minNetR * -2,
+          earlyAbortAfterPct: 50,
+        });
+        fullStageReplays += 1;
+        logResearch("replay_done", `${stage.id}:full:${candidate.symbol}`);
+        weeklyByStart = buildWorkerStageWeeklyMetricsMap({
+          trades: fullReplay.trades,
+          fromTs,
+          toTs: windowToTs,
+        });
+        aggregate = aggregateStageFromWeeklyMetrics({
+          fromTs,
+          toTs: windowToTs,
+          weeklyByStart,
+        });
+        const cacheRows: typeof pendingCacheWrites = [];
+        for (const [ws, metrics] of weeklyByStart.entries()) {
+          cacheRows.push({
+            venue: candidate.venue,
+            symbol: candidate.symbol,
+            strategyId: candidate.strategyId,
+            tuneId: candidate.tuneId,
+            session: candidate.session,
+            stageId: stage.id,
+            weekStartTs: ws,
+            weekToTs: ws + ONE_WEEK_MS,
+            metrics,
+          });
+        }
+        pendingCacheWrites.push(...cacheRows);
+      } else if (canReuseCachedNewestWeek) {
+        weeklyByStart.set(newestWeekStartForStage, newestWeekCached!);
+        aggregate = aggregateStageFromWeeklyMetrics({
+          fromTs,
+          toTs: windowToTs,
+          weeklyByStart,
+        });
+        cachedStageReuses += 1;
+      } else {
+        const newestWeekToTs = newestWeekStartForStage + ONE_WEEK_MS;
+        const newestWeekCandles = getCachedCandleWindow({
+          symbol: candidate.symbol,
+          candles: symbolCandles,
+          fromTs: newestWeekStartForStage,
+          toTs: newestWeekToTs,
+        });
+        if (newestWeekCandles.length < workerPolicy.minCandles) {
+          return buildWorkerStageSkeleton({
+            stage,
+            fromTs,
+            toTs: windowToTs,
+            reason: "insufficient_latest_week_candles",
+          });
+        }
+        const newestWeekReplay = await runScalpReplay({
+          candles: newestWeekCandles,
+          pipSize: runtime.symbolPipSize,
+          config: runtime.replayConfig,
+          captureTimeline: false,
+        });
+        incrementalStageReplays += 1;
+        logResearch("replay_done", `${stage.id}:incr:${candidate.symbol}`);
+        const newestWeekMetrics = buildWorkerStageWeeklyMetrics({
+          trades: newestWeekReplay.trades,
+          weekStartTs: newestWeekStartForStage,
+          weekToTs: newestWeekToTs,
+        });
+        weeklyByStart.set(newestWeekStartForStage, newestWeekMetrics);
+        aggregate = aggregateStageFromWeeklyMetrics({
+          fromTs,
+          toTs: windowToTs,
+          weeklyByStart,
+        });
+        pendingCacheWrites.push({
+          venue: candidate.venue,
+          symbol: candidate.symbol,
+          strategyId: candidate.strategyId,
+          tuneId: candidate.tuneId,
+          session: candidate.session,
+          stageId: stage.id,
+          weekStartTs: newestWeekStartForStage,
+          weekToTs: newestWeekToTs,
+          metrics: newestWeekMetrics,
+        });
+      }
 
-        let blockedStages = false;
-        const stageResults: Record<ScalpV2WorkerStageId, ScalpV2WorkerStageResult> = {
-          a: buildWorkerStageSkeleton({ stage: workerPolicy.stageA, fromTs: windowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS, toTs: windowToTs, reason: "stage_not_started" }),
-          b: buildWorkerStageSkeleton({ stage: workerPolicy.stageB, fromTs: windowToTs - workerPolicy.stageB.weeks * ONE_WEEK_MS, toTs: windowToTs, reason: "stage_not_started" }),
-          c: buildWorkerStageSkeleton({ stage: workerPolicy.stageC, fromTs: windowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS, toTs: windowToTs, reason: "stage_not_started" }),
-        };
-        const replayBaseConfig = defaultScalpReplayConfig(candidate.symbol);
+      const stageResult: ScalpV2WorkerStageResult = {
+        id: stage.id,
+        weeks: stage.weeks,
+        fromTs,
+        toTs: windowToTs,
+        executed: true,
+        passed: false,
+        reason: "stage_pending_gate",
+        candles: stageCandles.length,
+        trades: aggregate.trades,
+        netR: aggregate.netR,
+        expectancyR: aggregate.expectancyR,
+        winRatePct: aggregate.winRatePct,
+        maxDrawdownR: aggregate.maxDrawdownR,
+        profitFactor: aggregate.profitFactor,
+        winningWeeks: aggregate.winningWeeks,
+        consecutiveWinningWeeks: aggregate.consecutiveWinningWeeks,
+        durationMs: Math.max(0, nowMs() - stageStartedAtMs),
+        weeklyNetR: aggregate.weeklyNetR,
+        maxWeeklyNetR: aggregate.maxWeeklyNetR,
+        largestTradeR: aggregate.largestTradeR,
+        exitReasons: aggregate.exitReasons,
+      };
+      const gate = evaluateWorkerStageGate({ stage, stageResult });
+      stageResult.passed = gate.passed;
+      stageResult.reason = gate.reason || "stage_passed";
+      return stageResult;
+    }
+
+    function finalizeCandidateRuntime(runtime: StageCandidateRuntime) {
+      if (runtime.finalized) return;
+      const candidate = runtime.candidate;
+      const stageAResult = runtime.stageResults.a;
+      const stageBResult = runtime.stageResults.b;
+      const stageCResult = runtime.stageResults.c;
+      const finalPass = stageCResult.passed;
+      const meetsMinStage =
+        minPersistStage === "a"
+          ? stageAResult.passed
+          : minPersistStage === "b"
+            ? stageBResult.passed
+            : stageCResult.passed;
+
+      const workerMeta = {
+        version: "v2_research_inline_r3",
+        evaluatedAtMs: nowTs,
+        policy: {
+          stageA: workerPolicy.stageA,
+          stageB: workerPolicy.stageB,
+          stageC: workerPolicy.stageC,
+          minCandles: workerPolicy.minCandles,
+          weeklyCacheEnabled: true,
+          windowSliceCacheEnabled,
+        },
+        windowToTs,
+        stageA: stageAResult,
+        stageB: stageBResult,
+        stageC: stageCResult,
+        finalPass,
+      };
+
+      if (!meetsMinStage) {
+        droppedBelowMinStage += 1;
+        pendingCandidateUpserts.push({
+          mode: "rejected",
+          row: {
+            venue: candidate.venue,
+            symbol: candidate.symbol,
+            strategyId: candidate.strategyId,
+            tuneId: candidate.tuneId,
+            entrySessionProfile: candidate.session,
+            score: candidate.score,
+            status: "rejected",
+            reasonCodes: [
+              "SCALP_V2_RESEARCH_INLINE",
+              `SCALP_V2_BELOW_MIN_STAGE_${minPersistStage.toUpperCase()}`,
+            ],
+            metadata: {
+              evaluatedAtMs: nowTs,
+              evaluator: "v2_research_inline",
+              worker: workerMeta,
+            },
+          },
+        });
+        runtime.finalized = true;
+        return;
+      }
+
+      const executionPlan = resolveModelGuidedComposerExecutionPlanFromBlocks(
+        candidate.dsl.blocksByFamily,
+      );
+      const metadata: Record<string, unknown> = {
+        discoveredAtMs: candidate.dsl.generatedAtMs,
+        source: "model_guided_composer",
+        researchCandidateId: candidate.candidateId,
+        researchDsl: candidate.dsl.blocksByFamily,
+        researchReferences: candidate.dsl.referenceStrategyIds,
+        researchSupportScore: candidate.dsl.supportScore,
+        researchRegimeGateId: candidate.dsl.regimeGateId || null,
+        composerModel: candidate.dsl.model,
+        composerExecutionPlan: executionPlan,
+        evaluatedAtMs: nowTs,
+        evaluator: "v2_research_inline",
+        worker: workerMeta,
+      };
+      pendingCandidateUpserts.push({
+        mode: "evaluated",
+        row: {
+          venue: candidate.venue,
+          symbol: candidate.symbol,
+          strategyId: candidate.strategyId,
+          tuneId: candidate.tuneId,
+          entrySessionProfile: candidate.session,
+          score: candidate.score,
+          status: "evaluated",
+          reasonCodes: [
+            "SCALP_V2_RESEARCH_INLINE",
+            finalPass
+              ? "SCALP_V2_WORKER_STAGE_C_PASS"
+              : "SCALP_V2_WORKER_STAGE_C_FAIL",
+          ],
+          metadata,
+        },
+      });
+      runtime.finalized = true;
+    }
+
+    const candidateRuntimes: StageCandidateRuntime[] = chunked.map(
+      (candidate, selectedIndex) => {
         const deploymentId = toDeploymentId({
           venue: candidate.venue,
           symbol: candidate.symbol,
@@ -3179,6 +3543,7 @@ export async function runScalpV2ResearchJob(params: {
           tuneId: candidate.tuneId,
           session: candidate.session,
         });
+        const replayBaseConfig = defaultScalpReplayConfig(candidate.symbol);
         const exitOverrides = resolveExitRuleOverrides(
           candidate.dsl.blocksByFamily.exit_rule,
         );
@@ -3212,333 +3577,178 @@ export async function runScalpV2ResearchJob(params: {
           candidate.symbol,
           candidateMeta ?? undefined,
         );
-
-        logResearch("replay_start", `${candidate.symbol}:${candidate.tuneId.slice(0, 20)}:${candidate.session}`);
-
-        for (const stage of stagePolicies) {
-          const fromTs = windowToTs - stage.weeks * ONE_WEEK_MS;
-          if (blockedStages) {
-            stageResults[stage.id] = buildWorkerStageSkeleton({ stage, fromTs, toTs: windowToTs, reason: "blocked_prior_stage_failed" });
-            continue;
-          }
-          let stageCandles = getCachedCandleWindow({
-            symbol: candidate.symbol,
-            candles: symbolCandles,
-            fromTs,
-            toTs: windowToTs,
-          });
-          // Lazy candle extension: if this stage needs a wider range than
-          // what we initially loaded (e.g. stage B/C after stage A passed),
-          // reload with the full range.
-          if (stageCandles.length < workerPolicy.minCandles && symbolCandles[0] && symbolCandles[0].ts > fromTs) {
-            const extended = await loadScalpCandleHistoryInRange(
-              candidate.symbol, "1m", fromTs, windowToTs,
-            ).catch(() => null);
-            if (extended?.record?.candles) {
-              const meta = symbolMetadataMap.get(candidate.symbol) ?? null;
-              const pip = pipSizeForScalpSymbol(candidate.symbol, meta ?? undefined);
-              const cat = inferScalpV2AssetCategory(candidate.symbol);
-              const floor = minSpreadPipsForCategory(cat);
-              const base = defaultScalpReplayConfig(candidate.symbol);
-              const tick = meta?.tickSize ? meta.tickSize / pip : 0;
-              const spread = Math.max(base.defaultSpreadPips, floor, tick);
-              symbolCandles = filterSundayReplayCandles(
-                toReplayCandlesFromHistory(
-                  extended.record.candles as Array<[number, number, number, number, number, number]>,
-                  spread,
-                ),
-              );
-              candleCache.set(candidate.symbol, symbolCandles);
-              stageCandles = getCachedCandleWindow({
-                symbol: candidate.symbol,
-                candles: symbolCandles,
-                fromTs,
-                toTs: windowToTs,
-              });
-            }
-          }
-          if (stageCandles.length < workerPolicy.minCandles) {
-            stageResults[stage.id] = buildWorkerStageSkeleton({ stage, fromTs, toTs: windowToTs, reason: "insufficient_candles" });
-            blockedStages = true;
-            continue;
-          }
-
-          const stageStartedAtMs = nowMs();
-          const stageWeekStarts = listWeekStarts({ fromTs, toTs: windowToTs });
-          const newestWeekStart =
-            stageWeekStarts.length > 0
-              ? stageWeekStarts[stageWeekStarts.length - 1]!
-              : null;
-          if (newestWeekStart === null) {
-            stageResults[stage.id] = buildWorkerStageSkeleton({
-              stage,
-              fromTs,
+        return {
+          candidate,
+          selectedIndex,
+          deploymentId,
+          replayConfig,
+          symbolPipSize,
+          stageResults: {
+            a: buildWorkerStageSkeleton({
+              stage: workerPolicy.stageA,
+              fromTs: windowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS,
               toTs: windowToTs,
-              reason: "stage_no_weeks",
-            });
-            blockedStages = true;
-            continue;
-          }
-
-          const priorWeekStarts =
-            stageWeekStarts.length > 1
-              ? stageWeekStarts.slice(0, stageWeekStarts.length - 1)
-              : [];
-          // Check the weekly cache for prior weeks' full metrics.
-          const cacheKey = `${candidate.venue}:${candidate.symbol}:${candidate.strategyId}:${candidate.tuneId}:${candidate.session}:${stage.id}`.toLowerCase();
-          const cachedWeeks = workerStageWeeklyCache.get(cacheKey) || new Map<number, ScalpV2WorkerStageWeeklyMetrics>();
-          let weeklyByStart = new Map<number, ScalpV2WorkerStageWeeklyMetrics>();
-          let missingPriorWeeks = false;
-          for (const weekStart of priorWeekStarts) {
-            const cached = cachedWeeks.get(weekStart);
-            if (!cached) { missingPriorWeeks = true; break; }
-            weeklyByStart.set(weekStart, cached);
-          }
-
-          let aggregate: ReturnType<typeof aggregateStageFromWeeklyMetrics>;
-
-          if (missingPriorWeeks) {
-            // Cache miss — full replay, then persist all weeks to cache
-            const fullReplay = await runScalpReplay({
-              candles: stageCandles,
-              pipSize: symbolPipSize,
-              config: replayConfig,
-              captureTimeline: false,
-              // Early-abort: if netR is deeply negative after 50% of candles, stop
-              earlyAbortNetR: stage.minNetR * -2,
-              earlyAbortAfterPct: 50,
-            });
-            fullStageReplays += 1;
-            logResearch("replay_done", `${stage.id}:full:${candidate.symbol}`);
-            weeklyByStart = buildWorkerStageWeeklyMetricsMap({
-              trades: fullReplay.trades,
-              fromTs,
+              reason: "stage_not_started",
+            }),
+            b: buildWorkerStageSkeleton({
+              stage: workerPolicy.stageB,
+              fromTs: windowToTs - workerPolicy.stageB.weeks * ONE_WEEK_MS,
               toTs: windowToTs,
-            });
-            aggregate = aggregateStageFromWeeklyMetrics({
-              fromTs,
+              reason: "stage_not_started",
+            }),
+            c: buildWorkerStageSkeleton({
+              stage: workerPolicy.stageC,
+              fromTs: windowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS,
               toTs: windowToTs,
-              weeklyByStart,
-            });
-            // Persist to cache for next week's incremental replay
-            const cacheRows: typeof pendingCacheWrites = [];
-            for (const [ws, metrics] of weeklyByStart.entries()) {
-              cacheRows.push({
-                venue: candidate.venue,
-                symbol: candidate.symbol,
-                strategyId: candidate.strategyId,
-                tuneId: candidate.tuneId,
-                session: candidate.session,
-                stageId: stage.id,
-                weekStartTs: ws,
-                weekToTs: ws + ONE_WEEK_MS,
-                metrics,
-              });
-            }
-            pendingCacheWrites.push(...cacheRows);
-          } else {
-            // Cache hit — replay only the newest week
-            const newestWeekToTs = newestWeekStart + ONE_WEEK_MS;
-            const newestWeekCandles = getCachedCandleWindow({
-              symbol: candidate.symbol,
-              candles: symbolCandles,
-              fromTs: newestWeekStart,
-              toTs: newestWeekToTs,
-            });
-            if (newestWeekCandles.length < workerPolicy.minCandles) {
-              stageResults[stage.id] = buildWorkerStageSkeleton({
-                stage, fromTs, toTs: windowToTs,
-                reason: "insufficient_latest_week_candles",
-              });
-              blockedStages = true;
-              continue;
-            }
-            const newestWeekReplay = await runScalpReplay({
-              candles: newestWeekCandles,
-              pipSize: symbolPipSize,
-              config: replayConfig,
-              captureTimeline: false,
-            });
-            incrementalStageReplays += 1;
-            logResearch("replay_done", `${stage.id}:incr:${candidate.symbol}`);
-            const newestWeekMetrics = buildWorkerStageWeeklyMetrics({
-              trades: newestWeekReplay.trades,
-              weekStartTs: newestWeekStart,
-              weekToTs: newestWeekToTs,
-            });
-            weeklyByStart.set(newestWeekStart, newestWeekMetrics);
-            aggregate = aggregateStageFromWeeklyMetrics({
-              fromTs,
-              toTs: windowToTs,
-              weeklyByStart,
-            });
-            // Persist the newest week to cache
-            pendingCacheWrites.push({
-              venue: candidate.venue,
-              symbol: candidate.symbol,
-              strategyId: candidate.strategyId,
-              tuneId: candidate.tuneId,
-              session: candidate.session,
-              stageId: stage.id,
-              weekStartTs: newestWeekStart,
-              weekToTs: newestWeekToTs,
-              metrics: newestWeekMetrics,
-            });
-          }
-
-          const stageResult: ScalpV2WorkerStageResult = {
-            id: stage.id,
-            weeks: stage.weeks,
-            fromTs,
-            toTs: windowToTs,
-            executed: true,
-            passed: false,
-            reason: "stage_pending_gate",
-            candles: stageCandles.length,
-            trades: aggregate.trades,
-            netR: aggregate.netR,
-            expectancyR: aggregate.expectancyR,
-            winRatePct: aggregate.winRatePct,
-            maxDrawdownR: aggregate.maxDrawdownR,
-            profitFactor: aggregate.profitFactor,
-            winningWeeks: aggregate.winningWeeks,
-            consecutiveWinningWeeks: aggregate.consecutiveWinningWeeks,
-            durationMs: Math.max(0, nowMs() - stageStartedAtMs),
-            weeklyNetR: aggregate.weeklyNetR,
-            maxWeeklyNetR: aggregate.maxWeeklyNetR,
-            largestTradeR: aggregate.largestTradeR,
-            exitReasons: aggregate.exitReasons,
-          };
-          const gate = evaluateWorkerStageGate({ stage, stageResult });
-          stageResult.passed = gate.passed;
-          stageResult.reason = gate.reason || "stage_passed";
-          stageResults[stage.id] = stageResult;
-          if (!gate.passed) blockedStages = true;
-        }
-
-        const stageAResult = stageResults.a;
-        const stageBResult = stageResults.b;
-        const stageCResult = stageResults.c;
-        const finalPass = stageCResult.passed;
-
-        if (stageAResult.passed) stageAPass += 1; else stageAFail += 1;
-        if (stageBResult.executed && stageBResult.passed) stageBPass += 1;
-        else if (stageBResult.executed) stageBFail += 1;
-        if (stageCResult.executed && stageCResult.passed) stageCPass += 1;
-        else if (stageCResult.executed) stageCFail += 1;
-
-        const meetsMinStage =
-          minPersistStage === "a" ? stageAResult.passed :
-          minPersistStage === "b" ? stageBResult.passed :
-          stageCResult.passed;
-
-        const workerMeta = {
-          version: "v2_research_inline_r3",
-          evaluatedAtMs: nowTs,
-          policy: {
-            stageA: workerPolicy.stageA,
-            stageB: workerPolicy.stageB,
-            stageC: workerPolicy.stageC,
-            minCandles: workerPolicy.minCandles,
-            weeklyCacheEnabled: true,
-            windowSliceCacheEnabled,
+              reason: "stage_not_started",
+            }),
           },
-          windowToTs,
-          stageA: stageAResult,
-          stageB: stageBResult,
-          stageC: stageCResult,
-          finalPass,
+          finalized: false,
         };
+      },
+    );
 
-        if (!meetsMinStage) {
-          droppedBelowMinStage += 1;
-          // Persist as 'rejected' so the cache skips it on next cycle.
-          pendingCandidateUpserts.push({
-            mode: "rejected",
-            row: {
-              venue: candidate.venue,
-              symbol: candidate.symbol,
-              strategyId: candidate.strategyId,
-              tuneId: candidate.tuneId,
-              entrySessionProfile: candidate.session,
-              score: candidate.score,
-              status: "rejected",
-              reasonCodes: [
-                "SCALP_V2_RESEARCH_INLINE",
-                `SCALP_V2_BELOW_MIN_STAGE_${minPersistStage.toUpperCase()}`,
-              ],
-              metadata: {
-                evaluatedAtMs: nowTs,
-                evaluator: "v2_research_inline",
-                worker: workerMeta,
-              },
-            },
-          });
-          return;
+    async function runBarrierStage(params: {
+      stage: ScalpV2WorkerStagePolicy;
+      candidates: StageCandidateRuntime[];
+    }): Promise<StageCandidateRuntime[]> {
+      const passers: StageCandidateRuntime[] = [];
+      let processedInStage = 0;
+
+      for (
+        let candidateIdx = 0;
+        candidateIdx < params.candidates.length;
+        candidateIdx += BACKTEST_CONCURRENCY
+      ) {
+        const elapsedMs = nowMs() - jobStartMs;
+        if (elapsedMs >= timeBudgetMs) {
+          timeBudgetExhausted = true;
+          break;
         }
-
-        const executionPlan = resolveModelGuidedComposerExecutionPlanFromBlocks(
-          candidate.dsl.blocksByFamily,
+        const batch = params.candidates.slice(
+          candidateIdx,
+          candidateIdx + BACKTEST_CONCURRENCY,
         );
-        const metadata: Record<string, unknown> = {
-          discoveredAtMs: candidate.dsl.generatedAtMs,
-          source: "model_guided_composer",
-          researchCandidateId: candidate.candidateId,
-          researchDsl: candidate.dsl.blocksByFamily,
-          researchReferences: candidate.dsl.referenceStrategyIds,
-          researchSupportScore: candidate.dsl.supportScore,
-          researchRegimeGateId: candidate.dsl.regimeGateId || null,
-          composerModel: candidate.dsl.model,
-          composerExecutionPlan: executionPlan,
-          evaluatedAtMs: nowTs,
-          evaluator: "v2_research_inline",
-          worker: workerMeta,
-        };
-
-        pendingCandidateUpserts.push({
-          mode: "evaluated",
-          row: {
-            venue: candidate.venue,
-            symbol: candidate.symbol,
-            strategyId: candidate.strategyId,
-            tuneId: candidate.tuneId,
-            entrySessionProfile: candidate.session,
-            score: candidate.score,
-            status: "evaluated",
-            reasonCodes: [
-              "SCALP_V2_RESEARCH_INLINE",
-              finalPass ? "SCALP_V2_WORKER_STAGE_C_PASS" : "SCALP_V2_WORKER_STAGE_C_FAIL",
-            ],
-            metadata,
+        await emitResearchHeartbeat({
+          phase: "backtest_candidates",
+          progress: {
+            ...baseProgress,
+            workerStage: params.stage.id,
+            workerStageProcessed: processedInStage + batch.length,
+            workerStageTotal: params.candidates.length,
+            stageCPass,
+            persisted: persistedCount,
+            replayErrors,
           },
         });
-      } catch (err: any) {
-        replayErrors += 1;
-        processed += 1;
+
+        const batchResults = await Promise.all(
+          batch.map(async (runtime) => {
+            if (runtime.finalized) return null;
+            try {
+              const symbolCandles = await ensureCandidateSymbolCandles(runtime);
+              if (!symbolCandles) {
+                processed += 1;
+                runtime.finalized = true;
+                return null;
+              }
+              if (params.stage.id === "a") {
+                logResearch(
+                  "replay_start",
+                  `${runtime.candidate.symbol}:${runtime.candidate.tuneId.slice(0, 20)}:${runtime.candidate.session}`,
+                );
+              }
+              const stageResult = await evaluateCandidateStage(
+                runtime,
+                params.stage,
+              );
+              return { runtime, stageResult };
+            } catch (err: any) {
+              replayErrors += 1;
+              processed += 1;
+              runtime.finalized = true;
+              return null;
+            }
+          }),
+        );
+
+        for (const row of batchResults) {
+          if (!row) continue;
+          const { runtime, stageResult } = row;
+          runtime.stageResults[params.stage.id] = stageResult;
+          updateStageCounters(params.stage.id, stageResult);
+
+          if (params.stage.id === "a") {
+            if (stageResult.passed) {
+              passers.push(runtime);
+            } else {
+              markDownstreamBlocked(runtime, "a");
+              finalizeCandidateRuntime(runtime);
+            }
+            continue;
+          }
+
+          if (params.stage.id === "b") {
+            if (stageResult.passed) {
+              passers.push(runtime);
+            } else {
+              markDownstreamBlocked(runtime, "b");
+              finalizeCandidateRuntime(runtime);
+            }
+            continue;
+          }
+
+          finalizeCandidateRuntime(runtime);
+        }
+
+        processedInStage += batch.length;
+
+        await flushPendingCandidateUpserts();
+
+        await emitResearchHeartbeat({
+          phase: "backtest_candidates",
+          force: true,
+          progress: {
+            ...baseProgress,
+            workerStage: params.stage.id,
+            workerStageProcessed: processedInStage,
+            workerStageTotal: params.candidates.length,
+            stageCPass,
+            persisted: persistedCount,
+            replayErrors,
+          },
+        });
+
+        if (pendingCacheWrites.length >= 50) {
+          await upsertScalpV2WeeklyCache({ rows: pendingCacheWrites }).catch(
+            () => 0,
+          );
+          pendingCacheWrites.length = 0;
+        }
       }
-      })); // end Promise.all(batch.map)
 
-      await flushPendingCandidateUpserts();
+      return passers;
+    }
 
-      // Heartbeat after each batch to keep the lock alive
-      await emitResearchHeartbeat({
-        phase: "backtest_candidates",
-        force: true,
-        progress: {
-          ...baseProgress,
-          processedSoFar: Math.min(candidateIdx + BACKTEST_CONCURRENCY, chunked.length),
-          totalSelected: chunked.length,
-          stageCPass,
-          persisted: persistedCount,
-          replayErrors,
-        },
+    const stageAInput = candidateRuntimes.filter((runtime) => !runtime.finalized);
+    const stageAPassers = await runBarrierStage({
+      stage: workerPolicy.stageA,
+      candidates: stageAInput,
+    });
+
+    let stageBPassers: StageCandidateRuntime[] = [];
+    if (!timeBudgetExhausted) {
+      stageBPassers = await runBarrierStage({
+        stage: workerPolicy.stageB,
+        candidates: stageAPassers.filter((runtime) => !runtime.finalized),
       });
+    }
 
-      // Flush cache writes periodically so they survive timeouts
-      if (pendingCacheWrites.length >= 50) {
-        await upsertScalpV2WeeklyCache({ rows: pendingCacheWrites }).catch(() => 0);
-        pendingCacheWrites.length = 0;
-      }
+    if (!timeBudgetExhausted) {
+      await runBarrierStage({
+        stage: workerPolicy.stageC,
+        candidates: stageBPassers.filter((runtime) => !runtime.finalized),
+      });
     }
 
     await flushPendingCandidateUpserts();
@@ -3582,6 +3792,7 @@ export async function runScalpV2ResearchJob(params: {
       replayErrors,
       incrementalStageReplays,
       fullStageReplays,
+      cachedStageReuses,
       droppedByVenuePolicy,
       droppedByScopePrune,
       freshnessGate,
