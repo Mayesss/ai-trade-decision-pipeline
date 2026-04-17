@@ -69,6 +69,7 @@ import {
   listScalpV2OpenPositions,
   loadScalpV2ResearchCursor,
   loadScalpV2RuntimeConfig,
+  requeueScalpV2DeploymentCandidatesForWindow,
   snapshotScalpV2DailyMetrics,
   toDeploymentId,
   updateScalpV2CandidateStatuses,
@@ -2668,6 +2669,42 @@ export async function runScalpV2ResearchJob(params: {
     }
 
     // --- BACKTEST RUN: warm-up complete, skip generation entirely ---
+    const deploymentRolloverRequeueEnabled = envBool(
+      "SCALP_V2_RESEARCH_DEPLOYMENT_ROLLOVER_REQUEUE_ENABLED",
+      true,
+    );
+    const deploymentRolloverPreviousWindowOnly = envBool(
+      "SCALP_V2_RESEARCH_DEPLOYMENT_ROLLOVER_PREVIOUS_WINDOW_ONLY",
+      true,
+    );
+    const deploymentRolloverIncludeDisabled = envBool(
+      "SCALP_V2_RESEARCH_DEPLOYMENT_ROLLOVER_INCLUDE_DISABLED",
+      true,
+    );
+    let deploymentRolloverRequeued = 0;
+    if (deploymentRolloverRequeueEnabled) {
+      await emitResearchHeartbeat({
+        phase: "deployment_rollover_requeue",
+        force: true,
+      });
+      deploymentRolloverRequeued = await requeueScalpV2DeploymentCandidatesForWindow(
+        {
+          windowToTs,
+          previousWindowOnly: deploymentRolloverPreviousWindowOnly,
+          includeDisabledDeployments: deploymentRolloverIncludeDisabled,
+        },
+      ).catch(() => 0);
+      await emitResearchHeartbeat({
+        phase: "deployment_rollover_requeue",
+        force: true,
+        progress: {
+          deploymentRolloverRequeued,
+          deploymentRolloverPreviousWindowOnly,
+          deploymentRolloverIncludeDisabled,
+        },
+      });
+    }
+
     // Find the next symbol(s) that still have "discovered" candidates, load only those.
     await emitResearchHeartbeat({ phase: "load_backtest_chunk", force: true });
     const maxSymbolsPerRun = Math.max(1, Math.min(50,
@@ -2739,6 +2776,7 @@ export async function runScalpV2ResearchJob(params: {
         scopeCount: scopes.length,
         droppedByScopePrune,
         poolSizeTotal,
+        deploymentRolloverRequeued,
         totalCandidates: allCandidates.length,
         skippedByCache,
         pendingAfter,
@@ -2852,6 +2890,7 @@ export async function runScalpV2ResearchJob(params: {
         scopeCount: scopes.length,
         droppedByScopePrune,
         poolSizeTotal,
+        deploymentRolloverRequeued,
         totalCandidates: allCandidates.length,
         skippedByCache,
         skippedByClearFail,
@@ -3769,6 +3808,7 @@ export async function runScalpV2ResearchJob(params: {
       poolSizeTotal,
       deploymentVariantsGenerated,
       totalCandidates: allCandidates.length,
+      deploymentRolloverRequeued,
       skippedByCache,
       skippedByClearFail,
       skippedByNetRPreFilter,

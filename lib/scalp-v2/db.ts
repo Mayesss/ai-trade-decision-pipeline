@@ -1268,6 +1268,95 @@ export async function updateScalpV2CandidateStatuses(params: {
   return ids.length;
 }
 
+const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Requeue deployment-linked candidates for weekly rollover backtesting.
+ *
+ * This moves stale deployment candidates back to "discovered" so research
+ * can re-evaluate them for the current completed week window.
+ */
+export async function requeueScalpV2DeploymentCandidatesForWindow(params: {
+  windowToTs: number;
+  previousWindowOnly?: boolean;
+  includeDisabledDeployments?: boolean;
+  reasonCode?: string;
+}): Promise<number> {
+  if (!isScalpPgConfigured()) return 0;
+  const db = scalpPrisma();
+  const windowToTs = Math.floor(Number(params.windowToTs) || 0);
+  if (windowToTs <= 0) return 0;
+  const previousWindowOnly = params.previousWindowOnly !== false;
+  const includeDisabledDeployments = params.includeDisabledDeployments !== false;
+  const previousWindowToTs = windowToTs - ONE_WEEK_MS;
+  const reasonCode = String(
+    params.reasonCode || "SCALP_V2_REQUEUE_DEPLOYMENT_WINDOW_ROLLOVER",
+  )
+    .trim()
+    .toUpperCase();
+  const nowTs = Date.now();
+
+  const enabledFilter = includeDisabledDeployments
+    ? sql``
+    : sql`AND d.enabled = TRUE`;
+  const previousWindowFilter = previousWindowOnly
+    ? sql`
+        AND (
+          (c.metadata_json->'worker'->>'windowToTs') IS NULL
+          OR (c.metadata_json->'worker'->>'windowToTs')::bigint = ${previousWindowToTs}
+        )
+      `
+    : sql``;
+
+  const rows = await db.$queryRaw<Array<{ id: bigint | number }>>(sql`
+    WITH target AS (
+      SELECT c.id
+      FROM scalp_v2_candidates c
+      INNER JOIN scalp_v2_deployments d
+        ON d.candidate_id = c.id
+      WHERE c.status <> 'discovered'
+        AND (
+          (c.metadata_json->'worker'->>'windowToTs') IS NULL
+          OR (c.metadata_json->'worker'->>'windowToTs')::bigint <> ${windowToTs}
+        )
+        ${previousWindowFilter}
+        ${enabledFilter}
+    )
+    UPDATE scalp_v2_candidates c
+    SET
+      status = 'discovered',
+      reason_codes = (
+        SELECT ARRAY(
+          SELECT DISTINCT x
+          FROM unnest(
+            COALESCE(c.reason_codes, '{}'::text[]) || ARRAY[${reasonCode}]::text[]
+          ) AS x
+        )
+      ),
+      metadata_json = COALESCE(c.metadata_json, '{}'::jsonb) || jsonb_build_object(
+        'requeue',
+        jsonb_build_object(
+          'triggeredAtMs',
+          ${nowTs}::bigint,
+          'trigger',
+          'deployment_window_rollover',
+          'windowToTs',
+          ${windowToTs}::bigint,
+          'previousWindowOnly',
+          (${previousWindowOnly})::boolean,
+          'includeDisabledDeployments',
+          (${includeDisabledDeployments})::boolean
+        )
+      ),
+      updated_at = NOW()
+    FROM target t
+    WHERE c.id = t.id
+    RETURNING c.id;
+  `);
+
+  return rows.length;
+}
+
 const UPSERT_DEPLOYMENT_BATCH_SIZE = 400;
 
 export async function upsertScalpV2Deployments(params: {
