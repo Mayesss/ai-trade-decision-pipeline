@@ -1121,6 +1121,17 @@ function hasReusableNonZeroWeeklyCacheMetrics(
   return Number.isFinite(netR) && Math.abs(netR) > 1e-9;
 }
 
+function shouldDeferWorkerStageForCoverage(
+  stageResult: ScalpV2WorkerStageResult,
+): boolean {
+  if (stageResult.executed) return false;
+  return [
+    "insufficient_candles",
+    "insufficient_latest_week_candles",
+    "insufficient_stage_week_candle_coverage",
+  ].includes(String(stageResult.reason || "").trim().toLowerCase());
+}
+
 function evaluateWorkerStageGate(params: {
   stage: ScalpV2WorkerStagePolicy;
   stageResult: ScalpV2WorkerStageResult;
@@ -2359,17 +2370,23 @@ export async function runScalpV2ResearchJob(params: {
     runtime = scopePrune.runtime;
     const activePrunedScopes = normalizeActivePrunedScopes(runtime, nowTs);
     const jobStartMs = nowMs();
-    const timeBudgetMs = Math.max(
-      60_000,
-      Math.min(
-        780_000,
-        toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_TIME_BUDGET_MS,
-          650_000,
-          780_000,
-        ),
-      ),
+    const disableTimeBudget = envBool(
+      "SCALP_V2_RESEARCH_DISABLE_TIME_BUDGET",
+      false,
     );
+    const timeBudgetMs = disableTimeBudget
+      ? 365 * ONE_DAY_MS
+      : Math.max(
+          60_000,
+          Math.min(
+            780_000,
+            toPositiveInt(
+              process.env.SCALP_V2_RESEARCH_TIME_BUDGET_MS,
+              650_000,
+              780_000,
+            ),
+          ),
+        );
     // Research runs on Sundays (after new week candles are loaded).
     // Only execution is blocked on Sunday UTC.
 
@@ -2993,6 +3010,7 @@ export async function runScalpV2ResearchJob(params: {
     let stageBFail = 0;
     let stageCPass = 0;
     let stageCFail = 0;
+    let deferredByCandleCoverage = 0;
     let replayErrors = 0;
     let droppedBelowMinStage = 0;
     let incrementalStageReplays = 0;
@@ -3340,6 +3358,26 @@ export async function runScalpV2ResearchJob(params: {
             candles: symbolCandles,
             fromTs,
             toTs: windowToTs,
+          });
+        }
+      }
+
+      if (missingPriorWeeks) {
+        const observedWeeks = new Set<number>();
+        for (const candle of stageCandles) {
+          const ts = Math.floor(Number(candle.ts) || 0);
+          if (!Number.isFinite(ts) || ts < fromTs || ts >= windowToTs) continue;
+          observedWeeks.add(startOfScalpV2WeekMondayUtc(ts));
+        }
+        const missingCoverageWeeks = stageWeekStarts.filter(
+          (weekStart) => !observedWeeks.has(weekStart),
+        );
+        if (missingCoverageWeeks.length > 0) {
+          return buildWorkerStageSkeleton({
+            stage,
+            fromTs,
+            toTs: windowToTs,
+            reason: "insufficient_stage_week_candle_coverage",
           });
         }
       }
@@ -3715,6 +3753,12 @@ export async function runScalpV2ResearchJob(params: {
           if (!row) continue;
           const { runtime, stageResult } = row;
           runtime.stageResults[params.stage.id] = stageResult;
+          if (shouldDeferWorkerStageForCoverage(stageResult)) {
+            deferredByCandleCoverage += 1;
+            processed += 1;
+            runtime.finalized = true;
+            continue;
+          }
           updateStageCounters(params.stage.id, stageResult);
 
           if (params.stage.id === "a") {
@@ -3808,6 +3852,7 @@ export async function runScalpV2ResearchJob(params: {
       poolSizeTotal,
       deploymentVariantsGenerated,
       totalCandidates: allCandidates.length,
+      reason: timeBudgetExhausted ? "time_budget_exhausted" : undefined,
       deploymentRolloverRequeued,
       skippedByCache,
       skippedByClearFail,
@@ -3829,6 +3874,7 @@ export async function runScalpV2ResearchJob(params: {
       stageBFail,
       stageCPass,
       stageCFail,
+      deferredByCandleCoverage,
       replayErrors,
       incrementalStageReplays,
       fullStageReplays,
@@ -3838,6 +3884,7 @@ export async function runScalpV2ResearchJob(params: {
       freshnessGate,
       timeBudgetExhausted,
       timeBudgetMs,
+      timeBudgetDisabled: disableTimeBudget,
       elapsedMs: nowMs() - jobStartMs,
       remaining,
       pendingAfter,

@@ -27,34 +27,76 @@ const { loadEnvConfig } = nextEnv;
 // Ensure local scripts pick up .env/.env.local like Next.js runtime.
 loadEnvConfig(process.cwd());
 
-const SYMBOLS_PER_BATCH = Math.max(1, Math.floor(Number(process.env.BULK_SYMBOLS_PER_BATCH) || 4));
-const CANDIDATE_BATCH_SIZE = Math.max(
+let symbolsPerBatch = Math.max(1, Math.floor(Number(process.env.BULK_SYMBOLS_PER_BATCH) || 4));
+let candidateBatchSize = Math.max(
   1,
   Math.floor(Number(process.env.BULK_CANDIDATE_BATCH_SIZE) || 100),
 );
 const cpuCount = Math.max(1, os.cpus().length || 1);
 const defaultBacktestConcurrency = Math.max(1, Math.min(8, Math.floor(cpuCount / 2) || 1));
-const BACKTEST_CONCURRENCY = Math.max(
+let backtestConcurrency = Math.max(
   1,
   Math.min(16, Math.floor(Number(process.env.BULK_BACKTEST_CONCURRENCY) || defaultBacktestConcurrency)),
 );
-const TIME_BUDGET_MINUTES = Math.max(
+let timeBudgetMinutes = Math.max(
   1,
   Math.floor(Number(process.env.BULK_TIME_BUDGET_MINUTES) || 30),
 );
 const MAX_BATCHES = Math.max(0, Math.floor(Number(process.env.BULK_MAX_BATCHES) || 0));
+const MIN_SYMBOLS_PER_BATCH = Math.max(
+  1,
+  Math.floor(Number(process.env.BULK_MIN_SYMBOLS_PER_BATCH) || 1),
+);
+const MIN_CANDIDATE_BATCH_SIZE = Math.max(
+  1,
+  Math.floor(Number(process.env.BULK_MIN_CANDIDATE_BATCH_SIZE) || 20),
+);
+const MIN_BACKTEST_CONCURRENCY = Math.max(
+  1,
+  Math.floor(Number(process.env.BULK_MIN_BACKTEST_CONCURRENCY) || 2),
+);
+const LOW_PROGRESS_STREAK_FOR_BACKOFF = Math.max(
+  1,
+  Math.floor(Number(process.env.BULK_LOW_PROGRESS_STREAK_FOR_BACKOFF) || 2),
+);
+
+function envBool(name: string, fallback: boolean): boolean {
+  const raw = String(process.env[name] || '').trim().toLowerCase();
+  if (!raw) return fallback;
+  if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
+  if (['0', 'false', 'no', 'off'].includes(raw)) return false;
+  return fallback;
+}
+
+const DISABLE_TIME_BUDGET = envBool('BULK_DISABLE_TIME_BUDGET', true);
+
+function applyRuntimeOverrides(): void {
+  process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN = String(symbolsPerBatch);
+  process.env.SCALP_V2_RESEARCH_BATCH_SIZE = String(candidateBatchSize);
+  process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY_MAX = '16';
+  process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY = String(backtestConcurrency);
+  if (DISABLE_TIME_BUDGET) {
+    process.env.SCALP_V2_RESEARCH_DISABLE_TIME_BUDGET = '1';
+    delete process.env.SCALP_V2_RESEARCH_TIME_BUDGET_MS;
+  } else {
+    process.env.SCALP_V2_RESEARCH_DISABLE_TIME_BUDGET = '0';
+    process.env.SCALP_V2_RESEARCH_TIME_BUDGET_MS = String(timeBudgetMinutes * 60 * 1000);
+  }
+  // Prevent lock stealing during long local batches.
+  process.env.SCALP_V2_JOB_LOCK_STALE_MINUTES = String(
+    DISABLE_TIME_BUDGET ? 120 : Math.max(30, Math.ceil((timeBudgetMinutes * 2) + 5)),
+  );
+}
 
 // Override env so local runs process more work per batch.
-process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN = String(SYMBOLS_PER_BATCH);
-process.env.SCALP_V2_RESEARCH_BATCH_SIZE = String(CANDIDATE_BATCH_SIZE);
-process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY_MAX = '16';
-process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY = String(BACKTEST_CONCURRENCY);
-process.env.SCALP_V2_RESEARCH_TIME_BUDGET_MS = String(TIME_BUDGET_MINUTES * 60 * 1000);
+applyRuntimeOverrides();
 
 const globalStart = Date.now();
 let totalProcessed = 0;
 let totalSucceeded = 0;
 let batchCount = 0;
+let lastPending = -1;
+let lowProgressStreak = 0;
 
 let runScalpV2ResearchJob: ((params: { batchSize?: number }) => Promise<{
   ok: boolean;
@@ -80,10 +122,11 @@ function currentWindowToTs(): number {
 async function runBatch(): Promise<boolean> {
   batchCount += 1;
   const batchStart = Date.now();
-  console.log(`\n--- Batch ${batchCount} (${SYMBOLS_PER_BATCH} symbols, elapsed ${((Date.now() - globalStart) / 60000).toFixed(1)}m) ---`);
+  applyRuntimeOverrides();
+  console.log(`\n--- Batch ${batchCount} (${symbolsPerBatch} symbols, elapsed ${((Date.now() - globalStart) / 60000).toFixed(1)}m) ---`);
 
   const runResearch = await getRunScalpV2ResearchJob();
-  const result = await runResearch({ batchSize: CANDIDATE_BATCH_SIZE });
+  const result = await runResearch({ batchSize: candidateBatchSize });
 
   const elapsed = ((Date.now() - batchStart) / 1000).toFixed(1);
   totalProcessed += result.processed;
@@ -95,12 +138,42 @@ async function runBatch(): Promise<boolean> {
   const symsRun = d.symbolsThisRun || '?';
   const symsTotal = d.symbolsTotal || '?';
   const stgC = d.stageCPass || 0;
+  const stgA = d.stageAPass || 0;
+  const stgB = d.stageBPass || 0;
+  const budgetHit = Boolean(d.timeBudgetExhausted);
   const pending = result.pendingAfter || 0;
-  const reason = d.reason || '';
+  const reason = d.reason || (budgetHit ? 'time_budget_exhausted' : '');
 
   console.log(`  ${elapsed}s | processed=${result.processed} succeeded=${result.succeeded} stageC=${stgC}`);
   console.log(`  symbols=${symsRun}/${symsTotal} | weekly=${wkEval}/${wkTotal} (${wkTotal > 0 ? Math.round(wkEval / wkTotal * 100) : 0}%)`);
+  console.log(`  stageA=${stgA} stageB=${stgB} stageC=${stgC} | budgetHit=${budgetHit ? 'yes' : 'no'}`);
   console.log(`  pending=${pending} | reason=${reason}`);
+
+  // Auto-backoff when we keep burning batches with almost no forward progress.
+  const lowProgress =
+    pending > 0 &&
+    result.processed <= 1 &&
+    stgC === 0 &&
+    (lastPending < 0 || pending >= lastPending);
+  if (lowProgress) {
+    lowProgressStreak += 1;
+  } else {
+    lowProgressStreak = 0;
+  }
+  if (lowProgressStreak >= LOW_PROGRESS_STREAK_FOR_BACKOFF) {
+    const oldSymbols = symbolsPerBatch;
+    const oldBatch = candidateBatchSize;
+    const oldConc = backtestConcurrency;
+    symbolsPerBatch = Math.max(MIN_SYMBOLS_PER_BATCH, Math.floor(symbolsPerBatch / 2));
+    candidateBatchSize = Math.max(MIN_CANDIDATE_BATCH_SIZE, Math.floor(candidateBatchSize / 2));
+    backtestConcurrency = Math.max(MIN_BACKTEST_CONCURRENCY, Math.floor(backtestConcurrency / 2));
+    lowProgressStreak = 0;
+    applyRuntimeOverrides();
+    console.log(
+      `  Auto-backoff applied: symbols ${oldSymbols}->${symbolsPerBatch}, batch ${oldBatch}->${candidateBatchSize}, concurrency ${oldConc}->${backtestConcurrency}`,
+    );
+  }
+  lastPending = pending;
 
   if (result.busy) {
     if (MAX_BATCHES > 0 && batchCount >= MAX_BATCHES) {
@@ -161,10 +234,12 @@ async function main() {
   }).catch(() => -1);
 
   console.log(`Local bulk research runner`);
-  console.log(`Symbols per batch: ${SYMBOLS_PER_BATCH}`);
-  console.log(`Candidates per batch: ${CANDIDATE_BATCH_SIZE}`);
-  console.log(`Backtest concurrency: ${BACKTEST_CONCURRENCY}`);
-  console.log(`Time budget per batch: ${TIME_BUDGET_MINUTES} min`);
+  console.log(`Symbols per batch: ${symbolsPerBatch}`);
+  console.log(`Candidates per batch: ${candidateBatchSize}`);
+  console.log(`Backtest concurrency: ${backtestConcurrency}`);
+  console.log(
+    `Time budget per batch: ${DISABLE_TIME_BUDGET ? 'disabled (bulk mode)' : `${timeBudgetMinutes} min`}`,
+  );
   console.log(
     `Initial warm-up state: dbHash=${warmUpBefore?.scopeHash ?? 'null'} candidates=${warmUpBefore?.candidateCount ?? 0} discovered=${discoveredBefore >= 0 ? discoveredBefore : '?'}`,
   );

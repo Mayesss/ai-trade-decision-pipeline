@@ -93,9 +93,12 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
       Math.floor(Number(params.offset) || 0),
     ),
   );
+  // Stage C evaluates 12 completed weeks; cold-start candle bootstraps
+  // should cover at least that horizon plus one buffer week.
+  const minColdStartLookbackDays = 14 * 7;
   const lookbackDays = toPositiveInt(
     process.env.SCALP_V2_LOAD_CANDLES_LOOKBACK_DAYS,
-    35,
+    minColdStartLookbackDays,
     365,
   );
   const fetchWindowMinutes = toPositiveInt(
