@@ -1115,7 +1115,7 @@ function aggregateStageFromWeeklyMetrics(params: {
 
 function hasReusableNonZeroWeeklyCacheMetrics(
   metrics: ScalpV2WorkerStageWeeklyMetrics | null | undefined,
-): boolean {
+): metrics is ScalpV2WorkerStageWeeklyMetrics {
   if (!metrics) return false;
   const netR = Number(metrics.netR);
   return Number.isFinite(netR) && Math.abs(netR) > 1e-9;
