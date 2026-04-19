@@ -138,6 +138,58 @@ function hashScoreSeed(value: string): number {
   return positive % 1000;
 }
 
+const RESEARCH_WARM_UP_SCOPE_HASH_VERSION = "v2_sha256_r1";
+
+function buildResearchWarmUpScopeHash(params: {
+  scopes: Array<{
+    venue: ScalpV2Venue;
+    symbol: string;
+    session: ScalpV2Session;
+  }>;
+  maxCandidatesPerSession: number;
+  enabledDeploymentVariantSeeds: string[];
+}): string {
+  const normalizedScopes = params.scopes
+    .map((row) => `${row.venue}:${row.symbol}:${row.session}`)
+    .sort();
+  const normalizedEntryTriggerCompat: Array<[string, string[]]> = Object.entries(
+    ENTRY_TRIGGER_COMPAT,
+  )
+    .map(
+      ([armId, ids]): [string, string[]] => [
+        String(armId || "").trim().toLowerCase(),
+        (Array.isArray(ids) ? ids : [])
+          .map((id) => String(id || "").trim().toLowerCase())
+          .filter(Boolean)
+          .sort(),
+      ],
+    )
+    .sort((a, b) => a[0].localeCompare(b[0]));
+  const payload = JSON.stringify({
+    version: RESEARCH_WARM_UP_SCOPE_HASH_VERSION,
+    strategyId: MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
+    maxCandidatesPerSession: Math.max(
+      1,
+      Math.floor(Number(params.maxCandidatesPerSession) || 1),
+    ),
+    scopes: normalizedScopes,
+    enabledDeploymentVariantSeeds: params.enabledDeploymentVariantSeeds
+      .map((seed) => String(seed || "").trim().toLowerCase())
+      .filter(Boolean)
+      .sort(),
+    entryTriggerCompat: normalizedEntryTriggerCompat,
+    riskRuleResearchProfiles: RISK_RULE_RESEARCH_PROFILES.slice()
+      .map((id) => String(id || "").trim().toLowerCase())
+      .filter(Boolean)
+      .sort(),
+    stateMachineResearchProfiles: STATE_MACHINE_RESEARCH_PROFILES.slice()
+      .map((id) => String(id || "").trim().toLowerCase())
+      .filter(Boolean)
+      .sort(),
+  });
+  return crypto.createHash("sha256").update(payload).digest("hex");
+}
+
 function nowMs(): number {
   return Date.now();
 }
@@ -2565,7 +2617,7 @@ export async function runScalpV2ResearchJob(params: {
     }
 
     // --- Warm-up: generate and persist candidates once per week ---
-    // The scope hash fingerprints the current (scopes × maxCandidatesPerSession).
+    // The scope hash fingerprints the warm-up candidate universe inputs.
     // If it matches the DB, generation is skipped entirely — straight to backtest.
     const stagePolicies = [
       workerPolicy.stageA,
@@ -2573,9 +2625,27 @@ export async function runScalpV2ResearchJob(params: {
       workerPolicy.stageC,
     ] as const;
     const minWindowFromTs = windowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS;
-    const scopeHash = hashScoreSeed(
-      scopes.map((s) => `${s.venue}:${s.symbol}:${s.session}`).sort().join("|") + `|mc=${maxCandidatesPerSession}`,
-    ).toString();
+    const enabledDeploymentsForWarmUp = await listScalpV2Deployments({
+      enabledOnly: true,
+      limit: 500,
+    }).catch(() => [] as Awaited<ReturnType<typeof listScalpV2Deployments>>);
+    const enabledDeploymentVariantSeeds = enabledDeploymentsForWarmUp
+      .filter((dep) =>
+        isScalpV2RuntimeSymbolInScope({
+          runtime,
+          venue: dep.venue,
+          symbol: dep.symbol,
+        }),
+      )
+      .map(
+        (dep) =>
+          `${dep.venue}:${dep.symbol}:${dep.strategyId}:${dep.tuneId}:${dep.entrySessionProfile}`,
+      );
+    const scopeHash = buildResearchWarmUpScopeHash({
+      scopes,
+      maxCandidatesPerSession,
+      enabledDeploymentVariantSeeds,
+    });
     const warmUpState = await loadScalpV2WarmUpState({ windowToTs }).catch(() => null);
     const warmUpComplete = warmUpState !== null && warmUpState.scopeHash === scopeHash;
 
@@ -2649,7 +2719,7 @@ export async function runScalpV2ResearchJob(params: {
 
       // Deployment variants
       try {
-        const enabledDeployments = await listScalpV2Deployments({ enabledOnly: true, limit: 500 });
+        const enabledDeployments = enabledDeploymentsForWarmUp;
         const existingTuneIds = new Set(allCandidates.map((c) => c.tuneId));
         for (const dep of enabledDeployments) {
           if (!isScalpV2RuntimeSymbolInScope({ runtime, venue: dep.venue, symbol: dep.symbol })) continue;
@@ -2769,6 +2839,7 @@ export async function runScalpV2ResearchJob(params: {
         persisted: allCandidates.length,
         deploymentVariantsGenerated,
         scopeHash,
+        scopeHashVersion: RESEARCH_WARM_UP_SCOPE_HASH_VERSION,
         configuredBatchSize,
         effectiveBatchSize,
       };
@@ -3038,12 +3109,23 @@ export async function runScalpV2ResearchJob(params: {
     const chunked = selected.slice(0, effectiveBatchSize);
     const deferredCount = Math.max(0, selected.length - chunked.length);
 
-    // Base progress: include overall weekly totals so the UI shows global progress
-    const weeklyTotal = warmUpState?.candidateCount || selected.length;
-    const weeklyEvaluated = evaluatedKeys.size;
+    // Base progress: track this run against the live discovered backlog.
+    // UI progress should reflect "processed / discovered_total".
+    const discoveredBacklogForProgress = await countScalpV2CandidatesByStatus({
+      status: "discovered",
+    }).catch(() => -1);
+    const discoveredBacklogResolved =
+      discoveredBacklogForProgress >= 0 ? discoveredBacklogForProgress : selected.length;
+    const discoveredTotal = Math.max(0, discoveredBacklogResolved);
+    const weeklyEvaluated = 0;
+    const weeklyTotal = Math.max(
+      discoveredTotal,
+      selected.length,
+    );
     const baseProgress = {
       selectedCandidates: chunked.length,
       selectedTotal: selected.length,
+      discoveredTotal,
       weeklyTotal,
       weeklyEvaluated,
       skippedByCache,

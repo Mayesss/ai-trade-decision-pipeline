@@ -4287,30 +4287,36 @@ export default function Home() {
       return Math.max(0, Math.floor(v));
     };
 
-    // Prefer overall weekly totals from heartbeat (weeklyTotal / weeklyEvaluated)
+    // Primary progress model: processed / discovered_total.
+    const discoveredTotal = n(hb.discoveredTotal, p.discoveredTotal, null);
+    // Fallback legacy model: weeklyTotal / weeklyEvaluated.
     const weeklyTotal = n(hb.weeklyTotal, p.weeklyTotal, null);
     const weeklyEvaluated = n(hb.weeklyEvaluated, p.weeklyEvaluated, null);
     const stageCPass = n(hb.stageCPass, healthProg.stageCPass, p.stageCPass);
     const symbolsThisRun = n(p.symbolsThisRun, null, null);
     const symbolsTotal = n(p.symbolsTotal, null, null);
-
-    const total = weeklyTotal;
-    const doneConfirmed = weeklyEvaluated;
     const processedSoFar = n(
       hb.processedSoFar,
       (p as any)?.processedSoFar,
       (healthProg as any)?.processedSoFar,
     );
-    const doneLive =
-      total > 0
-        ? Math.min(
-            total,
-            Math.max(
-              doneConfirmed,
-              doneConfirmed + (isRunning ? processedSoFar : 0),
-            ),
-          )
-        : doneConfirmed;
+
+    const total = discoveredTotal > 0 ? discoveredTotal : weeklyTotal;
+    const doneConfirmed =
+      discoveredTotal > 0
+        ? Math.min(total, processedSoFar)
+        : weeklyEvaluated;
+    const doneLive = discoveredTotal > 0
+      ? doneConfirmed
+      : total > 0
+          ? Math.min(
+              total,
+              Math.max(
+                doneConfirmed,
+                doneConfirmed + (isRunning ? processedSoFar : 0),
+              ),
+            )
+          : doneConfirmed;
     const pct = total > 0 ? Math.min(100, (doneLive / total) * 100) : 0;
 
     let statusLabel: string | null = null;
