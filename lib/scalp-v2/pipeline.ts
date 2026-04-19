@@ -96,6 +96,7 @@ import {
   startOfScalpV2WeekMondayUtc,
 } from "./weekWindows";
 import type {
+  ScalpV2Deployment,
   ScalpV2ExecutionEvent,
   ScalpV2JobKind,
   ScalpV2JobResult,
@@ -105,6 +106,26 @@ import type {
   ScalpV2Venue,
   ScalpV2WorkerStageWeeklyMetrics,
 } from "./types";
+
+type ExecuteDeploymentFreshnessGate = {
+  ready: boolean;
+  reason:
+    | "execute_guard_freshness_not_ready"
+    | "execute_guard_freshness_weeks_incomplete"
+    | "execute_guard_window_stale"
+    | "execute_guard_stage_c_window_stale"
+    | "execute_guard_stage_c_weekly_missing"
+    | "execute_guard_stage_c_non_zero_weeks_below_threshold"
+    | null;
+  requiredWeeks: number;
+  completedWeeks: number;
+  expectedWindowToTs: number;
+  freshnessWindowToTs: number | null;
+  stageCToTs: number | null;
+  weeklyWeekCount: number;
+  nonZeroWeeks: number;
+  minNonZeroWeeks: number;
+};
 
 function hashScoreSeed(value: string): number {
   let hash = 0;
@@ -1332,6 +1353,82 @@ function resolveWorkerStageCFreshness(params: {
     freshness,
     ready: true,
     reason: null,
+  };
+}
+
+function resolveExecuteDeploymentFreshnessGate(params: {
+  deployment: ScalpV2Deployment;
+  nowTs: number;
+  requiredWeeks: number;
+}): ExecuteDeploymentFreshnessGate {
+  const requiredWeeks = Math.max(1, Math.min(52, Math.floor(params.requiredWeeks || 12)));
+  const expectedWindowToTs = resolveScalpV2CompletedWeekWindowToUtc(params.nowTs);
+  const promotionGate = asRecord(params.deployment.promotionGate);
+  const freshness = asRecord(promotionGate.freshness);
+  const worker = asRecord(promotionGate.worker);
+  const stageC = asRecord(worker.stageC);
+  const weeklyNetR = asRecord(stageC.weeklyNetR);
+
+  const completedWeeks = Math.max(
+    0,
+    Math.floor(Number(freshness.completedWeeks) || 0),
+  );
+  const freshnessReady = freshness.ready === true;
+  const freshnessWindowToTsRaw = Math.floor(Number(freshness.windowToTs) || 0);
+  const freshnessWindowToTs =
+    freshnessWindowToTsRaw > 0 ? freshnessWindowToTsRaw : null;
+  const stageCToTsRaw = Math.floor(Number(stageC.toTs) || 0);
+  const stageCToTs = stageCToTsRaw > 0 ? stageCToTsRaw : null;
+  const weeklyWeekStarts = Array.from(
+    new Set(
+      Object.keys(weeklyNetR)
+        .map((key) => Number(key))
+        .filter((weekStart) => Number.isFinite(weekStart) && weekStart > 0),
+    ),
+  ).sort((a, b) => a - b);
+  const weeklyWeekCount = weeklyWeekStarts.length;
+  const nonZeroWeeks = weeklyWeekStarts.filter((weekStart) => {
+    const netR = Number(weeklyNetR[String(weekStart)] || 0);
+    return Number.isFinite(netR) && Math.abs(netR) > 1e-9;
+  }).length;
+  const minNonZeroWeeks = Math.max(
+    0,
+    Math.min(
+      requiredWeeks,
+      toNonNegativeInt(
+        process.env.SCALP_V2_EXECUTE_MIN_NON_ZERO_STAGE_C_WEEKS,
+        0,
+        requiredWeeks,
+      ),
+    ),
+  );
+
+  let reason: ExecuteDeploymentFreshnessGate["reason"] = null;
+  if (!freshnessReady) {
+    reason = "execute_guard_freshness_not_ready";
+  } else if (completedWeeks < requiredWeeks) {
+    reason = "execute_guard_freshness_weeks_incomplete";
+  } else if (freshnessWindowToTs === null || freshnessWindowToTs !== expectedWindowToTs) {
+    reason = "execute_guard_window_stale";
+  } else if (stageCToTs !== null && stageCToTs !== expectedWindowToTs) {
+    reason = "execute_guard_stage_c_window_stale";
+  } else if (weeklyWeekCount < requiredWeeks) {
+    reason = "execute_guard_stage_c_weekly_missing";
+  } else if (minNonZeroWeeks > 0 && nonZeroWeeks < minNonZeroWeeks) {
+    reason = "execute_guard_stage_c_non_zero_weeks_below_threshold";
+  }
+
+  return {
+    ready: reason === null,
+    reason,
+    requiredWeeks,
+    completedWeeks,
+    expectedWindowToTs,
+    freshnessWindowToTs,
+    stageCToTs,
+    weeklyWeekCount,
+    nonZeroWeeks,
+    minNonZeroWeeks,
   };
 }
 
@@ -4934,12 +5031,111 @@ export async function runScalpV2ExecuteJob(params: {
       });
     }
 
+    const executeRequiredWeeks = resolvePromotionPolicy().minCompletedWeeks;
+    const freshnessChecks = scopedDeployments.map((deployment) => ({
+      deployment,
+      freshness: resolveExecuteDeploymentFreshnessGate({
+        deployment,
+        nowTs,
+        requiredWeeks: executeRequiredWeeks,
+      }),
+    }));
+    const staleDeployments = freshnessChecks.filter(
+      (row) => !row.freshness.ready,
+    );
+    const executableDeployments = freshnessChecks
+      .filter((row) => row.freshness.ready)
+      .map((row) => row.deployment);
+    const freshnessReasonCounts: Record<string, number> = {};
+    for (const row of staleDeployments) {
+      const reason = row.freshness.reason || "execute_guard_freshness_not_ready";
+      freshnessReasonCounts[reason] = (freshnessReasonCounts[reason] || 0) + 1;
+    }
+    let freshnessDemoted = 0;
+    let freshnessRequeuedCandidates = 0;
+    if (staleDeployments.length > 0) {
+      freshnessDemoted = await upsertScalpV2Deployments({
+        rows: staleDeployments.map((row) => {
+          const gate = asRecord(row.deployment.promotionGate);
+          return {
+            candidateId: row.deployment.candidateId,
+            venue: row.deployment.venue,
+            symbol: row.deployment.symbol,
+            strategyId: row.deployment.strategyId,
+            tuneId: row.deployment.tuneId,
+            entrySessionProfile: row.deployment.entrySessionProfile,
+            enabled: false,
+            liveMode: "shadow" as const,
+            promotionGate: {
+              ...gate,
+              eligible: false,
+              shadowEligible: false,
+              reason: row.freshness.reason || "execute_guard_freshness_not_ready",
+              source: "v2_execute_freshness_guard",
+              evaluatedAtMs: nowTs,
+              executeGuard: {
+                checkedAtMs: nowTs,
+                ...row.freshness,
+              },
+            },
+            riskProfile: row.deployment.riskProfile,
+          };
+        }),
+      }).catch(() => 0);
+      const staleCandidateIds = Array.from(
+        new Set(
+          staleDeployments
+            .map((row) => Math.floor(Number(row.deployment.candidateId) || 0))
+            .filter((id) => id > 0),
+        ),
+      );
+      if (staleCandidateIds.length > 0) {
+        const expectedWindowToTs =
+          staleDeployments[0]?.freshness.expectedWindowToTs ||
+          resolveScalpV2CompletedWeekWindowToUtc(nowTs);
+        freshnessRequeuedCandidates = await updateScalpV2CandidateStatuses({
+          ids: staleCandidateIds,
+          status: "discovered",
+          metadataPatch: {
+            requeue: {
+              triggeredAtMs: nowTs,
+              trigger: "execute_freshness_guard",
+              windowToTs: expectedWindowToTs,
+            },
+          },
+        }).catch(() => 0);
+      }
+    }
+
+    if (!executableDeployments.length) {
+      details = {
+        executed: 0,
+        reason:
+          staleDeployments.length > 0
+            ? "no_enabled_deployments_after_freshness_guard"
+            : "no_enabled_deployments",
+        filteredOutOfScope,
+        staleEnabledDeployments: staleDeployments.length,
+        freshnessDemoted,
+        freshnessRequeuedCandidates,
+        freshnessReasonCounts,
+      };
+      return buildScalpV2JobResult({
+        jobKind: "execute",
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        pendingAfter: 0,
+        details,
+      });
+    }
+
     const bitgetAdapter = getScalpV2VenueAdapter("bitget");
     const capitalAdapter = getScalpV2VenueAdapter("capital");
     const bitgetSnapshots = await bitgetAdapter.broker.fetchOpenPositionSnapshots().catch(() => []);
     const capitalSnapshots = await capitalAdapter.broker.fetchOpenPositionSnapshots().catch(() => []);
 
-    for (const deployment of scopedDeployments) {
+    for (const deployment of executableDeployments) {
       processed += 1;
       const deploymentDryRun = effectiveDryRun || !runtime.liveEnabled || deployment.liveMode !== "live";
       try {
@@ -5032,10 +5228,15 @@ export async function runScalpV2ExecuteJob(params: {
     }
 
     details = {
-      executedDeployments: scopedDeployments.length,
+      executedDeployments: executableDeployments.length,
       dryRun: effectiveDryRun,
       liveEnabled: runtime.liveEnabled,
       filteredOutOfScope,
+      staleEnabledDeployments: staleDeployments.length,
+      freshnessDemoted,
+      freshnessRequeuedCandidates,
+      freshnessReasonCounts,
+      executeFreshnessWeeks: executeRequiredWeeks,
     };
 
     return buildScalpV2JobResult({
