@@ -6,8 +6,7 @@ export type ScalpV2CandidateStatus =
   | "discovered"
   | "evaluated"
   | "promoted"
-  | "rejected"
-  | "shadow";
+  | "rejected";
 
 export type ScalpV2LiveMode = "shadow" | "live";
 

@@ -152,7 +152,6 @@ function normalizeCandidateStatus(value: unknown): ScalpV2CandidateStatus {
   if (normalized === "evaluated") return "evaluated";
   if (normalized === "promoted") return "promoted";
   if (normalized === "rejected") return "rejected";
-  if (normalized === "shadow") return "shadow";
   return "discovered";
 }
 
@@ -425,13 +424,13 @@ export async function upsertScalpV2Candidates(params: {
         score = EXCLUDED.score,
         status = CASE
           WHEN EXCLUDED.status = 'discovered'
-            AND scalp_v2_candidates.status IN ('evaluated', 'promoted', 'shadow', 'rejected')
+            AND scalp_v2_candidates.status IN ('evaluated', 'promoted', 'rejected')
             THEN scalp_v2_candidates.status
           ELSE EXCLUDED.status
         END,
         reason_codes = CASE
           WHEN EXCLUDED.status = 'discovered'
-            AND scalp_v2_candidates.status IN ('evaluated', 'promoted', 'shadow', 'rejected')
+            AND scalp_v2_candidates.status IN ('evaluated', 'promoted', 'rejected')
             THEN scalp_v2_candidates.reason_codes
           ELSE EXCLUDED.reason_codes
         END,
@@ -825,7 +824,7 @@ export async function loadScalpV2EvaluatedCandidateKeys(params: {
       tune_id AS "tuneId",
       entry_session_profile AS "session"
     FROM scalp_v2_candidates
-    WHERE status IN ('evaluated', 'promoted', 'shadow', 'rejected')
+    WHERE status IN ('evaluated', 'promoted', 'rejected')
       AND (metadata_json->'worker'->>'windowToTs')::bigint = ${params.windowToTs}
   `);
   const keys = new Set<string>();
@@ -922,7 +921,7 @@ export async function loadScalpV2PreviousWeekResults(params: {
           ORDER BY (metadata_json->'worker'->>'windowToTs')::bigint DESC, updated_at DESC
         ) AS rn
       FROM scalp_v2_candidates
-      WHERE status IN ('evaluated', 'promoted', 'shadow', 'rejected')
+      WHERE status IN ('evaluated', 'promoted', 'rejected')
         AND (metadata_json->'worker'->>'windowToTs')::bigint != ${params.currentWindowToTs}
         AND metadata_json->'worker'->'stageA' IS NOT NULL
         ${symbolFilter}
