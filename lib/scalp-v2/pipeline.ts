@@ -2399,6 +2399,7 @@ export async function runScalpV2ResearchJob(params: {
   const jobStartMs = nowMs();
   const researchLog: Array<{ t: number; p: string; d?: string }> = [];
   const MAX_LOG_ENTRIES = 60;
+  let stickyDiscoveredTotal: number | null = null;
 
   function logResearch(phase: string, detail?: string): void {
     const elapsed = Math.round((nowMs() - jobStartMs) / 1000);
@@ -2420,6 +2421,24 @@ export async function runScalpV2ResearchJob(params: {
     }
     lastHeartbeatAtMs = now;
     logResearch(params.phase, params.progress?.step as string || undefined);
+    const progressPayload: Record<string, unknown> = {
+      ...(params.progress || {}),
+    };
+    const explicitDiscoveredTotal = Math.floor(
+      Number(progressPayload.discoveredTotal) || -1,
+    );
+    if (explicitDiscoveredTotal >= 0) {
+      stickyDiscoveredTotal = explicitDiscoveredTotal;
+    }
+    if (stickyDiscoveredTotal !== null) {
+      progressPayload.discoveredTotal = stickyDiscoveredTotal;
+      const explicitWeeklyTotal = Math.floor(
+        Number(progressPayload.weeklyTotal) || -1,
+      );
+      if (explicitWeeklyTotal < 0) {
+        progressPayload.weeklyTotal = stickyDiscoveredTotal;
+      }
+    }
     await heartbeatScalpV2Job({
       jobKind: "research",
       lockOwner: owner,
@@ -2430,7 +2449,7 @@ export async function runScalpV2ResearchJob(params: {
           processedSoFar: processed,
           succeededSoFar: succeeded,
           failedSoFar: failed,
-          ...(params.progress || {}),
+          ...progressPayload,
         },
         log: researchLog,
         ...(params.extra || {}),
@@ -2450,11 +2469,21 @@ export async function runScalpV2ResearchJob(params: {
 
   try {
     let runtime = await loadScalpV2RuntimeConfig();
+    const discoveredAtRuntimeLoad = await countScalpV2CandidatesByStatus({
+      status: "discovered",
+    }).catch(() => -1);
+    if (discoveredAtRuntimeLoad >= 0) {
+      stickyDiscoveredTotal = discoveredAtRuntimeLoad;
+    }
     await emitResearchHeartbeat({
       phase: "runtime_loaded",
       force: true,
       progress: {
         runtimeEnabled: runtime.enabled,
+        discoveredTotal:
+          stickyDiscoveredTotal !== null ? stickyDiscoveredTotal : undefined,
+        weeklyTotal:
+          stickyDiscoveredTotal !== null ? stickyDiscoveredTotal : undefined,
       },
     });
     if (!runtime.enabled) {
