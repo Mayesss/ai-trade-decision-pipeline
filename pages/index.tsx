@@ -368,6 +368,7 @@ type ScalpSummaryResponse = {
     stateCounts?: Record<string, number>;
     totalDeployments?: number;
     totalCandidates?: number;
+    candidateStatusCounts?: Partial<Record<ScalpCandidateStatusUi, number>>;
     symbolCoverage?: Array<{ symbol: string; candidates: number; deployments: number }>;
   };
   deployments?: ScalpSummaryDeployment[];
@@ -587,9 +588,20 @@ type ScalpWorkerSortState = {
   direction: ScalpWorkerSortDirection;
 };
 
+type ScalpCandidateStatusUi =
+  | "discovered"
+  | "evaluated"
+  | "promoted"
+  | "rejected";
+
+type ScalpCandidateGridStateUi = ScalpCandidateStatusUi | "enabled" | "all";
+
 type ScalpWorkerJobGridRow = {
   rowId: string;
+  candidateId: number | null;
   deploymentId: string | null;
+  candidateStatus: ScalpCandidateStatusUi;
+  candidateState: Exclude<ScalpCandidateGridStateUi, "all">;
   entrySessionProfile?: ScalpEntrySessionProfileUi | null;
   workerOnly?: boolean;
   symbol: string;
@@ -782,6 +794,16 @@ function buildScalpCandidateSessionKey(params: {
   const session =
     normalizeScalpEntrySessionProfileUi(params.entrySessionProfile) || "unknown";
   return `${symbol}~${strategyId}~${tuneId}~${session}`;
+}
+
+function normalizeScalpCandidateStatusUi(value: unknown): ScalpCandidateStatusUi {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "evaluated") return "evaluated";
+  if (normalized === "promoted") return "promoted";
+  if (normalized === "rejected") return "rejected";
+  return "discovered";
 }
 
 const ADMIN_SECRET_STORAGE_KEY = "admin_access_secret";
@@ -1553,6 +1575,31 @@ function toUiScalpSummaryFromV2(
       stateCounts,
       totalDeployments: asFiniteOrNull(summary.deployments) ?? deploymentsRaw.length,
       totalCandidates: asFiniteOrNull(summary.candidates) ?? candidatesRaw.length,
+      candidateStatusCounts: (() => {
+        const rawCounts = asPlainObject(summary.candidateStatusCounts);
+        const discovered =
+          asFiniteOrNull(rawCounts.discovered) ??
+          asFiniteOrNull(summary.discoveredCandidates) ??
+          0;
+        const evaluated =
+          asFiniteOrNull(rawCounts.evaluated) ??
+          asFiniteOrNull(summary.evaluatedCandidates) ??
+          0;
+        const promoted =
+          asFiniteOrNull(rawCounts.promoted) ??
+          asFiniteOrNull(summary.promotedCandidates) ??
+          0;
+        const rejected =
+          asFiniteOrNull(rawCounts.rejected) ??
+          asFiniteOrNull(summary.rejectedCandidates) ??
+          0;
+        return {
+          discovered: Math.max(0, Math.floor(discovered)),
+          evaluated: Math.max(0, Math.floor(evaluated)),
+          promoted: Math.max(0, Math.floor(promoted)),
+          rejected: Math.max(0, Math.floor(rejected)),
+        };
+      })(),
       symbolCoverage: Array.isArray(summary.symbolCoverage)
         ? (summary.symbolCoverage as Array<Record<string, unknown>>).map((r) => ({
             symbol: String(r.symbol || ""),
@@ -2175,9 +2222,8 @@ export default function Home() {
   const [scalpActiveDeploymentId, setScalpActiveDeploymentId] = useState<
     string | null
   >(null);
-  const [scalpEnabledFilter, setScalpEnabledFilter] = useState<
-    "enabled" | "disabled"
-  >("enabled");
+  const [scalpCandidateStateFilter, setScalpCandidateStateFilter] =
+    useState<ScalpCandidateGridStateUi>("evaluated");
   const [scalpCopiedDeploymentId, setScalpCopiedDeploymentId] = useState<
     string | null
   >(null);
@@ -4268,6 +4314,79 @@ export default function Home() {
     (max, c) => Math.max(max, Number(c?.updatedAtMs || 0)),
     0,
   ) || null;
+  const scalpCandidateStatusProgress = useMemo(() => {
+    const summaryCountsRaw = asPlainObject(
+      scalpSummary?.summary?.candidateStatusCounts,
+    );
+    const summaryTotal = Math.max(
+      0,
+      Math.floor(Number(scalpSummary?.summary?.totalCandidates) || 0),
+    );
+    const summaryDiscovered = Math.max(
+      0,
+      Math.floor(Number(summaryCountsRaw.discovered) || 0),
+    );
+    const summaryEvaluated = Math.max(
+      0,
+      Math.floor(Number(summaryCountsRaw.evaluated) || 0),
+    );
+    const summaryPromoted = Math.max(
+      0,
+      Math.floor(Number(summaryCountsRaw.promoted) || 0),
+    );
+    const summaryRejected = Math.max(
+      0,
+      Math.floor(Number(summaryCountsRaw.rejected) || 0),
+    );
+    const hasSummaryBreakdown =
+      summaryTotal > 0 &&
+      summaryDiscovered + summaryEvaluated + summaryPromoted + summaryRejected >
+        0;
+    if (hasSummaryBreakdown) {
+      const done = summaryEvaluated + summaryPromoted + summaryRejected;
+      return {
+        total: summaryTotal,
+        discovered: summaryDiscovered,
+        evaluated: summaryEvaluated,
+        promoted: summaryPromoted,
+        rejected: summaryRejected,
+        done,
+        donePct: summaryTotal > 0 ? Math.min(100, (done / summaryTotal) * 100) : 0,
+      };
+    }
+
+    const totals = {
+      discovered: 0,
+      evaluated: 0,
+      promoted: 0,
+      rejected: 0,
+    };
+    for (const raw of scalpPaginatedCandidates) {
+      const row = asPlainObject(raw);
+      const status = normalizeScalpCandidateStatusUi(row.status);
+      totals[status] += 1;
+    }
+    const total = Math.max(
+      summaryTotal,
+      Math.max(0, Math.floor(Number(scalpCandidatesTotal) || 0)),
+      totals.discovered + totals.evaluated + totals.promoted + totals.rejected,
+    );
+    const done = totals.evaluated + totals.promoted + totals.rejected;
+    return {
+      total,
+      discovered: totals.discovered,
+      evaluated: totals.evaluated,
+      promoted: totals.promoted,
+      rejected: totals.rejected,
+      done,
+      donePct: total > 0 ? Math.min(100, (done / total) * 100) : 0,
+    };
+  }, [
+    scalpSummary?.summary?.candidateStatusCounts,
+    scalpSummary?.summary?.totalCandidates,
+    scalpPaginatedCandidates,
+    scalpCandidatesTotal,
+  ]);
 
   // --- Research progress bar data ---
   const scalpResearchProgress = (() => {
@@ -4941,6 +5060,10 @@ export default function Home() {
         if (row.errorCode) errorCodeSet.add(row.errorCode);
         byKey.set(key, {
           rowId: key,
+          candidateId: null,
+          candidateStatus: "evaluated",
+          candidateState:
+            row.deploymentEnabled === true ? "enabled" : "evaluated",
           deploymentId: row.deploymentId || null,
           entrySessionProfile,
           workerOnly: false,
@@ -5088,6 +5211,10 @@ export default function Home() {
             : null;
       out.push({
         rowId: row.rowId,
+        candidateId: null,
+        candidateStatus: "evaluated",
+        candidateState:
+          row.deploymentEnabled === true ? "enabled" : "evaluated",
         deploymentId: row.deploymentId,
         entrySessionProfile: row.entrySessionProfile,
         symbol: row.symbol,
@@ -5127,209 +5254,182 @@ export default function Home() {
     }
     return out.sort(compareScalpWorkerJobGridRows);
   }, [scalpWorkerTaskRows, scalpSession]);
-  const scalpAllDeploymentsGridRows = useMemo<ScalpWorkerJobGridRow[]>(() => {
-    const workerMetricsByDeploymentId = new Map(
-      scalpWorkerJobsGridRows
-        .map((row) =>
-          row.deploymentId ? ([row.deploymentId, row] as const) : null,
-        )
-        .filter((entry): entry is readonly [string, ScalpWorkerJobGridRow] =>
-          Boolean(entry),
-        ),
-    );
-    const registryDeploymentIds = new Set(
-      scalpRegistryDeployments.map((deployment) => deployment.deploymentId),
-    );
-    const out = scalpRegistryDeployments.map((deployment) => {
-      const workerMetrics = workerMetricsByDeploymentId.get(
-        deployment.deploymentId,
-      );
-      if (workerMetrics) {
-        // Backfill new metrics from promotionGate when the worker row
-        // doesn't have them (worker rows are built from weekly breakdowns
-        // that don't carry per-stage aggregate metrics).
-        const pg = asPlainObject(deployment.promotionGate);
-        const pgWorker = asPlainObject(pg.worker || pg);
-        const pgBestStage = (() => {
-          for (const key of ["stageC", "stageB", "stageA"] as const) {
-            const s = asPlainObject(pgWorker[key]);
-            if (s.executed) return s;
-          }
-          return {};
-        })();
-        const pgStageC = pgBestStage;
-        return {
-          ...workerMetrics,
-          rowId: `deployment:${deployment.deploymentId}`,
-          deploymentId: deployment.deploymentId,
-          entrySessionProfile:
-            deployment.entrySessionProfile ||
-            workerMetrics.entrySessionProfile ||
-            null,
-          workerOnly: false,
-          forwardValidation:
-            deployment.forwardValidation || workerMetrics.forwardValidation,
-          deployed: true,
-          deploymentEnabled: deployment.enabled,
-          inUniverse: deployment.inUniverse,
-          lifecycleState: deployment.lifecycleState,
-          promotionEligible: deployment.promotionEligible,
-          reason:
-            deployment.promotionReason ||
-            (deployment.promotionEligible ? "eligible" : workerMetrics.reason),
-          expectancyR: workerMetrics.expectancyR ?? asFiniteNumber(pgStageC.expectancyR),
-          profitFactor: workerMetrics.profitFactor ?? asFiniteNumber(pgStageC.profitFactor),
-          maxDrawdownR: workerMetrics.maxDrawdownR ?? asFiniteNumber(pgStageC.maxDrawdownR),
-          totalMaxDrawdownR: workerMetrics.totalMaxDrawdownR ?? asFiniteNumber(pgStageC.maxDrawdownR),
-          maxWeeklyNetR: workerMetrics.maxWeeklyNetR ?? asFiniteNumber(pgStageC.maxWeeklyNetR),
-          largestTradeR: workerMetrics.largestTradeR ?? asFiniteNumber(pgStageC.largestTradeR),
-          exitReasons: workerMetrics.exitReasons ?? (
-            pgStageC.exitReasons && typeof pgStageC.exitReasons === "object"
-              ? {
-                  stop: Number((pgStageC.exitReasons as any).stop || 0),
-                  stopLoss: Number((pgStageC.exitReasons as any).stopLoss || 0),
-                  stopBe: Number((pgStageC.exitReasons as any).stopBe || 0),
-                  stopTrail: Number((pgStageC.exitReasons as any).stopTrail || 0),
-                  tp: Number((pgStageC.exitReasons as any).tp || 0),
-                  timeStop: Number((pgStageC.exitReasons as any).timeStop || 0),
-                  forceClose: Number((pgStageC.exitReasons as any).forceClose || 0),
-                }
-              : null
-          ),
-        } satisfies ScalpWorkerJobGridRow;
-      }
-      const forwardValidation = deployment.forwardValidation || null;
-      // Extract best-available stage metrics from promotionGate when worker rows are absent.
-      // Prefer stage C, fall back to B then A when prior stages blocked execution.
-      const gate = deployment.promotionGate || {};
-      const gateWorker = (gate.worker || gate) as Record<string, any>;
-      const gateBestStage = (() => {
-        for (const key of ["stageC", "stageB", "stageA"] as const) {
-          const raw = (gateWorker[key] || {}) as Record<string, any>;
-          if (raw.executed) return { data: raw, label: key.replace("stage", "").toUpperCase() };
-        }
-        return null;
-      })();
-      const gateStageC = gateBestStage?.data ?? null;
-      const gateStageLabel = gateBestStage?.label ?? "C";
-      const gateTrades = asFiniteNumber(gateStageC?.trades);
-      const gateNetR = asFiniteNumber(gateStageC?.netR);
-      const gateExpR = asFiniteNumber(gateStageC?.expectancyR);
-      const gatePF = asFiniteNumber(gateStageC?.profitFactor);
-      const gateDD = asFiniteNumber(gateStageC?.maxDrawdownR);
-
-      // Build weekly window bars from stage C weeklyNetR stored on deployment
-      const gateWeeklyNetR = (gateStageC?.weeklyNetR || {}) as Record<string, unknown>;
-      const gateWeekKeys = Object.keys(gateWeeklyNetR)
-        .map((k) => Number(k))
-        .filter((v) => Number.isFinite(v))
-        .sort((a, b) => a - b);
-      const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-      const gateWindowNetRs = gateWeekKeys.map((weekStart) => {
-        const netRValue = Number(gateWeeklyNetR[String(weekStart)] || 0);
-        const netRDisplay = `${netRValue >= 0 ? "+" : ""}${netRValue.toFixed(2)}R`;
-        const weekEnd = weekStart + ONE_WEEK_MS;
-        const windowLabel = `${new Date(weekStart).toISOString().slice(0, 10)} → ${new Date(Math.max(weekStart, weekEnd - 1)).toISOString().slice(0, 10)}`;
-        return {
-          sortTs: weekEnd,
-          value: netRValue,
-          display: netRDisplay,
-          tooltip: `Window:${windowLabel} | Net:${netRDisplay}`,
-        };
+  const scalpAllCandidatesGridRows = useMemo<ScalpWorkerJobGridRow[]>(() => {
+    const workerMetricsByCandidateKey = new Map<string, ScalpWorkerJobGridRow>();
+    const workerMetricsByDeploymentId = new Map<string, ScalpWorkerJobGridRow>();
+    for (const row of scalpWorkerJobsGridRows) {
+      const candidateKey = buildScalpCandidateSessionKey({
+        symbol: row.symbol,
+        strategyId: row.strategyId,
+        tuneId: row.tuneId,
+        entrySessionProfile: row.entrySessionProfile || null,
       });
-      const gateWindowTotalNetR = gateWindowNetRs.reduce(
-        (acc, w) => acc + (w.value || 0),
-        0,
-      );
-
-      return {
-        rowId: `deployment:${deployment.deploymentId}`,
-        deploymentId: deployment.deploymentId,
-        entrySessionProfile: deployment.entrySessionProfile || null,
-        workerOnly: false,
-        symbol: deployment.symbol,
-        strategyId: deployment.strategyId,
-        tuneId: deployment.tuneId,
-        forwardValidation,
-        deployed: true,
-        deploymentEnabled: deployment.enabled,
-        inUniverse: deployment.inUniverse,
-        lifecycleState: deployment.lifecycleState,
-        promotionEligible: deployment.promotionEligible,
-        reason:
-          deployment.promotionReason ||
-          (deployment.promotionEligible ? "eligible" : "not_evaluated"),
-        status: gateWindowNetRs.length > 0 ? `${gateStageLabel}:${gateWindowNetRs.length}` : "registry",
-        windowCount: gateWindowNetRs.length,
-        windowsResults: gateWindowNetRs.length > 0
-          ? gateWindowNetRs.map((w) => w.display).join(" | ")
-          : "—",
-        windowNetRs: gateWindowNetRs,
-        trades: gateTrades,
-        netR: gateWindowNetRs.length > 0 ? gateWindowTotalNetR : gateNetR,
-        totalNetR: gateWindowNetRs.length > 0 ? gateWindowTotalNetR : gateNetR,
-        expectancyR: gateExpR ?? asFiniteNumber(forwardValidation?.meanExpectancyR),
-        profitFactor: gatePF ?? asFiniteNumber(forwardValidation?.meanProfitFactor),
-        maxDrawdownR: gateDD,
-        totalMaxDrawdownR: gateDD,
-        maxWeeklyNetR: asFiniteNumber(gateStageC?.maxWeeklyNetR),
-        largestTradeR: asFiniteNumber(gateStageC?.largestTradeR),
-        exitReasons: gateStageC?.exitReasons && typeof gateStageC.exitReasons === "object"
-          ? {
-              stop: Number(gateStageC.exitReasons.stop || 0),
-              stopLoss: Number((gateStageC.exitReasons as any).stopLoss || 0),
-              stopBe: Number((gateStageC.exitReasons as any).stopBe || 0),
-              stopTrail: Number((gateStageC.exitReasons as any).stopTrail || 0),
-              tp: Number(gateStageC.exitReasons.tp || 0),
-              timeStop: Number(gateStageC.exitReasons.timeStop || 0),
-              forceClose: Number(gateStageC.exitReasons.forceClose || 0),
-            }
-          : null,
-        errorCodes: null,
-      } satisfies ScalpWorkerJobGridRow;
-    });
-
-    // Add candidate-only rows not covered by fetched deployments
-    for (const workerRow of scalpWorkerJobsGridRows) {
-      const wdId = workerRow.deploymentId;
-      if (!wdId) continue;
-      if (registryDeploymentIds.has(wdId)) continue;
-      out.push({ ...workerRow, deploymentId: wdId } as typeof out[number]);
-    }
-
-    return out.sort((a, b) => {
-      const aNetR = a.totalNetR ?? Number.NEGATIVE_INFINITY;
-      const bNetR = b.totalNetR ?? Number.NEGATIVE_INFINITY;
-      return bNetR - aNetR;
-    });
-  }, [scalpRegistryDeployments, scalpWorkerJobsGridRows]);
-  const scalpSelectedWorkerGridRows = useMemo<ScalpWorkerJobGridRow[]>(() => {
-    return scalpAllDeploymentsGridRows.filter((row) => {
-      if (scalpEnabledFilter === "enabled") {
-        return row.deploymentEnabled === true;
+      workerMetricsByCandidateKey.set(candidateKey, row);
+      if (row.deploymentId) {
+        workerMetricsByDeploymentId.set(row.deploymentId, row);
       }
-      return row.deploymentEnabled !== true;
-    });
-  }, [scalpAllDeploymentsGridRows, scalpEnabledFilter]);
-  useEffect(() => {
-    if (scalpEnabledFilter !== "enabled") return;
-    const hasEnabledRows = scalpAllDeploymentsGridRows.some(
-      (row) => row.deploymentEnabled === true,
-    );
-    if (hasEnabledRows) return;
-    const hasNonEnabledRows = scalpAllDeploymentsGridRows.some(
-      (row) => row.deploymentEnabled !== true,
-    );
-    if (hasNonEnabledRows) {
-      setScalpEnabledFilter("disabled");
     }
-  }, [scalpEnabledFilter, scalpAllDeploymentsGridRows]);
+
+    const deploymentByCandidateKey = new Map<string, ScalpOpsDeploymentRow>();
+    for (const row of scalpRegistryDeployments) {
+      deploymentByCandidateKey.set(
+        buildScalpCandidateSessionKey({
+          symbol: row.symbol,
+          strategyId: row.strategyId,
+          tuneId: row.tuneId,
+          entrySessionProfile: row.entrySessionProfile,
+        }),
+        row,
+      );
+    }
+    for (const row of scalpOpsDeployments) {
+      const key = buildScalpCandidateSessionKey({
+        symbol: row.symbol,
+        strategyId: row.strategyId,
+        tuneId: row.tuneId,
+        entrySessionProfile: row.entrySessionProfile,
+      });
+      if (!deploymentByCandidateKey.has(key)) {
+        deploymentByCandidateKey.set(key, row);
+      }
+    }
+
+    const rows: ScalpWorkerJobGridRow[] = [];
+    for (const raw of scalpPaginatedCandidates) {
+      const candidate = asPlainObject(raw);
+      const symbol = String(candidate.symbol || "")
+        .trim()
+        .toUpperCase();
+      const strategyId = String(candidate.strategyId || "")
+        .trim()
+        .toLowerCase();
+      if (!symbol || !strategyId) continue;
+      const tuneId = String(candidate.tuneId || "default")
+        .trim()
+        .toLowerCase();
+      const entrySessionProfile =
+        normalizeScalpEntrySessionProfileUi(candidate.entrySessionProfile) ||
+        normalizeScalpEntrySessionProfileUi(scalpSession) ||
+        null;
+      const candidateId = asFiniteNumber(candidate.id);
+      const candidateStatus = normalizeScalpCandidateStatusUi(candidate.status);
+      const candidateReasonCodes = Array.isArray(candidate.reasonCodes)
+        ? candidate.reasonCodes
+            .map((code: unknown) => String(code || "").trim())
+            .filter((code: string) => code.length > 0)
+        : [];
+      const candidateKey = buildScalpCandidateSessionKey({
+        symbol,
+        strategyId,
+        tuneId,
+        entrySessionProfile,
+      });
+      const deploymentRow = deploymentByCandidateKey.get(candidateKey) || null;
+      const deploymentIdRaw = String(candidate.deploymentId || "").trim();
+      const deploymentEnabledRaw =
+        typeof candidate.deploymentEnabled === "boolean"
+          ? candidate.deploymentEnabled
+          : null;
+      const workerMetrics =
+        workerMetricsByCandidateKey.get(candidateKey) ||
+        (deploymentIdRaw
+          ? workerMetricsByDeploymentId.get(deploymentIdRaw) || null
+          : null);
+      const deploymentId =
+        deploymentIdRaw ||
+        deploymentRow?.deploymentId ||
+        workerMetrics?.deploymentId ||
+        null;
+      const deploymentEnabled =
+        deploymentEnabledRaw ??
+        (deploymentRow ? deploymentRow.enabled : workerMetrics?.deploymentEnabled ?? null);
+      const deployed = Boolean(deploymentId);
+      const candidateState: ScalpWorkerJobGridRow["candidateState"] =
+        deploymentEnabled === true ? "enabled" : candidateStatus;
+      const reason =
+        candidateStatus === "rejected"
+          ? candidateReasonCodes.join(", ") || workerMetrics?.reason || "rejected"
+          : workerMetrics?.reason ||
+            candidateReasonCodes[0] ||
+            (candidateState === "enabled" ? "enabled" : candidateStatus);
+
+      rows.push({
+        rowId:
+          candidateId !== null
+            ? `candidate:${Math.floor(candidateId)}`
+            : `candidate:${candidateKey}`,
+        candidateId: candidateId !== null ? Math.floor(candidateId) : null,
+        candidateStatus,
+        candidateState,
+        deploymentId,
+        entrySessionProfile:
+          entrySessionProfile || workerMetrics?.entrySessionProfile || null,
+        workerOnly: workerMetrics?.workerOnly || false,
+        symbol,
+        strategyId,
+        tuneId,
+        inUniverse:
+          deploymentRow?.inUniverse ??
+          workerMetrics?.inUniverse ??
+          null,
+        lifecycleState:
+          deploymentRow?.lifecycleState ??
+          workerMetrics?.lifecycleState ??
+          null,
+        forwardValidation:
+          deploymentRow?.forwardValidation ||
+          workerMetrics?.forwardValidation ||
+          null,
+        deployed,
+        deploymentEnabled,
+        promotionEligible:
+          deploymentRow?.promotionEligible ??
+          workerMetrics?.promotionEligible ??
+          (candidateStatus === "promoted" ? true : null),
+        reason,
+        status: workerMetrics?.status || candidateStatus,
+        windowCount: workerMetrics?.windowCount ?? 0,
+        windowsResults: workerMetrics?.windowsResults || "—",
+        windowNetRs: Array.isArray(workerMetrics?.windowNetRs)
+          ? workerMetrics?.windowNetRs
+          : [],
+        trades: workerMetrics?.trades ?? null,
+        netR: workerMetrics?.netR ?? null,
+        totalNetR: workerMetrics?.totalNetR ?? workerMetrics?.netR ?? null,
+        expectancyR: workerMetrics?.expectancyR ?? null,
+        profitFactor: workerMetrics?.profitFactor ?? null,
+        maxDrawdownR: workerMetrics?.maxDrawdownR ?? null,
+        totalMaxDrawdownR:
+          workerMetrics?.totalMaxDrawdownR ??
+          workerMetrics?.maxDrawdownR ??
+          null,
+        maxWeeklyNetR: workerMetrics?.maxWeeklyNetR ?? null,
+        largestTradeR: workerMetrics?.largestTradeR ?? null,
+        exitReasons: workerMetrics?.exitReasons ?? null,
+        errorCodes: workerMetrics?.errorCodes ?? null,
+      });
+    }
+
+    return rows.sort(compareScalpWorkerJobGridRows);
+  }, [
+    scalpWorkerJobsGridRows,
+    scalpRegistryDeployments,
+    scalpOpsDeployments,
+    scalpPaginatedCandidates,
+    scalpSession,
+  ]);
+  const scalpSelectedWorkerGridRows = useMemo<ScalpWorkerJobGridRow[]>(() => {
+    if (scalpCandidateStateFilter === "all") return scalpAllCandidatesGridRows;
+    return scalpAllCandidatesGridRows.filter(
+      (row) => row.candidateState === scalpCandidateStateFilter,
+    );
+  }, [scalpAllCandidatesGridRows, scalpCandidateStateFilter]);
   useEffect(() => {
     const total = scalpSelectedWorkerGridRows.length;
     setScalpGridLoadedRows(
       total > 0 ? Math.min(SCALP_GRID_LOAD_BATCH, total) : 0,
     );
-  }, [scalpEnabledFilter, scalpSelectedWorkerGridRows.length]);
+  }, [scalpCandidateStateFilter, scalpSelectedWorkerGridRows.length]);
   const scalpVisibleWorkerGridRows = useMemo<ScalpWorkerJobGridRow[]>(() => {
     if (!scalpSelectedWorkerGridRows.length) return [];
     const cappedCount = Math.max(
@@ -5381,7 +5481,7 @@ export default function Home() {
   >(
     () => [
       {
-        headerName: "Deployment",
+        headerName: "Candidate",
         field: "deploymentId",
         pinned: "left",
         minWidth: scalpIsMobileViewport ? 150 : 220,
@@ -5448,6 +5548,39 @@ export default function Home() {
               </button>
             </div>
           );
+        },
+      },
+      {
+        headerName: "State",
+        field: "candidateState",
+        minWidth: 140,
+        valueFormatter: (params) =>
+          String(params.value || "discovered").replace(/_/g, " "),
+        cellRenderer: (params: any) => {
+          const value = String(params?.value || "discovered")
+            .trim()
+            .toLowerCase() as ScalpWorkerJobGridRow["candidateState"];
+          const className =
+            value === "enabled"
+              ? scalpDarkMode
+                ? "text-emerald-300"
+                : "text-emerald-700"
+              : value === "promoted"
+                ? scalpDarkMode
+                  ? "text-emerald-300"
+                  : "text-emerald-700"
+                : value === "evaluated"
+                  ? scalpDarkMode
+                    ? "text-amber-300"
+                    : "text-amber-700"
+                  : value === "rejected"
+                    ? scalpDarkMode
+                      ? "text-rose-300"
+                      : "text-rose-700"
+                    : scalpDarkMode
+                      ? "text-zinc-300"
+                      : "text-slate-700";
+          return <span className={className}>{value.replace(/_/g, " ")}</span>;
         },
       },
       {
@@ -5538,7 +5671,6 @@ export default function Home() {
       {
         headerName: "Reason",
         field: "reason",
-        hide: scalpEnabledFilter === "enabled",
         minWidth: 210,
         valueFormatter: (params) =>
           String(params.value || "unknown").replace(/_/g, " "),
@@ -5706,7 +5838,6 @@ export default function Home() {
       {
         headerName: "Errors",
         field: "errorCodes",
-        hide: scalpEnabledFilter === "enabled",
         minWidth: 220,
         valueFormatter: (params) => String(params.value || "—"),
       },
@@ -5745,7 +5876,6 @@ export default function Home() {
     ],
     [
       scalpDarkMode,
-      scalpEnabledFilter,
       scalpWindowsResultsGlobalMaxAbs,
       scalpWindowsResultWeekSlots,
       scalpCopiedDeploymentId,
@@ -5766,21 +5896,20 @@ export default function Home() {
       }
       const totalRows = scalpSelectedWorkerGridRows.length;
       const loadedRows = scalpVisibleWorkerGridRows.length;
-      if (!totalRows || loadedRows >= totalRows) return;
+      const fetchedCount = scalpPaginatedCandidates.length;
+      const canFetchMore = fetchedCount < scalpCandidatesTotal;
+      if ((!totalRows || loadedRows >= totalRows) && !canFetchMore) return;
       const range = event?.api?.getVerticalPixelRange?.();
       const displayedRows = event?.api?.getDisplayedRowCount?.() || 0;
       if (!range || displayedRows <= 0) return;
       const nearBottom = range.bottom >= displayedRows * 54 - 108;
       if (!nearBottom) return;
-      setScalpGridLoadedRows((prev) =>
-        Math.min(totalRows, prev + SCALP_GRID_LOAD_BATCH),
-      );
-      // Fetch next server page when approaching end of loaded candidates
-      const fetchedCount = scalpPaginatedCandidates.length;
-      if (
-        fetchedCount < scalpCandidatesTotal &&
-        loadedRows >= fetchedCount - SCALP_GRID_LOAD_BATCH * 2
-      ) {
+      if (loadedRows < totalRows) {
+        setScalpGridLoadedRows((prev) =>
+          Math.min(totalRows, prev + SCALP_GRID_LOAD_BATCH),
+        );
+      }
+      if (canFetchMore) {
         loadScalpCandidatesPage(fetchedCount, scalpSession);
       }
     },
@@ -6622,16 +6751,59 @@ export default function Home() {
 
                   <section className={`${scalpSectionShellClass} overflow-hidden`}>
                     {/* Research progress bar — thin strip at top of panel */}
-                    {(scalpResearchProgress.totalCandidates > 0 || scalpResearchProgress.isRunning || scalpResearchHealthHint) && (
+                    {(scalpCandidateStatusProgress.total > 0 || scalpResearchProgress.isRunning || scalpResearchHealthHint) && (
                       <div className="relative">
-                        <div
-                          className={`h-2 w-full rounded-full ${scalpDarkMode ? "bg-zinc-700" : "bg-slate-200"}`}
-                        >
-                          <div
-                            className={`h-full rounded-full transition-all duration-700 ease-out ${scalpResearchProgress.isRunning ? "bg-amber-400" : "bg-emerald-500"}`}
-                            style={{ width: `${Math.max(scalpResearchProgress.pct, scalpResearchProgress.done > 0 ? 1 : 0)}%`, minWidth: scalpResearchProgress.done > 0 ? 6 : 0 }}
-                          />
-                        </div>
+                        {(() => {
+                          const total = Math.max(0, scalpCandidateStatusProgress.total);
+                          const promotedPct =
+                            total > 0
+                              ? Math.min(
+                                  100,
+                                  (scalpCandidateStatusProgress.promoted / total) *
+                                    100,
+                                )
+                              : 0;
+                          const evaluatedPct =
+                            total > 0
+                              ? Math.min(
+                                  100,
+                                  (scalpCandidateStatusProgress.evaluated / total) *
+                                    100,
+                                )
+                              : 0;
+                          const rejectedPct =
+                            total > 0
+                              ? Math.min(
+                                  100,
+                                  (scalpCandidateStatusProgress.rejected / total) *
+                                    100,
+                                )
+                              : 0;
+                          return (
+                            <div
+                              className={`flex h-2 w-full overflow-hidden rounded-full ${scalpDarkMode ? "bg-zinc-700" : "bg-slate-200"}`}
+                            >
+                              {promotedPct > 0 ? (
+                                <div
+                                  className="h-full bg-emerald-500 transition-all duration-700 ease-out"
+                                  style={{ width: `${promotedPct}%` }}
+                                />
+                              ) : null}
+                              {evaluatedPct > 0 ? (
+                                <div
+                                  className="h-full bg-amber-400 transition-all duration-700 ease-out"
+                                  style={{ width: `${evaluatedPct}%` }}
+                                />
+                              ) : null}
+                              {rejectedPct > 0 ? (
+                                <div
+                                  className="h-full bg-rose-500 transition-all duration-700 ease-out"
+                                  style={{ width: `${rejectedPct}%` }}
+                                />
+                              ) : null}
+                            </div>
+                          );
+                        })()}
                         <div
                           className={`flex items-center justify-between px-4 pt-1.5 pb-0 text-[11px] ${scalpTextMutedClass}`}
                         >
@@ -6639,12 +6811,26 @@ export default function Home() {
                             <span>
                               Research{" "}
                               <span className={scalpTextSecondaryClass}>
-                                {scalpResearchProgress.done}/{scalpResearchProgress.totalCandidates}
+                                {scalpCandidateStatusProgress.done}/
+                                {scalpCandidateStatusProgress.total}
                               </span>
                               {" "}
                               <span className="opacity-60">
-                                ({scalpResearchProgress.pct < 1 && scalpResearchProgress.pct > 0 ? scalpResearchProgress.pct.toFixed(1) : Math.round(scalpResearchProgress.pct)}%)
+                                ({scalpCandidateStatusProgress.donePct < 1 &&
+                                scalpCandidateStatusProgress.donePct > 0
+                                  ? scalpCandidateStatusProgress.donePct.toFixed(1)
+                                  : Math.round(scalpCandidateStatusProgress.donePct)}
+                                %)
                               </span>
+                            </span>
+                            <span className="text-amber-400">
+                              {scalpCandidateStatusProgress.evaluated} evaluated
+                            </span>
+                            <span className="text-rose-400">
+                              {scalpCandidateStatusProgress.rejected} rejected
+                            </span>
+                            <span className="text-emerald-400">
+                              {scalpCandidateStatusProgress.promoted} promoted
                             </span>
                             {scalpResearchProgress.isRunning &&
                               scalpResearchProgress.doneConfirmed <
@@ -6727,57 +6913,42 @@ export default function Home() {
                       <h3
                         className={`text-lg font-semibold ${scalpTextPrimaryClass}`}
                       >
-                        Deployment Coverage
+                        Candidate Coverage
                       </h3>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center justify-end gap-2">
                         <span className={`text-xs ${scalpTextMutedClass}`}>
-                          Enabled
+                          State
                         </span>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={scalpEnabledFilter === "enabled"}
-                          aria-label="Toggle enabled filter"
-                          onClick={() =>
-                            setScalpEnabledFilter((prev) =>
-                              prev === "enabled" ? "disabled" : "enabled",
-                            )
-                          }
-                          className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${
-                            scalpDarkMode
-                              ? scalpEnabledFilter === "enabled"
-                                ? "border-emerald-500/60 bg-emerald-500/20"
-                                : "border-zinc-600 bg-zinc-800"
-                              : scalpEnabledFilter === "enabled"
-                                ? "border-emerald-300 bg-emerald-100"
-                                : "border-slate-300 bg-slate-100"
-                          }`}
-                        >
-                          <span
-                            className={`inline-block h-4 w-4 transform rounded-full transition ${
-                              scalpDarkMode
-                                ? "bg-zinc-100"
-                                : "bg-white shadow-sm"
-                            } ${
-                              scalpEnabledFilter === "enabled"
-                                ? "translate-x-6"
-                                : "translate-x-1"
-                            }`}
-                          />
-                        </button>
-                        <span
-                          className={`text-xs font-semibold ${
-                            scalpEnabledFilter === "enabled"
-                              ? scalpDarkMode
-                                ? "text-emerald-300"
-                                : "text-emerald-700"
-                              : scalpDarkMode
-                                ? "text-rose-300"
-                                : "text-rose-700"
-                          }`}
-                        >
-                          {scalpEnabledFilter === "enabled" ? "yes" : "no"}
-                        </span>
+                        {(
+                          [
+                            "enabled",
+                            "all",
+                            "evaluated",
+                            "rejected",
+                            "promoted",
+                            "discovered",
+                          ] as ScalpCandidateGridStateUi[]
+                        ).map((state) => {
+                          const active = scalpCandidateStateFilter === state;
+                          return (
+                            <button
+                              key={`candidate-filter-${state}`}
+                              type="button"
+                              onClick={() => setScalpCandidateStateFilter(state)}
+                              className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold transition ${
+                                active
+                                  ? scalpDarkMode
+                                    ? "border-sky-400/70 bg-sky-500/20 text-sky-200"
+                                    : "border-sky-300 bg-sky-100 text-sky-700"
+                                  : scalpDarkMode
+                                    ? "border-zinc-600 bg-zinc-800 text-zinc-300 hover:border-zinc-500"
+                                    : "border-slate-300 bg-white text-slate-600 hover:border-slate-400"
+                              }`}
+                            >
+                              {state}
+                            </button>
+                          );
+                        })}
                         <span className={scalpTagNeutralClass}>
                           {`${scalpVisibleWorkerGridRows.length}/${scalpCandidatesTotal || scalpSummary?.summary?.totalCandidates || scalpSelectedWorkerGridRows.length}`}
                         </span>
@@ -6814,9 +6985,9 @@ export default function Home() {
                             : "border-slate-200 text-slate-600"
                         }`}
                       >
-                        {scalpAllDeploymentsGridRows.length
-                          ? "No deployments match the enabled filter."
-                          : "No deployment registry rows are available yet."}
+                        {scalpAllCandidatesGridRows.length
+                          ? "No candidates match the selected state filter."
+                          : "No candidate rows are available yet."}
                       </div>
                     )}
                     <div className={`mt-2 px-4 pb-4 text-xs ${scalpTextMutedClass}`}>

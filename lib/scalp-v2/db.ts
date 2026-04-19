@@ -456,25 +456,25 @@ export async function listScalpV2Candidates(params: {
   const values: unknown[] = [];
   if (params.status) {
     values.push(params.status);
-    where.push(`status = $${values.length}`);
+    where.push(`c.status = $${values.length}`);
   }
   if (params.venue) {
     values.push(params.venue);
-    where.push(`venue = $${values.length}`);
+    where.push(`c.venue = $${values.length}`);
   }
   if (params.session) {
     values.push(params.session);
-    where.push(`entry_session_profile = $${values.length}`);
+    where.push(`c.entry_session_profile = $${values.length}`);
   }
   if (params.symbols && params.symbols.length > 0) {
     values.push(params.symbols);
-    where.push(`symbol = ANY($${values.length})`);
+    where.push(`c.symbol = ANY($${values.length})`);
   }
   values.push(limit);
   const discoveredOnly = normalizeCandidateStatus(params.status) === "discovered";
   const orderBySql = discoveredOnly
-    ? `ORDER BY score DESC, updated_at DESC`
-    : `ORDER BY COALESCE((metadata_json->'worker'->'stageC'->>'netR')::double precision, -999) DESC, score DESC`;
+    ? `ORDER BY c.score DESC, c.updated_at DESC`
+    : `ORDER BY COALESCE((c.metadata_json->'worker'->'stageC'->>'netR')::double precision, -999) DESC, c.score DESC`;
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const rows = await db.$queryRawUnsafe<
     Array<{
@@ -488,25 +488,35 @@ export async function listScalpV2Candidates(params: {
       status: string;
       reasonCodes: string[];
       metadataJson: unknown;
+      deploymentId: string | null;
+      deploymentEnabled: boolean | null;
       createdAt: Date;
       updatedAt: Date;
     }>
   >(
     `
       SELECT
-        id,
-        venue,
-        symbol,
-        strategy_id AS "strategyId",
-        tune_id AS "tuneId",
-        entry_session_profile AS "entrySessionProfile",
-        score::double precision AS score,
-        status,
-        reason_codes AS "reasonCodes",
-        metadata_json AS "metadataJson",
-        created_at AS "createdAt",
-        updated_at AS "updatedAt"
-      FROM scalp_v2_candidates
+        c.id,
+        c.venue,
+        c.symbol,
+        c.strategy_id AS "strategyId",
+        c.tune_id AS "tuneId",
+        c.entry_session_profile AS "entrySessionProfile",
+        c.score::double precision AS score,
+        c.status,
+        c.reason_codes AS "reasonCodes",
+        c.metadata_json AS "metadataJson",
+        d.deployment_id AS "deploymentId",
+        d.enabled AS "deploymentEnabled",
+        c.created_at AS "createdAt",
+        c.updated_at AS "updatedAt"
+      FROM scalp_v2_candidates c
+      LEFT JOIN scalp_v2_deployments d
+        ON d.venue = c.venue
+       AND d.symbol = c.symbol
+       AND d.strategy_id = c.strategy_id
+       AND d.tune_id = c.tune_id
+       AND d.entry_session_profile = c.entry_session_profile
       ${whereSql}
       ${orderBySql}
       LIMIT $${values.length};
@@ -525,6 +535,11 @@ export async function listScalpV2Candidates(params: {
     status: normalizeCandidateStatus(row.status),
     reasonCodes: normalizeReasonCodes(row.reasonCodes || []),
     metadata: asRecord(row.metadataJson),
+    deploymentId: String(row.deploymentId || "").trim() || null,
+    deploymentEnabled:
+      typeof row.deploymentEnabled === "boolean"
+        ? row.deploymentEnabled
+        : null,
     createdAtMs: toMs(row.createdAt),
     updatedAtMs: toMs(row.updatedAt),
   }));
@@ -544,16 +559,16 @@ export async function paginateScalpV2Candidates(params: {
   const values: unknown[] = [];
   if (params.session) {
     values.push(params.session);
-    where.push(`entry_session_profile = $${values.length}`);
+    where.push(`c.entry_session_profile = $${values.length}`);
   }
   if (params.venue) {
     values.push(params.venue);
-    where.push(`venue = $${values.length}`);
+    where.push(`c.venue = $${values.length}`);
   }
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
   const [countRow] = await db.$queryRawUnsafe<Array<{ cnt: bigint }>>(
-    `SELECT COUNT(*)::bigint AS cnt FROM scalp_v2_candidates ${whereSql}`,
+    `SELECT COUNT(*)::bigint AS cnt FROM scalp_v2_candidates c ${whereSql}`,
     ...values,
   );
   const total = Number(countRow?.cnt || 0);
@@ -574,27 +589,37 @@ export async function paginateScalpV2Candidates(params: {
       status: string;
       reasonCodes: string[];
       metadataJson: unknown;
+      deploymentId: string | null;
+      deploymentEnabled: boolean | null;
       createdAt: Date;
       updatedAt: Date;
     }>
   >(
     `
       SELECT
-        id,
-        venue,
-        symbol,
-        strategy_id AS "strategyId",
-        tune_id AS "tuneId",
-        entry_session_profile AS "entrySessionProfile",
-        score::double precision AS score,
-        status,
-        reason_codes AS "reasonCodes",
-        metadata_json AS "metadataJson",
-        created_at AS "createdAt",
-        updated_at AS "updatedAt"
-      FROM scalp_v2_candidates
+        c.id,
+        c.venue,
+        c.symbol,
+        c.strategy_id AS "strategyId",
+        c.tune_id AS "tuneId",
+        c.entry_session_profile AS "entrySessionProfile",
+        c.score::double precision AS score,
+        c.status,
+        c.reason_codes AS "reasonCodes",
+        c.metadata_json AS "metadataJson",
+        d.deployment_id AS "deploymentId",
+        d.enabled AS "deploymentEnabled",
+        c.created_at AS "createdAt",
+        c.updated_at AS "updatedAt"
+      FROM scalp_v2_candidates c
+      LEFT JOIN scalp_v2_deployments d
+        ON d.venue = c.venue
+       AND d.symbol = c.symbol
+       AND d.strategy_id = c.strategy_id
+       AND d.tune_id = c.tune_id
+       AND d.entry_session_profile = c.entry_session_profile
       ${whereSql}
-      ORDER BY COALESCE((metadata_json->'worker'->'stageC'->>'netR')::double precision, -999) DESC, score DESC
+      ORDER BY COALESCE((c.metadata_json->'worker'->'stageC'->>'netR')::double precision, -999) DESC, c.score DESC
       LIMIT $${limitIdx} OFFSET $${offsetIdx};
     `,
     ...values,
@@ -613,6 +638,11 @@ export async function paginateScalpV2Candidates(params: {
       status: normalizeCandidateStatus(row.status),
       reasonCodes: normalizeReasonCodes(row.reasonCodes || []),
       metadata: asRecord(row.metadataJson),
+      deploymentId: String(row.deploymentId || "").trim() || null,
+      deploymentEnabled:
+        typeof row.deploymentEnabled === "boolean"
+          ? row.deploymentEnabled
+          : null,
       createdAtMs: toMs(row.createdAt),
       updatedAtMs: toMs(row.updatedAt),
     })),
@@ -2328,6 +2358,12 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
       candidates: 0,
       deployments: 0,
       enabledDeployments: 0,
+      candidateStatusCounts: {
+        discovered: 0,
+        evaluated: 0,
+        promoted: 0,
+        rejected: 0,
+      },
       events24h: 0,
       ledgerRows30d: 0,
       netR30d: 0,
@@ -2339,6 +2375,10 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
       candidates: bigint;
       deployments: bigint;
       enabledDeployments: bigint;
+      discoveredCandidates: bigint;
+      evaluatedCandidates: bigint;
+      promotedCandidates: bigint;
+      rejectedCandidates: bigint;
       events24h: bigint;
       ledgerRows30d: bigint;
       netR30d: number | null;
@@ -2349,6 +2389,10 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
       (SELECT COUNT(*)::bigint FROM scalp_v2_candidates) AS candidates,
       (SELECT COUNT(*)::bigint FROM scalp_v2_deployments) AS deployments,
       (SELECT COUNT(*)::bigint FROM scalp_v2_deployments WHERE enabled = TRUE) AS "enabledDeployments",
+      (SELECT COUNT(*)::bigint FROM scalp_v2_candidates WHERE status = 'discovered') AS "discoveredCandidates",
+      (SELECT COUNT(*)::bigint FROM scalp_v2_candidates WHERE status = 'evaluated') AS "evaluatedCandidates",
+      (SELECT COUNT(*)::bigint FROM scalp_v2_candidates WHERE status = 'promoted') AS "promotedCandidates",
+      (SELECT COUNT(*)::bigint FROM scalp_v2_candidates WHERE status = 'rejected') AS "rejectedCandidates",
       0::bigint AS "events24h",
       0::bigint AS "ledgerRows30d",
       0::double precision AS "netR30d",
@@ -2381,6 +2425,12 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
     candidates: Number(row?.candidates || 0),
     deployments: Number(row?.deployments || 0),
     enabledDeployments: Number(row?.enabledDeployments || 0),
+    candidateStatusCounts: {
+      discovered: Number(row?.discoveredCandidates || 0),
+      evaluated: Number(row?.evaluatedCandidates || 0),
+      promoted: Number(row?.promotedCandidates || 0),
+      rejected: Number(row?.rejectedCandidates || 0),
+    },
     events24h: Number(row?.events24h || 0),
     ledgerRows30d: Number(row?.ledgerRows30d || 0),
     netR30d: Number.isFinite(Number(row?.netR30d)) ? Number(row?.netR30d) : 0,
