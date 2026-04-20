@@ -595,6 +595,12 @@ type ScalpCandidateStatusUi =
   | "rejected";
 
 type ScalpCandidateGridStateUi = ScalpCandidateStatusUi | "enabled" | "all";
+type ScalpCandidatesPageRequest = {
+  offset: number;
+  session: ScalpEntrySessionProfileUi;
+  stateFilter: ScalpCandidateGridStateUi;
+  reset?: boolean;
+};
 
 type ScalpWorkerJobGridRow = {
   rowId: string;
@@ -2217,7 +2223,12 @@ export default function Home() {
     Array<Record<string, unknown>>
   >([]);
   const [scalpCandidatesTotal, setScalpCandidatesTotal] = useState(0);
+  const [scalpCandidatesSessionTotal, setScalpCandidatesSessionTotal] = useState(0);
   const scalpCandidatesLoadingRef = useRef(false);
+  const scalpCandidatesPendingRequestRef =
+    useRef<ScalpCandidatesPageRequest | null>(null);
+  const scalpCandidatesSessionRef = useRef<ScalpEntrySessionProfileUi>("berlin");
+  const scalpCandidatesStateFilterRef = useRef<ScalpCandidateGridStateUi>("evaluated");
   const scalpSummaryRawRef = useRef<Record<string, unknown> | null>(null);
   const [scalpActiveDeploymentId, setScalpActiveDeploymentId] = useState<
     string | null
@@ -2337,6 +2348,14 @@ export default function Home() {
   useEffect(() => {
     setScalpCronNowMs(Date.now());
   }, []);
+
+  useEffect(() => {
+    scalpCandidatesSessionRef.current = scalpSession;
+  }, [scalpSession]);
+
+  useEffect(() => {
+    scalpCandidatesStateFilterRef.current = scalpCandidateStateFilter;
+  }, [scalpCandidateStateFilter]);
 
   useEffect(() => {
     return () => {
@@ -2693,13 +2712,24 @@ export default function Home() {
   const loadScalpCandidatesPage = async (
     offset: number,
     session: ScalpEntrySessionProfileUi,
+    stateFilter: ScalpCandidateGridStateUi,
     reset?: boolean,
   ) => {
-    if (scalpCandidatesLoadingRef.current) return;
+    if (scalpCandidatesLoadingRef.current) {
+      scalpCandidatesPendingRequestRef.current = {
+        offset,
+        session,
+        stateFilter,
+        reset,
+      };
+      return;
+    }
     scalpCandidatesLoadingRef.current = true;
+    scalpCandidatesPendingRequestRef.current = null;
     try {
       const params = new URLSearchParams({
         session,
+        state: stateFilter,
         offset: String(offset),
         limit: "100",
       });
@@ -2711,12 +2741,58 @@ export default function Home() {
       const json = await res.json();
       const rows = Array.isArray(json.rows) ? json.rows : [];
       const total = Math.max(0, Math.floor(Number(json.total) || 0));
+      if (
+        session !== scalpCandidatesSessionRef.current ||
+        stateFilter !== scalpCandidatesStateFilterRef.current
+      ) {
+        return;
+      }
       setScalpCandidatesTotal(total);
       setScalpPaginatedCandidates((prev) => (reset ? rows : [...prev, ...rows]));
     } catch {
       // Non-fatal — grid just shows fewer rows
     } finally {
       scalpCandidatesLoadingRef.current = false;
+      const pendingRequest = scalpCandidatesPendingRequestRef.current;
+      if (pendingRequest) {
+        scalpCandidatesPendingRequestRef.current = null;
+        const {
+          offset: nextOffset,
+          session: nextSession,
+          stateFilter: nextStateFilter,
+          reset: nextReset,
+        } = pendingRequest;
+        void loadScalpCandidatesPage(
+          nextOffset,
+          nextSession,
+          nextStateFilter,
+          nextReset,
+        );
+      }
+    }
+  };
+
+  const loadScalpCandidatesSessionTotal = async (
+    session: ScalpEntrySessionProfileUi,
+  ) => {
+    try {
+      const params = new URLSearchParams({
+        session,
+        state: "all",
+        offset: "0",
+        limit: "1",
+      });
+      const res = await fetch(
+        `/api/scalp/v2/dashboard/candidates?${params.toString()}`,
+        { headers: buildAdminHeaders(), cache: "no-store" },
+      );
+      if (!res.ok) return;
+      const json = await res.json();
+      const total = Math.max(0, Math.floor(Number(json.total) || 0));
+      if (session !== scalpCandidatesSessionRef.current) return;
+      setScalpCandidatesSessionTotal(total);
+    } catch {
+      // Non-fatal — denominator can fall back to the filtered total.
     }
   };
 
@@ -2803,7 +2879,9 @@ export default function Home() {
       // Load first page of candidates
       setScalpPaginatedCandidates([]);
       setScalpCandidatesTotal(0);
-      loadScalpCandidatesPage(0, scalpSession, true);
+      setScalpCandidatesSessionTotal(0);
+      loadScalpCandidatesPage(0, scalpSession, scalpCandidateStateFilter, true);
+      loadScalpCandidatesSessionTotal(scalpSession);
     } catch (err: any) {
       scalpSummaryErrorCountRef.current += 1;
       setError(err?.message || "Failed to load scalp dashboard");
@@ -2824,6 +2902,16 @@ export default function Home() {
     setScalpSummary(remapped);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scalpPaginatedCandidates]);
+
+  useEffect(() => {
+    if (strategyMode !== "scalp") return;
+    if (!adminGranted) return;
+    if (!scalpSummaryRawRef.current) return;
+    setScalpPaginatedCandidates([]);
+    setScalpCandidatesTotal(0);
+    loadScalpCandidatesPage(0, scalpSession, scalpCandidateStateFilter, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scalpCandidateStateFilter]);
 
   const invokeScalpCronNow = async (row: ScalpOpsCronRow) => {
     const invokePath = normalizeInvokePathForScalpCronNow(
@@ -4368,7 +4456,6 @@ export default function Home() {
     }
     const total = Math.max(
       summaryTotal,
-      Math.max(0, Math.floor(Number(scalpCandidatesTotal) || 0)),
       totals.discovered + totals.evaluated + totals.promoted + totals.rejected,
     );
     const done = totals.evaluated + totals.promoted + totals.rejected;
@@ -4385,7 +4472,6 @@ export default function Home() {
     scalpSummary?.summary?.candidateStatusCounts,
     scalpSummary?.summary?.totalCandidates,
     scalpPaginatedCandidates,
-    scalpCandidatesTotal,
   ]);
 
   // --- Research progress bar data ---
@@ -5430,6 +5516,26 @@ export default function Home() {
       total > 0 ? Math.min(SCALP_GRID_LOAD_BATCH, total) : 0,
     );
   }, [scalpCandidateStateFilter, scalpSelectedWorkerGridRows.length]);
+  useEffect(() => {
+    // If the current filter has no matches in loaded pages yet, keep
+    // prefetching candidate pages until we either find matches or exhaust total.
+    if (scalpSelectedWorkerGridRows.length > 0) return;
+    if (scalpCandidatesLoadingRef.current) return;
+    const fetchedCount = scalpPaginatedCandidates.length;
+    if (fetchedCount >= scalpCandidatesTotal) return;
+    loadScalpCandidatesPage(
+      fetchedCount,
+      scalpSession,
+      scalpCandidateStateFilter,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    scalpSelectedWorkerGridRows.length,
+    scalpPaginatedCandidates.length,
+    scalpCandidatesTotal,
+    scalpSession,
+    scalpCandidateStateFilter,
+  ]);
   const scalpVisibleWorkerGridRows = useMemo<ScalpWorkerJobGridRow[]>(() => {
     if (!scalpSelectedWorkerGridRows.length) return [];
     const cappedCount = Math.max(
@@ -5438,6 +5544,13 @@ export default function Home() {
     );
     return scalpSelectedWorkerGridRows.slice(0, cappedCount);
   }, [scalpSelectedWorkerGridRows, scalpGridLoadedRows]);
+  const scalpSessionCandidatesTotalForStateChip = useMemo(
+    () =>
+      scalpCandidatesSessionTotal > 0
+        ? scalpCandidatesSessionTotal
+        : scalpCandidatesTotal,
+    [scalpCandidatesSessionTotal, scalpCandidatesTotal],
+  );
   const scalpWindowsResultsGlobalMaxAbs = useMemo(() => {
     let maxAbs = 0;
     for (const row of scalpSelectedWorkerGridRows) {
@@ -5910,7 +6023,11 @@ export default function Home() {
         );
       }
       if (canFetchMore) {
-        loadScalpCandidatesPage(fetchedCount, scalpSession);
+        loadScalpCandidatesPage(
+          fetchedCount,
+          scalpSession,
+          scalpCandidateStateFilter,
+        );
       }
     },
     [
@@ -5919,6 +6036,7 @@ export default function Home() {
       scalpPaginatedCandidates.length,
       scalpCandidatesTotal,
       scalpSession,
+      scalpCandidateStateFilter,
     ],
   );
   const handleScalpGridRowClicked = useCallback((event: any) => {
@@ -6950,7 +7068,7 @@ export default function Home() {
                           );
                         })}
                         <span className={scalpTagNeutralClass}>
-                          {`${scalpVisibleWorkerGridRows.length}/${scalpCandidatesTotal || scalpSummary?.summary?.totalCandidates || scalpSelectedWorkerGridRows.length}`}
+                          {`${scalpCandidatesTotal}/${scalpSessionCandidatesTotalForStateChip}`}
                         </span>
                       </div>
                     </div>
@@ -6991,7 +7109,7 @@ export default function Home() {
                       </div>
                     )}
                     <div className={`mt-2 px-4 pb-4 text-xs ${scalpTextMutedClass}`}>
-                      {`loaded ${scalpVisibleWorkerGridRows.length} of ${scalpCandidatesTotal || scalpSelectedWorkerGridRows.length}`}
+                      {`loaded ${scalpVisibleWorkerGridRows.length} of ${scalpCandidatesTotal}`}
                     </div>
                   </section>
 

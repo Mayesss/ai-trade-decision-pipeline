@@ -548,6 +548,8 @@ export async function listScalpV2Candidates(params: {
 export async function paginateScalpV2Candidates(params: {
   session?: ScalpV2Session;
   venue?: ScalpV2Venue;
+  status?: ScalpV2CandidateStatus;
+  deploymentEnabled?: boolean | null;
   offset?: number;
   limit?: number;
 }): Promise<{ rows: ScalpV2Candidate[]; total: number }> {
@@ -565,10 +567,28 @@ export async function paginateScalpV2Candidates(params: {
     values.push(params.venue);
     where.push(`c.venue = $${values.length}`);
   }
+  if (params.status) {
+    values.push(normalizeCandidateStatus(params.status));
+    where.push(`c.status = $${values.length}`);
+  }
+  if (params.deploymentEnabled === true) {
+    where.push(`d.enabled = TRUE`);
+  } else if (params.deploymentEnabled === false) {
+    where.push(`COALESCE(d.enabled, FALSE) = FALSE`);
+  }
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const fromSql = `
+    FROM scalp_v2_candidates c
+    LEFT JOIN scalp_v2_deployments d
+      ON d.venue = c.venue
+     AND d.symbol = c.symbol
+     AND d.strategy_id = c.strategy_id
+     AND d.tune_id = c.tune_id
+     AND d.entry_session_profile = c.entry_session_profile
+  `;
 
   const [countRow] = await db.$queryRawUnsafe<Array<{ cnt: bigint }>>(
-    `SELECT COUNT(*)::bigint AS cnt FROM scalp_v2_candidates c ${whereSql}`,
+    `SELECT COUNT(*)::bigint AS cnt ${fromSql} ${whereSql}`,
     ...values,
   );
   const total = Number(countRow?.cnt || 0);
@@ -611,13 +631,7 @@ export async function paginateScalpV2Candidates(params: {
         d.enabled AS "deploymentEnabled",
         c.created_at AS "createdAt",
         c.updated_at AS "updatedAt"
-      FROM scalp_v2_candidates c
-      LEFT JOIN scalp_v2_deployments d
-        ON d.venue = c.venue
-       AND d.symbol = c.symbol
-       AND d.strategy_id = c.strategy_id
-       AND d.tune_id = c.tune_id
-       AND d.entry_session_profile = c.entry_session_profile
+      ${fromSql}
       ${whereSql}
       ORDER BY COALESCE((c.metadata_json->'worker'->'stageC'->>'netR')::double precision, -999) DESC, c.score DESC
       LIMIT $${limitIdx} OFFSET $${offsetIdx};
