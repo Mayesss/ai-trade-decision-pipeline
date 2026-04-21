@@ -717,6 +717,25 @@ const BERLIN_TZ = "Europe/Berlin";
 const SCALP_MIN_REFRESH_GAP_MS = 25_000;
 const SCALP_WORKER_TASK_LIMIT_FULL = 5_000;
 const SCALP_GRID_LOAD_BATCH = 60;
+const SCALP_CANDIDATE_GRID_STATES: ScalpCandidateGridStateUi[] = [
+  "enabled",
+  "all",
+  "evaluated",
+  "rejected",
+  "promoted",
+  "discovered",
+];
+const createScalpCandidateTotalsByState = (): Record<
+  ScalpCandidateGridStateUi,
+  number
+> => ({
+  enabled: 0,
+  all: 0,
+  evaluated: 0,
+  rejected: 0,
+  promoted: 0,
+  discovered: 0,
+});
 type ScalpVenueUi = "capital" | "bitget";
 const SCALP_VENUE_ICON_SRC: Record<ScalpVenueUi, string> = {
   capital: "/capital.svg",
@@ -2223,11 +2242,16 @@ export default function Home() {
     Array<Record<string, unknown>>
   >([]);
   const [scalpCandidatesTotal, setScalpCandidatesTotal] = useState(0);
+  const [scalpCandidateTotalsByState, setScalpCandidateTotalsByState] =
+    useState<Record<ScalpCandidateGridStateUi, number>>(
+      createScalpCandidateTotalsByState,
+    );
   const [scalpCandidatesSessionTotal, setScalpCandidatesSessionTotal] = useState(0);
   const scalpCandidatesLoadingRef = useRef(false);
   const scalpCandidatesPendingRequestRef =
     useRef<ScalpCandidatesPageRequest | null>(null);
   const scalpCandidatesSessionRef = useRef<ScalpEntrySessionProfileUi>("berlin");
+  const scalpCandidateTotalsRequestIdRef = useRef(0);
   const scalpCandidatesStateFilterRef = useRef<ScalpCandidateGridStateUi>("evaluated");
   const scalpSummaryRawRef = useRef<Record<string, unknown> | null>(null);
   const [scalpActiveDeploymentId, setScalpActiveDeploymentId] = useState<
@@ -2748,6 +2772,13 @@ export default function Home() {
         return;
       }
       setScalpCandidatesTotal(total);
+      setScalpCandidateTotalsByState((prev) => ({
+        ...prev,
+        [stateFilter]: total,
+      }));
+      if (stateFilter === "all") {
+        setScalpCandidatesSessionTotal(total);
+      }
       setScalpPaginatedCandidates((prev) => (reset ? rows : [...prev, ...rows]));
     } catch {
       // Non-fatal — grid just shows fewer rows
@@ -2772,25 +2803,47 @@ export default function Home() {
     }
   };
 
-  const loadScalpCandidatesSessionTotal = async (
+  const loadScalpCandidateTotalsByState = async (
     session: ScalpEntrySessionProfileUi,
   ) => {
+    const requestId = scalpCandidateTotalsRequestIdRef.current + 1;
+    scalpCandidateTotalsRequestIdRef.current = requestId;
+    const updates: Partial<Record<ScalpCandidateGridStateUi, number>> = {};
     try {
-      const params = new URLSearchParams({
-        session,
-        state: "all",
-        offset: "0",
-        limit: "1",
-      });
-      const res = await fetch(
-        `/api/scalp/v2/dashboard/candidates?${params.toString()}`,
-        { headers: buildAdminHeaders(), cache: "no-store" },
+      await Promise.all(
+        SCALP_CANDIDATE_GRID_STATES.map(async (state) => {
+          try {
+            const params = new URLSearchParams({
+              session,
+              state,
+              offset: "0",
+              limit: "1",
+            });
+            const res = await fetch(
+              `/api/scalp/v2/dashboard/candidates?${params.toString()}`,
+              { headers: buildAdminHeaders(), cache: "no-store" },
+            );
+            if (!res.ok) return;
+            const json = await res.json();
+            const total = Math.max(0, Math.floor(Number(json.total) || 0));
+            updates[state] = total;
+          } catch {
+            // Non-fatal — leave previous count for this state.
+          }
+        }),
       );
-      if (!res.ok) return;
-      const json = await res.json();
-      const total = Math.max(0, Math.floor(Number(json.total) || 0));
       if (session !== scalpCandidatesSessionRef.current) return;
-      setScalpCandidatesSessionTotal(total);
+      if (requestId !== scalpCandidateTotalsRequestIdRef.current) return;
+      const updateEntries = Object.entries(updates);
+      if (!updateEntries.length) return;
+      setScalpCandidateTotalsByState((prev) => ({
+        ...prev,
+        ...updates,
+      }));
+      const allTotal = updates.all;
+      if (typeof allTotal === "number") {
+        setScalpCandidatesSessionTotal(allTotal);
+      }
     } catch {
       // Non-fatal — denominator can fall back to the filtered total.
     }
@@ -2879,9 +2932,10 @@ export default function Home() {
       // Load first page of candidates
       setScalpPaginatedCandidates([]);
       setScalpCandidatesTotal(0);
+      setScalpCandidateTotalsByState(createScalpCandidateTotalsByState());
       setScalpCandidatesSessionTotal(0);
       loadScalpCandidatesPage(0, scalpSession, scalpCandidateStateFilter, true);
-      loadScalpCandidatesSessionTotal(scalpSession);
+      loadScalpCandidateTotalsByState(scalpSession);
     } catch (err: any) {
       scalpSummaryErrorCountRef.current += 1;
       setError(err?.message || "Failed to load scalp dashboard");
@@ -6922,85 +6976,115 @@ export default function Home() {
                             </div>
                           );
                         })()}
-                        <div
-                          className={`flex items-center justify-between px-4 pt-1.5 pb-0 text-[11px] ${scalpTextMutedClass}`}
-                        >
-                          <span className="flex items-center gap-2">
-                            <span>
-                              Research{" "}
-                              <span className={scalpTextSecondaryClass}>
-                                {scalpCandidateStatusProgress.done}/
-                                {scalpCandidateStatusProgress.total}
-                              </span>
-                              {" "}
-                              <span className="opacity-60">
-                                ({scalpCandidateStatusProgress.donePct < 1 &&
-                                scalpCandidateStatusProgress.donePct > 0
-                                  ? scalpCandidateStatusProgress.donePct.toFixed(1)
-                                  : Math.round(scalpCandidateStatusProgress.donePct)}
-                                %)
-                              </span>
-                            </span>
-                            <span className="text-amber-400">
-                              {scalpCandidateStatusProgress.evaluated} evaluated
-                            </span>
-                            <span className="text-rose-400">
-                              {scalpCandidateStatusProgress.rejected} rejected
-                            </span>
-                            <span className="text-emerald-400">
-                              {scalpCandidateStatusProgress.promoted} promoted
-                            </span>
-                            {scalpResearchProgress.isRunning &&
-                              scalpResearchProgress.doneConfirmed <
-                                scalpResearchProgress.done && (
-                                <span className="opacity-60">
-                                  confirmed {scalpResearchProgress.doneConfirmed}
+                        {(() => {
+                          const total = Math.max(0, scalpCandidateStatusProgress.total);
+                          const evaluatedPct =
+                            total > 0
+                              ? Math.min(
+                                  100,
+                                  (scalpCandidateStatusProgress.evaluated / total) *
+                                    100,
+                                )
+                              : 0;
+                          const rejectedPct =
+                            total > 0
+                              ? Math.min(
+                                  100,
+                                  (scalpCandidateStatusProgress.rejected / total) *
+                                    100,
+                                )
+                              : 0;
+                          return (
+                            <div
+                              className={`flex items-center justify-between px-4 pt-1.5 pb-0 text-[11px] ${scalpTextMutedClass}`}
+                            >
+                              <span className="flex items-center gap-2">
+                                <span>
+                                  Research{" "}
+                                  <span className={scalpTextSecondaryClass}>
+                                    {scalpCandidateStatusProgress.done}/
+                                    {scalpCandidateStatusProgress.total}
+                                  </span>
+                                  {" "}
+                                  <span className="opacity-60">
+                                    ({scalpCandidateStatusProgress.donePct < 1 &&
+                                    scalpCandidateStatusProgress.donePct > 0
+                                      ? scalpCandidateStatusProgress.donePct.toFixed(1)
+                                      : Math.round(scalpCandidateStatusProgress.donePct)}
+                                    %)
+                                  </span>
                                 </span>
-                              )}
-                            {scalpResearchProgress.stageCPass > 0 && (
-                              <span className="text-emerald-400">{scalpResearchProgress.stageCPass} stageC</span>
-                            )}
-                            {scalpResearchProgress.phase && scalpResearchProgress.isRunning && (
-                              <span className="opacity-50">{scalpResearchProgress.phase}</span>
-                            )}
-                          </span>
-                          <span className="flex items-center gap-2">
-                            {scalpResearchProgress.statusLabel && (
-                              <span className="opacity-70">{scalpResearchProgress.statusLabel}</span>
-                            )}
-                            {scalpResearchHealthHint && (
-                              <span className="relative group">
-                                <span className={`inline-block h-2.5 w-2.5 rounded-full cursor-help ${
-                                  scalpResearchHealthHint.tone === "critical" ? "bg-rose-500" :
-                                  scalpResearchHealthHint.tone === "warn" ? "bg-amber-400" :
-                                  scalpResearchHealthHint.tone === "ok" ? "bg-emerald-400" :
-                                  "bg-slate-400"
-                                }`} />
-                                <span className={`pointer-events-none absolute right-0 top-full mt-2 z-50 w-80 rounded-lg border px-3 py-2 text-[10px] leading-relaxed opacity-0 shadow-xl transition-opacity group-hover:opacity-100 ${
-                                  scalpDarkMode
-                                    ? "border-zinc-600 bg-zinc-800 text-zinc-200"
-                                    : "border-slate-200 bg-white text-slate-700"
-                                }`}>
-                                  <div className="font-medium">{scalpResearchHealthHint.label}</div>
-                                  {scalpResearchHealthHint.detail && (
-                                    <div className="mt-0.5 opacity-70">{scalpResearchHealthHint.detail}</div>
+                                <span className="text-amber-400">
+                                  {scalpCandidateStatusProgress.evaluated} evaluated{" "}
+                                  <span className="opacity-60">
+                                    ({evaluatedPct < 1 && evaluatedPct > 0
+                                      ? evaluatedPct.toFixed(1)
+                                      : Math.round(evaluatedPct)}
+                                    %)
+                                  </span>
+                                </span>
+                                <span className="text-rose-400">
+                                  {scalpCandidateStatusProgress.rejected} rejected{" "}
+                                  <span className="opacity-60">
+                                    ({rejectedPct < 1 && rejectedPct > 0
+                                      ? rejectedPct.toFixed(1)
+                                      : Math.round(rejectedPct)}
+                                    %)
+                                  </span>
+                                </span>
+                                <span className="text-emerald-400">
+                                  {scalpCandidateStatusProgress.promoted} promoted
+                                </span>
+                                {scalpResearchProgress.isRunning &&
+                                  scalpResearchProgress.doneConfirmed <
+                                    scalpResearchProgress.done && (
+                                    <span className="opacity-60">
+                                      confirmed {scalpResearchProgress.doneConfirmed}
+                                    </span>
                                   )}
-                                  {(() => {
-                                    const log = (scalpResearchHealth?.job as any)?.log;
-                                    if (!Array.isArray(log) || !log.length) return null;
-                                    return (
-                                      <div className="mt-1.5 border-t border-current/20 pt-1.5 max-h-48 overflow-y-auto font-mono">
-                                        {log.slice(-10).map((entry: any, i: number) => (
-                                          <div key={i} className="opacity-60">{entry.t}s {entry.p}{entry.d ? ` · ${entry.d}` : ''}</div>
-                                        ))}
-                                      </div>
-                                    );
-                                  })()}
-                                </span>
+                                {scalpResearchProgress.phase && scalpResearchProgress.isRunning && (
+                                  <span className="opacity-50">{scalpResearchProgress.phase}</span>
+                                )}
                               </span>
-                            )}
-                          </span>
-                        </div>
+                              <span className="flex items-center gap-2">
+                                {scalpResearchProgress.statusLabel && (
+                                  <span className="opacity-70">{scalpResearchProgress.statusLabel}</span>
+                                )}
+                                {scalpResearchHealthHint && (
+                                  <span className="relative group">
+                                    <span className={`inline-block h-2.5 w-2.5 rounded-full cursor-help ${
+                                      scalpResearchHealthHint.tone === "critical" ? "bg-rose-500" :
+                                      scalpResearchHealthHint.tone === "warn" ? "bg-amber-400" :
+                                      scalpResearchHealthHint.tone === "ok" ? "bg-emerald-400" :
+                                      "bg-slate-400"
+                                    }`} />
+                                    <span className={`pointer-events-none absolute right-0 top-full mt-2 z-50 w-80 rounded-lg border px-3 py-2 text-[10px] leading-relaxed opacity-0 shadow-xl transition-opacity group-hover:opacity-100 ${
+                                      scalpDarkMode
+                                        ? "border-zinc-600 bg-zinc-800 text-zinc-200"
+                                        : "border-slate-200 bg-white text-slate-700"
+                                    }`}>
+                                      <div className="font-medium">{scalpResearchHealthHint.label}</div>
+                                      {scalpResearchHealthHint.detail && (
+                                        <div className="mt-0.5 opacity-70">{scalpResearchHealthHint.detail}</div>
+                                      )}
+                                      {(() => {
+                                        const log = (scalpResearchHealth?.job as any)?.log;
+                                        if (!Array.isArray(log) || !log.length) return null;
+                                        return (
+                                          <div className="mt-1.5 border-t border-current/20 pt-1.5 max-h-48 overflow-y-auto font-mono">
+                                            {log.slice(-10).map((entry: any, i: number) => (
+                                              <div key={i} className="opacity-60">{entry.t}s {entry.p}{entry.d ? ` · ${entry.d}` : ''}</div>
+                                            ))}
+                                          </div>
+                                        );
+                                      })()}
+                                    </span>
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
                     {/* Health hint is shown as a dot inside the progress row — see below */}
@@ -7037,17 +7121,12 @@ export default function Home() {
                         <span className={`text-xs ${scalpTextMutedClass}`}>
                           State
                         </span>
-                        {(
-                          [
-                            "enabled",
-                            "all",
-                            "evaluated",
-                            "rejected",
-                            "promoted",
-                            "discovered",
-                          ] as ScalpCandidateGridStateUi[]
-                        ).map((state) => {
+                        {SCALP_CANDIDATE_GRID_STATES.map((state) => {
                           const active = scalpCandidateStateFilter === state;
+                          const stateTotal = Math.max(
+                            0,
+                            Math.floor(Number(scalpCandidateTotalsByState[state]) || 0),
+                          );
                           return (
                             <button
                               key={`candidate-filter-${state}`}
@@ -7063,7 +7142,10 @@ export default function Home() {
                                     : "border-slate-300 bg-white text-slate-600 hover:border-slate-400"
                               }`}
                             >
-                              {state}
+                              <span className="inline-flex items-center gap-1">
+                                <span>{state}</span>
+                                <span className="opacity-70">{stateTotal.toLocaleString()}</span>
+                              </span>
                             </button>
                           );
                         })}
