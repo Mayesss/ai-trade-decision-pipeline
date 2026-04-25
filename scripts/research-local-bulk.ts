@@ -59,6 +59,7 @@ const LOW_PROGRESS_STREAK_FOR_BACKOFF = Math.max(
   1,
   Math.floor(Number(process.env.BULK_LOW_PROGRESS_STREAK_FOR_BACKOFF) || 2),
 );
+const BULK_DEBUG = envBool('BULK_DEBUG', false);
 
 function envBool(name: string, fallback: boolean): boolean {
   const raw = String(process.env[name] || '').trim().toLowerCase();
@@ -148,6 +149,42 @@ async function runBatch(): Promise<boolean> {
   console.log(`  symbols=${symsRun}/${symsTotal} | weekly=${wkEval}/${wkTotal} (${wkTotal > 0 ? Math.round(wkEval / wkTotal * 100) : 0}%)`);
   console.log(`  stageA=${stgA} stageB=${stgB} stageC=${stgC} | budgetHit=${budgetHit ? 'yes' : 'no'}`);
   console.log(`  pending=${pending} | reason=${reason}`);
+  if (BULK_DEBUG) {
+    const deferredByCoverage = Number(d.deferredByCandleCoverage || 0);
+    const replayErrors = Number(d.replayErrors || 0);
+    const droppedBelowMinStage = Number(d.droppedBelowMinStage || 0);
+    const persistedCount = Number(d.persistedCount || 0);
+    const backtested = Number(d.backtested || 0);
+    const deferredToNextRun = Number(d.deferredToNextRun || 0);
+    const incrementalStageReplays = Number(d.incrementalStageReplays || 0);
+    const fullStageReplays = Number(d.fullStageReplays || 0);
+    const cachedStageReuses = Number(d.cachedStageReuses || 0);
+    const freshnessGate = (d.freshnessGate || {}) as Record<string, unknown>;
+    const freshnessApplied = Boolean(freshnessGate.applied);
+    const freshnessReady = Boolean(freshnessGate.ready);
+    const freshnessStale = Number(freshnessGate.staleCount || 0);
+    const freshnessReason = String(freshnessGate.reason || '').trim() || null;
+    console.log(
+      `  debug: backtested=${backtested} persisted=${persistedCount} droppedBelowMinStage=${droppedBelowMinStage} deferredToNext=${deferredToNextRun}`,
+    );
+    console.log(
+      `  debug: replay(full=${fullStageReplays}, incr=${incrementalStageReplays}, cacheReuse=${cachedStageReuses}, errors=${replayErrors}) deferredByCoverage=${deferredByCoverage}`,
+    );
+    if (freshnessApplied) {
+      console.log(
+        `  debug: freshness ready=${freshnessReady} stale=${freshnessStale} reason=${freshnessReason ?? 'none'}`,
+      );
+    }
+    const policy = (d.policy || {}) as Record<string, unknown>;
+    if (Object.keys(policy).length > 0) {
+      console.log(
+        `  debug: policy=${JSON.stringify(policy)}`,
+      );
+    }
+    if (reason && reason !== 'all_candidates_already_evaluated_this_week') {
+      console.log(`  debug: details=${JSON.stringify(d)}`);
+    }
+  }
 
   // Auto-backoff when we keep burning batches with almost no forward progress.
   const lowProgress =

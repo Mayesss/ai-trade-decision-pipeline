@@ -956,9 +956,33 @@ function toReplayCandlesFromHistory(
 }
 
 function filterSundayReplayCandles(candles: ScalpReplayCandle[]): ScalpReplayCandle[] {
-  return (candles || []).filter(
-    (row) => new Date(row.ts).getUTCDay() !== 0,
-  );
+  const byWeek = new Map<
+    number,
+    { nonSunday: ScalpReplayCandle[]; sunday: ScalpReplayCandle[] }
+  >();
+  for (const row of candles || []) {
+    const weekStart = startOfScalpV2WeekMondayUtc(row.ts);
+    const bucket =
+      byWeek.get(weekStart) || { nonSunday: [], sunday: [] };
+    if (new Date(row.ts).getUTCDay() === 0) {
+      bucket.sunday.push(row);
+    } else {
+      bucket.nonSunday.push(row);
+    }
+    byWeek.set(weekStart, bucket);
+  }
+
+  const out: ScalpReplayCandle[] = [];
+  for (const weekStart of Array.from(byWeek.keys()).sort((a, b) => a - b)) {
+    const bucket = byWeek.get(weekStart)!;
+    if (bucket.nonSunday.length > 0) {
+      out.push(...bucket.nonSunday);
+    } else {
+      // Preserve Sunday-only weeks so stage coverage does not defer forever.
+      out.push(...bucket.sunday);
+    }
+  }
+  return out.sort((a, b) => a.ts - b.ts);
 }
 
 function listWeekStarts(params: { fromTs: number; toTs: number }): number[] {
@@ -1186,12 +1210,25 @@ function aggregateStageFromWeeklyMetrics(params: {
   };
 }
 
-function hasReusableNonZeroWeeklyCacheMetrics(
+function hasReusableWeeklyCacheMetrics(
   metrics: ScalpV2WorkerStageWeeklyMetrics | null | undefined,
 ): metrics is ScalpV2WorkerStageWeeklyMetrics {
   if (!metrics) return false;
-  const netR = Number(metrics.netR);
-  return Number.isFinite(netR) && Math.abs(netR) > 1e-9;
+  return (
+    Number.isFinite(Number(metrics.trades)) &&
+    Number.isFinite(Number(metrics.wins)) &&
+    Number.isFinite(Number(metrics.netR)) &&
+    Number.isFinite(Number(metrics.grossProfitR)) &&
+    Number.isFinite(Number(metrics.grossLossR)) &&
+    Number.isFinite(Number(metrics.maxDrawdownR)) &&
+    Number.isFinite(Number(metrics.maxPrefixR)) &&
+    Number.isFinite(Number(metrics.minPrefixR)) &&
+    Number.isFinite(Number(metrics.largestTradeR)) &&
+    Number.isFinite(Number(metrics.exitStop)) &&
+    Number.isFinite(Number(metrics.exitTp)) &&
+    Number.isFinite(Number(metrics.exitTimeStop)) &&
+    Number.isFinite(Number(metrics.exitForceClose))
+  );
 }
 
 function shouldDeferWorkerStageForCoverage(
@@ -3278,7 +3315,7 @@ export async function runScalpV2ResearchJob(params: {
           const priorStarts = listWeekStarts({ fromTs, toTs: windowToTs }).slice(0, -1);
           for (const ws of priorStarts) {
             const metrics = cached?.get(ws);
-            if (!hasReusableNonZeroWeeklyCacheMetrics(metrics)) {
+            if (!hasReusableWeeklyCacheMetrics(metrics)) {
               symbolsNeedingFullRange.add(c.symbol);
               break;
             }
@@ -3522,7 +3559,7 @@ export async function runScalpV2ResearchJob(params: {
       let missingPriorWeeks = false;
       for (const weekStart of priorWeekStarts) {
         const cached = cachedWeeks.get(weekStart);
-        if (!hasReusableNonZeroWeeklyCacheMetrics(cached)) {
+        if (!hasReusableWeeklyCacheMetrics(cached)) {
           missingPriorWeeks = true;
           break;
         }
@@ -3531,7 +3568,7 @@ export async function runScalpV2ResearchJob(params: {
       const newestWeekCached = cachedWeeks.get(newestWeekStartForStage);
       const canReuseCachedNewestWeek =
         !missingPriorWeeks &&
-        hasReusableNonZeroWeeklyCacheMetrics(newestWeekCached);
+        hasReusableWeeklyCacheMetrics(newestWeekCached);
 
       if (
         missingPriorWeeks &&
