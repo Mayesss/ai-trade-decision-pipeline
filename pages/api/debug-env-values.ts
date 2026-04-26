@@ -8,6 +8,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!requireAdminAccess(req, res)) return;
 
     try {
+        const scalpV2StaleRecoveryDays =
+            process.env.SCALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS ||
+            process.env.CALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS ||
+            '(default: 14)';
         console.log('Environment check:');
         console.log({
             BITGET_API_KEY: process.env.BITGET_API_KEY ? process.env.BITGET_API_KEY.slice(0, 6) + '...' : '❌ missing',
@@ -68,6 +72,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES:
                 process.env.FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES || '(default: 0)',
             FOREX_SELECTOR_TOP_PERCENT: process.env.FOREX_SELECTOR_TOP_PERCENT || '(default: 40)',
+            SCALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS: scalpV2StaleRecoveryDays,
         });
 
         return res.status(200).json({
@@ -117,6 +122,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES:
                 process.env.FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES || '(default: 0)',
             FOREX_SELECTOR_TOP_PERCENT: process.env.FOREX_SELECTOR_TOP_PERCENT || '(default: 40)',
+            SCALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS: scalpV2StaleRecoveryDays,
         });
     } catch (err: any) {
         console.error('Error in /debug-env-values:', err);

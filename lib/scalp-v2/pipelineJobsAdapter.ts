@@ -101,6 +101,17 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
     minColdStartLookbackDays,
     365,
   );
+  // Backward-compatible alias: some deployments mistakenly used CALP_*.
+  const staleRecoveryDaysRaw =
+    process.env.SCALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS ??
+    process.env.CALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS;
+  const staleRecoveryDays = Math.max(
+    1,
+    Math.min(
+      lookbackDays,
+      toPositiveInt(staleRecoveryDaysRaw, 14, 365),
+    ),
+  );
   const fetchWindowMinutes = toPositiveInt(
     process.env.SCALP_V2_LOAD_CANDLES_FETCH_WINDOW_MINUTES,
     360,
@@ -111,6 +122,7 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
     180,
     10_080,
   );
+  const staleRecoveryMs = staleRecoveryDays * ONE_DAY_MS;
   const incrementalOverlapMs = incrementalOverlapMinutes * 60 * 1000;
   const toTsMs = resolveLoadCandlesFetchUpperBoundMs(Date.now());
   const fromTsMs = Math.max(0, toTsMs - lookbackDays * ONE_DAY_MS);
@@ -132,6 +144,9 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
     symbol: string;
     fetchFromTsMs: number;
     fetchToTsMs: number;
+    fetchWindowFromTsMs: number;
+    staleRecoveryFromTsMs: number;
+    staleRecoveryApplied: boolean;
     coldStartBootstrap: boolean;
     existingCount: number;
     incomingCount: number;
@@ -175,11 +190,19 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
         fromTsMs,
         toTsMs - fetchWindowMinutes * 60 * 1000,
       );
+      const staleRecoveryFromTsMs = Math.max(0, toTsMs - staleRecoveryMs);
       // Cold-start scopes need a full lookback bootstrap; incremental windows
       // are used only after at least one valid latest candle is present.
+      const incrementalFromTsMs = coldStartBootstrap
+        ? fromTsMs
+        : Math.max(fromTsMs, existingLatestTsMs - incrementalOverlapMs);
+      const staleRecoveryApplied =
+        !coldStartBootstrap && existingLatestTsMs < fetchWindowFromTsMs;
       const fetchFromTsMs = coldStartBootstrap
         ? fromTsMs
-        : Math.max(fetchWindowFromTsMs, existingLatestTsMs - incrementalOverlapMs);
+        : staleRecoveryApplied
+          ? Math.max(incrementalFromTsMs, staleRecoveryFromTsMs)
+          : Math.max(fetchWindowFromTsMs, incrementalFromTsMs);
       const fetchToTsMs = toTsMs;
       let epic = scope.symbol;
       let incoming: Array<[number, number, number, number, number, number]> = [];
@@ -222,6 +245,9 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
         symbol: scope.symbol,
         fetchFromTsMs,
         fetchToTsMs,
+        fetchWindowFromTsMs,
+        staleRecoveryFromTsMs,
+        staleRecoveryApplied,
         coldStartBootstrap,
         existingCount,
         incomingCount: incoming.length,
@@ -256,6 +282,7 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
       timeframe: "1m",
       fromTsMs,
       toTsMs,
+      staleRecoveryDays,
       fetchWindowMinutes,
       incrementalOverlapMinutes,
       maxAttempts,

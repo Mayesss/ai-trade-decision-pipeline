@@ -351,11 +351,16 @@ npm run start
   - Optional env knobs:
     - `SCALP_PIPELINE_LOAD_PREWARM_WEEKS` (default `1`)
     - `SCALP_PIPELINE_LOAD_BACKFILL_CHUNK_WEEKS` (default matches prewarm)
+    - `SCALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS` (default `14`) to widen incremental fetch windows for stale symbols and prevent Sunday freshness deadlocks.
+      - Backward-compatible alias accepted: `CALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS`.
   - Claims rows from `scalp_discovered_symbols` and updates per-symbol load status.
   - Successor chaining (after drain, `pendingAfter=0`):
     - `successor=cycle` (default) triggers `/api/scalp/v2/cron/cycle`.
     - `successor=discover` triggers `/api/scalp/v2/cron/discover?autoSuccessor=1`.
     - `successorDryRun=true|false` controls `cycle?dryRun=...` handoff (default `false`).
+  - Debug query mode:
+    - `debug=true` adds route-level diagnostics to the response (`debug.selectedScope`, `debug.timing`, `debug.scopeStats`).
+    - `debug.scopeStats` includes per-symbol before/after 1m candle stats to verify whether a run actually advanced `toTsMs`.
   - No downstream chaining to v1-style `prepare/worker`; handoff is native v2 only.
 - `GET /api/scalp/v2/cron/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&session=berlin`
   - Legacy alias kept for compatibility: `/api/scalp/cron/v2/prepare`.
