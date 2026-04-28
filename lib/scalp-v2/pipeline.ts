@@ -98,6 +98,7 @@ import {
 } from "./weekWindows";
 import type {
   ScalpV2Deployment,
+  ScalpV2CandidateStatus,
   ScalpV2ExecutionEvent,
   ScalpV2JobKind,
   ScalpV2JobResult,
@@ -3203,10 +3204,15 @@ export async function runScalpV2ResearchJob(params: {
         () => new Set<string>(),
       ),
     );
-    const skippedByCache = evaluatedKeys.size;
+    const evaluatedKeyCount = evaluatedKeys.size;
+    let skippedByCache = 0;
     const notYetEvaluated = allCandidates.filter((c) => {
       const key = `${c.venue}:${c.symbol}:${c.tuneId}:${c.session}`.toLowerCase();
-      return !evaluatedKeys.has(key);
+      if (evaluatedKeys.has(key)) {
+        skippedByCache += 1;
+        return false;
+      }
+      return true;
     });
 
     if (!notYetEvaluated.length) {
@@ -3218,13 +3224,14 @@ export async function runScalpV2ResearchJob(params: {
         poolSizeTotal,
         deploymentRolloverRequeued,
         totalCandidates: allCandidates.length,
+        evaluatedKeyCount,
         skippedByCache,
         pendingAfter,
         scopePrune: scopePrune.details,
       });
       return buildScalpV2JobResult({
         jobKind: "research",
-        processed: skippedByCache,
+        processed: 0,
         succeeded: 0,
         failed: 0,
         pendingAfter,
@@ -3269,6 +3276,24 @@ export async function runScalpV2ResearchJob(params: {
 
     let skippedByClearFail = 0;
     let skippedByNetRPreFilter = 0;
+    type SmartSkipEntry = {
+      candidate: InMemoryCandidate;
+      reasonCode:
+        | "SCALP_V2_SMART_SKIP_NETR_PREFILTER"
+        | "SCALP_V2_SMART_SKIP_CLEAR_FAIL_NET_R"
+        | "SCALP_V2_SMART_SKIP_CLEAR_FAIL_TRADES";
+      stageReason:
+        | "smart_skip_net_r_prefilter"
+        | "smart_skip_clear_fail_net_r"
+        | "smart_skip_clear_fail_trades";
+      previousWindowToTs: number;
+      previousStageANetR: number | null;
+      previousStageATrades: number | null;
+      projectedStageANetR: number | null;
+      stageAWeeklyNetR: Record<string, number>;
+    };
+    const smartSkipped: SmartSkipEntry[] = [];
+    let smartSkippedPersisted = 0;
 
     // Pre-compute stage A week starts for the weeklyNetR pre-filter.
     const stageAFromTs = windowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS;
@@ -3311,6 +3336,16 @@ export async function runScalpV2ResearchJob(params: {
         }
         if (hasAllPrior && projectedNetR < workerPolicy.stageA.minNetR) {
           skippedByNetRPreFilter += 1;
+          smartSkipped.push({
+            candidate: c,
+            reasonCode: "SCALP_V2_SMART_SKIP_NETR_PREFILTER",
+            stageReason: "smart_skip_net_r_prefilter",
+            previousWindowToTs: Math.floor(Number(prev.windowToTs) || 0),
+            previousStageANetR: prev.stageANetR,
+            previousStageATrades: prev.stageATrades,
+            projectedStageANetR: projectedNetR,
+            stageAWeeklyNetR: prevWeeklyNetR,
+          });
           return false;
         }
       }
@@ -3329,16 +3364,137 @@ export async function runScalpV2ResearchJob(params: {
       // Clear fail: deeply negative netR or barely any trades
       if (netR !== null && netR < clearFailNetR) {
         skippedByClearFail += 1;
+        smartSkipped.push({
+          candidate: c,
+          reasonCode: "SCALP_V2_SMART_SKIP_CLEAR_FAIL_NET_R",
+          stageReason: "smart_skip_clear_fail_net_r",
+          previousWindowToTs: Math.floor(Number(prev.windowToTs) || 0),
+          previousStageANetR: prev.stageANetR,
+          previousStageATrades: prev.stageATrades,
+          projectedStageANetR: null,
+          stageAWeeklyNetR: prev.stageAWeeklyNetR || {},
+        });
         return false;
       }
       if (trades !== null && trades < clearFailMinTrades) {
         skippedByClearFail += 1;
+        smartSkipped.push({
+          candidate: c,
+          reasonCode: "SCALP_V2_SMART_SKIP_CLEAR_FAIL_TRADES",
+          stageReason: "smart_skip_clear_fail_trades",
+          previousWindowToTs: Math.floor(Number(prev.windowToTs) || 0),
+          previousStageANetR: prev.stageANetR,
+          previousStageATrades: prev.stageATrades,
+          projectedStageANetR: null,
+          stageAWeeklyNetR: prev.stageAWeeklyNetR || {},
+        });
         return false;
       }
 
       // Marginal fail — re-run, new week might tip it
       return true;
     });
+
+    async function persistSmartSkippedCandidates(): Promise<number> {
+      if (!smartSkipped.length) return 0;
+      const stageBSkeleton = buildWorkerStageSkeleton({
+        stage: workerPolicy.stageB,
+        fromTs: windowToTs - workerPolicy.stageB.weeks * ONE_WEEK_MS,
+        toTs: windowToTs,
+        reason: "blocked_smart_skip",
+      });
+      const stageCSkeleton = buildWorkerStageSkeleton({
+        stage: workerPolicy.stageC,
+        fromTs: windowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS,
+        toTs: windowToTs,
+        reason: "blocked_smart_skip",
+      });
+      const rows = smartSkipped.map((entry) => {
+        const c = entry.candidate;
+        const stageANetR =
+          finiteOrNull(entry.projectedStageANetR) ??
+          finiteOrNull(entry.previousStageANetR) ??
+          0;
+        const stageATrades = Math.max(
+          0,
+          Math.floor(Number(entry.previousStageATrades) || 0),
+        );
+        const stageA: ScalpV2WorkerStageResult = {
+          ...buildWorkerStageSkeleton({
+            stage: workerPolicy.stageA,
+            fromTs: stageAFromTs,
+            toTs: windowToTs,
+            reason: entry.stageReason,
+          }),
+          trades: stageATrades,
+          netR: stageANetR,
+          weeklyNetR: entry.stageAWeeklyNetR,
+        };
+        const workerMeta = {
+          version: "v2_research_smart_skip_r1",
+          evaluatedAtMs: nowTs,
+          policy: {
+            stageA: workerPolicy.stageA,
+            stageB: workerPolicy.stageB,
+            stageC: workerPolicy.stageC,
+            minCandles: workerPolicy.minCandles,
+            newestWeekMinCandles: resolveNewestWeekMinCandles({
+              symbol: c.symbol,
+              workerPolicy,
+            }),
+            weeklyCacheEnabled: true,
+          },
+          windowToTs,
+          smartSkip: {
+            reason: entry.stageReason,
+            previousWindowToTs: entry.previousWindowToTs || null,
+            previousStageANetR: entry.previousStageANetR,
+            previousStageATrades: entry.previousStageATrades,
+            projectedStageANetR: entry.projectedStageANetR,
+          },
+          stageA,
+          stageB: stageBSkeleton,
+          stageC: stageCSkeleton,
+          finalPass: false,
+        };
+        return {
+          venue: c.venue,
+          symbol: c.symbol,
+          strategyId: c.strategyId,
+          tuneId: c.tuneId,
+          entrySessionProfile: c.session,
+          score: c.score,
+          status: "rejected" as const,
+          reasonCodes: ["SCALP_V2_RESEARCH_INLINE", entry.reasonCode],
+          metadata: {
+            evaluatedAtMs: nowTs,
+            evaluator: "v2_research_inline",
+            worker: workerMeta,
+          },
+        };
+      });
+
+      try {
+        await withTiming("research.persist_smart_skips", () =>
+          upsertScalpV2Candidates({ rows }),
+        );
+        return rows.length;
+      } catch {
+        let persisted = 0;
+        for (const row of rows) {
+          try {
+            await withTiming("research.persist_smart_skip_single", () =>
+              upsertScalpV2Candidates({ rows: [row] }),
+            );
+            persisted += 1;
+          } catch {
+            // Leave the row discovered; a later batch can retry the skip.
+          }
+        }
+        return persisted;
+      }
+    }
+
     selected.sort((a, b) => {
       const left = previousPriority(a);
       const right = previousPriority(b);
@@ -3352,6 +3508,7 @@ export async function runScalpV2ResearchJob(params: {
     });
 
     if (!selected.length) {
+      smartSkippedPersisted = await persistSmartSkippedCandidates();
       const pendingAfter = await resolvePendingAfterBacklog(
         skippedByClearFail + skippedByNetRPreFilter,
       );
@@ -3362,22 +3519,26 @@ export async function runScalpV2ResearchJob(params: {
         poolSizeTotal,
         deploymentRolloverRequeued,
         totalCandidates: allCandidates.length,
+        evaluatedKeyCount,
         skippedByCache,
         skippedByClearFail,
         skippedByNetRPreFilter,
+        smartSkippedPersisted,
         candidatesWithPreviousResults: previousResults.size,
         pendingAfter,
         scopePrune: scopePrune.details,
       });
       return buildScalpV2JobResult({
         jobKind: "research",
-        processed: skippedByCache + skippedByClearFail + skippedByNetRPreFilter,
+        processed: smartSkippedPersisted,
         succeeded: 0,
         failed: 0,
         pendingAfter,
         details,
       });
     }
+
+    smartSkippedPersisted = await persistSmartSkippedCandidates();
 
     // --- Backtest remaining candidates in one pass ---
     await emitResearchHeartbeat({
@@ -3389,6 +3550,7 @@ export async function runScalpV2ResearchJob(params: {
         skippedByCache,
         skippedByClearFail,
         skippedByNetRPreFilter,
+        smartSkippedPersisted,
       },
     });
     const claimPool = selected.slice(
@@ -3434,9 +3596,11 @@ export async function runScalpV2ResearchJob(params: {
         deploymentRolloverRequeued,
         totalCandidates: allCandidates.length,
         selected: selected.length,
+        evaluatedKeyCount,
         skippedByCache,
         skippedByClearFail,
         skippedByNetRPreFilter,
+        smartSkippedPersisted,
         candidatesWithPreviousResults: previousResults.size,
         researchWorkLeasesEnabled,
         researchWorkLeaseMs,
@@ -3448,7 +3612,7 @@ export async function runScalpV2ResearchJob(params: {
       });
       return buildScalpV2JobResult({
         jobKind: "research",
-        processed: 0,
+        processed: smartSkippedPersisted,
         succeeded: 0,
         failed: 0,
         pendingAfter,
@@ -3485,6 +3649,7 @@ export async function runScalpV2ResearchJob(params: {
       skippedByCache,
       skippedByClearFail,
       skippedByNetRPreFilter,
+      smartSkippedPersisted,
     };
     await emitResearchHeartbeat({
       phase: "prepare_backtest",
@@ -4549,9 +4714,11 @@ export async function runScalpV2ResearchJob(params: {
       totalCandidates: allCandidates.length,
       reason: timeBudgetExhausted ? "time_budget_exhausted" : undefined,
       deploymentRolloverRequeued,
+      evaluatedKeyCount,
       skippedByCache,
       skippedByClearFail,
       skippedByNetRPreFilter,
+      smartSkippedPersisted,
       candidatesWithPreviousResults: previousResults.size,
       backtested: chunked.length,
       deferredToNextRun: deferredCount,
@@ -4616,7 +4783,7 @@ export async function runScalpV2ResearchJob(params: {
 
     return buildScalpV2JobResult({
       jobKind: "research",
-      processed,
+      processed: processed + smartSkippedPersisted,
       succeeded,
       failed,
       pendingAfter,
@@ -4903,6 +5070,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     type PromotionDraft = {
       deploymentId: string;
       candidateId: number | null;
+      candidateStatus: ScalpV2CandidateStatus | null;
       venue: ScalpV2Venue;
       symbol: string;
       strategyId: string;
@@ -5088,6 +5256,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       drafts.push({
         deploymentId,
         candidateId: candidate?.id ?? existing?.candidateId ?? null,
+        candidateStatus: candidate?.status ?? null,
         venue,
         symbol,
         strategyId,
@@ -5320,7 +5489,13 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       .filter((row) => row.candidateId !== null && row.enabled)
       .map((row) => Number(row.candidateId));
     const notPromotedIds = drafts
-      .filter((row) => row.candidateId !== null && !row.enabled)
+      .filter(
+        (row) =>
+          row.candidateId !== null &&
+          !row.enabled &&
+          row.candidateStatus !== "rejected" &&
+          row.workerStageCPass,
+      )
       .map((row) => Number(row.candidateId));
     if (promotedIds.length > 0) {
       await updateScalpV2CandidateStatuses({

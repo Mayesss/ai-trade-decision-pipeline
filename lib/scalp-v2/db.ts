@@ -436,6 +436,7 @@ export async function upsertScalpV2Candidates(params: {
   }>;
 }): Promise<number> {
   if (!isScalpPgConfigured() || params.rows.length === 0) return 0;
+  await ensureCandidateResearchLeaseColumns().catch(() => false);
   const db = scalpPrisma();
 
   for (let offset = 0; offset < params.rows.length; offset += UPSERT_CANDIDATE_BATCH_SIZE) {
@@ -496,6 +497,18 @@ export async function upsertScalpV2Candidates(params: {
             )
             THEN scalp_v2_candidates.reason_codes
           ELSE EXCLUDED.reason_codes
+        END,
+        research_locked_by = CASE
+          WHEN EXCLUDED.status <> 'discovered' THEN NULL
+          ELSE scalp_v2_candidates.research_locked_by
+        END,
+        research_claimed_at = CASE
+          WHEN EXCLUDED.status <> 'discovered' THEN NULL
+          ELSE scalp_v2_candidates.research_claimed_at
+        END,
+        research_lease_until = CASE
+          WHEN EXCLUDED.status <> 'discovered' THEN NULL
+          ELSE scalp_v2_candidates.research_lease_until
         END,
         metadata_json = (
           CASE
@@ -1599,6 +1612,7 @@ export async function updateScalpV2CandidateStatuses(params: {
   metadataPatch?: Record<string, unknown>;
 }): Promise<number> {
   if (!isScalpPgConfigured() || params.ids.length === 0) return 0;
+  await ensureCandidateResearchLeaseColumns().catch(() => false);
   const db = scalpPrisma();
   const ids = Array.from(new Set(params.ids.map((id) => Math.floor(id)).filter((id) => id > 0)));
   if (!ids.length) return 0;
@@ -1609,6 +1623,9 @@ export async function updateScalpV2CandidateStatuses(params: {
       SET
         status = ${params.status},
         metadata_json = COALESCE(metadata_json, '{}'::jsonb) || ${JSON.stringify(params.metadataPatch)}::jsonb,
+        research_locked_by = CASE WHEN ${params.status} <> 'discovered' THEN NULL ELSE research_locked_by END,
+        research_claimed_at = CASE WHEN ${params.status} <> 'discovered' THEN NULL ELSE research_claimed_at END,
+        research_lease_until = CASE WHEN ${params.status} <> 'discovered' THEN NULL ELSE research_lease_until END,
         updated_at = NOW()
       WHERE id = ANY(${ids}::int[]);
     `);
@@ -1617,6 +1634,9 @@ export async function updateScalpV2CandidateStatuses(params: {
       UPDATE scalp_v2_candidates
       SET
         status = ${params.status},
+        research_locked_by = CASE WHEN ${params.status} <> 'discovered' THEN NULL ELSE research_locked_by END,
+        research_claimed_at = CASE WHEN ${params.status} <> 'discovered' THEN NULL ELSE research_claimed_at END,
+        research_lease_until = CASE WHEN ${params.status} <> 'discovered' THEN NULL ELSE research_lease_until END,
         updated_at = NOW()
       WHERE id = ANY(${ids}::int[]);
     `);

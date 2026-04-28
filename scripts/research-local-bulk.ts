@@ -190,6 +190,7 @@ async function runBatch(): Promise<boolean> {
     const persistedCount = Number(d.persistedCount || 0);
     const backtested = Number(d.backtested || 0);
     const deferredToNextRun = Number(d.deferredToNextRun || 0);
+    const smartSkippedPersisted = Number(d.smartSkippedPersisted || 0);
     const incrementalStageReplays = Number(d.incrementalStageReplays || 0);
     const newestWeekReplayReuses = Number(d.newestWeekReplayReuses || 0);
     const fullStageReplays = Number(d.fullStageReplays || 0);
@@ -206,7 +207,7 @@ async function runBatch(): Promise<boolean> {
     const freshnessStale = Number(freshnessGate.staleCount || 0);
     const freshnessReason = String(freshnessGate.reason || '').trim() || null;
     console.log(
-      `  debug: backtested=${backtested} persisted=${persistedCount} droppedBelowMinStage=${droppedBelowMinStage} deferredToNext=${deferredToNextRun}`,
+      `  debug: backtested=${backtested} persisted=${persistedCount} smartSkipped=${smartSkippedPersisted} droppedBelowMinStage=${droppedBelowMinStage} deferredToNext=${deferredToNextRun}`,
     );
     console.log(
       `  debug: replay(full=${fullStageReplays}, earlyAbort=${earlyAbortedStageReplays}, incr=${incrementalStageReplays}, newestReuse=${newestWeekReplayReuses}, cacheReuse=${cachedStageReuses}, bCache=${stageBCacheHits}, cCache=${stageCCacheHits}, errors=${replayErrors}) deferredByCoverage=${deferredByCoverage}`,
