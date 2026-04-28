@@ -76,6 +76,9 @@ function applyRuntimeOverrides(): void {
   process.env.SCALP_V2_RESEARCH_BATCH_SIZE = String(candidateBatchSize);
   process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY_MAX = '16';
   process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY = String(backtestConcurrency);
+  if (BULK_DEBUG) {
+    process.env.SCALP_V2_RESEARCH_DEBUG_TIMING = '1';
+  }
   if (DISABLE_TIME_BUDGET) {
     process.env.SCALP_V2_RESEARCH_DISABLE_TIME_BUDGET = '1';
     delete process.env.SCALP_V2_RESEARCH_TIME_BUDGET_MS;
@@ -157,6 +160,7 @@ async function runBatch(): Promise<boolean> {
     const backtested = Number(d.backtested || 0);
     const deferredToNextRun = Number(d.deferredToNextRun || 0);
     const incrementalStageReplays = Number(d.incrementalStageReplays || 0);
+    const newestWeekReplayReuses = Number(d.newestWeekReplayReuses || 0);
     const fullStageReplays = Number(d.fullStageReplays || 0);
     const cachedStageReuses = Number(d.cachedStageReuses || 0);
     const freshnessGate = (d.freshnessGate || {}) as Record<string, unknown>;
@@ -168,8 +172,21 @@ async function runBatch(): Promise<boolean> {
       `  debug: backtested=${backtested} persisted=${persistedCount} droppedBelowMinStage=${droppedBelowMinStage} deferredToNext=${deferredToNextRun}`,
     );
     console.log(
-      `  debug: replay(full=${fullStageReplays}, incr=${incrementalStageReplays}, cacheReuse=${cachedStageReuses}, errors=${replayErrors}) deferredByCoverage=${deferredByCoverage}`,
+      `  debug: replay(full=${fullStageReplays}, incr=${incrementalStageReplays}, newestReuse=${newestWeekReplayReuses}, cacheReuse=${cachedStageReuses}, errors=${replayErrors}) deferredByCoverage=${deferredByCoverage}`,
     );
+    const timing = (d.timing || {}) as Record<string, any>;
+    const timingLabels = Array.isArray(timing.labels) ? timing.labels.slice(0, 8) : [];
+    if (timingLabels.length > 0) {
+      console.log(
+        `  debug: timing=${timingLabels.map((row: any) => {
+          const label = String(row?.label || '?');
+          const totalMs = Number(row?.totalMs || 0);
+          const count = Number(row?.count || 0);
+          const avgMs = Number(row?.avgMs || 0);
+          return `${label}:${totalMs}ms/${count}x(avg ${avgMs}ms)`;
+        }).join(' | ')}`,
+      );
+    }
     if (freshnessApplied) {
       console.log(
         `  debug: freshness ready=${freshnessReady} stale=${freshnessStale} reason=${freshnessReason ?? 'none'}`,

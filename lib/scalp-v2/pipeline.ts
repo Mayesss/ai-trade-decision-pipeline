@@ -3442,6 +3442,29 @@ export async function runScalpV2ResearchJob(params: {
 
     const newestWeekStart = startOfScalpV2WeekMondayUtc(windowToTs - ONE_WEEK_MS);
     const cacheIsPopulated = workerStageWeeklyCache.size > 0;
+    const stageCacheKey = (params: {
+      candidate: (typeof chunked)[number];
+      stageId: ScalpV2WorkerStageId;
+    }) =>
+      `${params.candidate.venue}:${params.candidate.symbol}:${params.candidate.strategyId}:${params.candidate.tuneId}:${params.candidate.session}:${params.stageId}`.toLowerCase();
+    const symbolsNeedingStageAFullRange = new Set<string>();
+    if (cacheIsPopulated) {
+      const stage = workerPolicy.stageA;
+      const fromTs = windowToTs - stage.weeks * ONE_WEEK_MS;
+      const priorStarts = listWeekStarts({ fromTs, toTs: windowToTs }).slice(0, -1);
+      for (const candidate of chunked) {
+        if (symbolsNeedingStageAFullRange.has(candidate.symbol)) continue;
+        const cached = workerStageWeeklyCache.get(
+          stageCacheKey({ candidate, stageId: stage.id }),
+        );
+        for (const weekStart of priorStarts) {
+          if (!hasReusableWeeklyCacheMetrics(cached?.get(weekStart))) {
+            symbolsNeedingStageAFullRange.add(candidate.symbol);
+            break;
+          }
+        }
+      }
+    }
 
     const pendingCacheWrites: Array<{
       venue: ScalpV2Venue;
@@ -3543,12 +3566,6 @@ export async function runScalpV2ResearchJob(params: {
       stagePolicies.map((stage) => [stage.id, stage] as const),
     );
 
-    const stageCacheKey = (params: {
-      candidate: (typeof chunked)[number];
-      stageId: ScalpV2WorkerStageId;
-    }) =>
-      `${params.candidate.venue}:${params.candidate.symbol}:${params.candidate.strategyId}:${params.candidate.tuneId}:${params.candidate.session}:${params.stageId}`.toLowerCase();
-
     function buildBlockedStageResult(
       stageId: ScalpV2WorkerStageId,
     ): ScalpV2WorkerStageResult {
@@ -3603,7 +3620,10 @@ export async function runScalpV2ResearchJob(params: {
         // Load only stage A window initially (4 weeks). If later stages need
         // a wider range, stage evaluation lazily extends to the full window.
         const stageAFromTs = windowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS;
-        const candleFromTs = cacheIsPopulated ? newestWeekStart : stageAFromTs;
+        const candleFromTs =
+          cacheIsPopulated && !symbolsNeedingStageAFullRange.has(candidate.symbol)
+            ? newestWeekStart
+            : stageAFromTs;
         const history = await withTiming("research.load_candles_initial", () =>
           loadScalpCandleHistoryInRange(
             candidate.symbol,
