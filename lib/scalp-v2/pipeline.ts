@@ -3396,6 +3396,7 @@ export async function runScalpV2ResearchJob(params: {
     let incrementalStageReplays = 0;
     let fullStageReplays = 0;
     let cachedStageReuses = 0;
+    let newestWeekReplayReuses = 0;
 
     let timeBudgetExhausted = false;
 
@@ -3439,30 +3440,8 @@ export async function runScalpV2ResearchJob(params: {
       : new Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>();
     await emitResearchHeartbeat({ phase: "prepare_backtest", force: true, progress: { ...baseProgress, step: "cache_loaded", cacheKeys: weeklyCacheKeys.length, cacheHits: workerStageWeeklyCache.size } });
 
-    // Pre-scan: determine which symbols need the full 12-week candle range
-    // vs just the newest week. Skip entirely when cache is empty (all need full range).
     const newestWeekStart = startOfScalpV2WeekMondayUtc(windowToTs - ONE_WEEK_MS);
     const cacheIsPopulated = workerStageWeeklyCache.size > 0;
-    const symbolsNeedingFullRange = new Set<string>();
-    if (cacheIsPopulated) {
-      for (const c of chunked) {
-        if (symbolsNeedingFullRange.has(c.symbol)) continue;
-        for (const stage of stagePolicies) {
-          const ck = `${c.venue}:${c.symbol}:${c.strategyId}:${c.tuneId}:${c.session}:${stage.id}`.toLowerCase();
-          const cached = workerStageWeeklyCache.get(ck);
-          const fromTs = windowToTs - stage.weeks * ONE_WEEK_MS;
-          const priorStarts = listWeekStarts({ fromTs, toTs: windowToTs }).slice(0, -1);
-          for (const ws of priorStarts) {
-            const metrics = cached?.get(ws);
-            if (!hasReusableWeeklyCacheMetrics(metrics)) {
-              symbolsNeedingFullRange.add(c.symbol);
-              break;
-            }
-          }
-          if (symbolsNeedingFullRange.has(c.symbol)) break;
-        }
-      }
-    }
 
     const pendingCacheWrites: Array<{
       venue: ScalpV2Venue;
@@ -3553,12 +3532,22 @@ export async function runScalpV2ResearchJob(params: {
       replayConfig: any;
       symbolPipSize: number;
       stageResults: Record<ScalpV2WorkerStageId, ScalpV2WorkerStageResult>;
+      newestWeekReplayAttempted: boolean;
+      newestWeekMetrics: ScalpV2WorkerStageWeeklyMetrics | null;
+      newestWeekCandleCount: number;
+      newestWeekCacheStages: Set<ScalpV2WorkerStageId>;
       finalized: boolean;
     };
 
     const stagePolicyById = new Map(
       stagePolicies.map((stage) => [stage.id, stage] as const),
     );
+
+    const stageCacheKey = (params: {
+      candidate: (typeof chunked)[number];
+      stageId: ScalpV2WorkerStageId;
+    }) =>
+      `${params.candidate.venue}:${params.candidate.symbol}:${params.candidate.strategyId}:${params.candidate.tuneId}:${params.candidate.session}:${params.stageId}`.toLowerCase();
 
     function buildBlockedStageResult(
       stageId: ScalpV2WorkerStageId,
@@ -3614,10 +3603,7 @@ export async function runScalpV2ResearchJob(params: {
         // Load only stage A window initially (4 weeks). If later stages need
         // a wider range, stage evaluation lazily extends to the full window.
         const stageAFromTs = windowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS;
-        const candleFromTs =
-          cacheIsPopulated && !symbolsNeedingFullRange.has(candidate.symbol)
-            ? newestWeekStart
-            : stageAFromTs;
+        const candleFromTs = cacheIsPopulated ? newestWeekStart : stageAFromTs;
         const history = await withTiming("research.load_candles_initial", () =>
           loadScalpCandleHistoryInRange(
             candidate.symbol,
@@ -3660,8 +3646,77 @@ export async function runScalpV2ResearchJob(params: {
           },
         });
       }
-      if (symbolCandles.length < workerPolicy.minCandles) return null;
+      if (symbolCandles.length <= 0) return null;
       return symbolCandles;
+    }
+
+    async function ensureRuntimeNewestWeekMetrics(
+      runtime: StageCandidateRuntime,
+    ): Promise<ScalpV2WorkerStageWeeklyMetrics | null> {
+      if (runtime.newestWeekReplayAttempted) {
+        if (runtime.newestWeekMetrics) newestWeekReplayReuses += 1;
+        return runtime.newestWeekMetrics;
+      }
+      runtime.newestWeekReplayAttempted = true;
+
+      const symbolCandles =
+        candleCache.get(runtime.candidate.symbol) ||
+        (await ensureCandidateSymbolCandles(runtime));
+      if (!symbolCandles) return null;
+
+      const newestWeekToTs = newestWeekStart + ONE_WEEK_MS;
+      const newestWeekCandles = getCachedCandleWindow({
+        symbol: runtime.candidate.symbol,
+        candles: symbolCandles,
+        fromTs: newestWeekStart,
+        toTs: newestWeekToTs,
+      });
+      runtime.newestWeekCandleCount = newestWeekCandles.length;
+      if (newestWeekCandles.length < workerPolicy.minCandles) return null;
+
+      const newestWeekReplay = await withTiming(
+        "research.replay_incremental_week",
+        () =>
+          runScalpReplay({
+            candles: newestWeekCandles,
+            pipSize: runtime.symbolPipSize,
+            config: runtime.replayConfig,
+            captureTimeline: false,
+          }),
+      );
+      incrementalStageReplays += 1;
+      logResearch(
+        "replay_done",
+        `week:incr:${runtime.candidate.symbol}`,
+      );
+      const newestWeekMetrics = buildWorkerStageWeeklyMetrics({
+        trades: newestWeekReplay.trades,
+        weekStartTs: newestWeekStart,
+        weekToTs: newestWeekToTs,
+      });
+      runtime.newestWeekMetrics = newestWeekMetrics;
+      return newestWeekMetrics;
+    }
+
+    function enqueueNewestWeekCacheWrite(params: {
+      runtime: StageCandidateRuntime;
+      stage: ScalpV2WorkerStagePolicy;
+      metrics: ScalpV2WorkerStageWeeklyMetrics;
+      weekStartTs: number;
+    }) {
+      if (params.runtime.newestWeekCacheStages.has(params.stage.id)) return;
+      params.runtime.newestWeekCacheStages.add(params.stage.id);
+      pendingCacheWrites.push({
+        venue: params.runtime.candidate.venue,
+        symbol: params.runtime.candidate.symbol,
+        strategyId: params.runtime.candidate.strategyId,
+        tuneId: params.runtime.candidate.tuneId,
+        session: params.runtime.candidate.session,
+        stageId: params.stage.id,
+        weekStartTs: params.weekStartTs,
+        weekToTs: params.weekStartTs + ONE_WEEK_MS,
+        metrics: params.metrics,
+      });
     }
 
     async function evaluateCandidateStage(
@@ -3696,7 +3751,7 @@ export async function runScalpV2ResearchJob(params: {
         stageWeekStarts.length > 1
           ? stageWeekStarts.slice(0, stageWeekStarts.length - 1)
           : [];
-      const cacheKey = `${candidate.venue}:${candidate.symbol}:${candidate.strategyId}:${candidate.tuneId}:${candidate.session}:${stage.id}`.toLowerCase();
+      const cacheKey = stageCacheKey({ candidate, stageId: stage.id });
       const cachedWeeks =
         workerStageWeeklyCache.get(cacheKey) ||
         new Map<number, ScalpV2WorkerStageWeeklyMetrics>();
@@ -3714,6 +3769,10 @@ export async function runScalpV2ResearchJob(params: {
       const canReuseCachedNewestWeek =
         !missingPriorWeeks &&
         hasReusableWeeklyCacheMetrics(newestWeekCached);
+      if (canReuseCachedNewestWeek && !runtime.newestWeekMetrics) {
+        runtime.newestWeekReplayAttempted = true;
+        runtime.newestWeekMetrics = newestWeekCached!;
+      }
 
       if (
         missingPriorWeeks &&
@@ -3831,14 +3890,8 @@ export async function runScalpV2ResearchJob(params: {
         });
         cachedStageReuses += 1;
       } else {
-        const newestWeekToTs = newestWeekStartForStage + ONE_WEEK_MS;
-        const newestWeekCandles = getCachedCandleWindow({
-          symbol: candidate.symbol,
-          candles: symbolCandles,
-          fromTs: newestWeekStartForStage,
-          toTs: newestWeekToTs,
-        });
-        if (newestWeekCandles.length < workerPolicy.minCandles) {
+        const newestWeekMetrics = await ensureRuntimeNewestWeekMetrics(runtime);
+        if (!newestWeekMetrics) {
           return buildWorkerStageSkeleton({
             stage,
             fromTs,
@@ -3846,39 +3899,17 @@ export async function runScalpV2ResearchJob(params: {
             reason: "insufficient_latest_week_candles",
           });
         }
-        const newestWeekReplay = await withTiming(
-          "research.replay_incremental_week",
-          () =>
-            runScalpReplay({
-              candles: newestWeekCandles,
-              pipSize: runtime.symbolPipSize,
-              config: runtime.replayConfig,
-              captureTimeline: false,
-            }),
-        );
-        incrementalStageReplays += 1;
-        logResearch("replay_done", `${stage.id}:incr:${candidate.symbol}`);
-        const newestWeekMetrics = buildWorkerStageWeeklyMetrics({
-          trades: newestWeekReplay.trades,
-          weekStartTs: newestWeekStartForStage,
-          weekToTs: newestWeekToTs,
-        });
         weeklyByStart.set(newestWeekStartForStage, newestWeekMetrics);
         aggregate = aggregateStageFromWeeklyMetrics({
           fromTs,
           toTs: windowToTs,
           weeklyByStart,
         });
-        pendingCacheWrites.push({
-          venue: candidate.venue,
-          symbol: candidate.symbol,
-          strategyId: candidate.strategyId,
-          tuneId: candidate.tuneId,
-          session: candidate.session,
-          stageId: stage.id,
-          weekStartTs: newestWeekStartForStage,
-          weekToTs: newestWeekToTs,
+        enqueueNewestWeekCacheWrite({
+          runtime,
+          stage,
           metrics: newestWeekMetrics,
+          weekStartTs: newestWeekStartForStage,
         });
       }
 
@@ -4058,6 +4089,10 @@ export async function runScalpV2ResearchJob(params: {
           deploymentId,
           replayConfig,
           symbolPipSize,
+          newestWeekReplayAttempted: false,
+          newestWeekMetrics: null,
+          newestWeekCandleCount: 0,
+          newestWeekCacheStages: new Set<ScalpV2WorkerStageId>(),
           stageResults: {
             a: buildWorkerStageSkeleton({
               stage: workerPolicy.stageA,
@@ -4287,6 +4322,7 @@ export async function runScalpV2ResearchJob(params: {
       deferredByCandleCoverage,
       replayErrors,
       incrementalStageReplays,
+      newestWeekReplayReuses,
       fullStageReplays,
       cachedStageReuses,
       droppedByVenuePolicy,
