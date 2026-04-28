@@ -13,6 +13,7 @@
  *   BULK_MAX_BATCHES=100          — max batches before stopping (default: unlimited)
  *   BULK_SHARD_COUNT=4            — split symbols across N local processes
  *   BULK_SHARD_INDEX=0            — shard index for this process (0-based)
+ *   BULK_WORK_LEASES=1            — claim candidate rows instead of singleton locking (default on)
  */
 import nextEnv from '@next/env';
 import os from 'node:os';
@@ -83,6 +84,7 @@ function envBool(name: string, fallback: boolean): boolean {
 }
 
 const DISABLE_TIME_BUDGET = envBool('BULK_DISABLE_TIME_BUDGET', true);
+const WORK_LEASES = envBool('BULK_WORK_LEASES', true);
 
 function applyRuntimeOverrides(): void {
   process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN = String(symbolsPerBatch);
@@ -92,10 +94,13 @@ function applyRuntimeOverrides(): void {
   if (BULK_DEBUG) {
     process.env.SCALP_V2_RESEARCH_DEBUG_TIMING = '1';
   }
+  process.env.SCALP_V2_RESEARCH_WORK_LEASES_ENABLED = WORK_LEASES ? '1' : '0';
   process.env.SCALP_V2_RESEARCH_SYMBOL_SHARD_COUNT = String(BULK_SHARD_COUNT);
   process.env.SCALP_V2_RESEARCH_SYMBOL_SHARD_INDEX = String(BULK_SHARD_INDEX);
-  if (BULK_SHARD_COUNT > 1) {
+  if (BULK_SHARD_COUNT > 1 && !WORK_LEASES) {
     process.env.SCALP_V2_RESEARCH_LOCK_SCOPE = `bulk-shard-${BULK_SHARD_INDEX}-of-${BULK_SHARD_COUNT}`;
+  } else if (WORK_LEASES) {
+    delete process.env.SCALP_V2_RESEARCH_LOCK_SCOPE;
   }
   if (DISABLE_TIME_BUDGET) {
     process.env.SCALP_V2_RESEARCH_DISABLE_TIME_BUDGET = '1';
@@ -151,7 +156,7 @@ async function runBatch(): Promise<boolean> {
   const result = await runResearch({
     batchSize: candidateBatchSize,
     lockScope:
-      BULK_SHARD_COUNT > 1
+      BULK_SHARD_COUNT > 1 && !WORK_LEASES
         ? `bulk-shard-${BULK_SHARD_INDEX}-of-${BULK_SHARD_COUNT}`
         : undefined,
   });
@@ -192,6 +197,9 @@ async function runBatch(): Promise<boolean> {
     const cachedStageReuses = Number(d.cachedStageReuses || 0);
     const stageBCacheHits = Number(d.stageBCacheHits || 0);
     const stageCCacheHits = Number(d.stageCCacheHits || 0);
+    const leaseClaimsAttempted = Number(d.leaseClaimsAttempted || 0);
+    const leaseClaimsSucceeded = Number(d.leaseClaimsSucceeded || 0);
+    const leaseClaimsLost = Number(d.leaseClaimsLost || 0);
     const freshnessGate = (d.freshnessGate || {}) as Record<string, unknown>;
     const freshnessApplied = Boolean(freshnessGate.applied);
     const freshnessReady = Boolean(freshnessGate.ready);
@@ -202,6 +210,9 @@ async function runBatch(): Promise<boolean> {
     );
     console.log(
       `  debug: replay(full=${fullStageReplays}, earlyAbort=${earlyAbortedStageReplays}, incr=${incrementalStageReplays}, newestReuse=${newestWeekReplayReuses}, cacheReuse=${cachedStageReuses}, bCache=${stageBCacheHits}, cCache=${stageCCacheHits}, errors=${replayErrors}) deferredByCoverage=${deferredByCoverage}`,
+    );
+    console.log(
+      `  debug: leases(enabled=${Boolean(d.researchWorkLeasesEnabled)}, attempted=${leaseClaimsAttempted}, claimed=${leaseClaimsSucceeded}, lost=${leaseClaimsLost}) scope=${String(d.researchLockScope || '')}`,
     );
     const timing = (d.timing || {}) as Record<string, any>;
     const timingLabels = Array.isArray(timing.labels) ? timing.labels.slice(0, 8) : [];
@@ -320,6 +331,7 @@ async function main() {
   console.log(`Symbols per batch: ${symbolsPerBatch}`);
   console.log(`Candidates per batch: ${candidateBatchSize}`);
   console.log(`Backtest concurrency: ${backtestConcurrency}`);
+  console.log(`Work leases: ${WORK_LEASES ? 'enabled' : 'disabled'}`);
   if (BULK_SHARD_COUNT > 1) {
     console.log(`Shard: ${BULK_SHARD_INDEX}/${BULK_SHARD_COUNT}`);
   }

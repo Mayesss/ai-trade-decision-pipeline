@@ -59,6 +59,8 @@ function toPositiveInt(value: unknown, fallback: number, max = 10_000): number {
 }
 
 const SCALP_TABLE_NAME_PATTERN = /^scalp_[a-z0-9_]+$/;
+const CANDIDATE_TABLE = "scalp_v2_candidates";
+let candidateResearchLeaseReady: boolean | null = null;
 
 async function scalpTableExists(tableName: string): Promise<boolean> {
   if (!isScalpPgConfigured()) return false;
@@ -78,6 +80,43 @@ async function scalpTableExists(tableName: string): Promise<boolean> {
     `);
     return Boolean(row?.exists);
   } catch {
+    return false;
+  }
+}
+
+async function ensureCandidateResearchLeaseColumns(): Promise<boolean> {
+  if (candidateResearchLeaseReady !== null) return candidateResearchLeaseReady;
+  if (!isScalpPgConfigured()) {
+    candidateResearchLeaseReady = false;
+    return false;
+  }
+  if (!(await scalpTableExists(CANDIDATE_TABLE))) {
+    candidateResearchLeaseReady = false;
+    return false;
+  }
+  try {
+    const db = scalpPrisma();
+    await db.$executeRaw(sql`
+      ALTER TABLE scalp_v2_candidates
+        ADD COLUMN IF NOT EXISTS research_locked_by TEXT,
+        ADD COLUMN IF NOT EXISTS research_claimed_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS research_lease_until TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS research_attempts INTEGER NOT NULL DEFAULT 0
+    `);
+    await db.$executeRaw(sql`
+      CREATE INDEX IF NOT EXISTS scalp_v2_candidates_research_lease_idx
+      ON scalp_v2_candidates(status, research_lease_until, score DESC, updated_at DESC)
+      WHERE status = 'discovered'
+    `);
+    await db.$executeRaw(sql`
+      CREATE INDEX IF NOT EXISTS scalp_v2_candidates_research_lock_owner_idx
+      ON scalp_v2_candidates(research_locked_by, research_lease_until)
+      WHERE research_locked_by IS NOT NULL
+    `);
+    candidateResearchLeaseReady = true;
+    return true;
+  } catch {
+    candidateResearchLeaseReady = false;
     return false;
   }
 }
@@ -598,6 +637,60 @@ export async function listScalpV2Candidates(params: {
     createdAtMs: toMs(row.createdAt),
     updatedAtMs: toMs(row.updatedAt),
   }));
+}
+
+export async function claimScalpV2ResearchCandidateLeases(params: {
+  candidateIds: number[];
+  lockOwner: string;
+  limit: number;
+  leaseMs: number;
+}): Promise<Set<number>> {
+  if (!isScalpPgConfigured()) return new Set();
+  if (!(await ensureCandidateResearchLeaseColumns())) return new Set();
+  const ids = Array.from(
+    new Set(
+      (params.candidateIds || [])
+        .map((id) => Math.floor(Number(id) || 0))
+        .filter((id) => id > 0),
+    ),
+  );
+  if (!ids.length) return new Set();
+  const lockOwner = String(params.lockOwner || "").trim();
+  if (!lockOwner) return new Set();
+  const limit = Math.max(1, Math.min(ids.length, Math.floor(Number(params.limit) || ids.length)));
+  const leaseMs = Math.max(60_000, Math.min(24 * 60 * 60 * 1000, Math.floor(Number(params.leaseMs) || 0)));
+  const requestedRows = ids.map((id, idx) => sql`(${id}::bigint, ${idx}::integer)`);
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{ id: bigint | number }>>(sql`
+    WITH requested(id, ord) AS (
+      VALUES ${join(requestedRows, ",")}
+    ),
+    claimable AS (
+      SELECT c.id, r.ord
+      FROM scalp_v2_candidates c
+      INNER JOIN requested r ON r.id = c.id
+      WHERE c.status = 'discovered'
+        AND (
+          c.research_lease_until IS NULL
+          OR c.research_lease_until < NOW()
+          OR c.research_locked_by = ${lockOwner}
+        )
+      ORDER BY r.ord ASC
+      LIMIT ${limit}
+      FOR UPDATE OF c SKIP LOCKED
+    )
+    UPDATE scalp_v2_candidates c
+    SET
+      research_locked_by = ${lockOwner},
+      research_claimed_at = NOW(),
+      research_lease_until = NOW() + (${leaseMs} * INTERVAL '1 millisecond'),
+      research_attempts = COALESCE(c.research_attempts, 0) + 1,
+      updated_at = NOW()
+    FROM claimable
+    WHERE c.id = claimable.id
+    RETURNING c.id;
+  `);
+  return new Set(rows.map((row) => Math.floor(Number(row.id) || 0)).filter((id) => id > 0));
 }
 
 export async function paginateScalpV2Candidates(params: {

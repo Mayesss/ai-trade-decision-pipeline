@@ -49,6 +49,7 @@ import { createScalpV2ExecutionPersistenceAdapter } from "./executionPersistence
 import {
   appendScalpV2ExecutionEvent,
   buildScalpV2JobResult,
+  claimScalpV2ResearchCandidateLeases,
   claimScalpV2Job,
   countScalpV2CandidatesByStatus,
   enforceScalpV2EnabledCap,
@@ -2434,11 +2435,19 @@ export async function runScalpV2ResearchJob(params: {
   debugTiming?: boolean;
   lockScope?: string;
 } = {}): Promise<ScalpV2JobResult> {
+  const researchWorkLeasesEnabled = envBool(
+    "SCALP_V2_RESEARCH_WORK_LEASES_ENABLED",
+    true,
+  );
+  const owner = lockOwner("research");
   const researchLockScope =
-    String(params.lockScope || process.env.SCALP_V2_RESEARCH_LOCK_SCOPE || "singleton")
+    String(
+      params.lockScope ||
+        process.env.SCALP_V2_RESEARCH_LOCK_SCOPE ||
+        (researchWorkLeasesEnabled ? `lease:${owner}` : "singleton"),
+    )
       .trim()
       .toLowerCase() || "singleton";
-  const owner = lockOwner("research");
   const claimed = await claimScalpV2Job({
     jobKind: "research",
     lockOwner: owner,
@@ -2708,6 +2717,19 @@ export async function runScalpV2ResearchJob(params: {
             ),
           ),
         );
+    const researchWorkLeaseMs = Math.max(
+      60_000,
+      Math.min(
+        24 * 60 * 60 * 1000,
+        toPositiveInt(
+          process.env.SCALP_V2_RESEARCH_WORK_LEASE_MS,
+          disableTimeBudget
+            ? 2 * 60 * 60 * 1000
+            : Math.max(30 * 60 * 1000, timeBudgetMs + 2 * 60_000),
+          24 * 60 * 60 * 1000,
+        ),
+      ),
+    );
     // Research runs on Sundays (after new week candles are loaded).
     // Only execution is blocked on Sunday UTC.
 
@@ -2828,6 +2850,7 @@ export async function runScalpV2ResearchJob(params: {
     const warmUpComplete = warmUpState !== null && warmUpState.scopeHash === scopeHash;
 
     type InMemoryCandidate = {
+      rowId?: number;
       venue: ScalpV2Venue;
       symbol: string;
       session: ScalpV2Session;
@@ -3144,6 +3167,7 @@ export async function runScalpV2ResearchJob(params: {
         const meta = row.metadata || {};
         const dslRaw = (meta.researchDsl || {}) as Record<string, string[]>;
         allCandidates.push({
+          rowId: row.id,
           venue: row.venue as ScalpV2Venue,
           symbol: row.symbol,
           session: row.entrySessionProfile as ScalpV2Session,
@@ -3367,8 +3391,70 @@ export async function runScalpV2ResearchJob(params: {
         skippedByNetRPreFilter,
       },
     });
-    const chunked = selected.slice(0, effectiveBatchSize);
+    const claimPool = selected.slice(
+      0,
+      researchWorkLeasesEnabled
+        ? Math.min(selected.length, Math.max(effectiveBatchSize, effectiveBatchSize * 5))
+        : effectiveBatchSize,
+    );
+    let leaseClaimsAttempted = 0;
+    let leaseClaimsSucceeded = 0;
+    let leaseClaimsLost = 0;
+    let chunked = claimPool.slice(0, effectiveBatchSize);
+    if (researchWorkLeasesEnabled) {
+      const candidateIdsForClaim = claimPool
+        .map((candidate) => Math.floor(Number(candidate.rowId) || 0))
+        .filter((id) => id > 0);
+      leaseClaimsAttempted = Math.min(effectiveBatchSize, candidateIdsForClaim.length);
+      const claimedIds = await withTiming("research.claim_candidate_leases", () =>
+        claimScalpV2ResearchCandidateLeases({
+          candidateIds: candidateIdsForClaim,
+          lockOwner: owner,
+          limit: effectiveBatchSize,
+          leaseMs: researchWorkLeaseMs,
+        }).catch(() => new Set<number>()),
+      );
+      leaseClaimsSucceeded = claimedIds.size;
+      chunked = claimPool
+        .filter((candidate) => claimedIds.has(Math.floor(Number(candidate.rowId) || 0)))
+        .slice(0, effectiveBatchSize);
+      leaseClaimsLost = Math.max(0, leaseClaimsAttempted - leaseClaimsSucceeded);
+    }
     const deferredCount = Math.max(0, selected.length - chunked.length);
+
+    if (!chunked.length) {
+      const pendingAfter = await resolvePendingAfterBacklog(selected.length);
+      details = attachTimingDetails({
+        reason: researchWorkLeasesEnabled
+          ? "all_selected_candidates_leased_by_other_workers"
+          : "no_candidates_selected_for_backtest",
+        scopeCount: scopes.length,
+        droppedByScopePrune,
+        poolSizeTotal,
+        deploymentRolloverRequeued,
+        totalCandidates: allCandidates.length,
+        selected: selected.length,
+        skippedByCache,
+        skippedByClearFail,
+        skippedByNetRPreFilter,
+        candidatesWithPreviousResults: previousResults.size,
+        researchWorkLeasesEnabled,
+        researchWorkLeaseMs,
+        leaseClaimsAttempted,
+        leaseClaimsSucceeded,
+        leaseClaimsLost,
+        pendingAfter,
+        scopePrune: scopePrune.details,
+      });
+      return buildScalpV2JobResult({
+        jobKind: "research",
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        pendingAfter,
+        details,
+      });
+    }
 
     // Base progress: track this run against the live discovered backlog.
     // UI progress should reflect "processed / discovered_total".
@@ -4475,6 +4561,11 @@ export async function runScalpV2ResearchJob(params: {
       symbolShardCount,
       symbolShardIndex,
       researchLockScope,
+      researchWorkLeasesEnabled,
+      researchWorkLeaseMs,
+      leaseClaimsAttempted,
+      leaseClaimsSucceeded,
+      leaseClaimsLost,
       processedCandidates: processed,
       configuredBatchSize,
       effectiveBatchSize,
