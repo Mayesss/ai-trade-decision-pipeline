@@ -36,6 +36,7 @@ export default async function handler(
     parseIntBounded(req.query.batchSize, 100, 1, 600),
     batchSizeHardCap,
   );
+  const debug = parseBool(req.query.debug, false);
   const autoSuccessor = parseBool(req.query.autoSuccessor, true);
   const autoContinue = parseBool(req.query.autoContinue, true);
   const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 20);
@@ -44,7 +45,7 @@ export default async function handler(
     hardCaps.maxSelfHops,
   );
 
-  const job = await runScalpV2ResearchJob({ batchSize });
+  const job = await runScalpV2ResearchJob({ batchSize, debugTiming: debug });
 
   let downstream: ScalpV2CronInvokeResult | null = null;
   let selfRecall: ScalpV2CronInvokeResult | null = null;
@@ -89,6 +90,7 @@ export default async function handler(
       autoContinue,
       selfHop,
       selfMaxHops,
+      debug,
       batchSize,
       batchSizeHardCap,
       downstream,

@@ -2401,6 +2401,7 @@ export async function runScalpV2DiscoverJob(): Promise<ScalpV2JobResult> {
  */
 export async function runScalpV2ResearchJob(params: {
   batchSize?: number;
+  debugTiming?: boolean;
 } = {}): Promise<ScalpV2JobResult> {
   const owner = lockOwner("research");
   const claimed = await claimScalpV2Job({ jobKind: "research", lockOwner: owner });
@@ -2421,6 +2422,58 @@ export async function runScalpV2ResearchJob(params: {
   let succeeded = 0;
   let failed = 0;
   let details: Record<string, unknown> = {};
+  const debugTiming =
+    params.debugTiming === true ||
+    envBool("SCALP_V2_RESEARCH_DEBUG_TIMING", false);
+  type ResearchTimingStat = { count: number; totalMs: number; maxMs: number };
+  const timingStats = new Map<string, ResearchTimingStat>();
+  function recordTiming(label: string, startedAtMs: number): void {
+    if (!debugTiming) return;
+    const elapsedMs = Math.max(0, nowMs() - startedAtMs);
+    const existing = timingStats.get(label) || { count: 0, totalMs: 0, maxMs: 0 };
+    existing.count += 1;
+    existing.totalMs += elapsedMs;
+    existing.maxMs = Math.max(existing.maxMs, elapsedMs);
+    timingStats.set(label, existing);
+  }
+  async function withTiming<T>(label: string, fn: () => Promise<T>): Promise<T> {
+    const startedAtMs = nowMs();
+    try {
+      return await fn();
+    } finally {
+      recordTiming(label, startedAtMs);
+    }
+  }
+  function buildTimingSummary(): Record<string, unknown> {
+    const labels = Array.from(timingStats.entries())
+      .map(([label, stat]) => ({
+        label,
+        count: stat.count,
+        totalMs: Math.floor(stat.totalMs),
+        avgMs:
+          stat.count > 0 ? Math.floor(stat.totalMs / Math.max(1, stat.count)) : 0,
+        maxMs: Math.floor(stat.maxMs),
+      }))
+      .sort((a, b) => b.totalMs - a.totalMs);
+    const totalTrackedMs = labels.reduce(
+      (sum, row) => sum + Math.max(0, Number(row.totalMs) || 0),
+      0,
+    );
+    return {
+      enabled: true,
+      totalTrackedMs,
+      labels,
+    };
+  }
+  function attachTimingDetails(
+    value: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (!debugTiming) return value;
+    return {
+      ...value,
+      timing: buildTimingSummary(),
+    };
+  }
   const heartbeatMinIntervalMs = Math.max(
     5_000,
     Math.min(
@@ -2505,10 +2558,16 @@ export async function runScalpV2ResearchJob(params: {
   });
 
   try {
-    let runtime = await loadScalpV2RuntimeConfig();
-    const discoveredAtRuntimeLoad = await countScalpV2CandidatesByStatus({
-      status: "discovered",
-    }).catch(() => -1);
+    let runtime = await withTiming("runtime.load_config", () =>
+      loadScalpV2RuntimeConfig(),
+    );
+    const discoveredAtRuntimeLoad = await withTiming(
+      "runtime.count_discovered",
+      () =>
+        countScalpV2CandidatesByStatus({
+          status: "discovered",
+        }).catch(() => -1),
+    );
     if (discoveredAtRuntimeLoad >= 0) {
       stickyDiscoveredTotal = discoveredAtRuntimeLoad;
     }
@@ -2524,7 +2583,10 @@ export async function runScalpV2ResearchJob(params: {
       },
     });
     if (!runtime.enabled) {
-      details = { skipped: true, reason: "SCALP_V2_DISABLED" };
+      details = attachTimingDetails({
+        skipped: true,
+        reason: "SCALP_V2_DISABLED",
+      });
       return buildScalpV2JobResult({
         jobKind: "research",
         processed,
@@ -2538,11 +2600,13 @@ export async function runScalpV2ResearchJob(params: {
     const workerPolicy = resolveWorkerPolicy();
     const nowTs = nowMs();
     const windowToTs = resolveScalpV2CompletedWeekWindowToUtc(nowTs);
-    const freshnessGate = await runScalpV2SundayResearchFreshnessGate({
-      runtime,
-      nowTs,
-      windowToTs,
-    });
+    const freshnessGate = await withTiming("research.freshness_gate", () =>
+      runScalpV2SundayResearchFreshnessGate({
+        runtime,
+        nowTs,
+        windowToTs,
+      }),
+    );
     await emitResearchHeartbeat({
       phase: "freshness_gate",
       force: true,
@@ -2555,12 +2619,12 @@ export async function runScalpV2ResearchJob(params: {
     if (!freshnessGate.ready) {
       ok = false;
       failed = Math.max(1, freshnessGate.staleCount);
-      details = {
+      details = attachTimingDetails({
         skipped: true,
         reason:
           freshnessGate.reason || "research_candle_freshness_gate_failed",
         freshnessGate,
-      };
+      });
       return buildScalpV2JobResult({
         jobKind: "research",
         processed,
@@ -2570,11 +2634,13 @@ export async function runScalpV2ResearchJob(params: {
         details,
       });
     }
-    const scopePrune = await runScalpV2ScopePrunePass({
-      runtime,
-      windowToTs,
-      nowTs,
-    });
+    const scopePrune = await withTiming("research.scope_prune", () =>
+      runScalpV2ScopePrunePass({
+        runtime,
+        windowToTs,
+        nowTs,
+      }),
+    );
     await emitResearchHeartbeat({
       phase: "scope_prune",
       force: true,
@@ -2665,13 +2731,13 @@ export async function runScalpV2ResearchJob(params: {
     }
 
     if (!scopes.length) {
-      details = {
+      details = attachTimingDetails({
         reason: "no_runtime_seed_scopes",
         droppedByVenuePolicy,
         droppedByScopePrune,
         freshnessGate,
         scopePrune: scopePrune.details,
-      };
+      });
       return buildScalpV2JobResult({
         jobKind: "research",
         processed: 0,
@@ -2691,10 +2757,14 @@ export async function runScalpV2ResearchJob(params: {
       workerPolicy.stageC,
     ] as const;
     const minWindowFromTs = windowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS;
-    const enabledDeploymentsForWarmUp = await listScalpV2Deployments({
-      enabledOnly: true,
-      limit: 500,
-    }).catch(() => [] as Awaited<ReturnType<typeof listScalpV2Deployments>>);
+    const enabledDeploymentsForWarmUp = await withTiming(
+      "warmup.load_enabled_deployments",
+      () =>
+        listScalpV2Deployments({
+          enabledOnly: true,
+          limit: 500,
+        }).catch(() => [] as Awaited<ReturnType<typeof listScalpV2Deployments>>),
+    );
     const enabledDeploymentVariantSeeds = enabledDeploymentsForWarmUp
       .filter((dep) =>
         isScalpV2RuntimeSymbolInScope({
@@ -2712,7 +2782,9 @@ export async function runScalpV2ResearchJob(params: {
       maxCandidatesPerSession,
       enabledDeploymentVariantSeeds,
     });
-    const warmUpState = await loadScalpV2WarmUpState({ windowToTs }).catch(() => null);
+    const warmUpState = await withTiming("warmup.load_state", () =>
+      loadScalpV2WarmUpState({ windowToTs }).catch(() => null),
+    );
     const warmUpComplete = warmUpState !== null && warmUpState.scopeHash === scopeHash;
 
     type InMemoryCandidate = {
@@ -2867,7 +2939,13 @@ export async function runScalpV2ResearchJob(params: {
       }
 
       if (!allCandidates.length) {
-        details = { reason: "no_candidates_generated", scopeCount: scopes.length, droppedByScopePrune, poolSizeTotal, scopePrune: scopePrune.details };
+        details = attachTimingDetails({
+          reason: "no_candidates_generated",
+          scopeCount: scopes.length,
+          droppedByScopePrune,
+          poolSizeTotal,
+          scopePrune: scopePrune.details,
+        });
         return buildScalpV2JobResult({ jobKind: "research", processed: 0, succeeded: 0, failed: 0, pendingAfter: 0, details });
       }
 
@@ -2884,6 +2962,7 @@ export async function runScalpV2ResearchJob(params: {
         reasonCodes: ["SCALP_V2_WARM_UP"],
         metadata: {
           discoveredAtMs: nowTs,
+          researchWindowToTs: windowToTs,
           source: "model_guided_composer",
           researchCandidateId: c.candidateId,
           researchDsl: c.dsl.blocksByFamily,
@@ -2893,12 +2972,20 @@ export async function runScalpV2ResearchJob(params: {
           composerModel: c.dsl.model,
         },
       }));
-      await upsertScalpV2Candidates({ rows });
+      await withTiming("warmup.persist_candidates", () =>
+        upsertScalpV2Candidates({ rows }),
+      );
 
       // Save fingerprint so subsequent runs skip generation entirely
-      await upsertScalpV2WarmUpState({ windowToTs, scopeHash, candidateCount: allCandidates.length });
+      await withTiming("warmup.persist_state", () =>
+        upsertScalpV2WarmUpState({
+          windowToTs,
+          scopeHash,
+          candidateCount: allCandidates.length,
+        }),
+      );
 
-      details = {
+      details = attachTimingDetails({
         reason: "warm_up_complete",
         scopeCount: scopes.length,
         poolSizeTotal,
@@ -2908,7 +2995,7 @@ export async function runScalpV2ResearchJob(params: {
         scopeHashVersion: RESEARCH_WARM_UP_SCOPE_HASH_VERSION,
         configuredBatchSize,
         effectiveBatchSize,
-      };
+      });
       return buildScalpV2JobResult({
         jobKind: "research",
         processed: 0,
@@ -2938,13 +3025,15 @@ export async function runScalpV2ResearchJob(params: {
         phase: "deployment_rollover_requeue",
         force: true,
       });
-      deploymentRolloverRequeued = await requeueScalpV2DeploymentCandidatesForWindow(
-        {
-          windowToTs,
-          previousWindowOnly: deploymentRolloverPreviousWindowOnly,
-          includeDisabledDeployments: deploymentRolloverIncludeDisabled,
-        },
-      ).catch(() => 0);
+      deploymentRolloverRequeued = await withTiming(
+        "research.rollover_requeue",
+        () =>
+          requeueScalpV2DeploymentCandidatesForWindow({
+            windowToTs,
+            previousWindowOnly: deploymentRolloverPreviousWindowOnly,
+            includeDisabledDeployments: deploymentRolloverIncludeDisabled,
+          }).catch(() => 0),
+      );
       await emitResearchHeartbeat({
         phase: "deployment_rollover_requeue",
         force: true,
@@ -2960,12 +3049,16 @@ export async function runScalpV2ResearchJob(params: {
     await emitResearchHeartbeat({ phase: "load_backtest_chunk", force: true });
     const maxSymbolsPerRun = Math.max(1, Math.min(50,
       toPositiveInt(process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN, 1, 50)));
-    const discoveredSymbols = await listScalpV2DiscoveredSymbols().catch(() => [] as string[]);
+    const discoveredSymbols = await withTiming("research.list_discovered_symbols", () =>
+      listScalpV2DiscoveredSymbols().catch(() => [] as string[]),
+    );
     const symbolsThisRun = discoveredSymbols.slice(0, maxSymbolsPerRun);
     async function resolvePendingAfterBacklog(fallback: number): Promise<number> {
-      const discoveredCount = await countScalpV2CandidatesByStatus({
-        status: "discovered",
-      }).catch(() => -1);
+      const discoveredCount = await withTiming("research.count_discovered", () =>
+        countScalpV2CandidatesByStatus({
+          status: "discovered",
+        }).catch(() => -1),
+      );
       if (Number.isFinite(Number(discoveredCount)) && Number(discoveredCount) >= 0) {
         return Math.max(0, Math.floor(Number(discoveredCount)));
       }
@@ -2973,11 +3066,13 @@ export async function runScalpV2ResearchJob(params: {
     }
 
     if (symbolsThisRun.length > 0) {
-      const chunkRows = await listScalpV2Candidates({
-        status: "discovered",
-        symbols: symbolsThisRun,
-        limit: 5_000,
-      }).catch(() => [] as Awaited<ReturnType<typeof listScalpV2Candidates>>);
+      const chunkRows = await withTiming("research.load_discovered_chunk", () =>
+        listScalpV2Candidates({
+          status: "discovered",
+          symbols: symbolsThisRun,
+          limit: 5_000,
+        }).catch(() => [] as Awaited<ReturnType<typeof listScalpV2Candidates>>),
+      );
 
       for (const row of chunkRows) {
         const meta = row.metadata || {};
@@ -3013,7 +3108,11 @@ export async function runScalpV2ResearchJob(params: {
         });
       }
     }
-    const evaluatedKeys = await loadScalpV2EvaluatedCandidateKeys({ windowToTs }).catch(() => new Set<string>());
+    const evaluatedKeys = await withTiming("research.load_evaluated_keys", () =>
+      loadScalpV2EvaluatedCandidateKeys({ windowToTs }).catch(
+        () => new Set<string>(),
+      ),
+    );
     const skippedByCache = evaluatedKeys.size;
     const notYetEvaluated = allCandidates.filter((c) => {
       const key = `${c.venue}:${c.symbol}:${c.tuneId}:${c.session}`.toLowerCase();
@@ -3022,7 +3121,7 @@ export async function runScalpV2ResearchJob(params: {
 
     if (!notYetEvaluated.length) {
       const pendingAfter = await resolvePendingAfterBacklog(0);
-      details = {
+      details = attachTimingDetails({
         reason: "all_candidates_already_evaluated_this_week",
         scopeCount: scopes.length,
         droppedByScopePrune,
@@ -3032,7 +3131,7 @@ export async function runScalpV2ResearchJob(params: {
         skippedByCache,
         pendingAfter,
         scopePrune: scopePrune.details,
-      };
+      });
       return buildScalpV2JobResult({
         jobKind: "research",
         processed: skippedByCache,
@@ -3052,24 +3151,26 @@ export async function runScalpV2ResearchJob(params: {
         notYetEvaluated: notYetEvaluated.length,
       },
     });
-    const previousResults = await loadScalpV2PreviousWeekResults({
-      currentWindowToTs: windowToTs,
-      symbols: Array.from(new Set(notYetEvaluated.map((row) => row.symbol))),
-      tuneIds: Array.from(new Set(notYetEvaluated.map((row) => row.tuneId))),
-    }).catch(
-      () =>
-        new Map<
-          string,
-          {
-            stageAPassed: boolean;
-            stageANetR: number | null;
-            stageATrades: number | null;
-            stageCPassed: boolean;
-            stageCNetR: number | null;
-            windowToTs: number;
-            stageAWeeklyNetR: Record<string, number>;
-          }
-        >(),
+    const previousResults = await withTiming("research.load_previous_results", () =>
+      loadScalpV2PreviousWeekResults({
+        currentWindowToTs: windowToTs,
+        symbols: Array.from(new Set(notYetEvaluated.map((row) => row.symbol))),
+        tuneIds: Array.from(new Set(notYetEvaluated.map((row) => row.tuneId))),
+      }).catch(
+        () =>
+          new Map<
+            string,
+            {
+              stageAPassed: boolean;
+              stageANetR: number | null;
+              stageATrades: number | null;
+              stageCPassed: boolean;
+              stageCNetR: number | null;
+              windowToTs: number;
+              stageAWeeklyNetR: Record<string, number>;
+            }
+          >(),
+      ),
     );
 
     // Thresholds for "clear fail" — well below stage A gates, won't flip.
@@ -3083,8 +3184,25 @@ export async function runScalpV2ResearchJob(params: {
     const stageAFromTs = windowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS;
     const stageAPriorWeekStarts = listWeekStarts({ fromTs: stageAFromTs, toTs: windowToTs }).slice(0, -1);
 
+    const researchCandidateKey = (c: InMemoryCandidate) =>
+      `${c.venue}:${c.symbol}:${c.tuneId}:${c.session}`.toLowerCase();
+    const finiteOrNull = (value: unknown): number | null => {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    };
+    const previousPriority = (c: InMemoryCandidate) => {
+      const prev = previousResults.get(researchCandidateKey(c));
+      const stageCNetR = finiteOrNull(prev?.stageCNetR);
+      const stageANetR = finiteOrNull(prev?.stageANetR);
+      return {
+        passRank: prev?.stageCPassed ? 3 : prev?.stageAPassed ? 2 : prev ? 1 : 0,
+        netR: stageCNetR ?? stageANetR ?? -1_000_000_000,
+        score: Number.isFinite(c.score) ? c.score : 0,
+      };
+    };
+
     const selected = notYetEvaluated.filter((c) => {
-      const key = `${c.venue}:${c.symbol}:${c.tuneId}:${c.session}`.toLowerCase();
+      const key = researchCandidateKey(c);
       const prev = previousResults.get(key);
       if (!prev) return true; // Never tested — must run
 
@@ -3131,12 +3249,23 @@ export async function runScalpV2ResearchJob(params: {
       // Marginal fail — re-run, new week might tip it
       return true;
     });
+    selected.sort((a, b) => {
+      const left = previousPriority(a);
+      const right = previousPriority(b);
+      return (
+        right.passRank - left.passRank ||
+        right.netR - left.netR ||
+        right.score - left.score ||
+        a.symbol.localeCompare(b.symbol) ||
+        a.tuneId.localeCompare(b.tuneId)
+      );
+    });
 
     if (!selected.length) {
       const pendingAfter = await resolvePendingAfterBacklog(
         skippedByClearFail + skippedByNetRPreFilter,
       );
-      details = {
+      details = attachTimingDetails({
         reason: "all_candidates_skipped",
         scopeCount: scopes.length,
         droppedByScopePrune,
@@ -3149,7 +3278,7 @@ export async function runScalpV2ResearchJob(params: {
         candidatesWithPreviousResults: previousResults.size,
         pendingAfter,
         scopePrune: scopePrune.details,
-      };
+      });
       return buildScalpV2JobResult({
         jobKind: "research",
         processed: skippedByCache + skippedByClearFail + skippedByNetRPreFilter,
@@ -3177,9 +3306,13 @@ export async function runScalpV2ResearchJob(params: {
 
     // Base progress: track this run against the live discovered backlog.
     // UI progress should reflect "processed / discovered_total".
-    const discoveredBacklogForProgress = await countScalpV2CandidatesByStatus({
-      status: "discovered",
-    }).catch(() => -1);
+    const discoveredBacklogForProgress = await withTiming(
+      "research.count_discovered_for_progress",
+      () =>
+        countScalpV2CandidatesByStatus({
+          status: "discovered",
+        }).catch(() => -1),
+    );
     const discoveredBacklogResolved =
       discoveredBacklogForProgress >= 0 ? discoveredBacklogForProgress : selected.length;
     const discoveredTotal = Math.max(0, discoveredBacklogResolved);
@@ -3204,8 +3337,10 @@ export async function runScalpV2ResearchJob(params: {
       progress: { ...baseProgress },
     });
     const uniqueSymbols = Array.from(new Set(chunked.map((c) => c.symbol)));
-    const symbolMetadataMap = await loadScalpSymbolMarketMetadataBulk(uniqueSymbols).catch(
-      () => new Map<string, ScalpSymbolMarketMetadata | null>(),
+    const symbolMetadataMap = await withTiming("research.load_symbol_metadata", () =>
+      loadScalpSymbolMarketMetadataBulk(uniqueSymbols).catch(
+        () => new Map<string, ScalpSymbolMarketMetadata | null>(),
+      ),
     );
     const windowSliceCacheEnabled = envBool(
       "SCALP_V2_RESEARCH_WINDOW_SLICE_CACHE_ENABLED",
@@ -3292,11 +3427,15 @@ export async function runScalpV2ResearchJob(params: {
     // Skip the heavy cache load if the table is empty (first run after deploy).
     // This avoids 56+ DB round-trips that return nothing.
     const workerStageWeeklyCache = weeklyCacheKeys.length > 0
-      ? await loadScalpV2WeeklyCache({
-          keys: weeklyCacheKeys,
-          fromWeekStartTs: minWindowFromTs,
-          toWeekStartTs: windowToTs,
-        }).catch(() => new Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>())
+      ? await withTiming("research.load_weekly_cache", () =>
+          loadScalpV2WeeklyCache({
+            keys: weeklyCacheKeys,
+            fromWeekStartTs: minWindowFromTs,
+            toWeekStartTs: windowToTs,
+          }).catch(
+            () => new Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>(),
+          ),
+        )
       : new Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>();
     await emitResearchHeartbeat({ phase: "prepare_backtest", force: true, progress: { ...baseProgress, step: "cache_loaded", cacheKeys: weeklyCacheKeys.length, cacheHits: workerStageWeeklyCache.size } });
 
@@ -3355,9 +3494,11 @@ export async function runScalpV2ResearchJob(params: {
       }
 
       try {
-        await upsertScalpV2Candidates({
-          rows: rows.map((entry) => entry.row),
-        });
+        await withTiming("research.upsert_candidates_batch", () =>
+          upsertScalpV2Candidates({
+            rows: rows.map((entry) => entry.row),
+          }),
+        );
         for (const entry of rows) {
           applyPersistSuccess(entry);
         }
@@ -3367,9 +3508,11 @@ export async function runScalpV2ResearchJob(params: {
         // - rejected persist failure is non-fatal (still processed)
         for (const entry of rows) {
           try {
-            await upsertScalpV2Candidates({
-              rows: [entry.row],
-            });
+            await withTiming("research.upsert_candidates_single", () =>
+              upsertScalpV2Candidates({
+                rows: [entry.row],
+              }),
+            );
             applyPersistSuccess(entry);
           } catch {
             processed += 1;
@@ -3475,11 +3618,13 @@ export async function runScalpV2ResearchJob(params: {
           cacheIsPopulated && !symbolsNeedingFullRange.has(candidate.symbol)
             ? newestWeekStart
             : stageAFromTs;
-        const history = await loadScalpCandleHistoryInRange(
-          candidate.symbol,
-          "1m",
-          candleFromTs,
-          windowToTs,
+        const history = await withTiming("research.load_candles_initial", () =>
+          loadScalpCandleHistoryInRange(
+            candidate.symbol,
+            "1m",
+            candleFromTs,
+            windowToTs,
+          ),
         );
         const meta = symbolMetadataMap.get(candidate.symbol) ?? null;
         const symbolPipSize = pipSizeForScalpSymbol(
@@ -3575,12 +3720,14 @@ export async function runScalpV2ResearchJob(params: {
         symbolCandles[0] &&
         symbolCandles[0].ts > fromTs
       ) {
-        const extended = await loadScalpCandleHistoryInRange(
-          candidate.symbol,
-          "1m",
-          fromTs,
-          windowToTs,
-        ).catch(() => null);
+        const extended = await withTiming("research.load_candles_extended", () =>
+          loadScalpCandleHistoryInRange(
+            candidate.symbol,
+            "1m",
+            fromTs,
+            windowToTs,
+          ).catch(() => null),
+        );
         if (extended?.record?.candles) {
           const meta = symbolMetadataMap.get(candidate.symbol) ?? null;
           const pip = pipSizeForScalpSymbol(candidate.symbol, meta ?? undefined);
@@ -3638,14 +3785,16 @@ export async function runScalpV2ResearchJob(params: {
             reason: "insufficient_candles",
           });
         }
-        const fullReplay = await runScalpReplay({
-          candles: stageCandles,
-          pipSize: runtime.symbolPipSize,
-          config: runtime.replayConfig,
-          captureTimeline: false,
-          earlyAbortNetR: stage.minNetR * -2,
-          earlyAbortAfterPct: 50,
-        });
+        const fullReplay = await withTiming("research.replay_full_stage", () =>
+          runScalpReplay({
+            candles: stageCandles,
+            pipSize: runtime.symbolPipSize,
+            config: runtime.replayConfig,
+            captureTimeline: false,
+            earlyAbortNetR: stage.minNetR * -2,
+            earlyAbortAfterPct: 50,
+          }),
+        );
         fullStageReplays += 1;
         logResearch("replay_done", `${stage.id}:full:${candidate.symbol}`);
         weeklyByStart = buildWorkerStageWeeklyMetricsMap({
@@ -3697,12 +3846,16 @@ export async function runScalpV2ResearchJob(params: {
             reason: "insufficient_latest_week_candles",
           });
         }
-        const newestWeekReplay = await runScalpReplay({
-          candles: newestWeekCandles,
-          pipSize: runtime.symbolPipSize,
-          config: runtime.replayConfig,
-          captureTimeline: false,
-        });
+        const newestWeekReplay = await withTiming(
+          "research.replay_incremental_week",
+          () =>
+            runScalpReplay({
+              candles: newestWeekCandles,
+              pipSize: runtime.symbolPipSize,
+              config: runtime.replayConfig,
+              captureTimeline: false,
+            }),
+        );
         incrementalStageReplays += 1;
         logResearch("replay_done", `${stage.id}:incr:${candidate.symbol}`);
         const newestWeekMetrics = buildWorkerStageWeeklyMetrics({
@@ -4048,8 +4201,10 @@ export async function runScalpV2ResearchJob(params: {
         });
 
         if (pendingCacheWrites.length >= 50) {
-          await upsertScalpV2WeeklyCache({ rows: pendingCacheWrites }).catch(
-            () => 0,
+          await withTiming("research.upsert_weekly_cache_flush", () =>
+            upsertScalpV2WeeklyCache({ rows: pendingCacheWrites }).catch(
+              () => 0,
+            ),
           );
           pendingCacheWrites.length = 0;
         }
@@ -4059,40 +4214,50 @@ export async function runScalpV2ResearchJob(params: {
     }
 
     const stageAInput = candidateRuntimes.filter((runtime) => !runtime.finalized);
-    const stageAPassers = await runBarrierStage({
-      stage: workerPolicy.stageA,
-      candidates: stageAInput,
-    });
+    const stageAPassers = await withTiming("research.stage_a_total", () =>
+      runBarrierStage({
+        stage: workerPolicy.stageA,
+        candidates: stageAInput,
+      }),
+    );
 
     let stageBPassers: StageCandidateRuntime[] = [];
     if (!timeBudgetExhausted) {
-      stageBPassers = await runBarrierStage({
-        stage: workerPolicy.stageB,
-        candidates: stageAPassers.filter((runtime) => !runtime.finalized),
-      });
+      stageBPassers = await withTiming("research.stage_b_total", () =>
+        runBarrierStage({
+          stage: workerPolicy.stageB,
+          candidates: stageAPassers.filter((runtime) => !runtime.finalized),
+        }),
+      );
     }
 
     if (!timeBudgetExhausted) {
-      await runBarrierStage({
-        stage: workerPolicy.stageC,
-        candidates: stageBPassers.filter((runtime) => !runtime.finalized),
-      });
+      await withTiming("research.stage_c_total", () =>
+        runBarrierStage({
+          stage: workerPolicy.stageC,
+          candidates: stageBPassers.filter((runtime) => !runtime.finalized),
+        }),
+      );
     }
 
     await flushPendingCandidateUpserts();
 
     // Flush remaining cache writes
     if (pendingCacheWrites.length > 0) {
-      await upsertScalpV2WeeklyCache({ rows: pendingCacheWrites }).catch(() => 0);
+      await withTiming("research.upsert_weekly_cache_flush", () =>
+        upsertScalpV2WeeklyCache({ rows: pendingCacheWrites }).catch(() => 0),
+      );
     }
     // Prune cache rows older than stage C window + 2 week margin
     const cacheRetentionTs = windowToTs - (workerPolicy.stageC.weeks + 2) * ONE_WEEK_MS;
-    await pruneScalpV2WeeklyCache({ olderThanTs: cacheRetentionTs }).catch(() => 0);
+    await withTiming("research.prune_weekly_cache", () =>
+      pruneScalpV2WeeklyCache({ olderThanTs: cacheRetentionTs }).catch(() => 0),
+    );
 
     const remaining = Math.max(0, chunked.length - processed);
     const pendingAfter = await resolvePendingAfterBacklog(remaining + deferredCount);
 
-    details = {
+    details = attachTimingDetails({
       scopeCount: scopes.length,
       poolSizeTotal,
       deploymentVariantsGenerated,
@@ -4141,7 +4306,7 @@ export async function runScalpV2ResearchJob(params: {
         minCandles: workerPolicy.minCandles,
         weeklyCacheEnabled: true,
       },
-    };
+    });
 
     return buildScalpV2JobResult({
       jobKind: "research",
@@ -4154,7 +4319,7 @@ export async function runScalpV2ResearchJob(params: {
   } catch (err: any) {
     ok = false;
     failed = Math.max(1, failed);
-    details = { error: err?.message || String(err) };
+    details = attachTimingDetails({ error: err?.message || String(err) });
     return buildScalpV2JobResult({
       jobKind: "research",
       processed,

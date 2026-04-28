@@ -313,6 +313,9 @@ npm run start
 - `GET /api/scalp/v2/cron/research?batchSize=100`
   - Unified v2 research pass (replaces legacy evaluate+worker split internally).
   - `batchSize` bounds how many selected candidates are backtested per invocation (default `100`).
+  - Debug timing:
+    - `debug=true` adds `job.details.timing` (per-label total/count/avg/max ms) for hotspot analysis.
+    - Env alternative: `SCALP_V2_RESEARCH_DEBUG_TIMING=true`.
   - Optional orchestration query params:
     - `autoContinue=true|false` + `selfHop/selfMaxHops` for bounded detached self-recalls when `pendingAfter > 0`.
     - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/v2/cron/promote` only after `pendingAfter` reaches `0`.

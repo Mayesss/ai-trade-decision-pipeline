@@ -425,16 +425,49 @@ export async function upsertScalpV2Candidates(params: {
         status = CASE
           WHEN EXCLUDED.status = 'discovered'
             AND scalp_v2_candidates.status IN ('evaluated', 'promoted', 'rejected')
+            AND (
+              (EXCLUDED.metadata_json->>'researchWindowToTs') IS NULL
+              OR (
+                scalp_v2_candidates.metadata_json->'worker'->>'windowToTs'
+              ) = (EXCLUDED.metadata_json->>'researchWindowToTs')
+            )
             THEN scalp_v2_candidates.status
           ELSE EXCLUDED.status
         END,
         reason_codes = CASE
           WHEN EXCLUDED.status = 'discovered'
             AND scalp_v2_candidates.status IN ('evaluated', 'promoted', 'rejected')
+            AND (
+              (EXCLUDED.metadata_json->>'researchWindowToTs') IS NULL
+              OR (
+                scalp_v2_candidates.metadata_json->'worker'->>'windowToTs'
+              ) = (EXCLUDED.metadata_json->>'researchWindowToTs')
+            )
             THEN scalp_v2_candidates.reason_codes
           ELSE EXCLUDED.reason_codes
         END,
-        metadata_json = COALESCE(scalp_v2_candidates.metadata_json, '{}'::jsonb) || EXCLUDED.metadata_json,
+        metadata_json = (
+          CASE
+            WHEN EXCLUDED.status = 'discovered'
+              AND scalp_v2_candidates.status IN ('evaluated', 'promoted', 'rejected')
+              AND (EXCLUDED.metadata_json->>'researchWindowToTs') IS NOT NULL
+              AND COALESCE(
+                scalp_v2_candidates.metadata_json->'worker'->>'windowToTs',
+                ''
+              ) <> (EXCLUDED.metadata_json->>'researchWindowToTs')
+              THEN CASE
+                WHEN scalp_v2_candidates.metadata_json->'worker' IS NOT NULL
+                  THEN jsonb_set(
+                    COALESCE(scalp_v2_candidates.metadata_json, '{}'::jsonb) - 'worker',
+                    '{previousWorker}',
+                    scalp_v2_candidates.metadata_json->'worker',
+                    true
+                  )
+                ELSE COALESCE(scalp_v2_candidates.metadata_json, '{}'::jsonb) - 'worker'
+              END
+            ELSE COALESCE(scalp_v2_candidates.metadata_json, '{}'::jsonb)
+          END
+        ) || EXCLUDED.metadata_json,
         updated_at = NOW();
     `);
   }
@@ -473,7 +506,17 @@ export async function listScalpV2Candidates(params: {
   values.push(limit);
   const discoveredOnly = normalizeCandidateStatus(params.status) === "discovered";
   const orderBySql = discoveredOnly
-    ? `ORDER BY c.score DESC, c.updated_at DESC`
+    ? `ORDER BY
+        COALESCE((c.metadata_json->'previousWorker'->'stageC'->>'passed')::boolean, false) DESC,
+        COALESCE((c.metadata_json->'previousWorker'->'stageA'->>'passed')::boolean, false) DESC,
+        COALESCE(
+          (c.metadata_json->'previousWorker'->'stageC'->>'netR')::double precision,
+          (c.metadata_json->'previousWorker'->'stageA'->>'netR')::double precision,
+          c.score::double precision,
+          -999
+        ) DESC,
+        c.score DESC,
+        c.updated_at DESC`
     : `ORDER BY COALESCE((c.metadata_json->'worker'->'stageC'->>'netR')::double precision, -999) DESC, c.score DESC`;
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const rows = await db.$queryRawUnsafe<
@@ -816,9 +859,26 @@ export async function listScalpV2DiscoveredSymbols(): Promise<string[]> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{ symbol: string }>>(sql`
-    SELECT DISTINCT symbol FROM scalp_v2_candidates
+    SELECT symbol
+    FROM scalp_v2_candidates
     WHERE status = 'discovered'
-    ORDER BY symbol
+    GROUP BY symbol
+    ORDER BY
+      BOOL_OR(
+        COALESCE(
+          (metadata_json->'previousWorker'->'stageC'->>'passed')::boolean,
+          false
+        )
+      ) DESC,
+      MAX(
+        COALESCE(
+          (metadata_json->'previousWorker'->'stageC'->>'netR')::double precision,
+          (metadata_json->'previousWorker'->'stageA'->>'netR')::double precision,
+          score::double precision,
+          -999
+        )
+      ) DESC,
+      symbol
   `);
   return rows.map((r) => r.symbol);
 }
@@ -947,29 +1007,44 @@ export async function loadScalpV2PreviousWeekResults(params: {
       stageAWeeklyNetR: unknown;
     }>
   >(sql`
-    WITH ranked AS (
+    WITH candidate_workers AS (
       SELECT
         venue,
         symbol,
         tune_id AS "tuneId",
         entry_session_profile AS "session",
-        (metadata_json->'worker'->>'windowToTs') AS "windowToTs",
-        (metadata_json->'worker'->'stageA'->>'passed') AS "stageAPassed",
-        (metadata_json->'worker'->'stageA'->>'netR') AS "stageANetR",
-        (metadata_json->'worker'->'stageA'->>'trades') AS "stageATrades",
-        (metadata_json->'worker'->'stageC'->>'passed') AS "stageCPassed",
-        (metadata_json->'worker'->'stageC'->>'netR') AS "stageCNetR",
-        (metadata_json->'worker'->'stageA'->'weeklyNetR') AS "stageAWeeklyNetR",
-        ROW_NUMBER() OVER (
-          PARTITION BY venue, symbol, tune_id, entry_session_profile
-          ORDER BY (metadata_json->'worker'->>'windowToTs')::bigint DESC, updated_at DESC
-        ) AS rn
+        CASE
+          WHEN status = 'discovered' AND metadata_json ? 'previousWorker'
+            THEN metadata_json->'previousWorker'
+          ELSE metadata_json->'worker'
+        END AS worker_json,
+        updated_at
       FROM scalp_v2_candidates
-      WHERE status IN ('evaluated', 'promoted', 'rejected')
-        AND (metadata_json->'worker'->>'windowToTs')::bigint != ${params.currentWindowToTs}
-        AND metadata_json->'worker'->'stageA' IS NOT NULL
+      WHERE status IN ('evaluated', 'promoted', 'rejected', 'discovered')
         ${symbolFilter}
         ${tuneFilter}
+    ),
+    ranked AS (
+      SELECT
+        venue,
+        symbol,
+        "tuneId",
+        "session",
+        (worker_json->>'windowToTs') AS "windowToTs",
+        (worker_json->'stageA'->>'passed') AS "stageAPassed",
+        (worker_json->'stageA'->>'netR') AS "stageANetR",
+        (worker_json->'stageA'->>'trades') AS "stageATrades",
+        (worker_json->'stageC'->>'passed') AS "stageCPassed",
+        (worker_json->'stageC'->>'netR') AS "stageCNetR",
+        (worker_json->'stageA'->'weeklyNetR') AS "stageAWeeklyNetR",
+        ROW_NUMBER() OVER (
+          PARTITION BY venue, symbol, "tuneId", "session"
+          ORDER BY (worker_json->>'windowToTs')::bigint DESC, updated_at DESC
+        ) AS rn
+      FROM candidate_workers
+      WHERE worker_json->>'windowToTs' IS NOT NULL
+        AND (worker_json->>'windowToTs')::bigint != ${params.currentWindowToTs}
+        AND worker_json->'stageA' IS NOT NULL
     )
     SELECT
       venue,
