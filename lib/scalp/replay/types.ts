@@ -167,6 +167,7 @@ export interface ScalpReplayResult {
     summary: ScalpReplaySummary;
     trades: ScalpReplayTrade[];
     timeline: ScalpReplayTimelineEvent[];
+    earlyAborted?: boolean;
 }
 
 export interface ScalpReplayProgressEvent {

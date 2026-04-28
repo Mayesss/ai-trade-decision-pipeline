@@ -11,6 +11,8 @@
  *   BULK_BACKTEST_CONCURRENCY=4   — replay concurrency (default half CPU cores, max 8)
  *   BULK_TIME_BUDGET_MINUTES=30   — time budget per batch (default 30)
  *   BULK_MAX_BATCHES=100          — max batches before stopping (default: unlimited)
+ *   BULK_SHARD_COUNT=4            — split symbols across N local processes
+ *   BULK_SHARD_INDEX=0            — shard index for this process (0-based)
  */
 import nextEnv from '@next/env';
 import os from 'node:os';
@@ -60,6 +62,17 @@ const LOW_PROGRESS_STREAK_FOR_BACKOFF = Math.max(
   Math.floor(Number(process.env.BULK_LOW_PROGRESS_STREAK_FOR_BACKOFF) || 2),
 );
 const BULK_DEBUG = envBool('BULK_DEBUG', false);
+const BULK_SHARD_COUNT = Math.max(
+  1,
+  Math.min(128, Math.floor(Number(process.env.BULK_SHARD_COUNT) || 1)),
+);
+const BULK_SHARD_INDEX = Math.max(
+  0,
+  Math.min(
+    BULK_SHARD_COUNT - 1,
+    Math.floor(Number(process.env.BULK_SHARD_INDEX) || 0),
+  ),
+);
 
 function envBool(name: string, fallback: boolean): boolean {
   const raw = String(process.env[name] || '').trim().toLowerCase();
@@ -78,6 +91,11 @@ function applyRuntimeOverrides(): void {
   process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY = String(backtestConcurrency);
   if (BULK_DEBUG) {
     process.env.SCALP_V2_RESEARCH_DEBUG_TIMING = '1';
+  }
+  process.env.SCALP_V2_RESEARCH_SYMBOL_SHARD_COUNT = String(BULK_SHARD_COUNT);
+  process.env.SCALP_V2_RESEARCH_SYMBOL_SHARD_INDEX = String(BULK_SHARD_INDEX);
+  if (BULK_SHARD_COUNT > 1) {
+    process.env.SCALP_V2_RESEARCH_LOCK_SCOPE = `bulk-shard-${BULK_SHARD_INDEX}-of-${BULK_SHARD_COUNT}`;
   }
   if (DISABLE_TIME_BUDGET) {
     process.env.SCALP_V2_RESEARCH_DISABLE_TIME_BUDGET = '1';
@@ -102,7 +120,7 @@ let batchCount = 0;
 let lastPending = -1;
 let lowProgressStreak = 0;
 
-let runScalpV2ResearchJob: ((params: { batchSize?: number }) => Promise<{
+let runScalpV2ResearchJob: ((params: { batchSize?: number; lockScope?: string }) => Promise<{
   ok: boolean;
   busy?: boolean;
   processed: number;
@@ -130,7 +148,13 @@ async function runBatch(): Promise<boolean> {
   console.log(`\n--- Batch ${batchCount} (${symbolsPerBatch} symbols, elapsed ${((Date.now() - globalStart) / 60000).toFixed(1)}m) ---`);
 
   const runResearch = await getRunScalpV2ResearchJob();
-  const result = await runResearch({ batchSize: candidateBatchSize });
+  const result = await runResearch({
+    batchSize: candidateBatchSize,
+    lockScope:
+      BULK_SHARD_COUNT > 1
+        ? `bulk-shard-${BULK_SHARD_INDEX}-of-${BULK_SHARD_COUNT}`
+        : undefined,
+  });
 
   const elapsed = ((Date.now() - batchStart) / 1000).toFixed(1);
   totalProcessed += result.processed;
@@ -141,6 +165,8 @@ async function runBatch(): Promise<boolean> {
   const wkTotal = d.weeklyTotal || d.totalCandidates || 0;
   const symsRun = d.symbolsThisRun || '?';
   const symsTotal = d.symbolsTotal || '?';
+  const shardCount = Number(d.symbolShardCount || BULK_SHARD_COUNT);
+  const shardIndex = Number(d.symbolShardIndex || BULK_SHARD_INDEX);
   const stgC = d.stageCPass || 0;
   const stgA = d.stageAPass || 0;
   const stgB = d.stageBPass || 0;
@@ -149,7 +175,7 @@ async function runBatch(): Promise<boolean> {
   const reason = d.reason || (budgetHit ? 'time_budget_exhausted' : '');
 
   console.log(`  ${elapsed}s | processed=${result.processed} succeeded=${result.succeeded} stageC=${stgC}`);
-  console.log(`  symbols=${symsRun}/${symsTotal} | weekly=${wkEval}/${wkTotal} (${wkTotal > 0 ? Math.round(wkEval / wkTotal * 100) : 0}%)`);
+  console.log(`  symbols=${symsRun}/${symsTotal}${shardCount > 1 ? ` shard=${shardIndex}/${shardCount}` : ''} | weekly=${wkEval}/${wkTotal} (${wkTotal > 0 ? Math.round(wkEval / wkTotal * 100) : 0}%)`);
   console.log(`  stageA=${stgA} stageB=${stgB} stageC=${stgC} | budgetHit=${budgetHit ? 'yes' : 'no'}`);
   console.log(`  pending=${pending} | reason=${reason}`);
   if (BULK_DEBUG) {
@@ -162,7 +188,10 @@ async function runBatch(): Promise<boolean> {
     const incrementalStageReplays = Number(d.incrementalStageReplays || 0);
     const newestWeekReplayReuses = Number(d.newestWeekReplayReuses || 0);
     const fullStageReplays = Number(d.fullStageReplays || 0);
+    const earlyAbortedStageReplays = Number(d.earlyAbortedStageReplays || 0);
     const cachedStageReuses = Number(d.cachedStageReuses || 0);
+    const stageBCacheHits = Number(d.stageBCacheHits || 0);
+    const stageCCacheHits = Number(d.stageCCacheHits || 0);
     const freshnessGate = (d.freshnessGate || {}) as Record<string, unknown>;
     const freshnessApplied = Boolean(freshnessGate.applied);
     const freshnessReady = Boolean(freshnessGate.ready);
@@ -172,7 +201,7 @@ async function runBatch(): Promise<boolean> {
       `  debug: backtested=${backtested} persisted=${persistedCount} droppedBelowMinStage=${droppedBelowMinStage} deferredToNext=${deferredToNextRun}`,
     );
     console.log(
-      `  debug: replay(full=${fullStageReplays}, incr=${incrementalStageReplays}, newestReuse=${newestWeekReplayReuses}, cacheReuse=${cachedStageReuses}, errors=${replayErrors}) deferredByCoverage=${deferredByCoverage}`,
+      `  debug: replay(full=${fullStageReplays}, earlyAbort=${earlyAbortedStageReplays}, incr=${incrementalStageReplays}, newestReuse=${newestWeekReplayReuses}, cacheReuse=${cachedStageReuses}, bCache=${stageBCacheHits}, cCache=${stageCCacheHits}, errors=${replayErrors}) deferredByCoverage=${deferredByCoverage}`,
     );
     const timing = (d.timing || {}) as Record<string, any>;
     const timingLabels = Array.isArray(timing.labels) ? timing.labels.slice(0, 8) : [];
@@ -291,6 +320,9 @@ async function main() {
   console.log(`Symbols per batch: ${symbolsPerBatch}`);
   console.log(`Candidates per batch: ${candidateBatchSize}`);
   console.log(`Backtest concurrency: ${backtestConcurrency}`);
+  if (BULK_SHARD_COUNT > 1) {
+    console.log(`Shard: ${BULK_SHARD_INDEX}/${BULK_SHARD_COUNT}`);
+  }
   console.log(
     `Time budget per batch: ${DISABLE_TIME_BUDGET ? 'disabled (bulk mode)' : `${timeBudgetMinutes} min`}`,
   );

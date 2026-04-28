@@ -1199,5 +1199,6 @@ export async function runScalpReplay(params: {
     summary,
     trades,
     timeline,
+    earlyAborted,
   };
 }

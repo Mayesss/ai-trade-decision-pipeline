@@ -92,6 +92,15 @@ function resolveScalpV2JobLockStaleMinutes(): number {
   );
 }
 
+function normalizeJobDedupeScope(value: unknown): string {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9:_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized || "singleton";
+}
+
 function normalizeVenue(value: unknown): ScalpV2Venue {
   const normalized = String(value || "")
     .trim()
@@ -273,10 +282,11 @@ export async function upsertScalpV2RuntimeConfig(
 export async function claimScalpV2Job(params: {
   jobKind: ScalpV2JobKind;
   lockOwner: string;
+  dedupeScope?: string;
 }): Promise<boolean> {
   if (!isScalpPgConfigured()) return true;
   const db = scalpPrisma();
-  const dedupeKey = `${params.jobKind}:singleton`;
+  const dedupeKey = `${params.jobKind}:${normalizeJobDedupeScope(params.dedupeScope)}`;
   const staleLockMinutes = resolveScalpV2JobLockStaleMinutes();
   await db.$executeRaw(sql`
     INSERT INTO scalp_v2_jobs(
@@ -325,11 +335,12 @@ export async function claimScalpV2Job(params: {
 export async function heartbeatScalpV2Job(params: {
   jobKind: ScalpV2JobKind;
   lockOwner: string;
+  dedupeScope?: string;
   details?: Record<string, unknown>;
 }): Promise<boolean> {
   if (!isScalpPgConfigured()) return true;
   const db = scalpPrisma();
-  const dedupeKey = `${params.jobKind}:singleton`;
+  const dedupeKey = `${params.jobKind}:${normalizeJobDedupeScope(params.dedupeScope)}`;
   const rows = await db.$queryRaw<Array<{ id: bigint }>>(sql`
     UPDATE scalp_v2_jobs
     SET
@@ -349,11 +360,12 @@ export async function finalizeScalpV2Job(params: {
   jobKind: ScalpV2JobKind;
   lockOwner: string;
   ok: boolean;
+  dedupeScope?: string;
   details?: Record<string, unknown>;
 }): Promise<void> {
   if (!isScalpPgConfigured()) return;
   const db = scalpPrisma();
-  const dedupeKey = `${params.jobKind}:singleton`;
+  const dedupeKey = `${params.jobKind}:${normalizeJobDedupeScope(params.dedupeScope)}`;
   await db.$executeRaw(sql`
     UPDATE scalp_v2_jobs
     SET
@@ -1224,6 +1236,119 @@ export async function loadScalpV2WeeklyCache(params: {
 }
 
 /**
+ * Load cached per-week metrics for candidate keys, independent of worker stage.
+ *
+ * The replay metrics are candidate-specific, not stage-specific.  New writes use
+ * the existing table with stage_id='a' as the canonical row, while this reader
+ * can still fall back to older duplicated stage rows.
+ */
+export async function loadScalpV2CandidateWeeklyCache(params: {
+  keys: Array<{
+    venue: ScalpV2Venue;
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    session: ScalpV2Session;
+  }>;
+  fromWeekStartTs: number;
+  toWeekStartTs: number;
+}): Promise<Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>> {
+  const out = new Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>();
+  if (!isScalpPgConfigured() || !params.keys.length) return out;
+  if (!(await ensureWeeklyCacheTable())) return out;
+  const fromTs = Math.floor(Number(params.fromWeekStartTs) || 0);
+  const toTs = Math.floor(Number(params.toWeekStartTs) || 0);
+  if (toTs <= fromTs) return out;
+
+  const db = scalpPrisma();
+  const [{ cnt }] = await db.$queryRaw<[{ cnt: bigint }]>(sql`
+    SELECT count(*) AS cnt FROM scalp_v2_worker_stage_weekly_cache LIMIT 1
+  `);
+  if (Number(cnt) === 0) return out;
+
+  const BATCH = 1500;
+  for (let offset = 0; offset < params.keys.length; offset += BATCH) {
+    const batch = params.keys.slice(offset, offset + BATCH);
+    if (!batch.length) continue;
+    const keyRows = batch.map((k) =>
+      sql`(
+        ${normalizeVenue(k.venue)},
+        ${String(k.symbol || "").trim().toUpperCase()},
+        ${String(k.strategyId || "").trim().toLowerCase()},
+        ${String(k.tuneId || "").trim().toLowerCase()},
+        ${normalizeSession(k.session)}
+      )`,
+    );
+    const rows = await db.$queryRaw<
+      Array<{
+        venue: string;
+        symbol: string;
+        strategyId: string;
+        tuneId: string;
+        session: string;
+        weekStartTs: string | number;
+        metricsJson: unknown;
+      }>
+    >(sql`
+      WITH keys(venue, symbol, strategy_id, tune_id, entry_session_profile) AS (
+        VALUES ${join(keyRows, ",")}
+      ),
+      ranked AS (
+        SELECT
+          c.venue,
+          c.symbol,
+          c.strategy_id AS "strategyId",
+          c.tune_id AS "tuneId",
+          c.entry_session_profile AS "session",
+          c.week_start_ts AS "weekStartTs",
+          c.metrics_json AS "metricsJson",
+          ROW_NUMBER() OVER (
+            PARTITION BY
+              c.venue,
+              c.symbol,
+              c.strategy_id,
+              c.tune_id,
+              c.entry_session_profile,
+              c.week_start_ts
+            ORDER BY
+              CASE WHEN c.stage_id = 'a' THEN 0 ELSE 1 END,
+              c.updated_at DESC
+          ) AS rn
+        FROM scalp_v2_worker_stage_weekly_cache c
+        INNER JOIN keys k
+          ON c.venue = k.venue
+         AND c.symbol = k.symbol
+         AND c.strategy_id = k.strategy_id
+         AND c.tune_id = k.tune_id
+         AND c.entry_session_profile = k.entry_session_profile
+        WHERE c.week_start_ts >= ${fromTs}
+          AND c.week_start_ts < ${toTs}
+      )
+      SELECT
+        venue,
+        symbol,
+        "strategyId",
+        "tuneId",
+        "session",
+        "weekStartTs",
+        "metricsJson"
+      FROM ranked
+      WHERE rn = 1
+      ORDER BY "weekStartTs" ASC;
+    `);
+    for (const row of rows) {
+      const key = `${normalizeVenue(row.venue)}:${String(row.symbol || "").trim().toUpperCase()}:${String(row.strategyId || "").trim().toLowerCase()}:${String(row.tuneId || "").trim().toLowerCase()}:${normalizeSession(row.session)}`.toLowerCase();
+      const weekStart = Math.floor(Number(row.weekStartTs) || 0);
+      if (weekStart <= 0) continue;
+      let perWeek = out.get(key);
+      if (!perWeek) { perWeek = new Map(); out.set(key, perWeek); }
+      perWeek.set(weekStart, normalizeWeeklyCacheMetrics(row.metricsJson));
+    }
+  }
+  return out;
+}
+
+/**
  * Persist per-week metrics to the cache table (upsert).
  */
 export async function upsertScalpV2WeeklyCache(params: {
@@ -1275,6 +1400,26 @@ export async function upsertScalpV2WeeklyCache(params: {
     written += batch.length;
   }
   return written;
+}
+
+export async function upsertScalpV2CandidateWeeklyCache(params: {
+  rows: Array<{
+    venue: ScalpV2Venue;
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    session: ScalpV2Session;
+    weekStartTs: number;
+    weekToTs: number;
+    metrics: ScalpV2WorkerStageWeeklyMetrics;
+  }>;
+}): Promise<number> {
+  return upsertScalpV2WeeklyCache({
+    rows: params.rows.map((row) => ({
+      ...row,
+      stageId: "a",
+    })),
+  });
 }
 
 /**
