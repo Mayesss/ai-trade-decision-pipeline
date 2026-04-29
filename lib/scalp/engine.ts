@@ -624,18 +624,33 @@ export async function runScalpExecuteCycle(opts: {
                             cfg: entryCfg,
                             entryIntent,
                         });
-                        phaseReasonCodes.push(...planRes.reasonCodes);
+                        const planReasonCodes = planRes.plan
+                            ? planRes.reasonCodes
+                            : planRes.reasonCodes.filter((code) => code !== 'ENTRY_PLAN_READY');
+                        if (!planRes.plan && planRes.reasonCodes.includes('ENTRY_PLAN_READY')) {
+                            planReasonCodes.push('ENTRY_PLAN_READY_WITHOUT_PLAN');
+                        }
+                        phaseReasonCodes.push(...planReasonCodes);
                         if (planRes.plan) {
-                            const entryRes = await executeScalpEntryPlan({
-                                adapter: venueAdapter,
-                                state: nextState,
-                                plan: planRes.plan,
-                                cfg: entryCfg,
-                                dryRun,
-                                nowMs,
-                            });
-                            nextState = entryRes.state;
-                            phaseReasonCodes.push(...entryRes.reasonCodes);
+                            phaseReasonCodes.push('ENTRY_EXECUTE_ATTEMPT');
+                            try {
+                                const entryRes = await executeScalpEntryPlan({
+                                    adapter: venueAdapter,
+                                    state: nextState,
+                                    plan: planRes.plan,
+                                    cfg: entryCfg,
+                                    dryRun,
+                                    nowMs,
+                                });
+                                nextState = entryRes.state;
+                                phaseReasonCodes.push(
+                                    ...(entryRes.reasonCodes.length
+                                        ? entryRes.reasonCodes
+                                        : ['ENTRY_EXECUTE_RESULT_MISSING_REASON']),
+                                );
+                            } catch {
+                                phaseReasonCodes.push('ENTRY_EXECUTE_THROWN');
+                            }
                         }
                     }
                 }

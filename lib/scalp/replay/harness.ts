@@ -1084,7 +1084,13 @@ export async function runScalpReplay(params: {
           cfg: strategyCfg,
           entryIntent,
         });
-        const reasons = dedupeReasonCodes(planRes.reasonCodes);
+        const planReasonCodes = planRes.plan
+          ? planRes.reasonCodes
+          : planRes.reasonCodes.filter((code) => code !== "ENTRY_PLAN_READY");
+        if (!planRes.plan && planRes.reasonCodes.includes("ENTRY_PLAN_READY")) {
+          planReasonCodes.push("ENTRY_PLAN_READY_WITHOUT_PLAN");
+        }
+        const reasons = dedupeReasonCodes(planReasonCodes);
         appendTimeline(
           timeline,
           {

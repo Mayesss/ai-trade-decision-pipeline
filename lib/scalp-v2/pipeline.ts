@@ -5935,12 +5935,24 @@ export async function runScalpV2ExecuteJob(params: {
       try {
         const rp = deployment.riskProfile;
         const dslFromGate = asRecord(asRecord(deployment.promotionGate).dsl || {});
+        const exitOverrides = resolveExitRuleOverrides(
+          Array.isArray(dslFromGate.exit_rule) ? (dslFromGate.exit_rule as string[]) : null,
+        );
+        const entryOverrides = resolveEntryTriggerOverrides(
+          Array.isArray(dslFromGate.entry_trigger) ? (dslFromGate.entry_trigger as string[]) : null,
+        );
+        const riskReplayOverrides = resolveRiskRuleReplayOverrides(
+          Array.isArray(dslFromGate.risk_rule) ? (dslFromGate.risk_rule as string[]) : null,
+        );
         const smOverrides = resolveStateMachineOverrides(
           Array.isArray(dslFromGate.state_machine) ? (dslFromGate.state_machine as string[]) : null,
         );
         const configOverride = buildScalpV2ExecuteConfigOverride({
           entrySessionProfile: deployment.entrySessionProfile,
           riskProfile: rp,
+          entryTriggerOverrides: entryOverrides,
+          exitRuleOverrides: exitOverrides,
+          riskRuleReplayOverrides: riskReplayOverrides,
           stateMachineOverrides: smOverrides,
         });
         const runtimeSnapshot = buildScalpV2RuntimeSnapshotForDeployment({
