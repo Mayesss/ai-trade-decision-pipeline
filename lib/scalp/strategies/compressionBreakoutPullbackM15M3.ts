@@ -276,6 +276,16 @@ function applyPhaseDetectorsWithOptions(
     }
 
     reasonCodes.push(...setup.reasonCodes);
+    const ifvgExpiresAtMs = setup.entryTsMs + Math.max(1, input.cfg.ifvg.ttlMinutes) * 60_000;
+    if (input.nowMs >= ifvgExpiresAtMs) {
+        next.state = 'IDLE';
+        next.sweep = null;
+        next.confirmation = null;
+        next.ifvg = null;
+        reasonCodes.push('SETUP_EXPIRED');
+        reasonCodes.push('SETUP_NOT_READY');
+        return finalizePhase({ state: next, reasonCodes });
+    }
     const breakoutTsMs = ts(input.market.baseCandles[setup.breakoutIndex]!);
     const sweepSide = setup.direction === 'BULLISH' ? 'SELL_SIDE' : 'BUY_SIDE';
 
@@ -300,7 +310,7 @@ function applyPhaseDetectorsWithOptions(
         low: setup.zoneLow,
         high: setup.zoneHigh > setup.zoneLow ? setup.zoneHigh : setup.zoneLow + 1e-9,
         createdTsMs: setup.entryTsMs,
-        expiresAtMs: setup.entryTsMs + Math.max(1, input.cfg.ifvg.ttlMinutes) * 60_000,
+        expiresAtMs: ifvgExpiresAtMs,
         entryMode: input.cfg.ifvg.entryMode,
         touched: true,
     };

@@ -222,6 +222,13 @@ export function resolveLegacyIfvgEntryIntent(
   if (state.trade) return null;
   if (state.state !== "WAITING_RETRACE") return null;
   if (!state.ifvg?.touched) return null;
+  if (
+    Number.isFinite(Number(state.ifvg.expiresAtMs)) &&
+    Number(state.ifvg.expiresAtMs) > 0 &&
+    state.updatedAtMs >= Number(state.ifvg.expiresAtMs)
+  ) {
+    return null;
+  }
   return { model: "ifvg_touch" };
 }
 
@@ -320,6 +327,14 @@ export function buildScalpEntryPlan(params: {
   const sweep = state.sweep;
   if (!ifvg || !sweep)
     return { plan: null, reasonCodes: ["ENTRY_PLAN_MISSING_SETUP"] };
+  const ifvgExpiresAtMs = Number(ifvg.expiresAtMs);
+  if (
+    Number.isFinite(ifvgExpiresAtMs) &&
+    ifvgExpiresAtMs > 0 &&
+    params.market.nowMs >= ifvgExpiresAtMs
+  ) {
+    return { plan: null, reasonCodes: ["ENTRY_PLAN_IFVG_EXPIRED"] };
+  }
   if (!ifvg.touched)
     return { plan: null, reasonCodes: ["ENTRY_PLAN_IFVG_NOT_TOUCHED"] };
 

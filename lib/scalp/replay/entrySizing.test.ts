@@ -150,6 +150,24 @@ test("entry plan rejects BUY stop that is not protective", () => {
   assert.ok(plan.reasonCodes.includes("ENTRY_PLAN_STOP_NOT_PROTECTIVE"));
 });
 
+test("entry plan rejects expired IFVG setup", () => {
+  const nowMs = Date.UTC(2026, 2, 17, 10, 0, 0, 0);
+  const cfg = getScalpStrategyConfig();
+  const market = makeMarket(nowMs);
+  const state = makeReadyState({ venue: "bitget", nowMs });
+  state.ifvg!.expiresAtMs = nowMs;
+
+  const plan = buildScalpEntryPlan({
+    state,
+    market,
+    cfg,
+    entryIntent: { model: "ifvg_touch" },
+  });
+
+  assert.equal(plan.plan, null);
+  assert.ok(plan.reasonCodes.includes("ENTRY_PLAN_IFVG_EXPIRED"));
+});
+
 test("entry plan rejects SELL stop that is not protective", () => {
   const nowMs = Date.UTC(2026, 2, 17, 10, 0, 0, 0);
   const cfg = applyScalpStrategyConfigOverride(getScalpStrategyConfig(), {

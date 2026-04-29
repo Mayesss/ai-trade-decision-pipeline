@@ -451,6 +451,31 @@ function appendTimeline(
   });
 }
 
+function estimateReplayMarketWindowLimit(params: {
+  nowMs: number;
+  startMs: number;
+  targetTfMs: number;
+  minCandles: number;
+  maxCandles: number;
+}): number {
+  const targetTfMs = Math.max(60_000, Math.floor(params.targetTfMs || 0));
+  const spanMs = Math.max(0, params.nowMs - params.startMs);
+  const barsFromSpan = Math.ceil(spanMs / targetTfMs);
+  const minCandles = Math.max(1, Math.floor(Number(params.minCandles) || 1));
+  const maxCandles = Math.max(minCandles, Math.floor(Number(params.maxCandles) || minCandles));
+  const required = Math.max(minCandles, barsFromSpan + 40);
+  return Math.max(minCandles, Math.min(maxCandles, required));
+}
+
+function sliceReplayMarketCandles(
+  candles: ScalpCandle[],
+  limit: number,
+): ScalpCandle[] {
+  const boundedLimit = Math.max(1, Math.floor(Number(limit) || 0));
+  if (candles.length <= boundedLimit) return candles;
+  return candles.slice(-boundedLimit);
+}
+
 function inferExitReasonFromManageCodes(codes: string[]): "STOP" | "STOP_LOSS" | "STOP_BE" | "STOP_TRAIL" | "TP" | "TIME_STOP" {
   const normalized = dedupeReasonCodes(codes);
   if (normalized.includes("TRADE_EXIT_TP_HIT")) return "TP";
@@ -783,12 +808,34 @@ export async function runScalpReplay(params: {
       }
       const transitioned = advanceScalpStateMachine(state, { nowMs, dayKey });
       state = transitioned.nextState;
+      const windows = buildScalpSessionWindows({
+        dayKey: state.dayKey,
+        clockMode: strategyCfg.sessions.clockMode,
+        asiaWindowLocal: strategyCfg.sessions.asiaWindowLocal,
+        raidWindowLocal: strategyCfg.sessions.raidWindowLocal,
+      });
+      const lookbackStartMs =
+        Math.min(windows.asiaStartMs, windows.raidStartMs) - 60 * 60_000;
+      const baseLimit = estimateReplayMarketWindowLimit({
+        nowMs,
+        startMs: lookbackStartMs,
+        targetTfMs: prepared.baseTfMs,
+        minCandles: strategyCfg.data.minBaseCandles,
+        maxCandles: strategyCfg.data.maxCandlesPerRequest,
+      });
+      const confirmLimit = estimateReplayMarketWindowLimit({
+        nowMs,
+        startMs: lookbackStartMs,
+        targetTfMs: prepared.confirmTfMs,
+        minCandles: strategyCfg.data.minConfirmCandles,
+        maxCandles: strategyCfg.data.maxCandlesPerRequest,
+      });
       const market = buildReplayMarketSnapshot({
         symbol: runtime.symbol,
         nowMs,
         priceCandle,
-        baseCandles: baseClosedCandles,
-        confirmCandles: confirmClosedCandles,
+        baseCandles: sliceReplayMarketCandles(baseClosedCandles, baseLimit),
+        confirmCandles: sliceReplayMarketCandles(confirmClosedCandles, confirmLimit),
         pipSize: params.pipSize,
         runtime,
         symbolMeta: params.symbolMeta ?? null,
@@ -797,12 +844,6 @@ export async function runScalpReplay(params: {
         symbol: runtime.symbol,
         nowMs,
         metadata: params.symbolMeta ?? null,
-      });
-      const windows = buildScalpSessionWindows({
-        dayKey: state.dayKey,
-        clockMode: strategyCfg.sessions.clockMode,
-        asiaWindowLocal: strategyCfg.sessions.asiaWindowLocal,
-        raidWindowLocal: strategyCfg.sessions.raidWindowLocal,
       });
       if (position && state.trade && marketGate.forceCloseNow) {
         const exitPrice = toFinite(market.quote.price, position.entryPrice);
