@@ -185,7 +185,7 @@ MARKETAUX_API_KEY=...
 # SCALP_V2_SEED_SYMBOLS_CAPITAL=EURUSD
 # SCALP_V2_SEED_LIVE_SYMBOLS_BITGET=BTCUSDT
 # SCALP_V2_SEED_LIVE_SYMBOLS_CAPITAL=EURUSD
-# SCALP_V2_FORCE_FIXED_SEED_SCOPE=true                  # default true: clamp v2 scope to BTCUSDT(bitget) + EURUSD(capital)
+# SCALP_V2_FORCE_FIXED_SEED_SCOPE=true                  # default true: clamp v2 scope to the fixed 48-symbol research universe
 # SCALP_V2_COMPOSER_MAX_CANDIDATES_PER_SESSION=24       # bounded candidate pool generated per venue+symbol+session scope
 # SCALP_V2_DISCOVER_PERSIST_CANDIDATES=false            # default false: discover updates cursors only; evaluate persists rotated slice
 # SCALP_V2_MAX_CANDIDATES_TOTAL=200
@@ -301,8 +301,8 @@ npm run start
   - Default mode is sparse/scan-only (`SCALP_V2_DISCOVER_PERSIST_CANDIDATES=false`): updates research cursors without bulk candidate persistence.
   - Optional persistence mode (`SCALP_V2_DISCOVER_PERSIST_CANDIDATES=true`) upserts discovered candidates and applies runtime candidate-budget trimming.
   - By default, runtime seed scope is fixed to:
-    - Bitget: `BTCUSDT`
-    - Capital: `EURUSD`
+    - Bitget: 34 crypto symbols.
+    - Capital: 14 forex/metals symbols.
   - `SCALP_V2_FORCE_FIXED_SEED_SCOPE=true` (default) enforces this clamp even if runtime/DB config contains wider seeds.
   - Candidate pool size per scope is bounded by `SCALP_V2_COMPOSER_MAX_CANDIDATES_PER_SESSION` (default `24`, max `96`).
   - Optional orchestration query params:
@@ -319,6 +319,27 @@ npm run start
   - Optional orchestration query params:
     - `autoContinue=true|false` + `selfHop/selfMaxHops` for bounded detached self-recalls when `pendingAfter > 0`.
     - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/v2/cron/promote` only after `pendingAfter` reaches `0`.
+  - Local bulk support:
+    - Use `scripts/research-local-bulk.ts` to support the Vercel research cron from local terminals when draining a large fresh candidate set.
+    - Keep `BULK_WORK_LEASES=1` enabled. Each process uses its own research job scope and claims candidate rows with DB leases, so parallel terminals should not backtest the same candidate at the same time.
+    - After a full research reset, start one terminal first until warm-up/candidate discovery completes, then start the remaining terminals. Starting all at once is safe, but can waste warm-up work.
+    - For multiple terminals, shard symbol scanning with the same `BULK_SHARD_COUNT` and a unique zero-based `BULK_SHARD_INDEX` per terminal.
+
+  ```bash
+  # Terminal 1 of 5. Use BULK_SHARD_INDEX=1,2,3,4 in the other terminals.
+  BULK_WORK_LEASES=1 \
+  BULK_SHARD_COUNT=5 \
+  BULK_SHARD_INDEX=0 \
+  BULK_DISABLE_TIME_BUDGET=1 \
+  BULK_SYMBOLS_PER_BATCH=10 \
+  BULK_CANDIDATE_BATCH_SIZE=180 \
+  BULK_BACKTEST_CONCURRENCY=4 \
+  BULK_MIN_BACKTEST_CONCURRENCY=2 \
+  BULK_LOW_PROGRESS_STREAK_FOR_BACKOFF=3 \
+  npm exec tsx scripts/research-local-bulk.ts
+  ```
+
+  - With five terminals and `BULK_BACKTEST_CONCURRENCY=4`, expect up to 20 local replay workers. If the machine, DB, or network becomes the bottleneck, reduce `BULK_BACKTEST_CONCURRENCY` to `3` or `BULK_CANDIDATE_BATCH_SIZE` to `120`.
 - `GET /api/scalp/v2/cron/evaluate?batchSize=200`
   - Native model-guided scoring pass over deterministic candidate pools for each venue+symbol+session scope.
   - Uses research cursor offsets (`scalp_v2_research_cursor.last_candidate_offset`) to rotate evaluation windows instead of rescoring full pools every run.
@@ -344,7 +365,7 @@ npm run start
 - `GET /api/scalp/v2/cron/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&successor=cycle`
   - Legacy alias kept for compatibility: `/api/scalp/cron/v2/load-candles`.
   - Legacy-backed candle-maintenance job kept for Sunday data refresh/backfill only.
-  - Processing scope is hard-filtered to scalp-v2 runtime symbols (seed + live-seed union, currently BTCUSDT/EURUSD under fixed scope).
+  - Processing scope is hard-filtered to scalp-v2 runtime symbols (seed + live-seed union, currently the fixed 48-symbol research universe by default).
   - Completed-week rollover now advances on UTC Sunday so Monday-Saturday candles count as the fresh completed week.
   - Sunday candles are excluded from storage ingest; on Sunday UTC, fetch windows are clamped to Saturday close.
   - Success criterion is strict by default: at least `12` completed Monday-Saturday weeks of 1m candles.
