@@ -3949,6 +3949,21 @@ export async function runScalpV2ResearchJob(params: {
       }
     }
 
+    function finalizeCandidateWithStageReason(
+      runtime: StageCandidateRuntime,
+      stage: ScalpV2WorkerStagePolicy,
+      reason: string,
+    ) {
+      runtime.stageResults[stage.id] = buildWorkerStageSkeleton({
+        stage,
+        fromTs: windowToTs - stage.weeks * ONE_WEEK_MS,
+        toTs: windowToTs,
+        reason,
+      });
+      markDownstreamBlocked(runtime, stage.id);
+      finalizeCandidateRuntime(runtime);
+    }
+
     function updateStageCounters(
       stageId: ScalpV2WorkerStageId,
       stageResult: ScalpV2WorkerStageResult,
@@ -4554,8 +4569,11 @@ export async function runScalpV2ResearchJob(params: {
             try {
               const symbolCandles = await ensureCandidateSymbolCandles(runtime);
               if (!symbolCandles) {
-                processed += 1;
-                runtime.finalized = true;
+                finalizeCandidateWithStageReason(
+                  runtime,
+                  params.stage,
+                  "missing_symbol_candle_history",
+                );
                 return null;
               }
               if (params.stage.id === "a") {

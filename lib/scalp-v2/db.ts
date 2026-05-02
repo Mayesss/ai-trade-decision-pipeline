@@ -551,9 +551,16 @@ export async function listScalpV2Candidates(params: {
   const limit = Math.max(1, Math.min(10_000, Math.floor(params.limit || 500)));
   const where: string[] = [];
   const values: unknown[] = [];
+  const discoveredOnly = normalizeCandidateStatus(params.status) === "discovered";
+  if (discoveredOnly) {
+    await ensureCandidateResearchLeaseColumns().catch(() => false);
+  }
   if (params.status) {
     values.push(params.status);
     where.push(`c.status = $${values.length}`);
+  }
+  if (discoveredOnly) {
+    where.push(`(c.research_lease_until IS NULL OR c.research_lease_until < NOW())`);
   }
   if (params.venue) {
     values.push(params.venue);
@@ -568,7 +575,6 @@ export async function listScalpV2Candidates(params: {
     where.push(`c.symbol = ANY($${values.length})`);
   }
   values.push(limit);
-  const discoveredOnly = normalizeCandidateStatus(params.status) === "discovered";
   const orderBySql = discoveredOnly
     ? `ORDER BY
         COALESCE((c.metadata_json->'previousWorker'->'stageC'->>'passed')::boolean, false) DESC,
