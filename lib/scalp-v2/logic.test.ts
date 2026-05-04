@@ -8,6 +8,7 @@ import {
   isScalpV2SundayUtc,
   isScalpV2DiscoverSymbolAllowed,
   mapV1LedgerRowToV2,
+  normalizeReasonCodes,
   toLedgerCloseTypeFromEvent,
 } from "./logic";
 import type { ScalpV2Candidate, ScalpV2Deployment } from "./types";
@@ -123,6 +124,17 @@ test("event and reason close mapping includes stop-loss and liquidation", () => 
     deriveCloseTypeFromReasonCodes(["sl_hit", "risk"]),
     "stop_loss",
   );
+});
+
+test("normalizeReasonCodes keeps execution result codes beyond early signal context", () => {
+  const codes = Array.from({ length: 20 }, (_, idx) => `CODE_${idx + 1}`);
+  codes.push("ENTRY_EXECUTE_ATTEMPT", "ENTRY_PLACED");
+
+  const out = normalizeReasonCodes(codes);
+
+  assert.equal(out.length, 22);
+  assert.equal(out.includes("ENTRY_EXECUTE_ATTEMPT"), true);
+  assert.equal(out.includes("ENTRY_PLACED"), true);
 });
 
 test("mapV1LedgerRowToV2 preserves identity and derives close type", () => {

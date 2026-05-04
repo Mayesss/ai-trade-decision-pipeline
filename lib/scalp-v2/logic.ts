@@ -149,7 +149,7 @@ export function normalizeReasonCodes(value: unknown): string[] {
       .toUpperCase();
     if (!code) continue;
     out.push(code.slice(0, 120));
-    if (out.length >= 16) break;
+    if (out.length >= 64) break;
   }
   return Array.from(new Set(out));
 }

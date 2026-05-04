@@ -619,55 +619,6 @@ async function executeBitgetScalpEntry(params: {
   const accountAvailableUsd = await fetchBitgetAccountAvailableUsd().catch(
     () => null,
   );
-  if (
-    riskMarginTargetUsd !== null &&
-    Number.isFinite(riskMarginTargetUsd) &&
-    riskMarginTargetUsd > notionalUsd + 1e-9
-  ) {
-    return {
-      placed: false,
-      dryRun: false,
-      orderId: null,
-      dealId: syntheticDealId,
-      dealReference: clientOid,
-      clientOid,
-      symbol,
-      direction,
-      notionalUsd,
-      leverage: marginTargetLeverage,
-      orderType,
-      size: null,
-      epic: symbol,
-      dealStatus: "REJECTED",
-      confirmStatus: "MARGIN_TARGET_INVALID",
-      rejectReason: "RISK_MARGIN_TARGET_EXCEEDS_NOTIONAL",
-    };
-  }
-  if (
-    riskMarginTargetUsd !== null &&
-    Number.isFinite(accountAvailableUsd as number) &&
-    Number(accountAvailableUsd) > 0 &&
-    Number(accountAvailableUsd) + 1e-9 < riskMarginTargetUsd
-  ) {
-    return {
-      placed: false,
-      dryRun: false,
-      orderId: null,
-      dealId: syntheticDealId,
-      dealReference: clientOid,
-      clientOid,
-      symbol,
-      direction,
-      notionalUsd,
-      leverage: marginTargetLeverage,
-      orderType,
-      size: null,
-      epic: symbol,
-      dealStatus: "REJECTED",
-      confirmStatus: "MARGIN_INSUFFICIENT",
-      rejectReason: "INSUFFICIENT_AVAILABLE_MARGIN_FOR_RISK_TARGET",
-    };
-  }
   const requiredLeverageByAvailable =
     Number.isFinite(accountAvailableUsd as number) && Number(accountAvailableUsd) > 0
       ? Math.max(
@@ -680,7 +631,6 @@ async function executeBitgetScalpEntry(params: {
     requiredLeverageByAvailable,
   );
   const leverage = Math.max(1, Math.min(symbolLeverageCap, targetLeverage));
-  const isolatedMarginUsd = notionalUsd / leverage;
 
   if (requiredLeverageByAvailable > symbolLeverageCap) {
     return {
@@ -702,31 +652,6 @@ async function executeBitgetScalpEntry(params: {
       rejectReason: "INSUFFICIENT_BALANCE_FOR_NOTIONAL",
     };
   }
-  if (
-    riskMarginTargetUsd !== null &&
-    Number.isFinite(isolatedMarginUsd) &&
-    isolatedMarginUsd + 1e-9 < riskMarginTargetUsd
-  ) {
-    return {
-      placed: false,
-      dryRun: false,
-      orderId: null,
-      dealId: syntheticDealId,
-      dealReference: clientOid,
-      clientOid,
-      symbol,
-      direction,
-      notionalUsd,
-      leverage,
-      orderType,
-      size: null,
-      epic: symbol,
-      dealStatus: "REJECTED",
-      confirmStatus: "MARGIN_TARGET_UNATTAINABLE",
-      rejectReason: "RISK_MARGIN_TARGET_UNATTAINABLE_WITH_LEVERAGE",
-    };
-  }
-
   await setBitgetLeverage({
     symbol,
     direction,
