@@ -2139,7 +2139,13 @@ export async function listScalpV2LedgerRows(params: {
     deploymentId: string;
     tsExitMs: number;
     entrySessionProfile: ScalpV2Session;
+    venue: ScalpV2Venue;
+    symbol: string;
+    closeType: ScalpV2CloseType;
     rMultiple: number;
+    pnlUsd: number | null;
+    sourceOfTruth: ScalpV2SourceOfTruth;
+    reasonCodes: string[];
   }>
 > {
   if (!isScalpPgConfigured()) return [];
@@ -2162,14 +2168,26 @@ export async function listScalpV2LedgerRows(params: {
       deploymentId: string;
       tsExitMs: bigint;
       entrySessionProfile: string;
+      venue: string;
+      symbol: string;
+      closeType: string;
       rMultiple: number;
+      pnlUsd: number | null;
+      sourceOfTruth: string;
+      reasonCodes: string[];
     }>
   >(sql`
     SELECT
       deployment_id AS "deploymentId",
       (EXTRACT(EPOCH FROM ts_exit) * 1000.0)::bigint AS "tsExitMs",
       entry_session_profile AS "entrySessionProfile",
-      r_multiple::double precision AS "rMultiple"
+      venue,
+      symbol,
+      close_type AS "closeType",
+      r_multiple::double precision AS "rMultiple",
+      pnl_usd::double precision AS "pnlUsd",
+      source_of_truth AS "sourceOfTruth",
+      reason_codes AS "reasonCodes"
     FROM scalp_v2_ledger
     WHERE deployment_id = ANY(${deploymentIds}::text[])
       AND ts_exit >= TO_TIMESTAMP(${fromTsMs} / 1000.0)
@@ -2182,7 +2200,18 @@ export async function listScalpV2LedgerRows(params: {
     deploymentId: String(row.deploymentId || "").trim(),
     tsExitMs: Number(row.tsExitMs || 0),
     entrySessionProfile: normalizeSession(row.entrySessionProfile),
+    venue: normalizeVenue(row.venue),
+    symbol: String(row.symbol || "").trim().toUpperCase(),
+    closeType: (String(row.closeType || "manual_close").trim().toLowerCase() as ScalpV2CloseType),
     rMultiple: Number.isFinite(Number(row.rMultiple)) ? Number(row.rMultiple) : 0,
+    pnlUsd:
+      row.pnlUsd === null || row.pnlUsd === undefined
+        ? null
+        : Number.isFinite(Number(row.pnlUsd))
+          ? Number(row.pnlUsd)
+          : null,
+    sourceOfTruth: normalizeSourceOfTruth(row.sourceOfTruth),
+    reasonCodes: normalizeReasonCodes(row.reasonCodes || []),
   }));
 }
 

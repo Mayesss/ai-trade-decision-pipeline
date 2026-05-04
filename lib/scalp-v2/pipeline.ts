@@ -1,6 +1,9 @@
 import crypto from "crypto";
 
-import { fetchCapitalOpenPositionSnapshots } from "../capital";
+import {
+  fetchCapitalDealActivityHistory,
+  fetchCapitalOpenPositionSnapshots,
+} from "../capital";
 import { loadScalpCandleHistoryInRange } from "../scalp/candleHistory";
 import { pipSizeForScalpSymbol } from "../scalp/marketData";
 import { loadScalpSymbolMarketMetadataBulk } from "../scalp/symbolMarketMetadataStore";
@@ -6135,6 +6138,151 @@ function snapshotExists(params: {
   return false;
 }
 
+function finiteNumberOrNull(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function normalizeBrokerText(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .toUpperCase();
+}
+
+function computeRMultipleFromCapitalCloseActivity(params: {
+  side: "long" | "short" | null;
+  details: Record<string, unknown>;
+}): number | null {
+  const side = params.side;
+  if (side !== "long" && side !== "short") return null;
+  const entry = finiteNumberOrNull(
+    params.details.openPrice ?? params.details.openLevel,
+  );
+  const exit = finiteNumberOrNull(params.details.level);
+  const stop = finiteNumberOrNull(params.details.stopLevel);
+  if (
+    !(Number.isFinite(entry) && Number(entry) > 0) ||
+    !(Number.isFinite(exit) && Number(exit) > 0) ||
+    !(Number.isFinite(stop) && Number(stop) > 0)
+  ) {
+    return null;
+  }
+  const riskAbs =
+    side === "long" ? Number(entry) - Number(stop) : Number(stop) - Number(entry);
+  if (!(Number.isFinite(riskAbs) && riskAbs > 0)) return null;
+  const pnlAbs =
+    side === "long" ? Number(exit) - Number(entry) : Number(entry) - Number(exit);
+  const r = pnlAbs / riskAbs;
+  return Number.isFinite(r) ? r : null;
+}
+
+function classifyCapitalCloseSource(source: string): {
+  reasonCode: string;
+  source: string;
+} {
+  const normalized = normalizeBrokerText(source);
+  if (normalized === "TP" || normalized.includes("PROFIT")) {
+    return { reasonCode: "SCALP_V2_RECONCILE_TP", source: normalized || "TP" };
+  }
+  if (
+    normalized === "SL" ||
+    normalized.includes("STOP") ||
+    normalized.includes("LOSS")
+  ) {
+    return { reasonCode: "SCALP_V2_RECONCILE_SL", source: normalized || "SL" };
+  }
+  if (normalized === "USER" || normalized.includes("MANUAL")) {
+    return {
+      reasonCode: "SCALP_V2_RECONCILE_MANUAL_CLOSE",
+      source: normalized || "USER",
+    };
+  }
+  return {
+    reasonCode: "SCALP_V2_RECONCILE_BROKER_CLOSE",
+    source: normalized || "UNKNOWN",
+  };
+}
+
+async function enrichMissingCapitalPositionClose(params: {
+  dealId: string | null;
+  side: "long" | "short" | null;
+  updatedAtMs: number;
+  nowTs: number;
+}): Promise<{
+  rMultiple: number;
+  pnlUsd: number | null;
+  reasonCodes: string[];
+  rawPayload: Record<string, unknown>;
+}> {
+  const base = {
+    rMultiple: 0,
+    pnlUsd: null,
+    reasonCodes: ["SCALP_V2_RECONCILE_CLOSE"],
+    rawPayload: {},
+  };
+  const dealId = String(params.dealId || "").trim();
+  if (!dealId) return base;
+  const fromTsMs = Math.max(
+    0,
+    Math.min(params.updatedAtMs, params.nowTs) - 24 * 60 * 60 * 1000,
+  );
+  const activities = await fetchCapitalDealActivityHistory({
+    dealId,
+    fromTsMs,
+    toTsMs: params.nowTs + 5 * 60 * 1000,
+    detailed: true,
+  }).catch(() => []);
+  const closeActivity =
+    activities.find((row) => {
+      const source = normalizeBrokerText(row.source);
+      const status = normalizeBrokerText(row.status);
+      return (
+        status === "ACCEPTED" &&
+        source !== "" &&
+        source !== "USER" &&
+        source !== "UNKNOWN"
+      );
+    }) ||
+    activities.find((row) => normalizeBrokerText(row.status) === "ACCEPTED") ||
+    null;
+  if (!closeActivity) return base;
+
+  const classification = classifyCapitalCloseSource(closeActivity.source || "");
+  let rMultiple = computeRMultipleFromCapitalCloseActivity({
+    side: params.side,
+    details: closeActivity.details,
+  });
+  if (rMultiple === null && classification.reasonCode === "SCALP_V2_RECONCILE_TP") {
+    rMultiple = 1;
+  } else if (
+    rMultiple === null &&
+    classification.reasonCode === "SCALP_V2_RECONCILE_SL"
+  ) {
+    rMultiple = -1;
+  }
+
+  return {
+    rMultiple: Number.isFinite(Number(rMultiple)) ? Number(rMultiple) : 0,
+    pnlUsd: null,
+    reasonCodes: [
+      "SCALP_V2_RECONCILE_CLOSE",
+      "SCALP_V2_RECONCILE_BROKER_HISTORY",
+      classification.reasonCode,
+    ],
+    rawPayload: {
+      capitalActivity: {
+        dateUtcMs: closeActivity.dateUtcMs,
+        epic: closeActivity.epic,
+        dealId: closeActivity.dealId,
+        source: classification.source,
+        type: closeActivity.type,
+        status: closeActivity.status,
+        details: closeActivity.details,
+      },
+    },
+  };
+}
+
 export async function runScalpV2ReconcileJob(): Promise<ScalpV2JobResult> {
   const owner = lockOwner("reconcile");
   const claimed = await claimScalpV2Job({ jobKind: "reconcile", lockOwner: owner });
@@ -6180,6 +6328,20 @@ export async function runScalpV2ReconcileJob(): Promise<ScalpV2JobResult> {
       }
 
       try {
+        const closeEnrichment =
+          position.venue === "capital"
+            ? await enrichMissingCapitalPositionClose({
+                dealId: position.dealId,
+                side: position.side,
+                updatedAtMs: position.updatedAtMs,
+                nowTs: nowMs(),
+              })
+            : {
+                rMultiple: 0,
+                pnlUsd: null,
+                reasonCodes: ["SCALP_V2_RECONCILE_CLOSE"],
+                rawPayload: {},
+              };
         await appendScalpV2ExecutionEvent(
           buildEvent({
             deploymentId: position.deploymentId,
@@ -6189,14 +6351,15 @@ export async function runScalpV2ReconcileJob(): Promise<ScalpV2JobResult> {
             tuneId: "unknown",
             entrySessionProfile: "berlin",
             eventType: "reconcile_close",
-            reasonCodes: ["SCALP_V2_RECONCILE_CLOSE"],
+            reasonCodes: closeEnrichment.reasonCodes,
             sourceOfTruth: "reconciler",
             rawPayload: {
               reason: "broker_position_missing",
               dealId: position.dealId,
               dealReference: position.dealReference,
-              rMultiple: 0,
-              pnlUsd: null,
+              rMultiple: closeEnrichment.rMultiple,
+              pnlUsd: closeEnrichment.pnlUsd,
+              ...closeEnrichment.rawPayload,
             },
           }),
         );

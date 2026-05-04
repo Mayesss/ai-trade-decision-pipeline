@@ -117,6 +117,17 @@ export type CapitalOpenPositionSnapshot = {
   updatedAtMs: number;
 };
 
+export type CapitalDealActivityRow = {
+  dateUtcMs: number | null;
+  epic: string | null;
+  dealId: string | null;
+  source: string | null;
+  type: string | null;
+  status: string | null;
+  details: Record<string, unknown>;
+  raw: Record<string, unknown>;
+};
+
 export type CapitalPositionOwnershipMatch =
   | "dealId"
   | "dealReference"
@@ -603,6 +614,54 @@ function extractRows<T>(payload: any, keys: string[]): T[] {
   if (Array.isArray(payload)) return payload as T[];
   if (Array.isArray(payload?.data)) return payload.data as T[];
   return [];
+}
+
+function formatCapitalHistoryDateUtc(tsMs: number): string {
+  const safe = Number.isFinite(tsMs) && tsMs > 0 ? Math.floor(tsMs) : Date.now();
+  return new Date(safe).toISOString().slice(0, 19);
+}
+
+function normalizeCapitalActivityRow(row: any): CapitalDealActivityRow {
+  const details =
+    row?.details && typeof row.details === "object" && !Array.isArray(row.details)
+      ? row.details
+      : {};
+  return {
+    dateUtcMs: toIsoTimestampMs(row?.dateUTC ?? row?.dateUtc ?? row?.date),
+    epic: normalizeCapitalText(row?.epic),
+    dealId: String(row?.dealId || "").trim() || null,
+    source: normalizeCapitalText(row?.source),
+    type: normalizeCapitalText(row?.type),
+    status: normalizeCapitalText(row?.status),
+    details,
+    raw: row && typeof row === "object" && !Array.isArray(row) ? row : {},
+  };
+}
+
+export async function fetchCapitalDealActivityHistory(params: {
+  dealId?: string | null;
+  fromTsMs?: number;
+  toTsMs?: number;
+  detailed?: boolean;
+}): Promise<CapitalDealActivityRow[]> {
+  const dealId = String(params.dealId || "").trim();
+  if (!dealId) return [];
+  const now = Date.now();
+  const toTsMs = Number.isFinite(Number(params.toTsMs))
+    ? Math.floor(Number(params.toTsMs))
+    : now;
+  const fromTsMs = Number.isFinite(Number(params.fromTsMs))
+    ? Math.floor(Number(params.fromTsMs))
+    : toTsMs - 24 * 60 * 60 * 1000;
+  const payload = await capitalFetch("GET", "/api/v1/history/activity", {
+    dealId,
+    from: formatCapitalHistoryDateUtc(fromTsMs),
+    to: formatCapitalHistoryDateUtc(toTsMs),
+    detailed: params.detailed === false ? "false" : "true",
+  });
+  return extractRows<any>(payload, ["activities", "activity", "data"]).map(
+    normalizeCapitalActivityRow,
+  );
 }
 
 function parseCapitalCandles(payload: any): any[] {
