@@ -4,6 +4,7 @@ import {
   fetchCapitalDealActivityHistory,
   fetchCapitalOpenPositionSnapshots,
 } from "../capital";
+import { bitgetFetch, resolveProductType } from "../bitget";
 import { loadScalpCandleHistoryInRange } from "../scalp/candleHistory";
 import { pipSizeForScalpSymbol } from "../scalp/marketData";
 import { loadScalpSymbolMarketMetadataBulk } from "../scalp/symbolMarketMetadataStore";
@@ -1885,6 +1886,7 @@ function buildEvent(params: {
   tuneId: string;
   entrySessionProfile: ScalpV2Session;
   eventType: ScalpV2ExecutionEvent["eventType"];
+  tsMs?: number;
   reasonCodes?: string[];
   brokerRef?: string | null;
   rawPayload?: Record<string, unknown>;
@@ -1892,7 +1894,9 @@ function buildEvent(params: {
 }): ScalpV2ExecutionEvent {
   return {
     id: crypto.randomUUID(),
-    tsMs: nowMs(),
+    tsMs: Number.isFinite(Number(params.tsMs)) && Number(params.tsMs) > 0
+      ? Math.floor(Number(params.tsMs))
+      : nowMs(),
     deploymentId: params.deploymentId,
     venue: params.venue,
     symbol: params.symbol,
@@ -6149,6 +6153,196 @@ function normalizeBrokerText(value: unknown): string {
     .toUpperCase();
 }
 
+function toFiniteOrNull(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function extractRowsFromBitgetHistory(payload: unknown): Record<string, unknown>[] {
+  const row = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  const candidates = [
+    row.entrustedList,
+    row.fillList,
+    row.orderList,
+    row.list,
+    row.data,
+    payload,
+  ];
+  for (const value of candidates) {
+    if (Array.isArray(value)) return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
+  }
+  return [];
+}
+
+async function fetchBitgetOrderHistory(params: {
+  symbol: string;
+  fromTsMs: number;
+  toTsMs: number;
+}): Promise<Record<string, unknown>[]> {
+  const symbol = String(params.symbol || "").trim().toUpperCase();
+  if (!symbol) return [];
+  const payload = await bitgetFetch("GET", "/api/v2/mix/order/orders-history", {
+    productType: resolveProductType(),
+    symbol,
+    startTime: String(Math.max(0, Math.floor(params.fromTsMs))),
+    endTime: String(Math.max(0, Math.floor(params.toTsMs))),
+    limit: 100,
+  });
+  return extractRowsFromBitgetHistory(payload);
+}
+
+function classifyBitgetClose(params: {
+  entry: Record<string, unknown> | null;
+  close: Record<string, unknown>;
+  side: "long" | "short" | null;
+}): { reasonCode: string; source: string } {
+  const source = normalizeBrokerText(params.close.enterPointSource);
+  const closePrice = toFiniteOrNull(params.close.priceAvg) ?? toFiniteOrNull(params.close.price);
+  const stop = toFiniteOrNull(params.entry?.presetStopLossPrice);
+  const takeProfit = toFiniteOrNull(params.entry?.presetStopSurplusPrice);
+  if (closePrice !== null && stop !== null) {
+    const nearStop = Math.abs(closePrice - stop) <= Math.max(0.02, Math.abs(stop) * 0.0015);
+    if (nearStop) return { reasonCode: "SCALP_V2_RECONCILE_SL", source: source || "SYS" };
+  }
+  if (closePrice !== null && takeProfit !== null) {
+    const nearTakeProfit = Math.abs(closePrice - takeProfit) <= Math.max(0.02, Math.abs(takeProfit) * 0.0015);
+    if (nearTakeProfit) return { reasonCode: "SCALP_V2_RECONCILE_TP", source: source || "SYS" };
+  }
+  if (source === "SYS") return { reasonCode: "SCALP_V2_RECONCILE_BROKER_CLOSE", source };
+  return { reasonCode: "SCALP_V2_RECONCILE_MANUAL_CLOSE", source: source || "UNKNOWN" };
+}
+
+function computeRMultipleFromBitgetOrders(params: {
+  side: "long" | "short" | null;
+  entry: Record<string, unknown> | null;
+  close: Record<string, unknown>;
+}): number | null {
+  if (params.side !== "long" && params.side !== "short") return null;
+  const entryPrice = toFiniteOrNull(params.entry?.priceAvg) ?? toFiniteOrNull(params.entry?.price);
+  const exitPrice = toFiniteOrNull(params.close.priceAvg) ?? toFiniteOrNull(params.close.price);
+  const stop = toFiniteOrNull(params.entry?.presetStopLossPrice);
+  if (
+    !(entryPrice !== null && entryPrice > 0) ||
+    !(exitPrice !== null && exitPrice > 0) ||
+    !(stop !== null && stop > 0)
+  ) {
+    return null;
+  }
+  const riskAbs = params.side === "long" ? entryPrice - stop : stop - entryPrice;
+  if (!(Number.isFinite(riskAbs) && riskAbs > 0)) return null;
+  const pnlAbs = params.side === "long" ? exitPrice - entryPrice : entryPrice - exitPrice;
+  const r = pnlAbs / riskAbs;
+  return Number.isFinite(r) ? r : null;
+}
+
+async function enrichMissingBitgetPositionClose(params: {
+  symbol: string;
+  side: "long" | "short" | null;
+  dealReference: string | null;
+  updatedAtMs: number;
+  nowTs: number;
+}): Promise<{
+  rMultiple: number;
+  pnlUsd: number | null;
+  reasonCodes: string[];
+  rawPayload: Record<string, unknown>;
+  brokerRef: string | null;
+  tsExitMs: number | null;
+}> {
+  const base = {
+    rMultiple: 0,
+    pnlUsd: null,
+    reasonCodes: ["SCALP_V2_RECONCILE_CLOSE"],
+    rawPayload: {},
+    brokerRef: null,
+    tsExitMs: null,
+  };
+  const fromTsMs = Math.max(
+    0,
+    Math.min(params.updatedAtMs, params.nowTs) - 24 * 60 * 60 * 1000,
+  );
+  const orders = await fetchBitgetOrderHistory({
+    symbol: params.symbol,
+    fromTsMs,
+    toTsMs: params.nowTs + 5 * 60 * 1000,
+  }).catch(() => []);
+  if (!orders.length) return base;
+
+  const sorted = orders
+    .slice()
+    .sort((a, b) => Number(a.cTime || a.uTime || 0) - Number(b.cTime || b.uTime || 0));
+  const entry =
+    sorted.find((row) => {
+      const clientOid = String(row.clientOid || "").trim();
+      return params.dealReference && clientOid === params.dealReference;
+    }) ||
+    sorted.find((row) => {
+      const reduceOnly = normalizeBrokerText(row.reduceOnly);
+      const source = normalizeBrokerText(row.enterPointSource);
+      return reduceOnly !== "YES" && source === "API";
+    }) ||
+    null;
+  const entryTs = Number(entry?.cTime || entry?.uTime || params.updatedAtMs || 0);
+  const close = sorted.find((row) => {
+    const reduceOnly = normalizeBrokerText(row.reduceOnly);
+    const ts = Number(row.cTime || row.uTime || 0);
+    return reduceOnly === "YES" && Number.isFinite(ts) && ts >= Math.max(0, entryTs - 1_000);
+  });
+  if (!close) return base;
+
+  const classification = classifyBitgetClose({ entry, close, side: params.side });
+  const rMultiple = computeRMultipleFromBitgetOrders({
+    side: params.side,
+    entry,
+    close,
+  });
+  const pnlUsd = toFiniteOrNull(close.totalProfits);
+  const tsExitMsRaw = Number(close.uTime || close.cTime || 0);
+  const tsExitMs = Number.isFinite(tsExitMsRaw) && tsExitMsRaw > 0 ? Math.floor(tsExitMsRaw) : null;
+  return {
+    rMultiple: Number.isFinite(Number(rMultiple)) ? Number(rMultiple) : 0,
+    pnlUsd,
+    reasonCodes: [
+      "SCALP_V2_RECONCILE_CLOSE",
+      "SCALP_V2_RECONCILE_BROKER_HISTORY",
+      classification.reasonCode,
+    ],
+    rawPayload: {
+      bitgetOrders: {
+        entry: entry
+          ? {
+              orderId: entry.orderId,
+              clientOid: entry.clientOid,
+              side: entry.side,
+              tradeSide: entry.tradeSide,
+              priceAvg: entry.priceAvg,
+              baseVolume: entry.baseVolume ?? entry.size,
+              presetStopLossPrice: entry.presetStopLossPrice,
+              presetStopSurplusPrice: entry.presetStopSurplusPrice,
+              cTime: entry.cTime,
+              uTime: entry.uTime,
+            }
+          : null,
+        close: {
+          orderId: close.orderId,
+          clientOid: close.clientOid,
+          side: close.side,
+          tradeSide: close.tradeSide,
+          priceAvg: close.priceAvg,
+          baseVolume: close.baseVolume ?? close.size,
+          totalProfits: close.totalProfits,
+          reduceOnly: close.reduceOnly,
+          enterPointSource: classification.source,
+          cTime: close.cTime,
+          uTime: close.uTime,
+        },
+      },
+    },
+    brokerRef: String(close.orderId || "").trim() || null,
+    tsExitMs,
+  };
+}
+
 function computeRMultipleFromCapitalCloseActivity(params: {
   side: "long" | "short" | null;
   details: Record<string, unknown>;
@@ -6213,12 +6407,16 @@ async function enrichMissingCapitalPositionClose(params: {
   pnlUsd: number | null;
   reasonCodes: string[];
   rawPayload: Record<string, unknown>;
+  brokerRef: string | null;
+  tsExitMs: number | null;
 }> {
   const base = {
     rMultiple: 0,
     pnlUsd: null,
     reasonCodes: ["SCALP_V2_RECONCILE_CLOSE"],
     rawPayload: {},
+    brokerRef: null,
+    tsExitMs: null,
   };
   const dealId = String(params.dealId || "").trim();
   if (!dealId) return base;
@@ -6280,6 +6478,8 @@ async function enrichMissingCapitalPositionClose(params: {
         details: closeActivity.details,
       },
     },
+    brokerRef: closeActivity.dealId || dealId || null,
+    tsExitMs: closeActivity.dateUtcMs || null,
   };
 }
 
@@ -6336,21 +6536,24 @@ export async function runScalpV2ReconcileJob(): Promise<ScalpV2JobResult> {
                 updatedAtMs: position.updatedAtMs,
                 nowTs: nowMs(),
               })
-            : {
-                rMultiple: 0,
-                pnlUsd: null,
-                reasonCodes: ["SCALP_V2_RECONCILE_CLOSE"],
-                rawPayload: {},
-              };
+            : await enrichMissingBitgetPositionClose({
+                symbol: position.symbol,
+                side: position.side,
+                dealReference: position.dealReference,
+                updatedAtMs: position.updatedAtMs,
+                nowTs: nowMs(),
+              });
         await appendScalpV2ExecutionEvent(
           buildEvent({
             deploymentId: position.deploymentId,
             venue: position.venue,
             symbol: position.symbol,
-            strategyId: "unknown",
-            tuneId: "unknown",
-            entrySessionProfile: "berlin",
+            strategyId: position.strategyId,
+            tuneId: position.tuneId,
+            entrySessionProfile: position.entrySessionProfile,
             eventType: "reconcile_close",
+            tsMs: closeEnrichment.tsExitMs || undefined,
+            brokerRef: closeEnrichment.brokerRef || position.dealId || position.dealReference,
             reasonCodes: closeEnrichment.reasonCodes,
             sourceOfTruth: "reconciler",
             rawPayload: {

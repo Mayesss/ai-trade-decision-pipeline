@@ -2287,6 +2287,9 @@ export async function listScalpV2OpenPositions(): Promise<
     deploymentId: string;
     venue: ScalpV2Venue;
     symbol: string;
+    strategyId: string;
+    tuneId: string;
+    entrySessionProfile: ScalpV2Session;
     side: "long" | "short" | null;
     dealId: string | null;
     dealReference: string | null;
@@ -2300,6 +2303,9 @@ export async function listScalpV2OpenPositions(): Promise<
       deploymentId: string;
       venue: string;
       symbol: string;
+      strategyId: string | null;
+      tuneId: string | null;
+      entrySessionProfile: string | null;
       side: string | null;
       dealId: string | null;
       dealReference: string | null;
@@ -2307,21 +2313,29 @@ export async function listScalpV2OpenPositions(): Promise<
     }>
   >(sql`
     SELECT
-      deployment_id AS "deploymentId",
-      venue,
-      symbol,
-      side,
-      deal_id AS "dealId",
-      deal_reference AS "dealReference",
-      updated_at AS "updatedAt"
-    FROM scalp_v2_positions
-    WHERE status = 'open'
-    ORDER BY updated_at DESC;
+      p.deployment_id AS "deploymentId",
+      p.venue,
+      p.symbol,
+      d.strategy_id AS "strategyId",
+      d.tune_id AS "tuneId",
+      d.entry_session_profile AS "entrySessionProfile",
+      p.side,
+      p.deal_id AS "dealId",
+      p.deal_reference AS "dealReference",
+      p.updated_at AS "updatedAt"
+    FROM scalp_v2_positions p
+    LEFT JOIN scalp_v2_deployments d
+      ON d.deployment_id = p.deployment_id
+    WHERE p.status = 'open'
+    ORDER BY p.updated_at DESC;
   `);
   return rows.map((row) => ({
     deploymentId: String(row.deploymentId || "").trim(),
     venue: normalizeVenue(row.venue),
     symbol: String(row.symbol || "").trim().toUpperCase(),
+    strategyId: String(row.strategyId || "unknown").trim() || "unknown",
+    tuneId: String(row.tuneId || "unknown").trim() || "unknown",
+    entrySessionProfile: normalizeSession(row.entrySessionProfile),
     side: row.side === "long" || row.side === "short" ? row.side : null,
     dealId: row.dealId || null,
     dealReference: row.dealReference || null,
