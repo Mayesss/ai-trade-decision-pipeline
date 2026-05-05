@@ -2041,6 +2041,7 @@ export async function appendScalpV2ExecutionEvent(
   const closeType = toLedgerCloseTypeFromEvent(event.eventType, event.reasonCodes);
   if (!closeType) return;
 
+  const rawPnlUsd = event.rawPayload.pnlUsd;
   await appendScalpV2LedgerRow({
     id: crypto.randomUUID(),
     tsExitMs: event.tsMs,
@@ -2055,8 +2056,11 @@ export async function appendScalpV2ExecutionEvent(
     closeType,
     rMultiple: Number(event.rawPayload.rMultiple || 0),
     pnlUsd:
-      Number.isFinite(Number(event.rawPayload.pnlUsd))
-        ? Number(event.rawPayload.pnlUsd)
+      rawPnlUsd !== null &&
+      rawPnlUsd !== undefined &&
+      rawPnlUsd !== "" &&
+      Number.isFinite(Number(rawPnlUsd))
+        ? Number(rawPnlUsd)
         : null,
     sourceOfTruth: event.sourceOfTruth,
     reasonCodes: event.reasonCodes,

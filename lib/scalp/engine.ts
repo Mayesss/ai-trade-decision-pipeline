@@ -503,20 +503,6 @@ export async function runScalpExecuteCycle(opts: {
                     );
                 }
 
-                const reconciled = await reconcileScalpBrokerPosition({
-                    adapter: venueAdapter,
-                    state: nextState,
-                    market,
-                    dryRun,
-                    maxOpenPositionsPerSymbol: cfg.risk.maxOpenPositionsPerSymbol,
-                    snapshots: opts.brokerPositionSnapshots,
-                    skipSnapshotFetch: opts.skipBrokerSnapshotFetch,
-                });
-                nextState = reconciled.state;
-                phaseReasonCodes.push(...reconciled.reasonCodes);
-                const brokerPositionGuardBlocked =
-                    reconciled.reasonCodes.includes('BROKER_RECONCILE_UNAVAILABLE') ||
-                    reconciled.reasonCodes.includes('BROKER_SYMBOL_POSITION_LIMIT_REACHED');
                 const hadOpenTradeAtStartOfManage = Boolean(nextState.trade);
                 const tradeBeforeManage = hadOpenTradeAtStartOfManage && nextState.trade ? { ...nextState.trade } : null;
                 const priorRealizedR = Number.isFinite(Number(nextState.stats.realizedR)) ? Number(nextState.stats.realizedR) : 0;
@@ -551,6 +537,20 @@ export async function runScalpExecuteCycle(opts: {
                         reasonCodes: dedupeReasonCodes(managed.reasonCodes),
                     });
                 }
+                const reconciled = await reconcileScalpBrokerPosition({
+                    adapter: venueAdapter,
+                    state: nextState,
+                    market,
+                    dryRun,
+                    maxOpenPositionsPerSymbol: cfg.risk.maxOpenPositionsPerSymbol,
+                    snapshots: opts.brokerPositionSnapshots,
+                    skipSnapshotFetch: opts.skipBrokerSnapshotFetch,
+                });
+                nextState = reconciled.state;
+                phaseReasonCodes.push(...reconciled.reasonCodes);
+                const brokerPositionGuardBlocked =
+                    reconciled.reasonCodes.includes('BROKER_RECONCILE_UNAVAILABLE') ||
+                    reconciled.reasonCodes.includes('BROKER_SYMBOL_POSITION_LIMIT_REACHED');
 
                 const strategyEntryIntent = phase.entryIntent ?? null;
                 // Skip legacy fallback for model-guided composer — it manages
