@@ -6430,18 +6430,33 @@ async function enrichMissingCapitalPositionClose(params: {
     toTsMs: params.nowTs + 5 * 60 * 1000,
     detailed: true,
   }).catch(() => []);
+  const sortedActivities = activities
+    .slice()
+    .sort((a, b) => Number(b.dateUtcMs || 0) - Number(a.dateUtcMs || 0));
   const closeActivity =
-    activities.find((row) => {
+    sortedActivities.find((row) => {
       const source = normalizeBrokerText(row.source);
       const status = normalizeBrokerText(row.status);
       return (
         status === "ACCEPTED" &&
+        row.type === "POSITION" &&
+        row.details &&
+        Number.isFinite(Number(row.details.openPrice ?? row.details.openLevel)) &&
         source !== "" &&
         source !== "USER" &&
         source !== "UNKNOWN"
       );
     }) ||
-    activities.find((row) => normalizeBrokerText(row.status) === "ACCEPTED") ||
+    sortedActivities.find((row) => {
+      const status = normalizeBrokerText(row.status);
+      return (
+        status === "ACCEPTED" &&
+        row.type === "POSITION" &&
+        row.details &&
+        Number.isFinite(Number(row.details.openPrice ?? row.details.openLevel))
+      );
+    }) ||
+    sortedActivities.find((row) => normalizeBrokerText(row.status) === "ACCEPTED") ||
     null;
   if (!closeActivity) return base;
 
