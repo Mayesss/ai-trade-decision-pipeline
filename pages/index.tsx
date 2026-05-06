@@ -7,7 +7,6 @@ import {
   type ColDef,
 } from "ag-grid-community";
 import vercelConfig from "../vercel.json";
-import { inScalpEntrySessionProfileWindow } from "../lib/scalp/sessions";
 import {
   Activity,
   BarChart3,
@@ -597,7 +596,7 @@ type ScalpCandidateStatusUi =
 type ScalpCandidateGridStateUi = ScalpCandidateStatusUi | "enabled" | "all";
 type ScalpCandidatesPageRequest = {
   offset: number;
-  session: ScalpEntrySessionProfileUi;
+  session: ScalpEntrySessionFilterUi;
   stateFilter: ScalpCandidateGridStateUi;
   reset?: boolean;
 };
@@ -697,6 +696,7 @@ type ScalpEntrySessionProfileUi =
   | "newyork"
   | "pacific"
   | "sydney";
+type ScalpEntrySessionFilterUi = "all" | ScalpEntrySessionProfileUi;
 
 const CURRENCY_SYMBOL = "₮"; // Tether-style symbol
 const THEME_PREFERENCE_STORAGE_KEY = "dashboard_theme_preference";
@@ -834,56 +834,17 @@ function normalizeScalpCandidateStatusUi(value: unknown): ScalpCandidateStatusUi
 const ADMIN_SECRET_STORAGE_KEY = "admin_access_secret";
 const ADMIN_AUTH_TIMEOUT_MS = 4000;
 const STRATEGY_MODE_STORAGE_KEY = "strategy_mode";
-const SCALP_ENTRY_SESSION_STORAGE_KEY = "scalp_entry_session_profile";
-type ScalpSessionTimelineColorMeta = {
-  id: ScalpEntrySessionProfileUi;
+const SCALP_ENTRY_SESSION_STORAGE_KEY = "scalp_entry_session_filter_v2";
+const SCALP_ENTRY_SESSION_FILTER_OPTIONS: Array<{
+  id: ScalpEntrySessionFilterUi;
   label: string;
-  lightFill: string;
-  darkFill: string;
-  lightBorder: string;
-  darkBorder: string;
-};
-const SCALP_SESSION_TIMELINE_COLORS: ScalpSessionTimelineColorMeta[] = [
-  {
-    id: "tokyo",
-    label: "Tokyo",
-    lightFill: "rgba(14, 165, 233, 0.35)",
-    darkFill: "rgba(56, 189, 248, 0.28)",
-    lightBorder: "rgba(2, 132, 199, 0.72)",
-    darkBorder: "rgba(56, 189, 248, 0.62)",
-  },
-  {
-    id: "berlin",
-    label: "Berlin",
-    lightFill: "rgba(16, 185, 129, 0.3)",
-    darkFill: "rgba(52, 211, 153, 0.24)",
-    lightBorder: "rgba(5, 150, 105, 0.7)",
-    darkBorder: "rgba(52, 211, 153, 0.58)",
-  },
-  {
-    id: "newyork",
-    label: "New York",
-    lightFill: "rgba(244, 63, 94, 0.28)",
-    darkFill: "rgba(251, 113, 133, 0.24)",
-    lightBorder: "rgba(225, 29, 72, 0.7)",
-    darkBorder: "rgba(251, 113, 133, 0.56)",
-  },
-  {
-    id: "pacific",
-    label: "Pacific",
-    lightFill: "rgba(139, 92, 246, 0.28)",
-    darkFill: "rgba(167, 139, 250, 0.24)",
-    lightBorder: "rgba(124, 58, 237, 0.7)",
-    darkBorder: "rgba(167, 139, 250, 0.56)",
-  },
-  {
-    id: "sydney",
-    label: "Sydney",
-    lightFill: "rgba(249, 115, 22, 0.28)",
-    darkFill: "rgba(251, 146, 60, 0.24)",
-    lightBorder: "rgba(234, 88, 12, 0.7)",
-    darkBorder: "rgba(251, 146, 60, 0.56)",
-  },
+}> = [
+  { id: "all", label: "All" },
+  { id: "tokyo", label: "Tokyo" },
+  { id: "berlin", label: "Berlin" },
+  { id: "newyork", label: "New York" },
+  { id: "pacific", label: "Pacific" },
+  { id: "sydney", label: "Sydney" },
 ];
 const SCALP_SESSION_TIMELINE_TICK_MINUTES = [0, 360, 720, 1080, 1440];
 
@@ -934,8 +895,7 @@ type ScalpBrokerTimelineBlock = {
   lane: number;
 };
 
-type ScalpBrokerTimelineVenueRow = {
-  venue: ScalpVenueUi;
+type ScalpBrokerTimeline = {
   blocks: ScalpBrokerTimelineBlock[];
   laneCount: number;
   activeCount: number;
@@ -1075,7 +1035,7 @@ function formatScalpV3TemporalLabel(
   return parts.length ? parts.join(" · ") : "full session";
 }
 
-function collectScalpV3EntryMinutesUtc(params: {
+function collectScalpV3EntryMinutesForBerlinUi(params: {
   session: ScalpEntrySessionProfileUi;
   filter: Record<string, any>;
 }): { minutes: number[]; stepMinutes: number } {
@@ -1125,7 +1085,8 @@ function collectScalpV3EntryMinutesUtc(params: {
         const slotIndex = Math.floor(minuteOffset / slotMinutes);
         if (!allowedSlots.includes(slotIndex)) continue;
       }
-      minutes.add(minute);
+      const berlin = readClockPartsInTimeZone(tsMs, BERLIN_TZ);
+      minutes.add(berlin.hh * 60 + berlin.mm);
     }
   }
   return { minutes: Array.from(minutes).sort((a, b) => a - b), stepMinutes };
@@ -1180,10 +1141,10 @@ function assignScalpTimelineLanes(
     });
 }
 
-function buildScalpBrokerTimelineRows(
+function buildScalpBrokerTimeline(
   deployments: ScalpOpsDeploymentRow[],
-): ScalpBrokerTimelineVenueRow[] {
-  const byVenue = new Map<ScalpVenueUi, Omit<ScalpBrokerTimelineBlock, "lane">[]>();
+): ScalpBrokerTimeline | null {
+  const rawBlocks: Array<Omit<ScalpBrokerTimelineBlock, "lane">> = [];
   for (const row of deployments) {
     const session =
       normalizeScalpEntrySessionProfileUi(row.entrySessionProfile) ||
@@ -1198,7 +1159,7 @@ function buildScalpBrokerTimelineRows(
     const status = scalpBrokerSeatStatusUi(row);
     const tone = scalpBrokerTimelineTone(status);
     const reasonCodes = scalpEntryBlockReasonCodesUi(row);
-    const { minutes, stepMinutes } = collectScalpV3EntryMinutesUtc({
+    const { minutes, stepMinutes } = collectScalpV3EntryMinutesForBerlinUi({
       session,
       filter,
     });
@@ -1237,27 +1198,21 @@ function buildScalpBrokerTimelineRows(
         widthPct: Math.max(1.2, ((group.endMinute - group.startMinute) / 1440) * 100),
       };
     });
-    const venueBlocks = byVenue.get(venue) || [];
-    venueBlocks.push(...blocks);
-    byVenue.set(venue, venueBlocks);
+    rawBlocks.push(...blocks);
   }
-  return (["capital", "bitget"] as ScalpVenueUi[])
-    .map((venue) => {
-      const blocks = assignScalpTimelineLanes(byVenue.get(venue) || []);
-      const laneCount = blocks.reduce(
-        (maxLane, block) => Math.max(maxLane, block.lane + 1),
-        0,
-      );
-      return {
-        venue,
-        blocks,
-        laneCount,
-        activeCount: blocks.filter((block) => block.tone === "active").length,
-        managementCount: blocks.filter((block) => block.tone === "management").length,
-        blockedCount: blocks.filter((block) => block.tone === "blocked").length,
-      };
-    })
-    .filter((row) => row.blocks.length > 0);
+  const blocks = assignScalpTimelineLanes(rawBlocks);
+  if (!blocks.length) return null;
+  const laneCount = blocks.reduce(
+    (maxLane, block) => Math.max(maxLane, block.lane + 1),
+    0,
+  );
+  return {
+    blocks,
+    laneCount,
+    activeCount: blocks.filter((block) => block.tone === "active").length,
+    managementCount: blocks.filter((block) => block.tone === "management").length,
+    blockedCount: blocks.filter((block) => block.tone === "blocked").length,
+  };
 }
 
 function toDayKeyFromMs(tsMs: number): string {
@@ -1266,7 +1221,7 @@ function toDayKeyFromMs(tsMs: number): string {
 
 function toUiScalpSummaryFromV2(
   payloadRaw: unknown,
-  opts: { range: DashboardRangeKey; session: ScalpEntrySessionProfileUi },
+  opts: { range: DashboardRangeKey; session: ScalpEntrySessionFilterUi },
 ): ScalpSummaryResponse {
   const payload = asPlainObject(payloadRaw);
   const runtime = asPlainObject(payload.runtime);
@@ -1678,9 +1633,10 @@ function toUiScalpSummaryFromV2(
     );
   }
 
-  const selectedSession = String(opts.session || "")
+  const selectedSessionRaw = String(opts.session || "")
     .trim()
     .toLowerCase();
+  const selectedSession = selectedSessionRaw === "all" ? "" : selectedSessionRaw;
   const workerRows = candidatesRaw
     .filter((candidateRaw) => {
       if (!selectedSession) return true;
@@ -2073,64 +2029,6 @@ function readClockPartsInTimeZone(
     hh: hourRaw === 24 ? 0 : hourRaw,
     mm: read("minute", 0),
   };
-}
-
-function formatDayKeyFromClockParts(parts: TimeZoneClockParts): string {
-  return `${String(parts.y).padStart(4, "0")}-${String(parts.m).padStart(2, "0")}-${String(parts.d).padStart(2, "0")}`;
-}
-
-function parseTimelineDayKey(dayKey: string): { y: number; m: number; d: number } | null {
-  const match = String(dayKey || "")
-    .trim()
-    .match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!match) return null;
-  return {
-    y: Number(match[1]),
-    m: Number(match[2]),
-    d: Number(match[3]),
-  };
-}
-
-function parseTimelineClock(
-  clock: string,
-): { hh: number; mm: number } | null {
-  const match = String(clock || "")
-    .trim()
-    .match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
-  if (!match) return null;
-  return { hh: Number(match[1]), mm: Number(match[2]) };
-}
-
-function utcMsFromZonedDayClock(
-  dayKey: string,
-  clock: string,
-  timeZone: string,
-): number | null {
-  const parsedDay = parseTimelineDayKey(dayKey);
-  const parsedClock = parseTimelineClock(clock);
-  if (!parsedDay || !parsedClock) return null;
-  let guessMs = Date.UTC(
-    parsedDay.y,
-    parsedDay.m - 1,
-    parsedDay.d,
-    parsedClock.hh,
-    parsedClock.mm,
-    0,
-    0,
-  );
-  const targetDayInt = parsedDay.y * 10_000 + parsedDay.m * 100 + parsedDay.d;
-  const targetMinuteOfDay = parsedClock.hh * 60 + parsedClock.mm;
-  for (let i = 0; i < 6; i += 1) {
-    const local = readClockPartsInTimeZone(guessMs, timeZone);
-    const localDayInt = local.y * 10_000 + local.m * 100 + local.d;
-    const dayDelta =
-      localDayInt === targetDayInt ? 0 : localDayInt < targetDayInt ? 1 : -1;
-    const localMinuteOfDay = local.hh * 60 + local.mm;
-    const deltaMinutes = dayDelta * 1440 + (targetMinuteOfDay - localMinuteOfDay);
-    if (deltaMinutes === 0) break;
-    guessMs += deltaMinutes * 60_000;
-  }
-  return guessMs;
 }
 
 function formatTimelineMinuteLabel(minuteOfDay: number): string {
@@ -2590,7 +2488,7 @@ export default function Home() {
   const [dashboardRange, setDashboardRange] = useState<DashboardRangeKey>("7D");
   const [strategyMode, setStrategyMode] = useState<StrategyMode>("swing");
   const [scalpSession, setScalpSession] =
-    useState<ScalpEntrySessionProfileUi>("berlin");
+    useState<ScalpEntrySessionFilterUi>("all");
   const [scalpSummary, setScalpSummary] = useState<ScalpSummaryResponse | null>(
     null,
   );
@@ -2608,7 +2506,7 @@ export default function Home() {
   const scalpCandidatesLoadingRef = useRef(false);
   const scalpCandidatesPendingRequestRef =
     useRef<ScalpCandidatesPageRequest | null>(null);
-  const scalpCandidatesSessionRef = useRef<ScalpEntrySessionProfileUi>("berlin");
+  const scalpCandidatesSessionRef = useRef<ScalpEntrySessionFilterUi>("all");
   const scalpCandidateTotalsRequestIdRef = useRef(0);
   const scalpCandidatesStateFilterRef = useRef<ScalpCandidateGridStateUi>("evaluated");
   const scalpSummaryRawRef = useRef<Record<string, unknown> | null>(null);
@@ -3093,7 +2991,7 @@ export default function Home() {
 
   const loadScalpCandidatesPage = async (
     offset: number,
-    session: ScalpEntrySessionProfileUi,
+    session: ScalpEntrySessionFilterUi,
     stateFilter: ScalpCandidateGridStateUi,
     reset?: boolean,
   ) => {
@@ -3110,11 +3008,11 @@ export default function Home() {
     scalpCandidatesPendingRequestRef.current = null;
     try {
       const params = new URLSearchParams({
-        session,
         state: stateFilter,
         offset: String(offset),
         limit: "100",
       });
+      if (session !== "all") params.set("session", session);
       const res = await fetch(
         `/api/scalp/v2/dashboard/candidates?${params.toString()}`,
         { headers: buildAdminHeaders(), cache: "no-store" },
@@ -3162,7 +3060,7 @@ export default function Home() {
   };
 
   const loadScalpCandidateTotalsByState = async (
-    session: ScalpEntrySessionProfileUi,
+    session: ScalpEntrySessionFilterUi,
   ) => {
     const requestId = scalpCandidateTotalsRequestIdRef.current + 1;
     scalpCandidateTotalsRequestIdRef.current = requestId;
@@ -3172,11 +3070,11 @@ export default function Home() {
         SCALP_CANDIDATE_GRID_STATES.map(async (state) => {
           try {
             const params = new URLSearchParams({
-              session,
               state,
               offset: "0",
               limit: "1",
             });
+            if (session !== "all") params.set("session", session);
             const res = await fetch(
               `/api/scalp/v2/dashboard/candidates?${params.toString()}`,
               { headers: buildAdminHeaders(), cache: "no-store" },
@@ -3224,12 +3122,14 @@ export default function Home() {
     try {
       const params = new URLSearchParams({
         range: dashboardRange,
-        session: scalpSession,
         eventLimit: "240",
         ledgerLimit: "300",
-        deploymentLimit: "10",
+        deploymentLimit: "500",
+        runtimeDeploymentLimit: "80",
+        compactDeployments: "true",
         jobLimit: "20",
       });
+      if (scalpSession !== "all") params.set("session", scalpSession);
       if (!silent || force) {
         params.set("fresh", "true");
       }
@@ -3329,7 +3229,7 @@ export default function Home() {
     const invokePath = normalizeInvokePathForScalpCronNow(
       row.id,
       String(row.invokePath || "").trim(),
-      scalpSession,
+      scalpSession === "all" ? "berlin" : scalpSession,
     );
     if (!invokePath) {
       setScalpCronInvokeStateById((prev) => ({
@@ -3671,6 +3571,7 @@ export default function Home() {
       .trim()
       .toLowerCase();
     if (
+      stored === "all" ||
       stored === "berlin" ||
       stored === "tokyo" ||
       stored === "newyork" ||
@@ -4124,8 +4025,8 @@ export default function Home() {
       return a.tuneId.localeCompare(b.tuneId);
     });
   }, [scalpSummary?.deployments]);
-  const scalpBrokerTimelineRows = useMemo(
-    () => buildScalpBrokerTimelineRows(scalpRegistryDeployments),
+  const scalpBrokerTimeline = useMemo(
+    () => buildScalpBrokerTimeline(scalpRegistryDeployments),
     [scalpRegistryDeployments],
   );
 
@@ -5037,7 +4938,10 @@ export default function Home() {
     return `${fromIso} → ${toIso}`;
   };
   const scalpCronRuntimeById: Record<string, ScalpCronRuntimeMeta> =
-    buildScalpCronRuntimeMap(scalpCronNowMs, scalpSession);
+    buildScalpCronRuntimeMap(
+      scalpCronNowMs,
+      scalpSession === "all" ? "berlin" : scalpSession,
+    );
   const scalpCronRuntimeMeta = (id: string): ScalpCronRuntimeMeta =>
     scalpCronRuntimeById[id] || {
       expressions: [],
@@ -5338,62 +5242,6 @@ export default function Home() {
   const scalpWorkerJobsGridThemeClass = scalpDarkMode
     ? "ag-theme-quartz-dark scalp-grid-muted-dark"
     : "ag-theme-quartz";
-  const scalpBerlinClockParts = useMemo(
-    () => readClockPartsInTimeZone(scalpCronNowMs, BERLIN_TZ),
-    [scalpCronNowMs],
-  );
-  const scalpBerlinDayKey = useMemo(
-    () => formatDayKeyFromClockParts(scalpBerlinClockParts),
-    [scalpBerlinClockParts],
-  );
-  const scalpBerlinNowMinuteOfDay = useMemo(
-    () =>
-      Math.max(0, Math.min(1439, scalpBerlinClockParts.hh * 60 + scalpBerlinClockParts.mm)),
-    [scalpBerlinClockParts],
-  );
-  const scalpBerlinNowLabel = useMemo(
-    () =>
-      `${String(scalpBerlinClockParts.hh).padStart(2, "0")}:${String(
-        scalpBerlinClockParts.mm,
-      ).padStart(2, "0")}`,
-    [scalpBerlinClockParts],
-  );
-  const scalpBerlinDayStartMs = useMemo(() => {
-    const fromTz = utcMsFromZonedDayClock(scalpBerlinDayKey, "00:00", BERLIN_TZ);
-    if (typeof fromTz === "number" && Number.isFinite(fromTz)) return fromTz;
-    return scalpCronNowMs - scalpBerlinNowMinuteOfDay * 60_000;
-  }, [scalpBerlinDayKey, scalpCronNowMs, scalpBerlinNowMinuteOfDay]);
-  const scalpSessionTimelineTracks = useMemo(
-    () =>
-      SCALP_SESSION_TIMELINE_COLORS.map((meta) => {
-        const segments: Array<{ startMinute: number; endMinute: number }> = [];
-        let activeStart: number | null = null;
-        for (let minute = 0; minute < 1440; minute += 1) {
-          const tsMs = scalpBerlinDayStartMs + minute * 60_000;
-          const active = inScalpEntrySessionProfileWindow(tsMs, meta.id);
-          if (active && activeStart === null) {
-            activeStart = minute;
-            continue;
-          }
-          if (!active && activeStart !== null) {
-            segments.push({ startMinute: activeStart, endMinute: minute });
-            activeStart = null;
-          }
-        }
-        if (activeStart !== null) {
-          segments.push({ startMinute: activeStart, endMinute: 1440 });
-        }
-        return {
-          ...meta,
-          segments,
-        };
-      }),
-    [scalpBerlinDayStartMs],
-  );
-  const scalpSessionTimelineNowPct = useMemo(
-    () => (scalpBerlinNowMinuteOfDay / 1440) * 100,
-    [scalpBerlinNowMinuteOfDay],
-  );
   const scalpWorkerJobRankScore = (row: ScalpWorkerJobGridRow): number => {
     const forwardValidation = row.forwardValidation || null;
     const primaryExpectancy =
@@ -7084,119 +6932,6 @@ export default function Home() {
                 </button>
               </div>
             </div>
-            {strategyMode === "scalp" ? (
-              <div
-                className={`mt-3 w-full rounded-xl border p-2.5 ${
-                  resolvedTheme === "dark"
-                    ? "border-zinc-700 bg-zinc-900/85"
-                    : "border-slate-200 bg-slate-50"
-                }`}
-              >
-                <div
-                  className={`relative h-14 overflow-hidden rounded-lg border ${
-                    resolvedTheme === "dark"
-                      ? "border-zinc-700 bg-zinc-950"
-                      : "border-slate-300 bg-white"
-                  }`}
-                >
-                  {SCALP_SESSION_TIMELINE_TICK_MINUTES.map((minute) => (
-                    <div
-                      key={`header-timeline-grid-${minute}`}
-                      className={`pointer-events-none absolute inset-y-0 w-px ${
-                        resolvedTheme === "dark" ? "bg-zinc-700/90" : "bg-slate-200"
-                      }`}
-                      style={{ left: `${(minute / 1440) * 100}%` }}
-                    />
-                  ))}
-                  {scalpSessionTimelineTracks.map((track) =>
-                    track.segments.map((segment, segmentIndex) => {
-                      const startPct = (segment.startMinute / 1440) * 100;
-                      const widthPct =
-                        ((segment.endMinute - segment.startMinute) / 1440) * 100;
-                      const isActiveSession = scalpSession === track.id;
-                      return (
-                        <button
-                          type="button"
-                          key={`header-timeline-segment-${track.id}-${segmentIndex}`}
-                          onClick={() => {
-                            setScalpSession(track.id);
-                            scalpSummaryFetchedAtMsRef.current = 0;
-                          }}
-                          className={`absolute rounded-md border px-1.5 text-[10px] font-semibold transition ${
-                            resolvedTheme === "dark"
-                              ? "text-zinc-100 hover:brightness-110"
-                              : "text-slate-900 hover:brightness-95"
-                          } ${
-                            isActiveSession
-                              ? resolvedTheme === "dark"
-                                ? "z-10 ring-2 ring-white/90"
-                                : "z-10 ring-2 ring-black/85"
-                              : ""
-                          }`}
-                          style={{
-                            top: "20%",
-                            bottom: "20%",
-                            left: `${startPct}%`,
-                            width: `${widthPct}%`,
-                            backgroundColor:
-                              resolvedTheme === "dark"
-                                ? track.darkFill
-                                : track.lightFill,
-                            borderColor:
-                              resolvedTheme === "dark"
-                                ? track.darkBorder
-                                : track.lightBorder,
-                          }}
-                          aria-label={`Select ${track.label} session`}
-                          aria-pressed={isActiveSession}
-                          title={`${track.label}: ${formatTimelineMinuteLabel(
-                            segment.startMinute,
-                          )} - ${formatTimelineMinuteLabel(segment.endMinute)}`}
-                        >
-                          <span className="inline-flex h-full items-center truncate">
-                            {track.label}
-                          </span>
-                        </button>
-                      );
-                    }),
-                  )}
-                  <div
-                    className="pointer-events-none absolute inset-y-0 w-[2px]"
-                    style={{
-                      left: `calc(${scalpSessionTimelineNowPct}% - 1px)`,
-                      backgroundColor:
-                        resolvedTheme === "dark"
-                          ? "rgba(255, 255, 255, 0.96)"
-                          : "rgba(0, 0, 0, 0.94)",
-                      boxShadow:
-                        resolvedTheme === "dark"
-                          ? "0 0 0 1px rgba(255,255,255,0.2)"
-                          : "0 0 0 1px rgba(0,0,0,0.18)",
-                    }}
-                  />
-                </div>
-                <div
-                  className={`mt-1.5 grid grid-cols-5 text-[10px] ${
-                    resolvedTheme === "dark" ? "text-zinc-400" : "text-slate-500"
-                  }`}
-                >
-                  {SCALP_SESSION_TIMELINE_TICK_MINUTES.map((minute, idx) => (
-                    <span
-                      key={`header-timeline-tick-${minute}`}
-                      className={
-                        idx === 0
-                          ? "text-left"
-                          : idx === SCALP_SESSION_TIMELINE_TICK_MINUTES.length - 1
-                            ? "text-right"
-                            : "text-center"
-                      }
-                    >
-                      {formatTimelineMinuteLabel(minute)}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ) : null}
           </div>
 
           {error && (
@@ -7283,19 +7018,31 @@ export default function Home() {
                     </div>
                   ) : null}
 
-                  {scalpBrokerTimelineRows.length ? (
+                  {scalpBrokerTimeline ? (
                     <section className={`${scalpSectionShellClass} p-4`}>
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
                           <h3 className={`text-lg font-semibold ${scalpTextPrimaryClass}`}>
                             Broker Entry Seats
                           </h3>
-                          <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
-                            UTC entry windows by broker. Only green seats should
-                            open fresh trades; amber seats keep management alive.
-                          </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                          <span className={scalpTagNeutralClass}>
+                            Berlin time
+                          </span>
+                          <span className={scalpTagNeutralClass}>
+                            {scalpBrokerTimeline.activeCount} entry blocks
+                          </span>
+                          {scalpBrokerTimeline.managementCount ? (
+                            <span className={scalpTagNeutralClass}>
+                              {scalpBrokerTimeline.managementCount} management
+                            </span>
+                          ) : null}
+                          {scalpBrokerTimeline.blockedCount ? (
+                            <span className={scalpTagNeutralClass}>
+                              {scalpBrokerTimeline.blockedCount} blocked
+                            </span>
+                          ) : null}
                           {[
                             ["bg-emerald-500", "entry"],
                             ["bg-amber-400", "management"],
@@ -7316,116 +7063,92 @@ export default function Home() {
                           ))}
                         </div>
                       </div>
-                      <div className="mt-4 space-y-4">
-                        {scalpBrokerTimelineRows.map((row) => {
-                          const iconSrc = SCALP_VENUE_ICON_SRC[row.venue];
-                          const rowHeight = Math.max(94, 52 + row.laneCount * 30);
+                      <div
+                        className={`relative mt-4 overflow-hidden rounded-lg border ${
+                          scalpDarkMode
+                            ? "border-zinc-700 bg-zinc-950/60"
+                            : "border-slate-200 bg-white"
+                        }`}
+                        style={{
+                          height: `${Math.max(94, 52 + scalpBrokerTimeline.laneCount * 30)}px`,
+                        }}
+                      >
+                        {SCALP_SESSION_TIMELINE_TICK_MINUTES.map((minute) => (
+                          <div
+                            key={`broker-seat-tick-${minute}`}
+                            className={`absolute top-0 h-full border-l ${
+                              scalpDarkMode ? "border-zinc-800" : "border-slate-100"
+                            }`}
+                            style={{
+                              left:
+                                minute === 1440
+                                  ? "calc(100% - 1px)"
+                                  : `${(minute / 1440) * 100}%`,
+                            }}
+                          >
+                            <span
+                              className={`absolute top-1 translate-x-1 text-[10px] ${scalpTextMutedClass}`}
+                            >
+                              {formatTimelineMinuteLabel(minute)}
+                            </span>
+                          </div>
+                        ))}
+                        <div
+                          className={`absolute left-0 right-0 top-7 border-t ${
+                            scalpDarkMode ? "border-zinc-800" : "border-slate-100"
+                          }`}
+                        />
+                        {scalpBrokerTimeline.blocks.map((block) => {
+                          const blockVenueIconSrc =
+                            SCALP_VENUE_ICON_SRC[block.venue];
+                          const blockClass = (() => {
+                            if (block.tone === "active") {
+                              return scalpDarkMode
+                                ? "border-emerald-400/60 bg-emerald-500/20 text-emerald-100"
+                                : "border-emerald-300 bg-emerald-100 text-emerald-800";
+                            }
+                            if (block.tone === "management") {
+                              return scalpDarkMode
+                                ? "border-amber-300/60 bg-amber-400/20 text-amber-100"
+                                : "border-amber-300 bg-amber-100 text-amber-800";
+                            }
+                            if (block.tone === "blocked") {
+                              return scalpDarkMode
+                                ? "border-rose-400/60 bg-rose-500/20 text-rose-100"
+                                : "border-rose-300 bg-rose-100 text-rose-800";
+                            }
+                            if (block.tone === "legacy") {
+                              return scalpDarkMode
+                                ? "border-sky-400/60 bg-sky-500/20 text-sky-100"
+                                : "border-sky-300 bg-sky-100 text-sky-800";
+                            }
+                            return scalpDarkMode
+                              ? "border-zinc-600 bg-zinc-800 text-zinc-300"
+                              : "border-slate-300 bg-slate-100 text-slate-500";
+                          })();
                           return (
-                            <div key={row.venue}>
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div
-                                  className={`inline-flex items-center gap-2 text-sm font-semibold ${scalpTextPrimaryClass}`}
-                                >
-                                  <img
-                                    src={iconSrc}
-                                    alt={`${row.venue} venue`}
-                                    className="h-4 w-auto opacity-85"
-                                  />
-                                  <span className="capitalize">{row.venue}</span>
-                                </div>
-                                <div className={`flex flex-wrap items-center gap-2 text-[11px] ${scalpTextMutedClass}`}>
-                                  <span>{row.activeCount} entry blocks</span>
-                                  {row.managementCount ? (
-                                    <span>{row.managementCount} management</span>
-                                  ) : null}
-                                  {row.blockedCount ? (
-                                    <span>{row.blockedCount} blocked</span>
-                                  ) : null}
-                                </div>
-                              </div>
-                              <div
-                                className={`relative mt-2 overflow-hidden rounded-lg border ${
-                                  scalpDarkMode
-                                    ? "border-zinc-700 bg-zinc-950/60"
-                                    : "border-slate-200 bg-white"
-                                }`}
-                                style={{ height: `${rowHeight}px` }}
-                              >
-                                {SCALP_SESSION_TIMELINE_TICK_MINUTES.map((minute) => (
-                                  <div
-                                    key={`${row.venue}-tick-${minute}`}
-                                    className={`absolute top-0 h-full border-l ${
-                                      scalpDarkMode
-                                        ? "border-zinc-800"
-                                        : "border-slate-100"
-                                    }`}
-                                    style={{
-                                      left:
-                                        minute === 1440
-                                          ? "calc(100% - 1px)"
-                                          : `${(minute / 1440) * 100}%`,
-                                    }}
-                                  >
-                                    <span
-                                      className={`absolute top-1 translate-x-1 text-[10px] ${scalpTextMutedClass}`}
-                                    >
-                                      {formatTimelineMinuteLabel(minute)}
-                                    </span>
-                                  </div>
-                                ))}
-                                <div
-                                  className={`absolute left-0 right-0 top-7 border-t ${
-                                    scalpDarkMode
-                                      ? "border-zinc-800"
-                                      : "border-slate-100"
-                                  }`}
+                            <div
+                              key={block.id}
+                              title={`${formatTimelineMinuteLabel(block.startMinute)}-${formatTimelineMinuteLabel(block.endMinute)} Berlin · ${block.detail}`}
+                              className={`absolute overflow-hidden rounded-md border px-2 py-1 text-[10px] leading-tight shadow-sm ${blockClass}`}
+                              style={{
+                                left: `${block.leftPct}%`,
+                                width: `${block.widthPct}%`,
+                                top: `${34 + block.lane * 30}px`,
+                              }}
+                            >
+                              <div className="flex min-w-0 items-center gap-1 font-semibold">
+                                <img
+                                  src={blockVenueIconSrc}
+                                  alt={`${block.venue} venue`}
+                                  className="h-3 w-auto shrink-0"
                                 />
-                                {row.blocks.map((block) => {
-                                  const blockClass = (() => {
-                                    if (block.tone === "active") {
-                                      return scalpDarkMode
-                                        ? "border-emerald-400/60 bg-emerald-500/20 text-emerald-100"
-                                        : "border-emerald-300 bg-emerald-100 text-emerald-800";
-                                    }
-                                    if (block.tone === "management") {
-                                      return scalpDarkMode
-                                        ? "border-amber-300/60 bg-amber-400/20 text-amber-100"
-                                        : "border-amber-300 bg-amber-100 text-amber-800";
-                                    }
-                                    if (block.tone === "blocked") {
-                                      return scalpDarkMode
-                                        ? "border-rose-400/60 bg-rose-500/20 text-rose-100"
-                                        : "border-rose-300 bg-rose-100 text-rose-800";
-                                    }
-                                    if (block.tone === "legacy") {
-                                      return scalpDarkMode
-                                        ? "border-sky-400/60 bg-sky-500/20 text-sky-100"
-                                        : "border-sky-300 bg-sky-100 text-sky-800";
-                                    }
-                                    return scalpDarkMode
-                                      ? "border-zinc-600 bg-zinc-800 text-zinc-300"
-                                      : "border-slate-300 bg-slate-100 text-slate-500";
-                                  })();
-                                  return (
-                                    <div
-                                      key={block.id}
-                                      title={`${formatTimelineMinuteLabel(block.startMinute)}-${formatTimelineMinuteLabel(block.endMinute)} UTC · ${block.detail}`}
-                                      className={`absolute overflow-hidden rounded-md border px-2 py-1 text-[10px] leading-tight shadow-sm ${blockClass}`}
-                                      style={{
-                                        left: `${block.leftPct}%`,
-                                        width: `${block.widthPct}%`,
-                                        top: `${34 + block.lane * 30}px`,
-                                      }}
-                                    >
-                                      <div className="truncate font-semibold">
-                                        {block.label}
-                                      </div>
-                                      <div className="truncate opacity-75">
-                                        {block.temporalLabel}
-                                      </div>
-                                    </div>
-                                  );
-                                })}
+                                <span className="min-w-0 truncate">
+                                  {block.label}
+                                </span>
+                              </div>
+                              <div className="truncate opacity-75">
+                                {block.temporalLabel}
                               </div>
                             </div>
                           );
@@ -7631,6 +7354,33 @@ export default function Home() {
                         Candidate Coverage
                       </h3>
                       <div className="flex flex-wrap items-center justify-end gap-2">
+                        <span className={`text-xs ${scalpTextMutedClass}`}>
+                          Session
+                        </span>
+                        {SCALP_ENTRY_SESSION_FILTER_OPTIONS.map((option) => {
+                          const active = scalpSession === option.id;
+                          return (
+                            <button
+                              key={`candidate-session-filter-${option.id}`}
+                              type="button"
+                              onClick={() => {
+                                setScalpSession(option.id);
+                                scalpSummaryFetchedAtMsRef.current = 0;
+                              }}
+                              className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold transition ${
+                                active
+                                  ? scalpDarkMode
+                                    ? "border-emerald-400/70 bg-emerald-500/20 text-emerald-200"
+                                    : "border-emerald-300 bg-emerald-100 text-emerald-700"
+                                  : scalpDarkMode
+                                    ? "border-zinc-600 bg-zinc-800 text-zinc-300 hover:border-zinc-500"
+                                    : "border-slate-300 bg-white text-slate-600 hover:border-slate-400"
+                              }`}
+                            >
+                              {option.label}
+                            </button>
+                          );
+                        })}
                         <span className={`text-xs ${scalpTextMutedClass}`}>
                           State
                         </span>

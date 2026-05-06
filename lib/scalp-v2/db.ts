@@ -769,6 +769,15 @@ export async function paginateScalpV2Candidates(params: {
   values.push(limit, offset);
   const limitIdx = values.length - 1;
   const offsetIdx = values.length;
+  const totalNetRSortSql = `
+    COALESCE(
+      (c.metadata_json->'worker'->'stageC'->>'netR')::double precision,
+      (c.metadata_json->'worker'->'stageB'->>'netR')::double precision,
+      (c.metadata_json->'worker'->'stageA'->>'netR')::double precision,
+      c.score::double precision,
+      -999
+    )
+  `;
 
   const rows = await db.$queryRawUnsafe<
     Array<{
@@ -806,7 +815,7 @@ export async function paginateScalpV2Candidates(params: {
         c.updated_at AS "updatedAt"
       ${fromSql}
       ${whereSql}
-      ORDER BY COALESCE((c.metadata_json->'worker'->'stageC'->>'netR')::double precision, -999) DESC, c.score DESC
+      ORDER BY ${totalNetRSortSql} DESC, c.score DESC, c.updated_at DESC
       LIMIT $${limitIdx} OFFSET $${offsetIdx};
     `,
     ...values,
@@ -1829,6 +1838,7 @@ export async function listScalpV2Deployments(params: {
   liveOnly?: boolean;
   venue?: ScalpV2Venue;
   session?: ScalpV2Session;
+  compactPromotionGate?: boolean;
   limit?: number;
 } = {}): Promise<ScalpV2Deployment[]> {
   if (!isScalpPgConfigured()) return [];
@@ -1856,6 +1866,27 @@ export async function listScalpV2Deployments(params: {
 
   values.push(limit);
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const promotionGateSelect = params.compactPromotionGate
+    ? `
+        jsonb_strip_nulls(jsonb_build_object(
+          'eligible', promotion_gate->'eligible',
+          'reason', promotion_gate->'reason',
+          'lifecycle', promotion_gate->'lifecycle',
+          'forwardValidation', promotion_gate->'forwardValidation',
+          'holdout', promotion_gate->'holdout',
+          'drift', promotion_gate->'drift',
+          'v3ValidationStatus', promotion_gate->'v3ValidationStatus',
+          'v3TemporalFilter', COALESCE(promotion_gate->'v3TemporalFilter', promotion_gate->'metadata'->'v3TemporalFilter'),
+          'brokerSeat', COALESCE(promotion_gate->'brokerSeat', promotion_gate->'metadata'->'brokerSeat'),
+          'entryBlockReasonCodes', COALESCE(promotion_gate->'entryBlockReasonCodes', promotion_gate->'metadata'->'entryBlockReasonCodes'),
+          'v3Ranking', COALESCE(promotion_gate->'v3Ranking', promotion_gate->'metadata'->'v3Ranking')
+        )) AS "promotionGate",
+        NULL::jsonb AS "riskProfile"
+      `
+    : `
+        promotion_gate AS "promotionGate",
+        risk_profile AS "riskProfile"
+      `;
 
   const rows = await db.$queryRawUnsafe<
     Array<{
@@ -1885,8 +1916,7 @@ export async function listScalpV2Deployments(params: {
         entry_session_profile AS "entrySessionProfile",
         enabled,
         live_mode AS "liveMode",
-        promotion_gate AS "promotionGate",
-        risk_profile AS "riskProfile",
+        ${promotionGateSelect},
         created_at AS "createdAt",
         updated_at AS "updatedAt"
       FROM scalp_v2_deployments
@@ -2799,70 +2829,102 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
       coverageJson: unknown;
     }>
   >(sql`
+    WITH candidate_stats AS (
+      SELECT
+        COUNT(*)::bigint AS candidates,
+        COUNT(*) FILTER (WHERE status = 'discovered')::bigint AS "discoveredCandidates",
+        COUNT(*) FILTER (WHERE status = 'evaluated')::bigint AS "evaluatedCandidates",
+        COUNT(*) FILTER (WHERE status = 'promoted')::bigint AS "promotedCandidates",
+        COUNT(*) FILTER (WHERE status = 'rejected')::bigint AS "rejectedCandidates"
+      FROM scalp_v2_candidates
+    ),
+    v3_candidate_stats AS (
+      SELECT
+        (SELECT COUNT(*)::bigint
+         FROM scalp_v2_candidates
+         WHERE metadata_json->'worker'->'holdout' IS NOT NULL
+            OR metadata_json->'v3Holdout' IS NOT NULL
+        ) AS "v3HoldoutCompletedCandidates",
+        (SELECT COUNT(*)::bigint
+         FROM scalp_v2_candidates
+         WHERE metadata_json->'v3TemporalFilter'->>'variantKind' IS NOT NULL
+        ) AS "v3TemporalCandidates",
+        (SELECT COUNT(*)::bigint
+         FROM scalp_v2_candidates
+         WHERE metadata_json->'v3TemporalFilter'->>'variantKind' IS NOT NULL
+           AND COALESCE((metadata_json->'v3Ranking'->'stageA'->>'variantTradeFloorPassed')::boolean, false)
+        ) AS "v3TemporalFloorPassedCandidates",
+        (SELECT COUNT(*)::bigint
+         FROM scalp_v2_candidates
+         WHERE metadata_json->'v3TemporalFilter'->>'variantKind' IS NOT NULL
+           AND metadata_json->'v3TemporalFilter'->>'variantKind' <> 'slot_weekday'
+           AND metadata_json->'v3Ranking'->'stageA' IS NOT NULL
+        ) AS "v3SingleAxisTemporalResultCandidates"
+    ),
+    deployment_stats AS (
+      SELECT
+        COUNT(*)::bigint AS deployments,
+        COUNT(*) FILTER (WHERE enabled = TRUE)::bigint AS "enabledDeployments",
+        COUNT(*) FILTER (
+          WHERE enabled = TRUE
+            AND promotion_gate->>'v3ValidationStatus' = 'validated'
+        )::bigint AS "v3EnabledValidatedDeployments",
+        COUNT(*) FILTER (
+          WHERE enabled = TRUE
+            AND COALESCE(promotion_gate->>'v3ValidationStatus', 'pending') <> 'validated'
+        )::bigint AS "v3PendingEnabledValidationDeployments",
+        COUNT(*) FILTER (
+          WHERE promotion_gate->'drift'->>'status' = 'drifting'
+        )::bigint AS "v3DriftingDeployments",
+        COUNT(*) FILTER (
+          WHERE promotion_gate->'drift'->>'status' = 'low_sample'
+        )::bigint AS "v3LowSampleDriftDeployments"
+      FROM scalp_v2_deployments
+    ),
+    candidate_symbol_counts AS (
+      SELECT symbol, COUNT(*)::bigint AS cnt
+      FROM scalp_v2_candidates
+      WHERE (metadata_json->'worker'->'stageC'->>'passed') IS NULL
+        AND status NOT IN ('rejected')
+      GROUP BY symbol
+    ),
+    deployment_symbol_counts AS (
+      SELECT symbol, COUNT(*)::bigint AS cnt
+      FROM scalp_v2_deployments
+      GROUP BY symbol
+    ),
+    coverage AS (
+      SELECT c.symbol, c.cnt AS c, COALESCE(d.cnt, 0) AS d
+      FROM candidate_symbol_counts c
+      LEFT JOIN deployment_symbol_counts d ON c.symbol = d.symbol
+      WHERE c.cnt > COALESCE(d.cnt, 0)
+      ORDER BY c.symbol
+    )
     SELECT
-      (SELECT COUNT(*)::bigint FROM scalp_v2_candidates) AS candidates,
-      (SELECT COUNT(*)::bigint FROM scalp_v2_deployments) AS deployments,
-      (SELECT COUNT(*)::bigint FROM scalp_v2_deployments WHERE enabled = TRUE) AS "enabledDeployments",
-      (SELECT COUNT(*)::bigint FROM scalp_v2_candidates WHERE status = 'discovered') AS "discoveredCandidates",
-      (SELECT COUNT(*)::bigint FROM scalp_v2_candidates WHERE status = 'evaluated') AS "evaluatedCandidates",
-      (SELECT COUNT(*)::bigint FROM scalp_v2_candidates WHERE status = 'promoted') AS "promotedCandidates",
-      (SELECT COUNT(*)::bigint FROM scalp_v2_candidates WHERE status = 'rejected') AS "rejectedCandidates",
+      cs.candidates,
+      ds.deployments,
+      ds."enabledDeployments",
+      cs."discoveredCandidates",
+      cs."evaluatedCandidates",
+      cs."promotedCandidates",
+      cs."rejectedCandidates",
       0::bigint AS "events24h",
       0::bigint AS "ledgerRows30d",
       0::double precision AS "netR30d",
-      (SELECT COUNT(*)::bigint
-       FROM scalp_v2_candidates
-       WHERE metadata_json->'worker'->'holdout' IS NOT NULL
-          OR metadata_json->'v3Holdout' IS NOT NULL
-      ) AS "v3HoldoutCompletedCandidates",
-      (SELECT COUNT(*)::bigint
-       FROM scalp_v2_candidates
-       WHERE metadata_json->'v3TemporalFilter'->>'variantKind' IS NOT NULL
-      ) AS "v3TemporalCandidates",
-      (SELECT COUNT(*)::bigint
-       FROM scalp_v2_candidates
-       WHERE metadata_json->'v3TemporalFilter'->>'variantKind' IS NOT NULL
-         AND COALESCE((metadata_json->'v3Ranking'->'stageA'->>'variantTradeFloorPassed')::boolean, false)
-      ) AS "v3TemporalFloorPassedCandidates",
-      (SELECT COUNT(*)::bigint
-       FROM scalp_v2_candidates
-       WHERE metadata_json->'v3TemporalFilter'->>'variantKind' IS NOT NULL
-         AND metadata_json->'v3TemporalFilter'->>'variantKind' <> 'slot_weekday'
-         AND metadata_json->'v3Ranking'->'stageA' IS NOT NULL
-      ) AS "v3SingleAxisTemporalResultCandidates",
-      (SELECT COUNT(*)::bigint
-       FROM scalp_v2_deployments
-       WHERE enabled = TRUE
-         AND promotion_gate->>'v3ValidationStatus' = 'validated'
-      ) AS "v3EnabledValidatedDeployments",
-      (SELECT COUNT(*)::bigint
-       FROM scalp_v2_deployments
-       WHERE enabled = TRUE
-         AND COALESCE(promotion_gate->>'v3ValidationStatus', 'pending') <> 'validated'
-      ) AS "v3PendingEnabledValidationDeployments",
-      (SELECT COUNT(*)::bigint
-       FROM scalp_v2_deployments
-       WHERE promotion_gate->'drift'->>'status' = 'drifting'
-      ) AS "v3DriftingDeployments",
-      (SELECT COUNT(*)::bigint
-       FROM scalp_v2_deployments
-       WHERE promotion_gate->'drift'->>'status' = 'low_sample'
-      ) AS "v3LowSampleDriftDeployments",
+      v3s."v3HoldoutCompletedCandidates",
+      v3s."v3TemporalCandidates",
+      v3s."v3TemporalFloorPassedCandidates",
+      v3s."v3SingleAxisTemporalResultCandidates",
+      ds."v3EnabledValidatedDeployments",
+      ds."v3PendingEnabledValidationDeployments",
+      ds."v3DriftingDeployments",
+      ds."v3LowSampleDriftDeployments",
       (SELECT COALESCE(jsonb_agg(jsonb_build_object('symbol', g.symbol, 'candidates', g.c, 'deployments', g.d)), '[]'::jsonb)
-       FROM (
-         SELECT c.symbol, c.cnt AS c, COALESCE(d.cnt, 0) AS d
-         FROM (
-           SELECT symbol, COUNT(*)::bigint AS cnt
-           FROM scalp_v2_candidates
-           WHERE (metadata_json->'worker'->'stageC'->>'passed') IS NULL
-             AND status NOT IN ('rejected')
-           GROUP BY symbol
-         ) c
-         LEFT JOIN (SELECT symbol, COUNT(*)::bigint AS cnt FROM scalp_v2_deployments GROUP BY symbol) d ON c.symbol = d.symbol
-         WHERE c.cnt > COALESCE(d.cnt, 0)
-         ORDER BY c.symbol
-       ) g
-      ) AS "coverageJson";
+       FROM coverage g
+      ) AS "coverageJson"
+    FROM candidate_stats cs
+    CROSS JOIN v3_candidate_stats v3s
+    CROSS JOIN deployment_stats ds
   `);
 
   const symbolCoverage = (Array.isArray(row?.coverageJson) ? row.coverageJson : []).map((r: any) => ({

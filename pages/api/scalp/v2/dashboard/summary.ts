@@ -25,6 +25,62 @@ import {
 let summaryCache: { data: Record<string, unknown>; ts: number; key: string } | null = null;
 const CACHE_TTL_MS = 30_000; // 30 seconds
 
+function asPlainRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function compactPromotionGateForDashboard(
+  value: unknown,
+): Record<string, unknown> | null {
+  const gate = asPlainRecord(value);
+  if (!Object.keys(gate).length) return null;
+  const metadata = asPlainRecord(gate.metadata);
+  const out: Record<string, unknown> = {};
+  for (const key of [
+    "eligible",
+    "reason",
+    "lifecycle",
+    "forwardValidation",
+    "holdout",
+    "drift",
+    "v3ValidationStatus",
+  ]) {
+    if (gate[key] !== undefined) out[key] = gate[key];
+  }
+  for (const key of [
+    "v3TemporalFilter",
+    "brokerSeat",
+    "entryBlockReasonCodes",
+    "v3Ranking",
+  ]) {
+    if (gate[key] !== undefined) {
+      out[key] = gate[key];
+    } else if (metadata[key] !== undefined) {
+      out[key] = metadata[key];
+    }
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function compactDeploymentForDashboard(row: Record<string, any>) {
+  return {
+    deploymentId: row.deploymentId,
+    candidateId: row.candidateId,
+    venue: row.venue,
+    symbol: row.symbol,
+    strategyId: row.strategyId,
+    tuneId: row.tuneId,
+    entrySessionProfile: row.entrySessionProfile,
+    enabled: row.enabled,
+    liveMode: row.liveMode,
+    promotionGate: compactPromotionGateForDashboard(row.promotionGate),
+    createdAtMs: row.createdAtMs,
+    updatedAtMs: row.updatedAtMs,
+  };
+}
+
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse,
@@ -42,11 +98,18 @@ export default async function handler(
     const jobLimit = parseIntBounded(req.query.jobLimit, 20, 5, 100);
     const eventLimit = parseIntBounded(req.query.eventLimit, 240, 20, 2_000);
     const ledgerLimit = parseIntBounded(req.query.ledgerLimit, 300, 20, 5_000);
+    const runtimeDeploymentLimit = parseIntBounded(
+      req.query.runtimeDeploymentLimit,
+      80,
+      1,
+      500,
+    );
     const session = parseSession(req.query.session);
     const venue = parseVenue(req.query.venue);
     const fresh = parseBool(req.query.fresh, false);
+    const compactDeployments = parseBool(req.query.compactDeployments, false);
 
-    const cacheKey = `${session || "all"}:${venue || "all"}:${deploymentLimit}:${jobLimit}:${eventLimit}:${ledgerLimit}`;
+    const cacheKey = `${session || "all"}:${venue || "all"}:${deploymentLimit}:${runtimeDeploymentLimit}:${jobLimit}:${eventLimit}:${ledgerLimit}:${compactDeployments ? "compact" : "full"}`;
     if (!fresh && summaryCache && summaryCache.key === cacheKey && Date.now() - summaryCache.ts < CACHE_TTL_MS) {
       return res.status(200).json(summaryCache.data);
     }
@@ -55,19 +118,31 @@ export default async function handler(
     const runtime = await loadScalpV2RuntimeConfig();
     const summary = await loadScalpV2Summary();
     const jobs = await listScalpV2Jobs({ limit: jobLimit });
-    const deployments = await listScalpV2Deployments({ limit: deploymentLimit, session, venue });
-    const deploymentIds = deployments
+    const deploymentRows = await listScalpV2Deployments({
+      limit: deploymentLimit,
+      session,
+      venue,
+      compactPromotionGate: compactDeployments,
+    });
+    const deployments = compactDeployments
+      ? deploymentRows.map((row) => compactDeploymentForDashboard(row))
+      : deploymentRows;
+    const runtimeDeploymentIds = deploymentRows
+      .filter((row) => row.enabled)
       .map((row) => String(row.deploymentId || "").trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .slice(0, runtimeDeploymentLimit);
     const events = await listScalpV2ExecutionEvents({
       limit: eventLimit,
       venue,
       session,
     });
-    const sessions = await listScalpV2SessionSnapshots({
-      deploymentIds,
-      limit: Math.max(deploymentLimit * 4, 100),
-    });
+    const sessions = runtimeDeploymentIds.length
+      ? await listScalpV2SessionSnapshots({
+          deploymentIds: runtimeDeploymentIds,
+          limit: runtimeDeploymentIds.length,
+        })
+      : [];
     const journal = await listScalpV2JournalRows({
       limit: eventLimit,
       venue,
@@ -76,9 +151,9 @@ export default async function handler(
     const nowMs = Date.now();
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
     const fromTsMs = Math.max(0, nowMs - THIRTY_DAYS_MS);
-    const ledger = deploymentIds.length
+    const ledger = runtimeDeploymentIds.length
       ? await listScalpV2LedgerRows({
-          deploymentIds,
+          deploymentIds: runtimeDeploymentIds,
           fromTsMs,
           toTsMs: nowMs + 1,
           limit: ledgerLimit,
