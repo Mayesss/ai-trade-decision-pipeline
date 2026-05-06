@@ -902,6 +902,364 @@ function asBoolOrNull(value: unknown): boolean | null {
   return null;
 }
 
+type ScalpBrokerSeatUiStatus =
+  | "winner"
+  | "management_only"
+  | "excluded"
+  | "legacy"
+  | "disabled";
+
+type ScalpBrokerTimelineTone =
+  | "active"
+  | "management"
+  | "blocked"
+  | "legacy"
+  | "disabled";
+
+type ScalpBrokerTimelineBlock = {
+  id: string;
+  venue: ScalpVenueUi;
+  symbol: string;
+  session: ScalpEntrySessionProfileUi;
+  deploymentId: string;
+  label: string;
+  detail: string;
+  temporalLabel: string;
+  status: ScalpBrokerSeatUiStatus;
+  tone: ScalpBrokerTimelineTone;
+  startMinute: number;
+  endMinute: number;
+  leftPct: number;
+  widthPct: number;
+  lane: number;
+};
+
+type ScalpBrokerTimelineVenueRow = {
+  venue: ScalpVenueUi;
+  blocks: ScalpBrokerTimelineBlock[];
+  laneCount: number;
+  activeCount: number;
+  managementCount: number;
+  blockedCount: number;
+};
+
+const SCALP_V3_SESSION_TIME_ZONE: Record<ScalpEntrySessionProfileUi, string> = {
+  tokyo: "Asia/Tokyo",
+  berlin: "Europe/Berlin",
+  newyork: "America/New_York",
+  pacific: "America/Los_Angeles",
+  sydney: "Australia/Sydney",
+};
+
+const SCALP_V3_SESSION_START_MINUTE: Record<ScalpEntrySessionProfileUi, number> = {
+  tokyo: 9 * 60,
+  berlin: 8 * 60,
+  newyork: 8 * 60,
+  pacific: 10 * 60,
+  sydney: 8 * 60,
+};
+
+const SCALP_V3_SESSION_DURATION_MINUTES = 4 * 60;
+const SCALP_V3_TIMELINE_LOOKAHEAD_DAYS = 14;
+const SCALP_V3_WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function normalizeNumberArrayUi(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null;
+  const out = value
+    .map((item) => Number(item))
+    .filter((item) => Number.isInteger(item));
+  return out.length ? Array.from(new Set(out)).sort((a, b) => a - b) : null;
+}
+
+function scalpLocalWeekdayFromParts(parts: TimeZoneClockParts): number {
+  return new Date(Date.UTC(parts.y, parts.m - 1, parts.d)).getUTCDay();
+}
+
+function normalizeScalpV3TemporalFilterUi(
+  row: ScalpOpsDeploymentRow,
+): Record<string, any> {
+  const gate = asPlainObject(row.promotionGate);
+  const direct = asPlainObject(gate.v3TemporalFilter);
+  const metadata = asPlainObject(gate.metadata);
+  const nested = asPlainObject(metadata.v3TemporalFilter);
+  return Object.keys(direct).length ? direct : nested;
+}
+
+function scalpBrokerSeatUi(row: ScalpOpsDeploymentRow): Record<string, any> {
+  const gate = asPlainObject(row.promotionGate);
+  const direct = asPlainObject(gate.brokerSeat);
+  if (Object.keys(direct).length) return direct;
+  return asPlainObject(asPlainObject(gate.metadata).brokerSeat);
+}
+
+function scalpEntryBlockReasonCodesUi(row: ScalpOpsDeploymentRow): string[] {
+  const gate = asPlainObject(row.promotionGate);
+  const raw = Array.isArray(gate.entryBlockReasonCodes)
+    ? gate.entryBlockReasonCodes
+    : Array.isArray(asPlainObject(gate.metadata).entryBlockReasonCodes)
+      ? asPlainObject(gate.metadata).entryBlockReasonCodes
+      : [];
+  return raw
+    .map((code: unknown) => String(code || "").trim())
+    .filter(Boolean);
+}
+
+function scalpBrokerSeatStatusUi(row: ScalpOpsDeploymentRow): ScalpBrokerSeatUiStatus {
+  const brokerSeat = scalpBrokerSeatUi(row);
+  const rawStatus = String(brokerSeat.status || "").trim().toLowerCase();
+  const reason = String(row.promotionReason || "").trim().toLowerCase();
+  const reasonCodes = scalpEntryBlockReasonCodesUi(row);
+  const blockedBySeat = reasonCodes.includes("V3_BROKER_SEAT_ENTRY_BLOCKED");
+  if (rawStatus === "management_only" || blockedBySeat) return "management_only";
+  if (
+    rawStatus === "excluded" ||
+    rawStatus === "blocked" ||
+    reason === "broker_entry_window_overlap_demoted"
+  ) {
+    return "excluded";
+  }
+  if (rawStatus === "winner") return "winner";
+  if (row.enabled) return "legacy";
+  return "disabled";
+}
+
+function scalpBrokerTimelineTone(status: ScalpBrokerSeatUiStatus): ScalpBrokerTimelineTone {
+  if (status === "winner") return "active";
+  if (status === "management_only") return "management";
+  if (status === "excluded") return "blocked";
+  if (status === "legacy") return "legacy";
+  return "disabled";
+}
+
+function formatScalpV3TemporalLabel(
+  filter: Record<string, any>,
+  session: ScalpEntrySessionProfileUi,
+): string {
+  const slotMinutes = Math.max(
+    5,
+    Math.floor(Number(filter.sessionSlotMinutes || 30)) || 30,
+  );
+  const sessionStartMinute = SCALP_V3_SESSION_START_MINUTE[session] ?? 8 * 60;
+  const parts: string[] = [];
+  const slots = normalizeNumberArrayUi(filter.allowedSessionWindowSlots);
+  const weekdays = normalizeNumberArrayUi(filter.allowedWeekdaysLocal);
+  const utcHours = normalizeNumberArrayUi(filter.allowedUtcHours);
+  if (slots?.length) {
+    parts.push(
+      slots
+        .slice(0, 3)
+        .map((slot) => {
+          const start = sessionStartMinute + slot * slotMinutes;
+          const end = start + slotMinutes;
+          return `${formatTimelineMinuteLabel(start)}-${formatTimelineMinuteLabel(end)} local`;
+        })
+        .join(", "),
+    );
+  }
+  if (weekdays?.length) {
+    parts.push(
+      weekdays
+        .slice(0, 4)
+        .map((day) => SCALP_V3_WEEKDAY_LABELS[((day % 7) + 7) % 7])
+        .join("/"),
+    );
+  }
+  if (utcHours?.length) {
+    parts.push(
+      utcHours
+        .slice(0, 4)
+        .map((hour) => `${String(((hour % 24) + 24) % 24).padStart(2, "0")}Z`)
+        .join("/"),
+    );
+  }
+  return parts.length ? parts.join(" · ") : "full session";
+}
+
+function collectScalpV3EntryMinutesUtc(params: {
+  session: ScalpEntrySessionProfileUi;
+  filter: Record<string, any>;
+}): { minutes: number[]; stepMinutes: number } {
+  const timeZone = SCALP_V3_SESSION_TIME_ZONE[params.session] || BERLIN_TZ;
+  const sessionStartMinute =
+    SCALP_V3_SESSION_START_MINUTE[params.session] ?? 8 * 60;
+  const filter = params.filter;
+  const slotMinutes = Math.max(
+    5,
+    Math.floor(Number(filter.sessionSlotMinutes || 30)) || 30,
+  );
+  const stepMinutes = Math.max(5, Math.min(15, slotMinutes));
+  const allowedSlots = normalizeNumberArrayUi(filter.allowedSessionWindowSlots);
+  const allowedWeekdays = normalizeNumberArrayUi(filter.allowedWeekdaysLocal);
+  const allowedUtcHours = normalizeNumberArrayUi(filter.allowedUtcHours);
+  const startUtcMs = Date.UTC(
+    new Date().getUTCFullYear(),
+    new Date().getUTCMonth(),
+    new Date().getUTCDate(),
+    0,
+    0,
+    0,
+    0,
+  );
+  const minutes = new Set<number>();
+  for (let day = 0; day < SCALP_V3_TIMELINE_LOOKAHEAD_DAYS; day += 1) {
+    for (let minute = 0; minute < 1440; minute += stepMinutes) {
+      const tsMs = startUtcMs + (day * 1440 + minute) * 60_000;
+      const local = readClockPartsInTimeZone(tsMs, timeZone);
+      const localMinuteOfDay = local.hh * 60 + local.mm;
+      const minuteOffset = localMinuteOfDay - sessionStartMinute;
+      if (
+        minuteOffset < 0 ||
+        minuteOffset >= SCALP_V3_SESSION_DURATION_MINUTES
+      ) {
+        continue;
+      }
+      if (allowedWeekdays?.length) {
+        const weekday = scalpLocalWeekdayFromParts(local);
+        if (!allowedWeekdays.includes(weekday)) continue;
+      }
+      if (allowedUtcHours?.length) {
+        const utcHour = Math.floor(minute / 60);
+        if (!allowedUtcHours.includes(utcHour)) continue;
+      }
+      if (allowedSlots?.length) {
+        const slotIndex = Math.floor(minuteOffset / slotMinutes);
+        if (!allowedSlots.includes(slotIndex)) continue;
+      }
+      minutes.add(minute);
+    }
+  }
+  return { minutes: Array.from(minutes).sort((a, b) => a - b), stepMinutes };
+}
+
+function groupScalpTimelineMinutes(
+  minutes: number[],
+  stepMinutes: number,
+): Array<{ startMinute: number; endMinute: number }> {
+  if (!minutes.length) return [];
+  const groups: Array<{ startMinute: number; endMinute: number }> = [];
+  let startMinute = minutes[0];
+  let previousMinute = minutes[0];
+  for (const minute of minutes.slice(1)) {
+    if (minute <= previousMinute + stepMinutes) {
+      previousMinute = minute;
+      continue;
+    }
+    groups.push({
+      startMinute,
+      endMinute: Math.min(1440, previousMinute + stepMinutes),
+    });
+    startMinute = minute;
+    previousMinute = minute;
+  }
+  groups.push({
+    startMinute,
+    endMinute: Math.min(1440, previousMinute + stepMinutes),
+  });
+  return groups.filter((group) => group.endMinute > group.startMinute);
+}
+
+function assignScalpTimelineLanes(
+  blocks: Omit<ScalpBrokerTimelineBlock, "lane">[],
+): ScalpBrokerTimelineBlock[] {
+  const laneEnds: number[] = [];
+  return blocks
+    .slice()
+    .sort((a, b) => {
+      if (a.startMinute !== b.startMinute) return a.startMinute - b.startMinute;
+      return b.endMinute - a.endMinute;
+    })
+    .map((block) => {
+      let lane = laneEnds.findIndex((endMinute) => endMinute <= block.startMinute);
+      if (lane < 0) {
+        lane = laneEnds.length;
+        laneEnds.push(block.endMinute);
+      } else {
+        laneEnds[lane] = block.endMinute;
+      }
+      return { ...block, lane };
+    });
+}
+
+function buildScalpBrokerTimelineRows(
+  deployments: ScalpOpsDeploymentRow[],
+): ScalpBrokerTimelineVenueRow[] {
+  const byVenue = new Map<ScalpVenueUi, Omit<ScalpBrokerTimelineBlock, "lane">[]>();
+  for (const row of deployments) {
+    const session =
+      normalizeScalpEntrySessionProfileUi(row.entrySessionProfile) ||
+      extractScalpEntrySessionProfileFromDeploymentId(row.deploymentId);
+    if (!session) continue;
+    const filter = normalizeScalpV3TemporalFilterUi(row);
+    const brokerSeat = scalpBrokerSeatUi(row);
+    const hasV3Metadata =
+      Object.keys(filter).length > 0 || Object.keys(brokerSeat).length > 0;
+    if (!row.enabled && !row.promotionEligible && !hasV3Metadata) continue;
+    const venue = resolveScalpVenueUiFromDeploymentId(row.deploymentId);
+    const status = scalpBrokerSeatStatusUi(row);
+    const tone = scalpBrokerTimelineTone(status);
+    const reasonCodes = scalpEntryBlockReasonCodesUi(row);
+    const { minutes, stepMinutes } = collectScalpV3EntryMinutesUtc({
+      session,
+      filter,
+    });
+    const groups = groupScalpTimelineMinutes(minutes, stepMinutes);
+    const temporalLabel = formatScalpV3TemporalLabel(filter, session);
+    const blocks = groups.map((group, idx) => {
+      const label = `${row.symbol} · ${session}`;
+      const statusLabel =
+        status === "management_only"
+          ? "management only"
+          : status === "winner"
+            ? "entry winner"
+            : status === "excluded"
+              ? "entry blocked"
+              : status;
+      const detailParts = [
+        row.deploymentId,
+        statusLabel,
+        temporalLabel,
+        reasonCodes.length ? reasonCodes.join(", ") : null,
+      ].filter(Boolean);
+      return {
+        id: `${row.deploymentId}:${idx}:${group.startMinute}`,
+        venue,
+        symbol: row.symbol,
+        session,
+        deploymentId: row.deploymentId,
+        label,
+        detail: detailParts.join(" · "),
+        temporalLabel,
+        status,
+        tone,
+        startMinute: group.startMinute,
+        endMinute: group.endMinute,
+        leftPct: (group.startMinute / 1440) * 100,
+        widthPct: Math.max(1.2, ((group.endMinute - group.startMinute) / 1440) * 100),
+      };
+    });
+    const venueBlocks = byVenue.get(venue) || [];
+    venueBlocks.push(...blocks);
+    byVenue.set(venue, venueBlocks);
+  }
+  return (["capital", "bitget"] as ScalpVenueUi[])
+    .map((venue) => {
+      const blocks = assignScalpTimelineLanes(byVenue.get(venue) || []);
+      const laneCount = blocks.reduce(
+        (maxLane, block) => Math.max(maxLane, block.lane + 1),
+        0,
+      );
+      return {
+        venue,
+        blocks,
+        laneCount,
+        activeCount: blocks.filter((block) => block.tone === "active").length,
+        managementCount: blocks.filter((block) => block.tone === "management").length,
+        blockedCount: blocks.filter((block) => block.tone === "blocked").length,
+      };
+    })
+    .filter((row) => row.blocks.length > 0);
+}
+
 function toDayKeyFromMs(tsMs: number): string {
   return new Date(tsMs).toISOString().slice(0, 10);
 }
@@ -3766,6 +4124,10 @@ export default function Home() {
       return a.tuneId.localeCompare(b.tuneId);
     });
   }, [scalpSummary?.deployments]);
+  const scalpBrokerTimelineRows = useMemo(
+    () => buildScalpBrokerTimelineRows(scalpRegistryDeployments),
+    [scalpRegistryDeployments],
+  );
 
   const scalpActiveOpsRow =
     (scalpActiveDeploymentId
@@ -6919,6 +7281,157 @@ export default function Home() {
                       No enabled scalp deployments right now. Job health and
                       cron telemetry are still available below.
                     </div>
+                  ) : null}
+
+                  {scalpBrokerTimelineRows.length ? (
+                    <section className={`${scalpSectionShellClass} p-4`}>
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <h3 className={`text-lg font-semibold ${scalpTextPrimaryClass}`}>
+                            Broker Entry Seats
+                          </h3>
+                          <p className={`mt-1 text-xs ${scalpTextSecondaryClass}`}>
+                            UTC entry windows by broker. Only green seats should
+                            open fresh trades; amber seats keep management alive.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                          {[
+                            ["bg-emerald-500", "entry"],
+                            ["bg-amber-400", "management"],
+                            ["bg-rose-500", "blocked"],
+                            ["bg-sky-400", "legacy"],
+                          ].map(([dotClass, label]) => (
+                            <span
+                              key={label}
+                              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 ${
+                                scalpDarkMode
+                                  ? "border-zinc-700 text-zinc-300"
+                                  : "border-slate-200 text-slate-600"
+                              }`}
+                            >
+                              <span className={`h-2 w-2 rounded-full ${dotClass}`} />
+                              {label}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="mt-4 space-y-4">
+                        {scalpBrokerTimelineRows.map((row) => {
+                          const iconSrc = SCALP_VENUE_ICON_SRC[row.venue];
+                          const rowHeight = Math.max(94, 52 + row.laneCount * 30);
+                          return (
+                            <div key={row.venue}>
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div
+                                  className={`inline-flex items-center gap-2 text-sm font-semibold ${scalpTextPrimaryClass}`}
+                                >
+                                  <img
+                                    src={iconSrc}
+                                    alt={`${row.venue} venue`}
+                                    className="h-4 w-auto opacity-85"
+                                  />
+                                  <span className="capitalize">{row.venue}</span>
+                                </div>
+                                <div className={`flex flex-wrap items-center gap-2 text-[11px] ${scalpTextMutedClass}`}>
+                                  <span>{row.activeCount} entry blocks</span>
+                                  {row.managementCount ? (
+                                    <span>{row.managementCount} management</span>
+                                  ) : null}
+                                  {row.blockedCount ? (
+                                    <span>{row.blockedCount} blocked</span>
+                                  ) : null}
+                                </div>
+                              </div>
+                              <div
+                                className={`relative mt-2 overflow-hidden rounded-lg border ${
+                                  scalpDarkMode
+                                    ? "border-zinc-700 bg-zinc-950/60"
+                                    : "border-slate-200 bg-white"
+                                }`}
+                                style={{ height: `${rowHeight}px` }}
+                              >
+                                {SCALP_SESSION_TIMELINE_TICK_MINUTES.map((minute) => (
+                                  <div
+                                    key={`${row.venue}-tick-${minute}`}
+                                    className={`absolute top-0 h-full border-l ${
+                                      scalpDarkMode
+                                        ? "border-zinc-800"
+                                        : "border-slate-100"
+                                    }`}
+                                    style={{
+                                      left:
+                                        minute === 1440
+                                          ? "calc(100% - 1px)"
+                                          : `${(minute / 1440) * 100}%`,
+                                    }}
+                                  >
+                                    <span
+                                      className={`absolute top-1 translate-x-1 text-[10px] ${scalpTextMutedClass}`}
+                                    >
+                                      {formatTimelineMinuteLabel(minute)}
+                                    </span>
+                                  </div>
+                                ))}
+                                <div
+                                  className={`absolute left-0 right-0 top-7 border-t ${
+                                    scalpDarkMode
+                                      ? "border-zinc-800"
+                                      : "border-slate-100"
+                                  }`}
+                                />
+                                {row.blocks.map((block) => {
+                                  const blockClass = (() => {
+                                    if (block.tone === "active") {
+                                      return scalpDarkMode
+                                        ? "border-emerald-400/60 bg-emerald-500/20 text-emerald-100"
+                                        : "border-emerald-300 bg-emerald-100 text-emerald-800";
+                                    }
+                                    if (block.tone === "management") {
+                                      return scalpDarkMode
+                                        ? "border-amber-300/60 bg-amber-400/20 text-amber-100"
+                                        : "border-amber-300 bg-amber-100 text-amber-800";
+                                    }
+                                    if (block.tone === "blocked") {
+                                      return scalpDarkMode
+                                        ? "border-rose-400/60 bg-rose-500/20 text-rose-100"
+                                        : "border-rose-300 bg-rose-100 text-rose-800";
+                                    }
+                                    if (block.tone === "legacy") {
+                                      return scalpDarkMode
+                                        ? "border-sky-400/60 bg-sky-500/20 text-sky-100"
+                                        : "border-sky-300 bg-sky-100 text-sky-800";
+                                    }
+                                    return scalpDarkMode
+                                      ? "border-zinc-600 bg-zinc-800 text-zinc-300"
+                                      : "border-slate-300 bg-slate-100 text-slate-500";
+                                  })();
+                                  return (
+                                    <div
+                                      key={block.id}
+                                      title={`${formatTimelineMinuteLabel(block.startMinute)}-${formatTimelineMinuteLabel(block.endMinute)} UTC · ${block.detail}`}
+                                      className={`absolute overflow-hidden rounded-md border px-2 py-1 text-[10px] leading-tight shadow-sm ${blockClass}`}
+                                      style={{
+                                        left: `${block.leftPct}%`,
+                                        width: `${block.widthPct}%`,
+                                        top: `${34 + block.lane * 30}px`,
+                                      }}
+                                    >
+                                      <div className="truncate font-semibold">
+                                        {block.label}
+                                      </div>
+                                      <div className="truncate opacity-75">
+                                        {block.temporalLabel}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
                   ) : null}
 
                   <section className={`${scalpSectionShellClass} overflow-hidden`}>
