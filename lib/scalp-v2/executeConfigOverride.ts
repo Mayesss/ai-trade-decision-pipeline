@@ -5,6 +5,7 @@ import type { ExitRuleOverrides } from "./exitRulePresets";
 import type { RiskRuleReplayOverrides } from "./riskRulePresets";
 import type { StateMachineOverrides } from "./stateMachinePresets";
 import type { ScalpV2RiskProfile, ScalpV2Session } from "./types";
+import type { ScalpV2V3TemporalFilter } from "../scalp-v3";
 
 function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
@@ -17,6 +18,8 @@ export function buildScalpV2ExecuteConfigOverride(params: {
   exitRuleOverrides?: ExitRuleOverrides;
   riskRuleReplayOverrides?: RiskRuleReplayOverrides;
   stateMachineOverrides: StateMachineOverrides;
+  temporalFilter?: ScalpV2V3TemporalFilter | null;
+  entryBlockReasonCodes?: string[];
 }): ScalpStrategyConfigOverride {
   const entry = params.entryTriggerOverrides || {};
   const exit = params.exitRuleOverrides || {};
@@ -31,6 +34,21 @@ export function buildScalpV2ExecuteConfigOverride(params: {
     // Always bind execution to the deployment session profile.
     sessions: {
       entrySessionProfile: params.entrySessionProfile,
+      ...(params.temporalFilter?.allowedSessionWindowSlots !== undefined && {
+        allowedSessionWindowSlots: params.temporalFilter.allowedSessionWindowSlots,
+      }),
+      ...(params.temporalFilter?.sessionSlotMinutes !== undefined && {
+        sessionSlotMinutes: params.temporalFilter.sessionSlotMinutes,
+      }),
+      ...(params.temporalFilter?.allowedWeekdaysLocal !== undefined && {
+        allowedWeekdaysLocal: params.temporalFilter.allowedWeekdaysLocal,
+      }),
+      ...(params.temporalFilter?.allowedUtcHours !== undefined && {
+        allowedUtcHours: params.temporalFilter.allowedUtcHours,
+      }),
+      ...(params.entryBlockReasonCodes?.length && {
+        entryBlockReasonCodes: params.entryBlockReasonCodes,
+      }),
     },
     risk: {
       riskPerTradePct: params.riskProfile.riskPerTradePct ?? riskRule.riskPerTradePct,

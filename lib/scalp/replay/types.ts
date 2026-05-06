@@ -43,6 +43,11 @@ export interface ScalpReplayRuntimeConfig {
     strategy: {
         sessionClockMode: 'LONDON_TZ' | 'UTC_FIXED';
         entrySessionProfile: ScalpEntrySessionProfile;
+        allowedSessionWindowSlots?: number[];
+        sessionSlotMinutes?: number;
+        allowedWeekdaysLocal?: number[];
+        allowedUtcHours?: number[];
+        entryBlockReasonCodes?: string[];
         asiaWindowLocal: [string, string];
         raidWindowLocal: [string, string];
         blockedBerlinEntryHours: number[];

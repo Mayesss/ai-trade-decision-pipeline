@@ -3,6 +3,7 @@ import {
   MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
 } from "../../scalp-v2/composerExecution";
 import { resolveRegimeGateRule } from "../../scalp-v2/regimeGatePresets";
+import { evaluateScalpV2V3TemporalFilter } from "../../scalp-v3";
 import {
   inScalpEntrySessionProfileWindow,
   normalizeScalpEntrySessionProfile,
@@ -133,6 +134,24 @@ function applyDelegate(input: ScalpStrategyPhaseInput): ScalpStrategyPhaseOutput
   }
 
   const phase = strategy.applyPhaseDetectors(input);
+  const entryBlockReasonCodes = Array.isArray(input.cfg.sessions.entryBlockReasonCodes)
+    ? input.cfg.sessions.entryBlockReasonCodes
+        .map((code) => String(code || "").trim().toUpperCase())
+        .filter(Boolean)
+    : [];
+  const temporal = evaluateScalpV2V3TemporalFilter({
+    nowMs: input.nowMs,
+    session: entrySessionProfile,
+    filter: {
+      sessionSlotMinutes: input.cfg.sessions.sessionSlotMinutes,
+      allowedSessionWindowSlots: input.cfg.sessions.allowedSessionWindowSlots,
+      allowedWeekdaysLocal: input.cfg.sessions.allowedWeekdaysLocal,
+      allowedUtcHours: input.cfg.sessions.allowedUtcHours,
+    },
+  });
+  const blockedByV3EntryGuard =
+    Boolean(phase.entryIntent) &&
+    (entryBlockReasonCodes.length > 0 || !temporal.allowed);
   const regimeGateId = plan.regimeGateBlockId || null;
   const regimeRule = resolveRegimeGateRule(regimeGateId);
   let blockedByRegime = false;
@@ -178,9 +197,11 @@ function applyDelegate(input: ScalpStrategyPhaseInput): ScalpStrategyPhaseOutput
       `MODEL_GUIDED_ARM_${plan.armId.toUpperCase()}`,
       `MODEL_GUIDED_DELEGATE_${strategy.id.toUpperCase()}`,
       ...phase.reasonCodes,
+      ...entryBlockReasonCodes,
+      ...temporal.reasonCodes,
       ...regimeReasonCodes,
     ]),
-    entryIntent: blockedByRegime ? null : phase.entryIntent,
+    entryIntent: blockedByRegime || blockedByV3EntryGuard ? null : phase.entryIntent,
     meta: {
       ...(phase.meta || {}),
       modelGuidedComposer: {
@@ -198,6 +219,13 @@ function applyDelegate(input: ScalpStrategyPhaseInput): ScalpStrategyPhaseOutput
                 blockedEntry: blockedByRegime,
               }
             : null,
+        v3Temporal: {
+          blockedEntry: blockedByV3EntryGuard,
+          reasonCodes: [...entryBlockReasonCodes, ...temporal.reasonCodes],
+          slotIndex: temporal.slotIndex,
+          weekdayLocal: temporal.weekdayLocal,
+          utcHour: temporal.utcHour,
+        },
       },
     },
   };

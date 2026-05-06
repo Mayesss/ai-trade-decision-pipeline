@@ -2788,6 +2788,14 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
       events24h: bigint;
       ledgerRows30d: bigint;
       netR30d: number | null;
+      v3HoldoutCompletedCandidates: bigint;
+      v3TemporalCandidates: bigint;
+      v3TemporalFloorPassedCandidates: bigint;
+      v3SingleAxisTemporalResultCandidates: bigint;
+      v3EnabledValidatedDeployments: bigint;
+      v3PendingEnabledValidationDeployments: bigint;
+      v3DriftingDeployments: bigint;
+      v3LowSampleDriftDeployments: bigint;
       coverageJson: unknown;
     }>
   >(sql`
@@ -2802,6 +2810,44 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
       0::bigint AS "events24h",
       0::bigint AS "ledgerRows30d",
       0::double precision AS "netR30d",
+      (SELECT COUNT(*)::bigint
+       FROM scalp_v2_candidates
+       WHERE metadata_json->'worker'->'holdout' IS NOT NULL
+          OR metadata_json->'v3Holdout' IS NOT NULL
+      ) AS "v3HoldoutCompletedCandidates",
+      (SELECT COUNT(*)::bigint
+       FROM scalp_v2_candidates
+       WHERE metadata_json->'v3TemporalFilter'->>'variantKind' IS NOT NULL
+      ) AS "v3TemporalCandidates",
+      (SELECT COUNT(*)::bigint
+       FROM scalp_v2_candidates
+       WHERE metadata_json->'v3TemporalFilter'->>'variantKind' IS NOT NULL
+         AND COALESCE((metadata_json->'v3Ranking'->'stageA'->>'variantTradeFloorPassed')::boolean, false)
+      ) AS "v3TemporalFloorPassedCandidates",
+      (SELECT COUNT(*)::bigint
+       FROM scalp_v2_candidates
+       WHERE metadata_json->'v3TemporalFilter'->>'variantKind' IS NOT NULL
+         AND metadata_json->'v3TemporalFilter'->>'variantKind' <> 'slot_weekday'
+         AND metadata_json->'v3Ranking'->'stageA' IS NOT NULL
+      ) AS "v3SingleAxisTemporalResultCandidates",
+      (SELECT COUNT(*)::bigint
+       FROM scalp_v2_deployments
+       WHERE enabled = TRUE
+         AND promotion_gate->>'v3ValidationStatus' = 'validated'
+      ) AS "v3EnabledValidatedDeployments",
+      (SELECT COUNT(*)::bigint
+       FROM scalp_v2_deployments
+       WHERE enabled = TRUE
+         AND COALESCE(promotion_gate->>'v3ValidationStatus', 'pending') <> 'validated'
+      ) AS "v3PendingEnabledValidationDeployments",
+      (SELECT COUNT(*)::bigint
+       FROM scalp_v2_deployments
+       WHERE promotion_gate->'drift'->>'status' = 'drifting'
+      ) AS "v3DriftingDeployments",
+      (SELECT COUNT(*)::bigint
+       FROM scalp_v2_deployments
+       WHERE promotion_gate->'drift'->>'status' = 'low_sample'
+      ) AS "v3LowSampleDriftDeployments",
       (SELECT COALESCE(jsonb_agg(jsonb_build_object('symbol', g.symbol, 'candidates', g.c, 'deployments', g.d)), '[]'::jsonb)
        FROM (
          SELECT c.symbol, c.cnt AS c, COALESCE(d.cnt, 0) AS d
@@ -2824,6 +2870,16 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
     candidates: Number(r?.candidates || 0),
     deployments: Number(r?.deployments || 0),
   }));
+  const v3TemporalCandidates = Number(row?.v3TemporalCandidates || 0);
+  const v3TemporalFloorPassedCandidates = Number(row?.v3TemporalFloorPassedCandidates || 0);
+  const v3SingleAxisTemporalResultCandidates = Number(
+    row?.v3SingleAxisTemporalResultCandidates || 0,
+  );
+  const v3HardGateMinCandidates = toPositiveInt(
+    process.env.SCALP_V2_V3_HARD_GATE_MIN_CANDIDATES,
+    50,
+    10_000,
+  );
 
   return {
     pgConfigured: true,
@@ -2841,6 +2897,40 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
     ledgerRows30d: Number(row?.ledgerRows30d || 0),
     netR30d: Number.isFinite(Number(row?.netR30d)) ? Number(row?.netR30d) : 0,
     symbolCoverage,
+    v3: {
+      enabled:
+        String(process.env.SCALP_V2_RESEARCH_VERSION || "v3").trim().toLowerCase() ===
+        "v3",
+      holdoutCompletedCandidates: Number(row?.v3HoldoutCompletedCandidates || 0),
+      hardGateMinCandidates: v3HardGateMinCandidates,
+      holdoutHardGateReady:
+        Number(row?.v3HoldoutCompletedCandidates || 0) >= v3HardGateMinCandidates,
+      weekTwoComboReadinessCount: v3SingleAxisTemporalResultCandidates,
+      weekTwoComboThreshold: v3HardGateMinCandidates,
+      weekTwoCombosReady: v3SingleAxisTemporalResultCandidates >= v3HardGateMinCandidates,
+      temporalVariantCandidates: v3TemporalCandidates,
+      temporalVariantFloorPassedCandidates: v3TemporalFloorPassedCandidates,
+      temporalVariantSurvivalRatePct:
+        v3TemporalCandidates > 0
+          ? (v3TemporalFloorPassedCandidates / v3TemporalCandidates) * 100
+          : null,
+      enabledValidatedDeployments: Number(row?.v3EnabledValidatedDeployments || 0),
+      pendingEnabledValidationDeployments: Number(
+        row?.v3PendingEnabledValidationDeployments || 0,
+      ),
+      drift: {
+        driftingDeployments: Number(row?.v3DriftingDeployments || 0),
+        lowSampleDeployments: Number(row?.v3LowSampleDriftDeployments || 0),
+        minTrades: toPositiveInt(process.env.SCALP_V2_V3_DRIFT_MIN_TRADES, 20, 10_000),
+        minWeeks: toPositiveInt(process.env.SCALP_V2_V3_DRIFT_MIN_WEEKS, 2, 520),
+        autoPause:
+          ["1", "true", "yes", "on"].includes(
+            String(process.env.SCALP_V2_V3_DRIFT_AUTO_PAUSE || "false")
+              .trim()
+              .toLowerCase(),
+          ),
+      },
+    },
   };
 }
 

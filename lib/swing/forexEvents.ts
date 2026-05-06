@@ -81,7 +81,7 @@ type ForexEventMatch = {
   msToEvent: number;
 };
 
-type ForexCompactEvent = {
+export type ForexCompactEvent = {
   id: string;
   timestamp_utc: string;
   currency: string;

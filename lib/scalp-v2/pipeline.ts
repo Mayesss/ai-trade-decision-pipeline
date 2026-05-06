@@ -51,6 +51,18 @@ import { buildScalpV2ExecuteConfigOverride } from "./executeConfigOverride";
 import { runScalpV2ExecuteCycle } from "./executeAdapter";
 import { createScalpV2ExecutionPersistenceAdapter } from "./executionPersistence";
 import {
+  buildScalpV2V3TemporalVariants,
+  computeScalpV2V3Bootstrap,
+  computeScalpV2V3Drift,
+  computeScalpV2V3EdgeScore,
+  computeScalpV2V3Holdout,
+  computeScalpV2V3PriorScore,
+  evaluateScalpV2V3NewsBlackout,
+  isScalpV2V3ResearchEnabled,
+  resolveScalpV2V3Config,
+  type ScalpV2V3TemporalFilter,
+} from "../scalp-v3";
+import {
   appendScalpV2ExecutionEvent,
   buildScalpV2JobResult,
   claimScalpV2ResearchCandidateLeases,
@@ -622,9 +634,12 @@ type ScalpV2WorkerStageResult = {
   maxWeeklyNetR?: number | null;
   /** Largest single-trade R-multiple (absolute). */
   largestTradeR?: number | null;
-  /** Exit reason counts. */
-  exitReasons?: { stop: number; tp: number; timeStop: number; forceClose: number } | null;
-};
+	  /** Exit reason counts. */
+	  exitReasons?: { stop: number; tp: number; timeStop: number; forceClose: number } | null;
+	  v3Ranking?: Record<string, unknown> | null;
+	  v3Bootstrap?: Record<string, unknown> | null;
+	  v3Holdout?: Record<string, unknown> | null;
+	};
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -2826,7 +2841,13 @@ export async function runScalpV2ResearchJob(params: {
       workerPolicy.stageB,
       workerPolicy.stageC,
     ] as const;
-    const minWindowFromTs = windowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS;
+    const v3Cfg = resolveScalpV2V3Config();
+    const v3Enabled = isScalpV2V3ResearchEnabled();
+    const trainingWindowToTs = v3Enabled
+      ? windowToTs - v3Cfg.holdoutWeeks * ONE_WEEK_MS
+      : windowToTs;
+    const minWindowFromTs =
+      trainingWindowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS;
     const enabledDeploymentsForWarmUp = await withTiming(
       "warmup.load_enabled_deployments",
       () =>
@@ -2856,65 +2877,177 @@ export async function runScalpV2ResearchJob(params: {
       loadScalpV2WarmUpState({ windowToTs }).catch(() => null),
     );
     const warmUpComplete = warmUpState !== null && warmUpState.scopeHash === scopeHash;
+    const v3SingleAxisTemporalResultCount = v3Enabled
+      ? (
+          await withTiming("warmup.load_v3_combo_readiness", () =>
+            listScalpV2Candidates({ limit: 10_000 }).catch(
+              () => [] as Awaited<ReturnType<typeof listScalpV2Candidates>>,
+            ),
+          )
+        ).filter((row) => {
+          const meta = asRecord(row.metadata);
+          const temporal = asRecord(meta.v3TemporalFilter);
+          const kind = String(temporal.variantKind || "");
+          const stageA = asRecord(asRecord(meta.v3Ranking).stageA);
+          return (
+            kind.length > 0 &&
+            kind !== "slot_weekday" &&
+            Object.keys(stageA).length > 0
+          );
+        }).length
+      : 0;
+    const v3SlotWeekdayCombosEnabled =
+      v3Enabled && v3SingleAxisTemporalResultCount >= v3Cfg.hardGateMinCandidates;
 
-    type InMemoryCandidate = {
-      rowId?: number;
-      venue: ScalpV2Venue;
-      symbol: string;
-      session: ScalpV2Session;
-      strategyId: string;
-      tuneId: string;
-      candidateId: string;
-      score: number;
-      dsl: ReturnType<typeof buildScalpV2ModelGuidedComposerGrid>[number];
-    };
+	    type InMemoryCandidate = {
+	      rowId?: number;
+	      venue: ScalpV2Venue;
+	      symbol: string;
+	      session: ScalpV2Session;
+	      strategyId: string;
+	      tuneId: string;
+	      candidateId: string;
+	      score: number;
+	      v3PriorScore?: number;
+	      v3TemporalFilter?: ScalpV2V3TemporalFilter | null;
+	      v3Ranking?: Record<string, unknown> | null;
+	      dsl: ReturnType<typeof buildScalpV2ModelGuidedComposerGrid>[number];
+	    };
 
-    let allCandidates: InMemoryCandidate[] = [];
-    let poolSizeTotal = 0;
-    let deploymentVariantsGenerated = 0;
-
+	    let allCandidates: InMemoryCandidate[] = [];
+	    let poolSizeTotal = 0;
+	    let deploymentVariantsGenerated = 0;
+	    let v3TemporalVariantsGenerated = 0;
     if (!warmUpComplete) {
       // --- WARM-UP RUN: generate all candidates, persist, save fingerprint ---
       await emitResearchHeartbeat({ phase: "warm_up_generate", force: true });
       let generatedScopeCount = 0;
 
-      for (const scope of scopes) {
-        generatedScopeCount += 1;
-        const composerCandidates = buildScalpV2ModelGuidedComposerGrid({
-          venue: scope.venue,
-          symbol: scope.symbol,
-          entrySessionProfile: scope.session,
-          maxCandidates: maxCandidatesPerSession,
-        });
-        poolSizeTotal += composerCandidates.length;
+	      for (const scope of scopes) {
+	        generatedScopeCount += 1;
+	        const v3TemporalBudget = v3Enabled
+	          ? Math.max(
+	              0,
+	              Math.min(
+	                maxCandidatesPerSession - 1,
+	                Math.floor(maxCandidatesPerSession * v3Cfg.temporalVariantQuotaPct),
+	              ),
+	            )
+	          : 0;
+	        const baseCandidateBudget = Math.max(
+	          1,
+	          maxCandidatesPerSession - v3TemporalBudget,
+	        );
+	        const composerCandidates = buildScalpV2ModelGuidedComposerGrid({
+	          venue: scope.venue,
+	          symbol: scope.symbol,
+	          entrySessionProfile: scope.session,
+	          maxCandidates: baseCandidateBudget,
+	        });
+	        poolSizeTotal += composerCandidates.length;
+	        const scopeCandidates: InMemoryCandidate[] = [];
 
-        for (const dsl of composerCandidates) {
-          const model = dsl.model;
-          const supportScore = Number.isFinite(Number(dsl.supportScore))
-            ? Number(dsl.supportScore)
-            : 0;
-          const supportNorm = Math.max(0, Math.min(12, supportScore)) / 12;
-          const score =
-            12 +
-            model.compositeScore * 66 +
-            model.confidence * 14 +
-            supportNorm * 8 +
-            hashScoreSeed(
-              `${scope.venue}:${scope.symbol}:${scope.session}:${dsl.tuneId}`,
-            ) / 1000;
+	        for (const dsl of composerCandidates) {
+	          const model = dsl.model;
+	          const supportScore = Number.isFinite(Number(dsl.supportScore))
+	            ? Number(dsl.supportScore)
+	            : 0;
+	          const supportNorm = Math.max(0, Math.min(12, supportScore)) / 12;
+	          const v3Ranking = v3Enabled
+	            ? computeScalpV2V3PriorScore({
+	                compositeScore: model.compositeScore,
+	                confidence: model.confidence,
+	                supportScore,
+	                blocksByFamily: dsl.blocksByFamily,
+	                seed: `${scope.venue}:${scope.symbol}:${scope.session}:${dsl.tuneId}`,
+	              })
+	            : null;
+	          const score = v3Ranking
+	            ? v3Ranking.priorScore
+	            : 12 +
+	              model.compositeScore * 66 +
+	              model.confidence * 14 +
+	              supportNorm * 8 +
+	              hashScoreSeed(
+	                `${scope.venue}:${scope.symbol}:${scope.session}:${dsl.tuneId}`,
+	              ) / 1000;
 
-          allCandidates.push({
-            venue: scope.venue,
-            symbol: scope.symbol,
-            session: scope.session,
-            strategyId: MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
-            tuneId: dsl.tuneId,
-            candidateId: dsl.candidateId,
-            score,
-            dsl,
-          });
-        }
-        if (generatedScopeCount % 10 === 0 || generatedScopeCount === scopes.length) {
+	          scopeCandidates.push({
+	            venue: scope.venue,
+	            symbol: scope.symbol,
+	            session: scope.session,
+	            strategyId: MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
+	            tuneId: dsl.tuneId,
+	            candidateId: dsl.candidateId,
+	            score,
+	            v3PriorScore: v3Ranking?.priorScore,
+	            v3TemporalFilter: null,
+	            v3Ranking,
+	            dsl,
+	          });
+	        }
+	        allCandidates.push(...scopeCandidates);
+	        if (v3Enabled && v3TemporalBudget > 0 && scopeCandidates.length > 0) {
+	          const variantsPerBase = Math.max(
+	            1,
+	            Math.ceil(v3TemporalBudget / Math.max(1, scopeCandidates.length)),
+	          );
+	          for (const baseCandidate of scopeCandidates) {
+	            if (v3TemporalVariantsGenerated >= v3TemporalBudget * generatedScopeCount) break;
+	            const plan = resolveModelGuidedComposerExecutionPlanFromTuneId(baseCandidate.tuneId);
+	            const variants = buildScalpV2V3TemporalVariants({
+	              baseTuneId: baseCandidate.tuneId,
+	              session: scope.session,
+	              venue: scope.venue,
+	              symbol: scope.symbol,
+	              maxVariants: variantsPerBase,
+	              includeSlotWeekdayCombos: v3SlotWeekdayCombosEnabled,
+	              variantOffset: v3TemporalVariantsGenerated,
+	            });
+	            for (const variant of variants) {
+	              const digest = crypto
+	                .createHash("sha1")
+	                .update(variant.tuneDigestSeed)
+	                .digest("hex");
+	              const tuneId = buildModelGuidedComposerTuneId({
+	                armId: plan.armId,
+	                digest,
+	                exitRuleId: plan.exitRuleBlockId,
+	                entryTriggerId: plan.entryTriggerBlockId,
+	                riskRuleId: plan.riskRuleBlockId,
+	                stateMachineId: plan.stateMachineBlockId,
+	                regimeGateId: plan.regimeGateBlockId,
+	              });
+	              const seed = `${scope.venue}:${scope.symbol}:${scope.session}:${tuneId}`;
+	              const model = baseCandidate.dsl.model;
+	              const supportScore = Number(baseCandidate.dsl.supportScore) || 0;
+	              const v3Ranking = computeScalpV2V3PriorScore({
+	                compositeScore: model.compositeScore,
+	                confidence: model.confidence,
+	                supportScore,
+	                blocksByFamily: baseCandidate.dsl.blocksByFamily,
+	                seed,
+	              });
+	              allCandidates.push({
+	                ...baseCandidate,
+	                tuneId,
+	                candidateId: `v3_${variant.filter.variantId}_${baseCandidate.candidateId}`,
+	                score: v3Ranking.priorScore - 0.01,
+	                v3PriorScore: v3Ranking.priorScore,
+	                v3TemporalFilter: variant.filter,
+	                v3Ranking,
+	                dsl: {
+	                  ...baseCandidate.dsl,
+	                  tuneId,
+	                  candidateId: `v3_${variant.filter.variantId}_${baseCandidate.dsl.candidateId}`,
+	                },
+	              });
+	              v3TemporalVariantsGenerated += 1;
+	              if (v3TemporalVariantsGenerated >= v3TemporalBudget * generatedScopeCount) break;
+	            }
+	          }
+	        }
+	        if (generatedScopeCount % 10 === 0 || generatedScopeCount === scopes.length) {
           await emitResearchHeartbeat({
             phase: "warm_up_generate",
             progress: {
@@ -3038,11 +3171,13 @@ export async function runScalpV2ResearchJob(params: {
           researchCandidateId: c.candidateId,
           researchDsl: c.dsl.blocksByFamily,
           researchReferences: c.dsl.referenceStrategyIds,
-          researchSupportScore: c.dsl.supportScore,
-          researchRegimeGateId: c.dsl.regimeGateId || null,
-          composerModel: c.dsl.model,
-        },
-      }));
+	          researchSupportScore: c.dsl.supportScore,
+	          researchRegimeGateId: c.dsl.regimeGateId || null,
+	          composerModel: c.dsl.model,
+	          v3Ranking: c.v3Ranking || null,
+	          v3TemporalFilter: c.v3TemporalFilter || null,
+	        },
+	      }));
       await withTiming("warmup.persist_candidates", () =>
         upsertScalpV2Candidates({ rows }),
       );
@@ -3061,8 +3196,11 @@ export async function runScalpV2ResearchJob(params: {
         scopeCount: scopes.length,
         poolSizeTotal,
         persisted: allCandidates.length,
-        deploymentVariantsGenerated,
-        scopeHash,
+	        deploymentVariantsGenerated,
+	        v3TemporalVariantsGenerated,
+	        v3SingleAxisTemporalResultCount,
+	        v3SlotWeekdayCombosEnabled,
+	        scopeHash,
         scopeHashVersion: RESEARCH_WARM_UP_SCOPE_HASH_VERSION,
         configuredBatchSize,
         effectiveBatchSize,
@@ -3180,10 +3318,19 @@ export async function runScalpV2ResearchJob(params: {
           symbol: row.symbol,
           session: row.entrySessionProfile as ScalpV2Session,
           strategyId: row.strategyId,
-          tuneId: row.tuneId,
-          candidateId: String(meta.researchCandidateId || row.tuneId),
-          score: row.score,
-          dsl: {
+	          tuneId: row.tuneId,
+	          candidateId: String(meta.researchCandidateId || row.tuneId),
+	          score: row.score,
+	          v3PriorScore: Number(asRecord(meta.v3Ranking).priorScore) || undefined,
+	          v3TemporalFilter:
+	            Object.keys(asRecord(meta.v3TemporalFilter)).length > 0
+	              ? (asRecord(meta.v3TemporalFilter) as ScalpV2V3TemporalFilter)
+	              : null,
+	          v3Ranking:
+	            Object.keys(asRecord(meta.v3Ranking)).length > 0
+	              ? asRecord(meta.v3Ranking)
+	              : null,
+	          dsl: {
             candidateId: String(meta.researchCandidateId || row.tuneId),
             tuneId: row.tuneId,
             venue: row.venue as ScalpV2Venue,
@@ -3303,8 +3450,11 @@ export async function runScalpV2ResearchJob(params: {
     let smartSkippedPersisted = 0;
 
     // Pre-compute stage A week starts for the weeklyNetR pre-filter.
-    const stageAFromTs = windowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS;
-    const stageAPriorWeekStarts = listWeekStarts({ fromTs: stageAFromTs, toTs: windowToTs }).slice(0, -1);
+    const stageAFromTs = trainingWindowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS;
+    const stageAPriorWeekStarts = listWeekStarts({
+      fromTs: stageAFromTs,
+      toTs: trainingWindowToTs,
+    }).slice(0, -1);
 
     const researchCandidateKey = (c: InMemoryCandidate) =>
       `${c.venue}:${c.symbol}:${c.tuneId}:${c.session}`.toLowerCase();
@@ -3473,12 +3623,20 @@ export async function runScalpV2ResearchJob(params: {
           score: c.score,
           status: "rejected" as const,
           reasonCodes: ["SCALP_V2_RESEARCH_INLINE", entry.reasonCode],
-          metadata: {
-            evaluatedAtMs: nowTs,
-            evaluator: "v2_research_inline",
-            worker: workerMeta,
-          },
-        };
+	          metadata: {
+	            evaluatedAtMs: nowTs,
+	            evaluator: "v2_research_inline",
+	            worker: workerMeta,
+	            researchCandidateId: c.candidateId,
+	            researchDsl: c.dsl.blocksByFamily,
+	            researchReferences: c.dsl.referenceStrategyIds,
+	            researchSupportScore: c.dsl.supportScore,
+	            researchRegimeGateId: c.dsl.regimeGateId || null,
+	            composerModel: c.dsl.model,
+	            v3Ranking: c.v3Ranking || null,
+	            v3TemporalFilter: c.v3TemporalFilter || null,
+	          },
+	        };
       });
 
       try {
@@ -3804,12 +3962,14 @@ export async function runScalpV2ResearchJob(params: {
       return loaded.size;
     }
 
-    const newestWeekStart = startOfScalpV2WeekMondayUtc(windowToTs - ONE_WEEK_MS);
+    const newestWeekStart = startOfScalpV2WeekMondayUtc(
+      trainingWindowToTs - ONE_WEEK_MS,
+    );
     const initialCacheHits = await loadCandidateWeeklyCacheRange({
       label: "research.load_weekly_cache_stage_a",
       candidates: chunked,
       fromTs: stageAFromTs,
-      toTs: windowToTs,
+      toTs: trainingWindowToTs,
     });
     await emitResearchHeartbeat({ phase: "prepare_backtest", force: true, progress: { ...baseProgress, step: "cache_loaded", cacheKeys: candidateWeeklyCacheKeys.length, cacheHits: initialCacheHits } });
 
@@ -3817,8 +3977,8 @@ export async function runScalpV2ResearchJob(params: {
     const symbolsNeedingStageAFullRange = new Set<string>();
     if (cacheIsPopulated) {
       const stage = workerPolicy.stageA;
-      const fromTs = windowToTs - stage.weeks * ONE_WEEK_MS;
-      const priorStarts = listWeekStarts({ fromTs, toTs: windowToTs }).slice(0, -1);
+      const fromTs = trainingWindowToTs - stage.weeks * ONE_WEEK_MS;
+      const priorStarts = listWeekStarts({ fromTs, toTs: trainingWindowToTs }).slice(0, -1);
       for (const candidate of chunked) {
         if (symbolsNeedingStageAFullRange.has(candidate.symbol)) continue;
         const cached = candidateWeeklyCache.get(candidateCacheKey(candidate));
@@ -3935,11 +4095,11 @@ export async function runScalpV2ResearchJob(params: {
       stageId: ScalpV2WorkerStageId,
     ): ScalpV2WorkerStageResult {
       const stage = stagePolicyById.get(stageId)!;
-      const fromTs = windowToTs - stage.weeks * ONE_WEEK_MS;
+      const fromTs = trainingWindowToTs - stage.weeks * ONE_WEEK_MS;
       return buildWorkerStageSkeleton({
         stage,
         fromTs,
-        toTs: windowToTs,
+        toTs: trainingWindowToTs,
         reason: "blocked_prior_stage_failed",
       });
     }
@@ -3963,8 +4123,8 @@ export async function runScalpV2ResearchJob(params: {
     ) {
       runtime.stageResults[stage.id] = buildWorkerStageSkeleton({
         stage,
-        fromTs: windowToTs - stage.weeks * ONE_WEEK_MS,
-        toTs: windowToTs,
+        fromTs: trainingWindowToTs - stage.weeks * ONE_WEEK_MS,
+        toTs: trainingWindowToTs,
         reason,
       });
       markDownstreamBlocked(runtime, stage.id);
@@ -3999,7 +4159,7 @@ export async function runScalpV2ResearchJob(params: {
       if (!symbolCandles) {
         // Load only stage A window initially (4 weeks). If later stages need
         // a wider range, stage evaluation lazily extends to the full window.
-        const stageAFromTs = windowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS;
+        const stageAFromTs = trainingWindowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS;
         const candleFromTs =
           cacheIsPopulated && !symbolsNeedingStageAFullRange.has(candidate.symbol)
             ? newestWeekStart
@@ -4009,7 +4169,7 @@ export async function runScalpV2ResearchJob(params: {
             candidate.symbol,
             "1m",
             candleFromTs,
-            windowToTs,
+            trainingWindowToTs,
           ),
         );
         const meta = symbolMetadataMap.get(candidate.symbol) ?? null;
@@ -4144,15 +4304,16 @@ export async function runScalpV2ResearchJob(params: {
     ): Promise<ScalpV2WorkerStageResult> {
       const candidate = runtime.candidate;
       let symbolCandles = candleCache.get(candidate.symbol) ?? [];
-      const fromTs = windowToTs - stage.weeks * ONE_WEEK_MS;
+      const stageToTs = trainingWindowToTs;
+      const fromTs = stageToTs - stage.weeks * ONE_WEEK_MS;
       let stageCandles = getCachedCandleWindow({
         symbol: candidate.symbol,
         candles: symbolCandles,
         fromTs,
-        toTs: windowToTs,
+        toTs: stageToTs,
       });
       const stageStartedAtMs = nowMs();
-      const stageWeekStarts = listWeekStarts({ fromTs, toTs: windowToTs });
+      const stageWeekStarts = listWeekStarts({ fromTs, toTs: stageToTs });
       const newestWeekStartForStage =
         stageWeekStarts.length > 0
           ? stageWeekStarts[stageWeekStarts.length - 1]!
@@ -4161,7 +4322,7 @@ export async function runScalpV2ResearchJob(params: {
         return buildWorkerStageSkeleton({
           stage,
           fromTs,
-          toTs: windowToTs,
+          toTs: stageToTs,
           reason: "stage_no_weeks",
         });
       }
@@ -4184,6 +4345,11 @@ export async function runScalpV2ResearchJob(params: {
         }
         weeklyByStart.set(weekStart, cached);
       }
+      if (v3Enabled) {
+        // V3 needs trade-level replay output for lower-bound scoring, bootstrap,
+        // and holdout metadata. Weekly cache still gets written for V2 fallback.
+        missingPriorWeeks = true;
+      }
       const newestWeekCached = cachedWeeks.get(newestWeekStartForStage);
       const canReuseCachedNewestWeek =
         !missingPriorWeeks &&
@@ -4203,7 +4369,7 @@ export async function runScalpV2ResearchJob(params: {
             candidate.symbol,
             "1m",
             fromTs,
-            windowToTs,
+            stageToTs,
           ).catch(() => null),
         );
         if (extended?.record?.candles) {
@@ -4227,7 +4393,7 @@ export async function runScalpV2ResearchJob(params: {
             symbol: candidate.symbol,
             candles: symbolCandles,
             fromTs,
-            toTs: windowToTs,
+            toTs: stageToTs,
           });
         }
       }
@@ -4236,7 +4402,7 @@ export async function runScalpV2ResearchJob(params: {
         const observedWeeks = new Set<number>();
         for (const candle of stageCandles) {
           const ts = Math.floor(Number(candle.ts) || 0);
-          if (!Number.isFinite(ts) || ts < fromTs || ts >= windowToTs) continue;
+          if (!Number.isFinite(ts) || ts < fromTs || ts >= stageToTs) continue;
           observedWeeks.add(startOfScalpV2WeekMondayUtc(ts));
         }
         const missingCoverageWeeks = stageWeekStarts.filter(
@@ -4246,20 +4412,23 @@ export async function runScalpV2ResearchJob(params: {
           return buildWorkerStageSkeleton({
             stage,
             fromTs,
-            toTs: windowToTs,
+            toTs: stageToTs,
             reason: "insufficient_stage_week_candle_coverage",
           });
         }
       }
 
-      let aggregate: ReturnType<typeof aggregateStageFromWeeklyMetrics>;
+	      let aggregate: ReturnType<typeof aggregateStageFromWeeklyMetrics>;
+	      let v3StageRanking: Record<string, unknown> | null = null;
+	      let v3Bootstrap: Record<string, unknown> | null = null;
+	      let v3Holdout: Record<string, unknown> | null = null;
 
       if (missingPriorWeeks) {
         if (stageCandles.length < workerPolicy.minCandles) {
           return buildWorkerStageSkeleton({
             stage,
             fromTs,
-            toTs: windowToTs,
+            toTs: stageToTs,
             reason: "insufficient_candles",
           });
         }
@@ -4277,17 +4446,106 @@ export async function runScalpV2ResearchJob(params: {
         const fullReplayEarlyAborted = Boolean(fullReplay.earlyAborted);
         if (fullReplayEarlyAborted) earlyAbortedStageReplays += 1;
         logResearch("replay_done", `${stage.id}:full:${candidate.symbol}`);
-        weeklyByStart = buildWorkerStageWeeklyMetricsMap({
-          trades: fullReplay.trades,
-          fromTs,
-          toTs: windowToTs,
-        });
-        aggregate = aggregateStageFromWeeklyMetrics({
-          fromTs,
-          toTs: windowToTs,
-          weeklyByStart,
-        });
-        if (!fullReplayEarlyAborted) {
+	        weeklyByStart = buildWorkerStageWeeklyMetricsMap({
+	          trades: fullReplay.trades,
+	          fromTs,
+	          toTs: stageToTs,
+	        });
+	        aggregate = aggregateStageFromWeeklyMetrics({
+	          fromTs,
+	          toTs: stageToTs,
+	          weeklyByStart,
+	        });
+	        if (v3Enabled) {
+	          const weeklyNetR = Object.fromEntries(
+	            Array.from(weeklyByStart.entries()).map(([ws, metrics]) => [
+	              String(ws),
+	              metrics.netR,
+	            ]),
+	          );
+	          const ranking = computeScalpV2V3EdgeScore({
+	            trades: fullReplay.trades,
+	            weeklyNetR,
+	            minVariantTrades: v3Cfg.minVariantTrades,
+	            isTemporalVariant: Boolean(candidate.v3TemporalFilter?.variantKind),
+	          });
+	          v3StageRanking = ranking as unknown as Record<string, unknown>;
+	          if (
+	            stage.id === "a" &&
+	            aggregate.trades >= Math.max(1, Math.floor(stage.minTrades * 0.75)) &&
+	            aggregate.netR >= stage.minNetR * 0.5
+	          ) {
+	            v3Bootstrap =
+	              (computeScalpV2V3Bootstrap({
+	                trades: fullReplay.trades,
+	                resamples: v3Cfg.bootstrapResamples,
+	                seed: `${candidate.symbol}:${candidate.tuneId}:${windowToTs}`,
+	              }) as unknown as Record<string, unknown> | null) || null;
+	          }
+	          if (stage.id === "c") {
+	            let holdoutCandles = getCachedCandleWindow({
+	              symbol: candidate.symbol,
+	              candles: symbolCandles,
+	              fromTs,
+	              toTs: windowToTs,
+	            });
+	            const hasHoldoutCandles =
+	              holdoutCandles.length > 0 &&
+	              holdoutCandles[holdoutCandles.length - 1]!.ts >= windowToTs - ONE_DAY_MS;
+	            if (!hasHoldoutCandles) {
+	              const extended = await withTiming("research.load_candles_holdout", () =>
+	                loadScalpCandleHistoryInRange(
+	                  candidate.symbol,
+	                  "1m",
+	                  fromTs,
+	                  windowToTs,
+	                ).catch(() => null),
+	              );
+	              if (extended?.record?.candles) {
+	                const meta = symbolMetadataMap.get(candidate.symbol) ?? null;
+	                const pip = pipSizeForScalpSymbol(candidate.symbol, meta ?? undefined);
+	                const cat = inferScalpV2AssetCategory(candidate.symbol);
+	                const floor = minSpreadPipsForCategory(cat);
+	                const base = defaultScalpReplayConfig(candidate.symbol);
+	                const tick = meta?.tickSize ? meta.tickSize / pip : 0;
+	                const spread = Math.max(base.defaultSpreadPips, floor, tick);
+	                symbolCandles = filterSundayReplayCandles(
+	                  toReplayCandlesFromHistory(
+	                    extended.record.candles as Array<
+	                      [number, number, number, number, number, number]
+	                    >,
+	                    spread,
+	                  ),
+	                );
+	                candleCache.set(candidate.symbol, symbolCandles);
+	                holdoutCandles = getCachedCandleWindow({
+	                  symbol: candidate.symbol,
+	                  candles: symbolCandles,
+	                  fromTs,
+	                  toTs: windowToTs,
+	                });
+	              }
+	            }
+	            const holdoutReplay = await withTiming("research.replay_holdout_stage", () =>
+	              runScalpReplay({
+	                candles: holdoutCandles,
+	                pipSize: runtime.symbolPipSize,
+	                config: runtime.replayConfig,
+	                captureTimeline: false,
+	              }),
+	            );
+	            const holdout = computeScalpV2V3Holdout({
+	              trades: holdoutReplay.trades,
+	              windowToTs,
+	              holdoutWeeks: v3Cfg.holdoutWeeks,
+	              trainingNetR: aggregate.netR,
+	              trainingExpectancyR: aggregate.expectancyR,
+	              minTrades: Math.max(1, Math.min(stage.minTrades, v3Cfg.minVariantTrades)),
+	            });
+	            v3Holdout = holdout as unknown as Record<string, unknown>;
+	          }
+	        }
+	        if (!fullReplayEarlyAborted) {
           for (const [ws, metrics] of weeklyByStart.entries()) {
             enqueueCandidateWeekCacheWrite({
               runtime,
@@ -4300,7 +4558,7 @@ export async function runScalpV2ResearchJob(params: {
         weeklyByStart.set(newestWeekStartForStage, newestWeekCached!);
         aggregate = aggregateStageFromWeeklyMetrics({
           fromTs,
-          toTs: windowToTs,
+          toTs: stageToTs,
           weeklyByStart,
         });
         cachedStageReuses += 1;
@@ -4310,14 +4568,14 @@ export async function runScalpV2ResearchJob(params: {
           return buildWorkerStageSkeleton({
             stage,
             fromTs,
-            toTs: windowToTs,
+            toTs: stageToTs,
             reason: "insufficient_latest_week_candles",
           });
         }
         weeklyByStart.set(newestWeekStartForStage, newestWeekMetrics);
         aggregate = aggregateStageFromWeeklyMetrics({
           fromTs,
-          toTs: windowToTs,
+          toTs: stageToTs,
           weeklyByStart,
         });
         enqueueCandidateWeekCacheWrite({
@@ -4331,7 +4589,7 @@ export async function runScalpV2ResearchJob(params: {
         id: stage.id,
         weeks: stage.weeks,
         fromTs,
-        toTs: windowToTs,
+        toTs: stageToTs,
         executed: true,
         passed: false,
         reason: "stage_pending_gate",
@@ -4348,8 +4606,11 @@ export async function runScalpV2ResearchJob(params: {
         weeklyNetR: aggregate.weeklyNetR,
         maxWeeklyNetR: aggregate.maxWeeklyNetR,
         largestTradeR: aggregate.largestTradeR,
-        exitReasons: aggregate.exitReasons,
-      };
+	        exitReasons: aggregate.exitReasons,
+	        v3Ranking: v3StageRanking,
+	        v3Bootstrap,
+	        v3Holdout,
+	      };
       const gate = evaluateWorkerStageGate({ stage, stageResult });
       stageResult.passed = gate.passed;
       stageResult.reason = gate.reason || "stage_passed";
@@ -4370,9 +4631,9 @@ export async function runScalpV2ResearchJob(params: {
             ? stageBResult.passed
             : stageCResult.passed;
 
-      const workerMeta = {
-        version: "v2_research_inline_r3",
-        evaluatedAtMs: nowTs,
+	      const workerMeta = {
+	        version: v3Enabled ? "v3_research_inline_r1" : "v2_research_inline_r3",
+	        evaluatedAtMs: nowTs,
         policy: {
           stageA: workerPolicy.stageA,
           stageB: workerPolicy.stageB,
@@ -4386,11 +4647,26 @@ export async function runScalpV2ResearchJob(params: {
           windowSliceCacheEnabled,
         },
         windowToTs,
-        stageA: stageAResult,
-        stageB: stageBResult,
-        stageC: stageCResult,
-        finalPass,
-      };
+	        stageA: stageAResult,
+	        stageB: stageBResult,
+	        stageC: stageCResult,
+	        holdout: stageCResult.v3Holdout || null,
+	        bootstrap: stageAResult.v3Bootstrap || null,
+	        finalPass,
+	      };
+	      const stageAEdge = Number(asRecord(stageAResult.v3Ranking).edgeScore);
+	      const finalScore =
+	        v3Enabled && Number.isFinite(stageAEdge)
+	          ? stageAEdge * 100 + (candidate.v3PriorScore || candidate.score) / 1_000
+	          : candidate.score;
+	      const mergedV3Ranking = v3Enabled
+	        ? {
+	            ...(candidate.v3Ranking || {}),
+	            stageA: stageAResult.v3Ranking || null,
+	            stageC: stageCResult.v3Ranking || null,
+	            edgeScore: Number.isFinite(stageAEdge) ? stageAEdge : null,
+	          }
+	        : candidate.v3Ranking || null;
 
       if (!meetsMinStage) {
         droppedBelowMinStage += 1;
@@ -4399,10 +4675,10 @@ export async function runScalpV2ResearchJob(params: {
           row: {
             venue: candidate.venue,
             symbol: candidate.symbol,
-            strategyId: candidate.strategyId,
-            tuneId: candidate.tuneId,
-            entrySessionProfile: candidate.session,
-            score: candidate.score,
+	            strategyId: candidate.strategyId,
+	            tuneId: candidate.tuneId,
+	            entrySessionProfile: candidate.session,
+	            score: finalScore,
             status: "rejected",
             reasonCodes: [
               "SCALP_V2_RESEARCH_INLINE",
@@ -4410,11 +4686,13 @@ export async function runScalpV2ResearchJob(params: {
             ],
             metadata: {
               evaluatedAtMs: nowTs,
-              evaluator: "v2_research_inline",
-              worker: workerMeta,
-            },
-          },
-        });
+	              evaluator: "v2_research_inline",
+	              worker: workerMeta,
+	              v3Ranking: mergedV3Ranking,
+	              v3TemporalFilter: candidate.v3TemporalFilter || null,
+	            },
+	          },
+	        });
         runtime.finalized = true;
         return;
       }
@@ -4429,10 +4707,12 @@ export async function runScalpV2ResearchJob(params: {
         researchDsl: candidate.dsl.blocksByFamily,
         researchReferences: candidate.dsl.referenceStrategyIds,
         researchSupportScore: candidate.dsl.supportScore,
-        researchRegimeGateId: candidate.dsl.regimeGateId || null,
-        composerModel: candidate.dsl.model,
-        composerExecutionPlan: executionPlan,
-        evaluatedAtMs: nowTs,
+	        researchRegimeGateId: candidate.dsl.regimeGateId || null,
+	        composerModel: candidate.dsl.model,
+	        composerExecutionPlan: executionPlan,
+	        v3Ranking: mergedV3Ranking,
+	        v3TemporalFilter: candidate.v3TemporalFilter || null,
+	        evaluatedAtMs: nowTs,
         evaluator: "v2_research_inline",
         worker: workerMeta,
       };
@@ -4442,9 +4722,9 @@ export async function runScalpV2ResearchJob(params: {
           venue: candidate.venue,
           symbol: candidate.symbol,
           strategyId: candidate.strategyId,
-          tuneId: candidate.tuneId,
-          entrySessionProfile: candidate.session,
-          score: candidate.score,
+	          tuneId: candidate.tuneId,
+	          entrySessionProfile: candidate.session,
+	          score: finalScore,
           status: "evaluated",
           reasonCodes: [
             "SCALP_V2_RESEARCH_INLINE",
@@ -4487,10 +4767,15 @@ export async function runScalpV2ResearchJob(params: {
           tuneId: candidate.tuneId,
           deploymentId,
           tuneLabel: candidate.tuneId,
-          strategy: {
-            ...replayBaseConfig.strategy,
-            entrySessionProfile: candidate.session,
-            ...exitOverrides,
+	          strategy: {
+	            ...replayBaseConfig.strategy,
+	            entrySessionProfile: candidate.session,
+	            allowedSessionWindowSlots:
+	              candidate.v3TemporalFilter?.allowedSessionWindowSlots,
+	            sessionSlotMinutes: candidate.v3TemporalFilter?.sessionSlotMinutes,
+	            allowedWeekdaysLocal: candidate.v3TemporalFilter?.allowedWeekdaysLocal,
+	            allowedUtcHours: candidate.v3TemporalFilter?.allowedUtcHours,
+	            ...exitOverrides,
             ...entryOverrides,
             ...riskReplayOverrides,
             ...smReplayOverrides,
@@ -4953,7 +5238,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         row.status === "promoted" ||
         row.status === "rejected",
     );
-    const existingDeploymentsRaw = await listScalpV2Deployments({ limit: 10_000 });
+	    const existingDeploymentsRaw = await listScalpV2Deployments({ limit: 10_000 });
     const existingDeployments = existingDeploymentsRaw.filter((row) =>
       isScalpV2RuntimeSymbolInScope({
         runtime,
@@ -4966,7 +5251,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       0,
       existingDeploymentsRaw.length - existingDeployments.length,
     );
-    const offScopeEnabledDeployments = existingDeploymentsRaw.filter(
+	    const offScopeEnabledDeployments = existingDeploymentsRaw.filter(
       (row) =>
         row.enabled &&
         !isScalpV2RuntimeSymbolInScope({
@@ -4975,7 +5260,30 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
           symbol: row.symbol,
           includeLiveSeeds: true,
         }),
-    );
+	    );
+	    const v3Cfg = resolveScalpV2V3Config();
+	    const v3Enabled = isScalpV2V3ResearchEnabled();
+	    const v3HoldoutCompletedCandidates = allCandidates.filter((row) =>
+	      Boolean(asRecord(asRecord(row.metadata).worker).holdout),
+	    ).length;
+	    const v3HoldoutHardGateActive =
+	      v3Enabled && v3HoldoutCompletedCandidates >= v3Cfg.hardGateMinCandidates;
+	    const hasV3Validation = (gateRaw: unknown): boolean => {
+	      const gate = asRecord(gateRaw);
+	      if (String(gate.v3ValidationStatus || "") === "validated") return true;
+	      if (Object.keys(asRecord(gate.holdout)).length > 0) return true;
+	      if (Object.keys(asRecord(gate.worker)).length > 0 && Object.keys(asRecord(asRecord(gate.worker).holdout)).length > 0) {
+	        return true;
+	      }
+	      return false;
+	    };
+	    const v3PendingEnabledDeployments = existingDeployments.filter(
+	      (row) => row.enabled && !hasV3Validation(row.promotionGate),
+	    );
+	    const v3PromotionFreezeActive =
+	      v3Enabled &&
+	      v3PendingEnabledDeployments.length > 0 &&
+	      !v3Cfg.promotionFreezeBypass;
     if (offScopeEnabledDeployments.length > 0) {
       await upsertScalpV2Deployments({
         rows: offScopeEnabledDeployments.map((row) => ({
@@ -5119,8 +5427,11 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       weeklyGateReason: string | null;
       workerStageCPass: boolean;
       workerStageReason: string | null;
-      workerStages: Record<string, unknown> | null;
-      eligible: boolean;
+	      workerStages: Record<string, unknown> | null;
+	      v3Holdout: Record<string, unknown> | null;
+	      v3Drift: Record<string, unknown> | null;
+	      v3ValidationStatus: "validated" | "stale" | "pending";
+	      eligible: boolean;
       shadowEligible: boolean;
       reason: string;
       enabled: boolean;
@@ -5238,9 +5549,42 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         policy.minTradesPerWeek > 0 &&
         freshness.ready &&
         weeklyRows.some((row) => row.trades < policy.minTradesPerWeek);
-      const totalTrades =
-        weeklyMetrics?.totalTrades ||
-        weeklyRows.reduce((acc, row) => acc + row.trades, 0);
+	      const totalTrades =
+	        weeklyMetrics?.totalTrades ||
+	        weeklyRows.reduce((acc, row) => acc + row.trades, 0);
+	      const workerStagesRecord = workerGate.workerStages || null;
+	      const v3Holdout = asRecord(asRecord(candidate?.metadata || {}).worker).holdout
+	        ? asRecord(asRecord(candidate?.metadata || {}).worker).holdout as Record<string, unknown>
+	        : asRecord(asRecord(candidate?.metadata || {}).v3Holdout);
+	      const holdoutPassed =
+	        !v3Enabled ||
+	        !v3HoldoutHardGateActive ||
+	        Boolean(asRecord(v3Holdout).passed);
+	      const drift = existing
+	        ? computeScalpV2V3Drift({
+	            deployment: existing,
+	            ledgerRows: ledgerRows
+	              .filter((row) => row.deploymentId === deploymentId)
+	              .map((row) => ({
+	                tsExitMs: row.tsExitMs,
+	                rMultiple: row.rMultiple,
+	              })),
+	            nowMs: nowTs,
+	          })
+	        : null;
+	      const driftBlocksNewPromotion =
+	        v3Enabled &&
+	        drift &&
+	        drift.status === "drifting" &&
+	        !currentlyEnabled;
+	      const v3ValidationStatus =
+	        v3Enabled && Object.keys(asRecord(v3Holdout)).length > 0
+	          ? "validated"
+	          : v3Enabled
+	            ? currentlyEnabled
+	              ? "stale"
+	              : "pending"
+	            : "validated";
 
       // Direct promotion: backtest stage C pass is sufficient for live
       // deployment. Backtests mirror live conditions so no shadow probation
@@ -5264,15 +5608,30 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         reason = workerGate.reason || "worker_stage_c_failed";
       } else if (!workerFreshness.ready) {
         reason = workerFreshness.reason || "worker_stage_c_freshness_incomplete";
-      } else if (backtestFourWeekGateFailed) {
-        reason = "backtest_4w_net_r_below_threshold";
-      } else {
-        // Stage C passed with acceptable 4-week rolling netR —
-        // promote directly to live.
-        eligible = true;
-        shadowEligible = true;
-        reason = "stage_c_passed";
-      }
+	      } else if (backtestFourWeekGateFailed) {
+	        reason = "backtest_4w_net_r_below_threshold";
+	      } else if (!holdoutPassed) {
+	        reason = "v3_holdout_gate_failed";
+	      } else if (driftBlocksNewPromotion) {
+	        reason = "v3_drift_gate_failed";
+	      } else if (v3PromotionFreezeActive && !currentlyEnabled) {
+	        reason = "v3_promotion_freeze_pending_validation";
+	      } else {
+	        // Stage C passed with acceptable 4-week rolling netR —
+	        // promote directly to live.
+	        eligible = true;
+	        shadowEligible = true;
+	        reason = "stage_c_passed";
+	      }
+	      if (
+	        v3PromotionFreezeActive &&
+	        currentlyEnabled &&
+	        v3ValidationStatus === "stale"
+	      ) {
+	        eligible = true;
+	        shadowEligible = true;
+	        reason = "v3_existing_deployment_pending_validation";
+	      }
 
       const promotedAtMs = Number(
         asRecord(existing?.promotionGate || {}).promotedAtMs,
@@ -5298,9 +5657,12 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         winningWeeks12w,
         consecutiveWinningWeeks,
         weeklyGateReason: weeklyGate.reason,
-        workerStageCPass: workerGate.stageCPass,
-        workerStageReason: workerGate.reason,
-        workerStages: workerGate.workerStages,
+	        workerStageCPass: workerGate.stageCPass,
+	        workerStageReason: workerGate.reason,
+	        workerStages: workerStagesRecord,
+	        v3Holdout: Object.keys(asRecord(v3Holdout)).length > 0 ? v3Holdout : null,
+	        v3Drift: drift as unknown as Record<string, unknown> | null,
+	        v3ValidationStatus,
         eligible,
         shadowEligible,
         reason,
@@ -5470,9 +5832,34 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
           droppedByBudget: row.droppedByBudget,
           strictSessionEvidence: row.strictSessionEvidence,
           freshness: row.freshness,
-          weekly: row.weeklyMetrics,
-          worker: row.workerStages,
-          lifecycle: row.lifecycle,
+	          weekly: row.weeklyMetrics,
+	          worker: row.workerStages,
+	          holdout: row.v3Holdout,
+	          drift: row.v3Drift,
+	          v3ValidationStatus: row.v3ValidationStatus,
+	          v3TemporalFilter: asRecord(
+	            asRecord(
+	              candidateByDeploymentId.get(
+	                toDeploymentId({
+	                  venue: row.venue,
+	                  symbol: row.symbol,
+	                  strategyId: row.strategyId,
+	                  tuneId: row.tuneId,
+	                  session: row.entrySessionProfile,
+	                }),
+	              )?.metadata || {},
+	            ).v3TemporalFilter || {},
+	          ),
+	          v3: {
+	            enabled: v3Enabled,
+	            holdoutHardGateActive: v3HoldoutHardGateActive,
+	            holdoutCompletedCandidates: v3HoldoutCompletedCandidates,
+	            hardGateMinCandidates: v3Cfg.hardGateMinCandidates,
+	            promotionFreezeActive: v3PromotionFreezeActive,
+	            pendingEnabledValidation: v3PendingEnabledDeployments.length,
+	            promotionFreezeBypass: v3Cfg.promotionFreezeBypass,
+	          },
+	          lifecycle: row.lifecycle,
           thresholds: {
             minCompletedWeeks: policy.minCompletedWeeks,
             strictPerSession: true,
@@ -5487,8 +5874,12 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
               policy.maxTopWeekPnlConcentrationPct,
             minFourWeekNetR: policy.minFourWeekNetR,
             fourWeekGroupCount: policy.fourWeekGroupCount,
-            fourWeekGroupSize: policy.fourWeekGroupSize,
-          },
+	            fourWeekGroupSize: policy.fourWeekGroupSize,
+	            v3MinVariantTrades: v3Cfg.minVariantTrades,
+	            v3HoldoutWeeks: v3Cfg.holdoutWeeks,
+	            v3DriftMinTrades: v3Cfg.driftMinTrades,
+	            v3DriftMinWeeks: v3Cfg.driftMinWeeks,
+	          },
           shortlistIncluded: row.shortlistIncluded,
           dsl: asRecord(
             asRecord(
@@ -5672,8 +6063,22 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       filteredDeploymentsOutOfScope,
       demotedOutOfScopeEnabled: offScopeEnabledDeployments.length,
       enabledSlots: runtime.budgets.maxEnabledDeployments,
-      highlightsUpserted,
-      workerStageFailedCount: drafts.filter(
+	      highlightsUpserted,
+	      v3: {
+	        enabled: v3Enabled,
+	        holdoutCompletedCandidates: v3HoldoutCompletedCandidates,
+	        hardGateMinCandidates: v3Cfg.hardGateMinCandidates,
+	        holdoutHardGateActive: v3HoldoutHardGateActive,
+	        promotionFreezeActive: v3PromotionFreezeActive,
+	        promotionFreezeBypass: v3Cfg.promotionFreezeBypass,
+	        pendingEnabledValidation: v3PendingEnabledDeployments.length,
+	        driftMinTrades: v3Cfg.driftMinTrades,
+	        driftMinWeeks: v3Cfg.driftMinWeeks,
+	        driftingDeployments: drafts.filter(
+	          (row) => String(asRecord(row.v3Drift).status) === "drifting",
+	        ).length,
+	      },
+	      workerStageFailedCount: drafts.filter(
         (row) => row.reason === "worker_stage_c_failed",
       ).length,
       reasonCounts,
@@ -5969,17 +6374,37 @@ export async function runScalpV2ExecuteJob(params: {
         const riskReplayOverrides = resolveRiskRuleReplayOverrides(
           Array.isArray(dslFromGate.risk_rule) ? (dslFromGate.risk_rule as string[]) : null,
         );
-        const smOverrides = resolveStateMachineOverrides(
-          Array.isArray(dslFromGate.state_machine) ? (dslFromGate.state_machine as string[]) : null,
-        );
-        const configOverride = buildScalpV2ExecuteConfigOverride({
-          entrySessionProfile: deployment.entrySessionProfile,
-          riskProfile: rp,
-          entryTriggerOverrides: entryOverrides,
-          exitRuleOverrides: exitOverrides,
-          riskRuleReplayOverrides: riskReplayOverrides,
-          stateMachineOverrides: smOverrides,
-        });
+	        const smOverrides = resolveStateMachineOverrides(
+	          Array.isArray(dslFromGate.state_machine) ? (dslFromGate.state_machine as string[]) : null,
+	        );
+	        const temporalFilterRaw = asRecord(deployment.promotionGate).v3TemporalFilter;
+	        const temporalFilter =
+	          Object.keys(asRecord(temporalFilterRaw)).length > 0
+	            ? (asRecord(temporalFilterRaw) as ScalpV2V3TemporalFilter)
+	            : null;
+	        const newsBlackout = await evaluateScalpV2V3NewsBlackout({
+	          venue: deployment.venue,
+	          symbol: deployment.symbol,
+	          nowMs: nowTs,
+	        }).catch(() => ({
+	          blocked: false,
+	          reasonCodes: ["V3_NEWS_BLACKOUT_CHECK_FAILED"],
+	          tier: null,
+	          staleData: true,
+	          activeEvents: [],
+	        }));
+	        const configOverride = buildScalpV2ExecuteConfigOverride({
+	          entrySessionProfile: deployment.entrySessionProfile,
+	          riskProfile: rp,
+	          entryTriggerOverrides: entryOverrides,
+	          exitRuleOverrides: exitOverrides,
+	          riskRuleReplayOverrides: riskReplayOverrides,
+	          stateMachineOverrides: smOverrides,
+	          temporalFilter,
+	          entryBlockReasonCodes: newsBlackout.blocked
+	            ? newsBlackout.reasonCodes
+	            : [],
+	        });
         const runtimeSnapshot = buildScalpV2RuntimeSnapshotForDeployment({
           strategyId: deployment.strategyId,
         });
@@ -6009,11 +6434,12 @@ export async function runScalpV2ExecuteJob(params: {
             eventType: "position_snapshot",
             reasonCodes: result.reasonCodes,
             sourceOfTruth: "system",
-            rawPayload: {
-              state: result.state,
-              dryRun: result.dryRun,
-              runLockAcquired: result.runLockAcquired,
-            },
+	            rawPayload: {
+	              state: result.state,
+	              dryRun: result.dryRun,
+	              runLockAcquired: result.runLockAcquired,
+	              v3NewsBlackout: newsBlackout,
+	            },
           }),
         );
 

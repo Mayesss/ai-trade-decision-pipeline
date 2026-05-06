@@ -185,6 +185,11 @@ export interface ScalpStrategyConfig {
     asiaWindowLocal: [string, string];
     raidWindowLocal: [string, string];
     blockedBerlinEntryHours: number[];
+    allowedSessionWindowSlots?: number[];
+    sessionSlotMinutes?: number;
+    allowedWeekdaysLocal?: number[];
+    allowedUtcHours?: number[];
+    entryBlockReasonCodes?: string[];
   };
   timeframes: {
     asiaBase: ScalpBaseTimeframe;
