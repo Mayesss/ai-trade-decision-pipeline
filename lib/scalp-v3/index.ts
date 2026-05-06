@@ -97,6 +97,11 @@ export type ScalpV2V3NewsBlackout = {
   activeEvents: ForexCompactEvent[];
 };
 
+export type ScalpV2V3EntryWindowSpec = {
+  session: ScalpV2Session;
+  filter?: ScalpV2V3TemporalFilter | null;
+};
+
 function envBool(name: string, fallback: boolean): boolean {
   const raw = String(process.env[name] || "").trim().toLowerCase();
   if (!raw) return fallback;
@@ -418,6 +423,73 @@ export function evaluateScalpV2V3TemporalFilter(params: {
     weekdayLocal: local.weekday,
     utcHour,
   };
+}
+
+function isInsideSessionWindow(params: {
+  nowMs: number;
+  session: ScalpV2Session;
+}): boolean {
+  const timeZone = SESSION_TIME_ZONE[params.session] || "Europe/Berlin";
+  const local = localParts(params.nowMs, timeZone);
+  const sessionStart = SESSION_START_MINUTE[params.session] ?? 8 * 60;
+  const minuteOffset = local.minuteOfDay - sessionStart;
+  return minuteOffset >= 0 && minuteOffset < 4 * 60;
+}
+
+function sessionSlotMinutes(filter?: ScalpV2V3TemporalFilter | null): number {
+  return Math.max(
+    5,
+    Math.floor(filter?.sessionSlotMinutes || resolveScalpV2V3Config().sessionSlotMinutes),
+  );
+}
+
+function buildEntryWindowCells(params: {
+  spec: ScalpV2V3EntryWindowSpec;
+  nowMs: number;
+  granularityMinutes: number;
+}): Set<number> {
+  const start = startOfUtcWeekMonday(params.nowMs);
+  const stepMs = Math.max(5, Math.floor(params.granularityMinutes)) * 60_000;
+  const cells = new Set<number>();
+  for (let ts = start; ts < start + 14 * ONE_DAY_MS; ts += stepMs) {
+    if (!isInsideSessionWindow({ nowMs: ts, session: params.spec.session })) continue;
+    const temporal = evaluateScalpV2V3TemporalFilter({
+      nowMs: ts,
+      session: params.spec.session,
+      filter: params.spec.filter || null,
+    });
+    if (!temporal.allowed) continue;
+    cells.add(Math.floor(ts / stepMs));
+  }
+  return cells;
+}
+
+export function scalpV2V3EntryWindowsOverlap(params: {
+  a: ScalpV2V3EntryWindowSpec;
+  b: ScalpV2V3EntryWindowSpec;
+  nowMs?: number;
+}): boolean {
+  const granularityMinutes = Math.min(
+    15,
+    sessionSlotMinutes(params.a.filter),
+    sessionSlotMinutes(params.b.filter),
+  );
+  const nowMs = Math.floor(Number(params.nowMs) || Date.now());
+  const aCells = buildEntryWindowCells({
+    spec: params.a,
+    nowMs,
+    granularityMinutes,
+  });
+  if (aCells.size <= 0) return false;
+  const bCells = buildEntryWindowCells({
+    spec: params.b,
+    nowMs,
+    granularityMinutes,
+  });
+  for (const cell of bCells) {
+    if (aCells.has(cell)) return true;
+  }
+  return false;
 }
 
 export function buildScalpV2V3TemporalVariants(params: {

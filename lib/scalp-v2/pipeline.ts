@@ -60,6 +60,7 @@ import {
   evaluateScalpV2V3NewsBlackout,
   isScalpV2V3ResearchEnabled,
   resolveScalpV2V3Config,
+  scalpV2V3EntryWindowsOverlap,
   type ScalpV2V3TemporalFilter,
 } from "../scalp-v3";
 import {
@@ -100,6 +101,7 @@ import {
 import {
   isScalpV2DiscoverSymbolAllowed,
   isScalpV2SundayUtc,
+  normalizeReasonCodes,
 } from "./logic";
 import {
   buildScalpV2ModelGuidedComposerGrid,
@@ -5366,6 +5368,11 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       toTsMs: windowToTs,
       limit: Math.max(50_000, consideredDeploymentIds.length * 5_000),
     });
+    const openPositionDeploymentIds = new Set(
+      (await listScalpV2OpenPositions().catch(() => []))
+        .map((row) => String(row.deploymentId || "").trim())
+        .filter(Boolean),
+    );
     const weeklyByDeploymentSession = new Map<
       string,
       Map<number, { trades: number; netR: number }>
@@ -5428,9 +5435,12 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       workerStageCPass: boolean;
       workerStageReason: string | null;
 	      workerStages: Record<string, unknown> | null;
+	      v3TemporalFilter: ScalpV2V3TemporalFilter | null;
 	      v3Holdout: Record<string, unknown> | null;
 	      v3Drift: Record<string, unknown> | null;
 	      v3ValidationStatus: "validated" | "stale" | "pending";
+	      entryBlockReasonCodes: string[];
+	      brokerSeat: Record<string, unknown> | null;
 	      eligible: boolean;
       shadowEligible: boolean;
       reason: string;
@@ -5553,6 +5563,18 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 	        weeklyMetrics?.totalTrades ||
 	        weeklyRows.reduce((acc, row) => acc + row.trades, 0);
 	      const workerStagesRecord = workerGate.workerStages || null;
+	      const candidateTemporalFilter = asRecord(
+	        asRecord(candidate?.metadata || {}).v3TemporalFilter,
+	      );
+	      const existingTemporalFilter = asRecord(
+	        asRecord(existing?.promotionGate || {}).v3TemporalFilter,
+	      );
+	      const v3TemporalFilter =
+	        Object.keys(candidateTemporalFilter).length > 0
+	          ? (candidateTemporalFilter as ScalpV2V3TemporalFilter)
+	          : Object.keys(existingTemporalFilter).length > 0
+	            ? (existingTemporalFilter as ScalpV2V3TemporalFilter)
+	            : null;
 	      const v3Holdout = asRecord(asRecord(candidate?.metadata || {}).worker).holdout
 	        ? asRecord(asRecord(candidate?.metadata || {}).worker).holdout as Record<string, unknown>
 	        : asRecord(asRecord(candidate?.metadata || {}).v3Holdout);
@@ -5660,9 +5682,12 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 	        workerStageCPass: workerGate.stageCPass,
 	        workerStageReason: workerGate.reason,
 	        workerStages: workerStagesRecord,
+	        v3TemporalFilter,
 	        v3Holdout: Object.keys(asRecord(v3Holdout)).length > 0 ? v3Holdout : null,
 	        v3Drift: drift as unknown as Record<string, unknown> | null,
 	        v3ValidationStatus,
+	        entryBlockReasonCodes: [],
+	        brokerSeat: null,
         eligible,
         shadowEligible,
         reason,
@@ -5716,6 +5741,63 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       }
 
       if (row.enabled) row.promotedAtMs = nowTs;
+    }
+
+    let demotedByBrokerEntryOverlap = 0;
+    let managementOnlyByBrokerEntryOverlap = 0;
+    const entrySeatWinnersByVenue = new Map<ScalpV2Venue, PromotionDraft[]>();
+    for (const row of drafts
+      .filter((draft) => draft.enabled)
+      .sort((a, b) => b.score - a.score)) {
+      const winners = entrySeatWinnersByVenue.get(row.venue) || [];
+      const overlappingWinner = winners.find((winner) =>
+        scalpV2V3EntryWindowsOverlap({
+          nowMs: nowTs,
+          a: {
+            session: winner.entrySessionProfile,
+            filter: winner.v3TemporalFilter,
+          },
+          b: {
+            session: row.entrySessionProfile,
+            filter: row.v3TemporalFilter,
+          },
+        }),
+      );
+      if (!overlappingWinner) {
+        row.brokerSeat = {
+          status: "winner",
+          venue: row.venue,
+          evaluatedAtMs: nowTs,
+        };
+        winners.push(row);
+        entrySeatWinnersByVenue.set(row.venue, winners);
+        continue;
+      }
+
+      const hasOpenPosition = openPositionDeploymentIds.has(row.deploymentId);
+      row.brokerSeat = {
+        status: hasOpenPosition && row.currentlyEnabled ? "management_only" : "excluded",
+        venue: row.venue,
+        winnerDeploymentId: overlappingWinner.deploymentId,
+        winnerSymbol: overlappingWinner.symbol,
+        winnerSession: overlappingWinner.entrySessionProfile,
+        evaluatedAtMs: nowTs,
+      };
+      if (hasOpenPosition && row.currentlyEnabled) {
+        row.entryBlockReasonCodes = normalizeReasonCodes([
+          ...row.entryBlockReasonCodes,
+          "V3_BROKER_SEAT_ENTRY_BLOCKED",
+          "V3_BROKER_ENTRY_WINDOW_OVERLAP",
+        ]);
+        row.reason = "broker_entry_window_overlap_management_only";
+        managementOnlyByBrokerEntryOverlap += 1;
+      } else {
+        row.enabled = false;
+        row.reason = "broker_entry_window_overlap_demoted";
+        row.lifecycle.state = "candidate";
+        row.lifecycle.lastSeatReleaseAtMs = nowTs;
+        demotedByBrokerEntryOverlap += 1;
+      }
     }
 
     const loserFailReasons = new Set([
@@ -5782,7 +5864,11 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     }
 
     const enabledByUniquenessKey = new Map<string, PromotionDraft[]>();
-    for (const row of drafts.filter((draft) => draft.enabled)) {
+    for (const row of drafts.filter(
+      (draft) =>
+        draft.enabled &&
+        !draft.entryBlockReasonCodes.includes("V3_BROKER_SEAT_ENTRY_BLOCKED"),
+    )) {
       const key = `${row.venue}:${row.symbol}:${row.strategyId}:${row.entrySessionProfile}`;
       const bucket = enabledByUniquenessKey.get(key) || [];
       bucket.push(row);
@@ -5837,19 +5923,9 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 	          holdout: row.v3Holdout,
 	          drift: row.v3Drift,
 	          v3ValidationStatus: row.v3ValidationStatus,
-	          v3TemporalFilter: asRecord(
-	            asRecord(
-	              candidateByDeploymentId.get(
-	                toDeploymentId({
-	                  venue: row.venue,
-	                  symbol: row.symbol,
-	                  strategyId: row.strategyId,
-	                  tuneId: row.tuneId,
-	                  session: row.entrySessionProfile,
-	                }),
-	              )?.metadata || {},
-	            ).v3TemporalFilter || {},
-	          ),
+	          v3TemporalFilter: row.v3TemporalFilter || {},
+	          entryBlockReasonCodes: row.entryBlockReasonCodes,
+	          brokerSeat: row.brokerSeat,
 	          v3: {
 	            enabled: v3Enabled,
 	            holdoutHardGateActive: v3HoldoutHardGateActive,
@@ -6039,6 +6115,11 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     const liveEnabledCount = drafts.filter(
       (row) => row.enabled && row.eligible,
     ).length;
+    const entryActiveEnabledCount = drafts.filter(
+      (row) =>
+        row.enabled &&
+        !row.entryBlockReasonCodes.includes("V3_BROKER_SEAT_ENTRY_BLOCKED"),
+    ).length;
 
     processed = promotionPool.length;
     succeeded = rows.length;
@@ -6051,9 +6132,12 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       suppressedCount,
       enabledCount,
       liveEnabledCount,
+      entryActiveEnabledCount,
       skippedWorkerMissing,
       requireWinnerShortlist,
       demotedByUniqueness,
+      demotedByBrokerEntryOverlap,
+      managementOnlyByBrokerEntryOverlap,
       demotedByEnabledCap: capOut.demoted,
       exactLosers: drafts.filter((row) => row.exactLoser).length,
       neighborSuspended: neighborSuspended.size,
@@ -6393,6 +6477,9 @@ export async function runScalpV2ExecuteJob(params: {
 	          staleData: true,
 	          activeEvents: [],
 	        }));
+	        const promotionEntryBlockReasonCodes = normalizeReasonCodes(
+	          asRecord(deployment.promotionGate).entryBlockReasonCodes,
+	        );
 	        const configOverride = buildScalpV2ExecuteConfigOverride({
 	          entrySessionProfile: deployment.entrySessionProfile,
 	          riskProfile: rp,
@@ -6401,9 +6488,10 @@ export async function runScalpV2ExecuteJob(params: {
 	          riskRuleReplayOverrides: riskReplayOverrides,
 	          stateMachineOverrides: smOverrides,
 	          temporalFilter,
-	          entryBlockReasonCodes: newsBlackout.blocked
-	            ? newsBlackout.reasonCodes
-	            : [],
+	          entryBlockReasonCodes: normalizeReasonCodes([
+	            ...promotionEntryBlockReasonCodes,
+	            ...(newsBlackout.blocked ? newsBlackout.reasonCodes : []),
+	          ]),
 	        });
         const runtimeSnapshot = buildScalpV2RuntimeSnapshotForDeployment({
           strategyId: deployment.strategyId,

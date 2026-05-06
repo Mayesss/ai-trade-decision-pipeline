@@ -8,6 +8,7 @@ import {
     computeScalpV2V3Holdout,
     evaluateScalpV2V3TemporalFilter,
     resolveScalpV2V3StaleNewsBlackout,
+    scalpV2V3EntryWindowsOverlap,
 } from './index';
 
 function trade(rMultiple: number, index: number, exitTs = Date.UTC(2026, 0, 5) + index * 60_000): ScalpReplayTrade {
@@ -192,4 +193,86 @@ test('V3 drift monitor flags live expectancy below 50 percent after sample thres
         if (previous.weeks === undefined) delete process.env.SCALP_V2_V3_DRIFT_MIN_WEEKS;
         else process.env.SCALP_V2_V3_DRIFT_MIN_WEEKS = previous.weeks;
     }
+});
+
+test('V3 broker entry-window overlap detects same-venue temporal conflicts', () => {
+    const nowMs = Date.UTC(2026, 0, 5);
+    assert.equal(
+        scalpV2V3EntryWindowsOverlap({
+            nowMs,
+            a: {
+                session: 'berlin',
+                filter: {
+                    sessionSlotMinutes: 30,
+                    allowedSessionWindowSlots: [0],
+                },
+            },
+            b: {
+                session: 'berlin',
+                filter: {
+                    sessionSlotMinutes: 30,
+                    allowedSessionWindowSlots: [0],
+                },
+            },
+        }),
+        true,
+    );
+    assert.equal(
+        scalpV2V3EntryWindowsOverlap({
+            nowMs,
+            a: {
+                session: 'berlin',
+                filter: {
+                    sessionSlotMinutes: 30,
+                    allowedSessionWindowSlots: [0],
+                },
+            },
+            b: {
+                session: 'berlin',
+                filter: {
+                    sessionSlotMinutes: 30,
+                    allowedSessionWindowSlots: [3],
+                },
+            },
+        }),
+        false,
+    );
+    assert.equal(
+        scalpV2V3EntryWindowsOverlap({
+            nowMs,
+            a: {
+                session: 'berlin',
+                filter: {
+                    allowedWeekdaysLocal: [1],
+                },
+            },
+            b: {
+                session: 'berlin',
+                filter: {
+                    allowedWeekdaysLocal: [2],
+                },
+            },
+        }),
+        false,
+    );
+});
+
+test('V3 broker entry-window overlap treats full-session candidates as overlapping slots', () => {
+    assert.equal(
+        scalpV2V3EntryWindowsOverlap({
+            nowMs: Date.UTC(2026, 0, 5),
+            a: {
+                session: 'berlin',
+                filter: null,
+            },
+            b: {
+                session: 'berlin',
+                filter: {
+                    sessionSlotMinutes: 30,
+                    allowedSessionWindowSlots: [2],
+                },
+            },
+        }),
+        true,
+    );
 });

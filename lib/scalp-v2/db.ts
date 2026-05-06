@@ -3950,6 +3950,7 @@ export async function enforceScalpV2EnabledCap(params: {
         ) AS rn
       FROM scalp_v2_deployments
       WHERE enabled = TRUE
+        AND COALESCE(promotion_gate->'brokerSeat'->>'status', '') <> 'management_only'
     )
     UPDATE scalp_v2_deployments d
     SET
