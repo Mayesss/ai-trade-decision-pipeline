@@ -281,6 +281,11 @@ async function runBatch(): Promise<boolean> {
   }
 
   // Stop conditions
+  if (reason === 'all_discovered_candidates_currently_leased') {
+    console.log('  All discovered candidates are currently leased by workers — waiting 30s...');
+    await new Promise(r => setTimeout(r, 30_000));
+    return true;
+  }
   if (reason === 'warm_up_complete') {
     const windowToTs = currentWindowToTs();
     const warmUpState = await loadScalpV2WarmUpState({ windowToTs }).catch(() => null);
@@ -299,6 +304,10 @@ async function runBatch(): Promise<boolean> {
     return true;
   }
   if (reason === 'all_candidates_already_evaluated_this_week') {
+    if (pending > 0) {
+      console.log(`\n  Current selection exhausted, but ${pending} discovered candidates remain — continuing...`);
+      return true;
+    }
     console.log('\n  ALL CANDIDATES EVALUATED — done!');
     return false;
   }

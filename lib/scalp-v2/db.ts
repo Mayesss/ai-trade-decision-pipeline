@@ -769,11 +769,55 @@ export async function paginateScalpV2Candidates(params: {
   values.push(limit, offset);
   const limitIdx = values.length - 1;
   const offsetIdx = values.length;
+  const stageExecutedSql = (stage: "stageA" | "stageB" | "stageC") =>
+    `(LOWER(COALESCE(c.metadata_json->'worker'->'${stage}'->>'executed', 'false')) = 'true')`;
+  const stageWeeklyNetRJsonSql = (stage: "stageA" | "stageB" | "stageC") => `
+    CASE
+      WHEN jsonb_typeof(c.metadata_json->'worker'->'${stage}'->'weeklyNetR') = 'object'
+      THEN c.metadata_json->'worker'->'${stage}'->'weeklyNetR'
+      ELSE '{}'::jsonb
+    END
+  `;
+  const stageWeeklyTotalNetRSql = (stage: "stageA" | "stageB" | "stageC") => {
+    const weeklyJson = stageWeeklyNetRJsonSql(stage);
+    return `
+      CASE
+        WHEN ${stageExecutedSql(stage)}
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_each_text((${weeklyJson})) AS weekly_probe(_key, _value)
+          )
+        THEN (
+          SELECT COALESCE(SUM(value::double precision), 0)
+          FROM jsonb_each_text((${weeklyJson})) AS weekly(_key, value)
+        )
+      END
+    `;
+  };
+  const fallbackExecutedStageTotalNetRSql = `
+    CASE
+      WHEN ${stageExecutedSql("stageA")} OR ${stageExecutedSql("stageB")} OR ${stageExecutedSql("stageC")}
+      THEN
+        CASE WHEN ${stageExecutedSql("stageA")}
+          THEN COALESCE((c.metadata_json->'worker'->'stageA'->>'netR')::double precision, 0)
+          ELSE 0
+        END
+        + CASE WHEN ${stageExecutedSql("stageB")}
+          THEN COALESCE((c.metadata_json->'worker'->'stageB'->>'netR')::double precision, 0)
+          ELSE 0
+        END
+        + CASE WHEN ${stageExecutedSql("stageC")}
+          THEN COALESCE((c.metadata_json->'worker'->'stageC'->>'netR')::double precision, 0)
+          ELSE 0
+        END
+    END
+  `;
   const totalNetRSortSql = `
     COALESCE(
-      (c.metadata_json->'worker'->'stageC'->>'netR')::double precision,
-      (c.metadata_json->'worker'->'stageB'->>'netR')::double precision,
-      (c.metadata_json->'worker'->'stageA'->>'netR')::double precision,
+      ${stageWeeklyTotalNetRSql("stageC")},
+      ${stageWeeklyTotalNetRSql("stageB")},
+      ${stageWeeklyTotalNetRSql("stageA")},
+      ${fallbackExecutedStageTotalNetRSql},
       c.score::double precision,
       -999
     )
@@ -815,7 +859,7 @@ export async function paginateScalpV2Candidates(params: {
         c.updated_at AS "updatedAt"
       ${fromSql}
       ${whereSql}
-      ORDER BY ${totalNetRSortSql} DESC, c.score DESC, c.updated_at DESC
+      ORDER BY ${totalNetRSortSql} DESC, c.score DESC, c.updated_at DESC, c.id DESC
       LIMIT $${limitIdx} OFFSET $${offsetIdx};
     `,
     ...values,
@@ -956,7 +1000,7 @@ export async function paginateScalpV2CandidatesForBackfill(params: {
 }
 
 /**
- * Returns a set of "venue:symbol:tuneId:session" keys for candidates
+ * Returns a set of "venue:symbol:strategyId:tuneId:session" keys for candidates
  * that were already backtested for the CURRENT windowToTs this week.
  * These are exact cache hits — no need to re-run at all.
  */
@@ -996,11 +1040,13 @@ export async function upsertScalpV2WarmUpState(params: {
 /** Distinct symbols that still have "discovered" candidates (not yet backtested). */
 export async function listScalpV2DiscoveredSymbols(): Promise<string[]> {
   if (!isScalpPgConfigured()) return [];
+  await ensureCandidateResearchLeaseColumns().catch(() => false);
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{ symbol: string }>>(sql`
     SELECT symbol
     FROM scalp_v2_candidates
     WHERE status = 'discovered'
+      AND (research_lease_until IS NULL OR research_lease_until < NOW())
     GROUP BY symbol
     ORDER BY
       BOOL_OR(
@@ -1059,11 +1105,18 @@ export async function loadScalpV2EvaluatedCandidateKeys(params: {
   if (!isScalpPgConfigured()) return new Set();
   const db = scalpPrisma();
   const rows = await db.$queryRaw<
-    Array<{ venue: string; symbol: string; tuneId: string; session: string }>
+    Array<{
+      venue: string;
+      symbol: string;
+      strategyId: string;
+      tuneId: string;
+      session: string;
+    }>
   >(sql`
     SELECT
       venue,
       symbol,
+      strategy_id AS "strategyId",
       tune_id AS "tuneId",
       entry_session_profile AS "session"
     FROM scalp_v2_candidates
@@ -1073,7 +1126,7 @@ export async function loadScalpV2EvaluatedCandidateKeys(params: {
   const keys = new Set<string>();
   for (const row of rows) {
     keys.add(
-      `${row.venue}:${row.symbol}:${row.tuneId}:${row.session}`.toLowerCase(),
+      `${row.venue}:${row.symbol}:${row.strategyId}:${row.tuneId}:${row.session}`.toLowerCase(),
     );
   }
   return keys;
@@ -1135,6 +1188,7 @@ export async function loadScalpV2PreviousWeekResults(params: {
     Array<{
       venue: string;
       symbol: string;
+      strategyId: string;
       tuneId: string;
       session: string;
       windowToTs: string;
@@ -1150,6 +1204,7 @@ export async function loadScalpV2PreviousWeekResults(params: {
       SELECT
         venue,
         symbol,
+        strategy_id AS "strategyId",
         tune_id AS "tuneId",
         entry_session_profile AS "session",
         CASE
@@ -1167,6 +1222,7 @@ export async function loadScalpV2PreviousWeekResults(params: {
       SELECT
         venue,
         symbol,
+        "strategyId",
         "tuneId",
         "session",
         (worker_json->>'windowToTs') AS "windowToTs",
@@ -1177,7 +1233,7 @@ export async function loadScalpV2PreviousWeekResults(params: {
         (worker_json->'stageC'->>'netR') AS "stageCNetR",
         (worker_json->'stageA'->'weeklyNetR') AS "stageAWeeklyNetR",
         ROW_NUMBER() OVER (
-          PARTITION BY venue, symbol, "tuneId", "session"
+          PARTITION BY venue, symbol, "strategyId", "tuneId", "session"
           ORDER BY (worker_json->>'windowToTs')::bigint DESC, updated_at DESC
         ) AS rn
       FROM candidate_workers
@@ -1188,6 +1244,7 @@ export async function loadScalpV2PreviousWeekResults(params: {
     SELECT
       venue,
       symbol,
+      "strategyId",
       "tuneId",
       "session",
       "windowToTs",
@@ -1202,7 +1259,8 @@ export async function loadScalpV2PreviousWeekResults(params: {
   `);
   const results = new Map<string, PreviousStageResult>();
   for (const row of rows) {
-    const key = `${row.venue}:${row.symbol}:${row.tuneId}:${row.session}`.toLowerCase();
+    const key =
+      `${row.venue}:${row.symbol}:${row.strategyId}:${row.tuneId}:${row.session}`.toLowerCase();
     // Extract weeklyNetR from the JSON object
     const weeklyNetR: Record<string, number> = {};
     const raw = asRecord(row.stageAWeeklyNetR);

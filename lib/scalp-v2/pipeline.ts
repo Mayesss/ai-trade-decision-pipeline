@@ -3286,6 +3286,38 @@ export async function runScalpV2ResearchJob(params: {
         ? discoveredSymbols.filter((symbol) => shardSymbol(symbol) === symbolShardIndex)
         : discoveredSymbols;
     const symbolsThisRun = discoveredSymbolsForShard.slice(0, maxSymbolsPerRun);
+    if (symbolsThisRun.length === 0) {
+      const pendingAfter = await withTiming("research.count_discovered", () =>
+        countScalpV2CandidatesByStatus({
+          status: "discovered",
+        }).catch(() => -1),
+      );
+      const pendingResolved = Math.max(0, Math.floor(Number(pendingAfter) || 0));
+      details = attachTimingDetails({
+        reason: pendingResolved > 0
+          ? "all_discovered_candidates_currently_leased"
+          : "all_candidates_already_evaluated_this_week",
+        scopeCount: scopes.length,
+        droppedByScopePrune,
+        poolSizeTotal,
+        deploymentRolloverRequeued,
+        totalCandidates: 0,
+        symbolsThisRun: 0,
+        symbolsTotal: discoveredSymbolsForShard.length,
+        symbolShardCount,
+        symbolShardIndex,
+        pendingAfter: pendingResolved,
+        scopePrune: scopePrune.details,
+      });
+      return buildScalpV2JobResult({
+        jobKind: "research",
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        pendingAfter: pendingResolved,
+        details,
+      });
+    }
     async function resolvePendingAfterBacklog(fallback: number): Promise<number> {
       if (symbolShardCount > 1 && discoveredSymbolsForShard.length === 0) {
         return 0;
@@ -3380,6 +3412,10 @@ export async function runScalpV2ResearchJob(params: {
         poolSizeTotal,
         deploymentRolloverRequeued,
         totalCandidates: allCandidates.length,
+        symbolsThisRun: symbolsThisRun.length,
+        symbolsTotal: discoveredSymbolsForShard.length,
+        symbolShardCount,
+        symbolShardIndex,
         evaluatedKeyCount,
         skippedByCache,
         pendingAfter,
@@ -3459,7 +3495,7 @@ export async function runScalpV2ResearchJob(params: {
     }).slice(0, -1);
 
     const researchCandidateKey = (c: InMemoryCandidate) =>
-      `${c.venue}:${c.symbol}:${c.tuneId}:${c.session}`.toLowerCase();
+      `${c.venue}:${c.symbol}:${c.strategyId}:${c.tuneId}:${c.session}`.toLowerCase();
     const finiteOrNull = (value: unknown): number | null => {
       const n = Number(value);
       return Number.isFinite(n) ? n : null;
