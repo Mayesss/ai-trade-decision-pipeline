@@ -730,27 +730,30 @@ export async function paginateScalpV2Candidates(params: {
   const db = scalpPrisma();
   const limit = Math.max(1, Math.min(500, Math.floor(params.limit || 100)));
   const offset = Math.max(0, Math.floor(params.offset || 0));
-  const where: string[] = [];
+  const candidateWhere: string[] = [];
   const values: unknown[] = [];
   if (params.session) {
     values.push(params.session);
-    where.push(`c.entry_session_profile = $${values.length}`);
+    candidateWhere.push(`c.entry_session_profile = $${values.length}`);
   }
   if (params.venue) {
     values.push(params.venue);
-    where.push(`c.venue = $${values.length}`);
+    candidateWhere.push(`c.venue = $${values.length}`);
   }
   if (params.status) {
     values.push(normalizeCandidateStatus(params.status));
-    where.push(`c.status = $${values.length}`);
+    candidateWhere.push(`c.status = $${values.length}`);
   }
+  const deploymentWhere: string[] = [];
   if (params.deploymentEnabled === true) {
-    where.push(`d.enabled = TRUE`);
+    deploymentWhere.push(`d.enabled = TRUE`);
   } else if (params.deploymentEnabled === false) {
-    where.push(`COALESCE(d.enabled, FALSE) = FALSE`);
+    deploymentWhere.push(`COALESCE(d.enabled, FALSE) = FALSE`);
   }
-  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-  const fromSql = `
+  const candidateWhereSql = candidateWhere.length
+    ? `WHERE ${candidateWhere.join(" AND ")}`
+    : "";
+  const deploymentJoinSql = `
     FROM scalp_v2_candidates c
     LEFT JOIN scalp_v2_deployments d
       ON d.venue = c.venue
@@ -759,21 +762,27 @@ export async function paginateScalpV2Candidates(params: {
      AND d.tune_id = c.tune_id
      AND d.entry_session_profile = c.entry_session_profile
   `;
+  const needsDeploymentFilter = deploymentWhere.length > 0;
+  const joinedWhereSql = [...candidateWhere, ...deploymentWhere].length
+    ? `WHERE ${[...candidateWhere, ...deploymentWhere].join(" AND ")}`
+    : "";
 
   const [countRow] = await db.$queryRawUnsafe<Array<{ cnt: bigint }>>(
-    `SELECT COUNT(*)::bigint AS cnt ${fromSql} ${whereSql}`,
+    needsDeploymentFilter
+      ? `SELECT COUNT(*)::bigint AS cnt ${deploymentJoinSql} ${joinedWhereSql}`
+      : `SELECT COUNT(*)::bigint AS cnt FROM scalp_v2_candidates c ${candidateWhereSql}`,
     ...values,
   );
   const total = Number(countRow?.cnt || 0);
 
-  values.push(limit, offset);
-  const limitIdx = values.length - 1;
-  const offsetIdx = values.length;
-  const totalNetRSortSql = `
+  const rowValues = [...values, limit, offset];
+  const limitIdx = rowValues.length - 1;
+  const offsetIdx = rowValues.length;
+  const totalNetRSortSql = (alias: string) => `
     COALESCE(
-      (c.metadata_json->'worker'->'stageC'->>'netR')::double precision,
-      (c.metadata_json->'worker'->'stageB'->>'netR')::double precision,
-      (c.metadata_json->'worker'->'stageA'->>'netR')::double precision,
+      (${alias}.metadata_json->'worker'->'stageC'->>'netR')::double precision,
+      (${alias}.metadata_json->'worker'->'stageB'->>'netR')::double precision,
+      (${alias}.metadata_json->'worker'->'stageA'->>'netR')::double precision,
       -999
     )
   `;
@@ -796,28 +805,80 @@ export async function paginateScalpV2Candidates(params: {
       updatedAt: Date;
     }>
   >(
-    `
-      SELECT
-        c.id,
-        c.venue,
-        c.symbol,
-        c.strategy_id AS "strategyId",
-        c.tune_id AS "tuneId",
-        c.entry_session_profile AS "entrySessionProfile",
-        c.score::double precision AS score,
-        c.status,
-        c.reason_codes AS "reasonCodes",
-        c.metadata_json AS "metadataJson",
-        d.deployment_id AS "deploymentId",
-        d.enabled AS "deploymentEnabled",
-        c.created_at AS "createdAt",
-        c.updated_at AS "updatedAt"
-      ${fromSql}
-      ${whereSql}
-      ORDER BY ${totalNetRSortSql} DESC, c.score DESC, c.updated_at DESC, c.id DESC
-      LIMIT $${limitIdx} OFFSET $${offsetIdx};
-    `,
-    ...values,
+    needsDeploymentFilter
+      ? `
+        SELECT
+          c.id,
+          c.venue,
+          c.symbol,
+          c.strategy_id AS "strategyId",
+          c.tune_id AS "tuneId",
+          c.entry_session_profile AS "entrySessionProfile",
+          c.score::double precision AS score,
+          c.status,
+          c.reason_codes AS "reasonCodes",
+          c.metadata_json AS "metadataJson",
+          d.deployment_id AS "deploymentId",
+          d.enabled AS "deploymentEnabled",
+          c.created_at AS "createdAt",
+          c.updated_at AS "updatedAt"
+        ${deploymentJoinSql}
+        ${joinedWhereSql}
+        ORDER BY ${totalNetRSortSql("c")} DESC, c.score DESC, c.updated_at DESC, c.id DESC
+        LIMIT $${limitIdx} OFFSET $${offsetIdx};
+      `
+      : `
+        WITH ordered_candidates AS (
+          SELECT
+            c.id,
+            c.venue,
+            c.symbol,
+            c.strategy_id,
+            c.tune_id,
+            c.entry_session_profile,
+            c.score,
+            c.status,
+            c.reason_codes,
+            c.metadata_json,
+            c.created_at,
+            c.updated_at
+          FROM scalp_v2_candidates c
+          ${candidateWhereSql}
+          ORDER BY ${totalNetRSortSql("c")} DESC, c.score DESC, c.updated_at DESC, c.id DESC
+          LIMIT $${limitIdx} OFFSET $${offsetIdx}
+        )
+        SELECT
+          c.id,
+          c.venue,
+          c.symbol,
+          c.strategy_id AS "strategyId",
+          c.tune_id AS "tuneId",
+          c.entry_session_profile AS "entrySessionProfile",
+          c.score::double precision AS score,
+          c.status,
+          c.reason_codes AS "reasonCodes",
+          c.metadata_json AS "metadataJson",
+          d.deployment_id AS "deploymentId",
+          d.enabled AS "deploymentEnabled",
+          c.created_at AS "createdAt",
+          c.updated_at AS "updatedAt"
+        FROM ordered_candidates c
+        LEFT JOIN LATERAL (
+          SELECT
+            d.deployment_id,
+            d.enabled
+          FROM scalp_v2_deployments d
+          WHERE d.venue = c.venue
+            AND d.symbol = c.symbol
+            AND d.strategy_id = c.strategy_id
+            AND d.tune_id = c.tune_id
+            AND d.entry_session_profile = c.entry_session_profile
+          ORDER BY d.updated_at DESC
+          LIMIT 1
+        ) d ON TRUE
+        ORDER BY ${totalNetRSortSql("c")} DESC, c.score DESC, c.updated_at DESC, c.id DESC;
+      `,
+    ...rowValues,
   );
 
   return {
