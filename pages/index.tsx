@@ -5278,6 +5278,10 @@ export default function Home() {
     a: ScalpWorkerJobGridRow,
     b: ScalpWorkerJobGridRow,
   ): number => {
+    const aNetR = asFiniteNumber(a.totalNetR) ?? Number.NEGATIVE_INFINITY;
+    const bNetR = asFiniteNumber(b.totalNetR) ?? Number.NEGATIVE_INFINITY;
+    if (bNetR !== aNetR) return bNetR - aNetR;
+
     const aScore = scalpWorkerJobRankScore(a);
     const bScore = scalpWorkerJobRankScore(b);
     if (bScore !== aScore) return bScore - aScore;
@@ -5308,10 +5312,6 @@ export default function Home() {
       asFiniteNumber(b.totalMaxDrawdownR) ??
       Number.POSITIVE_INFINITY;
     if (aDrawdown !== bDrawdown) return aDrawdown - bDrawdown;
-
-    const aNetR = asFiniteNumber(a.totalNetR) ?? Number.NEGATIVE_INFINITY;
-    const bNetR = asFiniteNumber(b.totalNetR) ?? Number.NEGATIVE_INFINITY;
-    if (bNetR !== aNetR) return bNetR - aNetR;
 
     if (a.symbol !== b.symbol) return a.symbol.localeCompare(b.symbol);
     if (a.strategyId !== b.strategyId)

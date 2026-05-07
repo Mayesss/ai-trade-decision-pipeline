@@ -769,56 +769,11 @@ export async function paginateScalpV2Candidates(params: {
   values.push(limit, offset);
   const limitIdx = values.length - 1;
   const offsetIdx = values.length;
-  const stageExecutedSql = (stage: "stageA" | "stageB" | "stageC") =>
-    `(LOWER(COALESCE(c.metadata_json->'worker'->'${stage}'->>'executed', 'false')) = 'true')`;
-  const stageWeeklyNetRJsonSql = (stage: "stageA" | "stageB" | "stageC") => `
-    CASE
-      WHEN jsonb_typeof(c.metadata_json->'worker'->'${stage}'->'weeklyNetR') = 'object'
-      THEN c.metadata_json->'worker'->'${stage}'->'weeklyNetR'
-      ELSE '{}'::jsonb
-    END
-  `;
-  const stageWeeklyTotalNetRSql = (stage: "stageA" | "stageB" | "stageC") => {
-    const weeklyJson = stageWeeklyNetRJsonSql(stage);
-    return `
-      CASE
-        WHEN ${stageExecutedSql(stage)}
-          AND EXISTS (
-            SELECT 1
-            FROM jsonb_each_text((${weeklyJson})) AS weekly_probe(_key, _value)
-          )
-        THEN (
-          SELECT COALESCE(SUM(value::double precision), 0)
-          FROM jsonb_each_text((${weeklyJson})) AS weekly(_key, value)
-        )
-      END
-    `;
-  };
-  const fallbackExecutedStageTotalNetRSql = `
-    CASE
-      WHEN ${stageExecutedSql("stageA")} OR ${stageExecutedSql("stageB")} OR ${stageExecutedSql("stageC")}
-      THEN
-        CASE WHEN ${stageExecutedSql("stageA")}
-          THEN COALESCE((c.metadata_json->'worker'->'stageA'->>'netR')::double precision, 0)
-          ELSE 0
-        END
-        + CASE WHEN ${stageExecutedSql("stageB")}
-          THEN COALESCE((c.metadata_json->'worker'->'stageB'->>'netR')::double precision, 0)
-          ELSE 0
-        END
-        + CASE WHEN ${stageExecutedSql("stageC")}
-          THEN COALESCE((c.metadata_json->'worker'->'stageC'->>'netR')::double precision, 0)
-          ELSE 0
-        END
-    END
-  `;
   const totalNetRSortSql = `
     COALESCE(
-      ${stageWeeklyTotalNetRSql("stageC")},
-      ${stageWeeklyTotalNetRSql("stageB")},
-      ${stageWeeklyTotalNetRSql("stageA")},
-      ${fallbackExecutedStageTotalNetRSql},
-      c.score::double precision,
+      (c.metadata_json->'worker'->'stageC'->>'netR')::double precision,
+      (c.metadata_json->'worker'->'stageB'->>'netR')::double precision,
+      (c.metadata_json->'worker'->'stageA'->>'netR')::double precision,
       -999
     )
   `;
