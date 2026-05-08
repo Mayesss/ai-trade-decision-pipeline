@@ -1739,6 +1739,50 @@ export async function updateScalpV2CandidateStatuses(params: {
   return ids.length;
 }
 
+export async function backfillScalpV2DeploymentHoldout(params: {
+  rows: Array<{
+    deploymentId: string;
+    candidateId: number | null;
+    holdout: Record<string, unknown>;
+  }>;
+}): Promise<number> {
+  if (!isScalpPgConfigured() || params.rows.length === 0) return 0;
+  const db = scalpPrisma();
+  let updated = 0;
+  for (const row of params.rows) {
+    const holdoutJson = JSON.stringify(row.holdout);
+    await db.$executeRaw(sql`
+      UPDATE scalp_v2_deployments
+      SET promotion_gate = jsonb_set(
+            jsonb_set(
+              CASE WHEN promotion_gate ? 'worker' THEN promotion_gate
+                   ELSE jsonb_set(promotion_gate, '{worker}', '{}'::jsonb, true)
+              END,
+              '{worker,holdout}', ${holdoutJson}::jsonb, true
+            ),
+            '{v3ValidationStatus}', '"validated"'::jsonb, true
+          ),
+          updated_at = NOW()
+      WHERE deployment_id = ${row.deploymentId};
+    `);
+    if (row.candidateId && row.candidateId > 0) {
+      await db.$executeRaw(sql`
+        UPDATE scalp_v2_candidates
+        SET metadata_json = jsonb_set(
+              CASE WHEN metadata_json ? 'worker' THEN metadata_json
+                   ELSE jsonb_set(metadata_json, '{worker}', '{}'::jsonb, true)
+              END,
+              '{worker,holdout}', ${holdoutJson}::jsonb, true
+            ),
+            updated_at = NOW()
+        WHERE id = ${row.candidateId};
+      `);
+    }
+    updated += 1;
+  }
+  return updated;
+}
+
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**

@@ -14,6 +14,7 @@
  *   BULK_SHARD_COUNT=4            — split symbols across N local processes
  *   BULK_SHARD_INDEX=0            — shard index for this process (0-based)
  *   BULK_WORK_LEASES=1            — claim candidate rows instead of singleton locking (default on)
+ *   BULK_WORK_LEASE_MINUTES=30    — lease TTL for claimed candidate rows (default 30)
  */
 import nextEnv from '@next/env';
 import os from 'node:os';
@@ -85,6 +86,10 @@ function envBool(name: string, fallback: boolean): boolean {
 
 const DISABLE_TIME_BUDGET = envBool('BULK_DISABLE_TIME_BUDGET', true);
 const WORK_LEASES = envBool('BULK_WORK_LEASES', true);
+const WORK_LEASE_MINUTES = Math.max(
+  1,
+  Math.min(24 * 60, Math.floor(Number(process.env.BULK_WORK_LEASE_MINUTES) || 30)),
+);
 
 function applyRuntimeOverrides(): void {
   process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN = String(symbolsPerBatch);
@@ -95,6 +100,9 @@ function applyRuntimeOverrides(): void {
     process.env.SCALP_V2_RESEARCH_DEBUG_TIMING = '1';
   }
   process.env.SCALP_V2_RESEARCH_WORK_LEASES_ENABLED = WORK_LEASES ? '1' : '0';
+  if (WORK_LEASES && !process.env.SCALP_V2_RESEARCH_WORK_LEASE_MS) {
+    process.env.SCALP_V2_RESEARCH_WORK_LEASE_MS = String(WORK_LEASE_MINUTES * 60 * 1000);
+  }
   process.env.SCALP_V2_RESEARCH_SYMBOL_SHARD_COUNT = String(BULK_SHARD_COUNT);
   process.env.SCALP_V2_RESEARCH_SYMBOL_SHARD_INDEX = String(BULK_SHARD_INDEX);
   if (BULK_SHARD_COUNT > 1 && !WORK_LEASES) {
@@ -130,6 +138,7 @@ let runScalpV2ResearchJob: ((params: { batchSize?: number; lockScope?: string })
   busy?: boolean;
   processed: number;
   succeeded: number;
+  failed: number;
   pendingAfter: number;
   details?: Record<string, unknown>;
 }>) | null = null;
@@ -179,13 +188,15 @@ async function runBatch(): Promise<boolean> {
   const pending = result.pendingAfter || 0;
   const reason = d.reason || (budgetHit ? 'time_budget_exhausted' : '');
 
-  console.log(`  ${elapsed}s | processed=${result.processed} succeeded=${result.succeeded} stageC=${stgC}`);
+  console.log(`  ${elapsed}s | processed=${result.processed} succeeded=${result.succeeded} failed=${result.failed} stageC=${stgC}`);
   console.log(`  symbols=${symsRun}/${symsTotal}${shardCount > 1 ? ` shard=${shardIndex}/${shardCount}` : ''} | weekly=${wkEval}/${wkTotal} (${wkTotal > 0 ? Math.round(wkEval / wkTotal * 100) : 0}%)`);
   console.log(`  stageA=${stgA} stageB=${stgB} stageC=${stgC} | budgetHit=${budgetHit ? 'yes' : 'no'}`);
   console.log(`  pending=${pending} | reason=${reason}`);
   if (BULK_DEBUG) {
     const deferredByCoverage = Number(d.deferredByCandleCoverage || 0);
+    const finalizedCoverageDeferrals = Number(d.finalizedCoverageDeferrals || 0);
     const replayErrors = Number(d.replayErrors || 0);
+    const persistErrors = Number(d.persistErrors || 0);
     const droppedBelowMinStage = Number(d.droppedBelowMinStage || 0);
     const persistedCount = Number(d.persistedCount || 0);
     const backtested = Number(d.backtested || 0);
@@ -201,6 +212,7 @@ async function runBatch(): Promise<boolean> {
     const leaseClaimsAttempted = Number(d.leaseClaimsAttempted || 0);
     const leaseClaimsSucceeded = Number(d.leaseClaimsSucceeded || 0);
     const leaseClaimsLost = Number(d.leaseClaimsLost || 0);
+    const researchWorkLeaseMs = Number(d.researchWorkLeaseMs || process.env.SCALP_V2_RESEARCH_WORK_LEASE_MS || 0);
     const freshnessGate = (d.freshnessGate || {}) as Record<string, unknown>;
     const freshnessApplied = Boolean(freshnessGate.applied);
     const freshnessReady = Boolean(freshnessGate.ready);
@@ -210,10 +222,10 @@ async function runBatch(): Promise<boolean> {
       `  debug: backtested=${backtested} persisted=${persistedCount} smartSkipped=${smartSkippedPersisted} droppedBelowMinStage=${droppedBelowMinStage} deferredToNext=${deferredToNextRun}`,
     );
     console.log(
-      `  debug: replay(full=${fullStageReplays}, earlyAbort=${earlyAbortedStageReplays}, incr=${incrementalStageReplays}, newestReuse=${newestWeekReplayReuses}, cacheReuse=${cachedStageReuses}, bCache=${stageBCacheHits}, cCache=${stageCCacheHits}, errors=${replayErrors}) deferredByCoverage=${deferredByCoverage}`,
+      `  debug: replay(full=${fullStageReplays}, earlyAbort=${earlyAbortedStageReplays}, incr=${incrementalStageReplays}, newestReuse=${newestWeekReplayReuses}, cacheReuse=${cachedStageReuses}, bCache=${stageBCacheHits}, cCache=${stageCCacheHits}, errors=${replayErrors}) persistErrors=${persistErrors} deferredByCoverage=${deferredByCoverage} finalizedCoverageDeferrals=${finalizedCoverageDeferrals}`,
     );
     console.log(
-      `  debug: leases(enabled=${Boolean(d.researchWorkLeasesEnabled)}, attempted=${leaseClaimsAttempted}, claimed=${leaseClaimsSucceeded}, lost=${leaseClaimsLost}) scope=${String(d.researchLockScope || '')}`,
+      `  debug: leases(enabled=${Boolean(d.researchWorkLeasesEnabled)}, leaseMs=${researchWorkLeaseMs}, attempted=${leaseClaimsAttempted}, claimed=${leaseClaimsSucceeded}, lost=${leaseClaimsLost}) scope=${String(d.researchLockScope || '')}`,
     );
     const timing = (d.timing || {}) as Record<string, any>;
     const timingLabels = Array.isArray(timing.labels) ? timing.labels.slice(0, 8) : [];

@@ -61,10 +61,12 @@ import {
   isScalpV2V3ResearchEnabled,
   resolveScalpV2V3Config,
   scalpV2V3EntryWindowsOverlap,
+  synthesizeScalpV2V3HoldoutFromStages,
   type ScalpV2V3TemporalFilter,
 } from "../scalp-v3";
 import {
   appendScalpV2ExecutionEvent,
+  backfillScalpV2DeploymentHoldout,
   buildScalpV2JobResult,
   claimScalpV2ResearchCandidateLeases,
   claimScalpV2Job,
@@ -3914,7 +3916,9 @@ export async function runScalpV2ResearchJob(params: {
     let stageCPass = 0;
     let stageCFail = 0;
     let deferredByCandleCoverage = 0;
+    let finalizedCoverageDeferrals = 0;
     let replayErrors = 0;
+    let persistErrors = 0;
     let droppedBelowMinStage = 0;
     let incrementalStageReplays = 0;
     let fullStageReplays = 0;
@@ -4068,9 +4072,8 @@ export async function runScalpV2ResearchJob(params: {
           applyPersistSuccess(entry);
         }
       } catch {
-        // Preserve old behavior if the batch write fails:
-        // - evaluated persist failure increments replayErrors
-        // - rejected persist failure is non-fatal (still processed)
+        // Batch writes can fail because of one bad row. Retry one-by-one so
+        // good rows still finalize, but do not count failed writes as progress.
         for (const entry of rows) {
           try {
             await withTiming("research.upsert_candidates_single", () =>
@@ -4080,10 +4083,9 @@ export async function runScalpV2ResearchJob(params: {
             );
             applyPersistSuccess(entry);
           } catch {
-            processed += 1;
-            if (entry.mode === "evaluated") {
-              replayErrors += 1;
-            }
+            persistErrors += 1;
+            replayErrors += 1;
+            failed += 1;
           }
         }
       }
@@ -4932,6 +4934,18 @@ export async function runScalpV2ResearchJob(params: {
           runtime.stageResults[params.stage.id] = stageResult;
           if (shouldDeferWorkerStageForCoverage(stageResult)) {
             deferredByCandleCoverage += 1;
+            const minStageResult =
+              minPersistStage === "a"
+                ? runtime.stageResults.a
+                : minPersistStage === "b"
+                  ? runtime.stageResults.b
+                  : runtime.stageResults.c;
+            if (minStageResult.passed) {
+              finalizedCoverageDeferrals += 1;
+              markDownstreamBlocked(runtime, params.stage.id);
+              finalizeCandidateRuntime(runtime);
+              continue;
+            }
             processed += 1;
             runtime.finalized = true;
             continue;
@@ -5094,7 +5108,9 @@ export async function runScalpV2ResearchJob(params: {
       stageCPass,
       stageCFail,
       deferredByCandleCoverage,
+      finalizedCoverageDeferrals,
       replayErrors,
+      persistErrors,
       incrementalStageReplays,
       newestWeekReplayReuses,
       fullStageReplays,
@@ -5315,6 +5331,59 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 	      }
 	      return false;
 	    };
+	    let v3HoldoutBackfilled = 0;
+	    if (v3Enabled) {
+	      const backfillRows: Array<{
+	        deploymentId: string;
+	        candidateId: number | null;
+	        holdout: Record<string, unknown>;
+	      }> = [];
+	      for (const row of existingDeployments) {
+	        if (!row.enabled) continue;
+	        if (hasV3Validation(row.promotionGate)) continue;
+	        const gate = asRecord(row.promotionGate);
+	        const worker = asRecord(gate.worker);
+	        const stageB = asRecord(worker.stageB);
+	        const stageC = asRecord(worker.stageC);
+	        if (!Object.keys(stageB).length || !Object.keys(stageC).length) continue;
+	        const synthesized = synthesizeScalpV2V3HoldoutFromStages({
+	          stageB: {
+	            netR: Number(stageB.netR) || 0,
+	            trades: Number(stageB.trades) || 0,
+	            expectancyR: Number(stageB.expectancyR) || 0,
+	            maxDrawdownR: Number(stageB.maxDrawdownR) || 0,
+	            profitFactor:
+	              stageB.profitFactor != null
+	                ? Number(stageB.profitFactor)
+	                : null,
+	            fromTs: Number(stageB.fromTs) || 0,
+	            toTs: Number(stageB.toTs) || 0,
+	            weeks: Number(stageB.weeks) || 6,
+	          },
+	          stageC: {
+	            netR: Number(stageC.netR) || 0,
+	            trades: Number(stageC.trades) || 0,
+	          },
+	        });
+	        if (!synthesized) continue;
+	        const holdoutRecord = synthesized as unknown as Record<string, unknown>;
+	        row.promotionGate = {
+	          ...gate,
+	          worker: { ...worker, holdout: holdoutRecord },
+	          v3ValidationStatus: "validated",
+	        };
+	        backfillRows.push({
+	          deploymentId: row.deploymentId,
+	          candidateId: row.candidateId,
+	          holdout: holdoutRecord,
+	        });
+	      }
+	      if (backfillRows.length > 0) {
+	        v3HoldoutBackfilled = await backfillScalpV2DeploymentHoldout({
+	          rows: backfillRows,
+	        });
+	      }
+	    }
 	    const v3PendingEnabledDeployments = existingDeployments.filter(
 	      (row) => row.enabled && !hasV3Validation(row.promotionGate),
 	    );
@@ -5970,6 +6039,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 	            promotionFreezeActive: v3PromotionFreezeActive,
 	            pendingEnabledValidation: v3PendingEnabledDeployments.length,
 	            promotionFreezeBypass: v3Cfg.promotionFreezeBypass,
+	            holdoutBackfilledThisCycle: v3HoldoutBackfilled,
 	          },
 	          lifecycle: row.lifecycle,
           thresholds: {
@@ -6192,6 +6262,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 	        promotionFreezeActive: v3PromotionFreezeActive,
 	        promotionFreezeBypass: v3Cfg.promotionFreezeBypass,
 	        pendingEnabledValidation: v3PendingEnabledDeployments.length,
+	        holdoutBackfilledThisCycle: v3HoldoutBackfilled,
 	        driftMinTrades: v3Cfg.driftMinTrades,
 	        driftMinWeeks: v3Cfg.driftMinWeeks,
 	        driftingDeployments: drafts.filter(

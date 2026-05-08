@@ -318,6 +318,65 @@ export function computeScalpV2V3Bootstrap(params: {
   };
 }
 
+export function synthesizeScalpV2V3HoldoutFromStages(params: {
+  stageB: {
+    netR: number;
+    trades: number;
+    expectancyR?: number;
+    maxDrawdownR?: number;
+    profitFactor?: number | null;
+    fromTs?: number;
+    toTs?: number;
+    weeks?: number;
+  } | null;
+  stageC: { netR: number; trades: number } | null;
+  minHoldoutTrades?: number;
+}): (ScalpV2V3Holdout & { source: "v2_backfill"; trainingTrades: number }) | null {
+  const stageB = params.stageB;
+  const stageC = params.stageC;
+  if (!stageB || !stageC) return null;
+  const holdoutTrades = Math.floor(stageB.trades || 0);
+  const totalTrades = Math.floor(stageC.trades || 0);
+  const trainingTrades = totalTrades - holdoutTrades;
+  if (holdoutTrades <= 0 || trainingTrades <= 0) return null;
+  const holdoutNetR = finite(stageB.netR);
+  const trainingNetR = finite(stageC.netR) - holdoutNetR;
+  const holdoutExpectancyR = holdoutNetR / holdoutTrades;
+  const trainingExpectancyR = trainingNetR / trainingTrades;
+  const ratio =
+    Math.abs(trainingExpectancyR) > 1e-9
+      ? holdoutExpectancyR / trainingExpectancyR
+      : null;
+  const minTrades = Math.max(1, Math.floor(params.minHoldoutTrades || 6));
+  let reason: string | null = null;
+  if (holdoutTrades < minTrades) reason = "holdout_min_trades_not_met";
+  else if (ratio === null || ratio < 0.5)
+    reason = "holdout_expectancy_ratio_below_threshold";
+  else if (holdoutNetR < -0.25 * Math.abs(trainingNetR))
+    reason = "holdout_net_r_materially_negative";
+  return {
+    version: "scalp_v2_v3_holdout_r1",
+    weeks: Math.max(1, Math.floor(stageB.weeks || 6)),
+    fromTs: Math.floor(stageB.fromTs || 0),
+    toTs: Math.floor(stageB.toTs || 0),
+    trades: holdoutTrades,
+    netR: holdoutNetR,
+    expectancyR: holdoutExpectancyR,
+    maxDrawdownR: finite(stageB.maxDrawdownR),
+    profitFactor:
+      stageB.profitFactor != null && Number.isFinite(Number(stageB.profitFactor))
+        ? finite(stageB.profitFactor)
+        : null,
+    trainingNetR,
+    trainingExpectancyR,
+    holdoutToTrainingExpectancyRatio: ratio,
+    passed: reason === null,
+    reason,
+    source: "v2_backfill",
+    trainingTrades,
+  };
+}
+
 export function computeScalpV2V3Holdout(params: {
   trades: ScalpReplayTrade[];
   windowToTs: number;

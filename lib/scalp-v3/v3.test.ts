@@ -9,6 +9,7 @@ import {
     evaluateScalpV2V3TemporalFilter,
     resolveScalpV2V3StaleNewsBlackout,
     scalpV2V3EntryWindowsOverlap,
+    synthesizeScalpV2V3HoldoutFromStages,
 } from './index';
 
 function trade(rMultiple: number, index: number, exitTs = Date.UTC(2026, 0, 5) + index * 60_000): ScalpReplayTrade {
@@ -274,5 +275,34 @@ test('V3 broker entry-window overlap treats full-session candidates as overlappi
             },
         }),
         true,
+    );
+});
+
+test('synthesizeScalpV2V3HoldoutFromStages splits stage-C minus stage-B and applies pass criteria', () => {
+    const passing = synthesizeScalpV2V3HoldoutFromStages({
+        stageB: { netR: 14.9, trades: 20, fromTs: 1, toTs: 2, weeks: 6, maxDrawdownR: 1, profitFactor: 8.4 },
+        stageC: { netR: 23.0, trades: 30 },
+    });
+    assert.ok(passing);
+    assert.equal(passing!.trades, 20);
+    assert.equal(passing!.trainingTrades, 10);
+    assert.ok(Math.abs(passing!.trainingNetR - 8.1) < 1e-6);
+    assert.equal(passing!.passed, true);
+    assert.equal(passing!.source, 'v2_backfill');
+
+    const failing = synthesizeScalpV2V3HoldoutFromStages({
+        stageB: { netR: 5.7, trades: 47, fromTs: 1, toTs: 2, weeks: 6, maxDrawdownR: 4.6, profitFactor: 1.3 },
+        stageC: { netR: 20.5, trades: 100 },
+    });
+    assert.ok(failing);
+    assert.equal(failing!.passed, false);
+    assert.equal(failing!.reason, 'holdout_expectancy_ratio_below_threshold');
+
+    assert.equal(
+        synthesizeScalpV2V3HoldoutFromStages({
+            stageB: { netR: 5, trades: 10 },
+            stageC: { netR: 5, trades: 10 },
+        }),
+        null,
     );
 });
