@@ -87,6 +87,7 @@ import {
   listScalpV2Deployments,
   listScalpV2LedgerRows,
   listScalpV2OpenPositions,
+  listScalpV2ResearchCursors,
   loadScalpV2ResearchCursor,
   loadScalpV2RuntimeConfig,
   requeueScalpV2DeploymentCandidatesForWindow,
@@ -648,6 +649,104 @@ type ScalpV2WorkerStageResult = {
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
+}
+
+// Decides whether a deployment row needs to be re-UPSERTed.
+// Promote runs every cycle and previously rewrote all 33K rows because volatile
+// fields (evaluatedAtMs, v3 config snapshot, thresholds) tick on every cycle.
+// We only re-upsert when something material to the live decision actually changed.
+function isScalpV2DeploymentUpsertNeeded(
+  existing:
+    | {
+        candidateId: number | null;
+        enabled: boolean;
+        liveMode: string;
+        promotionGate: Record<string, unknown> | unknown;
+        riskProfile: Record<string, unknown> | unknown;
+      }
+    | undefined,
+  draft: {
+    candidateId: number | null;
+    enabled: boolean;
+    liveMode: string;
+    promotionGate?: Record<string, unknown>;
+    riskProfile: Record<string, unknown> | unknown;
+  },
+): boolean {
+  if (!existing) return true;
+  if ((existing.candidateId ?? null) !== (draft.candidateId ?? null)) return true;
+  if (existing.enabled !== draft.enabled) return true;
+  if (existing.liveMode !== draft.liveMode) return true;
+  const a = asRecord(existing.promotionGate);
+  const b = asRecord(draft.promotionGate);
+  for (const key of [
+    "eligible",
+    "shadowEligible",
+    "reason",
+    "shortlistIncluded",
+    "droppedByBudget",
+    "v3ValidationStatus",
+    "strictSessionEvidence",
+  ]) {
+    if (a[key] !== b[key]) return true;
+  }
+  if (Math.abs((Number(a.score) || 0) - (Number(b.score) || 0)) > 1e-6) return true;
+  if (asRecord(a.holdout).passed !== asRecord(b.holdout).passed) return true;
+  if (asRecord(a.drift).status !== asRecord(b.drift).status) return true;
+  if (asRecord(a.brokerSeat).status !== asRecord(b.brokerSeat).status) return true;
+  if (asRecord(a.lifecycle).state !== asRecord(b.lifecycle).state) return true;
+  if (
+    JSON.stringify(a.entryBlockReasonCodes || []) !==
+    JSON.stringify(b.entryBlockReasonCodes || [])
+  ) {
+    return true;
+  }
+  if (
+    JSON.stringify(a.v3TemporalFilter || {}) !==
+    JSON.stringify(b.v3TemporalFilter || {})
+  ) {
+    return true;
+  }
+  if (JSON.stringify(a.dsl || {}) !== JSON.stringify(b.dsl || {})) return true;
+  if (JSON.stringify(a.weekly ?? null) !== JSON.stringify(b.weekly ?? null)) return true;
+  if (JSON.stringify(a.worker ?? null) !== JSON.stringify(b.worker ?? null)) return true;
+  if (JSON.stringify(existing.riskProfile) !== JSON.stringify(draft.riskProfile)) {
+    return true;
+  }
+  return false;
+}
+
+// Cursor is observability-only (drives ops dashboard counters). Skip the upsert
+// when the underlying counters and phase haven't changed — most scopes are
+// dormant and re-write 0/0/0/0 every cycle. updatedAtMs is volatile so we
+// strip it before comparing.
+function isResearchCursorUpsertNeeded(
+  existing:
+    | {
+        phase: string;
+        lastWeekStartMs: number | null;
+        progress: Record<string, unknown>;
+      }
+    | undefined,
+  draft: {
+    phase: string;
+    lastWeekStartMs: number | null;
+    progress: Record<string, unknown>;
+  },
+): boolean {
+  if (!existing) return true;
+  if (existing.phase !== draft.phase) return true;
+  if ((existing.lastWeekStartMs ?? null) !== (draft.lastWeekStartMs ?? null)) {
+    return true;
+  }
+  const stripVolatile = (raw: Record<string, unknown>): Record<string, unknown> => {
+    const { updatedAtMs: _omit, ...rest } = raw;
+    return rest;
+  };
+  return (
+    JSON.stringify(stripVolatile(existing.progress)) !==
+    JSON.stringify(stripVolatile(draft.progress))
+  );
 }
 
 function envBool(name: string, fallback: boolean): boolean {
@@ -6081,7 +6180,15 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       }),
     );
 
-    await upsertScalpV2Deployments({ rows });
+    const rowsToUpsert = rows.filter((row, idx) => {
+      const draft = drafts[idx]!;
+      const existing = existingByDeploymentId.get(draft.deploymentId);
+      return isScalpV2DeploymentUpsertNeeded(existing, row);
+    });
+    const deploymentsUpsertSkipped = rows.length - rowsToUpsert.length;
+    if (rowsToUpsert.length > 0) {
+      await upsertScalpV2Deployments({ rows: rowsToUpsert });
+    }
 
     const promotedIds = drafts
       .filter((row) => row.candidateId !== null && row.enabled)
@@ -6189,22 +6296,52 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       }
       cursorAggregates.set(key, current);
     }
+    const aggregateRows = Array.from(cursorAggregates.values());
+    const existingCursors = aggregateRows.length > 0
+      ? await listScalpV2ResearchCursors({ limit: 10_000 }).catch(() => [])
+      : [];
+    const existingCursorByKey = new Map(
+      existingCursors.map((c) => [c.cursorKey, c]),
+    );
+    const cursorWriteCandidates = aggregateRows.map((row) => {
+      const cursorKey = toScalpV2ResearchCursorKey({
+        venue: row.venue,
+        symbol: row.symbol,
+        entrySessionProfile: row.entrySessionProfile,
+      });
+      const existing = existingCursorByKey.get(cursorKey);
+      const phase = (row.enabled > 0 ? "promote" : "validate") as
+        | "promote"
+        | "validate";
+      const progress: Record<string, unknown> = {
+        considered: row.considered,
+        eligible: row.eligible,
+        enabled: row.enabled,
+        highlighted: row.highlighted,
+        policyWeeks: policy.minCompletedWeeks,
+        updatedAtMs: nowMs(),
+      };
+      return { row, existing, phase, progress };
+    });
+    const cursorsToWrite = cursorWriteCandidates.filter((c) =>
+      isResearchCursorUpsertNeeded(c.existing, {
+        phase: c.phase,
+        lastWeekStartMs: windowFromTs,
+        progress: c.progress,
+      }),
+    );
+    const cursorsUpsertSkipped =
+      cursorWriteCandidates.length - cursorsToWrite.length;
     await Promise.all(
-      Array.from(cursorAggregates.values()).map((row) =>
+      cursorsToWrite.map((c) =>
         updateResearchCursorSafe({
-          venue: row.venue,
-          symbol: row.symbol,
-          entrySessionProfile: row.entrySessionProfile,
-          phase: row.enabled > 0 ? "promote" : "validate",
+          venue: c.row.venue,
+          symbol: c.row.symbol,
+          entrySessionProfile: c.row.entrySessionProfile,
+          phase: c.phase,
+          lastCandidateOffset: c.existing?.lastCandidateOffset ?? 0,
           lastWeekStartMs: windowFromTs,
-          progress: {
-            considered: row.considered,
-            eligible: row.eligible,
-            enabled: row.enabled,
-            highlighted: row.highlighted,
-            policyWeeks: policy.minCompletedWeeks,
-            updatedAtMs: nowMs(),
-          },
+          progress: c.progress,
         }),
       ),
     );
@@ -6232,6 +6369,10 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     details = {
       considered: promotionPool.length,
       deploymentsConsidered: drafts.length,
+      deploymentsUpserted: rowsToUpsert.length,
+      deploymentsUpsertSkipped,
+      cursorsUpserted: cursorsToWrite.length,
+      cursorsUpsertSkipped,
       promoted: promotedIds.length,
       notPromoted: notPromotedIds.length,
       rejectedByBudget: 0,
