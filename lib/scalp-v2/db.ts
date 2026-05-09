@@ -1988,18 +1988,28 @@ export async function listScalpV2Deployments(params: {
     ? `
         jsonb_strip_nulls(jsonb_build_object(
           'eligible', promotion_gate->'eligible',
+          'shadowEligible', promotion_gate->'shadowEligible',
+          'shortlistIncluded', promotion_gate->'shortlistIncluded',
+          'droppedByBudget', promotion_gate->'droppedByBudget',
+          'strictSessionEvidence', promotion_gate->'strictSessionEvidence',
+          'score', promotion_gate->'score',
           'reason', promotion_gate->'reason',
           'lifecycle', promotion_gate->'lifecycle',
           'forwardValidation', promotion_gate->'forwardValidation',
           'holdout', promotion_gate->'holdout',
           'drift', promotion_gate->'drift',
           'v3ValidationStatus', promotion_gate->'v3ValidationStatus',
+          'worker', CASE
+            WHEN promotion_gate->'worker'->'holdout' IS NOT NULL
+              THEN jsonb_build_object('holdout', promotion_gate->'worker'->'holdout')
+            ELSE NULL
+          END,
           'v3TemporalFilter', COALESCE(promotion_gate->'v3TemporalFilter', promotion_gate->'metadata'->'v3TemporalFilter'),
           'brokerSeat', COALESCE(promotion_gate->'brokerSeat', promotion_gate->'metadata'->'brokerSeat'),
           'entryBlockReasonCodes', COALESCE(promotion_gate->'entryBlockReasonCodes', promotion_gate->'metadata'->'entryBlockReasonCodes'),
           'v3Ranking', COALESCE(promotion_gate->'v3Ranking', promotion_gate->'metadata'->'v3Ranking')
         )) AS "promotionGate",
-        NULL::jsonb AS "riskProfile"
+        risk_profile AS "riskProfile"
       `
     : `
         promotion_gate AS "promotionGate",

@@ -655,6 +655,9 @@ function asRecord(value: unknown): Record<string, unknown> {
 // Promote runs every cycle and previously rewrote all 33K rows because volatile
 // fields (evaluatedAtMs, v3 config snapshot, thresholds) tick on every cycle.
 // We only re-upsert when something material to the live decision actually changed.
+// `dsl`/`weekly`/`worker` are intentionally not compared — they are computed
+// snapshots redundant with candidate.metadata_json and not load-bearing for
+// strategy behavior. Decision changes are captured by the explicit fields below.
 function isScalpV2DeploymentUpsertNeeded(
   existing:
     | {
@@ -707,9 +710,6 @@ function isScalpV2DeploymentUpsertNeeded(
   ) {
     return true;
   }
-  if (JSON.stringify(a.dsl || {}) !== JSON.stringify(b.dsl || {})) return true;
-  if (JSON.stringify(a.weekly ?? null) !== JSON.stringify(b.weekly ?? null)) return true;
-  if (JSON.stringify(a.worker ?? null) !== JSON.stringify(b.worker ?? null)) return true;
   if (JSON.stringify(existing.riskProfile) !== JSON.stringify(draft.riskProfile)) {
     return true;
   }
@@ -5391,7 +5391,10 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         row.status === "promoted" ||
         row.status === "rejected",
     );
-	    const existingDeploymentsRaw = await listScalpV2Deployments({ limit: 10_000 });
+	    const existingDeploymentsRaw = await listScalpV2Deployments({
+	      limit: 10_000,
+	      compactPromotionGate: true,
+	    });
     const existingDeployments = existingDeploymentsRaw.filter((row) =>
       isScalpV2RuntimeSymbolInScope({
         runtime,
