@@ -4,6 +4,8 @@ import {
   buildScalpV4ClassifierValidityReport,
   buildScalpV4WeeklyBars,
   classifyScalpV4RawRegimes,
+  loadScalpV4DeploymentSymbols,
+  runScalpV4WeeklyRegimeBuild,
   SCALP_V4_CLASSIFIER_VERSION,
   upsertScalpV4RegimeSnapshots,
   type ScalpV4Venue,
@@ -37,29 +39,57 @@ function venue(value: unknown): ScalpV4Venue {
   return String(value || "").toLowerCase() === "capital" ? "capital" : "bitget";
 }
 
-async function loadWeekly(symbol: string) {
-  const history = await loadScalpCandleHistory(symbol, "1m");
-  return buildScalpV4WeeklyBars(history.record?.candles || []);
-}
-
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const apply = Boolean(args.apply);
-  const force = Boolean(args.force);
-  const venues = csv(args.venues || args.venue || "capital,bitget").map(venue);
-  const symbols = csv(args.symbols || "EURUSD,BTCUSDT");
+  const dryRun = Boolean(args.dryRun);
+  const force = Boolean(args.force || args.forceValidity);
+  const explicitVenues = args.venues || args.venue ? csv(args.venues || args.venue).map(venue) : null;
+  const explicitSymbols = args.symbols ? csv(args.symbols) : null;
   const classifierVersion = String(args.classifierVersion || SCALP_V4_CLASSIFIER_VERSION);
+
+  // Default path: auto-discover from deployments and apply.
+  if (!explicitSymbols) {
+    if (dryRun) {
+      const targets = await loadScalpV4DeploymentSymbols();
+      const filtered = explicitVenues ? targets.filter((row) => explicitVenues.includes(row.venue)) : targets;
+      console.log(JSON.stringify({
+        ok: true,
+        dryRun: true,
+        classifierVersion,
+        symbolsRequested: filtered.length,
+        targets: filtered,
+      }, null, 2));
+      return;
+    }
+    const targets = await loadScalpV4DeploymentSymbols();
+    const filtered = explicitVenues ? targets.filter((row) => explicitVenues.includes(row.venue)) : targets;
+    const result = await runScalpV4WeeklyRegimeBuild({
+      symbols: filtered,
+      classifierVersion,
+      forceValidity: force,
+    });
+    if (result.validityFailures.length > 0 && !force) {
+      console.log(JSON.stringify({ ...result, ok: false, reason: "classifier_validity_failed" }, null, 2));
+      process.exit(1);
+    }
+    console.log(JSON.stringify({ ...result, ok: true }, null, 2));
+    return;
+  }
+
+  // Explicit-symbols path retained for selective re-builds.
+  const symbols = explicitSymbols;
+  const venues = explicitVenues || ["bitget", "capital"];
   const shared = {
-    usdJpy: await loadWeekly("USDJPY").catch(() => []),
-    audJpy: await loadWeekly("AUDJPY").catch(() => []),
-    btcUsdt: await loadWeekly("BTCUSDT").catch(() => []),
+    usdJpy: await loadScalpCandleHistory("USDJPY", "1m").then((row) => buildScalpV4WeeklyBars(row.record?.candles || [])).catch(() => []),
+    audJpy: await loadScalpCandleHistory("AUDJPY", "1m").then((row) => buildScalpV4WeeklyBars(row.record?.candles || [])).catch(() => []),
+    btcUsdt: await loadScalpCandleHistory("BTCUSDT", "1m").then((row) => buildScalpV4WeeklyBars(row.record?.candles || [])).catch(() => []),
   };
   const results: unknown[] = [];
   const rowsToSave: ReturnType<typeof applyScalpV4Hysteresis> = [];
   let saved = 0;
   for (const v of venues) {
     for (const symbol of symbols) {
-      const weeklyBars = await loadWeekly(symbol).catch(() => []);
+      const weeklyBars = await loadScalpCandleHistory(symbol, "1m").then((row) => buildScalpV4WeeklyBars(row.record?.candles || [])).catch(() => []);
       if (!weeklyBars.length) {
         results.push({ venue: v, symbol, skipped: true, reason: "missing_symbol_history" });
         continue;
@@ -82,51 +112,16 @@ async function main() {
         },
       });
       rowsToSave.push(...snapshots);
-      results.push({
-        venue: v,
-        symbol,
-        weeks: weeklyBars.length,
-        snapshots: snapshots.length,
-        saved: 0,
-        validity: report,
-      });
+      results.push({ venue: v, symbol, weeks: weeklyBars.length, snapshots: snapshots.length, validity: report });
     }
   }
-  const invalid = results.filter((row) => {
-    const validity = row && typeof row === "object" ? (row as any).validity : null;
-    return validity && validity.passed === false;
-  });
+  const invalid = results.filter((row) => row && typeof row === "object" && (row as any).validity?.passed === false);
   if (invalid.length > 0 && !force) {
-    console.log(JSON.stringify({
-      ok: false,
-      dryRun: !apply,
-      classifierVersion,
-      saved,
-      sharedCoverage: {
-        usdJpyWeeks: shared.usdJpy.length,
-        audJpyWeeks: shared.audJpy.length,
-        btcUsdtWeeks: shared.btcUsdt.length,
-      },
-      reason: "classifier_validity_failed",
-      invalid,
-      results,
-    }, null, 2));
+    console.log(JSON.stringify({ ok: false, dryRun, classifierVersion, reason: "classifier_validity_failed", invalid, results }, null, 2));
     process.exit(1);
   }
-  if (apply) saved = await upsertScalpV4RegimeSnapshots(rowsToSave);
-  console.log(JSON.stringify({
-    ok: true,
-    dryRun: !apply,
-    forced: force,
-    classifierVersion,
-    saved,
-    sharedCoverage: {
-      usdJpyWeeks: shared.usdJpy.length,
-      audJpyWeeks: shared.audJpy.length,
-      btcUsdtWeeks: shared.btcUsdt.length,
-    },
-    results,
-  }, null, 2));
+  if (!dryRun) saved = await upsertScalpV4RegimeSnapshots(rowsToSave);
+  console.log(JSON.stringify({ ok: true, dryRun, forced: force, classifierVersion, saved, results }, null, 2));
 }
 
 main().catch((err) => {

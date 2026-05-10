@@ -27,8 +27,40 @@ export function isScalpV4Enabled(): boolean {
 }
 
 export function isScalpV4HardGateEnabled(): boolean {
-  const raw = String(process.env.SCALP_V4_HARD_GATE_ENABLED || "false").trim().toLowerCase();
-  return ["1", "true", "yes", "on"].includes(raw);
+  // Default ON: v4 entry-blocks are real, not shadow. Set
+  // SCALP_V4_HARD_GATE_ENABLED=false to revert to shadow-only logging.
+  const raw = String(process.env.SCALP_V4_HARD_GATE_ENABLED ?? "true").trim().toLowerCase();
+  return !["0", "false", "no", "off"].includes(raw);
+}
+
+export async function loadScalpV4DeploymentSymbols(): Promise<Array<{ venue: ScalpV4Venue; symbol: string }>> {
+  if (!isScalpPgConfigured()) return [];
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{ venue: string; symbol: string }>>(sql`
+    SELECT DISTINCT venue, symbol
+    FROM scalp_v2_deployments
+    WHERE candidate_id IS NOT NULL
+    ORDER BY venue, symbol;
+  `);
+  return rows
+    .map((row) => ({ venue: normalizeVenue(row.venue), symbol: normalizeSymbol(row.symbol) }))
+    .filter((row) => Boolean(row.symbol));
+}
+
+export async function loadScalpV4SymbolsWithSnapshotForWeek(params: {
+  classifierVersion: string;
+  weekStartMs: number;
+}): Promise<Set<string>> {
+  if (!isScalpPgConfigured()) return new Set();
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{ venue: string; symbol: string }>>(sql`
+    SELECT DISTINCT venue, symbol
+    FROM scalp_regime_snapshots
+    WHERE classifier_version = ${params.classifierVersion}
+      AND granularity = 'week'
+      AND week_start = ${new Date(params.weekStartMs)};
+  `);
+  return new Set(rows.map((row) => `${normalizeVenue(row.venue)}:${normalizeSymbol(row.symbol)}`));
 }
 
 export function resolveScalpV4SnapshotTtlMs(venue: unknown): number {
