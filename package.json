@@ -32,7 +32,7 @@
     "db:pg:backfill:weekly-metrics": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-backfill-weekly-metrics-from-research.ts --apply",
     "test:ts": "node --import tsx --test",
     "test:forex": "node --import tsx --test lib/forex/*.test.ts lib/forex/modules/*.test.ts lib/forex/replay/*.test.ts",
-    "test:scalp": "node --import tsx --test lib/scalp/replay/*.test.ts lib/scalp/strategies/*.test.ts lib/scalp-v3/*.test.ts",
+    "test:scalp": "node --import tsx --test lib/scalp/replay/*.test.ts lib/scalp/strategies/*.test.ts lib/scalp-v3/*.test.ts lib/scalp-v4/*.test.ts",
     "replay:run": "node --import tsx scripts/forex-replay.ts --input data/replay/eurusd.sample.json --outDir /tmp/forex-replay",
     "replay:matrix": "node --import tsx scripts/forex-replay-matrix.ts --fixtures core --fixturesIndex data/replay/fixtures/index.json --outDir /tmp/forex-replay-matrix",
     "replay:scalp": "node --import tsx scripts/scalp-replay.ts --input data/scalp-replay/fixtures/eurusd.sample.json --outDir /tmp/scalp-replay",
@@ -41,7 +41,9 @@
     "backtest:scalp:deployments": "node --import tsx scripts/scalp-deployment-matrix.ts",
     "smoke:scalp:v2": "bash scripts/scalp-v2-smoke.sh",
     "scalp:sync-candles-kv": "node --import tsx scripts/scalp-sync-candles-kv.ts",
-    "scalp:purge-capital-traces": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-purge-capital-traces.ts"
+    "scalp:purge-capital-traces": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-purge-capital-traces.ts",
+    "scalp:v4:build-regimes": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v4-build-regimes.ts",
+    "scalp:v4:backfill": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v4-backfill-walkforward.ts"
   },
   "devDependencies": {
     "@types/pg": "^8.20.0",

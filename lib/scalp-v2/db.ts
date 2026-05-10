@@ -1999,6 +1999,7 @@ export async function listScalpV2Deployments(params: {
           'holdout', promotion_gate->'holdout',
           'drift', promotion_gate->'drift',
           'v3ValidationStatus', promotion_gate->'v3ValidationStatus',
+          'regimeEnvelope', promotion_gate->'regimeEnvelope',
           'worker', CASE
             WHEN promotion_gate->'worker'->'holdout' IS NOT NULL
               THEN jsonb_build_object('holdout', promotion_gate->'worker'->'holdout')

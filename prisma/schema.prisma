@@ -418,6 +418,77 @@ model ScalpDeploymentWeeklyMetric {
   @@map("scalp_deployment_weekly_metrics")
 }
 
+model ScalpRegimeSnapshot {
+  id                 BigInt   @id @default(autoincrement())
+  venue              String
+  symbol             String
+  granularity        String   @default("week")
+  weekStart          DateTime @map("week_start") @db.Timestamptz(3)
+  classifierVersion  String   @map("classifier_version")
+  rawCellId          String   @map("raw_cell_id")
+  cellId             String   @map("cell_id")
+  pendingCellId      String?  @map("pending_cell_id")
+  pendingWeeks       Int      @default(0) @map("pending_weeks")
+  volAxis            String   @map("vol_axis")
+  trendAxis          String   @map("trend_axis")
+  riskAxis           String   @map("risk_axis")
+  confidenceJson     Json     @default(dbgenerated("'{}'::jsonb")) @map("confidence_json") @db.JsonB
+  sourceCoverageJson Json     @default(dbgenerated("'{}'::jsonb")) @map("source_coverage_json") @db.JsonB
+  detailsJson        Json     @default(dbgenerated("'{}'::jsonb")) @map("details_json") @db.JsonB
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([venue, symbol, granularity, weekStart, classifierVersion], map: "scalp_regime_snapshots_unique_week")
+  @@index([venue, symbol, granularity, weekStart(sort: Desc), classifierVersion], map: "scalp_regime_snapshots_lookup_idx")
+  @@index([classifierVersion, cellId, weekStart(sort: Desc)], map: "scalp_regime_snapshots_cell_idx")
+  @@map("scalp_regime_snapshots")
+}
+
+model ScalpRegimeTransition {
+  id                  BigInt   @id @default(autoincrement())
+  venue               String
+  symbol              String
+  transitionWeekStart DateTime @map("transition_week_start") @db.Timestamptz(3)
+  classifierVersion   String   @map("classifier_version")
+  fromCellId          String?  @map("from_cell_id")
+  toCellId            String   @map("to_cell_id")
+  detailsJson         Json     @default(dbgenerated("'{}'::jsonb")) @map("details_json") @db.JsonB
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([venue, symbol, transitionWeekStart, classifierVersion], map: "scalp_regime_transitions_unique_week")
+  @@index([venue, symbol, transitionWeekStart(sort: Desc), classifierVersion], map: "scalp_regime_transitions_lookup_idx")
+  @@map("scalp_regime_transitions")
+}
+
+model ScalpRegimeWalkforwardResult {
+  id                 BigInt   @id @default(autoincrement())
+  candidateId        BigInt?  @map("candidate_id")
+  deploymentId       String   @map("deployment_id")
+  venue              String
+  symbol             String
+  strategyId         String   @map("strategy_id")
+  tuneId             String   @map("tune_id")
+  classifierVersion  String   @map("classifier_version")
+  windowFrom         DateTime @map("window_from") @db.Timestamptz(3)
+  windowTo           DateTime @map("window_to") @db.Timestamptz(3)
+  effectiveTrials    BigInt   @default(1) @map("effective_trials")
+  status             String
+  manualApproved     Boolean  @default(false) @map("manual_approved")
+  autoRejectAfter    DateTime? @map("auto_reject_after") @db.Timestamptz(3)
+  envelopeJson       Json     @default(dbgenerated("'{}'::jsonb")) @map("envelope_json") @db.JsonB
+  windowResultsJson  Json     @default(dbgenerated("'[]'::jsonb")) @map("window_results_json") @db.JsonB
+  detailsJson        Json     @default(dbgenerated("'{}'::jsonb")) @map("details_json") @db.JsonB
+  evaluatedAt        DateTime @default(now()) @map("evaluated_at") @db.Timestamptz(3)
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([deploymentId, classifierVersion, windowFrom, windowTo], map: "scalp_regime_walkforward_results_unique_window")
+  @@index([candidateId, evaluatedAt(sort: Desc)], map: "scalp_regime_walkforward_results_candidate_idx")
+  @@index([deploymentId, evaluatedAt(sort: Desc)], map: "scalp_regime_walkforward_results_deployment_idx")
+  @@index([status, evaluatedAt(sort: Desc)], map: "scalp_regime_walkforward_results_status_idx")
+  @@map("scalp_regime_walkforward_results")
+}
+
 model ScalpAdaptiveSelectorSnapshot {
   snapshotId          String   @id @map("snapshot_id")
   symbol              String

@@ -65,6 +65,12 @@ import {
   type ScalpV2V3TemporalFilter,
 } from "../scalp-v3";
 import {
+  isScalpV4Enabled,
+  isScalpV4HardGateEnabled,
+  loadScalpV4CurrentRegimeSnapshot,
+  resolveScalpV4EnvelopeBlock,
+} from "../scalp-v4";
+import {
   appendScalpV2ExecutionEvent,
   backfillScalpV2DeploymentHoldout,
   buildScalpV2JobResult,
@@ -6745,6 +6751,21 @@ export async function runScalpV2ExecuteJob(params: {
 	          staleData: true,
 	          activeEvents: [],
 	        }));
+	        const v4Enabled = isScalpV4Enabled();
+	        const v4CurrentRegime = v4Enabled
+	          ? await loadScalpV4CurrentRegimeSnapshot({
+	              venue: deployment.venue,
+	              symbol: deployment.symbol,
+	              nowMs: nowTs,
+	            }).catch(() => ({ cellId: null, stale: true, snapshot: null }))
+	          : { cellId: null, stale: false, snapshot: null };
+	        const v4RegimeGate = resolveScalpV4EnvelopeBlock({
+	          enabled: v4Enabled,
+	          hardGate: isScalpV4HardGateEnabled(),
+	          envelope: asRecord(deployment.promotionGate).regimeEnvelope,
+	          currentCellId: v4CurrentRegime.cellId,
+	          stale: Boolean(v4CurrentRegime.stale),
+	        });
 	        const promotionEntryBlockReasonCodes = normalizeReasonCodes(
 	          asRecord(deployment.promotionGate).entryBlockReasonCodes,
 	        );
@@ -6759,6 +6780,7 @@ export async function runScalpV2ExecuteJob(params: {
 	          entryBlockReasonCodes: normalizeReasonCodes([
 	            ...promotionEntryBlockReasonCodes,
 	            ...(newsBlackout.blocked ? newsBlackout.reasonCodes : []),
+	            ...(v4RegimeGate.blocked ? v4RegimeGate.reasonCodes : []),
 	          ]),
 	        });
         const runtimeSnapshot = buildScalpV2RuntimeSnapshotForDeployment({
@@ -6795,6 +6817,11 @@ export async function runScalpV2ExecuteJob(params: {
 	              dryRun: result.dryRun,
 	              runLockAcquired: result.runLockAcquired,
 	              v3NewsBlackout: newsBlackout,
+	              v4RegimeGate: {
+	                ...v4RegimeGate,
+	                currentCellId: v4CurrentRegime.cellId,
+	                snapshot: v4CurrentRegime.snapshot,
+	              },
 	            },
           }),
         );
