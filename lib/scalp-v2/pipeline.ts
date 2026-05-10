@@ -2560,6 +2560,12 @@ export async function runScalpV2ResearchJob(params: {
   batchSize?: number;
   debugTiming?: boolean;
   lockScope?: string;
+  // Optional process-level candle cache that persists across job invocations.
+  // When provided (typically by the local bulk runner), per-symbol candle
+  // history is loaded from Neon at most once per symbol per process — instead
+  // of being re-fetched on every batch. Cron callers omit it; behavior is
+  // identical to before for them.
+  candleCacheRef?: Map<string, ScalpReplayCandle[]>;
 } = {}): Promise<ScalpV2JobResult> {
   const researchWorkLeasesEnabled = envBool(
     "SCALP_V2_RESEARCH_WORK_LEASES_ENABLED",
@@ -3970,7 +3976,11 @@ export async function runScalpV2ResearchJob(params: {
       "SCALP_V2_RESEARCH_WINDOW_SLICE_CACHE_ENABLED",
       true,
     );
-    const candleCache = new Map<string, ScalpReplayCandle[]>();
+    const candleCache =
+      params.candleCacheRef ?? new Map<string, ScalpReplayCandle[]>();
+    const candleCacheIsPersistent = params.candleCacheRef !== undefined;
+    let candleCacheHits = 0;
+    let candleCacheMisses = 0;
     type SymbolWindowSliceCache = {
       candlesRef: ScalpReplayCandle[];
       windows: Map<string, ScalpReplayCandle[]>;
@@ -4295,7 +4305,10 @@ export async function runScalpV2ResearchJob(params: {
     ): Promise<ScalpReplayCandle[] | null> {
       const candidate = runtime.candidate;
       let symbolCandles = candleCache.get(candidate.symbol) ?? null;
-      if (!symbolCandles) {
+      if (symbolCandles) {
+        candleCacheHits += 1;
+      } else {
+        candleCacheMisses += 1;
         // Load only stage A window initially (4 weeks). If later stages need
         // a wider range, stage evaluation lazily extends to the full window.
         const stageAFromTs = trainingWindowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS;
@@ -5188,6 +5201,10 @@ export async function runScalpV2ResearchJob(params: {
       symbolsTotalAllShards: discoveredSymbols.length || uniqueSymbols.length,
       symbolShardCount,
       symbolShardIndex,
+      candleCachePersistent: candleCacheIsPersistent,
+      candleCacheHits,
+      candleCacheMisses,
+      candleCacheSize: candleCache.size,
       researchLockScope,
       researchWorkLeasesEnabled,
       researchWorkLeaseMs,

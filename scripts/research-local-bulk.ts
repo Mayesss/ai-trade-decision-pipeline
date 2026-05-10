@@ -24,6 +24,7 @@ import {
   loadScalpV2WarmUpState,
 } from '../lib/scalp-v2/db';
 import { isScalpPgConfigured } from '../lib/scalp-v2/pg';
+import type { ScalpReplayCandle } from '../lib/scalp/replay/types';
 import { resolveScalpV2CompletedWeekWindowToUtc } from '../lib/scalp-v2/weekWindows';
 
 const { loadEnvConfig } = nextEnv;
@@ -133,7 +134,19 @@ let batchCount = 0;
 let lastPending = -1;
 let lowProgressStreak = 0;
 
-let runScalpV2ResearchJob: ((params: { batchSize?: number; lockScope?: string }) => Promise<{
+// Persistent across all batches in this process — symbol candle history is
+// loaded from Neon at most once per symbol per bulk run instead of every batch.
+const persistentCandleCache = new Map<string, ScalpReplayCandle[]>();
+const PERSISTENT_CANDLE_CACHE_SOFT_CAP = Math.max(
+  10,
+  Math.floor(Number(process.env.BULK_CANDLE_CACHE_SOFT_CAP) || 60),
+);
+
+let runScalpV2ResearchJob: ((params: {
+  batchSize?: number;
+  lockScope?: string;
+  candleCacheRef?: Map<string, ScalpReplayCandle[]>;
+}) => Promise<{
   ok: boolean;
   busy?: boolean;
   processed: number;
@@ -168,7 +181,18 @@ async function runBatch(): Promise<boolean> {
       BULK_SHARD_COUNT > 1 && !WORK_LEASES
         ? `bulk-shard-${BULK_SHARD_INDEX}-of-${BULK_SHARD_COUNT}`
         : undefined,
+    candleCacheRef: persistentCandleCache,
   });
+  // Soft cap: if cache grows past the threshold, evict the oldest insertions
+  // (Map preserves insertion order). Bulk runs typically stay well under this.
+  if (persistentCandleCache.size > PERSISTENT_CANDLE_CACHE_SOFT_CAP) {
+    const evictTarget = Math.floor(PERSISTENT_CANDLE_CACHE_SOFT_CAP * 0.8);
+    while (persistentCandleCache.size > evictTarget) {
+      const oldestKey = persistentCandleCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      persistentCandleCache.delete(oldestKey);
+    }
+  }
 
   const elapsed = ((Date.now() - batchStart) / 1000).toFixed(1);
   totalProcessed += result.processed;
@@ -188,9 +212,18 @@ async function runBatch(): Promise<boolean> {
   const pending = result.pendingAfter || 0;
   const reason = d.reason || (budgetHit ? 'time_budget_exhausted' : '');
 
+  const candleHits = Number(d.candleCacheHits || 0);
+  const candleMisses = Number(d.candleCacheMisses || 0);
+  const candleSize = Number(d.candleCacheSize || persistentCandleCache.size);
+  const candleHitRate =
+    candleHits + candleMisses > 0
+      ? Math.round((candleHits / (candleHits + candleMisses)) * 100)
+      : 0;
+
   console.log(`  ${elapsed}s | processed=${result.processed} succeeded=${result.succeeded} failed=${result.failed} stageC=${stgC}`);
   console.log(`  symbols=${symsRun}/${symsTotal}${shardCount > 1 ? ` shard=${shardIndex}/${shardCount}` : ''} | weekly=${wkEval}/${wkTotal} (${wkTotal > 0 ? Math.round(wkEval / wkTotal * 100) : 0}%)`);
   console.log(`  stageA=${stgA} stageB=${stgB} stageC=${stgC} | budgetHit=${budgetHit ? 'yes' : 'no'}`);
+  console.log(`  candleCache: hits=${candleHits} misses=${candleMisses} hitRate=${candleHitRate}% size=${candleSize}`);
   console.log(`  pending=${pending} | reason=${reason}`);
   if (BULK_DEBUG) {
     const deferredByCoverage = Number(d.deferredByCandleCoverage || 0);
