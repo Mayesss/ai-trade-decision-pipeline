@@ -347,11 +347,12 @@ npm run start
   - `scripts/research-local-bulk.ts` defaults to this v4 path. `BULK_CANDIDATE_BATCH_SIZE` controls `maxCandidatesPerCall`; set `BULK_RESEARCH_VERSION=v2` only for legacy v2/v3 drains.
   - Local v4 bulk keeps a bounded per-process two-year `1m` candle range cache keyed by symbol/window. Tune with `BULK_V4_CANDLE_CACHE_SOFT_CAP` (default `16`) if memory pressure is high.
   - v4 research backfills missing/insufficient two-year `1m` candle coverage before walkforward by default. Disable with `BULK_V4_BACKFILL_CANDLES=0` locally or `backfillCandles=false` on the API route.
+  - v4 research claims each deployment/window in `scalp_regime_walkforward_results` with `status='in_progress'` before expensive work, so parallel terminals skip candidates already claimed by another worker. Stale claims are retried after `BULK_V4_WORK_LEASE_MINUTES` / `workClaimLeaseMinutes` (default `120`).
   - Optional query params:
     - `maxCandidatesPerCall=<int>` / `batchSize=<int>` for v4 walkforward candidates per call.
     - `candidateFetchLimit=<int>` for the v4 candidate scan limit.
     - `forceValidity=true|false` to override v4 classifier validity checks.
-    - `backfillCandles=true|false`, `minCandleCoverageRatio=<0.1..1>`, `candleBackfillChunkWeeks=<1..26>`, `candleBackfillMaxRequestsPerChunk=<40..5000>` for v4 walkforward candle coverage.
+    - `backfillCandles=true|false`, `minCandleCoverageRatio=<0.1..1>`, `candleBackfillChunkWeeks=<1..26>`, `candleBackfillMaxRequestsPerChunk=<40..5000>`, `workClaimLeaseMinutes=<5..1440>` for v4 walkforward candle coverage and work claiming.
 - `GET /api/scalp/v2/cron/evaluate?batchSize=200`
   - Legacy v2/v3 path. Disabled by default through the API route; pass `legacyV2=true` to run intentionally.
   - Native model-guided scoring pass over deterministic candidate pools for each venue+symbol+session scope.

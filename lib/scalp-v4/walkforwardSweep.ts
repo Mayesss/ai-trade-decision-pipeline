@@ -14,8 +14,10 @@ import {
 } from "./candleCoverage";
 import { SCALP_V4_CLASSIFIER_VERSION } from "./classifier";
 import {
+  claimScalpV4WalkforwardDeployment,
   listScalpV4ResearchCandidates,
   loadScalpV4CompletedWalkforwardDeploymentIds,
+  resolveScalpV4WalkforwardClaimLeaseMs,
   loadScalpV4RegimeSnapshots,
   upsertScalpV4WalkforwardResult,
 } from "./pg";
@@ -38,6 +40,7 @@ export interface ScalpV4WalkforwardSweepOptions {
   minCandleCoverageRatio?: number;
   candleBackfillChunkWeeks?: number;
   candleBackfillMaxRequestsPerChunk?: number;
+  workClaimLeaseMs?: number;
 }
 
 export interface ScalpV4WalkforwardSweepResult {
@@ -55,6 +58,7 @@ export interface ScalpV4WalkforwardSweepResult {
   candleBackfillsSucceeded: number;
   candleBackfilledCandles: number;
   candleCoverageFailures: number;
+  claimSkipped: number;
   results: Array<Record<string, unknown>>;
 }
 
@@ -142,6 +146,11 @@ export async function runScalpV4WalkforwardSweep(
   let candleBackfillsSucceeded = 0;
   let candleBackfilledCandles = 0;
   let candleCoverageFailures = 0;
+  let claimSkipped = 0;
+  const workClaimLeaseMs = Math.max(
+    5 * 60_000,
+    Math.min(24 * 60 * 60_000, Math.floor(Number(options.workClaimLeaseMs) || resolveScalpV4WalkforwardClaimLeaseMs())),
+  );
   if (maxCandidatesPerCall === 0) {
     return {
       classifierVersion,
@@ -158,6 +167,7 @@ export async function runScalpV4WalkforwardSweep(
       candleBackfillsSucceeded: 0,
       candleBackfilledCandles: 0,
       candleCoverageFailures: 0,
+      claimSkipped: 0,
       results: [],
     };
   }
@@ -168,6 +178,7 @@ export async function runScalpV4WalkforwardSweep(
     classifierVersion,
     windowFromMs,
     windowToMs: alignedWindowToMs,
+    leaseMs: workClaimLeaseMs,
   });
   const results: Array<Record<string, unknown>> = [];
   let eligible = 0;
@@ -186,6 +197,24 @@ export async function runScalpV4WalkforwardSweep(
     });
     if (completed.has(deployment.deploymentId)) {
       skipped += 1;
+      continue;
+    }
+    const claimed = await claimScalpV4WalkforwardDeployment({
+      candidateId: candidate.id,
+      deploymentId: deployment.deploymentId,
+      venue: venue as ScalpV4Venue,
+      symbol: candidate.symbol,
+      strategyId: candidate.strategyId,
+      tuneId: candidate.tuneId,
+      classifierVersion,
+      windowFromMs,
+      windowToMs: alignedWindowToMs,
+      effectiveTrials,
+      leaseMs: workClaimLeaseMs,
+    });
+    if (!claimed) {
+      skipped += 1;
+      claimSkipped += 1;
       continue;
     }
     const snapshots = await loadScalpV4RegimeSnapshots({
@@ -352,6 +381,7 @@ export async function runScalpV4WalkforwardSweep(
     candleBackfillsSucceeded,
     candleBackfilledCandles,
     candleCoverageFailures,
+    claimSkipped,
     results,
   };
 }

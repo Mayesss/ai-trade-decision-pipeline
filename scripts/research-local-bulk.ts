@@ -17,6 +17,7 @@
  *   BULK_V4_FORCE_VALIDITY=1      — v4 only: override classifier validity
  *   BULK_V4_CANDLE_CACHE_SOFT_CAP=16 — v4 only: cached 2-year symbol ranges
  *   BULK_V4_BACKFILL_CANDLES=1    — v4 only: fetch/save missing walkforward candles
+ *   BULK_V4_WORK_LEASE_MINUTES=120 — v4 only: candidate claim TTL
  */
 import nextEnv from '@next/env';
 import os from 'node:os';
@@ -176,6 +177,10 @@ const BULK_V4_BACKFILL_MAX_REQUESTS_PER_CHUNK = Math.max(
   40,
   Math.min(5000, Math.floor(Number(process.env.BULK_V4_BACKFILL_MAX_REQUESTS_PER_CHUNK) || 1200)),
 );
+const BULK_V4_WORK_LEASE_MINUTES = Math.max(
+  5,
+  Math.min(24 * 60, Math.floor(Number(process.env.BULK_V4_WORK_LEASE_MINUTES) || 120)),
+);
 const persistentV4CandleCache = new Map<string, ScalpCandle[]>();
 
 let runScalpV2ResearchJob: ((params: {
@@ -205,6 +210,7 @@ let runScalpV4ResearchJob: ((params?: {
   minCandleCoverageRatio?: number;
   candleBackfillChunkWeeks?: number;
   candleBackfillMaxRequestsPerChunk?: number;
+  workClaimLeaseMs?: number;
 }) => Promise<ScalpV4ResearchJobResult>) | null = null;
 
 async function getRunScalpV2ResearchJob() {
@@ -248,6 +254,7 @@ async function runBatch(): Promise<boolean> {
       minCandleCoverageRatio: BULK_V4_MIN_CANDLE_COVERAGE_RATIO,
       candleBackfillChunkWeeks: BULK_V4_BACKFILL_CHUNK_WEEKS,
       candleBackfillMaxRequestsPerChunk: BULK_V4_BACKFILL_MAX_REQUESTS_PER_CHUNK,
+      workClaimLeaseMs: BULK_V4_WORK_LEASE_MINUTES * 60 * 1000,
     });
     const elapsed = ((Date.now() - batchStart) / 1000).toFixed(1);
     totalProcessed += result.processed;
@@ -261,7 +268,7 @@ async function runBatch(): Promise<boolean> {
     const symbolsRequested = weeklyResult?.symbolsRequested ?? 0;
 
     console.log(
-      `  ${elapsed}s | v4 processed=${result.processed} eligible=${walkforward.eligible} ineligible=${walkforward.ineligible} skipped=${walkforward.skipped}`,
+      `  ${elapsed}s | v4 processed=${result.processed} eligible=${walkforward.eligible} ineligible=${walkforward.ineligible} skipped=${walkforward.skipped} claimSkipped=${walkforward.claimSkipped}`,
     );
     console.log(
       `  regimes: skipped=${weekly.skipped ? 'yes' : 'no'} reason=${weekly.reason || weeklyResult?.reason || 'none'} saved=${symbolsSaved}/${symbolsRequested} validityFailures=${validityFailures}`,
@@ -509,6 +516,7 @@ async function main() {
     console.log(
       `V4 candle backfill: ${BULK_V4_BACKFILL_CANDLES ? 'enabled' : 'disabled'} (minCoverage=${Math.round(BULK_V4_MIN_CANDLE_COVERAGE_RATIO * 100)}%, chunkWeeks=${BULK_V4_BACKFILL_CHUNK_WEEKS})`,
     );
+    console.log(`V4 work lease: ${BULK_V4_WORK_LEASE_MINUTES} minutes`);
   } else {
     console.log(`Symbols per batch: ${symbolsPerBatch}`);
     console.log(`Backtest concurrency: ${backtestConcurrency}`);

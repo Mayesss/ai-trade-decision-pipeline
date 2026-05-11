@@ -82,6 +82,12 @@ export default async function handler(
       40,
       5000,
     );
+    const workClaimLeaseMinutes = parseIntBounded(
+      req.query.workClaimLeaseMinutes,
+      Math.max(5, Math.floor(Number(process.env.SCALP_V4_WORK_LEASE_MINUTES || 120))),
+      5,
+      24 * 60,
+    );
     const classifierVersion =
       firstQueryValue(req.query.classifierVersion).trim() || undefined;
 
@@ -95,6 +101,7 @@ export default async function handler(
       minCandleCoverageRatio,
       candleBackfillChunkWeeks,
       candleBackfillMaxRequestsPerChunk,
+      workClaimLeaseMs: workClaimLeaseMinutes * 60 * 1000,
     });
 
     return res.status(200).json({
@@ -111,6 +118,7 @@ export default async function handler(
         minCandleCoverageRatio,
         candleBackfillChunkWeeks,
         candleBackfillMaxRequestsPerChunk,
+        workClaimLeaseMinutes,
       },
     });
   } catch (err: any) {

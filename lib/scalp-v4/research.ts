@@ -39,6 +39,7 @@ export async function runScalpV4ResearchJob(params: {
   minCandleCoverageRatio?: number;
   candleBackfillChunkWeeks?: number;
   candleBackfillMaxRequestsPerChunk?: number;
+  workClaimLeaseMs?: number;
 } = {}): Promise<ScalpV4ResearchJobResult> {
   const weeklyBuild = await ensureScalpV4WeeklyRegimesBuilt({
     classifierVersion: params.classifierVersion,
@@ -57,6 +58,7 @@ export async function runScalpV4ResearchJob(params: {
     minCandleCoverageRatio: params.minCandleCoverageRatio,
     candleBackfillChunkWeeks: params.candleBackfillChunkWeeks,
     candleBackfillMaxRequestsPerChunk: params.candleBackfillMaxRequestsPerChunk,
+    workClaimLeaseMs: params.workClaimLeaseMs,
   });
   return {
     ok: true,

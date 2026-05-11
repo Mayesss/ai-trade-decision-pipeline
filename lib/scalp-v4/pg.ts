@@ -39,6 +39,12 @@ export function isScalpV4HardGateEnabled(): boolean {
   return !["0", "false", "no", "off"].includes(raw);
 }
 
+export function resolveScalpV4WalkforwardClaimLeaseMs(): number {
+  const n = Number(process.env.SCALP_V4_WALKFORWARD_CLAIM_LEASE_MS);
+  if (!Number.isFinite(n) || n <= 0) return 2 * 60 * 60_000;
+  return Math.max(5 * 60_000, Math.min(24 * 60 * 60_000, Math.floor(n)));
+}
+
 export async function loadScalpV4DeploymentSymbols(): Promise<Array<{ venue: ScalpV4Venue; symbol: string }>> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
@@ -431,19 +437,96 @@ export async function upsertScalpV4WalkforwardResult(params: {
   `);
 }
 
+export async function claimScalpV4WalkforwardDeployment(params: {
+  candidateId?: number | null;
+  deploymentId: string;
+  venue: ScalpV4Venue;
+  symbol: string;
+  strategyId: string;
+  tuneId: string;
+  classifierVersion: string;
+  windowFromMs: number;
+  windowToMs: number;
+  effectiveTrials: number;
+  leaseMs?: number;
+}): Promise<boolean> {
+  if (!isScalpPgConfigured()) return true;
+  const leaseMs = Math.max(
+    5 * 60_000,
+    Math.min(24 * 60 * 60_000, Math.floor(Number(params.leaseMs) || resolveScalpV4WalkforwardClaimLeaseMs())),
+  );
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{ id: bigint }>>(sql`
+    INSERT INTO scalp_regime_walkforward_results(
+      candidate_id,
+      deployment_id,
+      venue,
+      symbol,
+      strategy_id,
+      tune_id,
+      classifier_version,
+      window_from,
+      window_to,
+      effective_trials,
+      status,
+      details_json,
+      evaluated_at
+    ) VALUES (
+      ${params.candidateId || null},
+      ${params.deploymentId},
+      ${params.venue},
+      ${params.symbol},
+      ${params.strategyId},
+      ${params.tuneId},
+      ${params.classifierVersion},
+      ${new Date(params.windowFromMs)},
+      ${new Date(params.windowToMs)},
+      ${params.effectiveTrials},
+      'in_progress',
+      ${JSON.stringify({ claimedAtMs: Date.now(), leaseMs })}::jsonb,
+      NOW()
+    )
+    ON CONFLICT(deployment_id, classifier_version, window_from, window_to)
+    DO UPDATE SET
+      candidate_id = EXCLUDED.candidate_id,
+      venue = EXCLUDED.venue,
+      symbol = EXCLUDED.symbol,
+      strategy_id = EXCLUDED.strategy_id,
+      tune_id = EXCLUDED.tune_id,
+      effective_trials = EXCLUDED.effective_trials,
+      status = 'in_progress',
+      details_json = EXCLUDED.details_json,
+      evaluated_at = NOW(),
+      updated_at = NOW()
+    WHERE scalp_regime_walkforward_results.status = 'in_progress'
+      AND scalp_regime_walkforward_results.updated_at < NOW() - (${leaseMs} * interval '1 millisecond')
+    RETURNING id;
+  `);
+  return rows.length > 0;
+}
+
 export async function loadScalpV4CompletedWalkforwardDeploymentIds(params: {
   classifierVersion: string;
   windowFromMs: number;
   windowToMs: number;
+  leaseMs?: number;
 }): Promise<Set<string>> {
   if (!isScalpPgConfigured()) return new Set();
+  const leaseMs = Math.max(
+    5 * 60_000,
+    Math.min(24 * 60 * 60_000, Math.floor(Number(params.leaseMs) || resolveScalpV4WalkforwardClaimLeaseMs())),
+  );
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{ deploymentId: string }>>(sql`
     SELECT deployment_id AS "deploymentId"
     FROM scalp_regime_walkforward_results
     WHERE classifier_version = ${params.classifierVersion}
       AND window_from = ${new Date(params.windowFromMs)}
-      AND window_to = ${new Date(params.windowToMs)};
+      AND window_to = ${new Date(params.windowToMs)}
+      AND (
+        status <> 'in_progress'
+        OR updated_at >= NOW() - (${leaseMs} * interval '1 millisecond')
+      );
   `);
   return new Set(rows.map((row) => String(row.deploymentId || "").trim()).filter(Boolean));
 }
