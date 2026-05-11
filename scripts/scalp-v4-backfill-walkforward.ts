@@ -2,6 +2,7 @@
 import {
   applyScalpV4OverbroadAutoRejects,
   buildScalpV4ClassifierValidityReport,
+  listScalpV4ResearchCandidates,
   loadScalpV4CompletedWalkforwardDeploymentIds,
   loadScalpV4RegimeSnapshots,
   runScalpV4WalkForward,
@@ -17,7 +18,6 @@ import type { ScalpReplayCandle } from "../lib/scalp/replay/types";
 import { ensureScalpSymbolMarketMetadata } from "../lib/scalp/symbolMarketMetadataSync";
 import { scalpPrisma } from "../lib/scalp/pg/client";
 import { sql } from "../lib/scalp/pg/sql";
-import { listScalpV2Candidates } from "../lib/scalp-v2/db";
 
 const WEEK = 7 * 24 * 60 * 60 * 1000;
 
@@ -49,13 +49,6 @@ function toReplayCandles(rows: Array<[number, number, number, number, number, nu
   }));
 }
 
-function stageCPassed(metadata: Record<string, unknown>): boolean {
-  const worker = metadata.worker && typeof metadata.worker === "object" ? (metadata.worker as Record<string, any>) : {};
-  if (worker.finalPass === true) return true;
-  const stageC = worker.stageC && typeof worker.stageC === "object" ? worker.stageC : {};
-  return stageC.passed === true;
-}
-
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const apply = Boolean(args.apply);
@@ -67,7 +60,7 @@ async function main() {
   const windowToMs = Math.floor(Number(args.windowToMs || Date.now()));
   const alignedWindowToMs = windowToMs - (windowToMs % WEEK);
   const windowFromMs = alignedWindowToMs - 104 * WEEK;
-  const candidates = (await listScalpV2Candidates({ limit })).filter((row) => stageCPassed(row.metadata));
+  const candidates = await listScalpV4ResearchCandidates({ limit });
   const autoRejected = apply ? await applyScalpV4OverbroadAutoRejects(Date.now()) : 0;
   const completedDeploymentIds = rerun
     ? new Set<string>()

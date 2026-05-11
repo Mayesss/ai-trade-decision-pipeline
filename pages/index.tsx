@@ -509,6 +509,15 @@ type ScalpWorkerTask = {
   _stageLargestR?: number | null;
   _stageExitReasons?: Record<string, unknown> | null;
   _stageReason?: string | null;
+  _stageWindowKind?: string | null;
+  _workerVersion?: string | null;
+  _workerWindowToTs?: number | null;
+  _holdoutFromTs?: number | null;
+  _holdoutToTs?: number | null;
+  _holdoutPassed?: boolean | null;
+  _holdoutReason?: string | null;
+  _holdoutTrades?: number | null;
+  _holdoutNetR?: number | null;
 };
 
 type ScalpOpsDeploymentRow = {
@@ -633,6 +642,7 @@ type ScalpWorkerJobGridRow = {
     value: number | null;
     display: string;
     tooltip: string;
+    kind?: "training" | "window";
   }>;
   trades: number | null;
   netR: number | null;
@@ -1688,6 +1698,14 @@ function toUiScalpSummaryFromV2(
       const stageC = asPlainObject(worker.stageC);
       const stageB = asPlainObject(worker.stageB);
       const stageA = asPlainObject(worker.stageA);
+      const workerVersion = String(worker.version || "").trim();
+      const workerWindowToTs = asFiniteOrNull(worker.windowToTs);
+      const holdout = asPlainObject(worker.holdout || stageC.v3Holdout);
+      const holdoutFromTs = asFiniteOrNull(holdout.fromTs);
+      const holdoutToTs = asFiniteOrNull(holdout.toTs);
+      const hasHoldoutWindow = holdoutFromTs !== null && holdoutToTs !== null;
+      const displaysTrainingWeeks =
+        workerVersion.startsWith("v3_") && hasHoldoutWindow;
       const finalPass = worker.finalPass === true || stageC.passed === true;
 
       // Pick the longest executed stage for the weekly breakdown.
@@ -1771,6 +1789,7 @@ function toUiScalpSummaryFromV2(
       const stageReason = String(
         worker.reason || primaryStage.reason || (finalPass ? "stage_c_passed" : "worker_stage_c_failed"),
       ).trim();
+      const stageWindowKind = displaysTrainingWeeks ? "training" : "window";
 
       const rows: ScalpSummaryWorkerRow[] = [];
       for (const weekStart of weekKeys) {
@@ -1803,6 +1822,15 @@ function toUiScalpSummaryFromV2(
           _stageLargestR: stageLargestR,
           _stageExitReasons: stageExitReasons,
           _stageReason: stageReason,
+          _stageWindowKind: stageWindowKind,
+          _workerVersion: workerVersion,
+          _workerWindowToTs: workerWindowToTs,
+          _holdoutFromTs: holdoutFromTs,
+          _holdoutToTs: holdoutToTs,
+          _holdoutPassed: holdout.passed === true,
+          _holdoutReason: String(holdout.reason || "").trim() || null,
+          _holdoutTrades: asFiniteOrNull(holdout.trades),
+          _holdoutNetR: asFiniteOrNull(holdout.netR),
         } as ScalpSummaryWorkerRow);
       }
       return rows;
@@ -4304,6 +4332,18 @@ export default function Home() {
         _stageLargestR: asFiniteNumber((row as any)?._stageLargestR),
         _stageExitReasons: (row as any)?._stageExitReasons ?? null,
         _stageReason: (row as any)?._stageReason ?? null,
+        _stageWindowKind: (row as any)?._stageWindowKind ?? null,
+        _workerVersion: (row as any)?._workerVersion ?? null,
+        _workerWindowToTs: asFiniteNumber((row as any)?._workerWindowToTs),
+        _holdoutFromTs: asFiniteNumber((row as any)?._holdoutFromTs),
+        _holdoutToTs: asFiniteNumber((row as any)?._holdoutToTs),
+        _holdoutPassed:
+          typeof (row as any)?._holdoutPassed === "boolean"
+            ? (row as any)._holdoutPassed
+            : null,
+        _holdoutReason: (row as any)?._holdoutReason ?? null,
+        _holdoutTrades: asFiniteNumber((row as any)?._holdoutTrades),
+        _holdoutNetR: asFiniteNumber((row as any)?._holdoutNetR),
       } as ScalpWorkerTask);
     }
     return tasks;
@@ -4519,6 +4559,16 @@ export default function Home() {
           _stageLargestR: asFiniteNumber(task?._stageLargestR),
           _stageExitReasons: task?._stageExitReasons || null,
           _stageReason: String(task?._stageReason || "").trim() || null,
+          _stageWindowKind: String(task?._stageWindowKind || "").trim() || null,
+          _workerVersion: String(task?._workerVersion || "").trim() || null,
+          _workerWindowToTs: asFiniteNumber(task?._workerWindowToTs),
+          _holdoutFromTs: asFiniteNumber(task?._holdoutFromTs),
+          _holdoutToTs: asFiniteNumber(task?._holdoutToTs),
+          _holdoutPassed:
+            typeof task?._holdoutPassed === "boolean" ? task._holdoutPassed : null,
+          _holdoutReason: String(task?._holdoutReason || "").trim() || null,
+          _holdoutTrades: asFiniteNumber(task?._holdoutTrades),
+          _holdoutNetR: asFiniteNumber(task?._holdoutNetR),
         };
       })
       .filter((row) => row.symbol && row.strategyId);
@@ -5334,6 +5384,7 @@ export default function Home() {
         netRValue: number | null;
         netRDisplay: string;
         tooltipText: string;
+        kind?: "training" | "window";
       }>;
       expectancyWeightedSum: number;
       expectancyWeightedTrades: number;
@@ -5369,13 +5420,59 @@ export default function Home() {
             )
               .toISOString()
               .slice(0, 10)}`;
+      const stageWindowKind = String((row as any)._stageWindowKind || "") === "training"
+        ? "training"
+        : "window";
+      const workerWindowToTs = asFiniteNumber((row as any)._workerWindowToTs);
+      const holdoutFromTs = asFiniteNumber((row as any)._holdoutFromTs);
+      const holdoutToTs = asFiniteNumber((row as any)._holdoutToTs);
+      const holdoutPassed =
+        typeof (row as any)._holdoutPassed === "boolean"
+          ? ((row as any)._holdoutPassed as boolean)
+          : null;
+      const holdoutNetR = asFiniteNumber((row as any)._holdoutNetR);
+      const holdoutTrades = asFiniteNumber((row as any)._holdoutTrades);
+      const holdoutReason = String((row as any)._holdoutReason || "").trim();
+      const formatInclusiveWindow = (fromTs: number | null, toTs: number | null) =>
+        fromTs === null || toTs === null
+          ? null
+          : `${new Date(fromTs).toISOString().slice(0, 10)} → ${new Date(
+              Math.max(fromTs, toTs - 1),
+            )
+              .toISOString()
+              .slice(0, 10)}`;
+      const holdoutLabel = formatInclusiveWindow(holdoutFromTs, holdoutToTs);
+      const workerThroughLabel =
+        workerWindowToTs === null
+          ? null
+          : new Date(Math.max(0, workerWindowToTs - 1))
+              .toISOString()
+              .slice(0, 10);
       const netRValue = row.netR;
       const netRDisplay =
         netRValue === null
           ? "—"
           : `${netRValue >= 0 ? "+" : ""}${netRValue.toFixed(2)}R`;
       const tooltipText = [
-        `Window:${windowLabel}`,
+        `${stageWindowKind === "training" ? "Training week" : "Window"}:${windowLabel}`,
+        stageWindowKind === "training" && workerThroughLabel
+          ? `Evaluation through:${workerThroughLabel}`
+          : null,
+        stageWindowKind === "training" && holdoutLabel
+          ? `Holdout:${holdoutLabel}`
+          : null,
+        stageWindowKind === "training" && holdoutPassed !== null
+          ? `Holdout pass:${holdoutPassed ? "yes" : "no"}`
+          : null,
+        stageWindowKind === "training" && holdoutNetR !== null
+          ? `Holdout Net:${holdoutNetR >= 0 ? "+" : ""}${holdoutNetR.toFixed(2)}R`
+          : null,
+        stageWindowKind === "training" && holdoutTrades !== null
+          ? `Holdout T:${Math.max(0, Math.floor(holdoutTrades))}`
+          : null,
+        stageWindowKind === "training" && holdoutReason
+          ? `Holdout reason:${holdoutReason}`
+          : null,
         row.trades !== null ? `T:${Math.max(0, Math.floor(row.trades))}` : null,
         row.netR !== null
           ? `Net:${row.netR >= 0 ? "+" : ""}${row.netR.toFixed(2)}R`
@@ -5459,6 +5556,7 @@ export default function Home() {
               netRValue,
               netRDisplay,
               tooltipText,
+              kind: stageWindowKind,
             },
           ],
           expectancyWeightedSum:
@@ -5504,6 +5602,7 @@ export default function Home() {
         netRValue,
         netRDisplay,
         tooltipText,
+        kind: stageWindowKind,
       });
       if (row.trades !== null)
         current.trades = (current.trades ?? 0) + row.trades;
@@ -5583,6 +5682,7 @@ export default function Home() {
           value: entry.netRValue,
           display: entry.netRDisplay,
           tooltip: entry.tooltipText,
+          kind: entry.kind,
         })),
         trades: row.trades,
         netR: row.netR,
@@ -5980,6 +6080,7 @@ export default function Home() {
               value: number | null;
               display: string;
               tooltip: string;
+              kind?: "training" | "window";
             }
           >();
           for (const entry of entries) {

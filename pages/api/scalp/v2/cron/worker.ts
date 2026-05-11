@@ -17,6 +17,7 @@ import {
   setNoStoreHeaders,
 } from "../../../../../lib/scalp-v2/http";
 import { runScalpV2WorkerJob } from "../../../../../lib/scalp-v2/pipeline";
+import { runScalpV4ResearchJob } from "../../../../../lib/scalp-v4";
 
 export default async function handler(
   req: NextApiRequest,
@@ -36,6 +37,27 @@ export default async function handler(
     hardCaps.maxBatchSizeWorker,
   );
   const autoSuccessor = parseBool(req.query.autoSuccessor, true);
+  const legacyV2 = parseBool(req.query.legacyV2, false);
+  if (!legacyV2) {
+    const job = await runScalpV4ResearchJob({
+      maxCandidatesPerCall: Math.max(0, Math.min(500, batchSize)),
+      candidateFetchLimit: Math.max(Math.min(500, batchSize) * 4, 50),
+      forceValidity: parseBool(req.query.forceValidity, false),
+    });
+    return res.status(200).json({
+      ok: job.ok,
+      busy: job.busy,
+      job,
+      version: "v4",
+      legacyRoute: "/api/scalp/v2/cron/worker",
+      message:
+        "v2 worker is disabled by default; pass legacyV2=true to run the old v2/v3 path.",
+      chaining: {
+        autoSuccessor: false,
+        downstream: null,
+      },
+    });
+  }
 
   const job = await runScalpV2WorkerJob({ batchSize });
 

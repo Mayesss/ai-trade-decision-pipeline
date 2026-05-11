@@ -1,5 +1,15 @@
 export type ScalpV4Venue = "bitget" | "capital";
 
+export interface ScalpV4ResearchCandidate {
+  id: number;
+  venue: ScalpV4Venue;
+  symbol: string;
+  strategyId: string;
+  tuneId: string;
+  entrySessionProfile: string;
+  metadata: Record<string, unknown>;
+}
+
 export type ScalpV4AxisBucket = "low" | "mid" | "high" | "unknown";
 export type ScalpV4TrendAxis = "trending_up" | "trending_down" | "choppy" | "unknown";
 export type ScalpV4RiskAxis = "risk_on" | "risk_off" | "neutral" | "unknown";

@@ -65,12 +65,10 @@ import {
   type ScalpV2V3TemporalFilter,
 } from "../scalp-v3";
 import {
-  ensureScalpV4WeeklyRegimesBuilt,
   isScalpV4Enabled,
   isScalpV4HardGateEnabled,
   loadScalpV4CurrentRegimeSnapshot,
   resolveScalpV4EnvelopeBlock,
-  runScalpV4WalkforwardSweep,
 } from "../scalp-v4";
 import {
   appendScalpV2ExecutionEvent,
@@ -2736,16 +2734,6 @@ export async function runScalpV2ResearchJob(params: {
     }).catch(() => undefined);
   }
 
-  let v4WeeklyBuild: Awaited<ReturnType<typeof ensureScalpV4WeeklyRegimesBuilt>> | null = null;
-  if (isScalpV4Enabled()) {
-    v4WeeklyBuild = await withTiming("research.v4_ensure_regimes_built", () =>
-      ensureScalpV4WeeklyRegimesBuilt({}).catch((err) => ({
-        skipped: true,
-        reason: `error:${(err as Error)?.message || String(err)}`,
-      })),
-    );
-  }
-
   await emitResearchHeartbeat({
     phase: "claimed",
     force: true,
@@ -2753,13 +2741,7 @@ export async function runScalpV2ResearchJob(params: {
       requestedBatchSize: Number.isFinite(Number(params.batchSize))
         ? Math.floor(Number(params.batchSize))
         : null,
-      v4WeeklyBuild: v4WeeklyBuild
-        ? {
-            skipped: v4WeeklyBuild.skipped,
-            reason: v4WeeklyBuild.reason,
-            symbolsSaved: v4WeeklyBuild.result?.symbolsSaved ?? 0,
-          }
-        : null,
+      v4WeeklyBuild: null,
     },
   });
 
@@ -5206,22 +5188,6 @@ export async function runScalpV2ResearchJob(params: {
     const remaining = Math.max(0, chunked.length - processed);
     const pendingAfter = await resolvePendingAfterBacklog(remaining + deferredCount);
 
-    let v4WalkforwardSweep: Awaited<ReturnType<typeof runScalpV4WalkforwardSweep>> | null = null;
-    if (isScalpV4Enabled()) {
-      v4WalkforwardSweep = await withTiming("research.v4_walkforward_sweep", () =>
-        runScalpV4WalkforwardSweep({}).catch((err) => ({
-          classifierVersion: "",
-          windowFromMs: 0,
-          windowToMs: 0,
-          processed: 0,
-          eligible: 0,
-          ineligible: 0,
-          skipped: 0,
-          results: [{ error: (err as Error)?.message || String(err) }],
-        })),
-      );
-    }
-
     details = attachTimingDetails({
       scopeCount: scopes.length,
       poolSizeTotal,
@@ -5246,23 +5212,8 @@ export async function runScalpV2ResearchJob(params: {
       candleCacheHits,
       candleCacheMisses,
       candleCacheSize: candleCache.size,
-      v4WeeklyBuild: v4WeeklyBuild
-        ? {
-            skipped: v4WeeklyBuild.skipped,
-            reason: v4WeeklyBuild.reason,
-            symbolsSaved: v4WeeklyBuild.result?.symbolsSaved ?? 0,
-            symbolsRequested: v4WeeklyBuild.result?.symbolsRequested ?? 0,
-            validityFailures: v4WeeklyBuild.result?.validityFailures?.length ?? 0,
-          }
-        : null,
-      v4WalkforwardSweep: v4WalkforwardSweep
-        ? {
-            processed: v4WalkforwardSweep.processed,
-            eligible: v4WalkforwardSweep.eligible,
-            ineligible: v4WalkforwardSweep.ineligible,
-            skipped: v4WalkforwardSweep.skipped,
-          }
-        : null,
+      v4WeeklyBuild: null,
+      v4WalkforwardSweep: null,
       researchLockScope,
       researchWorkLeasesEnabled,
       researchWorkLeaseMs,

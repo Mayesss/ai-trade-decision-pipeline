@@ -7,8 +7,14 @@ import type { ScalpReplayCandle } from "../scalp/replay/types";
 import { ensureScalpSymbolMarketMetadata } from "../scalp/symbolMarketMetadataSync";
 import { scalpPrisma } from "../scalp/pg/client";
 import { sql } from "../scalp/pg/sql";
+import type { ScalpCandle } from "../scalp/types";
+import {
+  assessScalpV4CandleCoverage,
+  ensureScalpV4CandleCoverage,
+} from "./candleCoverage";
 import { SCALP_V4_CLASSIFIER_VERSION } from "./classifier";
 import {
+  listScalpV4ResearchCandidates,
   loadScalpV4CompletedWalkforwardDeploymentIds,
   loadScalpV4RegimeSnapshots,
   upsertScalpV4WalkforwardResult,
@@ -16,7 +22,6 @@ import {
 import { buildScalpV4ClassifierValidityReport } from "./sanity";
 import type { ScalpV4Venue } from "./types";
 import { runScalpV4WalkForward } from "./walkForward";
-import { listScalpV2Candidates } from "../scalp-v2/db";
 
 const WEEK = 7 * 24 * 60 * 60 * 1000;
 
@@ -27,6 +32,12 @@ export interface ScalpV4WalkforwardSweepOptions {
   maxCandidatesPerCall?: number;
   candidateFetchLimit?: number;
   forceValidity?: boolean;
+  candleCacheRef?: Map<string, ScalpCandle[]>;
+  candleCacheSoftCap?: number;
+  autoBackfillCandles?: boolean;
+  minCandleCoverageRatio?: number;
+  candleBackfillChunkWeeks?: number;
+  candleBackfillMaxRequestsPerChunk?: number;
 }
 
 export interface ScalpV4WalkforwardSweepResult {
@@ -37,11 +48,18 @@ export interface ScalpV4WalkforwardSweepResult {
   eligible: number;
   ineligible: number;
   skipped: number;
+  candleCacheHits: number;
+  candleCacheMisses: number;
+  candleCacheSize: number;
+  candleBackfillsAttempted: number;
+  candleBackfillsSucceeded: number;
+  candleBackfilledCandles: number;
+  candleCoverageFailures: number;
   results: Array<Record<string, unknown>>;
 }
 
 function toReplayCandles(
-  rows: Array<[number, number, number, number, number, number]>,
+  rows: ScalpCandle[],
   spreadPips: number,
 ): ScalpReplayCandle[] {
   return rows.map((row) => ({
@@ -55,11 +73,21 @@ function toReplayCandles(
   }));
 }
 
-function stageCPassed(metadata: Record<string, unknown>): boolean {
-  const worker = metadata.worker && typeof metadata.worker === "object" ? (metadata.worker as Record<string, any>) : {};
-  if (worker.finalPass === true) return true;
-  const stageC = worker.stageC && typeof worker.stageC === "object" ? worker.stageC : {};
-  return stageC.passed === true;
+function normalizeCacheSymbol(symbol: string): string {
+  return String(symbol || "").trim().toUpperCase();
+}
+
+function evictOldestCandles(
+  cache: Map<string, ScalpCandle[]>,
+  softCap: number,
+): void {
+  if (softCap <= 0 || cache.size <= softCap) return;
+  const evictTarget = Math.max(1, Math.floor(softCap * 0.8));
+  while (cache.size > evictTarget) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) break;
+    cache.delete(oldestKey);
+  }
 }
 
 export async function runScalpV4WalkforwardSweep(
@@ -88,6 +116,32 @@ export async function runScalpV4WalkforwardSweep(
     1,
     Math.floor(options.candidateFetchLimit ?? Math.max(maxCandidatesPerCall * 4, 50)),
   );
+  const candleCache = options.candleCacheRef ?? new Map<string, ScalpCandle[]>();
+  const candleCacheSoftCap = Math.max(
+    1,
+    Math.floor(
+      options.candleCacheSoftCap ??
+        Number(process.env.SCALP_V4_WALKFORWARD_CANDLE_CACHE_SOFT_CAP ?? 16),
+    ),
+  );
+  const autoBackfillCandles = options.autoBackfillCandles !== false;
+  const minCandleCoverageRatio = Math.max(
+    0.1,
+    Math.min(
+      1,
+      Number(
+        options.minCandleCoverageRatio ??
+          process.env.SCALP_V4_WALKFORWARD_MIN_CANDLE_COVERAGE_RATIO ??
+          0.65,
+      ),
+    ),
+  );
+  let candleCacheHits = 0;
+  let candleCacheMisses = 0;
+  let candleBackfillsAttempted = 0;
+  let candleBackfillsSucceeded = 0;
+  let candleBackfilledCandles = 0;
+  let candleCoverageFailures = 0;
   if (maxCandidatesPerCall === 0) {
     return {
       classifierVersion,
@@ -97,12 +151,19 @@ export async function runScalpV4WalkforwardSweep(
       eligible: 0,
       ineligible: 0,
       skipped: 0,
+      candleCacheHits: 0,
+      candleCacheMisses: 0,
+      candleCacheSize: candleCache.size,
+      candleBackfillsAttempted: 0,
+      candleBackfillsSucceeded: 0,
+      candleBackfilledCandles: 0,
+      candleCoverageFailures: 0,
       results: [],
     };
   }
-  const candidates = (await listScalpV2Candidates({ limit: candidateFetchLimit })).filter(
-    (row) => stageCPassed(row.metadata),
-  );
+  const candidates = await listScalpV4ResearchCandidates({
+    limit: candidateFetchLimit,
+  });
   const completed = await loadScalpV4CompletedWalkforwardDeploymentIds({
     classifierVersion,
     windowFromMs,
@@ -150,16 +211,62 @@ export async function runScalpV4WalkforwardSweep(
       });
       continue;
     }
-    const history = await loadScalpCandleHistoryInRange(
-      candidate.symbol,
-      "1m",
-      windowFromMs,
-      alignedWindowToMs,
-    );
-    const candles = (history.record?.candles || []) as Array<[number, number, number, number, number, number]>;
-    if (!candles.length) {
+    const candleCacheKey = `${normalizeCacheSymbol(candidate.symbol)}:1m:${windowFromMs}:${alignedWindowToMs}`;
+    let candles = candleCache.get(candleCacheKey);
+    if (candles) {
+      candleCacheHits += 1;
+    } else {
+      candleCacheMisses += 1;
+      const history = await loadScalpCandleHistoryInRange(
+        candidate.symbol,
+        "1m",
+        windowFromMs,
+        alignedWindowToMs,
+      );
+      candles = (history.record?.candles || []) as ScalpCandle[];
+      candleCache.set(candleCacheKey, candles);
+      evictOldestCandles(candleCache, candleCacheSoftCap);
+    }
+    const coverage = assessScalpV4CandleCoverage({
+      candles,
+      fromMs: windowFromMs,
+      toMs: alignedWindowToMs,
+      minCoverageRatio: minCandleCoverageRatio,
+    });
+    if (!coverage.ok && autoBackfillCandles) {
+      candleBackfillsAttempted += 1;
+      const ensured = await ensureScalpV4CandleCoverage({
+        venue: venue as ScalpV4Venue,
+        symbol: candidate.symbol,
+        fromMs: windowFromMs,
+        toMs: alignedWindowToMs,
+        existingCandles: candles,
+        minCoverageRatio: minCandleCoverageRatio,
+        chunkWeeks: options.candleBackfillChunkWeeks,
+        maxRequestsPerChunk: options.candleBackfillMaxRequestsPerChunk,
+      });
+      candles = ensured.candles;
+      candleBackfilledCandles += ensured.fetchedCandles;
+      if (ensured.coverage.ok) candleBackfillsSucceeded += 1;
+      candleCache.set(candleCacheKey, candles);
+      evictOldestCandles(candleCache, candleCacheSoftCap);
+    }
+    const finalCoverage = assessScalpV4CandleCoverage({
+      candles,
+      fromMs: windowFromMs,
+      toMs: alignedWindowToMs,
+      minCoverageRatio: minCandleCoverageRatio,
+    });
+    if (!finalCoverage.ok) {
+      candleCoverageFailures += 1;
       skipped += 1;
-      results.push({ candidateId: candidate.id, deploymentId: deployment.deploymentId, skipped: true, reason: "missing_candles" });
+      results.push({
+        candidateId: candidate.id,
+        deploymentId: deployment.deploymentId,
+        skipped: true,
+        reason: finalCoverage.reason || "insufficient_candle_coverage",
+        candleCoverage: finalCoverage,
+      });
       continue;
     }
     const meta = await ensureScalpSymbolMarketMetadata(candidate.symbol, { fetchIfMissing: true });
@@ -238,6 +345,13 @@ export async function runScalpV4WalkforwardSweep(
     eligible,
     ineligible,
     skipped,
+    candleCacheHits,
+    candleCacheMisses,
+    candleCacheSize: candleCache.size,
+    candleBackfillsAttempted,
+    candleBackfillsSucceeded,
+    candleBackfilledCandles,
+    candleCoverageFailures,
     results,
   };
 }

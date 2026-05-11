@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   applyScalpV4Hysteresis,
+  assessScalpV4CandleCoverage,
   bootstrapP05Expectancy,
   buildScalpV4ClassifierValidityReport,
   buildScalpV4RegimeEnvelope,
@@ -18,6 +19,7 @@ import {
 } from "./index";
 
 const WEEK = 7 * 24 * 60 * 60 * 1000;
+const MINUTE = 60_000;
 
 function weeklyBar(idx: number, close: number, range = 1): ScalpV4WeeklyBar {
   const weekStartMs = Date.UTC(2024, 0, 1) + idx * WEEK;
@@ -251,4 +253,30 @@ test("shadow mode records v4 reasons without hard blocking", () => {
   });
   assert.equal(hard.blocked, true);
   assert.ok(hard.reasonCodes.includes("V4_REGIME_ENVELOPE_BLOCKED"));
+});
+
+test("candle coverage requires enough candles and range edges", () => {
+  const fromMs = Date.UTC(2024, 0, 1);
+  const toMs = fromMs + 14 * 24 * 60 * MINUTE;
+  const dense = Array.from({ length: 14 * 24 * 60 }, (_, idx) => {
+    const price = 100 + idx * 0.0001;
+    return [fromMs + idx * MINUTE, price, price, price, price, 1] as const;
+  });
+  const covered = assessScalpV4CandleCoverage({
+    candles: dense.map((row) => [...row] as [number, number, number, number, number, number]),
+    fromMs,
+    toMs,
+    minCoverageRatio: 0.9,
+  });
+  assert.equal(covered.ok, true);
+
+  const late = dense.slice(8 * 24 * 60);
+  const missingStart = assessScalpV4CandleCoverage({
+    candles: late.map((row) => [...row] as [number, number, number, number, number, number]),
+    fromMs,
+    toMs,
+    minCoverageRatio: 0.1,
+  });
+  assert.equal(missingStart.ok, false);
+  assert.equal(missingStart.reason, "missing_window_start");
 });

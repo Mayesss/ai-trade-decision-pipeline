@@ -2,6 +2,7 @@ import { isScalpPgConfigured, scalpPrisma } from "../scalp/pg/client";
 import { join, sql } from "../scalp/pg/sql";
 import type {
   ScalpV4CellId,
+  ScalpV4ResearchCandidate,
   ScalpV4RegimeEnvelope,
   ScalpV4RegimeSnapshot,
   ScalpV4Venue,
@@ -19,6 +20,11 @@ function normalizeSymbol(value: unknown): string {
 function asCellId(value: unknown): ScalpV4CellId {
   const normalized = String(value || "").trim();
   return normalized.startsWith("vol=") ? (normalized as ScalpV4CellId) : "unknown";
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
 }
 
 export function isScalpV4Enabled(): boolean {
@@ -45,6 +51,57 @@ export async function loadScalpV4DeploymentSymbols(): Promise<Array<{ venue: Sca
   return rows
     .map((row) => ({ venue: normalizeVenue(row.venue), symbol: normalizeSymbol(row.symbol) }))
     .filter((row) => Boolean(row.symbol));
+}
+
+export async function listScalpV4ResearchCandidates(params: {
+  limit?: number;
+} = {}): Promise<ScalpV4ResearchCandidate[]> {
+  if (!isScalpPgConfigured()) return [];
+  const limit = Math.max(1, Math.min(2_000, Math.floor(Number(params.limit || 100))));
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{
+    id: bigint;
+    venue: string;
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    entrySessionProfile: string;
+    metadataJson: unknown;
+  }>>(sql`
+    SELECT
+      id,
+      venue,
+      symbol,
+      strategy_id AS "strategyId",
+      tune_id AS "tuneId",
+      entry_session_profile AS "entrySessionProfile",
+      metadata_json AS "metadataJson"
+    FROM scalp_v2_candidates
+    WHERE COALESCE((metadata_json->'worker'->>'finalPass')::boolean, FALSE)
+       OR COALESCE((metadata_json->'worker'->'stageC'->>'passed')::boolean, FALSE)
+    ORDER BY
+      COALESCE(
+        (metadata_json->'worker'->'stageC'->>'netR')::double precision,
+        (metadata_json->'worker'->'stageB'->>'netR')::double precision,
+        (metadata_json->'worker'->'stageA'->>'netR')::double precision,
+        -999
+      ) DESC,
+      score DESC,
+      updated_at DESC,
+      id DESC
+    LIMIT ${limit};
+  `);
+  return rows
+    .map((row) => ({
+      id: Number(row.id),
+      venue: normalizeVenue(row.venue),
+      symbol: normalizeSymbol(row.symbol),
+      strategyId: String(row.strategyId || "").trim().toLowerCase(),
+      tuneId: String(row.tuneId || "").trim().toLowerCase() || "default",
+      entrySessionProfile: String(row.entrySessionProfile || "").trim().toLowerCase(),
+      metadata: asRecord(row.metadataJson),
+    }))
+    .filter((row) => row.id > 0 && Boolean(row.symbol) && Boolean(row.strategyId));
 }
 
 export async function loadScalpV4SymbolsWithSnapshotForWeek(params: {

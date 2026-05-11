@@ -1,20 +1,22 @@
 /**
- * Local bulk research runner — processes ALL remaining discovered candidates
- * without Vercel's time/memory limits. Run once to bootstrap the first week,
- * then let the cron handle subsequent weeks incrementally.
+ * Local bulk research runner. Defaults to the latest research version (v4).
+ * Set BULK_RESEARCH_VERSION=v2 only for intentional legacy v2/v3 drains.
  *
  * Usage: npx tsx scripts/research-local-bulk.ts
  *
  * Options (env vars):
- *   BULK_SYMBOLS_PER_BATCH=4      — symbols to process per batch (default 4)
- *   BULK_CANDIDATE_BATCH_SIZE=100 — candidate rows per research call (default 100)
- *   BULK_BACKTEST_CONCURRENCY=4   — replay concurrency (default half CPU cores, max 8)
- *   BULK_TIME_BUDGET_MINUTES=30   — time budget per batch (default 30)
+ *   BULK_RESEARCH_VERSION=v4      — v4 by default; use v2 for legacy v2/v3
+ *   BULK_SYMBOLS_PER_BATCH=4      — v2 only: symbols to process per batch
+ *   BULK_CANDIDATE_BATCH_SIZE=100 — candidate rows per research call
+ *   BULK_BACKTEST_CONCURRENCY=4   — v2 only: replay concurrency
+ *   BULK_TIME_BUDGET_MINUTES=30   — v2 only: time budget per batch
  *   BULK_MAX_BATCHES=100          — max batches before stopping (default: unlimited)
- *   BULK_SHARD_COUNT=4            — split symbols across N local processes
- *   BULK_SHARD_INDEX=0            — shard index for this process (0-based)
- *   BULK_WORK_LEASES=1            — claim candidate rows instead of singleton locking (default on)
- *   BULK_WORK_LEASE_MINUTES=30    — lease TTL for claimed candidate rows (default 30)
+ *   BULK_SHARD_COUNT=4            — v2 only: split symbols across N processes
+ *   BULK_SHARD_INDEX=0            — v2 only: shard index for this process
+ *   BULK_WORK_LEASES=1            — v2 only: claim candidate rows
+ *   BULK_V4_FORCE_VALIDITY=1      — v4 only: override classifier validity
+ *   BULK_V4_CANDLE_CACHE_SOFT_CAP=16 — v4 only: cached 2-year symbol ranges
+ *   BULK_V4_BACKFILL_CANDLES=1    — v4 only: fetch/save missing walkforward candles
  */
 import nextEnv from '@next/env';
 import os from 'node:os';
@@ -25,12 +27,25 @@ import {
 } from '../lib/scalp-v2/db';
 import { isScalpPgConfigured } from '../lib/scalp-v2/pg';
 import type { ScalpReplayCandle } from '../lib/scalp/replay/types';
+import type { ScalpCandle } from '../lib/scalp/types';
 import { resolveScalpV2CompletedWeekWindowToUtc } from '../lib/scalp-v2/weekWindows';
+import type { ScalpV4ResearchJobResult } from '../lib/scalp-v4';
 
 const { loadEnvConfig } = nextEnv;
 
 // Ensure local scripts pick up .env/.env.local like Next.js runtime.
 loadEnvConfig(process.cwd());
+
+type BulkResearchVersion = 'v2' | 'v4';
+
+function resolveBulkResearchVersion(): BulkResearchVersion {
+  const raw = String(process.env.BULK_RESEARCH_VERSION || process.env.SCALP_RESEARCH_VERSION || 'v4')
+    .trim()
+    .toLowerCase();
+  return raw === 'v2' || raw === 'legacy' || raw === 'legacy_v2' ? 'v2' : 'v4';
+}
+
+const BULK_RESEARCH_VERSION = resolveBulkResearchVersion();
 
 let symbolsPerBatch = Math.max(1, Math.floor(Number(process.env.BULK_SYMBOLS_PER_BATCH) || 4));
 let candidateBatchSize = Math.max(
@@ -87,12 +102,16 @@ function envBool(name: string, fallback: boolean): boolean {
 
 const DISABLE_TIME_BUDGET = envBool('BULK_DISABLE_TIME_BUDGET', true);
 const WORK_LEASES = envBool('BULK_WORK_LEASES', true);
+const BULK_V4_FORCE_VALIDITY = envBool('BULK_V4_FORCE_VALIDITY', false);
+const BULK_V4_BACKFILL_CANDLES = envBool('BULK_V4_BACKFILL_CANDLES', true);
 const WORK_LEASE_MINUTES = Math.max(
   1,
   Math.min(24 * 60, Math.floor(Number(process.env.BULK_WORK_LEASE_MINUTES) || 30)),
 );
 
 function applyRuntimeOverrides(): void {
+  if (BULK_RESEARCH_VERSION !== 'v2') return;
+
   process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN = String(symbolsPerBatch);
   process.env.SCALP_V2_RESEARCH_BATCH_SIZE = String(candidateBatchSize);
   process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY_MAX = '16';
@@ -141,6 +160,23 @@ const PERSISTENT_CANDLE_CACHE_SOFT_CAP = Math.max(
   10,
   Math.floor(Number(process.env.BULK_CANDLE_CACHE_SOFT_CAP) || 60),
 );
+const PERSISTENT_V4_CANDLE_CACHE_SOFT_CAP = Math.max(
+  1,
+  Math.floor(Number(process.env.BULK_V4_CANDLE_CACHE_SOFT_CAP) || 16),
+);
+const BULK_V4_MIN_CANDLE_COVERAGE_RATIO = Math.max(
+  0.1,
+  Math.min(1, Number(process.env.BULK_V4_MIN_CANDLE_COVERAGE_RATIO) || 0.65),
+);
+const BULK_V4_BACKFILL_CHUNK_WEEKS = Math.max(
+  1,
+  Math.min(26, Math.floor(Number(process.env.BULK_V4_BACKFILL_CHUNK_WEEKS) || 8)),
+);
+const BULK_V4_BACKFILL_MAX_REQUESTS_PER_CHUNK = Math.max(
+  40,
+  Math.min(5000, Math.floor(Number(process.env.BULK_V4_BACKFILL_MAX_REQUESTS_PER_CHUNK) || 1200)),
+);
+const persistentV4CandleCache = new Map<string, ScalpCandle[]>();
 
 let runScalpV2ResearchJob: ((params: {
   batchSize?: number;
@@ -156,12 +192,35 @@ let runScalpV2ResearchJob: ((params: {
   details?: Record<string, unknown>;
 }>) | null = null;
 
+let runScalpV4ResearchJob: ((params?: {
+  classifierVersion?: string;
+  forceValidity?: boolean;
+  maxCandidatesPerCall?: number;
+  candidateFetchLimit?: number;
+  effectiveTrials?: number;
+  windowToMs?: number;
+  candleCacheRef?: Map<string, ScalpCandle[]>;
+  candleCacheSoftCap?: number;
+  autoBackfillCandles?: boolean;
+  minCandleCoverageRatio?: number;
+  candleBackfillChunkWeeks?: number;
+  candleBackfillMaxRequestsPerChunk?: number;
+}) => Promise<ScalpV4ResearchJobResult>) | null = null;
+
 async function getRunScalpV2ResearchJob() {
   if (!runScalpV2ResearchJob) {
     const mod = await import('../lib/scalp-v2/pipeline');
     runScalpV2ResearchJob = mod.runScalpV2ResearchJob;
   }
   return runScalpV2ResearchJob;
+}
+
+async function getRunScalpV4ResearchJob() {
+  if (!runScalpV4ResearchJob) {
+    const mod = await import('../lib/scalp-v4/research');
+    runScalpV4ResearchJob = mod.runScalpV4ResearchJob;
+  }
+  return runScalpV4ResearchJob;
 }
 
 function currentWindowToTs(): number {
@@ -172,7 +231,63 @@ async function runBatch(): Promise<boolean> {
   batchCount += 1;
   const batchStart = Date.now();
   applyRuntimeOverrides();
-  console.log(`\n--- Batch ${batchCount} (${symbolsPerBatch} symbols, elapsed ${((Date.now() - globalStart) / 60000).toFixed(1)}m) ---`);
+  const batchLabel = BULK_RESEARCH_VERSION === 'v4'
+    ? `${candidateBatchSize} v4 candidates`
+    : `${symbolsPerBatch} symbols`;
+  console.log(`\n--- Batch ${batchCount} (${batchLabel}, elapsed ${((Date.now() - globalStart) / 60000).toFixed(1)}m) ---`);
+
+  if (BULK_RESEARCH_VERSION === 'v4') {
+    const runResearch = await getRunScalpV4ResearchJob();
+    const result = await runResearch({
+      maxCandidatesPerCall: candidateBatchSize,
+      candidateFetchLimit: Math.max(candidateBatchSize * 4, 50),
+      forceValidity: BULK_V4_FORCE_VALIDITY,
+      candleCacheRef: persistentV4CandleCache,
+      candleCacheSoftCap: PERSISTENT_V4_CANDLE_CACHE_SOFT_CAP,
+      autoBackfillCandles: BULK_V4_BACKFILL_CANDLES,
+      minCandleCoverageRatio: BULK_V4_MIN_CANDLE_COVERAGE_RATIO,
+      candleBackfillChunkWeeks: BULK_V4_BACKFILL_CHUNK_WEEKS,
+      candleBackfillMaxRequestsPerChunk: BULK_V4_BACKFILL_MAX_REQUESTS_PER_CHUNK,
+    });
+    const elapsed = ((Date.now() - batchStart) / 1000).toFixed(1);
+    totalProcessed += result.processed;
+    totalSucceeded += result.succeeded;
+
+    const weekly = result.details.weeklyBuild;
+    const weeklyResult = weekly.result;
+    const walkforward = result.details.walkforward;
+    const validityFailures = weeklyResult?.validityFailures?.length ?? 0;
+    const symbolsSaved = weeklyResult?.symbolsSaved ?? 0;
+    const symbolsRequested = weeklyResult?.symbolsRequested ?? 0;
+
+    console.log(
+      `  ${elapsed}s | v4 processed=${result.processed} eligible=${walkforward.eligible} ineligible=${walkforward.ineligible} skipped=${walkforward.skipped}`,
+    );
+    console.log(
+      `  regimes: skipped=${weekly.skipped ? 'yes' : 'no'} reason=${weekly.reason || weeklyResult?.reason || 'none'} saved=${symbolsSaved}/${symbolsRequested} validityFailures=${validityFailures}`,
+    );
+    console.log(
+      `  walkforward: classifier=${walkforward.classifierVersion} window=${new Date(walkforward.windowFromMs).toISOString().slice(0, 10)}..${new Date(walkforward.windowToMs).toISOString().slice(0, 10)}`,
+    );
+    console.log(
+      `  candleCache: hits=${walkforward.candleCacheHits} misses=${walkforward.candleCacheMisses} size=${walkforward.candleCacheSize}`,
+    );
+    console.log(
+      `  candleBackfill: attempted=${walkforward.candleBackfillsAttempted} succeeded=${walkforward.candleBackfillsSucceeded} fetched=${walkforward.candleBackfilledCandles} coverageFailures=${walkforward.candleCoverageFailures}`,
+    );
+    if (BULK_DEBUG) {
+      console.log(`  debug: details=${JSON.stringify(result.details)}`);
+    }
+    if (MAX_BATCHES > 0 && batchCount >= MAX_BATCHES) {
+      console.log(`\n  Reached max batches (${MAX_BATCHES}) — stopping.`);
+      return false;
+    }
+    if (result.processed === 0) {
+      console.log('\n  No v4 walkforward candidates processed — done for now.');
+      return false;
+    }
+    return true;
+  }
 
   const runResearch = await getRunScalpV2ResearchJob();
   const result = await runResearch({
@@ -375,27 +490,39 @@ async function main() {
     process.exit(1);
   }
 
-  const warmUpBefore = await loadScalpV2WarmUpState({
-    windowToTs: currentWindowToTs(),
-  }).catch(() => null);
-  const discoveredBefore = await countScalpV2CandidatesByStatus({
-    status: 'discovered',
-  }).catch(() => -1);
+  const warmUpBefore = BULK_RESEARCH_VERSION === 'v2'
+    ? await loadScalpV2WarmUpState({
+      windowToTs: currentWindowToTs(),
+    }).catch(() => null)
+    : null;
+  const discoveredBefore = BULK_RESEARCH_VERSION === 'v2'
+    ? await countScalpV2CandidatesByStatus({
+      status: 'discovered',
+    }).catch(() => -1)
+    : -1;
 
-  console.log(`Local bulk research runner`);
-  console.log(`Symbols per batch: ${symbolsPerBatch}`);
+  console.log(`Local bulk research runner (${BULK_RESEARCH_VERSION})`);
   console.log(`Candidates per batch: ${candidateBatchSize}`);
-  console.log(`Backtest concurrency: ${backtestConcurrency}`);
-  console.log(`Work leases: ${WORK_LEASES ? 'enabled' : 'disabled'}`);
-  if (BULK_SHARD_COUNT > 1) {
-    console.log(`Shard: ${BULK_SHARD_INDEX}/${BULK_SHARD_COUNT}`);
+  if (BULK_RESEARCH_VERSION === 'v4') {
+    console.log(`V4 force validity: ${BULK_V4_FORCE_VALIDITY ? 'enabled' : 'disabled'}`);
+    console.log(`V4 candle cache soft cap: ${PERSISTENT_V4_CANDLE_CACHE_SOFT_CAP} symbol ranges`);
+    console.log(
+      `V4 candle backfill: ${BULK_V4_BACKFILL_CANDLES ? 'enabled' : 'disabled'} (minCoverage=${Math.round(BULK_V4_MIN_CANDLE_COVERAGE_RATIO * 100)}%, chunkWeeks=${BULK_V4_BACKFILL_CHUNK_WEEKS})`,
+    );
+  } else {
+    console.log(`Symbols per batch: ${symbolsPerBatch}`);
+    console.log(`Backtest concurrency: ${backtestConcurrency}`);
+    console.log(`Work leases: ${WORK_LEASES ? 'enabled' : 'disabled'}`);
+    if (BULK_SHARD_COUNT > 1) {
+      console.log(`Shard: ${BULK_SHARD_INDEX}/${BULK_SHARD_COUNT}`);
+    }
+    console.log(
+      `Time budget per batch: ${DISABLE_TIME_BUDGET ? 'disabled (bulk mode)' : `${timeBudgetMinutes} min`}`,
+    );
+    console.log(
+      `Initial warm-up state: dbHash=${warmUpBefore?.scopeHash ?? 'null'} candidates=${warmUpBefore?.candidateCount ?? 0} discovered=${discoveredBefore >= 0 ? discoveredBefore : '?'}`,
+    );
   }
-  console.log(
-    `Time budget per batch: ${DISABLE_TIME_BUDGET ? 'disabled (bulk mode)' : `${timeBudgetMinutes} min`}`,
-  );
-  console.log(
-    `Initial warm-up state: dbHash=${warmUpBefore?.scopeHash ?? 'null'} candidates=${warmUpBefore?.candidateCount ?? 0} discovered=${discoveredBefore >= 0 ? discoveredBefore : '?'}`,
-  );
   if (MAX_BATCHES > 0) console.log(`Max batches: ${MAX_BATCHES}`);
   console.log('');
 

@@ -319,14 +319,15 @@ npm run start
   - Optional orchestration query params:
     - `autoContinue=true|false` + `selfHop/selfMaxHops` for bounded detached self-recalls when `pendingAfter > 0`.
     - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/v2/cron/promote` only after `pendingAfter` reaches `0`.
-  - Local bulk support:
-    - Use `scripts/research-local-bulk.ts` to support the Vercel research cron from local terminals when draining a large fresh candidate set.
+  - Legacy local bulk support:
+    - Use `BULK_RESEARCH_VERSION=v2 npm exec tsx scripts/research-local-bulk.ts` only when intentionally draining old v2/v3 research work.
     - Keep `BULK_WORK_LEASES=1` enabled. Each process uses its own research job scope and claims candidate rows with DB leases, so parallel terminals should not backtest the same candidate at the same time.
     - After a full research reset, start one terminal first until warm-up/candidate discovery completes, then start the remaining terminals. Starting all at once is safe, but can waste warm-up work.
     - For multiple terminals, shard symbol scanning with the same `BULK_SHARD_COUNT` and a unique zero-based `BULK_SHARD_INDEX` per terminal.
 
   ```bash
-  # Terminal 1 of 5. Use BULK_SHARD_INDEX=1,2,3,4 in the other terminals.
+  # Legacy v2/v3 only. Terminal 1 of 5. Use BULK_SHARD_INDEX=1,2,3,4 in the other terminals.
+  BULK_RESEARCH_VERSION=v2 \
   BULK_WORK_LEASES=1 \
   BULK_SHARD_COUNT=5 \
   BULK_SHARD_INDEX=0 \
@@ -340,7 +341,19 @@ npm run start
   ```
 
   - With five terminals and `BULK_BACKTEST_CONCURRENCY=4`, expect up to 20 local replay workers. If the machine, DB, or network becomes the bottleneck, reduce `BULK_BACKTEST_CONCURRENCY` to `3` or `BULK_CANDIDATE_BATCH_SIZE` to `120`.
+- `GET /api/scalp/v4/cron/research?maxCandidatesPerCall=5`
+  - Current research entrypoint. Builds v4 weekly regime snapshots and runs v4 walkforward/envelope evaluation from `lib/scalp-v4`.
+  - Legacy v2 endpoints (`/api/scalp/v2/cron/research`, `/evaluate`, `/worker`, `/cycle`) now default to v4-only compatibility shims. Pass `legacyV2=true` only for intentional v2/v3 replay/scoring work.
+  - `scripts/research-local-bulk.ts` defaults to this v4 path. `BULK_CANDIDATE_BATCH_SIZE` controls `maxCandidatesPerCall`; set `BULK_RESEARCH_VERSION=v2` only for legacy v2/v3 drains.
+  - Local v4 bulk keeps a bounded per-process two-year `1m` candle range cache keyed by symbol/window. Tune with `BULK_V4_CANDLE_CACHE_SOFT_CAP` (default `16`) if memory pressure is high.
+  - v4 research backfills missing/insufficient two-year `1m` candle coverage before walkforward by default. Disable with `BULK_V4_BACKFILL_CANDLES=0` locally or `backfillCandles=false` on the API route.
+  - Optional query params:
+    - `maxCandidatesPerCall=<int>` / `batchSize=<int>` for v4 walkforward candidates per call.
+    - `candidateFetchLimit=<int>` for the v4 candidate scan limit.
+    - `forceValidity=true|false` to override v4 classifier validity checks.
+    - `backfillCandles=true|false`, `minCandleCoverageRatio=<0.1..1>`, `candleBackfillChunkWeeks=<1..26>`, `candleBackfillMaxRequestsPerChunk=<40..5000>` for v4 walkforward candle coverage.
 - `GET /api/scalp/v2/cron/evaluate?batchSize=200`
+  - Legacy v2/v3 path. Disabled by default through the API route; pass `legacyV2=true` to run intentionally.
   - Native model-guided scoring pass over deterministic candidate pools for each venue+symbol+session scope.
   - Uses research cursor offsets (`scalp_v2_research_cursor.last_candidate_offset`) to rotate evaluation windows instead of rescoring full pools every run.
   - Persists only the selected window slice as `evaluated` candidates, keeping DB writes bounded while maintaining broad candidate coverage over successive runs.
@@ -349,6 +362,7 @@ npm run start
     - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/v2/cron/worker`.
     - `workerBatchSize=<int>` for downstream worker batch size (default `12`).
 - `GET /api/scalp/v2/cron/worker?batchSize=12`
+  - Legacy v2/v3 path. Disabled by default through the API route; pass `legacyV2=true` to run intentionally.
   - Legacy alias kept for compatibility: `/api/scalp/cron/v2/worker`.
   - Native staged replay worker over `evaluated|shadow|promoted` candidates in runtime scope.
   - Runs phased validation with early cutoff:
