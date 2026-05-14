@@ -4,6 +4,7 @@ import {
 } from "./build";
 import {
   runScalpV4WalkforwardSweep,
+  type ScalpV4WalkforwardProgressEvent,
   type ScalpV4WalkforwardSweepResult,
 } from "./walkforwardSweep";
 import type { ScalpCandle } from "../scalp/types";
@@ -40,6 +41,8 @@ export async function runScalpV4ResearchJob(params: {
   candleBackfillChunkWeeks?: number;
   candleBackfillMaxRequestsPerChunk?: number;
   workClaimLeaseMs?: number;
+  progressIntervalMs?: number;
+  onProgress?: (event: ScalpV4WalkforwardProgressEvent) => void;
 } = {}): Promise<ScalpV4ResearchJobResult> {
   const weeklyBuild = await ensureScalpV4WeeklyRegimesBuilt({
     classifierVersion: params.classifierVersion,
@@ -59,6 +62,8 @@ export async function runScalpV4ResearchJob(params: {
     candleBackfillChunkWeeks: params.candleBackfillChunkWeeks,
     candleBackfillMaxRequestsPerChunk: params.candleBackfillMaxRequestsPerChunk,
     workClaimLeaseMs: params.workClaimLeaseMs,
+    progressIntervalMs: params.progressIntervalMs,
+    onProgress: params.onProgress,
   });
   return {
     ok: true,

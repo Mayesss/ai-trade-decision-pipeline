@@ -15,9 +15,11 @@
  *   BULK_SHARD_INDEX=0            — v2 only: shard index for this process
  *   BULK_WORK_LEASES=1            — v2 only: claim candidate rows
  *   BULK_V4_FORCE_VALIDITY=1      — v4 only: override classifier validity
+ *   BULK_V4_CANDIDATE_FETCH_LIMIT=1000 — v4 only: candidate scan window before claiming work
  *   BULK_V4_CANDLE_CACHE_SOFT_CAP=16 — v4 only: cached 2-year symbol ranges
  *   BULK_V4_BACKFILL_CANDLES=1    — v4 only: fetch/save missing walkforward candles
  *   BULK_V4_WORK_LEASE_MINUTES=120 — v4 only: candidate claim TTL
+ *   BULK_V4_PROGRESS_LOG_SECONDS=60 — v4 only: heartbeat while a candidate is running; 0 disables
  */
 import nextEnv from '@next/env';
 import os from 'node:os';
@@ -31,6 +33,7 @@ import type { ScalpReplayCandle } from '../lib/scalp/replay/types';
 import type { ScalpCandle } from '../lib/scalp/types';
 import { resolveScalpV2CompletedWeekWindowToUtc } from '../lib/scalp-v2/weekWindows';
 import type { ScalpV4ResearchJobResult } from '../lib/scalp-v4';
+import type { ScalpV4WalkforwardProgressEvent } from '../lib/scalp-v4/walkforwardSweep';
 
 const { loadEnvConfig } = nextEnv;
 
@@ -99,6 +102,13 @@ function envBool(name: string, fallback: boolean): boolean {
   if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
   if (['0', 'false', 'no', 'off'].includes(raw)) return false;
   return fallback;
+}
+
+function envNumber(name: string, fallback: number): number {
+  const raw = String(process.env[name] || '').trim();
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 const DISABLE_TIME_BUDGET = envBool('BULK_DISABLE_TIME_BUDGET', true);
@@ -181,6 +191,17 @@ const BULK_V4_WORK_LEASE_MINUTES = Math.max(
   5,
   Math.min(24 * 60, Math.floor(Number(process.env.BULK_V4_WORK_LEASE_MINUTES) || 120)),
 );
+const BULK_V4_CANDIDATE_FETCH_LIMIT = Math.max(
+  50,
+  Math.min(
+    5_000,
+    Math.floor(envNumber('BULK_V4_CANDIDATE_FETCH_LIMIT', Math.max(candidateBatchSize * 8, 1000))),
+  ),
+);
+const BULK_V4_PROGRESS_LOG_SECONDS = Math.max(
+  0,
+  Math.min(10 * 60, Math.floor(envNumber('BULK_V4_PROGRESS_LOG_SECONDS', 60))),
+);
 const persistentV4CandleCache = new Map<string, ScalpCandle[]>();
 
 let runScalpV2ResearchJob: ((params: {
@@ -211,6 +232,8 @@ let runScalpV4ResearchJob: ((params?: {
   candleBackfillChunkWeeks?: number;
   candleBackfillMaxRequestsPerChunk?: number;
   workClaimLeaseMs?: number;
+  progressIntervalMs?: number;
+  onProgress?: (event: ScalpV4WalkforwardProgressEvent) => void;
 }) => Promise<ScalpV4ResearchJobResult>) | null = null;
 
 async function getRunScalpV2ResearchJob() {
@@ -233,6 +256,44 @@ function currentWindowToTs(): number {
   return resolveScalpV2CompletedWeekWindowToUtc(Date.now());
 }
 
+function summarizeCounts(
+  counts: Record<string, number> | null | undefined,
+  limit = 5,
+): string {
+  const entries = Object.entries(counts || {})
+    .filter(([, count]) => Number(count) > 0)
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .slice(0, limit);
+  return entries.length > 0
+    ? entries.map(([reason, count]) => `${reason}:${count}`).join(', ')
+    : 'none';
+}
+
+function formatDuration(ms: number | null | undefined): string {
+  const totalSeconds = Math.max(0, Math.floor(Number(ms || 0) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m${String(seconds).padStart(2, '0')}s` : `${seconds}s`;
+}
+
+function logV4Progress(event: ScalpV4WalkforwardProgressEvent): void {
+  const prefix = `  progress: ${event.symbol} ${event.phase.replace('candidate_', '')}`;
+  const counts = `processed=${event.processed}/${event.maxCandidatesPerCall} eligible=${event.eligible} ineligible=${event.ineligible} skipped=${event.skipped} claimSkipped=${event.claimSkipped}`;
+  if (event.phase === 'candidate_start') {
+    console.log(`${prefix} venue=${event.venue} cache=${event.candleCacheSize} ${counts}`);
+    return;
+  }
+  if (event.phase === 'candidate_heartbeat') {
+    console.log(`${prefix} elapsed=${formatDuration(event.durationMs)} cache=${event.candleCacheSize} ${counts}`);
+    return;
+  }
+  if (event.phase === 'candidate_done') {
+    console.log(`${prefix} status=${event.status || 'unknown'} elapsed=${formatDuration(event.durationMs)} ${counts}`);
+    return;
+  }
+  console.log(`${prefix} reason=${event.reason || 'unknown'} cache=${event.candleCacheSize} ${counts}`);
+}
+
 async function runBatch(): Promise<boolean> {
   batchCount += 1;
   const batchStart = Date.now();
@@ -246,7 +307,7 @@ async function runBatch(): Promise<boolean> {
     const runResearch = await getRunScalpV4ResearchJob();
     const result = await runResearch({
       maxCandidatesPerCall: candidateBatchSize,
-      candidateFetchLimit: Math.max(candidateBatchSize * 4, 50),
+      candidateFetchLimit: BULK_V4_CANDIDATE_FETCH_LIMIT,
       forceValidity: BULK_V4_FORCE_VALIDITY,
       candleCacheRef: persistentV4CandleCache,
       candleCacheSoftCap: PERSISTENT_V4_CANDLE_CACHE_SOFT_CAP,
@@ -255,6 +316,8 @@ async function runBatch(): Promise<boolean> {
       candleBackfillChunkWeeks: BULK_V4_BACKFILL_CHUNK_WEEKS,
       candleBackfillMaxRequestsPerChunk: BULK_V4_BACKFILL_MAX_REQUESTS_PER_CHUNK,
       workClaimLeaseMs: BULK_V4_WORK_LEASE_MINUTES * 60 * 1000,
+      progressIntervalMs: BULK_V4_PROGRESS_LOG_SECONDS * 1000,
+      onProgress: BULK_V4_PROGRESS_LOG_SECONDS > 0 ? logV4Progress : undefined,
     });
     const elapsed = ((Date.now() - batchStart) / 1000).toFixed(1);
     totalProcessed += result.processed;
@@ -266,6 +329,14 @@ async function runBatch(): Promise<boolean> {
     const validityFailures = weeklyResult?.validityFailures?.length ?? 0;
     const symbolsSaved = weeklyResult?.symbolsSaved ?? 0;
     const symbolsRequested = weeklyResult?.symbolsRequested ?? 0;
+    const validityFailureReasons = (weeklyResult?.validityFailures || []).reduce<Record<string, number>>(
+      (acc, row) => {
+        const reason = String(row.reason || 'unknown');
+        acc[reason] = (acc[reason] || 0) + 1;
+        return acc;
+      },
+      {},
+    );
 
     console.log(
       `  ${elapsed}s | v4 processed=${result.processed} eligible=${walkforward.eligible} ineligible=${walkforward.ineligible} skipped=${walkforward.skipped} claimSkipped=${walkforward.claimSkipped}`,
@@ -273,9 +344,13 @@ async function runBatch(): Promise<boolean> {
     console.log(
       `  regimes: skipped=${weekly.skipped ? 'yes' : 'no'} reason=${weekly.reason || weeklyResult?.reason || 'none'} saved=${symbolsSaved}/${symbolsRequested} validityFailures=${validityFailures}`,
     );
+    if (validityFailures > 0) {
+      console.log(`  regime validity reasons: ${summarizeCounts(validityFailureReasons)}`);
+    }
     console.log(
       `  walkforward: classifier=${walkforward.classifierVersion} window=${new Date(walkforward.windowFromMs).toISOString().slice(0, 10)}..${new Date(walkforward.windowToMs).toISOString().slice(0, 10)}`,
     );
+    console.log(`  walkforward skip reasons: ${summarizeCounts(walkforward.skipReasons)}`);
     console.log(
       `  candleCache: hits=${walkforward.candleCacheHits} misses=${walkforward.candleCacheMisses} size=${walkforward.candleCacheSize}`,
     );
@@ -290,6 +365,11 @@ async function runBatch(): Promise<boolean> {
       return false;
     }
     if (result.processed === 0) {
+      if (validityFailures > 0 && symbolsSaved === 0 && !BULK_V4_FORCE_VALIDITY) {
+        console.log(
+          '  No regimes were saved because classifier validity failed. For a one-time bootstrap run, retry with BULK_V4_FORCE_VALIDITY=1.',
+        );
+      }
       console.log('\n  No v4 walkforward candidates processed — done for now.');
       return false;
     }
@@ -511,12 +591,16 @@ async function main() {
   console.log(`Local bulk research runner (${BULK_RESEARCH_VERSION})`);
   console.log(`Candidates per batch: ${candidateBatchSize}`);
   if (BULK_RESEARCH_VERSION === 'v4') {
+    console.log(`V4 candidate fetch limit: ${BULK_V4_CANDIDATE_FETCH_LIMIT}`);
     console.log(`V4 force validity: ${BULK_V4_FORCE_VALIDITY ? 'enabled' : 'disabled'}`);
     console.log(`V4 candle cache soft cap: ${PERSISTENT_V4_CANDLE_CACHE_SOFT_CAP} symbol ranges`);
     console.log(
       `V4 candle backfill: ${BULK_V4_BACKFILL_CANDLES ? 'enabled' : 'disabled'} (minCoverage=${Math.round(BULK_V4_MIN_CANDLE_COVERAGE_RATIO * 100)}%, chunkWeeks=${BULK_V4_BACKFILL_CHUNK_WEEKS})`,
     );
     console.log(`V4 work lease: ${BULK_V4_WORK_LEASE_MINUTES} minutes`);
+    console.log(
+      `V4 progress logs: ${BULK_V4_PROGRESS_LOG_SECONDS > 0 ? `every ${BULK_V4_PROGRESS_LOG_SECONDS}s` : 'disabled'}`,
+    );
   } else {
     console.log(`Symbols per batch: ${symbolsPerBatch}`);
     console.log(`Backtest concurrency: ${backtestConcurrency}`);

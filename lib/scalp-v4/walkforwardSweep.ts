@@ -41,6 +41,8 @@ export interface ScalpV4WalkforwardSweepOptions {
   candleBackfillChunkWeeks?: number;
   candleBackfillMaxRequestsPerChunk?: number;
   workClaimLeaseMs?: number;
+  progressIntervalMs?: number;
+  onProgress?: (event: ScalpV4WalkforwardProgressEvent) => void;
 }
 
 export interface ScalpV4WalkforwardSweepResult {
@@ -59,7 +61,29 @@ export interface ScalpV4WalkforwardSweepResult {
   candleBackfilledCandles: number;
   candleCoverageFailures: number;
   claimSkipped: number;
+  skipReasons: Record<string, number>;
   results: Array<Record<string, unknown>>;
+}
+
+export interface ScalpV4WalkforwardProgressEvent {
+  phase: "candidate_start" | "candidate_heartbeat" | "candidate_done" | "candidate_skip";
+  candidateId: number;
+  deploymentId: string;
+  venue: ScalpV4Venue;
+  symbol: string;
+  strategyId: string;
+  tuneId: string;
+  processed: number;
+  eligible: number;
+  ineligible: number;
+  skipped: number;
+  claimSkipped: number;
+  maxCandidatesPerCall: number;
+  candidateFetchLimit: number;
+  candleCacheSize: number;
+  durationMs?: number;
+  status?: string;
+  reason?: string;
 }
 
 function toReplayCandles(
@@ -168,6 +192,7 @@ export async function runScalpV4WalkforwardSweep(
       candleBackfilledCandles: 0,
       candleCoverageFailures: 0,
       claimSkipped: 0,
+      skipReasons: {},
       results: [],
     };
   }
@@ -185,6 +210,24 @@ export async function runScalpV4WalkforwardSweep(
   let ineligible = 0;
   let skipped = 0;
   let processed = 0;
+  const skipReasons: Record<string, number> = {};
+  const recordSkip = (reason: string): void => {
+    skipped += 1;
+    const key = String(reason || "unknown");
+    skipReasons[key] = (skipReasons[key] || 0) + 1;
+  };
+  const progressIntervalMs = Math.max(
+    0,
+    Math.min(10 * 60_000, Math.floor(Number(options.progressIntervalMs) || 0)),
+  );
+  const notifyProgress = (event: ScalpV4WalkforwardProgressEvent): void => {
+    if (!options.onProgress) return;
+    try {
+      options.onProgress(event);
+    } catch {
+      // Progress logging must never affect research execution.
+    }
+  };
 
   for (const candidate of candidates) {
     if (processed >= maxCandidatesPerCall) break;
@@ -196,7 +239,30 @@ export async function runScalpV4WalkforwardSweep(
       tuneId: candidate.tuneId,
     });
     if (completed.has(deployment.deploymentId)) {
-      skipped += 1;
+      recordSkip("already_completed_or_claimed");
+      continue;
+    }
+    const snapshots = await loadScalpV4RegimeSnapshots({
+      venue,
+      symbol: candidate.symbol,
+      classifierVersion,
+      fromMs: windowFromMs,
+      toMs: alignedWindowToMs + WEEK,
+    });
+    if (!snapshots.length) {
+      recordSkip("missing_regime_snapshots");
+      results.push({ candidateId: candidate.id, deploymentId: deployment.deploymentId, skipped: true, reason: "missing_regime_snapshots" });
+      continue;
+    }
+    const validity = buildScalpV4ClassifierValidityReport({ snapshots: snapshots as any });
+    if (!validity.passed && !options.forceValidity) {
+      recordSkip(`classifier_validity_failed:${validity.reason}`);
+      results.push({
+        candidateId: candidate.id,
+        deploymentId: deployment.deploymentId,
+        skipped: true,
+        reason: `classifier_validity_failed:${validity.reason}`,
+      });
       continue;
     }
     const claimed = await claimScalpV4WalkforwardDeployment({
@@ -213,31 +279,8 @@ export async function runScalpV4WalkforwardSweep(
       leaseMs: workClaimLeaseMs,
     });
     if (!claimed) {
-      skipped += 1;
+      recordSkip("claim_skipped");
       claimSkipped += 1;
-      continue;
-    }
-    const snapshots = await loadScalpV4RegimeSnapshots({
-      venue,
-      symbol: candidate.symbol,
-      classifierVersion,
-      fromMs: windowFromMs,
-      toMs: alignedWindowToMs + WEEK,
-    });
-    if (!snapshots.length) {
-      skipped += 1;
-      results.push({ candidateId: candidate.id, deploymentId: deployment.deploymentId, skipped: true, reason: "missing_regime_snapshots" });
-      continue;
-    }
-    const validity = buildScalpV4ClassifierValidityReport({ snapshots: snapshots as any });
-    if (!validity.passed && !options.forceValidity) {
-      skipped += 1;
-      results.push({
-        candidateId: candidate.id,
-        deploymentId: deployment.deploymentId,
-        skipped: true,
-        reason: `classifier_validity_failed:${validity.reason}`,
-      });
       continue;
     }
     const candleCacheKey = `${normalizeCacheSymbol(candidate.symbol)}:1m:${windowFromMs}:${alignedWindowToMs}`;
@@ -288,7 +331,25 @@ export async function runScalpV4WalkforwardSweep(
     });
     if (!finalCoverage.ok) {
       candleCoverageFailures += 1;
-      skipped += 1;
+      recordSkip(finalCoverage.reason || "insufficient_candle_coverage");
+      notifyProgress({
+        phase: "candidate_skip",
+        candidateId: Number(candidate.id),
+        deploymentId: deployment.deploymentId,
+        venue: venue as ScalpV4Venue,
+        symbol: candidate.symbol,
+        strategyId: candidate.strategyId,
+        tuneId: candidate.tuneId,
+        processed,
+        eligible,
+        ineligible,
+        skipped,
+        claimSkipped,
+        maxCandidatesPerCall,
+        candidateFetchLimit,
+        candleCacheSize: candleCache.size,
+        reason: finalCoverage.reason || "insufficient_candle_coverage",
+      });
       results.push({
         candidateId: candidate.id,
         deploymentId: deployment.deploymentId,
@@ -301,29 +362,75 @@ export async function runScalpV4WalkforwardSweep(
     const meta = await ensureScalpSymbolMarketMetadata(candidate.symbol, { fetchIfMissing: true });
     const runtime = buildScalpReplayRuntimeFromDeployment({ deployment, configOverride: null });
     const startedAt = Date.now();
-    const fullReplayCandles = toReplayCandles(candles, runtime.defaultSpreadPips);
-    const run = await runScalpV4WalkForward({
-      classifierVersion,
-      snapshots: snapshots as any,
-      windowFromMs,
-      windowToMs: alignedWindowToMs,
-      effectiveTrials,
-      runWindow: async ({ windowStartMs, windowEndMs }) => {
-        const scoped = fullReplayCandles.filter((row) => row.ts >= windowStartMs && row.ts < windowEndMs);
-        const replay = await runScalpReplay({
-          candles: scoped,
-          pipSize: pipSizeForScalpSymbol(candidate.symbol, meta),
-          config: runtime,
-          captureTimeline: false,
-          symbolMeta: meta,
-        });
-        return replay.trades.map((trade) => ({
-          entryTs: trade.entryTs,
-          exitTs: trade.exitTs,
-          rMultiple: trade.rMultiple,
-        }));
-      },
+    notifyProgress({
+      phase: "candidate_start",
+      candidateId: Number(candidate.id),
+      deploymentId: deployment.deploymentId,
+      venue: venue as ScalpV4Venue,
+      symbol: candidate.symbol,
+      strategyId: candidate.strategyId,
+      tuneId: candidate.tuneId,
+      processed,
+      eligible,
+      ineligible,
+      skipped,
+      claimSkipped,
+      maxCandidatesPerCall,
+      candidateFetchLimit,
+      candleCacheSize: candleCache.size,
     });
+    const fullReplayCandles = toReplayCandles(candles, runtime.defaultSpreadPips);
+    let heartbeat: ReturnType<typeof setInterval> | null = null;
+    if (progressIntervalMs > 0) {
+      heartbeat = setInterval(() => {
+        notifyProgress({
+          phase: "candidate_heartbeat",
+          candidateId: Number(candidate.id),
+          deploymentId: deployment.deploymentId,
+          venue: venue as ScalpV4Venue,
+          symbol: candidate.symbol,
+          strategyId: candidate.strategyId,
+          tuneId: candidate.tuneId,
+          processed,
+          eligible,
+          ineligible,
+          skipped,
+          claimSkipped,
+          maxCandidatesPerCall,
+          candidateFetchLimit,
+          candleCacheSize: candleCache.size,
+          durationMs: Date.now() - startedAt,
+        });
+      }, progressIntervalMs);
+    }
+    const run = await (async () => {
+      try {
+        return await runScalpV4WalkForward({
+          classifierVersion,
+          snapshots: snapshots as any,
+          windowFromMs,
+          windowToMs: alignedWindowToMs,
+          effectiveTrials,
+          runWindow: async ({ windowStartMs, windowEndMs }) => {
+            const scoped = fullReplayCandles.filter((row) => row.ts >= windowStartMs && row.ts < windowEndMs);
+            const replay = await runScalpReplay({
+              candles: scoped,
+              pipSize: pipSizeForScalpSymbol(candidate.symbol, meta),
+              config: runtime,
+              captureTimeline: false,
+              symbolMeta: meta,
+            });
+            return replay.trades.map((trade) => ({
+              entryTs: trade.entryTs,
+              exitTs: trade.exitTs,
+              rMultiple: trade.rMultiple,
+            }));
+          },
+        });
+      } finally {
+        if (heartbeat) clearInterval(heartbeat);
+      }
+    })();
     await upsertScalpV4WalkforwardResult({
       candidateId: candidate.id,
       deploymentId: deployment.deploymentId,
@@ -355,6 +462,25 @@ export async function runScalpV4WalkforwardSweep(
     if (run.envelope.eligible) eligible += 1;
     else ineligible += 1;
     processed += 1;
+    notifyProgress({
+      phase: "candidate_done",
+      candidateId: Number(candidate.id),
+      deploymentId: deployment.deploymentId,
+      venue: venue as ScalpV4Venue,
+      symbol: candidate.symbol,
+      strategyId: candidate.strategyId,
+      tuneId: candidate.tuneId,
+      processed,
+      eligible,
+      ineligible,
+      skipped,
+      claimSkipped,
+      maxCandidatesPerCall,
+      candidateFetchLimit,
+      candleCacheSize: candleCache.size,
+      durationMs: Date.now() - startedAt,
+      status: run.envelope.status,
+    });
     results.push({
       candidateId: candidate.id,
       deploymentId: deployment.deploymentId,
@@ -382,6 +508,7 @@ export async function runScalpV4WalkforwardSweep(
     candleBackfilledCandles,
     candleCoverageFailures,
     claimSkipped,
+    skipReasons,
     results,
   };
 }
