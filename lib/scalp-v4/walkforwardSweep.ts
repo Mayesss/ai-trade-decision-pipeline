@@ -140,9 +140,23 @@ export async function runScalpV4WalkforwardSweep(
         Number(process.env.SCALP_V4_WALKFORWARD_INLINE_MAX_PER_RUN ?? 5),
     ),
   );
+  // Top-N pre-filter: candidates are sorted by stage-C netR DESC in
+  // listScalpV4ResearchCandidates, so capping the fetch limit effectively
+  // restricts walk-forward to the top-N candidates. With 0% pass rate observed
+  // in the bottom half of the stage-C distribution, this lets us focus compute
+  // on the candidates most likely to have edge.
+  const envTopN = Number(process.env.SCALP_V4_WALKFORWARD_TOP_N);
+  const envCandidateFetch = Number(process.env.SCALP_V4_WALKFORWARD_CANDIDATE_FETCH_LIMIT);
   const candidateFetchLimit = Math.max(
     1,
-    Math.floor(options.candidateFetchLimit ?? Math.max(maxCandidatesPerCall * 4, 50)),
+    Math.floor(
+      options.candidateFetchLimit ??
+        (Number.isFinite(envTopN) && envTopN > 0
+          ? envTopN
+          : Number.isFinite(envCandidateFetch) && envCandidateFetch > 0
+            ? envCandidateFetch
+            : Math.max(maxCandidatesPerCall * 4, 50)),
+    ),
   );
   const candleCache = options.candleCacheRef ?? new Map<string, ScalpCandle[]>();
   const candleCacheSoftCap = Math.max(

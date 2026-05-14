@@ -43,7 +43,8 @@
     "scalp:sync-candles-kv": "node --import tsx scripts/scalp-sync-candles-kv.ts",
     "scalp:purge-capital-traces": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-purge-capital-traces.ts",
     "scalp:v4:build-regimes": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v4-build-regimes.ts",
-    "scalp:v4:backfill": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v4-backfill-walkforward.ts"
+    "scalp:v4:backfill": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v4-backfill-walkforward.ts",
+    "scalp:v4:reevaluate": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v4-reevaluate-envelopes.ts"
   },
   "devDependencies": {
     "@types/pg": "^8.20.0",

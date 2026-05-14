@@ -13,10 +13,16 @@ import type {
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
+// Defaults tuned from real 2-year diagnostic: 27-cell taxonomy rarely produces
+// the same cell across >=2 distinct epochs in 104 weeks, so `minDistinctEpochs`
+// is relaxed to 1 and we compensate with stronger per-cell evidence
+// (`minCellWindows=12`, `minCellTrades=30`). `positiveWindowPct=70` kept
+// because the distribution is bimodal — ~15% of cells exceed 70% positive
+// windows and the rest cluster well below.
 export const DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS: ScalpV4EnvelopeThresholds = {
-  minCellWindows: 4,
-  minCellTrades: 15,
-  minDistinctEpochs: 2,
+  minCellWindows: 12,
+  minCellTrades: 30,
+  minDistinctEpochs: 1,
   minPositiveWindowPct: 70,
   minBootstrapP05ExpectancyR: 0,
   relaxedPositiveWindowPct: 55,
@@ -26,6 +32,88 @@ export const DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS: ScalpV4EnvelopeThresholds = {
   bootstrapBlockWeeks: 4,
   bootstrapResamples: 2_000,
 };
+
+function envNum(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || String(raw).trim() === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+export function resolveScalpV4EnvelopeThresholds(): ScalpV4EnvelopeThresholds {
+  return {
+    minCellWindows: envNum("SCALP_V4_MIN_CELL_WINDOWS", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.minCellWindows),
+    minCellTrades: envNum("SCALP_V4_MIN_CELL_TRADES", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.minCellTrades),
+    minDistinctEpochs: envNum("SCALP_V4_MIN_DISTINCT_EPOCHS", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.minDistinctEpochs),
+    minPositiveWindowPct: envNum("SCALP_V4_MIN_POSITIVE_WINDOW_PCT", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.minPositiveWindowPct),
+    minBootstrapP05ExpectancyR: envNum("SCALP_V4_MIN_BOOTSTRAP_P05_EXPECTANCY_R", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.minBootstrapP05ExpectancyR),
+    relaxedPositiveWindowPct: envNum("SCALP_V4_RELAXED_POSITIVE_WINDOW_PCT", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.relaxedPositiveWindowPct),
+    relaxedBootstrapP05ExpectancyR: envNum("SCALP_V4_RELAXED_BOOTSTRAP_P05_EXPECTANCY_R", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.relaxedBootstrapP05ExpectancyR),
+    overbroadCellPassPct: envNum("SCALP_V4_OVERBROAD_CELL_PASS_PCT", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.overbroadCellPassPct),
+    overbroadMinCells: envNum("SCALP_V4_OVERBROAD_MIN_CELLS", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.overbroadMinCells),
+    bootstrapBlockWeeks: envNum("SCALP_V4_BOOTSTRAP_BLOCK_WEEKS", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.bootstrapBlockWeeks),
+    bootstrapResamples: envNum("SCALP_V4_BOOTSTRAP_RESAMPLES", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.bootstrapResamples),
+  };
+}
+
+// Recompute the envelope decision from already-stored cell aggregates without
+// re-running any replay. Lets us re-evaluate completed candidates instantly
+// when thresholds change.
+export function reevaluateScalpV4EnvelopeFromCells(params: {
+  envelope: ScalpV4RegimeEnvelope;
+  thresholds?: Partial<ScalpV4EnvelopeThresholds>;
+  evaluatedAtMs?: number;
+}): ScalpV4RegimeEnvelope {
+  const thresholds = { ...resolveScalpV4EnvelopeThresholds(), ...(params.thresholds || {}) };
+  const cells = params.envelope.cells.map((cell) => {
+    const strictPassed =
+      cell.windows >= thresholds.minCellWindows &&
+      cell.trades >= thresholds.minCellTrades &&
+      cell.distinctEpochCount >= thresholds.minDistinctEpochs &&
+      cell.positiveWindowPct >= thresholds.minPositiveWindowPct &&
+      cell.bootstrapP05ExpectancyR !== null &&
+      cell.bootstrapP05ExpectancyR > thresholds.minBootstrapP05ExpectancyR;
+    const relaxedPassed =
+      cell.positiveWindowPct >= thresholds.relaxedPositiveWindowPct &&
+      cell.bootstrapP05ExpectancyR !== null &&
+      cell.bootstrapP05ExpectancyR >= thresholds.relaxedBootstrapP05ExpectancyR;
+    let reason: string | null = null;
+    if (!strictPassed) {
+      if (cell.windows < thresholds.minCellWindows) reason = "min_cell_windows_not_met";
+      else if (cell.trades < thresholds.minCellTrades) reason = "min_cell_trades_not_met";
+      else if (cell.distinctEpochCount < thresholds.minDistinctEpochs) reason = "min_distinct_epochs_not_met";
+      else if (cell.positiveWindowPct < thresholds.minPositiveWindowPct) reason = "positive_window_pct_below_threshold";
+      else if (cell.bootstrapP05ExpectancyR === null || cell.bootstrapP05ExpectancyR <= thresholds.minBootstrapP05ExpectancyR) {
+        reason = "bootstrap_p05_expectancy_below_threshold";
+      }
+    }
+    return { ...cell, strictPassed, relaxedPassed, reason };
+  });
+  const occupiedCells = cells.length;
+  const strictPassingCells = cells.filter((row) => row.strictPassed).length;
+  const relaxedPassingCells = cells.filter((row) => row.relaxedPassed).length;
+  const overbroad =
+    occupiedCells >= thresholds.overbroadMinCells &&
+    strictPassingCells > 0 &&
+    (strictPassingCells / occupiedCells) * 100 >= thresholds.overbroadCellPassPct;
+  const evaluatedAtMs = Math.floor(params.evaluatedAtMs || Date.now());
+  const eligible = strictPassingCells > 0 && !overbroad;
+  return {
+    version: "scalp_v4_regime_envelope_r1",
+    classifierVersion: params.envelope.classifierVersion,
+    evaluatedAtMs,
+    eligible,
+    status: eligible ? "eligible" : overbroad ? "regime_overbroad_pending_review" : "no_passing_cells",
+    allowedCells: overbroad ? [] : cells.filter((row) => row.strictPassed).map((row) => row.cellId),
+    occupiedCells,
+    strictPassingCells,
+    relaxedPassingCells,
+    overbroad,
+    overbroadReviewUntilMs: overbroad ? evaluatedAtMs + SEVEN_DAYS_MS : null,
+    thresholds,
+    cells,
+  };
+}
 
 function finite(value: unknown, fallback = 0): number {
   const n = Number(value);
@@ -138,7 +226,7 @@ export function buildScalpV4RegimeEnvelope(params: {
   evaluatedAtMs?: number;
   thresholds?: Partial<ScalpV4EnvelopeThresholds>;
 }): ScalpV4RegimeEnvelope {
-  const thresholds = { ...DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS, ...(params.thresholds || {}) };
+  const thresholds = { ...resolveScalpV4EnvelopeThresholds(), ...(params.thresholds || {}) };
   const byWeek = buildScalpV4SnapshotLookup(params.snapshots);
   const epochByWeek = epochIdByWeek(params.snapshots);
   const byCell = new Map<
