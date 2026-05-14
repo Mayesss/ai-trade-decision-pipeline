@@ -8,8 +8,9 @@ import { setNoStoreHeaders } from "../../../../lib/scalp-v2/http";
 import {
   isScalpV4Enabled,
   isScalpV4HardGateEnabled,
-  loadScalpV4CurrentRegimeSnapshot,
+  resolveScalpV4FailClosedStaleMs,
   SCALP_V4_CLASSIFIER_VERSION,
+  startOfUtcWeekMondayMs,
 } from "../../../../lib/scalp-v4";
 import { scalpPrisma } from "../../../../lib/scalp/pg/client";
 import { sql } from "../../../../lib/scalp/pg/sql";
@@ -142,21 +143,41 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return Object.keys(envelope).length > 0;
     });
 
+    // Single bulk query for all current-week snapshots, keyed by (venue, symbol).
+    // Previously this was 80 parallel SELECTs which Neon's pool serializes;
+    // one shot is ~40× faster end-to-end.
+    const currentWeekStartMs = startOfUtcWeekMondayMs(nowMs);
+    const failClosedStaleMs = resolveScalpV4FailClosedStaleMs();
     const currentRegimeByKey = new Map<string, { cellId: string | null; stale: boolean; updatedAtMs: number | null }>();
-    await Promise.all(
-      enabledOrEnvelopeBearing.slice(0, 80).map(async (row) => {
-        const snap = await loadScalpV4CurrentRegimeSnapshot({
-          venue: row.venue,
-          symbol: row.symbol,
-          nowMs,
-        }).catch(() => ({ cellId: null, stale: true, snapshot: null }));
-        currentRegimeByKey.set(`${row.venue}:${row.symbol}`, {
+    const venueSymbolPairs = enabledOrEnvelopeBearing.map((row) => `${row.venue}:${row.symbol}`);
+    if (venueSymbolPairs.length > 0) {
+      const currentSnaps = await db.$queryRaw<Array<{
+        venue: string;
+        symbol: string;
+        cellId: string | null;
+        updatedAt: Date;
+      }>>(sql`
+        SELECT DISTINCT ON (venue, symbol)
+          venue,
+          symbol,
+          cell_id AS "cellId",
+          updated_at AS "updatedAt"
+        FROM scalp_regime_snapshots
+        WHERE classifier_version = ${classifierVersion}
+          AND granularity = 'week'
+          AND week_start = ${new Date(currentWeekStartMs)}
+          AND (venue || ':' || symbol) = ANY(${venueSymbolPairs}::text[])
+        ORDER BY venue, symbol, updated_at DESC;
+      `);
+      for (const snap of currentSnaps) {
+        const ageMs = Math.max(0, nowMs - snap.updatedAt.getTime());
+        currentRegimeByKey.set(`${snap.venue}:${snap.symbol}`, {
           cellId: snap.cellId,
-          stale: snap.stale,
-          updatedAtMs: Number((snap.snapshot as any)?.updatedAtMs) || null,
+          stale: ageMs > failClosedStaleMs,
+          updatedAtMs: snap.updatedAt.getTime(),
         });
-      }),
-    );
+      }
+    }
 
     const deploymentRows = enabledOrEnvelopeBearing.map((row) => {
       const gate = asRecord(row.promotionGate);

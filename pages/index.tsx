@@ -486,8 +486,8 @@ export default function ScalpV4Dashboard() {
               className="w-72 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500"
             />
           </div>
-          <div className="overflow-hidden rounded-lg border border-zinc-800">
-            <table className="w-full text-xs">
+          <div className="overflow-x-auto rounded-lg border border-zinc-800">
+            <table className="w-full min-w-[720px] text-xs">
               <thead className="bg-zinc-900 text-zinc-400">
                 <tr>
                   <th className="px-3 py-2 text-left">Status</th>
