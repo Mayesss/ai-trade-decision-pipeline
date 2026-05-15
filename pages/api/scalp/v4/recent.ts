@@ -71,7 +71,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }>>(sql`
         SELECT ts, deployment_id AS "deploymentId", venue, symbol, type, reason_codes AS "reasonCodes", payload
         FROM scalp_v2_journal
-        WHERE type = 'execution' AND ts > NOW() - INTERVAL '14 day'
+        WHERE type = 'execution'
+          AND ts > NOW() - INTERVAL '30 day'
+          AND (
+            (payload->>'tradeEventOccurred')::boolean = true
+            OR (payload->>'stateChanged')::boolean = true
+            OR 'ENTRY_PLAN_READY' = ANY(reason_codes)
+            OR 'ENTRY_EXECUTION_ERROR' = ANY(reason_codes)
+          )
         ORDER BY ts DESC
         LIMIT 30;
       `),
@@ -106,18 +113,36 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       })),
       recentTrades: tradeRows.map((row) => {
         const payload = asRecord(row.payload);
+        const reasonCodes = Array.isArray(row.reasonCodes) ? row.reasonCodes : [];
+        const tradeOccurred = Boolean(payload.tradeEventOccurred);
+        const stateChanged = Boolean(payload.stateChanged);
+        const state = String(payload.state || "");
+        const tradePayload = asRecord(payload.trade);
+        const eventKind = tradeOccurred
+          ? "trade"
+          : reasonCodes.includes("ENTRY_EXECUTION_ERROR")
+            ? "entry_error"
+            : reasonCodes.includes("ENTRY_PLAN_READY") && reasonCodes.includes("ENTRY_NOT_PLACED")
+              ? "entry_skipped"
+              : "state_change";
+        const rMultiple =
+          tradePayload.rMultiple !== undefined && Number.isFinite(Number(tradePayload.rMultiple))
+            ? Number(tradePayload.rMultiple)
+            : payload.rMultiple !== undefined && Number.isFinite(Number(payload.rMultiple))
+              ? Number(payload.rMultiple)
+              : null;
         return {
           tsMs: row.ts.getTime(),
           deploymentId: row.deploymentId,
           venue: row.venue,
           symbol: row.symbol,
-          reasonCodes: Array.isArray(row.reasonCodes) ? row.reasonCodes : [],
-          summary: String(payload.summary || payload.message || payload.event || "execution"),
-          rMultiple:
-            payload.rMultiple !== undefined && Number.isFinite(Number(payload.rMultiple))
-              ? Number(payload.rMultiple)
-              : null,
-          phase: String(payload.phase || payload.action || ""),
+          reasonCodes,
+          eventKind,
+          state,
+          stateChanged,
+          tradeEventOccurred: tradeOccurred,
+          rMultiple,
+          summary: String(payload.summary || payload.message || payload.event || state || "execution"),
         };
       }),
     });

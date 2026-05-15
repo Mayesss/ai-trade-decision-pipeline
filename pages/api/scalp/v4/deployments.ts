@@ -121,6 +121,44 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
+    // Load per-cell window arrays from walkforward_results.incremental_state_json
+    // for eligible deployments. Needed for the per-cell sparklines in the UI.
+    const eligibleDeploymentIds = interesting
+      .filter((row) => {
+        const env = asRecord(asRecord(row.promotionGate).regimeEnvelope);
+        return Boolean(env.eligible);
+      })
+      .map((row) => row.deploymentId);
+    const windowExpectancyByDepCell = new Map<string, Map<string, number[]>>();
+    if (eligibleDeploymentIds.length > 0) {
+      const wfRows = await db.$queryRaw<Array<{
+        deploymentId: string;
+        incrementalStateJson: unknown;
+      }>>(sql`
+        SELECT DISTINCT ON (deployment_id)
+          deployment_id AS "deploymentId",
+          incremental_state_json AS "incrementalStateJson"
+        FROM scalp_regime_walkforward_results
+        WHERE classifier_version = ${classifierVersion}
+          AND deployment_id = ANY(${eligibleDeploymentIds}::text[])
+          AND incremental_state_json IS NOT NULL
+        ORDER BY deployment_id, evaluated_at DESC;
+      `);
+      for (const row of wfRows) {
+        const state = asRecord(row.incrementalStateJson);
+        const cells = asRecord(state.cells);
+        const byCell = new Map<string, number[]>();
+        for (const [cellId, value] of Object.entries(cells)) {
+          const stat = asRecord(value);
+          const arr = Array.isArray(stat.windowExpectancyR)
+            ? (stat.windowExpectancyR as unknown[]).map((v) => Number(v)).filter(Number.isFinite)
+            : [];
+          if (arr.length > 0) byCell.set(cellId, arr);
+        }
+        windowExpectancyByDepCell.set(row.deploymentId, byCell);
+      }
+    }
+
     const rows = interesting.map((row) => {
       const gate = asRecord(row.promotionGate);
       const envelope = asRecord(gate.regimeEnvelope);
@@ -140,6 +178,39 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const allowedCells = Array.isArray(envelope.allowedCells)
         ? (envelope.allowedCells as unknown[]).map(String).filter(Boolean)
         : [];
+      // Pass through full cell aggregates so the UI can show per-cell KPI
+      // details on demand. Stripped to a small subset of useful fields per
+      // cell, plus the per-window expectancy array from incremental state.
+      const cellsRaw: Array<Record<string, unknown>> = Array.isArray(envelope.cells)
+        ? (envelope.cells as Array<Record<string, unknown>>)
+        : [];
+      const winExpByCell = windowExpectancyByDepCell.get(row.deploymentId) || new Map<string, number[]>();
+      const cells = cellsRaw.map((cell) => {
+        const cellId = String(cell.cellId || "");
+        const deflated = asRecord(cell.deflatedSharpe);
+        return {
+          cellId,
+          windows: Number(cell.windows) || 0,
+          trades: Number(cell.trades) || 0,
+          distinctEpochCount: Number(cell.distinctEpochCount) || 0,
+          netR: Number(cell.netR) || 0,
+          expectancyR: Number(cell.expectancyR) || 0,
+          positiveWindowPct: Number(cell.positiveWindowPct) || 0,
+          p25ExpectancyR: Number(cell.p25ExpectancyR) || 0,
+          maxDrawdownR: Number(cell.maxDrawdownR) || 0,
+          crossRegimeTradePct: Number(cell.crossRegimeTradePct) || 0,
+          bootstrapP05ExpectancyR:
+            cell.bootstrapP05ExpectancyR === null || cell.bootstrapP05ExpectancyR === undefined
+              ? null
+              : Number(cell.bootstrapP05ExpectancyR),
+          sharpe: deflated.sharpe === null || deflated.sharpe === undefined ? null : Number(deflated.sharpe),
+          deflatedScore: deflated.diagnosticScore === null || deflated.diagnosticScore === undefined ? null : Number(deflated.diagnosticScore),
+          strictPassed: Boolean(cell.strictPassed),
+          relaxedPassed: Boolean(cell.relaxedPassed),
+          reason: cell.reason ? String(cell.reason) : null,
+          windowExpectancyR: winExpByCell.get(cellId) || null,
+        };
+      });
       return {
         deploymentId: row.deploymentId,
         venue: row.venue,
@@ -156,6 +227,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           allowedCells,
           occupiedCells: Number(envelope.occupiedCells) || 0,
           strictPassingCells: Number(envelope.strictPassingCells) || 0,
+          cells,
         },
         currentRegime: { ...current, weeksInCell: weeksInCurrentCell },
         lastEntryAtMs,
