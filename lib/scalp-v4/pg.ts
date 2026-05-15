@@ -2,6 +2,7 @@ import { isScalpPgConfigured, scalpPrisma } from "../scalp/pg/client";
 import { join, sql } from "../scalp/pg/sql";
 import type {
   ScalpV4CellId,
+  ScalpV4IncrementalState,
   ScalpV4ResearchCandidate,
   ScalpV4RegimeEnvelope,
   ScalpV4RegimeSnapshot,
@@ -388,6 +389,8 @@ export async function upsertScalpV4WalkforwardResult(params: {
   effectiveTrials: number;
   status: string;
   envelope: ScalpV4RegimeEnvelope;
+  incrementalState?: ScalpV4IncrementalState | null;
+  nextWindowStartMs?: number | null;
   windowResults?: unknown;
   details?: Record<string, unknown>;
 }): Promise<void> {
@@ -408,6 +411,8 @@ export async function upsertScalpV4WalkforwardResult(params: {
       status,
       auto_reject_after,
       envelope_json,
+      incremental_state_json,
+      next_window_start,
       window_results_json,
       details_json,
       evaluated_at
@@ -425,6 +430,8 @@ export async function upsertScalpV4WalkforwardResult(params: {
       ${params.status},
       ${params.envelope.overbroadReviewUntilMs ? new Date(params.envelope.overbroadReviewUntilMs) : null},
       ${JSON.stringify(params.envelope)}::jsonb,
+      ${params.incrementalState ? JSON.stringify(params.incrementalState) : null}::jsonb,
+      ${params.nextWindowStartMs ? new Date(params.nextWindowStartMs) : null},
       ${JSON.stringify(params.windowResults || [])}::jsonb,
       ${JSON.stringify(params.details || {})}::jsonb,
       NOW()
@@ -440,11 +447,54 @@ export async function upsertScalpV4WalkforwardResult(params: {
       status = EXCLUDED.status,
       auto_reject_after = EXCLUDED.auto_reject_after,
       envelope_json = EXCLUDED.envelope_json,
+      incremental_state_json = EXCLUDED.incremental_state_json,
+      next_window_start = EXCLUDED.next_window_start,
       window_results_json = EXCLUDED.window_results_json,
       details_json = EXCLUDED.details_json,
       evaluated_at = NOW(),
       updated_at = NOW();
   `);
+}
+
+// Bulk-load the most recent walk-forward incremental state per deployment
+// for a given classifier version. Used by the sweep to skip historical
+// windows that have already been aggregated.
+export async function loadScalpV4IncrementalStates(params: {
+  classifierVersion: string;
+  deploymentIds: string[];
+}): Promise<Map<string, { incrementalState: ScalpV4IncrementalState; nextWindowStartMs: number; windowFromMs: number; windowToMs: number }>> {
+  if (!isScalpPgConfigured() || params.deploymentIds.length === 0) return new Map();
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{
+    deploymentId: string;
+    incrementalStateJson: unknown;
+    nextWindowStart: Date | null;
+    windowFrom: Date;
+    windowTo: Date;
+  }>>(sql`
+    SELECT DISTINCT ON (deployment_id)
+      deployment_id AS "deploymentId",
+      incremental_state_json AS "incrementalStateJson",
+      next_window_start AS "nextWindowStart",
+      window_from AS "windowFrom",
+      window_to AS "windowTo"
+    FROM scalp_regime_walkforward_results
+    WHERE classifier_version = ${params.classifierVersion}
+      AND incremental_state_json IS NOT NULL
+      AND deployment_id = ANY(${params.deploymentIds}::text[])
+    ORDER BY deployment_id, evaluated_at DESC;
+  `);
+  const out = new Map<string, { incrementalState: ScalpV4IncrementalState; nextWindowStartMs: number; windowFromMs: number; windowToMs: number }>();
+  for (const row of rows) {
+    if (!row.incrementalStateJson || !row.nextWindowStart) continue;
+    out.set(row.deploymentId, {
+      incrementalState: row.incrementalStateJson as ScalpV4IncrementalState,
+      nextWindowStartMs: row.nextWindowStart.getTime(),
+      windowFromMs: row.windowFrom.getTime(),
+      windowToMs: row.windowTo.getTime(),
+    });
+  }
+  return out;
 }
 
 export async function claimScalpV4WalkforwardDeployment(params: {

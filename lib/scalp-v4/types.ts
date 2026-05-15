@@ -140,6 +140,27 @@ export interface ScalpV4RegimeEnvelope {
   cells: ScalpV4CellAggregate[];
 }
 
+// Per-cell cumulative stats — incrementally updated each sweep when a new
+// window is appended. Lets future sweeps skip re-replaying historical windows.
+export interface ScalpV4CellCumulativeStat {
+  trades: number;
+  netR: number;
+  maxDrawdownR: number;
+  crossRegimeTrades: number;
+  epochsSeen: number[];                 // distinct epoch IDs encountered
+  windowExpectancyR: number[];          // per-window mean R for this cell
+  windowNetR: number[];                 // per-window total R for this cell
+}
+
+export interface ScalpV4IncrementalState {
+  version: "scalp_v4_incremental_r1";
+  classifierVersion: string;
+  windowFromMs: number;                 // earliest window start ever included
+  lastWindowEndMs: number;              // latest window end already aggregated
+  cells: Record<string, ScalpV4CellCumulativeStat>;
+  synthesizedAt?: number;               // set when cell stats were backfilled from envelope (not from real per-window data)
+}
+
 export interface ScalpV4EnvelopeThresholds {
   minCellWindows: number;
   minCellTrades: number;

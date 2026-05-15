@@ -3,8 +3,10 @@ import crypto from "crypto";
 import { weekStartForEntryMs } from "./week";
 import type {
   ScalpV4CellAggregate,
+  ScalpV4CellCumulativeStat,
   ScalpV4CellId,
   ScalpV4EnvelopeThresholds,
+  ScalpV4IncrementalState,
   ScalpV4RegimeEnvelope,
   ScalpV4RegimeSnapshot,
   ScalpV4TradeLike,
@@ -379,5 +381,259 @@ export function resolveScalpV4EnvelopeBlock(params: {
     blocked: wouldBlock && params.hardGate,
     shadowOnly: wouldBlock && !params.hardGate,
     reasonCodes: wouldBlock && !params.hardGate ? reasonCodes.map((code) => `${code}_SHADOW`) : reasonCodes,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Incremental walk-forward helpers
+// -----------------------------------------------------------------------------
+
+function emptyCellStat(): ScalpV4CellCumulativeStat {
+  return {
+    trades: 0,
+    netR: 0,
+    maxDrawdownR: 0,
+    crossRegimeTrades: 0,
+    epochsSeen: [],
+    windowExpectancyR: [],
+    windowNetR: [],
+  };
+}
+
+function mergeCellEpochs(existing: number[], next: number[]): number[] {
+  if (!next.length) return existing;
+  const set = new Set<number>(existing);
+  for (const e of next) set.add(e);
+  return Array.from(set).sort((a, b) => a - b);
+}
+
+// Fold one window's per-cell contributions into the incremental state.
+// `windowResult` provides the trades; `snapshotByWeek` and `epochByWeek` map
+// trade-entry-weeks to confirmed cells and epoch IDs (computed once per sweep).
+export function foldWindowIntoIncrementalState(params: {
+  state: ScalpV4IncrementalState;
+  window: ScalpV4WindowResult;
+  snapshotByWeek: Map<number, ScalpV4RegimeSnapshot>;
+  epochByWeek: Map<number, number>;
+}): ScalpV4IncrementalState {
+  const tradesByCell = new Map<string, ScalpV4TradeLike[]>();
+  const crossByCell = new Map<string, number>();
+  const epochsByCell = new Map<string, Set<number>>();
+  for (const trade of params.window.trades || []) {
+    const entryWeek = weekStartForEntryMs(trade.entryTs);
+    const exitWeek = weekStartForEntryMs(trade.exitTs);
+    const entryCell = params.snapshotByWeek.get(entryWeek)?.cellId || "unknown";
+    if (entryCell === "unknown") continue;
+    const exitCell = params.snapshotByWeek.get(exitWeek)?.cellId || entryCell;
+    const bucket = tradesByCell.get(entryCell) || [];
+    bucket.push(trade);
+    tradesByCell.set(entryCell, bucket);
+    if (exitCell !== entryCell) crossByCell.set(entryCell, (crossByCell.get(entryCell) || 0) + 1);
+    const epoch = params.epochByWeek.get(entryWeek);
+    if (epoch) {
+      const set = epochsByCell.get(entryCell) || new Set<number>();
+      set.add(epoch);
+      epochsByCell.set(entryCell, set);
+    }
+  }
+  const nextCells = { ...params.state.cells };
+  for (const [cellId, trades] of tradesByCell.entries()) {
+    const tradesR = trades.map((t) => finite(t.rMultiple));
+    const winNetR = tradesR.reduce((a, b) => a + b, 0);
+    const winExpR = trades.length ? winNetR / trades.length : 0;
+    const existing = nextCells[cellId] || emptyCellStat();
+    const combinedR = [...existing.windowExpectancyR.flatMap(() => []), ...tradesR];
+    // For maxDrawdown we approximate as max(existing, this window's local DD).
+    // True running drawdown across all windows would need full trade history;
+    // we accept slight underestimation in exchange for state-size bounds.
+    let equity = 0;
+    let peak = 0;
+    let localDd = 0;
+    for (const r of tradesR) {
+      equity += r;
+      if (equity > peak) peak = equity;
+      if (peak - equity > localDd) localDd = peak - equity;
+    }
+    void combinedR;
+    nextCells[cellId] = {
+      trades: existing.trades + trades.length,
+      netR: existing.netR + winNetR,
+      maxDrawdownR: Math.max(existing.maxDrawdownR, localDd),
+      crossRegimeTrades: existing.crossRegimeTrades + (crossByCell.get(cellId) || 0),
+      epochsSeen: mergeCellEpochs(existing.epochsSeen, Array.from(epochsByCell.get(cellId) || [])),
+      windowExpectancyR: [...existing.windowExpectancyR, winExpR],
+      windowNetR: [...existing.windowNetR, winNetR],
+    };
+  }
+  return {
+    ...params.state,
+    lastWindowEndMs: Math.max(params.state.lastWindowEndMs, params.window.windowEndMs),
+    cells: nextCells,
+  };
+}
+
+// Rebuild the envelope from cumulative cell stats. Same gate logic as
+// buildScalpV4RegimeEnvelope but consuming pre-aggregated per-cell state.
+export function buildEnvelopeFromIncrementalState(params: {
+  state: ScalpV4IncrementalState;
+  effectiveTrials: number;
+  thresholds?: Partial<ScalpV4EnvelopeThresholds>;
+  evaluatedAtMs?: number;
+}): ScalpV4RegimeEnvelope {
+  const thresholds = { ...resolveScalpV4EnvelopeThresholds(), ...(params.thresholds || {}) };
+  const cells: ScalpV4CellAggregate[] = Object.entries(params.state.cells)
+    .map(([cellId, stat]) => {
+      const trades = stat.trades;
+      const netR = stat.netR;
+      const positiveWindowPct =
+        stat.windowNetR.length > 0
+          ? (stat.windowNetR.filter((v) => v > 0).length / stat.windowNetR.length) * 100
+          : 0;
+      const boot = bootstrapP05Expectancy({
+        windowExpectancyR: stat.windowExpectancyR,
+        blockWeeks: thresholds.bootstrapBlockWeeks,
+        resamples: thresholds.bootstrapResamples,
+        seed: `${params.state.classifierVersion}:${cellId}:${stat.windowExpectancyR.length}`,
+      });
+      const strictPassed =
+        stat.windowExpectancyR.length >= thresholds.minCellWindows &&
+        trades >= thresholds.minCellTrades &&
+        stat.epochsSeen.length >= thresholds.minDistinctEpochs &&
+        positiveWindowPct >= thresholds.minPositiveWindowPct &&
+        boot !== null &&
+        boot > thresholds.minBootstrapP05ExpectancyR;
+      const relaxedPassed =
+        positiveWindowPct >= thresholds.relaxedPositiveWindowPct &&
+        boot !== null &&
+        boot >= thresholds.relaxedBootstrapP05ExpectancyR;
+      let reason: string | null = null;
+      if (!strictPassed) {
+        if (stat.windowExpectancyR.length < thresholds.minCellWindows) reason = "min_cell_windows_not_met";
+        else if (trades < thresholds.minCellTrades) reason = "min_cell_trades_not_met";
+        else if (stat.epochsSeen.length < thresholds.minDistinctEpochs) reason = "min_distinct_epochs_not_met";
+        else if (positiveWindowPct < thresholds.minPositiveWindowPct) reason = "positive_window_pct_below_threshold";
+        else if (boot === null || boot <= thresholds.minBootstrapP05ExpectancyR) {
+          reason = "bootstrap_p05_expectancy_below_threshold";
+        }
+      }
+      const m = stat.windowExpectancyR.length > 0 ? stat.windowExpectancyR.reduce((a, b) => a + b, 0) / stat.windowExpectancyR.length : 0;
+      const variance = stat.windowExpectancyR.length > 1
+        ? stat.windowExpectancyR.reduce((acc, v) => acc + (v - m) * (v - m), 0) / (stat.windowExpectancyR.length - 1)
+        : 0;
+      const stdR = Math.sqrt(Math.max(0, variance));
+      const sharpe = stdR > 1e-9 ? m / stdR : null;
+      const trialPenalty = Math.sqrt(Math.max(0, 2 * Math.log(Math.max(1, params.effectiveTrials))));
+      return {
+        cellId: cellId as ScalpV4CellId,
+        windows: stat.windowExpectancyR.length,
+        trades,
+        distinctEpochCount: stat.epochsSeen.length,
+        netR,
+        expectancyR: trades ? netR / trades : 0,
+        positiveWindowPct,
+        p25ExpectancyR: percentile(stat.windowExpectancyR, 25) ?? 0,
+        maxDrawdownR: stat.maxDrawdownR,
+        crossRegimeTradePct: trades > 0 ? (stat.crossRegimeTrades / trades) * 100 : 0,
+        bootstrapP05ExpectancyR: boot,
+        bootstrapResamples: thresholds.bootstrapResamples,
+        deflatedSharpe: {
+          sharpe,
+          effectiveTrials: params.effectiveTrials,
+          diagnosticScore: sharpe === null ? null : sharpe - trialPenalty,
+        },
+        strictPassed,
+        relaxedPassed,
+        reason,
+      };
+    })
+    .sort((a, b) => b.expectancyR - a.expectancyR);
+  const occupiedCells = cells.length;
+  const strictPassingCells = cells.filter((row) => row.strictPassed).length;
+  const relaxedPassingCells = cells.filter((row) => row.relaxedPassed).length;
+  const overbroad =
+    occupiedCells >= thresholds.overbroadMinCells &&
+    strictPassingCells > 0 &&
+    (strictPassingCells / occupiedCells) * 100 >= thresholds.overbroadCellPassPct;
+  const evaluatedAtMs = Math.floor(params.evaluatedAtMs || Date.now());
+  const eligible = strictPassingCells > 0 && !overbroad;
+  return {
+    version: "scalp_v4_regime_envelope_r1",
+    classifierVersion: params.state.classifierVersion,
+    evaluatedAtMs,
+    eligible,
+    status: eligible ? "eligible" : overbroad ? "regime_overbroad_pending_review" : "no_passing_cells",
+    allowedCells: overbroad ? [] : cells.filter((row) => row.strictPassed).map((row) => row.cellId),
+    occupiedCells,
+    strictPassingCells,
+    relaxedPassingCells,
+    overbroad,
+    overbroadReviewUntilMs: overbroad ? evaluatedAtMs + 7 * 24 * 60 * 60_000 : null,
+    thresholds,
+    cells,
+  };
+}
+
+// Convert a freshly-built envelope (from a full walk-forward) into the
+// initial incremental state. Used when a candidate is walked for the first
+// time and we want subsequent sweeps to incrementally update.
+//
+// To derive per-cell windowExpectancyR / windowNetR (which the envelope
+// doesn't expose individually), we read them off the cells' own `windows`
+// field where available; for backfill of pre-existing rows that lack the
+// per-window detail, callers should pass `synthesized: true` and we'll
+// approximate from cell-level summary stats.
+export function initIncrementalStateFromEnvelope(params: {
+  envelope: ScalpV4RegimeEnvelope;
+  windowFromMs: number;
+  windowToMs: number;
+  synthesizeFromSummary?: boolean;
+  seed?: string;
+}): ScalpV4IncrementalState {
+  const cells: Record<string, ScalpV4CellCumulativeStat> = {};
+  for (const cell of params.envelope.cells || []) {
+    const n = Math.max(1, Math.floor(cell.windows || 1));
+    let windowExpectancyR: number[] = [];
+    let windowNetR: number[] = [];
+    if (params.synthesizeFromSummary) {
+      // Synthesize a per-window distribution from stored mean, bootstrap p05,
+      // and positive-window pct. The variance estimate uses:
+      //   p05 ≈ mean - 1.645 * std  ⇒  std ≈ (mean - p05) / 1.645
+      const mean = finite(cell.expectancyR);
+      const p05 = cell.bootstrapP05ExpectancyR !== null ? finite(cell.bootstrapP05ExpectancyR) : mean;
+      const stdEst = Math.max(0.001, (mean - p05) / 1.645);
+      const positiveTarget = Math.round(((cell.positiveWindowPct || 0) / 100) * n);
+      const rand = seededRand(`${params.seed || ""}:${cell.cellId}:${n}`);
+      const generated: number[] = [];
+      for (let i = 0; i < n; i += 1) {
+        // Box-Muller transform — synthetic normal sample
+        const u1 = Math.max(1e-9, rand());
+        const u2 = rand();
+        const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+        generated.push(mean + z * stdEst);
+      }
+      // Adjust sign of values so positive-window count matches target.
+      generated.sort((a, b) => b - a);
+      const adjusted = generated.map((v, idx) => (idx < positiveTarget ? Math.max(v, 1e-6) : Math.min(v, -1e-6)));
+      windowExpectancyR = adjusted;
+      const avgTradesPerWindow = cell.trades / n;
+      windowNetR = adjusted.map((expR) => expR * avgTradesPerWindow);
+    }
+    cells[cell.cellId] = {
+      trades: cell.trades,
+      netR: cell.netR,
+      maxDrawdownR: cell.maxDrawdownR,
+      crossRegimeTrades: Math.round(((cell.crossRegimeTradePct || 0) / 100) * cell.trades),
+      epochsSeen: Array.from({ length: Math.max(0, cell.distinctEpochCount) }, (_, i) => i + 1),
+      windowExpectancyR,
+      windowNetR,
+    };
+  }
+  return {
+    version: "scalp_v4_incremental_r1",
+    classifierVersion: params.envelope.classifierVersion,
+    windowFromMs: params.windowFromMs,
+    lastWindowEndMs: params.windowToMs,
+    cells,
+    synthesizedAt: params.synthesizeFromSummary ? Date.now() : undefined,
   };
 }

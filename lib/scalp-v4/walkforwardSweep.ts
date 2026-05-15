@@ -17,15 +17,20 @@ import {
   claimScalpV4WalkforwardDeployment,
   listScalpV4ResearchCandidates,
   loadScalpV4CompletedWalkforwardDeploymentIds,
+  loadScalpV4IncrementalStates,
   loadScalpV4WalkforwardClusterCounts,
   resolveScalpV4WalkforwardClaimLeaseMs,
   loadScalpV4RegimeSnapshots,
   upsertScalpV4WalkforwardResult,
 } from "./pg";
 import { buildScalpV4ClassifierValidityReport } from "./sanity";
-import type { ScalpV4Venue } from "./types";
+import type { ScalpV4IncrementalState, ScalpV4RegimeSnapshot, ScalpV4Venue } from "./types";
 import { buildScalpV4ClusterKey } from "./v4Status";
 import { runScalpV4WalkForward } from "./walkForward";
+import {
+  buildEnvelopeFromIncrementalState,
+  foldWindowIntoIncrementalState,
+} from "./envelope";
 
 const WEEK = 7 * 24 * 60 * 60 * 1000;
 
@@ -216,11 +221,31 @@ export async function runScalpV4WalkforwardSweep(
   const candidates = await listScalpV4ResearchCandidates({
     limit: candidateFetchLimit,
   });
+  // Exact-week match for the "already done this Sunday" check. Cross-week
+  // results are handled by the incremental-state lookup below — those
+  // candidates get updated, not skipped.
   const completed = await loadScalpV4CompletedWalkforwardDeploymentIds({
     classifierVersion,
     windowFromMs,
     windowToMs: alignedWindowToMs,
     leaseMs: workClaimLeaseMs,
+    reuseWeeks: 0,
+  });
+  // Pre-load incremental state for every candidate deployment we might touch.
+  // Saves a per-candidate round-trip. Candidates with state get the fast path
+  // (walk only new windows since last sweep + fold into existing state).
+  const candidateDeploymentIds = candidates.map((candidate) => {
+    const venue = String(candidate.venue || "").toLowerCase() === "capital" ? "capital" : "bitget";
+    return resolveScalpDeployment({
+      venue,
+      symbol: candidate.symbol,
+      strategyId: candidate.strategyId,
+      tuneId: candidate.tuneId,
+    }).deploymentId;
+  });
+  const incrementalStates = await loadScalpV4IncrementalStates({
+    classifierVersion,
+    deploymentIds: candidateDeploymentIds,
   });
   // Cluster cap — same-bet variations (e.g. 26 LINKUSDT/sydney/mdl_basis
   // variants) waste compute. Default cap = 2 walk-forwards per cluster;
@@ -454,12 +479,30 @@ export async function runScalpV4WalkforwardSweep(
         });
       }, progressIntervalMs);
     }
+    // Incremental fork: if we already have aggregated state for this
+    // deployment, walk only NEW windows (since lastWindowEndMs) and fold
+    // their trades into the existing state. Otherwise full 104-week walk.
+    const existingEntry = incrementalStates.get(deployment.deploymentId);
+    const isIncrementalPath =
+      Boolean(existingEntry) &&
+      existingEntry!.incrementalState.classifierVersion === classifierVersion &&
+      existingEntry!.incrementalState.lastWindowEndMs < alignedWindowToMs;
+    // Walk-from-Ms is narrowed for incremental: the earliest NEW 12-week
+    // window starts at (lastWindowEndMs + 1 step) - windowSpan.
+    const SELECTION_WEEKS = 12;
+    const STEP_WEEKS = 1;
+    const walkFromMs = isIncrementalPath
+      ? Math.max(
+          windowFromMs,
+          existingEntry!.incrementalState.lastWindowEndMs - (SELECTION_WEEKS - STEP_WEEKS) * WEEK,
+        )
+      : windowFromMs;
     const run = await (async () => {
       try {
         return await runScalpV4WalkForward({
           classifierVersion,
           snapshots: snapshots as any,
-          windowFromMs,
+          windowFromMs: walkFromMs,
           windowToMs: alignedWindowToMs,
           effectiveTrials,
           runWindow: async ({ windowStartMs, windowEndMs }) => {
@@ -482,6 +525,51 @@ export async function runScalpV4WalkforwardSweep(
         if (heartbeat) clearInterval(heartbeat);
       }
     })();
+    // Build snapshot + epoch lookups once for trade attribution.
+    const snapshotByWeek = new Map<number, ScalpV4RegimeSnapshot>(
+      (snapshots as ScalpV4RegimeSnapshot[]).map((row) => [row.weekStartMs, row]),
+    );
+    const sortedSnaps = [...(snapshots as ScalpV4RegimeSnapshot[])].sort(
+      (a, b) => a.weekStartMs - b.weekStartMs,
+    );
+    const epochByWeek = new Map<number, number>();
+    let epochCounter = 0;
+    let prevCellId: string | null = null;
+    for (const snap of sortedSnaps) {
+      if (snap.cellId !== "unknown" && snap.cellId !== prevCellId) {
+        epochCounter += 1;
+        prevCellId = snap.cellId;
+      }
+      epochByWeek.set(snap.weekStartMs, epochCounter);
+    }
+    // Fold all new windows into state (existing for incremental, fresh for full).
+    let state: ScalpV4IncrementalState = isIncrementalPath
+      ? existingEntry!.incrementalState
+      : {
+          version: "scalp_v4_incremental_r1",
+          classifierVersion,
+          windowFromMs: walkFromMs,
+          lastWindowEndMs: walkFromMs,
+          cells: {},
+        };
+    // For incremental: ONLY fold windows ending after lastWindowEndMs (skip
+    // the overlap windows we re-replayed). For full: fold everything.
+    const foldFromMs = isIncrementalPath ? existingEntry!.incrementalState.lastWindowEndMs : -Infinity;
+    for (const window of run.windows) {
+      if (window.windowEndMs <= foldFromMs) continue;
+      state = foldWindowIntoIncrementalState({
+        state,
+        window,
+        snapshotByWeek,
+        epochByWeek,
+      });
+    }
+    const finalEnvelope = buildEnvelopeFromIncrementalState({
+      state,
+      effectiveTrials,
+      evaluatedAtMs: Date.now(),
+    });
+    const newWindowsAppended = run.windows.filter((w) => w.windowEndMs > foldFromMs).length;
     await upsertScalpV4WalkforwardResult({
       candidateId: candidate.id,
       deploymentId: deployment.deploymentId,
@@ -490,18 +578,28 @@ export async function runScalpV4WalkforwardSweep(
       strategyId: candidate.strategyId,
       tuneId: candidate.tuneId,
       classifierVersion,
-      windowFromMs,
+      windowFromMs: state.windowFromMs,
       windowToMs: alignedWindowToMs,
       effectiveTrials,
-      status: run.envelope.status,
-      envelope: run.envelope,
+      status: finalEnvelope.status,
+      envelope: finalEnvelope,
+      incrementalState: state,
+      nextWindowStartMs: alignedWindowToMs,
       windowResults: run.windows.map((row) => ({
         windowStartMs: row.windowStartMs,
         windowEndMs: row.windowEndMs,
         trades: row.trades.length,
         netR: row.trades.reduce((acc, trade) => acc + trade.rMultiple, 0),
       })),
-      details: { durationMs: Date.now() - startedAt },
+      details: {
+        durationMs: Date.now() - startedAt,
+        incremental: isIncrementalPath,
+        newWindowsAppended,
+        totalWindowsAggregated: Object.values(state.cells).reduce(
+          (max, cell) => Math.max(max, cell.windowExpectancyR.length),
+          0,
+        ),
+      },
     });
     await scalpPrisma().$executeRaw(sql`
       UPDATE scalp_v2_deployments
