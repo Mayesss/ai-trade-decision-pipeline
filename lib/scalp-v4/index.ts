@@ -8,4 +8,5 @@ export * from "./pg";
 export * from "./walkForward";
 export * from "./build";
 export * from "./walkforwardSweep";
+export * from "./v4Status";
 export * from "./research";

@@ -45,6 +45,16 @@ export function resolveScalpV4WalkforwardClaimLeaseMs(): number {
   return Math.max(5 * 60_000, Math.min(24 * 60 * 60_000, Math.floor(n)));
 }
 
+// How recent a walk-forward result must be to count as "completed" — older
+// results are re-evaluated. Default 4 weeks: every Sunday rollover, only
+// candidates whose result is >4 weeks old get re-walked. Saves ~75% of the
+// recurring weekly recompute that would otherwise happen on every rollover.
+export function resolveScalpV4WalkforwardReuseWeeks(): number {
+  const n = Number(process.env.SCALP_V4_WALKFORWARD_REUSE_WEEKS);
+  if (!Number.isFinite(n) || n < 0) return 4;
+  return Math.max(0, Math.min(52, Math.floor(n)));
+}
+
 export async function loadScalpV4DeploymentSymbols(): Promise<Array<{ venue: ScalpV4Venue; symbol: string }>> {
   if (!isScalpPgConfigured()) return [];
   const db = scalpPrisma();
@@ -505,24 +515,82 @@ export async function claimScalpV4WalkforwardDeployment(params: {
   return rows.length > 0;
 }
 
+// Returns a map of cluster_key -> count of completed walk-forwards for this
+// classifier/window. Used by walkforwardSweep to cap effort per cluster so
+// we don't spend compute on 26 variations of the same bet. Excludes
+// in_progress claims unless they're past the lease (those represent crashed
+// workers and should be reclaimable).
+export async function loadScalpV4WalkforwardClusterCounts(params: {
+  classifierVersion: string;
+  windowFromMs: number;
+  windowToMs: number;
+  leaseMs?: number;
+  reuseWeeks?: number;
+}): Promise<Map<string, number>> {
+  if (!isScalpPgConfigured()) return new Map();
+  const leaseMs = Math.max(
+    5 * 60_000,
+    Math.min(24 * 60 * 60_000, Math.floor(Number(params.leaseMs) || resolveScalpV4WalkforwardClaimLeaseMs())),
+  );
+  const reuseWeeks = params.reuseWeeks ?? resolveScalpV4WalkforwardReuseWeeks();
+  const reuseWindowMs = Math.max(0, reuseWeeks) * 7 * 24 * 60 * 60_000;
+  const minWindowToMs = params.windowToMs - reuseWindowMs;
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{ clusterKey: string; n: bigint }>>(sql`
+    SELECT
+      lower(c.venue) || ':' ||
+        upper(c.symbol) || ':' ||
+        lower(c.entry_session_profile) || ':' ||
+        COALESCE(
+          NULLIF(
+            SPLIT_PART(c.tune_id, '_', 1) || '_' ||
+            SPLIT_PART(c.tune_id, '_', 2) || '_' ||
+            SPLIT_PART(c.tune_id, '_', 3) || '_' ||
+            SPLIT_PART(c.tune_id, '_', 4),
+            '___'),
+          'unknown'
+        ) || ':' ||
+        lower(COALESCE(c.metadata_json->'v3TemporalFilter'->>'variantKind', 'baseline'))
+        AS "clusterKey",
+      COUNT(*)::bigint AS n
+    FROM scalp_regime_walkforward_results w
+    INNER JOIN scalp_v2_candidates c ON c.id = w.candidate_id
+    WHERE w.classifier_version = ${params.classifierVersion}
+      AND w.window_to >= ${new Date(minWindowToMs)}
+      AND w.window_to <= ${new Date(params.windowToMs)}
+      AND (
+        w.status <> 'in_progress'
+        OR w.updated_at >= NOW() - (${leaseMs} * interval '1 millisecond')
+      )
+    GROUP BY 1;
+  `);
+  const out = new Map<string, number>();
+  for (const row of rows) out.set(row.clusterKey, Number(row.n));
+  return out;
+}
+
 export async function loadScalpV4CompletedWalkforwardDeploymentIds(params: {
   classifierVersion: string;
   windowFromMs: number;
   windowToMs: number;
   leaseMs?: number;
+  reuseWeeks?: number;
 }): Promise<Set<string>> {
   if (!isScalpPgConfigured()) return new Set();
   const leaseMs = Math.max(
     5 * 60_000,
     Math.min(24 * 60 * 60_000, Math.floor(Number(params.leaseMs) || resolveScalpV4WalkforwardClaimLeaseMs())),
   );
+  const reuseWeeks = params.reuseWeeks ?? resolveScalpV4WalkforwardReuseWeeks();
+  const reuseWindowMs = Math.max(0, reuseWeeks) * 7 * 24 * 60 * 60_000;
+  const minWindowToMs = params.windowToMs - reuseWindowMs;
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{ deploymentId: string }>>(sql`
     SELECT deployment_id AS "deploymentId"
     FROM scalp_regime_walkforward_results
     WHERE classifier_version = ${params.classifierVersion}
-      AND window_from = ${new Date(params.windowFromMs)}
-      AND window_to = ${new Date(params.windowToMs)}
+      AND window_to >= ${new Date(minWindowToMs)}
+      AND window_to <= ${new Date(params.windowToMs)}
       AND (
         status <> 'in_progress'
         OR updated_at >= NOW() - (${leaseMs} * interval '1 millisecond')

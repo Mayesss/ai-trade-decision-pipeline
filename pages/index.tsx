@@ -92,7 +92,7 @@ interface TransitionRow {
   toCellId: string;
 }
 
-interface Summary {
+interface HealthResp {
   ok: boolean;
   classifierVersion: string;
   v4Enabled: boolean;
@@ -102,8 +102,18 @@ interface Summary {
   walkforwardTotal: number;
   pendingWalkforward: number;
   regimeBuild: { symbolsCovered: number; latestWeekStartMs: number | null };
-  statusHistogram: Record<V4Status, number>;
+}
+
+interface DeploymentsResp {
+  ok: boolean;
+  classifierVersion: string;
   deployments: DeploymentRow[];
+  statusHistogram: Record<V4Status, number>;
+}
+
+interface RecentResp {
+  ok: boolean;
+  classifierVersion: string;
   recentWalkforward: WalkforwardRow[];
   recentTransitions: TransitionRow[];
 }
@@ -179,7 +189,12 @@ function StatBox({ label, value, sub, accent }: { label: string; value: number |
 }
 
 export default function ScalpV4Dashboard() {
-  const [summary, setSummary] = useState<Summary | null>(null);
+  const [health, setHealth] = useState<HealthResp | null>(null);
+  const [deploymentsResp, setDeploymentsResp] = useState<DeploymentsResp | null>(null);
+  const [recent, setRecent] = useState<RecentResp | null>(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+  const [deploymentsLoading, setDeploymentsLoading] = useState(false);
+  const [recentLoading, setRecentLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadedAt, setLoadedAt] = useState<number | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -203,26 +218,48 @@ export default function ScalpV4Dashboard() {
   }, []);
 
   const load = useCallback(async () => {
-    try {
-      const headers: Record<string, string> = {};
-      if (adminSecret) headers["x-admin-access-secret"] = adminSecret;
-      const res = await fetch("/api/scalp/v4/summary", { headers, credentials: "include" });
-      if (res.status === 401) {
-        setUnauthorized(true);
-        setShowSecretPanel(true);
-        setError("Unauthorized — admin secret missing or invalid.");
-        return;
+    const headers: Record<string, string> = {};
+    if (adminSecret) headers["x-admin-access-secret"] = adminSecret;
+
+    async function fetchSection<T extends { ok: boolean }>(
+      url: string,
+      setData: (data: T) => void,
+      setLoading: (loading: boolean) => void,
+    ): Promise<{ unauthorized?: boolean; error?: string }> {
+      setLoading(true);
+      try {
+        const res = await fetch(url, { headers, credentials: "include" });
+        if (res.status === 401) return { unauthorized: true };
+        if (!res.ok) return { error: `HTTP ${res.status}` };
+        const data = (await res.json()) as T;
+        if (!data.ok) return { error: (data as any).error || "request_failed" };
+        setData(data);
+        return {};
+      } catch (err) {
+        return { error: (err as Error)?.message || String(err) };
+      } finally {
+        setLoading(false);
       }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as Summary;
-      if (!data.ok) throw new Error((data as any).error || "request_failed");
-      setSummary(data);
-      setError(null);
-      setUnauthorized(false);
-      setLoadedAt(Date.now());
-    } catch (err) {
-      setError((err as Error)?.message || String(err));
     }
+
+    // Fire all three in parallel — each writes its own state independently.
+    const [hRes, dRes, rRes] = await Promise.all([
+      fetchSection<HealthResp>("/api/scalp/v4/health", setHealth, setHealthLoading),
+      fetchSection<DeploymentsResp>("/api/scalp/v4/deployments", setDeploymentsResp, setDeploymentsLoading),
+      fetchSection<RecentResp>("/api/scalp/v4/recent", setRecent, setRecentLoading),
+    ]);
+
+    const anyUnauth = hRes.unauthorized || dRes.unauthorized || rRes.unauthorized;
+    if (anyUnauth) {
+      setUnauthorized(true);
+      setShowSecretPanel(true);
+      setError("Unauthorized — admin secret missing or invalid.");
+      return;
+    }
+    const firstError = hRes.error || dRes.error || rRes.error || null;
+    setError(firstError);
+    setUnauthorized(false);
+    setLoadedAt(Date.now());
   }, [adminSecret]);
 
   useEffect(() => {
@@ -247,11 +284,11 @@ export default function ScalpV4Dashboard() {
   );
 
   const filteredDeployments = useMemo(() => {
-    if (!summary) return [];
+    if (!deploymentsResp) return [];
     const needle = search.trim().toLowerCase();
-    return summary.deployments
-      .filter((row) => statusFilter === "all" || row.v4Status === statusFilter)
-      .filter((row) => {
+    return deploymentsResp.deployments
+      .filter((row: DeploymentRow) => statusFilter === "all" || row.v4Status === statusFilter)
+      .filter((row: DeploymentRow) => {
         if (!needle) return true;
         return (
           row.symbol.toLowerCase().includes(needle) ||
@@ -261,12 +298,15 @@ export default function ScalpV4Dashboard() {
           row.tuneId.toLowerCase().includes(needle)
         );
       })
-      .sort((a, b) => STATUS_ORDER.indexOf(a.v4Status) - STATUS_ORDER.indexOf(b.v4Status));
-  }, [summary, statusFilter, search]);
+      .sort(
+        (a: DeploymentRow, b: DeploymentRow) =>
+          STATUS_ORDER.indexOf(a.v4Status) - STATUS_ORDER.indexOf(b.v4Status),
+      );
+  }, [deploymentsResp, statusFilter, search]);
 
-  const totalDeployments = summary?.deployments.length || 0;
-  const classifierAge = summary?.regimeBuild.latestWeekStartMs
-    ? fmtAgo(summary.regimeBuild.latestWeekStartMs + 7 * 24 * 60 * 60_000)
+  const totalDeployments = deploymentsResp?.deployments.length || 0;
+  const classifierAge = health?.regimeBuild.latestWeekStartMs
+    ? fmtAgo(health.regimeBuild.latestWeekStartMs + 7 * 24 * 60 * 60_000)
     : "—";
 
   return (
@@ -281,7 +321,7 @@ export default function ScalpV4Dashboard() {
             <Activity className="h-5 w-5 text-emerald-400" />
             <h1 className="text-lg font-semibold">Scalp v4 · Macro-Regime Control</h1>
             <span className="ml-2 rounded bg-zinc-800/80 px-2 py-0.5 text-[11px] text-zinc-300">
-              {summary?.classifierVersion || "—"}
+              {health?.classifierVersion || "—"}
             </span>
           </div>
           <div className="flex items-center gap-3 text-sm text-zinc-400">
@@ -403,39 +443,48 @@ export default function ScalpV4Dashboard() {
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
             <StatBox
               label="V4 hard gate"
-              value={summary?.v4HardGateEnabled ? "ON" : "OFF"}
-              sub={summary?.v4Enabled ? "v4 enabled" : "v4 disabled"}
+              value={health?.v4HardGateEnabled ? "ON" : "OFF"}
+              sub={health?.v4Enabled ? "v4 enabled" : "v4 disabled"}
               accent={
-                summary?.v4HardGateEnabled
+                health?.v4HardGateEnabled
                   ? "border-emerald-500/40 bg-emerald-500/10"
                   : "border-amber-500/40 bg-amber-500/10"
               }
             />
             <StatBox
               label="Symbols covered"
-              value={summary?.regimeBuild.symbolsCovered ?? "—"}
+              value={health?.regimeBuild.symbolsCovered ?? (healthLoading ? "…" : "—")}
               sub={`latest build ${classifierAge}`}
             />
-            <StatBox label="Stage-C survivors" value={summary?.stageCSurvivors ?? "—"} />
+            <StatBox
+              label="Stage-C survivors"
+              value={health?.stageCSurvivors ?? (healthLoading ? "…" : "—")}
+            />
             <StatBox
               label="WF eligible"
-              value={summary?.walkforwardCounts.eligible || 0}
+              value={health?.walkforwardCounts.eligible || 0}
               accent="border-emerald-500/40 bg-emerald-500/10"
             />
             <StatBox
               label="WF in progress"
-              value={summary?.walkforwardCounts.in_progress || 0}
+              value={health?.walkforwardCounts.in_progress || 0}
               accent="border-sky-500/40 bg-sky-500/10"
             />
             <StatBox
               label="WF no passing cells"
-              value={summary?.walkforwardCounts.no_passing_cells || 0}
+              value={health?.walkforwardCounts.no_passing_cells || 0}
               accent="border-rose-500/40 bg-rose-500/10"
             />
             <StatBox
+              label="WF cluster-capped"
+              value={health?.walkforwardCounts.cluster_cap_exceeded || 0}
+              sub="skipped — same bet"
+              accent="border-amber-500/40 bg-amber-500/10"
+            />
+            <StatBox
               label="WF pending"
-              value={summary?.pendingWalkforward ?? "—"}
-              sub={`${summary?.walkforwardTotal ?? 0} done`}
+              value={health?.pendingWalkforward ?? (healthLoading ? "…" : "—")}
+              sub={`${health?.walkforwardTotal ?? 0} done`}
             />
           </div>
         </section>
@@ -444,6 +493,7 @@ export default function ScalpV4Dashboard() {
         <section>
           <h2 className="mb-2 text-sm uppercase tracking-wide text-zinc-400">
             Deployment v4 status · {totalDeployments} tracked
+            {deploymentsLoading ? <span className="ml-2 text-xs text-zinc-500">loading…</span> : null}
           </h2>
           <div className="flex flex-wrap gap-2">
             <button
@@ -458,7 +508,7 @@ export default function ScalpV4Dashboard() {
             </button>
             {STATUS_ORDER.map((status) => {
               const meta = STATUS_META[status];
-              const count = summary?.statusHistogram[status] || 0;
+              const count = deploymentsResp?.statusHistogram[status] || 0;
               const active = statusFilter === status;
               return (
                 <button
@@ -570,6 +620,7 @@ export default function ScalpV4Dashboard() {
           <div>
             <h2 className="mb-2 flex items-center gap-1 text-sm uppercase tracking-wide text-zinc-400">
               <TrendingUp className="h-4 w-4" /> Recent walk-forward results
+              {recentLoading ? <span className="ml-2 text-xs text-zinc-500">loading…</span> : null}
             </h2>
             <div className="overflow-hidden rounded-lg border border-zinc-800">
               <table className="w-full text-xs">
@@ -583,9 +634,13 @@ export default function ScalpV4Dashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(summary?.recentWalkforward || []).slice(0, 30).map((row, idx) => {
+                  {(recent?.recentWalkforward || []).slice(0, 30).map((row, idx) => {
                     const isEligible = row.eligible;
                     const isInProgress = row.status === "in_progress";
+                    const isClusterCapped = row.status === "cluster_cap_exceeded";
+                    const isOverbroad =
+                      row.status === "regime_overbroad_pending_review" ||
+                      row.status === "regime_overbroad_auto_rejected";
                     return (
                       <tr key={`${row.deploymentId}-${idx}`} className="border-t border-zinc-800/80">
                         <td className="px-3 py-1.5 text-zinc-400">{fmtAgo(row.evaluatedAtMs)}</td>
@@ -600,8 +655,17 @@ export default function ScalpV4Dashboard() {
                                 ? "border-emerald-500/40 bg-emerald-500/20 text-emerald-300"
                                 : isInProgress
                                   ? "border-sky-500/40 bg-sky-500/20 text-sky-300"
-                                  : "border-rose-500/40 bg-rose-500/20 text-rose-300"
+                                  : isClusterCapped
+                                    ? "border-amber-500/40 bg-amber-500/20 text-amber-300"
+                                    : isOverbroad
+                                      ? "border-purple-500/40 bg-purple-500/20 text-purple-300"
+                                      : "border-rose-500/40 bg-rose-500/20 text-rose-300"
                             }`}
+                            title={
+                              isClusterCapped
+                                ? "Skipped — same-cluster cap reached (top 2 per cluster kept)"
+                                : undefined
+                            }
                           >
                             {row.status}
                           </span>
@@ -614,7 +678,7 @@ export default function ScalpV4Dashboard() {
                       </tr>
                     );
                   })}
-                  {!summary?.recentWalkforward.length ? (
+                  {!recent?.recentWalkforward.length ? (
                     <tr>
                       <td colSpan={5} className="px-3 py-6 text-center text-zinc-500">
                         No walk-forward results yet.
@@ -629,6 +693,7 @@ export default function ScalpV4Dashboard() {
           <div>
             <h2 className="mb-2 flex items-center gap-1 text-sm uppercase tracking-wide text-zinc-400">
               <History className="h-4 w-4" /> Recent regime transitions
+              {recentLoading ? <span className="ml-2 text-xs text-zinc-500">loading…</span> : null}
             </h2>
             <div className="overflow-hidden rounded-lg border border-zinc-800">
               <table className="w-full text-xs">
@@ -641,7 +706,7 @@ export default function ScalpV4Dashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(summary?.recentTransitions || []).slice(0, 30).map((row, idx) => (
+                  {(recent?.recentTransitions || []).slice(0, 30).map((row, idx) => (
                     <tr key={`${row.venue}-${row.symbol}-${row.transitionWeekStartMs}-${idx}`} className="border-t border-zinc-800/80">
                       <td className="px-3 py-1.5 text-zinc-400">
                         <Clock className="mr-1 inline h-3 w-3" />
@@ -659,7 +724,7 @@ export default function ScalpV4Dashboard() {
                       </td>
                     </tr>
                   ))}
-                  {!summary?.recentTransitions.length ? (
+                  {!recent?.recentTransitions.length ? (
                     <tr>
                       <td colSpan={4} className="px-3 py-6 text-center text-zinc-500">
                         No transitions recorded.
@@ -674,7 +739,8 @@ export default function ScalpV4Dashboard() {
 
         <footer className="flex items-center justify-between border-t border-zinc-800 pt-4 text-[11px] text-zinc-500">
           <span className="inline-flex items-center gap-1">
-            <Layers className="h-3 w-3" /> Source: <code>/api/scalp/v4/summary</code>
+            <Layers className="h-3 w-3" /> Sources:{" "}
+            <code>/api/scalp/v4/health</code> · <code>/deployments</code> · <code>/recent</code>
           </span>
           <span>
             <CheckCircle2 className="mr-1 inline h-3 w-3 text-emerald-500" /> v4 dashboard · macro-regime view

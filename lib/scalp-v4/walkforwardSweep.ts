@@ -17,12 +17,14 @@ import {
   claimScalpV4WalkforwardDeployment,
   listScalpV4ResearchCandidates,
   loadScalpV4CompletedWalkforwardDeploymentIds,
+  loadScalpV4WalkforwardClusterCounts,
   resolveScalpV4WalkforwardClaimLeaseMs,
   loadScalpV4RegimeSnapshots,
   upsertScalpV4WalkforwardResult,
 } from "./pg";
 import { buildScalpV4ClassifierValidityReport } from "./sanity";
 import type { ScalpV4Venue } from "./types";
+import { buildScalpV4ClusterKey } from "./v4Status";
 import { runScalpV4WalkForward } from "./walkForward";
 
 const WEEK = 7 * 24 * 60 * 60 * 1000;
@@ -32,6 +34,7 @@ export interface ScalpV4WalkforwardSweepOptions {
   effectiveTrials?: number;
   windowToMs?: number;
   maxCandidatesPerCall?: number;
+  maxWalkforwardsPerCluster?: number;
   candidateFetchLimit?: number;
   forceValidity?: boolean;
   candleCacheRef?: Map<string, ScalpCandle[]>;
@@ -219,6 +222,25 @@ export async function runScalpV4WalkforwardSweep(
     windowToMs: alignedWindowToMs,
     leaseMs: workClaimLeaseMs,
   });
+  // Cluster cap — same-bet variations (e.g. 26 LINKUSDT/sydney/mdl_basis
+  // variants) waste compute. Default cap = 2 walk-forwards per cluster;
+  // candidates are pre-sorted by stage-C netR DESC so the top members of
+  // each cluster are evaluated first. Disabled when cap = 0.
+  const clusterCap = Math.max(
+    0,
+    Math.floor(
+      Number(options.maxWalkforwardsPerCluster ?? process.env.SCALP_V4_WALKFORWARD_MAX_PER_CLUSTER ?? 2),
+    ),
+  );
+  const clusterCounts =
+    clusterCap > 0
+      ? await loadScalpV4WalkforwardClusterCounts({
+          classifierVersion,
+          windowFromMs,
+          windowToMs: alignedWindowToMs,
+          leaseMs: workClaimLeaseMs,
+        })
+      : new Map<string, number>();
   const results: Array<Record<string, unknown>> = [];
   let eligible = 0;
   let ineligible = 0;
@@ -254,6 +276,21 @@ export async function runScalpV4WalkforwardSweep(
     });
     if (completed.has(deployment.deploymentId)) {
       recordSkip("already_completed_or_claimed");
+      continue;
+    }
+    const clusterKey = buildScalpV4ClusterKey({
+      venue,
+      symbol: candidate.symbol,
+      session: candidate.entrySessionProfile,
+      tuneId: candidate.tuneId,
+      v3TemporalVariantKind:
+        (candidate.metadata as Record<string, unknown> | undefined)?.v3TemporalFilter &&
+        typeof (candidate.metadata as any).v3TemporalFilter === "object"
+          ? ((candidate.metadata as any).v3TemporalFilter.variantKind as string | undefined)
+          : null,
+    });
+    if (clusterCap > 0 && (clusterCounts.get(clusterKey) ?? 0) >= clusterCap) {
+      recordSkip("cluster_cap_exceeded");
       continue;
     }
     const snapshots = await loadScalpV4RegimeSnapshots({
@@ -476,6 +513,7 @@ export async function runScalpV4WalkforwardSweep(
     if (run.envelope.eligible) eligible += 1;
     else ineligible += 1;
     processed += 1;
+    clusterCounts.set(clusterKey, (clusterCounts.get(clusterKey) ?? 0) + 1);
     notifyProgress({
       phase: "candidate_done",
       candidateId: Number(candidate.id),
