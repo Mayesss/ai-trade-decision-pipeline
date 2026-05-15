@@ -269,6 +269,13 @@ export default function ScalpV4Dashboard() {
   const [showAllActiveDeployments, setShowAllActiveDeployments] = useState(false);
   // Click-to-expand: deployment IDs whose per-cell detail is currently visible.
   const [expandedDeployments, setExpandedDeployments] = useState<Set<string>>(new Set());
+  // Tick used only to make the "last X ago" label update in realtime without
+  // refetching data. Updates every 5 seconds.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 5_000);
+    return () => clearInterval(t);
+  }, []);
   const toggleExpanded = useCallback((id: string) => {
     setExpandedDeployments((prev) => {
       const next = new Set(prev);
@@ -348,6 +355,29 @@ export default function ScalpV4Dashboard() {
     const t = setInterval(load, 30_000);
     return () => clearInterval(t);
   }, [autoRefresh, load, unauthorized, secretHydrated]);
+
+  // Refresh on tab-visible. Background tabs have their setInterval throttled
+  // (browsers cap to ~1/min in background, sometimes pause entirely after
+  // hours), so coming back from a hidden tab can show stale data. Reload
+  // immediately when the user returns to make the dashboard feel current.
+  useEffect(() => {
+    if (!secretHydrated || unauthorized) return;
+    const onVisible = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        load();
+      }
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisible);
+      window.addEventListener("focus", onVisible);
+    }
+    return () => {
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisible);
+        window.removeEventListener("focus", onVisible);
+      }
+    };
+  }, [load, secretHydrated, unauthorized]);
 
   const saveSecret = useCallback((next: string) => {
     const value = next.trim();
@@ -444,7 +474,17 @@ export default function ScalpV4Dashboard() {
             <span className="text-zinc-500">classifier {health?.classifierVersion || "—"}</span>
           </div>
           <div className="flex items-center gap-3 text-zinc-500">
-            <span>refresh 30s · last {loadedAt ? `${fmtAgo(loadedAt)} ago` : "—"}</span>
+            <span>
+              refresh 30s · last{" "}
+              {loadedAt ? (() => {
+                const ageSec = Math.floor((Date.now() - loadedAt) / 1000);
+                const cls =
+                  ageSec > 5 * 60 ? "text-rose-400"
+                  : ageSec > 90 ? "text-amber-400"
+                  : "text-zinc-400";
+                return <span className={cls}>{fmtAgo(loadedAt)} ago</span>;
+              })() : "—"}
+            </span>
             <label className="flex items-center gap-1 cursor-pointer">
               <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />auto
             </label>
