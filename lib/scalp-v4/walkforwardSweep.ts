@@ -20,7 +20,7 @@ import {
   loadScalpV4IncrementalStates,
   loadScalpV4WalkforwardClusterCounts,
   resolveScalpV4WalkforwardClaimLeaseMs,
-  loadScalpV4RegimeSnapshots,
+  loadScalpV4RegimeSnapshotsBulk,
   upsertScalpV4WalkforwardResult,
 } from "./pg";
 import { buildScalpV4ClassifierValidityReport } from "./sanity";
@@ -247,6 +247,24 @@ export async function runScalpV4WalkforwardSweep(
     classifierVersion,
     deploymentIds: candidateDeploymentIds,
   });
+  // Bulk-load regime snapshots for every unique (venue, symbol) the sweep
+  // might touch. Replaces N per-candidate round-trips with a single query
+  // — for 200 candidates over ~50 unique symbols, that's ~150 fewer Neon
+  // calls per sweep.
+  const uniquePairs = Array.from(
+    new Map(
+      candidates.map((c) => {
+        const v = (String(c.venue || "").toLowerCase() === "capital" ? "capital" : "bitget") as ScalpV4Venue;
+        return [`${v}:${c.symbol}`, { venue: v, symbol: c.symbol }];
+      }),
+    ).values(),
+  );
+  const snapshotsByVenueSymbol = await loadScalpV4RegimeSnapshotsBulk({
+    pairs: uniquePairs,
+    classifierVersion,
+    fromMs: windowFromMs,
+    toMs: alignedWindowToMs + WEEK,
+  });
   // Cluster cap — same-bet variations (e.g. 26 LINKUSDT/sydney/mdl_basis
   // variants) waste compute. Default cap = 2 walk-forwards per cluster;
   // candidates are pre-sorted by stage-C netR DESC so the top members of
@@ -318,13 +336,8 @@ export async function runScalpV4WalkforwardSweep(
       recordSkip("cluster_cap_exceeded");
       continue;
     }
-    const snapshots = await loadScalpV4RegimeSnapshots({
-      venue,
-      symbol: candidate.symbol,
-      classifierVersion,
-      fromMs: windowFromMs,
-      toMs: alignedWindowToMs + WEEK,
-    });
+    // Bulk pre-loaded above; in-memory lookup keyed by `${venue}:${symbol}`.
+    const snapshots = snapshotsByVenueSymbol.get(`${venue}:${candidate.symbol}`) ?? [];
     if (!snapshots.length) {
       recordSkip("missing_regime_snapshots");
       results.push({ candidateId: candidate.id, deploymentId: deployment.deploymentId, skipped: true, reason: "missing_regime_snapshots" });

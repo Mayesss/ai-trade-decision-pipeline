@@ -376,6 +376,116 @@ export async function loadScalpV4RegimeSnapshots(params: {
   }));
 }
 
+// Bulk variant of loadScalpV4RegimeSnapshots — fetches snapshots for many
+// (venue, symbol) pairs in a single round-trip. Used by walkforwardSweep so
+// per-candidate snapshot loads collapse to one query per sweep.
+export type ScalpV4SnapshotRow = {
+  weekStartMs: number;
+  classifierVersion: string;
+  venue: ScalpV4Venue;
+  symbol: string;
+  rawCellId: ScalpV4CellId;
+  cellId: ScalpV4CellId;
+  pendingCellId: ScalpV4CellId | null;
+  pendingWeeks: number;
+  volAxis: string;
+  trendAxis: string;
+  riskAxis: string;
+  confidence: Record<string, unknown>;
+  sourceCoverage: Record<string, unknown>;
+  details: Record<string, unknown>;
+  transition: null;
+};
+
+export async function loadScalpV4RegimeSnapshotsBulk(params: {
+  pairs: Array<{ venue: ScalpV4Venue; symbol: string }>;
+  classifierVersion: string;
+  fromMs: number;
+  toMs: number;
+}): Promise<Map<string, ScalpV4SnapshotRow[]>> {
+  type Row = {
+    venue: string;
+    symbol: string;
+    weekStart: Date;
+    rawCellId: string;
+    cellId: string;
+    pendingCellId: string | null;
+    pendingWeeks: number;
+    volAxis: string;
+    trendAxis: string;
+    riskAxis: string;
+    confidenceJson: unknown;
+    sourceCoverageJson: unknown;
+    detailsJson: unknown;
+  };
+  const out = new Map<string, ScalpV4SnapshotRow[]>();
+  if (!isScalpPgConfigured() || params.pairs.length === 0) return out;
+  // Dedupe and normalize to canonical lower:UPPER pairs.
+  const seen = new Set<string>();
+  const keys: string[] = [];
+  for (const p of params.pairs) {
+    const v = normalizeVenue(p.venue);
+    const s = normalizeSymbol(p.symbol);
+    if (!s) continue;
+    const k = `${v}:${s}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    keys.push(k);
+  }
+  if (keys.length === 0) return out;
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Row[]>(sql`
+    SELECT
+      venue,
+      symbol,
+      week_start AS "weekStart",
+      raw_cell_id AS "rawCellId",
+      cell_id AS "cellId",
+      pending_cell_id AS "pendingCellId",
+      pending_weeks AS "pendingWeeks",
+      vol_axis AS "volAxis",
+      trend_axis AS "trendAxis",
+      risk_axis AS "riskAxis",
+      confidence_json AS "confidenceJson",
+      source_coverage_json AS "sourceCoverageJson",
+      details_json AS "detailsJson"
+    FROM scalp_regime_snapshots
+    WHERE classifier_version = ${params.classifierVersion}
+      AND granularity = 'week'
+      AND week_start >= ${new Date(params.fromMs)}
+      AND week_start < ${new Date(params.toMs)}
+      AND (lower(venue) || ':' || upper(symbol)) = ANY(${keys}::text[])
+    ORDER BY venue, symbol, week_start ASC;
+  `);
+  for (const row of rows) {
+    const venue = normalizeVenue(row.venue);
+    const symbol = normalizeSymbol(row.symbol);
+    const key = `${venue}:${symbol}`;
+    let list = out.get(key);
+    if (!list) {
+      list = [];
+      out.set(key, list);
+    }
+    list.push({
+      weekStartMs: row.weekStart.getTime(),
+      classifierVersion: params.classifierVersion,
+      venue,
+      symbol,
+      rawCellId: asCellId(row.rawCellId),
+      cellId: asCellId(row.cellId),
+      pendingCellId: row.pendingCellId ? asCellId(row.pendingCellId) : null,
+      pendingWeeks: Math.max(0, Math.floor(Number(row.pendingWeeks) || 0)),
+      volAxis: String(row.volAxis || "unknown"),
+      trendAxis: String(row.trendAxis || "unknown"),
+      riskAxis: String(row.riskAxis || "unknown"),
+      confidence: row.confidenceJson && typeof row.confidenceJson === "object" ? (row.confidenceJson as Record<string, unknown>) : {},
+      sourceCoverage: row.sourceCoverageJson && typeof row.sourceCoverageJson === "object" ? (row.sourceCoverageJson as Record<string, unknown>) : {},
+      details: row.detailsJson && typeof row.detailsJson === "object" ? (row.detailsJson as Record<string, unknown>) : {},
+      transition: null,
+    });
+  }
+  return out;
+}
 export async function upsertScalpV4WalkforwardResult(params: {
   candidateId?: number | null;
   deploymentId: string;
