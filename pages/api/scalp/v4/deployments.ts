@@ -69,6 +69,58 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
+    // Enrich with live trade signals + regime cell age. Three bulk queries.
+    const deploymentIds = interesting.map((row) => row.deploymentId);
+    const venueSymbolUniquePairs = Array.from(
+      new Set(interesting.map((row) => `${row.venue}:${row.symbol}`)),
+    );
+    const lastEntryByDeployment = new Map<string, number>();
+    const openPositionByDeployment = new Map<string, number>();
+    const weeksInCellByVenueSymbol = new Map<string, number>();
+    if (deploymentIds.length > 0) {
+      const [journalRows, positionRows] = await Promise.all([
+        db.$queryRaw<Array<{ deploymentId: string; lastTs: Date }>>(sql`
+          SELECT deployment_id AS "deploymentId", MAX(ts) AS "lastTs"
+          FROM scalp_v2_journal
+          WHERE deployment_id = ANY(${deploymentIds}::text[])
+            AND type = 'execution'
+          GROUP BY deployment_id;
+        `),
+        db.$queryRaw<Array<{ deploymentId: string; n: bigint }>>(sql`
+          SELECT deployment_id AS "deploymentId", COUNT(*)::bigint AS n
+          FROM scalp_v2_positions
+          WHERE deployment_id = ANY(${deploymentIds}::text[])
+            AND status <> 'flat'
+            AND status <> 'closed'
+          GROUP BY deployment_id;
+        `),
+      ]);
+      for (const row of journalRows) lastEntryByDeployment.set(row.deploymentId, row.lastTs.getTime());
+      for (const row of positionRows) openPositionByDeployment.set(row.deploymentId, Number(row.n));
+    }
+    if (venueSymbolUniquePairs.length > 0) {
+      const transitionRows = await db.$queryRaw<Array<{
+        venue: string;
+        symbol: string;
+        lastTransition: Date | null;
+      }>>(sql`
+        SELECT venue, symbol, MAX(transition_week_start) AS "lastTransition"
+        FROM scalp_regime_transitions
+        WHERE classifier_version = ${classifierVersion}
+          AND from_cell_id IS NOT NULL
+          AND (lower(venue) || ':' || upper(symbol)) = ANY(${venueSymbolUniquePairs.map((s) => s.toLowerCase().split(':')[0] + ':' + s.split(':')[1]!.toUpperCase())}::text[])
+        GROUP BY venue, symbol;
+      `);
+      for (const row of transitionRows) {
+        if (!row.lastTransition) continue;
+        const weeks = Math.max(
+          1,
+          Math.floor((currentWeekStartMs - row.lastTransition.getTime()) / (7 * 24 * 60 * 60_000)) + 1,
+        );
+        weeksInCellByVenueSymbol.set(`${row.venue}:${row.symbol}`, weeks);
+      }
+    }
+
     const rows = interesting.map((row) => {
       const gate = asRecord(row.promotionGate);
       const envelope = asRecord(gate.regimeEnvelope);
@@ -77,6 +129,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         stale: true,
         updatedAtMs: null,
       };
+      const lastEntryAtMs = lastEntryByDeployment.get(row.deploymentId) ?? null;
+      const openPositionCount = openPositionByDeployment.get(row.deploymentId) ?? 0;
+      const weeksInCurrentCell = weeksInCellByVenueSymbol.get(`${row.venue}:${row.symbol}`) ?? null;
       const v4Status = classifyScalpV4DeploymentStatus({
         enabled: row.enabled,
         envelope: Object.keys(envelope).length > 0 ? envelope : null,
@@ -102,7 +157,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           occupiedCells: Number(envelope.occupiedCells) || 0,
           strictPassingCells: Number(envelope.strictPassingCells) || 0,
         },
-        currentRegime: current,
+        currentRegime: { ...current, weeksInCell: weeksInCurrentCell },
+        lastEntryAtMs,
+        openPositionCount,
         reason: gate.reason || null,
         score: Number(gate.score) || null,
       };

@@ -1,23 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Head from "next/head";
 import Link from "next/link";
-import {
-  Activity,
-  AlertTriangle,
-  CheckCircle2,
-  CircleSlash,
-  Clock,
-  History,
-  KeyRound,
-  Layers,
-  Moon,
-  RefreshCw,
-  Sun,
-  TrendingUp,
-} from "lucide-react";
 
-// Same storage key the legacy page uses — secrets entered on either page
-// transfer automatically.
+// Storage key shared with the legacy page so the admin secret transfers freely.
 const ADMIN_SECRET_STORAGE_KEY = "admin_access_secret";
 
 function readStoredAdminSecret(): string {
@@ -36,7 +21,7 @@ function persistAdminSecret(value: string): void {
     if (normalized) window.localStorage.setItem(ADMIN_SECRET_STORAGE_KEY, normalized);
     else window.localStorage.removeItem(ADMIN_SECRET_STORAGE_KEY);
   } catch {
-    // ignore quota / private-mode failures
+    /* ignore */
   }
 }
 
@@ -66,7 +51,9 @@ interface DeploymentRow {
     occupiedCells: number;
     strictPassingCells: number;
   };
-  currentRegime: { cellId: string | null; stale: boolean; updatedAtMs: number | null };
+  currentRegime: { cellId: string | null; stale: boolean; updatedAtMs: number | null; weeksInCell: number | null };
+  lastEntryAtMs: number | null;
+  openPositionCount: number;
   reason: string | null;
   score: number | null;
 }
@@ -90,6 +77,17 @@ interface TransitionRow {
   transitionWeekStartMs: number;
   fromCellId: string | null;
   toCellId: string;
+}
+
+interface TradeRow {
+  tsMs: number;
+  deploymentId: string | null;
+  venue: string | null;
+  symbol: string | null;
+  reasonCodes: string[];
+  summary: string;
+  rMultiple: number | null;
+  phase: string;
 }
 
 interface HealthResp {
@@ -116,97 +114,77 @@ interface RecentResp {
   classifierVersion: string;
   recentWalkforward: WalkforwardRow[];
   recentTransitions: TransitionRow[];
+  recentTrades: TradeRow[];
 }
 
-const STATUS_META: Record<V4Status, { label: string; cls: string; emoji: string }> = {
-  trading: { label: "Trading", cls: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40", emoji: "🟢" },
-  dormant_wrong_regime: { label: "Dormant (wrong regime)", cls: "bg-amber-500/20 text-amber-300 border-amber-500/40", emoji: "🟡" },
-  dormant_no_regime: { label: "Dormant (no regime data)", cls: "bg-amber-500/10 text-amber-200 border-amber-500/30", emoji: "⏸" },
-  pending_walkforward: { label: "Pending v4", cls: "bg-orange-500/20 text-orange-300 border-orange-500/40", emoji: "🟠" },
-  eligible_not_promoted: { label: "Eligible (awaiting promotion)", cls: "bg-sky-500/20 text-sky-300 border-sky-500/40", emoji: "🔵" },
-  failed_walkforward: { label: "Failed v4", cls: "bg-rose-500/20 text-rose-300 border-rose-500/40", emoji: "🔴" },
-  disabled: { label: "Disabled", cls: "bg-zinc-700/30 text-zinc-400 border-zinc-700/50", emoji: "⚪" },
-};
-
-const STATUS_ORDER: V4Status[] = [
-  "trading",
-  "dormant_wrong_regime",
-  "dormant_no_regime",
-  "eligible_not_promoted",
-  "pending_walkforward",
-  "failed_walkforward",
-  "disabled",
-];
+// ─── formatting helpers ───────────────────────────────────────────────────────
 
 function fmtAgo(ms: number | null | undefined): string {
   if (!ms) return "—";
   const diff = Math.max(0, Date.now() - ms);
   const sec = Math.floor(diff / 1000);
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 48) return `${hr}h ago`;
-  return `${Math.floor(hr / 24)}d ago`;
-}
-
-function fmtDate(ms: number | null | undefined): string {
-  if (!ms) return "—";
-  const d = new Date(ms);
-  return `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
-}
-
-function fmtDuration(ms: number | null): string {
-  if (!ms) return "—";
-  if (ms < 1000) return `${ms}ms`;
-  const sec = Math.floor(ms / 1000);
   if (sec < 60) return `${sec}s`;
   const min = Math.floor(sec / 60);
-  return `${min}m ${sec % 60}s`;
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  if (hr < 48) return `${hr}h`;
+  return `${Math.floor(hr / 24)}d`;
 }
 
-function CellChip({ cellId, highlight = false }: { cellId: string; highlight?: boolean }) {
-  return (
-    <span
-      className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-mono ${
-        highlight ? "bg-emerald-500/30 text-emerald-200 border border-emerald-400/40" : "bg-zinc-800/80 text-zinc-300 border border-zinc-700"
-      }`}
-      title={cellId}
-    >
-      {cellId.replace(/vol=|trend=|risk=/g, "").replace(/\|/g, "/")}
-    </span>
-  );
+function fmtClock(ms: number | null | undefined): string {
+  if (!ms) return "—";
+  const d = new Date(ms);
+  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
 }
 
-function StatBox({ label, value, sub, accent }: { label: string; value: number | string; sub?: string; accent?: string }) {
-  return (
-    <div className={`flex flex-col rounded-lg border p-3 ${accent || "border-zinc-800 bg-zinc-900/50"}`}>
-      <span className="text-[11px] uppercase tracking-wide text-zinc-400">{label}</span>
-      <span className="mt-0.5 text-2xl font-semibold leading-tight">{value}</span>
-      {sub ? <span className="text-[11px] text-zinc-500">{sub}</span> : null}
-    </div>
-  );
+function fmtWeek(ms: number | null | undefined): string {
+  if (!ms) return "—";
+  const d = new Date(ms);
+  const year = d.getUTCFullYear();
+  const start = Date.UTC(year, 0, 1);
+  const week = Math.floor((d.getTime() - start) / (7 * 24 * 60 * 60_000)) + 1;
+  return `W${String(week).padStart(2, "0")}`;
 }
+
+function fmtPad(s: string | number, width: number, align: "L" | "R" = "L"): string {
+  const str = String(s);
+  if (str.length >= width) return str;
+  const pad = " ".repeat(width - str.length);
+  return align === "L" ? str + pad : pad + str;
+}
+
+function abbrCell(cellId: string | null): string {
+  if (!cellId || cellId === "unknown") return "unknown";
+  // vol=mid|trend=trending_up|risk=risk_on  ->  vol=mid|tr=up|risk=on
+  return cellId
+    .replace(/trend=trending_up/g, "tr=up")
+    .replace(/trend=trending_down/g, "tr=dn")
+    .replace(/trend=choppy/g, "tr=chop")
+    .replace(/risk=risk_on/g, "risk=on")
+    .replace(/risk=risk_off/g, "risk=off")
+    .replace(/risk=neutral/g, "risk=neu");
+}
+
+function bar(value: number, max: number, width = 28): string {
+  if (!max || max <= 0) return " ".repeat(width);
+  const filled = Math.max(0, Math.min(width, Math.round((value / max) * width)));
+  return "█".repeat(filled) + "░".repeat(width - filled);
+}
+
+// ─── component ────────────────────────────────────────────────────────────────
 
 export default function ScalpV4Dashboard() {
   const [health, setHealth] = useState<HealthResp | null>(null);
   const [deploymentsResp, setDeploymentsResp] = useState<DeploymentsResp | null>(null);
   const [recent, setRecent] = useState<RecentResp | null>(null);
-  const [healthLoading, setHealthLoading] = useState(false);
-  const [deploymentsLoading, setDeploymentsLoading] = useState(false);
-  const [recentLoading, setRecentLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadedAt, setLoadedAt] = useState<number | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [dark, setDark] = useState(true);
-  const [statusFilter, setStatusFilter] = useState<V4Status | "all">("all");
-  const [search, setSearch] = useState("");
   const [adminSecret, setAdminSecret] = useState("");
   const [secretInput, setSecretInput] = useState("");
   const [showSecretPanel, setShowSecretPanel] = useState(false);
   const [unauthorized, setUnauthorized] = useState(false);
 
-  // Hydrate the admin secret from localStorage on first client render.
   useEffect(() => {
     const stored = readStoredAdminSecret();
     if (stored) {
@@ -220,44 +198,33 @@ export default function ScalpV4Dashboard() {
   const load = useCallback(async () => {
     const headers: Record<string, string> = {};
     if (adminSecret) headers["x-admin-access-secret"] = adminSecret;
-
-    async function fetchSection<T extends { ok: boolean }>(
-      url: string,
-      setData: (data: T) => void,
-      setLoading: (loading: boolean) => void,
-    ): Promise<{ unauthorized?: boolean; error?: string }> {
-      setLoading(true);
+    async function fetchOne<T extends { ok: boolean }>(url: string): Promise<{ data?: T; unauthorized?: boolean; error?: string }> {
       try {
         const res = await fetch(url, { headers, credentials: "include" });
         if (res.status === 401) return { unauthorized: true };
-        if (!res.ok) return { error: `HTTP ${res.status}` };
+        if (!res.ok) return { error: `${url} → HTTP ${res.status}` };
         const data = (await res.json()) as T;
-        if (!data.ok) return { error: (data as any).error || "request_failed" };
-        setData(data);
-        return {};
+        if (!data.ok) return { error: (data as any).error || `${url} → request_failed` };
+        return { data };
       } catch (err) {
         return { error: (err as Error)?.message || String(err) };
-      } finally {
-        setLoading(false);
       }
     }
-
-    // Fire all three in parallel — each writes its own state independently.
-    const [hRes, dRes, rRes] = await Promise.all([
-      fetchSection<HealthResp>("/api/scalp/v4/health", setHealth, setHealthLoading),
-      fetchSection<DeploymentsResp>("/api/scalp/v4/deployments", setDeploymentsResp, setDeploymentsLoading),
-      fetchSection<RecentResp>("/api/scalp/v4/recent", setRecent, setRecentLoading),
+    const [h, d, r] = await Promise.all([
+      fetchOne<HealthResp>("/api/scalp/v4/health"),
+      fetchOne<DeploymentsResp>("/api/scalp/v4/deployments"),
+      fetchOne<RecentResp>("/api/scalp/v4/recent"),
     ]);
-
-    const anyUnauth = hRes.unauthorized || dRes.unauthorized || rRes.unauthorized;
-    if (anyUnauth) {
+    if (h.unauthorized || d.unauthorized || r.unauthorized) {
       setUnauthorized(true);
       setShowSecretPanel(true);
       setError("Unauthorized — admin secret missing or invalid.");
       return;
     }
-    const firstError = hRes.error || dRes.error || rRes.error || null;
-    setError(firstError);
+    if (h.data) setHealth(h.data);
+    if (d.data) setDeploymentsResp(d.data);
+    if (r.data) setRecent(r.data);
+    setError(h.error || d.error || r.error || null);
     setUnauthorized(false);
     setLoadedAt(Date.now());
   }, [adminSecret]);
@@ -272,119 +239,124 @@ export default function ScalpV4Dashboard() {
     return () => clearInterval(t);
   }, [autoRefresh, load, unauthorized]);
 
-  const saveSecret = useCallback(
-    (next: string) => {
-      const value = next.trim();
-      persistAdminSecret(value);
-      setAdminSecret(value);
-      setUnauthorized(false);
-      setShowSecretPanel(false);
-    },
-    [],
-  );
+  const saveSecret = useCallback((next: string) => {
+    const value = next.trim();
+    persistAdminSecret(value);
+    setAdminSecret(value);
+    setUnauthorized(false);
+    setShowSecretPanel(false);
+  }, []);
 
-  const filteredDeployments = useMemo(() => {
+  // ─── derived: split deployments by status for the sections ──────────────────
+  const trading = useMemo(() => {
     if (!deploymentsResp) return [];
-    const needle = search.trim().toLowerCase();
     return deploymentsResp.deployments
-      .filter((row: DeploymentRow) => statusFilter === "all" || row.v4Status === statusFilter)
-      .filter((row: DeploymentRow) => {
-        if (!needle) return true;
-        return (
-          row.symbol.toLowerCase().includes(needle) ||
-          row.venue.toLowerCase().includes(needle) ||
-          row.session.toLowerCase().includes(needle) ||
-          row.strategyId.toLowerCase().includes(needle) ||
-          row.tuneId.toLowerCase().includes(needle)
-        );
-      })
-      .sort(
-        (a: DeploymentRow, b: DeploymentRow) =>
-          STATUS_ORDER.indexOf(a.v4Status) - STATUS_ORDER.indexOf(b.v4Status),
-      );
-  }, [deploymentsResp, statusFilter, search]);
+      .filter((r) => r.v4Status === "trading")
+      .sort((a, b) => (b.lastEntryAtMs || 0) - (a.lastEntryAtMs || 0));
+  }, [deploymentsResp]);
+  const dormant = useMemo(() => {
+    if (!deploymentsResp) return [];
+    return deploymentsResp.deployments
+      .filter((r) => r.v4Status === "dormant_wrong_regime" || r.v4Status === "dormant_no_regime")
+      .sort((a, b) => `${a.venue}/${a.symbol}`.localeCompare(`${b.venue}/${b.symbol}`));
+  }, [deploymentsResp]);
+  const eligibleNotPromoted = useMemo(() => {
+    if (!deploymentsResp) return [];
+    return deploymentsResp.deployments
+      .filter((r) => r.v4Status === "eligible_not_promoted")
+      .sort((a, b) => (b.envelope.strictPassingCells - a.envelope.strictPassingCells));
+  }, [deploymentsResp]);
+  // current-regime overview: enabled deployments' symbols, deduped by (venue, symbol)
+  const regimeRows = useMemo(() => {
+    if (!deploymentsResp) return [] as Array<{
+      venue: string;
+      symbol: string;
+      cellId: string | null;
+      weeksInCell: number | null;
+      matches: number;
+    }>;
+    const seen = new Map<string, { venue: string; symbol: string; cellId: string | null; weeksInCell: number | null; matches: number }>();
+    for (const row of deploymentsResp.deployments) {
+      if (!row.enabled) continue;
+      const key = `${row.venue}:${row.symbol}`;
+      const matchesThis = row.currentRegime.cellId && row.envelope.allowedCells.includes(row.currentRegime.cellId) ? 1 : 0;
+      const prev = seen.get(key);
+      if (prev) {
+        prev.matches += matchesThis;
+      } else {
+        seen.set(key, {
+          venue: row.venue,
+          symbol: row.symbol,
+          cellId: row.currentRegime.cellId,
+          weeksInCell: row.currentRegime.weeksInCell,
+          matches: matchesThis,
+        });
+      }
+    }
+    return Array.from(seen.values()).sort((a, b) => {
+      if (a.venue !== b.venue) return a.venue.localeCompare(b.venue);
+      return a.symbol.localeCompare(b.symbol);
+    });
+  }, [deploymentsResp]);
 
-  const totalDeployments = deploymentsResp?.deployments.length || 0;
-  const classifierAge = health?.regimeBuild.latestWeekStartMs
-    ? fmtAgo(health.regimeBuild.latestWeekStartMs + 7 * 24 * 60 * 60_000)
-    : "—";
+  // Combined activity feed
+  const activity = useMemo(() => {
+    type Event = { tsMs: number; kind: "wf" | "regime" | "trade"; payload: any };
+    const out: Event[] = [];
+    if (recent) {
+      for (const r of recent.recentWalkforward) out.push({ tsMs: r.evaluatedAtMs, kind: "wf", payload: r });
+      for (const r of recent.recentTransitions) out.push({ tsMs: r.transitionWeekStartMs, kind: "regime", payload: r });
+      for (const r of recent.recentTrades) out.push({ tsMs: r.tsMs, kind: "trade", payload: r });
+    }
+    return out.sort((a, b) => b.tsMs - a.tsMs).slice(0, 30);
+  }, [recent]);
+
+  // ─── render ──────────────────────────────────────────────────────────────────
+  const totalDone = (health?.walkforwardTotal ?? 0);
+  const totalPlanned = (health?.stageCSurvivors ?? 0);
+  const pctDone = totalPlanned > 0 ? Math.round((totalDone / totalPlanned) * 100) : 0;
+  const counts = health?.walkforwardCounts ?? {};
+  const maxCount = Math.max(1, counts.eligible || 0, counts.no_passing_cells || 0, counts.cluster_cap_exceeded || 0, counts.in_progress || 0, counts.regime_overbroad_pending_review || 0);
 
   return (
-    <div className={dark ? "dark min-h-screen bg-zinc-950 text-zinc-100" : "min-h-screen bg-zinc-50 text-zinc-900"}>
+    <div className="min-h-screen bg-zinc-950 text-zinc-200 font-mono text-[13px] leading-[1.45]">
       <Head>
-        <title>Scalp V4 · Macro-Regime Control</title>
+        <title>scalp v4 · operator</title>
       </Head>
-
-      <header className="border-b border-zinc-800 bg-zinc-900/40 px-6 py-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Activity className="h-5 w-5 text-emerald-400" />
-            <h1 className="text-lg font-semibold">Scalp v4 · Macro-Regime Control</h1>
-            <span className="ml-2 rounded bg-zinc-800/80 px-2 py-0.5 text-[11px] text-zinc-300">
-              {health?.classifierVersion || "—"}
-            </span>
+      <div className="mx-auto max-w-[1200px] px-4 py-4">
+        {/* header */}
+        <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-zinc-800 pb-2">
+          <div className="flex items-baseline gap-3">
+            <span className="text-zinc-100">SCALP V4</span>
+            <span className="text-zinc-500">·</span>
+            <span className="text-zinc-400">{new Date().toISOString().slice(0, 16).replace("T", " ")} UTC</span>
+            <span className="text-zinc-500">·</span>
+            <span className="text-zinc-500">classifier {health?.classifierVersion || "—"}</span>
           </div>
-          <div className="flex items-center gap-3 text-sm text-zinc-400">
-            <span>Updated {loadedAt ? fmtAgo(loadedAt) : "—"}</span>
-            <button
-              onClick={load}
-              className="inline-flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 hover:bg-zinc-800"
-            >
-              <RefreshCw className="h-3.5 w-3.5" /> Refresh
-            </button>
-            <label className="flex items-center gap-1">
-              <input
-                type="checkbox"
-                checked={autoRefresh}
-                onChange={(e) => setAutoRefresh(e.target.checked)}
-              />
-              Auto 30s
+          <div className="flex items-center gap-3 text-zinc-500">
+            <span>refresh 30s · last {loadedAt ? `${fmtAgo(loadedAt)} ago` : "—"}</span>
+            <label className="flex items-center gap-1 cursor-pointer">
+              <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />auto
             </label>
+            <button onClick={load} className="text-zinc-300 hover:text-white">[refresh]</button>
             <button
               onClick={() => {
                 setSecretInput(adminSecret);
                 setShowSecretPanel((s) => !s);
               }}
-              className={`inline-flex items-center gap-1 rounded border px-2 py-1 ${
-                adminSecret
-                  ? "border-zinc-700 text-zinc-400 hover:bg-zinc-800"
-                  : "border-amber-500/50 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
-              }`}
-              aria-label="admin secret"
-              title={adminSecret ? "Admin secret set — click to change" : "Set admin secret"}
+              className={adminSecret ? "text-zinc-500 hover:text-zinc-300" : "text-amber-300 hover:text-amber-200"}
             >
-              <KeyRound className="h-3.5 w-3.5" />
-              {adminSecret ? "secret" : "set secret"}
+              [{adminSecret ? "secret" : "set secret"}]
             </button>
-            <button
-              onClick={() => setDark((d) => !d)}
-              className="inline-flex items-center rounded border border-zinc-700 p-1 hover:bg-zinc-800"
-              aria-label="toggle theme"
-            >
-              {dark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-            </button>
-            <Link href="/legacy" className="text-xs text-zinc-500 hover:text-zinc-300">
-              legacy dashboard →
-            </Link>
+            <Link href="/legacy" className="text-zinc-500 hover:text-zinc-300">[legacy]</Link>
           </div>
         </div>
-      </header>
 
-      <main className="mx-auto max-w-[1400px] space-y-6 px-6 py-6">
+        {/* admin secret panel */}
         {showSecretPanel ? (
-          <div className={`rounded-lg border p-4 ${
-            unauthorized
-              ? "border-rose-500/40 bg-rose-500/10"
-              : "border-amber-500/40 bg-amber-500/10"
-          }`}>
-            <div className="mb-2 flex items-center gap-2 text-sm">
-              <KeyRound className="h-4 w-4" />
-              <span className="font-medium">
-                {unauthorized ? "Admin access required" : "Set admin access secret"}
-              </span>
-              <span className="text-xs text-zinc-400">
-                stored in localStorage as <code className="font-mono">{ADMIN_SECRET_STORAGE_KEY}</code>
-              </span>
+          <div className={`mt-3 border ${unauthorized ? "border-rose-500/40 bg-rose-500/10" : "border-amber-500/40 bg-amber-500/10"} p-3`}>
+            <div className="text-zinc-300">
+              {unauthorized ? "admin access required" : "set admin access secret"} · key <span className="text-zinc-500">{ADMIN_SECRET_STORAGE_KEY}</span>
             </div>
             <form
               onSubmit={(e) => {
@@ -392,22 +364,17 @@ export default function ScalpV4Dashboard() {
                 saveSecret(secretInput);
                 setTimeout(load, 0);
               }}
-              className="flex flex-wrap items-center gap-2"
+              className="mt-2 flex flex-wrap items-center gap-2"
             >
               <input
                 type="password"
                 placeholder="ADMIN_ACCESS_SECRET"
                 value={secretInput}
                 onChange={(e) => setSecretInput(e.target.value)}
-                className="w-80 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+                className="w-80 border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100 focus:outline-none focus:border-zinc-500"
                 autoFocus
               />
-              <button
-                type="submit"
-                className="rounded border border-emerald-500/50 bg-emerald-500/20 px-3 py-1 text-xs text-emerald-200 hover:bg-emerald-500/30"
-              >
-                Save & retry
-              </button>
+              <button type="submit" className="border border-emerald-500/50 bg-emerald-500/20 px-3 py-1 text-emerald-200 hover:bg-emerald-500/30">save &amp; retry</button>
               {adminSecret ? (
                 <button
                   type="button"
@@ -415,338 +382,223 @@ export default function ScalpV4Dashboard() {
                     saveSecret("");
                     setSecretInput("");
                   }}
-                  className="rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
-                >
-                  Clear
-                </button>
+                  className="text-zinc-500 hover:text-zinc-300"
+                >clear</button>
               ) : null}
-              <button
-                type="button"
-                onClick={() => setShowSecretPanel(false)}
-                className="rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
-              >
-                Dismiss
-              </button>
+              <button type="button" onClick={() => setShowSecretPanel(false)} className="text-zinc-500 hover:text-zinc-300">dismiss</button>
             </form>
           </div>
         ) : null}
 
-        {error ? (
-          <div className="rounded border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">
-            <AlertTriangle className="mr-1 inline h-4 w-4" /> {error}
-          </div>
+        {error && !unauthorized ? (
+          <pre className="mt-3 whitespace-pre-wrap text-rose-400">⚠ {error}</pre>
         ) : null}
 
-        {/* --- System health --- */}
-        <section>
-          <h2 className="mb-2 text-sm uppercase tracking-wide text-zinc-400">System health</h2>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
-            <StatBox
-              label="V4 hard gate"
-              value={health?.v4HardGateEnabled ? "ON" : "OFF"}
-              sub={health?.v4Enabled ? "v4 enabled" : "v4 disabled"}
-              accent={
-                health?.v4HardGateEnabled
-                  ? "border-emerald-500/40 bg-emerald-500/10"
-                  : "border-amber-500/40 bg-amber-500/10"
-              }
-            />
-            <StatBox
-              label="Symbols covered"
-              value={health?.regimeBuild.symbolsCovered ?? (healthLoading ? "…" : "—")}
-              sub={`latest build ${classifierAge}`}
-            />
-            <StatBox
-              label="Stage-C survivors"
-              value={health?.stageCSurvivors ?? (healthLoading ? "…" : "—")}
-            />
-            <StatBox
-              label="WF eligible"
-              value={health?.walkforwardCounts.eligible || 0}
-              accent="border-emerald-500/40 bg-emerald-500/10"
-            />
-            <StatBox
-              label="WF in progress"
-              value={health?.walkforwardCounts.in_progress || 0}
-              accent="border-sky-500/40 bg-sky-500/10"
-            />
-            <StatBox
-              label="WF no passing cells"
-              value={health?.walkforwardCounts.no_passing_cells || 0}
-              accent="border-rose-500/40 bg-rose-500/10"
-            />
-            <StatBox
-              label="WF cluster-capped"
-              value={health?.walkforwardCounts.cluster_cap_exceeded || 0}
-              sub="skipped — same bet"
-              accent="border-amber-500/40 bg-amber-500/10"
-            />
-            <StatBox
-              label="WF pending"
-              value={health?.pendingWalkforward ?? (healthLoading ? "…" : "—")}
-              sub={`${health?.walkforwardTotal ?? 0} done`}
-            />
+        {/* HEALTH */}
+        <section className="mt-4">
+          <div className="text-zinc-500">═══════════ HEALTH ════════════════════════════════════════════════════════════</div>
+          <div className="text-zinc-300">
+            {"  hard gate   "}
+            <span className={health?.v4HardGateEnabled ? "text-emerald-400" : "text-amber-400"}>{health?.v4HardGateEnabled ? "ON " : "OFF"}</span>
+            {"       v4  "}<span className={health?.v4Enabled ? "text-emerald-400" : "text-amber-400"}>{health?.v4Enabled ? "enabled" : "disabled"}</span>
+            {"       freeze  "}<span className="text-emerald-400">inactive</span>
+          </div>
+          <div className="text-zinc-300">
+            {"  regimes     "}<span className="text-zinc-100">{health?.regimeBuild.symbolsCovered ?? "—"}</span>
+            <span className="text-zinc-500"> symbols valid</span>
+            {"     last build  "}<span className="text-zinc-100">{health?.regimeBuild.latestWeekStartMs ? fmtAgo(health.regimeBuild.latestWeekStartMs + 7 * 24 * 60 * 60_000) + " ago" : "—"}</span>
           </div>
         </section>
 
-        {/* --- Status histogram --- */}
-        <section>
-          <h2 className="mb-2 text-sm uppercase tracking-wide text-zinc-400">
-            Deployment v4 status · {totalDeployments} tracked
-            {deploymentsLoading ? <span className="ml-2 text-xs text-zinc-500">loading…</span> : null}
-          </h2>
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={() => setStatusFilter("all")}
-              className={`rounded border px-2.5 py-1 text-xs ${
-                statusFilter === "all"
-                  ? "border-zinc-300 bg-zinc-800 text-white"
-                  : "border-zinc-700 text-zinc-400 hover:bg-zinc-800"
-              }`}
-            >
-              All · {totalDeployments}
-            </button>
-            {STATUS_ORDER.map((status) => {
-              const meta = STATUS_META[status];
-              const count = deploymentsResp?.statusHistogram[status] || 0;
-              const active = statusFilter === status;
+        {/* PIPELINE */}
+        <section className="mt-4">
+          <div className="text-zinc-500">═══════════ PIPELINE  ·  {fmtWeek(Date.now())} ════════════════════════════════════════════════</div>
+          <div className="text-zinc-300">
+            {"  stage-C survivors  "}<span className="text-zinc-100">{fmtPad(totalPlanned, 6, "R")}</span>
+            <span className="text-zinc-500">  progress </span>
+            <span className="text-emerald-400">{bar(totalDone, totalPlanned)}</span>
+            <span className="text-zinc-500"> {pctDone}%</span>
+          </div>
+          <div className="text-zinc-300">
+            {"  walk-forward       "}<span className="text-zinc-100">{fmtPad(totalDone, 6, "R")}</span>
+            <span className="text-zinc-500"> done    </span>
+            <span className="text-sky-400">{fmtPad(counts.in_progress || 0, 4, "R")}</span>
+            <span className="text-zinc-500"> running   </span>
+            <span className="text-zinc-100">{fmtPad(health?.pendingWalkforward ?? "—", 4, "R")}</span>
+            <span className="text-zinc-500"> pending</span>
+          </div>
+          <CountLine label="● eligible        " value={counts.eligible || 0} max={maxCount} colorClass="text-emerald-400" />
+          <CountLine label="○ no_passing      " value={counts.no_passing_cells || 0} max={maxCount} colorClass="text-rose-400" />
+          <CountLine label="◐ cluster_capped  " value={counts.cluster_cap_exceeded || 0} max={maxCount} colorClass="text-amber-400" />
+          <CountLine label="◔ in_progress     " value={counts.in_progress || 0} max={maxCount} colorClass="text-sky-400" />
+          <CountLine label="· overbroad       " value={counts.regime_overbroad_pending_review || 0} max={maxCount} colorClass="text-zinc-400" />
+        </section>
+
+        {/* LIVE summary */}
+        <section className="mt-4">
+          <div className="text-zinc-500">═══════════ LIVE ══════════════════════════════════════════════════════════════</div>
+          <div className="text-zinc-300">
+            {"  trading now           "}<span className="text-emerald-400">{fmtPad(trading.length, 3, "R")}</span><span className="text-zinc-500"> deployments  ·  </span>
+            <span className="text-zinc-100">{trading.reduce((acc, r) => acc + r.openPositionCount, 0)}</span><span className="text-zinc-500"> open position(s)</span>
+          </div>
+          <div className="text-zinc-300">
+            {"  dormant by regime    "}<span className="text-amber-400">{fmtPad(dormant.length, 3, "R")}</span><span className="text-zinc-500"> deployments  ·  awaiting regime match</span>
+          </div>
+          <div className="text-zinc-300">
+            {"  awaiting promote     "}<span className="text-sky-400">{fmtPad(eligibleNotPromoted.length, 3, "R")}</span><span className="text-zinc-500"> candidates    ·  next promote cycle imminent</span>
+          </div>
+        </section>
+
+        {/* ACTIVE DEPLOYMENTS */}
+        <section className="mt-4">
+          <div className="text-zinc-500">═══════════ ACTIVE DEPLOYMENTS  ·  live=● dormant=○ ═════════════════════════════</div>
+          {trading.length === 0 && dormant.length === 0 ? (
+            <div className="text-zinc-500">  (no enabled deployments)</div>
+          ) : null}
+          {trading.map((row) => (
+            <div key={row.deploymentId} className="text-zinc-300">
+              <span className="text-emerald-400">{"  ● "}</span>
+              <span className="text-zinc-500">{fmtPad(row.venue, 7)}</span>
+              <span className="text-zinc-100">{fmtPad(row.symbol, 11)}</span>
+              <span className="text-zinc-500">{fmtPad(row.session, 9)}</span>
+              <span className="text-zinc-400">{fmtPad(row.tuneId.split("_").slice(0, 4).join("_"), 24)}</span>
+              <span className="text-zinc-500">  last </span><span className="text-zinc-200">{fmtPad(row.lastEntryAtMs ? fmtAgo(row.lastEntryAtMs) : "never", 6)}</span>
+              <span className="text-zinc-500">open </span><span className="text-zinc-100">{row.openPositionCount}</span>
+            </div>
+          ))}
+          {dormant.map((row) => (
+            <div key={row.deploymentId} className="text-zinc-300">
+              <span className="text-amber-400">{"  ○ "}</span>
+              <span className="text-zinc-500">{fmtPad(row.venue, 7)}</span>
+              <span className="text-zinc-100">{fmtPad(row.symbol, 11)}</span>
+              <span className="text-zinc-500">{fmtPad(row.session, 9)}</span>
+              <span className="text-zinc-400">{fmtPad(row.tuneId.split("_").slice(0, 4).join("_"), 24)}</span>
+              <span className="text-amber-400/80">  blocked: {row.v4Status === "dormant_no_regime" ? "no regime data" : "regime mismatch"}</span>
+            </div>
+          ))}
+          {dormant.length > 0 ? (
+            <div className="mt-1 pl-6 text-zinc-500">
+              {dormant.slice(0, 5).map((row) => (
+                <div key={`mm:${row.deploymentId}`}>
+                  <span className="text-zinc-500">    {fmtPad(row.symbol, 11)} </span>
+                  <span className="text-zinc-500">allowed </span><span className="text-zinc-400">[{row.envelope.allowedCells.map(abbrCell).join(", ") || "none"}]</span>
+                  <span className="text-zinc-500">  current </span><span className="text-amber-300">{abbrCell(row.currentRegime.cellId)}</span>
+                </div>
+              ))}
+              {dormant.length > 5 ? <div>    … {dormant.length - 5} more</div> : null}
+            </div>
+          ) : null}
+        </section>
+
+        {/* ELIGIBLE NOT PROMOTED */}
+        <section className="mt-4">
+          <div className="text-zinc-500">═══════════ ELIGIBLE  ·  not yet promoted ({eligibleNotPromoted.length}) ════════════════════════</div>
+          {eligibleNotPromoted.length === 0 ? <div className="text-zinc-500">  (none)</div> : null}
+          {eligibleNotPromoted.slice(0, 30).map((row) => (
+            <div key={row.deploymentId} className="text-zinc-300">
+              <span className="text-sky-400">{"  ▸ "}</span>
+              <span className="text-zinc-500">{fmtPad(row.venue, 7)}</span>
+              <span className="text-zinc-100">{fmtPad(row.symbol, 11)}</span>
+              <span className="text-zinc-500">{fmtPad(row.session, 9)}</span>
+              <span className="text-zinc-400">{fmtPad(row.tuneId.split("_").slice(0, 4).join("_"), 24)}</span>
+              <span className="text-zinc-500">cells </span>
+              <span className="text-emerald-400">{row.envelope.strictPassingCells}</span>
+              <span className="text-zinc-500">/{row.envelope.occupiedCells}</span>
+              <span className="text-zinc-500">  allowed </span>
+              <span className="text-zinc-300">[{row.envelope.allowedCells.slice(0, 2).map(abbrCell).join(", ")}{row.envelope.allowedCells.length > 2 ? "…" : ""}]</span>
+            </div>
+          ))}
+          {eligibleNotPromoted.length > 30 ? <div className="text-zinc-500">  … {eligibleNotPromoted.length - 30} more</div> : null}
+        </section>
+
+        {/* REGIMES */}
+        <section className="mt-4">
+          <div className="text-zinc-500">═══════════ REGIMES  ·  current week ═══════════════════════════════════════════</div>
+          {regimeRows.length === 0 ? <div className="text-zinc-500">  (no enabled symbols)</div> : null}
+          {regimeRows.map((row) => (
+            <div key={`${row.venue}:${row.symbol}`} className="text-zinc-300">
+              <span className="text-zinc-500">  {fmtPad(row.venue, 7)}</span>
+              <span className="text-zinc-100">{fmtPad(row.symbol, 11)}</span>
+              <span className={row.cellId ? "text-zinc-300" : "text-zinc-600"}>{fmtPad(abbrCell(row.cellId), 34)}</span>
+              <span className="text-zinc-500">{fmtPad(row.weeksInCell ? `${row.weeksInCell}w in cell` : "—", 14)}</span>
+              {row.matches > 0 ? <span className="text-emerald-400">matches: {row.matches} strat</span> : null}
+            </div>
+          ))}
+        </section>
+
+        {/* ACTIVITY */}
+        <section className="mt-4 mb-6">
+          <div className="text-zinc-500">═══════════ ACTIVITY  ·  last {activity.length} ═══════════════════════════════════════════════</div>
+          {activity.length === 0 ? <div className="text-zinc-500">  (no recent events)</div> : null}
+          {activity.map((event, idx) => {
+            if (event.kind === "wf") {
+              const p = event.payload as WalkforwardRow;
+              const symbol = `${p.venue}/${p.symbol}`;
+              const marker = p.eligible ? "WF ✓" : p.status === "in_progress" ? "WF ◔" : p.status === "cluster_cap_exceeded" ? "WF ◐" : "WF ✗";
+              const colorClass = p.eligible ? "text-emerald-400" : p.status === "cluster_cap_exceeded" ? "text-amber-400" : p.status === "in_progress" ? "text-sky-400" : "text-rose-400";
               return (
-                <button
-                  key={status}
-                  onClick={() => setStatusFilter(active ? "all" : status)}
-                  className={`rounded border px-2.5 py-1 text-xs ${active ? "ring-2 ring-offset-1 ring-offset-zinc-950" : ""} ${meta.cls}`}
-                  title={meta.label}
-                >
-                  {meta.emoji} {meta.label} · {count}
-                </button>
+                <div key={`wf:${idx}`} className="text-zinc-300">
+                  <span className="text-zinc-500">  {fmtClock(p.evaluatedAtMs)}  </span>
+                  <span className={colorClass}>{fmtPad(marker, 7)}</span>
+                  <span className="text-zinc-100">{fmtPad(symbol, 28)}</span>
+                  <span className="text-zinc-400">{fmtPad(p.eligible ? `cells:${p.strictPassingCells}/${p.occupiedCells}` : p.status, 22)}</span>
+                  <span className="text-zinc-500">{p.durationMs ? `${Math.round(p.durationMs / 60_000)}m` : ""}</span>
+                </div>
               );
-            })}
-          </div>
-        </section>
-
-        {/* --- Deployments table --- */}
-        <section>
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <h2 className="text-sm uppercase tracking-wide text-zinc-400">Deployments</h2>
-            <input
-              type="text"
-              placeholder="filter symbol, venue, session, strategy…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-72 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500"
-            />
-          </div>
-          <div className="overflow-x-auto rounded-lg border border-zinc-800">
-            <table className="w-full min-w-[720px] text-xs">
-              <thead className="bg-zinc-900 text-zinc-400">
-                <tr>
-                  <th className="px-3 py-2 text-left">Status</th>
-                  <th className="px-3 py-2 text-left">Symbol</th>
-                  <th className="px-3 py-2 text-left">Session</th>
-                  <th className="px-3 py-2 text-left">Strategy</th>
-                  <th className="px-3 py-2 text-left">Current regime</th>
-                  <th className="px-3 py-2 text-left">Allowed cells</th>
-                  <th className="px-3 py-2 text-left">Reason</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredDeployments.slice(0, 200).map((row) => {
-                  const meta = STATUS_META[row.v4Status];
-                  return (
-                    <tr key={row.deploymentId} className="border-t border-zinc-800/80 hover:bg-zinc-900/50">
-                      <td className="px-3 py-1.5">
-                        <span className={`inline-block rounded border px-1.5 py-0.5 text-[10px] ${meta.cls}`}>
-                          {meta.emoji} {meta.label}
-                        </span>
-                      </td>
-                      <td className="px-3 py-1.5 font-mono">
-                        <span className="text-zinc-500">{row.venue}/</span>
-                        {row.symbol}
-                      </td>
-                      <td className="px-3 py-1.5">{row.session}</td>
-                      <td className="px-3 py-1.5 font-mono text-zinc-400" title={row.tuneId}>
-                        {row.strategyId}
-                      </td>
-                      <td className="px-3 py-1.5">
-                        {row.currentRegime.cellId ? (
-                          <CellChip
-                            cellId={row.currentRegime.cellId}
-                            highlight={row.envelope.allowedCells.includes(row.currentRegime.cellId)}
-                          />
-                        ) : (
-                          <span className="text-zinc-500">no regime</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-1.5">
-                        <div className="flex flex-wrap gap-1">
-                          {row.envelope.allowedCells.length === 0 ? (
-                            <span className="text-zinc-500">—</span>
-                          ) : (
-                            row.envelope.allowedCells.map((cell) => (
-                              <CellChip
-                                key={cell}
-                                cellId={cell}
-                                highlight={row.currentRegime.cellId === cell}
-                              />
-                            ))
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-3 py-1.5 text-zinc-400" title={row.reason || ""}>
-                        {row.reason ? <span className="font-mono">{row.reason}</span> : "—"}
-                      </td>
-                    </tr>
-                  );
-                })}
-                {filteredDeployments.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="px-3 py-6 text-center text-zinc-500">
-                      <CircleSlash className="mr-1 inline h-3.5 w-3.5" /> No deployments match the current filter.
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-            {filteredDeployments.length > 200 ? (
-              <div className="border-t border-zinc-800 px-3 py-1.5 text-[11px] text-zinc-500">
-                Showing 200 of {filteredDeployments.length} — refine the filter to see more.
+            }
+            if (event.kind === "regime") {
+              const p = event.payload as TransitionRow;
+              const symbol = `${p.venue}/${p.symbol}`;
+              return (
+                <div key={`r:${idx}`} className="text-zinc-300">
+                  <span className="text-zinc-500">  {fmtClock(p.transitionWeekStartMs)}  </span>
+                  <span className="text-purple-400">{fmtPad("REGIME", 7)}</span>
+                  <span className="text-zinc-100">{fmtPad(symbol, 28)}</span>
+                  <span className="text-zinc-400">{abbrCell(p.fromCellId)} → {abbrCell(p.toCellId)}</span>
+                </div>
+              );
+            }
+            const p = event.payload as TradeRow;
+            const symbol = `${p.venue || "?"}/${p.symbol || "?"}`;
+            const r = p.rMultiple !== null ? (p.rMultiple > 0 ? `+${p.rMultiple.toFixed(2)}R` : `${p.rMultiple.toFixed(2)}R`) : "";
+            const colorClass = p.rMultiple !== null ? (p.rMultiple > 0 ? "text-emerald-400" : "text-rose-400") : "text-zinc-400";
+            return (
+              <div key={`t:${idx}`} className="text-zinc-300">
+                <span className="text-zinc-500">  {fmtClock(p.tsMs)}  </span>
+                <span className="text-zinc-200">{fmtPad("TRADE", 7)}</span>
+                <span className="text-zinc-100">{fmtPad(symbol, 28)}</span>
+                <span className={colorClass}>{fmtPad(p.phase || p.summary, 22)}</span>
+                <span className={colorClass}>{r}</span>
               </div>
-            ) : null}
-          </div>
+            );
+          })}
         </section>
 
-        {/* --- Recent walk-forwards + transitions side by side on wide screens --- */}
-        <section className="grid gap-6 lg:grid-cols-2">
-          <div>
-            <h2 className="mb-2 flex items-center gap-1 text-sm uppercase tracking-wide text-zinc-400">
-              <TrendingUp className="h-4 w-4" /> Recent walk-forward results
-              {recentLoading ? <span className="ml-2 text-xs text-zinc-500">loading…</span> : null}
-            </h2>
-            <div className="overflow-hidden rounded-lg border border-zinc-800">
-              <table className="w-full text-xs">
-                <thead className="bg-zinc-900 text-zinc-400">
-                  <tr>
-                    <th className="px-3 py-2 text-left">When</th>
-                    <th className="px-3 py-2 text-left">Symbol</th>
-                    <th className="px-3 py-2 text-left">Status</th>
-                    <th className="px-3 py-2 text-left">Cells</th>
-                    <th className="px-3 py-2 text-left">Duration</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(recent?.recentWalkforward || []).slice(0, 30).map((row, idx) => {
-                    const isEligible = row.eligible;
-                    const isInProgress = row.status === "in_progress";
-                    const isClusterCapped = row.status === "cluster_cap_exceeded";
-                    const isOverbroad =
-                      row.status === "regime_overbroad_pending_review" ||
-                      row.status === "regime_overbroad_auto_rejected";
-                    return (
-                      <tr key={`${row.deploymentId}-${idx}`} className="border-t border-zinc-800/80">
-                        <td className="px-3 py-1.5 text-zinc-400">{fmtAgo(row.evaluatedAtMs)}</td>
-                        <td className="px-3 py-1.5 font-mono">
-                          <span className="text-zinc-500">{row.venue}/</span>
-                          {row.symbol}
-                        </td>
-                        <td className="px-3 py-1.5">
-                          <span
-                            className={`rounded border px-1.5 py-0.5 text-[10px] ${
-                              isEligible
-                                ? "border-emerald-500/40 bg-emerald-500/20 text-emerald-300"
-                                : isInProgress
-                                  ? "border-sky-500/40 bg-sky-500/20 text-sky-300"
-                                  : isClusterCapped
-                                    ? "border-amber-500/40 bg-amber-500/20 text-amber-300"
-                                    : isOverbroad
-                                      ? "border-purple-500/40 bg-purple-500/20 text-purple-300"
-                                      : "border-rose-500/40 bg-rose-500/20 text-rose-300"
-                            }`}
-                            title={
-                              isClusterCapped
-                                ? "Skipped — same-cluster cap reached (top 2 per cluster kept)"
-                                : undefined
-                            }
-                          >
-                            {row.status}
-                          </span>
-                        </td>
-                        <td className="px-3 py-1.5">
-                          <span className="text-emerald-300">{row.strictPassingCells}</span>
-                          <span className="text-zinc-500"> / {row.occupiedCells}</span>
-                        </td>
-                        <td className="px-3 py-1.5 text-zinc-400">{fmtDuration(row.durationMs)}</td>
-                      </tr>
-                    );
-                  })}
-                  {!recent?.recentWalkforward.length ? (
-                    <tr>
-                      <td colSpan={5} className="px-3 py-6 text-center text-zinc-500">
-                        No walk-forward results yet.
-                      </td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
-          </div>
+        <div className="border-t border-zinc-800 pt-2 text-zinc-600">
+          sources  /api/scalp/v4/health · /deployments · /recent
+        </div>
+      </div>
+    </div>
+  );
+}
 
-          <div>
-            <h2 className="mb-2 flex items-center gap-1 text-sm uppercase tracking-wide text-zinc-400">
-              <History className="h-4 w-4" /> Recent regime transitions
-              {recentLoading ? <span className="ml-2 text-xs text-zinc-500">loading…</span> : null}
-            </h2>
-            <div className="overflow-hidden rounded-lg border border-zinc-800">
-              <table className="w-full text-xs">
-                <thead className="bg-zinc-900 text-zinc-400">
-                  <tr>
-                    <th className="px-3 py-2 text-left">Week</th>
-                    <th className="px-3 py-2 text-left">Symbol</th>
-                    <th className="px-3 py-2 text-left">From</th>
-                    <th className="px-3 py-2 text-left">To</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(recent?.recentTransitions || []).slice(0, 30).map((row, idx) => (
-                    <tr key={`${row.venue}-${row.symbol}-${row.transitionWeekStartMs}-${idx}`} className="border-t border-zinc-800/80">
-                      <td className="px-3 py-1.5 text-zinc-400">
-                        <Clock className="mr-1 inline h-3 w-3" />
-                        {fmtDate(row.transitionWeekStartMs)}
-                      </td>
-                      <td className="px-3 py-1.5 font-mono">
-                        <span className="text-zinc-500">{row.venue}/</span>
-                        {row.symbol}
-                      </td>
-                      <td className="px-3 py-1.5">
-                        {row.fromCellId ? <CellChip cellId={row.fromCellId} /> : <span className="text-zinc-500">—</span>}
-                      </td>
-                      <td className="px-3 py-1.5">
-                        <CellChip cellId={row.toCellId} highlight />
-                      </td>
-                    </tr>
-                  ))}
-                  {!recent?.recentTransitions.length ? (
-                    <tr>
-                      <td colSpan={4} className="px-3 py-6 text-center text-zinc-500">
-                        No transitions recorded.
-                      </td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-
-        <footer className="flex items-center justify-between border-t border-zinc-800 pt-4 text-[11px] text-zinc-500">
-          <span className="inline-flex items-center gap-1">
-            <Layers className="h-3 w-3" /> Sources:{" "}
-            <code>/api/scalp/v4/health</code> · <code>/deployments</code> · <code>/recent</code>
-          </span>
-          <span>
-            <CheckCircle2 className="mr-1 inline h-3 w-3 text-emerald-500" /> v4 dashboard · macro-regime view
-          </span>
-        </footer>
-      </main>
+function CountLine({
+  label,
+  value,
+  max,
+  colorClass,
+}: {
+  label: string;
+  value: number;
+  max: number;
+  colorClass: string;
+}) {
+  return (
+    <div className="text-zinc-300">
+      <span className="text-zinc-500">{"                      "}</span>
+      <span className={colorClass}>{label}</span>
+      <span className="text-zinc-100">{fmtPad(value, 4, "R")}</span>
+      <span className="text-zinc-500">   {bar(value, max, 30)}</span>
     </div>
   );
 }

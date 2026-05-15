@@ -23,7 +23,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const classifierVersion = SCALP_V4_CLASSIFIER_VERSION;
     const db = scalpPrisma();
 
-    const [walkforwardRows, transitionRows] = await Promise.all([
+    const [walkforwardRows, transitionRows, tradeRows] = await Promise.all([
       db.$queryRaw<Array<{
         deploymentId: string;
         venue: string;
@@ -60,6 +60,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         ORDER BY transition_week_start DESC, created_at DESC
         LIMIT 40;
       `),
+      db.$queryRaw<Array<{
+        ts: Date;
+        deploymentId: string | null;
+        venue: string | null;
+        symbol: string | null;
+        type: string;
+        reasonCodes: string[];
+        payload: unknown;
+      }>>(sql`
+        SELECT ts, deployment_id AS "deploymentId", venue, symbol, type, reason_codes AS "reasonCodes", payload
+        FROM scalp_v2_journal
+        WHERE type = 'execution' AND ts > NOW() - INTERVAL '14 day'
+        ORDER BY ts DESC
+        LIMIT 30;
+      `),
     ]);
 
     return res.status(200).json({
@@ -89,6 +104,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         fromCellId: row.fromCellId,
         toCellId: row.toCellId,
       })),
+      recentTrades: tradeRows.map((row) => {
+        const payload = asRecord(row.payload);
+        return {
+          tsMs: row.ts.getTime(),
+          deploymentId: row.deploymentId,
+          venue: row.venue,
+          symbol: row.symbol,
+          reasonCodes: Array.isArray(row.reasonCodes) ? row.reasonCodes : [],
+          summary: String(payload.summary || payload.message || payload.event || "execution"),
+          rMultiple:
+            payload.rMultiple !== undefined && Number.isFinite(Number(payload.rMultiple))
+              ? Number(payload.rMultiple)
+              : null,
+          phase: String(payload.phase || payload.action || ""),
+        };
+      }),
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: (err as Error)?.message || String(err) });
