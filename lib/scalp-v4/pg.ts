@@ -516,7 +516,13 @@ export async function upsertScalpV4WalkforwardResult(params: {
 }): Promise<void> {
   if (!isScalpPgConfigured()) return;
   const db = scalpPrisma();
-  await db.$executeRaw(sql`
+  // Bulk sweeps run 20–30 min of pure CPU work between DB hits. If Neon's
+  // compute auto-suspends or scales during that gap, the first upsert after
+  // the gap can fail with "connection terminated unexpectedly" on a stale
+  // pooled socket. Retry the write — the second attempt either wakes Neon
+  // or gets a fresh socket. Idempotent because of ON CONFLICT.
+  const runUpsert = async (): Promise<void> => {
+    await db.$executeRaw(sql`
     INSERT INTO scalp_regime_walkforward_results(
       candidate_id,
       deployment_id,
@@ -574,6 +580,19 @@ export async function upsertScalpV4WalkforwardResult(params: {
       evaluated_at = NOW(),
       updated_at = NOW();
   `);
+  };
+  try {
+    await runUpsert();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const isTransient =
+      /terminated unexpectedly|server conn crashed|ECONNRESET|Connection terminated|read ECONNRESET|EPIPE|08P01/i.test(
+        message,
+      );
+    if (!isTransient) throw err;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    await runUpsert();
+  }
 }
 
 // Bulk-load the most recent walk-forward incremental state per deployment

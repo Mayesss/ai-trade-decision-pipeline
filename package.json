@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
     "@prisma/client": "^6.16.0",
     "@tailwindcss/postcss": "^4.1.18",
     "@types/node": "^24.10.0",

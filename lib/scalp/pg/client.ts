@@ -1,3 +1,4 @@
+import { neon, type NeonQueryFunction } from '@neondatabase/serverless';
 import { Pool, type PoolClient } from 'pg';
 
 export type ScalpPgSqlObject = {
@@ -365,6 +366,71 @@ class ScalpPgClientImpl extends ScalpPgExecutorImpl implements ScalpPgClient {
     }
 }
 
+// HTTP-backed client. Uses @neondatabase/serverless's neon() function which
+// sends each query as a stateless HTTPS request. No socket pool, no idle
+// timeouts, no autosuspend race conditions — every query wakes the compute
+// fresh. Used for the bulk research path where the script does 20–30 min of
+// CPU work between DB hits and the socket pool was unreliable.
+//
+// Trade-off: ~20–30ms per query (HTTPS round-trip) vs ~5ms for socket. For
+// bulk write batches that fire once per candidate this is irrelevant; for
+// the live trade-entry path keep the socket pool.
+class ScalpPgHttpClientImpl implements ScalpPgClient {
+    constructor(private readonly sql: NeonQueryFunction<false, true>) {}
+
+    async $queryRaw<T = unknown>(
+        query: ScalpPgSqlObject | TemplateStringsArray,
+        ...values: unknown[]
+    ): Promise<T> {
+        const compiled = compileSafeQuery(query, values);
+        const result = await this.sql.query(compiled.text, compiled.values);
+        return result.rows as unknown as T;
+    }
+
+    async $queryRawUnsafe<T = unknown>(query: string, ...values: unknown[]): Promise<T> {
+        const compiled = compileUnsafeQuery(query, values);
+        const result = await this.sql.query(compiled.text, compiled.values);
+        return result.rows as unknown as T;
+    }
+
+    async $executeRaw(
+        query: ScalpPgSqlObject | TemplateStringsArray,
+        ...values: unknown[]
+    ): Promise<number> {
+        const compiled = compileSafeQuery(query, values);
+        const result = await this.sql.query(compiled.text, compiled.values);
+        return Number(result.rowCount || 0);
+    }
+
+    async $executeRawUnsafe(query: string, ...values: unknown[]): Promise<number> {
+        const compiled = compileUnsafeQuery(query, values);
+        const result = await this.sql.query(compiled.text, compiled.values);
+        return Number(result.rowCount || 0);
+    }
+
+    async $transaction<T>(
+        _fn: (tx: ScalpPgTxClient) => Promise<T>,
+        _options: ScalpPgTransactionOptions = {},
+    ): Promise<T> {
+        throw new Error(
+            'Transactions are not supported on the HTTP scalp PG client. ' +
+                'Use the default socket client (unset SCALP_PG_USE_HTTP) for transactional code.',
+        );
+    }
+
+    async $disconnect(): Promise<void> {
+        if (global.__scalpPgClient === this) {
+            global.__scalpPgClient = undefined;
+        }
+        // HTTP client holds no persistent connection.
+    }
+}
+
+function shouldUseHttpClient(): boolean {
+    const raw = String(process.env.SCALP_PG_USE_HTTP ?? '').trim().toLowerCase();
+    return ['1', 'true', 'yes', 'on'].includes(raw);
+}
+
 export function isScalpPgConfigured(): boolean {
     return resolveScalpPgUrl() !== null;
 }
@@ -382,6 +448,11 @@ export function createScalpPrismaClient(): ScalpPgClient {
         console.warn(
             `[scalp-pg] ${resolved.envKey} is deprecated; prefer DATABASE_URL (Neon) or SCALP_PG_CONNECTION_STRING.`,
         );
+    }
+
+    if (shouldUseHttpClient()) {
+        const sql = neon(resolved.url, { fullResults: true }) as NeonQueryFunction<false, true>;
+        return new ScalpPgHttpClientImpl(sql);
     }
 
     const sslEnabled = shouldUseSsl(resolved.url);

@@ -40,6 +40,15 @@ const { loadEnvConfig } = nextEnv;
 // Ensure local scripts pick up .env/.env.local like Next.js runtime.
 loadEnvConfig(process.cwd());
 
+// Default the bulk path to Neon's HTTP driver. The sweep does 20–30 min of
+// in-process CPU work between DB hits and the socket pool was unreliable
+// across compute autosuspend events. Each query is now a stateless HTTPS
+// request — no idle sockets to die on us. Override with SCALP_PG_USE_HTTP=0
+// to fall back to the socket pool.
+if (process.env.SCALP_PG_USE_HTTP === undefined) {
+  process.env.SCALP_PG_USE_HTTP = '1';
+}
+
 type BulkResearchVersion = 'v2' | 'v4';
 
 function resolveBulkResearchVersion(): BulkResearchVersion {
