@@ -76,6 +76,10 @@ export async function listScalpV4ResearchCandidates(params: {
   if (!isScalpPgConfigured()) return [];
   const limit = Math.max(1, Math.min(2_000, Math.floor(Number(params.limit || 100))));
   const db = scalpPrisma();
+  // Project only the fields the sweep actually reads. Pulling the whole
+  // metadata_json blob (often >100KB per row) caused Neon to drop the
+  // connection with FATAL 08P01 once the survivor pool grew. The sweep only
+  // needs the variantKind for cluster keying — extract it server-side.
   const rows = await db.$queryRaw<Array<{
     id: bigint;
     venue: string;
@@ -83,7 +87,7 @@ export async function listScalpV4ResearchCandidates(params: {
     strategyId: string;
     tuneId: string;
     entrySessionProfile: string;
-    metadataJson: unknown;
+    variantKind: string | null;
   }>>(sql`
     SELECT
       id,
@@ -92,7 +96,7 @@ export async function listScalpV4ResearchCandidates(params: {
       strategy_id AS "strategyId",
       tune_id AS "tuneId",
       entry_session_profile AS "entrySessionProfile",
-      metadata_json AS "metadataJson"
+      metadata_json->'v3TemporalFilter'->>'variantKind' AS "variantKind"
     FROM scalp_v2_candidates
     WHERE COALESCE((metadata_json->'worker'->>'finalPass')::boolean, FALSE)
        OR COALESCE((metadata_json->'worker'->'stageC'->>'passed')::boolean, FALSE)
@@ -109,15 +113,21 @@ export async function listScalpV4ResearchCandidates(params: {
     LIMIT ${limit};
   `);
   return rows
-    .map((row) => ({
-      id: Number(row.id),
-      venue: normalizeVenue(row.venue),
-      symbol: normalizeSymbol(row.symbol),
-      strategyId: String(row.strategyId || "").trim().toLowerCase(),
-      tuneId: String(row.tuneId || "").trim().toLowerCase() || "default",
-      entrySessionProfile: String(row.entrySessionProfile || "").trim().toLowerCase(),
-      metadata: asRecord(row.metadataJson),
-    }))
+    .map((row) => {
+      const variantKind = row.variantKind ? String(row.variantKind) : null;
+      const metadata: Record<string, unknown> = variantKind
+        ? { v3TemporalFilter: { variantKind } }
+        : {};
+      return {
+        id: Number(row.id),
+        venue: normalizeVenue(row.venue),
+        symbol: normalizeSymbol(row.symbol),
+        strategyId: String(row.strategyId || "").trim().toLowerCase(),
+        tuneId: String(row.tuneId || "").trim().toLowerCase() || "default",
+        entrySessionProfile: String(row.entrySessionProfile || "").trim().toLowerCase(),
+        metadata,
+      };
+    })
     .filter((row) => row.id > 0 && Boolean(row.symbol) && Boolean(row.strategyId));
 }
 
