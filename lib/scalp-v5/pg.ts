@@ -25,24 +25,30 @@ export interface ScalpV5DeploymentRow {
   promotionGate: Record<string, unknown>;
 }
 
+// Default work-lease TTL: the bulk eval processes one row in ~5-30s, so 10
+// minutes covers a slow-machine evaluation plus generous overhead for stuck
+// candle fetches before a different worker can reclaim a row.
+const DEFAULT_V5_LEASE_MS = 10 * 60_000;
+
 // Load deployments that need v5 (re-)evaluation. Scope is every row that
 // v3/v2 has promoted at least once (candidate_id IS NOT NULL), regardless
-// of current `enabled` state. This lets v5 chew through the full pool of
-// stage-C survivors and keep evidence fresh on all of them — when the
-// promotion path eventually flips a row to enabled, the v5 gate already
-// has data and the entry-time check is non-permissive immediately.
+// of current `enabled` state.
+//
+// CLAIM SEMANTICS — this function is a *claim*, not a read. It atomically
+// stamps `v5_lease_until = NOW() + leaseMs` on each row it returns via
+// UPDATE…RETURNING with FOR UPDATE SKIP LOCKED on the inner SELECT. Concurrent
+// callers (hourly cron + N local bulk shards + ad-hoc admin scripts) get
+// disjoint row sets without coordination. Failed evaluations don't block the
+// queue — the lease auto-expires after leaseMs and another worker reclaims
+// the row; successful evaluations clear the lease via
+// upsertScalpV5DeploymentEvidence.
+//
 // Sort priorities, descending importance:
 //   1. enabled DESC          — live rows refresh ahead of inactive
-//   2. v5_enabled DESC       — known last-week winners (passed v5 on their
-//                              previous evaluation) refresh ahead of rows
-//                              that failed or were never evaluated. This
-//                              gets fresh evidence for the promotion-ready
-//                              set into the DB first; never-evaluated rows
-//                              still get processed in tier 2 alongside
-//                              known-losers, ordered by v5_evaluated_at.
+//   2. v5_enabled DESC       — known last-week winners refresh first so
+//                              promotion-ready evidence stays current
 //   3. v5_evaluated_at ASC NULLS FIRST — within a tier, never-evaluated and
-//                              oldest-evaluated rows go first so coverage
-//                              fans out evenly.
+//                              oldest-evaluated rows go first
 export async function loadScalpV5DeploymentsForEvaluation(params: {
   limit?: number;
   staleOlderThanMs?: number;
@@ -53,12 +59,20 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
   // different shardIndex and run in parallel without overlapping rows.
   shardCount?: number;
   shardIndex?: number;
+  // How long the claim lasts before another worker can reclaim a row.
+  // Defaults to 10 minutes. Set lower for short evals, higher to give a slow
+  // network more slack.
+  leaseMs?: number;
 }): Promise<ScalpV5DeploymentRow[]> {
   if (!isScalpPgConfigured()) return [];
   const limit = Math.max(1, Math.min(500, Math.floor(Number(params.limit || 50))));
   const staleOlderThanMs = Math.max(
     60_000,
     Math.floor(Number(params.staleOlderThanMs || 6 * 24 * 60 * 60_000)),
+  );
+  const leaseMs = Math.max(
+    60_000,
+    Math.min(60 * 60_000, Math.floor(Number(params.leaseMs || DEFAULT_V5_LEASE_MS))),
   );
   const onlyEnabled = Boolean(params.onlyEnabled);
   const nowMs = Math.floor(Number(params.nowMs || Date.now()));
@@ -72,10 +86,14 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
   const shardIndex = shardCount > 1
     ? Math.max(0, Math.min(shardCount - 1, Number.isFinite(shardIndexRaw) ? shardIndexRaw : 0))
     : 0;
-  // hashtext() returns a signed int32; mask the sign bit so the modulo is
-  // always non-negative without the abs(INT_MIN) edge case.
   const sharded = shardCount > 1;
   const db = scalpPrisma();
+
+  // Atomic claim: the inner SELECT acquires row locks via FOR UPDATE SKIP
+  // LOCKED (concurrent transactions get disjoint rows), the outer UPDATE
+  // stamps the lease, and RETURNING gives us the full row payload in one
+  // round-trip. hashtext() & 2147483647 masks the sign bit so the modulo is
+  // non-negative without the abs(INT_MIN) edge case.
   const rows = await db.$queryRaw<Array<{
     deploymentId: string;
     venue: string;
@@ -89,28 +107,37 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
     v5EvaluatedAt: Date | null;
     promotionGate: unknown;
   }>>(sql`
-    SELECT
-      deployment_id AS "deploymentId",
-      venue,
-      symbol,
-      strategy_id AS "strategyId",
-      tune_id AS "tuneId",
-      entry_session_profile AS "entrySessionProfile",
-      enabled,
-      live_mode AS "liveMode",
-      COALESCE(v5_enabled, FALSE) AS "v5Enabled",
-      v5_evaluated_at AS "v5EvaluatedAt",
-      promotion_gate AS "promotionGate"
-    FROM scalp_v2_deployments
-    WHERE candidate_id IS NOT NULL
-      AND (${onlyEnabled} = FALSE OR enabled = TRUE)
-      AND (v5_evaluated_at IS NULL OR v5_evaluated_at < ${staleBefore})
-      AND (
-        ${sharded} = FALSE
-        OR ((hashtext(deployment_id) & 2147483647) % ${shardCount}) = ${shardIndex}
-      )
-    ORDER BY enabled DESC, v5_enabled DESC, v5_evaluated_at ASC NULLS FIRST, updated_at DESC
-    LIMIT ${limit};
+    UPDATE scalp_v2_deployments AS t
+    SET v5_lease_until = NOW() + (${leaseMs} * INTERVAL '1 millisecond'),
+        updated_at = NOW()
+    FROM (
+      SELECT deployment_id
+      FROM scalp_v2_deployments
+      WHERE candidate_id IS NOT NULL
+        AND (${onlyEnabled} = FALSE OR enabled = TRUE)
+        AND (v5_evaluated_at IS NULL OR v5_evaluated_at < ${staleBefore})
+        AND (v5_lease_until IS NULL OR v5_lease_until < NOW())
+        AND (
+          ${sharded} = FALSE
+          OR ((hashtext(deployment_id) & 2147483647) % ${shardCount}) = ${shardIndex}
+        )
+      ORDER BY enabled DESC, v5_enabled DESC, v5_evaluated_at ASC NULLS FIRST, updated_at DESC
+      LIMIT ${limit}
+      FOR UPDATE SKIP LOCKED
+    ) AS picked
+    WHERE t.deployment_id = picked.deployment_id
+    RETURNING
+      t.deployment_id AS "deploymentId",
+      t.venue,
+      t.symbol,
+      t.strategy_id AS "strategyId",
+      t.tune_id AS "tuneId",
+      t.entry_session_profile AS "entrySessionProfile",
+      t.enabled,
+      t.live_mode AS "liveMode",
+      COALESCE(t.v5_enabled, FALSE) AS "v5Enabled",
+      t.v5_evaluated_at AS "v5EvaluatedAt",
+      t.promotion_gate AS "promotionGate";
   `);
   return rows.map((row) => ({
     deploymentId: String(row.deploymentId || "").trim(),
@@ -125,6 +152,23 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
     v5EvaluatedAtMs: row.v5EvaluatedAt ? row.v5EvaluatedAt.getTime() : null,
     promotionGate: asRecord(row.promotionGate),
   }));
+}
+
+// Explicitly release a lease without writing evidence. Useful when an
+// evaluation aborts early (e.g. no candles) and the caller wants the row to
+// be available for retry sooner than the leaseMs TTL.
+export async function releaseScalpV5DeploymentLease(params: {
+  deploymentId: string;
+}): Promise<void> {
+  if (!isScalpPgConfigured()) return;
+  const db = scalpPrisma();
+  await db.$executeRaw(sql`
+    UPDATE scalp_v2_deployments
+    SET v5_lease_until = NULL,
+        updated_at = NOW()
+    WHERE deployment_id = ${params.deploymentId}
+      AND v5_lease_until IS NOT NULL;
+  `);
 }
 
 // Flip `enabled = TRUE` on every deployment that v5 has confirmed as a
@@ -155,8 +199,9 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
   const dryRun = Boolean(params.dryRun);
   const db = scalpPrisma();
 
-  // Find candidates for promotion. The shape mirrors loadScalpV5DeploymentsForEvaluation
-  // so the cron can log a stable label per row.
+  // Find candidates for promotion. Skip rows currently leased — they're
+  // mid-evaluation and we shouldn't act on their previous (possibly stale)
+  // evidence. Wait one cycle for the eval to land and flip enabled then.
   const candidates = await db.$queryRaw<Array<{ deploymentId: string }>>(sql`
     SELECT deployment_id AS "deploymentId"
     FROM scalp_v2_deployments
@@ -165,6 +210,7 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
       AND v5_enabled = TRUE
       AND v5_evaluated_at IS NOT NULL
       AND v5_evaluated_at >= ${staleBefore}
+      AND (v5_lease_until IS NULL OR v5_lease_until < NOW())
     ORDER BY v5_evaluated_at DESC;
   `);
   const ids = candidates.map((r) => String(r.deploymentId || "").trim()).filter(Boolean);
@@ -195,12 +241,16 @@ export async function upsertScalpV5DeploymentEvidence(params: {
 }): Promise<void> {
   if (!isScalpPgConfigured()) return;
   const db = scalpPrisma();
+  // Always clear v5_lease_until alongside the evidence write — the worker
+  // holding the lease just finished successfully, so the lease should drop
+  // immediately rather than waiting for its TTL.
   await db.$executeRaw(sql`
     UPDATE scalp_v2_deployments
     SET
       v5_cell_evidence = ${JSON.stringify(params.evidence)}::jsonb,
       v5_enabled = ${params.enabled},
       v5_evaluated_at = NOW(),
+      v5_lease_until = NULL,
       updated_at = NOW()
     WHERE deployment_id = ${params.deploymentId};
   `);
