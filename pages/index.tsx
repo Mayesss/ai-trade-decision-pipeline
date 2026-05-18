@@ -15,6 +15,8 @@ import {
   fetchOne,
   fmtAgo,
   fmtClock,
+  fmtEta,
+  sparkline,
   useAdminSecretLoader,
 } from "../components/scalp/shared";
 import { WeeklyNetRTrack } from "../components/scalp/WeeklyNetRTrack";
@@ -36,6 +38,15 @@ interface CoverageResp {
     missingEvidence: number;
     stale: number;
     staleThresholdMs: number;
+  };
+  progress: {
+    weekStartMs: number;
+    evaluatedThisWeek: number;
+    remainingThisWeek: number;
+    lastHour: number;
+    buckets12h: number[];
+    ratePerHour: number;
+    etaHours: number | null;
   };
 }
 
@@ -94,6 +105,7 @@ interface V5DeploymentRow {
   };
   holdoutWindow: { fromMs: number; toMs: number } | null;
   totalTrades: number;
+  totalNetR: number;
   cells: V5CellRow[];
 }
 
@@ -250,7 +262,14 @@ export default function ScalpV5Dashboard() {
       <SectionHeader
         title={`evaluator · holdout=${coverage?.config.holdoutWeeks ?? "—"}w  minTrades/cell=${coverage?.config.minTradesPerCell ?? "—"}`}
       />
-      {coverage ? <EvaluatorStrip data={coverage} /> : <Skeleton label="loading evaluator" />}
+      {coverage ? (
+        <>
+          <EvaluatorStrip data={coverage} />
+          <EvaluatorProgress data={coverage} />
+        </>
+      ) : (
+        <Skeleton label="loading evaluator" />
+      )}
 
       <SectionHeader
         title={`deployments · live cell evidence${decisionFilter ? ` · filter=${V5_DECISION_LABEL[decisionFilter]}` : ""}`}
@@ -434,6 +453,70 @@ function EvaluatorStrip({ data }: { data: CoverageResp }) {
   );
 }
 
+// Weekly evaluator progress: bar showing evaluatedThisWeek / total, the
+// hourly throughput (with a 12h sparkline), and an ETA until every row is
+// re-evaluated this week. Re-evaluation cadence matches the regime week —
+// every Monday rollover the staleness threshold kicks back and the worker
+// chews through the pool again.
+function EvaluatorProgress({ data }: { data: CoverageResp }) {
+  const p = data.progress;
+  const total = data.coverage.totalDeployments;
+  const done = p.evaluatedThisWeek;
+  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  const idle = p.ratePerHour === 0;
+  const weekLabel = new Date(p.weekStartMs).toISOString().slice(0, 10);
+  return (
+    <div className="mt-2 pl-2 grid grid-cols-[auto_1fr] md:grid-cols-[10rem_1fr] gap-x-3 items-baseline">
+      <span className="text-zinc-500">this week</span>
+      <span className="flex flex-wrap items-baseline gap-x-2">
+        <span>
+          <span className={pct >= 100 ? "text-emerald-400" : "text-zinc-100"}>{done}</span>
+          <span className="text-zinc-500">/{total}</span>
+        </span>
+        <span className={`font-mono whitespace-pre ${pct >= 100 ? "text-emerald-400" : "text-sky-400"}`}>
+          {bar(done, total || 1, 30)}
+        </span>
+        <span className="text-zinc-500">{pct}%</span>
+        {pct >= 100 ? <span className="text-emerald-400">✓</span> : null}
+        <span className="text-zinc-500 text-[12px]">since {weekLabel}</span>
+      </span>
+      <span className="text-zinc-500">throughput</span>
+      <span className="flex flex-wrap items-baseline gap-x-3">
+        <span>
+          <span className="text-zinc-100">{p.lastHour}</span>
+          <span className="text-zinc-500">/hr last 1h</span>
+        </span>
+        <span className="text-zinc-500">avg </span>
+        <span className="text-zinc-100">{p.ratePerHour.toFixed(1)}</span>
+        <span className="text-zinc-500">/hr</span>
+        <span className="text-zinc-500">12h </span>
+        <span
+          className="text-emerald-400 font-mono whitespace-pre"
+          title={p.buckets12h.join(" / ")}
+        >
+          {sparkline(p.buckets12h)}
+        </span>
+      </span>
+      <span className="text-zinc-500">eta</span>
+      <span>
+        {idle ? (
+          <>
+            <span className="text-amber-400">idle</span>
+            <span className="text-zinc-500"> · {p.remainingThisWeek} deployments still to evaluate this week</span>
+          </>
+        ) : p.remainingThisWeek === 0 ? (
+          <span className="text-emerald-400">done · all deployments evaluated this week</span>
+        ) : (
+          <>
+            <span className="text-zinc-100">{fmtEta(p.etaHours)}</span>
+            <span className="text-zinc-500"> at {p.ratePerHour.toFixed(1)}/hr · {p.remainingThisWeek} remaining</span>
+          </>
+        )}
+      </span>
+    </div>
+  );
+}
+
 // ─── deployment row ──────────────────────────────────────────────────────────
 
 function V5DeploymentRowView({
@@ -451,6 +534,9 @@ function V5DeploymentRowView({
   const currentN = row.gate.currentCellStat?.trades ?? null;
   const currentExpStr =
     currentR === null ? "—" : `${currentR >= 0 ? "+" : ""}${currentR.toFixed(2)}R${currentN !== null ? `(${currentN}t)` : ""}`;
+  const netRStr = `${row.totalNetR >= 0 ? "+" : ""}${row.totalNetR.toFixed(2)}R`;
+  const netRColor =
+    row.totalNetR > 0 ? "text-emerald-400" : row.totalNetR < 0 ? "text-rose-400" : "text-zinc-500";
   const decisionGlyph = V5_DECISION_GLYPH[decision];
   const decisionLabel = V5_DECISION_LABEL[decision];
   const decisionColor = V5_DECISION_COLOR[decision];
@@ -488,7 +574,10 @@ function V5DeploymentRowView({
             </span>
             <span className="text-zinc-500 text-[12px]">{row.session}</span>
             <span className={`${decisionColor} text-[12px]`}>{decisionLabel}</span>
-            <span className="ml-auto text-zinc-500">{expanded ? "▾" : "▸"}</span>
+            <span className={`${netRColor} text-[12px] ml-auto`} title="total 12w netR across all cells">
+              {netRStr}
+            </span>
+            <span className="text-zinc-500">{expanded ? "▾" : "▸"}</span>
           </div>
           <div className="pl-5 text-[12px] text-zinc-400 truncate" title={row.tuneId}>
             {family}
@@ -502,7 +591,7 @@ function V5DeploymentRowView({
             </span>
           </div>
         </div>
-        <div className="hidden md:grid md:grid-cols-[1rem_1.25rem_4rem_8rem_5rem_5rem_8rem_1fr_1rem] md:gap-x-2 md:items-baseline">
+        <div className="hidden md:grid md:grid-cols-[1rem_1.25rem_4rem_8rem_5rem_5rem_6rem_7rem_1fr_1rem] md:gap-x-2 md:items-baseline">
           {enabledMark}
           <span className={decisionColor}>{decisionGlyph}</span>
           <span className="text-zinc-500">{row.venue}</span>
@@ -510,6 +599,12 @@ function V5DeploymentRowView({
           <span className="text-zinc-500">{row.session}</span>
           <span className={`${decisionColor} text-[13px] truncate`} title={decision}>
             {decisionLabel}
+          </span>
+          <span
+            className={`${netRColor} text-right`}
+            title="total 12w netR across all cells"
+          >
+            {netRStr}
           </span>
           <span
             className={currentR === null ? "text-zinc-500" : currentR >= 0 ? "text-emerald-400" : "text-rose-400"}

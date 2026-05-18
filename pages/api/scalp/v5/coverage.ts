@@ -8,6 +8,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../lib/admin";
 import { setNoStoreHeaders } from "../../../../lib/scalp-v2/http";
+import { startOfUtcWeekMondayMs } from "../../../../lib/scalp-v4/week";
 import {
   isScalpV5Enabled,
   isScalpV5HardGateEnabled,
@@ -33,36 +34,85 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ),
     );
     const staleBefore = new Date(nowMs - staleThresholdMs);
+    const weekStartMs = startOfUtcWeekMondayMs(nowMs);
+    const weekStart = new Date(weekStartMs);
+    const lastHourBefore = new Date(nowMs - 60 * 60_000);
+    const last12hBefore = new Date(nowMs - 12 * 60 * 60_000);
     const db = scalpPrisma();
-    const rows = await db.$queryRaw<Array<{
-      totalDeployments: bigint;
-      enabledDeployments: bigint;
-      evaluated: bigint;
-      missingEvidence: bigint;
-      stale: bigint;
-      latestEvaluatedAt: Date | null;
-      oldestEvaluatedAt: Date | null;
-    }>>(sql`
-      SELECT
-        COUNT(*) AS "totalDeployments",
-        COUNT(*) FILTER (WHERE enabled = TRUE) AS "enabledDeployments",
-        COUNT(*) FILTER (WHERE v5_evaluated_at IS NOT NULL) AS "evaluated",
-        COUNT(*) FILTER (WHERE v5_evaluated_at IS NULL) AS "missingEvidence",
-        COUNT(*) FILTER (WHERE v5_evaluated_at IS NOT NULL AND v5_evaluated_at < ${staleBefore}) AS "stale",
-        MAX(v5_evaluated_at) AS "latestEvaluatedAt",
-        MIN(v5_evaluated_at) AS "oldestEvaluatedAt"
-      FROM scalp_v2_deployments
-      WHERE candidate_id IS NOT NULL;
-    `);
-    const r = rows[0] || {
+
+    // Aggregate counts + 12h throughput in two parallel queries. The bucket
+    // query is grouped by hour so the UI can render a sparkline; missing
+    // hours are filled with 0 client-side / here below.
+    const [aggRows, bucketRows] = await Promise.all([
+      db.$queryRaw<Array<{
+        totalDeployments: bigint;
+        enabledDeployments: bigint;
+        evaluated: bigint;
+        missingEvidence: bigint;
+        stale: bigint;
+        evaluatedThisWeek: bigint;
+        evaluatedLastHour: bigint;
+        latestEvaluatedAt: Date | null;
+        oldestEvaluatedAt: Date | null;
+      }>>(sql`
+        SELECT
+          COUNT(*) AS "totalDeployments",
+          COUNT(*) FILTER (WHERE enabled = TRUE) AS "enabledDeployments",
+          COUNT(*) FILTER (WHERE v5_evaluated_at IS NOT NULL) AS "evaluated",
+          COUNT(*) FILTER (WHERE v5_evaluated_at IS NULL) AS "missingEvidence",
+          COUNT(*) FILTER (WHERE v5_evaluated_at IS NOT NULL AND v5_evaluated_at < ${staleBefore}) AS "stale",
+          COUNT(*) FILTER (WHERE v5_evaluated_at >= ${weekStart}) AS "evaluatedThisWeek",
+          COUNT(*) FILTER (WHERE v5_evaluated_at >= ${lastHourBefore}) AS "evaluatedLastHour",
+          MAX(v5_evaluated_at) AS "latestEvaluatedAt",
+          MIN(v5_evaluated_at) AS "oldestEvaluatedAt"
+        FROM scalp_v2_deployments
+        WHERE candidate_id IS NOT NULL;
+      `),
+      db.$queryRaw<Array<{ hourStart: Date; n: bigint }>>(sql`
+        SELECT
+          date_trunc('hour', v5_evaluated_at) AS "hourStart",
+          COUNT(*) AS "n"
+        FROM scalp_v2_deployments
+        WHERE candidate_id IS NOT NULL
+          AND v5_evaluated_at >= ${last12hBefore}
+        GROUP BY 1
+        ORDER BY 1 ASC;
+      `),
+    ]);
+    const r = aggRows[0] || {
       totalDeployments: BigInt(0),
       enabledDeployments: BigInt(0),
       evaluated: BigInt(0),
       missingEvidence: BigInt(0),
       stale: BigInt(0),
+      evaluatedThisWeek: BigInt(0),
+      evaluatedLastHour: BigInt(0),
       latestEvaluatedAt: null,
       oldestEvaluatedAt: null,
     };
+
+    // Fill 12 hourly buckets oldest→newest (last bucket is the partial
+    // current hour). UI renders this as a sparkline.
+    const buckets12h: number[] = new Array(12).fill(0);
+    const nowHourStart = Math.floor(nowMs / (60 * 60_000)) * (60 * 60_000);
+    for (const row of bucketRows) {
+      const bucketMs = row.hourStart.getTime();
+      const hoursAgo = Math.floor((nowHourStart - bucketMs) / (60 * 60_000));
+      if (hoursAgo >= 0 && hoursAgo < 12) {
+        buckets12h[11 - hoursAgo] = Number(row.n);
+      }
+    }
+
+    // ETA = (total - evaluatedThisWeek) / hourly rate.
+    // Prefer the 12h average to smooth bursty workers; fall back to the
+    // last-hour count if 12h is zero (cold start).
+    const total = Number(r.totalDeployments);
+    const evaluatedThisWeek = Number(r.evaluatedThisWeek);
+    const lastHour = Number(r.evaluatedLastHour);
+    const last12hSum = buckets12h.reduce((a, b) => a + b, 0);
+    const ratePerHour = last12hSum > 0 ? last12hSum / 12 : lastHour;
+    const remainingThisWeek = Math.max(0, total - evaluatedThisWeek);
+    const etaHours = ratePerHour > 0 ? remainingThisWeek / ratePerHour : null;
 
     return res.status(200).json({
       ok: true,
@@ -85,6 +135,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         missingEvidence: Number(r.missingEvidence),
         stale: Number(r.stale),
         staleThresholdMs,
+      },
+      progress: {
+        weekStartMs,
+        evaluatedThisWeek,
+        remainingThisWeek,
+        lastHour,
+        buckets12h,
+        ratePerHour,
+        etaHours,
       },
     });
   } catch (err) {

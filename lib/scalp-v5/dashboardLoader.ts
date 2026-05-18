@@ -46,6 +46,9 @@ export interface V5DashboardDeploymentRow {
   currentCell: { cellId: string | null; stale: boolean; updatedAtMs: number | null };
   decision: V5GateDecision;
   currentCellStat: ScalpV5CellStat | null;
+  // Sum of netR across every cell in the evidence (12w holdout total). 0 when
+  // evidence is missing. Used as the deployment-list sort key.
+  totalNetR: number;
 }
 
 export interface V5DashboardLoad {
@@ -233,6 +236,12 @@ export async function loadV5DashboardData(): Promise<V5DashboardLoad> {
       minTradesPerCell: cfg.minTradesPerCell,
     });
     const currentCellStat = currentCellId && evidence ? evidence.cells[currentCellId] ?? null : null;
+    let totalNetR = 0;
+    if (evidence) {
+      for (const stat of Object.values(evidence.cells)) {
+        totalNetR += Number(stat.netR) || 0;
+      }
+    }
 
     rows.push({
       deploymentId: r.deploymentId,
@@ -249,6 +258,7 @@ export async function loadV5DashboardData(): Promise<V5DashboardLoad> {
       currentCell: { cellId: currentCellId, stale: regimeStale, updatedAtMs: snapUpdatedAtMs },
       decision,
       currentCellStat,
+      totalNetR,
     });
   }
 

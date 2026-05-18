@@ -21,7 +21,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const data = await loadV5DashboardData();
-    const deployments = data.rows.map((row) => {
+    // Sort: enabled rows first (kept visible at the top), then totalNetR
+    // descending so the winners surface within each group.
+    const sortedRows = [...data.rows].sort((a, b) => {
+      if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+      return b.totalNetR - a.totalNetR;
+    });
+    const deployments = sortedRows.map((row) => {
       const cells = shapeCellsForDeployment(row);
       const totalTrades = cells.reduce((acc, c) => acc + c.trades, 0);
       return {
@@ -52,6 +58,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           ? { fromMs: row.evidence.holdoutFromMs, toMs: row.evidence.holdoutToMs }
           : null,
         totalTrades,
+        totalNetR: row.totalNetR,
         cells,
       };
     });
