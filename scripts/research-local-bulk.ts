@@ -49,13 +49,15 @@ if (process.env.SCALP_PG_USE_HTTP === undefined) {
   process.env.SCALP_PG_USE_HTTP = '1';
 }
 
-type BulkResearchVersion = 'v2' | 'v4';
+type BulkResearchVersion = 'v2' | 'v4' | 'v5';
 
 function resolveBulkResearchVersion(): BulkResearchVersion {
   const raw = String(process.env.BULK_RESEARCH_VERSION || process.env.SCALP_RESEARCH_VERSION || 'v4')
     .trim()
     .toLowerCase();
-  return raw === 'v2' || raw === 'legacy' || raw === 'legacy_v2' ? 'v2' : 'v4';
+  if (raw === 'v5') return 'v5';
+  if (raw === 'v2' || raw === 'legacy' || raw === 'legacy_v2') return 'v2';
+  return 'v4';
 }
 
 const BULK_RESEARCH_VERSION = resolveBulkResearchVersion();
@@ -261,6 +263,26 @@ async function getRunScalpV4ResearchJob() {
   return runScalpV4ResearchJob;
 }
 
+const BULK_V5_LIMIT = Math.max(1, Math.min(500, Math.floor(envNumber('BULK_V5_LIMIT', 25))));
+const BULK_V5_STALE_OLDER_THAN_HOURS = Math.max(
+  1,
+  Math.min(24 * 14, Math.floor(envNumber('BULK_V5_STALE_OLDER_THAN_HOURS', 24 * 6))),
+);
+
+let runScalpV5EvaluationBatch: ((params?: {
+  limit?: number;
+  staleOlderThanMs?: number;
+  nowMs?: number;
+}) => Promise<import('../lib/scalp-v5/evaluator').ScalpV5BulkResult>) | null = null;
+
+async function getRunScalpV5EvaluationBatch() {
+  if (!runScalpV5EvaluationBatch) {
+    const mod = await import('../lib/scalp-v5/evaluator');
+    runScalpV5EvaluationBatch = mod.runScalpV5EvaluationBatch;
+  }
+  return runScalpV5EvaluationBatch;
+}
+
 function currentWindowToTs(): number {
   return resolveScalpV2CompletedWeekWindowToUtc(Date.now());
 }
@@ -309,8 +331,53 @@ async function runBatch(): Promise<boolean> {
   applyRuntimeOverrides();
   const batchLabel = BULK_RESEARCH_VERSION === 'v4'
     ? `${candidateBatchSize} v4 candidates`
-    : `${symbolsPerBatch} symbols`;
+    : BULK_RESEARCH_VERSION === 'v5'
+      ? `up to ${BULK_V5_LIMIT} v5 deployments`
+      : `${symbolsPerBatch} symbols`;
   console.log(`\n--- Batch ${batchCount} (${batchLabel}, elapsed ${((Date.now() - globalStart) / 60000).toFixed(1)}m) ---`);
+
+  if (BULK_RESEARCH_VERSION === 'v5') {
+    const runEval = await getRunScalpV5EvaluationBatch();
+    const result = await runEval({
+      limit: BULK_V5_LIMIT,
+      staleOlderThanMs: BULK_V5_STALE_OLDER_THAN_HOURS * 60 * 60 * 1000,
+    });
+    const elapsed = ((Date.now() - batchStart) / 1000).toFixed(1);
+    totalProcessed += result.processed;
+    totalSucceeded += result.succeeded;
+    console.log(
+      `  ${elapsed}s | v5 processed=${result.processed} succeeded=${result.succeeded} failed=${result.failed} enabled=${result.enabled} disabled=${result.disabled}`,
+    );
+    console.log(
+      `  v5 config: classifier=${result.details.classifierVersion} holdoutWeeks=${result.details.holdoutWeeks} minTradesPerCell=${result.details.minTradesPerCell}`,
+    );
+    const failureReasons = result.outcomes
+      .filter((o) => !o.ok && o.reason)
+      .reduce<Record<string, number>>((acc, o) => {
+        const reason = String(o.reason || 'unknown').split(':')[0]!;
+        acc[reason] = (acc[reason] || 0) + 1;
+        return acc;
+      }, {});
+    if (Object.keys(failureReasons).length > 0) {
+      console.log(`  v5 failure reasons: ${summarizeCounts(failureReasons)}`);
+    }
+    if (BULK_DEBUG) {
+      for (const o of result.outcomes) {
+        console.log(
+          `  v5 ${o.deploymentId} ok=${o.ok}${o.enabled !== undefined ? ` enabled=${o.enabled}` : ''}${o.tradeCount !== undefined ? ` trades=${o.tradeCount}` : ''}${o.eligibleCells && o.eligibleCells.length > 0 ? ` cells=[${o.eligibleCells.join('|')}]` : ''}${o.reason ? ` reason=${o.reason}` : ''} (${formatDuration(o.durationMs)})`,
+        );
+      }
+    }
+    if (MAX_BATCHES > 0 && batchCount >= MAX_BATCHES) {
+      console.log(`\n  Reached max batches (${MAX_BATCHES}) — stopping.`);
+      return false;
+    }
+    if (result.processed === 0) {
+      console.log('\n  No v5 deployments needed evaluation — done for now.');
+      return false;
+    }
+    return true;
+  }
 
   if (BULK_RESEARCH_VERSION === 'v4') {
     const runResearch = await getRunScalpV4ResearchJob();

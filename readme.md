@@ -206,6 +206,15 @@ MARKETAUX_API_KEY=...
 # SCALP_HOUSEKEEPING_JOURNAL_MAX=500
 # SCALP_HOUSEKEEPING_TRADE_LEDGER_MAX=10000
 
+# Scalp v5 — per-regime-cell entry gate (see "Scalp v5" section below)
+# SCALP_V5_ENABLED=true                  # default ON; set to 0/false to disable the gate entirely
+# SCALP_V5_HARD_GATE=true                # default ON; set to 0/false for shadow-only blocks (logged with *_SHADOW suffix)
+# SCALP_V5_HOLDOUT_WEEKS=12              # how many weeks of replay the evaluator buckets by cell
+# SCALP_V5_MIN_TRADES_PER_CELL=8         # min trades in a cell before its expectancy can gate entries
+# SCALP_V5_CLASSIFIER_VERSION=scalp_v4_macro_weekly_r1   # which regime classifier produces the cell labels
+# BULK_V5_LIMIT=25                       # bulk evaluator: max deployments per batch
+# BULK_V5_STALE_OLDER_THAN_HOURS=144     # bulk evaluator: re-evaluate rows older than this (default 6 days)
+
 # KV (Upstash REST)
 upstash_payasyougo_KV_REST_API_URL=https://...
 upstash_payasyougo_KV_REST_API_TOKEN=...
@@ -609,6 +618,68 @@ node --import tsx scripts/scalp-replay-matrix.ts \
   - Single replay: `summary.json`, `config.json`, `trades.json`, `timeline.json`, `trades.csv`, `timeline.csv`
   - Matrix replay: `matrix.summary.json`, `matrix.summary.csv`, `matrix.scenarios.csv`
   - `matrix.summary.json` includes both per-run rows and scenario-level robustness summaries (`tradeCoveragePct`, `avgNetR`, `worstMaxDrawdownR`, `robustnessScore`).
+
+## Scalp v5 — Per-Regime-Cell Entry Gate
+
+### Why
+
+The earlier v4 layer ran a full 104-week walk-forward per stage-C survivor every week to compute per-regime-cell expectancy, then gated entries on "current cell is in an `eligible` envelope." Empirical post-mortem (`scripts/scalp-v4-cell-stability.ts`): sign agreement between older-half and newer-half per-cell expectancy was only ~67% with pearson r ≈ 0.39, so the 2-year walk's *positive* prediction was ~52% (coin flip) while its *negative* prediction was ~75%. Most of v4's value was a kill-switch on live deployments, and computing it across 698+ stage-C survivors every Monday was ~290 compute-hours for a coin-flip selection signal.
+
+v5 replaces the weekly 2-year walk with a cheaper, fresher signal:
+
+- Reuse the **12-week recency replay** that v3 already does at stage C.
+- Tag each replayed trade with the **regime cell active at its `entryTs`** (week-aligned lookup against `scalp_regime_snapshots`).
+- Aggregate `{trades, netR, expectancyR}` per cell and persist to the deployment row.
+- At entry time, look up the **current cell** for the deployment's symbol from the latest snapshot, and allow/block based on that cell's stored evidence.
+
+The v4 regime classifier (the `vol × trend × risk` 3×3×3 cell taxonomy and weekly snapshot table) is reused. The 104-week walk-forward sweep is no longer load-bearing; v5 obsoletes its role at the live entry path.
+
+### Components
+
+| File | Role |
+|---|---|
+| `lib/scalp-v5/index.ts` | Types, config, pure helpers: `tagTradesWithCells`, `buildScalpV5CellEvidence`, `resolveScalpV5EntryBlock` |
+| `lib/scalp-v5/pg.ts` | DB layer: load deployments needing (re-)evaluation, upsert evidence (targeted three-column UPDATE), read evidence for the live gate |
+| `lib/scalp-v5/evaluator.ts` | Orchestration: replay 12 weeks of 1m candles → cell-tag trades → persist evidence; `runScalpV5EvaluationBatch` iterates over enabled deployments |
+| `prisma/migrations/20260518120000_scalp_v5_cell_evidence/` | Adds `v5_cell_evidence JSONB`, `v5_enabled BOOLEAN`, `v5_evaluated_at TIMESTAMPTZ` to `scalp_v2_deployments` plus two partial indexes |
+| `lib/scalp-v2/pipeline.ts` (entry-execute loop) | Calls `resolveScalpV5EntryBlock` next to the v4 envelope check; appends v5 reasons to `entryBlockReasonCodes` and records `v5CellGate` in every `position_snapshot` event |
+
+### Gate decision matrix (at live entry time)
+
+| Deployment state | Result |
+|---|---|
+| `v5_evaluated_at IS NULL` (evaluator hasn't run yet on this row) | **Permissive** — `V5_CELL_EVIDENCE_MISSING` reason logged, no block. Falls through to upstream gates. |
+| Evaluator ran, current cell in evidence with `expectancyR > 0` and `trades >= SCALP_V5_MIN_TRADES_PER_CELL` | **Allow** |
+| Evaluator ran, current cell in evidence but `expectancyR <= 0` | **Block** with `V5_CELL_NEGATIVE_EXPECTANCY` |
+| Evaluator ran, current cell unseen in 12-week replay | **Block** with `V5_CELL_NOT_IN_EVIDENCE` |
+| Evaluator ran but regime snapshot stale or missing | **Block** with `V5_CELL_DATA_STALE` |
+| `SCALP_V5_ENABLED=0` | Gate disabled entirely, no reason codes emitted |
+| `SCALP_V5_HARD_GATE=0` | Block conditions emit `*_SHADOW` reason codes only; trades are not actually blocked |
+
+All gate outcomes (allow, block, shadow) are recorded on each `position_snapshot` event as `rawPayload.v5CellGate.{reasonCodes, matchedCellId, evidence, v5Enabled, evaluatedAtMs}` for inspection without touching the DB.
+
+### Running the v5 evaluator
+
+The evaluator is driven via the existing bulk runner:
+
+```bash
+BULK_RESEARCH_VERSION=v5 npm exec tsx scripts/research-local-bulk.ts
+```
+
+Per batch the script:
+
+1. Pulls up to `BULK_V5_LIMIT` deployments where `enabled = TRUE` AND (`v5_evaluated_at IS NULL` OR `v5_evaluated_at < NOW() - BULK_V5_STALE_OLDER_THAN_HOURS`).
+2. For each, replays the last `SCALP_V5_HOLDOUT_WEEKS` of 1m candles (typically 30s–2min), bulk-loads regime snapshots, tags trades by cell, persists `v5_cell_evidence`.
+3. Sets `v5_enabled = TRUE` if any cell meets `trades >= SCALP_V5_MIN_TRADES_PER_CELL` AND `expectancyR > 0`.
+
+The evaluator only acts on already-promoted (`enabled=true`) deployments, so the candidate pool is the small live set (~4 typical, single-digit in practice), not the full 698-row stage-C survivor list. This is the structural reason v5 is cheap.
+
+### Operational notes
+
+- **Default-ON** for both `SCALP_V5_ENABLED` and `SCALP_V5_HARD_GATE`. Missing evidence is treated as permissive (not a block) so flipping the master switch live doesn't strand deployments that haven't been evaluated yet — they pass through unaffected until the next bulk pass populates evidence.
+- **Coexists with v4.** v5 lives alongside v4 in the entry-gate chain; the regime snapshot lookup is shared (one DB call covers both gates). v4 can be left running until v5 is trusted, then disabled via `SCALP_V4_ENABLED=0` independently.
+- **No new cron job.** v5 evaluation runs only when you trigger the bulk script. Cadence can be moved to a scheduled cron later once latency requirements are clear.
+- **No dashboard yet.** Inspect via the `position_snapshot` event payload, or query `SELECT deployment_id, v5_enabled, v5_evaluated_at, v5_cell_evidence FROM scalp_v2_deployments WHERE v5_evaluated_at IS NOT NULL`.
 
 ## Data Flow
 

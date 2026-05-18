@@ -71,6 +71,13 @@ import {
   resolveScalpV4EnvelopeBlock,
 } from "../scalp-v4";
 import {
+  isScalpV5Enabled,
+  isScalpV5HardGateEnabled,
+  resolveScalpV5Config,
+  resolveScalpV5EntryBlock,
+} from "../scalp-v5";
+import { loadScalpV5DeploymentEvidence } from "../scalp-v5/pg";
+import {
   appendScalpV2ExecutionEvent,
   backfillScalpV2DeploymentHoldout,
   buildScalpV2JobResult,
@@ -6755,7 +6762,11 @@ export async function runScalpV2ExecuteJob(params: {
 	          activeEvents: [],
 	        }));
 	        const v4Enabled = isScalpV4Enabled();
-	        const v4CurrentRegime = v4Enabled
+	        const v5Enabled = isScalpV5Enabled();
+	        // The regime snapshot is shared between v4 and v5 — fetch once if
+	        // either gate needs it. Avoids a round-trip when only one is on.
+	        const needsRegimeSnapshot = v4Enabled || v5Enabled;
+	        const v4CurrentRegime = needsRegimeSnapshot
 	          ? await loadScalpV4CurrentRegimeSnapshot({
 	              venue: deployment.venue,
 	              symbol: deployment.symbol,
@@ -6768,6 +6779,20 @@ export async function runScalpV2ExecuteJob(params: {
 	          envelope: asRecord(deployment.promotionGate).regimeEnvelope,
 	          currentCellId: v4CurrentRegime.cellId,
 	          stale: Boolean(v4CurrentRegime.stale),
+	        });
+	        const v5Cfg = resolveScalpV5Config();
+	        const v5Stored = v5Enabled
+	          ? await loadScalpV5DeploymentEvidence({
+	              deploymentId: deployment.deploymentId,
+	            }).catch(() => null)
+	          : null;
+	        const v5Gate = resolveScalpV5EntryBlock({
+	          enabled: v5Enabled && Boolean(v5Stored?.v5Enabled),
+	          hardGate: isScalpV5HardGateEnabled(),
+	          evidence: v5Stored?.evidence ?? null,
+	          currentCellId: v4CurrentRegime.cellId,
+	          stale: Boolean(v4CurrentRegime.stale),
+	          minTradesPerCell: v5Cfg.minTradesPerCell,
 	        });
 	        const promotionEntryBlockReasonCodes = normalizeReasonCodes(
 	          asRecord(deployment.promotionGate).entryBlockReasonCodes,
@@ -6784,6 +6809,7 @@ export async function runScalpV2ExecuteJob(params: {
 	            ...promotionEntryBlockReasonCodes,
 	            ...(newsBlackout.blocked ? newsBlackout.reasonCodes : []),
 	            ...(v4RegimeGate.blocked ? v4RegimeGate.reasonCodes : []),
+	            ...(v5Gate.blocked || v5Gate.shadowOnly ? v5Gate.reasonCodes : []),
 	          ]),
 	        });
         const runtimeSnapshot = buildScalpV2RuntimeSnapshotForDeployment({
@@ -6824,6 +6850,11 @@ export async function runScalpV2ExecuteJob(params: {
 	                ...v4RegimeGate,
 	                currentCellId: v4CurrentRegime.cellId,
 	                snapshot: v4CurrentRegime.snapshot,
+	              },
+	              v5CellGate: {
+	                ...v5Gate,
+	                evaluatedAtMs: v5Stored?.v5EvaluatedAtMs ?? null,
+	                v5Enabled: Boolean(v5Stored?.v5Enabled),
 	              },
 	            },
           }),
