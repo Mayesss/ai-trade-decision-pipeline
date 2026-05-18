@@ -38,6 +38,11 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
   staleOlderThanMs?: number;
   nowMs?: number;
   onlyEnabled?: boolean;
+  // When set, restrict the result to a disjoint slice of deployments based on
+  // a stable hash of deployment_id. Multiple bulk processes can each take a
+  // different shardIndex and run in parallel without overlapping rows.
+  shardCount?: number;
+  shardIndex?: number;
 }): Promise<ScalpV5DeploymentRow[]> {
   if (!isScalpPgConfigured()) return [];
   const limit = Math.max(1, Math.min(500, Math.floor(Number(params.limit || 50))));
@@ -48,6 +53,18 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
   const onlyEnabled = Boolean(params.onlyEnabled);
   const nowMs = Math.floor(Number(params.nowMs || Date.now()));
   const staleBefore = new Date(nowMs - staleOlderThanMs);
+  // Shard normalisation: count >= 2 enables filtering; otherwise unsharded.
+  const shardCountRaw = Math.floor(Number(params.shardCount || 1));
+  const shardCount = Number.isFinite(shardCountRaw) && shardCountRaw >= 2
+    ? Math.max(2, Math.min(128, shardCountRaw))
+    : 1;
+  const shardIndexRaw = Math.floor(Number(params.shardIndex || 0));
+  const shardIndex = shardCount > 1
+    ? Math.max(0, Math.min(shardCount - 1, Number.isFinite(shardIndexRaw) ? shardIndexRaw : 0))
+    : 0;
+  // hashtext() returns a signed int32; mask the sign bit so the modulo is
+  // always non-negative without the abs(INT_MIN) edge case.
+  const sharded = shardCount > 1;
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{
     deploymentId: string;
@@ -78,6 +95,10 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
     WHERE candidate_id IS NOT NULL
       AND (${onlyEnabled} = FALSE OR enabled = TRUE)
       AND (v5_evaluated_at IS NULL OR v5_evaluated_at < ${staleBefore})
+      AND (
+        ${sharded} = FALSE
+        OR ((hashtext(deployment_id) & 2147483647) % ${shardCount}) = ${shardIndex}
+      )
     ORDER BY enabled DESC, v5_evaluated_at ASC NULLS FIRST, updated_at DESC
     LIMIT ${limit};
   `);

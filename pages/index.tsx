@@ -1,169 +1,25 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import Head from "next/head";
-import Link from "next/link";
+import {
+  AdminSecretPanel,
+  DashboardHeader,
+  PageShell,
+  SectionHeader,
+  Skeleton,
+  V5_DECISION_COLOR,
+  V5_DECISION_GLYPH,
+  V5_DECISION_LABEL,
+  type V5GateDecision,
+  abbrCell,
+  bar,
+  fetchOne,
+  fmtAgo,
+  fmtClock,
+  useAdminSecretLoader,
+} from "../components/scalp/shared";
+import { WeeklyNetRTrack } from "../components/scalp/WeeklyNetRTrack";
 
-// Storage key shared with the legacy page so the admin secret transfers freely.
-const ADMIN_SECRET_STORAGE_KEY = "admin_access_secret";
-
-function readStoredAdminSecret(): string {
-  if (typeof window === "undefined") return "";
-  try {
-    return (window.localStorage.getItem(ADMIN_SECRET_STORAGE_KEY) || "").trim();
-  } catch {
-    return "";
-  }
-}
-
-function persistAdminSecret(value: string): void {
-  if (typeof window === "undefined") return;
-  try {
-    const normalized = value.trim();
-    if (normalized) window.localStorage.setItem(ADMIN_SECRET_STORAGE_KEY, normalized);
-    else window.localStorage.removeItem(ADMIN_SECRET_STORAGE_KEY);
-  } catch {
-    /* ignore */
-  }
-}
-
-type V4Status =
-  | "trading"
-  | "dormant_wrong_regime"
-  | "dormant_no_regime"
-  | "pending_walkforward"
-  | "eligible_not_promoted"
-  | "failed_walkforward"
-  | "disabled";
-
-interface CellDetail {
-  cellId: string;
-  windows: number;
-  trades: number;
-  distinctEpochCount: number;
-  netR: number;
-  expectancyR: number;
-  positiveWindowPct: number;
-  p25ExpectancyR: number;
-  maxDrawdownR: number;
-  crossRegimeTradePct: number;
-  bootstrapP05ExpectancyR: number | null;
-  sharpe: number | null;
-  deflatedScore: number | null;
-  strictPassed: boolean;
-  relaxedPassed: boolean;
-  reason: string | null;
-  windowExpectancyR: number[] | null;
-}
-
-interface DeploymentRow {
-  deploymentId: string;
-  venue: string;
-  symbol: string;
-  session: string;
-  strategyId: string;
-  tuneId: string;
-  enabled: boolean;
-  liveMode: string;
-  v4Status: V4Status;
-  envelope: {
-    eligible: boolean;
-    status: string | null;
-    allowedCells: string[];
-    occupiedCells: number;
-    strictPassingCells: number;
-    cells?: CellDetail[];
-  };
-  currentRegime: { cellId: string | null; stale: boolean; updatedAtMs: number | null; weeksInCell: number | null };
-  lastEntryAtMs: number | null;
-  openPositionCount: number;
-  reason: string | null;
-  score: number | null;
-}
-
-interface WalkforwardRow {
-  deploymentId: string;
-  venue: string;
-  symbol: string;
-  status: string;
-  eligible: boolean;
-  allowedCells: string[];
-  strictPassingCells: number;
-  occupiedCells: number;
-  evaluatedAtMs: number;
-  durationMs: number | null;
-}
-
-interface TransitionRow {
-  venue: string;
-  symbol: string;
-  transitionWeekStartMs: number;
-  fromCellId: string | null;
-  toCellId: string;
-}
-
-interface TradeRow {
-  tsMs: number;
-  deploymentId: string | null;
-  venue: string | null;
-  symbol: string | null;
-  reasonCodes: string[];
-  eventKind: "trade" | "entry_error" | "entry_skipped" | "state_change";
-  state: string;
-  stateChanged: boolean;
-  tradeEventOccurred: boolean;
-  rMultiple: number | null;
-  summary: string;
-}
-
-interface HealthResp {
-  ok: boolean;
-  classifierVersion: string;
-  v4Enabled: boolean;
-  v4HardGateEnabled: boolean;
-  stageCSurvivors: number;
-  walkforwardCounts: Record<string, number>;
-  walkforwardTotal: number;
-  pendingWalkforward: number;
-  regimeBuild: { symbolsCovered: number; latestWeekStartMs: number | null };
-  throughput: {
-    lastHour: number;
-    buckets12h: number[];
-    etaHours: number | null;
-  };
-  rollover: {
-    currentWeekStartMs: number;
-    previousWeekStartMs: number;
-    walkedThisWeek: number;
-    walkedLastWeek: number;
-    regimesBuiltThisWeek: number;
-    regimesExpected: number;
-    newSurvivorsDiscovered: number;
-    newSurvivorsWalked: number;
-  };
-}
-
-interface DeploymentsResp {
-  ok: boolean;
-  classifierVersion: string;
-  deployments: DeploymentRow[];
-  statusHistogram: Record<V4Status, number>;
-}
-
-interface RecentResp {
-  ok: boolean;
-  classifierVersion: string;
-  recentWalkforward: WalkforwardRow[];
-  recentTransitions: TransitionRow[];
-  recentTrades: TradeRow[];
-}
-
-// v5 (per-regime-cell entry gate) types
-type V5GateDecision =
-  | "allow"
-  | "block_negative"
-  | "block_unseen"
-  | "block_stale"
-  | "block_evaluator_pending"
-  | "block_insufficient_trades";
+// ─── types (mirror /api/scalp/v5/* + /api/scalp/v4/recent) ───────────────────
 
 interface V5CellRow {
   cellId: string;
@@ -218,175 +74,47 @@ interface V5DashboardResp {
   deployments: V5DeploymentRow[];
 }
 
-// ─── formatting helpers ───────────────────────────────────────────────────────
-
-function fmtAgo(ms: number | null | undefined): string {
-  if (!ms) return "—";
-  const diff = Math.max(0, Date.now() - ms);
-  const sec = Math.floor(diff / 1000);
-  if (sec < 60) return `${sec}s`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m`;
-  const hr = Math.floor(min / 60);
-  if (hr < 48) return `${hr}h`;
-  return `${Math.floor(hr / 24)}d`;
+interface TradeRow {
+  tsMs: number;
+  deploymentId: string | null;
+  venue: string | null;
+  symbol: string | null;
+  reasonCodes: string[];
+  eventKind: "trade" | "entry_error" | "entry_skipped" | "state_change";
+  state: string;
+  stateChanged: boolean;
+  tradeEventOccurred: boolean;
+  rMultiple: number | null;
+  summary: string;
 }
 
-function fmtClock(ms: number | null | undefined): string {
-  if (!ms) return "—";
-  const d = new Date(ms);
-  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+interface RecentResp {
+  ok: boolean;
+  classifierVersion: string;
+  recentTrades: TradeRow[];
 }
 
-function fmtWeek(ms: number | null | undefined): string {
-  if (!ms) return "—";
-  const d = new Date(ms);
-  const year = d.getUTCFullYear();
-  const start = Date.UTC(year, 0, 1);
-  const week = Math.floor((d.getTime() - start) / (7 * 24 * 60 * 60_000)) + 1;
-  return `W${String(week).padStart(2, "0")}`;
-}
+// Holdout NetR ordering: weeklyNetR comes in as an object/array keyed by week
+// in the evidence. The API serializes it in ascending week order, so the
+// rendering can use it as-is (oldest → newest, left → right).
+const DECISION_ORDER: V5GateDecision[] = [
+  "allow",
+  "block_negative",
+  "block_unseen",
+  "block_insufficient_trades",
+  "block_stale",
+  "block_evaluator_pending",
+];
 
-// Unicode block sparkline — 8 levels. Renders the array left-to-right as-given;
-// callers should pass values in oldest→newest order (natural time flow).
-// Handles negative values by anchoring the bottom of the scale at min(0, min)
-// and the top at max(0, max) so positive bars grow up and negative bars stay
-// near the baseline.
-function sparkline(values: number[]): string {
-  const chars = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-  if (values.length === 0) return "";
-  const min = Math.min(0, ...values);
-  const max = Math.max(0, ...values);
-  const range = max - min;
-  return values
-    .map((n) => {
-      if (range === 0) return " ";
-      const norm = (n - min) / range;
-      const idx = Math.max(0, Math.min(chars.length - 1, Math.floor(norm * chars.length)));
-      return chars[idx];
-    })
-    .join("");
-}
+// ─── page ────────────────────────────────────────────────────────────────────
 
-function fmtEta(hours: number | null): string {
-  if (hours === null || !Number.isFinite(hours)) return "—";
-  if (hours < 1) return `${Math.max(1, Math.round(hours * 60))}m`;
-  if (hours < 24) return `${hours.toFixed(1)}h`;
-  const d = Math.floor(hours / 24);
-  const h = Math.round(hours - d * 24);
-  return h > 0 ? `${d}d ${h}h` : `${d}d`;
-}
-
-function abbrCell(cellId: string | null): string {
-  if (!cellId || cellId === "unknown") return "unknown";
-  // vol=mid|trend=trending_up|risk=risk_on  ->  vol=mid|tr=up|risk=on
-  return cellId
-    .replace(/trend=trending_up/g, "tr=up")
-    .replace(/trend=trending_down/g, "tr=dn")
-    .replace(/trend=choppy/g, "tr=chop")
-    .replace(/risk=risk_on/g, "risk=on")
-    .replace(/risk=risk_off/g, "risk=off")
-    .replace(/risk=neutral/g, "risk=neu");
-}
-
-// Minimalist loading placeholder — three dots that pulse, matches text rhythm.
-function Skeleton({ label }: { label: string }) {
-  return (
-    <div className="text-zinc-600 animate-pulse">{"  "}{label} <span className="inline-block">· · ·</span></div>
-  );
-}
-
-// One-liner section header — uses pseudo-rule via `flex-1` border so it grows
-// with the viewport width and stays readable on mobile.
-function SectionHeader({ title }: { title: string }) {
-  return (
-    <div className="mt-5 flex items-center gap-2 text-zinc-500">
-      <span className="text-zinc-500">══</span>
-      <span className="whitespace-nowrap text-zinc-400 uppercase tracking-wider text-[12px]">{title}</span>
-      <span className="flex-1 border-t border-zinc-800/80" />
-    </div>
-  );
-}
-
-function bar(value: number, max: number, width = 28): string {
-  if (!max || max <= 0) return " ".repeat(width);
-  const filled = Math.max(0, Math.min(width, Math.round((value / max) * width)));
-  return "█".repeat(filled) + "░".repeat(width - filled);
-}
-
-// v5 cell-mix sparkline: each cell becomes a 2-char token (▲/▼ + ▁..█).
-// Height encodes |expectancyR| relative to the deployment's max |E|.
-// Sign glyph encodes profitability. Cells are passed pre-sorted (current
-// first, then by trades DESC).
-function cellMixTokens(cells: V5CellRow[]): Array<{ glyph: string; height: string; cellId: string; isCurrent: boolean; expectancyR: number }> {
-  const heights = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-  const maxAbs = cells.reduce((m, c) => Math.max(m, Math.abs(c.expectancyR)), 0);
-  return cells.map((c) => {
-    const norm = maxAbs > 0 ? Math.abs(c.expectancyR) / maxAbs : 0;
-    const idx = Math.max(0, Math.min(heights.length - 1, Math.floor(norm * heights.length)));
-    return {
-      glyph: c.expectancyR > 0 ? "▲" : c.expectancyR < 0 ? "▼" : "·",
-      height: heights[idx]!,
-      cellId: c.cellId,
-      isCurrent: c.isCurrent,
-      expectancyR: c.expectancyR,
-    };
-  });
-}
-
-const V5_DECISION_LABEL: Record<V5GateDecision, string> = {
-  allow: "allow",
-  block_negative: "neg",
-  block_unseen: "unseen",
-  block_stale: "stale",
-  block_evaluator_pending: "pending",
-  block_insufficient_trades: "thin",
-};
-
-const V5_DECISION_COLOR: Record<V5GateDecision, string> = {
-  allow: "text-emerald-400",
-  block_negative: "text-rose-400",
-  block_unseen: "text-amber-300",
-  block_stale: "text-amber-300",
-  block_evaluator_pending: "text-sky-400",
-  block_insufficient_trades: "text-amber-300",
-};
-
-const V5_DECISION_GLYPH: Record<V5GateDecision, string> = {
-  allow: "✓",
-  block_negative: "✗",
-  block_unseen: "✗",
-  block_stale: "⊘",
-  block_evaluator_pending: "○",
-  block_insufficient_trades: "◐",
-};
-
-// ─── component ────────────────────────────────────────────────────────────────
-
-export default function ScalpV4Dashboard() {
-  const [health, setHealth] = useState<HealthResp | null>(null);
-  const [deploymentsResp, setDeploymentsResp] = useState<DeploymentsResp | null>(null);
-  const [recent, setRecent] = useState<RecentResp | null>(null);
+export default function ScalpV5Dashboard() {
   const [v5, setV5] = useState<V5DashboardResp | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loadedAt, setLoadedAt] = useState<number | null>(null);
-  const [autoRefresh, setAutoRefresh] = useState(true);
-  const [adminSecret, setAdminSecret] = useState("");
-  const [secretInput, setSecretInput] = useState("");
-  const [showSecretPanel, setShowSecretPanel] = useState(false);
-  const [unauthorized, setUnauthorized] = useState(false);
-  const [showAllRegimes, setShowAllRegimes] = useState(false);
-  const [showAllActiveDeployments, setShowAllActiveDeployments] = useState(false);
-  const [showAllV5Inactive, setShowAllV5Inactive] = useState(false);
-  // Click-to-expand: deployment IDs whose per-cell detail is currently visible.
+  const [recent, setRecent] = useState<RecentResp | null>(null);
   const [expandedDeployments, setExpandedDeployments] = useState<Set<string>>(new Set());
-  // Tick used only to make the "last X ago" label update in realtime without
-  // refetching data. Updates every 5 seconds.
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => setTick((n) => n + 1), 5_000);
-    return () => clearInterval(t);
-  }, []);
+  const [showAllInactive, setShowAllInactive] = useState(false);
+  const [decisionFilter, setDecisionFilter] = useState<V5GateDecision | null>(null);
+
   const toggleExpanded = useCallback((id: string) => {
     setExpandedDeployments((prev) => {
       const next = new Set(prev);
@@ -395,153 +123,63 @@ export default function ScalpV4Dashboard() {
       return next;
     });
   }, []);
-  // Tracks whether we've finished reading localStorage for the admin secret.
-  // load() must wait for this — otherwise the first call fires with an empty
-  // secret (because the hydration effect hasn't run yet), gets a 401, and
-  // opens the secret panel even though a valid secret is stored.
-  const [secretHydrated, setSecretHydrated] = useState(false);
 
-  useEffect(() => {
-    const stored = readStoredAdminSecret();
-    if (stored) {
-      setAdminSecret(stored);
-      setSecretInput(stored);
-    } else {
-      setShowSecretPanel(true);
-    }
-    setSecretHydrated(true);
-  }, []);
-
-  const load = useCallback(async () => {
-    const headers: Record<string, string> = {};
-    if (adminSecret) headers["x-admin-access-secret"] = adminSecret;
-    // Each fetch fires in parallel AND calls setState the moment it resolves.
-    // The slowest endpoint no longer gates the faster ones, so health renders
-    // first, then deployments, then recent (in whatever order they complete).
-    async function fetchOne<T extends { ok: boolean }>(
-      url: string,
-      apply: (data: T) => void,
-    ): Promise<{ unauthorized?: boolean; error?: string }> {
-      try {
-        const res = await fetch(url, { headers, credentials: "include" });
-        if (res.status === 401) return { unauthorized: true };
-        if (!res.ok) return { error: `${url} → HTTP ${res.status}` };
-        const data = (await res.json()) as T;
-        if (!data.ok) return { error: (data as any).error || `${url} → request_failed` };
-        apply(data);
-        return {};
-      } catch (err) {
-        return { error: (err as Error)?.message || String(err) };
-      }
-    }
-    const [h, d, r, v] = await Promise.all([
-      fetchOne<HealthResp>("/api/scalp/v4/health", setHealth),
-      fetchOne<DeploymentsResp>("/api/scalp/v4/deployments", setDeploymentsResp),
-      fetchOne<RecentResp>("/api/scalp/v4/recent", setRecent),
-      fetchOne<V5DashboardResp>("/api/scalp/v5/dashboard", setV5),
+  const loader = useCallback(async (headers: Record<string, string>) => {
+    const [v, r] = await Promise.all([
+      fetchOne<V5DashboardResp>("/api/scalp/v5/dashboard", headers, setV5),
+      fetchOne<RecentResp>("/api/scalp/v4/recent", headers, setRecent),
     ]);
-    if (h.unauthorized || d.unauthorized || r.unauthorized || v.unauthorized) {
-      setUnauthorized(true);
-      setShowSecretPanel(true);
-      setError("Unauthorized — admin secret missing or invalid.");
-      return;
-    }
-    setError(h.error || d.error || r.error || v.error || null);
-    setUnauthorized(false);
-    // Successful load means the secret is valid — auto-close the panel if it
-    // was open from a previous 401.
-    setShowSecretPanel(false);
-    setLoadedAt(Date.now());
-  }, [adminSecret]);
-
-  useEffect(() => {
-    // Wait for localStorage hydration before the first load() — otherwise the
-    // first call fires with an empty adminSecret, gets 401, and pops the
-    // panel even when a valid secret is stored.
-    if (!secretHydrated) return;
-    load();
-  }, [load, secretHydrated]);
-
-  useEffect(() => {
-    if (!autoRefresh || unauthorized || !secretHydrated) return;
-    const t = setInterval(load, 30_000);
-    return () => clearInterval(t);
-  }, [autoRefresh, load, unauthorized, secretHydrated]);
-
-  // Refresh on tab-visible. Background tabs have their setInterval throttled
-  // (browsers cap to ~1/min in background, sometimes pause entirely after
-  // hours), so coming back from a hidden tab can show stale data. Reload
-  // immediately when the user returns to make the dashboard feel current.
-  useEffect(() => {
-    if (!secretHydrated || unauthorized) return;
-    const onVisible = () => {
-      if (typeof document !== "undefined" && document.visibilityState === "visible") {
-        load();
-      }
-    };
-    if (typeof document !== "undefined") {
-      document.addEventListener("visibilitychange", onVisible);
-      window.addEventListener("focus", onVisible);
-    }
-    return () => {
-      if (typeof document !== "undefined") {
-        document.removeEventListener("visibilitychange", onVisible);
-        window.removeEventListener("focus", onVisible);
-      }
-    };
-  }, [load, secretHydrated, unauthorized]);
-
-  const saveSecret = useCallback((next: string) => {
-    const value = next.trim();
-    persistAdminSecret(value);
-    setAdminSecret(value);
-    setUnauthorized(false);
-    setShowSecretPanel(false);
+    if (v.unauthorized || r.unauthorized) return { unauthorized: true };
+    return { error: v.error || r.error };
   }, []);
 
-  // ─── derived: split deployments by status for the sections ──────────────────
-  const trading = useMemo(() => {
-    if (!deploymentsResp) return [];
-    return deploymentsResp.deployments
-      .filter((r) => r.v4Status === "trading")
-      .sort((a, b) => (b.lastEntryAtMs || 0) - (a.lastEntryAtMs || 0));
-  }, [deploymentsResp]);
-  const dormant = useMemo(() => {
-    if (!deploymentsResp) return [];
-    return deploymentsResp.deployments
-      .filter((r) => r.v4Status === "dormant_wrong_regime" || r.v4Status === "dormant_no_regime")
-      .sort((a, b) => `${a.venue}/${a.symbol}`.localeCompare(`${b.venue}/${b.symbol}`));
-  }, [deploymentsResp]);
-  const eligibleNotPromoted = useMemo(() => {
-    if (!deploymentsResp) return [];
-    return deploymentsResp.deployments
-      .filter((r) => r.v4Status === "eligible_not_promoted")
-      .sort((a, b) => (b.envelope.strictPassingCells - a.envelope.strictPassingCells));
-  }, [deploymentsResp]);
-  // current-regime overview: enabled deployments' symbols, deduped by (venue, symbol)
+  const access = useAdminSecretLoader(loader);
+
+  const enabledRows = useMemo(() => (v5 ? v5.deployments.filter((d) => d.enabled) : []), [v5]);
+  const inactiveRows = useMemo(() => (v5 ? v5.deployments.filter((d) => !d.enabled) : []), [v5]);
+
+  const filteredEnabled = useMemo(() => {
+    if (!decisionFilter) return enabledRows;
+    return enabledRows.filter((r) => r.gate.decision === decisionFilter);
+  }, [enabledRows, decisionFilter]);
+
+  // Regimes-this-week aggregate, enriched with the gate decision count per
+  // (venue, symbol) — replaces the v4 "matches" count.
   const regimeRows = useMemo(() => {
-    if (!deploymentsResp) return [] as Array<{
+    if (!v5) return [];
+    type Bucket = {
       venue: string;
       symbol: string;
       cellId: string | null;
-      weeksInCell: number | null;
-      matches: number;
-    }>;
-    const seen = new Map<string, { venue: string; symbol: string; cellId: string | null; weeksInCell: number | null; matches: number }>();
-    for (const row of deploymentsResp.deployments) {
+      stale: boolean;
+      allowCount: number;
+      blockCount: number;
+      pendingCount: number;
+      totalEnabled: number;
+    };
+    const seen = new Map<string, Bucket>();
+    for (const row of v5.deployments) {
       if (!row.enabled) continue;
       const key = `${row.venue}:${row.symbol}`;
-      const matchesThis = row.currentRegime.cellId && row.envelope.allowedCells.includes(row.currentRegime.cellId) ? 1 : 0;
-      const prev = seen.get(key);
-      if (prev) {
-        prev.matches += matchesThis;
+      const existing = seen.get(key);
+      const isAllow = row.gate.decision === "allow";
+      const isPending = row.gate.decision === "block_evaluator_pending";
+      const isBlock = !isAllow && !isPending;
+      if (existing) {
+        existing.allowCount += isAllow ? 1 : 0;
+        existing.blockCount += isBlock ? 1 : 0;
+        existing.pendingCount += isPending ? 1 : 0;
+        existing.totalEnabled += 1;
       } else {
         seen.set(key, {
           venue: row.venue,
           symbol: row.symbol,
-          cellId: row.currentRegime.cellId,
-          weeksInCell: row.currentRegime.weeksInCell,
-          matches: matchesThis,
+          cellId: row.currentCell.cellId,
+          stale: row.currentCell.stale,
+          allowCount: isAllow ? 1 : 0,
+          blockCount: isBlock ? 1 : 0,
+          pendingCount: isPending ? 1 : 0,
+          totalEnabled: 1,
         });
       }
     }
@@ -549,719 +187,254 @@ export default function ScalpV4Dashboard() {
       if (a.venue !== b.venue) return a.venue.localeCompare(b.venue);
       return a.symbol.localeCompare(b.symbol);
     });
-  }, [deploymentsResp]);
+  }, [v5]);
 
-  // Combined activity feed
-  const activity = useMemo(() => {
-    type Event = { tsMs: number; kind: "wf" | "regime" | "trade"; payload: any };
-    const out: Event[] = [];
-    if (recent) {
-      for (const r of recent.recentWalkforward) out.push({ tsMs: r.evaluatedAtMs, kind: "wf", payload: r });
-      for (const r of recent.recentTransitions) out.push({ tsMs: r.transitionWeekStartMs, kind: "regime", payload: r });
-      for (const r of recent.recentTrades) out.push({ tsMs: r.tsMs, kind: "trade", payload: r });
-    }
-    return out.sort((a, b) => b.tsMs - a.tsMs).slice(0, 30);
+  // Activity feed — v5-flavored: only trade-line events. Reason codes that
+  // start with V5_ get color-coded by gate decision; everything else is shown
+  // by trade R-multiple sign.
+  const activityRows = useMemo(() => {
+    if (!recent) return [];
+    return recent.recentTrades.slice(0, 40);
   }, [recent]);
 
-  // ─── render ──────────────────────────────────────────────────────────────────
-  const totalDone = (health?.walkforwardTotal ?? 0);
-  const totalPlanned = (health?.stageCSurvivors ?? 0);
-  const pctDone = totalPlanned > 0 ? Math.round((totalDone / totalPlanned) * 100) : 0;
-  const counts = health?.walkforwardCounts ?? {};
-  const maxCount = Math.max(1, counts.eligible || 0, counts.no_passing_cells || 0, counts.cluster_cap_exceeded || 0, counts.in_progress || 0, counts.regime_overbroad_pending_review || 0);
-
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-200 font-mono text-[13px] leading-[1.45]">
+    <PageShell>
       <Head>
-        <title>scalp v4 · operator</title>
+        <title>scalp v5 · cell gate</title>
       </Head>
-      <div className="mx-auto max-w-[1200px] px-4 py-4">
-        {/* header */}
-        <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-zinc-800 pb-2">
-          <div className="flex items-baseline gap-3">
-            <span className="text-zinc-100">SCALP V4</span>
-            <span className="text-zinc-500">·</span>
-            <span className="text-zinc-400">{new Date().toISOString().slice(0, 16).replace("T", " ")} UTC</span>
-            <span className="text-zinc-500">·</span>
-            <span className="text-zinc-500">classifier {health?.classifierVersion || "—"}</span>
-          </div>
-          <div className="flex items-center gap-3 text-zinc-500">
-            <span>
-              refresh 30s · last{" "}
-              {loadedAt ? (() => {
-                const ageSec = Math.floor((Date.now() - loadedAt) / 1000);
-                const cls =
-                  ageSec > 5 * 60 ? "text-rose-400"
-                  : ageSec > 90 ? "text-amber-400"
-                  : "text-zinc-400";
-                return <span className={cls}>{fmtAgo(loadedAt)} ago</span>;
-              })() : "—"}
-            </span>
-            <label className="flex items-center gap-1 cursor-pointer">
-              <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />auto
-            </label>
-            <button onClick={load} className="text-zinc-300 hover:text-white">[refresh]</button>
-            <button
-              onClick={() => {
-                setSecretInput(adminSecret);
-                setShowSecretPanel((s) => !s);
-              }}
-              className={adminSecret ? "text-zinc-500 hover:text-zinc-300" : "text-amber-300 hover:text-amber-200"}
-            >
-              [{adminSecret ? "secret" : "set secret"}]
-            </button>
-            <Link href="/legacy" className="text-zinc-500 hover:text-zinc-300">[legacy]</Link>
-          </div>
-        </div>
+      <DashboardHeader
+        title="SCALP V5 · CELL GATE"
+        classifierVersion={v5?.classifierVersion || null}
+        loadedAt={access.loadedAt}
+        autoRefresh={access.autoRefresh}
+        setAutoRefresh={access.setAutoRefresh}
+        load={access.load}
+        adminSecret={access.adminSecret}
+        onToggleSecret={() => {
+          access.setSecretInput(access.adminSecret);
+          access.setShowSecretPanel(!access.showSecretPanel);
+        }}
+        navLinks={[
+          { href: "/v4-pipeline", label: "v4 pipeline" },
+          { href: "/legacy", label: "legacy" },
+        ]}
+      />
 
-        {/* admin secret panel */}
-        {showSecretPanel ? (
-          <div className={`mt-3 border ${unauthorized ? "border-rose-500/40 bg-rose-500/10" : "border-amber-500/40 bg-amber-500/10"} p-3`}>
-            <div className="text-zinc-300">
-              {unauthorized ? "admin access required" : "set admin access secret"} · key <span className="text-zinc-500">{ADMIN_SECRET_STORAGE_KEY}</span>
-            </div>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                saveSecret(secretInput);
-                setTimeout(load, 0);
-              }}
-              className="mt-2 flex flex-wrap items-center gap-2"
-            >
-              <input
-                type="password"
-                placeholder="ADMIN_ACCESS_SECRET"
-                value={secretInput}
-                onChange={(e) => setSecretInput(e.target.value)}
-                className="w-80 border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100 focus:outline-none focus:border-zinc-500"
-                autoFocus
-              />
-              <button type="submit" className="border border-emerald-500/50 bg-emerald-500/20 px-3 py-1 text-emerald-200 hover:bg-emerald-500/30">save &amp; retry</button>
-              {adminSecret ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    saveSecret("");
-                    setSecretInput("");
-                  }}
-                  className="text-zinc-500 hover:text-zinc-300"
-                >clear</button>
-              ) : null}
-              <button type="button" onClick={() => setShowSecretPanel(false)} className="text-zinc-500 hover:text-zinc-300">dismiss</button>
-            </form>
-          </div>
-        ) : null}
+      <AdminSecretPanel
+        show={access.showSecretPanel}
+        unauthorized={access.unauthorized}
+        adminSecret={access.adminSecret}
+        secretInput={access.secretInput}
+        setSecretInput={access.setSecretInput}
+        saveSecret={access.saveSecret}
+        load={access.load}
+        dismiss={() => access.setShowSecretPanel(false)}
+      />
 
-        {error && !unauthorized ? (
-          <pre className="mt-3 whitespace-pre-wrap text-rose-400">⚠ {error}</pre>
-        ) : null}
-
-        {/* HEALTH */}
-        {/* HEALTH */}
-        <SectionHeader title="health" />
-        {health ? (
-          <div className="mt-1 flex flex-wrap gap-x-6 gap-y-0.5 pl-2">
-            <span>
-              <span className="text-zinc-500">hard gate </span>
-              <span className={health.v4HardGateEnabled ? "text-emerald-400" : "text-amber-400"}>{health.v4HardGateEnabled ? "ON" : "OFF"}</span>
-            </span>
-            <span>
-              <span className="text-zinc-500">v4 </span>
-              <span className={health.v4Enabled ? "text-emerald-400" : "text-amber-400"}>{health.v4Enabled ? "enabled" : "disabled"}</span>
-            </span>
-            <span>
-              <span className="text-zinc-500">freeze </span>
-              <span className="text-emerald-400">inactive</span>
-            </span>
-            <span>
-              <span className="text-zinc-500">regimes </span>
-              <span className="text-zinc-100">{health.regimeBuild.symbolsCovered}</span>
-              <span className="text-zinc-500"> symbols valid</span>
-            </span>
-            <span>
-              <span className="text-zinc-500">last build </span>
-              <span className="text-zinc-100">{health.regimeBuild.latestWeekStartMs ? fmtAgo(health.regimeBuild.latestWeekStartMs + 7 * 24 * 60 * 60_000) + " ago" : "—"}</span>
-            </span>
-          </div>
-        ) : (
-          <Skeleton label="loading health" />
-        )}
-
-        {/* PIPELINE */}
-        <SectionHeader title={`pipeline · ${fmtWeek(Date.now())}`} />
-        {health ? (
-          <div className="mt-1 pl-2">
-            <div className="grid grid-cols-[auto_1fr] md:grid-cols-[10rem_1fr] gap-x-3 items-baseline">
-              <span className="text-zinc-500">stage-C survivors</span>
-              <span>
-                <span className="text-zinc-100">{totalPlanned}</span>
-                <span className="text-zinc-500">  progress </span>
-                <span className="text-emerald-400 font-mono whitespace-pre">{bar(totalDone, totalPlanned)}</span>
-                <span className="text-zinc-500"> {pctDone}%</span>
-              </span>
-              <span className="text-zinc-500">walk-forward</span>
-              <span className="flex flex-wrap gap-x-3">
-                <span><span className="text-zinc-100">{totalDone}</span><span className="text-zinc-500"> done</span></span>
-                <span><span className="text-sky-400">{counts.in_progress || 0}</span><span className="text-zinc-500"> running</span></span>
-                <span><span className="text-zinc-100">{health.pendingWalkforward}</span><span className="text-zinc-500"> pending</span></span>
-              </span>
-              <span className="text-zinc-500">throughput</span>
-              <span className="flex flex-wrap items-baseline gap-x-3">
-                <span><span className="text-zinc-100">{health.throughput.lastHour}</span><span className="text-zinc-500">/hr last 1h</span></span>
-                <span className="text-zinc-500">12h </span>
-                <span className="text-emerald-400 font-mono whitespace-pre" title={health.throughput.buckets12h.slice().reverse().join(" / ")}>
-                  {sparkline([...health.throughput.buckets12h].reverse())}
-                </span>
-              </span>
-              <span className="text-zinc-500">eta</span>
-              <span>
-                <span className="text-zinc-100">{fmtEta(health.throughput.etaHours)}</span>
-                <span className="text-zinc-500"> at current rate</span>
-                {health.throughput.lastHour === 0 && health.pendingWalkforward > 0 ? (
-                  <span className="text-amber-400/80"> · idle</span>
-                ) : null}
-              </span>
-            </div>
-            <div className="mt-2 space-y-0.5">
-              <CountLineGrid label="● eligible" value={counts.eligible || 0} max={maxCount} colorClass="text-emerald-400" />
-              <CountLineGrid label="○ no_passing" value={counts.no_passing_cells || 0} max={maxCount} colorClass="text-rose-400" />
-              <CountLineGrid label="◐ cluster_capped" value={counts.cluster_cap_exceeded || 0} max={maxCount} colorClass="text-amber-400" />
-              <CountLineGrid label="◔ in_progress" value={counts.in_progress || 0} max={maxCount} colorClass="text-sky-400" />
-              <CountLineGrid label="· overbroad" value={counts.regime_overbroad_pending_review || 0} max={maxCount} colorClass="text-zinc-400" />
-            </div>
-          </div>
-        ) : (
-          <Skeleton label="loading pipeline" />
-        )}
-
-        {/* ROLLOVER */}
-        <SectionHeader title={`rollover · week of ${health ? new Date(health.rollover.currentWeekStartMs).toISOString().slice(0, 10) : "—"}`} />
-        {health ? (
-          <RolloverProgress rollover={health.rollover} />
-        ) : (
-          <Skeleton label="loading rollover" />
-        )}
-
-        {/* LIVE summary */}
-        <SectionHeader title="live" />
-        {deploymentsResp ? (
-          <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 pl-2 items-baseline">
-            <span className="text-zinc-500">trading now</span>
-            <span>
-              <span className="text-emerald-400">{trading.length}</span>
-              <span className="text-zinc-500"> deployments · </span>
-              <span className="text-zinc-100">{trading.reduce((acc, r) => acc + r.openPositionCount, 0)}</span>
-              <span className="text-zinc-500"> open position(s)</span>
-            </span>
-            <span className="text-zinc-500">dormant by regime</span>
-            <span>
-              <span className="text-amber-400">{dormant.length}</span>
-              <span className="text-zinc-500"> deployments · awaiting regime match</span>
-            </span>
-            <span className="text-zinc-500">awaiting promote</span>
-            <span>
-              <span className="text-sky-400">{eligibleNotPromoted.length}</span>
-              <span className="text-zinc-500"> candidates · next promote cycle imminent</span>
-            </span>
-          </div>
-        ) : (
-          <Skeleton label="loading live state" />
-        )}
-
-        {/* V5 GATE */}
-        <SectionHeader title="v5 gate · per-regime-cell entry control" />
-        {v5 ? (
-          <V5GateSection
-            data={v5}
-            expanded={expandedDeployments}
-            onToggle={toggleExpanded}
-            showAllInactive={showAllV5Inactive}
-            onToggleShowAllInactive={() => setShowAllV5Inactive((v) => !v)}
-          />
-        ) : (
-          <Skeleton label="loading v5 gate" />
-        )}
-
-        {/* ACTIVE DEPLOYMENTS */}
-        <SectionHeader title="active deployments · live=● dormant=○" />
-        {deploymentsResp ? (
-          (trading.length === 0 && dormant.length === 0) ? (
-            <div className="pl-2 text-zinc-500">(no enabled deployments)</div>
-          ) : (
-            <div className="mt-1 pl-2 space-y-0.5">
-              {trading.map((row) => <DeploymentRowView key={row.deploymentId} row={row} kind="trading" />)}
-              {(showAllActiveDeployments ? dormant : dormant.slice(0, 8)).map((row) => (
-                <DeploymentRowView key={row.deploymentId} row={row} kind="dormant" />
-              ))}
-              {dormant.length > 8 && !showAllActiveDeployments ? (
-                <button
-                  onClick={() => setShowAllActiveDeployments(true)}
-                  className="text-zinc-500 hover:text-zinc-300"
-                >
-                  … show all {dormant.length} dormant
-                </button>
-              ) : null}
-              {dormant.length > 8 && showAllActiveDeployments ? (
-                <button
-                  onClick={() => setShowAllActiveDeployments(false)}
-                  className="text-zinc-500 hover:text-zinc-300"
-                >
-                  ↑ collapse
-                </button>
-              ) : null}
-            </div>
-          )
-        ) : (
-          <Skeleton label="loading deployments" />
-        )}
-
-        {/* ELIGIBLE NOT PROMOTED */}
-        <SectionHeader title={`eligible · not yet promoted (${eligibleNotPromoted.length})`} />
-        {deploymentsResp ? (
-          eligibleNotPromoted.length === 0 ? (
-            <div className="pl-2 text-zinc-500">(none)</div>
-          ) : (
-            <div className="mt-1 pl-2 space-y-0.5">
-              {eligibleNotPromoted.slice(0, 30).map((row) => (
-                <EligibleRowView
-                  key={row.deploymentId}
-                  row={row}
-                  expanded={expandedDeployments.has(row.deploymentId)}
-                  onToggle={() => toggleExpanded(row.deploymentId)}
-                />
-              ))}
-              {eligibleNotPromoted.length > 30 ? (
-                <div className="text-zinc-500">… {eligibleNotPromoted.length - 30} more</div>
-              ) : null}
-            </div>
-          )
-        ) : (
-          <Skeleton label="loading eligibles" />
-        )}
-
-        {/* REGIMES */}
-        <SectionHeader title="regimes · current week" />
-        {deploymentsResp ? (
-          regimeRows.length === 0 ? (
-            <div className="pl-2 text-zinc-500">(no enabled symbols)</div>
-          ) : (
-            <div className="mt-1 pl-2 space-y-0.5">
-              {(showAllRegimes ? regimeRows : regimeRows.slice(0, 15)).map((row) => (
-                <RegimeRowView key={`${row.venue}:${row.symbol}`} row={row} />
-              ))}
-              {regimeRows.length > 15 ? (
-                <button
-                  onClick={() => setShowAllRegimes((s) => !s)}
-                  className="text-zinc-500 hover:text-zinc-300"
-                >
-                  {showAllRegimes ? "↑ collapse" : `… show all ${regimeRows.length}`}
-                </button>
-              ) : null}
-            </div>
-          )
-        ) : (
-          <Skeleton label="loading regimes" />
-        )}
-
-        {/* ACTIVITY */}
-        <SectionHeader title={`activity · last ${activity.length}`} />
-        {recent ? (
-          activity.length === 0 ? (
-            <div className="pl-2 text-zinc-500">(no recent events)</div>
-          ) : (
-            <div className="mt-1 pl-2 space-y-0.5">
-              {activity.map((event, idx) => <ActivityRowView key={`a:${idx}`} event={event} />)}
-            </div>
-          )
-        ) : (
-          <Skeleton label="loading activity" />
-        )}
-
-        <div className="border-t border-zinc-800 pt-2 text-zinc-600">
-          sources  /api/scalp/v4/health · /deployments · /recent
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── reusable row views ─────────────────────────────────────────────────────
-// All rows use CSS grid for column alignment so long symbols (PENDLEUSDT) don't
-// shift the layout. On mobile (< md) the grid collapses to flex-wrap and the
-// less-critical columns wrap onto new lines.
-
-function CountLineGrid({
-  label,
-  value,
-  max,
-  colorClass,
-}: {
-  label: string;
-  value: number;
-  max: number;
-  colorClass: string;
-}) {
-  return (
-    <div className="grid grid-cols-[10rem_3rem_1fr] gap-x-3 items-baseline">
-      <span className={colorClass}>{label}</span>
-      <span className="text-zinc-100 text-right">{value}</span>
-      <span className="text-zinc-500 font-mono whitespace-pre overflow-hidden">{bar(value, max, 30)}</span>
-    </div>
-  );
-}
-
-function DeploymentRowView({ row, kind }: { row: DeploymentRow; kind: "trading" | "dormant" }) {
-  const isTrading = kind === "trading";
-  const family = row.tuneId.split("_").slice(0, 4).join("_");
-  const dot = isTrading ? "●" : "○";
-  const dotClass = isTrading ? "text-emerald-400" : "text-amber-400";
-  const meta = isTrading ? (
-    <>
-      <span className="text-zinc-500">last </span>
-      <span className="text-zinc-200">{row.lastEntryAtMs ? fmtAgo(row.lastEntryAtMs) : "never"}</span>
-      <span className="text-zinc-500"> · open </span>
-      <span className="text-zinc-100">{row.openPositionCount}</span>
-    </>
-  ) : (
-    <span className="text-amber-400/80">
-      blocked: {row.v4Status === "dormant_no_regime" ? "no regime data" : "regime mismatch"}
-    </span>
-  );
-  return (
-    <div>
-      {/* mobile */}
-      <div className="md:hidden">
-        <div className="flex items-baseline gap-x-2">
-          <span className={dotClass}>{dot}</span>
-          <span className="text-zinc-100 truncate"><span className="text-zinc-500">{row.venue}/</span>{row.symbol}</span>
-          <span className="text-zinc-500 text-[12px]">{row.session}</span>
-        </div>
-        <div className="pl-5 text-[12px] text-zinc-400 truncate" title={row.tuneId}>{family}</div>
-        <div className="pl-5 text-[12px]">{meta}</div>
-      </div>
-      {/* desktop */}
-      <div className="hidden md:grid md:grid-cols-[1.25rem_5rem_8rem_6rem_14rem_1fr] md:gap-x-2 md:items-baseline">
-        <span className={dotClass}>{dot}</span>
-        <span className="text-zinc-500">{row.venue}</span>
-        <span className="text-zinc-100 truncate">{row.symbol}</span>
-        <span className="text-zinc-500">{row.session}</span>
-        <span className="text-zinc-400 truncate" title={row.tuneId}>{family}</span>
-        <span className="text-zinc-500 text-[13px]">{meta}</span>
-      </div>
-      {!isTrading ? (
-        <div className="pl-5 md:ml-6 mt-0.5 text-[11px] md:text-[12px] text-zinc-500 flex flex-wrap gap-x-3">
-          <span>
-            <span>allowed </span>
-            <span className="text-zinc-400">[{row.envelope.allowedCells.map(abbrCell).join(", ") || "none"}]</span>
-          </span>
-          <span>
-            <span>current </span>
-            <span className="text-amber-300">{abbrCell(row.currentRegime.cellId)}</span>
-          </span>
-        </div>
+      {access.error && !access.unauthorized ? (
+        <pre className="mt-3 whitespace-pre-wrap text-rose-400">⚠ {access.error}</pre>
       ) : null}
-    </div>
-  );
-}
 
-function EligibleRowView({
-  row,
-  expanded,
-  onToggle,
-}: {
-  row: DeploymentRow;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  const family = row.tuneId.split("_").slice(0, 4).join("_");
-  const allowedHead = row.envelope.allowedCells.slice(0, 2).map(abbrCell).join(", ");
-  const more = row.envelope.allowedCells.length > 2 ? "…" : "";
-  const meta = (
-    <>
-      <span className="text-zinc-500">cells </span>
-      <span className="text-emerald-400">{row.envelope.strictPassingCells}</span>
-      <span className="text-zinc-500">/{row.envelope.occupiedCells} </span>
-      <span className="text-zinc-500">[</span>
-      <span className="text-zinc-300">{allowedHead}{more}</span>
-      <span className="text-zinc-500">]</span>
-      <span className="ml-2 text-zinc-500">{expanded ? "▾" : "▸"}</span>
-    </>
-  );
-  const cells = row.envelope.cells || [];
-  return (
-    <div>
-      <button
-        onClick={onToggle}
-        className="w-full text-left hover:bg-zinc-900/40 -mx-2 px-2 py-0.5 rounded-sm transition-colors"
-        title={expanded ? "click to collapse" : "click to expand cell detail"}
-      >
-        {/* mobile */}
-        <div className="md:hidden">
-          <div className="flex items-baseline gap-x-2">
-            <span className="text-sky-400">▸</span>
-            <span className="text-zinc-100 truncate"><span className="text-zinc-500">{row.venue}/</span>{row.symbol}</span>
-            <span className="text-zinc-500 text-[12px]">{row.session}</span>
-          </div>
-          <div className="pl-5 text-[12px] text-zinc-400 truncate" title={row.tuneId}>{family}</div>
-          <div className="pl-5 text-[12px] truncate">{meta}</div>
-        </div>
-        {/* desktop */}
-        <div className="hidden md:grid md:grid-cols-[1.25rem_5rem_8rem_6rem_14rem_1fr] md:gap-x-2 md:items-baseline">
-          <span className="text-sky-400">▸</span>
-          <span className="text-zinc-500">{row.venue}</span>
-          <span className="text-zinc-100 truncate">{row.symbol}</span>
-          <span className="text-zinc-500">{row.session}</span>
-          <span className="text-zinc-400 truncate" title={row.tuneId}>{family}</span>
-          <span className="text-[13px] truncate">{meta}</span>
-        </div>
-      </button>
-      {expanded ? (
-        <div className="pl-5 md:pl-7 mt-1 mb-2 border-l border-zinc-800/60 ml-2 md:ml-3 pl-3 space-y-2">
-          {cells.length === 0 ? (
-            <div className="text-zinc-500 text-[12px]">(no per-cell detail available — older eligible row before backfill)</div>
-          ) : (
-            cells.map((cell) => <CellDetailView key={cell.cellId} cell={cell} />)
-          )}
-        </div>
-      ) : null}
-    </div>
-  );
-}
+      <SectionHeader title="gate · live decision (enabled deployments now)" />
+      {v5 ? (
+        <GateDistribution
+          stateNowEnabled={v5.stateNowEnabled}
+          activeFilter={decisionFilter}
+          onPick={(d) => setDecisionFilter((cur) => (cur === d ? null : d))}
+        />
+      ) : (
+        <Skeleton label="loading gate state" />
+      )}
 
-function CellDetailView({ cell }: { cell: CellDetail }) {
-  const passed = cell.strictPassed;
-  const headerColor = passed ? "text-emerald-300" : "text-zinc-500";
-  const labelColor = "text-zinc-500";
-  const numClass = passed ? "text-zinc-200" : "text-zinc-400";
-  const expR = cell.expectancyR;
-  const expColor = expR > 0 ? "text-emerald-400" : expR < 0 ? "text-rose-400" : "text-zinc-300";
-  const p05 = cell.bootstrapP05ExpectancyR;
-  const p05Color = p05 === null ? "text-zinc-500" : p05 > 0 ? "text-emerald-400" : "text-rose-400";
-  const winSpark = cell.windowExpectancyR;
-  // Range for the sparkline tooltip
-  const winRange = winSpark && winSpark.length > 0
-    ? `${Math.min(...winSpark).toFixed(2)} .. ${Math.max(...winSpark).toFixed(2)}`
-    : "—";
-  return (
-    <div className="text-[12px] md:text-[13px]">
-      <div className={`${headerColor} flex flex-wrap items-baseline gap-x-2`}>
-        <span>{passed ? "✓ cell" : "· cell"}</span>
-        <span className="font-mono text-zinc-300 truncate" title={cell.cellId}>{abbrCell(cell.cellId)}</span>
-        {passed ? <span className="text-emerald-400">strict pass</span> : (
-          <span className="text-zinc-500">fail: {cell.reason || "—"}</span>
-        )}
-      </div>
-      <div className="pl-3 mt-0.5 grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-0.5">
-        <span><span className={labelColor}>trades </span><span className={numClass}>{cell.trades}</span></span>
-        <span><span className={labelColor}>netR </span><span className={expR > 0 ? "text-emerald-400" : "text-rose-400"}>{expR >= 0 ? "+" : ""}{cell.netR.toFixed(2)}R</span></span>
-        <span><span className={labelColor}>exp/trade </span><span className={expColor}>{expR >= 0 ? "+" : ""}{expR.toFixed(3)}R</span></span>
-        <span><span className={labelColor}>p05 </span><span className={p05Color}>{p05 === null ? "—" : `${p05 >= 0 ? "+" : ""}${p05.toFixed(3)}R`}</span></span>
-        <span><span className={labelColor}>windows </span><span className={numClass}>{cell.windows}</span></span>
-        <span><span className={labelColor}>pos% </span><span className={cell.positiveWindowPct >= 70 ? "text-emerald-400" : "text-zinc-400"}>{cell.positiveWindowPct.toFixed(0)}%</span></span>
-        <span><span className={labelColor}>epochs </span><span className={numClass}>{cell.distinctEpochCount}</span></span>
-        <span><span className={labelColor}>maxDD </span><span className="text-zinc-400">{cell.maxDrawdownR.toFixed(2)}R</span></span>
-        <span><span className={labelColor}>p25 </span><span className={numClass}>{cell.p25ExpectancyR >= 0 ? "+" : ""}{cell.p25ExpectancyR.toFixed(3)}R</span></span>
-        <span><span className={labelColor}>crossR </span><span className="text-zinc-400">{cell.crossRegimeTradePct.toFixed(0)}%</span></span>
-        <span><span className={labelColor}>sharpe </span><span className={numClass}>{cell.sharpe === null ? "—" : cell.sharpe.toFixed(2)}</span></span>
-        <span><span className={labelColor}>deflated </span><span className={numClass}>{cell.deflatedScore === null ? "—" : cell.deflatedScore.toFixed(2)}</span></span>
-      </div>
-      {winSpark && winSpark.length > 0 ? (
-        <div className="pl-3 mt-1 flex items-baseline gap-2">
-          <span className={labelColor}>per-window R</span>
-          <span
-            className={`font-mono whitespace-pre ${passed ? "text-emerald-400" : "text-zinc-500"}`}
-            title={`${winSpark.length} windows · range ${winRange}\nvalues: ${winSpark.map((v) => v.toFixed(2)).join(", ")}`}
-          >
-            {sparkline(winSpark)}
-          </span>
-          <span className={`${labelColor} text-[11px]`}>{winSpark.length}w · range {winRange}</span>
-        </div>
-      ) : null}
-    </div>
-  );
-}
+      <SectionHeader title={`evaluator · holdout=${v5?.config.holdoutWeeks ?? "—"}w  minTrades/cell=${v5?.config.minTradesPerCell ?? "—"}`} />
+      {v5 ? <EvaluatorStrip data={v5} /> : <Skeleton label="loading evaluator" />}
 
-// V5 gate section — terminal-style live view of the per-regime-cell entry
-// gate. Top block is the evaluator summary + coverage + state distribution.
-// Below is one line per enabled deployment with an inline cell-mix
-// sparkline (glyph+height per cell). Clicking a row expands the per-cell
-// table with the weekly netR sparkline — the candle-style visualization
-// from the legacy AgGrid column, rendered as monospace blocks.
-function V5GateSection({
-  data,
-  expanded,
-  onToggle,
-  showAllInactive,
-  onToggleShowAllInactive,
-}: {
-  data: V5DashboardResp;
-  expanded: Set<string>;
-  onToggle: (id: string) => void;
-  showAllInactive: boolean;
-  onToggleShowAllInactive: () => void;
-}) {
-  const cov = data.coverage;
-  const sn = data.stateNow;
-  const evaluatorAge = data.evaluator.latestEvaluationMs
-    ? fmtAgo(data.evaluator.latestEvaluationMs)
-    : null;
-  const oldestAge = data.evaluator.oldestEvaluationMs
-    ? fmtAgo(data.evaluator.oldestEvaluationMs)
-    : null;
-  // State-distribution stacked bar widths.
-  const totalRated = Math.max(1, Object.values(sn).reduce((a, b) => a + b, 0));
-  const allSegments: Array<{ kind: V5GateDecision; n: number }> = [
-    { kind: "allow", n: sn.allow },
-    { kind: "block_negative", n: sn.block_negative },
-    { kind: "block_unseen", n: sn.block_unseen },
-    { kind: "block_insufficient_trades", n: sn.block_insufficient_trades },
-    { kind: "block_stale", n: sn.block_stale },
-    { kind: "block_evaluator_pending", n: sn.block_evaluator_pending },
-  ];
-  const segments = allSegments.filter((s) => s.n > 0);
-  return (
-    <>
-      <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 pl-2 items-baseline">
-        <span className="text-zinc-500">evaluator</span>
-        <span className="flex flex-wrap gap-x-3">
-          <span>
-            <span className="text-zinc-500">last run </span>
-            <span className="text-zinc-100">{evaluatorAge ? `${evaluatorAge} ago` : "—"}</span>
-          </span>
-          <span>
-            <span className="text-zinc-500">holdout </span>
-            <span className="text-zinc-100">{data.config.holdoutWeeks}w</span>
-          </span>
-          <span>
-            <span className="text-zinc-500">min trades/cell </span>
-            <span className="text-zinc-100">{data.config.minTradesPerCell}</span>
-          </span>
-          <span>
-            <span className="text-zinc-500">hard gate </span>
-            <span className={data.v5HardGateEnabled ? "text-emerald-400" : "text-amber-400"}>
-              {data.v5HardGateEnabled ? "ON" : "OFF"}
-            </span>
-          </span>
-        </span>
-        <span className="text-zinc-500">coverage</span>
-        <span className="flex flex-wrap gap-x-3">
-          <span>
-            <span className="text-zinc-100">{cov.evaluated}</span>
-            <span className="text-zinc-500">/</span>
-            <span className="text-zinc-100">{cov.totalDeployments}</span>
-            <span className="text-zinc-500"> evaluated · </span>
-            <span className="text-emerald-400">{cov.enabledDeployments}</span>
-            <span className="text-zinc-500"> enabled · </span>
-            <span className="text-zinc-400">{cov.totalDeployments - cov.enabledDeployments}</span>
-            <span className="text-zinc-500"> inactive</span>
-          </span>
-          <span>
-            <span className={cov.missingEvidence > 0 ? "text-sky-400" : "text-zinc-500"}>
-              {cov.missingEvidence}
-            </span>
-            <span className="text-zinc-500"> missing</span>
-          </span>
-          <span>
-            <span className={cov.stale > 0 ? "text-amber-400" : "text-zinc-500"}>{cov.stale}</span>
-            <span className="text-zinc-500"> stale evidence</span>
-          </span>
-          <span className="text-zinc-500">
-            oldest {oldestAge ? `${oldestAge} ago` : "—"}
-          </span>
-        </span>
-        <span className="text-zinc-500">state now</span>
-        <span className="flex flex-wrap gap-x-3 items-baseline">
-          <span className="text-zinc-500 text-[12px]">enabled:</span>
-          {(() => {
-            const eSegs = allSegments
-              .map((s) => ({ kind: s.kind, n: data.stateNowEnabled[s.kind] }))
-              .filter((s) => s.n > 0);
-            const eTotal = Math.max(1, eSegs.reduce((a, b) => a + b.n, 0));
-            if (eSegs.length === 0) return <span className="text-zinc-500">(none)</span>;
-            return eSegs.map((s) => (
-              <span key={`e-${s.kind}`} className="flex items-baseline gap-x-1">
-                <span className={`${V5_DECISION_COLOR[s.kind]} font-mono`}>
-                  {"█".repeat(Math.max(1, Math.round((s.n / eTotal) * 8)))}
-                </span>
-                <span className={V5_DECISION_COLOR[s.kind]}>{V5_DECISION_LABEL[s.kind]}</span>
-                <span className="text-zinc-100">{s.n}</span>
-              </span>
-            ));
-          })()}
-        </span>
-        <span className="text-zinc-500">all</span>
-        <span className="flex flex-wrap gap-x-3 items-baseline">
-          {segments.length === 0 ? (
-            <span className="text-zinc-500">(no deployments)</span>
-          ) : (
-            segments.map((s) => (
-              <span key={s.kind} className="flex items-baseline gap-x-1">
-                <span className={`${V5_DECISION_COLOR[s.kind]} font-mono opacity-70`}>
-                  {"█".repeat(Math.max(1, Math.round((s.n / totalRated) * 8)))}
-                </span>
-                <span className={V5_DECISION_COLOR[s.kind]}>{V5_DECISION_LABEL[s.kind]}</span>
-                <span className="text-zinc-100">{s.n}</span>
-              </span>
-            ))
-          )}
-        </span>
-      </div>
-      {data.deployments.length === 0 ? (
-        <div className="pl-2 mt-1 text-zinc-500">(no deployments — nothing v3-promoted yet)</div>
-      ) : (() => {
-        const enabledRows = data.deployments.filter((d) => d.enabled);
-        const inactiveRows = data.deployments.filter((d) => !d.enabled);
-        const INACTIVE_PREVIEW_LIMIT = 12;
-        const visibleInactive = showAllInactive
-          ? inactiveRows
-          : inactiveRows.slice(0, INACTIVE_PREVIEW_LIMIT);
-        return (
+      <SectionHeader
+        title={`deployments · live cell evidence${decisionFilter ? ` · filter=${V5_DECISION_LABEL[decisionFilter]}` : ""}`}
+      />
+      {v5 ? (
+        v5.deployments.length === 0 ? (
+          <div className="pl-2 mt-1 text-zinc-500">(no deployments — nothing v3-promoted yet)</div>
+        ) : (
           <div className="mt-1 pl-2 space-y-0.5">
-            {enabledRows.length > 0 ? (
-              <>
-                {enabledRows.map((dep) => (
-                  <V5DeploymentRowView
-                    key={dep.deploymentId}
-                    row={dep}
-                    expanded={expanded.has(dep.deploymentId)}
-                    onToggle={() => onToggle(dep.deploymentId)}
-                  />
-                ))}
-              </>
+            {filteredEnabled.length > 0 ? (
+              filteredEnabled.map((dep) => (
+                <V5DeploymentRowView
+                  key={dep.deploymentId}
+                  row={dep}
+                  expanded={expandedDeployments.has(dep.deploymentId)}
+                  onToggle={() => toggleExpanded(dep.deploymentId)}
+                />
+              ))
             ) : (
-              <div className="text-zinc-500 text-[12px]">(no currently enabled deployments — only inactive evidence below)</div>
+              <div className="text-zinc-500 text-[12px]">
+                (no enabled deployments{decisionFilter ? ` with decision=${V5_DECISION_LABEL[decisionFilter]}` : ""})
+              </div>
             )}
-            {inactiveRows.length > 0 ? (
+            {inactiveRows.length > 0 && !decisionFilter ? (
               <>
-                <div className="mt-2 text-zinc-500 text-[11px] uppercase tracking-wider">
-                  ─── inactive ({inactiveRows.length}) · evidence pre-staged for future promotion
+                <div className="mt-3 text-zinc-500 text-[11px] uppercase tracking-wider">
+                  ─── inactive ({inactiveRows.length}) · evidence pre-staged, not enabled
                 </div>
-                {visibleInactive.map((dep) => (
+                {(showAllInactive ? inactiveRows : inactiveRows.slice(0, 12)).map((dep) => (
                   <V5DeploymentRowView
                     key={dep.deploymentId}
                     row={dep}
-                    expanded={expanded.has(dep.deploymentId)}
-                    onToggle={() => onToggle(dep.deploymentId)}
+                    expanded={expandedDeployments.has(dep.deploymentId)}
+                    onToggle={() => toggleExpanded(dep.deploymentId)}
                   />
                 ))}
-                {inactiveRows.length > INACTIVE_PREVIEW_LIMIT ? (
+                {inactiveRows.length > 12 ? (
                   <button
-                    onClick={onToggleShowAllInactive}
+                    onClick={() => setShowAllInactive((v) => !v)}
                     className="text-zinc-500 hover:text-zinc-300"
                   >
-                    {showAllInactive
-                      ? "↑ collapse inactive"
-                      : `… show all ${inactiveRows.length} inactive`}
+                    {showAllInactive ? "↑ collapse inactive" : `… show all ${inactiveRows.length} inactive`}
                   </button>
                 ) : null}
               </>
             ) : null}
           </div>
-        );
-      })()}
-    </>
+        )
+      ) : (
+        <Skeleton label="loading deployments" />
+      )}
+
+      <SectionHeader title="symbol regimes · this week" />
+      {v5 ? (
+        regimeRows.length === 0 ? (
+          <div className="pl-2 text-zinc-500">(no enabled symbols)</div>
+        ) : (
+          <div className="mt-1 pl-2 space-y-0.5">
+            {regimeRows.map((row) => (
+              <SymbolRegimeRow key={`${row.venue}:${row.symbol}`} row={row} />
+            ))}
+          </div>
+        )
+      ) : (
+        <Skeleton label="loading regimes" />
+      )}
+
+      <SectionHeader title={`activity · last ${activityRows.length} trade events`} />
+      {recent ? (
+        activityRows.length === 0 ? (
+          <div className="pl-2 text-zinc-500">(no recent trade events)</div>
+        ) : (
+          <div className="mt-1 pl-2 space-y-0.5">
+            {activityRows.map((event, idx) => (
+              <V5ActivityRow key={`a:${idx}`} event={event} />
+            ))}
+          </div>
+        )
+      ) : (
+        <Skeleton label="loading activity" />
+      )}
+
+      <div className="border-t border-zinc-800 pt-2 mt-6 text-zinc-600">
+        sources /api/scalp/v5/dashboard · /api/scalp/v4/recent
+      </div>
+    </PageShell>
   );
 }
+
+// ─── gate-distribution histogram ─────────────────────────────────────────────
+// Bars are clickable filters; clicking the active decision clears the filter.
+
+function GateDistribution({
+  stateNowEnabled,
+  activeFilter,
+  onPick,
+}: {
+  stateNowEnabled: Record<V5GateDecision, number>;
+  activeFilter: V5GateDecision | null;
+  onPick: (d: V5GateDecision) => void;
+}) {
+  const max = Math.max(1, ...DECISION_ORDER.map((d) => stateNowEnabled[d] || 0));
+  return (
+    <div className="mt-1 pl-2 space-y-0.5">
+      {DECISION_ORDER.map((decision) => {
+        const value = stateNowEnabled[decision] || 0;
+        const isActive = activeFilter === decision;
+        return (
+          <button
+            key={decision}
+            onClick={() => onPick(decision)}
+            className={`block w-full text-left hover:bg-zinc-900/40 -mx-2 px-2 py-0.5 rounded-sm transition-colors ${
+              isActive ? "bg-zinc-900/60" : ""
+            }`}
+            title={`click to ${isActive ? "clear filter" : `filter to ${V5_DECISION_LABEL[decision]}`}`}
+          >
+            <div className="grid grid-cols-[1rem_8rem_3rem_1fr] gap-x-3 items-baseline">
+              <span className={V5_DECISION_COLOR[decision]}>{V5_DECISION_GLYPH[decision]}</span>
+              <span className={V5_DECISION_COLOR[decision]}>{V5_DECISION_LABEL[decision]}</span>
+              <span className="text-zinc-100 text-right">{value}</span>
+              <span className={`font-mono whitespace-pre overflow-hidden ${V5_DECISION_COLOR[decision]}`}>
+                {bar(value, max, 30)}
+              </span>
+            </div>
+          </button>
+        );
+      })}
+      {activeFilter ? (
+        <button onClick={() => onPick(activeFilter)} className="text-zinc-500 hover:text-zinc-300 text-[12px] mt-1">
+          ↑ clear filter
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function EvaluatorStrip({ data }: { data: V5DashboardResp }) {
+  const cov = data.coverage;
+  const latest = data.evaluator.latestEvaluationMs ? fmtAgo(data.evaluator.latestEvaluationMs) : null;
+  const oldest = data.evaluator.oldestEvaluationMs ? fmtAgo(data.evaluator.oldestEvaluationMs) : null;
+  return (
+    <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 pl-2 items-baseline">
+      <span className="text-zinc-500">coverage</span>
+      <span className="flex flex-wrap gap-x-3">
+        <span>
+          <span className="text-zinc-100">{cov.evaluated}</span>
+          <span className="text-zinc-500">/</span>
+          <span className="text-zinc-100">{cov.totalDeployments}</span>
+          <span className="text-zinc-500"> evaluated · </span>
+          <span className="text-emerald-400">{cov.enabledDeployments}</span>
+          <span className="text-zinc-500"> enabled · </span>
+          <span className="text-zinc-400">{cov.totalDeployments - cov.enabledDeployments}</span>
+          <span className="text-zinc-500"> inactive</span>
+        </span>
+        <span>
+          <span className={cov.missingEvidence > 0 ? "text-sky-400" : "text-zinc-500"}>{cov.missingEvidence}</span>
+          <span className="text-zinc-500"> missing evidence</span>
+        </span>
+        <span>
+          <span className={cov.stale > 0 ? "text-amber-400" : "text-zinc-500"}>{cov.stale}</span>
+          <span className="text-zinc-500"> stale</span>
+        </span>
+      </span>
+      <span className="text-zinc-500">runs</span>
+      <span className="flex flex-wrap gap-x-3">
+        <span>
+          <span className="text-zinc-500">last </span>
+          <span className="text-zinc-100">{latest ? `${latest} ago` : "—"}</span>
+        </span>
+        <span>
+          <span className="text-zinc-500">oldest </span>
+          <span className="text-zinc-100">{oldest ? `${oldest} ago` : "—"}</span>
+        </span>
+        <span>
+          <span className="text-zinc-500">hard gate </span>
+          <span className={data.v5HardGateEnabled ? "text-emerald-400" : "text-amber-400"}>
+            {data.v5HardGateEnabled ? "ON" : "OFF"}
+          </span>
+        </span>
+      </span>
+    </div>
+  );
+}
+
+// ─── deployment row ──────────────────────────────────────────────────────────
+// One row per deployment. Compact summary in the row; expanded body shows the
+// per-cell table with WeeklyNetRTrack bars (v3-style 12-bar div port).
 
 function V5DeploymentRowView({
   row,
@@ -1274,48 +447,31 @@ function V5DeploymentRowView({
 }) {
   const family = row.tuneId.split("_").slice(0, 4).join("_");
   const decision = row.gate.decision;
-  const tokens = cellMixTokens(row.cells);
   const currentR = row.gate.currentCellStat?.expectancyR ?? null;
   const currentN = row.gate.currentCellStat?.trades ?? null;
-  const currentExpStr = currentR === null
-    ? "—"
-    : `${currentR >= 0 ? "+" : ""}${currentR.toFixed(2)}R${currentN !== null ? `(${currentN}t)` : ""}`;
+  const currentExpStr =
+    currentR === null ? "—" : `${currentR >= 0 ? "+" : ""}${currentR.toFixed(2)}R${currentN !== null ? `(${currentN}t)` : ""}`;
   const decisionGlyph = V5_DECISION_GLYPH[decision];
   const decisionLabel = V5_DECISION_LABEL[decision];
   const decisionColor = V5_DECISION_COLOR[decision];
-  const cellMix = (
-    <span className="font-mono whitespace-pre">
-      {tokens.length === 0 ? (
-        <span className="text-zinc-600">(no cell evidence)</span>
-      ) : (
-        tokens.map((t, i) => (
-          <span
-            key={`${t.cellId}-${i}`}
-            title={`${abbrCell(t.cellId)} · E=${t.expectancyR >= 0 ? "+" : ""}${t.expectancyR.toFixed(3)}R${t.isCurrent ? " · CURRENT" : ""}`}
-            className={
-              t.isCurrent
-                ? "text-amber-300"
-                : t.expectancyR > 0
-                  ? "text-emerald-400"
-                  : t.expectancyR < 0
-                    ? "text-rose-400"
-                    : "text-zinc-400"
-            }
-          >
-            {t.glyph}
-            {t.height}
-            {i < tokens.length - 1 ? " " : ""}
-          </span>
-        ))
-      )}
-    </span>
-  );
   const dim = !row.enabled ? "opacity-60" : "";
   const enabledMark = row.enabled ? (
     <span className="text-emerald-400" title="enabled">●</span>
   ) : (
     <span className="text-zinc-600" title="inactive">○</span>
   );
+  // Per-deployment NetR scale so cells are visually comparable within one row.
+  const maxAbs = useMemo(() => {
+    let m = 0;
+    for (const c of row.cells) {
+      for (const v of c.weeklyNetR) {
+        const abs = Math.abs(v);
+        if (abs > m) m = abs;
+      }
+    }
+    return m;
+  }, [row.cells]);
+
   return (
     <div className={dim}>
       <button
@@ -1323,7 +479,6 @@ function V5DeploymentRowView({
         className="w-full text-left hover:bg-zinc-900/40 -mx-2 px-2 py-0.5 rounded-sm transition-colors"
         title={expanded ? "click to collapse" : "click to expand cell detail"}
       >
-        {/* mobile */}
         <div className="md:hidden">
           <div className="flex items-baseline gap-x-2">
             {enabledMark}
@@ -1336,7 +491,9 @@ function V5DeploymentRowView({
             <span className={`${decisionColor} text-[12px]`}>{decisionLabel}</span>
             <span className="ml-auto text-zinc-500">{expanded ? "▾" : "▸"}</span>
           </div>
-          <div className="pl-5 text-[12px] text-zinc-400 truncate" title={row.tuneId}>{family}</div>
+          <div className="pl-5 text-[12px] text-zinc-400 truncate" title={row.tuneId}>
+            {family}
+          </div>
           <div className="pl-5 text-[12px]">
             <span className="text-zinc-500">curr </span>
             <span className="text-amber-300">{abbrCell(row.currentCell.cellId)}</span>
@@ -1345,16 +502,16 @@ function V5DeploymentRowView({
               {currentExpStr}
             </span>
           </div>
-          <div className="pl-5 text-[12px]">{cellMix}</div>
         </div>
-        {/* desktop */}
-        <div className="hidden md:grid md:grid-cols-[1rem_1.25rem_4rem_8rem_5rem_5rem_8rem_12rem_1fr] md:gap-x-2 md:items-baseline">
+        <div className="hidden md:grid md:grid-cols-[1rem_1.25rem_4rem_8rem_5rem_5rem_8rem_1fr_1rem] md:gap-x-2 md:items-baseline">
           {enabledMark}
           <span className={decisionColor}>{decisionGlyph}</span>
           <span className="text-zinc-500">{row.venue}</span>
           <span className="text-zinc-100 truncate">{row.symbol}</span>
           <span className="text-zinc-500">{row.session}</span>
-          <span className={`${decisionColor} text-[13px] truncate`} title={decision}>{decisionLabel}</span>
+          <span className={`${decisionColor} text-[13px] truncate`} title={decision}>
+            {decisionLabel}
+          </span>
           <span
             className={currentR === null ? "text-zinc-500" : currentR >= 0 ? "text-emerald-400" : "text-rose-400"}
             title={`current cell expectancy${currentN !== null ? ` · ${currentN} trades` : ""}`}
@@ -1364,15 +521,14 @@ function V5DeploymentRowView({
           <span className="text-amber-300 truncate" title={row.currentCell.cellId || "no cell"}>
             {abbrCell(row.currentCell.cellId)}
           </span>
-          <span className="truncate">{cellMix}</span>
+          <span className="text-zinc-500 text-right">{expanded ? "▾" : "▸"}</span>
         </div>
       </button>
       {expanded ? (
-        <div className="pl-5 md:pl-7 mt-1 mb-2 border-l border-zinc-800/60 ml-2 md:ml-3 pl-3 space-y-1">
+        <div className="pl-5 md:pl-7 mt-1 mb-3 border-l border-zinc-800/60 ml-2 md:ml-3 pl-3 space-y-2">
           <div className="text-[12px] text-zinc-500 flex flex-wrap gap-x-3">
             <span>
-              evaluated{" "}
-              <span className="text-zinc-300">{row.v5EvaluatedAtMs ? fmtAgo(row.v5EvaluatedAtMs) + " ago" : "—"}</span>
+              evaluated <span className="text-zinc-300">{row.v5EvaluatedAtMs ? fmtAgo(row.v5EvaluatedAtMs) + " ago" : "—"}</span>
             </span>
             <span>
               trades <span className="text-zinc-300">{row.totalTrades}</span>
@@ -1394,66 +550,17 @@ function V5DeploymentRowView({
             </span>
           </div>
           {row.cells.length === 0 ? (
-            <div className="text-zinc-500 text-[12px]">(no cell evidence — evaluator hasn't run on this row)</div>
+            <div className="text-zinc-500 text-[12px]">(no cell evidence — evaluator hasn&apos;t run on this row)</div>
           ) : (
-            <div className="space-y-0.5">
-              <div className="hidden md:grid md:grid-cols-[1.25rem_1fr_4rem_5rem_5rem_1fr] md:gap-x-2 text-[11px] text-zinc-500 uppercase tracking-wider">
-                <span></span>
-                <span>cell</span>
-                <span className="text-right">trades</span>
-                <span className="text-right">exp/trade</span>
-                <span className="text-right">netR</span>
-                <span>weekly netR</span>
-              </div>
-              {row.cells.map((cell) => {
-                const expR = cell.expectancyR;
-                const expColor = expR > 0 ? "text-emerald-400" : expR < 0 ? "text-rose-400" : "text-zinc-300";
-                const netColor = cell.netR > 0 ? "text-emerald-400" : cell.netR < 0 ? "text-rose-400" : "text-zinc-300";
-                const sparkSrc = cell.weeklyNetR.length > 0 ? cell.weeklyNetR : [];
-                const sparkRange = sparkSrc.length > 0
-                  ? `${Math.min(...sparkSrc).toFixed(2)} .. ${Math.max(...sparkSrc).toFixed(2)}R`
-                  : "—";
-                return (
-                  <div
-                    key={cell.cellId}
-                    className="grid grid-cols-[1.25rem_1fr_4rem_5rem_5rem_1fr] md:grid-cols-[1.25rem_1fr_4rem_5rem_5rem_1fr] gap-x-2 text-[12px] md:text-[13px] items-baseline"
-                  >
-                    <span className={cell.isCurrent ? "text-amber-300" : "text-zinc-500"}>
-                      {cell.isCurrent ? "▶" : "·"}
-                    </span>
-                    <span
-                      className={cell.isCurrent ? "text-amber-300 truncate" : "text-zinc-300 truncate"}
-                      title={cell.cellId}
-                    >
-                      {abbrCell(cell.cellId)}
-                      {cell.isCurrent ? <span className="ml-1 text-[11px] text-amber-400/70">CURRENT</span> : null}
-                    </span>
-                    <span className="text-zinc-300 text-right">{cell.trades}</span>
-                    <span className={`${expColor} text-right`}>
-                      {expR >= 0 ? "+" : ""}
-                      {expR.toFixed(3)}R
-                    </span>
-                    <span className={`${netColor} text-right`}>
-                      {cell.netR >= 0 ? "+" : ""}
-                      {cell.netR.toFixed(2)}R
-                    </span>
-                    <span
-                      className={cell.netR >= 0 ? "text-emerald-400 font-mono" : "text-rose-400 font-mono"}
-                      title={`weekly netR range ${sparkRange}`}
-                    >
-                      {sparkSrc.length > 0 ? sparkline(sparkSrc) : <span className="text-zinc-600">—</span>}
-                    </span>
-                  </div>
-                );
-              })}
+            <div className="space-y-1.5">
+              {row.cells.map((cell) => (
+                <CellEvidenceRow key={cell.cellId} cell={cell} maxAbs={maxAbs} holdoutFromMs={row.holdoutWindow?.fromMs ?? null} />
+              ))}
             </div>
           )}
           {row.gate.eligibleCells.length > 0 ? (
-            <div className="text-[12px] text-zinc-500 mt-1">
-              eligible cells:{" "}
-              <span className="text-emerald-400">
-                {row.gate.eligibleCells.map(abbrCell).join(", ")}
-              </span>
+            <div className="text-[12px] text-zinc-500">
+              eligible cells: <span className="text-emerald-400">{row.gate.eligibleCells.map(abbrCell).join(", ")}</span>
             </div>
           ) : null}
         </div>
@@ -1462,197 +569,183 @@ function V5DeploymentRowView({
   );
 }
 
-// Sunday rollover progress — shows how the new week's data is filling in:
-//   1. regimes built for new week (denominator = symbols across deployments)
-//   2. walk-forwards for new week (denominator = last week's deployment count
-//      — anything walked last week should be carried forward incrementally)
-//   3. new stage-C survivors discovered this week + how many walked
-function RolloverProgress({
-  rollover,
+// ─── per-cell evidence row (with v3-style weekly bar track) ──────────────────
+
+function CellEvidenceRow({
+  cell,
+  maxAbs,
+  holdoutFromMs,
 }: {
-  rollover: {
-    currentWeekStartMs: number;
-    previousWeekStartMs: number;
-    walkedThisWeek: number;
-    walkedLastWeek: number;
-    regimesBuiltThisWeek: number;
-    regimesExpected: number;
-    newSurvivorsDiscovered: number;
-    newSurvivorsWalked: number;
-  };
+  cell: V5CellRow;
+  maxAbs: number;
+  holdoutFromMs: number | null;
 }) {
-  const regimePct = rollover.regimesExpected > 0
-    ? Math.round((rollover.regimesBuiltThisWeek / rollover.regimesExpected) * 100)
-    : 0;
-  // Use last week's distinct deployments as the target — that's the set we
-  // should be carrying forward incrementally this week.
-  const walkTarget = Math.max(rollover.walkedLastWeek, rollover.walkedThisWeek);
-  const walkPct = walkTarget > 0
-    ? Math.round((rollover.walkedThisWeek / walkTarget) * 100)
-    : 0;
-  const newWalkPct = rollover.newSurvivorsDiscovered > 0
-    ? Math.round((rollover.newSurvivorsWalked / rollover.newSurvivorsDiscovered) * 100)
-    : 0;
+  const expR = cell.expectancyR;
+  const expColor = expR > 0 ? "text-emerald-400" : expR < 0 ? "text-rose-400" : "text-zinc-300";
+  const netColor = cell.netR > 0 ? "text-emerald-400" : cell.netR < 0 ? "text-rose-400" : "text-zinc-300";
+  const ONE_WEEK = 7 * 24 * 60 * 60_000;
+  const weekLabel = useCallback(
+    (idx: number, value: number) => {
+      if (holdoutFromMs === null) {
+        return `w${idx + 1}: ${value >= 0 ? "+" : ""}${value.toFixed(2)}R`;
+      }
+      const weekStart = new Date(holdoutFromMs + idx * ONE_WEEK).toISOString().slice(0, 10);
+      return `${weekStart}: ${value >= 0 ? "+" : ""}${value.toFixed(2)}R`;
+    },
+    [holdoutFromMs],
+  );
   return (
-    <div className="mt-1 pl-2 grid grid-cols-[auto_1fr] md:grid-cols-[14rem_1fr] gap-x-3 gap-y-0.5 items-baseline">
-      <span className="text-zinc-500">regimes built</span>
-      <span className="flex flex-wrap items-baseline gap-x-2">
-        <span>
-          <span className={regimePct >= 100 ? "text-emerald-400" : "text-zinc-100"}>{rollover.regimesBuiltThisWeek}</span>
-          <span className="text-zinc-500">/{rollover.regimesExpected}</span>
-        </span>
-        <span className={`font-mono whitespace-pre ${regimePct >= 100 ? "text-emerald-400" : "text-amber-400"}`}>
-          {bar(rollover.regimesBuiltThisWeek, rollover.regimesExpected, 20)}
-        </span>
-        <span className="text-zinc-500">{regimePct}%</span>
-        {regimePct >= 100 ? <span className="text-emerald-400">✓</span> : null}
+    <div className="grid grid-cols-[1rem_1fr] md:grid-cols-[1rem_18rem_1fr] gap-x-2 items-start">
+      <span className={cell.isCurrent ? "text-amber-300 mt-1" : "text-zinc-500 mt-1"}>
+        {cell.isCurrent ? "▶" : "·"}
       </span>
-
-      <span className="text-zinc-500">incremental walks</span>
-      <span className="flex flex-wrap items-baseline gap-x-2">
-        <span>
-          <span className={walkPct >= 100 ? "text-emerald-400" : "text-zinc-100"}>{rollover.walkedThisWeek}</span>
-          <span className="text-zinc-500">/{walkTarget}</span>
+      <div className="flex flex-col gap-y-0.5">
+        <span
+          className={cell.isCurrent ? "text-amber-300 truncate text-[13px]" : "text-zinc-300 truncate text-[13px]"}
+          title={cell.cellId}
+        >
+          {abbrCell(cell.cellId)}
+          {cell.isCurrent ? <span className="ml-1 text-[11px] text-amber-400/70">CURRENT</span> : null}
         </span>
-        <span className={`font-mono whitespace-pre ${walkPct >= 100 ? "text-emerald-400" : "text-sky-400"}`}>
-          {bar(rollover.walkedThisWeek, walkTarget, 20)}
-        </span>
-        <span className="text-zinc-500">{walkPct}%</span>
-        <span className="text-zinc-500 text-[12px]">· carryover from last week</span>
-      </span>
-
-      <span className="text-zinc-500">new survivors</span>
-      <span className="flex flex-wrap items-baseline gap-x-2">
-        <span>
-          <span className="text-zinc-100">{rollover.newSurvivorsWalked}</span>
-          <span className="text-zinc-500">/{rollover.newSurvivorsDiscovered}</span>
-        </span>
-        {rollover.newSurvivorsDiscovered > 0 ? (
-          <>
-            <span className="font-mono whitespace-pre text-sky-400">
-              {bar(rollover.newSurvivorsWalked, rollover.newSurvivorsDiscovered, 20)}
+        <div className="flex flex-wrap gap-x-2 text-[12px] text-zinc-500">
+          <span>
+            trades <span className="text-zinc-300">{cell.trades}</span>
+          </span>
+          <span>
+            E/tr{" "}
+            <span className={expColor}>
+              {expR >= 0 ? "+" : ""}
+              {expR.toFixed(3)}R
             </span>
-            <span className="text-zinc-500">{newWalkPct}%</span>
-          </>
-        ) : (
-          <span className="text-zinc-500 text-[12px]">no new stage-C survivors this week yet</span>
-        )}
-      </span>
-
-      <span className="text-zinc-500">next rollover</span>
-      <span className="text-zinc-300">
-        {(() => {
-          const nextMs = rollover.currentWeekStartMs + 7 * 24 * 60 * 60_000;
-          const diff = nextMs - Date.now();
-          if (diff <= 0) return <span className="text-amber-400">now (rollover overdue)</span>;
-          const d = Math.floor(diff / (24 * 60 * 60_000));
-          const h = Math.floor((diff % (24 * 60 * 60_000)) / (60 * 60_000));
-          return <span>in {d}d {h}h <span className="text-zinc-500">· {new Date(nextMs).toISOString().slice(0, 10)} UTC</span></span>;
-        })()}
-      </span>
+          </span>
+          <span>
+            netR{" "}
+            <span className={netColor}>
+              {cell.netR >= 0 ? "+" : ""}
+              {cell.netR.toFixed(2)}R
+            </span>
+          </span>
+          <span>
+            w/l <span className="text-zinc-300">{cell.wins}</span>/<span className="text-zinc-300">{cell.losses}</span>
+          </span>
+        </div>
+      </div>
+      <div className="col-span-2 md:col-span-1 md:max-w-[420px]">
+        <WeeklyNetRTrack values={cell.weeklyNetR} globalMaxAbs={maxAbs} weekLabel={weekLabel} heightPx={36} />
+      </div>
     </div>
   );
 }
 
-function RegimeRowView({
+// ─── symbol regime row (v5-flavored) ─────────────────────────────────────────
+
+function SymbolRegimeRow({
   row,
 }: {
   row: {
     venue: string;
     symbol: string;
     cellId: string | null;
-    weeksInCell: number | null;
-    matches: number;
+    stale: boolean;
+    allowCount: number;
+    blockCount: number;
+    pendingCount: number;
+    totalEnabled: number;
   };
 }) {
   return (
     <div>
-      {/* mobile */}
       <div className="md:hidden">
         <div className="flex items-baseline gap-x-2">
-          <span className="text-zinc-100 truncate"><span className="text-zinc-500">{row.venue}/</span>{row.symbol}</span>
-          <span className="text-zinc-500 text-[12px]">
-            {row.weeksInCell ? `${row.weeksInCell}w` : "—"}
-            {row.matches > 0 ? <span className="text-emerald-400"> · {row.matches} strat</span> : null}
+          <span className="text-zinc-100 truncate">
+            <span className="text-zinc-500">{row.venue}/</span>
+            {row.symbol}
           </span>
+          {row.stale ? <span className="text-amber-300 text-[11px]">stale</span> : null}
         </div>
-        <div className={`pl-2 text-[12px] truncate ${row.cellId ? "text-zinc-300" : "text-zinc-600"}`} title={row.cellId || ""}>
+        <div
+          className={`pl-2 text-[12px] truncate ${row.cellId ? "text-zinc-300" : "text-zinc-600"}`}
+          title={row.cellId || ""}
+        >
           {abbrCell(row.cellId)}
         </div>
+        <div className="pl-2 text-[12px] text-zinc-500">
+          <span className="text-emerald-400">{row.allowCount} allow</span>
+          {row.blockCount > 0 ? <span className="text-rose-400"> · {row.blockCount} block</span> : null}
+          {row.pendingCount > 0 ? <span className="text-sky-400"> · {row.pendingCount} pending</span> : null}
+          <span> / {row.totalEnabled} deps</span>
+        </div>
       </div>
-      {/* desktop */}
-      <div className="hidden md:grid md:grid-cols-[5rem_8rem_1fr_6rem_auto] md:gap-x-2 md:items-baseline">
+      <div className="hidden md:grid md:grid-cols-[5rem_8rem_1fr_4rem_1fr] md:gap-x-2 md:items-baseline">
         <span className="text-zinc-500">{row.venue}</span>
         <span className="text-zinc-100 truncate">{row.symbol}</span>
-        <span className={row.cellId ? "text-zinc-300 truncate" : "text-zinc-600"} title={row.cellId || ""}>{abbrCell(row.cellId)}</span>
-        <span className="text-zinc-500 text-[13px]">{row.weeksInCell ? `${row.weeksInCell}w in cell` : "—"}</span>
-        {row.matches > 0 ? <span className="text-emerald-400 text-[13px]">matches: {row.matches} strat</span> : <span />}
+        <span className={row.cellId ? "text-zinc-300 truncate" : "text-zinc-600"} title={row.cellId || ""}>
+          {abbrCell(row.cellId)}
+        </span>
+        <span className={`text-[12px] ${row.stale ? "text-amber-300" : "text-zinc-600"}`}>
+          {row.stale ? "stale" : ""}
+        </span>
+        <span className="text-[13px] text-zinc-500">
+          <span className="text-emerald-400">{row.allowCount} allow</span>
+          {row.blockCount > 0 ? <span className="text-rose-400"> · {row.blockCount} block</span> : null}
+          {row.pendingCount > 0 ? <span className="text-sky-400"> · {row.pendingCount} pending</span> : null}
+          <span> / {row.totalEnabled} deps</span>
+        </span>
       </div>
     </div>
   );
 }
 
-type ActivityEvent = { tsMs: number; kind: "wf" | "regime" | "trade"; payload: WalkforwardRow | TransitionRow | TradeRow };
+// ─── activity row (v5-flavored: highlight v5 reason codes) ───────────────────
 
-function ActivityRowView({ event }: { event: ActivityEvent }) {
-  let timeMs: number;
+function V5ActivityRow({ event }: { event: TradeRow }) {
+  const timeMs = event.tsMs;
+  const symbol = `${event.venue || "?"}/${event.symbol || "?"}`;
+  const v5Reason = event.reasonCodes.find((c) => c.startsWith("V5_"));
   let marker: string;
   let markerClass: string;
-  let symbol: string;
   let detail: string;
   let detailClass: string;
-  let tail = ""; // duration / R-multiple shown on the right on desktop, after detail on mobile
+  let tail = "";
   let tailClass = "text-zinc-500";
 
-  if (event.kind === "wf") {
-    const p = event.payload as WalkforwardRow;
-    timeMs = p.evaluatedAtMs;
-    symbol = `${p.venue}/${p.symbol}`;
-    marker = p.eligible ? "WF ✓" : p.status === "in_progress" ? "WF ◔" : p.status === "cluster_cap_exceeded" ? "WF ◐" : "WF ✗";
-    markerClass =
-      p.eligible ? "text-emerald-400"
-      : p.status === "cluster_cap_exceeded" ? "text-amber-400"
-      : p.status === "in_progress" ? "text-sky-400"
-      : "text-rose-400";
-    detail = p.eligible ? `cells:${p.strictPassingCells}/${p.occupiedCells}` : p.status;
-    detailClass = "text-zinc-400";
-    tail = p.durationMs ? `${Math.round(p.durationMs / 60_000)}m` : "";
-  } else if (event.kind === "regime") {
-    const p = event.payload as TransitionRow;
-    timeMs = p.transitionWeekStartMs;
-    symbol = `${p.venue}/${p.symbol}`;
-    marker = "REGIME";
-    markerClass = "text-purple-400";
-    detail = `${abbrCell(p.fromCellId)} → ${abbrCell(p.toCellId)}`;
-    detailClass = "text-zinc-400";
-  } else {
-    const p = event.payload as TradeRow;
-    timeMs = p.tsMs;
-    symbol = `${p.venue || "?"}/${p.symbol || "?"}`;
-    marker =
-      p.eventKind === "trade" ? "TRADE"
-      : p.eventKind === "entry_error" ? "ENTRY✗"
-      : p.eventKind === "entry_skipped" ? "ENTRY-"
-      : "STATE";
+  if (event.eventKind === "trade") {
+    marker = "TRADE";
     const tone =
-      p.eventKind === "trade" ? (p.rMultiple !== null ? (p.rMultiple > 0 ? "text-emerald-400" : "text-rose-400") : "text-zinc-200")
-      : p.eventKind === "entry_error" ? "text-rose-400"
-      : p.eventKind === "entry_skipped" ? "text-amber-400"
-      : "text-zinc-400";
+      event.rMultiple !== null ? (event.rMultiple > 0 ? "text-emerald-400" : "text-rose-400") : "text-zinc-200";
     markerClass = tone;
-    detail =
-      p.eventKind === "trade" ? (p.state || p.summary)
-      : p.eventKind === "entry_error" ? "execution error"
-      : p.eventKind === "entry_skipped" ? "entry skipped"
-      : p.state || "state change";
+    detail = event.state || event.summary;
     detailClass = tone;
-    tail = p.rMultiple !== null ? (p.rMultiple > 0 ? `+${p.rMultiple.toFixed(2)}R` : `${p.rMultiple.toFixed(2)}R`) : "";
+    tail = event.rMultiple !== null ? (event.rMultiple > 0 ? `+${event.rMultiple.toFixed(2)}R` : `${event.rMultiple.toFixed(2)}R`) : "";
     tailClass = tone;
+  } else if (event.eventKind === "entry_error") {
+    marker = "ENTRY✗";
+    markerClass = "text-rose-400";
+    detail = "execution error";
+    detailClass = "text-rose-400";
+  } else if (event.eventKind === "entry_skipped") {
+    // Map v5 reason → decision color so blocked entries shout the right tone.
+    let decision: V5GateDecision | null = null;
+    if (v5Reason === "V5_CELL_NEGATIVE_EXPECTANCY") decision = "block_negative";
+    else if (v5Reason === "V5_CELL_NOT_IN_EVIDENCE") decision = "block_unseen";
+    else if (v5Reason === "V5_CELL_DATA_STALE") decision = "block_stale";
+    else if (v5Reason === "V5_CELL_EVIDENCE_MISSING") decision = "block_evaluator_pending";
+    else if (v5Reason === "V5_CELL_INSUFFICIENT_TRADES") decision = "block_insufficient_trades";
+    const tone = decision ? V5_DECISION_COLOR[decision] : "text-amber-400";
+    const tag = decision ? V5_DECISION_GLYPH[decision] + " " + V5_DECISION_LABEL[decision] : "skipped";
+    marker = "ENTRY-";
+    markerClass = tone;
+    detail = tag;
+    detailClass = tone;
+    if (v5Reason) tail = v5Reason.replace(/^V5_/, "");
+  } else {
+    marker = "STATE";
+    markerClass = "text-zinc-400";
+    detail = event.state || "state change";
+    detailClass = "text-zinc-400";
   }
-
   return (
     <div>
-      {/* mobile: 2 lines — primary identifier on line 1, detail indented on line 2 */}
       <div className="md:hidden">
         <div className="flex items-baseline gap-x-2">
           <span className="text-zinc-500 w-[2.75rem] shrink-0">{fmtClock(timeMs)}</span>
@@ -1660,16 +753,18 @@ function ActivityRowView({ event }: { event: ActivityEvent }) {
           <span className="text-zinc-100 truncate">{symbol}</span>
         </div>
         <div className={`pl-[6.5rem] text-[12px] truncate ${detailClass}`} title={detail}>
-          {detail}{tail ? <span className={`ml-2 ${tailClass}`}>{tail}</span> : null}
+          {detail}
+          {tail ? <span className={`ml-2 ${tailClass}`}>{tail}</span> : null}
         </div>
       </div>
-      {/* desktop: single line grid */}
-      <div className="hidden md:grid md:grid-cols-[3rem_3.5rem_14rem_1fr_3rem] md:gap-x-2 md:items-baseline">
+      <div className="hidden md:grid md:grid-cols-[3rem_3.5rem_14rem_1fr_8rem] md:gap-x-2 md:items-baseline">
         <span className="text-zinc-500">{fmtClock(timeMs)}</span>
         <span className={markerClass}>{marker}</span>
         <span className="text-zinc-100 truncate">{symbol}</span>
         <span className={`${detailClass} truncate text-[13px]`}>{detail}</span>
-        <span className={`${tailClass} text-[13px]`}>{tail}</span>
+        <span className={`${tailClass} text-[13px] truncate text-right`} title={tail}>
+          {tail}
+        </span>
       </div>
     </div>
   );

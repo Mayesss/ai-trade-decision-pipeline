@@ -184,6 +184,11 @@ export async function runScalpV5EvaluationBatch(params: {
   limit?: number;
   staleOlderThanMs?: number;
   nowMs?: number;
+  // Optional sharding: when shardCount >= 2, only deployments whose stable
+  // hash of deployment_id falls into the chosen shardIndex are returned.
+  // Lets multiple bulk processes run in parallel on disjoint row sets.
+  shardCount?: number;
+  shardIndex?: number;
 } = {}): Promise<ScalpV5BulkResult> {
   const cfg = resolveScalpV5Config();
   const nowMs = Math.floor(Number(params.nowMs || Date.now()));
@@ -191,6 +196,8 @@ export async function runScalpV5EvaluationBatch(params: {
     limit: params.limit,
     staleOlderThanMs: params.staleOlderThanMs,
     nowMs,
+    shardCount: params.shardCount,
+    shardIndex: params.shardIndex,
   });
   let processed = 0;
   let succeeded = 0;

@@ -20,6 +20,10 @@
  *   BULK_V4_BACKFILL_CANDLES=1    — v4 only: fetch/save missing walkforward candles
  *   BULK_V4_WORK_LEASE_MINUTES=120 — v4 only: candidate claim TTL
  *   BULK_V4_PROGRESS_LOG_SECONDS=60 — v4 only: heartbeat while a candidate is running; 0 disables
+ *   BULK_V5_LIMIT=25              — v5 only: deployments evaluated per batch (max 500)
+ *   BULK_V5_STALE_OLDER_THAN_HOURS=144 — v5 only: re-evaluate rows whose evidence is older than this
+ *   BULK_V5_SHARD_COUNT=1         — v5 only: split deployments across N parallel processes
+ *   BULK_V5_SHARD_INDEX=0         — v5 only: which shard this process owns (0..count-1)
  */
 import nextEnv from '@next/env';
 import os from 'node:os';
@@ -268,11 +272,28 @@ const BULK_V5_STALE_OLDER_THAN_HOURS = Math.max(
   1,
   Math.min(24 * 14, Math.floor(envNumber('BULK_V5_STALE_OLDER_THAN_HOURS', 24 * 6))),
 );
+// v5 sharding (separate from v2's BULK_SHARD_COUNT, which is a symbol-level
+// shard). v5 shards by hash(deployment_id) so each process owns a disjoint
+// slice of rows — safe to run N terminals at BULK_V5_SHARD_COUNT=N for true
+// parallelism (each is its own Node process, its own CPU core).
+const BULK_V5_SHARD_COUNT = Math.max(
+  1,
+  Math.min(128, Math.floor(envNumber('BULK_V5_SHARD_COUNT', 1))),
+);
+const BULK_V5_SHARD_INDEX = Math.max(
+  0,
+  Math.min(
+    BULK_V5_SHARD_COUNT - 1,
+    Math.floor(envNumber('BULK_V5_SHARD_INDEX', 0)),
+  ),
+);
 
 let runScalpV5EvaluationBatch: ((params?: {
   limit?: number;
   staleOlderThanMs?: number;
   nowMs?: number;
+  shardCount?: number;
+  shardIndex?: number;
 }) => Promise<import('../lib/scalp-v5/evaluator').ScalpV5BulkResult>) | null = null;
 
 async function getRunScalpV5EvaluationBatch() {
@@ -341,12 +362,17 @@ async function runBatch(): Promise<boolean> {
     const result = await runEval({
       limit: BULK_V5_LIMIT,
       staleOlderThanMs: BULK_V5_STALE_OLDER_THAN_HOURS * 60 * 60 * 1000,
+      shardCount: BULK_V5_SHARD_COUNT,
+      shardIndex: BULK_V5_SHARD_INDEX,
     });
     const elapsed = ((Date.now() - batchStart) / 1000).toFixed(1);
     totalProcessed += result.processed;
     totalSucceeded += result.succeeded;
+    const shardSuffix = BULK_V5_SHARD_COUNT > 1
+      ? ` shard=${BULK_V5_SHARD_INDEX}/${BULK_V5_SHARD_COUNT}`
+      : '';
     console.log(
-      `  ${elapsed}s | v5 processed=${result.processed} succeeded=${result.succeeded} failed=${result.failed} enabled=${result.enabled} disabled=${result.disabled}`,
+      `  ${elapsed}s | v5${shardSuffix} processed=${result.processed} succeeded=${result.succeeded} failed=${result.failed} enabled=${result.enabled} disabled=${result.disabled}`,
     );
     console.log(
       `  v5 config: classifier=${result.details.classifierVersion} holdoutWeeks=${result.details.holdoutWeeks} minTradesPerCell=${result.details.minTradesPerCell}`,
@@ -665,8 +691,18 @@ async function main() {
     : -1;
 
   console.log(`Local bulk research runner (${BULK_RESEARCH_VERSION})`);
-  console.log(`Candidates per batch: ${candidateBatchSize}`);
-  if (BULK_RESEARCH_VERSION === 'v4') {
+  if (BULK_RESEARCH_VERSION !== 'v5') {
+    console.log(`Candidates per batch: ${candidateBatchSize}`);
+  }
+  if (BULK_RESEARCH_VERSION === 'v5') {
+    console.log(`V5 deployments per batch: ${BULK_V5_LIMIT}`);
+    console.log(`V5 stale threshold: ${BULK_V5_STALE_OLDER_THAN_HOURS}h`);
+    if (BULK_V5_SHARD_COUNT > 1) {
+      console.log(`V5 shard: ${BULK_V5_SHARD_INDEX}/${BULK_V5_SHARD_COUNT} (run all ${BULK_V5_SHARD_COUNT} shards in parallel for full coverage)`);
+    } else {
+      console.log(`V5 shard: 1/1 (single process; set BULK_V5_SHARD_COUNT=N for parallel runs)`);
+    }
+  } else if (BULK_RESEARCH_VERSION === 'v4') {
     console.log(`V4 candidate fetch limit: ${BULK_V4_CANDIDATE_FETCH_LIMIT}`);
     console.log(`V4 force validity: ${BULK_V4_FORCE_VALIDITY ? 'enabled' : 'disabled'}`);
     console.log(`V4 candle cache soft cap: ${PERSISTENT_V4_CANDLE_CACHE_SOFT_CAP} symbol ranges`);
