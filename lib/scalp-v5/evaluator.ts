@@ -168,11 +168,15 @@ export async function evaluateScalpV5ForDeployment(params: {
     captureTimeline: false,
   });
 
+  // Snapshot bounds match the holdout exactly. The candle loader excludes
+  // weeks with week_start >= holdoutToMs, so no trade can fall in the
+  // current week — no need to load that snapshot. The bulk loader's
+  // upper bound is exclusive (week_start < toMs).
   const snapshotMap = await loadScalpV4RegimeSnapshotsBulk({
     pairs: [{ venue: deploymentRow.venue as ScalpV4Venue, symbol: deploymentRow.symbol }],
     classifierVersion: cfg.classifierVersion,
     fromMs: holdoutFromMs,
-    toMs: holdoutToMs + WEEK_MS,
+    toMs: holdoutToMs,
   });
   const snaps = snapshotMap.get(`${deploymentRow.venue}:${deploymentRow.symbol}`) || [];
   const snapshotsByWeekStart = new Map<number, ScalpV4CellId>();

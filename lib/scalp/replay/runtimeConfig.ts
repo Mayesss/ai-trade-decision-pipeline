@@ -41,6 +41,18 @@ export function buildScalpReplayRuntimeFromDeployment(params: {
             asiaWindowLocal: cfg.sessions.asiaWindowLocal,
             raidWindowLocal: cfg.sessions.raidWindowLocal,
             blockedBerlinEntryHours: cfg.sessions.blockedBerlinEntryHours,
+            // Temporal-filter fields. `base.strategy` was built from the
+            // pre-override global config so it carries the global default
+            // (usually undefined). Re-copy the post-override values from
+            // cfg.sessions so deployment-specific slot/weekday/hour
+            // restrictions (set via configOverride) actually reach the
+            // replay harness, which reads these straight off runtime.strategy
+            // at lib/scalp/replay/harness.ts:123-127.
+            allowedSessionWindowSlots: cfg.sessions.allowedSessionWindowSlots,
+            sessionSlotMinutes: cfg.sessions.sessionSlotMinutes,
+            allowedWeekdaysLocal: cfg.sessions.allowedWeekdaysLocal,
+            allowedUtcHours: cfg.sessions.allowedUtcHours,
+            entryBlockReasonCodes: cfg.sessions.entryBlockReasonCodes,
             asiaBaseTf: preferredTimeframes?.asiaBaseTf ?? cfg.timeframes.asiaBase,
             confirmTf: preferredTimeframes?.confirmTf ?? cfg.timeframes.confirm,
             maxTradesPerDay: cfg.risk.maxTradesPerSymbolPerDay,
