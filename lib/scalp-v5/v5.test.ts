@@ -92,6 +92,42 @@ test("buildScalpV5CellEvidence aggregates per cell and marks eligible cells", ()
   assert.deepEqual(evidence.eligibleCells, [CELL_A]);
 });
 
+test("buildScalpV5CellEvidence populates per-cell weeklyNetR aligned to the holdout window", () => {
+  // 12-week holdout window starting at ANCHOR. Cell A has trades in weeks 0
+  // and 2 only; cell B has a trade in week 1 only.
+  const tagged = tagTradesWithCells({
+    trades: [
+      tradeAt(0, 0.5),
+      tradeAt(0, 0.3),
+      tradeAt(2, -0.2),
+      tradeAt(1, 0.8),
+    ],
+    snapshotsByWeekStart: new Map([
+      [ANCHOR, CELL_A as any],
+      [ANCHOR + WEEK_MS, CELL_B as any],
+      [ANCHOR + 2 * WEEK_MS, CELL_A as any],
+    ]),
+  });
+  const evidence = buildScalpV5CellEvidence({
+    tagged,
+    classifierVersion: "scalp_v4_macro_weekly_r1",
+    evaluatedAtMs: ANCHOR + 12 * WEEK_MS,
+    holdoutFromMs: ANCHOR,
+    holdoutToMs: ANCHOR + 12 * WEEK_MS,
+    minTradesPerCell: 1,
+  });
+  const aWeekly = evidence.cells[CELL_A]?.weeklyNetR ?? [];
+  const bWeekly = evidence.cells[CELL_B]?.weeklyNetR ?? [];
+  assert.equal(aWeekly.length, 12);
+  assert.equal(bWeekly.length, 12);
+  assert.equal(aWeekly[0]?.toFixed(3), "0.800"); // 0.5 + 0.3
+  assert.equal(aWeekly[1], 0);
+  assert.equal(aWeekly[2]?.toFixed(3), "-0.200");
+  assert.equal(bWeekly[0], 0);
+  assert.equal(bWeekly[1]?.toFixed(3), "0.800");
+  assert.equal(bWeekly[2], 0);
+});
+
 test("buildScalpV5CellEvidence respects the minTradesPerCell threshold", () => {
   const tagged = tagTradesWithCells({
     trades: [

@@ -156,6 +156,65 @@ interface RecentResp {
   recentTrades: TradeRow[];
 }
 
+// v5 (per-regime-cell entry gate) types
+type V5GateDecision =
+  | "allow"
+  | "block_negative"
+  | "block_unseen"
+  | "block_stale"
+  | "block_evaluator_pending"
+  | "block_insufficient_trades";
+
+interface V5CellRow {
+  cellId: string;
+  trades: number;
+  netR: number;
+  expectancyR: number;
+  wins: number;
+  losses: number;
+  weeklyNetR: number[];
+  isCurrent: boolean;
+}
+
+interface V5DeploymentRow {
+  deploymentId: string;
+  venue: string;
+  symbol: string;
+  session: string;
+  strategyId: string;
+  tuneId: string;
+  v5Enabled: boolean;
+  v5EvaluatedAtMs: number | null;
+  currentCell: { cellId: string | null; stale: boolean; updatedAtMs: number | null };
+  gate: {
+    decision: V5GateDecision;
+    currentCellStat: { trades: number; expectancyR: number; netR: number; wins: number; losses: number } | null;
+    eligibleCells: string[];
+  };
+  holdoutWindow: { fromMs: number; toMs: number } | null;
+  totalTrades: number;
+  cells: V5CellRow[];
+}
+
+interface V5DashboardResp {
+  ok: boolean;
+  classifierVersion: string;
+  v5Enabled: boolean;
+  v5HardGateEnabled: boolean;
+  config: { holdoutWeeks: number; minTradesPerCell: number };
+  nowMs: number;
+  evaluator: { latestEvaluationMs: number | null; oldestEvaluationMs: number | null };
+  coverage: {
+    enabledDeployments: number;
+    evaluated: number;
+    missingEvidence: number;
+    stale: number;
+    staleThresholdMs: number;
+  };
+  stateNow: Record<V5GateDecision, number>;
+  deployments: V5DeploymentRow[];
+}
+
 // ─── formatting helpers ───────────────────────────────────────────────────────
 
 function fmtAgo(ms: number | null | undefined): string {
@@ -252,12 +311,60 @@ function bar(value: number, max: number, width = 28): string {
   return "█".repeat(filled) + "░".repeat(width - filled);
 }
 
+// v5 cell-mix sparkline: each cell becomes a 2-char token (▲/▼ + ▁..█).
+// Height encodes |expectancyR| relative to the deployment's max |E|.
+// Sign glyph encodes profitability. Cells are passed pre-sorted (current
+// first, then by trades DESC).
+function cellMixTokens(cells: V5CellRow[]): Array<{ glyph: string; height: string; cellId: string; isCurrent: boolean; expectancyR: number }> {
+  const heights = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+  const maxAbs = cells.reduce((m, c) => Math.max(m, Math.abs(c.expectancyR)), 0);
+  return cells.map((c) => {
+    const norm = maxAbs > 0 ? Math.abs(c.expectancyR) / maxAbs : 0;
+    const idx = Math.max(0, Math.min(heights.length - 1, Math.floor(norm * heights.length)));
+    return {
+      glyph: c.expectancyR > 0 ? "▲" : c.expectancyR < 0 ? "▼" : "·",
+      height: heights[idx]!,
+      cellId: c.cellId,
+      isCurrent: c.isCurrent,
+      expectancyR: c.expectancyR,
+    };
+  });
+}
+
+const V5_DECISION_LABEL: Record<V5GateDecision, string> = {
+  allow: "allow",
+  block_negative: "neg",
+  block_unseen: "unseen",
+  block_stale: "stale",
+  block_evaluator_pending: "pending",
+  block_insufficient_trades: "thin",
+};
+
+const V5_DECISION_COLOR: Record<V5GateDecision, string> = {
+  allow: "text-emerald-400",
+  block_negative: "text-rose-400",
+  block_unseen: "text-amber-300",
+  block_stale: "text-amber-300",
+  block_evaluator_pending: "text-sky-400",
+  block_insufficient_trades: "text-amber-300",
+};
+
+const V5_DECISION_GLYPH: Record<V5GateDecision, string> = {
+  allow: "✓",
+  block_negative: "✗",
+  block_unseen: "✗",
+  block_stale: "⊘",
+  block_evaluator_pending: "○",
+  block_insufficient_trades: "◐",
+};
+
 // ─── component ────────────────────────────────────────────────────────────────
 
 export default function ScalpV4Dashboard() {
   const [health, setHealth] = useState<HealthResp | null>(null);
   const [deploymentsResp, setDeploymentsResp] = useState<DeploymentsResp | null>(null);
   const [recent, setRecent] = useState<RecentResp | null>(null);
+  const [v5, setV5] = useState<V5DashboardResp | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadedAt, setLoadedAt] = useState<number | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -323,18 +430,19 @@ export default function ScalpV4Dashboard() {
         return { error: (err as Error)?.message || String(err) };
       }
     }
-    const [h, d, r] = await Promise.all([
+    const [h, d, r, v] = await Promise.all([
       fetchOne<HealthResp>("/api/scalp/v4/health", setHealth),
       fetchOne<DeploymentsResp>("/api/scalp/v4/deployments", setDeploymentsResp),
       fetchOne<RecentResp>("/api/scalp/v4/recent", setRecent),
+      fetchOne<V5DashboardResp>("/api/scalp/v5/dashboard", setV5),
     ]);
-    if (h.unauthorized || d.unauthorized || r.unauthorized) {
+    if (h.unauthorized || d.unauthorized || r.unauthorized || v.unauthorized) {
       setUnauthorized(true);
       setShowSecretPanel(true);
       setError("Unauthorized — admin secret missing or invalid.");
       return;
     }
-    setError(h.error || d.error || r.error || null);
+    setError(h.error || d.error || r.error || v.error || null);
     setUnauthorized(false);
     // Successful load means the secret is valid — auto-close the panel if it
     // was open from a previous 401.
@@ -656,6 +764,14 @@ export default function ScalpV4Dashboard() {
           <Skeleton label="loading live state" />
         )}
 
+        {/* V5 GATE */}
+        <SectionHeader title="v5 gate · per-regime-cell entry control" />
+        {v5 ? (
+          <V5GateSection data={v5} expanded={expandedDeployments} onToggle={toggleExpanded} />
+        ) : (
+          <Skeleton label="loading v5 gate" />
+        )}
+
         {/* ACTIVE DEPLOYMENTS */}
         <SectionHeader title="active deployments · live=● dormant=○" />
         {deploymentsResp ? (
@@ -949,6 +1065,312 @@ function CellDetailView({ cell }: { cell: CellDetail }) {
             {sparkline(winSpark)}
           </span>
           <span className={`${labelColor} text-[11px]`}>{winSpark.length}w · range {winRange}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// V5 gate section — terminal-style live view of the per-regime-cell entry
+// gate. Top block is the evaluator summary + coverage + state distribution.
+// Below is one line per enabled deployment with an inline cell-mix
+// sparkline (glyph+height per cell). Clicking a row expands the per-cell
+// table with the weekly netR sparkline — the candle-style visualization
+// from the legacy AgGrid column, rendered as monospace blocks.
+function V5GateSection({
+  data,
+  expanded,
+  onToggle,
+}: {
+  data: V5DashboardResp;
+  expanded: Set<string>;
+  onToggle: (id: string) => void;
+}) {
+  const cov = data.coverage;
+  const sn = data.stateNow;
+  const evaluatorAge = data.evaluator.latestEvaluationMs
+    ? fmtAgo(data.evaluator.latestEvaluationMs)
+    : null;
+  const oldestAge = data.evaluator.oldestEvaluationMs
+    ? fmtAgo(data.evaluator.oldestEvaluationMs)
+    : null;
+  // State-distribution stacked bar widths.
+  const totalRated = Math.max(1, Object.values(sn).reduce((a, b) => a + b, 0));
+  const allSegments: Array<{ kind: V5GateDecision; n: number }> = [
+    { kind: "allow", n: sn.allow },
+    { kind: "block_negative", n: sn.block_negative },
+    { kind: "block_unseen", n: sn.block_unseen },
+    { kind: "block_insufficient_trades", n: sn.block_insufficient_trades },
+    { kind: "block_stale", n: sn.block_stale },
+    { kind: "block_evaluator_pending", n: sn.block_evaluator_pending },
+  ];
+  const segments = allSegments.filter((s) => s.n > 0);
+  return (
+    <>
+      <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 pl-2 items-baseline">
+        <span className="text-zinc-500">evaluator</span>
+        <span className="flex flex-wrap gap-x-3">
+          <span>
+            <span className="text-zinc-500">last run </span>
+            <span className="text-zinc-100">{evaluatorAge ? `${evaluatorAge} ago` : "—"}</span>
+          </span>
+          <span>
+            <span className="text-zinc-500">holdout </span>
+            <span className="text-zinc-100">{data.config.holdoutWeeks}w</span>
+          </span>
+          <span>
+            <span className="text-zinc-500">min trades/cell </span>
+            <span className="text-zinc-100">{data.config.minTradesPerCell}</span>
+          </span>
+          <span>
+            <span className="text-zinc-500">hard gate </span>
+            <span className={data.v5HardGateEnabled ? "text-emerald-400" : "text-amber-400"}>
+              {data.v5HardGateEnabled ? "ON" : "OFF"}
+            </span>
+          </span>
+        </span>
+        <span className="text-zinc-500">coverage</span>
+        <span className="flex flex-wrap gap-x-3">
+          <span>
+            <span className="text-zinc-100">{cov.evaluated}</span>
+            <span className="text-zinc-500">/</span>
+            <span className="text-zinc-100">{cov.enabledDeployments}</span>
+            <span className="text-zinc-500"> evaluated</span>
+          </span>
+          <span>
+            <span className={cov.missingEvidence > 0 ? "text-sky-400" : "text-zinc-500"}>
+              {cov.missingEvidence}
+            </span>
+            <span className="text-zinc-500"> missing</span>
+          </span>
+          <span>
+            <span className={cov.stale > 0 ? "text-amber-400" : "text-zinc-500"}>{cov.stale}</span>
+            <span className="text-zinc-500"> stale evidence</span>
+          </span>
+          <span className="text-zinc-500">
+            oldest {oldestAge ? `${oldestAge} ago` : "—"}
+          </span>
+        </span>
+        <span className="text-zinc-500">state now</span>
+        <span className="flex flex-wrap gap-x-3 items-baseline">
+          {segments.length === 0 ? (
+            <span className="text-zinc-500">(no enabled deployments)</span>
+          ) : (
+            segments.map((s) => (
+              <span key={s.kind} className="flex items-baseline gap-x-1">
+                <span className={`${V5_DECISION_COLOR[s.kind]} font-mono`}>
+                  {"█".repeat(Math.max(1, Math.round((s.n / totalRated) * 8)))}
+                </span>
+                <span className={V5_DECISION_COLOR[s.kind]}>{V5_DECISION_LABEL[s.kind]}</span>
+                <span className="text-zinc-100">{s.n}</span>
+              </span>
+            ))
+          )}
+        </span>
+      </div>
+      {data.deployments.length === 0 ? (
+        <div className="pl-2 mt-1 text-zinc-500">(no enabled deployments)</div>
+      ) : (
+        <div className="mt-1 pl-2 space-y-0.5">
+          {data.deployments.map((dep) => (
+            <V5DeploymentRowView
+              key={dep.deploymentId}
+              row={dep}
+              expanded={expanded.has(dep.deploymentId)}
+              onToggle={() => onToggle(dep.deploymentId)}
+            />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function V5DeploymentRowView({
+  row,
+  expanded,
+  onToggle,
+}: {
+  row: V5DeploymentRow;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const family = row.tuneId.split("_").slice(0, 4).join("_");
+  const decision = row.gate.decision;
+  const tokens = cellMixTokens(row.cells);
+  const currentR = row.gate.currentCellStat?.expectancyR ?? null;
+  const currentN = row.gate.currentCellStat?.trades ?? null;
+  const currentExpStr = currentR === null
+    ? "—"
+    : `${currentR >= 0 ? "+" : ""}${currentR.toFixed(2)}R${currentN !== null ? `(${currentN}t)` : ""}`;
+  const decisionGlyph = V5_DECISION_GLYPH[decision];
+  const decisionLabel = V5_DECISION_LABEL[decision];
+  const decisionColor = V5_DECISION_COLOR[decision];
+  const cellMix = (
+    <span className="font-mono whitespace-pre">
+      {tokens.length === 0 ? (
+        <span className="text-zinc-600">(no cell evidence)</span>
+      ) : (
+        tokens.map((t, i) => (
+          <span
+            key={`${t.cellId}-${i}`}
+            title={`${abbrCell(t.cellId)} · E=${t.expectancyR >= 0 ? "+" : ""}${t.expectancyR.toFixed(3)}R${t.isCurrent ? " · CURRENT" : ""}`}
+            className={
+              t.isCurrent
+                ? "text-amber-300"
+                : t.expectancyR > 0
+                  ? "text-emerald-400"
+                  : t.expectancyR < 0
+                    ? "text-rose-400"
+                    : "text-zinc-400"
+            }
+          >
+            {t.glyph}
+            {t.height}
+            {i < tokens.length - 1 ? " " : ""}
+          </span>
+        ))
+      )}
+    </span>
+  );
+  return (
+    <div>
+      <button
+        onClick={onToggle}
+        className="w-full text-left hover:bg-zinc-900/40 -mx-2 px-2 py-0.5 rounded-sm transition-colors"
+        title={expanded ? "click to collapse" : "click to expand cell detail"}
+      >
+        {/* mobile */}
+        <div className="md:hidden">
+          <div className="flex items-baseline gap-x-2">
+            <span className={decisionColor}>{decisionGlyph}</span>
+            <span className="text-zinc-100 truncate">
+              <span className="text-zinc-500">{row.venue}/</span>
+              {row.symbol}
+            </span>
+            <span className="text-zinc-500 text-[12px]">{row.session}</span>
+            <span className={`${decisionColor} text-[12px]`}>{decisionLabel}</span>
+            <span className="ml-auto text-zinc-500">{expanded ? "▾" : "▸"}</span>
+          </div>
+          <div className="pl-5 text-[12px] text-zinc-400 truncate" title={row.tuneId}>{family}</div>
+          <div className="pl-5 text-[12px]">
+            <span className="text-zinc-500">curr </span>
+            <span className="text-amber-300">{abbrCell(row.currentCell.cellId)}</span>
+            <span className="text-zinc-500"> · E </span>
+            <span className={currentR === null ? "text-zinc-500" : currentR >= 0 ? "text-emerald-400" : "text-rose-400"}>
+              {currentExpStr}
+            </span>
+          </div>
+          <div className="pl-5 text-[12px]">{cellMix}</div>
+        </div>
+        {/* desktop */}
+        <div className="hidden md:grid md:grid-cols-[1.25rem_4rem_8rem_5rem_5rem_8rem_12rem_1fr] md:gap-x-2 md:items-baseline">
+          <span className={decisionColor}>{decisionGlyph}</span>
+          <span className="text-zinc-500">{row.venue}</span>
+          <span className="text-zinc-100 truncate">{row.symbol}</span>
+          <span className="text-zinc-500">{row.session}</span>
+          <span className={`${decisionColor} text-[13px] truncate`} title={decision}>{decisionLabel}</span>
+          <span
+            className={currentR === null ? "text-zinc-500" : currentR >= 0 ? "text-emerald-400" : "text-rose-400"}
+            title={`current cell expectancy${currentN !== null ? ` · ${currentN} trades` : ""}`}
+          >
+            {currentExpStr}
+          </span>
+          <span className="text-amber-300 truncate" title={row.currentCell.cellId || "no cell"}>
+            {abbrCell(row.currentCell.cellId)}
+          </span>
+          <span className="truncate">{cellMix}</span>
+        </div>
+      </button>
+      {expanded ? (
+        <div className="pl-5 md:pl-7 mt-1 mb-2 border-l border-zinc-800/60 ml-2 md:ml-3 pl-3 space-y-1">
+          <div className="text-[12px] text-zinc-500 flex flex-wrap gap-x-3">
+            <span>
+              evaluated{" "}
+              <span className="text-zinc-300">{row.v5EvaluatedAtMs ? fmtAgo(row.v5EvaluatedAtMs) + " ago" : "—"}</span>
+            </span>
+            <span>
+              trades <span className="text-zinc-300">{row.totalTrades}</span>
+            </span>
+            <span>
+              cells <span className="text-zinc-300">{row.cells.length}</span>
+            </span>
+            {row.holdoutWindow ? (
+              <span>
+                holdout{" "}
+                <span className="text-zinc-300">
+                  {new Date(row.holdoutWindow.fromMs).toISOString().slice(0, 10)}..
+                  {new Date(row.holdoutWindow.toMs).toISOString().slice(0, 10)}
+                </span>
+              </span>
+            ) : null}
+            <span className="truncate" title={row.deploymentId}>
+              id <span className="text-zinc-400">{row.deploymentId}</span>
+            </span>
+          </div>
+          {row.cells.length === 0 ? (
+            <div className="text-zinc-500 text-[12px]">(no cell evidence — evaluator hasn't run on this row)</div>
+          ) : (
+            <div className="space-y-0.5">
+              <div className="hidden md:grid md:grid-cols-[1.25rem_1fr_4rem_5rem_5rem_1fr] md:gap-x-2 text-[11px] text-zinc-500 uppercase tracking-wider">
+                <span></span>
+                <span>cell</span>
+                <span className="text-right">trades</span>
+                <span className="text-right">exp/trade</span>
+                <span className="text-right">netR</span>
+                <span>weekly netR</span>
+              </div>
+              {row.cells.map((cell) => {
+                const expR = cell.expectancyR;
+                const expColor = expR > 0 ? "text-emerald-400" : expR < 0 ? "text-rose-400" : "text-zinc-300";
+                const netColor = cell.netR > 0 ? "text-emerald-400" : cell.netR < 0 ? "text-rose-400" : "text-zinc-300";
+                const sparkSrc = cell.weeklyNetR.length > 0 ? cell.weeklyNetR : [];
+                const sparkRange = sparkSrc.length > 0
+                  ? `${Math.min(...sparkSrc).toFixed(2)} .. ${Math.max(...sparkSrc).toFixed(2)}R`
+                  : "—";
+                return (
+                  <div
+                    key={cell.cellId}
+                    className="grid grid-cols-[1.25rem_1fr_4rem_5rem_5rem_1fr] md:grid-cols-[1.25rem_1fr_4rem_5rem_5rem_1fr] gap-x-2 text-[12px] md:text-[13px] items-baseline"
+                  >
+                    <span className={cell.isCurrent ? "text-amber-300" : "text-zinc-500"}>
+                      {cell.isCurrent ? "▶" : "·"}
+                    </span>
+                    <span
+                      className={cell.isCurrent ? "text-amber-300 truncate" : "text-zinc-300 truncate"}
+                      title={cell.cellId}
+                    >
+                      {abbrCell(cell.cellId)}
+                      {cell.isCurrent ? <span className="ml-1 text-[11px] text-amber-400/70">CURRENT</span> : null}
+                    </span>
+                    <span className="text-zinc-300 text-right">{cell.trades}</span>
+                    <span className={`${expColor} text-right`}>
+                      {expR >= 0 ? "+" : ""}
+                      {expR.toFixed(3)}R
+                    </span>
+                    <span className={`${netColor} text-right`}>
+                      {cell.netR >= 0 ? "+" : ""}
+                      {cell.netR.toFixed(2)}R
+                    </span>
+                    <span
+                      className={cell.netR >= 0 ? "text-emerald-400 font-mono" : "text-rose-400 font-mono"}
+                      title={`weekly netR range ${sparkRange}`}
+                    >
+                      {sparkSrc.length > 0 ? sparkline(sparkSrc) : <span className="text-zinc-600">—</span>}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {row.gate.eligibleCells.length > 0 ? (
+            <div className="text-[12px] text-zinc-500 mt-1">
+              eligible cells:{" "}
+              <span className="text-emerald-400">
+                {row.gate.eligibleCells.map(abbrCell).join(", ")}
+              </span>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

@@ -12,7 +12,7 @@ import type { ScalpReplayTrade } from "../scalp/replay/types";
 import type { ScalpV4CellId } from "../scalp-v4/types";
 import { startOfUtcWeekMondayMs } from "../scalp-v4/week";
 
-export const SCALP_V5_VERSION = "scalp_v5_cell_evidence_r1" as const;
+export const SCALP_V5_VERSION = "scalp_v5_cell_evidence_r2" as const;
 
 export interface ScalpV5CellStat {
   trades: number;
@@ -20,6 +20,11 @@ export interface ScalpV5CellStat {
   expectancyR: number;
   wins: number;
   losses: number;
+  // Per-week netR contribution for this cell, in chronological order over
+  // the holdout window. Weeks with no trades in this cell are 0. Used by
+  // the v5 dashboard to render a per-cell sparkline equivalent to the
+  // legacy candle column.
+  weeklyNetR: number[];
 }
 
 export interface ScalpV5CellEvidence {
@@ -102,6 +107,8 @@ export function tagTradesWithCells(params: {
   return out;
 }
 
+const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
 export function buildScalpV5CellEvidence(params: {
   tagged: TaggedReplayTrade[];
   classifierVersion: string;
@@ -110,16 +117,40 @@ export function buildScalpV5CellEvidence(params: {
   holdoutToMs: number;
   minTradesPerCell: number;
 }): ScalpV5CellEvidence {
-  const buckets = new Map<string, { netR: number; trades: number; wins: number; losses: number }>();
-  for (const { trade, cellId } of params.tagged) {
+  // The holdout window is week-aligned (caller responsibility); compute the
+  // count of weeks once so weeklyNetR arrays are all the same length and
+  // align by index across cells.
+  const holdoutStartMs = startOfUtcWeekMondayMs(params.holdoutFromMs);
+  const totalWeeks = Math.max(
+    1,
+    Math.round((startOfUtcWeekMondayMs(params.holdoutToMs) - holdoutStartMs) / ONE_WEEK_MS),
+  );
+
+  type Bucket = {
+    netR: number;
+    trades: number;
+    wins: number;
+    losses: number;
+    weeklyNetR: number[];
+  };
+  const buckets = new Map<string, Bucket>();
+  for (const { trade, cellId, weekStartMs } of params.tagged) {
     if (!cellId) continue;
     const r = Number(trade.rMultiple) || 0;
-    const bucket = buckets.get(cellId) ?? { netR: 0, trades: 0, wins: 0, losses: 0 };
+    let bucket = buckets.get(cellId);
+    if (!bucket) {
+      bucket = { netR: 0, trades: 0, wins: 0, losses: 0, weeklyNetR: new Array(totalWeeks).fill(0) };
+      buckets.set(cellId, bucket);
+    }
     bucket.netR += r;
     bucket.trades += 1;
     if (r > 0) bucket.wins += 1;
     else if (r < 0) bucket.losses += 1;
-    buckets.set(cellId, bucket);
+    const weekIdx = Math.max(
+      0,
+      Math.min(totalWeeks - 1, Math.round((weekStartMs - holdoutStartMs) / ONE_WEEK_MS)),
+    );
+    bucket.weeklyNetR[weekIdx] = (bucket.weeklyNetR[weekIdx] ?? 0) + r;
   }
   const cells: Record<string, ScalpV5CellStat> = {};
   const eligibleCells: string[] = [];
@@ -131,6 +162,7 @@ export function buildScalpV5CellEvidence(params: {
       expectancyR,
       wins: b.wins,
       losses: b.losses,
+      weeklyNetR: b.weeklyNetR,
     };
     if (b.trades >= params.minTradesPerCell && expectancyR > 0) {
       eligibleCells.push(cellId);
