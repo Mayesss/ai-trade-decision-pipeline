@@ -31,6 +31,7 @@ import {
   buildEnvelopeFromIncrementalState,
   foldWindowIntoIncrementalState,
 } from "./envelope";
+import { startOfUtcWeekMondayMs } from "./week";
 
 const WEEK = 7 * 24 * 60 * 60 * 1000;
 
@@ -139,7 +140,12 @@ export async function runScalpV4WalkforwardSweep(
     ),
   );
   const windowToMsRaw = Math.floor(Number(options.windowToMs || Date.now()));
-  const alignedWindowToMs = windowToMsRaw - (windowToMsRaw % WEEK);
+  // Align window_to to Monday 00:00 UTC, matching startOfUtcWeekMondayMs used
+  // by the dashboard, regime build, and validity logic. Raw modulo on WEEK
+  // would align to Thursday (Unix epoch was a Thursday), causing rollover to
+  // happen on Thursdays instead of Mondays and the bulk sweep to treat
+  // candidates as "already done this week" until next Thursday.
+  const alignedWindowToMs = startOfUtcWeekMondayMs(windowToMsRaw);
   const windowFromMs = alignedWindowToMs - 104 * WEEK;
   const maxCandidatesPerCall = Math.max(
     0,

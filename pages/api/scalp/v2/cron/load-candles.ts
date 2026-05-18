@@ -227,9 +227,13 @@ export default async function handler(
     0,
     120,
   );
+  // 60 s default. Cold-start fetches pull ~14 weeks of 1m bars per symbol
+  // from Bitget/Capital pagination and can take 30 s+; 7.5 s killed the
+  // chain at offset ~20 every cron tick. Vercel function `maxDuration` is
+  // 800 s, so 60 s is well within bounds.
   const routeTimeoutMs = envIntBounded(
     "SCALP_V2_LOAD_CANDLES_ROUTE_TIMEOUT_MS",
-    7_500,
+    60_000,
     1_000,
     120_000,
   );
@@ -291,6 +295,32 @@ export default async function handler(
       "load_candles_job",
     );
   } catch (err: any) {
+    // The batch handler timed out — the underlying job keeps running and
+    // commits whatever it managed to fetch. Still advance the chain so one
+    // slow symbol doesn't strand the remaining offsets until the next cron
+    // tick. Skip past this batch by jumping `offset + batchSize`.
+    const skipNextOffset = Math.min(scope.length, offset + batchSize);
+    let timeoutSelfRecall: ScalpV2CronInvokeResult | null = null;
+    if (
+      autoContinue &&
+      skipNextOffset < scope.length &&
+      selfHop < selfMaxHops
+    ) {
+      timeoutSelfRecall = await invokeScalpV2CronEndpointDetached(
+        req,
+        "/api/scalp/v2/cron/load-candles",
+        {
+          batchSize,
+          maxAttempts,
+          offset: skipNextOffset,
+          autoContinue: 1,
+          autoSuccessor: autoSuccessor ? 1 : 0,
+          selfHop: selfHop + 1,
+          selfMaxHops,
+        },
+        selfRecallTimeoutMs,
+      );
+    }
     return res.status(504).json({
       ok: false,
       busy: false,
@@ -308,9 +338,11 @@ export default async function handler(
         selfHop,
         selfMaxHops,
         offset,
+        nextOffset: skipNextOffset,
         maxSelfHopsCap,
         selfRecallTimeoutMs,
         downstreamInvokeTimeoutMs,
+        selfRecall: timeoutSelfRecall,
       },
       ...(debug
         ? {
