@@ -31,8 +31,18 @@ export interface ScalpV5DeploymentRow {
 // stage-C survivors and keep evidence fresh on all of them — when the
 // promotion path eventually flips a row to enabled, the v5 gate already
 // has data and the entry-time check is non-permissive immediately.
-// Within scope, enabled rows are prioritised so the live set stays first
-// in line.
+// Sort priorities, descending importance:
+//   1. enabled DESC          — live rows refresh ahead of inactive
+//   2. v5_enabled DESC       — known last-week winners (passed v5 on their
+//                              previous evaluation) refresh ahead of rows
+//                              that failed or were never evaluated. This
+//                              gets fresh evidence for the promotion-ready
+//                              set into the DB first; never-evaluated rows
+//                              still get processed in tier 2 alongside
+//                              known-losers, ordered by v5_evaluated_at.
+//   3. v5_evaluated_at ASC NULLS FIRST — within a tier, never-evaluated and
+//                              oldest-evaluated rows go first so coverage
+//                              fans out evenly.
 export async function loadScalpV5DeploymentsForEvaluation(params: {
   limit?: number;
   staleOlderThanMs?: number;
@@ -99,7 +109,7 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
         ${sharded} = FALSE
         OR ((hashtext(deployment_id) & 2147483647) % ${shardCount}) = ${shardIndex}
       )
-    ORDER BY enabled DESC, v5_evaluated_at ASC NULLS FIRST, updated_at DESC
+    ORDER BY enabled DESC, v5_enabled DESC, v5_evaluated_at ASC NULLS FIRST, updated_at DESC
     LIMIT ${limit};
   `);
   return rows.map((row) => ({
@@ -115,6 +125,67 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
     v5EvaluatedAtMs: row.v5EvaluatedAt ? row.v5EvaluatedAt.getTime() : null,
     promotionGate: asRecord(row.promotionGate),
   }));
+}
+
+// Flip `enabled = TRUE` on every deployment that v5 has confirmed as a
+// winner (v5_enabled = TRUE) and whose evidence is still fresh. Promotion-only
+// — never auto-demotes, since disabling a live deployment mid-week is a
+// destructive action and the v2 promote cron already handles scope-based
+// demotion every 5 minutes (lib/scalp-v2/pipeline.ts:5443-5550). If v5
+// disagrees with an enabled row, the live entry gate
+// (resolveScalpV5EntryBlock) already blocks new entries — so a "soft
+// disable" via the gate is the failure mode, not data corruption.
+export async function autoPromoteScalpV5WinnersToEnabled(params: {
+  // Treat evidence older than this as stale and ignore. Defaults to 14 days
+  // (twice the bulk eval cycle, so a deployment whose evaluation slipped one
+  // cycle still promotes).
+  staleOlderThanMs?: number;
+  nowMs?: number;
+  // If true, only return the rows that WOULD be promoted; no writes. Used by
+  // the cron's dry-run mode for testing.
+  dryRun?: boolean;
+}): Promise<{ promoted: number; deploymentIds: string[] }> {
+  if (!isScalpPgConfigured()) return { promoted: 0, deploymentIds: [] };
+  const staleOlderThanMs = Math.max(
+    60_000,
+    Math.floor(Number(params.staleOlderThanMs || 14 * 24 * 60 * 60_000)),
+  );
+  const nowMs = Math.floor(Number(params.nowMs || Date.now()));
+  const staleBefore = new Date(nowMs - staleOlderThanMs);
+  const dryRun = Boolean(params.dryRun);
+  const db = scalpPrisma();
+
+  // Find candidates for promotion. The shape mirrors loadScalpV5DeploymentsForEvaluation
+  // so the cron can log a stable label per row.
+  const candidates = await db.$queryRaw<Array<{ deploymentId: string }>>(sql`
+    SELECT deployment_id AS "deploymentId"
+    FROM scalp_v2_deployments
+    WHERE candidate_id IS NOT NULL
+      AND enabled = FALSE
+      AND v5_enabled = TRUE
+      AND v5_evaluated_at IS NOT NULL
+      AND v5_evaluated_at >= ${staleBefore}
+    ORDER BY v5_evaluated_at DESC;
+  `);
+  const ids = candidates.map((r) => String(r.deploymentId || "").trim()).filter(Boolean);
+  if (dryRun || ids.length === 0) {
+    return { promoted: 0, deploymentIds: ids };
+  }
+
+  // Flip enabled = TRUE and stamp last_promoted_at. Match the existing pattern
+  // in lib/scalp-v2/db.ts:1947 which uses last_promoted_at to track when the
+  // current promotion was made.
+  await db.$executeRaw(sql`
+    UPDATE scalp_v2_deployments
+    SET
+      enabled = TRUE,
+      last_promoted_at = NOW(),
+      updated_at = NOW()
+    WHERE deployment_id = ANY(${ids}::text[])
+      AND enabled = FALSE
+      AND v5_enabled = TRUE;
+  `);
+  return { promoted: ids.length, deploymentIds: ids };
 }
 
 export async function upsertScalpV5DeploymentEvidence(params: {
