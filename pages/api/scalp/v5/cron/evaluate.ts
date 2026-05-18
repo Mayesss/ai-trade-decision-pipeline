@@ -66,6 +66,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         failed: result.failed,
         enabled: result.enabled,
         disabled: result.disabled,
+        // Mode split: how the successful evaluations were produced. In
+        // steady state (after the first Sunday wave) most outcomes should
+        // be `incremental`. Persistent `full` dominance means checkpoints
+        // are not being preserved across runs — usually configHash drift
+        // (deployment DSL changing) or a missed Sunday rollover that left
+        // evidence stale for >1 week.
+        fullCount: result.fullCount,
+        incrementalCount: result.incrementalCount,
         config: result.details,
       },
     });

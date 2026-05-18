@@ -372,7 +372,7 @@ async function runBatch(): Promise<boolean> {
       ? ` shard=${BULK_V5_SHARD_INDEX}/${BULK_V5_SHARD_COUNT}`
       : '';
     console.log(
-      `  ${elapsed}s | v5${shardSuffix} processed=${result.processed} succeeded=${result.succeeded} failed=${result.failed} enabled=${result.enabled} disabled=${result.disabled}`,
+      `  ${elapsed}s | v5${shardSuffix} processed=${result.processed} succeeded=${result.succeeded} failed=${result.failed} enabled=${result.enabled} disabled=${result.disabled} mode=full:${result.fullCount}/incr:${result.incrementalCount}`,
     );
     console.log(
       `  v5 config: classifier=${result.details.classifierVersion} holdoutWeeks=${result.details.holdoutWeeks} minTradesPerCell=${result.details.minTradesPerCell}`,

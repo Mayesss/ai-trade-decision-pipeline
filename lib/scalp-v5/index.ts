@@ -261,6 +261,122 @@ export function resolveScalpV5EntryBlock(params: {
   };
 }
 
+// Slides an existing 12-week evidence forward by exactly one week:
+// subtracts the OLDEST week's per-cell contributions, appends the NEW
+// week's contributions. Pure function — no IO. Used by the incremental
+// v5 evaluator to update a deployment's evidence without re-replaying
+// the full 12 weeks of candles.
+//
+// Contract: existing.holdoutToMs MUST equal newHoldoutToMs - ONE_WEEK_MS,
+// and existing.version MUST be the current SCALP_V5_VERSION. Callers are
+// responsible for validating these (else the per-week arrays don't align).
+export function mergeIncrementalCellEvidence(params: {
+  existing: ScalpV5CellEvidence;
+  newWeekTagged: TaggedReplayTrade[];
+  newHoldoutFromMs: number;
+  newHoldoutToMs: number;
+  classifierVersion: string;
+  evaluatedAtMs: number;
+  minTradesPerCell: number;
+}): ScalpV5CellEvidence {
+  const totalWeeks = Math.max(
+    1,
+    Math.round((params.newHoldoutToMs - params.newHoldoutFromMs) / ONE_WEEK_MS),
+  );
+
+  // Bucket the new week's trades by cell (single bucket per cell — all
+  // trades in this batch share the same week, the just-completed one).
+  type WeekContribution = { netR: number; trades: number; wins: number; losses: number };
+  const newWeekStats = new Map<string, WeekContribution>();
+  for (const { trade, cellId } of params.newWeekTagged) {
+    if (!cellId) continue;
+    const r = Number(trade.rMultiple) || 0;
+    let stat = newWeekStats.get(cellId);
+    if (!stat) {
+      stat = { netR: 0, trades: 0, wins: 0, losses: 0 };
+      newWeekStats.set(cellId, stat);
+    }
+    stat.netR += r;
+    stat.trades += 1;
+    if (r > 0) stat.wins += 1;
+    else if (r < 0) stat.losses += 1;
+  }
+
+  // Drop oldest week + push new week per existing cell.
+  const updatedCells: Record<string, ScalpV5CellStat> = {};
+  for (const [cellId, oldStat] of Object.entries(params.existing.cells)) {
+    const droppedTrades = oldStat.weeklyTrades[0] ?? 0;
+    const droppedNetR = oldStat.weeklyNetR[0] ?? 0;
+    const droppedWins = oldStat.weeklyWins[0] ?? 0;
+    const droppedLosses = oldStat.weeklyLosses[0] ?? 0;
+    const incoming = newWeekStats.get(cellId);
+    const addedTrades = incoming?.trades ?? 0;
+    const addedNetR = incoming?.netR ?? 0;
+    const addedWins = incoming?.wins ?? 0;
+    const addedLosses = incoming?.losses ?? 0;
+    const trades = Math.max(0, oldStat.trades - droppedTrades + addedTrades);
+    const netR = oldStat.netR - droppedNetR + addedNetR;
+    const wins = Math.max(0, oldStat.wins - droppedWins + addedWins);
+    const losses = Math.max(0, oldStat.losses - droppedLosses + addedLosses);
+    if (trades === 0) {
+      // Cell vacated the holdout window entirely — drop it from evidence.
+      continue;
+    }
+    const weeklyNetR = [...oldStat.weeklyNetR.slice(1), addedNetR];
+    const weeklyTrades = [...oldStat.weeklyTrades.slice(1), addedTrades];
+    const weeklyWins = [...oldStat.weeklyWins.slice(1), addedWins];
+    const weeklyLosses = [...oldStat.weeklyLosses.slice(1), addedLosses];
+    updatedCells[cellId] = {
+      trades,
+      netR,
+      expectancyR: trades > 0 ? netR / trades : 0,
+      wins,
+      losses,
+      weeklyNetR,
+      weeklyTrades,
+      weeklyWins,
+      weeklyLosses,
+    };
+  }
+
+  // New cells that appear for the first time in this week. They get
+  // zero-filled history for the prior 11 weeks plus the new week's data.
+  for (const [cellId, incoming] of newWeekStats.entries()) {
+    if (updatedCells[cellId]) continue;
+    if (incoming.trades === 0) continue;
+    const zeros = new Array(totalWeeks - 1).fill(0);
+    updatedCells[cellId] = {
+      trades: incoming.trades,
+      netR: incoming.netR,
+      expectancyR: incoming.trades > 0 ? incoming.netR / incoming.trades : 0,
+      wins: incoming.wins,
+      losses: incoming.losses,
+      weeklyNetR: [...zeros, incoming.netR],
+      weeklyTrades: [...zeros, incoming.trades],
+      weeklyWins: [...zeros, incoming.wins],
+      weeklyLosses: [...zeros, incoming.losses],
+    };
+  }
+
+  const eligibleCells: string[] = [];
+  for (const [cellId, stat] of Object.entries(updatedCells)) {
+    if (stat.trades >= params.minTradesPerCell && stat.expectancyR > 0) {
+      eligibleCells.push(cellId);
+    }
+  }
+
+  return {
+    version: SCALP_V5_VERSION,
+    classifierVersion: params.classifierVersion,
+    evaluatedAtMs: params.evaluatedAtMs,
+    holdoutFromMs: params.newHoldoutFromMs,
+    holdoutToMs: params.newHoldoutToMs,
+    minTradesPerCell: params.minTradesPerCell,
+    cells: updatedCells,
+    eligibleCells,
+  };
+}
+
 // Sunday is the v5 evaluation/promotion day — fresh weekly snapshot lands at
 // Monday 00:00 UTC and the v5 evaluator re-runs the 12-week holdout against
 // it overnight. We block new entries throughout Sunday UTC so trading uses

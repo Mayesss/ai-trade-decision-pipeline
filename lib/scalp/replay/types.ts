@@ -1,5 +1,22 @@
-import type { ScalpEntrySessionProfile } from '../types';
+import type { ScalpCandle, ScalpEntrySessionProfile, ScalpSessionState } from '../types';
 import type { ScalpStrategyConfigOverride } from '../config';
+
+// Open-position bookkeeping inside the replay loop. Defined here (not in
+// harness.ts) so the incremental checkpoint type can name it. Plain numbers
+// + strings — fully JSON-serializable.
+export interface ScalpReplayPosition {
+    tradeId: string;
+    dayKey: string;
+    side: "BUY" | "SELL";
+    entryTs: number;
+    entryPrice: number;
+    initialStopPrice: number;
+    stopPrice: number;
+    takeProfitPrice: number;
+    riskAbs: number;
+    riskUsd: number;
+    notionalUsd: number;
+}
 
 export interface ScalpReplayInputCandle {
     ts: number | string;
@@ -173,6 +190,44 @@ export interface ScalpReplayResult {
     trades: ScalpReplayTrade[];
     timeline: ScalpReplayTimelineEvent[];
     earlyAborted?: boolean;
+    // Snapshot of strategy + position state at the LAST candle processed,
+    // plus the closed-candle tails the strategy needs as indicator lookback
+    // when resuming. Produced by every real runScalpReplay call; optional
+    // on the type so test fixtures and manually-constructed result literals
+    // don't have to fabricate one.
+    finalCheckpoint?: ScalpReplayCheckpoint;
+}
+
+// Resumable replay state. Pass as `initialCheckpoint` to runScalpReplay to
+// continue a previous replay against new candles instead of starting fresh.
+//
+// `configHash` is stamped at write time; callers MUST compare it against
+// the configHash of their current run before re-using a checkpoint. A
+// mismatch (deployment DSL changed, classifier version bumped, etc.)
+// invalidates the checkpoint — fall back to a full replay.
+export interface ScalpReplayCheckpoint {
+    version: 1;
+    // Last candle timestamp processed (in ms). Used by callers to verify the
+    // checkpoint's coverage and decide whether incremental is applicable.
+    endTs: number;
+    // The next scheduled run timestamp at the moment the previous replay
+    // ended. Restoring this lets the resumed replay pick up the cadence
+    // exactly where it left off.
+    nextRunTs: number;
+    // Strategy phase state (asia range, sweep, confirmation, ifvg, daily
+    // stats, etc.). Already fully JSON-serializable by design.
+    state: ScalpSessionState;
+    // Open position carried into the next replay, or null when flat.
+    position: ScalpReplayPosition | null;
+    // Closed-candle tails the strategy reads for indicator lookbacks (ATR,
+    // SMA, MSS, etc.). Capped at MAX_CHECKPOINT_CANDLE_TAIL on each side so
+    // the JSONB payload stays bounded.
+    baseClosedCandles: ScalpCandle[];
+    confirmClosedCandles: ScalpCandle[];
+    // SHA-256/16 of the stable-stringified strategy config that produced
+    // the checkpoint. Caller compares against the config of the new replay
+    // and discards the checkpoint if it differs.
+    configHash: string;
 }
 
 export interface ScalpReplayProgressEvent {

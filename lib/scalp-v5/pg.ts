@@ -2,6 +2,7 @@ import { isScalpPgConfigured, scalpPrisma } from "../scalp/pg/client";
 import { sql } from "../scalp/pg/sql";
 import { getScalpV2DefaultRiskProfile } from "../scalp-v2/config";
 import type { ScalpV2RiskProfile, ScalpV2Venue } from "../scalp-v2/types";
+import type { ScalpReplayCheckpoint } from "../scalp/replay/types";
 import type { ScalpV5CellEvidence } from "./index";
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -201,6 +202,7 @@ export async function invalidateAllScalpV5Evidence(params: {
         v5_enabled = FALSE,
         v5_evaluated_at = NULL,
         v5_lease_until = NULL,
+        v5_replay_checkpoint = NULL,
         updated_at = NOW()
     WHERE candidate_id IS NOT NULL
       AND (${onlyEnabled} = FALSE OR enabled = TRUE)
@@ -294,12 +296,21 @@ export async function upsertScalpV5DeploymentEvidence(params: {
   deploymentId: string;
   evidence: ScalpV5CellEvidence;
   enabled: boolean;
+  // Replay checkpoint paired with this evidence. The next evaluation can
+  // resume from this checkpoint instead of replaying the full 12 weeks,
+  // provided the holdout window slid by exactly one week and the config
+  // hash matches. Pass null to clear an existing checkpoint (e.g. when a
+  // full replay produced no usable checkpoint).
+  checkpoint: ScalpReplayCheckpoint | null;
 }): Promise<void> {
   if (!isScalpPgConfigured()) return;
   const db = scalpPrisma();
+  const checkpointJson = params.checkpoint ? JSON.stringify(params.checkpoint) : null;
   // Always clear v5_lease_until alongside the evidence write — the worker
   // holding the lease just finished successfully, so the lease should drop
-  // immediately rather than waiting for its TTL.
+  // immediately rather than waiting for its TTL. Evidence + checkpoint are
+  // written in the same UPDATE so they stay in lockstep — a checkpoint
+  // pointing at a different holdout window would be useless.
   await db.$executeRaw(sql`
     UPDATE scalp_v2_deployments
     SET
@@ -307,9 +318,40 @@ export async function upsertScalpV5DeploymentEvidence(params: {
       v5_enabled = ${params.enabled},
       v5_evaluated_at = NOW(),
       v5_lease_until = NULL,
+      v5_replay_checkpoint = ${checkpointJson}::jsonb,
       updated_at = NOW()
     WHERE deployment_id = ${params.deploymentId};
   `);
+}
+
+// Load just the replay checkpoint for a deployment. The dashboard never
+// reads this (it's only useful to the incremental evaluator), so it's a
+// separate query rather than bolted onto the deployment loader.
+export async function loadScalpV5DeploymentCheckpoint(params: {
+  deploymentId: string;
+}): Promise<ScalpReplayCheckpoint | null> {
+  if (!isScalpPgConfigured()) return null;
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{ checkpoint: unknown }>>(sql`
+    SELECT v5_replay_checkpoint AS "checkpoint"
+    FROM scalp_v2_deployments
+    WHERE deployment_id = ${params.deploymentId}
+    LIMIT 1;
+  `);
+  const raw = rows[0]?.checkpoint;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  // Light shape validation. A malformed checkpoint (e.g. wrong version, or
+  // missing required field after a code change) gets discarded so the
+  // evaluator falls back to a full replay.
+  const rec = raw as Record<string, unknown>;
+  if (rec.version !== 1) return null;
+  if (typeof rec.endTs !== "number" || typeof rec.nextRunTs !== "number") return null;
+  if (typeof rec.configHash !== "string") return null;
+  if (!rec.state || typeof rec.state !== "object") return null;
+  if (!Array.isArray(rec.baseClosedCandles) || !Array.isArray(rec.confirmClosedCandles)) {
+    return null;
+  }
+  return rec as unknown as ScalpReplayCheckpoint;
 }
 
 // Lightweight read for the live entry gate. Returns null when the row has

@@ -34,7 +34,9 @@ import type {
 } from "../types";
 import type {
   ScalpReplayCandle,
+  ScalpReplayCheckpoint,
   ScalpReplayInputFile,
+  ScalpReplayPosition,
   ScalpReplayProgressEvent,
   ScalpReplayResult,
   ScalpReplayRuntimeConfig,
@@ -42,20 +44,39 @@ import type {
   ScalpReplayTimelineEvent,
   ScalpReplayTrade,
 } from "./types";
+import { createHash } from "crypto";
 
-type ReplayPosition = {
-  tradeId: string;
-  dayKey: string;
-  side: "BUY" | "SELL";
-  entryTs: number;
-  entryPrice: number;
-  initialStopPrice: number;
-  stopPrice: number;
-  takeProfitPrice: number;
-  riskAbs: number;
-  riskUsd: number;
-  notionalUsd: number;
-};
+// Local alias — historical name used throughout the loop body. The exported
+// type lives in ./types.ts so the checkpoint can reference it without an
+// import cycle.
+type ReplayPosition = ScalpReplayPosition;
+
+// Closed-candle tail size persisted in a checkpoint. The strategy's largest
+// indicator lookback (atrPeriod, SMA / EMA windows, MSS lookback) plus a
+// session-window lookback (~24h of base candles at M15 = ~96 candles) all
+// fit comfortably under 500. Picked larger than necessary so we don't have
+// to recompute on every config tweak.
+const MAX_CHECKPOINT_CANDLE_TAIL = 500;
+
+// Stable hash of the strategy config that affects replay behavior. Used to
+// invalidate checkpoints when the deployment's DSL or runtime changes.
+// Truncated to 16 hex chars — plenty of collision resistance for our use
+// (we're comparing within a single deployment's history, not globally).
+// Exported so callers can compute the hash of their next-run runtime BEFORE
+// calling runScalpReplay, compare against a stored checkpoint's configHash,
+// and decide whether to resume or fall back to a full replay.
+export function computeReplayConfigHash(runtime: ScalpReplayRuntimeConfig): string {
+  const blob = JSON.stringify({
+    strategyId: runtime.strategyId,
+    tuneId: runtime.tuneId,
+    configOverride: runtime.configOverride ?? null,
+    // strategy.* captures the post-override merged config (slot filters,
+    // session profile, DSL params). Anything that changes per-candle
+    // strategy behavior should be hashed in here.
+    strategy: runtime.strategy,
+  });
+  return createHash("sha256").update(blob).digest("hex").slice(0, 16);
+}
 
 type ScalpReplayProgressOptions = {
   everyRuns?: number;
@@ -644,6 +665,14 @@ export async function runScalpReplay(params: {
    *  earlyAbortAfterPct% of candles, stop the replay early. */
   earlyAbortNetR?: number;
   earlyAbortAfterPct?: number;
+  /**
+   * Resume from a previous run instead of starting fresh. State, open
+   * position, and the closed-candle history tails are primed from the
+   * checkpoint; the replay processes only the new candles. Caller is
+   * responsible for verifying the checkpoint is applicable (matching
+   * configHash, no time gap, etc.) — the harness trusts what it's given.
+   */
+  initialCheckpoint?: ScalpReplayCheckpoint;
 }): Promise<ScalpReplayResult> {
   const candles = params.candles.slice().sort((a, b) => a.ts - b.ts);
   if (!candles.length) throw new Error("Replay requires candles");
@@ -750,14 +779,29 @@ export async function runScalpReplay(params: {
   const timeline: ScalpReplayTimelineEvent[] = [];
   const trades: ScalpReplayTrade[] = [];
   let runs = 0;
-  let state: ScalpSessionState | null = null;
-  let position: ReplayPosition | null = null;
-  let nextRunTs = driverCandles[0]!.ts;
+  // When resuming from a checkpoint, prime state / position / closed-candle
+  // history tails so the strategy sees a continuous view of the world even
+  // though only the new candles are being processed this round. The
+  // checkpoint's nextRunTs may sit before the first new candle (gap between
+  // runs); we clamp to driverCandles[0].ts so the loop doesn't spin through
+  // empty time. Cursors always start at 0 — they index into the freshly
+  // prepared candle arrays for this run only; the closed-candle history is
+  // tracked separately in baseClosedCandles / confirmClosedCandles.
+  const checkpoint = params.initialCheckpoint ?? null;
+  let state: ScalpSessionState | null = checkpoint ? checkpoint.state : null;
+  let position: ReplayPosition | null = checkpoint ? checkpoint.position : null;
+  let nextRunTs = checkpoint
+    ? Math.max(checkpoint.nextRunTs, driverCandles[0]!.ts)
+    : driverCandles[0]!.ts;
   let priceCursor = 0;
   let baseCursor = 0;
   let confirmCursor = 0;
-  const baseClosedCandles: ScalpCandle[] = [];
-  const confirmClosedCandles: ScalpCandle[] = [];
+  const baseClosedCandles: ScalpCandle[] = checkpoint
+    ? checkpoint.baseClosedCandles.slice()
+    : [];
+  const confirmClosedCandles: ScalpCandle[] = checkpoint
+    ? checkpoint.confirmClosedCandles.slice()
+    : [];
 
   // Early-abort: track running netR and abort if hopeless
   const earlyAbortNetR = params.earlyAbortNetR ?? null;
@@ -1251,11 +1295,30 @@ export async function runScalpReplay(params: {
     endTs: driverCandles[driverCandles.length - 1]?.ts ?? null,
   });
 
+  // Build the final checkpoint regardless of whether the caller asked for
+  // one. Callers that don't use incremental replay simply ignore it. state
+  // is guaranteed non-null here: either the loop's lazy init populated it
+  // (any candle iteration runs the inner while at least once because
+  // nextRunTs initializes to driverCandles[0].ts on a fresh run) or the
+  // initialCheckpoint provided one. The `!` assertion encodes that.
+  const lastCandleTs = driverCandles[driverCandles.length - 1]!.ts;
+  const finalCheckpoint: ScalpReplayCheckpoint = {
+    version: 1,
+    endTs: lastCandleTs,
+    nextRunTs,
+    state: state!,
+    position,
+    baseClosedCandles: baseClosedCandles.slice(-MAX_CHECKPOINT_CANDLE_TAIL),
+    confirmClosedCandles: confirmClosedCandles.slice(-MAX_CHECKPOINT_CANDLE_TAIL),
+    configHash: computeReplayConfigHash(runtime),
+  };
+
   return {
     config: runtime,
     summary,
     trades,
     timeline,
     earlyAborted,
+    finalCheckpoint,
   };
 }
