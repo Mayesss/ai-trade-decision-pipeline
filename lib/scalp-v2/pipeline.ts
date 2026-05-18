@@ -75,6 +75,7 @@ import {
   isScalpV5HardGateEnabled,
   resolveScalpV5Config,
   resolveScalpV5EntryBlock,
+  resolveScalpV5SundayBlock,
 } from "../scalp-v5";
 import { loadScalpV5DeploymentEvidence } from "../scalp-v5/pg";
 import {
@@ -6797,6 +6798,10 @@ export async function runScalpV2ExecuteJob(params: {
 	        const promotionEntryBlockReasonCodes = normalizeReasonCodes(
 	          asRecord(deployment.promotionGate).entryBlockReasonCodes,
 	        );
+	        // Sunday UTC = v5 evaluation+promotion day. No new entries; existing
+	        // positions still get managed/reconciled. Monday resumes trading
+	        // against the freshly-validated evidence written overnight.
+	        const sundayBlock = resolveScalpV5SundayBlock(nowTs);
 	        const configOverride = buildScalpV2ExecuteConfigOverride({
 	          entrySessionProfile: deployment.entrySessionProfile,
 	          riskProfile: rp,
@@ -6810,6 +6815,7 @@ export async function runScalpV2ExecuteJob(params: {
 	            ...(newsBlackout.blocked ? newsBlackout.reasonCodes : []),
 	            ...(v4RegimeGate.blocked ? v4RegimeGate.reasonCodes : []),
 	            ...(v5Gate.blocked || v5Gate.shadowOnly ? v5Gate.reasonCodes : []),
+	            ...(sundayBlock.blocked ? sundayBlock.reasonCodes : []),
 	          ]),
 	        });
         const runtimeSnapshot = buildScalpV2RuntimeSnapshotForDeployment({
@@ -6856,6 +6862,7 @@ export async function runScalpV2ExecuteJob(params: {
 	                evaluatedAtMs: v5Stored?.v5EvaluatedAtMs ?? null,
 	                v5Enabled: Boolean(v5Stored?.v5Enabled),
 	              },
+	              v5SundayBlock: sundayBlock,
 	            },
           }),
         );

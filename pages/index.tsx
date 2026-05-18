@@ -48,6 +48,13 @@ interface CoverageResp {
     ratePerHour: number;
     etaHours: number | null;
   };
+  candleHealth: {
+    fresh: number;
+    lagging: number;
+    broken: number;
+    missing: number;
+    worstSymbols: Array<{ venue: string; symbol: string; ageMinutes: number | null }>;
+  };
 }
 
 interface GateStateResp {
@@ -266,6 +273,7 @@ export default function ScalpV5Dashboard() {
         <>
           <EvaluatorStrip data={coverage} />
           <EvaluatorProgress data={coverage} />
+          <CandleHealth data={coverage} />
         </>
       ) : (
         <Skeleton label="loading evaluator" />
@@ -512,6 +520,56 @@ function EvaluatorProgress({ data }: { data: CoverageResp }) {
             <span className="text-zinc-500"> at {p.ratePerHour.toFixed(1)}/hr · {p.remainingThisWeek} remaining</span>
           </>
         )}
+      </span>
+    </div>
+  );
+}
+
+// Candle freshness panel: surfaces symbols whose 1m candle history hasn't
+// been updated recently by the load-candles cron. Cron runs every 2h so
+// "fresh" is <4h since last write; 4-12h is "lagging" (one missed tick);
+// >12h is "broken" (cron is failing on this symbol). Missing means no
+// candles at all — usually a new symbol that hasn't been backfilled yet.
+function CandleHealth({ data }: { data: CoverageResp }) {
+  const ch = data.candleHealth;
+  const anyProblem = ch.lagging + ch.broken + ch.missing > 0;
+  const worstTooltip = ch.worstSymbols.length === 0
+    ? "all enabled deployments have fresh candles"
+    : ch.worstSymbols
+        .map((s) => `${s.venue}/${s.symbol}: ${s.ageMinutes === null ? "no candles" : `${s.ageMinutes}m ago`}`)
+        .join("\n");
+  return (
+    <div className="mt-2 pl-2 grid grid-cols-[auto_1fr] md:grid-cols-[10rem_1fr] gap-x-3 items-baseline">
+      <span className="text-zinc-500">candle health</span>
+      <span className="flex flex-wrap items-baseline gap-x-3" title={worstTooltip}>
+        <span>
+          <span className="text-emerald-400">{ch.fresh}</span>
+          <span className="text-zinc-500"> fresh</span>
+        </span>
+        <span>
+          <span className={ch.lagging > 0 ? "text-amber-400" : "text-zinc-500"}>{ch.lagging}</span>
+          <span className="text-zinc-500"> lagging (4-12h)</span>
+        </span>
+        <span>
+          <span className={ch.broken > 0 ? "text-rose-400" : "text-zinc-500"}>{ch.broken}</span>
+          <span className="text-zinc-500"> broken (&gt;12h)</span>
+        </span>
+        <span>
+          <span className={ch.missing > 0 ? "text-rose-400" : "text-zinc-500"}>{ch.missing}</span>
+          <span className="text-zinc-500"> missing</span>
+        </span>
+        {anyProblem && ch.worstSymbols.length > 0 ? (
+          <span className="text-zinc-500 text-[12px]">
+            worst:{" "}
+            <span className="text-zinc-300">
+              {ch.worstSymbols
+                .slice(0, 3)
+                .map((s) => `${s.symbol}${s.ageMinutes === null ? "(none)" : `(${s.ageMinutes}m)`}`)
+                .join(", ")}
+              {ch.worstSymbols.length > 3 ? ` +${ch.worstSymbols.length - 3}` : ""}
+            </span>
+          </span>
+        ) : null}
       </span>
     </div>
   );

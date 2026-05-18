@@ -117,9 +117,15 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
     360,
     525_600,
   );
+  // Overlap window for incremental fetches: how far back we re-fetch on each
+  // cron run. 24h means a single missed 2h tick (e.g. transient cron skip)
+  // is fully recovered on the next run with no gaps. Previously 180 min,
+  // which left a hole if a cron tick was skipped. Override via
+  // SCALP_V2_LOAD_CANDLES_INCREMENTAL_OVERLAP_MINUTES if rate limits become
+  // a problem on a particular venue.
   const incrementalOverlapMinutes = toPositiveInt(
     process.env.SCALP_V2_LOAD_CANDLES_INCREMENTAL_OVERLAP_MINUTES,
-    180,
+    1_440,
     10_080,
   );
   const staleRecoveryMs = staleRecoveryDays * ONE_DAY_MS;

@@ -80,9 +80,14 @@ export async function evaluateScalpV5ForDeployment(params: {
   const deploymentRow = params.deployment;
   const cfg = resolveScalpV5Config();
   const nowMs = Math.floor(Number(params.nowMs || Date.now()));
-  // Holdout window aligned to Monday so cell-week lookups match the
-  // weekly regime snapshots exactly.
-  const holdoutToMs = startOfUtcWeekMondayMs(nowMs);
+  // Holdout window — week-aligned (Mon UTC) so cell lookups match the
+  // weekly regime snapshots exactly. On Sunday UTC the trading week (Mon-Sat)
+  // has just ended, so we advance the boundary to the upcoming Monday and
+  // include the just-completed week as the 12th holdout week. Mon-Sat use the
+  // standard "12 completed weeks before this week" semantics.
+  const weekStart = startOfUtcWeekMondayMs(nowMs);
+  const holdoutToMs =
+    new Date(nowMs).getUTCDay() === 0 ? weekStart + WEEK_MS : weekStart;
   const holdoutFromMs = holdoutToMs - cfg.holdoutWeeks * WEEK_MS;
 
   // Build a ScalpDeploymentRef for the replay harness. The deployment row

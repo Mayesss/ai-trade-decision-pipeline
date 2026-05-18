@@ -74,17 +74,35 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function parseNumberArray(value: unknown, length: number): number[] {
+  if (!Array.isArray(value)) return new Array(length).fill(0);
+  const arr = (value as unknown[]).map((v) => Number(v) || 0);
+  // Pad/truncate to match weeklyNetR length so callers can assume parallel arrays.
+  if (arr.length === length) return arr;
+  if (arr.length > length) return arr.slice(0, length);
+  return arr.concat(new Array(length - arr.length).fill(0));
+}
+
 function parseCellStat(value: unknown): ScalpV5CellStat | null {
   const rec = asRecord(value);
   if (!rec) return null;
-  const weekly = Array.isArray(rec.weeklyNetR) ? (rec.weeklyNetR as unknown[]).map((v) => Number(v) || 0) : [];
+  const weeklyNetR = Array.isArray(rec.weeklyNetR)
+    ? (rec.weeklyNetR as unknown[]).map((v) => Number(v) || 0)
+    : [];
+  const len = weeklyNetR.length;
+  // r2 evidence didn't carry weeklyTrades/Wins/Losses — fall back to zero
+  // arrays of matching length. The incremental evaluator detects this case
+  // by inspecting evidence.version (r2 → full replay).
   return {
     trades: Math.max(0, Math.floor(Number(rec.trades) || 0)),
     netR: Number(rec.netR) || 0,
     expectancyR: Number(rec.expectancyR) || 0,
     wins: Math.max(0, Math.floor(Number(rec.wins) || 0)),
     losses: Math.max(0, Math.floor(Number(rec.losses) || 0)),
-    weeklyNetR: weekly,
+    weeklyNetR,
+    weeklyTrades: parseNumberArray(rec.weeklyTrades, len),
+    weeklyWins: parseNumberArray(rec.weeklyWins, len),
+    weeklyLosses: parseNumberArray(rec.weeklyLosses, len),
   };
 }
 
@@ -101,7 +119,11 @@ function parseEvidence(value: unknown): ScalpV5CellEvidence | null {
     ? (rec.eligibleCells as unknown[]).map((v) => String(v))
     : [];
   return {
-    version: (rec.version as ScalpV5CellEvidence["version"]) ?? "scalp_v5_cell_evidence_r2",
+    // Preserve whichever version was written; the type accepts the current
+    // version constant but at runtime we coerce. r2 rows show up here too
+    // and the incremental evaluator checks `version !== SCALP_V5_VERSION`
+    // to know to fall back to full replay.
+    version: (rec.version as ScalpV5CellEvidence["version"]) ?? "scalp_v5_cell_evidence_r3",
     classifierVersion: String(rec.classifierVersion || ""),
     evaluatedAtMs: Number(rec.evaluatedAtMs) || 0,
     holdoutFromMs: Number(rec.holdoutFromMs) || 0,
