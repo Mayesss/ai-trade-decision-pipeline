@@ -19,7 +19,51 @@ import {
 } from "../components/scalp/shared";
 import { WeeklyNetRTrack } from "../components/scalp/WeeklyNetRTrack";
 
-// ─── types (mirror /api/scalp/v5/* + /api/scalp/v4/recent) ───────────────────
+// ─── types (mirror the four /api/scalp/v5/* endpoints + /api/scalp/v4/recent)
+
+interface CoverageResp {
+  ok: boolean;
+  classifierVersion: string;
+  v5Enabled: boolean;
+  v5HardGateEnabled: boolean;
+  config: { holdoutWeeks: number; minTradesPerCell: number };
+  nowMs: number;
+  evaluator: { latestEvaluationMs: number | null; oldestEvaluationMs: number | null };
+  coverage: {
+    totalDeployments: number;
+    enabledDeployments: number;
+    evaluated: number;
+    missingEvidence: number;
+    stale: number;
+    staleThresholdMs: number;
+  };
+}
+
+interface GateStateResp {
+  ok: boolean;
+  classifierVersion: string;
+  nowMs: number;
+  stateNow: Record<V5GateDecision, number>;
+  stateNowEnabled: Record<V5GateDecision, number>;
+}
+
+interface SymbolRegimeBucket {
+  venue: string;
+  symbol: string;
+  cellId: string | null;
+  stale: boolean;
+  allowCount: number;
+  blockCount: number;
+  pendingCount: number;
+  totalEnabled: number;
+}
+
+interface RegimesResp {
+  ok: boolean;
+  classifierVersion: string;
+  nowMs: number;
+  regimes: SymbolRegimeBucket[];
+}
 
 interface V5CellRow {
   cellId: string;
@@ -53,24 +97,10 @@ interface V5DeploymentRow {
   cells: V5CellRow[];
 }
 
-interface V5DashboardResp {
+interface DeploymentsResp {
   ok: boolean;
   classifierVersion: string;
-  v5Enabled: boolean;
-  v5HardGateEnabled: boolean;
-  config: { holdoutWeeks: number; minTradesPerCell: number };
   nowMs: number;
-  evaluator: { latestEvaluationMs: number | null; oldestEvaluationMs: number | null };
-  coverage: {
-    totalDeployments: number;
-    enabledDeployments: number;
-    evaluated: number;
-    missingEvidence: number;
-    stale: number;
-    staleThresholdMs: number;
-  };
-  stateNow: Record<V5GateDecision, number>;
-  stateNowEnabled: Record<V5GateDecision, number>;
   deployments: V5DeploymentRow[];
 }
 
@@ -94,9 +124,6 @@ interface RecentResp {
   recentTrades: TradeRow[];
 }
 
-// Holdout NetR ordering: weeklyNetR comes in as an object/array keyed by week
-// in the evidence. The API serializes it in ascending week order, so the
-// rendering can use it as-is (oldest → newest, left → right).
 const DECISION_ORDER: V5GateDecision[] = [
   "allow",
   "block_negative",
@@ -109,8 +136,13 @@ const DECISION_ORDER: V5GateDecision[] = [
 // ─── page ────────────────────────────────────────────────────────────────────
 
 export default function ScalpV5Dashboard() {
-  const [v5, setV5] = useState<V5DashboardResp | null>(null);
+  // Four independent slices so a slow endpoint doesn't gate the others.
+  const [coverage, setCoverage] = useState<CoverageResp | null>(null);
+  const [gateState, setGateState] = useState<GateStateResp | null>(null);
+  const [regimes, setRegimes] = useState<RegimesResp | null>(null);
+  const [deployments, setDeployments] = useState<DeploymentsResp | null>(null);
   const [recent, setRecent] = useState<RecentResp | null>(null);
+
   const [expandedDeployments, setExpandedDeployments] = useState<Set<string>>(new Set());
   const [showAllInactive, setShowAllInactive] = useState(false);
   const [decisionFilter, setDecisionFilter] = useState<V5GateDecision | null>(null);
@@ -124,78 +156,47 @@ export default function ScalpV5Dashboard() {
     });
   }, []);
 
+  // Fire all five endpoints in parallel. Each one calls its own setState as it
+  // resolves — coverage typically lands first (~50ms), deployments last (the
+  // heavy one). UI sections render as data arrives.
   const loader = useCallback(async (headers: Record<string, string>) => {
-    const [v, r] = await Promise.all([
-      fetchOne<V5DashboardResp>("/api/scalp/v5/dashboard", headers, setV5),
+    const [c, g, r, d, rc] = await Promise.all([
+      fetchOne<CoverageResp>("/api/scalp/v5/coverage", headers, setCoverage),
+      fetchOne<GateStateResp>("/api/scalp/v5/gate-state", headers, setGateState),
+      fetchOne<RegimesResp>("/api/scalp/v5/regimes", headers, setRegimes),
+      fetchOne<DeploymentsResp>("/api/scalp/v5/deployments", headers, setDeployments),
       fetchOne<RecentResp>("/api/scalp/v4/recent", headers, setRecent),
     ]);
-    if (v.unauthorized || r.unauthorized) return { unauthorized: true };
-    return { error: v.error || r.error };
+    if (c.unauthorized || g.unauthorized || r.unauthorized || d.unauthorized || rc.unauthorized) {
+      return { unauthorized: true };
+    }
+    return { error: c.error || g.error || r.error || d.error || rc.error };
   }, []);
 
   const access = useAdminSecretLoader(loader);
 
-  const enabledRows = useMemo(() => (v5 ? v5.deployments.filter((d) => d.enabled) : []), [v5]);
-  const inactiveRows = useMemo(() => (v5 ? v5.deployments.filter((d) => !d.enabled) : []), [v5]);
-
+  const enabledRows = useMemo(
+    () => (deployments ? deployments.deployments.filter((d) => d.enabled) : []),
+    [deployments],
+  );
+  const inactiveRows = useMemo(
+    () => (deployments ? deployments.deployments.filter((d) => !d.enabled) : []),
+    [deployments],
+  );
   const filteredEnabled = useMemo(() => {
     if (!decisionFilter) return enabledRows;
     return enabledRows.filter((r) => r.gate.decision === decisionFilter);
   }, [enabledRows, decisionFilter]);
 
-  // Regimes-this-week aggregate, enriched with the gate decision count per
-  // (venue, symbol) — replaces the v4 "matches" count.
-  const regimeRows = useMemo(() => {
-    if (!v5) return [];
-    type Bucket = {
-      venue: string;
-      symbol: string;
-      cellId: string | null;
-      stale: boolean;
-      allowCount: number;
-      blockCount: number;
-      pendingCount: number;
-      totalEnabled: number;
-    };
-    const seen = new Map<string, Bucket>();
-    for (const row of v5.deployments) {
-      if (!row.enabled) continue;
-      const key = `${row.venue}:${row.symbol}`;
-      const existing = seen.get(key);
-      const isAllow = row.gate.decision === "allow";
-      const isPending = row.gate.decision === "block_evaluator_pending";
-      const isBlock = !isAllow && !isPending;
-      if (existing) {
-        existing.allowCount += isAllow ? 1 : 0;
-        existing.blockCount += isBlock ? 1 : 0;
-        existing.pendingCount += isPending ? 1 : 0;
-        existing.totalEnabled += 1;
-      } else {
-        seen.set(key, {
-          venue: row.venue,
-          symbol: row.symbol,
-          cellId: row.currentCell.cellId,
-          stale: row.currentCell.stale,
-          allowCount: isAllow ? 1 : 0,
-          blockCount: isBlock ? 1 : 0,
-          pendingCount: isPending ? 1 : 0,
-          totalEnabled: 1,
-        });
-      }
-    }
-    return Array.from(seen.values()).sort((a, b) => {
-      if (a.venue !== b.venue) return a.venue.localeCompare(b.venue);
-      return a.symbol.localeCompare(b.symbol);
-    });
-  }, [v5]);
+  const activityRows = useMemo(() => (recent ? recent.recentTrades.slice(0, 40) : []), [recent]);
 
-  // Activity feed — v5-flavored: only trade-line events. Reason codes that
-  // start with V5_ get color-coded by gate decision; everything else is shown
-  // by trade R-multiple sign.
-  const activityRows = useMemo(() => {
-    if (!recent) return [];
-    return recent.recentTrades.slice(0, 40);
-  }, [recent]);
+  // Header classifierVersion: prefer whichever endpoint has loaded first.
+  const classifierVersion =
+    coverage?.classifierVersion ||
+    gateState?.classifierVersion ||
+    regimes?.classifierVersion ||
+    deployments?.classifierVersion ||
+    null;
 
   return (
     <PageShell>
@@ -204,7 +205,7 @@ export default function ScalpV5Dashboard() {
       </Head>
       <DashboardHeader
         title="SCALP V5 · CELL GATE"
-        classifierVersion={v5?.classifierVersion || null}
+        classifierVersion={classifierVersion}
         loadedAt={access.loadedAt}
         autoRefresh={access.autoRefresh}
         setAutoRefresh={access.setAutoRefresh}
@@ -236,9 +237,9 @@ export default function ScalpV5Dashboard() {
       ) : null}
 
       <SectionHeader title="gate · live decision (enabled deployments now)" />
-      {v5 ? (
+      {gateState ? (
         <GateDistribution
-          stateNowEnabled={v5.stateNowEnabled}
+          stateNowEnabled={gateState.stateNowEnabled}
           activeFilter={decisionFilter}
           onPick={(d) => setDecisionFilter((cur) => (cur === d ? null : d))}
         />
@@ -246,14 +247,16 @@ export default function ScalpV5Dashboard() {
         <Skeleton label="loading gate state" />
       )}
 
-      <SectionHeader title={`evaluator · holdout=${v5?.config.holdoutWeeks ?? "—"}w  minTrades/cell=${v5?.config.minTradesPerCell ?? "—"}`} />
-      {v5 ? <EvaluatorStrip data={v5} /> : <Skeleton label="loading evaluator" />}
+      <SectionHeader
+        title={`evaluator · holdout=${coverage?.config.holdoutWeeks ?? "—"}w  minTrades/cell=${coverage?.config.minTradesPerCell ?? "—"}`}
+      />
+      {coverage ? <EvaluatorStrip data={coverage} /> : <Skeleton label="loading evaluator" />}
 
       <SectionHeader
         title={`deployments · live cell evidence${decisionFilter ? ` · filter=${V5_DECISION_LABEL[decisionFilter]}` : ""}`}
       />
-      {v5 ? (
-        v5.deployments.length === 0 ? (
+      {deployments ? (
+        deployments.deployments.length === 0 ? (
           <div className="pl-2 mt-1 text-zinc-500">(no deployments — nothing v3-promoted yet)</div>
         ) : (
           <div className="mt-1 pl-2 space-y-0.5">
@@ -301,12 +304,12 @@ export default function ScalpV5Dashboard() {
       )}
 
       <SectionHeader title="symbol regimes · this week" />
-      {v5 ? (
-        regimeRows.length === 0 ? (
+      {regimes ? (
+        regimes.regimes.length === 0 ? (
           <div className="pl-2 text-zinc-500">(no enabled symbols)</div>
         ) : (
           <div className="mt-1 pl-2 space-y-0.5">
-            {regimeRows.map((row) => (
+            {regimes.regimes.map((row) => (
               <SymbolRegimeRow key={`${row.venue}:${row.symbol}`} row={row} />
             ))}
           </div>
@@ -331,14 +334,13 @@ export default function ScalpV5Dashboard() {
       )}
 
       <div className="border-t border-zinc-800 pt-2 mt-6 text-zinc-600">
-        sources /api/scalp/v5/dashboard · /api/scalp/v4/recent
+        sources /api/scalp/v5/coverage · /gate-state · /regimes · /deployments · /api/scalp/v4/recent
       </div>
     </PageShell>
   );
 }
 
 // ─── gate-distribution histogram ─────────────────────────────────────────────
-// Bars are clickable filters; clicking the active decision clears the filter.
 
 function GateDistribution({
   stateNowEnabled,
@@ -384,7 +386,7 @@ function GateDistribution({
   );
 }
 
-function EvaluatorStrip({ data }: { data: V5DashboardResp }) {
+function EvaluatorStrip({ data }: { data: CoverageResp }) {
   const cov = data.coverage;
   const latest = data.evaluator.latestEvaluationMs ? fmtAgo(data.evaluator.latestEvaluationMs) : null;
   const oldest = data.evaluator.oldestEvaluationMs ? fmtAgo(data.evaluator.oldestEvaluationMs) : null;
@@ -433,8 +435,6 @@ function EvaluatorStrip({ data }: { data: V5DashboardResp }) {
 }
 
 // ─── deployment row ──────────────────────────────────────────────────────────
-// One row per deployment. Compact summary in the row; expanded body shows the
-// per-cell table with WeeklyNetRTrack bars (v3-style 12-bar div port).
 
 function V5DeploymentRowView({
   row,
@@ -460,7 +460,6 @@ function V5DeploymentRowView({
   ) : (
     <span className="text-zinc-600" title="inactive">○</span>
   );
-  // Per-deployment NetR scale so cells are visually comparable within one row.
   const maxAbs = useMemo(() => {
     let m = 0;
     for (const c of row.cells) {
@@ -569,8 +568,6 @@ function V5DeploymentRowView({
   );
 }
 
-// ─── per-cell evidence row (with v3-style weekly bar track) ──────────────────
-
 function CellEvidenceRow({
   cell,
   maxAbs,
@@ -637,22 +634,7 @@ function CellEvidenceRow({
   );
 }
 
-// ─── symbol regime row (v5-flavored) ─────────────────────────────────────────
-
-function SymbolRegimeRow({
-  row,
-}: {
-  row: {
-    venue: string;
-    symbol: string;
-    cellId: string | null;
-    stale: boolean;
-    allowCount: number;
-    blockCount: number;
-    pendingCount: number;
-    totalEnabled: number;
-  };
-}) {
+function SymbolRegimeRow({ row }: { row: SymbolRegimeBucket }) {
   return (
     <div>
       <div className="md:hidden">
@@ -696,8 +678,6 @@ function SymbolRegimeRow({
   );
 }
 
-// ─── activity row (v5-flavored: highlight v5 reason codes) ───────────────────
-
 function V5ActivityRow({ event }: { event: TradeRow }) {
   const timeMs = event.tsMs;
   const symbol = `${event.venue || "?"}/${event.symbol || "?"}`;
@@ -724,7 +704,6 @@ function V5ActivityRow({ event }: { event: TradeRow }) {
     detail = "execution error";
     detailClass = "text-rose-400";
   } else if (event.eventKind === "entry_skipped") {
-    // Map v5 reason → decision color so blocked entries shout the right tone.
     let decision: V5GateDecision | null = null;
     if (v5Reason === "V5_CELL_NEGATIVE_EXPECTANCY") decision = "block_negative";
     else if (v5Reason === "V5_CELL_NOT_IN_EVIDENCE") decision = "block_unseen";

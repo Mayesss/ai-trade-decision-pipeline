@@ -391,6 +391,9 @@ export async function loadScalpV4RegimeSnapshots(params: {
 // per-candidate snapshot loads collapse to one query per sweep.
 export type ScalpV4SnapshotRow = {
   weekStartMs: number;
+  // Wall-clock time the row was last written, used by staleness checks. May be
+  // 0 when the source query did not include it (older callers).
+  updatedAtMs: number;
   classifierVersion: string;
   venue: ScalpV4Venue;
   symbol: string;
@@ -417,6 +420,7 @@ export async function loadScalpV4RegimeSnapshotsBulk(params: {
     venue: string;
     symbol: string;
     weekStart: Date;
+    updatedAt: Date;
     rawCellId: string;
     cellId: string;
     pendingCellId: string | null;
@@ -449,6 +453,7 @@ export async function loadScalpV4RegimeSnapshotsBulk(params: {
       venue,
       symbol,
       week_start AS "weekStart",
+      updated_at AS "updatedAt",
       raw_cell_id AS "rawCellId",
       cell_id AS "cellId",
       pending_cell_id AS "pendingCellId",
@@ -478,6 +483,7 @@ export async function loadScalpV4RegimeSnapshotsBulk(params: {
     }
     list.push({
       weekStartMs: row.weekStart.getTime(),
+      updatedAtMs: row.updatedAt ? row.updatedAt.getTime() : 0,
       classifierVersion: params.classifierVersion,
       venue,
       symbol,

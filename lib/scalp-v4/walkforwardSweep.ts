@@ -545,10 +545,14 @@ export async function runScalpV4WalkforwardSweep(
       }
     })();
     // Build snapshot + epoch lookups once for trade attribution.
+    // SnapshotRow → RegimeSnapshot cast was already structurally loose; the
+    // new updatedAtMs field tipped TS over its overlap threshold so route via
+    // unknown to preserve prior behaviour.
+    const snapshotsAsRegime = snapshots as unknown as ScalpV4RegimeSnapshot[];
     const snapshotByWeek = new Map<number, ScalpV4RegimeSnapshot>(
-      (snapshots as ScalpV4RegimeSnapshot[]).map((row) => [row.weekStartMs, row]),
+      snapshotsAsRegime.map((row) => [row.weekStartMs, row]),
     );
-    const sortedSnaps = [...(snapshots as ScalpV4RegimeSnapshot[])].sort(
+    const sortedSnaps = [...snapshotsAsRegime].sort(
       (a, b) => a.weekStartMs - b.weekStartMs,
     );
     const epochByWeek = new Map<number, number>();
