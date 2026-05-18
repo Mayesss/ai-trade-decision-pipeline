@@ -20,6 +20,11 @@ const UNAUTHENTICATED_CRON_ROUTES = new Set<string>([
   "/api/scalp/v2/cron/reconcile",
   "/api/scalp/v2/cron/research",
   "/api/scalp/v2/cron/cycle",
+  // v5 crons. Same pattern as the v2 list above — Vercel cron requests don't
+  // carry x-admin-access-secret, so these routes have to be admin-secret-
+  // exempt or the handlers 401 and the cron silently no-ops.
+  "/api/scalp/v5/cron/evaluate",
+  "/api/scalp/v5/cron/promote",
 ]);
 
 function firstHeaderValue(value: string | string[] | undefined): string {
