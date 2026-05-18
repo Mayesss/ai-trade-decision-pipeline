@@ -2,14 +2,24 @@
 //
 // Schedule: Sunday 02:00 UTC (see vercel.json). At this point Saturday's
 // week is complete and the v4 classifier has the data it needs to write
-// the new weekly regime snapshot. This handler clears every row's
-// v5_evaluated_at so the existing hourly evaluate cron picks them all up
-// over the rest of Sunday — by Monday 00:00 UTC every deployment has been
-// re-validated against the just-completed week and any new winners have
-// been auto-promoted.
+// the new weekly regime snapshot. This handler marks every row's
+// v5_evaluated_at as NULL so the existing hourly evaluate cron picks them
+// all up over the rest of Sunday — by Monday 00:00 UTC every deployment
+// has been re-validated against the just-completed week and any new
+// winners have been auto-promoted.
 //
-// Idempotent. Defensive day-of-week check: refuses to run on non-Sunday
-// unless ?force=true is passed (lets you trigger it manually for a one-off
+// IMPORTANT: by default this does NOT wipe evidence or checkpoints. The
+// dispatcher in evaluateScalpV5ForDeployment validates the existing
+// evidence + checkpoint and runs the cheap incremental path (1 week of
+// replay) when they're applicable. Wiping them would force a 12-week full
+// replay every Sunday and defeat the whole incremental architecture.
+//
+// Pass ?force=full to ALSO wipe evidence and checkpoints (use after a
+// classifier version bump or any change that invalidates checkpoints,
+// before invalidating you'll want every row to re-evaluate from scratch).
+//
+// Defensive day-of-week check: refuses to run on non-Sunday unless
+// ?force=true is passed (lets you trigger it manually for a one-off
 // re-eval without waiting for the next Sunday).
 
 export const config = { runtime: "nodejs", maxDuration: 60 };
@@ -41,9 +51,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const startedAt = Date.now();
   const force = parseBool(req.query.force, false);
+  // ?force=full → wipe evidence + checkpoint (destructive; brief permissive
+  // window per row until re-eval lands). Default → stale-only: clears
+  // v5_evaluated_at so rows re-enter the eval queue, evidence + checkpoint
+  // stay intact for the incremental path to use.
+  const forceFull = String(req.query.force ?? "").trim().toLowerCase() === "full";
+  const mode: "full" | "stale" = forceFull ? "full" : "stale";
   const nowDay = new Date().getUTCDay(); // 0 = Sunday UTC
 
-  if (nowDay !== 0 && !force) {
+  if (nowDay !== 0 && !force && !forceFull) {
     return res.status(200).json({
       ok: true,
       skipped: true,
@@ -53,12 +69,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
-    const result = await invalidateAllScalpV5Evidence({ onlyEnabled: false });
+    const result = await invalidateAllScalpV5Evidence({ onlyEnabled: false, mode });
     return res.status(200).json({
       ok: true,
       durationMs: Date.now() - startedAt,
       utcDay: nowDay,
-      forced: force,
+      forced: force || forceFull,
+      mode: result.mode,
       invalidated: result.invalidated,
     });
   } catch (err) {

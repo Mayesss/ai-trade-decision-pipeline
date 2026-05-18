@@ -185,17 +185,49 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
   });
 }
 
-// Wipe every stored v5 evidence row so the next bulk pass re-evaluates with
-// the current code path. Use after a behavior change in the evaluator (e.g.
-// fixing the configOverride bug). Does NOT touch the `enabled` flag — rows
-// that were auto-promoted by v5 stay live; the entry gate goes permissive
-// (V5_CELL_EVIDENCE_MISSING) until the next eval lands fresh evidence.
+// Mark every v5 evidence row as needing re-evaluation.
+//
+// Two modes:
+//
+// - mode="stale" (default for weekly Sunday rollover): only NULLs
+//   v5_evaluated_at so the rows become eligible for the loader's staleness
+//   filter again. Evidence + checkpoint stay in place — the dispatcher
+//   sees them on the next evaluation, validates the prerequisites, and
+//   runs the cheap incremental path (1 week of replay instead of 12) when
+//   they line up. Use after a normal weekly rollover.
+//
+// - mode="full" (use after a behavior change that invalidates checkpoints,
+//   e.g. classifier version bump, evaluator logic change, DSL semantics
+//   change): wipes evidence + v5_enabled + checkpoint. Every row will go
+//   through a full 12-week replay on its next evaluation. The entry gate
+//   goes permissive (V5_CELL_EVIDENCE_MISSING) on each row until its
+//   re-eval lands fresh evidence — brief degradation, but unavoidable
+//   when the underlying data shape changes.
+//
+// Either way, the `enabled` flag on the deployment is NOT touched — v5
+// auto-promoted rows stay live.
 export async function invalidateAllScalpV5Evidence(params: {
   onlyEnabled?: boolean;
-} = {}): Promise<{ invalidated: number }> {
-  if (!isScalpPgConfigured()) return { invalidated: 0 };
+  mode?: "full" | "stale";
+} = {}): Promise<{ invalidated: number; mode: "full" | "stale" }> {
+  const mode: "full" | "stale" = params.mode === "full" ? "full" : "stale";
+  if (!isScalpPgConfigured()) return { invalidated: 0, mode };
   const onlyEnabled = Boolean(params.onlyEnabled);
   const db = scalpPrisma();
+  if (mode === "stale") {
+    const rows = await db.$queryRaw<Array<{ deploymentId: string }>>(sql`
+      UPDATE scalp_v2_deployments
+      SET v5_evaluated_at = NULL,
+          v5_lease_until = NULL,
+          updated_at = NOW()
+      WHERE candidate_id IS NOT NULL
+        AND (${onlyEnabled} = FALSE OR enabled = TRUE)
+        AND v5_evaluated_at IS NOT NULL
+      RETURNING deployment_id AS "deploymentId";
+    `);
+    return { invalidated: rows.length, mode };
+  }
+  // mode === "full"
   const rows = await db.$queryRaw<Array<{ deploymentId: string }>>(sql`
     UPDATE scalp_v2_deployments
     SET v5_cell_evidence = NULL,
@@ -209,7 +241,7 @@ export async function invalidateAllScalpV5Evidence(params: {
       AND v5_evaluated_at IS NOT NULL
     RETURNING deployment_id AS "deploymentId";
   `);
-  return { invalidated: rows.length };
+  return { invalidated: rows.length, mode };
 }
 
 // Explicitly release a lease without writing evidence. Useful when an
