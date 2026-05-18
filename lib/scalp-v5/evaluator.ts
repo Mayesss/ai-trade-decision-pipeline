@@ -12,6 +12,13 @@ import { runScalpReplay } from "../scalp/replay/harness";
 import { buildScalpReplayRuntimeFromDeployment } from "../scalp/replay/runtimeConfig";
 import type { ScalpReplayCandle } from "../scalp/replay/types";
 import type { ScalpCandle } from "../scalp/types";
+import { resolveEntryTriggerOverrides } from "../scalp-v2/entryTriggerPresets";
+import { buildScalpV2ExecuteConfigOverride } from "../scalp-v2/executeConfigOverride";
+import { resolveExitRuleOverrides } from "../scalp-v2/exitRulePresets";
+import { resolveRiskRuleReplayOverrides } from "../scalp-v2/riskRulePresets";
+import { resolveStateMachineOverrides } from "../scalp-v2/stateMachinePresets";
+import type { ScalpV2Session } from "../scalp-v2/types";
+import type { ScalpV2V3TemporalFilter } from "../scalp-v3";
 import { loadScalpV4RegimeSnapshotsBulk } from "../scalp-v4/pg";
 import type { ScalpV4CellId, ScalpV4Venue } from "../scalp-v4/types";
 import { startOfUtcWeekMondayMs } from "../scalp-v4/week";
@@ -26,6 +33,16 @@ import {
   upsertScalpV5DeploymentEvidence,
   type ScalpV5DeploymentRow,
 } from "./pg";
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function asDslList(value: unknown): string[] | null {
+  return Array.isArray(value) ? (value as unknown[]).map((v) => String(v)).filter(Boolean) : null;
+}
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -109,9 +126,38 @@ export async function evaluateScalpV5ForDeployment(params: {
     fetchIfMissing: true,
   }).catch(() => null);
 
+  // Build a deployment-specific config override so the replay mirrors what
+  // the deployment would actually trade. Without this the replay falls back
+  // to the global default config — including the default entrySessionProfile
+  // — so non-default-session deployments get evaluated on the wrong session
+  // window and produce essentially noise. Mirrors the live execute path at
+  // lib/scalp-v2/pipeline.ts:6800.
+  const dslFromGate = asRecord(asRecord(deploymentRow.promotionGate).dsl);
+  const entryOverrides = resolveEntryTriggerOverrides(asDslList(dslFromGate.entry_trigger));
+  const exitOverrides = resolveExitRuleOverrides(asDslList(dslFromGate.exit_rule));
+  const riskReplayOverrides = resolveRiskRuleReplayOverrides(asDslList(dslFromGate.risk_rule));
+  const smOverrides = resolveStateMachineOverrides(asDslList(dslFromGate.state_machine));
+  const temporalFilterRaw = asRecord(deploymentRow.promotionGate).v3TemporalFilter;
+  const temporalFilter =
+    Object.keys(asRecord(temporalFilterRaw)).length > 0
+      ? (asRecord(temporalFilterRaw) as ScalpV2V3TemporalFilter)
+      : null;
+  const configOverride = buildScalpV2ExecuteConfigOverride({
+    entrySessionProfile: deploymentRow.entrySessionProfile as ScalpV2Session,
+    riskProfile: deploymentRow.riskProfile,
+    entryTriggerOverrides: entryOverrides,
+    exitRuleOverrides: exitOverrides,
+    riskRuleReplayOverrides: riskReplayOverrides,
+    stateMachineOverrides: smOverrides,
+    temporalFilter,
+    // Intentionally omit entryBlockReasonCodes — those are a *live* gate
+    // that blocks specific entry reasons. Historical replay shouldn't
+    // apply them, otherwise we'd be measuring a counterfactual that the
+    // strategy never actually executed.
+  });
   const runtime = buildScalpReplayRuntimeFromDeployment({
     deployment: deploymentRef,
-    configOverride: null,
+    configOverride,
   });
   const pipSize = pipSizeForScalpSymbol(deploymentRow.symbol);
   const replayCandles = toReplayCandles(rawCandles, runtime.defaultSpreadPips);

@@ -1,6 +1,7 @@
 import { isScalpPgConfigured, scalpPrisma } from "../scalp/pg/client";
 import { sql } from "../scalp/pg/sql";
-import type { ScalpV2Venue } from "../scalp-v2/types";
+import { getScalpV2DefaultRiskProfile } from "../scalp-v2/config";
+import type { ScalpV2RiskProfile, ScalpV2Venue } from "../scalp-v2/types";
 import type { ScalpV5CellEvidence } from "./index";
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -23,6 +24,10 @@ export interface ScalpV5DeploymentRow {
   // is currently part of the v3 promotion universe — surface eligibility
   // and a few low-level worker hints if present.
   promotionGate: Record<string, unknown>;
+  // riskProfile drives position sizing / loss-pause limits in the replay,
+  // so it has to mirror the deployment's actual profile rather than the
+  // global default. JSONB on the row; defaults applied when missing.
+  riskProfile: ScalpV2RiskProfile;
 }
 
 // Default work-lease TTL: the bulk eval processes one row in ~5-30s, so 10
@@ -106,6 +111,7 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
     v5Enabled: boolean;
     v5EvaluatedAt: Date | null;
     promotionGate: unknown;
+    riskProfile: unknown;
   }>>(sql`
     UPDATE scalp_v2_deployments AS t
     SET v5_lease_until = NOW() + (${leaseMs} * INTERVAL '1 millisecond'),
@@ -137,21 +143,71 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
       t.live_mode AS "liveMode",
       COALESCE(t.v5_enabled, FALSE) AS "v5Enabled",
       t.v5_evaluated_at AS "v5EvaluatedAt",
-      t.promotion_gate AS "promotionGate";
+      t.promotion_gate AS "promotionGate",
+      t.risk_profile AS "riskProfile";
   `);
-  return rows.map((row) => ({
-    deploymentId: String(row.deploymentId || "").trim(),
-    venue: (String(row.venue || "").toLowerCase() === "capital" ? "capital" : "bitget") as ScalpV2Venue,
-    symbol: String(row.symbol || "").trim().toUpperCase(),
-    strategyId: String(row.strategyId || "").trim().toLowerCase(),
-    tuneId: String(row.tuneId || "").trim().toLowerCase() || "default",
-    entrySessionProfile: String(row.entrySessionProfile || "").trim().toLowerCase(),
-    enabled: Boolean(row.enabled),
-    liveMode: row.liveMode ? String(row.liveMode) : null,
-    v5Enabled: Boolean(row.v5Enabled),
-    v5EvaluatedAtMs: row.v5EvaluatedAt ? row.v5EvaluatedAt.getTime() : null,
-    promotionGate: asRecord(row.promotionGate),
-  }));
+  const defaultRiskProfile = getScalpV2DefaultRiskProfile();
+  return rows.map((row) => {
+    const rpRaw = asRecord(row.riskProfile);
+    const rp: ScalpV2RiskProfile = {
+      riskPerTradePct:
+        Number.isFinite(Number(rpRaw.riskPerTradePct))
+          ? Number(rpRaw.riskPerTradePct)
+          : defaultRiskProfile.riskPerTradePct,
+      maxOpenPositionsPerSymbol:
+        Number.isFinite(Number(rpRaw.maxOpenPositionsPerSymbol))
+          ? Math.max(1, Math.floor(Number(rpRaw.maxOpenPositionsPerSymbol)))
+          : defaultRiskProfile.maxOpenPositionsPerSymbol,
+      autoPauseDailyR:
+        Number.isFinite(Number(rpRaw.autoPauseDailyR))
+          ? Number(rpRaw.autoPauseDailyR)
+          : defaultRiskProfile.autoPauseDailyR,
+      autoPause30dR:
+        Number.isFinite(Number(rpRaw.autoPause30dR))
+          ? Number(rpRaw.autoPause30dR)
+          : defaultRiskProfile.autoPause30dR,
+    };
+    return {
+      deploymentId: String(row.deploymentId || "").trim(),
+      venue: (String(row.venue || "").toLowerCase() === "capital" ? "capital" : "bitget") as ScalpV2Venue,
+      symbol: String(row.symbol || "").trim().toUpperCase(),
+      strategyId: String(row.strategyId || "").trim().toLowerCase(),
+      tuneId: String(row.tuneId || "").trim().toLowerCase() || "default",
+      entrySessionProfile: String(row.entrySessionProfile || "").trim().toLowerCase(),
+      enabled: Boolean(row.enabled),
+      liveMode: row.liveMode ? String(row.liveMode) : null,
+      v5Enabled: Boolean(row.v5Enabled),
+      v5EvaluatedAtMs: row.v5EvaluatedAt ? row.v5EvaluatedAt.getTime() : null,
+      promotionGate: asRecord(row.promotionGate),
+      riskProfile: rp,
+    };
+  });
+}
+
+// Wipe every stored v5 evidence row so the next bulk pass re-evaluates with
+// the current code path. Use after a behavior change in the evaluator (e.g.
+// fixing the configOverride bug). Does NOT touch the `enabled` flag — rows
+// that were auto-promoted by v5 stay live; the entry gate goes permissive
+// (V5_CELL_EVIDENCE_MISSING) until the next eval lands fresh evidence.
+export async function invalidateAllScalpV5Evidence(params: {
+  onlyEnabled?: boolean;
+} = {}): Promise<{ invalidated: number }> {
+  if (!isScalpPgConfigured()) return { invalidated: 0 };
+  const onlyEnabled = Boolean(params.onlyEnabled);
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{ deploymentId: string }>>(sql`
+    UPDATE scalp_v2_deployments
+    SET v5_cell_evidence = NULL,
+        v5_enabled = FALSE,
+        v5_evaluated_at = NULL,
+        v5_lease_until = NULL,
+        updated_at = NOW()
+    WHERE candidate_id IS NOT NULL
+      AND (${onlyEnabled} = FALSE OR enabled = TRUE)
+      AND v5_evaluated_at IS NOT NULL
+    RETURNING deployment_id AS "deploymentId";
+  `);
+  return { invalidated: rows.length };
 }
 
 // Explicitly release a lease without writing evidence. Useful when an
