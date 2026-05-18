@@ -183,6 +183,7 @@ interface V5DeploymentRow {
   session: string;
   strategyId: string;
   tuneId: string;
+  enabled: boolean;
   v5Enabled: boolean;
   v5EvaluatedAtMs: number | null;
   currentCell: { cellId: string | null; stale: boolean; updatedAtMs: number | null };
@@ -205,6 +206,7 @@ interface V5DashboardResp {
   nowMs: number;
   evaluator: { latestEvaluationMs: number | null; oldestEvaluationMs: number | null };
   coverage: {
+    totalDeployments: number;
     enabledDeployments: number;
     evaluated: number;
     missingEvidence: number;
@@ -212,6 +214,7 @@ interface V5DashboardResp {
     staleThresholdMs: number;
   };
   stateNow: Record<V5GateDecision, number>;
+  stateNowEnabled: Record<V5GateDecision, number>;
   deployments: V5DeploymentRow[];
 }
 
@@ -374,6 +377,7 @@ export default function ScalpV4Dashboard() {
   const [unauthorized, setUnauthorized] = useState(false);
   const [showAllRegimes, setShowAllRegimes] = useState(false);
   const [showAllActiveDeployments, setShowAllActiveDeployments] = useState(false);
+  const [showAllV5Inactive, setShowAllV5Inactive] = useState(false);
   // Click-to-expand: deployment IDs whose per-cell detail is currently visible.
   const [expandedDeployments, setExpandedDeployments] = useState<Set<string>>(new Set());
   // Tick used only to make the "last X ago" label update in realtime without
@@ -767,7 +771,13 @@ export default function ScalpV4Dashboard() {
         {/* V5 GATE */}
         <SectionHeader title="v5 gate · per-regime-cell entry control" />
         {v5 ? (
-          <V5GateSection data={v5} expanded={expandedDeployments} onToggle={toggleExpanded} />
+          <V5GateSection
+            data={v5}
+            expanded={expandedDeployments}
+            onToggle={toggleExpanded}
+            showAllInactive={showAllV5Inactive}
+            onToggleShowAllInactive={() => setShowAllV5Inactive((v) => !v)}
+          />
         ) : (
           <Skeleton label="loading v5 gate" />
         )}
@@ -1081,10 +1091,14 @@ function V5GateSection({
   data,
   expanded,
   onToggle,
+  showAllInactive,
+  onToggleShowAllInactive,
 }: {
   data: V5DashboardResp;
   expanded: Set<string>;
   onToggle: (id: string) => void;
+  showAllInactive: boolean;
+  onToggleShowAllInactive: () => void;
 }) {
   const cov = data.coverage;
   const sn = data.stateNow;
@@ -1134,8 +1148,12 @@ function V5GateSection({
           <span>
             <span className="text-zinc-100">{cov.evaluated}</span>
             <span className="text-zinc-500">/</span>
-            <span className="text-zinc-100">{cov.enabledDeployments}</span>
-            <span className="text-zinc-500"> evaluated</span>
+            <span className="text-zinc-100">{cov.totalDeployments}</span>
+            <span className="text-zinc-500"> evaluated · </span>
+            <span className="text-emerald-400">{cov.enabledDeployments}</span>
+            <span className="text-zinc-500"> enabled · </span>
+            <span className="text-zinc-400">{cov.totalDeployments - cov.enabledDeployments}</span>
+            <span className="text-zinc-500"> inactive</span>
           </span>
           <span>
             <span className={cov.missingEvidence > 0 ? "text-sky-400" : "text-zinc-500"}>
@@ -1153,12 +1171,32 @@ function V5GateSection({
         </span>
         <span className="text-zinc-500">state now</span>
         <span className="flex flex-wrap gap-x-3 items-baseline">
+          <span className="text-zinc-500 text-[12px]">enabled:</span>
+          {(() => {
+            const eSegs = allSegments
+              .map((s) => ({ kind: s.kind, n: data.stateNowEnabled[s.kind] }))
+              .filter((s) => s.n > 0);
+            const eTotal = Math.max(1, eSegs.reduce((a, b) => a + b.n, 0));
+            if (eSegs.length === 0) return <span className="text-zinc-500">(none)</span>;
+            return eSegs.map((s) => (
+              <span key={`e-${s.kind}`} className="flex items-baseline gap-x-1">
+                <span className={`${V5_DECISION_COLOR[s.kind]} font-mono`}>
+                  {"█".repeat(Math.max(1, Math.round((s.n / eTotal) * 8)))}
+                </span>
+                <span className={V5_DECISION_COLOR[s.kind]}>{V5_DECISION_LABEL[s.kind]}</span>
+                <span className="text-zinc-100">{s.n}</span>
+              </span>
+            ));
+          })()}
+        </span>
+        <span className="text-zinc-500">all</span>
+        <span className="flex flex-wrap gap-x-3 items-baseline">
           {segments.length === 0 ? (
-            <span className="text-zinc-500">(no enabled deployments)</span>
+            <span className="text-zinc-500">(no deployments)</span>
           ) : (
             segments.map((s) => (
               <span key={s.kind} className="flex items-baseline gap-x-1">
-                <span className={`${V5_DECISION_COLOR[s.kind]} font-mono`}>
+                <span className={`${V5_DECISION_COLOR[s.kind]} font-mono opacity-70`}>
                   {"█".repeat(Math.max(1, Math.round((s.n / totalRated) * 8)))}
                 </span>
                 <span className={V5_DECISION_COLOR[s.kind]}>{V5_DECISION_LABEL[s.kind]}</span>
@@ -1169,19 +1207,58 @@ function V5GateSection({
         </span>
       </div>
       {data.deployments.length === 0 ? (
-        <div className="pl-2 mt-1 text-zinc-500">(no enabled deployments)</div>
-      ) : (
-        <div className="mt-1 pl-2 space-y-0.5">
-          {data.deployments.map((dep) => (
-            <V5DeploymentRowView
-              key={dep.deploymentId}
-              row={dep}
-              expanded={expanded.has(dep.deploymentId)}
-              onToggle={() => onToggle(dep.deploymentId)}
-            />
-          ))}
-        </div>
-      )}
+        <div className="pl-2 mt-1 text-zinc-500">(no deployments — nothing v3-promoted yet)</div>
+      ) : (() => {
+        const enabledRows = data.deployments.filter((d) => d.enabled);
+        const inactiveRows = data.deployments.filter((d) => !d.enabled);
+        const INACTIVE_PREVIEW_LIMIT = 12;
+        const visibleInactive = showAllInactive
+          ? inactiveRows
+          : inactiveRows.slice(0, INACTIVE_PREVIEW_LIMIT);
+        return (
+          <div className="mt-1 pl-2 space-y-0.5">
+            {enabledRows.length > 0 ? (
+              <>
+                {enabledRows.map((dep) => (
+                  <V5DeploymentRowView
+                    key={dep.deploymentId}
+                    row={dep}
+                    expanded={expanded.has(dep.deploymentId)}
+                    onToggle={() => onToggle(dep.deploymentId)}
+                  />
+                ))}
+              </>
+            ) : (
+              <div className="text-zinc-500 text-[12px]">(no currently enabled deployments — only inactive evidence below)</div>
+            )}
+            {inactiveRows.length > 0 ? (
+              <>
+                <div className="mt-2 text-zinc-500 text-[11px] uppercase tracking-wider">
+                  ─── inactive ({inactiveRows.length}) · evidence pre-staged for future promotion
+                </div>
+                {visibleInactive.map((dep) => (
+                  <V5DeploymentRowView
+                    key={dep.deploymentId}
+                    row={dep}
+                    expanded={expanded.has(dep.deploymentId)}
+                    onToggle={() => onToggle(dep.deploymentId)}
+                  />
+                ))}
+                {inactiveRows.length > INACTIVE_PREVIEW_LIMIT ? (
+                  <button
+                    onClick={onToggleShowAllInactive}
+                    className="text-zinc-500 hover:text-zinc-300"
+                  >
+                    {showAllInactive
+                      ? "↑ collapse inactive"
+                      : `… show all ${inactiveRows.length} inactive`}
+                  </button>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+        );
+      })()}
     </>
   );
 }
@@ -1233,8 +1310,14 @@ function V5DeploymentRowView({
       )}
     </span>
   );
+  const dim = !row.enabled ? "opacity-60" : "";
+  const enabledMark = row.enabled ? (
+    <span className="text-emerald-400" title="enabled">●</span>
+  ) : (
+    <span className="text-zinc-600" title="inactive">○</span>
+  );
   return (
-    <div>
+    <div className={dim}>
       <button
         onClick={onToggle}
         className="w-full text-left hover:bg-zinc-900/40 -mx-2 px-2 py-0.5 rounded-sm transition-colors"
@@ -1243,6 +1326,7 @@ function V5DeploymentRowView({
         {/* mobile */}
         <div className="md:hidden">
           <div className="flex items-baseline gap-x-2">
+            {enabledMark}
             <span className={decisionColor}>{decisionGlyph}</span>
             <span className="text-zinc-100 truncate">
               <span className="text-zinc-500">{row.venue}/</span>
@@ -1264,7 +1348,8 @@ function V5DeploymentRowView({
           <div className="pl-5 text-[12px]">{cellMix}</div>
         </div>
         {/* desktop */}
-        <div className="hidden md:grid md:grid-cols-[1.25rem_4rem_8rem_5rem_5rem_8rem_12rem_1fr] md:gap-x-2 md:items-baseline">
+        <div className="hidden md:grid md:grid-cols-[1rem_1.25rem_4rem_8rem_5rem_5rem_8rem_12rem_1fr] md:gap-x-2 md:items-baseline">
+          {enabledMark}
           <span className={decisionColor}>{decisionGlyph}</span>
           <span className="text-zinc-500">{row.venue}</span>
           <span className="text-zinc-100 truncate">{row.symbol}</span>

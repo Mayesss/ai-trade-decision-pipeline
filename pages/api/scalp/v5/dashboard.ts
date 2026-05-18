@@ -131,8 +131,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         v5_evaluated_at AS "v5EvaluatedAt",
         v5_cell_evidence AS "v5CellEvidence"
       FROM scalp_v2_deployments
-      WHERE enabled = TRUE
-      ORDER BY symbol ASC, entry_session_profile ASC;
+      WHERE candidate_id IS NOT NULL
+      ORDER BY enabled DESC, symbol ASC, entry_session_profile ASC;
     `);
 
     let latestEvaluationMs: number | null = null;
@@ -140,7 +140,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     let evaluatedCount = 0;
     let missingCount = 0;
     let staleCount = 0;
+    let enabledCount = 0;
     const stateNow: Record<GateDecision, number> = {
+      allow: 0,
+      block_negative: 0,
+      block_unseen: 0,
+      block_stale: 0,
+      block_evaluator_pending: 0,
+      block_insufficient_trades: 0,
+    };
+    // Mirror stateNow but restricted to enabled rows — the count actually
+    // relevant for live trading.
+    const stateNowEnabled: Record<GateDecision, number> = {
       allow: 0,
       block_negative: 0,
       block_unseen: 0,
@@ -156,6 +167,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const enrichedDeployments: Array<Record<string, unknown>> = [];
     for (const row of rows) {
       const venue = String(row.venue || "").toLowerCase() === "capital" ? "capital" : "bitget";
+      const enabled = Boolean(row.enabled);
+      if (enabled) enabledCount += 1;
       const evaluatedAtMs = row.v5EvaluatedAt ? row.v5EvaluatedAt.getTime() : null;
       const evidence = parseEvidence(row.v5CellEvidence);
       if (evaluatedAtMs) {
@@ -185,6 +198,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         minTradesPerCell: cfg.minTradesPerCell,
       });
       stateNow[decision] += 1;
+      if (enabled) stateNowEnabled[decision] += 1;
 
       // Ordered cells: current cell first (if present), then by trade count
       // descending. Caps the payload at 12 cells per deployment — beyond
@@ -214,6 +228,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         session: row.entrySessionProfile,
         strategyId: row.strategyId,
         tuneId: row.tuneId,
+        enabled,
         v5Enabled: Boolean(row.v5Enabled),
         v5EvaluatedAtMs: evaluatedAtMs,
         currentCell: {
@@ -257,13 +272,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         oldestEvaluationMs,
       },
       coverage: {
-        enabledDeployments: rows.length,
+        totalDeployments: rows.length,
+        enabledDeployments: enabledCount,
         evaluated: evaluatedCount,
         missingEvidence: missingCount,
         stale: staleCount,
         staleThresholdMs,
       },
       stateNow,
+      stateNowEnabled,
       deployments: enrichedDeployments,
     });
   } catch (err) {

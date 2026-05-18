@@ -25,13 +25,19 @@ export interface ScalpV5DeploymentRow {
   promotionGate: Record<string, unknown>;
 }
 
-// Load deployments that need v5 (re-)evaluation. Filter to rows that are
-// already on the live promotion path (enabled=true) and either have no v5
-// evidence yet, or whose evidence is older than `staleOlderThanMs`.
+// Load deployments that need v5 (re-)evaluation. Scope is every row that
+// v3/v2 has promoted at least once (candidate_id IS NOT NULL), regardless
+// of current `enabled` state. This lets v5 chew through the full pool of
+// stage-C survivors and keep evidence fresh on all of them — when the
+// promotion path eventually flips a row to enabled, the v5 gate already
+// has data and the entry-time check is non-permissive immediately.
+// Within scope, enabled rows are prioritised so the live set stays first
+// in line.
 export async function loadScalpV5DeploymentsForEvaluation(params: {
   limit?: number;
   staleOlderThanMs?: number;
   nowMs?: number;
+  onlyEnabled?: boolean;
 }): Promise<ScalpV5DeploymentRow[]> {
   if (!isScalpPgConfigured()) return [];
   const limit = Math.max(1, Math.min(500, Math.floor(Number(params.limit || 50))));
@@ -39,6 +45,7 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
     60_000,
     Math.floor(Number(params.staleOlderThanMs || 6 * 24 * 60 * 60_000)),
   );
+  const onlyEnabled = Boolean(params.onlyEnabled);
   const nowMs = Math.floor(Number(params.nowMs || Date.now()));
   const staleBefore = new Date(nowMs - staleOlderThanMs);
   const db = scalpPrisma();
@@ -68,9 +75,10 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
       v5_evaluated_at AS "v5EvaluatedAt",
       promotion_gate AS "promotionGate"
     FROM scalp_v2_deployments
-    WHERE enabled = TRUE
+    WHERE candidate_id IS NOT NULL
+      AND (${onlyEnabled} = FALSE OR enabled = TRUE)
       AND (v5_evaluated_at IS NULL OR v5_evaluated_at < ${staleBefore})
-    ORDER BY v5_evaluated_at ASC NULLS FIRST, updated_at DESC
+    ORDER BY enabled DESC, v5_evaluated_at ASC NULLS FIRST, updated_at DESC
     LIMIT ${limit};
   `);
   return rows.map((row) => ({
