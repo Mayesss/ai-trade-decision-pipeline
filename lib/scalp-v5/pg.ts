@@ -38,7 +38,8 @@ const DEFAULT_V5_LEASE_MS = 10 * 60_000;
 
 // Load deployments that need v5 (re-)evaluation. Scope is every row that
 // v3/v2 has promoted at least once (candidate_id IS NOT NULL), regardless
-// of current `enabled` state.
+// of current `enabled` state, except candidates explicitly removed from
+// scope because their symbol has no candle history.
 //
 // CLAIM SEMANTICS — this function is a *claim*, not a read. It atomically
 // stamps `v5_lease_until = NOW() + leaseMs` on each row it returns via
@@ -118,17 +119,23 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
     SET v5_lease_until = NOW() + (${leaseMs} * INTERVAL '1 millisecond'),
         updated_at = NOW()
     FROM (
-      SELECT deployment_id
-      FROM scalp_v2_deployments
-      WHERE candidate_id IS NOT NULL
-        AND (${onlyEnabled} = FALSE OR enabled = TRUE)
-        AND (v5_evaluated_at IS NULL OR v5_evaluated_at < ${staleBefore})
-        AND (v5_lease_until IS NULL OR v5_lease_until < NOW())
+      SELECT d.deployment_id
+      FROM scalp_v2_deployments d
+      WHERE d.candidate_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM scalp_v2_candidates c
+          WHERE c.id = d.candidate_id
+            AND c.metadata_json->'scopeRemoval'->>'reason' = 'bitget_symbol_removed_no_candles'
+        )
+        AND (${onlyEnabled} = FALSE OR d.enabled = TRUE)
+        AND (d.v5_evaluated_at IS NULL OR d.v5_evaluated_at < ${staleBefore})
+        AND (d.v5_lease_until IS NULL OR d.v5_lease_until < NOW())
         AND (
           ${sharded} = FALSE
-          OR ((hashtext(deployment_id) & 2147483647) % ${shardCount}) = ${shardIndex}
+          OR ((hashtext(d.deployment_id) & 2147483647) % ${shardCount}) = ${shardIndex}
         )
-      ORDER BY enabled DESC, v5_enabled DESC, v5_evaluated_at ASC NULLS FIRST, updated_at DESC
+      ORDER BY d.enabled DESC, d.v5_enabled DESC, d.v5_evaluated_at ASC NULLS FIRST, d.updated_at DESC
       LIMIT ${limit}
       FOR UPDATE SKIP LOCKED
     ) AS picked
@@ -259,6 +266,158 @@ export async function releaseScalpV5DeploymentLease(params: {
     WHERE deployment_id = ${params.deploymentId}
       AND v5_lease_until IS NOT NULL;
   `);
+}
+
+// Competitive cull: retire the worst N% of judgeable composer deployments by
+// total NetR. Complementary to trim-tail (which retires chronic non-eligibles
+// regardless of merit). Together they form the weekly retirement pipeline:
+//
+//   trim-tail:   "you've had 28 days and never passed v5" → retire
+//   cull-bottom: "of those judgeable enough to rank, you're in the worst N%
+//                AND your total NetR is negative" → retire
+//
+// Strict protections — we never retire:
+//   - currently live rows (enabled = TRUE)
+//   - rows young enough to still be accumulating evidence (< graceDays)
+//   - rows with too few trades to rank fairly (< minTrades)
+//   - rows with positive total NetR (a "worst" row that's still profitable
+//     stays in the pool; only proven losers get culled)
+//   - rows whose candidate was scope-removed (no candles) — they're already
+//     functionally retired
+//   - rows that would shrink the pool below minPoolSize
+//
+// Retirement action mirrors trim-tail: candidate_id = NULL drops the row
+// from the v5 evaluation queue, enabled = FALSE stops new entries, and
+// evidence + checkpoint are cleared. Reversible: future research that
+// regenerates the same DSL combo creates a fresh deployment row.
+//
+// Returns the threshold NetR (the worst-performing kept row's score) so
+// the cron log shows "we retired everything below -3.5R" — useful operator
+// signal for tuning percentToRetire over time.
+export async function cullBottomPerformersScalpV5Deployments(params: {
+  percentToRetire?: number;
+  graceDays?: number;
+  minTrades?: number;
+  minPoolSize?: number;
+  maxRetireAbs?: number | null;
+  dryRun?: boolean;
+} = {}): Promise<{
+  retired: number;
+  deploymentIds: string[];
+  eligibleCount: number;
+  poolSize: number;
+  thresholdNetR: number | null;
+  dryRun: boolean;
+}> {
+  const percentToRetire = Math.max(0, Math.min(1, Number(params.percentToRetire ?? 0.15)));
+  const graceDays = Math.max(7, Math.floor(Number(params.graceDays ?? 28)));
+  const minTrades = Math.max(0, Math.floor(Number(params.minTrades ?? 30)));
+  const minPoolSize = Math.max(0, Math.floor(Number(params.minPoolSize ?? 1500)));
+  const maxRetireAbs =
+    typeof params.maxRetireAbs === "number" && params.maxRetireAbs > 0
+      ? Math.floor(params.maxRetireAbs)
+      : null;
+  const dryRun = Boolean(params.dryRun);
+  if (!isScalpPgConfigured()) {
+    return { retired: 0, deploymentIds: [], eligibleCount: 0, poolSize: 0, thresholdNetR: null, dryRun };
+  }
+  const db = scalpPrisma();
+  const ageBefore = new Date(Date.now() - graceDays * 24 * 60 * 60_000);
+
+  // One SQL: walk every composer row's v5 evidence cells, compute totals,
+  // filter to eligible-for-cull, return ordered by net_r ASC.
+  // Mirrors the scope-removal filter that the rest of the v5 path uses so
+  // we don't double-act on already-retired candidates.
+  const rows = await db.$queryRaw<Array<{
+    deploymentId: string;
+    totalNetR: string;   // numeric → string at the wire
+    totalTrades: number;
+  }>>(sql`
+    WITH totals AS (
+      SELECT
+        d.deployment_id,
+        d.enabled,
+        d.created_at,
+        (
+          SELECT COALESCE(SUM((value->>'netR')::numeric), 0)
+          FROM jsonb_each(COALESCE(d.v5_cell_evidence->'cells', '{}'::jsonb))
+        ) AS total_net_r,
+        (
+          SELECT COALESCE(SUM((value->>'trades')::int), 0)
+          FROM jsonb_each(COALESCE(d.v5_cell_evidence->'cells', '{}'::jsonb))
+        ) AS total_trades
+      FROM scalp_v2_deployments d
+      WHERE d.candidate_id IS NOT NULL
+        AND d.strategy_id = 'model_guided_composer_v2'
+        AND d.v5_evaluated_at IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM scalp_v2_candidates c
+          WHERE c.id = d.candidate_id
+            AND c.metadata_json->'scopeRemoval'->>'reason' = 'bitget_symbol_removed_no_candles'
+        )
+    )
+    SELECT
+      deployment_id AS "deploymentId",
+      total_net_r::text AS "totalNetR",
+      total_trades::int AS "totalTrades"
+    FROM totals
+    WHERE NOT COALESCE(enabled, FALSE)
+      AND total_trades >= ${minTrades}
+      AND created_at < ${ageBefore}
+      AND total_net_r < 0
+    ORDER BY total_net_r ASC;
+  `);
+
+  // Separate count of total active pool (for the floor check). Doesn't need
+  // evidence walk; just the raw deployment count.
+  const poolRows = await db.$queryRaw<Array<{ count: bigint }>>(sql`
+    SELECT COUNT(*)::bigint AS count
+    FROM scalp_v2_deployments d
+    WHERE d.candidate_id IS NOT NULL
+      AND d.strategy_id = 'model_guided_composer_v2'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM scalp_v2_candidates c
+        WHERE c.id = d.candidate_id
+          AND c.metadata_json->'scopeRemoval'->>'reason' = 'bitget_symbol_removed_no_candles'
+      );
+  `);
+  const poolSize = Number(poolRows[0]?.count ?? 0);
+  const eligibleCount = rows.length;
+
+  // Compute the retirement budget:
+  //   - percent of eligible
+  //   - capped at maxRetireAbs (your weekly intake target — never retire
+  //     faster than the v2 generator can refill)
+  //   - capped by minPoolSize floor (never shrink active pool below this)
+  let targetCount = Math.floor(eligibleCount * percentToRetire);
+  if (maxRetireAbs !== null) targetCount = Math.min(targetCount, maxRetireAbs);
+  const maxByFloor = Math.max(0, poolSize - minPoolSize);
+  targetCount = Math.min(targetCount, maxByFloor, eligibleCount);
+
+  const toRetire = rows.slice(0, targetCount);
+  const deploymentIds = toRetire.map((r) => String(r.deploymentId || "").trim()).filter(Boolean);
+  const thresholdNetR =
+    toRetire.length > 0 ? Number(toRetire[toRetire.length - 1].totalNetR) : null;
+
+  if (dryRun || deploymentIds.length === 0) {
+    return { retired: 0, deploymentIds, eligibleCount, poolSize, thresholdNetR, dryRun };
+  }
+
+  await db.$executeRaw(sql`
+    UPDATE scalp_v2_deployments
+    SET candidate_id        = NULL,
+        enabled             = FALSE,
+        v5_evaluated_at     = NULL,
+        v5_lease_until      = NULL,
+        v5_cell_evidence    = NULL,
+        v5_enabled          = FALSE,
+        v5_replay_checkpoint = NULL,
+        updated_at          = NOW()
+    WHERE deployment_id = ANY(${deploymentIds}::text[]);
+  `);
+  return { retired: deploymentIds.length, deploymentIds, eligibleCount, poolSize, thresholdNetR, dryRun };
 }
 
 // Trim the long tail of consistently-failing deployments. A deployment is

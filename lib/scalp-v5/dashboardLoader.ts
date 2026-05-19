@@ -190,8 +190,14 @@ export async function loadV5DashboardData(): Promise<V5DashboardLoad> {
       COALESCE(v5_enabled, FALSE) AS "v5Enabled",
       v5_evaluated_at AS "v5EvaluatedAt",
       v5_cell_evidence AS "v5CellEvidence"
-    FROM scalp_v2_deployments
-    WHERE candidate_id IS NOT NULL
+    FROM scalp_v2_deployments d
+    WHERE d.candidate_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM scalp_v2_candidates c
+        WHERE c.id = d.candidate_id
+          AND c.metadata_json->'scopeRemoval'->>'reason' = 'bitget_symbol_removed_no_candles'
+      )
     ORDER BY enabled DESC, symbol ASC, entry_session_profile ASC;
   `);
 

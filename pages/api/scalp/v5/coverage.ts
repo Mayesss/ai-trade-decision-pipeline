@@ -72,16 +72,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           COUNT(*) FILTER (WHERE v5_evaluated_at >= ${lastHourBefore}) AS "evaluatedLastHour",
           MAX(v5_evaluated_at) AS "latestEvaluatedAt",
           MIN(v5_evaluated_at) AS "oldestEvaluatedAt"
-        FROM scalp_v2_deployments
-        WHERE candidate_id IS NOT NULL;
+        FROM scalp_v2_deployments d
+        WHERE d.candidate_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM scalp_v2_candidates c
+            WHERE c.id = d.candidate_id
+              AND c.metadata_json->'scopeRemoval'->>'reason' = 'bitget_symbol_removed_no_candles'
+          );
       `),
       db.$queryRaw<Array<{ hourStart: Date; n: bigint }>>(sql`
         SELECT
           date_trunc('hour', v5_evaluated_at) AS "hourStart",
           COUNT(*) AS "n"
-        FROM scalp_v2_deployments
-        WHERE candidate_id IS NOT NULL
-          AND v5_evaluated_at >= ${last12hBefore}
+        FROM scalp_v2_deployments d
+        WHERE d.candidate_id IS NOT NULL
+          AND d.v5_evaluated_at >= ${last12hBefore}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM scalp_v2_candidates c
+            WHERE c.id = d.candidate_id
+              AND c.metadata_json->'scopeRemoval'->>'reason' = 'bitget_symbol_removed_no_candles'
+          )
         GROUP BY 1
         ORDER BY 1 ASC;
       `),
@@ -104,6 +116,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
          AND c.timeframe = '1m'
         WHERE d.enabled = TRUE
           AND d.candidate_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM scalp_v2_candidates rc
+            WHERE rc.id = d.candidate_id
+              AND rc.metadata_json->'scopeRemoval'->>'reason' = 'bitget_symbol_removed_no_candles'
+          )
         GROUP BY d.venue, d.symbol
         ORDER BY "lastWriteAt" ASC NULLS FIRST;
       `),
