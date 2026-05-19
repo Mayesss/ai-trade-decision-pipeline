@@ -44,6 +44,10 @@
       "schedule": "5 * * * *"
     },
     {
+      "path": "/api/scalp/v5/cron/load-live-candles?batchSize=20&maxAttempts=10",
+      "schedule": "*/30 * * * *"
+    },
+    {
       "path": "/api/scalp/v5/cron/evaluate?limit=50",
       "schedule": "0 * * * *"
     },
