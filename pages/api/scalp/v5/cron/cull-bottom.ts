@@ -48,7 +48,11 @@ function parseIntBounded(
   min: number,
   max: number,
 ): number {
-  const parsed = Math.floor(Number(firstQueryValue(value)));
+  // Absent query param → "" → Number("") = 0, not NaN. Short-circuit so the
+  // fallback fires correctly when the param is missing.
+  const raw = firstQueryValue(value).trim();
+  if (!raw) return fallback;
+  const parsed = Math.floor(Number(raw));
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(max, parsed));
 }
@@ -59,7 +63,9 @@ function parseFloatBounded(
   min: number,
   max: number,
 ): number {
-  const parsed = Number(firstQueryValue(value));
+  const raw = firstQueryValue(value).trim();
+  if (!raw) return fallback;
+  const parsed = Number(raw);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(max, parsed));
 }

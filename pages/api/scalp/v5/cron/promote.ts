@@ -1,14 +1,27 @@
-// /api/scalp/v5/cron/promote — auto-flip enabled=TRUE on every deployment
-// that v5 confirmed as a winner (v5_enabled=TRUE) with fresh evidence.
+// /api/scalp/v5/cron/promote — unified strict promote: flip enabled=TRUE
+// only on deployments where BOTH v5 AND v2 endorse live trading.
 //
-// This is the C wire-up: v5 starts driving who trades live, not just gating
-// entries on rows already promoted. Only the promotion direction is
-// automated. We never auto-demote here — the v2 promote cron at
-// /api/scalp/v2/cron/promote handles scope-based demotion every 5 min, and
-// the live entry gate (resolveScalpV5EntryBlock) already soft-blocks new
-// entries on rows v5 no longer passes.
+// v5-side: fresh evidence + totalNetR/trades/positive-weeks/worst-week
+// thresholds (configurable via query params). v2-side: promotion_gate's
+// `eligible = TRUE` AND `freshness.ready = TRUE`. Both must hold — this is
+// what stops the v5↔v2 flap loop where v5 promoted, v2 immediately demoted.
 //
-// Honors SCALP_V5_AUTO_PROMOTE_ENABLED — set to "0"/"false"/"off" to disable.
+// Only promotion direction is automated. We never auto-demote here — the
+// v2 promote cron at /api/scalp/v2/cron/promote and the v2 execute
+// freshness guard handle demotion. The live entry gate
+// (resolveScalpV5EntryBlock) soft-blocks new entries on rows v5 no longer
+// passes.
+//
+// Honors SCALP_V5_AUTO_PROMOTE_ENABLED — set to "0"/"false"/"off" to
+// disable without redeploy.
+//
+// Query params for tuning the strict criteria (defaults shown):
+//   ?minTotalNetR=4        minimum sum-of-cell-netR across 12w
+//   ?minTotalTrades=60     minimum sum-of-cell-trades
+//   ?minPositiveWeeks=8    minimum weeks-with-positive-cross-cell-netR
+//   ?minWorstWeekR=3       worst single week must be >= -minWorstWeekR
+//   ?staleOlderThanHours=336 v5 evidence freshness (default 14 days)
+//   ?dryRun=true           preview without writes; emits the funnel
 
 export const config = { runtime: "nodejs", maxDuration: 60 };
 
@@ -36,7 +49,24 @@ function parseIntBounded(
   min: number,
   max: number,
 ): number {
-  const parsed = Math.floor(Number(firstQueryValue(value)));
+  // Important: an absent query param produces "" here, and Number("") is 0
+  // (not NaN). Short-circuit on empty so the fallback actually fires.
+  const raw = firstQueryValue(value).trim();
+  if (!raw) return fallback;
+  const parsed = Math.floor(Number(raw));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function parseFloatBounded(
+  value: string | string[] | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const raw = firstQueryValue(value).trim();
+  if (!raw) return fallback;
+  const parsed = Number(raw);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(max, parsed));
 }
@@ -62,6 +92,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     1,
     24 * 30,
   );
+  const minTotalNetR = parseFloatBounded(req.query.minTotalNetR, 4, -100, 1_000);
+  const minTotalTrades = parseIntBounded(req.query.minTotalTrades, 60, 0, 10_000);
+  const minPositiveWeeks = parseIntBounded(req.query.minPositiveWeeks, 8, 0, 52);
+  const minWorstWeekR = parseFloatBounded(req.query.minWorstWeekR, 3, 0, 100);
 
   // Env kill switch — overrides query unless explicitly dryRun.
   const enabledByEnv = isAutoPromoteEnabledByEnv();
@@ -78,13 +112,39 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const result = await autoPromoteScalpV5WinnersToEnabled({
       staleOlderThanMs: staleOlderThanHours * 60 * 60_000,
       dryRun,
+      minTotalNetR,
+      minTotalTrades,
+      minPositiveWeeks,
+      minWorstWeekR,
     });
     return res.status(200).json({
       ok: true,
       dryRun,
       durationMs: Date.now() - startedAt,
-      params: { staleOlderThanHours },
-      result,
+      params: {
+        staleOlderThanHours,
+        minTotalNetR,
+        minTotalTrades,
+        minPositiveWeeks,
+        minWorstWeekR,
+      },
+      result: {
+        promoted: result.promoted,
+        // funnel tells operator WHERE rows are getting filtered out:
+        //   candidates      = rows that passed v5_enabled + freshness + lease
+        //   failedTotalNetR = of those, how many fell short on totalNetR
+        //   failedTotalTrades / failedPositiveWeeks / failedWorstWeek = same
+        //     idea for the other v5-side thresholds
+        //   failedV2Eligible    = passed v5 strict but promotion_gate.eligible
+        //                         was FALSE (v2 didn't endorse)
+        //   failedV2Freshness   = passed v5 + v2 eligible but stage-C window
+        //                         was stale (v2 research lag)
+        //   qualified           = passed everything → promoted (or would be
+        //                         in dry-run)
+        funnel: result.funnel,
+        // Cap sample IDs to keep cron log small.
+        sampleDeploymentIds: result.deploymentIds.slice(0, 50),
+      },
     });
   } catch (err) {
     return res.status(500).json({

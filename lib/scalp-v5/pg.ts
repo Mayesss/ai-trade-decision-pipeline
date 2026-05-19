@@ -508,39 +508,108 @@ export async function retireConsistentlyFailingScalpV5Deployments(params: {
   };
 }
 
-// Flip `enabled = TRUE` on every deployment that v5 has confirmed as a
-// winner (v5_enabled = TRUE) and whose evidence is still fresh. Promotion-only
-// — never auto-demotes, since disabling a live deployment mid-week is a
-// destructive action and the v2 promote cron already handles scope-based
-// demotion every 5 minutes (lib/scalp-v2/pipeline.ts:5443-5550). If v5
-// disagrees with an enabled row, the live entry gate
-// (resolveScalpV5EntryBlock) already blocks new entries — so a "soft
-// disable" via the gate is the failure mode, not data corruption.
+// Unified strict promotion: flips `enabled = TRUE` only when BOTH v5 and v2
+// agree the row deserves live trading. The strictness mirrors v2's existing
+// criteria, but evaluated against v5's per-cell evidence (which is fresh
+// hourly) rather than v2's stage-C JSON (which goes stale operationally).
+// Promotion-only — never auto-demotes; v2 promote / execute paths handle
+// demotion through their own checks. The unified gate prevents the v5↔v2
+// flap loop where v5 promoted, v2 immediately demoted for freshness or
+// 4w-NetR reasons.
+//
+// Criteria (ALL must hold for a row to be promoted):
+//
+//   v5-side (computed from v5_cell_evidence JSONB):
+//     1. v5_enabled = TRUE                         (≥1 positive-expectancy cell)
+//     2. v5_evaluated_at >= now - staleOlderThanMs (evidence fresh)
+//     3. v5_lease_until IS NULL OR expired         (not mid-evaluation)
+//     4. totalNetR >= minTotalNetR                 (sum across cells; default ≥ 4R, mirrors v2's 4w-NetR ≥ 4R)
+//     5. totalTrades >= minTotalTrades             (sum across cells; default ≥ 60, mirrors v2's min total)
+//     6. weeks_with_positive_cross_cell_netR >= minPositiveWeeks
+//                                                   (default ≥ 8, mirrors v2's "8/12 four-week windows positive")
+//     7. worst_single_week_cross_cell_netR >= -minWorstWeekR
+//                                                   (default ≥ -3R, mirrors v2's worst-week bound)
+//
+//   v2-side (read from promotion_gate JSONB written by v2 promote):
+//     8. promotion_gate.eligible = TRUE            (v2's full promotion gate passed)
+//     9. promotion_gate.freshness.ready = TRUE     (v2 stage-C window-aligned)
+//
+// Implementation strategy: a single SELECT brings every v5-eligible row out
+// with its evidence + promotion_gate JSONB. Strict criteria 4-7 are computed
+// in JS (the JSONB walk to "sum across cells per week" is too verbose in
+// SQL); criteria 8-9 are read straight off the row. The qualifying IDs go
+// into one UPDATE.
 export async function autoPromoteScalpV5WinnersToEnabled(params: {
-  // Treat evidence older than this as stale and ignore. Defaults to 14 days
-  // (twice the bulk eval cycle, so a deployment whose evaluation slipped one
-  // cycle still promotes).
   staleOlderThanMs?: number;
   nowMs?: number;
-  // If true, only return the rows that WOULD be promoted; no writes. Used by
-  // the cron's dry-run mode for testing.
   dryRun?: boolean;
-}): Promise<{ promoted: number; deploymentIds: string[] }> {
-  if (!isScalpPgConfigured()) return { promoted: 0, deploymentIds: [] };
+  minTotalNetR?: number;
+  minTotalTrades?: number;
+  minPositiveWeeks?: number;
+  minWorstWeekR?: number;
+}): Promise<{
+  promoted: number;
+  deploymentIds: string[];
+  // Funnel breakdown — surfaces WHY rows didn't promote, so the operator can
+  // see whether the v5-side criteria, the v2-side criteria, or neither is the
+  // binding constraint.
+  funnel: {
+    candidates: number;        // passed v5_enabled + freshness + lease checks
+    failedTotalNetR: number;
+    failedTotalTrades: number;
+    failedPositiveWeeks: number;
+    failedWorstWeek: number;
+    failedV2Eligible: number;
+    failedV2Freshness: number;
+    qualified: number;          // passed everything
+  };
+}> {
+  const emptyFunnel = {
+    candidates: 0,
+    failedTotalNetR: 0,
+    failedTotalTrades: 0,
+    failedPositiveWeeks: 0,
+    failedWorstWeek: 0,
+    failedV2Eligible: 0,
+    failedV2Freshness: 0,
+    qualified: 0,
+  };
+  if (!isScalpPgConfigured()) {
+    return { promoted: 0, deploymentIds: [], funnel: emptyFunnel };
+  }
   const staleOlderThanMs = Math.max(
     60_000,
     Math.floor(Number(params.staleOlderThanMs || 14 * 24 * 60 * 60_000)),
+  );
+  const minTotalNetR = Number.isFinite(Number(params.minTotalNetR))
+    ? Number(params.minTotalNetR)
+    : 4;
+  const minTotalTrades = Math.max(0, Math.floor(Number(params.minTotalTrades ?? 60)));
+  const minPositiveWeeks = Math.max(0, Math.floor(Number(params.minPositiveWeeks ?? 8)));
+  // worst-week floor: a row whose single-worst week is below this gets
+  // rejected. Stored as a positive number; we compare via >= -minWorstWeekR.
+  const minWorstWeekR = Math.abs(
+    Number.isFinite(Number(params.minWorstWeekR))
+      ? Number(params.minWorstWeekR)
+      : 3,
   );
   const nowMs = Math.floor(Number(params.nowMs || Date.now()));
   const staleBefore = new Date(nowMs - staleOlderThanMs);
   const dryRun = Boolean(params.dryRun);
   const db = scalpPrisma();
 
-  // Find candidates for promotion. Skip rows currently leased — they're
-  // mid-evaluation and we shouldn't act on their previous (possibly stale)
-  // evidence. Wait one cycle for the eval to land and flip enabled then.
-  const candidates = await db.$queryRaw<Array<{ deploymentId: string }>>(sql`
-    SELECT deployment_id AS "deploymentId"
+  // Pull v5-eligible candidates with everything we need to evaluate strict
+  // criteria. Single SELECT — JSONB walk happens in JS.
+  type CandidateRow = {
+    deploymentId: string;
+    v5CellEvidence: unknown;
+    promotionGate: unknown;
+  };
+  const candidates = await db.$queryRaw<CandidateRow[]>(sql`
+    SELECT
+      deployment_id    AS "deploymentId",
+      v5_cell_evidence AS "v5CellEvidence",
+      promotion_gate   AS "promotionGate"
     FROM scalp_v2_deployments
     WHERE candidate_id IS NOT NULL
       AND enabled = FALSE
@@ -550,25 +619,103 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
       AND (v5_lease_until IS NULL OR v5_lease_until < NOW())
     ORDER BY v5_evaluated_at DESC;
   `);
-  const ids = candidates.map((r) => String(r.deploymentId || "").trim()).filter(Boolean);
-  if (dryRun || ids.length === 0) {
-    return { promoted: 0, deploymentIds: ids };
+
+  const funnel = { ...emptyFunnel, candidates: candidates.length };
+  const qualifyingIds: string[] = [];
+
+  for (const row of candidates) {
+    // Walk v5_cell_evidence.cells.*.{netR,trades,weeklyNetR} to compute the
+    // four v5-side strict metrics.
+    const evidence = (row.v5CellEvidence && typeof row.v5CellEvidence === "object" && !Array.isArray(row.v5CellEvidence))
+      ? (row.v5CellEvidence as Record<string, unknown>)
+      : null;
+    const cellsRaw = evidence?.cells;
+    const cellsRec = (cellsRaw && typeof cellsRaw === "object" && !Array.isArray(cellsRaw))
+      ? (cellsRaw as Record<string, unknown>)
+      : {};
+
+    let totalNetR = 0;
+    let totalTrades = 0;
+    // Per-week aggregate across all cells. Length = max weeklyNetR length
+    // across the row's cells (always 12 for r3, possibly shorter for r2).
+    const weeklySums: number[] = [];
+    for (const cellValue of Object.values(cellsRec)) {
+      const cell = (cellValue && typeof cellValue === "object" && !Array.isArray(cellValue))
+        ? (cellValue as Record<string, unknown>)
+        : {};
+      const cellNetR = Number(cell.netR) || 0;
+      const cellTrades = Math.max(0, Math.floor(Number(cell.trades) || 0));
+      totalNetR += cellNetR;
+      totalTrades += cellTrades;
+      const weekly = Array.isArray(cell.weeklyNetR) ? (cell.weeklyNetR as unknown[]) : [];
+      for (let i = 0; i < weekly.length; i += 1) {
+        const v = Number(weekly[i]) || 0;
+        weeklySums[i] = (weeklySums[i] ?? 0) + v;
+      }
+    }
+    const positiveWeeks = weeklySums.filter((v) => v > 0).length;
+    const worstWeek = weeklySums.length > 0 ? Math.min(...weeklySums) : 0;
+
+    // v5-side strict criteria — short-circuit and bucket the failure reason
+    // so the funnel diagnostic surfaces the binding constraint.
+    if (totalNetR < minTotalNetR) {
+      funnel.failedTotalNetR += 1;
+      continue;
+    }
+    if (totalTrades < minTotalTrades) {
+      funnel.failedTotalTrades += 1;
+      continue;
+    }
+    if (positiveWeeks < minPositiveWeeks) {
+      funnel.failedPositiveWeeks += 1;
+      continue;
+    }
+    if (worstWeek < -minWorstWeekR) {
+      funnel.failedWorstWeek += 1;
+      continue;
+    }
+
+    // v2-side concurrence — read promotion_gate. Both eligible AND freshness
+    // ready must be TRUE.
+    const promotionGate = (row.promotionGate && typeof row.promotionGate === "object" && !Array.isArray(row.promotionGate))
+      ? (row.promotionGate as Record<string, unknown>)
+      : {};
+    const v2Eligible = promotionGate.eligible === true;
+    if (!v2Eligible) {
+      funnel.failedV2Eligible += 1;
+      continue;
+    }
+    const freshness = (promotionGate.freshness && typeof promotionGate.freshness === "object" && !Array.isArray(promotionGate.freshness))
+      ? (promotionGate.freshness as Record<string, unknown>)
+      : {};
+    const v2FreshnessReady = freshness.ready === true;
+    if (!v2FreshnessReady) {
+      funnel.failedV2Freshness += 1;
+      continue;
+    }
+
+    funnel.qualified += 1;
+    qualifyingIds.push(String(row.deploymentId || "").trim());
   }
 
-  // Flip enabled = TRUE and stamp last_promoted_at. Match the existing pattern
-  // in lib/scalp-v2/db.ts:1947 which uses last_promoted_at to track when the
-  // current promotion was made.
+  const filteredIds = qualifyingIds.filter(Boolean);
+  if (dryRun || filteredIds.length === 0) {
+    return { promoted: 0, deploymentIds: filteredIds, funnel };
+  }
+
+  // Final write. Match the existing pattern in lib/scalp-v2/db.ts:1947 which
+  // uses last_promoted_at to track when the current promotion was made.
   await db.$executeRaw(sql`
     UPDATE scalp_v2_deployments
     SET
       enabled = TRUE,
       last_promoted_at = NOW(),
       updated_at = NOW()
-    WHERE deployment_id = ANY(${ids}::text[])
+    WHERE deployment_id = ANY(${filteredIds}::text[])
       AND enabled = FALSE
       AND v5_enabled = TRUE;
   `);
-  return { promoted: ids.length, deploymentIds: ids };
+  return { promoted: filteredIds.length, deploymentIds: filteredIds, funnel };
 }
 
 export async function upsertScalpV5DeploymentEvidence(params: {
