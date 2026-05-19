@@ -4,7 +4,9 @@ import test from "node:test";
 import type { ScalpReplayTrade } from "../scalp/replay/types";
 import {
   buildScalpV5CellEvidence,
+  evaluateScalpV5PromotionEvidence,
   resolveScalpV5EntryBlock,
+  resolveScalpV5EvidenceFreshness,
   SCALP_V5_VERSION,
   tagTradesWithCells,
 } from "./index";
@@ -17,6 +19,22 @@ const WEEK_MS = 7 * ONE_DAY_MS;
 
 // 2026-04-06 is a Monday. Use it as a stable anchor for the test windows.
 const ANCHOR = Date.UTC(2026, 3, 6);
+
+function cellStat(params: {
+  trades: number;
+  netR: number;
+  expectancyR: number;
+  wins: number;
+  losses: number;
+}) {
+  return {
+    ...params,
+    weeklyNetR: new Array(12).fill(0),
+    weeklyTrades: new Array(12).fill(0),
+    weeklyWins: new Array(12).fill(0),
+    weeklyLosses: new Array(12).fill(0),
+  };
+}
 
 function tradeAt(weeksFromAnchor: number, rMultiple: number): ScalpReplayTrade {
   const entryTs = ANCHOR + weeksFromAnchor * WEEK_MS + 12 * 60 * 60 * 1000; // mid-week
@@ -162,8 +180,8 @@ test("resolveScalpV5EntryBlock allows when current cell is profitable", () => {
     holdoutToMs: ANCHOR,
     minTradesPerCell: 8,
     cells: {
-      [CELL_A]: { trades: 20, netR: 4, expectancyR: 0.2, wins: 12, losses: 8 },
-      [CELL_B]: { trades: 15, netR: -3, expectancyR: -0.2, wins: 5, losses: 10 },
+      [CELL_A]: cellStat({ trades: 20, netR: 4, expectancyR: 0.2, wins: 12, losses: 8 }),
+      [CELL_B]: cellStat({ trades: 15, netR: -3, expectancyR: -0.2, wins: 5, losses: 10 }),
     },
     eligibleCells: [CELL_A],
   };
@@ -191,7 +209,7 @@ test("resolveScalpV5EntryBlock blocks when current cell is unprofitable (hard ga
     holdoutToMs: ANCHOR,
     minTradesPerCell: 8,
     cells: {
-      [CELL_B]: { trades: 15, netR: -3, expectancyR: -0.2, wins: 5, losses: 10 },
+      [CELL_B]: cellStat({ trades: 15, netR: -3, expectancyR: -0.2, wins: 5, losses: 10 }),
     },
     eligibleCells: [],
   };
@@ -254,7 +272,7 @@ test("resolveScalpV5EntryBlock blocks when regime data is stale", () => {
     holdoutToMs: ANCHOR,
     minTradesPerCell: 8,
     cells: {
-      [CELL_A]: { trades: 20, netR: 4, expectancyR: 0.2, wins: 12, losses: 8 },
+      [CELL_A]: cellStat({ trades: 20, netR: 4, expectancyR: 0.2, wins: 12, losses: 8 }),
     },
     eligibleCells: [CELL_A],
   };
@@ -282,4 +300,131 @@ test("resolveScalpV5EntryBlock returns blocked=false when v5 is disabled", () =>
   assert.equal(gate.blocked, false);
   assert.equal(gate.shadowOnly, false);
   assert.deepEqual(gate.reasonCodes, []);
+});
+
+function promotionEvidence(params: {
+  weekly: number[];
+  trades?: number;
+}) {
+  const trades = params.trades ?? Math.max(1, params.weekly.length * 5);
+  const netR = params.weekly.reduce((acc, value) => acc + value, 0);
+  return {
+    version: SCALP_V5_VERSION,
+    classifierVersion: "scalp_v4_macro_weekly_r1",
+    evaluatedAtMs: ANCHOR,
+    holdoutFromMs: ANCHOR - 12 * WEEK_MS,
+    holdoutToMs: ANCHOR,
+    minTradesPerCell: 8,
+    cells: {
+      [CELL_A]: {
+        trades,
+        netR,
+        expectancyR: netR / trades,
+        wins: Math.max(0, Math.floor(trades / 2)),
+        losses: Math.max(0, Math.floor(trades / 3)),
+        weeklyNetR: params.weekly,
+        weeklyTrades: new Array(params.weekly.length).fill(Math.floor(trades / params.weekly.length)),
+        weeklyWins: new Array(params.weekly.length).fill(1),
+        weeklyLosses: new Array(params.weekly.length).fill(0),
+      },
+    },
+    eligibleCells: [CELL_A],
+  };
+}
+
+const PROMOTION_THRESHOLDS = {
+  minTotalNetR: 4,
+  minTotalTrades: 60,
+  minPositiveWeeks: 8,
+  minWorstWeekR: 3,
+  minTrailing4wNetR: 4,
+};
+
+test("evaluateScalpV5PromotionEvidence qualifies v5 evidence without v2 promotion_gate", () => {
+  const evaluation = evaluateScalpV5PromotionEvidence({
+    evidence: promotionEvidence({
+      trades: 72,
+      weekly: [0.5, 0.4, -0.2, 0.7, 0.6, -0.5, 0.4, 0.5, 1.2, 1.1, 1.0, 0.9],
+    }),
+    thresholds: PROMOTION_THRESHOLDS,
+  });
+  assert.equal(evaluation.qualified, true);
+  assert.equal(evaluation.reason, "v5_strict_passed");
+  assert.equal(evaluation.metrics.positiveWeeks, 10);
+  assert.equal(evaluation.metrics.trailing4wNetR.toFixed(1), "4.2");
+});
+
+test("evaluateScalpV5PromotionEvidence reports the binding v5 threshold failure", () => {
+  assert.equal(
+    evaluateScalpV5PromotionEvidence({
+      evidence: promotionEvidence({ trades: 72, weekly: [0.1, 0.1, 0.1, 0.1] }),
+      thresholds: PROMOTION_THRESHOLDS,
+    }).reason,
+    "v5_total_net_r_below_threshold",
+  );
+  assert.equal(
+    evaluateScalpV5PromotionEvidence({
+      evidence: promotionEvidence({
+        trades: 20,
+        weekly: [0.5, 0.4, -0.2, 0.7, 0.6, -0.5, 0.4, 0.5, 1.2, 1.1, 1.0, 0.9],
+      }),
+      thresholds: PROMOTION_THRESHOLDS,
+    }).reason,
+    "v5_total_trades_below_threshold",
+  );
+  assert.equal(
+    evaluateScalpV5PromotionEvidence({
+      evidence: promotionEvidence({
+        trades: 72,
+        weekly: [2, -0.1, 2, -0.1, 2, -0.1, 2, -0.1, 2, -0.1, 2, -0.1],
+      }),
+      thresholds: PROMOTION_THRESHOLDS,
+    }).reason,
+    "v5_positive_weeks_below_threshold",
+  );
+  assert.equal(
+    evaluateScalpV5PromotionEvidence({
+      evidence: promotionEvidence({
+        trades: 72,
+        weekly: [2, 1, 1, 1, 1, 1, 1, 1, 1, -4, 1, 1],
+      }),
+      thresholds: PROMOTION_THRESHOLDS,
+    }).reason,
+    "v5_worst_week_below_threshold",
+  );
+  assert.equal(
+    evaluateScalpV5PromotionEvidence({
+      evidence: promotionEvidence({
+        trades: 72,
+        weekly: [1, 1, -0.2, 1, 1, -0.2, 1, 1, 0.2, 0.2, 0.2, 0.2],
+      }),
+      thresholds: PROMOTION_THRESHOLDS,
+    }).reason,
+    "v5_trailing_4w_net_r_below_threshold",
+  );
+});
+
+test("resolveScalpV5EvidenceFreshness marks stale and fresh evidence", () => {
+  const nowMs = ANCHOR + 20 * ONE_DAY_MS;
+  const staleOlderThanMs = 14 * ONE_DAY_MS;
+  assert.equal(
+    resolveScalpV5EvidenceFreshness({
+      evaluatedAtMs: nowMs - 15 * ONE_DAY_MS,
+      nowMs,
+      staleOlderThanMs,
+    }).stale,
+    true,
+  );
+  assert.equal(
+    resolveScalpV5EvidenceFreshness({
+      evaluatedAtMs: nowMs - 2 * ONE_DAY_MS,
+      nowMs,
+      staleOlderThanMs,
+    }).stale,
+    false,
+  );
+  assert.equal(
+    resolveScalpV5EvidenceFreshness({ evaluatedAtMs: null, nowMs, staleOlderThanMs }).stale,
+    true,
+  );
 });

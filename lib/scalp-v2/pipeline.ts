@@ -73,6 +73,7 @@ import {
 import {
   isScalpV5Enabled,
   isScalpV5HardGateEnabled,
+  resolveScalpV5EvidenceFreshness,
   resolveScalpV5Config,
   resolveScalpV5EntryBlock,
   resolveScalpV5SundayBlock,
@@ -771,6 +772,30 @@ function envBool(name: string, fallback: boolean): boolean {
   if (["1", "true", "yes", "on"].includes(raw)) return true;
   if (["0", "false", "no", "off"].includes(raw)) return false;
   return fallback;
+}
+
+export function isScalpV2PromoteEnabled(): boolean {
+  return envBool("SCALP_V2_PROMOTE_ENABLED", false);
+}
+
+export function isScalpV5OwnedPromotionGate(value: unknown): boolean {
+  const gate = asRecord(value);
+  return (
+    String(gate.source || "").trim().toLowerCase() === "v5_cell_evidence" ||
+    Object.keys(asRecord(gate.v5Promotion)).length > 0
+  );
+}
+
+export function resolveScalpV2ExecuteDryRunForDeployment(params: {
+  effectiveDryRun: boolean;
+  runtimeLiveEnabled: boolean;
+  deploymentLiveMode: unknown;
+  v5Owned: boolean;
+}): boolean {
+  if (params.effectiveDryRun) return true;
+  if (String(params.deploymentLiveMode || "").trim().toLowerCase() !== "live") return true;
+  if (params.v5Owned) return false;
+  return !params.runtimeLiveEnabled;
 }
 
 function toFinite(value: unknown, fallback: number): number {
@@ -5359,6 +5384,22 @@ void _legacyEvaluateRemoved;
 
 const _legacyCodeRemoved = true; void _legacyCodeRemoved;
 export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
+  if (!isScalpV2PromoteEnabled()) {
+    return buildScalpV2JobResult({
+      jobKind: "promote",
+      processed: 0,
+      succeeded: 0,
+      failed: 0,
+      busy: false,
+      pendingAfter: 0,
+      details: {
+        skipped: true,
+        reason: "scalp_v2_promote_disabled",
+        env: "SCALP_V2_PROMOTE_ENABLED",
+      },
+    });
+  }
+
   const owner = lockOwner("promote");
   const claimed = await claimScalpV2Job({ jobKind: "promote", lockOwner: owner });
   if (!claimed) {
@@ -6627,6 +6668,7 @@ export async function runScalpV2ExecuteJob(params: {
     const executeRequiredWeeks = resolvePromotionPolicy().minCompletedWeeks;
     const freshnessChecks = scopedDeployments.map((deployment) => ({
       deployment,
+      v5Owned: isScalpV5OwnedPromotionGate(deployment.promotionGate),
       freshness: resolveExecuteDeploymentFreshnessGate({
         deployment,
         nowTs,
@@ -6634,10 +6676,13 @@ export async function runScalpV2ExecuteJob(params: {
       }),
     }));
     const staleDeployments = freshnessChecks.filter(
-      (row) => !row.freshness.ready,
+      (row) => !row.freshness.ready && !row.v5Owned,
+    );
+    const v5FreshnessBypassedDeployments = freshnessChecks.filter(
+      (row) => !row.freshness.ready && row.v5Owned,
     );
     const executableDeployments = freshnessChecks
-      .filter((row) => row.freshness.ready)
+      .filter((row) => row.freshness.ready || row.v5Owned)
       .map((row) => row.deployment);
     const freshnessReasonCounts: Record<string, number> = {};
     for (const row of staleDeployments) {
@@ -6709,6 +6754,7 @@ export async function runScalpV2ExecuteJob(params: {
             : "no_enabled_deployments",
         filteredOutOfScope,
         staleEnabledDeployments: staleDeployments.length,
+        v5FreshnessBypassedDeployments: v5FreshnessBypassedDeployments.length,
         freshnessDemoted,
         freshnessRequeuedCandidates,
         freshnessReasonCounts,
@@ -6730,7 +6776,13 @@ export async function runScalpV2ExecuteJob(params: {
 
     for (const deployment of executableDeployments) {
       processed += 1;
-      const deploymentDryRun = effectiveDryRun || !runtime.liveEnabled || deployment.liveMode !== "live";
+      const v5Owned = isScalpV5OwnedPromotionGate(deployment.promotionGate);
+      const deploymentDryRun = resolveScalpV2ExecuteDryRunForDeployment({
+        effectiveDryRun,
+        runtimeLiveEnabled: runtime.liveEnabled,
+        deploymentLiveMode: deployment.liveMode,
+        v5Owned,
+      });
       try {
         const rp = deployment.riskProfile;
         const dslFromGate = asRecord(asRecord(deployment.promotionGate).dsl || {});
@@ -6787,14 +6839,22 @@ export async function runScalpV2ExecuteJob(params: {
 	              deploymentId: deployment.deploymentId,
 	            }).catch(() => null)
 	          : null;
+	        const v5EvidenceFreshness = resolveScalpV5EvidenceFreshness({
+	          evaluatedAtMs: v5Stored?.v5EvaluatedAtMs ?? null,
+	          nowMs: nowTs,
+	          staleOlderThanMs: 14 * 24 * 60 * 60_000,
+	        });
 	        const v5Gate = resolveScalpV5EntryBlock({
 	          enabled: v5Enabled && Boolean(v5Stored?.v5Enabled),
 	          hardGate: isScalpV5HardGateEnabled(),
 	          evidence: v5Stored?.evidence ?? null,
 	          currentCellId: v4CurrentRegime.cellId,
-	          stale: Boolean(v4CurrentRegime.stale),
+	          stale: Boolean(v4CurrentRegime.stale) || v5EvidenceFreshness.stale,
 	          minTradesPerCell: v5Cfg.minTradesPerCell,
 	        });
+	        const v5OwnedMissingEvidenceReasonCodes = v5Owned && v5Enabled && !v5Stored?.evidence
+	          ? ["V5_CELL_EVIDENCE_MISSING"]
+	          : [];
 	        const promotionEntryBlockReasonCodes = normalizeReasonCodes(
 	          asRecord(deployment.promotionGate).entryBlockReasonCodes,
 	        );
@@ -6815,6 +6875,7 @@ export async function runScalpV2ExecuteJob(params: {
 	            ...(newsBlackout.blocked ? newsBlackout.reasonCodes : []),
 	            ...(v4RegimeGate.blocked ? v4RegimeGate.reasonCodes : []),
 	            ...(v5Gate.blocked || v5Gate.shadowOnly ? v5Gate.reasonCodes : []),
+	            ...v5OwnedMissingEvidenceReasonCodes,
 	            ...(sundayBlock.blocked ? sundayBlock.reasonCodes : []),
 	          ]),
 	        });
@@ -6847,23 +6908,25 @@ export async function runScalpV2ExecuteJob(params: {
             eventType: "position_snapshot",
             reasonCodes: result.reasonCodes,
             sourceOfTruth: "system",
-	            rawPayload: {
-	              state: result.state,
-	              dryRun: result.dryRun,
-	              runLockAcquired: result.runLockAcquired,
-	              v3NewsBlackout: newsBlackout,
-	              v4RegimeGate: {
-	                ...v4RegimeGate,
-	                currentCellId: v4CurrentRegime.cellId,
-	                snapshot: v4CurrentRegime.snapshot,
-	              },
-	              v5CellGate: {
-	                ...v5Gate,
-	                evaluatedAtMs: v5Stored?.v5EvaluatedAtMs ?? null,
-	                v5Enabled: Boolean(v5Stored?.v5Enabled),
-	              },
-	              v5SundayBlock: sundayBlock,
-	            },
+            rawPayload: {
+              state: result.state,
+              dryRun: result.dryRun,
+              runLockAcquired: result.runLockAcquired,
+              v3NewsBlackout: newsBlackout,
+              v4RegimeGate: {
+                ...v4RegimeGate,
+                currentCellId: v4CurrentRegime.cellId,
+                snapshot: v4CurrentRegime.snapshot,
+              },
+              v5CellGate: {
+                ...v5Gate,
+                evaluatedAtMs: v5Stored?.v5EvaluatedAtMs ?? null,
+                v5Enabled: Boolean(v5Stored?.v5Enabled),
+                v5Owned,
+                v5LiveBypassesV2LiveEnabled: v5Owned,
+              },
+              v5SundayBlock: sundayBlock,
+            },
           }),
         );
 
@@ -6912,10 +6975,12 @@ export async function runScalpV2ExecuteJob(params: {
       executedDeployments: executableDeployments.length,
       dryRun: effectiveDryRun,
       liveEnabled: runtime.liveEnabled,
+      v5LiveBypassesV2LiveEnabled: true,
       filteredOutOfScope,
       staleEnabledDeployments: staleDeployments.length,
       freshnessDemoted,
       freshnessRequeuedCandidates,
+      v5FreshnessBypassedDeployments: v5FreshnessBypassedDeployments.length,
       freshnessReasonCounts,
       executeFreshnessWeeks: executeRequiredWeeks,
     };

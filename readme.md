@@ -193,7 +193,8 @@ MARKETAUX_API_KEY=...
 # SCALP_V1_RESEARCH_MAX_CANDIDATES_CAP=80
 # SCALP_V1_RESEARCH_MAX_SELF_HOPS_CAP=8               # must be >= cron selfMaxHops for v2 cycle/research auto-continue
 # SCALP_V2_ENABLED=true
-# SCALP_V2_LIVE_ENABLED=false                           # fail-closed by default
+# SCALP_V2_PROMOTE_ENABLED=false                        # default false: v5 promotion is authoritative; set true only for rollback
+# SCALP_V2_LIVE_ENABLED=false                           # fail-closed for legacy v2-owned rows; v5-owned live rows bypass this flag
 # SCALP_V2_DRY_RUN_DEFAULT=true
 # SCALP_V2_DEFAULT_STRATEGY_ID=model_guided_composer_v2
 # SCALP_V2_SEED_SYMBOLS_BITGET=BTCUSDT

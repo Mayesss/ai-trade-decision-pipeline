@@ -66,6 +66,39 @@ export interface ScalpV5GateResult {
   evidence: ScalpV5CellStat | null;
 }
 
+export interface ScalpV5PromotionThresholds {
+  minTotalNetR: number;
+  minTotalTrades: number;
+  minPositiveWeeks: number;
+  minWorstWeekR: number;
+  minTrailing4wNetR: number;
+}
+
+export interface ScalpV5PromotionMetrics {
+  totalNetR: number;
+  totalTrades: number;
+  positiveWeeks: number;
+  worstWeekR: number;
+  trailing4wNetR: number;
+  expectancyR: number;
+  wins: number;
+  losses: number;
+  winRatePct: number | null;
+  activeCells: number;
+}
+
+export interface ScalpV5PromotionEvaluation {
+  qualified: boolean;
+  reason:
+    | "v5_strict_passed"
+    | "v5_total_net_r_below_threshold"
+    | "v5_total_trades_below_threshold"
+    | "v5_positive_weeks_below_threshold"
+    | "v5_worst_week_below_threshold"
+    | "v5_trailing_4w_net_r_below_threshold";
+  metrics: ScalpV5PromotionMetrics;
+}
+
 export function isScalpV5Enabled(): boolean {
   // Default ON. Set SCALP_V5_ENABLED=0 to disable the gate entirely (e.g.
   // before evidence has been evaluated on a fresh deployment).
@@ -94,6 +127,85 @@ export function resolveScalpV5Config(): ScalpV5Config {
       ? Math.max(1, Math.min(200, Math.floor(minTradesRaw)))
       : 8,
   };
+}
+
+export function resolveScalpV5EvidenceFreshness(params: {
+  evaluatedAtMs: number | null | undefined;
+  nowMs: number;
+  staleOlderThanMs: number;
+}): { stale: boolean; ageMs: number | null; staleBeforeMs: number } {
+  const nowMs = Math.floor(Number(params.nowMs) || Date.now());
+  const staleOlderThanMs = Math.max(
+    60_000,
+    Math.floor(Number(params.staleOlderThanMs) || 14 * 24 * 60 * 60_000),
+  );
+  const staleBeforeMs = nowMs - staleOlderThanMs;
+  const evaluatedAtMs = Math.floor(Number(params.evaluatedAtMs) || 0);
+  if (evaluatedAtMs <= 0) {
+    return { stale: true, ageMs: null, staleBeforeMs };
+  }
+  return {
+    stale: evaluatedAtMs < staleBeforeMs,
+    ageMs: Math.max(0, nowMs - evaluatedAtMs),
+    staleBeforeMs,
+  };
+}
+
+export function evaluateScalpV5PromotionEvidence(params: {
+  evidence: ScalpV5CellEvidence | null;
+  thresholds: ScalpV5PromotionThresholds;
+}): ScalpV5PromotionEvaluation {
+  const cells = params.evidence?.cells || {};
+  let totalNetR = 0;
+  let totalTrades = 0;
+  let wins = 0;
+  let losses = 0;
+  let activeCells = 0;
+  const weeklySums: number[] = [];
+  for (const cellValue of Object.values(cells)) {
+    const cell = cellValue && typeof cellValue === "object" && !Array.isArray(cellValue)
+      ? (cellValue as ScalpV5CellStat)
+      : null;
+    if (!cell) continue;
+    totalNetR += Number(cell.netR) || 0;
+    const cellTrades = Math.max(0, Math.floor(Number(cell.trades) || 0));
+    totalTrades += cellTrades;
+    wins += Math.max(0, Math.floor(Number(cell.wins) || 0));
+    losses += Math.max(0, Math.floor(Number(cell.losses) || 0));
+    if (cellTrades > 0) activeCells += 1;
+    const weekly = Array.isArray(cell.weeklyNetR) ? cell.weeklyNetR : [];
+    for (let idx = 0; idx < weekly.length; idx += 1) {
+      weeklySums[idx] = (weeklySums[idx] ?? 0) + (Number(weekly[idx]) || 0);
+    }
+  }
+  const metrics: ScalpV5PromotionMetrics = {
+    totalNetR,
+    totalTrades,
+    positiveWeeks: weeklySums.filter((value) => value > 0).length,
+    worstWeekR: weeklySums.length > 0 ? Math.min(...weeklySums) : 0,
+    trailing4wNetR: weeklySums.slice(-4).reduce((acc, value) => acc + value, 0),
+    expectancyR: totalTrades > 0 ? totalNetR / totalTrades : 0,
+    wins,
+    losses,
+    winRatePct: wins + losses > 0 ? (wins / (wins + losses)) * 100 : null,
+    activeCells,
+  };
+  if (metrics.totalNetR < params.thresholds.minTotalNetR) {
+    return { qualified: false, reason: "v5_total_net_r_below_threshold", metrics };
+  }
+  if (metrics.totalTrades < params.thresholds.minTotalTrades) {
+    return { qualified: false, reason: "v5_total_trades_below_threshold", metrics };
+  }
+  if (metrics.positiveWeeks < params.thresholds.minPositiveWeeks) {
+    return { qualified: false, reason: "v5_positive_weeks_below_threshold", metrics };
+  }
+  if (metrics.worstWeekR < -Math.abs(params.thresholds.minWorstWeekR)) {
+    return { qualified: false, reason: "v5_worst_week_below_threshold", metrics };
+  }
+  if (metrics.trailing4wNetR < params.thresholds.minTrailing4wNetR) {
+    return { qualified: false, reason: "v5_trailing_4w_net_r_below_threshold", metrics };
+  }
+  return { qualified: true, reason: "v5_strict_passed", metrics };
 }
 
 // -----------------------------------------------------------------------------

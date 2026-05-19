@@ -1,16 +1,14 @@
-// /api/scalp/v5/cron/promote — unified strict promote: flip enabled=TRUE
-// only on deployments where BOTH v5 AND v2 endorse live trading.
+// /api/scalp/v5/cron/promote — v5-authoritative strict promote.
 //
 // v5-side: fresh evidence + totalNetR/trades/positive-weeks/worst-week
-// thresholds (configurable via query params). v2-side: promotion_gate's
-// `eligible = TRUE` AND `freshness.ready = TRUE`. Both must hold — this is
-// what stops the v5↔v2 flap loop where v5 promoted, v2 immediately demoted.
+// thresholds (configurable via query params). v2 promotion_gate is
+// informational only; v5 writes a v5Promotion marker when it enables a row.
 //
-// Only promotion direction is automated. We never auto-demote here — the
-// v2 promote cron at /api/scalp/v2/cron/promote and the v2 execute
-// freshness guard handle demotion. The live entry gate
-// (resolveScalpV5EntryBlock) soft-blocks new entries on rows v5 no longer
-// passes.
+// Only promotion direction is automated. We never auto-demote here. The
+// existing v2 execute/reconcile engine remains responsible for live order
+// handling, while the v5 live entry gate blocks new entries on stale or
+// failing v5 evidence. v5-owned live rows bypass SCALP_V2_LIVE_ENABLED;
+// explicit execute dryRun=true still prevents live orders.
 //
 // Honors SCALP_V5_AUTO_PROMOTE_ENABLED — set to "0"/"false"/"off" to
 // disable without redeploy.
@@ -20,6 +18,8 @@
 //   ?minTotalTrades=60     minimum sum-of-cell-trades
 //   ?minPositiveWeeks=8    minimum weeks-with-positive-cross-cell-netR
 //   ?minWorstWeekR=3       worst single week must be >= -minWorstWeekR
+//   ?minTrailing4wNetR=4   trailing 4-week cross-cell netR must be >= this
+//   ?maxPromotions=12      optional cap (defaults to remaining runtime slots)
 //   ?staleOlderThanHours=336 v5 evidence freshness (default 14 days)
 //   ?dryRun=true           preview without writes; emits the funnel
 
@@ -96,6 +96,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const minTotalTrades = parseIntBounded(req.query.minTotalTrades, 60, 0, 10_000);
   const minPositiveWeeks = parseIntBounded(req.query.minPositiveWeeks, 8, 0, 52);
   const minWorstWeekR = parseFloatBounded(req.query.minWorstWeekR, 3, 0, 100);
+  const minTrailing4wNetR = parseFloatBounded(req.query.minTrailing4wNetR, 4, -100, 1_000);
+  const maxPromotionsRaw = firstQueryValue(req.query.maxPromotions).trim();
+  const maxPromotions = maxPromotionsRaw
+    ? parseIntBounded(req.query.maxPromotions, 12, 0, 500)
+    : undefined;
 
   // Env kill switch — overrides query unless explicitly dryRun.
   const enabledByEnv = isAutoPromoteEnabledByEnv();
@@ -116,6 +121,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       minTotalTrades,
       minPositiveWeeks,
       minWorstWeekR,
+      minTrailing4wNetR,
+      maxPromotions,
     });
     return res.status(200).json({
       ok: true,
@@ -127,18 +134,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         minTotalTrades,
         minPositiveWeeks,
         minWorstWeekR,
+        minTrailing4wNetR,
+        ...(maxPromotions !== undefined && { maxPromotions }),
       },
       result: {
         promoted: result.promoted,
+        liveMode: result.liveMode,
+        runtimeLiveEnabled: result.runtimeLiveEnabled,
+        v5LiveBypassesV2LiveEnabled: result.v5LiveBypassesV2LiveEnabled,
         // funnel tells operator WHERE rows are getting filtered out:
         //   candidates      = rows that passed v5_enabled + freshness + lease
         //   failedTotalNetR = of those, how many fell short on totalNetR
-        //   failedTotalTrades / failedPositiveWeeks / failedWorstWeek = same
-        //     idea for the other v5-side thresholds
-        //   failedV2Eligible    = passed v5 strict but promotion_gate.eligible
-        //                         was FALSE (v2 didn't endorse)
-        //   failedV2Freshness   = passed v5 + v2 eligible but stage-C window
-        //                         was stale (v2 research lag)
+        //   failedTotalTrades / failedPositiveWeeks / failedWorstWeek /
+        //     failedTrailing4wNetR = same idea for v5-side thresholds
         //   qualified           = passed everything → promoted (or would be
         //                         in dry-run)
         funnel: result.funnel,

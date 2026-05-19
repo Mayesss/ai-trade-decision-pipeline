@@ -1,9 +1,14 @@
 import { isScalpPgConfigured, scalpPrisma } from "../scalp/pg/client";
 import { sql } from "../scalp/pg/sql";
-import { getScalpV2DefaultRiskProfile } from "../scalp-v2/config";
+import { getScalpV2DefaultRiskProfile, getScalpV2RuntimeConfig } from "../scalp-v2/config";
 import type { ScalpV2RiskProfile, ScalpV2Venue } from "../scalp-v2/types";
 import type { ScalpReplayCheckpoint } from "../scalp/replay/types";
-import type { ScalpV5CellEvidence } from "./index";
+import {
+  evaluateScalpV5PromotionEvidence,
+  type ScalpV5CellEvidence,
+  type ScalpV5PromotionMetrics,
+  type ScalpV5PromotionThresholds,
+} from "./index";
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -508,14 +513,10 @@ export async function retireConsistentlyFailingScalpV5Deployments(params: {
   };
 }
 
-// Unified strict promotion: flips `enabled = TRUE` only when BOTH v5 and v2
-// agree the row deserves live trading. The strictness mirrors v2's existing
-// criteria, but evaluated against v5's per-cell evidence (which is fresh
-// hourly) rather than v2's stage-C JSON (which goes stale operationally).
-// Promotion-only — never auto-demotes; v2 promote / execute paths handle
-// demotion through their own checks. The unified gate prevents the v5↔v2
-// flap loop where v5 promoted, v2 immediately demoted for freshness or
-// 4w-NetR reasons.
+// Unified strict promotion: v5 is authoritative for v5-qualified rows. It
+// flips `enabled = TRUE` from v5 cell evidence alone and writes a v5-owned
+// marker into promotion_gate. v2 promote is disabled by default; v2 execute
+// remains the live order engine but must treat this marker as authoritative.
 //
 // Criteria (ALL must hold for a row to be promoted):
 //
@@ -529,16 +530,13 @@ export async function retireConsistentlyFailingScalpV5Deployments(params: {
 //                                                   (default ≥ 8, mirrors v2's "8/12 four-week windows positive")
 //     7. worst_single_week_cross_cell_netR >= -minWorstWeekR
 //                                                   (default ≥ -3R, mirrors v2's worst-week bound)
-//
-//   v2-side (read from promotion_gate JSONB written by v2 promote):
-//     8. promotion_gate.eligible = TRUE            (v2's full promotion gate passed)
-//     9. promotion_gate.freshness.ready = TRUE     (v2 stage-C window-aligned)
+//     8. trailing_4w_cross_cell_netR >= minTrailing4wNetR
+//                                                   (default ≥ 4R, direct-live momentum gate)
 //
 // Implementation strategy: a single SELECT brings every v5-eligible row out
-// with its evidence + promotion_gate JSONB. Strict criteria 4-7 are computed
-// in JS (the JSONB walk to "sum across cells per week" is too verbose in
-// SQL); criteria 8-9 are read straight off the row. The qualifying IDs go
-// into one UPDATE.
+// with its evidence. Strict criteria 4-7 are computed in JS (the JSONB walk
+// to "sum across cells per week" is too verbose in SQL); the qualifying rows
+// get per-row promotion metrics merged into promotion_gate.
 export async function autoPromoteScalpV5WinnersToEnabled(params: {
   staleOlderThanMs?: number;
   nowMs?: number;
@@ -547,21 +545,26 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
   minTotalTrades?: number;
   minPositiveWeeks?: number;
   minWorstWeekR?: number;
+  minTrailing4wNetR?: number;
+  maxPromotions?: number;
 }): Promise<{
   promoted: number;
   deploymentIds: string[];
+  liveMode: "live";
+  runtimeLiveEnabled: boolean;
+  v5LiveBypassesV2LiveEnabled: boolean;
   // Funnel breakdown — surfaces WHY rows didn't promote, so the operator can
-  // see whether the v5-side criteria, the v2-side criteria, or neither is the
-  // binding constraint.
+  // see which v5-side criterion is binding.
   funnel: {
     candidates: number;        // passed v5_enabled + freshness + lease checks
     failedTotalNetR: number;
     failedTotalTrades: number;
     failedPositiveWeeks: number;
     failedWorstWeek: number;
-    failedV2Eligible: number;
-    failedV2Freshness: number;
+    failedTrailing4wNetR: number;
     qualified: number;          // passed everything
+    shortlisted: number;
+    promoted: number;
   };
 }> {
   const emptyFunnel = {
@@ -570,29 +573,46 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
     failedTotalTrades: 0,
     failedPositiveWeeks: 0,
     failedWorstWeek: 0,
-    failedV2Eligible: 0,
-    failedV2Freshness: 0,
+    failedTrailing4wNetR: 0,
     qualified: 0,
+    shortlisted: 0,
+    promoted: 0,
   };
+  const runtime = getScalpV2RuntimeConfig();
+  const runtimeLiveEnabled = Boolean(runtime.liveEnabled);
+  const v5LiveBypassesV2LiveEnabled = true;
+  const liveMode: "live" = "live";
   if (!isScalpPgConfigured()) {
-    return { promoted: 0, deploymentIds: [], funnel: emptyFunnel };
+    return {
+      promoted: 0,
+      deploymentIds: [],
+      liveMode,
+      runtimeLiveEnabled,
+      v5LiveBypassesV2LiveEnabled,
+      funnel: emptyFunnel,
+    };
   }
   const staleOlderThanMs = Math.max(
     60_000,
     Math.floor(Number(params.staleOlderThanMs || 14 * 24 * 60 * 60_000)),
   );
-  const minTotalNetR = Number.isFinite(Number(params.minTotalNetR))
-    ? Number(params.minTotalNetR)
-    : 4;
-  const minTotalTrades = Math.max(0, Math.floor(Number(params.minTotalTrades ?? 60)));
-  const minPositiveWeeks = Math.max(0, Math.floor(Number(params.minPositiveWeeks ?? 8)));
-  // worst-week floor: a row whose single-worst week is below this gets
-  // rejected. Stored as a positive number; we compare via >= -minWorstWeekR.
-  const minWorstWeekR = Math.abs(
-    Number.isFinite(Number(params.minWorstWeekR))
-      ? Number(params.minWorstWeekR)
-      : 3,
-  );
+  const thresholds: ScalpV5PromotionThresholds = {
+    minTotalNetR: Number.isFinite(Number(params.minTotalNetR))
+      ? Number(params.minTotalNetR)
+      : 4,
+    minTotalTrades: Math.max(0, Math.floor(Number(params.minTotalTrades ?? 60))),
+    minPositiveWeeks: Math.max(0, Math.floor(Number(params.minPositiveWeeks ?? 8))),
+    // worst-week floor: a row whose single-worst week is below this gets
+    // rejected. Stored as a positive number; we compare via >= -minWorstWeekR.
+    minWorstWeekR: Math.abs(
+      Number.isFinite(Number(params.minWorstWeekR))
+        ? Number(params.minWorstWeekR)
+        : 3,
+    ),
+    minTrailing4wNetR: Number.isFinite(Number(params.minTrailing4wNetR))
+      ? Number(params.minTrailing4wNetR)
+      : 4,
+  };
   const nowMs = Math.floor(Number(params.nowMs || Date.now()));
   const staleBefore = new Date(nowMs - staleOlderThanMs);
   const dryRun = Boolean(params.dryRun);
@@ -602,120 +622,188 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
   // criteria. Single SELECT — JSONB walk happens in JS.
   type CandidateRow = {
     deploymentId: string;
+    candidateId: number | bigint | null;
+    enabled: boolean;
+    liveMode: string | null;
     v5CellEvidence: unknown;
     promotionGate: unknown;
   };
   const candidates = await db.$queryRaw<CandidateRow[]>(sql`
     SELECT
       deployment_id    AS "deploymentId",
+      candidate_id     AS "candidateId",
+      enabled          AS "enabled",
+      live_mode        AS "liveMode",
       v5_cell_evidence AS "v5CellEvidence",
       promotion_gate   AS "promotionGate"
     FROM scalp_v2_deployments
     WHERE candidate_id IS NOT NULL
-      AND enabled = FALSE
       AND v5_enabled = TRUE
       AND v5_evaluated_at IS NOT NULL
       AND v5_evaluated_at >= ${staleBefore}
       AND (v5_lease_until IS NULL OR v5_lease_until < NOW())
+      AND (
+        enabled = FALSE
+        OR live_mode IS DISTINCT FROM 'live'
+        OR promotion_gate->>'source' IS DISTINCT FROM 'v5_cell_evidence'
+        OR promotion_gate->'v5Promotion' IS NULL
+      )
     ORDER BY v5_evaluated_at DESC;
   `);
 
   const funnel = { ...emptyFunnel, candidates: candidates.length };
-  const qualifyingIds: string[] = [];
+  const qualifiedRows: Array<{
+    deploymentId: string;
+    candidateId: number | null;
+    alreadyEnabled: boolean;
+    liveRepair: boolean;
+    metrics: ScalpV5PromotionMetrics;
+  }> = [];
 
   for (const row of candidates) {
-    // Walk v5_cell_evidence.cells.*.{netR,trades,weeklyNetR} to compute the
-    // four v5-side strict metrics.
     const evidence = (row.v5CellEvidence && typeof row.v5CellEvidence === "object" && !Array.isArray(row.v5CellEvidence))
-      ? (row.v5CellEvidence as Record<string, unknown>)
+      ? (row.v5CellEvidence as ScalpV5CellEvidence)
       : null;
-    const cellsRaw = evidence?.cells;
-    const cellsRec = (cellsRaw && typeof cellsRaw === "object" && !Array.isArray(cellsRaw))
-      ? (cellsRaw as Record<string, unknown>)
-      : {};
-
-    let totalNetR = 0;
-    let totalTrades = 0;
-    // Per-week aggregate across all cells. Length = max weeklyNetR length
-    // across the row's cells (always 12 for r3, possibly shorter for r2).
-    const weeklySums: number[] = [];
-    for (const cellValue of Object.values(cellsRec)) {
-      const cell = (cellValue && typeof cellValue === "object" && !Array.isArray(cellValue))
-        ? (cellValue as Record<string, unknown>)
-        : {};
-      const cellNetR = Number(cell.netR) || 0;
-      const cellTrades = Math.max(0, Math.floor(Number(cell.trades) || 0));
-      totalNetR += cellNetR;
-      totalTrades += cellTrades;
-      const weekly = Array.isArray(cell.weeklyNetR) ? (cell.weeklyNetR as unknown[]) : [];
-      for (let i = 0; i < weekly.length; i += 1) {
-        const v = Number(weekly[i]) || 0;
-        weeklySums[i] = (weeklySums[i] ?? 0) + v;
-      }
-    }
-    const positiveWeeks = weeklySums.filter((v) => v > 0).length;
-    const worstWeek = weeklySums.length > 0 ? Math.min(...weeklySums) : 0;
-
-    // v5-side strict criteria — short-circuit and bucket the failure reason
-    // so the funnel diagnostic surfaces the binding constraint.
-    if (totalNetR < minTotalNetR) {
+    const evaluation = evaluateScalpV5PromotionEvidence({ evidence, thresholds });
+    if (evaluation.reason === "v5_total_net_r_below_threshold") {
       funnel.failedTotalNetR += 1;
       continue;
     }
-    if (totalTrades < minTotalTrades) {
+    if (evaluation.reason === "v5_total_trades_below_threshold") {
       funnel.failedTotalTrades += 1;
       continue;
     }
-    if (positiveWeeks < minPositiveWeeks) {
+    if (evaluation.reason === "v5_positive_weeks_below_threshold") {
       funnel.failedPositiveWeeks += 1;
       continue;
     }
-    if (worstWeek < -minWorstWeekR) {
+    if (evaluation.reason === "v5_worst_week_below_threshold") {
       funnel.failedWorstWeek += 1;
       continue;
     }
-
-    // v2-side concurrence — read promotion_gate. Both eligible AND freshness
-    // ready must be TRUE.
-    const promotionGate = (row.promotionGate && typeof row.promotionGate === "object" && !Array.isArray(row.promotionGate))
-      ? (row.promotionGate as Record<string, unknown>)
-      : {};
-    const v2Eligible = promotionGate.eligible === true;
-    if (!v2Eligible) {
-      funnel.failedV2Eligible += 1;
-      continue;
-    }
-    const freshness = (promotionGate.freshness && typeof promotionGate.freshness === "object" && !Array.isArray(promotionGate.freshness))
-      ? (promotionGate.freshness as Record<string, unknown>)
-      : {};
-    const v2FreshnessReady = freshness.ready === true;
-    if (!v2FreshnessReady) {
-      funnel.failedV2Freshness += 1;
+    if (evaluation.reason === "v5_trailing_4w_net_r_below_threshold") {
+      funnel.failedTrailing4wNetR += 1;
       continue;
     }
 
     funnel.qualified += 1;
-    qualifyingIds.push(String(row.deploymentId || "").trim());
+    const gate = asRecord(row.promotionGate);
+    const v5Owned =
+      String(gate.source || "").trim().toLowerCase() === "v5_cell_evidence" ||
+      Object.keys(asRecord(gate.v5Promotion)).length > 0;
+    qualifiedRows.push({
+      deploymentId: String(row.deploymentId || "").trim(),
+      candidateId: row.candidateId === null || row.candidateId === undefined
+        ? null
+        : Math.floor(Number(row.candidateId) || 0) || null,
+      alreadyEnabled: Boolean(row.enabled),
+      liveRepair: Boolean(row.enabled) && (
+        String(row.liveMode || "").trim().toLowerCase() !== "live" ||
+        !v5Owned
+      ),
+      metrics: evaluation.metrics,
+    });
   }
 
-  const filteredIds = qualifyingIds.filter(Boolean);
-  if (dryRun || filteredIds.length === 0) {
-    return { promoted: 0, deploymentIds: filteredIds, funnel };
-  }
-
-  // Final write. Match the existing pattern in lib/scalp-v2/db.ts:1947 which
-  // uses last_promoted_at to track when the current promotion was made.
-  await db.$executeRaw(sql`
-    UPDATE scalp_v2_deployments
-    SET
-      enabled = TRUE,
-      last_promoted_at = NOW(),
-      updated_at = NOW()
-    WHERE deployment_id = ANY(${filteredIds}::text[])
-      AND enabled = FALSE
-      AND v5_enabled = TRUE;
+  const enabledRows = await db.$queryRaw<Array<{ count: bigint }>>(sql`
+    SELECT COUNT(*)::bigint AS count
+    FROM scalp_v2_deployments
+    WHERE enabled = TRUE;
   `);
-  return { promoted: filteredIds.length, deploymentIds: filteredIds, funnel };
+  const enabledCount = Math.max(0, Math.floor(Number(enabledRows[0]?.count || 0)));
+  const maxNewPromotions = Math.max(
+    0,
+    Math.floor(
+      Number.isFinite(Number(params.maxPromotions))
+        ? Number(params.maxPromotions)
+        : Math.max(0, Math.floor(Number(runtime.budgets.maxEnabledDeployments || 0)) - enabledCount),
+    ),
+  );
+  const rankedRows = qualifiedRows
+    .filter((row) => Boolean(row.deploymentId))
+    .sort((a, b) =>
+      b.metrics.totalNetR - a.metrics.totalNetR ||
+      b.metrics.trailing4wNetR - a.metrics.trailing4wNetR ||
+      b.metrics.expectancyR - a.metrics.expectancyR,
+    );
+  const repairRows = rankedRows.filter((row) => row.liveRepair);
+  const newRows = rankedRows
+    .filter((row) => !row.alreadyEnabled)
+    .slice(0, maxNewPromotions);
+  const filteredRows = Array.from(
+    new Map([...repairRows, ...newRows].map((row) => [row.deploymentId, row])).values(),
+  );
+  funnel.shortlisted = filteredRows.length;
+  const filteredIds = filteredRows.map((row) => row.deploymentId);
+  if (dryRun || filteredRows.length === 0) {
+    return {
+      promoted: 0,
+      deploymentIds: filteredIds,
+      liveMode,
+      runtimeLiveEnabled,
+      v5LiveBypassesV2LiveEnabled,
+      funnel,
+    };
+  }
+
+  const promotedAtMs = nowMs;
+  for (const row of filteredRows) {
+    await db.$executeRaw(sql`
+      UPDATE scalp_v2_deployments
+      SET
+        enabled = TRUE,
+        live_mode = ${liveMode},
+        promotion_gate = COALESCE(promotion_gate, '{}'::jsonb) || jsonb_build_object(
+          'eligible', TRUE,
+          'reason', 'v5_strict_passed',
+          'source', 'v5_cell_evidence',
+          'evaluatedAtMs', ${promotedAtMs}::bigint,
+          'promotedAtMs', ${promotedAtMs}::bigint,
+          'v5Promotion', ${JSON.stringify({
+            promotedAtMs,
+            metrics: row.metrics,
+            thresholds,
+            liveMode,
+            runtimeLiveEnabled,
+            v5LiveBypassesV2LiveEnabled,
+          })}::jsonb
+        ),
+        last_promoted_at = NOW(),
+        updated_at = NOW()
+      WHERE deployment_id = ${row.deploymentId}
+        AND v5_enabled = TRUE
+        AND (v5_lease_until IS NULL OR v5_lease_until < NOW());
+    `);
+  }
+  const candidateIds = Array.from(
+    new Set(
+      filteredRows
+        .map((row) => row.candidateId)
+        .filter((id): id is number => Number.isFinite(Number(id)) && Number(id) > 0),
+    ),
+  );
+  if (candidateIds.length > 0) {
+    await db.$executeRaw(sql`
+      UPDATE scalp_v2_candidates
+      SET
+        status = 'promoted',
+        metadata_json = COALESCE(metadata_json, '{}'::jsonb) || jsonb_build_object(
+          'promotedAtMs', ${promotedAtMs}::bigint,
+          'promotedBy', 'v5_cell_evidence'
+        ),
+        updated_at = NOW()
+      WHERE id = ANY(${candidateIds}::bigint[]);
+    `);
+  }
+  funnel.promoted = filteredRows.length;
+  return {
+    promoted: filteredRows.length,
+    deploymentIds: filteredIds,
+    liveMode,
+    runtimeLiveEnabled,
+    v5LiveBypassesV2LiveEnabled,
+    funnel,
+  };
 }
 
 export async function upsertScalpV5DeploymentEvidence(params: {
