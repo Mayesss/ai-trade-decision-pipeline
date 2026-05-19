@@ -261,6 +261,94 @@ export async function releaseScalpV5DeploymentLease(params: {
   `);
 }
 
+// Trim the long tail of consistently-failing deployments. A deployment is
+// "trim-eligible" when ALL of these hold:
+//   - candidate_id IS NOT NULL                 (still in the active pool)
+//   - created_at < NOW() - stalenessDays       (in the pool long enough to
+//                                                have been evaluated several
+//                                                times — 28 days covers ~4
+//                                                Sunday rollovers)
+//   - v5_evaluated_at IS NOT NULL              (v5 has evaluated it at least
+//                                                once; otherwise we don't yet
+//                                                know if it's bad)
+//   - COALESCE(v5_enabled, FALSE) = FALSE      (v5 has consistently failed to
+//                                                find a positive-expectancy
+//                                                cell)
+//   - COALESCE(enabled, FALSE) = FALSE         (not currently trading live —
+//                                                we never disrupt live trading
+//                                                via the trim path)
+//   - last_promoted_at IS NULL                 (has never been live-promoted;
+//                                                extra safety, lets us avoid
+//                                                retiring rows that someone
+//                                                manually promoted and later
+//                                                de-promoted)
+//
+// Trim action mirrors the dedupe path: candidate_id = NULL drops the row from
+// the v5 evaluation queue and the live execute scope. v5_evaluated_at is
+// cleared so the dashboard doesn't count it as "evaluated." Evidence and
+// checkpoint are NULLed to reclaim storage — the row is now considered
+// proven dead.
+//
+// Reversal: if a retired row's (venue, symbol, session, strategy, tune)
+// combo gets regenerated later by v2 research, a new deployment row is
+// created with the same key but a fresh candidate_id — automatic second
+// chance, no manual revival needed.
+export async function retireConsistentlyFailingScalpV5Deployments(params: {
+  stalenessDays?: number;
+  dryRun?: boolean;
+} = {}): Promise<{ retired: number; deploymentIds: string[]; dryRun: boolean }> {
+  const dryRun = Boolean(params.dryRun);
+  // Minimum 7 days. Going lower than that risks retiring candidates that
+  // simply haven't been v5-evaluated yet on their natural staleness cycle.
+  // Default 28 days = 4 weeks ≈ 4 Sunday rollovers.
+  const stalenessDays = Math.max(7, Math.floor(Number(params.stalenessDays ?? 28)));
+  if (!isScalpPgConfigured()) return { retired: 0, deploymentIds: [], dryRun };
+  const db = scalpPrisma();
+  const stalenessInterval = stalenessDays * 24 * 60 * 60_000;
+  const ageBefore = new Date(Date.now() - stalenessInterval);
+  if (dryRun) {
+    const rows = await db.$queryRaw<Array<{ deploymentId: string }>>(sql`
+      SELECT deployment_id AS "deploymentId"
+      FROM scalp_v2_deployments
+      WHERE candidate_id IS NOT NULL
+        AND created_at < ${ageBefore}
+        AND v5_evaluated_at IS NOT NULL
+        AND COALESCE(v5_enabled, FALSE) = FALSE
+        AND COALESCE(enabled, FALSE) = FALSE
+        AND last_promoted_at IS NULL
+      ORDER BY created_at ASC;
+    `);
+    return {
+      retired: rows.length,
+      deploymentIds: rows.map((r) => String(r.deploymentId || "").trim()).filter(Boolean),
+      dryRun,
+    };
+  }
+  const rows = await db.$queryRaw<Array<{ deploymentId: string }>>(sql`
+    UPDATE scalp_v2_deployments
+    SET candidate_id        = NULL,
+        enabled             = FALSE,
+        v5_evaluated_at     = NULL,
+        v5_lease_until      = NULL,
+        v5_cell_evidence    = NULL,
+        v5_enabled          = FALSE,
+        v5_replay_checkpoint = NULL,
+        updated_at          = NOW()
+    WHERE candidate_id IS NOT NULL
+      AND created_at < ${ageBefore}
+      AND v5_evaluated_at IS NOT NULL
+      AND COALESCE(v5_enabled, FALSE) = FALSE
+      AND COALESCE(enabled, FALSE) = FALSE
+      AND last_promoted_at IS NULL
+    RETURNING deployment_id AS "deploymentId";
+  `);
+  return {
+    retired: rows.length,
+    deploymentIds: rows.map((r) => String(r.deploymentId || "").trim()).filter(Boolean),
+    dryRun,
+  };
+}
+
 // Flip `enabled = TRUE` on every deployment that v5 has confirmed as a
 // winner (v5_enabled = TRUE) and whose evidence is still fresh. Promotion-only
 // — never auto-demotes, since disabling a live deployment mid-week is a

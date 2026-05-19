@@ -1562,8 +1562,14 @@ export function buildScalpV2ModelGuidedComposerGrid(params: {
     return true;
   });
 
-  // Multiply each surviving base-arm candidate by TF variants × exit rule profiles.
+  // Multiply each surviving base-arm candidate by TF variants × exit rule
+  // profiles × regime-gate variants, but **dedupe by behavior**: drop any
+  // (variant tuple) that resolves to the same set of dimensions the
+  // composer actually consumes at execution time. See the BEHAVIOR
+  // FINGERPRINT comment below for the exact contract.
   const expanded: ScalpV2ModelGuidedCandidateDslSpec[] = [];
+  const seenBehaviorKeys = new Set<string>();
+  let dedupedByBehavior = 0;
   for (let rowIdx = 0; rowIdx < dedupedByBaseArm.length; rowIdx += 1) {
     const row = dedupedByBaseArm[rowIdx]!;
     const regimeGateVariants =
@@ -1574,10 +1580,43 @@ export function buildScalpV2ModelGuidedComposerGrid(params: {
       for (const exitRuleId of EXIT_RULE_RESEARCH_PROFILES) {
         for (const regimeGateId of regimeGateVariants) {
           const armId = `${row._baseArm}_${tfVariant.label}` as ModelGuidedComposerArmId;
+          // BEHAVIOR FINGERPRINT — the dimensions that actually change the
+          // model-guided composer's replay output. The composer's exit
+          // logic and regime gating are INTERNAL: overrides to
+          // runtime.strategy.takeProfitR / trailStartR / etc. via
+          // exit_rule DSL blocks don't reach the composer's trade
+          // decisions, and regime gating happens through a separate
+          // mechanism that doesn't depend on `regime_gate` block IDs.
+          // So varying exitRuleId or regimeGateId for the same base arm
+          // produces byte-identical replays — pure waste in research +
+          // v5 eval + storage. Fingerprint excludes those axes; the
+          // first (exitRuleId, regimeGateId) combo that lands on a fresh
+          // fingerprint is the canonical one emitted.
+          //
+          // If a future strategy (or a refactor of the composer) starts
+          // consuming exit_rule / regime_gate, this fingerprint will need
+          // to widen to include them — at which point variants stop
+          // collapsing and full grid coverage is restored automatically.
+          const behaviorKey = [
+            row.venue,
+            row.symbol,
+            row.entrySessionProfile,
+            armId,
+            row.model.version,
+          ].join(":");
+          if (seenBehaviorKeys.has(behaviorKey)) {
+            dedupedByBehavior += 1;
+            continue;
+          }
+          seenBehaviorKeys.add(behaviorKey);
           const executionPlan = resolveModelGuidedComposerExecutionPlanFromBlocks(
             row.blocksByFamily,
             tfVariant.label,
           );
+          // Keep the existing candidate hash inputs identical — including
+          // exitRuleId and regimeGateId — so the resulting candidate_id
+          // and tune_id remain stable for the (canonical) combo. Only the
+          // *expansion* changes; persisted IDs do not.
           const digest = candidateHash(
             [
               row.venue,
@@ -1613,6 +1652,16 @@ export function buildScalpV2ModelGuidedComposerGrid(params: {
         }
       }
     }
+  }
+  if (dedupedByBehavior > 0) {
+    // Visibility into how aggressively the fingerprint is collapsing
+    // variants. With composer + 4 exit profiles + up to 3 regime gates,
+    // we expect ~75-90% of raw variants to be dedup'd. A sudden drop in
+    // this ratio after a strategy change is the signal that an axis
+    // started mattering and the fingerprint may need to widen.
+    console.log(
+      `[composer-grid] deduped ${dedupedByBehavior} behavior-equivalent variants (kept ${expanded.length})`,
+    );
   }
 
   return expanded;

@@ -4,6 +4,21 @@ Next.js app that runs an AI-driven trading loop for multiple platforms (Bitget +
 
 ---
 
+## Scalp pipeline layers
+
+The scalp directories `lib/scalp-v2/`, `lib/scalp-v3/`, `lib/scalp-v4/`, `lib/scalp-v5/` are **stacked layers**, not parallel versions. Quick reference:
+
+| Codebase prefix | Role | What it adds |
+|---|---|---|
+| **v2** | `core` | Candidate generation, discovery, promotion, live execution |
+| **v3** | `temporal-filter` | 30-min session-slot / weekday / UTC-hour variants on v2 candidates |
+| **v4** | `regime-classifier` | Weekly regime cells (vol / trend / risk axes) |
+| **v5** | `regime-evidence` | 12-week regime-tagged evaluation + per-cell entry gate |
+
+All four are simultaneously active. See [docs/architecture.md](docs/architecture.md) for the full pipeline diagram, candidate lifecycle, gate composition, cron schedule, and storage layout.
+
+---
+
 ## What’s Inside
 
 - **Next.js API routes** for analysis (`/api/analyze`), AI-driven evaluations (`/api/evaluate`), history/PNL enrichment (`/api/evaluations`, `/api/rest-history`, `/api/chart`), scalp cron execution, and health/debug helpers.
