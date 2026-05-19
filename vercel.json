@@ -40,6 +40,10 @@
       "schedule": "*/10 * * * *"
     },
     {
+      "path": "/api/scalp/v4/cron/build-regimes?liveOnly=true&forceValidity=true",
+      "schedule": "5 * * * *"
+    },
+    {
       "path": "/api/scalp/v5/cron/evaluate?limit=50",
       "schedule": "0 * * * *"
     },
