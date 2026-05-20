@@ -628,6 +628,26 @@ function V5DeploymentRowView({
     }
     return m;
   }, [row.cells]);
+  // Deployment-wide running NetR across all cells — overlaid as a single
+  // trajectory line on every cell's track so the chart tells one coherent
+  // story instead of N independent per-cell trajectories.
+  const deploymentCumulative = useMemo(() => {
+    const weekCount = row.cells.reduce((m, c) => Math.max(m, c.weeklyNetR.length), 0);
+    const weeklySum = new Array<number>(weekCount).fill(0);
+    for (const c of row.cells) {
+      for (let i = 0; i < c.weeklyNetR.length; i++) {
+        const v = c.weeklyNetR[i];
+        weeklySum[i] += Number.isFinite(v) ? v : 0;
+      }
+    }
+    const cum: number[] = [];
+    let running = 0;
+    for (const v of weeklySum) {
+      running += v;
+      cum.push(running);
+    }
+    return cum;
+  }, [row.cells]);
 
   return (
     <div className={dim}>
@@ -720,7 +740,13 @@ function V5DeploymentRowView({
           ) : (
             <div className="space-y-1.5">
               {row.cells.map((cell) => (
-                <CellEvidenceRow key={cell.cellId} cell={cell} maxAbs={maxAbs} holdoutFromMs={row.holdoutWindow?.fromMs ?? null} />
+                <CellEvidenceRow
+                  key={cell.cellId}
+                  cell={cell}
+                  maxAbs={maxAbs}
+                  holdoutFromMs={row.holdoutWindow?.fromMs ?? null}
+                  deploymentCumulative={deploymentCumulative}
+                />
               ))}
             </div>
           )}
@@ -739,10 +765,12 @@ function CellEvidenceRow({
   cell,
   maxAbs,
   holdoutFromMs,
+  deploymentCumulative,
 }: {
   cell: V5CellRow;
   maxAbs: number;
   holdoutFromMs: number | null;
+  deploymentCumulative: number[];
 }) {
   const expR = cell.expectancyR;
   const expColor = expR > 0 ? "text-emerald-400" : expR < 0 ? "text-rose-400" : "text-zinc-300";
@@ -795,7 +823,12 @@ function CellEvidenceRow({
         </div>
       </div>
       <div className="col-span-2 md:col-span-1 md:max-w-[420px]">
-        <WeeklyNetRTrack values={cell.weeklyNetR} globalMaxAbs={maxAbs} weekLabel={weekLabel} />
+        <WeeklyNetRTrack
+          values={cell.weeklyNetR}
+          globalMaxAbs={maxAbs}
+          cumulativeOverride={deploymentCumulative}
+          weekLabel={weekLabel}
+        />
       </div>
     </div>
   );

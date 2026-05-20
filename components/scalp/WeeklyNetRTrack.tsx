@@ -8,6 +8,11 @@ export interface WeeklyNetRTrackProps {
   // Pass to share a normalization scale across multiple tracks (eg all cells
   // of the same deployment). Defaults to max |value| across this row alone.
   globalMaxAbs?: number;
+  // Override the trajectory line. When provided, the line shows this series
+  // instead of the per-week cumulative of `values` — used to overlay the
+  // deployment-wide running NetR on top of each cell's bars. The Σ readout is
+  // suppressed in that mode (the cell's own sum is shown elsewhere in the row).
+  cumulativeOverride?: number[];
   // Tooltip helper — given a week index, returns the displayed label.
   weekLabel?: (idx: number, value: number) => string;
   // Track height in px. Default matches the v5 cell-evidence row.
@@ -20,6 +25,7 @@ export interface WeeklyNetRTrackProps {
 export function WeeklyNetRTrack({
   values,
   globalMaxAbs,
+  cumulativeOverride,
   weekLabel,
   heightPx = 56,
   widthPx,
@@ -40,14 +46,21 @@ export function WeeklyNetRTrack({
       ? globalMaxAbs
       : Math.max(0.0001, ...values.map((v) => Math.abs(Number.isFinite(v) ? v : 0)));
 
-  // Running cumulative NetR; scaled to its own max so the trajectory line
-  // uses the full vertical range regardless of individual week magnitudes.
-  const cum: number[] = [];
-  let running = 0;
-  for (const v of values) {
-    running += Number.isFinite(v) ? v : 0;
-    cum.push(running);
-  }
+  // Trajectory line: either the per-week cumulative of this cell's `values`,
+  // or an externally-supplied override (used to overlay the deployment-wide
+  // running NetR across every cell track).
+  const usesOverride = Array.isArray(cumulativeOverride) && cumulativeOverride.length > 0;
+  const cum: number[] = usesOverride
+    ? cumulativeOverride!.slice(0, values.length)
+    : (() => {
+        const out: number[] = [];
+        let running = 0;
+        for (const v of values) {
+          running += Number.isFinite(v) ? v : 0;
+          out.push(running);
+        }
+        return out;
+      })();
   const maxCumAbs = Math.max(0.0001, ...cum.map((c) => Math.abs(c)));
   const finalCum = cum.length > 0 ? cum[cum.length - 1] : 0;
   const finalColor =
@@ -119,16 +132,18 @@ export function WeeklyNetRTrack({
           <circle cx={N - 0.5} cy={-finalCum / maxCumAbs} r={0.09} className={finalDotClass} />
         </svg>
       </div>
-      <div
-        className={`flex w-[4.5rem] shrink-0 flex-col justify-center text-right text-[11px] leading-tight ${finalColor}`}
-        title={`cumulative 12w netR: ${finalCum >= 0 ? "+" : ""}${finalCum.toFixed(2)}R`}
-      >
-        <span className="text-zinc-500 text-[10px]">Σ 12w</span>
-        <span>
-          {finalCum >= 0 ? "+" : ""}
-          {finalCum.toFixed(2)}R
-        </span>
-      </div>
+      {usesOverride ? null : (
+        <div
+          className={`flex w-[4.5rem] shrink-0 flex-col justify-center text-right text-[11px] leading-tight ${finalColor}`}
+          title={`cumulative 12w netR: ${finalCum >= 0 ? "+" : ""}${finalCum.toFixed(2)}R`}
+        >
+          <span className="text-zinc-500 text-[10px]">Σ 12w</span>
+          <span>
+            {finalCum >= 0 ? "+" : ""}
+            {finalCum.toFixed(2)}R
+          </span>
+        </div>
+      )}
     </div>
   );
 }
