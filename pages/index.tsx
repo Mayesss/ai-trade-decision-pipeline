@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Head from "next/head";
 import {
   AdminSecretPanel,
@@ -63,24 +63,6 @@ interface GateStateResp {
   nowMs: number;
   stateNow: Record<V5GateDecision, number>;
   stateNowEnabled: Record<V5GateDecision, number>;
-}
-
-interface SymbolRegimeBucket {
-  venue: string;
-  symbol: string;
-  cellId: string | null;
-  stale: boolean;
-  allowCount: number;
-  blockCount: number;
-  pendingCount: number;
-  totalEnabled: number;
-}
-
-interface RegimesResp {
-  ok: boolean;
-  classifierVersion: string;
-  nowMs: number;
-  regimes: SymbolRegimeBucket[];
 }
 
 interface V5CellRow {
@@ -158,13 +140,24 @@ export default function ScalpV5Dashboard() {
   // Four independent slices so a slow endpoint doesn't gate the others.
   const [coverage, setCoverage] = useState<CoverageResp | null>(null);
   const [gateState, setGateState] = useState<GateStateResp | null>(null);
-  const [regimes, setRegimes] = useState<RegimesResp | null>(null);
   const [deployments, setDeployments] = useState<DeploymentsResp | null>(null);
   const [recent, setRecent] = useState<RecentResp | null>(null);
 
   const [expandedDeployments, setExpandedDeployments] = useState<Set<string>>(new Set());
   const [showAllInactive, setShowAllInactive] = useState(false);
   const [decisionFilter, setDecisionFilter] = useState<V5GateDecision | null>(null);
+
+  // On first gate-state load, default the filter to "allow" so the deployments
+  // section opens scoped to the live-trading rows. Only fires once — user
+  // clears/switches stick after.
+  const defaultFilterApplied = useRef(false);
+  useEffect(() => {
+    if (defaultFilterApplied.current || !gateState) return;
+    defaultFilterApplied.current = true;
+    if ((gateState.stateNowEnabled.allow || 0) > 0) {
+      setDecisionFilter("allow");
+    }
+  }, [gateState]);
 
   const toggleExpanded = useCallback((id: string) => {
     setExpandedDeployments((prev) => {
@@ -175,21 +168,20 @@ export default function ScalpV5Dashboard() {
     });
   }, []);
 
-  // Fire all five endpoints in parallel. Each one calls its own setState as it
-  // resolves — coverage typically lands first (~50ms), deployments last (the
-  // heavy one). UI sections render as data arrives.
+  // Fire endpoints in parallel. Each one calls its own setState as it resolves —
+  // coverage typically lands first (~50ms), deployments last (the heavy one).
+  // UI sections render as data arrives.
   const loader = useCallback(async (headers: Record<string, string>) => {
-    const [c, g, r, d, rc] = await Promise.all([
+    const [c, g, d, rc] = await Promise.all([
       fetchOne<CoverageResp>("/api/scalp/v5/coverage", headers, setCoverage),
       fetchOne<GateStateResp>("/api/scalp/v5/gate-state", headers, setGateState),
-      fetchOne<RegimesResp>("/api/scalp/v5/regimes", headers, setRegimes),
       fetchOne<DeploymentsResp>("/api/scalp/v5/deployments", headers, setDeployments),
       fetchOne<RecentResp>("/api/scalp/v4/recent", headers, setRecent),
     ]);
-    if (c.unauthorized || g.unauthorized || r.unauthorized || d.unauthorized || rc.unauthorized) {
+    if (c.unauthorized || g.unauthorized || d.unauthorized || rc.unauthorized) {
       return { unauthorized: true };
     }
-    return { error: c.error || g.error || r.error || d.error || rc.error };
+    return { error: c.error || g.error || d.error || rc.error };
   }, []);
 
   const access = useAdminSecretLoader(loader);
@@ -222,7 +214,6 @@ export default function ScalpV5Dashboard() {
   const classifierVersion =
     coverage?.classifierVersion ||
     gateState?.classifierVersion ||
-    regimes?.classifierVersion ||
     deployments?.classifierVersion ||
     null;
 
@@ -339,21 +330,6 @@ export default function ScalpV5Dashboard() {
         <Skeleton label="loading deployments" />
       )}
 
-      <SectionHeader title="symbol regimes · this week" />
-      {regimes ? (
-        regimes.regimes.length === 0 ? (
-          <div className="pl-2 text-zinc-500">(no enabled symbols)</div>
-        ) : (
-          <div className="mt-1 pl-2 space-y-0.5">
-            {regimes.regimes.map((row) => (
-              <SymbolRegimeRow key={`${row.venue}:${row.symbol}`} row={row} />
-            ))}
-          </div>
-        )
-      ) : (
-        <Skeleton label="loading regimes" />
-      )}
-
       <SectionHeader title={`activity · last ${activityRows.length} trade events`} />
       {recent ? (
         activityRows.length === 0 ? (
@@ -370,7 +346,7 @@ export default function ScalpV5Dashboard() {
       )}
 
       <div className="border-t border-zinc-800 pt-2 mt-6 text-zinc-600">
-        sources /api/scalp/v5/coverage · /gate-state · /regimes · /deployments · /api/scalp/v4/recent
+        sources /api/scalp/v5/coverage · /gate-state · /deployments · /api/scalp/v4/recent
       </div>
     </PageShell>
   );
@@ -783,50 +759,6 @@ function CellEvidenceRow({
       </div>
       <div className="col-span-2 md:col-span-1 md:max-w-[420px]">
         <WeeklyNetRTrack values={cell.weeklyNetR} globalMaxAbs={maxAbs} weekLabel={weekLabel} heightPx={36} />
-      </div>
-    </div>
-  );
-}
-
-function SymbolRegimeRow({ row }: { row: SymbolRegimeBucket }) {
-  return (
-    <div>
-      <div className="md:hidden">
-        <div className="flex items-baseline gap-x-2">
-          <span className="text-zinc-100 truncate">
-            <span className="text-zinc-500">{row.venue}/</span>
-            {row.symbol}
-          </span>
-          {row.stale ? <span className="text-amber-300 text-[11px]">stale</span> : null}
-        </div>
-        <div
-          className={`pl-2 text-[12px] truncate ${row.cellId ? "text-zinc-300" : "text-zinc-600"}`}
-          title={row.cellId || ""}
-        >
-          {abbrCell(row.cellId)}
-        </div>
-        <div className="pl-2 text-[12px] text-zinc-500">
-          <span className="text-emerald-400">{row.allowCount} allow</span>
-          {row.blockCount > 0 ? <span className="text-rose-400"> · {row.blockCount} block</span> : null}
-          {row.pendingCount > 0 ? <span className="text-sky-400"> · {row.pendingCount} pending</span> : null}
-          <span> / {row.totalEnabled} deps</span>
-        </div>
-      </div>
-      <div className="hidden md:grid md:grid-cols-[5rem_8rem_1fr_4rem_1fr] md:gap-x-2 md:items-baseline">
-        <span className="text-zinc-500">{row.venue}</span>
-        <span className="text-zinc-100 truncate">{row.symbol}</span>
-        <span className={row.cellId ? "text-zinc-300 truncate" : "text-zinc-600"} title={row.cellId || ""}>
-          {abbrCell(row.cellId)}
-        </span>
-        <span className={`text-[12px] ${row.stale ? "text-amber-300" : "text-zinc-600"}`}>
-          {row.stale ? "stale" : ""}
-        </span>
-        <span className="text-[13px] text-zinc-500">
-          <span className="text-emerald-400">{row.allowCount} allow</span>
-          {row.blockCount > 0 ? <span className="text-rose-400"> · {row.blockCount} block</span> : null}
-          {row.pendingCount > 0 ? <span className="text-sky-400"> · {row.pendingCount} pending</span> : null}
-          <span> / {row.totalEnabled} deps</span>
-        </span>
       </div>
     </div>
   );
