@@ -19,6 +19,13 @@
 //   ?minPositiveWeeks=8    minimum weeks-with-positive-cross-cell-netR
 //   ?minWorstWeekR=3       worst single week must be >= -minWorstWeekR
 //   ?minTrailing4wNetR=4   trailing 4-week cross-cell netR must be >= this
+//   Low-sample consistency exception defaults:
+//   ?minConsistencyTrades=30
+//   ?minConsistencyTotalNetR=12
+//   ?minConsistencyPositiveWeeks=11
+//   ?minConsistencyWorstWeekR=0
+//   ?minConsistencyTrailing4wNetR=4
+//   ?minConsistencyActiveCells=2
 //   ?maxPromotions=12      optional cap (defaults to remaining runtime slots)
 //   ?staleOlderThanHours=336 v5 evidence freshness (default 14 days)
 //   ?dryRun=true           preview without writes; emits the funnel
@@ -97,6 +104,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const minPositiveWeeks = parseIntBounded(req.query.minPositiveWeeks, 8, 0, 52);
   const minWorstWeekR = parseFloatBounded(req.query.minWorstWeekR, 3, 0, 100);
   const minTrailing4wNetR = parseFloatBounded(req.query.minTrailing4wNetR, 4, -100, 1_000);
+  const minConsistencyTrades = parseIntBounded(req.query.minConsistencyTrades, 30, 0, 10_000);
+  const minConsistencyTotalNetR = parseFloatBounded(req.query.minConsistencyTotalNetR, 12, -100, 1_000);
+  const minConsistencyPositiveWeeks = parseIntBounded(req.query.minConsistencyPositiveWeeks, 11, 0, 52);
+  const minConsistencyWorstWeekR = parseFloatBounded(req.query.minConsistencyWorstWeekR, 0, -100, 100);
+  const minConsistencyTrailing4wNetR = parseFloatBounded(req.query.minConsistencyTrailing4wNetR, 4, -100, 1_000);
+  const minConsistencyActiveCells = parseIntBounded(req.query.minConsistencyActiveCells, 2, 1, 100);
   const maxPromotionsRaw = firstQueryValue(req.query.maxPromotions).trim();
   const maxPromotions = maxPromotionsRaw
     ? parseIntBounded(req.query.maxPromotions, 12, 0, 500)
@@ -122,6 +135,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       minPositiveWeeks,
       minWorstWeekR,
       minTrailing4wNetR,
+      minConsistencyTrades,
+      minConsistencyTotalNetR,
+      minConsistencyPositiveWeeks,
+      minConsistencyWorstWeekR,
+      minConsistencyTrailing4wNetR,
+      minConsistencyActiveCells,
       maxPromotions,
     });
     return res.status(200).json({
@@ -135,6 +154,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         minPositiveWeeks,
         minWorstWeekR,
         minTrailing4wNetR,
+        minConsistencyTrades,
+        minConsistencyTotalNetR,
+        minConsistencyPositiveWeeks,
+        minConsistencyWorstWeekR,
+        minConsistencyTrailing4wNetR,
+        minConsistencyActiveCells,
         ...(maxPromotions !== undefined && { maxPromotions }),
       },
       result: {

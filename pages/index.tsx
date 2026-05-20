@@ -209,6 +209,15 @@ export default function ScalpV5Dashboard() {
 
   const activityRows = useMemo(() => (recent ? recent.recentTrades.slice(0, 40) : []), [recent]);
 
+  // Hide evaluator section once this week's evaluation pass is complete —
+  // the panel is only useful while there's still work to do.
+  const evaluatorComplete = useMemo(() => {
+    if (!coverage) return false;
+    const total = coverage.coverage.totalDeployments;
+    if (total === 0) return false;
+    return coverage.progress.evaluatedThisWeek >= total;
+  }, [coverage]);
+
   // Header classifierVersion: prefer whichever endpoint has loaded first.
   const classifierVersion =
     coverage?.classifierVersion ||
@@ -255,9 +264,26 @@ export default function ScalpV5Dashboard() {
         <pre className="mt-3 whitespace-pre-wrap text-rose-400">⚠ {access.error}</pre>
       ) : null}
 
-      <SectionHeader title="gate · live decision (enabled deployments now)" />
+      {evaluatorComplete ? null : (
+        <>
+          <SectionHeader
+            title={`evaluator · holdout=${coverage?.config.holdoutWeeks ?? "—"}w  minTrades/cell=${coverage?.config.minTradesPerCell ?? "—"}`}
+          />
+          {coverage ? (
+            <>
+              <EvaluatorStrip data={coverage} />
+              <EvaluatorProgress data={coverage} />
+              <CandleHealth data={coverage} />
+            </>
+          ) : (
+            <Skeleton label="loading evaluator" />
+          )}
+        </>
+      )}
+
+      <SectionHeader title="deployments · live cell evidence" />
       {gateState ? (
-        <GateDistribution
+        <GateChipBar
           stateNowEnabled={gateState.stateNowEnabled}
           activeFilter={decisionFilter}
           onPick={(d) => setDecisionFilter((cur) => (cur === d ? null : d))}
@@ -265,23 +291,6 @@ export default function ScalpV5Dashboard() {
       ) : (
         <Skeleton label="loading gate state" />
       )}
-
-      <SectionHeader
-        title={`evaluator · holdout=${coverage?.config.holdoutWeeks ?? "—"}w  minTrades/cell=${coverage?.config.minTradesPerCell ?? "—"}`}
-      />
-      {coverage ? (
-        <>
-          <EvaluatorStrip data={coverage} />
-          <EvaluatorProgress data={coverage} />
-          <CandleHealth data={coverage} />
-        </>
-      ) : (
-        <Skeleton label="loading evaluator" />
-      )}
-
-      <SectionHeader
-        title={`deployments · live cell evidence${decisionFilter ? ` · filter=${V5_DECISION_LABEL[decisionFilter]}` : ""}`}
-      />
       {deployments ? (
         deployments.deployments.length === 0 ? (
           <div className="pl-2 mt-1 text-zinc-500">(no deployments — nothing v3-promoted yet)</div>
@@ -367,9 +376,9 @@ export default function ScalpV5Dashboard() {
   );
 }
 
-// ─── gate-distribution histogram ─────────────────────────────────────────────
+// ─── gate chip bar (inline filter strip under deployments header) ────────────
 
-function GateDistribution({
+function GateChipBar({
   stateNowEnabled,
   activeFilter,
   onPick,
@@ -378,35 +387,27 @@ function GateDistribution({
   activeFilter: V5GateDecision | null;
   onPick: (d: V5GateDecision) => void;
 }) {
-  const max = Math.max(1, ...DECISION_ORDER.map((d) => stateNowEnabled[d] || 0));
   return (
-    <div className="mt-1 pl-2 space-y-0.5">
+    <div className="mt-1 pl-2 flex flex-wrap items-baseline gap-x-4 gap-y-0.5 text-[12px]">
       {DECISION_ORDER.map((decision) => {
         const value = stateNowEnabled[decision] || 0;
         const isActive = activeFilter === decision;
+        const dim = activeFilter && !isActive ? "opacity-40" : "";
         return (
           <button
             key={decision}
             onClick={() => onPick(decision)}
-            className={`block w-full text-left hover:bg-zinc-900/40 -mx-2 px-2 py-0.5 rounded-sm transition-colors ${
-              isActive ? "bg-zinc-900/60" : ""
-            }`}
+            className={`${dim} hover:opacity-100 transition-opacity ${isActive ? "underline underline-offset-4" : ""}`}
             title={`click to ${isActive ? "clear filter" : `filter to ${V5_DECISION_LABEL[decision]}`}`}
           >
-            <div className="grid grid-cols-[1rem_8rem_3rem_1fr] gap-x-3 items-baseline">
-              <span className={V5_DECISION_COLOR[decision]}>{V5_DECISION_GLYPH[decision]}</span>
-              <span className={V5_DECISION_COLOR[decision]}>{V5_DECISION_LABEL[decision]}</span>
-              <span className="text-zinc-100 text-right">{value}</span>
-              <span className={`font-mono whitespace-pre overflow-hidden ${V5_DECISION_COLOR[decision]}`}>
-                {bar(value, max, 30)}
-              </span>
-            </div>
+            <span className={V5_DECISION_COLOR[decision]}>{V5_DECISION_GLYPH[decision]} {V5_DECISION_LABEL[decision]}</span>
+            <span className="text-zinc-100 ml-1">{value}</span>
           </button>
         );
       })}
       {activeFilter ? (
-        <button onClick={() => onPick(activeFilter)} className="text-zinc-500 hover:text-zinc-300 text-[12px] mt-1">
-          ↑ clear filter
+        <button onClick={() => onPick(activeFilter)} className="text-zinc-500 hover:text-zinc-300">
+          ↑ clear
         </button>
       ) : null}
     </div>

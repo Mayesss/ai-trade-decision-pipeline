@@ -136,6 +136,7 @@ function parseEvidence(value: unknown): ScalpV5CellEvidence | null {
 
 function decideGate(params: {
   evidence: ScalpV5CellEvidence | null;
+  consistencyException: boolean;
   currentCellId: string | null;
   stale: boolean;
   minTradesPerCell: number;
@@ -144,9 +145,25 @@ function decideGate(params: {
   if (params.stale || !params.currentCellId) return "block_stale";
   const cellStat = params.evidence.cells[params.currentCellId];
   if (!cellStat) return "block_unseen";
-  if (cellStat.trades < params.minTradesPerCell) return "block_insufficient_trades";
+  if (cellStat.trades < params.minTradesPerCell) {
+    const thinPositiveAllowed =
+      params.consistencyException &&
+      cellStat.trades >= 3 &&
+      cellStat.netR > 0 &&
+      cellStat.expectancyR > 0;
+    if (!thinPositiveAllowed) return "block_insufficient_trades";
+  }
   if (cellStat.expectancyR <= 0) return "block_negative";
   return "allow";
+}
+
+function isConsistencyExceptionPromotionGate(value: unknown): boolean {
+  const gate = asRecord(value) || {};
+  const promotion = asRecord(gate.v5Promotion) || {};
+  const reason = String(gate.reason || promotion.passReason || "")
+    .trim()
+    .toLowerCase();
+  return reason === "v5_consistency_exception_passed";
 }
 
 function resolveStaleThresholdMs(): number {
@@ -176,6 +193,7 @@ export async function loadV5DashboardData(): Promise<V5DashboardLoad> {
     v5Enabled: boolean;
     v5EvaluatedAt: Date | null;
     v5CellEvidence: unknown;
+    promotionGate: unknown;
   };
   const deployRows = await db.$queryRaw<DeploymentDbRow[]>(sql`
     SELECT
@@ -189,7 +207,8 @@ export async function loadV5DashboardData(): Promise<V5DashboardLoad> {
       live_mode AS "liveMode",
       COALESCE(v5_enabled, FALSE) AS "v5Enabled",
       v5_evaluated_at AS "v5EvaluatedAt",
-      v5_cell_evidence AS "v5CellEvidence"
+      v5_cell_evidence AS "v5CellEvidence",
+      promotion_gate AS "promotionGate"
     FROM scalp_v2_deployments d
     WHERE d.candidate_id IS NOT NULL
       AND NOT EXISTS (
@@ -259,6 +278,7 @@ export async function loadV5DashboardData(): Promise<V5DashboardLoad> {
 
     const decision = decideGate({
       evidence,
+      consistencyException: isConsistencyExceptionPromotionGate(r.promotionGate),
       currentCellId,
       stale: regimeStale,
       minTradesPerCell: cfg.minTradesPerCell,

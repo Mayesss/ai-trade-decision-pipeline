@@ -200,6 +200,44 @@ test("resolveScalpV5EntryBlock allows when current cell is profitable", () => {
   assert.deepEqual(gate.reasonCodes, []);
 });
 
+test("resolveScalpV5EntryBlock allows positive thin cell for consistency exception rows", () => {
+  const evidence = {
+    version: SCALP_V5_VERSION,
+    classifierVersion: "scalp_v4_macro_weekly_r1",
+    evaluatedAtMs: ANCHOR,
+    holdoutFromMs: ANCHOR - 12 * WEEK_MS,
+    holdoutToMs: ANCHOR,
+    minTradesPerCell: 8,
+    cells: {
+      [CELL_A]: cellStat({ trades: 3, netR: 1.5, expectancyR: 0.5, wins: 2, losses: 1 }),
+    },
+    eligibleCells: [],
+  };
+  const withoutException = resolveScalpV5EntryBlock({
+    enabled: true,
+    hardGate: true,
+    evidence,
+    currentCellId: CELL_A as any,
+    stale: false,
+    minTradesPerCell: 8,
+  });
+  assert.equal(withoutException.blocked, true);
+  assert.ok(withoutException.reasonCodes.includes("V5_CELL_INSUFFICIENT_TRADES"));
+
+  const withException = resolveScalpV5EntryBlock({
+    enabled: true,
+    hardGate: true,
+    evidence,
+    currentCellId: CELL_A as any,
+    stale: false,
+    minTradesPerCell: 8,
+    allowThinPositiveCell: true,
+    minThinCellTrades: 3,
+  });
+  assert.equal(withException.blocked, false);
+  assert.deepEqual(withException.reasonCodes, []);
+});
+
 test("resolveScalpV5EntryBlock blocks when current cell is unprofitable (hard gate)", () => {
   const evidence = {
     version: SCALP_V5_VERSION,
@@ -352,6 +390,47 @@ test("evaluateScalpV5PromotionEvidence qualifies v5 evidence without v2 promotio
   assert.equal(evaluation.reason, "v5_strict_passed");
   assert.equal(evaluation.metrics.positiveWeeks, 10);
   assert.equal(evaluation.metrics.trailing4wNetR.toFixed(1), "4.2");
+});
+
+test("evaluateScalpV5PromotionEvidence allows exceptional low-sample consistency", () => {
+  const evaluation = evaluateScalpV5PromotionEvidence({
+    evidence: {
+      ...promotionEvidence({
+        trades: 29,
+        weekly: [1.4, 2.8, 0.9, 1.8, 0.9, 0.9, 2.7, 2.5, 0.9, 1.9, 0.9, 0],
+      }),
+      cells: {
+        [CELL_A]: {
+          trades: 29,
+          netR: 17.6,
+          expectancyR: 17.6 / 29,
+          wins: 26,
+          losses: 3,
+          weeklyNetR: [1.4, 2.8, 0.9, 1.8, 0.9, 0.9, 2.7, 2.5, 0.9, 1.9, 0.9, 0],
+          weeklyTrades: new Array(12).fill(2),
+          weeklyWins: new Array(12).fill(1),
+          weeklyLosses: new Array(12).fill(0),
+        },
+        [CELL_B]: {
+          trades: 3,
+          netR: 1.5,
+          expectancyR: 0.5,
+          wins: 2,
+          losses: 1,
+          weeklyNetR: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.5],
+          weeklyTrades: new Array(11).fill(0).concat(3),
+          weeklyWins: new Array(11).fill(0).concat(2),
+          weeklyLosses: new Array(11).fill(0).concat(1),
+        },
+      },
+      eligibleCells: [CELL_A, CELL_B],
+    },
+    thresholds: PROMOTION_THRESHOLDS,
+  });
+  assert.equal(evaluation.qualified, true);
+  assert.equal(evaluation.reason, "v5_consistency_exception_passed");
+  assert.equal(evaluation.metrics.totalTrades, 32);
+  assert.equal(evaluation.metrics.activeCells, 2);
 });
 
 test("evaluateScalpV5PromotionEvidence reports the binding v5 threshold failure", () => {

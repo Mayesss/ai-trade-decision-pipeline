@@ -533,6 +533,12 @@ export async function retireConsistentlyFailingScalpV5Deployments(params: {
 //     8. trailing_4w_cross_cell_netR >= minTrailing4wNetR
 //                                                   (default ≥ 4R, direct-live momentum gate)
 //
+// Low-sample consistency exception:
+//   Rows below minTotalTrades can still pass when they have ≥30 trades,
+//   ≥12R total, ≥11 positive weeks, no negative week, ≥4R trailing 4w,
+//   and at least two active cells. This is intentionally stricter on
+//   distribution quality instead of globally lowering the 60-trade gate.
+//
 // Implementation strategy: a single SELECT brings every v5-eligible row out
 // with its evidence. Strict criteria 4-7 are computed in JS (the JSONB walk
 // to "sum across cells per week" is too verbose in SQL); the qualifying rows
@@ -546,6 +552,12 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
   minPositiveWeeks?: number;
   minWorstWeekR?: number;
   minTrailing4wNetR?: number;
+  minConsistencyTrades?: number;
+  minConsistencyTotalNetR?: number;
+  minConsistencyPositiveWeeks?: number;
+  minConsistencyWorstWeekR?: number;
+  minConsistencyTrailing4wNetR?: number;
+  minConsistencyActiveCells?: number;
   maxPromotions?: number;
 }): Promise<{
   promoted: number;
@@ -562,6 +574,7 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
     failedPositiveWeeks: number;
     failedWorstWeek: number;
     failedTrailing4wNetR: number;
+    qualifiedByConsistencyException: number;
     qualified: number;          // passed everything
     shortlisted: number;
     promoted: number;
@@ -574,6 +587,7 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
     failedPositiveWeeks: 0,
     failedWorstWeek: 0,
     failedTrailing4wNetR: 0,
+    qualifiedByConsistencyException: 0,
     qualified: 0,
     shortlisted: 0,
     promoted: 0,
@@ -612,6 +626,18 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
     minTrailing4wNetR: Number.isFinite(Number(params.minTrailing4wNetR))
       ? Number(params.minTrailing4wNetR)
       : 4,
+    minConsistencyTrades: Math.max(0, Math.floor(Number(params.minConsistencyTrades ?? 30))),
+    minConsistencyTotalNetR: Number.isFinite(Number(params.minConsistencyTotalNetR))
+      ? Number(params.minConsistencyTotalNetR)
+      : 12,
+    minConsistencyPositiveWeeks: Math.max(0, Math.floor(Number(params.minConsistencyPositiveWeeks ?? 11))),
+    minConsistencyWorstWeekR: Number.isFinite(Number(params.minConsistencyWorstWeekR))
+      ? Number(params.minConsistencyWorstWeekR)
+      : 0,
+    minConsistencyTrailing4wNetR: Number.isFinite(Number(params.minConsistencyTrailing4wNetR))
+      ? Number(params.minConsistencyTrailing4wNetR)
+      : 4,
+    minConsistencyActiveCells: Math.max(1, Math.floor(Number(params.minConsistencyActiveCells ?? 2))),
   };
   const nowMs = Math.floor(Number(params.nowMs || Date.now()));
   const staleBefore = new Date(nowMs - staleOlderThanMs);
@@ -657,6 +683,7 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
     candidateId: number | null;
     alreadyEnabled: boolean;
     liveRepair: boolean;
+    passReason: string;
     metrics: ScalpV5PromotionMetrics;
   }> = [];
 
@@ -687,6 +714,9 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
     }
 
     funnel.qualified += 1;
+    if (evaluation.reason === "v5_consistency_exception_passed") {
+      funnel.qualifiedByConsistencyException += 1;
+    }
     const gate = asRecord(row.promotionGate);
     const v5Owned =
       String(gate.source || "").trim().toLowerCase() === "v5_cell_evidence" ||
@@ -701,6 +731,7 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
         String(row.liveMode || "").trim().toLowerCase() !== "live" ||
         !v5Owned
       ),
+      passReason: evaluation.reason,
       metrics: evaluation.metrics,
     });
   }
@@ -755,7 +786,7 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
         live_mode = ${liveMode},
         promotion_gate = COALESCE(promotion_gate, '{}'::jsonb) || jsonb_build_object(
           'eligible', TRUE,
-          'reason', 'v5_strict_passed',
+          'reason', ${row.passReason}::text,
           'source', 'v5_cell_evidence',
           'evaluatedAtMs', ${promotedAtMs}::bigint,
           'promotedAtMs', ${promotedAtMs}::bigint,
@@ -763,6 +794,7 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
             promotedAtMs,
             metrics: row.metrics,
             thresholds,
+            passReason: row.passReason,
             liveMode,
             runtimeLiveEnabled,
             v5LiveBypassesV2LiveEnabled,

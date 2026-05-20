@@ -72,6 +72,15 @@ export interface ScalpV5PromotionThresholds {
   minPositiveWeeks: number;
   minWorstWeekR: number;
   minTrailing4wNetR: number;
+  // Low-sample consistency exception. This does not lower the normal
+  // minTotalTrades gate; it allows unusually clean 12-week distributions
+  // through when every stability metric is substantially stronger.
+  minConsistencyTrades?: number;
+  minConsistencyTotalNetR?: number;
+  minConsistencyPositiveWeeks?: number;
+  minConsistencyWorstWeekR?: number;
+  minConsistencyTrailing4wNetR?: number;
+  minConsistencyActiveCells?: number;
 }
 
 export interface ScalpV5PromotionMetrics {
@@ -91,6 +100,7 @@ export interface ScalpV5PromotionEvaluation {
   qualified: boolean;
   reason:
     | "v5_strict_passed"
+    | "v5_consistency_exception_passed"
     | "v5_total_net_r_below_threshold"
     | "v5_total_trades_below_threshold"
     | "v5_positive_weeks_below_threshold"
@@ -194,6 +204,30 @@ export function evaluateScalpV5PromotionEvidence(params: {
     return { qualified: false, reason: "v5_total_net_r_below_threshold", metrics };
   }
   if (metrics.totalTrades < params.thresholds.minTotalTrades) {
+    const consistency = {
+      minTrades: Math.max(0, Math.floor(Number(params.thresholds.minConsistencyTrades ?? 30))),
+      minTotalNetR: Number.isFinite(Number(params.thresholds.minConsistencyTotalNetR))
+        ? Number(params.thresholds.minConsistencyTotalNetR)
+        : 12,
+      minPositiveWeeks: Math.max(0, Math.floor(Number(params.thresholds.minConsistencyPositiveWeeks ?? 11))),
+      minWorstWeekR: Number.isFinite(Number(params.thresholds.minConsistencyWorstWeekR))
+        ? Number(params.thresholds.minConsistencyWorstWeekR)
+        : 0,
+      minTrailing4wNetR: Number.isFinite(Number(params.thresholds.minConsistencyTrailing4wNetR))
+        ? Number(params.thresholds.minConsistencyTrailing4wNetR)
+        : 4,
+      minActiveCells: Math.max(1, Math.floor(Number(params.thresholds.minConsistencyActiveCells ?? 2))),
+    };
+    if (
+      metrics.totalTrades >= consistency.minTrades &&
+      metrics.totalNetR >= consistency.minTotalNetR &&
+      metrics.positiveWeeks >= consistency.minPositiveWeeks &&
+      metrics.worstWeekR >= consistency.minWorstWeekR &&
+      metrics.trailing4wNetR >= consistency.minTrailing4wNetR &&
+      metrics.activeCells >= consistency.minActiveCells
+    ) {
+      return { qualified: true, reason: "v5_consistency_exception_passed", metrics };
+    }
     return { qualified: false, reason: "v5_total_trades_below_threshold", metrics };
   }
   if (metrics.positiveWeeks < params.thresholds.minPositiveWeeks) {
@@ -329,6 +363,8 @@ export function resolveScalpV5EntryBlock(params: {
   currentCellId: ScalpV4CellId | null;
   stale: boolean;
   minTradesPerCell: number;
+  allowThinPositiveCell?: boolean;
+  minThinCellTrades?: number;
 }): ScalpV5GateResult {
   if (!params.enabled) {
     return { blocked: false, shadowOnly: false, reasonCodes: [], matchedCellId: null, evidence: null };
@@ -355,7 +391,15 @@ export function resolveScalpV5EntryBlock(params: {
     cellStat = params.evidence.cells[params.currentCellId] ?? null;
     if (!cellStat) {
       reasonCodes.push("V5_CELL_NOT_IN_EVIDENCE");
-    } else if (cellStat.trades < params.minTradesPerCell) {
+    } else if (
+      cellStat.trades < params.minTradesPerCell &&
+      !(
+        params.allowThinPositiveCell &&
+        cellStat.trades >= Math.max(1, Math.floor(Number(params.minThinCellTrades ?? 3))) &&
+        cellStat.netR > 0 &&
+        cellStat.expectancyR > 0
+      )
+    ) {
       reasonCodes.push("V5_CELL_INSUFFICIENT_TRADES");
     } else if (cellStat.expectancyR <= 0) {
       reasonCodes.push("V5_CELL_NEGATIVE_EXPECTANCY");

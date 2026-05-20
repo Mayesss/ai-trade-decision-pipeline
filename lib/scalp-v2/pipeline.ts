@@ -786,6 +786,15 @@ export function isScalpV5OwnedPromotionGate(value: unknown): boolean {
   );
 }
 
+export function isScalpV5ConsistencyExceptionPromotionGate(value: unknown): boolean {
+  const gate = asRecord(value);
+  const promotion = asRecord(gate.v5Promotion);
+  const reason = String(gate.reason || promotion.passReason || "")
+    .trim()
+    .toLowerCase();
+  return reason === "v5_consistency_exception_passed";
+}
+
 export function resolveScalpV2ExecuteDryRunForDeployment(params: {
   effectiveDryRun: boolean;
   runtimeLiveEnabled: boolean;
@@ -6851,6 +6860,8 @@ export async function runScalpV2ExecuteJob(params: {
 	          currentCellId: v4CurrentRegime.cellId,
 	          stale: Boolean(v4CurrentRegime.stale) || v5EvidenceFreshness.stale,
 	          minTradesPerCell: v5Cfg.minTradesPerCell,
+	          allowThinPositiveCell: isScalpV5ConsistencyExceptionPromotionGate(deployment.promotionGate),
+	          minThinCellTrades: 3,
 	        });
 	        const v5OwnedMissingEvidenceReasonCodes = v5Owned && v5Enabled && !v5Stored?.evidence
 	          ? ["V5_CELL_EVIDENCE_MISSING"]
