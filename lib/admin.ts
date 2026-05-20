@@ -28,6 +28,8 @@ const UNAUTHENTICATED_CRON_ROUTES = new Set<string>([
   "/api/scalp/v5/cron/sunday-rollover",
   "/api/scalp/v5/cron/trim-tail",
   "/api/scalp/v5/cron/cull-bottom",
+  "/api/scalp/v5/cron/load-live-candles",
+  "/api/scalp/v4/cron/build-regimes",
 ]);
 
 function firstHeaderValue(value: string | string[] | undefined): string {
