@@ -210,6 +210,36 @@ export default function ScalpV5Dashboard() {
     return coverage.progress.evaluatedThisWeek >= total;
   }, [coverage]);
 
+  const sessionCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const row of enabledRows) {
+      if (row.gate.decision !== "allow") continue;
+      const key = (row.session || "").toLowerCase();
+      counts[key] = (counts[key] || 0) + 1;
+    }
+    return counts;
+  }, [enabledRows]);
+
+  // Tick once per 30s so session highlighting follows the wall clock.
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const activeSessions = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of SESSION_PROFILES) {
+      const localMoD = minuteOfDayInTz(nowMs, p.timeZone);
+      const inWindow =
+        p.endMin > p.startMin
+          ? localMoD >= p.startMin && localMoD < p.endMin
+          : localMoD >= p.startMin || localMoD < p.endMin;
+      if (inWindow) set.add(p.name);
+    }
+    return set;
+  }, [nowMs]);
+
   // Header classifierVersion: prefer whichever endpoint has loaded first.
   const classifierVersion =
     coverage?.classifierVersion ||
@@ -272,6 +302,8 @@ export default function ScalpV5Dashboard() {
         </>
       )}
 
+      <SessionTimeline sessionCounts={sessionCounts} />
+
       <SectionHeader title="deployments · live cell evidence" />
       {gateState ? (
         <GateChipBar
@@ -294,6 +326,7 @@ export default function ScalpV5Dashboard() {
                   row={dep}
                   expanded={expandedDeployments.has(dep.deploymentId)}
                   onToggle={() => toggleExpanded(dep.deploymentId)}
+                  sessionActive={activeSessions.has((dep.session || "").toLowerCase())}
                 />
               ))
             ) : (
@@ -312,6 +345,7 @@ export default function ScalpV5Dashboard() {
                     row={dep}
                     expanded={expandedDeployments.has(dep.deploymentId)}
                     onToggle={() => toggleExpanded(dep.deploymentId)}
+                    sessionActive={activeSessions.has((dep.session || "").toLowerCase())}
                   />
                 ))}
                 {inactiveRows.length > 12 ? (
@@ -558,13 +592,16 @@ function V5DeploymentRowView({
   row,
   expanded,
   onToggle,
+  sessionActive,
 }: {
   row: V5DeploymentRow;
   expanded: boolean;
   onToggle: () => void;
+  sessionActive: boolean;
 }) {
   const family = row.tuneId.split("_").slice(0, 4).join("_");
   const decision = row.gate.decision;
+  const sessionClass = sessionActive ? "text-emerald-400" : "text-zinc-500";
   const currentR = row.gate.currentCellStat?.expectancyR ?? null;
   const currentN = row.gate.currentCellStat?.trades ?? null;
   const currentExpStr =
@@ -607,7 +644,7 @@ function V5DeploymentRowView({
               <span className="text-zinc-500">{row.venue}/</span>
               {row.symbol}
             </span>
-            <span className="text-zinc-500 text-[12px]">{row.session}</span>
+            <span className={`${sessionClass} text-[12px]`} title={sessionActive ? "session active now" : undefined}>{row.session}</span>
             <span className={`${decisionColor} text-[12px]`}>{decisionLabel}</span>
             <span className={`${netRColor} text-[12px] ml-auto`} title="total 12w netR across all cells">
               {netRStr}
@@ -631,7 +668,7 @@ function V5DeploymentRowView({
           <span className={decisionColor}>{decisionGlyph}</span>
           <span className="text-zinc-500">{row.venue}</span>
           <span className="text-zinc-100 truncate">{row.symbol}</span>
-          <span className="text-zinc-500">{row.session}</span>
+          <span className={sessionClass} title={sessionActive ? "session active now" : undefined}>{row.session}</span>
           <span className={`${decisionColor} text-[13px] truncate`} title={decision}>
             {decisionLabel}
           </span>
@@ -758,7 +795,7 @@ function CellEvidenceRow({
         </div>
       </div>
       <div className="col-span-2 md:col-span-1 md:max-w-[420px]">
-        <WeeklyNetRTrack values={cell.weeklyNetR} globalMaxAbs={maxAbs} weekLabel={weekLabel} heightPx={36} />
+        <WeeklyNetRTrack values={cell.weeklyNetR} globalMaxAbs={maxAbs} weekLabel={weekLabel} />
       </div>
     </div>
   );
@@ -831,6 +868,292 @@ function V5ActivityRow({ event }: { event: TradeRow }) {
           {tail}
         </span>
       </div>
+    </div>
+  );
+}
+
+// ─── session timeline ────────────────────────────────────────────────────────
+
+// Sessions are 4h windows defined in local time (DST-aware via Intl). UTC
+// window labels are derived per render so they stay correct across DST shifts.
+// Kept in sync with lib/scalp/sessions.ts — five 4h profiles.
+type SessionName = "tokyo" | "berlin" | "newyork" | "pacific" | "sydney";
+
+const SESSION_PROFILES: ReadonlyArray<{
+  name: SessionName;
+  timeZone: string;
+  startMin: number;
+  endMin: number;
+}> = [
+  { name: "tokyo", timeZone: "Asia/Tokyo", startMin: 9 * 60, endMin: 13 * 60 },
+  { name: "berlin", timeZone: "Europe/Berlin", startMin: 8 * 60, endMin: 12 * 60 },
+  { name: "newyork", timeZone: "America/New_York", startMin: 8 * 60, endMin: 12 * 60 },
+  { name: "pacific", timeZone: "America/Los_Angeles", startMin: 10 * 60, endMin: 14 * 60 },
+  { name: "sydney", timeZone: "Australia/Sydney", startMin: 8 * 60, endMin: 12 * 60 },
+];
+
+function minuteOfDayInTz(tsMs: number, tz: string): number {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(tsMs));
+  const hh = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
+  const mm = Number(parts.find((p) => p.type === "minute")?.value ?? 0);
+  return hh * 60 + mm;
+}
+
+function fmtClockHM(min: number): string {
+  const norm = ((min % 1440) + 1440) % 1440;
+  const hh = Math.floor(norm / 60);
+  const mm = norm % 60;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
+function fmtDurShort(min: number): string {
+  if (min <= 0) return "0m";
+  if (min < 60) return `${min}m`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m === 0 ? `${h}h` : `${h}h${String(m).padStart(2, "0")}m`;
+}
+
+interface SessionRowState {
+  name: SessionName;
+  utcLabel: string;
+  active: boolean;
+  // Status frames the most relevant time fact: time left in active session,
+  // "in X" for the next open, or "closed Xm ago" if it just ended.
+  status: string;
+  statusTone: "active" | "soon" | "just-closed" | "later";
+}
+
+function computeSessionRow(
+  profile: { name: SessionName; timeZone: string; startMin: number; endMin: number },
+  nowMs: number,
+): SessionRowState {
+  const localMoD = minuteOfDayInTz(nowMs, profile.timeZone);
+  const utcMoD =
+    new Date(nowMs).getUTCHours() * 60 + new Date(nowMs).getUTCMinutes();
+  let offset = localMoD - utcMoD;
+  if (offset > 720) offset -= 1440;
+  if (offset < -720) offset += 1440;
+  const utcStart = ((profile.startMin - offset) % 1440 + 1440) % 1440;
+  const utcEnd = ((profile.endMin - offset) % 1440 + 1440) % 1440;
+  const utcLabel = `${fmtClockHM(utcStart)}–${fmtClockHM(utcEnd)} UTC`;
+
+  const inWindow =
+    profile.endMin > profile.startMin
+      ? localMoD >= profile.startMin && localMoD < profile.endMin
+      : localMoD >= profile.startMin || localMoD < profile.endMin;
+
+  if (inWindow) {
+    const minutesLeft =
+      profile.endMin > profile.startMin
+        ? profile.endMin - localMoD
+        : localMoD >= profile.startMin
+          ? 1440 - localMoD + profile.endMin
+          : profile.endMin - localMoD;
+    return {
+      name: profile.name,
+      utcLabel,
+      active: true,
+      status: `${fmtDurShort(minutesLeft)} left`,
+      statusTone: "active",
+    };
+  }
+
+  let minutesUntilOpen: number;
+  let minutesSinceClose: number;
+  if (localMoD < profile.startMin) {
+    minutesUntilOpen = profile.startMin - localMoD;
+    minutesSinceClose = 1440 - profile.endMin + localMoD;
+  } else {
+    minutesUntilOpen = 1440 - localMoD + profile.startMin;
+    minutesSinceClose = localMoD - profile.endMin;
+  }
+
+  if (minutesSinceClose < 240) {
+    return {
+      name: profile.name,
+      utcLabel,
+      active: false,
+      status: `closed ${fmtDurShort(minutesSinceClose)} ago`,
+      statusTone: "just-closed",
+    };
+  }
+  return {
+    name: profile.name,
+    utcLabel,
+    active: false,
+    status: `in ${fmtDurShort(minutesUntilOpen)}`,
+    statusTone: minutesUntilOpen < 120 ? "soon" : "later",
+  };
+}
+
+// Axis is centered on NOW with ±12h on each side (24h total span). Each
+// session's nearest occurrence is clipped to this window and rendered as a
+// percentage offset from the left edge.
+const SPAN_MINUTES = 1440;
+
+function computeRelativeBands(
+  profile: { startMin: number; endMin: number; timeZone: string },
+  nowMs: number,
+): Array<{ leftPct: number; widthPct: number }> {
+  const localMoD = minuteOfDayInTz(nowMs, profile.timeZone);
+  const duration =
+    profile.endMin > profile.startMin
+      ? profile.endMin - profile.startMin
+      : 1440 - profile.startMin + profile.endMin;
+  const deltaToStart = profile.startMin - localMoD;
+  const todayStartMs = nowMs + deltaToStart * 60_000;
+  const windowStartMs = nowMs - (SPAN_MINUTES / 2) * 60_000;
+  const windowEndMs = nowMs + (SPAN_MINUTES / 2) * 60_000;
+  const spanMs = windowEndMs - windowStartMs;
+
+  const bands: Array<{ leftPct: number; widthPct: number }> = [];
+  for (const shiftDays of [-1, 0, 1]) {
+    const candStart = todayStartMs + shiftDays * 24 * 60 * 60_000;
+    const candEnd = candStart + duration * 60_000;
+    if (candEnd <= windowStartMs || candStart >= windowEndMs) continue;
+    const clippedStart = Math.max(candStart, windowStartMs);
+    const clippedEnd = Math.min(candEnd, windowEndMs);
+    bands.push({
+      leftPct: ((clippedStart - windowStartMs) / spanMs) * 100,
+      widthPct: ((clippedEnd - clippedStart) / spanMs) * 100,
+    });
+  }
+  return bands;
+}
+
+function SessionTimeline({ sessionCounts }: { sessionCounts: Record<string, number> }) {
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const nowLabel = fmtClockHM(new Date(now).getUTCHours() * 60 + new Date(now).getUTCMinutes());
+  const NOW_PCT = 50;
+
+  const rows = SESSION_PROFILES.map((p) => ({
+    profile: p,
+    state: computeSessionRow(p, now),
+    bands: computeRelativeBands(p, now),
+    count: sessionCounts[p.name] || 0,
+  }));
+
+  return (
+    <>
+      <SectionHeader title={`sessions · now ${nowLabel} UTC`} />
+      <div className="mt-1 pl-2">
+        <SessionAxis nowMs={now} nowPct={NOW_PCT} />
+        <div className="space-y-0.5">
+          {rows.map(({ profile, state, bands, count }) => (
+            <SessionLane key={profile.name} state={state} bands={bands} count={count} nowPct={NOW_PCT} />
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function computeUtcHourTicks(nowMs: number): Array<{ pct: number; label: string }> {
+  const windowStartMs = nowMs - 12 * 60 * 60_000;
+  const windowEndMs = nowMs + 12 * 60 * 60_000;
+  const spanMs = windowEndMs - windowStartMs;
+  const nowDate = new Date(nowMs);
+  const midnightUtcMs = Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), nowDate.getUTCDate());
+  const ticks: Array<{ pct: number; label: string }> = [];
+  for (const h of [0, 4, 8, 12, 16, 20]) {
+    for (const shiftDays of [-1, 0, 1]) {
+      const ts = midnightUtcMs + (shiftDays * 24 + h) * 60 * 60_000;
+      if (ts >= windowStartMs && ts <= windowEndMs) {
+        ticks.push({
+          pct: ((ts - windowStartMs) / spanMs) * 100,
+          label: String(h).padStart(2, "0"),
+        });
+        break;
+      }
+    }
+  }
+  return ticks;
+}
+
+function SessionAxis({ nowMs, nowPct }: { nowMs: number; nowPct: number }) {
+  const ticks = computeUtcHourTicks(nowMs);
+  return (
+    <div className="grid grid-cols-[5rem_1fr_11rem] gap-x-3 items-end mb-1">
+      <span />
+      <div className="relative h-4 text-[10px] text-zinc-600">
+        {ticks.map((t) => (
+          <span
+            key={`${t.label}-${t.pct.toFixed(2)}`}
+            className="absolute top-1"
+            style={{ left: `${t.pct}%`, transform: "translateX(-50%)" }}
+          >
+            {t.label}
+          </span>
+        ))}
+        <span
+          className="absolute top-0 text-amber-400 text-[11px] leading-none"
+          style={{ left: `${nowPct}%`, transform: "translateX(-50%)" }}
+        >
+          ▼
+        </span>
+      </div>
+      <span />
+    </div>
+  );
+}
+
+function SessionLane({
+  state,
+  bands,
+  count,
+  nowPct,
+}: {
+  state: SessionRowState;
+  bands: Array<{ leftPct: number; widthPct: number }>;
+  count: number;
+  nowPct: number;
+}) {
+  const nameClass = state.active ? "text-zinc-100" : "text-zinc-400";
+  const statusClass =
+    state.statusTone === "active"
+      ? "text-emerald-400"
+      : state.statusTone === "soon"
+        ? "text-sky-400"
+        : "text-zinc-500";
+  const barClass = state.active
+    ? "bg-emerald-500/60"
+    : state.statusTone === "soon"
+      ? "bg-sky-500/25"
+      : "bg-zinc-500/20";
+  const countClass = count === 0 ? "text-zinc-600" : state.active ? "text-emerald-400" : "text-zinc-300";
+  return (
+    <div className="grid grid-cols-[5rem_1fr_11rem] gap-x-3 items-center text-[12px]">
+      <span className={nameClass}>{state.name}</span>
+      <div className="relative h-2 bg-zinc-900/40 rounded-[1px]">
+        {bands.map((b, i) => (
+          <div
+            key={i}
+            className={`absolute inset-y-0 ${barClass} rounded-[1px]`}
+            style={{ left: `${b.leftPct}%`, width: `${b.widthPct}%` }}
+            title={state.utcLabel}
+          />
+        ))}
+        <div
+          className="absolute inset-y-[-2px] border-l border-amber-400/60"
+          style={{ left: `${nowPct}%` }}
+        />
+      </div>
+      <span className="text-right whitespace-nowrap">
+        <span className={countClass}>{count} {count === 1 ? "dep" : "deps"}</span>
+        <span className="text-zinc-600"> · </span>
+        <span className={statusClass}>{state.status}</span>
+      </span>
     </div>
   );
 }

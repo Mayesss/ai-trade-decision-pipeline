@@ -795,6 +795,14 @@ export function isScalpV5ConsistencyExceptionPromotionGate(value: unknown): bool
   return reason === "v5_consistency_exception_passed";
 }
 
+export function shouldRunScalpV2ExecuteCycleForDeployment(params: {
+  entryBlocked: boolean;
+  hasOpenPosition: boolean;
+}): boolean {
+  if (params.hasOpenPosition) return true;
+  return !params.entryBlocked;
+}
+
 export function resolveScalpV2ExecuteDryRunForDeployment(params: {
   effectiveDryRun: boolean;
   runtimeLiveEnabled: boolean;
@@ -6782,6 +6790,13 @@ export async function runScalpV2ExecuteJob(params: {
     const capitalAdapter = getScalpV2VenueAdapter("capital");
     const bitgetSnapshots = await bitgetAdapter.broker.fetchOpenPositionSnapshots().catch(() => []);
     const capitalSnapshots = await capitalAdapter.broker.fetchOpenPositionSnapshots().catch(() => []);
+    const openPositions = await listScalpV2OpenPositions().catch(() => []);
+    const openPositionDeploymentIds = new Set(
+      openPositions.map((position) => String(position.deploymentId || "").trim()).filter(Boolean),
+    );
+    let executedCycleDeployments = 0;
+    let skippedEntryBlockedDeployments = 0;
+    const skippedEntryBlockReasonCounts: Record<string, number> = {};
 
     for (const deployment of executableDeployments) {
       processed += 1;
@@ -6836,7 +6851,7 @@ export async function runScalpV2ExecuteJob(params: {
 	            }).catch(() => ({ cellId: null, stale: true, snapshot: null }))
 	          : { cellId: null, stale: false, snapshot: null };
 	        const v4RegimeGate = resolveScalpV4EnvelopeBlock({
-	          enabled: v4Enabled,
+	          enabled: v4Enabled && !v5Owned,
 	          hardGate: isScalpV4HardGateEnabled(),
 	          envelope: asRecord(deployment.promotionGate).regimeEnvelope,
 	          currentCellId: v4CurrentRegime.cellId,
@@ -6873,6 +6888,34 @@ export async function runScalpV2ExecuteJob(params: {
 	        // positions still get managed/reconciled. Monday resumes trading
 	        // against the freshly-validated evidence written overnight.
 	        const sundayBlock = resolveScalpV5SundayBlock(nowTs);
+	        const hardEntryBlocked = Boolean(
+	          promotionEntryBlockReasonCodes.length > 0 ||
+	          newsBlackout.blocked ||
+	          v4RegimeGate.blocked ||
+	          v5Gate.blocked ||
+	          v5OwnedMissingEvidenceReasonCodes.length > 0 ||
+	          sundayBlock.blocked
+	        );
+	        const entryBlockReasonCodes = normalizeReasonCodes([
+	          ...promotionEntryBlockReasonCodes,
+	          ...(newsBlackout.blocked ? newsBlackout.reasonCodes : []),
+	          ...(v4RegimeGate.blocked ? v4RegimeGate.reasonCodes : []),
+	          ...(v5Gate.blocked || v5Gate.shadowOnly ? v5Gate.reasonCodes : []),
+	          ...v5OwnedMissingEvidenceReasonCodes,
+	          ...(sundayBlock.blocked ? sundayBlock.reasonCodes : []),
+	        ]);
+	        const hasOpenPosition = openPositionDeploymentIds.has(deployment.deploymentId);
+	        if (!shouldRunScalpV2ExecuteCycleForDeployment({
+	          entryBlocked: hardEntryBlocked,
+	          hasOpenPosition,
+	        })) {
+	          skippedEntryBlockedDeployments += 1;
+	          for (const reasonCode of entryBlockReasonCodes) {
+	            skippedEntryBlockReasonCounts[reasonCode] =
+	              (skippedEntryBlockReasonCounts[reasonCode] || 0) + 1;
+	          }
+	          continue;
+	        }
 	        const configOverride = buildScalpV2ExecuteConfigOverride({
 	          entrySessionProfile: deployment.entrySessionProfile,
 	          riskProfile: rp,
@@ -6881,14 +6924,7 @@ export async function runScalpV2ExecuteJob(params: {
 	          riskRuleReplayOverrides: riskReplayOverrides,
 	          stateMachineOverrides: smOverrides,
 	          temporalFilter,
-	          entryBlockReasonCodes: normalizeReasonCodes([
-	            ...promotionEntryBlockReasonCodes,
-	            ...(newsBlackout.blocked ? newsBlackout.reasonCodes : []),
-	            ...(v4RegimeGate.blocked ? v4RegimeGate.reasonCodes : []),
-	            ...(v5Gate.blocked || v5Gate.shadowOnly ? v5Gate.reasonCodes : []),
-	            ...v5OwnedMissingEvidenceReasonCodes,
-	            ...(sundayBlock.blocked ? sundayBlock.reasonCodes : []),
-	          ]),
+	          entryBlockReasonCodes,
 	        });
         const runtimeSnapshot = buildScalpV2RuntimeSnapshotForDeployment({
           strategyId: deployment.strategyId,
@@ -6907,6 +6943,7 @@ export async function runScalpV2ExecuteJob(params: {
           runtimeSnapshot,
           persistence,
         });
+        executedCycleDeployments += 1;
 
         await appendScalpV2ExecutionEvent(
           buildEvent({
@@ -6983,7 +7020,10 @@ export async function runScalpV2ExecuteJob(params: {
     }
 
     details = {
-      executedDeployments: executableDeployments.length,
+      executedDeployments: executedCycleDeployments,
+      consideredDeployments: executableDeployments.length,
+      skippedEntryBlockedDeployments,
+      skippedEntryBlockReasonCounts,
       dryRun: effectiveDryRun,
       liveEnabled: runtime.liveEnabled,
       v5LiveBypassesV2LiveEnabled: true,

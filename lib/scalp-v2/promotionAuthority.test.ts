@@ -6,6 +6,7 @@ import {
   isScalpV5OwnedPromotionGate,
   resolveScalpV2ExecuteDryRunForDeployment,
   runScalpV2PromoteJob,
+  shouldRunScalpV2ExecuteCycleForDeployment,
 } from "./pipeline";
 
 function withEnv<T>(key: string, value: string | undefined, fn: () => T): T {
@@ -99,6 +100,30 @@ test("v5-owned live deployments bypass SCALP_V2_LIVE_ENABLED in execute dry-run 
       runtimeLiveEnabled: false,
       deploymentLiveMode: "shadow",
       v5Owned: true,
+    }),
+    true,
+  );
+});
+
+test("execute cycle skips entry-blocked flat deployments but still manages open positions", () => {
+  assert.equal(
+    shouldRunScalpV2ExecuteCycleForDeployment({
+      entryBlocked: false,
+      hasOpenPosition: false,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldRunScalpV2ExecuteCycleForDeployment({
+      entryBlocked: true,
+      hasOpenPosition: false,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldRunScalpV2ExecuteCycleForDeployment({
+      entryBlocked: true,
+      hasOpenPosition: true,
     }),
     true,
   );
