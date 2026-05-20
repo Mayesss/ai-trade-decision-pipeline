@@ -670,11 +670,10 @@ async function executeBitgetScalpEntry(params: {
     marginCoin: "USDT",
     marginMode: "isolated",
     side: direction.toLowerCase(),
+    tradeSide: "open",
     orderType: orderType === "LIMIT" ? "limit" : "market",
     size: String(size),
     clientOid,
-    force: "gtc",
-    holdSide,
   };
   if (
     orderType === "LIMIT" &&
@@ -682,6 +681,7 @@ async function executeBitgetScalpEntry(params: {
     Number(params.limitLevel) > 0
   ) {
     body.price = Number(params.limitLevel);
+    body.force = "gtc";
   }
   if (Number.isFinite(toFinite(params.stopLevel)) && Number(params.stopLevel) > 0) {
     body.presetStopLossPrice = String(Number(params.stopLevel));
