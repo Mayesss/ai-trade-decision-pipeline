@@ -14,6 +14,33 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function hasAnyReason(reasonCodes: string[], values: string[]): boolean {
+  const set = new Set(reasonCodes);
+  return values.some((value) => set.has(value));
+}
+
+function isCloseReason(reasonCodes: string[]): boolean {
+  return hasAnyReason(reasonCodes, [
+    "TRADE_CLOSE_CONFIRMED",
+    "TRADE_CLOSE_OWNED_POSITION_NOT_FOUND",
+    "TRADE_EXIT_ASSUMED_BROKER_CLOSED",
+    "TRADE_EXITED_READY_NEXT_SETUP",
+    "TRADE_EXIT_STOP_HIT",
+    "TRADE_EXIT_TP_HIT",
+    "TRADE_EXIT_TIME_STOP",
+    "SCALP_V2_RECONCILE_CLOSE",
+    "BROKER_OWNED_POSITION_NOT_FOUND_MARK_DONE",
+  ]);
+}
+
+function labelCloseType(value: unknown): string {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, " ");
+  return normalized || "closed";
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") return res.status(405).json({ error: "Method Not Allowed" });
   if (!requireAdminAccess(req, res)) return;
@@ -23,7 +50,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const classifierVersion = SCALP_V4_CLASSIFIER_VERSION;
     const db = scalpPrisma();
 
-    const [walkforwardRows, transitionRows, tradeRows] = await Promise.all([
+    const [walkforwardRows, transitionRows, journalRows, ledgerRows] = await Promise.all([
       db.$queryRaw<Array<{
         deploymentId: string;
         venue: string;
@@ -80,9 +107,96 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             OR 'ENTRY_EXECUTION_ERROR' = ANY(reason_codes)
           )
         ORDER BY ts DESC
-        LIMIT 30;
+        LIMIT 80;
+      `),
+      db.$queryRaw<Array<{
+        tsExit: Date;
+        deploymentId: string;
+        venue: string;
+        symbol: string;
+        closeType: string;
+        rMultiple: number | null;
+        reasonCodes: string[];
+      }>>(sql`
+        SELECT
+          ts_exit AS "tsExit",
+          deployment_id AS "deploymentId",
+          venue,
+          symbol,
+          close_type AS "closeType",
+          r_multiple::double precision AS "rMultiple",
+          reason_codes AS "reasonCodes"
+        FROM scalp_v2_ledger
+        WHERE ts_exit > NOW() - INTERVAL '30 day'
+        ORDER BY ts_exit DESC
+        LIMIT 80;
       `),
     ]);
+
+    const recentTrades = [
+      ...ledgerRows.map((row) => {
+        const reasonCodes = Array.isArray(row.reasonCodes) ? row.reasonCodes : [];
+        return {
+          tsMs: row.tsExit.getTime(),
+          deploymentId: row.deploymentId,
+          venue: row.venue,
+          symbol: row.symbol,
+          reasonCodes,
+          eventKind: "trade_close" as const,
+          state: "CLOSED",
+          stateChanged: true,
+          tradeEventOccurred: true,
+          rMultiple:
+            row.rMultiple !== null && Number.isFinite(Number(row.rMultiple))
+              ? Number(row.rMultiple)
+              : null,
+          summary: labelCloseType(row.closeType),
+        };
+      }),
+      ...journalRows
+        .filter((row) => {
+          const reasonCodes = Array.isArray(row.reasonCodes) ? row.reasonCodes : [];
+          return !isCloseReason(reasonCodes);
+        })
+        .map((row) => {
+          const payload = asRecord(row.payload);
+          const reasonCodes = Array.isArray(row.reasonCodes) ? row.reasonCodes : [];
+          const tradeOccurred = Boolean(payload.tradeEventOccurred);
+          const stateChanged = Boolean(payload.stateChanged);
+          const state = String(payload.state || "");
+          const tradePayload = asRecord(payload.trade);
+          const eventKind = tradeOccurred
+            ? hasAnyReason(reasonCodes, ["ENTRY_PLACED"])
+              ? "trade_open"
+              : "trade"
+            : reasonCodes.includes("ENTRY_EXECUTION_ERROR")
+              ? "entry_error"
+              : reasonCodes.includes("ENTRY_PLAN_READY") && reasonCodes.includes("ENTRY_NOT_PLACED")
+                ? "entry_skipped"
+                : "state_change";
+          const rMultiple =
+            tradePayload.rMultiple !== undefined && Number.isFinite(Number(tradePayload.rMultiple))
+              ? Number(tradePayload.rMultiple)
+              : payload.rMultiple !== undefined && Number.isFinite(Number(payload.rMultiple))
+                ? Number(payload.rMultiple)
+                : null;
+          return {
+            tsMs: row.ts.getTime(),
+            deploymentId: row.deploymentId,
+            venue: row.venue,
+            symbol: row.symbol,
+            reasonCodes,
+            eventKind,
+            state,
+            stateChanged,
+            tradeEventOccurred: tradeOccurred,
+            rMultiple,
+            summary: String(payload.summary || payload.message || payload.event || state || "execution"),
+          };
+        }),
+    ]
+      .sort((a, b) => b.tsMs - a.tsMs)
+      .slice(0, 40);
 
     return res.status(200).json({
       ok: true,
@@ -111,40 +225,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         fromCellId: row.fromCellId,
         toCellId: row.toCellId,
       })),
-      recentTrades: tradeRows.map((row) => {
-        const payload = asRecord(row.payload);
-        const reasonCodes = Array.isArray(row.reasonCodes) ? row.reasonCodes : [];
-        const tradeOccurred = Boolean(payload.tradeEventOccurred);
-        const stateChanged = Boolean(payload.stateChanged);
-        const state = String(payload.state || "");
-        const tradePayload = asRecord(payload.trade);
-        const eventKind = tradeOccurred
-          ? "trade"
-          : reasonCodes.includes("ENTRY_EXECUTION_ERROR")
-            ? "entry_error"
-            : reasonCodes.includes("ENTRY_PLAN_READY") && reasonCodes.includes("ENTRY_NOT_PLACED")
-              ? "entry_skipped"
-              : "state_change";
-        const rMultiple =
-          tradePayload.rMultiple !== undefined && Number.isFinite(Number(tradePayload.rMultiple))
-            ? Number(tradePayload.rMultiple)
-            : payload.rMultiple !== undefined && Number.isFinite(Number(payload.rMultiple))
-              ? Number(payload.rMultiple)
-              : null;
-        return {
-          tsMs: row.ts.getTime(),
-          deploymentId: row.deploymentId,
-          venue: row.venue,
-          symbol: row.symbol,
-          reasonCodes,
-          eventKind,
-          state,
-          stateChanged,
-          tradeEventOccurred: tradeOccurred,
-          rMultiple,
-          summary: String(payload.summary || payload.message || payload.event || state || "execution"),
-        };
-      }),
+      recentTrades,
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: (err as Error)?.message || String(err) });

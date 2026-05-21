@@ -111,7 +111,7 @@ interface TradeRow {
   venue: string | null;
   symbol: string | null;
   reasonCodes: string[];
-  eventKind: "trade" | "entry_error" | "entry_skipped" | "state_change";
+  eventKind: "trade" | "trade_open" | "trade_close" | "entry_error" | "entry_skipped" | "state_change";
   state: string;
   stateChanged: boolean;
   tradeEventOccurred: boolean;
@@ -845,12 +845,17 @@ function V5ActivityRow({ event }: { event: TradeRow }) {
   let tail = "";
   let tailClass = "text-zinc-500";
 
-  if (event.eventKind === "trade") {
-    marker = "TRADE";
+  if (event.eventKind === "trade" || event.eventKind === "trade_open" || event.eventKind === "trade_close") {
+    marker =
+      event.eventKind === "trade_open"
+        ? "OPEN"
+        : event.eventKind === "trade_close"
+          ? "CLOSE"
+          : "TRADE";
     const tone =
       event.rMultiple !== null ? (event.rMultiple > 0 ? "text-emerald-400" : "text-rose-400") : "text-zinc-200";
     markerClass = tone;
-    detail = event.state || event.summary;
+    detail = event.summary || event.state;
     detailClass = tone;
     tail = event.rMultiple !== null ? (event.rMultiple > 0 ? `+${event.rMultiple.toFixed(2)}R` : `${event.rMultiple.toFixed(2)}R`) : "";
     tailClass = tone;
