@@ -5,6 +5,7 @@ import {
   applyScalpStrategyConfigOverride,
   getScalpStrategyConfig,
 } from "../config";
+import { resolveBitgetExecutableNotionalUsd } from "../adapters/bitget";
 import { executeScalpEntryPlan } from "../execution";
 import { createInitialScalpSessionState } from "../stateMachine";
 
@@ -125,4 +126,29 @@ test("executeScalpEntryPlan forwards riskUsd to broker entry adapter", async () 
   assert.equal(capturedRiskUsd, 250);
   assert.equal(out.state.state, "IN_TRADE");
   assert.ok(out.reasonCodes.includes("ENTRY_PLACED"));
+});
+
+test("Bitget executable notional is capped to available margin at symbol max leverage", () => {
+  const capped = resolveBitgetExecutableNotionalUsd({
+    requestedNotionalUsd: 10_000,
+    availableUsd: 140,
+    maxLeverage: 50,
+    minNotionalUsd: 5,
+    safetyFactor: 0.9,
+  });
+
+  assert.equal(capped.rejectReason, null);
+  assert.equal(capped.capped, true);
+  assert.equal(capped.notionalUsd, 6_300);
+
+  const tooSmall = resolveBitgetExecutableNotionalUsd({
+    requestedNotionalUsd: 100,
+    availableUsd: 0.05,
+    maxLeverage: 50,
+    minNotionalUsd: 5,
+    safetyFactor: 0.9,
+  });
+
+  assert.equal(tooSmall.capped, true);
+  assert.equal(tooSmall.rejectReason, "INSUFFICIENT_BALANCE_FOR_MIN_NOTIONAL");
 });

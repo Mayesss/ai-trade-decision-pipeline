@@ -749,6 +749,22 @@ export async function executeScalpEntryPlan(params: {
     return { state: next, reasonCodes };
   }
 
+  const executedNotionalUsd =
+    Number.isFinite(Number(exec.notionalUsd)) && Number(exec.notionalUsd) > 0
+      ? Number(exec.notionalUsd)
+      : params.plan.notionalUsd;
+  const notionalScale =
+    Number.isFinite(executedNotionalUsd) &&
+    executedNotionalUsd > 0 &&
+    Number.isFinite(params.plan.notionalUsd) &&
+    params.plan.notionalUsd > 0
+      ? Math.min(1, executedNotionalUsd / params.plan.notionalUsd)
+      : 1;
+  const executedRiskUsd =
+    Number.isFinite(params.plan.riskUsd) && params.plan.riskUsd > 0
+      ? params.plan.riskUsd * notionalScale
+      : params.plan.riskUsd;
+
   next.trade = {
     setupId: params.plan.setupId,
     dealReference: String(exec.dealReference || params.plan.dealReference),
@@ -758,8 +774,8 @@ export async function executeScalpEntryPlan(params: {
     takeProfitPrice: params.plan.takeProfitPrice,
     riskR: 1,
     riskAbs: params.plan.riskAbs,
-    riskUsd: params.plan.riskUsd,
-    notionalUsd: params.plan.notionalUsd,
+    riskUsd: executedRiskUsd,
+    notionalUsd: executedNotionalUsd,
     initialStopPrice: params.plan.stopPrice,
     remainingSizePct: 1,
     realizedR: 0,

@@ -35,6 +35,13 @@ const BITGET_RISK_MARGIN_LEVERAGE_SAFETY_BUFFER = Math.max(
     Number(process.env.SCALP_BITGET_RISK_MARGIN_LEVERAGE_SAFETY_BUFFER) || 10,
   ),
 );
+const BITGET_AVAILABLE_NOTIONAL_SAFETY_FACTOR = Math.max(
+  0.1,
+  Math.min(
+    1,
+    Number(process.env.SCALP_BITGET_AVAILABLE_NOTIONAL_SAFETY_FACTOR) || 0.9,
+  ),
+);
 
 type CachedContractMeta = {
   fetchedAtMs: number;
@@ -361,8 +368,10 @@ async function fetchBitgetAccountAvailableUsd(): Promise<number | null> {
     let best: number | null = null;
     for (const row of rows) {
       const available =
+        toPositive((row as any)?.isolatedMaxAvailable) ??
         toPositive((row as any)?.available) ??
         toPositive((row as any)?.crossedMaxAvailable) ??
+        toPositive((row as any)?.unionAvailable) ??
         toPositive((row as any)?.maxTransferOut) ??
         toPositive((row as any)?.accountEquity) ??
         toPositive((row as any)?.usdtEquity);
@@ -554,6 +563,55 @@ function resolveLeverageForRiskMarginTarget(params: {
   return Math.max(1, bufferedLeverage);
 }
 
+export function resolveBitgetExecutableNotionalUsd(params: {
+  requestedNotionalUsd: number;
+  availableUsd: number | null;
+  maxLeverage: number;
+  minNotionalUsd?: number | null;
+  safetyFactor?: number | null;
+}): {
+  notionalUsd: number;
+  capped: boolean;
+  rejectReason: "INSUFFICIENT_BALANCE_FOR_MIN_NOTIONAL" | null;
+} {
+  const requestedNotionalUsd = toFinite(params.requestedNotionalUsd);
+  if (!(Number.isFinite(requestedNotionalUsd) && requestedNotionalUsd > 0)) {
+    return {
+      notionalUsd: 0,
+      capped: false,
+      rejectReason: "INSUFFICIENT_BALANCE_FOR_MIN_NOTIONAL",
+    };
+  }
+  const availableUsd = toPositive(params.availableUsd);
+  const maxLeverage = Math.max(1, Math.floor(toFinite(params.maxLeverage, 1)));
+  if (!(availableUsd !== null && availableUsd > 0)) {
+    return { notionalUsd: requestedNotionalUsd, capped: false, rejectReason: null };
+  }
+
+  const safetyFactorRaw =
+    params.safetyFactor === null || params.safetyFactor === undefined
+      ? BITGET_AVAILABLE_NOTIONAL_SAFETY_FACTOR
+      : toFinite(params.safetyFactor, BITGET_AVAILABLE_NOTIONAL_SAFETY_FACTOR);
+  const safetyFactor = Math.max(0.1, Math.min(1, safetyFactorRaw));
+  const maxAffordableNotionalUsd = availableUsd * maxLeverage * safetyFactor;
+  const minNotionalUsd = Math.max(0, toFinite(params.minNotionalUsd, 0));
+  if (maxAffordableNotionalUsd < Math.max(0.01, minNotionalUsd)) {
+    return {
+      notionalUsd: 0,
+      capped: true,
+      rejectReason: "INSUFFICIENT_BALANCE_FOR_MIN_NOTIONAL",
+    };
+  }
+  if (requestedNotionalUsd <= maxAffordableNotionalUsd) {
+    return { notionalUsd: requestedNotionalUsd, capped: false, rejectReason: null };
+  }
+  return {
+    notionalUsd: Math.max(minNotionalUsd, maxAffordableNotionalUsd),
+    capped: true,
+    rejectReason: null,
+  };
+}
+
 async function executeBitgetScalpEntry(params: {
   symbol: string;
   direction: "BUY" | "SELL";
@@ -569,8 +627,8 @@ async function executeBitgetScalpEntry(params: {
 }) {
   const symbol = normalizeSymbol(params.symbol);
   if (!symbol) throw new Error("Bitget scalp entry requires symbol");
-  const notionalUsd = toFinite(params.notionalUsd);
-  if (!(Number.isFinite(notionalUsd) && notionalUsd > 0)) {
+  const requestedNotionalUsd = toFinite(params.notionalUsd);
+  if (!(Number.isFinite(requestedNotionalUsd) && requestedNotionalUsd > 0)) {
     throw new Error(`Invalid bitget scalp notional for ${symbol}`);
   }
   const orderType: "MARKET" | "LIMIT" =
@@ -583,7 +641,7 @@ async function executeBitgetScalpEntry(params: {
   const requestedLeverage = clampLeverage(params.leverage ?? null) ?? 1;
   const riskMarginTargetUsd = toPositive(params.riskUsd);
   const marginTargetLeverage = resolveLeverageForRiskMarginTarget({
-    notionalUsd,
+    notionalUsd: requestedNotionalUsd,
     riskMarginTargetUsd,
     fallbackLeverage: requestedLeverage,
   });
@@ -599,7 +657,7 @@ async function executeBitgetScalpEntry(params: {
       clientOid,
       symbol,
       direction,
-      notionalUsd,
+      notionalUsd: requestedNotionalUsd,
       leverage: marginTargetLeverage,
       orderType,
       size: null,
@@ -620,7 +678,7 @@ async function executeBitgetScalpEntry(params: {
       clientOid,
       symbol,
       direction,
-      notionalUsd,
+      notionalUsd: requestedNotionalUsd,
       leverage: marginTargetLeverage,
       orderType,
       size: null,
@@ -636,6 +694,33 @@ async function executeBitgetScalpEntry(params: {
   const accountAvailableUsd = await fetchBitgetAccountAvailableUsd().catch(
     () => null,
   );
+  const executableNotional = resolveBitgetExecutableNotionalUsd({
+    requestedNotionalUsd,
+    availableUsd: accountAvailableUsd,
+    maxLeverage: symbolLeverageCap,
+    minNotionalUsd: toPositive((meta as any).minTradeUSDT),
+  });
+  if (executableNotional.rejectReason) {
+    return {
+      placed: false,
+      dryRun: false,
+      orderId: null,
+      dealId: syntheticDealId,
+      dealReference: clientOid,
+      clientOid,
+      symbol,
+      direction,
+      notionalUsd: requestedNotionalUsd,
+      leverage: symbolLeverageCap,
+      orderType,
+      size: null,
+      epic: symbol,
+      dealStatus: "REJECTED",
+      confirmStatus: "MARGIN_INSUFFICIENT",
+      rejectReason: executableNotional.rejectReason,
+    };
+  }
+  const notionalUsd = executableNotional.notionalUsd;
   const requiredLeverageByAvailable =
     Number.isFinite(accountAvailableUsd as number) && Number(accountAvailableUsd) > 0
       ? Math.max(
