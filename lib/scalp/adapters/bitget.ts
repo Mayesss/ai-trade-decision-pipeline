@@ -480,6 +480,23 @@ function quantizeDownSize(params: {
   return Math.floor(params.rawSize * factor) / factor;
 }
 
+function quantizePriceToTick(params: {
+  rawPrice: unknown;
+  tickSize: number | null;
+  pricePlace: number | null;
+}): number | null {
+  const raw = toFinite(params.rawPrice);
+  if (!(Number.isFinite(raw) && raw > 0)) return null;
+  const decimals = params.pricePlace !== null ? Math.max(0, params.pricePlace) : 8;
+  const tickSize =
+    params.tickSize && Number.isFinite(params.tickSize) && params.tickSize > 0
+      ? params.tickSize
+      : 10 ** -decimals;
+  const rounded = Math.round(raw / tickSize) * tickSize;
+  if (!(Number.isFinite(rounded) && rounded > 0)) return null;
+  return Number(rounded.toFixed(decimals));
+}
+
 function isBitgetLiveEnabled(): boolean {
   const normalized = String(process.env.SCALP_BITGET_LIVE_ENABLED || "")
     .trim()
@@ -664,6 +681,10 @@ async function executeBitgetScalpEntry(params: {
   if (!(Number.isFinite(size) && size > 0)) {
     throw new Error(`Bitget returned invalid order size for ${symbol}`);
   }
+  const pricePlace = Number.isFinite(toFinite((meta as any).pricePlace))
+    ? Math.max(0, Math.floor(toFinite((meta as any).pricePlace)))
+    : null;
+  const tickSize = resolveBitgetTickSize(meta, pricePlace);
   const body: Record<string, unknown> = {
     symbol,
     productType: productTypeRaw,
@@ -679,17 +700,29 @@ async function executeBitgetScalpEntry(params: {
     Number.isFinite(toFinite(params.limitLevel)) &&
     Number(params.limitLevel) > 0
   ) {
-    body.price = Number(params.limitLevel);
+    const price = quantizePriceToTick({
+      rawPrice: params.limitLevel,
+      tickSize,
+      pricePlace,
+    });
+    if (price !== null) body.price = String(price);
     body.force = "gtc";
   }
-  if (Number.isFinite(toFinite(params.stopLevel)) && Number(params.stopLevel) > 0) {
-    body.presetStopLossPrice = String(Number(params.stopLevel));
+  const stopPrice = quantizePriceToTick({
+    rawPrice: params.stopLevel,
+    tickSize,
+    pricePlace,
+  });
+  if (stopPrice !== null) {
+    body.presetStopLossPrice = String(stopPrice);
   }
-  if (
-    Number.isFinite(toFinite(params.profitLevel)) &&
-    Number(params.profitLevel) > 0
-  ) {
-    body.presetStopSurplusPrice = String(Number(params.profitLevel));
+  const profitPrice = quantizePriceToTick({
+    rawPrice: params.profitLevel,
+    tickSize,
+    pricePlace,
+  });
+  if (profitPrice !== null) {
+    body.presetStopSurplusPrice = String(profitPrice);
   }
 
   try {
