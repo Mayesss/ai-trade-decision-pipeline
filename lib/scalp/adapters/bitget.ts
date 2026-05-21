@@ -670,7 +670,6 @@ async function executeBitgetScalpEntry(params: {
     marginCoin: "USDT",
     marginMode: "isolated",
     side: direction.toLowerCase(),
-    tradeSide: "open",
     orderType: orderType === "LIMIT" ? "limit" : "market",
     size: String(size),
     clientOid,
@@ -864,7 +863,6 @@ async function closeBitgetPositionByOwnership(params: {
     orderType: "market",
     size: String(quantizedCloseSize),
     clientOid,
-    force: "gtc",
   };
   if (isHedgeMode) {
     closeBody.side = ownership.holdSide === "long" ? "buy" : "sell";
