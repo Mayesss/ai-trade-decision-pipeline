@@ -23,6 +23,7 @@ export type ScalpV2EventType =
 export type ScalpV2CloseType =
   | "fill"
   | "stop_loss"
+  | "trailing_stop"
   | "liquidation"
   | "manual_close"
   | "reconcile_close";

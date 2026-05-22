@@ -159,6 +159,9 @@ export function deriveCloseTypeFromReasonCodes(
 ): ScalpV2CloseType {
   const codes = normalizeReasonCodes(reasonCodes);
   if (codes.some((code) => code.includes("LIQUID"))) return "liquidation";
+  if (codes.some((code) => code.includes("TRAIL_STOP"))) {
+    return "trailing_stop";
+  }
   if (codes.some((code) => code.includes("STOP") || code.includes("SL_"))) {
     return "stop_loss";
   }

@@ -41,6 +41,17 @@ function labelCloseType(value: unknown): string {
   return normalized || "closed";
 }
 
+function labelLedgerClose(row: { closeType: string; reasonCodes: string[] }): string {
+  const reasonCodes = Array.isArray(row.reasonCodes) ? row.reasonCodes : [];
+  if (
+    String(row.closeType || "").toLowerCase() === "stop_loss" &&
+    hasAnyReason(reasonCodes, ["TRAIL_STOP_UPDATED"])
+  ) {
+    return "trailing stop";
+  }
+  return labelCloseType(row.closeType);
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") return res.status(405).json({ error: "Method Not Allowed" });
   if (!requireAdminAccess(req, res)) return;
@@ -150,7 +161,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             row.rMultiple !== null && Number.isFinite(Number(row.rMultiple))
               ? Number(row.rMultiple)
               : null,
-          summary: labelCloseType(row.closeType),
+          summary: labelLedgerClose(row),
         };
       }),
       ...journalRows

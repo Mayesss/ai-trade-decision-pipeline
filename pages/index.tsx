@@ -302,6 +302,8 @@ export default function ScalpV5Dashboard() {
         </>
       )}
 
+      <WeekNetRTrack recentTrades={recent?.recentTrades ?? null} />
+
       <SessionTimeline sessionCounts={sessionCounts} />
 
       <SectionHeader title="deployments · live cell evidence" />
@@ -1063,6 +1065,144 @@ function computeRelativeBands(
     });
   }
   return bands;
+}
+
+// ─── week NetR strip ─────────────────────────────────────────────────────────
+
+// Sunday is the rollover/evaluation day — no live trading happens, so the
+// week strip shows Mon–Sat with a 7th cell that rolls the week total up.
+const WEEK_DOW_LABELS = ["mon", "tue", "wed", "thu", "fri", "sat"] as const;
+const DAY_MS = 24 * 60 * 60_000;
+
+function WeekNetRTrack({ recentTrades }: { recentTrades: TradeRow[] | null }) {
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const days = useMemo(() => {
+    const today = new Date(now);
+    const utcDow = today.getUTCDay(); // 0=Sun..6=Sat
+    const daysSinceMon = (utcDow + 6) % 7;
+    const mondayMidnightMs = Date.UTC(
+      today.getUTCFullYear(),
+      today.getUTCMonth(),
+      today.getUTCDate() - daysSinceMon,
+    );
+    return Array.from({ length: 6 }, (_, i) => {
+      const startMs = mondayMidnightMs + i * DAY_MS;
+      return {
+        startMs,
+        endMs: startMs + DAY_MS,
+        dow: WEEK_DOW_LABELS[i],
+        date: new Date(startMs).getUTCDate(),
+        isToday: now >= startMs && now < startMs + DAY_MS,
+        isFuture: startMs > now,
+      };
+    });
+  }, [now]);
+
+  const aggByDay = useMemo(() => {
+    const byDay = new Map<number, { netR: number; trades: number }>();
+    if (!recentTrades) return byDay;
+    for (const t of recentTrades) {
+      // The ledger-sourced closes carry the realized rMultiple as "trade_close".
+      // Journal "trade" rows are usually opens (rMultiple null) but accept them
+      // too if they happen to carry a value, so we don't silently drop data.
+      if (t.eventKind !== "trade_close" && t.eventKind !== "trade") continue;
+      if (t.rMultiple == null || !Number.isFinite(t.rMultiple)) continue;
+      const dayStart = Math.floor(t.tsMs / DAY_MS) * DAY_MS;
+      const prev = byDay.get(dayStart) || { netR: 0, trades: 0 };
+      byDay.set(dayStart, { netR: prev.netR + t.rMultiple, trades: prev.trades + 1 });
+    }
+    return byDay;
+  }, [recentTrades]);
+
+  const weekTotal = days.reduce(
+    (acc, d) => {
+      const a = aggByDay.get(d.startMs);
+      if (!a) return acc;
+      return {
+        netR: acc.netR + a.netR,
+        trades: acc.trades + a.trades,
+        daysActive: acc.daysActive + 1,
+      };
+    },
+    { netR: 0, trades: 0, daysActive: 0 },
+  );
+  const totalNetRColor =
+    weekTotal.trades === 0
+      ? "text-zinc-600"
+      : weekTotal.netR > 0
+        ? "text-emerald-400"
+        : weekTotal.netR < 0
+          ? "text-rose-400"
+          : "text-zinc-300";
+  return (
+    <>
+      <SectionHeader title="this week · live netR" />
+      <div className="mt-1 pl-2 grid grid-cols-7 gap-1">
+        {days.map((d) => {
+          const agg = aggByDay.get(d.startMs);
+          const hasData = !!agg && agg.trades > 0;
+          const netRColor = !hasData
+            ? "text-zinc-600"
+            : agg!.netR > 0
+              ? "text-emerald-400"
+              : agg!.netR < 0
+                ? "text-rose-400"
+                : "text-zinc-300";
+          const cellBg = d.isToday
+            ? "border-emerald-500/50 bg-emerald-500/5"
+            : hasData
+              ? "border-zinc-700/60 bg-zinc-900/40"
+              : "border-zinc-800/60 bg-zinc-900/20";
+          const dim = d.isFuture ? "opacity-40" : "";
+          return (
+            <div
+              key={d.startMs}
+              className={`border rounded-sm px-1.5 py-1 ${cellBg} ${dim}`}
+              title={new Date(d.startMs).toISOString().slice(0, 10)}
+            >
+              <div className="flex items-baseline justify-between text-[10px] text-zinc-500 leading-none">
+                <span className={d.isToday ? "text-emerald-400" : ""}>{d.dow}</span>
+                <span className="text-zinc-400">{d.date}</span>
+              </div>
+              <div className={`${netRColor} text-[12px] mt-1 leading-none whitespace-nowrap`}>
+                {hasData ? `${agg!.netR >= 0 ? "+" : ""}${agg!.netR.toFixed(2)}R` : "—"}
+              </div>
+              <div className="text-zinc-600 text-[10px] mt-0.5 leading-none">
+                {hasData ? `${agg!.trades} trade${agg!.trades === 1 ? "" : "s"}` : " "}
+              </div>
+            </div>
+          );
+        })}
+        <div
+          className="border border-zinc-600/70 bg-zinc-800/40 rounded-sm px-1.5 py-1"
+          title={`week total · ${weekTotal.trades} trade${weekTotal.trades === 1 ? "" : "s"} across ${weekTotal.daysActive} day${weekTotal.daysActive === 1 ? "" : "s"}`}
+        >
+          <div className="flex items-baseline justify-between text-[10px] text-zinc-500 leading-none">
+            <span>week</span>
+            <span className="text-zinc-400">Σ</span>
+          </div>
+          <div className={`${totalNetRColor} text-[12px] mt-1 leading-none whitespace-nowrap`}>
+            {weekTotal.trades > 0
+              ? `${weekTotal.netR >= 0 ? "+" : ""}${weekTotal.netR.toFixed(2)}R`
+              : "—"}
+          </div>
+          <div className="text-zinc-600 text-[10px] mt-0.5 leading-none">
+            {weekTotal.daysActive > 0
+              ? `${weekTotal.daysActive} day${weekTotal.daysActive === 1 ? "" : "s"}`
+              : " "}
+          </div>
+        </div>
+      </div>
+      {recentTrades === null ? (
+        <div className="pl-2 mt-1 text-zinc-600 text-[11px]">loading trades…</div>
+      ) : null}
+    </>
+  );
 }
 
 function SessionTimeline({ sessionCounts }: { sessionCounts: Record<string, number> }) {
