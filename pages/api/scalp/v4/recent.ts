@@ -72,7 +72,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const classifierVersion = SCALP_V4_CLASSIFIER_VERSION;
     const db = scalpPrisma();
 
-    const [walkforwardRows, transitionRows, journalRows, ledgerRows] = await Promise.all([
+    const [walkforwardRows, transitionRows, journalRows, ledgerRows, dailyRows] = await Promise.all([
       db.$queryRaw<Array<{
         deploymentId: string;
         venue: string;
@@ -158,6 +158,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         WHERE ts_exit > NOW() - INTERVAL '30 day'
         ORDER BY ts_exit DESC
         LIMIT 80;
+      `),
+      db.$queryRaw<Array<{
+        dayKey: Date | string;
+        trades: number | bigint;
+        wins: number | bigint;
+        losses: number | bigint;
+        netR: number | null;
+        pnlUsd: number | null;
+      }>>(sql`
+        SELECT
+          day_key AS "dayKey",
+          SUM(trades)::int AS trades,
+          SUM(wins)::int AS wins,
+          SUM(losses)::int AS losses,
+          COALESCE(SUM(net_r), 0)::double precision AS "netR",
+          COALESCE(SUM(net_pnl_usd), 0)::double precision AS "pnlUsd"
+        FROM scalp_v2_metrics_daily
+        WHERE day_key >= ((NOW() AT TIME ZONE 'UTC')::date - INTERVAL '35 day')
+        GROUP BY day_key
+        ORDER BY day_key ASC;
       `),
     ]);
 
@@ -259,6 +279,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         fromCellId: row.fromCellId,
         toCellId: row.toCellId,
       })),
+      dailyNetR: dailyRows.map((row) => {
+        const dayKey =
+          row.dayKey instanceof Date
+            ? row.dayKey.toISOString().slice(0, 10)
+            : String(row.dayKey || "").slice(0, 10);
+        return {
+          dayKey,
+          dayStartMs: Date.parse(`${dayKey}T00:00:00.000Z`),
+          trades: Number(row.trades || 0),
+          wins: Number(row.wins || 0),
+          losses: Number(row.losses || 0),
+          netR: Number.isFinite(Number(row.netR)) ? Number(row.netR) : 0,
+          pnlUsd: Number.isFinite(Number(row.pnlUsd)) ? Number(row.pnlUsd) : 0,
+        };
+      }),
       recentTrades,
     });
   } catch (err) {

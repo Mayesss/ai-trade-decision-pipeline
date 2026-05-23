@@ -47,6 +47,14 @@ function toOptionalMs(value: unknown): number | null {
   return Math.floor(n);
 }
 
+const DAY_MS = 24 * 60 * 60_000;
+
+function utcDayKeyFromMs(tsMs: number): string {
+  const n = Math.floor(Number(tsMs) || 0);
+  const dayStart = Math.floor(Math.max(0, n) / DAY_MS) * DAY_MS;
+  return new Date(dayStart).toISOString().slice(0, 10);
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
@@ -2289,7 +2297,13 @@ export async function appendScalpV2LedgerRow(row: {
     DO NOTHING
     RETURNING id;
   `);
-  return inserted.length > 0;
+  const wasInserted = inserted.length > 0;
+  if (wasInserted) {
+    await snapshotScalpV2DailyMetrics({ dayKey: utcDayKeyFromMs(row.tsExitMs) }).catch(
+      () => undefined,
+    );
+  }
+  return wasInserted;
 }
 
 export async function listScalpV2LedgerRows(params: {
@@ -4183,11 +4197,11 @@ export async function snapshotScalpV2DailyMetrics(params: {
       SELECT
         ${dayKey}::date,
         l.deployment_id,
-        l.venue,
-        l.symbol,
-        l.strategy_id,
-        l.tune_id,
-        l.entry_session_profile,
+        MIN(l.venue) AS venue,
+        MIN(l.symbol) AS symbol,
+        MIN(l.strategy_id) AS strategy_id,
+        MIN(l.tune_id) AS tune_id,
+        MIN(l.entry_session_profile) AS entry_session_profile,
         COUNT(*)::int AS trades,
         COUNT(*) FILTER (WHERE l.r_multiple > 0)::int AS wins,
         COUNT(*) FILTER (WHERE l.r_multiple <= 0)::int AS losses,
@@ -4197,13 +4211,7 @@ export async function snapshotScalpV2DailyMetrics(params: {
       FROM scalp_v2_ledger l
       WHERE l.ts_exit >= ${dayKey}::date
         AND l.ts_exit < ${dayKey}::date + INTERVAL '1 day'
-      GROUP BY
-        l.deployment_id,
-        l.venue,
-        l.symbol,
-        l.strategy_id,
-        l.tune_id,
-        l.entry_session_profile
+      GROUP BY l.deployment_id
       ON CONFLICT(day_key, deployment_id)
       DO UPDATE SET
         trades = EXCLUDED.trades,
@@ -4235,11 +4243,11 @@ export async function snapshotScalpV2DailyMetrics(params: {
     SELECT
       DATE_TRUNC('day', l.ts_exit)::date AS day_key,
       l.deployment_id,
-      l.venue,
-      l.symbol,
-      l.strategy_id,
-      l.tune_id,
-      l.entry_session_profile,
+      MIN(l.venue) AS venue,
+      MIN(l.symbol) AS symbol,
+      MIN(l.strategy_id) AS strategy_id,
+      MIN(l.tune_id) AS tune_id,
+      MIN(l.entry_session_profile) AS entry_session_profile,
       COUNT(*)::int AS trades,
       COUNT(*) FILTER (WHERE l.r_multiple > 0)::int AS wins,
       COUNT(*) FILTER (WHERE l.r_multiple <= 0)::int AS losses,
@@ -4250,12 +4258,7 @@ export async function snapshotScalpV2DailyMetrics(params: {
     WHERE l.ts_exit >= NOW() - INTERVAL '35 days'
     GROUP BY
       DATE_TRUNC('day', l.ts_exit)::date,
-      l.deployment_id,
-      l.venue,
-      l.symbol,
-      l.strategy_id,
-      l.tune_id,
-      l.entry_session_profile
+      l.deployment_id
     ON CONFLICT(day_key, deployment_id)
     DO UPDATE SET
       trades = EXCLUDED.trades,

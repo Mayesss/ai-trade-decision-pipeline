@@ -119,9 +119,20 @@ interface TradeRow {
   summary: string;
 }
 
+interface DailyNetRRow {
+  dayKey: string;
+  dayStartMs: number;
+  trades: number;
+  wins: number;
+  losses: number;
+  netR: number;
+  pnlUsd: number;
+}
+
 interface RecentResp {
   ok: boolean;
   classifierVersion: string;
+  dailyNetR: DailyNetRRow[];
   recentTrades: TradeRow[];
 }
 
@@ -302,7 +313,7 @@ export default function ScalpV5Dashboard() {
         </>
       )}
 
-      <WeekNetRTrack recentTrades={recent?.recentTrades ?? null} />
+      <WeekNetRTrack dailyNetR={recent?.dailyNetR ?? null} recentTrades={recent?.recentTrades ?? null} />
 
       <SessionTimeline sessionCounts={sessionCounts} />
 
@@ -1074,7 +1085,13 @@ function computeRelativeBands(
 const WEEK_DOW_LABELS = ["mon", "tue", "wed", "thu", "fri", "sat"] as const;
 const DAY_MS = 24 * 60 * 60_000;
 
-function WeekNetRTrack({ recentTrades }: { recentTrades: TradeRow[] | null }) {
+function WeekNetRTrack({
+  dailyNetR,
+  recentTrades,
+}: {
+  dailyNetR: DailyNetRRow[] | null;
+  recentTrades: TradeRow[] | null;
+}) {
   const [now, setNow] = useState<number>(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 60_000);
@@ -1105,6 +1122,20 @@ function WeekNetRTrack({ recentTrades }: { recentTrades: TradeRow[] | null }) {
 
   const aggByDay = useMemo(() => {
     const byDay = new Map<number, { netR: number; trades: number }>();
+    if (dailyNetR && dailyNetR.length > 0) {
+      for (const row of dailyNetR) {
+        const dayStart =
+          Number.isFinite(row.dayStartMs) && row.dayStartMs > 0
+            ? Math.floor(row.dayStartMs / DAY_MS) * DAY_MS
+            : Date.parse(`${row.dayKey}T00:00:00.000Z`);
+        if (!Number.isFinite(dayStart)) continue;
+        byDay.set(dayStart, {
+          netR: Number.isFinite(row.netR) ? row.netR : 0,
+          trades: Number.isFinite(row.trades) ? row.trades : 0,
+        });
+      }
+      return byDay;
+    }
     if (!recentTrades) return byDay;
     for (const t of recentTrades) {
       // The ledger-sourced closes carry the realized rMultiple as "trade_close".
@@ -1117,7 +1148,7 @@ function WeekNetRTrack({ recentTrades }: { recentTrades: TradeRow[] | null }) {
       byDay.set(dayStart, { netR: prev.netR + t.rMultiple, trades: prev.trades + 1 });
     }
     return byDay;
-  }, [recentTrades]);
+  }, [dailyNetR, recentTrades]);
 
   const weekTotal = days.reduce(
     (acc, d) => {
@@ -1198,8 +1229,8 @@ function WeekNetRTrack({ recentTrades }: { recentTrades: TradeRow[] | null }) {
           </div>
         </div>
       </div>
-      {recentTrades === null ? (
-        <div className="pl-2 mt-1 text-zinc-600 text-[11px]">loading trades…</div>
+      {dailyNetR === null && recentTrades === null ? (
+        <div className="pl-2 mt-1 text-zinc-600 text-[11px]">loading daily NetR…</div>
       ) : null}
     </>
   );
