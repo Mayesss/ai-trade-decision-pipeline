@@ -228,6 +228,141 @@ test("manageScalpOpenTrade executes TP1 partial and keeps runner open", async ()
   assert.ok(managed.reasonCodes.includes("TP1_PARTIAL_EXECUTED"));
 });
 
+test("manageScalpOpenTrade broker-first live mode ignores candle-only TP", async () => {
+  const nowMs = Date.UTC(2026, 0, 5, 12, 0, 0, 0);
+  const state = createInitialScalpSessionState({
+    symbol: "BTCUSDT",
+    dayKey: "2026-01-05",
+    nowMs,
+    killSwitchActive: false,
+  });
+  state.state = "IN_TRADE";
+  state.trade = {
+    setupId: "live-candle-tp",
+    dealReference: "live-candle-tp-ref",
+    side: "BUY",
+    entryPrice: 100,
+    stopPrice: 99,
+    takeProfitPrice: 102,
+    riskR: 1,
+    riskAbs: 1,
+    initialStopPrice: 99,
+    remainingSizePct: 1,
+    realizedR: 0,
+    tp1Done: false,
+    tp1Price: null,
+    trailActive: false,
+    trailStopPrice: null,
+    favorableExtremePrice: 100,
+    barsHeld: 0,
+    openedAtMs: nowMs,
+    brokerOrderId: "order-live-tp",
+    brokerPositionId: "BTCUSDT:long",
+    dryRun: false,
+  };
+  const cfg = applyScalpStrategyConfigOverride(getScalpStrategyConfig(), {
+    risk: {
+      tp1R: 999,
+      trailStartR: 999,
+      timeStopBars: 999,
+    },
+  });
+
+  const managed = await manageScalpOpenTrade({
+    state,
+    market: marketSnapshot({
+      nowMs,
+      price: 100.5,
+      confirmCandles: [candle(nowMs - 60_000, 100, 103, 99.8, 100.5)],
+    }),
+    cfg,
+    dryRun: false,
+    nowMs,
+    liveBrokerFirst: true,
+    adapter: {
+      broker: {
+        async closePositionByOwnership() {
+          throw new Error("live candle TP should not close");
+        },
+      },
+    } as any,
+  });
+
+  assert.ok(managed.state.trade);
+  assert.equal(managed.closedTrade, null);
+  assert.equal(managed.reasonCodes.includes("TRADE_EXIT_TP_HIT"), false);
+});
+
+test("manageScalpOpenTrade broker-first live mode closes trailing stop from quote", async () => {
+  const nowMs = Date.UTC(2026, 0, 5, 12, 15, 0, 0);
+  const state = createInitialScalpSessionState({
+    symbol: "BTCUSDT",
+    dayKey: "2026-01-05",
+    nowMs,
+    killSwitchActive: false,
+  });
+  state.state = "IN_TRADE";
+  state.trade = {
+    setupId: "live-trail-stop",
+    dealReference: "live-trail-stop-ref",
+    side: "BUY",
+    entryPrice: 100,
+    stopPrice: 101,
+    takeProfitPrice: 105,
+    riskR: 1,
+    riskAbs: 1,
+    initialStopPrice: 99,
+    remainingSizePct: 1,
+    realizedR: 0,
+    tp1Done: true,
+    tp1Price: 101,
+    trailActive: true,
+    trailStopPrice: 101,
+    favorableExtremePrice: 103,
+    barsHeld: 0,
+    openedAtMs: nowMs - 3 * 60_000,
+    brokerOrderId: "order-live-trail",
+    brokerPositionId: "BTCUSDT:long",
+    dryRun: false,
+  };
+  const cfg = applyScalpStrategyConfigOverride(getScalpStrategyConfig(), {
+    risk: {
+      trailStartR: 1,
+      timeStopBars: 999,
+      dailyLossLimitR: -99,
+    },
+  });
+
+  const managed = await manageScalpOpenTrade({
+    state,
+    market: marketSnapshot({
+      nowMs,
+      price: 100.9,
+      confirmCandles: [],
+    }),
+    cfg,
+    dryRun: false,
+    nowMs,
+    liveBrokerFirst: true,
+    adapter: {
+      broker: {
+        async closePositionByOwnership() {
+          return {
+            closed: true,
+            orderId: "close-live-trail",
+            clientOid: "close-live-trail-oid",
+            partial: false,
+          };
+        },
+      },
+    } as any,
+  });
+
+  assert.equal(managed.state.trade, null);
+  assert.ok(managed.reasonCodes.includes("TRADE_EXIT_STOP_HIT"));
+  assert.equal(managed.closedTrade?.exitReason, "STOP_TRAIL");
+});
+
 test("manageScalpOpenTrade treats missing owned broker position as already closed and clears stale trade", async () => {
   const nowMs = Date.UTC(2026, 0, 5, 13, 0, 0, 0);
   const state = createInitialScalpSessionState({

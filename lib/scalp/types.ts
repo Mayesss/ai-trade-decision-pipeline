@@ -162,6 +162,7 @@ export interface ScalpTradeLedgerEntry {
   id: string;
   timestampMs: number;
   exitAtMs: number;
+  openedAtMs?: number | null;
   symbol: string;
   strategyId: string;
   tuneId: string;
@@ -169,7 +170,23 @@ export interface ScalpTradeLedgerEntry {
   side: "BUY" | "SELL" | null;
   dryRun: boolean;
   rMultiple: number;
+  pnlUsd?: number | null;
+  sourceOfTruth?: "broker" | "reconciler" | "system" | "legacy_v1_import";
+  entryRef?: string | null;
+  exitRef?: string | null;
+  dealReference?: string | null;
+  brokerOrderId?: string | null;
+  brokerPositionId?: string | null;
+  riskUsd?: number | null;
+  rawPayload?: Record<string, unknown>;
   reasonCodes: string[];
+}
+
+export interface ScalpTradeLedgerAppendResult {
+  ok: boolean;
+  reasonCodes: string[];
+  pending?: boolean;
+  error?: string;
 }
 
 export interface ScalpStrategyConfig {

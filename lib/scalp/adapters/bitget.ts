@@ -42,6 +42,18 @@ const BITGET_AVAILABLE_NOTIONAL_SAFETY_FACTOR = Math.max(
     Number(process.env.SCALP_BITGET_AVAILABLE_NOTIONAL_SAFETY_FACTOR) || 0.9,
   ),
 );
+const BITGET_MAX_ENTRY_LEVERAGE = Math.max(
+  1,
+  Math.floor(Number(process.env.SCALP_BITGET_MAX_ENTRY_LEVERAGE) || 20),
+);
+const BITGET_MAX_NOTIONAL_EQUITY_MULT = Math.max(
+  1,
+  Number(process.env.SCALP_BITGET_MAX_NOTIONAL_EQUITY_MULT) || 20,
+);
+const SCALP_MAX_FEE_RISK_FRACTION = Math.max(
+  0.01,
+  Math.min(1, Number(process.env.SCALP_MAX_FEE_RISK_FRACTION) || 0.35),
+);
 
 type CachedContractMeta = {
   fetchedAtMs: number;
@@ -612,6 +624,41 @@ export function resolveBitgetExecutableNotionalUsd(params: {
   };
 }
 
+export function resolveBitgetLiveEntryRiskGuard(params: {
+  notionalUsd: number;
+  leverage: number;
+  availableUsd: number | null;
+  riskUsd?: number | null;
+  takerFeeRate?: number | null;
+}): string | null {
+  const notionalUsd = toFinite(params.notionalUsd);
+  const leverage = toFinite(params.leverage);
+  if (!(Number.isFinite(notionalUsd) && notionalUsd > 0)) {
+    return "ENTRY_INVALID_NOTIONAL";
+  }
+  if (Number.isFinite(leverage) && leverage > BITGET_MAX_ENTRY_LEVERAGE) {
+    return "ENTRY_LEVERAGE_CAP_EXCEEDED";
+  }
+  const availableUsd = toPositive(params.availableUsd);
+  if (
+    availableUsd !== null &&
+    availableUsd > 0 &&
+    notionalUsd > availableUsd * BITGET_MAX_NOTIONAL_EQUITY_MULT
+  ) {
+    return "ENTRY_NOTIONAL_EQUITY_CAP_EXCEEDED";
+  }
+  const riskUsd = toPositive(params.riskUsd);
+  const takerFeeRate = Math.max(0, toFinite(params.takerFeeRate, 0));
+  if (
+    riskUsd !== null &&
+    riskUsd > 0 &&
+    notionalUsd * takerFeeRate * 2 > riskUsd * SCALP_MAX_FEE_RISK_FRACTION
+  ) {
+    return "ENTRY_FEE_RISK_FRACTION_EXCEEDED";
+  }
+  return null;
+}
+
 async function executeBitgetScalpEntry(params: {
   symbol: string;
   direction: "BUY" | "SELL";
@@ -752,6 +799,35 @@ async function executeBitgetScalpEntry(params: {
       dealStatus: "REJECTED",
       confirmStatus: "MARGIN_INSUFFICIENT",
       rejectReason: "INSUFFICIENT_BALANCE_FOR_NOTIONAL",
+    };
+  }
+
+  const feeSchedule = getScalpVenueFeeSchedule("bitget");
+  const riskGuardRejectReason = resolveBitgetLiveEntryRiskGuard({
+    notionalUsd,
+    leverage,
+    availableUsd: accountAvailableUsd,
+    riskUsd: params.riskUsd,
+    takerFeeRate: feeSchedule.takerFeeRate,
+  });
+  if (riskGuardRejectReason) {
+    return {
+      placed: false,
+      dryRun: false,
+      orderId: null,
+      dealId: syntheticDealId,
+      dealReference: clientOid,
+      clientOid,
+      symbol,
+      direction,
+      notionalUsd,
+      leverage,
+      orderType,
+      size: null,
+      epic: symbol,
+      dealStatus: "REJECTED",
+      confirmStatus: "RISK_GUARD",
+      rejectReason: riskGuardRejectReason,
     };
   }
   await setBitgetLeverage({

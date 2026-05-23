@@ -9,6 +9,7 @@ import type {
 import type {
   ScalpJournalEntry,
   ScalpSessionState,
+  ScalpTradeLedgerAppendResult,
   ScalpTradeLedgerEntry,
 } from "../scalp/types";
 
@@ -20,6 +21,7 @@ import {
   upsertScalpV2SessionState,
 } from "./db";
 import { deriveCloseTypeFromReasonCodes, toDeploymentId } from "./logic";
+import { resolveBitgetBrokerCloseLedger } from "./bitgetCloseHistory";
 import type { ScalpV2Session, ScalpV2Venue } from "./types";
 
 function inferVenueFromDeploymentId(value: unknown): ScalpV2Venue {
@@ -139,40 +141,113 @@ export function createScalpV2ExecutionPersistenceAdapter(params: {
     },
     appendTradeLedgerEntry: async (
       entry: ScalpTradeLedgerEntry,
-    ): Promise<void> => {
+    ): Promise<ScalpTradeLedgerAppendResult> => {
       const deploymentId = String(entry.deploymentId || "").trim();
-      if (!deploymentId) return;
+      if (!deploymentId) {
+        return { ok: false, reasonCodes: ["LEDGER_WRITE_SKIPPED_NO_DEPLOYMENT"] };
+      }
       const deployment = await loadDeploymentCached(deploymentId);
       const venue = deployment?.venue || inferVenueFromDeploymentId(deploymentId);
       const session =
         deployment?.entrySessionProfile ||
         inferSessionFromTuneOrDeploymentId(entry.tuneId || deploymentId);
-      await appendScalpV2LedgerRow({
+
+      let rMultiple = Number.isFinite(Number(entry.rMultiple))
+        ? Number(entry.rMultiple)
+        : 0;
+      let pnlUsd =
+        entry.pnlUsd !== null &&
+        entry.pnlUsd !== undefined &&
+        Number.isFinite(Number(entry.pnlUsd))
+          ? Number(entry.pnlUsd)
+          : null;
+      let sourceOfTruth = entry.sourceOfTruth || "system";
+      let exitRef = entry.exitRef ?? null;
+      let tsExitMs = Number.isFinite(Number(entry.exitAtMs))
+        ? Number(entry.exitAtMs)
+        : Date.now();
+      let reasonCodes = entry.reasonCodes || [];
+      let rawPayload: Record<string, unknown> = {
+        side: entry.side || null,
+        dryRun: Boolean(entry.dryRun),
+        timestampMs: entry.timestampMs,
+        ...(entry.rawPayload || {}),
+      };
+
+      if (venue === "bitget" && !entry.dryRun) {
+        const brokerClose = await resolveBitgetBrokerCloseLedger({
+          symbol: entry.symbol,
+          side: entry.side,
+          dealReference: entry.dealReference,
+          brokerOrderId: entry.brokerOrderId,
+          openedAtMs: entry.openedAtMs,
+          exitAtMs: tsExitMs,
+          riskUsd: entry.riskUsd,
+        });
+        if (!brokerClose.found) {
+          await appendScalpV2JournalEntry({
+            entry: {
+              id: `ledger-pending-${entry.id || Date.now()}`,
+              timestampMs: Date.now(),
+              type: "error",
+              symbol: String(entry.symbol || "").trim().toUpperCase() || null,
+              dayKey: null,
+              level: "warn",
+              reasonCodes: ["LEDGER_BROKER_CLOSE_PENDING", ...brokerClose.reasonCodes],
+              payload: {
+                deploymentId,
+                dryRun: Boolean(entry.dryRun),
+                exitAtMs: tsExitMs,
+                ...brokerClose.rawPayload,
+              },
+            },
+            deploymentId,
+            venue,
+            strategyId: deployment?.strategyId || null,
+            tuneId: deployment?.tuneId || null,
+            entrySessionProfile: session,
+          });
+          return {
+            ok: false,
+            pending: true,
+            reasonCodes: ["LEDGER_BROKER_CLOSE_PENDING", ...brokerClose.reasonCodes],
+          };
+        }
+        rMultiple = brokerClose.rMultiple;
+        pnlUsd = brokerClose.pnlUsd;
+        sourceOfTruth = "broker";
+        exitRef = brokerClose.brokerRef;
+        tsExitMs = brokerClose.tsExitMs || tsExitMs;
+        reasonCodes = [...reasonCodes, ...brokerClose.reasonCodes];
+        rawPayload = {
+          ...rawPayload,
+          ...brokerClose.rawPayload,
+          riskUsd: entry.riskUsd ?? null,
+        };
+      }
+
+      const inserted = await appendScalpV2LedgerRow({
         id: String(entry.id || "").trim(),
-        tsExitMs: Number.isFinite(Number(entry.exitAtMs))
-          ? Number(entry.exitAtMs)
-          : Date.now(),
+        tsExitMs,
         deploymentId,
         venue,
         symbol: String(entry.symbol || "").trim().toUpperCase(),
         strategyId: String(entry.strategyId || "").trim().toLowerCase(),
         tuneId: String(entry.tuneId || "").trim().toLowerCase(),
         entrySessionProfile: session,
-        entryRef: null,
-        exitRef: null,
+        entryRef: entry.entryRef ?? entry.dealReference ?? null,
+        exitRef,
         closeType: deriveCloseTypeFromReasonCodes(entry.reasonCodes || []),
-        rMultiple: Number.isFinite(Number(entry.rMultiple))
-          ? Number(entry.rMultiple)
-          : 0,
-        pnlUsd: null,
-        sourceOfTruth: "system",
-        reasonCodes: entry.reasonCodes || [],
-        rawPayload: {
-          side: entry.side || null,
-          dryRun: Boolean(entry.dryRun),
-          timestampMs: entry.timestampMs,
-        },
+        rMultiple,
+        pnlUsd,
+        sourceOfTruth,
+        reasonCodes,
+        rawPayload,
       });
+      return {
+        ok: inserted,
+        reasonCodes: inserted ? ["LEDGER_WRITE_CONFIRMED"] : ["LEDGER_WRITE_SKIPPED_DUPLICATE"],
+      };
     },
     tryAcquireRunLock: async (): Promise<boolean> => true,
     releaseRunLock: async (): Promise<void> => undefined,

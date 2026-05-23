@@ -65,6 +65,23 @@ function classifyEntryExecutionError(err: unknown): string[] {
   return Array.from(new Set(reasonCodes));
 }
 
+function hasEntryBalanceRejection(reasonCodes: string[]): boolean {
+  return reasonCodes.some(
+    (code) =>
+      code === "ENTRY_REJECT_INSUFFICIENT_BALANCE" ||
+      code === "ENTRY_REJECT_BITGET_40762" ||
+      code.includes("INSUFFICIENT_BALANCE") ||
+      code.includes("INSUFFICIENT_BALANCE_FOR_NOTIONAL") ||
+      code.includes("INSUFFICIENT_BALANCE_FOR_MIN_NOTIONAL"),
+  );
+}
+
+function entryRejectCooldownMinutes(): number {
+  const n = Number(process.env.SCALP_ENTRY_REJECT_COOLDOWN_MINUTES);
+  if (!(Number.isFinite(n) && n > 0)) return 30;
+  return Math.max(1, Math.min(24 * 60, Math.floor(n)));
+}
+
 const SCALP_LEVERAGE_BY_CATEGORY_BY_VENUE: Record<
   ScalpVenue,
   Record<ScalpAssetCategory, number>
@@ -249,6 +266,30 @@ function currentRForTrade(
   const signedMove =
     trade.side === "BUY" ? price - trade.entryPrice : trade.entryPrice - price;
   return signedMove / riskAbs;
+}
+
+function liveExecutablePriceForTrade(
+  trade: NonNullable<ScalpSessionState["trade"]>,
+  market: ScalpMarketSnapshot,
+): number {
+  const bid = toFinite(market.quote.bid);
+  const offer = toFinite(market.quote.offer);
+  if (trade.side === "BUY" && Number.isFinite(bid) && bid > 0) return bid;
+  if (trade.side === "SELL" && Number.isFinite(offer) && offer > 0) return offer;
+  return toFinite(market.quote.price);
+}
+
+function applyEntryRejectCooldown(
+  state: ScalpSessionState,
+  reasonCodes: string[],
+  nowMs: number,
+): ScalpSessionState {
+  if (!hasEntryBalanceRejection(reasonCodes)) return state;
+  return {
+    ...state,
+    state: "COOLDOWN",
+    cooldownUntilMs: nowMs + entryRejectCooldownMinutes() * 60_000,
+  };
 }
 
 async function closeScalpTradePortion(params: {
@@ -737,7 +778,13 @@ export async function executeScalpEntryPlan(params: {
       profitLevel: params.plan.takeProfitPrice,
     });
   } catch (err) {
-    return { state: next, reasonCodes: classifyEntryExecutionError(err) };
+    const reasonCodes = classifyEntryExecutionError(err);
+    const cooled = applyEntryRejectCooldown(next, reasonCodes, params.nowMs);
+    return {
+      state: cooled,
+      reasonCodes:
+        cooled === next ? reasonCodes : [...reasonCodes, "ENTRY_REJECT_COOLDOWN_SET"],
+    };
   }
 
   if (!exec.placed && !params.dryRun) {
@@ -746,7 +793,12 @@ export async function executeScalpEntryPlan(params: {
     const rejectReason = normalizeReasonFragment(exec.rejectReason);
     if (dealStatus) reasonCodes.push(`ENTRY_DEAL_STATUS_${dealStatus}`);
     if (rejectReason) reasonCodes.push(`ENTRY_REJECT_${rejectReason}`);
-    return { state: next, reasonCodes };
+    const cooled = applyEntryRejectCooldown(next, reasonCodes, params.nowMs);
+    return {
+      state: cooled,
+      reasonCodes:
+        cooled === next ? reasonCodes : [...reasonCodes, "ENTRY_REJECT_COOLDOWN_SET"],
+    };
   }
 
   const executedNotionalUsd =
@@ -808,6 +860,7 @@ export async function manageScalpOpenTrade(params: {
   dryRun: boolean;
   nowMs: number;
   adapter?: ScalpVenueAdapter;
+  liveBrokerFirst?: boolean;
 }): Promise<{
   state: ScalpSessionState;
   reasonCodes: string[];
@@ -833,7 +886,10 @@ export async function manageScalpOpenTrade(params: {
   const trade = next.trade;
   const reasonCodes: string[] = [];
   const entry = toFinite(trade.entryPrice);
-  const price = toFinite(params.market.quote.price);
+  const brokerFirstLive = params.liveBrokerFirst === true && !params.dryRun;
+  const price = brokerFirstLive
+    ? liveExecutablePriceForTrade(trade, params.market)
+    : toFinite(params.market.quote.price);
   if (
     !(
       Number.isFinite(entry) &&
@@ -885,7 +941,13 @@ export async function manageScalpOpenTrade(params: {
   );
   trade.barsHeld = barsHeld;
   const lastCandle = params.market.confirmCandles.at(-1);
-  if (lastCandle) {
+  if (brokerFirstLive) {
+    const extreme = price;
+    trade.favorableExtremePrice =
+      trade.side === "BUY"
+        ? Math.max(toFinite(trade.favorableExtremePrice, entry), extreme)
+        : Math.min(toFinite(trade.favorableExtremePrice, entry), extreme);
+  } else if (lastCandle) {
     const extreme = trade.side === "BUY" ? high(lastCandle) : low(lastCandle);
     if (Number.isFinite(extreme)) {
       trade.favorableExtremePrice =
@@ -968,14 +1030,26 @@ export async function manageScalpOpenTrade(params: {
     }
   }
 
-  // Use intra-bar high/low for stop/TP checks: if the bar's extreme crossed
-  // the level at any point, the order would have filled — regardless of close.
-  const barLow = lastCandle ? toFinite(low(lastCandle), price) : price;
-  const barHigh = lastCandle ? toFinite(high(lastCandle), price) : price;
-  const stopHit =
+  // Replay/dry-run uses intra-bar high/low. Live broker-first execution must
+  // not infer full TP/SL fills from candle extremes; Bitget preset TP/SL fills
+  // are reconciled from broker history. Engine-managed live exits only use the
+  // executable quote for trailing/time-stop closes.
+  const barLow = brokerFirstLive
+    ? price
+    : lastCandle
+      ? toFinite(low(lastCandle), price)
+      : price;
+  const barHigh = brokerFirstLive
+    ? price
+    : lastCandle
+      ? toFinite(high(lastCandle), price)
+      : price;
+  const rawStopHit =
     trade.side === "BUY" ? barLow <= trade.stopPrice : barHigh >= trade.stopPrice;
+  const stopHit = brokerFirstLive ? trade.trailActive && rawStopHit : rawStopHit;
   const tpPrice = toFinite(trade.takeProfitPrice, 0);
   const tpHit =
+    !brokerFirstLive &&
     tpPrice > 0 &&
     (trade.side === "BUY" ? barHigh >= tpPrice : barLow <= tpPrice);
   const timeStopHit = barsHeld >= Math.max(1, params.cfg.risk.timeStopBars);

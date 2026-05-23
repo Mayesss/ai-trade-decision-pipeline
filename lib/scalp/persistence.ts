@@ -12,6 +12,7 @@ import {
 import type {
     ScalpJournalEntry,
     ScalpSessionState,
+    ScalpTradeLedgerAppendResult,
     ScalpTradeLedgerEntry,
 } from './types';
 
@@ -39,7 +40,7 @@ export interface ScalpExecutionPersistenceAdapter {
     appendTradeLedgerEntry: (
         entry: ScalpTradeLedgerEntry,
         maxRows?: number,
-    ) => Promise<void>;
+    ) => Promise<ScalpTradeLedgerAppendResult>;
     tryAcquireRunLock: (
         symbol: string,
         token: string,
@@ -61,7 +62,10 @@ export const defaultScalpExecutionPersistenceAdapter: ScalpExecutionPersistenceA
         loadSessionState: loadScalpSessionState,
         saveSessionState: saveScalpSessionState,
         appendJournal: appendScalpJournal,
-        appendTradeLedgerEntry: appendScalpTradeLedgerEntry,
+        appendTradeLedgerEntry: async (entry, maxRows) => {
+            await appendScalpTradeLedgerEntry(entry, maxRows);
+            return { ok: true, reasonCodes: ['LEDGER_WRITE_CONFIRMED'] };
+        },
         tryAcquireRunLock: tryAcquireScalpRunLock,
         releaseRunLock: releaseScalpRunLock,
     };

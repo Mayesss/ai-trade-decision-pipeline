@@ -42,6 +42,7 @@ import {
   resolveRiskRuleOverrides,
   resolveRiskRuleReplayOverrides,
 } from "./riskRulePresets";
+import { resolveBitgetBrokerCloseLedger } from "./bitgetCloseHistory";
 import {
   resolveStateMachineOverrides,
   resolveStateMachineReplayOverrides,
@@ -7223,89 +7224,24 @@ async function enrichMissingBitgetPositionClose(params: {
     brokerRef: null,
     tsExitMs: null,
   };
-  const fromTsMs = Math.max(
-    0,
-    Math.min(params.updatedAtMs, params.nowTs) - 24 * 60 * 60 * 1000,
-  );
-  const orders = await fetchBitgetOrderHistory({
+  const brokerClose = await resolveBitgetBrokerCloseLedger({
     symbol: params.symbol,
-    fromTsMs,
-    toTsMs: params.nowTs + 5 * 60 * 1000,
-  }).catch(() => []);
-  if (!orders.length) return base;
-
-  const sorted = orders
-    .slice()
-    .sort((a, b) => Number(a.cTime || a.uTime || 0) - Number(b.cTime || b.uTime || 0));
-  const entry =
-    sorted.find((row) => {
-      const clientOid = String(row.clientOid || "").trim();
-      return params.dealReference && clientOid === params.dealReference;
-    }) ||
-    sorted.find((row) => {
-      const reduceOnly = normalizeBrokerText(row.reduceOnly);
-      const source = normalizeBrokerText(row.enterPointSource);
-      return reduceOnly !== "YES" && source === "API";
-    }) ||
-    null;
-  const entryTs = Number(entry?.cTime || entry?.uTime || params.updatedAtMs || 0);
-  const close = sorted.find((row) => {
-    const reduceOnly = normalizeBrokerText(row.reduceOnly);
-    const ts = Number(row.cTime || row.uTime || 0);
-    return reduceOnly === "YES" && Number.isFinite(ts) && ts >= Math.max(0, entryTs - 1_000);
-  });
-  if (!close) return base;
-
-  const classification = classifyBitgetClose({ entry, close, side: params.side });
-  const rMultiple = computeRMultipleFromBitgetOrders({
     side: params.side,
-    entry,
-    close,
-  });
-  const pnlUsd = toFiniteOrNull(close.totalProfits);
-  const tsExitMsRaw = Number(close.uTime || close.cTime || 0);
-  const tsExitMs = Number.isFinite(tsExitMsRaw) && tsExitMsRaw > 0 ? Math.floor(tsExitMsRaw) : null;
+    dealReference: params.dealReference,
+    openedAtMs: params.updatedAtMs,
+    exitAtMs: params.nowTs,
+  }).catch(() => null);
+  if (!brokerClose?.found) return base;
   return {
-    rMultiple: Number.isFinite(Number(rMultiple)) ? Number(rMultiple) : 0,
-    pnlUsd,
+    rMultiple: Number.isFinite(Number(brokerClose.rMultiple)) ? Number(brokerClose.rMultiple) : 0,
+    pnlUsd: brokerClose.pnlUsd,
     reasonCodes: [
       "SCALP_V2_RECONCILE_CLOSE",
-      "SCALP_V2_RECONCILE_BROKER_HISTORY",
-      classification.reasonCode,
+      ...brokerClose.reasonCodes,
     ],
-    rawPayload: {
-      bitgetOrders: {
-        entry: entry
-          ? {
-              orderId: entry.orderId,
-              clientOid: entry.clientOid,
-              side: entry.side,
-              tradeSide: entry.tradeSide,
-              priceAvg: entry.priceAvg,
-              baseVolume: entry.baseVolume ?? entry.size,
-              presetStopLossPrice: entry.presetStopLossPrice,
-              presetStopSurplusPrice: entry.presetStopSurplusPrice,
-              cTime: entry.cTime,
-              uTime: entry.uTime,
-            }
-          : null,
-        close: {
-          orderId: close.orderId,
-          clientOid: close.clientOid,
-          side: close.side,
-          tradeSide: close.tradeSide,
-          priceAvg: close.priceAvg,
-          baseVolume: close.baseVolume ?? close.size,
-          totalProfits: close.totalProfits,
-          reduceOnly: close.reduceOnly,
-          enterPointSource: classification.source,
-          cTime: close.cTime,
-          uTime: close.uTime,
-        },
-      },
-    },
-    brokerRef: String(close.orderId || "").trim() || null,
-    tsExitMs,
+    rawPayload: brokerClose.rawPayload,
+    brokerRef: brokerClose.brokerRef,
+    tsExitMs: brokerClose.tsExitMs,
   };
 }
 

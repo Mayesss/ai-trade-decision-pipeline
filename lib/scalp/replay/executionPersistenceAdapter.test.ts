@@ -61,7 +61,7 @@ test("runScalpExecuteCycle uses injected persistence adapter", async () => {
       appendJournal: async () => {
         calls.appendJournal += 1;
       },
-      appendTradeLedgerEntry: async () => undefined,
+      appendTradeLedgerEntry: async () => ({ ok: true, reasonCodes: ["LEDGER_WRITE_CONFIRMED"] }),
       tryAcquireRunLock: async () => {
         calls.tryAcquireRunLock += 1;
         return true;

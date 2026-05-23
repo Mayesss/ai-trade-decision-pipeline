@@ -641,6 +641,7 @@ function sanitizeTradeLedgerEntry(entry: ScalpTradeLedgerEntry): ScalpTradeLedge
         id: String(entry?.id || `${Date.now()}`),
         timestampMs: Number.isFinite(Number(entry?.timestampMs)) ? Number(entry.timestampMs) : Date.now(),
         exitAtMs: Number.isFinite(Number(entry?.exitAtMs)) ? Number(entry.exitAtMs) : Date.now(),
+        openedAtMs: Number.isFinite(Number(entry?.openedAtMs)) ? Number(entry.openedAtMs) : null,
         symbol: symbol || 'UNKNOWN',
         strategyId,
         tuneId,
@@ -648,6 +649,15 @@ function sanitizeTradeLedgerEntry(entry: ScalpTradeLedgerEntry): ScalpTradeLedge
         side,
         dryRun: Boolean(entry?.dryRun),
         rMultiple: Number.isFinite(rMultiple) ? rMultiple : 0,
+        pnlUsd: Number.isFinite(Number(entry?.pnlUsd)) ? Number(entry.pnlUsd) : null,
+        sourceOfTruth: entry?.sourceOfTruth,
+        entryRef: entry?.entryRef ?? null,
+        exitRef: entry?.exitRef ?? null,
+        dealReference: entry?.dealReference ?? null,
+        brokerOrderId: entry?.brokerOrderId ?? null,
+        brokerPositionId: entry?.brokerPositionId ?? null,
+        riskUsd: Number.isFinite(Number(entry?.riskUsd)) ? Number(entry.riskUsd) : null,
+        rawPayload: entry?.rawPayload,
         reasonCodes: compactReasonCodes(entry?.reasonCodes),
     };
 }

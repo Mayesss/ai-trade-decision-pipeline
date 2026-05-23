@@ -5,8 +5,12 @@ import {
   applyScalpStrategyConfigOverride,
   getScalpStrategyConfig,
 } from "../config";
-import { resolveBitgetExecutableNotionalUsd } from "../adapters/bitget";
+import {
+  resolveBitgetExecutableNotionalUsd,
+  resolveBitgetLiveEntryRiskGuard,
+} from "../adapters/bitget";
 import { executeScalpEntryPlan } from "../execution";
+import { resolveScalpLiveRiskPctOfEquity } from "../engine";
 import { createInitialScalpSessionState } from "../stateMachine";
 
 test("executeScalpEntryPlan maps broker throw to entry rejection reason codes", async () => {
@@ -52,11 +56,12 @@ test("executeScalpEntryPlan maps broker throw to entry rejection reason codes", 
   });
 
   assert.equal(out.state.trade, null);
-  assert.equal(out.state.state, "IDLE");
+  assert.equal(out.state.state, "COOLDOWN");
   assert.ok(out.reasonCodes.includes("ENTRY_NOT_PLACED"));
   assert.ok(out.reasonCodes.includes("ENTRY_EXECUTION_ERROR"));
   assert.ok(out.reasonCodes.includes("ENTRY_REJECT_BITGET_40762"));
   assert.ok(out.reasonCodes.includes("ENTRY_REJECT_INSUFFICIENT_BALANCE"));
+  assert.ok(out.reasonCodes.includes("ENTRY_REJECT_COOLDOWN_SET"));
 });
 
 test("executeScalpEntryPlan forwards riskUsd to broker entry adapter", async () => {
@@ -151,4 +156,58 @@ test("Bitget executable notional is capped to available margin at symbol max lev
 
   assert.equal(tooSmall.capped, true);
   assert.equal(tooSmall.rejectReason, "INSUFFICIENT_BALANCE_FOR_MIN_NOTIONAL");
+});
+
+test("live risk default is 0.35 percent of equity", () => {
+  const prev = process.env.SCALP_LIVE_RISK_PER_TRADE_PCT;
+  delete process.env.SCALP_LIVE_RISK_PER_TRADE_PCT;
+  try {
+    assert.equal(resolveScalpLiveRiskPctOfEquity(), 0.35);
+  } finally {
+    if (prev === undefined) delete process.env.SCALP_LIVE_RISK_PER_TRADE_PCT;
+    else process.env.SCALP_LIVE_RISK_PER_TRADE_PCT = prev;
+  }
+});
+
+test("Bitget live entry risk guard blocks leverage, notional, and fee-heavy trades", () => {
+  assert.equal(
+    resolveBitgetLiveEntryRiskGuard({
+      notionalUsd: 2_000,
+      leverage: 21,
+      availableUsd: 1_000,
+      riskUsd: 10,
+      takerFeeRate: 0.0006,
+    }),
+    "ENTRY_LEVERAGE_CAP_EXCEEDED",
+  );
+  assert.equal(
+    resolveBitgetLiveEntryRiskGuard({
+      notionalUsd: 2_100,
+      leverage: 2,
+      availableUsd: 100,
+      riskUsd: 10,
+      takerFeeRate: 0.0006,
+    }),
+    "ENTRY_NOTIONAL_EQUITY_CAP_EXCEEDED",
+  );
+  assert.equal(
+    resolveBitgetLiveEntryRiskGuard({
+      notionalUsd: 4_000,
+      leverage: 10,
+      availableUsd: 1_000,
+      riskUsd: 10,
+      takerFeeRate: 0.0006,
+    }),
+    "ENTRY_FEE_RISK_FRACTION_EXCEEDED",
+  );
+  assert.equal(
+    resolveBitgetLiveEntryRiskGuard({
+      notionalUsd: 500,
+      leverage: 5,
+      availableUsd: 1_000,
+      riskUsd: 10,
+      takerFeeRate: 0.0006,
+    }),
+    null,
+  );
 });

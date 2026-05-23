@@ -26,6 +26,7 @@ import type {
     ScalpJournalEntry,
     ScalpMarketSnapshot,
     ScalpSessionState,
+    ScalpTradeLedgerAppendResult,
     ScalpTradeLedgerEntry,
 } from './types';
 import type { ScalpVenue } from './venue';
@@ -65,11 +66,17 @@ async function safeAppendJournal(
 async function safeAppendTradeLedgerEntry(
     persistence: ScalpExecutionPersistenceAdapter,
     entry: ScalpTradeLedgerEntry,
-): Promise<void> {
+): Promise<ScalpTradeLedgerAppendResult> {
     try {
-        await persistence.appendTradeLedgerEntry(entry);
+        const result = await persistence.appendTradeLedgerEntry(entry);
+        return result || { ok: true, reasonCodes: ['LEDGER_WRITE_CONFIRMED'] };
     } catch (err) {
         console.warn('Failed to append scalp trade ledger entry:', err);
+        return {
+            ok: false,
+            reasonCodes: ['LEDGER_WRITE_FAILED'],
+            error: err instanceof Error ? err.message : String(err),
+        };
     }
 }
 
@@ -140,7 +147,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     return value as Record<string, unknown>;
 }
 
-const SCALP_ENFORCED_RISK_PCT_OF_EQUITY = 5;
+export function resolveScalpLiveRiskPctOfEquity(): number {
+    const n = Number(process.env.SCALP_LIVE_RISK_PER_TRADE_PCT);
+    return Number.isFinite(n) && n > 0 ? n : 0.35;
+}
+const SCALP_LIVE_RISK_PCT_OF_EQUITY = resolveScalpLiveRiskPctOfEquity();
 const SCALP_IDLE_HEARTBEAT_PERSIST_MS = (() => {
     const n = Number(process.env.SCALP_IDLE_HEARTBEAT_PERSIST_MS ?? 5 * 60_000);
     if (!Number.isFinite(n) || n <= 0) return 5 * 60_000;
@@ -514,6 +525,7 @@ export async function runScalpExecuteCycle(opts: {
                     cfg,
                     dryRun,
                     nowMs,
+                    liveBrokerFirst: deployment.venue === 'bitget' && !dryRun,
                 });
                 nextState = managed.state;
                 phaseReasonCodes.push(...managed.reasonCodes);
@@ -521,12 +533,13 @@ export async function runScalpExecuteCycle(opts: {
                     tradeEventOccurred = true;
                     const nextRealizedR = Number.isFinite(Number(nextState.stats.realizedR)) ? Number(nextState.stats.realizedR) : priorRealizedR;
                     const totalTradeR = nextRealizedR - priorRealizedR;
-                    await safeAppendTradeLedgerEntry(persistence, {
+                    const ledgerResult = await safeAppendTradeLedgerEntry(persistence, {
                         id: crypto.randomUUID(),
                         timestampMs: nowMs,
                         exitAtMs: Number.isFinite(Number(nextState.stats.lastExitAtMs))
                             ? Number(nextState.stats.lastExitAtMs)
                             : nowMs,
+                        openedAtMs: tradeBeforeManage.openedAtMs,
                         symbol: deployment.symbol,
                         strategyId: deployment.strategyId,
                         tuneId: deployment.tuneId,
@@ -534,9 +547,39 @@ export async function runScalpExecuteCycle(opts: {
                         side: tradeBeforeManage.side,
                         dryRun: Boolean(tradeBeforeManage.dryRun),
                         rMultiple: Number.isFinite(totalTradeR) ? totalTradeR : 0,
+                        riskUsd: tradeBeforeManage.riskUsd ?? null,
+                        dealReference: tradeBeforeManage.dealReference ?? null,
+                        brokerOrderId: tradeBeforeManage.brokerOrderId ?? null,
+                        brokerPositionId: tradeBeforeManage.brokerPositionId ?? null,
                         reasonCodes: dedupeReasonCodes(managed.reasonCodes),
                     });
+                    phaseReasonCodes.push(...ledgerResult.reasonCodes);
+                    if (!ledgerResult.ok && !ledgerResult.pending) {
+                        await safeAppendJournal(
+                            persistence,
+                            journalEntry({
+                                type: 'error',
+                                symbol: deployment.symbol,
+                                dayKey,
+                                level: 'error',
+                                reasonCodes: ['LEDGER_WRITE_FAILED'],
+                                payload: {
+                                    dryRun,
+                                    nowMs,
+                                    runId,
+                                    strategyId: deployment.strategyId,
+                                    tuneId: deployment.tuneId,
+                                    deploymentId: deployment.deploymentId,
+                                    message: ledgerResult.error || 'ledger_write_failed',
+                                },
+                            }),
+                            cfg.storage.journalMax,
+                        );
+                    }
                 }
+                const hadOpenTradeAtStartOfReconcile = Boolean(nextState.trade);
+                const tradeBeforeReconcile =
+                    hadOpenTradeAtStartOfReconcile && nextState.trade ? { ...nextState.trade } : null;
                 const reconciled = await reconcileScalpBrokerPosition({
                     adapter: venueAdapter,
                     state: nextState,
@@ -548,6 +591,55 @@ export async function runScalpExecuteCycle(opts: {
                 });
                 nextState = reconciled.state;
                 phaseReasonCodes.push(...reconciled.reasonCodes);
+                if (hadOpenTradeAtStartOfReconcile && tradeBeforeReconcile && !nextState.trade) {
+                    tradeEventOccurred = true;
+                    const ledgerResult = await safeAppendTradeLedgerEntry(persistence, {
+                        id: crypto.randomUUID(),
+                        timestampMs: nowMs,
+                        exitAtMs: Number.isFinite(Number(nextState.stats.lastExitAtMs))
+                            ? Number(nextState.stats.lastExitAtMs)
+                            : nowMs,
+                        openedAtMs: tradeBeforeReconcile.openedAtMs,
+                        symbol: deployment.symbol,
+                        strategyId: deployment.strategyId,
+                        tuneId: deployment.tuneId,
+                        deploymentId: deployment.deploymentId,
+                        side: tradeBeforeReconcile.side,
+                        dryRun: Boolean(tradeBeforeReconcile.dryRun),
+                        rMultiple: 0,
+                        riskUsd: tradeBeforeReconcile.riskUsd ?? null,
+                        dealReference: tradeBeforeReconcile.dealReference ?? null,
+                        brokerOrderId: tradeBeforeReconcile.brokerOrderId ?? null,
+                        brokerPositionId: tradeBeforeReconcile.brokerPositionId ?? null,
+                        reasonCodes: dedupeReasonCodes([
+                            ...reconciled.reasonCodes,
+                            'SCALP_RECONCILE_BROKER_CLOSED_TRADE',
+                        ]),
+                    });
+                    phaseReasonCodes.push(...ledgerResult.reasonCodes);
+                    if (!ledgerResult.ok && !ledgerResult.pending) {
+                        await safeAppendJournal(
+                            persistence,
+                            journalEntry({
+                                type: 'error',
+                                symbol: deployment.symbol,
+                                dayKey,
+                                level: 'error',
+                                reasonCodes: ['LEDGER_WRITE_FAILED'],
+                                payload: {
+                                    dryRun,
+                                    nowMs,
+                                    runId,
+                                    strategyId: deployment.strategyId,
+                                    tuneId: deployment.tuneId,
+                                    deploymentId: deployment.deploymentId,
+                                    message: ledgerResult.error || 'ledger_write_failed',
+                                },
+                            }),
+                            cfg.storage.journalMax,
+                        );
+                    }
+                }
                 const brokerPositionGuardBlocked =
                     reconciled.reasonCodes.includes('BROKER_RECONCILE_UNAVAILABLE') ||
                     reconciled.reasonCodes.includes('BROKER_SYMBOL_POSITION_LIMIT_REACHED');
@@ -587,7 +679,7 @@ export async function runScalpExecuteCycle(opts: {
                         ...cfg,
                         risk: {
                             ...cfg.risk,
-                            riskPerTradePct: SCALP_ENFORCED_RISK_PCT_OF_EQUITY,
+                            riskPerTradePct: SCALP_LIVE_RISK_PCT_OF_EQUITY,
                         },
                     };
                     let canPlanEntry = dryRun;
@@ -603,7 +695,7 @@ export async function runScalpExecuteCycle(opts: {
                                         referenceEquityUsd: Number(liveEquityUsd),
                                     },
                                 };
-                                phaseReasonCodes.push(`ENTRY_RISK_${SCALP_ENFORCED_RISK_PCT_OF_EQUITY}PCT_LIVE_EQUITY`);
+                                phaseReasonCodes.push(`ENTRY_RISK_${SCALP_LIVE_RISK_PCT_OF_EQUITY}PCT_LIVE_EQUITY`);
                                 canPlanEntry = true;
                             } else {
                                 phaseReasonCodes.push('ENTRY_BLOCKED_LIVE_EQUITY_UNAVAILABLE');
@@ -612,7 +704,7 @@ export async function runScalpExecuteCycle(opts: {
                             phaseReasonCodes.push('ENTRY_BLOCKED_LIVE_EQUITY_UNAVAILABLE');
                         }
                     } else {
-                            phaseReasonCodes.push(`ENTRY_RISK_${SCALP_ENFORCED_RISK_PCT_OF_EQUITY}PCT_REFERENCE_EQUITY`);
+                            phaseReasonCodes.push(`ENTRY_RISK_${SCALP_LIVE_RISK_PCT_OF_EQUITY}PCT_REFERENCE_EQUITY`);
                     }
 
                     if (!canPlanEntry) {
