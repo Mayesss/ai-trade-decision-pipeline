@@ -52,6 +52,17 @@ function labelLedgerClose(row: { closeType: string; reasonCodes: string[] }): st
   return labelCloseType(row.closeType);
 }
 
+function brokerPayloadSummary(value: unknown): Record<string, unknown> | null {
+  const payload = asRecord(value);
+  const close = asRecord(payload.bitgetBrokerClose);
+  if (Object.keys(close).length === 0) return null;
+  return {
+    position: close.position ?? null,
+    entryOrder: close.entryOrder ?? null,
+    closeOrders: close.closeOrders ?? null,
+  };
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") return res.status(405).json({ error: "Method Not Allowed" });
   if (!requireAdminAccess(req, res)) return;
@@ -127,7 +138,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         symbol: string;
         closeType: string;
         rMultiple: number | null;
+        pnlUsd: number | null;
+        sourceOfTruth: string;
         reasonCodes: string[];
+        rawPayload: unknown;
       }>>(sql`
         SELECT
           ts_exit AS "tsExit",
@@ -136,7 +150,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           symbol,
           close_type AS "closeType",
           r_multiple::double precision AS "rMultiple",
-          reason_codes AS "reasonCodes"
+          pnl_usd::double precision AS "pnlUsd",
+          source_of_truth AS "sourceOfTruth",
+          reason_codes AS "reasonCodes",
+          raw_payload AS "rawPayload"
         FROM scalp_v2_ledger
         WHERE ts_exit > NOW() - INTERVAL '30 day'
         ORDER BY ts_exit DESC
@@ -161,6 +178,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             row.rMultiple !== null && Number.isFinite(Number(row.rMultiple))
               ? Number(row.rMultiple)
               : null,
+          pnlUsd:
+            row.pnlUsd !== null && Number.isFinite(Number(row.pnlUsd))
+              ? Number(row.pnlUsd)
+              : null,
+          sourceOfTruth: row.sourceOfTruth,
+          broker: brokerPayloadSummary(row.rawPayload),
           summary: labelLedgerClose(row),
         };
       }),
