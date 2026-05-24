@@ -70,6 +70,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       batchSize,
       maxAttempts,
       scopes,
+      auditSource: "v5_live_load_candles",
+      auditTrigger: "cron",
     });
 
     return res.status(200).json({

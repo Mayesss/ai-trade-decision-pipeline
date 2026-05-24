@@ -36,6 +36,14 @@ function parseIntBounded(
   return Math.max(min, Math.min(max, parsed));
 }
 
+function parseBool(value: string | string[] | undefined, fallback: boolean): boolean {
+  const raw = firstQueryValue(value).trim().toLowerCase();
+  if (!raw) return fallback;
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  return fallback;
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") {
     return res.status(405).json({ error: "Method Not Allowed", message: "Use GET" });
@@ -54,16 +62,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       1,
       24 * 14,
     );
+    const preflightCandles = parseBool(req.query.preflightCandles, true);
+    const forcePreflight = parseBool(req.query.forcePreflight, false);
+    const preflightBatchSize = parseIntBounded(req.query.preflightBatchSize, 200, 1, 200);
+    const preflightMaxAttempts = parseIntBounded(req.query.preflightMaxAttempts, 10, 1, 30);
 
     const result = await runScalpV5EvaluationBatch({
       limit,
       staleOlderThanMs: staleOlderThanHours * 60 * 60_000,
+      preflightCandles,
+      forcePreflight,
+      preflightBatchSize,
+      preflightMaxAttempts,
     });
 
     return res.status(200).json({
       ok: true,
       durationMs: Date.now() - startedAt,
-      params: { limit, staleOlderThanHours },
+      params: { limit, staleOlderThanHours, preflightCandles, forcePreflight, preflightBatchSize, preflightMaxAttempts },
       result: {
         processed: result.processed,
         succeeded: result.succeeded,
@@ -78,6 +94,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // evidence stale for >1 week.
         fullCount: result.fullCount,
         incrementalCount: result.incrementalCount,
+        skippedReason: result.skippedReason,
+        preflight: result.preflight,
         config: result.details,
       },
     });

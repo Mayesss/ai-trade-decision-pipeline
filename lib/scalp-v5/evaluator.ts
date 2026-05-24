@@ -41,6 +41,10 @@ import {
   upsertScalpV5DeploymentEvidence,
   type ScalpV5DeploymentRow,
 } from "./pg";
+import {
+  runScalpV5CandlePreflight,
+  type ScalpV5CandlePreflightResult,
+} from "./candlePreflight";
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -445,6 +449,8 @@ export interface ScalpV5BulkResult {
   fullCount: number;
   incrementalCount: number;
   outcomes: ScalpV5EvaluationOutcome[];
+  preflight: ScalpV5CandlePreflightResult | null;
+  skippedReason?: "v5_candle_preflight_not_ready";
   details: {
     classifierVersion: string;
     holdoutWeeks: number;
@@ -453,10 +459,24 @@ export interface ScalpV5BulkResult {
   };
 }
 
+export function shouldRunScalpV5EvaluationCandlePreflight(params: {
+  nowMs: number;
+  preflightCandles?: boolean;
+  forcePreflight?: boolean;
+}): boolean {
+  if (params.preflightCandles === false) return false;
+  if (params.forcePreflight) return true;
+  return new Date(params.nowMs).getUTCDay() === 0;
+}
+
 export async function runScalpV5EvaluationBatch(params: {
   limit?: number;
   staleOlderThanMs?: number;
   nowMs?: number;
+  preflightCandles?: boolean;
+  forcePreflight?: boolean;
+  preflightBatchSize?: number;
+  preflightMaxAttempts?: number;
   // Optional sharding: when shardCount >= 2, only deployments whose stable
   // hash of deployment_id falls into the chosen shardIndex are returned.
   // Lets multiple bulk processes run in parallel on disjoint row sets.
@@ -465,6 +485,41 @@ export async function runScalpV5EvaluationBatch(params: {
 } = {}): Promise<ScalpV5BulkResult> {
   const cfg = resolveScalpV5Config();
   const nowMs = Math.floor(Number(params.nowMs || Date.now()));
+  let preflight: ScalpV5CandlePreflightResult | null = null;
+  if (
+    shouldRunScalpV5EvaluationCandlePreflight({
+      nowMs,
+      preflightCandles: params.preflightCandles,
+      forcePreflight: params.forcePreflight,
+    })
+  ) {
+    preflight = await runScalpV5CandlePreflight({
+      nowMs,
+      batchSize: params.preflightBatchSize,
+      maxAttempts: params.preflightMaxAttempts,
+      auditTrigger: params.forcePreflight ? "evaluate_force_preflight" : "evaluate_sunday_preflight",
+    });
+    if (!preflight.ready) {
+      return {
+        processed: 0,
+        succeeded: 0,
+        failed: preflight.blockingFailures.length,
+        enabled: 0,
+        disabled: 0,
+        fullCount: 0,
+        incrementalCount: 0,
+        outcomes: [],
+        preflight,
+        skippedReason: "v5_candle_preflight_not_ready",
+        details: {
+          classifierVersion: cfg.classifierVersion,
+          holdoutWeeks: cfg.holdoutWeeks,
+          minTradesPerCell: cfg.minTradesPerCell,
+          nowMs,
+        },
+      };
+    }
+  }
   const deployments = await loadScalpV5DeploymentsForEvaluation({
     limit: params.limit,
     staleOlderThanMs: params.staleOlderThanMs,
@@ -508,6 +563,7 @@ export async function runScalpV5EvaluationBatch(params: {
     fullCount,
     incrementalCount,
     outcomes,
+    preflight,
     details: {
       classifierVersion: cfg.classifierVersion,
       holdoutWeeks: cfg.holdoutWeeks,

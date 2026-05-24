@@ -7,6 +7,8 @@ import {
   saveScalpCandleHistory,
 } from "../scalp/candleHistory";
 import { fetchBitgetCandlesByEpicDateRange } from "../scalp/bitgetHistory";
+import { isScalpPgConfigured, scalpPrisma } from "../scalp/pg/client";
+import { sql } from "../scalp/pg/sql";
 
 import type { ScalpV2Venue } from "./types";
 
@@ -56,6 +58,51 @@ type ScalpV2LoadCandlesResult = {
   details: Record<string, unknown>;
 };
 
+async function writeScalpCandleLoadAudit(params: {
+  source: string;
+  trigger?: string | null;
+  startedAtMs: number;
+  finishedAtMs: number;
+  scopes: ScalpV2LoadCandlesScope[];
+  jobParams: Record<string, unknown>;
+  result: ScalpV2LoadCandlesResult;
+}): Promise<void> {
+  if (!isScalpPgConfigured()) return;
+  const db = scalpPrisma();
+  const details = (params.result.details || {}) as Record<string, unknown>;
+  const errors = Array.isArray(details.errors) ? details.errors : [];
+  await db.$executeRaw(sql`
+    INSERT INTO scalp_candle_load_runs(
+      source,
+      trigger,
+      ok,
+      started_at,
+      finished_at,
+      scope_count,
+      processed,
+      succeeded,
+      failed,
+      params_json,
+      result_json,
+      errors_json
+    )
+    VALUES(
+      ${params.source},
+      ${params.trigger || null},
+      ${params.result.ok},
+      to_timestamp(${params.startedAtMs} / 1000.0),
+      to_timestamp(${params.finishedAtMs} / 1000.0),
+      ${params.scopes.length},
+      ${params.result.processed},
+      ${params.result.succeeded},
+      ${params.result.failed},
+      ${JSON.stringify(params.jobParams)}::jsonb,
+      ${JSON.stringify(params.result)}::jsonb,
+      ${JSON.stringify(errors)}::jsonb
+    );
+  `);
+}
+
 function normalizeScopes(params: {
   scopes?: ScalpV2LoadCandlesScope[];
   symbols?: string[];
@@ -82,7 +129,10 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
   offset?: number;
   scopes?: ScalpV2LoadCandlesScope[];
   symbols?: string[];
+  auditSource?: string;
+  auditTrigger?: string | null;
 }): Promise<ScalpV2LoadCandlesResult> {
+  const startedAtMs = Date.now();
   const scopes = normalizeScopes(params);
   const batchSize = toPositiveInt(params.batchSize, 6, 200);
   const maxAttempts = toPositiveInt(params.maxAttempts, 5, 30);
@@ -272,7 +322,7 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
   }
 
   const nextOffset = offset + processed;
-  return {
+  const result: ScalpV2LoadCandlesResult = {
     ok: failed <= 0,
     busy: false,
     jobKind: "load_candles",
@@ -300,4 +350,19 @@ export async function runScalpV2LoadCandlesPipelineJob(params: {
       errors,
     },
   };
+  await writeScalpCandleLoadAudit({
+    source: String(params.auditSource || "v2_native_load_candles").trim() || "v2_native_load_candles",
+    trigger: params.auditTrigger || null,
+    startedAtMs,
+    finishedAtMs: Date.now(),
+    scopes,
+    jobParams: {
+      batchSize,
+      maxAttempts,
+      offset,
+      scopeCount: scopes.length,
+    },
+    result,
+  }).catch(() => undefined);
+  return result;
 }

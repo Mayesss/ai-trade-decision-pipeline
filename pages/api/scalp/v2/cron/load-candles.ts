@@ -16,6 +16,10 @@ import {
   resolveScalpV2ResearchHardCaps,
 } from "../../../../../lib/scalp-v2/costControls";
 import { loadScalpV2RuntimeConfig } from "../../../../../lib/scalp-v2/db";
+import {
+  shouldContinueScalpV2LoadCandles,
+  shouldTriggerScalpV2LoadCandlesSuccessor,
+} from "../../../../../lib/scalp-v2/loadCandlesChaining";
 import { runScalpV2LoadCandlesPipelineJob } from "../../../../../lib/scalp-v2/pipelineJobsAdapter";
 import type { ScalpV2Venue } from "../../../../../lib/scalp-v2/types";
 
@@ -290,6 +294,8 @@ export default async function handler(
         maxAttempts,
         offset,
         scopes: scope,
+        auditSource: "v2_cron_load_candles",
+        auditTrigger: firstQueryValue(req.query.triggeredBy) || "cron",
       }),
       routeTimeoutMs,
       "load_candles_job",
@@ -315,6 +321,8 @@ export default async function handler(
           offset: skipNextOffset,
           autoContinue: 1,
           autoSuccessor: autoSuccessor ? 1 : 0,
+          successor,
+          successorDryRun: successorDryRun ? 1 : 0,
           selfHop: selfHop + 1,
           selfMaxHops,
         },
@@ -381,11 +389,13 @@ export default async function handler(
   let selfRecall: ScalpV2CronInvokeResult | null = null;
 
   if (
-    result.ok &&
-    !result.busy &&
-    autoContinue &&
-    result.pendingAfter > 0 &&
-    selfHop < selfMaxHops
+    shouldContinueScalpV2LoadCandles({
+      busy: result.busy,
+      autoContinue,
+      pendingAfter: result.pendingAfter,
+      selfHop,
+      selfMaxHops,
+    })
   ) {
     selfRecall = await invokeScalpV2CronEndpointDetached(
       req,
@@ -396,6 +406,8 @@ export default async function handler(
         offset: nextOffset,
         autoContinue: 1,
         autoSuccessor: autoSuccessor ? 1 : 0,
+        successor,
+        successorDryRun: successorDryRun ? 1 : 0,
         selfHop: selfHop + 1,
         selfMaxHops,
       },
@@ -404,10 +416,12 @@ export default async function handler(
   }
 
   if (
-    result.ok &&
-    !result.busy &&
-    autoSuccessor &&
-    result.pendingAfter <= 0
+    shouldTriggerScalpV2LoadCandlesSuccessor({
+      ok: result.ok,
+      busy: result.busy,
+      autoSuccessor,
+      pendingAfter: result.pendingAfter,
+    })
   ) {
     if (successor === "discover") {
       downstream = await invokeScalpV2CronEndpointDetached(

@@ -10,6 +10,12 @@ import {
   SCALP_V5_VERSION,
   tagTradesWithCells,
 } from "./index";
+import {
+  isScalpV5RemovedBitgetSymbolError,
+  resolveScalpV5PreflightWeek,
+  summarizeScalpV5CandleCoverage,
+} from "./candlePreflight";
+import { shouldRunScalpV5EvaluationCandlePreflight } from "./evaluator";
 
 const CELL_A = "vol=mid|trend=trending_up|risk=risk_on";
 const CELL_B = "vol=high|trend=choppy|risk=risk_off";
@@ -505,5 +511,75 @@ test("resolveScalpV5EvidenceFreshness marks stale and fresh evidence", () => {
   assert.equal(
     resolveScalpV5EvidenceFreshness({ evaluatedAtMs: null, nowMs, staleOlderThanMs }).stale,
     true,
+  );
+});
+
+test("resolveScalpV5PreflightWeek targets the just-completed week on Sunday", () => {
+  const sunday = Date.UTC(2026, 4, 24, 7, 30, 0);
+  const out = resolveScalpV5PreflightWeek({ nowMs: sunday, holdoutWeeks: 12 });
+  assert.equal(out.targetWeekStartMs, Date.UTC(2026, 4, 18));
+  assert.equal(out.targetWeekEndMs, Date.UTC(2026, 4, 25));
+  assert.equal(out.holdoutFromMs, Date.UTC(2026, 2, 2));
+  assert.equal(out.holdoutToMs, Date.UTC(2026, 4, 25));
+});
+
+test("summarizeScalpV5CandleCoverage flags missing and partial weekly buckets", () => {
+  const failures = summarizeScalpV5CandleCoverage({
+    scopes: [
+      { venue: "bitget", symbol: "BTCUSDT" },
+      { venue: "capital", symbol: "EURUSD" },
+      { venue: "bitget", symbol: "SOLUSDT" },
+    ],
+    coverageRows: [
+      { symbol: "BTCUSDT", candleCount: 7_999, firstTsMs: 1, lastTsMs: 2 },
+      { symbol: "EURUSD", candleCount: 6_000, firstTsMs: 1, lastTsMs: 2 },
+    ],
+    minCandles: { bitget: 8_000, capital: 6_000 },
+  });
+  assert.deepEqual(
+    failures.map((row) => ({ symbol: row.symbol, reason: row.reason, candles: row.candles })),
+    [
+      { symbol: "BTCUSDT", reason: "insufficient_week_candles", candles: 7_999 },
+      { symbol: "SOLUSDT", reason: "missing_week_bucket", candles: 0 },
+    ],
+  );
+});
+
+test("removed Bitget symbols are classified from provider errors", () => {
+  assert.equal(
+    isScalpV5RemovedBitgetSymbolError(
+      "bitget_history_request_failed:MKRUSDT: Bitget error 40309: The symbol has been removed",
+    ),
+    true,
+  );
+  assert.equal(isScalpV5RemovedBitgetSymbolError("capital timeout"), false);
+});
+
+test("v5 evaluation candle preflight runs only on Sunday unless forced", () => {
+  assert.equal(
+    shouldRunScalpV5EvaluationCandlePreflight({
+      nowMs: Date.UTC(2026, 4, 24, 7, 0, 0),
+    }),
+    true,
+  );
+  assert.equal(
+    shouldRunScalpV5EvaluationCandlePreflight({
+      nowMs: Date.UTC(2026, 4, 25, 7, 0, 0),
+    }),
+    false,
+  );
+  assert.equal(
+    shouldRunScalpV5EvaluationCandlePreflight({
+      nowMs: Date.UTC(2026, 4, 25, 7, 0, 0),
+      forcePreflight: true,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldRunScalpV5EvaluationCandlePreflight({
+      nowMs: Date.UTC(2026, 4, 24, 7, 0, 0),
+      preflightCandles: false,
+    }),
+    false,
   );
 });

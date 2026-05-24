@@ -49,7 +49,11 @@
     },
     {
       "path": "/api/scalp/v5/cron/evaluate?limit=50",
-      "schedule": "0 * * * *"
+      "schedule": "15 * * * *"
+    },
+    {
+      "path": "/api/scalp/v5/cron/preflight-candles?batchSize=200&maxAttempts=10",
+      "schedule": "20 0 * * 0"
     },
     {
       "path": "/api/scalp/v5/cron/promote",

@@ -20,6 +20,10 @@ import {
   type PromotionSelectionRow,
 } from "../pipelineJobs";
 import type { ScalpPromotionForwardValidationCandidate } from "../promotionPolicy";
+import {
+  shouldContinueScalpV2LoadCandles,
+  shouldTriggerScalpV2LoadCandlesSuccessor,
+} from "../../scalp-v2/loadCandlesChaining";
 
 function makeCandidate(params: {
   deploymentId: string;
@@ -643,6 +647,37 @@ test("resolveLoadCandlesFetchUpperBoundMs clamps Sunday UTC to Saturday close", 
   const mondayMorningUtc = Date.UTC(2026, 2, 23, 8, 15, 0); // Monday
   const outMonday = resolveLoadCandlesFetchUpperBoundMs(mondayMorningUtc);
   assert.equal(outMonday, mondayMorningUtc);
+});
+
+test("v2 load-candles chaining continues past partial failures", () => {
+  assert.equal(
+    shouldContinueScalpV2LoadCandles({
+      busy: false,
+      autoContinue: true,
+      pendingAfter: 10,
+      selfHop: 2,
+      selfMaxHops: 20,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldTriggerScalpV2LoadCandlesSuccessor({
+      ok: false,
+      busy: false,
+      autoSuccessor: true,
+      pendingAfter: 0,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldTriggerScalpV2LoadCandlesSuccessor({
+      ok: true,
+      busy: false,
+      autoSuccessor: true,
+      pendingAfter: 0,
+    }),
+    true,
+  );
 });
 
 test("filterScalpSundayCandles removes UTC Sunday candles", () => {
