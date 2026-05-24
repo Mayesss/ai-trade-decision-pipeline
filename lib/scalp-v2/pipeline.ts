@@ -7,9 +7,11 @@ import {
 import { bitgetFetch, resolveProductType } from "../bitget";
 import { loadScalpCandleHistoryInRange } from "../scalp/candleHistory";
 import { pipSizeForScalpSymbol } from "../scalp/marketData";
+import { inScalpEntrySessionProfileWindow } from "../scalp/sessions";
 import { loadScalpSymbolMarketMetadataBulk } from "../scalp/symbolMarketMetadataStore";
 import type { ScalpSymbolMarketMetadata } from "../scalp/symbolMarketMetadata";
 import type { ScalpStrategyRuntimeSnapshot } from "../scalp/store";
+import type { ScalpMarketSnapshot } from "../scalp/types";
 import {
   defaultScalpReplayConfig,
   runScalpReplay,
@@ -6795,11 +6797,124 @@ export async function runScalpV2ExecuteJob(params: {
     const openPositionDeploymentIds = new Set(
       openPositions.map((position) => String(position.deploymentId || "").trim()).filter(Boolean),
     );
+
+    // Cheap-skip pre-filter. The strategy logic already rejects entries
+    // outside their session window (via SESSION_FILTER_OUTSIDE_ENTRY_PROFILE
+    // in lib/scalp/strategies/*) and the per-deployment loop below already
+    // honors Sunday-block + promotion_gate entry block reason codes — but
+    // both of those happen AFTER the engine has fetched candles, news,
+    // regime, and v5 evidence. For a deployment with no open position that
+    // is going to be rejected by these cheap, nowMs-only checks anyway,
+    // the data fetches are pure waste. Hoist the checks here so we never
+    // pay for them.
+    //
+    // Position-holding deployments ALWAYS pass through: their exit rules,
+    // trail-stops, and reconciliation must run regardless of entry-block
+    // state. Open-position membership is the only override.
+    const sundayBlock = resolveScalpV5SundayBlock(nowTs);
+    const cheapSkipReasonCounts: Record<string, number> = {};
+    const eligibleAfterCheapFilter = executableDeployments.filter((deployment) => {
+      if (openPositionDeploymentIds.has(deployment.deploymentId)) return true;
+      if (sundayBlock.blocked) {
+        cheapSkipReasonCounts.SUNDAY_BLOCK =
+          (cheapSkipReasonCounts.SUNDAY_BLOCK || 0) + 1;
+        return false;
+      }
+      if (!inScalpEntrySessionProfileWindow(nowTs, deployment.entrySessionProfile)) {
+        cheapSkipReasonCounts.OUT_OF_SESSION =
+          (cheapSkipReasonCounts.OUT_OF_SESSION || 0) + 1;
+        return false;
+      }
+      const promoGateBlocks = normalizeReasonCodes(
+        asRecord(deployment.promotionGate).entryBlockReasonCodes,
+      );
+      if (promoGateBlocks.length > 0) {
+        cheapSkipReasonCounts.PROMOTION_GATE_BLOCKED =
+          (cheapSkipReasonCounts.PROMOTION_GATE_BLOCKED || 0) + 1;
+        return false;
+      }
+      return true;
+    });
+    const cheapSkippedDeployments =
+      executableDeployments.length - eligibleAfterCheapFilter.length;
+
+    // Tier-2 optimization: candle dedup across the per-deployment loop.
+    // The engine already supports this via its `marketSnapshotCache`
+    // parameter (see lib/scalp/engine.ts). The cache key is
+    // (venue, symbol, baseTf, confirmTf, nowMs, minBaseCandles,
+    //  minConfirmCandles, maxCandlesPerRequest) — so two deployments on
+    // the same symbol+timeframes share one broker fetch, even when they
+    // use different strategies / tunes / sessions.
+    //
+    // Pass `nowMs: nowTs` to every cycle so the cache key matches across
+    // iterations (otherwise the engine would default to Date.now() per
+    // call and every iteration would miss the cache). This also has the
+    // side benefit of tick-level timestamp consistency: every event/
+    // journal entry from this tick shares the same generatedAtMs.
+    const marketSnapshotCache = new Map<string, ScalpMarketSnapshot>();
+
+    // Tier-3 optimization: dedup news-blackout + v4-regime fetches across
+    // deployments that share a (venue, symbol). Both lookups are pure of
+    // (venue, symbol, nowMs); with nowMs pinned (Tier 2), they're pure of
+    // (venue, symbol) within a tick. v5 cell-evidence is genuinely
+    // per-deployment (keyed by deployment_id) so it stays uncached.
+    //
+    // v4Enabled / v5Enabled are env-derived, so we hoist them out of the
+    // loop alongside `needsRegimeSnapshot` — they were being re-read on
+    // every iteration for no reason.
+    const v4Enabled = isScalpV4Enabled();
+    const v5Enabled = isScalpV5Enabled();
+    const needsRegimeSnapshot = v4Enabled || v5Enabled;
+    const newsBlackoutCache = new Map<
+      string,
+      Promise<Awaited<ReturnType<typeof evaluateScalpV2V3NewsBlackout>>>
+    >();
+    const v4RegimeCache = new Map<
+      string,
+      Promise<Awaited<ReturnType<typeof loadScalpV4CurrentRegimeSnapshot>>>
+    >();
+    const symbolCacheKey = (venue: ScalpV2Venue, symbol: string): string =>
+      `${venue}:${symbol}`;
+    const getCachedNewsBlackout = (venue: ScalpV2Venue, symbol: string) => {
+      const key = symbolCacheKey(venue, symbol);
+      let pending = newsBlackoutCache.get(key);
+      if (!pending) {
+        pending = evaluateScalpV2V3NewsBlackout({
+          venue,
+          symbol,
+          nowMs: nowTs,
+        }).catch(() => ({
+          blocked: false,
+          reasonCodes: ["V3_NEWS_BLACKOUT_CHECK_FAILED"],
+          tier: null,
+          staleData: true,
+          activeEvents: [],
+        })) as Promise<Awaited<ReturnType<typeof evaluateScalpV2V3NewsBlackout>>>;
+        newsBlackoutCache.set(key, pending);
+      }
+      return pending;
+    };
+    const getCachedV4Regime = (venue: ScalpV2Venue, symbol: string) => {
+      const key = symbolCacheKey(venue, symbol);
+      let pending = v4RegimeCache.get(key);
+      if (!pending) {
+        pending = loadScalpV4CurrentRegimeSnapshot({
+          venue,
+          symbol,
+          nowMs: nowTs,
+        }).catch(() => ({ cellId: null, stale: true, snapshot: null })) as Promise<
+          Awaited<ReturnType<typeof loadScalpV4CurrentRegimeSnapshot>>
+        >;
+        v4RegimeCache.set(key, pending);
+      }
+      return pending;
+    };
+
     let executedCycleDeployments = 0;
     let skippedEntryBlockedDeployments = 0;
     const skippedEntryBlockReasonCounts: Record<string, number> = {};
 
-    for (const deployment of executableDeployments) {
+    for (const deployment of eligibleAfterCheapFilter) {
       processed += 1;
       const v5Owned = isScalpV5OwnedPromotionGate(deployment.promotionGate);
       const deploymentDryRun = resolveScalpV2ExecuteDryRunForDeployment({
@@ -6828,28 +6943,16 @@ export async function runScalpV2ExecuteJob(params: {
 	          Object.keys(asRecord(temporalFilterRaw)).length > 0
 	            ? (asRecord(temporalFilterRaw) as ScalpV2V3TemporalFilter)
 	            : null;
-	        const newsBlackout = await evaluateScalpV2V3NewsBlackout({
-	          venue: deployment.venue,
-	          symbol: deployment.symbol,
-	          nowMs: nowTs,
-	        }).catch(() => ({
-	          blocked: false,
-	          reasonCodes: ["V3_NEWS_BLACKOUT_CHECK_FAILED"],
-	          tier: null,
-	          staleData: true,
-	          activeEvents: [],
-	        }));
-	        const v4Enabled = isScalpV4Enabled();
-	        const v5Enabled = isScalpV5Enabled();
-	        // The regime snapshot is shared between v4 and v5 — fetch once if
-	        // either gate needs it. Avoids a round-trip when only one is on.
-	        const needsRegimeSnapshot = v4Enabled || v5Enabled;
+	        // News blackout + v4 regime are now served from per-tick caches
+	        // (keyed by venue+symbol). v4Enabled / v5Enabled / needsRegimeSnapshot
+	        // are hoisted above the loop — they're env-derived and constant
+	        // across iterations.
+	        const newsBlackout = await getCachedNewsBlackout(
+	          deployment.venue,
+	          deployment.symbol,
+	        );
 	        const v4CurrentRegime = needsRegimeSnapshot
-	          ? await loadScalpV4CurrentRegimeSnapshot({
-	              venue: deployment.venue,
-	              symbol: deployment.symbol,
-	              nowMs: nowTs,
-	            }).catch(() => ({ cellId: null, stale: true, snapshot: null }))
+	          ? await getCachedV4Regime(deployment.venue, deployment.symbol)
 	          : { cellId: null, stale: false, snapshot: null };
 	        const v4RegimeGate = resolveScalpV4EnvelopeBlock({
 	          enabled: v4Enabled && !v5Owned,
@@ -6885,10 +6988,12 @@ export async function runScalpV2ExecuteJob(params: {
 	        const promotionEntryBlockReasonCodes = normalizeReasonCodes(
 	          asRecord(deployment.promotionGate).entryBlockReasonCodes,
 	        );
-	        // Sunday UTC = v5 evaluation+promotion day. No new entries; existing
-	        // positions still get managed/reconciled. Monday resumes trading
-	        // against the freshly-validated evidence written overnight.
-	        const sundayBlock = resolveScalpV5SundayBlock(nowTs);
+	        // Sunday UTC = v5 evaluation+promotion day. No new entries;
+	        // existing positions still get managed/reconciled. Monday
+	        // resumes trading against the freshly-validated evidence
+	        // written overnight. `sundayBlock` is hoisted to outer scope
+	        // (above the cheap-skip filter) since it's a pure function of
+	        // nowTs.
 	        const hardEntryBlocked = Boolean(
 	          promotionEntryBlockReasonCodes.length > 0 ||
 	          newsBlackout.blocked ||
@@ -6943,6 +7048,12 @@ export async function runScalpV2ExecuteJob(params: {
           configOverride,
           runtimeSnapshot,
           persistence,
+          // Pin nowMs so every cycle in this tick uses the same value —
+          // required for the marketSnapshotCache key to match across
+          // iterations. Drift between first and last cycle in the loop
+          // is at most a few seconds, well under the 60s cron cadence.
+          nowMs: nowTs,
+          marketSnapshotCache,
         });
         executedCycleDeployments += 1;
 
@@ -7023,6 +7134,41 @@ export async function runScalpV2ExecuteJob(params: {
     details = {
       executedDeployments: executedCycleDeployments,
       consideredDeployments: executableDeployments.length,
+      // How many deployments were eliminated by the cheap-skip pre-filter
+      // (out-of-session / Sunday-block / promotion-gate-blocked, with no
+      // open position). These never reached the expensive per-deployment
+      // loop, so they cost zero candle/news/regime/evidence fetches.
+      cheapSkippedDeployments,
+      cheapSkipReasonCounts,
+      // How many deployments survived the cheap filter and entered the
+      // per-deployment loop (= position-holders + in-session entry
+      // candidates).
+      postCheapFilterDeployments: eligibleAfterCheapFilter.length,
+      // Candle-fetch dedup: marketSnapshotCacheUniqueLoads is the number
+      // of distinct (venue, symbol, baseTf, confirmTf, ...) tuples we
+      // actually fetched from the broker; marketSnapshotCacheReuses is
+      // the number of cycle invocations that hit the cache instead of
+      // fetching. Reuses ~= savings; if reuses == 0 every cycle is using
+      // a unique config combination (no dedup possible).
+      marketSnapshotCacheUniqueLoads: marketSnapshotCache.size,
+      marketSnapshotCacheReuses: Math.max(
+        0,
+        executedCycleDeployments - marketSnapshotCache.size,
+      ),
+      // News-blackout + v4-regime dedup. UniqueSymbols = number of distinct
+      // (venue, symbol) pairs we fetched for; Reuses = number of cycle
+      // invocations that hit the cache instead of fetching. v5 cell-evidence
+      // is genuinely per-deployment so it's not in this cache.
+      newsBlackoutCacheUniqueSymbols: newsBlackoutCache.size,
+      newsBlackoutCacheReuses: Math.max(
+        0,
+        executedCycleDeployments - newsBlackoutCache.size,
+      ),
+      v4RegimeCacheUniqueSymbols: v4RegimeCache.size,
+      v4RegimeCacheReuses: Math.max(
+        0,
+        (needsRegimeSnapshot ? executedCycleDeployments : 0) - v4RegimeCache.size,
+      ),
       skippedEntryBlockedDeployments,
       skippedEntryBlockReasonCounts,
       dryRun: effectiveDryRun,
