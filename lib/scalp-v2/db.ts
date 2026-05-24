@@ -1882,6 +1882,15 @@ export async function requeueScalpV2DeploymentCandidatesForWindow(params: {
 
 const UPSERT_DEPLOYMENT_BATCH_SIZE = 400;
 
+// Bulk upsert. The ON CONFLICT clause is gated on retired_at IS NULL: if a
+// row was previously retired by v5 trim-tail / cull-bottom, conflicting
+// upserts (e.g., v2 pipeline regenerating the same combo as a new
+// candidate) are silently no-op'd at the DB layer. This is the DB-side
+// enforcement of the v5 "permanent ban" — combined with the retired_at
+// exclusions in the v5 refill pool queries, it means a (venue, symbol,
+// strategy_id, tune_id, entry_session_profile) tuple that has been retired
+// can NEVER be resurrected through any code path that flows through this
+// function. Manual reset requires clearing retired_at directly in SQL.
 export async function upsertScalpV2Deployments(params: {
   rows: Array<{
     candidateId: number | null;
@@ -1952,7 +1961,8 @@ export async function upsertScalpV2Deployments(params: {
         promotion_gate = EXCLUDED.promotion_gate,
         risk_profile = EXCLUDED.risk_profile,
         updated_at = NOW(),
-        last_promoted_at = CASE WHEN EXCLUDED.enabled THEN NOW() ELSE scalp_v2_deployments.last_promoted_at END;
+        last_promoted_at = CASE WHEN EXCLUDED.enabled THEN NOW() ELSE scalp_v2_deployments.last_promoted_at END
+      WHERE scalp_v2_deployments.retired_at IS NULL;
     `);
   }
 

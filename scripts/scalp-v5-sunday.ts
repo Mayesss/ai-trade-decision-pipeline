@@ -70,6 +70,32 @@ function numArg(args: Args, key: string, fallback: number, min: number, max: num
   return Math.max(min, Math.min(max, parsed));
 }
 
+function stringArg(args: Args, key: string, fallback: string): string {
+  const value = args[key];
+  if (value === undefined || typeof value === "boolean") return fallback;
+  return String(value).trim();
+}
+
+// Resolve the loop deadline. With no explicit ISO override, defaults to
+// "next Monday 00:00 UTC minus leadHours". On Sunday (UTC day 0) that's
+// tomorrow; on Monday or later it rolls forward to next week's Monday so
+// the loop never lands an in-the-past deadline.
+function computeDefaultLoopDeadlineMs(nowMs: number, leadHours: number): number {
+  const nowDate = new Date(nowMs);
+  const day = nowDate.getUTCDay();
+  const daysUntilNextMonday = ((8 - day) % 7) || 7;
+  const mondayMidnightUtcMs = Date.UTC(
+    nowDate.getUTCFullYear(),
+    nowDate.getUTCMonth(),
+    nowDate.getUTCDate() + daysUntilNextMonday,
+    0,
+    0,
+    0,
+    0,
+  );
+  return mondayMidnightUtcMs - Math.max(0, leadHours) * 60 * 60_000;
+}
+
 function summarizeFailureReasons(outcomes: Array<{ ok: boolean; reason?: string }>): Record<string, number> {
   const out: Record<string, number> = {};
   for (const row of outcomes) {
@@ -187,6 +213,16 @@ async function main() {
   const minStageCTrades = intArg(args, "minStageCTrades", 30, 0, 100_000);
   const staleOlderThanHours = intArg(args, "staleOlderThanHours", 24 * 6, 1, 24 * 14);
   const staleOlderThanMs = staleOlderThanHours * 60 * 60_000;
+  // Loop-mode flags. When --loop is set, after the single-shot refill the
+  // script keeps adding small batches of seats until the deadline (or pools
+  // exhaust). Lets us use spare Sunday compute to push past the initial
+  // targetNewSeats without committing to one large refill upfront.
+  const loop = boolArg(args, "loop", false);
+  const loopBatchSeats = intArg(args, "loopBatchSeats", 100, 1, 1000);
+  const loopMondayLeadHours = numArg(args, "loopMondayLeadHours", 2, 0, 48);
+  const loopUntilIso = stringArg(args, "loopUntilIso", "");
+  const loopMaxIterations = intArg(args, "loopMaxIterations", 100, 1, 10_000);
+  const loopMaxCumulativeSeats = intArg(args, "loopMaxCumulativeSeats", 5000, 1, 100_000);
   const utcDay = new Date().getUTCDay();
 
   if (!isScalpPgConfigured()) {
@@ -349,6 +385,121 @@ async function main() {
         });
 
   summary.finalPromote = await autoPromoteScalpV5WinnersToEnabled({ dryRun });
+
+  // Loop mode: continue refilling in small batches until the deadline.
+  // Disabled in dryRun (the whole point is to commit incremental seats).
+  // Stops on any of: deadline reached, pools exhausted (upserted=0),
+  // max-iterations safety cap, max-cumulative-seats safety cap.
+  if (loop && !dryRun) {
+    const nowMs = Date.now();
+    const deadlineMs = loopUntilIso
+      ? Date.parse(loopUntilIso)
+      : computeDefaultLoopDeadlineMs(nowMs, loopMondayLeadHours);
+    if (!Number.isFinite(deadlineMs)) {
+      summary.refillLoop = { enabled: true, skipped: true, reason: "invalid_loopUntilIso", loopUntilIso };
+    } else if (deadlineMs <= nowMs) {
+      summary.refillLoop = {
+        enabled: true,
+        skipped: true,
+        reason: "deadline_in_past",
+        deadlineIso: new Date(deadlineMs).toISOString(),
+      };
+    } else {
+      const iterations: Array<Record<string, unknown>> = [];
+      const cumulative = {
+        refilled: 0,
+        evaluated: 0,
+        v5Enabled: 0,
+        promoted: 0,
+      };
+      let stoppedReason: string | null = null;
+      console.log(
+        `[loop] start batch=${loopBatchSeats} deadline=${new Date(deadlineMs).toISOString()} maxIter=${loopMaxIterations} maxSeats=${loopMaxCumulativeSeats}`,
+      );
+      while (true) {
+        if (Date.now() >= deadlineMs) {
+          stoppedReason = "deadline_reached";
+          break;
+        }
+        if (iterations.length >= loopMaxIterations) {
+          stoppedReason = "max_iterations";
+          break;
+        }
+        if (cumulative.refilled >= loopMaxCumulativeSeats) {
+          stoppedReason = "max_cumulative_seats";
+          break;
+        }
+        const iterStart = Date.now();
+        const batchRefill = await refillScalpV5DeploymentsMixed({
+          targetNewSeats: loopBatchSeats,
+          minStageCNetR,
+          minStageCTrades,
+          dryRun: false,
+        });
+        if (batchRefill.upserted === 0) {
+          iterations.push({
+            iteration: iterations.length + 1,
+            refill: { upserted: 0, quotas: batchRefill.quotas, selected: batchRefill.selected },
+            stopped: true,
+            reason: "pools_exhausted",
+            durationMs: Date.now() - iterStart,
+          });
+          stoppedReason = "pools_exhausted";
+          break;
+        }
+        const batchDrain = await drainV5Evaluation({
+          label: `v5-loop-eval-${iterations.length + 1}`,
+          evalLimit,
+          staleOlderThanMs,
+          maxEvalBatches,
+          deploymentIds: batchRefill.deploymentIds,
+        });
+        const batchPromote = await autoPromoteScalpV5WinnersToEnabled({});
+        cumulative.refilled += batchRefill.upserted;
+        cumulative.evaluated += batchDrain.succeeded;
+        cumulative.v5Enabled += batchDrain.enabled;
+        cumulative.promoted += batchPromote.promoted;
+        iterations.push({
+          iteration: iterations.length + 1,
+          refill: {
+            quotas: batchRefill.quotas,
+            selected: batchRefill.selected,
+            upserted: batchRefill.upserted,
+          },
+          drain: {
+            processed: batchDrain.processed,
+            succeeded: batchDrain.succeeded,
+            failed: batchDrain.failed,
+            enabled: batchDrain.enabled,
+            disabled: batchDrain.disabled,
+            remaining: batchDrain.remaining,
+          },
+          promote: {
+            qualified: batchPromote.funnel.qualified,
+            promoted: batchPromote.promoted,
+          },
+          cumulative: { ...cumulative },
+          durationMs: Date.now() - iterStart,
+        });
+        const remainingMs = deadlineMs - Date.now();
+        console.log(
+          `[loop] iter=${iterations.length} refilled=${batchRefill.upserted} enabled=${batchDrain.enabled} promoted=${batchPromote.promoted} cumRefilled=${cumulative.refilled} remainingMs=${remainingMs}`,
+        );
+      }
+      summary.refillLoop = {
+        enabled: true,
+        deadlineIso: new Date(deadlineMs).toISOString(),
+        batchSeats: loopBatchSeats,
+        maxIterations: loopMaxIterations,
+        maxCumulativeSeats: loopMaxCumulativeSeats,
+        stoppedReason,
+        totalIterations: iterations.length,
+        cumulative,
+        iterations,
+      };
+    }
+  }
+
   summary.queueAfter = await getScalpV5EvaluationQueueStats({ staleOlderThanMs });
 
   console.log("\n=== scalp-v5-sunday summary ===");

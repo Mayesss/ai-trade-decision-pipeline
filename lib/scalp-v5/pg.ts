@@ -597,6 +597,7 @@ export async function cullBottomPerformersScalpV5Deployments(params: {
         v5_cell_evidence    = NULL,
         v5_enabled          = FALSE,
         v5_replay_checkpoint = NULL,
+        retired_at          = NOW(),
         updated_at          = NOW()
     WHERE deployment_id = ANY(${deploymentIds}::text[]);
   `);
@@ -631,10 +632,14 @@ export async function cullBottomPerformersScalpV5Deployments(params: {
 // checkpoint are NULLed to reclaim storage — the row is now considered
 // proven dead.
 //
-// Reversal: if a retired row's (venue, symbol, session, strategy, tune)
-// combo gets regenerated later by v2 research, a new deployment row is
-// created with the same key but a fresh candidate_id — automatic second
-// chance, no manual revival needed.
+// PERMANENT BAN: alongside clearing candidate_id, this stamps retired_at
+// = NOW(). All three v5 refill pool queries (stagec / mutation /
+// exploration) exclude any (venue, symbol, strategy_id, tune_id,
+// entry_session_profile) tuple whose deployment row has retired_at IS
+// NOT NULL. So if v2 research generates a fresh candidate with the same
+// tuple, refill skips it — we already paid the compute proving the
+// strategy doesn't work and won't pay it again. Manual reset requires
+// clearing retired_at directly in SQL.
 export async function retireConsistentlyFailingScalpV5Deployments(params: {
   stalenessDays?: number;
   dryRun?: boolean;
@@ -675,6 +680,7 @@ export async function retireConsistentlyFailingScalpV5Deployments(params: {
         v5_cell_evidence    = NULL,
         v5_enabled          = FALSE,
         v5_replay_checkpoint = NULL,
+        retired_at          = NOW(),
         updated_at          = NOW()
     WHERE candidate_id IS NOT NULL
       AND created_at < ${ageBefore}
@@ -852,6 +858,20 @@ export async function listScalpV5StageCRankedRefillCandidates(params: {
           FROM scalp_v2_deployments d
           WHERE d.candidate_id = c.id
         )
+        -- Permanent ban: skip any tuple whose previous deployment was
+        -- retired (trim-tail or cull-bottom). The hard-ban lives on
+        -- scalp_v2_deployments.retired_at; clear that column manually if
+        -- you ever want to give a retired tuple a second chance.
+        AND NOT EXISTS (
+          SELECT 1
+          FROM scalp_v2_deployments d
+          WHERE d.venue = c.venue
+            AND d.symbol = c.symbol
+            AND d.strategy_id = c.strategy_id
+            AND d.tune_id = c.tune_id
+            AND d.entry_session_profile = c.entry_session_profile
+            AND d.retired_at IS NOT NULL
+        )
     )
     SELECT
       id,
@@ -957,6 +977,13 @@ export async function listScalpV5WinnerMutationRefillCandidates(params: {
   winnerFreshOlderThanMs?: number;
   fetchLimit?: number;
   nowMs?: number;
+  // Cap mutation seats per symbol. Without this, the ORDER BY stage_c_net_r
+  // DESC scoops up entire tune-variant clusters from one symbol (e.g. 19/50
+  // mutation seats on AAVEUSDT in the 2026-05-24 dry-run). The cap leaves
+  // room for cross-symbol discovery without sacrificing the strongest
+  // candidate per symbol. Default 2; set higher to let dense clusters
+  // through, set to 0 to disable.
+  maxPerSymbol?: number;
 } = {}): Promise<ScalpV5MutationRefillCandidate[]> {
   if (!isScalpPgConfigured()) return [];
   const targetNewSeats = Math.max(0, Math.floor(Number(params.targetNewSeats ?? 125)));
@@ -975,6 +1002,13 @@ export async function listScalpV5WinnerMutationRefillCandidates(params: {
     targetNewSeats,
     Math.min(20_000, Math.floor(Number(params.fetchLimit ?? targetNewSeats * 10))),
   );
+  const maxPerSymbolRaw = Number(params.maxPerSymbol);
+  // 0 = disabled (no cap). Otherwise clamp to a sane range.
+  const maxPerSymbol =
+    Number.isFinite(maxPerSymbolRaw) && maxPerSymbolRaw >= 0
+      ? Math.min(1000, Math.floor(maxPerSymbolRaw))
+      : 2;
+  const symbolCapEnabled = maxPerSymbol > 0;
   const runtime = await loadScalpV2RuntimeConfig();
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{
@@ -1035,6 +1069,16 @@ export async function listScalpV5WinnerMutationRefillCandidates(params: {
         AND NOT EXISTS (
           SELECT 1 FROM scalp_v2_deployments d WHERE d.candidate_id = c.id
         )
+        -- Permanent ban: see listScalpV5StageCRankedRefillCandidates.
+        AND NOT EXISTS (
+          SELECT 1 FROM scalp_v2_deployments d
+          WHERE d.venue = c.venue
+            AND d.symbol = c.symbol
+            AND d.strategy_id = c.strategy_id
+            AND d.tune_id = c.tune_id
+            AND d.entry_session_profile = c.entry_session_profile
+            AND d.retired_at IS NOT NULL
+        )
     ),
     matched AS (
       SELECT
@@ -1050,6 +1094,27 @@ export async function listScalpV5WinnerMutationRefillCandidates(params: {
             AND w.entry_session_profile = s."entrySessionProfile"
         ) AS regime_match
       FROM scored s
+    ),
+    eligible AS (
+      SELECT
+        m.*,
+        CASE
+          WHEN strategy_match AND regime_match THEN 'both'
+          WHEN strategy_match THEN 'strategy'
+          WHEN regime_match THEN 'regime'
+          ELSE 'none'
+        END AS match_basis,
+        -- Rank candidates within the same venue+symbol so a per-symbol cap
+        -- can be applied below. Tiebreakers mirror the global ORDER BY so
+        -- the cap keeps the strongest-per-symbol rows.
+        ROW_NUMBER() OVER (
+          PARTITION BY m.venue, m.symbol
+          ORDER BY m.stage_c_net_r DESC, m.stage_c_trades DESC, m.score DESC NULLS LAST
+        ) AS per_symbol_rank
+      FROM matched m
+      WHERE (strategy_match OR regime_match)
+        AND stage_c_net_r >= ${minStageCNetR}
+        AND stage_c_trades >= ${minStageCTrades}
     )
     SELECT
       id,
@@ -1063,16 +1128,9 @@ export async function listScalpV5WinnerMutationRefillCandidates(params: {
       metadata,
       stage_c_net_r::text AS "stageCNetR",
       stage_c_trades::int AS "stageCTrades",
-      CASE
-        WHEN strategy_match AND regime_match THEN 'both'
-        WHEN strategy_match THEN 'strategy'
-        WHEN regime_match THEN 'regime'
-        ELSE 'none'
-      END AS "matchBasis"
-    FROM matched
-    WHERE (strategy_match OR regime_match)
-      AND stage_c_net_r >= ${minStageCNetR}
-      AND stage_c_trades >= ${minStageCTrades}
+      match_basis AS "matchBasis"
+    FROM eligible
+    WHERE ${symbolCapEnabled} = FALSE OR per_symbol_rank <= ${maxPerSymbol}
     ORDER BY stage_c_net_r DESC, stage_c_trades DESC, score DESC NULLS LAST
     LIMIT ${fetchLimit};
   `);
@@ -1205,6 +1263,16 @@ export async function listScalpV5ExplorationRefillCandidates(params: {
         AND COALESCE(c.metadata_json->'scopeRemoval'->>'reason', '') <> 'bitget_symbol_removed_no_candles'
         AND NOT EXISTS (
           SELECT 1 FROM scalp_v2_deployments d WHERE d.candidate_id = c.id
+        )
+        -- Permanent ban: see listScalpV5StageCRankedRefillCandidates.
+        AND NOT EXISTS (
+          SELECT 1 FROM scalp_v2_deployments d
+          WHERE d.venue = c.venue
+            AND d.symbol = c.symbol
+            AND d.strategy_id = c.strategy_id
+            AND d.tune_id = c.tune_id
+            AND d.entry_session_profile = c.entry_session_profile
+            AND d.retired_at IS NOT NULL
         )
     )
     SELECT
@@ -1498,16 +1566,12 @@ export async function refillScalpV5DeploymentsMixed(params: {
   const mutationTaken = take(mutationPool, "mutation", quotas.mutation);
   const explorationTaken = take(explorationPool, "exploration", quotas.exploration);
 
-  // Spill logic: if a pool was short, redistribute the deficit to the
-  // next-priority pool. Order: shortfalls in mutation flow to exploration,
-  // shortfalls in exploration flow to stagec, shortfalls in stagec flow
-  // to mutation (since exploration is the riskiest fallback).
-  let deficit = (quotas.stagec - stagecTaken)
-    + (quotas.mutation - mutationTaken)
-    + (quotas.exploration - explorationTaken);
-  if (deficit > 0) {
-    // Try to re-allocate the unused budget by giving extra capacity to the
-    // pools that still have inventory. Walk pools in priority order.
+  // Spill logic: any unfilled budget from a short pool gets reallocated
+  // to the remaining pools in priority order. take()'s quota parameter is
+  // "take up to N MORE candidates from this pool"; we pass the remaining
+  // deficit directly so the spill never overshoots the global budget.
+  let remaining = targetNewSeats - (stagecTaken + mutationTaken + explorationTaken);
+  if (remaining > 0) {
     const spillOrder: Array<{
       pool: Array<ScalpV5StageCRefillCandidate | ScalpV5MutationRefillCandidate>;
       bucket: ScalpV5RefillBucket;
@@ -1517,11 +1581,9 @@ export async function refillScalpV5DeploymentsMixed(params: {
       { pool: explorationPool, bucket: "exploration" },
     ];
     for (const { pool, bucket } of spillOrder) {
-      if (deficit <= 0) break;
-      const before = selected[bucket];
-      take(pool, bucket, before + deficit);
-      const taken = selected[bucket] - before;
-      deficit -= taken;
+      if (remaining <= 0) break;
+      const taken = take(pool, bucket, remaining);
+      remaining -= taken;
     }
   }
 
