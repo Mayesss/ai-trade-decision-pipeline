@@ -16,6 +16,7 @@ import {
   summarizeScalpV5CandleCoverage,
 } from "./candlePreflight";
 import { shouldRunScalpV5EvaluationCandlePreflight } from "./evaluator";
+import { rankScalpV5StageCRefillCandidates, type ScalpV5StageCRefillCandidate } from "./pg";
 
 const CELL_A = "vol=mid|trend=trending_up|risk=risk_on";
 const CELL_B = "vol=high|trend=choppy|risk=risk_off";
@@ -582,4 +583,46 @@ test("v5 evaluation candle preflight runs only on Sunday unless forced", () => {
     }),
     false,
   );
+});
+
+function makeRefillCandidate(
+  id: number,
+  overrides: Partial<ScalpV5StageCRefillCandidate> = {},
+): ScalpV5StageCRefillCandidate {
+  const base: ScalpV5StageCRefillCandidate = {
+    id,
+    venue: "bitget",
+    symbol: `T${id}USDT`,
+    strategyId: "model_guided_composer_v2",
+    tuneId: `tune_${id}`,
+    entrySessionProfile: "tokyo",
+    score: 10,
+    status: "evaluated",
+    metadata: {},
+    stageCNetR: 8,
+    stageCTrades: 50,
+    deploymentId: `bitget:T${id}USDT~model_guided_composer_v2~tune_${id}__sp_tokyo`,
+    inRuntimeScope: true,
+  };
+  return { ...base, ...overrides };
+}
+
+test("rankScalpV5StageCRefillCandidates filters inactive quality candidates and orders by edge", () => {
+  const selected = rankScalpV5StageCRefillCandidates({
+    targetNewSeats: 3,
+    minStageCNetR: 4,
+    minStageCTrades: 30,
+    candidates: [
+      makeRefillCandidate(1, { stageCNetR: 12, stageCTrades: 35, score: 9 }),
+      makeRefillCandidate(2, { stageCNetR: 20, stageCTrades: 31, score: 1 }),
+      makeRefillCandidate(3, { stageCNetR: 20, stageCTrades: 60, score: 1 }),
+      makeRefillCandidate(4, { stageCNetR: 30, stageCTrades: 80, alreadyActive: true }),
+      makeRefillCandidate(5, { stageCNetR: 30, stageCTrades: 80, scopeRemoved: true }),
+      makeRefillCandidate(6, { stageCNetR: 30, stageCTrades: 80, inRuntimeScope: false }),
+      makeRefillCandidate(7, { stageCNetR: 3.9, stageCTrades: 80 }),
+      makeRefillCandidate(8, { stageCNetR: 30, stageCTrades: 29 }),
+      makeRefillCandidate(9, { stageCNetR: 30, stageCTrades: 80, status: "discovered" }),
+    ],
+  });
+  assert.deepEqual(selected.map((row) => row.id), [3, 2, 1]);
 });

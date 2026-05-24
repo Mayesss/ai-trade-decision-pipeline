@@ -21,30 +21,31 @@ function requirePathByPrefix(paths: string[], prefix: string): string {
   return row;
 }
 
-test("vercel scalp v2 cron topology matches cycle-first production model", async () => {
+test("vercel scalp cron topology keeps only live and lightweight maintenance crons", async () => {
   const cronPaths = await loadCronPaths();
-
-  const cyclePath = requirePathByPrefix(cronPaths, "/api/scalp/v2/cron/cycle");
-  const cycleUrl = new URL(cyclePath, "https://example.test");
-  assert.equal(cycleUrl.pathname, "/api/scalp/v2/cron/cycle");
-  assert.equal(cycleUrl.searchParams.get("dryRun"), "false");
-  assert.equal(cycleUrl.searchParams.get("batchSize"), "100");
-  assert.equal(cycleUrl.searchParams.get("autoContinue"), "true");
-  assert.equal(cycleUrl.searchParams.get("selfMaxHops"), "8");
 
   requirePathByPrefix(cronPaths, "/api/scalp/v2/cron/execute?dryRun=false");
   requirePathByPrefix(cronPaths, "/api/scalp/v2/cron/reconcile");
-  requirePathByPrefix(cronPaths, "/api/scalp/v2/cron/load-candles");
+  requirePathByPrefix(cronPaths, "/api/scalp/v4/cron/build-regimes?liveOnly=true&forceValidity=true");
+  requirePathByPrefix(cronPaths, "/api/scalp/v5/cron/load-live-candles");
+  requirePathByPrefix(cronPaths, "/api/scalp/v5/cron/promote");
 
   const forbiddenPrefixes = [
     "/api/scalp/cron/execute-deployments",
     "/api/scalp/cron/worker",
     "/api/scalp/cron/promotion",
+    "/api/scalp/v2/cron/cycle",
     "/api/scalp/v2/cron/discover",
     "/api/scalp/v2/cron/evaluate",
     "/api/scalp/v2/cron/worker",
     "/api/scalp/v2/cron/research",
     "/api/scalp/v2/cron/promote",
+    "/api/scalp/v2/cron/load-candles",
+    "/api/scalp/v5/cron/evaluate",
+    "/api/scalp/v5/cron/preflight-candles",
+    "/api/scalp/v5/cron/sunday-rollover",
+    "/api/scalp/v5/cron/trim-tail",
+    "/api/scalp/v5/cron/cull-bottom",
   ];
   for (const prefix of forbiddenPrefixes) {
     assert.equal(

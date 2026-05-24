@@ -482,6 +482,9 @@ export async function runScalpV5EvaluationBatch(params: {
   // Lets multiple bulk processes run in parallel on disjoint row sets.
   shardCount?: number;
   shardIndex?: number;
+  // Direct local orchestration path: evaluate these deployments regardless
+  // of normal staleness ordering. Still uses the v5 lease claim.
+  deploymentIds?: string[];
 } = {}): Promise<ScalpV5BulkResult> {
   const cfg = resolveScalpV5Config();
   const nowMs = Math.floor(Number(params.nowMs || Date.now()));
@@ -526,6 +529,7 @@ export async function runScalpV5EvaluationBatch(params: {
     nowMs,
     shardCount: params.shardCount,
     shardIndex: params.shardIndex,
+    deploymentIds: params.deploymentIds,
   });
   let processed = 0;
   let succeeded = 0;

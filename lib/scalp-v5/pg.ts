@@ -1,7 +1,13 @@
 import { isScalpPgConfigured, scalpPrisma } from "../scalp/pg/client";
 import { sql } from "../scalp/pg/sql";
-import { getScalpV2DefaultRiskProfile, getScalpV2RuntimeConfig } from "../scalp-v2/config";
-import type { ScalpV2RiskProfile, ScalpV2Venue } from "../scalp-v2/types";
+import {
+  getScalpV2DefaultRiskProfile,
+  getScalpV2RuntimeConfig,
+  isScalpV2RuntimeSymbolInScope,
+} from "../scalp-v2/config";
+import { loadScalpV2RuntimeConfig, upsertScalpV2Deployments } from "../scalp-v2/db";
+import { toDeploymentId } from "../scalp-v2/logic";
+import type { ScalpV2CandidateStatus, ScalpV2RiskProfile, ScalpV2Session, ScalpV2Venue } from "../scalp-v2/types";
 import type { ScalpReplayCheckpoint } from "../scalp/replay/types";
 import {
   evaluateScalpV5PromotionEvidence,
@@ -66,6 +72,7 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
   staleOlderThanMs?: number;
   nowMs?: number;
   onlyEnabled?: boolean;
+  deploymentIds?: string[];
   // When set, restrict the result to a disjoint slice of deployments based on
   // a stable hash of deployment_id. Multiple bulk processes can each take a
   // different shardIndex and run in parallel without overlapping rows.
@@ -87,6 +94,14 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
     Math.min(60 * 60_000, Math.floor(Number(params.leaseMs || DEFAULT_V5_LEASE_MS))),
   );
   const onlyEnabled = Boolean(params.onlyEnabled);
+  const deploymentIds = Array.from(
+    new Set(
+      (params.deploymentIds || [])
+        .map((row) => String(row || "").trim())
+        .filter(Boolean),
+    ),
+  );
+  const directDeploymentFilter = deploymentIds.length > 0;
   const nowMs = Math.floor(Number(params.nowMs || Date.now()));
   const staleBefore = new Date(nowMs - staleOlderThanMs);
   // Shard normalisation: count >= 2 enables filtering; otherwise unsharded.
@@ -127,6 +142,7 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
       SELECT d.deployment_id
       FROM scalp_v2_deployments d
       WHERE d.candidate_id IS NOT NULL
+        AND (${directDeploymentFilter} = FALSE OR d.deployment_id = ANY(${deploymentIds}::text[]))
         AND NOT EXISTS (
           SELECT 1
           FROM scalp_v2_candidates c
@@ -134,7 +150,7 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
             AND c.metadata_json->'scopeRemoval'->>'reason' = 'bitget_symbol_removed_no_candles'
         )
         AND (${onlyEnabled} = FALSE OR d.enabled = TRUE)
-        AND (d.v5_evaluated_at IS NULL OR d.v5_evaluated_at < ${staleBefore})
+        AND (${directDeploymentFilter} = TRUE OR d.v5_evaluated_at IS NULL OR d.v5_evaluated_at < ${staleBefore})
         AND (d.v5_lease_until IS NULL OR d.v5_lease_until < NOW())
         AND (
           ${sharded} = FALSE
@@ -510,6 +526,358 @@ export async function retireConsistentlyFailingScalpV5Deployments(params: {
     retired: rows.length,
     deploymentIds: rows.map((r) => String(r.deploymentId || "").trim()).filter(Boolean),
     dryRun,
+  };
+}
+
+export type ScalpV5StageCRefillCandidate = {
+  id: number;
+  venue: ScalpV2Venue;
+  symbol: string;
+  strategyId: string;
+  tuneId: string;
+  entrySessionProfile: ScalpV2Session;
+  score: number;
+  status: ScalpV2CandidateStatus;
+  metadata: Record<string, unknown>;
+  stageCNetR: number;
+  stageCTrades: number;
+  deploymentId: string;
+  alreadyActive?: boolean;
+  scopeRemoved?: boolean;
+  inRuntimeScope?: boolean;
+};
+
+function normalizeVenue(value: unknown): ScalpV2Venue {
+  return String(value || "").trim().toLowerCase() === "capital" ? "capital" : "bitget";
+}
+
+function normalizeSession(value: unknown): ScalpV2Session {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (
+    normalized === "tokyo" ||
+    normalized === "berlin" ||
+    normalized === "newyork" ||
+    normalized === "pacific" ||
+    normalized === "sydney"
+  ) {
+    return normalized;
+  }
+  return "berlin";
+}
+
+function normalizeStatus(value: unknown): ScalpV2CandidateStatus {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (
+    normalized === "discovered" ||
+    normalized === "evaluated" ||
+    normalized === "promoted" ||
+    normalized === "rejected"
+  ) {
+    return normalized;
+  }
+  return "discovered";
+}
+
+function normalizeSymbol(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9._-]/g, "");
+}
+
+function numericOrNull(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function resolveStageCRecord(metadata: Record<string, unknown>): Record<string, unknown> {
+  const worker = asRecord(metadata.worker);
+  const fromWorker = asRecord(worker.stageC);
+  if (Object.keys(fromWorker).length > 0) return fromWorker;
+  const fromWorkerSnake = asRecord(worker.stage_c);
+  if (Object.keys(fromWorkerSnake).length > 0) return fromWorkerSnake;
+  const direct = asRecord(metadata.stageC);
+  if (Object.keys(direct).length > 0) return direct;
+  return asRecord(metadata.stage_c);
+}
+
+export function rankScalpV5StageCRefillCandidates(params: {
+  candidates: ScalpV5StageCRefillCandidate[];
+  targetNewSeats?: number;
+  minStageCNetR?: number;
+  minStageCTrades?: number;
+}): ScalpV5StageCRefillCandidate[] {
+  const targetNewSeats = Math.max(0, Math.floor(Number(params.targetNewSeats ?? 500)));
+  const minStageCNetR = Number.isFinite(Number(params.minStageCNetR)) ? Number(params.minStageCNetR) : 4;
+  const minStageCTrades = Math.max(0, Math.floor(Number(params.minStageCTrades ?? 30)));
+  if (targetNewSeats <= 0) return [];
+  return (params.candidates || [])
+    .filter((row) => !row.alreadyActive)
+    .filter((row) => !row.scopeRemoved)
+    .filter((row) => row.inRuntimeScope !== false)
+    .filter((row) => row.status === "evaluated" || row.status === "rejected")
+    .filter((row) => Number(row.stageCNetR) >= minStageCNetR)
+    .filter((row) => Number(row.stageCTrades) >= minStageCTrades)
+    .sort((a, b) =>
+      Number(b.stageCNetR) - Number(a.stageCNetR) ||
+      Number(b.stageCTrades) - Number(a.stageCTrades) ||
+      Number(b.score) - Number(a.score) ||
+      a.deploymentId.localeCompare(b.deploymentId),
+    )
+    .slice(0, targetNewSeats);
+}
+
+export async function listScalpV5StageCRankedRefillCandidates(params: {
+  targetNewSeats?: number;
+  minStageCNetR?: number;
+  minStageCTrades?: number;
+  fetchLimit?: number;
+} = {}): Promise<ScalpV5StageCRefillCandidate[]> {
+  if (!isScalpPgConfigured()) return [];
+  const targetNewSeats = Math.max(0, Math.floor(Number(params.targetNewSeats ?? 500)));
+  if (targetNewSeats <= 0) return [];
+  const minStageCNetR = Number.isFinite(Number(params.minStageCNetR)) ? Number(params.minStageCNetR) : 4;
+  const minStageCTrades = Math.max(0, Math.floor(Number(params.minStageCTrades ?? 30)));
+  const fetchLimit = Math.max(
+    targetNewSeats,
+    Math.min(20_000, Math.floor(Number(params.fetchLimit ?? targetNewSeats * 10))),
+  );
+  const runtime = await loadScalpV2RuntimeConfig();
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{
+    id: number | bigint;
+    venue: string;
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    entrySessionProfile: string;
+    score: number | string | null;
+    status: string;
+    metadata: unknown;
+    stageCNetR: string | number | null;
+    stageCTrades: number | bigint | null;
+  }>>(sql`
+    WITH scored AS (
+      SELECT
+        c.id,
+        c.venue,
+        c.symbol,
+        c.strategy_id AS "strategyId",
+        c.tune_id AS "tuneId",
+        c.entry_session_profile AS "entrySessionProfile",
+        c.score,
+        c.status,
+        c.metadata_json AS metadata,
+        COALESCE(
+          CASE WHEN (c.metadata_json->'worker'->'stageC'->>'netR') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+            THEN (c.metadata_json->'worker'->'stageC'->>'netR')::numeric END,
+          CASE WHEN (c.metadata_json->'stageC'->>'netR') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+            THEN (c.metadata_json->'stageC'->>'netR')::numeric END,
+          0
+        ) AS stage_c_net_r,
+        COALESCE(
+          CASE WHEN (c.metadata_json->'worker'->'stageC'->>'trades') ~ '^[0-9]+$'
+            THEN (c.metadata_json->'worker'->'stageC'->>'trades')::int END,
+          CASE WHEN (c.metadata_json->'stageC'->>'trades') ~ '^[0-9]+$'
+            THEN (c.metadata_json->'stageC'->>'trades')::int END,
+          0
+        ) AS stage_c_trades
+      FROM scalp_v2_candidates c
+      WHERE c.status IN ('evaluated', 'rejected')
+        AND COALESCE(c.metadata_json->'scopeRemoval'->>'reason', '') <> 'bitget_symbol_removed_no_candles'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM scalp_v2_deployments d
+          WHERE d.candidate_id = c.id
+        )
+    )
+    SELECT
+      id,
+      venue,
+      symbol,
+      "strategyId",
+      "tuneId",
+      "entrySessionProfile",
+      score,
+      status,
+      metadata,
+      stage_c_net_r::text AS "stageCNetR",
+      stage_c_trades::int AS "stageCTrades"
+    FROM scored
+    WHERE stage_c_net_r >= ${minStageCNetR}
+      AND stage_c_trades >= ${minStageCTrades}
+    ORDER BY stage_c_net_r DESC, stage_c_trades DESC, score DESC NULLS LAST
+    LIMIT ${fetchLimit};
+  `);
+  const candidates = rows.map((row) => {
+    const venue = normalizeVenue(row.venue);
+    const symbol = normalizeSymbol(row.symbol);
+    const strategyId = String(row.strategyId || "").trim().toLowerCase();
+    const tuneId = String(row.tuneId || "default").trim().toLowerCase() || "default";
+    const entrySessionProfile = normalizeSession(row.entrySessionProfile);
+    const metadata = asRecord(row.metadata);
+    const stageC = resolveStageCRecord(metadata);
+    const stageCNetR = numericOrNull(row.stageCNetR) ?? numericOrNull(stageC.netR) ?? 0;
+    const stageCTrades = Math.max(0, Math.floor(numericOrNull(row.stageCTrades) ?? numericOrNull(stageC.trades) ?? 0));
+    const deploymentId = toDeploymentId({
+      venue,
+      symbol,
+      strategyId,
+      tuneId,
+      session: entrySessionProfile,
+    });
+    return {
+      id: Math.floor(Number(row.id) || 0),
+      venue,
+      symbol,
+      strategyId,
+      tuneId,
+      entrySessionProfile,
+      score: numericOrNull(row.score) ?? 0,
+      status: normalizeStatus(row.status),
+      metadata,
+      stageCNetR,
+      stageCTrades,
+      deploymentId,
+      scopeRemoved: asRecord(metadata.scopeRemoval).reason === "bitget_symbol_removed_no_candles",
+      inRuntimeScope: isScalpV2RuntimeSymbolInScope({
+        runtime,
+        venue,
+        symbol,
+        includeLiveSeeds: true,
+      }),
+    } satisfies ScalpV5StageCRefillCandidate;
+  });
+  return rankScalpV5StageCRefillCandidates({
+    candidates,
+    targetNewSeats,
+    minStageCNetR,
+    minStageCTrades,
+  });
+}
+
+export async function refillScalpV5DeploymentsFromStageCRankedCandidates(params: {
+  targetNewSeats?: number;
+  minStageCNetR?: number;
+  minStageCTrades?: number;
+  dryRun?: boolean;
+} = {}): Promise<{
+  dryRun: boolean;
+  selected: number;
+  upserted: number;
+  deploymentIds: string[];
+  candidates: ScalpV5StageCRefillCandidate[];
+}> {
+  const dryRun = Boolean(params.dryRun);
+  const candidates = await listScalpV5StageCRankedRefillCandidates({
+    targetNewSeats: params.targetNewSeats,
+    minStageCNetR: params.minStageCNetR,
+    minStageCTrades: params.minStageCTrades,
+  });
+  const deploymentIds = candidates.map((row) => row.deploymentId);
+  if (dryRun || candidates.length === 0 || !isScalpPgConfigured()) {
+    return { dryRun, selected: candidates.length, upserted: 0, deploymentIds, candidates };
+  }
+  const riskProfile = getScalpV2DefaultRiskProfile();
+  const refilledAtMs = Date.now();
+  await upsertScalpV2Deployments({
+    rows: candidates.map((row) => {
+      const metadata = asRecord(row.metadata);
+      const worker = asRecord(metadata.worker);
+      return {
+        candidateId: row.id,
+        venue: row.venue,
+        symbol: row.symbol,
+        strategyId: row.strategyId,
+        tuneId: row.tuneId,
+        entrySessionProfile: row.entrySessionProfile,
+        enabled: false,
+        liveMode: "shadow",
+        riskProfile,
+        promotionGate: {
+          eligible: false,
+          reason: "v5_stagec_refill_pending_v5_evaluation",
+          source: "v5_sunday_stagec_refill",
+          refilledAtMs,
+          refill: {
+            candidateId: row.id,
+            stageCNetR: row.stageCNetR,
+            stageCTrades: row.stageCTrades,
+            minStageCNetR: Number.isFinite(Number(params.minStageCNetR)) ? Number(params.minStageCNetR) : 4,
+            minStageCTrades: Math.max(0, Math.floor(Number(params.minStageCTrades ?? 30))),
+          },
+          worker,
+          holdout: asRecord(worker.holdout),
+          v3TemporalFilter: asRecord(metadata.v3TemporalFilter),
+          dsl: asRecord(metadata.researchDsl || metadata.dsl),
+        },
+      };
+    }),
+  });
+  const db = scalpPrisma();
+  await db.$executeRaw(sql`
+    UPDATE scalp_v2_deployments
+    SET
+      v5_cell_evidence = NULL,
+      v5_enabled = FALSE,
+      v5_evaluated_at = NULL,
+      v5_lease_until = NULL,
+      v5_replay_checkpoint = NULL,
+      updated_at = NOW()
+    WHERE deployment_id = ANY(${deploymentIds}::text[]);
+  `);
+  return {
+    dryRun,
+    selected: candidates.length,
+    upserted: candidates.length,
+    deploymentIds,
+    candidates,
+  };
+}
+
+export async function getScalpV5EvaluationQueueStats(params: {
+  staleOlderThanMs?: number;
+  nowMs?: number;
+} = {}): Promise<{
+  active: number;
+  missingEvidence: number;
+  stale: number;
+  leased: number;
+}> {
+  if (!isScalpPgConfigured()) return { active: 0, missingEvidence: 0, stale: 0, leased: 0 };
+  const staleOlderThanMs = Math.max(
+    60_000,
+    Math.floor(Number(params.staleOlderThanMs || 6 * 24 * 60 * 60_000)),
+  );
+  const nowMs = Math.floor(Number(params.nowMs || Date.now()));
+  const staleBefore = new Date(nowMs - staleOlderThanMs);
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{
+    active: bigint;
+    missingEvidence: bigint;
+    stale: bigint;
+    leased: bigint;
+  }>>(sql`
+    SELECT
+      COUNT(*)::bigint AS active,
+      COUNT(*) FILTER (WHERE d.v5_evaluated_at IS NULL)::bigint AS "missingEvidence",
+      COUNT(*) FILTER (WHERE d.v5_evaluated_at IS NOT NULL AND d.v5_evaluated_at < ${staleBefore})::bigint AS stale,
+      COUNT(*) FILTER (WHERE d.v5_lease_until IS NOT NULL AND d.v5_lease_until > NOW())::bigint AS leased
+    FROM scalp_v2_deployments d
+    WHERE d.candidate_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM scalp_v2_candidates c
+        WHERE c.id = d.candidate_id
+          AND c.metadata_json->'scopeRemoval'->>'reason' = 'bitget_symbol_removed_no_candles'
+      );
+  `);
+  const row = rows[0];
+  return {
+    active: Math.max(0, Math.floor(Number(row?.active || 0))),
+    missingEvidence: Math.max(0, Math.floor(Number(row?.missingEvidence || 0))),
+    stale: Math.max(0, Math.floor(Number(row?.stale || 0))),
+    leased: Math.max(0, Math.floor(Number(row?.leased || 0))),
   };
 }
 

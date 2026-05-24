@@ -20,24 +20,12 @@
       "schedule": "0 * * * *"
     },
     {
-      "path": "/api/scalp/v2/cron/cycle?dryRun=false&batchSize=100&autoContinue=true&selfMaxHops=8",
-      "schedule": "*/5 * * * *"
-    },
-    {
       "path": "/api/scalp/v2/cron/execute?dryRun=false",
       "schedule": "* * * * *"
     },
     {
       "path": "/api/scalp/v2/cron/reconcile",
       "schedule": "*/2 * * * *"
-    },
-    {
-      "path": "/api/scalp/v2/cron/load-candles?batchSize=4&autoSuccessor=true&autoContinue=true&selfMaxHops=20&successor=discover",
-      "schedule": "10 */2 * * *"
-    },
-    {
-      "path": "/api/scalp/v2/cron/research?batchSize=200&autoContinue=true&selfMaxHops=8",
-      "schedule": "*/10 * * * *"
     },
     {
       "path": "/api/scalp/v4/cron/build-regimes?liveOnly=true&forceValidity=true",
@@ -48,28 +36,8 @@
       "schedule": "*/30 * * * *"
     },
     {
-      "path": "/api/scalp/v5/cron/evaluate?limit=50",
-      "schedule": "15 * * * *"
-    },
-    {
-      "path": "/api/scalp/v5/cron/preflight-candles?batchSize=200&maxAttempts=10",
-      "schedule": "20 0 * * 0"
-    },
-    {
       "path": "/api/scalp/v5/cron/promote",
       "schedule": "*/15 * * * *"
-    },
-    {
-      "path": "/api/scalp/v5/cron/sunday-rollover",
-      "schedule": "0 2 * * 0"
-    },
-    {
-      "path": "/api/scalp/v5/cron/trim-tail",
-      "schedule": "0 6 * * 0"
-    },
-    {
-      "path": "/api/scalp/v5/cron/cull-bottom",
-      "schedule": "0 8 * * 0"
     }
   ]
 }
