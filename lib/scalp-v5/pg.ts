@@ -9,12 +9,18 @@ import { loadScalpV2RuntimeConfig, upsertScalpV2Deployments } from "../scalp-v2/
 import { toDeploymentId } from "../scalp-v2/logic";
 import type { ScalpV2CandidateStatus, ScalpV2RiskProfile, ScalpV2Session, ScalpV2Venue } from "../scalp-v2/types";
 import type { ScalpReplayCheckpoint } from "../scalp/replay/types";
+import { startOfUtcWeekMondayMs } from "../scalp-v4/week";
 import {
   evaluateScalpV5PromotionEvidence,
+  resolveScalpV5Config,
+  SCALP_V5_VERSION,
   type ScalpV5CellEvidence,
+  type ScalpV5EvidenceVersion,
   type ScalpV5PromotionMetrics,
   type ScalpV5PromotionThresholds,
 } from "./index";
+
+const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -270,6 +276,162 @@ export async function invalidateAllScalpV5Evidence(params: {
     RETURNING deployment_id AS "deploymentId";
   `);
   return { invalidated: rows.length, mode };
+}
+
+export interface ScalpV5AdvancementBreakdown {
+  // Evidence row is missing entirely (never evaluated, refilled, or
+  // wiped by a force=full path). Requires a full 12-week replay.
+  missingEvidence: number;
+  // Evidence shape/schema version is older than SCALP_V5_VERSION. The
+  // dispatcher's incremental prereqs reject these, so re-eval = full replay.
+  versionStale: number;
+  // Evidence was built against a different classifier version than the one
+  // currently configured. Cells from the old classifier may not even be
+  // comparable to the new one, so full replay is required.
+  classifierStale: number;
+  // Evidence is current-version, current-classifier, but its holdoutToMs is
+  // older than the new week boundary. The dispatcher's incremental path
+  // can advance these in 1 week of replay each.
+  weekStale: number;
+  // Evidence already covers the new week. No work required.
+  alreadyFresh: number;
+  total: number;
+}
+
+// Smart Sunday queue: returns the deployment IDs whose v5 evidence has NOT
+// yet been advanced to the new holdout boundary, along with a breakdown of
+// WHY each row needs work. Replaces the blanket
+// invalidateAllScalpV5Evidence({ mode: "stale" }) NULLing of v5_evaluated_at:
+//
+//   - Idempotent re-runs: a row that's already been advanced this run will
+//     not appear in the returned ID list, so a crashed-and-restarted Sunday
+//     script skips its already-completed work.
+//   - Honest dashboards: `breakdown.alreadyFresh` reflects rows that genuinely
+//     don't need work, instead of "all 2500 are stale because we just NULLed
+//     them."
+//   - Same compute as the previous flow in the steady-state case: each row
+//     still needs exactly one incremental replay to slide the holdout
+//     forward by a week. The savings are in correctness/observability, not
+//     CPU.
+//
+// The reason classification is mutually exclusive in priority order:
+//   missingEvidence > versionStale > classifierStale > weekStale > alreadyFresh
+// — so a row with a stale version is reported as versionStale even if it
+// also happens to be week-stale (the version mismatch is the more useful
+// signal because it forces a full replay regardless).
+//
+// Holdout boundary is computed the same way evaluateScalpV5ForDeployment
+// computes it: Sunday UTC advances the boundary to the upcoming Monday so
+// the just-completed week becomes the 12th holdout week; Mon-Sat use the
+// standard week-start boundary.
+export async function selectScalpV5DeploymentsNeedingAdvancement(params: {
+  nowMs?: number;
+  evidenceVersion?: ScalpV5EvidenceVersion;
+  classifierVersion?: string;
+  holdoutWeeks?: number;
+  // Restrict to live rows only. The Sunday flow leaves this false so v5
+  // evidence stays current across the entire judgeable pool.
+  onlyEnabled?: boolean;
+} = {}): Promise<{
+  newHoldoutToMs: number;
+  newHoldoutFromMs: number;
+  evidenceVersion: ScalpV5EvidenceVersion;
+  classifierVersion: string;
+  deploymentIds: string[];
+  breakdown: ScalpV5AdvancementBreakdown;
+}> {
+  const cfg = resolveScalpV5Config();
+  const evidenceVersion: ScalpV5EvidenceVersion = params.evidenceVersion || SCALP_V5_VERSION;
+  const classifierVersion = String(
+    params.classifierVersion || cfg.classifierVersion,
+  ).trim() || cfg.classifierVersion;
+  const holdoutWeeks = Math.max(
+    1,
+    Math.min(52, Math.floor(Number(params.holdoutWeeks ?? cfg.holdoutWeeks))),
+  );
+  const nowMs = Math.floor(Number(params.nowMs || Date.now()));
+  const weekStart = startOfUtcWeekMondayMs(nowMs);
+  const newHoldoutToMs =
+    new Date(nowMs).getUTCDay() === 0 ? weekStart + ONE_WEEK_MS : weekStart;
+  const newHoldoutFromMs = newHoldoutToMs - holdoutWeeks * ONE_WEEK_MS;
+  const onlyEnabled = Boolean(params.onlyEnabled);
+  const emptyBreakdown: ScalpV5AdvancementBreakdown = {
+    missingEvidence: 0,
+    versionStale: 0,
+    classifierStale: 0,
+    weekStale: 0,
+    alreadyFresh: 0,
+    total: 0,
+  };
+  if (!isScalpPgConfigured()) {
+    return {
+      newHoldoutToMs,
+      newHoldoutFromMs,
+      evidenceVersion,
+      classifierVersion,
+      deploymentIds: [],
+      breakdown: emptyBreakdown,
+    };
+  }
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{ deploymentId: string; reason: string }>>(sql`
+    SELECT
+      d.deployment_id AS "deploymentId",
+      CASE
+        WHEN d.v5_cell_evidence IS NULL OR d.v5_evaluated_at IS NULL
+          THEN 'missing_evidence'
+        WHEN COALESCE(d.v5_cell_evidence->>'version', '') <> ${evidenceVersion}
+          THEN 'version_stale'
+        WHEN COALESCE(d.v5_cell_evidence->>'classifierVersion', '') <> ${classifierVersion}
+          THEN 'classifier_stale'
+        WHEN COALESCE((d.v5_cell_evidence->>'holdoutToMs')::bigint, 0) < ${newHoldoutToMs}
+          THEN 'week_stale'
+        ELSE 'already_fresh'
+      END AS reason
+    FROM scalp_v2_deployments d
+    WHERE d.candidate_id IS NOT NULL
+      AND (${onlyEnabled} = FALSE OR d.enabled = TRUE)
+      AND NOT EXISTS (
+        SELECT 1
+        FROM scalp_v2_candidates c
+        WHERE c.id = d.candidate_id
+          AND c.metadata_json->'scopeRemoval'->>'reason' = 'bitget_symbol_removed_no_candles'
+      );
+  `);
+  const deploymentIds: string[] = [];
+  const breakdown: ScalpV5AdvancementBreakdown = { ...emptyBreakdown, total: rows.length };
+  for (const row of rows) {
+    const id = String(row.deploymentId || "").trim();
+    switch (row.reason) {
+      case "missing_evidence":
+        breakdown.missingEvidence += 1;
+        if (id) deploymentIds.push(id);
+        break;
+      case "version_stale":
+        breakdown.versionStale += 1;
+        if (id) deploymentIds.push(id);
+        break;
+      case "classifier_stale":
+        breakdown.classifierStale += 1;
+        if (id) deploymentIds.push(id);
+        break;
+      case "week_stale":
+        breakdown.weekStale += 1;
+        if (id) deploymentIds.push(id);
+        break;
+      default:
+        breakdown.alreadyFresh += 1;
+        break;
+    }
+  }
+  return {
+    newHoldoutToMs,
+    newHoldoutFromMs,
+    evidenceVersion,
+    classifierVersion,
+    deploymentIds,
+    breakdown,
+  };
 }
 
 // Explicitly release a lease without writing evidence. Useful when an
@@ -756,6 +918,361 @@ export async function listScalpV5StageCRankedRefillCandidates(params: {
   });
 }
 
+// Refill bucket: which sub-pool this candidate was drawn from. Stored on
+// the new deployment's promotion_gate so survival/promotion rates can be
+// tracked per-bucket over future Sundays — the operator signal that says
+// "is the 60/25/15 split the right ratio for THIS market regime?"
+export type ScalpV5RefillBucket = "stagec" | "mutation" | "exploration";
+
+export type ScalpV5MutationRefillCandidate = ScalpV5StageCRefillCandidate & {
+  // Which winner-similarity axis caught this candidate:
+  //   strategy = shares (strategyId, tuneId) with at least one v5 winner
+  //   regime   = shares (venue, symbol, entrySessionProfile)
+  //   both     = both axes
+  matchBasis: "strategy" | "regime" | "both";
+};
+
+// Pool B — winner-mutations. Returns candidates that share at least one
+// identity axis with a current v5 winner (active, fresh evidence). Intent:
+// when a strategy is proven on a particular (symbol, session), try the same
+// strategy elsewhere (strategy-fixed) AND try other strategies on the same
+// (symbol, session) (regime-fixed).
+//
+// "Mutation" here is identity-level, not DSL-element-level. A DSL-one-slot-
+// diff query would be more precise but materially more complex; this looser
+// definition catches the bulk of the value at a fraction of the SQL.
+//
+// Candidates that ARE already the winner row (same candidate_id deployed)
+// are excluded by the NOT EXISTS deployment filter — only OTHER candidates
+// sharing the identity slip through.
+export async function listScalpV5WinnerMutationRefillCandidates(params: {
+  targetNewSeats?: number;
+  // Minimum stage-C netR floor. Set lower than the stage-C pool's 4R bar by
+  // default — mutations are a "second chance" pool, the strict bar already
+  // gated Pool A. 0 = "at least broke even globally."
+  minStageCNetR?: number;
+  minStageCTrades?: number;
+  // How fresh a winner's evidence has to be to count for mutation seeding.
+  // Defaults to 14 days (matches promotion staleness window).
+  winnerFreshOlderThanMs?: number;
+  fetchLimit?: number;
+  nowMs?: number;
+} = {}): Promise<ScalpV5MutationRefillCandidate[]> {
+  if (!isScalpPgConfigured()) return [];
+  const targetNewSeats = Math.max(0, Math.floor(Number(params.targetNewSeats ?? 125)));
+  if (targetNewSeats <= 0) return [];
+  const minStageCNetR = Number.isFinite(Number(params.minStageCNetR))
+    ? Number(params.minStageCNetR)
+    : 0;
+  const minStageCTrades = Math.max(0, Math.floor(Number(params.minStageCTrades ?? 15)));
+  const winnerFreshOlderThanMs = Math.max(
+    60_000,
+    Math.floor(Number(params.winnerFreshOlderThanMs ?? 14 * 24 * 60 * 60_000)),
+  );
+  const nowMs = Math.floor(Number(params.nowMs || Date.now()));
+  const staleBefore = new Date(nowMs - winnerFreshOlderThanMs);
+  const fetchLimit = Math.max(
+    targetNewSeats,
+    Math.min(20_000, Math.floor(Number(params.fetchLimit ?? targetNewSeats * 10))),
+  );
+  const runtime = await loadScalpV2RuntimeConfig();
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{
+    id: number | bigint;
+    venue: string;
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    entrySessionProfile: string;
+    score: number | string | null;
+    status: string;
+    metadata: unknown;
+    stageCNetR: string | number | null;
+    stageCTrades: number | bigint | null;
+    matchBasis: string;
+  }>>(sql`
+    WITH winners AS (
+      SELECT DISTINCT
+        d.venue,
+        d.symbol,
+        d.strategy_id,
+        d.tune_id,
+        d.entry_session_profile
+      FROM scalp_v2_deployments d
+      WHERE d.candidate_id IS NOT NULL
+        AND COALESCE(d.v5_enabled, FALSE) = TRUE
+        AND d.v5_evaluated_at IS NOT NULL
+        AND d.v5_evaluated_at >= ${staleBefore}
+    ),
+    scored AS (
+      SELECT
+        c.id,
+        c.venue,
+        c.symbol,
+        c.strategy_id AS "strategyId",
+        c.tune_id AS "tuneId",
+        c.entry_session_profile AS "entrySessionProfile",
+        c.score,
+        c.status,
+        c.metadata_json AS metadata,
+        COALESCE(
+          CASE WHEN (c.metadata_json->'worker'->'stageC'->>'netR') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+            THEN (c.metadata_json->'worker'->'stageC'->>'netR')::numeric END,
+          CASE WHEN (c.metadata_json->'stageC'->>'netR') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+            THEN (c.metadata_json->'stageC'->>'netR')::numeric END,
+          0
+        ) AS stage_c_net_r,
+        COALESCE(
+          CASE WHEN (c.metadata_json->'worker'->'stageC'->>'trades') ~ '^[0-9]+$'
+            THEN (c.metadata_json->'worker'->'stageC'->>'trades')::int END,
+          CASE WHEN (c.metadata_json->'stageC'->>'trades') ~ '^[0-9]+$'
+            THEN (c.metadata_json->'stageC'->>'trades')::int END,
+          0
+        ) AS stage_c_trades
+      FROM scalp_v2_candidates c
+      WHERE c.status IN ('evaluated', 'rejected')
+        AND COALESCE(c.metadata_json->'scopeRemoval'->>'reason', '') <> 'bitget_symbol_removed_no_candles'
+        AND NOT EXISTS (
+          SELECT 1 FROM scalp_v2_deployments d WHERE d.candidate_id = c.id
+        )
+    ),
+    matched AS (
+      SELECT
+        s.*,
+        EXISTS (
+          SELECT 1 FROM winners w
+          WHERE w.strategy_id = s."strategyId" AND w.tune_id = s."tuneId"
+        ) AS strategy_match,
+        EXISTS (
+          SELECT 1 FROM winners w
+          WHERE w.venue = s.venue
+            AND w.symbol = s.symbol
+            AND w.entry_session_profile = s."entrySessionProfile"
+        ) AS regime_match
+      FROM scored s
+    )
+    SELECT
+      id,
+      venue,
+      symbol,
+      "strategyId",
+      "tuneId",
+      "entrySessionProfile",
+      score,
+      status,
+      metadata,
+      stage_c_net_r::text AS "stageCNetR",
+      stage_c_trades::int AS "stageCTrades",
+      CASE
+        WHEN strategy_match AND regime_match THEN 'both'
+        WHEN strategy_match THEN 'strategy'
+        WHEN regime_match THEN 'regime'
+        ELSE 'none'
+      END AS "matchBasis"
+    FROM matched
+    WHERE (strategy_match OR regime_match)
+      AND stage_c_net_r >= ${minStageCNetR}
+      AND stage_c_trades >= ${minStageCTrades}
+    ORDER BY stage_c_net_r DESC, stage_c_trades DESC, score DESC NULLS LAST
+    LIMIT ${fetchLimit};
+  `);
+  const mapped: ScalpV5MutationRefillCandidate[] = rows.map((row) => {
+    const venue = normalizeVenue(row.venue);
+    const symbol = normalizeSymbol(row.symbol);
+    const strategyId = String(row.strategyId || "").trim().toLowerCase();
+    const tuneId = String(row.tuneId || "default").trim().toLowerCase() || "default";
+    const entrySessionProfile = normalizeSession(row.entrySessionProfile);
+    const metadata = asRecord(row.metadata);
+    const stageC = resolveStageCRecord(metadata);
+    const stageCNetR = numericOrNull(row.stageCNetR) ?? numericOrNull(stageC.netR) ?? 0;
+    const stageCTrades = Math.max(
+      0,
+      Math.floor(numericOrNull(row.stageCTrades) ?? numericOrNull(stageC.trades) ?? 0),
+    );
+    const matchBasisRaw = String(row.matchBasis || "");
+    const matchBasis: ScalpV5MutationRefillCandidate["matchBasis"] =
+      matchBasisRaw === "both" || matchBasisRaw === "strategy" || matchBasisRaw === "regime"
+        ? matchBasisRaw
+        : "strategy";
+    return {
+      id: Math.floor(Number(row.id) || 0),
+      venue,
+      symbol,
+      strategyId,
+      tuneId,
+      entrySessionProfile,
+      score: numericOrNull(row.score) ?? 0,
+      status: normalizeStatus(row.status),
+      metadata,
+      stageCNetR,
+      stageCTrades,
+      deploymentId: toDeploymentId({
+        venue,
+        symbol,
+        strategyId,
+        tuneId,
+        session: entrySessionProfile,
+      }),
+      scopeRemoved: asRecord(metadata.scopeRemoval).reason === "bitget_symbol_removed_no_candles",
+      inRuntimeScope: isScalpV2RuntimeSymbolInScope({
+        runtime,
+        venue,
+        symbol,
+        includeLiveSeeds: true,
+      }),
+      matchBasis,
+    };
+  });
+  return mapped
+    .filter((row) => !row.scopeRemoved)
+    .filter((row) => row.inRuntimeScope !== false)
+    .slice(0, targetNewSeats);
+}
+
+// Pool C — exploration. Globally-marginal candidates (positive netR but
+// didn't clear the stage-C bar) that v5's regime-cell bucketing might still
+// rescue: a strategy with mediocre global expectancy can still be excellent
+// in one specific regime cell, which is exactly what v5's evidence shape
+// surfaces.
+export async function listScalpV5ExplorationRefillCandidates(params: {
+  targetNewSeats?: number;
+  // Lower bound on stage-C netR. 0 = "at least broke even globally."
+  minStageCNetR?: number;
+  // Upper bound on stage-C netR. Defaults to the stage-C bar (4) so Pool C
+  // never overlaps Pool A — every candidate is in exactly one pool.
+  maxStageCNetR?: number;
+  // Lower trade-count bar. Defaults lower than stage-C's 30 so candidates
+  // with thinner samples but plausible distributions still get a v5 chance.
+  minStageCTrades?: number;
+  fetchLimit?: number;
+} = {}): Promise<ScalpV5StageCRefillCandidate[]> {
+  if (!isScalpPgConfigured()) return [];
+  const targetNewSeats = Math.max(0, Math.floor(Number(params.targetNewSeats ?? 75)));
+  if (targetNewSeats <= 0) return [];
+  const minStageCNetR = Number.isFinite(Number(params.minStageCNetR))
+    ? Number(params.minStageCNetR)
+    : 0;
+  const maxStageCNetR = Number.isFinite(Number(params.maxStageCNetR))
+    ? Number(params.maxStageCNetR)
+    : 4;
+  const minStageCTrades = Math.max(0, Math.floor(Number(params.minStageCTrades ?? 15)));
+  const fetchLimit = Math.max(
+    targetNewSeats,
+    Math.min(20_000, Math.floor(Number(params.fetchLimit ?? targetNewSeats * 10))),
+  );
+  const runtime = await loadScalpV2RuntimeConfig();
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{
+    id: number | bigint;
+    venue: string;
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    entrySessionProfile: string;
+    score: number | string | null;
+    status: string;
+    metadata: unknown;
+    stageCNetR: string | number | null;
+    stageCTrades: number | bigint | null;
+  }>>(sql`
+    WITH scored AS (
+      SELECT
+        c.id,
+        c.venue,
+        c.symbol,
+        c.strategy_id AS "strategyId",
+        c.tune_id AS "tuneId",
+        c.entry_session_profile AS "entrySessionProfile",
+        c.score,
+        c.status,
+        c.metadata_json AS metadata,
+        COALESCE(
+          CASE WHEN (c.metadata_json->'worker'->'stageC'->>'netR') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+            THEN (c.metadata_json->'worker'->'stageC'->>'netR')::numeric END,
+          CASE WHEN (c.metadata_json->'stageC'->>'netR') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+            THEN (c.metadata_json->'stageC'->>'netR')::numeric END,
+          0
+        ) AS stage_c_net_r,
+        COALESCE(
+          CASE WHEN (c.metadata_json->'worker'->'stageC'->>'trades') ~ '^[0-9]+$'
+            THEN (c.metadata_json->'worker'->'stageC'->>'trades')::int END,
+          CASE WHEN (c.metadata_json->'stageC'->>'trades') ~ '^[0-9]+$'
+            THEN (c.metadata_json->'stageC'->>'trades')::int END,
+          0
+        ) AS stage_c_trades
+      FROM scalp_v2_candidates c
+      WHERE c.status IN ('evaluated', 'rejected')
+        AND COALESCE(c.metadata_json->'scopeRemoval'->>'reason', '') <> 'bitget_symbol_removed_no_candles'
+        AND NOT EXISTS (
+          SELECT 1 FROM scalp_v2_deployments d WHERE d.candidate_id = c.id
+        )
+    )
+    SELECT
+      id,
+      venue,
+      symbol,
+      "strategyId",
+      "tuneId",
+      "entrySessionProfile",
+      score,
+      status,
+      metadata,
+      stage_c_net_r::text AS "stageCNetR",
+      stage_c_trades::int AS "stageCTrades"
+    FROM scored
+    WHERE stage_c_net_r >= ${minStageCNetR}
+      AND stage_c_net_r < ${maxStageCNetR}
+      AND stage_c_trades >= ${minStageCTrades}
+    ORDER BY stage_c_net_r DESC, stage_c_trades DESC, score DESC NULLS LAST
+    LIMIT ${fetchLimit};
+  `);
+  return rows
+    .map((row): ScalpV5StageCRefillCandidate => {
+      const venue = normalizeVenue(row.venue);
+      const symbol = normalizeSymbol(row.symbol);
+      const strategyId = String(row.strategyId || "").trim().toLowerCase();
+      const tuneId = String(row.tuneId || "default").trim().toLowerCase() || "default";
+      const entrySessionProfile = normalizeSession(row.entrySessionProfile);
+      const metadata = asRecord(row.metadata);
+      const stageC = resolveStageCRecord(metadata);
+      const stageCNetR = numericOrNull(row.stageCNetR) ?? numericOrNull(stageC.netR) ?? 0;
+      const stageCTrades = Math.max(
+        0,
+        Math.floor(numericOrNull(row.stageCTrades) ?? numericOrNull(stageC.trades) ?? 0),
+      );
+      return {
+        id: Math.floor(Number(row.id) || 0),
+        venue,
+        symbol,
+        strategyId,
+        tuneId,
+        entrySessionProfile,
+        score: numericOrNull(row.score) ?? 0,
+        status: normalizeStatus(row.status),
+        metadata,
+        stageCNetR,
+        stageCTrades,
+        deploymentId: toDeploymentId({
+          venue,
+          symbol,
+          strategyId,
+          tuneId,
+          session: entrySessionProfile,
+        }),
+        scopeRemoved: asRecord(metadata.scopeRemoval).reason === "bitget_symbol_removed_no_candles",
+        inRuntimeScope: isScalpV2RuntimeSymbolInScope({
+          runtime,
+          venue,
+          symbol,
+          includeLiveSeeds: true,
+        }),
+      };
+    })
+    .filter((row) => !row.scopeRemoved)
+    .filter((row) => row.inRuntimeScope !== false)
+    .slice(0, targetNewSeats);
+}
+
 export async function refillScalpV5DeploymentsFromStageCRankedCandidates(params: {
   targetNewSeats?: number;
   minStageCNetR?: number;
@@ -833,6 +1350,258 @@ export async function refillScalpV5DeploymentsFromStageCRankedCandidates(params:
     deploymentIds,
     candidates,
   };
+}
+
+// Mixed-source refill: pulls from three sub-pools at a 60/25/15 split.
+//
+//   stagec (60%) — listScalpV5StageCRankedRefillCandidates: globally-strong
+//   mutation (25%) — listScalpV5WinnerMutationRefillCandidates: identity
+//                    neighbors of current v5 winners
+//   exploration (15%) — listScalpV5ExplorationRefillCandidates: globally-
+//                       marginal candidates that may have a regime cell
+//                       where they excel
+//
+// Quotas are computed by floor() so they may under-fill by 1-2 seats on
+// odd targets; remainders go to the stagec bucket. If a bucket is short
+// (e.g., no mutations found because no current winners), the deficit
+// spills to the next bucket in priority order (stagec > mutation > explore)
+// so we always fill up to targetNewSeats when supply allows.
+//
+// Dedupe: a candidate could appear in multiple pools (e.g., a winner-
+// identity neighbor that also passes the stage-C bar). We honor the FIRST
+// pool that picks it — stagec wins ties — and tag its bucket accordingly
+// so future operators can read survival rates per bucket from
+// promotion_gate.refill.bucket.
+export async function refillScalpV5DeploymentsMixed(params: {
+  targetNewSeats?: number;
+  stagecFraction?: number;       // default 0.60
+  mutationFraction?: number;     // default 0.25
+  explorationFraction?: number;  // default 0.15
+  minStageCNetR?: number;        // stage-C pool floor (default 4)
+  minStageCTrades?: number;      // stage-C pool floor (default 30)
+  mutationMinStageCNetR?: number;   // default 0
+  mutationMinStageCTrades?: number; // default 15
+  explorationMinStageCNetR?: number; // default 0
+  explorationMaxStageCNetR?: number; // default 4
+  explorationMinStageCTrades?: number; // default 15
+  dryRun?: boolean;
+} = {}): Promise<{
+  dryRun: boolean;
+  targetNewSeats: number;
+  quotas: { stagec: number; mutation: number; exploration: number };
+  selected: { stagec: number; mutation: number; exploration: number };
+  upserted: number;
+  deploymentIds: string[];
+  sampleByBucket: {
+    stagec: string[];
+    mutation: string[];
+    exploration: string[];
+  };
+}> {
+  const dryRun = Boolean(params.dryRun);
+  const targetNewSeats = Math.max(0, Math.floor(Number(params.targetNewSeats ?? 500)));
+  const emptyResult = {
+    dryRun,
+    targetNewSeats,
+    quotas: { stagec: 0, mutation: 0, exploration: 0 },
+    selected: { stagec: 0, mutation: 0, exploration: 0 },
+    upserted: 0,
+    deploymentIds: [] as string[],
+    sampleByBucket: { stagec: [], mutation: [], exploration: [] },
+  };
+  if (targetNewSeats <= 0) return emptyResult;
+
+  const stagecFraction = clampFraction(params.stagecFraction, 0.60);
+  const mutationFraction = clampFraction(params.mutationFraction, 0.25);
+  const explorationFraction = clampFraction(params.explorationFraction, 0.15);
+  // Fractions are advisory; spill logic below handles a short bucket by
+  // promoting the deficit to the next priority. We don't normalise/clamp
+  // the sum: operators can intentionally pass 0.5/0.2/0.1 to under-fill.
+  const stagecQuota = Math.floor(targetNewSeats * stagecFraction);
+  const mutationQuota = Math.floor(targetNewSeats * mutationFraction);
+  const explorationQuota = Math.floor(targetNewSeats * explorationFraction);
+  const initialSum = stagecQuota + mutationQuota + explorationQuota;
+  // Remainder from floor() goes to stagec (the safest pool).
+  const stagecQuotaAdjusted = stagecQuota + Math.max(0, targetNewSeats - initialSum);
+  const quotas = {
+    stagec: stagecQuotaAdjusted,
+    mutation: mutationQuota,
+    exploration: explorationQuota,
+  };
+
+  // Load each pool with up to `targetNewSeats` candidates — NOT just its
+  // own quota. The orchestrator below allocates `quotas.{bucket}` for the
+  // primary fill and may need to draw additional rows for spill when a
+  // sibling pool comes up short. If we capped each pool at its primary
+  // quota, spill would have nothing to fall back to.
+  const fetchLimit = Math.max(targetNewSeats * 5, 1000);
+  const stagecPool = await listScalpV5StageCRankedRefillCandidates({
+    targetNewSeats,
+    fetchLimit,
+    minStageCNetR: params.minStageCNetR,
+    minStageCTrades: params.minStageCTrades,
+  });
+  const mutationPool = await listScalpV5WinnerMutationRefillCandidates({
+    targetNewSeats,
+    fetchLimit,
+    minStageCNetR: params.mutationMinStageCNetR,
+    minStageCTrades: params.mutationMinStageCTrades,
+  });
+  const explorationPool = await listScalpV5ExplorationRefillCandidates({
+    targetNewSeats,
+    fetchLimit,
+    minStageCNetR: params.explorationMinStageCNetR,
+    maxStageCNetR: params.explorationMaxStageCNetR,
+    minStageCTrades: params.explorationMinStageCTrades,
+  });
+
+  // Allocate with dedupe in priority order: stagec → mutation → exploration.
+  // A candidate appearing in multiple pools is tagged by the FIRST pool that
+  // picks it (because that's the strongest signal for "why we took it"
+  // — stage-C strength beats winner-similarity beats globally-marginal).
+  type Picked = {
+    candidate: ScalpV5StageCRefillCandidate | ScalpV5MutationRefillCandidate;
+    bucket: ScalpV5RefillBucket;
+    matchBasis?: ScalpV5MutationRefillCandidate["matchBasis"];
+  };
+  const seen = new Set<string>();
+  const picked: Picked[] = [];
+  const sampleByBucket = {
+    stagec: [] as string[],
+    mutation: [] as string[],
+    exploration: [] as string[],
+  };
+  const selected = { stagec: 0, mutation: 0, exploration: 0 };
+  function take(
+    pool: Array<ScalpV5StageCRefillCandidate | ScalpV5MutationRefillCandidate>,
+    bucket: ScalpV5RefillBucket,
+    quota: number,
+  ): number {
+    let taken = 0;
+    for (const candidate of pool) {
+      if (taken >= quota) break;
+      const id = candidate.deploymentId;
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      picked.push({
+        candidate,
+        bucket,
+        matchBasis: "matchBasis" in candidate ? candidate.matchBasis : undefined,
+      });
+      if (sampleByBucket[bucket].length < 25) sampleByBucket[bucket].push(id);
+      taken += 1;
+    }
+    selected[bucket] += taken;
+    return taken;
+  }
+  const stagecTaken = take(stagecPool, "stagec", quotas.stagec);
+  const mutationTaken = take(mutationPool, "mutation", quotas.mutation);
+  const explorationTaken = take(explorationPool, "exploration", quotas.exploration);
+
+  // Spill logic: if a pool was short, redistribute the deficit to the
+  // next-priority pool. Order: shortfalls in mutation flow to exploration,
+  // shortfalls in exploration flow to stagec, shortfalls in stagec flow
+  // to mutation (since exploration is the riskiest fallback).
+  let deficit = (quotas.stagec - stagecTaken)
+    + (quotas.mutation - mutationTaken)
+    + (quotas.exploration - explorationTaken);
+  if (deficit > 0) {
+    // Try to re-allocate the unused budget by giving extra capacity to the
+    // pools that still have inventory. Walk pools in priority order.
+    const spillOrder: Array<{
+      pool: Array<ScalpV5StageCRefillCandidate | ScalpV5MutationRefillCandidate>;
+      bucket: ScalpV5RefillBucket;
+    }> = [
+      { pool: stagecPool, bucket: "stagec" },
+      { pool: mutationPool, bucket: "mutation" },
+      { pool: explorationPool, bucket: "exploration" },
+    ];
+    for (const { pool, bucket } of spillOrder) {
+      if (deficit <= 0) break;
+      const before = selected[bucket];
+      take(pool, bucket, before + deficit);
+      const taken = selected[bucket] - before;
+      deficit -= taken;
+    }
+  }
+
+  const deploymentIds = picked.map((p) => p.candidate.deploymentId);
+  if (dryRun || picked.length === 0 || !isScalpPgConfigured()) {
+    return {
+      ...emptyResult,
+      quotas,
+      selected,
+      upserted: 0,
+      deploymentIds,
+      sampleByBucket,
+    };
+  }
+
+  const riskProfile = getScalpV2DefaultRiskProfile();
+  const refilledAtMs = Date.now();
+  await upsertScalpV2Deployments({
+    rows: picked.map(({ candidate, bucket, matchBasis }) => {
+      const metadata = asRecord(candidate.metadata);
+      const worker = asRecord(metadata.worker);
+      return {
+        candidateId: candidate.id,
+        venue: candidate.venue,
+        symbol: candidate.symbol,
+        strategyId: candidate.strategyId,
+        tuneId: candidate.tuneId,
+        entrySessionProfile: candidate.entrySessionProfile,
+        enabled: false,
+        liveMode: "shadow",
+        riskProfile,
+        promotionGate: {
+          eligible: false,
+          reason: `v5_${bucket}_refill_pending_v5_evaluation`,
+          source: `v5_sunday_${bucket}_refill`,
+          refilledAtMs,
+          refill: {
+            bucket,
+            matchBasis: matchBasis ?? null,
+            candidateId: candidate.id,
+            stageCNetR: candidate.stageCNetR,
+            stageCTrades: candidate.stageCTrades,
+          },
+          worker,
+          holdout: asRecord(worker.holdout),
+          v3TemporalFilter: asRecord(metadata.v3TemporalFilter),
+          dsl: asRecord(metadata.researchDsl || metadata.dsl),
+        },
+      };
+    }),
+  });
+  const db = scalpPrisma();
+  await db.$executeRaw(sql`
+    UPDATE scalp_v2_deployments
+    SET
+      v5_cell_evidence = NULL,
+      v5_enabled = FALSE,
+      v5_evaluated_at = NULL,
+      v5_lease_until = NULL,
+      v5_replay_checkpoint = NULL,
+      updated_at = NOW()
+    WHERE deployment_id = ANY(${deploymentIds}::text[]);
+  `);
+  return {
+    dryRun,
+    targetNewSeats,
+    quotas,
+    selected,
+    upserted: picked.length,
+    deploymentIds,
+    sampleByBucket,
+  };
+}
+
+function clampFraction(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  if (parsed < 0) return 0;
+  if (parsed > 1) return 1;
+  return parsed;
 }
 
 export async function getScalpV5EvaluationQueueStats(params: {

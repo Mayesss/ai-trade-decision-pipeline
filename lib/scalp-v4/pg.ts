@@ -165,55 +165,62 @@ export async function upsertScalpV4RegimeSnapshots(rows: ScalpV4RegimeSnapshot[]
   const normalized = (rows || []).filter((row) => row.symbol && row.venue && row.weekStartMs > 0);
   if (!normalized.length) return 0;
   const db = scalpPrisma();
-  const values = normalized.map((row) => sql`(
-    ${row.venue},
-    ${row.symbol},
-    'week',
-    ${new Date(row.weekStartMs)},
-    ${row.classifierVersion},
-    ${row.rawCellId},
-    ${row.cellId},
-    ${row.pendingCellId || null},
-    ${row.pendingWeeks},
-    ${row.volAxis},
-    ${row.trendAxis},
-    ${row.riskAxis},
-    ${JSON.stringify(row.confidence || {})}::jsonb,
-    ${JSON.stringify(row.sourceCoverage || {})}::jsonb,
-    ${JSON.stringify(row.details || {})}::jsonb
-  )`);
-  await db.$executeRaw(sql`
-    INSERT INTO scalp_regime_snapshots(
-      venue,
-      symbol,
-      granularity,
-      week_start,
-      classifier_version,
-      raw_cell_id,
-      cell_id,
-      pending_cell_id,
-      pending_weeks,
-      vol_axis,
-      trend_axis,
-      risk_axis,
-      confidence_json,
-      source_coverage_json,
-      details_json
-    ) VALUES ${join(values, ",")}
-    ON CONFLICT(venue, symbol, granularity, week_start, classifier_version)
-    DO UPDATE SET
-      raw_cell_id = EXCLUDED.raw_cell_id,
-      cell_id = EXCLUDED.cell_id,
-      pending_cell_id = EXCLUDED.pending_cell_id,
-      pending_weeks = EXCLUDED.pending_weeks,
-      vol_axis = EXCLUDED.vol_axis,
-      trend_axis = EXCLUDED.trend_axis,
-      risk_axis = EXCLUDED.risk_axis,
-      confidence_json = EXCLUDED.confidence_json,
-      source_coverage_json = EXCLUDED.source_coverage_json,
-      details_json = EXCLUDED.details_json,
-      updated_at = NOW();
-  `);
+  const snapshotBatchSize = Math.max(
+    1,
+    Math.min(200, Math.floor(Number(process.env.SCALP_V4_UPSERT_BATCH_SIZE || 50))),
+  );
+  for (let offset = 0; offset < normalized.length; offset += snapshotBatchSize) {
+    const batch = normalized.slice(offset, offset + snapshotBatchSize);
+    const values = batch.map((row) => sql`(
+      ${row.venue},
+      ${row.symbol},
+      'week',
+      ${new Date(row.weekStartMs)},
+      ${row.classifierVersion},
+      ${row.rawCellId},
+      ${row.cellId},
+      ${row.pendingCellId || null},
+      ${row.pendingWeeks},
+      ${row.volAxis},
+      ${row.trendAxis},
+      ${row.riskAxis},
+      ${JSON.stringify(row.confidence || {})}::jsonb,
+      ${JSON.stringify(row.sourceCoverage || {})}::jsonb,
+      ${JSON.stringify(row.details || {})}::jsonb
+    )`);
+    await db.$executeRaw(sql`
+      INSERT INTO scalp_regime_snapshots(
+        venue,
+        symbol,
+        granularity,
+        week_start,
+        classifier_version,
+        raw_cell_id,
+        cell_id,
+        pending_cell_id,
+        pending_weeks,
+        vol_axis,
+        trend_axis,
+        risk_axis,
+        confidence_json,
+        source_coverage_json,
+        details_json
+      ) VALUES ${join(values, ",")}
+      ON CONFLICT(venue, symbol, granularity, week_start, classifier_version)
+      DO UPDATE SET
+        raw_cell_id = EXCLUDED.raw_cell_id,
+        cell_id = EXCLUDED.cell_id,
+        pending_cell_id = EXCLUDED.pending_cell_id,
+        pending_weeks = EXCLUDED.pending_weeks,
+        vol_axis = EXCLUDED.vol_axis,
+        trend_axis = EXCLUDED.trend_axis,
+        risk_axis = EXCLUDED.risk_axis,
+        confidence_json = EXCLUDED.confidence_json,
+        source_coverage_json = EXCLUDED.source_coverage_json,
+        details_json = EXCLUDED.details_json,
+        updated_at = NOW();
+    `);
+  }
   const transitions = normalized
     .filter((row) => row.transition?.toCellId)
     .map((row) => sql`(
@@ -226,23 +233,27 @@ export async function upsertScalpV4RegimeSnapshots(rows: ScalpV4RegimeSnapshot[]
       ${JSON.stringify({ rawCellId: row.rawCellId, pendingWeeks: row.pendingWeeks })}::jsonb
     )`);
   if (transitions.length > 0) {
-    await db.$executeRaw(sql`
-      INSERT INTO scalp_regime_transitions(
-        venue,
-        symbol,
-        transition_week_start,
-        classifier_version,
-        from_cell_id,
-        to_cell_id,
-        details_json
-      ) VALUES ${join(transitions, ",")}
-      ON CONFLICT(venue, symbol, transition_week_start, classifier_version)
-      DO UPDATE SET
-        from_cell_id = EXCLUDED.from_cell_id,
-        to_cell_id = EXCLUDED.to_cell_id,
-        details_json = EXCLUDED.details_json,
-        created_at = scalp_regime_transitions.created_at;
-    `);
+    const transitionBatchSize = Math.max(1, Math.min(200, snapshotBatchSize));
+    for (let offset = 0; offset < transitions.length; offset += transitionBatchSize) {
+      const batch = transitions.slice(offset, offset + transitionBatchSize);
+      await db.$executeRaw(sql`
+        INSERT INTO scalp_regime_transitions(
+          venue,
+          symbol,
+          transition_week_start,
+          classifier_version,
+          from_cell_id,
+          to_cell_id,
+          details_json
+        ) VALUES ${join(batch, ",")}
+        ON CONFLICT(venue, symbol, transition_week_start, classifier_version)
+        DO UPDATE SET
+          from_cell_id = EXCLUDED.from_cell_id,
+          to_cell_id = EXCLUDED.to_cell_id,
+          details_json = EXCLUDED.details_json,
+          created_at = scalp_regime_transitions.created_at;
+      `);
+    }
   }
   return normalized.length;
 }

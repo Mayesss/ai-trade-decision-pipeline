@@ -12,9 +12,9 @@ import {
   autoPromoteScalpV5WinnersToEnabled,
   cullBottomPerformersScalpV5Deployments,
   getScalpV5EvaluationQueueStats,
-  invalidateAllScalpV5Evidence,
-  refillScalpV5DeploymentsFromStageCRankedCandidates,
+  refillScalpV5DeploymentsMixed,
   retireConsistentlyFailingScalpV5Deployments,
+  selectScalpV5DeploymentsNeedingAdvancement,
 } from "../lib/scalp-v5/pg";
 
 const { loadEnvConfig } = nextEnv;
@@ -112,8 +112,18 @@ async function drainV5Evaluation(params: {
   disabled: number;
   fullCount: number;
   incrementalCount: number;
+  remaining: number;
   failureReasons: Record<string, number>;
 }> {
+  // When deploymentIds is supplied the loader bypasses its own staleness
+  // filter, so an already-evaluated row stays eligible to be re-claimed
+  // each batch. Track processed IDs locally and shrink the working set so
+  // the drain terminates cleanly once every requested row has been
+  // attempted exactly once.
+  const directMode = Array.isArray(params.deploymentIds);
+  const remaining = directMode
+    ? new Set((params.deploymentIds || []).map((row) => String(row || "").trim()).filter(Boolean))
+    : null;
   const totals = {
     label: params.label,
     batches: 0,
@@ -124,15 +134,17 @@ async function drainV5Evaluation(params: {
     disabled: 0,
     fullCount: 0,
     incrementalCount: 0,
+    remaining: remaining ? remaining.size : 0,
     failureReasons: {} as Record<string, number>,
   };
   while (params.maxEvalBatches <= 0 || totals.batches < params.maxEvalBatches) {
+    if (remaining && remaining.size === 0) break;
     totals.batches += 1;
     const result = await runScalpV5EvaluationBatch({
       limit: params.evalLimit,
       staleOlderThanMs: params.staleOlderThanMs,
       preflightCandles: false,
-      deploymentIds: params.deploymentIds,
+      deploymentIds: remaining ? Array.from(remaining) : undefined,
     });
     totals.processed += result.processed;
     totals.succeeded += result.succeeded;
@@ -145,14 +157,20 @@ async function drainV5Evaluation(params: {
     for (const [reason, count] of Object.entries(failures)) {
       totals.failureReasons[reason] = (totals.failureReasons[reason] || 0) + count;
     }
+    if (remaining) {
+      for (const outcome of result.outcomes) {
+        remaining.delete(String(outcome.deploymentId || "").trim());
+      }
+    }
     console.log(
-      `[${params.label}] batch=${totals.batches} processed=${result.processed} succeeded=${result.succeeded} failed=${result.failed} full=${result.fullCount} incremental=${result.incrementalCount}`,
+      `[${params.label}] batch=${totals.batches} processed=${result.processed} succeeded=${result.succeeded} failed=${result.failed} full=${result.fullCount} incremental=${result.incrementalCount}${remaining ? ` remaining=${remaining.size}` : ""}`,
     );
     if (result.processed === 0) {
       totals.batches -= 1;
       break;
     }
   }
+  totals.remaining = remaining ? remaining.size : 0;
   return totals;
 }
 
@@ -200,10 +218,10 @@ async function main() {
 
   summary.queueBefore = await getScalpV5EvaluationQueueStats({ staleOlderThanMs });
 
+  let mainEvalDeploymentIds: string[] | undefined;
   if (dryRun) {
     summary.preflight = { skipped: true, reason: "dry_run" };
     summary.regimes = { skipped: true, reason: "dry_run" };
-    summary.rollover = { skipped: true, reason: "dry_run" };
   } else {
     let preflight = null as Awaited<ReturnType<typeof runScalpV5CandlePreflight>> | null;
     for (let round = 1; round <= preflightMaxRounds; round += 1) {
@@ -236,19 +254,38 @@ async function main() {
       validityFailures: regimes.validityFailures.length,
     };
     console.log(`[regimes] saved=${regimes.symbolsSaved}/${regimeSymbols.length} validityFailures=${regimes.validityFailures.length}`);
-
-    summary.rollover = await invalidateAllScalpV5Evidence({ mode: "stale" });
-    console.log(`[rollover] ${JSON.stringify(summary.rollover)}`);
   }
+
+  // Smart queue runs in both branches — it's read-only, so a dry-run that
+  // SKIPS it would just hide the most useful diagnostic in the whole script
+  // ("how much work is actually left right now?"). On a fresh Sunday it
+  // should show ~all rows needing advancement; on a re-run it should show
+  // ~all rows already-fresh.
+  const advancement = await selectScalpV5DeploymentsNeedingAdvancement({});
+  summary.advancementQueue = {
+    newHoldoutToMs: advancement.newHoldoutToMs,
+    newHoldoutFromMs: advancement.newHoldoutFromMs,
+    evidenceVersion: advancement.evidenceVersion,
+    classifierVersion: advancement.classifierVersion,
+    breakdown: advancement.breakdown,
+    sampleDeploymentIds: advancement.deploymentIds.slice(0, 25),
+  };
+  mainEvalDeploymentIds = advancement.deploymentIds;
+  console.log(
+    `[advancement] needsWork=${advancement.deploymentIds.length} alreadyFresh=${advancement.breakdown.alreadyFresh} missing=${advancement.breakdown.missingEvidence} weekStale=${advancement.breakdown.weekStale} versionStale=${advancement.breakdown.versionStale} classifierStale=${advancement.breakdown.classifierStale}`,
+  );
 
   summary.evaluation = dryRun
     ? { skipped: true, reason: "dry_run" }
-    : await drainV5Evaluation({
-        label: "v5-main-eval",
-        evalLimit,
-        staleOlderThanMs,
-        maxEvalBatches,
-      });
+    : mainEvalDeploymentIds && mainEvalDeploymentIds.length === 0
+      ? { skipped: true, reason: "no_deployments_need_advancement" }
+      : await drainV5Evaluation({
+          label: "v5-main-eval",
+          evalLimit,
+          staleOlderThanMs,
+          maxEvalBatches,
+          deploymentIds: mainEvalDeploymentIds,
+        });
 
   summary.firstPromote = await autoPromoteScalpV5WinnersToEnabled({ dryRun });
   console.log(`[promote:first] ${JSON.stringify(summary.firstPromote)}`);
@@ -262,7 +299,10 @@ async function main() {
       percentToRetire: 0.15,
       graceDays: 28,
       minTrades: 30,
-      minPoolSize: 1500,
+      // Floor at 2300 so a slow refill week can't drag the active pool
+      // below the ~2500 seat target. Cull is bounded by maxRetireAbs=500
+      // and percentToRetire=15% anyway; this is the safety net.
+      minPoolSize: 2300,
       maxRetireAbs: 500,
       dryRun,
     });
@@ -274,7 +314,12 @@ async function main() {
     summary.cullBottom = { skipped: true, reason: "cleanup_disabled" };
   }
 
-  const refill = await refillScalpV5DeploymentsFromStageCRankedCandidates({
+  // 60/25/15 mixed refill: stage-C strong (exploit known winners),
+  // winner-identity mutations (variation around proven combos), and
+  // exploration (globally-marginal candidates that may be regime-cell
+  // winners). Each refilled deployment is tagged with promotion_gate.refill.bucket
+  // so per-bucket survival/promotion rate can be measured over future Sundays.
+  const refill = await refillScalpV5DeploymentsMixed({
     targetNewSeats,
     minStageCNetR,
     minStageCTrades,
@@ -282,11 +327,15 @@ async function main() {
   });
   summary.refill = {
     dryRun: refill.dryRun,
+    targetNewSeats: refill.targetNewSeats,
+    quotas: refill.quotas,
     selected: refill.selected,
     upserted: refill.upserted,
-    sampleDeploymentIds: refill.deploymentIds.slice(0, 25),
+    sampleByBucket: refill.sampleByBucket,
   };
-  console.log(`[refill] selected=${refill.selected} upserted=${refill.upserted}`);
+  console.log(
+    `[refill] target=${refill.targetNewSeats} stagec=${refill.selected.stagec}/${refill.quotas.stagec} mutation=${refill.selected.mutation}/${refill.quotas.mutation} exploration=${refill.selected.exploration}/${refill.quotas.exploration} upserted=${refill.upserted}`,
+  );
 
   summary.refillEvaluation =
     dryRun || refill.deploymentIds.length === 0

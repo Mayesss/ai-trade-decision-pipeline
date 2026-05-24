@@ -25,7 +25,6 @@ const UNAUTHENTICATED_CRON_ROUTES = new Set<string>([
   // exempt or the handlers 401 and the cron silently no-ops.
   "/api/scalp/v5/cron/evaluate",
   "/api/scalp/v5/cron/promote",
-  "/api/scalp/v5/cron/sunday-rollover",
   "/api/scalp/v5/cron/trim-tail",
   "/api/scalp/v5/cron/cull-bottom",
   "/api/scalp/v5/cron/load-live-candles",

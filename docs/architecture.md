@@ -70,8 +70,12 @@ and close naturally via the execute cron. The gates only block NEW entries.
 | `10 */2 * * *` | `/api/scalp/v2/cron/load-candles` | v2 | 1m candle ingestion (both venues) |
 | `0 * * * *` | `/api/scalp/v5/cron/evaluate?limit=50` | v5 | Hourly 12-week evidence refresh |
 | `*/15 * * * *` | `/api/scalp/v5/cron/promote` | v5 | Auto-promote v5-passing rows |
-| `0 2 * * 0` | `/api/scalp/v5/cron/sunday-rollover` | v5 | Weekly: mark evidence stale (`mode=stale`) |
 | `0 6 * * 0` | `/api/scalp/v5/cron/trim-tail` | v5 | Weekly: retire consistently-failing rows |
+
+The weekly Sunday rollover (evidence advancement + cull + refill + promote) runs
+from the terminal via [`scripts/scalp-v5-sunday.ts`](../scripts/scalp-v5-sunday.ts)
+instead of a vercel cron — too long-running for the serverless function timeout
+and easier to monitor / re-run locally.
 
 ## Candidate pool steady-state
 
