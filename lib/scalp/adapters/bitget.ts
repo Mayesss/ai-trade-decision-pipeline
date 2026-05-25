@@ -29,12 +29,6 @@ const BITGET_OWNERSHIP_CACHE_TTL_MS = Math.max(
     Number(process.env.SCALP_BITGET_OWNERSHIP_CACHE_TTL_MS) || 24 * 60 * 60_000,
   ),
 );
-const BITGET_RISK_MARGIN_LEVERAGE_SAFETY_BUFFER = Math.max(
-  0,
-  Math.floor(
-    Number(process.env.SCALP_BITGET_RISK_MARGIN_LEVERAGE_SAFETY_BUFFER) || 10,
-  ),
-);
 const BITGET_AVAILABLE_NOTIONAL_SAFETY_FACTOR = Math.max(
   0.1,
   Math.min(
@@ -44,7 +38,12 @@ const BITGET_AVAILABLE_NOTIONAL_SAFETY_FACTOR = Math.max(
 );
 const BITGET_MAX_ENTRY_LEVERAGE = Math.max(
   1,
-  Math.floor(Number(process.env.SCALP_BITGET_MAX_ENTRY_LEVERAGE) || 20),
+  Math.floor(
+    Number(
+      process.env.SCALP_BITGET_MAX_ENTRY_LEVERAGE ||
+        process.env.SCALP_BITGET_POLICY_MAX_LEVERAGE,
+    ) || 20,
+  ),
 );
 const BITGET_MAX_NOTIONAL_EQUITY_MULT = Math.max(
   1,
@@ -551,28 +550,25 @@ async function setBitgetLeverage(params: {
   });
 }
 
-function resolveLeverageForRiskMarginTarget(params: {
+export function resolveBitgetEntryLeverageForMarginBudget(params: {
   notionalUsd: number;
-  riskMarginTargetUsd: number | null;
+  marginBudgetUsd: number | null;
   fallbackLeverage: number;
 }): number {
   const fallback = Math.max(1, Math.floor(params.fallbackLeverage));
   if (!(Number.isFinite(params.notionalUsd) && params.notionalUsd > 0)) {
     return fallback;
   }
-  const riskTarget = toPositive(params.riskMarginTargetUsd);
-  if (!(Number.isFinite(riskTarget as number) && Number(riskTarget) > 0)) {
+  const marginBudget = toPositive(params.marginBudgetUsd);
+  if (!(Number.isFinite(marginBudget as number) && Number(marginBudget) > 0)) {
     return fallback;
   }
-  const rawLeverage = params.notionalUsd / Number(riskTarget);
+  const rawLeverage = params.notionalUsd / Number(marginBudget);
   if (!(Number.isFinite(rawLeverage) && rawLeverage > 0)) {
     return fallback;
   }
   if (rawLeverage < 1) return 1;
-  const exactTargetLeverage = Math.floor(rawLeverage);
-  const bufferedLeverage =
-    exactTargetLeverage - BITGET_RISK_MARGIN_LEVERAGE_SAFETY_BUFFER;
-  return Math.max(1, bufferedLeverage);
+  return Math.ceil(rawLeverage);
 }
 
 export function resolveBitgetExecutableNotionalUsd(params: {
@@ -664,6 +660,10 @@ async function executeBitgetScalpEntry(params: {
   direction: "BUY" | "SELL";
   notionalUsd: number;
   riskUsd?: number | null;
+  targetRiskUsd?: number | null;
+  actualRiskUsd?: number | null;
+  marginBudgetUsd?: number | null;
+  riskTargetFillPct?: number | null;
   leverage?: number | null;
   dryRun?: boolean;
   clientOid?: string;
@@ -686,10 +686,10 @@ async function executeBitgetScalpEntry(params: {
   const clientOid = normalizeClientOid(params.clientOid, "bg-scl");
   const dryRun = params.dryRun !== false;
   const requestedLeverage = clampLeverage(params.leverage ?? null) ?? 1;
-  const riskMarginTargetUsd = toPositive(params.riskUsd);
-  const marginTargetLeverage = resolveLeverageForRiskMarginTarget({
+  const marginBudgetUsd = toPositive(params.marginBudgetUsd);
+  const marginBudgetLeverage = resolveBitgetEntryLeverageForMarginBudget({
     notionalUsd: requestedNotionalUsd,
-    riskMarginTargetUsd,
+    marginBudgetUsd,
     fallbackLeverage: requestedLeverage,
   });
   const syntheticDealId = buildSyntheticPositionId(symbol, holdSide);
@@ -705,7 +705,7 @@ async function executeBitgetScalpEntry(params: {
       symbol,
       direction,
       notionalUsd: requestedNotionalUsd,
-      leverage: marginTargetLeverage,
+      leverage: marginBudgetLeverage,
       orderType,
       size: null,
       epic: symbol,
@@ -726,7 +726,7 @@ async function executeBitgetScalpEntry(params: {
       symbol,
       direction,
       notionalUsd: requestedNotionalUsd,
-      leverage: marginTargetLeverage,
+      leverage: marginBudgetLeverage,
       orderType,
       size: null,
       epic: symbol,
@@ -776,7 +776,7 @@ async function executeBitgetScalpEntry(params: {
         )
       : 1;
   const targetLeverage = Math.max(
-    marginTargetLeverage,
+    marginBudgetLeverage,
     requiredLeverageByAvailable,
   );
   const leverage = Math.max(1, Math.min(symbolLeverageCap, targetLeverage));

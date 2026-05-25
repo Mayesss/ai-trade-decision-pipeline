@@ -41,6 +41,7 @@ function makeMarket(nowMs: number): ScalpMarketSnapshot {
       scalingFactor: null,
       minDealSize: null,
       sizeDecimals: null,
+      maxLeverage: 50,
       openingHours: {
         zone: "UTC",
         alwaysOpen: true,
@@ -57,6 +58,30 @@ function makeMarket(nowMs: number): ScalpMarketSnapshot {
       fetchedAtMs: nowMs,
     },
   };
+}
+
+function withBitgetSizingEnv<T>(env: Record<string, string>, fn: () => T): T {
+  const previous = new Map<string, string | undefined>();
+  for (const key of Object.keys(env)) {
+    previous.set(key, process.env[key]);
+    process.env[key] = env[key];
+  }
+  try {
+    return fn();
+  } finally {
+    for (const [key, value] of previous.entries()) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+function assertAlmostEqual(actual: number | undefined, expected: number, tolerance = 1e-9) {
+  assert.equal(typeof actual, "number");
+  assert.ok(
+    Math.abs(actual - expected) <= tolerance,
+    `${actual} not within ${tolerance} of ${expected}`,
+  );
 }
 
 function makeReadyState(params: {
@@ -94,12 +119,12 @@ function makeReadyState(params: {
   return state;
 }
 
-test("entry sizing remains executable when leverage cap prevents target risk", () => {
+test("Bitget margin-aware sizing reaches target risk under 20x and 5 percent margin", () => {
   const nowMs = Date.UTC(2026, 2, 17, 10, 0, 0, 0);
   const cfg = applyScalpStrategyConfigOverride(getScalpStrategyConfig(), {
     risk: {
-      referenceEquityUsd: 100,
-      riskPerTradePct: 100,
+      referenceEquityUsd: 10_000,
+      riskPerTradePct: 0.35,
       minNotionalUsd: 1,
       maxNotionalUsd: 100_000,
       stopBufferPips: 0,
@@ -109,20 +134,106 @@ test("entry sizing remains executable when leverage cap prevents target risk", (
   });
   const market = makeMarket(nowMs);
 
-  const bitgetPlan = buildScalpEntryPlan({
-    state: makeReadyState({ venue: "bitget", nowMs }),
-    market,
-    cfg,
-    entryIntent: { model: "ifvg_touch" },
-  });
+  const bitgetPlan = withBitgetSizingEnv(
+    {
+      SCALP_BITGET_POLICY_MAX_LEVERAGE: "20",
+      SCALP_BITGET_MARGIN_PER_TRADE_PCT: "5",
+      SCALP_BITGET_MIN_RISK_TARGET_FILL_PCT: "25",
+    },
+    () =>
+      buildScalpEntryPlan({
+        state: makeReadyState({ venue: "bitget", nowMs }),
+        market,
+        cfg,
+        entryIntent: { model: "ifvg_touch" },
+      }),
+  );
 
   assert.ok(bitgetPlan.plan);
-  assert.ok(
-    bitgetPlan.reasonCodes.includes("ENTRY_PLAN_ASSET_LEVERAGE_CAP_ACTIVE") ||
-      bitgetPlan.reasonCodes.includes("ENTRY_PLAN_RISK_TARGET_UNREACHABLE"),
-  );
+  assertAlmostEqual(bitgetPlan.plan?.targetRiskUsd, 35);
+  assertAlmostEqual(bitgetPlan.plan?.actualRiskUsd, 35);
+  assertAlmostEqual(bitgetPlan.plan?.riskUsd, 35);
+  assert.equal(bitgetPlan.plan?.marginBudgetUsd, 500);
+  assert.equal(bitgetPlan.plan?.leverage, 7);
+  assertAlmostEqual(bitgetPlan.plan?.riskTargetFillPct, 100);
+  assert.ok(bitgetPlan.reasonCodes.includes("BITGET_MARGIN_AWARE_SIZING"));
   assert.ok(bitgetPlan.reasonCodes.includes("ENTRY_PLAN_FEE_AWARE_RISK_SIZING"));
-  assert.ok((bitgetPlan.plan?.notionalUsd ?? 0) > 0);
+});
+
+test("Bitget margin-aware sizing downsizes without moving stop or take profit", () => {
+  const nowMs = Date.UTC(2026, 2, 17, 10, 0, 0, 0);
+  const cfg = applyScalpStrategyConfigOverride(getScalpStrategyConfig(), {
+    risk: {
+      referenceEquityUsd: 10_000,
+      riskPerTradePct: 0.35,
+      minNotionalUsd: 1,
+      maxNotionalUsd: 100_000,
+      stopBufferPips: 0,
+      stopBufferSpreadMult: 0,
+      minStopDistancePips: 0.01,
+    },
+  });
+  const market = makeMarket(nowMs);
+
+  const bitgetPlan = withBitgetSizingEnv(
+    {
+      SCALP_BITGET_POLICY_MAX_LEVERAGE: "20",
+      SCALP_BITGET_MARGIN_PER_TRADE_PCT: "5",
+      SCALP_BITGET_MIN_RISK_TARGET_FILL_PCT: "25",
+    },
+    () =>
+      buildScalpEntryPlan({
+        state: makeReadyState({ venue: "bitget", nowMs, sweepPrice: 99.99 }),
+        market,
+        cfg,
+        entryIntent: { model: "ifvg_touch" },
+      }),
+  );
+
+  assert.ok(bitgetPlan.plan);
+  assert.equal(bitgetPlan.plan?.entryReferencePrice, 100);
+  assert.equal(bitgetPlan.plan?.stopPrice, 99.99);
+  assertAlmostEqual(bitgetPlan.plan?.takeProfitPrice, 100.02);
+  assert.equal(bitgetPlan.plan?.notionalUsd, 10_000);
+  assert.equal(bitgetPlan.plan?.leverage, 20);
+  assert.ok((bitgetPlan.plan?.actualRiskUsd ?? 0) < 35);
+  assert.ok((bitgetPlan.plan?.riskTargetFillPct ?? 0) > 25);
+  assert.ok(bitgetPlan.reasonCodes.includes("ENTRY_PLAN_RISK_TARGET_DOWNSIZED"));
+});
+
+test("Bitget margin-aware sizing skips when downsized risk is too small", () => {
+  const nowMs = Date.UTC(2026, 2, 17, 10, 0, 0, 0);
+  const cfg = applyScalpStrategyConfigOverride(getScalpStrategyConfig(), {
+    risk: {
+      referenceEquityUsd: 10_000,
+      riskPerTradePct: 0.35,
+      minNotionalUsd: 1,
+      maxNotionalUsd: 100_000,
+      stopBufferPips: 0,
+      stopBufferSpreadMult: 0,
+      minStopDistancePips: 0.01,
+    },
+  });
+  const market = makeMarket(nowMs);
+
+  const bitgetPlan = withBitgetSizingEnv(
+    {
+      SCALP_BITGET_POLICY_MAX_LEVERAGE: "20",
+      SCALP_BITGET_MARGIN_PER_TRADE_PCT: "0.1",
+      SCALP_BITGET_MIN_RISK_TARGET_FILL_PCT: "25",
+    },
+    () =>
+      buildScalpEntryPlan({
+        state: makeReadyState({ venue: "bitget", nowMs, sweepPrice: 99.99 }),
+        market,
+        cfg,
+        entryIntent: { model: "ifvg_touch" },
+      }),
+  );
+
+  assert.equal(bitgetPlan.plan, null);
+  assert.ok(bitgetPlan.reasonCodes.includes("BITGET_MARGIN_AWARE_SIZING"));
+  assert.ok(bitgetPlan.reasonCodes.includes("ENTRY_PLAN_RISK_TARGET_TOO_SMALL"));
 });
 
 test("entry plan rejects BUY stop that is not protective", () => {

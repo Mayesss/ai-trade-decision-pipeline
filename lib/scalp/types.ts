@@ -371,6 +371,10 @@ export interface ScalpEntryPlan {
   takeProfitPrice: number;
   riskAbs: number;
   riskUsd: number;
+  targetRiskUsd: number;
+  actualRiskUsd: number;
+  marginBudgetUsd: number | null;
+  riskTargetFillPct: number;
   notionalUsd: number;
   leverage: number;
 }

@@ -6,6 +6,7 @@ import {
   getScalpStrategyConfig,
 } from "../config";
 import {
+  resolveBitgetEntryLeverageForMarginBudget,
   resolveBitgetExecutableNotionalUsd,
   resolveBitgetLiveEntryRiskGuard,
 } from "../adapters/bitget";
@@ -40,6 +41,10 @@ test("executeScalpEntryPlan maps broker throw to entry rejection reason codes", 
       takeProfitPrice: 1.29,
       riskAbs: 0.03,
       riskUsd: 10,
+      targetRiskUsd: 10,
+      actualRiskUsd: 10,
+      marginBudgetUsd: 50,
+      riskTargetFillPct: 100,
       notionalUsd: 100,
       leverage: 20,
     },
@@ -64,7 +69,7 @@ test("executeScalpEntryPlan maps broker throw to entry rejection reason codes", 
   assert.ok(out.reasonCodes.includes("ENTRY_REJECT_COOLDOWN_SET"));
 });
 
-test("executeScalpEntryPlan forwards riskUsd to broker entry adapter", async () => {
+test("executeScalpEntryPlan forwards risk and margin sizing fields to broker entry adapter", async () => {
   const nowMs = Date.UTC(2026, 2, 18, 9, 5, 0, 0);
   const state = createInitialScalpSessionState({
     symbol: "XANUSDT",
@@ -79,6 +84,8 @@ test("executeScalpEntryPlan forwards riskUsd to broker entry adapter", async () 
   });
 
   let capturedRiskUsd: number | null = null;
+  let capturedTargetRiskUsd: number | null = null;
+  let capturedMarginBudgetUsd: number | null = null;
   const out = await executeScalpEntryPlan({
     state,
     plan: {
@@ -92,6 +99,10 @@ test("executeScalpEntryPlan forwards riskUsd to broker entry adapter", async () 
       takeProfitPrice: 1.29,
       riskAbs: 0.03,
       riskUsd: 250,
+      targetRiskUsd: 300,
+      actualRiskUsd: 250,
+      marginBudgetUsd: 200,
+      riskTargetFillPct: 83.33333333333334,
       notionalUsd: 1_000,
       leverage: 4,
     },
@@ -104,6 +115,14 @@ test("executeScalpEntryPlan forwards riskUsd to broker entry adapter", async () 
           capturedRiskUsd =
             Number.isFinite(Number(params?.riskUsd)) && Number(params.riskUsd) > 0
               ? Number(params.riskUsd)
+              : null;
+          capturedTargetRiskUsd =
+            Number.isFinite(Number(params?.targetRiskUsd)) && Number(params.targetRiskUsd) > 0
+              ? Number(params.targetRiskUsd)
+              : null;
+          capturedMarginBudgetUsd =
+            Number.isFinite(Number(params?.marginBudgetUsd)) && Number(params.marginBudgetUsd) > 0
+              ? Number(params.marginBudgetUsd)
               : null;
           return {
             placed: true,
@@ -129,8 +148,80 @@ test("executeScalpEntryPlan forwards riskUsd to broker entry adapter", async () 
   });
 
   assert.equal(capturedRiskUsd, 250);
+  assert.equal(capturedTargetRiskUsd, 300);
+  assert.equal(capturedMarginBudgetUsd, 200);
   assert.equal(out.state.state, "IN_TRADE");
   assert.ok(out.reasonCodes.includes("ENTRY_PLACED"));
+});
+
+test("executeScalpEntryPlan cools down leverage-cap entry rejections", async () => {
+  const nowMs = Date.UTC(2026, 2, 18, 9, 10, 0, 0);
+  const state = createInitialScalpSessionState({
+    symbol: "XANUSDT",
+    dayKey: "2026-03-18",
+    nowMs,
+    killSwitchActive: false,
+  });
+  const cfg = applyScalpStrategyConfigOverride(getScalpStrategyConfig(), {
+    execution: {
+      liveEnabled: true,
+    },
+  });
+
+  const out = await executeScalpEntryPlan({
+    state,
+    plan: {
+      setupId: "test-xan-entry-leverage-reject",
+      dealReference: "test-xan-ref-leverage-reject",
+      side: "BUY",
+      orderType: "MARKET",
+      limitLevel: null,
+      entryReferencePrice: 1.23,
+      stopPrice: 1.2,
+      takeProfitPrice: 1.29,
+      riskAbs: 0.03,
+      riskUsd: 10,
+      targetRiskUsd: 10,
+      actualRiskUsd: 10,
+      marginBudgetUsd: 50,
+      riskTargetFillPct: 100,
+      notionalUsd: 100,
+      leverage: 20,
+    },
+    cfg,
+    dryRun: false,
+    nowMs,
+    adapter: {
+      broker: {
+        async executeScalpEntry(params: any) {
+          return {
+            placed: false,
+            dryRun: false,
+            orderId: null,
+            dealId: null,
+            dealReference: String(params?.clientOid || "test-deal-ref"),
+            clientOid: String(params?.clientOid || "test-client-oid"),
+            symbol: "XANUSDT",
+            direction: "BUY",
+            notionalUsd: Number(params?.notionalUsd || 0),
+            leverage: Number(params?.leverage || 1),
+            orderType: "MARKET",
+            size: null,
+            epic: "XANUSDT",
+            dealStatus: "REJECTED",
+            confirmStatus: "REJECTED",
+            rejectReason: "ENTRY_LEVERAGE_CAP_EXCEEDED",
+          };
+        },
+      },
+    } as any,
+  });
+
+  assert.equal(out.state.trade, null);
+  assert.equal(out.state.state, "COOLDOWN");
+  assert.ok(out.reasonCodes.includes("ENTRY_NOT_PLACED"));
+  assert.ok(out.reasonCodes.includes("ENTRY_REJECT_ENTRY_LEVERAGE_CAP_EXCEEDED"));
+  assert.ok(out.reasonCodes.includes("ENTRY_REJECT_COOLDOWN_SET"));
 });
 
 test("Bitget executable notional is capped to available margin at symbol max leverage", () => {
@@ -156,6 +247,25 @@ test("Bitget executable notional is capped to available margin at symbol max lev
 
   assert.equal(tooSmall.capped, true);
   assert.equal(tooSmall.rejectReason, "INSUFFICIENT_BALANCE_FOR_MIN_NOTIONAL");
+});
+
+test("Bitget entry leverage uses margin budget instead of risk dollars", () => {
+  assert.equal(
+    resolveBitgetEntryLeverageForMarginBudget({
+      notionalUsd: 1_000,
+      marginBudgetUsd: 200,
+      fallbackLeverage: 20,
+    }),
+    5,
+  );
+  assert.equal(
+    resolveBitgetEntryLeverageForMarginBudget({
+      notionalUsd: 1_000,
+      marginBudgetUsd: null,
+      fallbackLeverage: 20,
+    }),
+    20,
+  );
 });
 
 test("live risk default is 0.35 percent of equity", () => {

@@ -65,14 +65,16 @@ function classifyEntryExecutionError(err: unknown): string[] {
   return Array.from(new Set(reasonCodes));
 }
 
-function hasEntryBalanceRejection(reasonCodes: string[]): boolean {
+function hasEntryRejectCooldownReason(reasonCodes: string[]): boolean {
   return reasonCodes.some(
     (code) =>
       code === "ENTRY_REJECT_INSUFFICIENT_BALANCE" ||
+      code === "ENTRY_REJECT_ENTRY_LEVERAGE_CAP_EXCEEDED" ||
       code === "ENTRY_REJECT_BITGET_40762" ||
       code.includes("INSUFFICIENT_BALANCE") ||
       code.includes("INSUFFICIENT_BALANCE_FOR_NOTIONAL") ||
-      code.includes("INSUFFICIENT_BALANCE_FOR_MIN_NOTIONAL"),
+      code.includes("INSUFFICIENT_BALANCE_FOR_MIN_NOTIONAL") ||
+      (code.startsWith("ENTRY_REJECT") && code.includes("LEVERAGE") && code.includes("CAP")),
   );
 }
 
@@ -80,6 +82,24 @@ function entryRejectCooldownMinutes(): number {
   const n = Number(process.env.SCALP_ENTRY_REJECT_COOLDOWN_MINUTES);
   if (!(Number.isFinite(n) && n > 0)) return 30;
   return Math.max(1, Math.min(24 * 60, Math.floor(n)));
+}
+
+function bitgetPolicyMaxLeverage(): number {
+  const n = Number(process.env.SCALP_BITGET_POLICY_MAX_LEVERAGE);
+  if (!(Number.isFinite(n) && n > 0)) return 20;
+  return Math.max(1, Math.min(125, Math.floor(n)));
+}
+
+function bitgetMarginPerTradePct(): number {
+  const n = Number(process.env.SCALP_BITGET_MARGIN_PER_TRADE_PCT);
+  if (!(Number.isFinite(n) && n > 0)) return 5;
+  return Math.max(0.01, Math.min(100, n));
+}
+
+function bitgetMinRiskTargetFillPct(): number {
+  const n = Number(process.env.SCALP_BITGET_MIN_RISK_TARGET_FILL_PCT);
+  if (!(Number.isFinite(n) && n >= 0)) return 25;
+  return Math.max(0, Math.min(100, n));
 }
 
 const SCALP_LEVERAGE_BY_CATEGORY_BY_VENUE: Record<
@@ -284,7 +304,7 @@ function applyEntryRejectCooldown(
   reasonCodes: string[],
   nowMs: number,
 ): ScalpSessionState {
-  if (!hasEntryBalanceRejection(reasonCodes)) return state;
+  if (!hasEntryRejectCooldownReason(reasonCodes)) return state;
   return {
     ...state,
     state: "COOLDOWN",
@@ -437,7 +457,7 @@ export function buildScalpEntryPlan(params: {
     return { plan: null, reasonCodes: ["ENTRY_PLAN_STOP_DISTANCE_TOO_TIGHT"] };
   }
 
-  const riskUsd =
+  const targetRiskUsd =
     params.cfg.risk.referenceEquityUsd *
     (params.cfg.risk.riskPerTradePct / 100);
   const venue: ScalpVenue = params.state.venue || "bitget";
@@ -454,37 +474,88 @@ export function buildScalpEntryPlan(params: {
   if (!(Number.isFinite(effectiveRiskRate) && effectiveRiskRate > 0)) {
     return { plan: null, reasonCodes: ["ENTRY_PLAN_INVALID_RISK_RATE"] };
   }
-  const rawNotionalUsd = riskUsd / effectiveRiskRate;
+  const rawNotionalUsd = targetRiskUsd / effectiveRiskRate;
+  const bitgetSymbolLeverage = toFinite(params.market.symbolMeta?.maxLeverage);
+  const bitgetLeverageCap = Math.max(
+    1,
+    Math.min(
+      bitgetPolicyMaxLeverage(),
+      Number.isFinite(bitgetSymbolLeverage) && bitgetSymbolLeverage > 0
+        ? Math.floor(bitgetSymbolLeverage)
+        : categoryLeverage,
+    ),
+  );
+  const marginBudgetUsd =
+    venue === "bitget"
+      ? params.cfg.risk.referenceEquityUsd * (bitgetMarginPerTradePct() / 100)
+      : null;
+  const maxNotionalByBitgetMargin =
+    venue === "bitget" && Number.isFinite(marginBudgetUsd as number) && Number(marginBudgetUsd) > 0
+      ? Number(marginBudgetUsd) * bitgetLeverageCap
+      : null;
   const maxNotionalByCategoryLeverage =
-    params.cfg.risk.referenceEquityUsd > 0
+    venue !== "bitget" && params.cfg.risk.referenceEquityUsd > 0
       ? params.cfg.risk.referenceEquityUsd * categoryLeverage
       : null;
   const boundedMaxNotionalUsd =
-    Number.isFinite(maxNotionalByCategoryLeverage as number) &&
-    Number(maxNotionalByCategoryLeverage) > 0
-      ? Math.min(params.cfg.risk.maxNotionalUsd, Number(maxNotionalByCategoryLeverage))
-      : params.cfg.risk.maxNotionalUsd;
+    venue === "bitget"
+      ? Math.min(
+          params.cfg.risk.maxNotionalUsd,
+          Number.isFinite(maxNotionalByBitgetMargin as number) &&
+            Number(maxNotionalByBitgetMargin) > 0
+            ? Number(maxNotionalByBitgetMargin)
+            : params.cfg.risk.maxNotionalUsd,
+        )
+      : Number.isFinite(maxNotionalByCategoryLeverage as number) &&
+          Number(maxNotionalByCategoryLeverage) > 0
+        ? Math.min(params.cfg.risk.maxNotionalUsd, Number(maxNotionalByCategoryLeverage))
+        : params.cfg.risk.maxNotionalUsd;
   const boundedMinNotionalUsd = Math.min(
     params.cfg.risk.minNotionalUsd,
     boundedMaxNotionalUsd,
   );
-  const notionalUsd = clamp(
-    rawNotionalUsd,
-    boundedMinNotionalUsd,
-    boundedMaxNotionalUsd,
-  );
+  const notionalUsd =
+    venue === "bitget"
+      ? Math.min(rawNotionalUsd, boundedMaxNotionalUsd)
+      : clamp(rawNotionalUsd, boundedMinNotionalUsd, boundedMaxNotionalUsd);
   if (!(Number.isFinite(notionalUsd) && notionalUsd > 0)) {
     return { plan: null, reasonCodes: ["ENTRY_PLAN_INVALID_NOTIONAL"] };
   }
+  if (venue === "bitget" && notionalUsd < boundedMinNotionalUsd) {
+    return { plan: null, reasonCodes: ["ENTRY_PLAN_INVALID_NOTIONAL"] };
+  }
+  const actualRiskUsd = venue === "bitget" ? notionalUsd * effectiveRiskRate : targetRiskUsd;
+  const riskTargetFillPct =
+    targetRiskUsd > 0 ? (actualRiskUsd / targetRiskUsd) * 100 : 0;
+  if (venue === "bitget" && riskTargetFillPct < bitgetMinRiskTargetFillPct()) {
+    return {
+      plan: null,
+      reasonCodes: [
+        "BITGET_MARGIN_AWARE_SIZING",
+        "ENTRY_PLAN_RISK_TARGET_DOWNSIZED",
+        "ENTRY_PLAN_RISK_TARGET_TOO_SMALL",
+      ],
+    };
+  }
   const leverageCapActive =
-    Number.isFinite(maxNotionalByCategoryLeverage as number) &&
-    Number(maxNotionalByCategoryLeverage) > 0 &&
-    Number(maxNotionalByCategoryLeverage) < params.cfg.risk.maxNotionalUsd;
+    venue === "bitget"
+      ? Number.isFinite(maxNotionalByBitgetMargin as number) &&
+        Number(maxNotionalByBitgetMargin) > 0 &&
+        Number(maxNotionalByBitgetMargin) < rawNotionalUsd
+      : Number.isFinite(maxNotionalByCategoryLeverage as number) &&
+        Number(maxNotionalByCategoryLeverage) > 0 &&
+        Number(maxNotionalByCategoryLeverage) < params.cfg.risk.maxNotionalUsd;
   const expectedRiskUsd = notionalUsd * effectiveRiskRate;
   const riskTargetUnreachable =
     rawNotionalUsd > notionalUsd &&
     Number.isFinite(expectedRiskUsd) &&
-    expectedRiskUsd < riskUsd * 0.99;
+    expectedRiskUsd < targetRiskUsd * 0.99;
+  const leverage =
+    venue === "bitget" &&
+    Number.isFinite(marginBudgetUsd as number) &&
+    Number(marginBudgetUsd) > 0
+      ? Math.max(1, Math.min(bitgetLeverageCap, Math.ceil(notionalUsd / Number(marginBudgetUsd))))
+      : params.cfg.execution.defaultLeverage;
 
   const takeProfitPrice =
     side === "BUY"
@@ -506,16 +577,22 @@ export function buildScalpEntryPlan(params: {
       stopPrice,
       takeProfitPrice,
       riskAbs,
-      riskUsd,
+      riskUsd: venue === "bitget" ? actualRiskUsd : targetRiskUsd,
+      targetRiskUsd,
+      actualRiskUsd,
+      marginBudgetUsd,
+      riskTargetFillPct,
       notionalUsd,
-      leverage: params.cfg.execution.defaultLeverage,
+      leverage,
     },
     reasonCodes: [
       "ENTRY_INTENT_IFVG_TOUCH",
       "ENTRY_PLAN_READY",
+      ...(venue === "bitget" ? ["BITGET_MARGIN_AWARE_SIZING"] : []),
       ...(leverageCapActive ? ["ENTRY_PLAN_ASSET_LEVERAGE_CAP_ACTIVE"] : []),
       ...(riskTargetUnreachable
         ? [
+            ...(venue === "bitget" ? ["ENTRY_PLAN_RISK_TARGET_DOWNSIZED"] : []),
             "ENTRY_PLAN_RISK_TARGET_UNREACHABLE",
             "ENTRY_PLAN_NOTIONAL_CAPPED_BELOW_TARGET",
           ]
@@ -769,6 +846,10 @@ export async function executeScalpEntryPlan(params: {
       direction: params.plan.side,
       notionalUsd: params.plan.notionalUsd,
       riskUsd: params.plan.riskUsd,
+      targetRiskUsd: params.plan.targetRiskUsd,
+      actualRiskUsd: params.plan.actualRiskUsd,
+      marginBudgetUsd: params.plan.marginBudgetUsd,
+      riskTargetFillPct: params.plan.riskTargetFillPct,
       leverage: params.plan.leverage,
       dryRun: params.dryRun,
       clientOid: params.plan.dealReference,

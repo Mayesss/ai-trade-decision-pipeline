@@ -6685,8 +6685,76 @@ export async function runScalpV2ExecuteJob(params: {
       });
     }
 
+    const openPositions = await listScalpV2OpenPositions().catch(() => []);
+    const openPositionDeploymentIds = new Set(
+      openPositions.map((position) => String(position.deploymentId || "").trim()).filter(Boolean),
+    );
+
+    // First and cheapest live-execute scope cut: only deployments whose
+    // entry session is currently open should be considered for entry work.
+    // Open-position deployments bypass this filter so exits/trailing/reconcile
+    // still run outside the entry window.
+    const sundayBlock = resolveScalpV5SundayBlock(nowTs);
+    const cheapSkipReasonCounts: Record<string, number> = {};
+    const sessionScopedDeployments = scopedDeployments.filter((deployment) => {
+      if (openPositionDeploymentIds.has(deployment.deploymentId)) return true;
+      if (sundayBlock.blocked) {
+        cheapSkipReasonCounts.SUNDAY_BLOCK =
+          (cheapSkipReasonCounts.SUNDAY_BLOCK || 0) + 1;
+        return false;
+      }
+      if (!inScalpEntrySessionProfileWindow(nowTs, deployment.entrySessionProfile)) {
+        cheapSkipReasonCounts.OUT_OF_SESSION =
+          (cheapSkipReasonCounts.OUT_OF_SESSION || 0) + 1;
+        return false;
+      }
+      const promoGateBlocks = normalizeReasonCodes(
+        asRecord(deployment.promotionGate).entryBlockReasonCodes,
+      );
+      if (promoGateBlocks.length > 0) {
+        cheapSkipReasonCounts.PROMOTION_GATE_BLOCKED =
+          (cheapSkipReasonCounts.PROMOTION_GATE_BLOCKED || 0) + 1;
+        return false;
+      }
+      return true;
+    });
+    const cheapSkippedDeployments =
+      scopedDeployments.length - sessionScopedDeployments.length;
+
+    if (!sessionScopedDeployments.length) {
+      details = {
+        executed: 0,
+        reason:
+          scopedDeployments.length > 0
+            ? "no_enabled_deployments_in_current_session"
+            : "no_enabled_deployments",
+        consideredDeployments: scopedDeployments.length,
+        cheapSkippedDeployments,
+        cheapSkipReasonCounts,
+        postCheapFilterDeployments: 0,
+        openPositionDeployments: openPositionDeploymentIds.size,
+        dryRun: effectiveDryRun,
+        liveEnabled: runtime.liveEnabled,
+        v5LiveBypassesV2LiveEnabled: true,
+        filteredOutOfScope,
+        staleEnabledDeployments: 0,
+        freshnessDemoted: 0,
+        freshnessRequeuedCandidates: 0,
+        v5FreshnessBypassedDeployments: 0,
+        freshnessReasonCounts: {},
+      };
+      return buildScalpV2JobResult({
+        jobKind: "execute",
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        pendingAfter: 0,
+        details,
+      });
+    }
+
     const executeRequiredWeeks = resolvePromotionPolicy().minCompletedWeeks;
-    const freshnessChecks = scopedDeployments.map((deployment) => ({
+    const freshnessChecks = sessionScopedDeployments.map((deployment) => ({
       deployment,
       v5Owned: isScalpV5OwnedPromotionGate(deployment.promotionGate),
       freshness: resolveExecuteDeploymentFreshnessGate({
@@ -6778,6 +6846,9 @@ export async function runScalpV2ExecuteJob(params: {
         freshnessDemoted,
         freshnessRequeuedCandidates,
         freshnessReasonCounts,
+        cheapSkippedDeployments,
+        cheapSkipReasonCounts,
+        postCheapFilterDeployments: 0,
       };
       return buildScalpV2JobResult({
         jobKind: "execute",
@@ -6788,15 +6859,6 @@ export async function runScalpV2ExecuteJob(params: {
         details,
       });
     }
-
-    const bitgetAdapter = getScalpV2VenueAdapter("bitget");
-    const capitalAdapter = getScalpV2VenueAdapter("capital");
-    const bitgetSnapshots = await bitgetAdapter.broker.fetchOpenPositionSnapshots().catch(() => []);
-    const capitalSnapshots = await capitalAdapter.broker.fetchOpenPositionSnapshots().catch(() => []);
-    const openPositions = await listScalpV2OpenPositions().catch(() => []);
-    const openPositionDeploymentIds = new Set(
-      openPositions.map((position) => String(position.deploymentId || "").trim()).filter(Boolean),
-    );
 
     // Cheap-skip pre-filter. The strategy logic already rejects entries
     // outside their session window (via SESSION_FILTER_OUTSIDE_ENTRY_PROFILE
@@ -6811,8 +6873,6 @@ export async function runScalpV2ExecuteJob(params: {
     // Position-holding deployments ALWAYS pass through: their exit rules,
     // trail-stops, and reconciliation must run regardless of entry-block
     // state. Open-position membership is the only override.
-    const sundayBlock = resolveScalpV5SundayBlock(nowTs);
-    const cheapSkipReasonCounts: Record<string, number> = {};
     const eligibleAfterCheapFilter = executableDeployments.filter((deployment) => {
       if (openPositionDeploymentIds.has(deployment.deploymentId)) return true;
       if (sundayBlock.blocked) {
@@ -6835,8 +6895,45 @@ export async function runScalpV2ExecuteJob(params: {
       }
       return true;
     });
-    const cheapSkippedDeployments =
+    const postFreshnessCheapSkippedDeployments =
       executableDeployments.length - eligibleAfterCheapFilter.length;
+    const totalCheapSkippedDeployments =
+      cheapSkippedDeployments + postFreshnessCheapSkippedDeployments;
+
+    if (!eligibleAfterCheapFilter.length) {
+      details = {
+        executed: 0,
+        reason: "no_enabled_deployments_after_cheap_filter",
+        consideredDeployments: scopedDeployments.length,
+        cheapSkippedDeployments: totalCheapSkippedDeployments,
+        cheapSkipReasonCounts,
+        postCheapFilterDeployments: 0,
+        openPositionDeployments: openPositionDeploymentIds.size,
+        dryRun: effectiveDryRun,
+        liveEnabled: runtime.liveEnabled,
+        v5LiveBypassesV2LiveEnabled: true,
+        filteredOutOfScope,
+        staleEnabledDeployments: staleDeployments.length,
+        freshnessDemoted,
+        freshnessRequeuedCandidates,
+        v5FreshnessBypassedDeployments: v5FreshnessBypassedDeployments.length,
+        freshnessReasonCounts,
+        executeFreshnessWeeks: executeRequiredWeeks,
+      };
+      return buildScalpV2JobResult({
+        jobKind: "execute",
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        pendingAfter: 0,
+        details,
+      });
+    }
+
+    const bitgetAdapter = getScalpV2VenueAdapter("bitget");
+    const capitalAdapter = getScalpV2VenueAdapter("capital");
+    const bitgetSnapshots = await bitgetAdapter.broker.fetchOpenPositionSnapshots().catch(() => []);
+    const capitalSnapshots = await capitalAdapter.broker.fetchOpenPositionSnapshots().catch(() => []);
 
     // Tier-2 optimization: candle dedup across the per-deployment loop.
     // The engine already supports this via its `marketSnapshotCache`
@@ -7138,7 +7235,7 @@ export async function runScalpV2ExecuteJob(params: {
       // (out-of-session / Sunday-block / promotion-gate-blocked, with no
       // open position). These never reached the expensive per-deployment
       // loop, so they cost zero candle/news/regime/evidence fetches.
-      cheapSkippedDeployments,
+      cheapSkippedDeployments: totalCheapSkippedDeployments,
       cheapSkipReasonCounts,
       // How many deployments survived the cheap filter and entered the
       // per-deployment loop (= position-holders + in-session entry

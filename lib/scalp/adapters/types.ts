@@ -85,6 +85,10 @@ export interface ScalpVenueBrokerAdapter {
     direction: "BUY" | "SELL";
     notionalUsd: number;
     riskUsd?: number | null;
+    targetRiskUsd?: number | null;
+    actualRiskUsd?: number | null;
+    marginBudgetUsd?: number | null;
+    riskTargetFillPct?: number | null;
     leverage?: number | null;
     dryRun?: boolean;
     clientOid?: string;
