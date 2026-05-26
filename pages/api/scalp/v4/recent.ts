@@ -43,6 +43,12 @@ function labelCloseType(value: unknown): string {
 
 function labelLedgerClose(row: { closeType: string; reasonCodes: string[] }): string {
   const reasonCodes = Array.isArray(row.reasonCodes) ? row.reasonCodes : [];
+  if (hasAnyReason(reasonCodes, ["TRADE_EXIT_TIME_STOP"])) {
+    return "time stop";
+  }
+  if (hasAnyReason(reasonCodes, ["TRADE_EXIT_TP_HIT", "SCALP_V2_RECONCILE_TP"])) {
+    return "take profit";
+  }
   if (
     String(row.closeType || "").toLowerCase() === "stop_loss" &&
     hasAnyReason(reasonCodes, ["TRAIL_STOP_UPDATED"])

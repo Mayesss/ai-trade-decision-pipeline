@@ -128,6 +128,10 @@ test("event and reason close mapping includes stop-loss and liquidation", () => 
     deriveCloseTypeFromReasonCodes(["TRAIL_STOP_UPDATED", "TRADE_EXIT_STOP_HIT"]),
     "trailing_stop",
   );
+  assert.equal(
+    deriveCloseTypeFromReasonCodes(["TRADE_CLOSE_CONFIRMED", "TRADE_EXIT_TIME_STOP"]),
+    "manual_close",
+  );
 });
 
 test("normalizeReasonCodes keeps execution result codes beyond early signal context", () => {

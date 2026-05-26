@@ -162,6 +162,9 @@ export function deriveCloseTypeFromReasonCodes(
   if (codes.some((code) => code.includes("TRAIL_STOP"))) {
     return "trailing_stop";
   }
+  if (codes.some((code) => code.includes("TIME_STOP"))) {
+    return "manual_close";
+  }
   if (codes.some((code) => code.includes("STOP") || code.includes("SL_"))) {
     return "stop_loss";
   }
