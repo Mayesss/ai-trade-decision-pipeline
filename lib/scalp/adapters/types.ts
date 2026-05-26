@@ -53,6 +53,7 @@ export interface ScalpVenueEntryResult {
   dealStatus: string | null;
   confirmStatus: string | null;
   rejectReason: string | null;
+  reasonCodes?: string[];
   raw?: unknown;
 }
 

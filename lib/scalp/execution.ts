@@ -74,6 +74,7 @@ function hasEntryRejectCooldownReason(reasonCodes: string[]): boolean {
       code.includes("INSUFFICIENT_BALANCE") ||
       code.includes("INSUFFICIENT_BALANCE_FOR_NOTIONAL") ||
       code.includes("INSUFFICIENT_BALANCE_FOR_MIN_NOTIONAL") ||
+      code.includes("INSUFFICIENT_AVAILABLE_MARGIN") ||
       (code.startsWith("ENTRY_REJECT") && code.includes("LEVERAGE") && code.includes("CAP")),
   );
 }
@@ -869,7 +870,10 @@ export async function executeScalpEntryPlan(params: {
   }
 
   if (!exec.placed && !params.dryRun) {
-    const reasonCodes = ["ENTRY_NOT_PLACED"];
+    const adapterReasonCodes = Array.isArray(exec.reasonCodes)
+      ? exec.reasonCodes.filter((code) => String(code || "").trim())
+      : [];
+    const reasonCodes = ["ENTRY_NOT_PLACED", ...adapterReasonCodes];
     const dealStatus = normalizeReasonFragment(exec.dealStatus);
     const rejectReason = normalizeReasonFragment(exec.rejectReason);
     if (dealStatus) reasonCodes.push(`ENTRY_DEAL_STATUS_${dealStatus}`);
@@ -931,7 +935,10 @@ export async function executeScalpEntryPlan(params: {
     return { state: next, reasonCodes: ["ENTRY_DRYRUN_SIMULATED"] };
   }
   next.state = "IN_TRADE";
-  return { state: next, reasonCodes: ["ENTRY_PLACED"] };
+  const adapterReasonCodes = Array.isArray(exec.reasonCodes)
+    ? exec.reasonCodes.filter((code) => String(code || "").trim())
+    : [];
+  return { state: next, reasonCodes: ["ENTRY_PLACED", ...adapterReasonCodes] };
 }
 
 export async function manageScalpOpenTrade(params: {

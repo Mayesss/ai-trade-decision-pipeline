@@ -151,6 +151,7 @@ export type CapitalScalpEntryResult = {
   dealStatus: string | null;
   confirmStatus: string | null;
   rejectReason: string | null;
+  reasonCodes?: string[];
 };
 
 const CAPITAL_API_BASE = (
@@ -225,10 +226,15 @@ const CAPITAL_LEVERAGE_BY_CATEGORY: Record<ScalpAssetCategory, number> = {
   crypto: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_CRYPTO, 2),
   other: toPositiveNumberWithFallback(process.env.SCALP_CAPITAL_LEVERAGE_OTHER, 5),
 };
+const CAPITAL_FX_USD_CONVERSION_CACHE_TTL_MS = Math.max(
+  5_000,
+  Math.floor(Number(process.env.CAPITAL_FX_USD_CONVERSION_CACHE_TTL_MS) || 60_000),
+);
 
 let cachedSession: SessionState | null = null;
 let capitalSessionPromise: Promise<SessionState> | null = null;
 const resolvedEpicCache = new Map<string, ResolveEpicResult>();
+const capitalFxConversionQuoteCache = new Map<string, { price: number; expiresAtMs: number }>();
 let capitalRateLimitChain: Promise<void> = Promise.resolve();
 let capitalNextAllowedAtMs = 0;
 
@@ -882,6 +888,210 @@ function quantizeSize(
   return Number(finalSize.toFixed(Math.max(0, sizeDecimals)));
 }
 
+function parseFxPairSymbol(symbol: string): { base: string; quote: string } | null {
+  const normalized = normalizeTicker(symbol);
+  if (!/^[A-Z]{6}$/.test(normalized)) return null;
+  const base = normalized.slice(0, 3);
+  const quote = normalized.slice(3, 6);
+  if (base === quote) return null;
+  return { base, quote };
+}
+
+function positiveQuote(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+export function resolveCapitalForexBaseUnitUsdFromQuotes(params: {
+  symbol: string;
+  pairPrice: number;
+  quotes: Record<string, unknown> | Map<string, unknown>;
+}): { baseUnitUsd: number | null; reasonCodes: string[] } {
+  const pair = parseFxPairSymbol(params.symbol);
+  const pairPrice = positiveQuote(params.pairPrice);
+  if (!pair || pairPrice === null) {
+    return { baseUnitUsd: null, reasonCodes: ["CAPITAL_FX_CONVERSION_UNAVAILABLE"] };
+  }
+  if (pair.base === "USD") {
+    return { baseUnitUsd: 1, reasonCodes: ["CAPITAL_FX_USD_CONVERSION"] };
+  }
+  if (pair.quote === "USD") {
+    return { baseUnitUsd: pairPrice, reasonCodes: ["CAPITAL_FX_USD_CONVERSION"] };
+  }
+
+  const getQuote = (symbol: string): number | null => {
+    const key = normalizeTicker(symbol);
+    const raw =
+      params.quotes instanceof Map
+        ? params.quotes.get(key)
+        : (params.quotes as Record<string, unknown>)[key];
+    return positiveQuote(raw);
+  };
+
+  const directBaseUsd = getQuote(`${pair.base}USD`);
+  if (directBaseUsd !== null) {
+    return { baseUnitUsd: directBaseUsd, reasonCodes: ["CAPITAL_FX_USD_CONVERSION"] };
+  }
+  const inverseUsdBase = getQuote(`USD${pair.base}`);
+  if (inverseUsdBase !== null) {
+    return { baseUnitUsd: 1 / inverseUsdBase, reasonCodes: ["CAPITAL_FX_USD_CONVERSION"] };
+  }
+  const directQuoteUsd = getQuote(`${pair.quote}USD`);
+  if (directQuoteUsd !== null) {
+    return { baseUnitUsd: pairPrice * directQuoteUsd, reasonCodes: ["CAPITAL_FX_USD_CONVERSION"] };
+  }
+  const inverseUsdQuote = getQuote(`USD${pair.quote}`);
+  if (inverseUsdQuote !== null) {
+    return { baseUnitUsd: pairPrice / inverseUsdQuote, reasonCodes: ["CAPITAL_FX_USD_CONVERSION"] };
+  }
+  return { baseUnitUsd: null, reasonCodes: ["CAPITAL_FX_CONVERSION_UNAVAILABLE"] };
+}
+
+export function resolveCapitalScalpOrderSizing(params: {
+  symbol: string;
+  assetCategory: ScalpAssetCategory;
+  requestedNotionalUsd: number;
+  referencePrice: number;
+  minDealSize: number | null;
+  sizeDecimals: number;
+  availableMarginUsd: number | null;
+  leverageCap: number;
+  forexBaseUnitUsd?: number | null;
+}): {
+  accepted: boolean;
+  orderNotionalUsd: number;
+  size: number | null;
+  minNotionalUsd: number | null;
+  maxNotionalUsd: number | null;
+  reasonCodes: string[];
+  rejectReason: string | null;
+} {
+  const reasonCodes: string[] = [];
+  const requestedNotionalUsd = positiveQuote(params.requestedNotionalUsd);
+  const referencePrice = positiveQuote(params.referencePrice);
+  if (requestedNotionalUsd === null || referencePrice === null) {
+    return {
+      accepted: false,
+      orderNotionalUsd: 0,
+      size: null,
+      minNotionalUsd: null,
+      maxNotionalUsd: null,
+      reasonCodes: ["CAPITAL_INVALID_ORDER_SIZING"],
+      rejectReason: "INVALID_ORDER_SIZING",
+    };
+  }
+
+  const isForex = params.assetCategory === "forex" && parseFxPairSymbol(params.symbol) !== null;
+  const sizeUnitUsd = isForex ? positiveQuote(params.forexBaseUnitUsd) : referencePrice;
+  if (isForex && sizeUnitUsd === null) {
+    return {
+      accepted: false,
+      orderNotionalUsd: 0,
+      size: null,
+      minNotionalUsd: null,
+      maxNotionalUsd: null,
+      reasonCodes: ["CAPITAL_FX_CONVERSION_UNAVAILABLE"],
+      rejectReason: "CAPITAL_FX_CONVERSION_UNAVAILABLE",
+    };
+  }
+  if (!(Number.isFinite(sizeUnitUsd as number) && Number(sizeUnitUsd) > 0)) {
+    return {
+      accepted: false,
+      orderNotionalUsd: 0,
+      size: null,
+      minNotionalUsd: null,
+      maxNotionalUsd: null,
+      reasonCodes: ["CAPITAL_INVALID_ORDER_SIZING"],
+      rejectReason: "INVALID_ORDER_SIZING",
+    };
+  }
+  if (isForex) reasonCodes.push("CAPITAL_FX_USD_CONVERSION");
+
+  const minSize =
+    Number.isFinite(params.minDealSize as number) && Number(params.minDealSize) > 0
+      ? Number(params.minDealSize)
+      : 0.0001;
+  const minNotionalUsd = minSize * Number(sizeUnitUsd);
+  const availableMarginUsd = positiveQuote(params.availableMarginUsd);
+  const leverageCap =
+    Number.isFinite(params.leverageCap) && params.leverageCap > 0
+      ? params.leverageCap
+      : 1;
+  const maxNotionalUsd =
+    availableMarginUsd !== null ? availableMarginUsd * leverageCap : null;
+
+  if (maxNotionalUsd !== null && maxNotionalUsd < minNotionalUsd) {
+    return {
+      accepted: false,
+      orderNotionalUsd: 0,
+      size: minSize,
+      minNotionalUsd,
+      maxNotionalUsd,
+      reasonCodes,
+      rejectReason: "INSUFFICIENT_AVAILABLE_MARGIN",
+    };
+  }
+
+  let cappedNotionalUsd =
+    maxNotionalUsd !== null
+      ? Math.min(requestedNotionalUsd, maxNotionalUsd)
+      : requestedNotionalUsd;
+  if (cappedNotionalUsd < requestedNotionalUsd) {
+    reasonCodes.push("CAPITAL_MARGIN_DOWNSIZED");
+  }
+  if (cappedNotionalUsd < minNotionalUsd) {
+    return {
+      accepted: false,
+      orderNotionalUsd: 0,
+      size: minSize,
+      minNotionalUsd,
+      maxNotionalUsd,
+      reasonCodes: [...reasonCodes, "CAPITAL_MIN_SIZE_EXCEEDS_REQUESTED_NOTIONAL"],
+      rejectReason: "MIN_SIZE_EXCEEDS_REQUESTED_NOTIONAL",
+    };
+  }
+
+  const rawSize = cappedNotionalUsd / Number(sizeUnitUsd);
+  const size = quantizeSize(rawSize, params.minDealSize, params.sizeDecimals);
+  if (!(Number.isFinite(size) && size > 0)) {
+    return {
+      accepted: false,
+      orderNotionalUsd: 0,
+      size: null,
+      minNotionalUsd,
+      maxNotionalUsd,
+      reasonCodes: [...reasonCodes, "CAPITAL_INVALID_ORDER_SIZING"],
+      rejectReason: "INVALID_ORDER_SIZING",
+    };
+  }
+
+  const quantizedNotionalUsd = size * Number(sizeUnitUsd);
+  if (quantizedNotionalUsd < cappedNotionalUsd * 0.999) {
+    reasonCodes.push("CAPITAL_MIN_SIZE_APPLIED");
+  }
+  if (maxNotionalUsd !== null && quantizedNotionalUsd > maxNotionalUsd * 1.000001) {
+    return {
+      accepted: false,
+      orderNotionalUsd: 0,
+      size,
+      minNotionalUsd,
+      maxNotionalUsd,
+      reasonCodes,
+      rejectReason: "INSUFFICIENT_AVAILABLE_MARGIN",
+    };
+  }
+
+  return {
+    accepted: true,
+    orderNotionalUsd: quantizedNotionalUsd,
+    size,
+    minNotionalUsd,
+    maxNotionalUsd,
+    reasonCodes,
+    rejectReason: null,
+  };
+}
+
 type CapitalStopLossConstraint = {
   kind: "minvalue" | "maxvalue";
   value: number;
@@ -923,6 +1133,7 @@ function adjustStopAndSizeForCapitalConstraint(params: {
   orderNotional: number;
   minDealSize: number | null;
   sizeDecimals: number;
+  sizeUnitUsd?: number | null;
   constraint: CapitalStopLossConstraint;
 }): {
   stopLevel: number;
@@ -963,8 +1174,9 @@ function adjustStopAndSizeForCapitalConstraint(params: {
     const scaledNotional =
       params.orderNotional * (originalRiskAbs / adjustedRiskAbs);
     const cappedNotional = Math.min(params.orderNotional, scaledNotional);
-    if (Number.isFinite(cappedNotional) && cappedNotional > 0) {
-      const rawSize = cappedNotional / params.referencePrice;
+    const sizeUnitUsd = positiveQuote(params.sizeUnitUsd) ?? params.referencePrice;
+    if (Number.isFinite(cappedNotional) && cappedNotional > 0 && sizeUnitUsd > 0) {
+      const rawSize = cappedNotional / sizeUnitUsd;
       const quantized = quantizeSize(
         rawSize,
         params.minDealSize,
@@ -2066,6 +2278,57 @@ export async function fetchCapitalLivePrice(symbol: string) {
   };
 }
 
+async function fetchCapitalForexConversionQuote(symbol: string): Promise<number | null> {
+  const normalized = normalizeTicker(symbol);
+  if (!normalized) return null;
+  const cached = capitalFxConversionQuoteCache.get(normalized);
+  const nowMs = Date.now();
+  if (cached && cached.expiresAtMs > nowMs) return cached.price;
+  const quote = await fetchCapitalLivePrice(normalized).catch(() => null);
+  const price = positiveQuote((quote as any)?.price);
+  if (price === null) return null;
+  capitalFxConversionQuoteCache.set(normalized, {
+    price,
+    expiresAtMs: nowMs + CAPITAL_FX_USD_CONVERSION_CACHE_TTL_MS,
+  });
+  return price;
+}
+
+async function resolveCapitalForexBaseUnitUsdLive(params: {
+  symbol: string;
+  pairPrice: number;
+}): Promise<{ baseUnitUsd: number | null; reasonCodes: string[] }> {
+  const pair = parseFxPairSymbol(params.symbol);
+  const pairPrice = positiveQuote(params.pairPrice);
+  if (!pair || pairPrice === null) {
+    return { baseUnitUsd: null, reasonCodes: ["CAPITAL_FX_CONVERSION_UNAVAILABLE"] };
+  }
+  if (pair.base === "USD" || pair.quote === "USD") {
+    return resolveCapitalForexBaseUnitUsdFromQuotes({
+      symbol: params.symbol,
+      pairPrice,
+      quotes: {},
+    });
+  }
+
+  const quoteSymbols = [
+    `${pair.base}USD`,
+    `USD${pair.base}`,
+    `${pair.quote}USD`,
+    `USD${pair.quote}`,
+  ];
+  const quotes: Record<string, number> = {};
+  for (const quoteSymbol of quoteSymbols) {
+    const price = await fetchCapitalForexConversionQuote(quoteSymbol);
+    if (price !== null) quotes[quoteSymbol] = price;
+  }
+  return resolveCapitalForexBaseUnitUsdFromQuotes({
+    symbol: params.symbol,
+    pairPrice,
+    quotes,
+  });
+}
+
 export async function fetchCapitalSymbolMarketMetadata(
   symbol: string,
 ): Promise<ScalpSymbolMarketMetadata> {
@@ -2825,56 +3088,54 @@ async function openCapitalPosition(params: {
   const requestedNotional =
     sideSizeUSDT *
     (SCALP_CAPITAL_USE_ACCOUNT_LEVERAGE ? 1 : leverage ?? 1);
-  let orderNotional = requestedNotional;
+  const forexConversion =
+    assetCategory === "forex"
+      ? await resolveCapitalForexBaseUnitUsdLive({
+          symbol,
+          pairPrice: referencePrice,
+        })
+      : { baseUnitUsd: null, reasonCodes: [] };
   const availableMarginUsd = await fetchCapitalAccountAvailableMarginUsd().catch(
     () => null,
   );
+  const sizing = resolveCapitalScalpOrderSizing({
+    symbol,
+    assetCategory,
+    requestedNotionalUsd: requestedNotional,
+    referencePrice,
+    minDealSize: details.minDealSize,
+    sizeDecimals: details.sizeDecimals,
+    availableMarginUsd,
+    leverageCap: effectiveLeverageForMarginCap,
+    forexBaseUnitUsd: forexConversion.baseUnitUsd,
+  });
+  const sizingReasonCodes = Array.from(
+    new Set([...forexConversion.reasonCodes, ...sizing.reasonCodes]),
+  );
   if (
-    Number.isFinite(availableMarginUsd as number) &&
-    Number(availableMarginUsd) > 0 &&
-    Number.isFinite(effectiveLeverageForMarginCap) &&
-    effectiveLeverageForMarginCap > 0
+    !sizing.accepted ||
+    !(Number.isFinite(sizing.orderNotionalUsd) && sizing.orderNotionalUsd > 0)
   ) {
-    const maxNotionalByAvailableMargin =
-      Number(availableMarginUsd) * effectiveLeverageForMarginCap;
-    if (!(Number.isFinite(maxNotionalByAvailableMargin) && maxNotionalByAvailableMargin > 0)) {
-      return {
-        payload: null,
-        orderId: null,
-        dealId: null,
-        dealReference: clientOid,
-        size: null,
-        epic: details.epic,
-        dealStatus: "REJECTED",
-        confirmStatus: "MARGIN_CAP_BLOCKED",
-        rejectReason: "INSUFFICIENT_AVAILABLE_MARGIN",
-        accepted: false,
-      };
-    }
-    orderNotional = Math.min(requestedNotional, maxNotionalByAvailableMargin);
-    const minSize =
-      Number.isFinite(details.minDealSize as number) &&
-      Number(details.minDealSize) > 0
-        ? Number(details.minDealSize)
-        : 0.0001;
-    const minNotional = minSize * referencePrice;
-    if (minNotional > maxNotionalByAvailableMargin) {
-      return {
-        payload: null,
-        orderId: null,
-        dealId: null,
-        dealReference: clientOid,
-        size: minSize,
-        epic: details.epic,
-        dealStatus: "REJECTED",
-        confirmStatus: "MARGIN_CAP_BLOCKED",
-        rejectReason: "INSUFFICIENT_AVAILABLE_MARGIN",
-        accepted: false,
-      };
-    }
+    return {
+      payload: null,
+      orderId: null,
+      dealId: null,
+      dealReference: clientOid,
+      notionalUsd: sizing.orderNotionalUsd,
+      size: sizing.size,
+      epic: details.epic,
+      dealStatus: "REJECTED",
+      confirmStatus:
+        sizing.rejectReason === "CAPITAL_FX_CONVERSION_UNAVAILABLE"
+          ? "FX_CONVERSION_BLOCKED"
+          : "MARGIN_CAP_BLOCKED",
+      rejectReason: sizing.rejectReason || "INVALID_ORDER_SIZING",
+      reasonCodes: sizingReasonCodes,
+      accepted: false,
+    };
   }
-  const rawSize = orderNotional / referencePrice;
-  let size = quantizeSize(rawSize, details.minDealSize, details.sizeDecimals);
+  const orderNotional = sizing.orderNotionalUsd;
+  let size = sizing.size ?? 0;
   if (!(size > 0))
     throw new Error(`Computed non-positive order size for ${symbol}`);
 
@@ -2922,6 +3183,10 @@ async function openCapitalPosition(params: {
       orderNotional,
       minDealSize: details.minDealSize,
       sizeDecimals: details.sizeDecimals,
+      sizeUnitUsd:
+        assetCategory === "forex" && forexConversion.baseUnitUsd
+          ? forexConversion.baseUnitUsd
+          : referencePrice,
       constraint,
     });
     if (!adjusted) {
@@ -2930,11 +3195,13 @@ async function openCapitalPosition(params: {
         orderId: null,
         dealId: null,
         dealReference: clientOid,
+        notionalUsd: orderNotional,
         size,
         epic: details.epic,
         dealStatus: "REJECTED",
         confirmStatus: "STOPLOSS_CONSTRAINT_BLOCKED",
         rejectReason: stopLossRejectReason(constraint),
+        reasonCodes: sizingReasonCodes,
         accepted: false,
       };
     }
@@ -2961,11 +3228,13 @@ async function openCapitalPosition(params: {
         orderId: null,
         dealId: null,
         dealReference: clientOid,
+        notionalUsd: orderNotional,
         size,
         epic: details.epic,
         dealStatus: "REJECTED",
         confirmStatus: "STOPLOSS_CONSTRAINT_BLOCKED",
         rejectReason: stopLossRejectReason(retryConstraint),
+        reasonCodes: sizingReasonCodes,
         accepted: false,
       };
     }
@@ -2986,11 +3255,13 @@ async function openCapitalPosition(params: {
       orderId: null,
       dealId: null,
       dealReference: dealReferenceNormalized,
+      notionalUsd: orderNotional,
       size,
       epic: details.epic,
       dealStatus: confirmDealStatus,
       confirmStatus,
       rejectReason: confirmRejectReason,
+      reasonCodes: sizingReasonCodes,
       accepted: false,
     };
   }
@@ -3012,11 +3283,13 @@ async function openCapitalPosition(params: {
     orderId,
     dealId,
     dealReference,
+    notionalUsd: orderNotional,
     size,
     epic: details.epic,
     dealStatus: confirmDealStatus,
     confirmStatus,
     rejectReason: confirmRejectReason,
+    reasonCodes: sizingReasonCodes,
     accepted: true,
   };
 }
@@ -3065,6 +3338,7 @@ export async function executeCapitalScalpEntry(params: {
       dealStatus: null,
       confirmStatus: null,
       rejectReason: null,
+      reasonCodes: [],
     };
   }
 
@@ -3090,7 +3364,10 @@ export async function executeCapitalScalpEntry(params: {
       clientOid,
       symbol,
       direction: params.direction,
-      notionalUsd,
+      notionalUsd:
+        Number.isFinite(Number(opened.notionalUsd)) && Number(opened.notionalUsd) > 0
+          ? Number(opened.notionalUsd)
+          : notionalUsd,
       leverage,
       orderType,
       size: opened.size,
@@ -3098,6 +3375,7 @@ export async function executeCapitalScalpEntry(params: {
       dealStatus: opened.dealStatus ?? null,
       confirmStatus: opened.confirmStatus ?? null,
       rejectReason: opened.rejectReason ?? null,
+      reasonCodes: opened.reasonCodes || [],
     };
   }
   return {
@@ -3109,7 +3387,10 @@ export async function executeCapitalScalpEntry(params: {
     clientOid,
     symbol,
     direction: params.direction,
-    notionalUsd,
+    notionalUsd:
+      Number.isFinite(Number(opened.notionalUsd)) && Number(opened.notionalUsd) > 0
+        ? Number(opened.notionalUsd)
+        : notionalUsd,
     leverage,
     orderType,
     size: opened.size,
@@ -3117,6 +3398,7 @@ export async function executeCapitalScalpEntry(params: {
     dealStatus: opened.dealStatus ?? null,
     confirmStatus: opened.confirmStatus ?? null,
     rejectReason: opened.rejectReason ?? null,
+    reasonCodes: opened.reasonCodes || [],
   };
 }
 
