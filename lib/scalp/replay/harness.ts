@@ -21,6 +21,7 @@ import { evaluateScalpReplayMarketGate } from "../marketHours";
 import { buildScalpSessionWindows, isScalpSundayEntryBlocked } from "../sessions";
 import type { ScalpSymbolMarketMetadata } from "../symbolMarketMetadata";
 import { resolveScalpDeployment } from "../deployments";
+import { getScalpVenueFeeSchedule } from "../fees";
 import {
   advanceScalpStateMachine,
   createInitialScalpSessionState,
@@ -524,14 +525,26 @@ function closePositionAsTrade(params: {
   exitReason: "STOP" | "STOP_LOSS" | "STOP_BE" | "STOP_TRAIL" | "TP" | "TIME_STOP" | "FORCE_CLOSE";
   totalTradeR: number;
   tradeBeforeExit: NonNullable<ScalpSessionState["trade"]> | null;
+  /** Round-trip fee rate (2 x taker) for the venue; 0 for embedded-spread venues. */
+  roundTripFeeRate: number;
 }): ScalpReplayTrade {
   const holdMinutes = Math.max(
     0,
     (params.exitTs - params.position.entryTs) / 60_000,
   );
-  const rMultiple = Number.isFinite(params.totalTradeR)
+  const grossRMultiple = Number.isFinite(params.totalTradeR)
     ? params.totalTradeR
     : 0;
+  // Round-trip trading fee in R. The notional is filled in full on entry and
+  // out in full on exit (irrespective of partial scale-outs), so a single
+  // round-trip charge on notional is exact. Expressed in R by dividing the USD
+  // fee by the trade's risk budget (riskUsd).
+  const feeR =
+    params.roundTripFeeRate > 0 && params.position.riskUsd > 0
+      ? (params.roundTripFeeRate * params.position.notionalUsd) /
+        params.position.riskUsd
+      : 0;
+  const rMultiple = grossRMultiple - feeR;
   const pnlUsd = rMultiple * params.position.riskUsd;
   const realizedRBeforeFinalExit = params.tradeBeforeExit
     ? toFinite(params.tradeBeforeExit.realizedR, 0)
@@ -559,6 +572,8 @@ function closePositionAsTrade(params: {
     notionalUsd: params.position.notionalUsd,
     rMultiple,
     pnlUsd,
+    feeR,
+    grossRMultiple,
     realizedRBeforeFinalExit,
     remainingSizePctAtExit,
     tp1Taken,
@@ -682,6 +697,19 @@ export async function runScalpReplay(params: {
     tuneId: params.config.tuneId,
     deploymentId: params.config.deploymentId,
   });
+  // Round-trip trading fee for the deployment's venue, in fractional terms
+  // (2 x taker). Venues with an embedded-spread fee model expose a null taker
+  // rate and are charged 0 here (their cost is already in the fill price).
+  // NOTE: fees are deducted from each closed trade's recorded R only (scoring);
+  // they are intentionally NOT fed into the in-replay risk state machine
+  // (daily-loss / consecutive-loss gates), so the trade path is identical to a
+  // fee-free run. This keeps a post-hoc bulk repair (netR -= trades*feeR) a
+  // faithful reproduction of re-running with this fix.
+  const venueFeeSchedule = getScalpVenueFeeSchedule(deployment.venue);
+  const roundTripFeeRate =
+    venueFeeSchedule.takerFeeRate != null
+      ? Math.max(0, venueFeeSchedule.takerFeeRate) * 2
+      : 0;
   const executionStrategyId =
     resolveScalpExecutionStrategyId({
       strategyId: deployment.strategyId,
@@ -920,6 +948,7 @@ export async function runScalpReplay(params: {
           exitReason: "FORCE_CLOSE",
           totalTradeR,
           tradeBeforeExit: { ...state.trade },
+          roundTripFeeRate,
         });
         trades.push(trade); runningNetR += trade.rMultiple || 0;
         appendTimeline(
@@ -1042,6 +1071,7 @@ export async function runScalpReplay(params: {
             exitReason,
             totalTradeR,
             tradeBeforeExit: tradeBeforeManage,
+            roundTripFeeRate,
           });
           trades.push(trade); runningNetR += trade.rMultiple || 0;
           appendTimeline(
@@ -1261,6 +1291,7 @@ export async function runScalpReplay(params: {
       exitReason: "FORCE_CLOSE",
       totalTradeR,
       tradeBeforeExit: { ...state.trade },
+      roundTripFeeRate,
     });
     trades.push(trade);
     appendTimeline(

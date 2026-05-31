@@ -130,6 +130,10 @@ export interface ScalpReplayTrade {
     notionalUsd: number;
     rMultiple: number;
     pnlUsd: number;
+    /** Round-trip trading fee charged against this trade, expressed in R. */
+    feeR?: number;
+    /** rMultiple before fees were deducted (rMultiple === grossRMultiple - feeR). */
+    grossRMultiple?: number;
     realizedRBeforeFinalExit?: number;
     remainingSizePctAtExit?: number;
     tp1Taken?: boolean;
