@@ -16,6 +16,9 @@ export interface ScalpReplayPosition {
     riskAbs: number;
     riskUsd: number;
     notionalUsd: number;
+    /** Bid/ask spread (abs price) at entry, used to charge embedded-spread
+     *  (e.g. forex) venues a round-trip spread cost in R. */
+    entrySpreadAbs?: number;
 }
 
 export interface ScalpReplayInputCandle {

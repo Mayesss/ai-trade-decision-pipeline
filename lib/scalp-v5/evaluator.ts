@@ -94,7 +94,7 @@ export interface ScalpV5EvaluationOutcome {
 // just ended; we advance the boundary to the upcoming Monday so the just-
 // completed week is the 12th holdout week. Mon-Sat use the standard "12
 // completed weeks before this week" semantics.
-function resolveHoldoutWindow(nowMs: number, holdoutWeeks: number): {
+export function resolveHoldoutWindow(nowMs: number, holdoutWeeks: number): {
   holdoutFromMs: number;
   holdoutToMs: number;
 } {
@@ -108,7 +108,7 @@ function resolveHoldoutWindow(nowMs: number, holdoutWeeks: number): {
 // Build the per-deployment replay runtime + its config hash. Same logic for
 // full and incremental paths, factored so we only build it once and so the
 // dispatcher can compute the hash before deciding which path to take.
-function buildDeploymentRuntime(deploymentRow: ScalpV5DeploymentRow): {
+export function buildDeploymentRuntime(deploymentRow: ScalpV5DeploymentRow): {
   runtime: ScalpReplayRuntimeConfig;
   configHash: string;
   deploymentRef: ScalpDeploymentRef;

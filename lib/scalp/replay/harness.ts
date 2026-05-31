@@ -527,6 +527,9 @@ function closePositionAsTrade(params: {
   tradeBeforeExit: NonNullable<ScalpSessionState["trade"]> | null;
   /** Round-trip fee rate (2 x taker) for the venue; 0 for embedded-spread venues. */
   roundTripFeeRate: number;
+  /** True for embedded-spread (e.g. forex) venues: charge the round-trip bid/ask
+   *  spread instead of an explicit taker fee. */
+  chargeSpread: boolean;
 }): ScalpReplayTrade {
   const holdMinutes = Math.max(
     0,
@@ -535,15 +538,25 @@ function closePositionAsTrade(params: {
   const grossRMultiple = Number.isFinite(params.totalTradeR)
     ? params.totalTradeR
     : 0;
-  // Round-trip trading fee in R. The notional is filled in full on entry and
-  // out in full on exit (irrespective of partial scale-outs), so a single
-  // round-trip charge on notional is exact. Expressed in R by dividing the USD
-  // fee by the trade's risk budget (riskUsd).
-  const feeR =
+  // Round-trip trading cost in R. Two mutually-exclusive venue models:
+  //  - fixed_taker_pct (e.g. bitget): explicit taker fee on notional. The
+  //    notional fills in full on entry and out in full on exit (irrespective of
+  //    partial scale-outs), so a single round-trip charge on notional is exact.
+  //  - embedded_spread (e.g. forex): no explicit fee, but the backtest fills
+  //    entries at mid and exits at the stop/TP level, so it never pays the
+  //    bid/ask spread. Charge the full round-trip spread (enter at offer, exit
+  //    at bid = one full spread vs mid-to-mid). Both expressed in R.
+  const takerFeeR =
     params.roundTripFeeRate > 0 && params.position.riskUsd > 0
       ? (params.roundTripFeeRate * params.position.notionalUsd) /
         params.position.riskUsd
       : 0;
+  const spreadFeeR =
+    params.chargeSpread && params.position.riskAbs > 0
+      ? Math.max(0, params.position.entrySpreadAbs ?? 0) /
+        params.position.riskAbs
+      : 0;
+  const feeR = takerFeeR + spreadFeeR;
   const rMultiple = grossRMultiple - feeR;
   const pnlUsd = rMultiple * params.position.riskUsd;
   const realizedRBeforeFinalExit = params.tradeBeforeExit
@@ -710,6 +723,9 @@ export async function runScalpReplay(params: {
     venueFeeSchedule.takerFeeRate != null
       ? Math.max(0, venueFeeSchedule.takerFeeRate) * 2
       : 0;
+  // Embedded-spread venues (e.g. forex) carry no explicit taker fee; their
+  // cost is the bid/ask spread, charged per trade from the entry-time spread.
+  const chargeSpread = venueFeeSchedule.model === "embedded_spread_or_broker";
   const executionStrategyId =
     resolveScalpExecutionStrategyId({
       strategyId: deployment.strategyId,
@@ -949,6 +965,7 @@ export async function runScalpReplay(params: {
           totalTradeR,
           tradeBeforeExit: { ...state.trade },
           roundTripFeeRate,
+          chargeSpread,
         });
         trades.push(trade); runningNetR += trade.rMultiple || 0;
         appendTimeline(
@@ -1072,6 +1089,7 @@ export async function runScalpReplay(params: {
             totalTradeR,
             tradeBeforeExit: tradeBeforeManage,
             roundTripFeeRate,
+            chargeSpread,
           });
           trades.push(trade); runningNetR += trade.rMultiple || 0;
           appendTimeline(
@@ -1210,6 +1228,7 @@ export async function runScalpReplay(params: {
               riskAbs,
               riskUsd: planRes.plan.riskUsd,
               notionalUsd: planRes.plan.notionalUsd,
+              entrySpreadAbs: Math.max(0, toFinite(market.quote.spreadAbs, 0)),
             };
             state.trade = {
               setupId: planRes.plan.setupId,
@@ -1292,6 +1311,7 @@ export async function runScalpReplay(params: {
       totalTradeR,
       tradeBeforeExit: { ...state.trade },
       roundTripFeeRate,
+      chargeSpread,
     });
     trades.push(trade);
     appendTimeline(
