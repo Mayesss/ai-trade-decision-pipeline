@@ -8,7 +8,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../lib/admin";
 import { setNoStoreHeaders } from "../../../../lib/scalp-v2/http";
-import { startOfUtcWeekMondayMs } from "../../../../lib/scalp-v4/week";
+import { startOfUtcDayMs } from "../../../../lib/scalp-v4/week";
 import {
   isScalpV5Enabled,
   isScalpV5HardGateEnabled,
@@ -40,10 +40,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Monday boundary, every Monday 00:00 UTC the dashboard's "this
     // week N/total" widget would reset to 0 even though Sunday's
     // rollover already advanced every row's evidence ~hours earlier.
-    // Shifting back by one day keeps Sunday's evals inside "this week"
-    // through the entire Monday-to-Saturday that follows.
+    // Anchor to the most recent Sunday 00:00 UTC, INCLUSIVE of today:
+    // Sun→today, Mon→yesterday, … Sat→6 days back. This is what makes
+    // the widget reset on the rollover Sunday itself (so it tracks that
+    // day's progress) instead of one Sunday late.
     const ONE_DAY_MS = 24 * 60 * 60_000;
-    const weekStartMs = startOfUtcWeekMondayMs(nowMs) - ONE_DAY_MS;
+    const utcDay = new Date(nowMs).getUTCDay();
+    const weekStartMs = startOfUtcDayMs(nowMs) - utcDay * ONE_DAY_MS;
     const weekStart = new Date(weekStartMs);
     const lastHourBefore = new Date(nowMs - 60 * 60_000);
     const last12hBefore = new Date(nowMs - 12 * 60 * 60_000);
