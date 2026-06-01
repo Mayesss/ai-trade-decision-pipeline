@@ -12,7 +12,26 @@ import { setNoStoreHeaders } from "../../../../lib/scalp-v2/http";
 import {
   loadV5DashboardData,
   shapeCellsForDeployment,
+  type V5DashboardScope,
 } from "../../../../lib/scalp-v5/dashboardLoader";
+
+function firstQueryValue(value: string | string[] | undefined): string {
+  return Array.isArray(value) ? String(value[0] || "") : String(value || "");
+}
+
+function parseScope(value: string | string[] | undefined): V5DashboardScope {
+  const raw = firstQueryValue(value).trim().toLowerCase();
+  if (raw === "enabled" || raw === "inactive" || raw === "all") return raw;
+  return "live";
+}
+
+function parseIntBounded(value: string | string[] | undefined, fallback: number, min: number, max: number): number {
+  const raw = firstQueryValue(value).trim();
+  if (!raw) return fallback;
+  const parsed = Math.floor(Number(raw));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") return res.status(405).json({ error: "Method Not Allowed" });
@@ -20,7 +39,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   setNoStoreHeaders(res);
 
   try {
-    const data = await loadV5DashboardData();
+    const scope = parseScope(req.query.scope);
+    const limit = parseIntBounded(req.query.limit, scope === "live" ? 100 : 50, 1, 250);
+    const offset = parseIntBounded(req.query.offset, 0, 0, 100_000);
+    const data = await loadV5DashboardData({ scope, limit, offset });
     // Sort: enabled rows first (kept visible at the top), then totalNetR
     // descending so the winners surface within each group.
     const sortedRows = [...data.rows].sort((a, b) => {
@@ -38,6 +60,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         strategyId: row.strategyId,
         tuneId: row.tuneId,
         enabled: row.enabled,
+        liveMode: row.liveMode,
         v5Enabled: row.v5Enabled,
         v5EvaluatedAtMs: row.v5EvaluatedAtMs,
         currentCell: row.currentCell,
@@ -66,6 +89,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ok: true,
       classifierVersion: data.cfg.classifierVersion,
       nowMs: data.nowMs,
+      page: data.page,
+      diagnostics: {
+        payloadClass: scope === "live" ? "live_deployments" : "paged_deployments",
+      },
       deployments,
     });
   } catch (err) {

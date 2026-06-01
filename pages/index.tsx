@@ -63,6 +63,7 @@ interface GateStateResp {
   nowMs: number;
   stateNow: Record<V5GateDecision, number>;
   stateNowEnabled: Record<V5GateDecision, number>;
+  stateNowLive?: Record<V5GateDecision, number>;
 }
 
 interface V5CellRow {
@@ -84,6 +85,7 @@ interface V5DeploymentRow {
   strategyId: string;
   tuneId: string;
   enabled: boolean;
+  liveMode: string | null;
   v5Enabled: boolean;
   v5EvaluatedAtMs: number | null;
   currentCell: { cellId: string | null; stale: boolean; updatedAtMs: number | null };
@@ -102,6 +104,16 @@ interface DeploymentsResp {
   ok: boolean;
   classifierVersion: string;
   nowMs: number;
+  page: {
+    scope: DeploymentScope;
+    limit: number;
+    offset: number;
+    returned: number;
+    totalMatching: number;
+    hasMore: boolean;
+    includeInactive: boolean;
+  };
+  diagnostics?: { payloadClass?: string };
   deployments: V5DeploymentRow[];
 }
 
@@ -178,6 +190,8 @@ interface NeonUsageResp {
   };
 }
 
+type DeploymentScope = "live" | "enabled" | "inactive" | "all";
+
 const DECISION_ORDER: V5GateDecision[] = [
   "allow",
   "block_negative",
@@ -198,8 +212,12 @@ export default function ScalpV5Dashboard() {
   const [neonUsage, setNeonUsage] = useState<NeonUsageResp | null>(null);
 
   const [expandedDeployments, setExpandedDeployments] = useState<Set<string>>(new Set());
-  const [showAllInactive, setShowAllInactive] = useState(false);
   const [decisionFilter, setDecisionFilter] = useState<V5GateDecision | null>(null);
+  const [deploymentScope, setDeploymentScope] = useState<DeploymentScope>("live");
+  const [deploymentOffset, setDeploymentOffset] = useState(0);
+  const [deploymentsLoading, setDeploymentsLoading] = useState(false);
+  const [deploymentsError, setDeploymentsError] = useState<string | null>(null);
+  const deploymentsInitialLoaded = useRef(false);
 
   // On first gate-state load, default the filter to "allow" so the deployments
   // section opens scoped to the live-trading rows. Only fires once — user
@@ -222,37 +240,63 @@ export default function ScalpV5Dashboard() {
     });
   }, []);
 
-  // Fire endpoints in parallel. Each one calls its own setState as it resolves —
-  // coverage typically lands first (~50ms), deployments last (the heavy one).
-  // UI sections render as data arrives.
+  // Fire small endpoints in parallel. Deployments are intentionally excluded:
+  // that endpoint can carry large evidence payloads and is loaded on demand.
   const loader = useCallback(async (headers: Record<string, string>) => {
-    const [c, g, d, rc, nu] = await Promise.all([
+    const [c, g, rc, nu] = await Promise.all([
       fetchOne<CoverageResp>("/api/scalp/v5/coverage", headers, setCoverage),
       fetchOne<GateStateResp>("/api/scalp/v5/gate-state", headers, setGateState),
-      fetchOne<DeploymentsResp>("/api/scalp/v5/deployments", headers, setDeployments),
       fetchOne<RecentResp>("/api/scalp/v4/recent", headers, setRecent),
       fetchOne<NeonUsageResp>("/api/scalp/ops/neon-usage", headers, setNeonUsage),
     ]);
-    if (c.unauthorized || g.unauthorized || d.unauthorized || rc.unauthorized || nu.unauthorized) {
+    if (c.unauthorized || g.unauthorized || rc.unauthorized || nu.unauthorized) {
       return { unauthorized: true };
     }
-    return { error: c.error || g.error || d.error || rc.error || nu.error };
+    return { error: c.error || g.error || rc.error || nu.error };
   }, []);
 
   const access = useAdminSecretLoader(loader);
 
-  const enabledRows = useMemo(
-    () => (deployments ? deployments.deployments.filter((d) => d.enabled) : []),
-    [deployments],
+  const loadDeployments = useCallback(
+    async (scope: DeploymentScope = deploymentScope, offset = deploymentOffset) => {
+      const headers: Record<string, string> = {};
+      if (access.adminSecret) headers["x-admin-access-secret"] = access.adminSecret;
+      const limit = scope === "live" ? 100 : 50;
+      setDeploymentsLoading(true);
+      setDeploymentsError(null);
+      const attempt = await fetchOne<DeploymentsResp>(
+        `/api/scalp/v5/deployments?scope=${encodeURIComponent(scope)}&limit=${limit}&offset=${offset}`,
+        headers,
+        setDeployments,
+      );
+      setDeploymentsLoading(false);
+      if (attempt.unauthorized) {
+        deploymentsInitialLoaded.current = false;
+        access.setShowSecretPanel(true);
+        setDeploymentsError("Unauthorized — admin secret missing or invalid.");
+        return;
+      }
+      if (attempt.error) {
+        setDeploymentsError(attempt.error);
+        return;
+      }
+      setDeploymentScope(scope);
+      setDeploymentOffset(offset);
+    },
+    [access.adminSecret, access.setShowSecretPanel, deploymentOffset, deploymentScope],
   );
-  const inactiveRows = useMemo(
-    () => (deployments ? deployments.deployments.filter((d) => !d.enabled) : []),
-    [deployments],
-  );
-  const filteredEnabled = useMemo(() => {
-    if (!decisionFilter) return enabledRows;
-    return enabledRows.filter((r) => r.gate.decision === decisionFilter);
-  }, [enabledRows, decisionFilter]);
+
+  useEffect(() => {
+    if (deploymentsInitialLoaded.current || !access.secretHydrated || access.unauthorized) return;
+    deploymentsInitialLoaded.current = true;
+    loadDeployments("live", 0);
+  }, [access.secretHydrated, access.unauthorized, loadDeployments]);
+
+  const deploymentRows = useMemo(() => (deployments ? deployments.deployments : []), [deployments]);
+  const filteredDeploymentRows = useMemo(() => {
+    if (!decisionFilter) return deploymentRows;
+    return deploymentRows.filter((r) => r.gate.decision === decisionFilter);
+  }, [deploymentRows, decisionFilter]);
 
   const activityRows = useMemo(() => (recent ? recent.recentTrades.slice(0, 40) : []), [recent]);
 
@@ -267,13 +311,14 @@ export default function ScalpV5Dashboard() {
 
   const sessionCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const row of enabledRows) {
+    for (const row of deploymentRows) {
+      if (!row.enabled || row.liveMode !== "live") continue;
       if (row.gate.decision !== "allow") continue;
       const key = (row.session || "").toLowerCase();
       counts[key] = (counts[key] || 0) + 1;
     }
     return counts;
-  }, [enabledRows]);
+  }, [deploymentRows]);
 
   // Tick once per 30s so session highlighting follows the wall clock.
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
@@ -367,20 +412,30 @@ export default function ScalpV5Dashboard() {
       <SectionHeader title="deployments · live cell evidence" />
       {gateState ? (
         <GateChipBar
-          stateNowEnabled={gateState.stateNowEnabled}
+          stateNowEnabled={gateState.stateNowLive ?? gateState.stateNowEnabled}
           activeFilter={decisionFilter}
           onPick={(d) => setDecisionFilter((cur) => (cur === d ? null : d))}
         />
       ) : (
         <Skeleton label="loading gate state" />
       )}
+      <DeploymentScopeControls
+        scope={deploymentScope}
+        page={deployments?.page ?? null}
+        loading={deploymentsLoading}
+        error={deploymentsError}
+        onScope={(scope) => loadDeployments(scope, 0)}
+        onRefresh={() => loadDeployments(deploymentScope, deploymentOffset)}
+        onPrev={() => loadDeployments(deploymentScope, Math.max(0, deploymentOffset - (deployments?.page.limit ?? 50)))}
+        onNext={() => loadDeployments(deploymentScope, deploymentOffset + (deployments?.page.limit ?? 50))}
+      />
       {deployments ? (
         deployments.deployments.length === 0 ? (
-          <div className="pl-2 mt-1 text-zinc-500">(no deployments — nothing v3-promoted yet)</div>
+          <div className="pl-2 mt-1 text-zinc-500">(no {deploymentScope} deployments on this page)</div>
         ) : (
           <div className="mt-1 pl-2 space-y-0.5">
-            {filteredEnabled.length > 0 ? (
-              filteredEnabled.map((dep) => (
+            {filteredDeploymentRows.length > 0 ? (
+              filteredDeploymentRows.map((dep) => (
                 <V5DeploymentRowView
                   key={dep.deploymentId}
                   row={dep}
@@ -391,37 +446,13 @@ export default function ScalpV5Dashboard() {
               ))
             ) : (
               <div className="text-zinc-500 text-[12px]">
-                (no enabled deployments{decisionFilter ? ` with decision=${V5_DECISION_LABEL[decisionFilter]}` : ""})
+                (no {deploymentScope} deployments{decisionFilter ? ` with decision=${V5_DECISION_LABEL[decisionFilter]}` : ""})
               </div>
             )}
-            {inactiveRows.length > 0 && !decisionFilter ? (
-              <>
-                <div className="mt-3 text-zinc-500 text-[11px] uppercase tracking-wider">
-                  ─── inactive ({inactiveRows.length}) · evidence pre-staged, not enabled
-                </div>
-                {(showAllInactive ? inactiveRows : inactiveRows.slice(0, 12)).map((dep) => (
-                  <V5DeploymentRowView
-                    key={dep.deploymentId}
-                    row={dep}
-                    expanded={expandedDeployments.has(dep.deploymentId)}
-                    onToggle={() => toggleExpanded(dep.deploymentId)}
-                    sessionActive={activeSessions.has((dep.session || "").toLowerCase())}
-                  />
-                ))}
-                {inactiveRows.length > 12 ? (
-                  <button
-                    onClick={() => setShowAllInactive((v) => !v)}
-                    className="text-zinc-500 hover:text-zinc-300"
-                  >
-                    {showAllInactive ? "↑ collapse inactive" : `… show all ${inactiveRows.length} inactive`}
-                  </button>
-                ) : null}
-              </>
-            ) : null}
           </div>
         )
       ) : (
-        <Skeleton label="loading deployments" />
+        <div className="pl-2 mt-1 text-zinc-600">deployments load on demand; live page loads once</div>
       )}
 
       <SectionHeader title={`activity · last ${activityRows.length} trade events`} />
@@ -532,6 +563,76 @@ function NeonUsageCompact({ data }: { data: NeonUsageResp }) {
 }
 
 // ─── gate chip bar (inline filter strip under deployments header) ────────────
+
+const DEPLOYMENT_SCOPE_LABEL: Record<DeploymentScope, string> = {
+  live: "live",
+  enabled: "enabled",
+  inactive: "inactive",
+  all: "all",
+};
+
+function DeploymentScopeControls({
+  scope,
+  page,
+  loading,
+  error,
+  onScope,
+  onRefresh,
+  onPrev,
+  onNext,
+}: {
+  scope: DeploymentScope;
+  page: DeploymentsResp["page"] | null;
+  loading: boolean;
+  error: string | null;
+  onScope: (scope: DeploymentScope) => void;
+  onRefresh: () => void;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const pageStart = page ? page.offset + 1 : 0;
+  const pageEnd = page ? page.offset + page.returned : 0;
+  return (
+    <div className="mt-1 pl-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[12px]">
+      {(["live", "enabled", "inactive", "all"] as DeploymentScope[]).map((s) => (
+        <button
+          key={s}
+          onClick={() => onScope(s)}
+          disabled={loading}
+          className={`${scope === s ? "text-zinc-100 underline underline-offset-4" : "text-zinc-500 hover:text-zinc-300"} disabled:opacity-50`}
+        >
+          {DEPLOYMENT_SCOPE_LABEL[s]}
+        </button>
+      ))}
+      <button onClick={onRefresh} disabled={loading} className="text-zinc-500 hover:text-zinc-300 disabled:opacity-50">
+        {loading ? "loading" : "refresh deployments"}
+      </button>
+      {page ? (
+        <>
+          <span className="text-zinc-600">
+            {page.totalMatching === 0 ? "0" : `${pageStart}-${pageEnd}`} / {page.totalMatching}
+          </span>
+          <button
+            onClick={onPrev}
+            disabled={loading || page.offset <= 0}
+            className="text-zinc-500 hover:text-zinc-300 disabled:opacity-30"
+          >
+            prev
+          </button>
+          <button
+            onClick={onNext}
+            disabled={loading || !page.hasMore}
+            className="text-zinc-500 hover:text-zinc-300 disabled:opacity-30"
+          >
+            next
+          </button>
+          <span className="text-zinc-600">{page.scope} · limit {page.limit}</span>
+        </>
+      ) : null}
+      {error ? <span className="text-amber-400">{error}</span> : null}
+    </div>
+  );
+}
 
 function GateChipBar({
   stateNowEnabled,

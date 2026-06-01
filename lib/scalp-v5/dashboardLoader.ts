@@ -1,8 +1,6 @@
-// Shared loader for the v5 dashboard endpoints. Loads every deployment row +
-// the current-week regime snapshot for each (venue, symbol) in one bulk query,
-// then computes the v5 gate decision per row. Used by /gate-state, /regimes,
-// and /deployments — collapses what was an N+1 per-row snapshot loop into one
-// bulk SELECT.
+// Shared loader for scoped v5 dashboard deployment endpoints. Loads a bounded
+// page of deployment rows + the current-week regime snapshot for each
+// (venue, symbol) in one bulk query, then computes the v5 gate decision per row.
 //
 // The old combined /dashboard endpoint did the per-row loop sequentially,
 // which timed out on Vercel once the deployment count grew. This helper
@@ -56,6 +54,15 @@ export interface V5DashboardLoad {
   nowMs: number;
   staleThresholdMs: number;
   rows: V5DashboardDeploymentRow[];
+  page: {
+    scope: V5DashboardScope;
+    limit: number;
+    offset: number;
+    returned: number;
+    totalMatching: number;
+    hasMore: boolean;
+    includeInactive: boolean;
+  };
   // Aggregate stats over the loaded set, derived once to avoid each endpoint
   // re-iterating the rows.
   totals: {
@@ -67,6 +74,15 @@ export interface V5DashboardLoad {
     latestEvaluationMs: number | null;
     oldestEvaluationMs: number | null;
   };
+}
+
+export type V5DashboardScope = "live" | "enabled" | "inactive" | "all";
+
+export interface V5DashboardLoadOptions {
+  scope?: V5DashboardScope;
+  limit?: number;
+  offset?: number;
+  includeInactive?: boolean;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -134,7 +150,7 @@ function parseEvidence(value: unknown): ScalpV5CellEvidence | null {
   };
 }
 
-function decideGate(params: {
+export function decideV5Gate(params: {
   evidence: ScalpV5CellEvidence | null;
   consistencyException: boolean;
   currentCellId: string | null;
@@ -172,14 +188,38 @@ function resolveStaleThresholdMs(): number {
   return Math.max(60 * 60_000, Math.floor(ms));
 }
 
-// Load every promoted deployment row + its current-week regime snapshot in two
-// queries total. The bulk snapshot fetch uses `= ANY(keys::text[])`, so cost is
-// independent of deployment count.
-export async function loadV5DashboardData(): Promise<V5DashboardLoad> {
+function normalizeDashboardScope(value: unknown): V5DashboardScope {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "enabled" || raw === "inactive" || raw === "all") return raw;
+  return "live";
+}
+
+function normalizeLimit(value: unknown, fallback: number, max: number): number {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.max(1, Math.min(max, n));
+}
+
+// Load a scoped page of promoted deployment rows + its current-week regime
+// snapshots. The bulk snapshot fetch uses `= ANY(keys::text[])`, so cost is
+// bounded by the number of symbols in the requested page.
+export async function loadV5DashboardData(options: V5DashboardLoadOptions = {}): Promise<V5DashboardLoad> {
   const cfg = resolveScalpV5Config();
   const nowMs = Date.now();
   const staleThresholdMs = resolveStaleThresholdMs();
   const db = scalpPrisma();
+  const scope = normalizeDashboardScope(options.scope);
+  const limit = normalizeLimit(options.limit, scope === "live" ? 100 : 50, 250);
+  const offset = Math.max(0, Math.floor(Number(options.offset) || 0));
+  const includeInactive = options.includeInactive ?? scope !== "live";
+  const scopeWhere =
+    scope === "live"
+      ? sql`AND d.enabled = TRUE AND d.live_mode = 'live'`
+      : scope === "enabled"
+        ? sql`AND d.enabled = TRUE`
+        : scope === "inactive"
+          ? sql`AND d.enabled = FALSE`
+          : sql``;
 
   type DeploymentDbRow = {
     deploymentId: string;
@@ -195,30 +235,48 @@ export async function loadV5DashboardData(): Promise<V5DashboardLoad> {
     v5CellEvidence: unknown;
     promotionGate: unknown;
   };
-  const deployRows = await db.$queryRaw<DeploymentDbRow[]>(sql`
-    SELECT
-      deployment_id AS "deploymentId",
-      venue,
-      symbol,
-      strategy_id AS "strategyId",
-      tune_id AS "tuneId",
-      entry_session_profile AS "entrySessionProfile",
-      enabled,
-      live_mode AS "liveMode",
-      COALESCE(v5_enabled, FALSE) AS "v5Enabled",
-      v5_evaluated_at AS "v5EvaluatedAt",
-      v5_cell_evidence AS "v5CellEvidence",
-      promotion_gate AS "promotionGate"
-    FROM scalp_v2_deployments d
-    WHERE d.candidate_id IS NOT NULL
-      AND NOT EXISTS (
-        SELECT 1
-        FROM scalp_v2_candidates c
-        WHERE c.id = d.candidate_id
-          AND c.metadata_json->'scopeRemoval'->>'reason' = 'bitget_symbol_removed_no_candles'
-      )
-    ORDER BY enabled DESC, symbol ASC, entry_session_profile ASC;
-  `);
+  const [countRows, deployRows] = await Promise.all([
+    db.$queryRaw<Array<{ count: bigint }>>(sql`
+      SELECT COUNT(*) AS count
+      FROM scalp_v2_deployments d
+      WHERE d.candidate_id IS NOT NULL
+        ${scopeWhere}
+        AND NOT EXISTS (
+          SELECT 1
+          FROM scalp_v2_candidates c
+          WHERE c.id = d.candidate_id
+            AND c.metadata_json->'scopeRemoval'->>'reason' = 'bitget_symbol_removed_no_candles'
+        );
+    `),
+    db.$queryRaw<DeploymentDbRow[]>(sql`
+      SELECT
+        deployment_id AS "deploymentId",
+        venue,
+        symbol,
+        strategy_id AS "strategyId",
+        tune_id AS "tuneId",
+        entry_session_profile AS "entrySessionProfile",
+        enabled,
+        live_mode AS "liveMode",
+        COALESCE(v5_enabled, FALSE) AS "v5Enabled",
+        v5_evaluated_at AS "v5EvaluatedAt",
+        v5_cell_evidence AS "v5CellEvidence",
+        promotion_gate AS "promotionGate"
+      FROM scalp_v2_deployments d
+      WHERE d.candidate_id IS NOT NULL
+        ${scopeWhere}
+        AND NOT EXISTS (
+          SELECT 1
+          FROM scalp_v2_candidates c
+          WHERE c.id = d.candidate_id
+            AND c.metadata_json->'scopeRemoval'->>'reason' = 'bitget_symbol_removed_no_candles'
+        )
+      ORDER BY enabled DESC, live_mode ASC NULLS LAST, symbol ASC, entry_session_profile ASC, deployment_id ASC
+      LIMIT ${limit}
+      OFFSET ${offset};
+    `),
+  ]);
+  const totalMatching = Math.max(0, Number(countRows[0]?.count || 0));
 
   // Build the dedup'd (venue, symbol) pair set for the bulk snapshot load.
   const currentWeekStartMs = startOfUtcWeekMondayMs(nowMs);
@@ -276,7 +334,7 @@ export async function loadV5DashboardData(): Promise<V5DashboardLoad> {
     const regimeStale =
       snapUpdatedAtMs === null || nowMs - snapUpdatedAtMs > failClosedStaleMs;
 
-    const decision = decideGate({
+    const decision = decideV5Gate({
       evidence,
       consistencyException: isConsistencyExceptionPromotionGate(r.promotionGate),
       currentCellId,
@@ -315,6 +373,15 @@ export async function loadV5DashboardData(): Promise<V5DashboardLoad> {
     nowMs,
     staleThresholdMs,
     rows,
+    page: {
+      scope,
+      limit,
+      offset,
+      returned: rows.length,
+      totalMatching,
+      hasMore: offset + rows.length < totalMatching,
+      includeInactive,
+    },
     totals: {
       total: deployRows.length,
       enabled,

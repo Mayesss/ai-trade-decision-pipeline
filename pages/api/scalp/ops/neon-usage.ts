@@ -32,9 +32,9 @@ function resolveAllowanceBytes(): number {
   return Math.max(1, gb) * 1024 ** 3;
 }
 
-async function neonFetch<T>(path: string, apiKey: string): Promise<T> {
+async function neonFetch<T>(path: string, apiKey: string, timeoutMs = 10_000): Promise<T> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10_000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`${NEON_API_BASE}${path}`, {
       method: "GET",
@@ -162,6 +162,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             projectId,
           )}&metrics=public_network_transfer_bytes,private_network_transfer_bytes`,
           apiKey,
+          30_000,
         ).catch((err) => ({ error: err instanceof Error ? err.message : String(err) }))
       : Promise.resolve(null);
 
