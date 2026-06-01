@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { writeFile } from 'node:fs/promises';
 
-import { listScalpCandleHistorySymbols, loadScalpCandleHistory } from '../lib/scalp/candleHistory';
+import { listScalpCandleHistorySymbols, loadScalpCandleHistoryRange } from '../lib/scalp/candleHistory';
 import { pipSizeForScalpSymbol } from '../lib/scalp/marketData';
 import { defaultScalpReplayConfig, runScalpReplay } from '../lib/scalp/replay/harness';
 import { applySymbolGuardRiskDefaultsToReplayRuntime } from '../lib/scalp/strategies/guardDefaults';
@@ -191,8 +191,18 @@ async function main() {
         const startedSymbolMs = Date.now();
         try {
             const [hist15m, hist1m] = await Promise.all([
-                loadScalpCandleHistory(symbol, '15m', { backend: 'pg' }),
-                loadScalpCandleHistory(symbol, '1m', { backend: 'pg' }),
+                loadScalpCandleHistoryRange(symbol, '15m', fromMs, nowMs, {
+                    backend: 'pg',
+                    readOrder: ['pg'],
+                    maxBrokerRangeDays: Math.min(31, Math.max(1, days)),
+                    auditSource: 'script_scalp_backtest_profiles',
+                }),
+                loadScalpCandleHistoryRange(symbol, '1m', fromMs, nowMs, {
+                    backend: 'pg',
+                    readOrder: ['pg'],
+                    maxBrokerRangeDays: Math.min(31, Math.max(1, days)),
+                    auditSource: 'script_scalp_backtest_profiles',
+                }),
             ]);
             const rows15m = (hist15m.record?.candles || [])
                 .filter((row) => row[0] >= fromMs && row[0] <= nowMs) as Array<[number, number, number, number, number, number]>;

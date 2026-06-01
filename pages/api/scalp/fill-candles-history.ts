@@ -6,8 +6,7 @@ import { requireAdminAccess } from "../../../lib/admin";
 import { fetchBitgetCandlesByEpicDateRange } from "../../../lib/scalp/bitgetHistory";
 import {
   type CandleHistoryBackend,
-  loadScalpCandleHistory,
-  mergeScalpCandleHistory,
+  loadScalpCandleHistoryStatsBulk,
   normalizeHistoryTimeframe,
   saveScalpCandleHistory,
   timeframeToMs,
@@ -148,10 +147,16 @@ export default async function handler(
     const nowMs = parseNowMs(firstQueryValue(req.query.nowMs)) ?? Date.now();
     const backend = parseBackend(firstQueryValue(req.query.backend));
 
-    const history = await loadScalpCandleHistory(symbol, timeframe, {
+    const [beforeStats] = await loadScalpCandleHistoryStatsBulk([symbol], timeframe, {
       backend,
     });
-    const existing = history.record?.candles ?? [];
+    const existingCount = Math.max(0, Math.floor(Number(beforeStats?.candleCount || 0)));
+    const existingFromTsMs = Number.isFinite(Number(beforeStats?.fromTsMs))
+      ? Number(beforeStats?.fromTsMs)
+      : null;
+    const existingToTsMs = Number.isFinite(Number(beforeStats?.toTsMs))
+      ? Number(beforeStats?.toTsMs)
+      : null;
     const tfMs = timeframeToMs(timeframe);
     const maxRequests = Math.max(
       20,
@@ -160,8 +165,8 @@ export default async function handler(
 
     const baseAnchorMs =
       direction === "backfill"
-        ? (existing[0]?.[0] ?? nowMs)
-        : (existing[existing.length - 1]?.[0] ?? nowMs - days * ONE_DAY_MS);
+        ? (existingFromTsMs ?? nowMs)
+        : (existingToTsMs ?? nowMs - days * ONE_DAY_MS);
 
     let fetchFromMs =
       direction === "backfill"
@@ -194,11 +199,11 @@ export default async function handler(
         direction,
         dryRun,
         days,
-        backend: history.backend,
-        storageRef: history.storageRef,
-        existingCount: existing.length,
+        backend: "pg",
+        storageRef: `scalp_candle_history_weeks:${symbol}:${timeframe}`,
+        existingCount,
         fetchedCount: 0,
-        mergedCount: existing.length,
+        mergedCount: existingCount,
         addedCount: 0,
         clampedToNow,
         message: "No fetch needed for requested window.",
@@ -216,26 +221,42 @@ export default async function handler(
       },
     );
     const fetched = normalizeFetchedCandles(fetchedRaw);
-    const merged = mergeScalpCandleHistory(existing, fetched);
-    const addedCount = Math.max(0, merged.length - existing.length);
+    const addedCount = fetched.length;
 
     let saveResult: {
       backend: string;
       storageRef: string;
       saved: boolean;
     } | null = null;
-    if (!dryRun) {
+    if (!dryRun && fetched.length > 0) {
       saveResult = await saveScalpCandleHistory(
         {
           symbol,
           timeframe,
           epic: epicResolved.epic,
           source: "bitget",
-          candles: merged,
+          candles: fetched,
         },
         { backend },
       );
     }
+    const [afterStats] =
+      !dryRun && fetched.length > 0
+        ? await loadScalpCandleHistoryStatsBulk([symbol], timeframe, { backend })
+        : [beforeStats];
+    const afterCount = Math.max(existingCount, Math.floor(Number(afterStats?.candleCount || existingCount)));
+    const afterFromTsMs = Number.isFinite(Number(afterStats?.fromTsMs))
+      ? Number(afterStats?.fromTsMs)
+      : (fetched[0]?.[0] ?? existingFromTsMs);
+    const afterToTsMs = Number.isFinite(Number(afterStats?.toTsMs))
+      ? Number(afterStats?.toTsMs)
+      : (fetched[fetched.length - 1]?.[0] ?? existingToTsMs);
+    const dryRunFromCandidates = [existingFromTsMs, fetched[0]?.[0] ?? null].filter(
+      (value): value is number => Number.isFinite(Number(value)),
+    );
+    const dryRunToCandidates = [existingToTsMs, fetched[fetched.length - 1]?.[0] ?? null].filter(
+      (value): value is number => Number.isFinite(Number(value)),
+    );
 
     return res.status(200).json({
       ok: true,
@@ -249,21 +270,27 @@ export default async function handler(
       fetchFromMs,
       fetchToMs,
       clampedToNow,
-      backend: saveResult?.backend || history.backend,
-      storageRef: saveResult?.storageRef || history.storageRef,
-      existingCount: existing.length,
+      backend: saveResult?.backend || "pg",
+      storageRef:
+        saveResult?.storageRef ||
+        `scalp_candle_history_weeks:${symbol}:${timeframe}`,
+      existingCount,
       fetchedCount: fetched.length,
-      mergedCount: merged.length,
+      mergedCount: dryRun ? existingCount + addedCount : afterCount,
       addedCount,
       saved: saveResult?.saved ?? false,
       coverage: {
         before: {
-          fromTsMs: existing[0]?.[0] ?? null,
-          toTsMs: existing[existing.length - 1]?.[0] ?? null,
+          fromTsMs: existingFromTsMs,
+          toTsMs: existingToTsMs,
         },
         after: {
-          fromTsMs: merged[0]?.[0] ?? null,
-          toTsMs: merged[merged.length - 1]?.[0] ?? null,
+          fromTsMs: dryRun
+            ? (dryRunFromCandidates.length ? Math.min(...dryRunFromCandidates) : null)
+            : afterFromTsMs,
+          toTsMs: dryRun
+            ? (dryRunToCandidates.length ? Math.max(...dryRunToCandidates) : null)
+            : afterToTsMs,
         },
       },
     });

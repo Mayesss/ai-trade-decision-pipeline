@@ -14,8 +14,8 @@ import {
 } from "./adaptive/types";
 import { fetchBitgetCandlesByEpicDateRange } from "./bitgetHistory";
 import {
-  loadScalpCandleHistory,
   loadScalpCandleHistoryInRange,
+  loadScalpCandleHistoryRange,
   mergeScalpCandleHistory,
   saveScalpCandleHistory,
   timeframeToMs,
@@ -4360,13 +4360,29 @@ async function ensureSymbolWeeklyCoverage(params: {
   addedCount: number;
   error: string | null;
 }> {
-  const history = await loadScalpCandleHistory(params.symbol, "1m");
-  const existingRaw = history.record?.candles || [];
-  const existing = filterScalpSundayCandles(existingRaw);
-  const existingHadSundayCandles = existing.length !== existingRaw.length;
   const bitgetOnly = isScalpPipelineBitgetOnlyEnabled();
   const symbolIsBitget = isBitgetPipelineSymbol(params.symbol);
   const useCapitalVenue = params.allowNonBitgetSymbols && !symbolIsBitget;
+  const fetchUpperBoundMs = resolveLoadCandlesFetchUpperBoundMs(params.nowMs);
+  const requiredCoverageStartMs = resolveCompletedWeekCoverageStartMs(
+    params.nowMs,
+    params.requiredWeeks,
+  );
+  const history = await loadScalpCandleHistoryRange(
+    params.symbol,
+    "1m",
+    requiredCoverageStartMs,
+    fetchUpperBoundMs,
+    {
+      venue: useCapitalVenue ? "capital" : "bitget",
+      maxBrokerRangeDays: Math.max(7, params.backfillChunkWeeks * 7),
+      requireCoverageRatio: 0.2,
+      auditSource: "scalp_pipeline_load_candles_existing",
+    },
+  );
+  const existingRaw = history.record?.candles || [];
+  const existing = filterScalpSundayCandles(existingRaw);
+  const existingHadSundayCandles = existing.length !== existingRaw.length;
   if (!useCapitalVenue && bitgetOnly && !symbolIsBitget) {
     const coverage = countCoveredCompletedWeeks(
       existing,
@@ -4389,10 +4405,6 @@ async function ensureSymbolWeeklyCoverage(params: {
     params.requiredWeeks,
   );
   const seedTfMs = Math.max(ONE_MINUTE_MS, timeframeToMs("1m"));
-  const requiredCoverageStartMs = resolveCompletedWeekCoverageStartMs(
-    params.nowMs,
-    params.requiredWeeks,
-  );
   const prewarmWeeks = Math.max(
     1,
     Math.min(params.requiredWeeks, Math.floor(params.prewarmWeeks)),
@@ -4435,7 +4447,6 @@ async function ensureSymbolWeeklyCoverage(params: {
     };
   }
 
-  const fetchUpperBoundMs = resolveLoadCandlesFetchUpperBoundMs(params.nowMs);
   const fetchWindow = (() => {
     // First-touch symbols: warm recent history first so load jobs don't stall on deep backfill.
     if (
@@ -5133,7 +5144,7 @@ async function runStagedEvalCutoverMigration(params: {
       stageCWeeks: params.cfg.stageCWeeks,
     });
     const existingGate =
-      (asJsonObject(row.promotionGate) as ScalpDeploymentPromotionGate | null) ||
+      (asJsonObject(row.promotionGate) as unknown as ScalpDeploymentPromotionGate | null) ||
       null;
     const existingHalving = normalizedStagedHalving(existingGate?.halving);
     const targetWeeks = rebucket.targetWeeks;
@@ -6622,7 +6633,7 @@ export async function runPromotionPipelineJob(
       }
       const currentlyEnabled = Boolean(rowState?.enabled ?? deployment.enabled);
       const gate =
-        (asJsonObject(rowState?.promotionGate) as ScalpDeploymentPromotionGate | null) ||
+        (asJsonObject(rowState?.promotionGate) as unknown as ScalpDeploymentPromotionGate | null) ||
         deployment.promotionGate;
       const existingHalving = normalizedStagedHalving(gate?.halving);
       const desiredHalving = resolveDesiredHalvingForDeployment({
@@ -6653,7 +6664,7 @@ export async function runPromotionPipelineJob(
       const currentlyEnabled = Boolean(rowState?.enabled ?? deployment.enabled);
       const lifecycle = normalizeLifecycleFromGate({
         gate:
-          (asJsonObject(rowState?.promotionGate) as ScalpDeploymentPromotionGate | null) ||
+          (asJsonObject(rowState?.promotionGate) as unknown as ScalpDeploymentPromotionGate | null) ||
           deployment.promotionGate,
         tuneId: deployment.tuneId,
         enabled: currentlyEnabled,
@@ -7222,7 +7233,7 @@ export async function runPromotionPipelineJob(
             (asJsonObject(
               deploymentStateByDeploymentId.get(deployment.deploymentId)
                 ?.promotionGate || null,
-            ) as ScalpDeploymentPromotionGate | null) || deployment.promotionGate,
+            ) as unknown as ScalpDeploymentPromotionGate | null) || deployment.promotionGate,
           tuneId: deployment.tuneId,
           enabled: currentlyEnabled,
           nowMs,
@@ -7439,7 +7450,7 @@ export async function runPromotionPipelineJob(
       const currentlyEnabled = Boolean(rowState?.enabled ?? deployment.enabled);
       let lifecycle = normalizeLifecycleFromGate({
         gate:
-          (asJsonObject(rowState?.promotionGate) as ScalpDeploymentPromotionGate | null) ||
+          (asJsonObject(rowState?.promotionGate) as unknown as ScalpDeploymentPromotionGate | null) ||
           deployment.promotionGate,
         tuneId: deployment.tuneId,
         enabled: currentlyEnabled,

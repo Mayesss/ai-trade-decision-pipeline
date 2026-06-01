@@ -2,15 +2,14 @@
 import {
   applyScalpV4Hysteresis,
   buildScalpV4ClassifierValidityReport,
-  buildScalpV4WeeklyBars,
   classifyScalpV4RawRegimes,
+  loadOrRefreshScalpV4WeeklyBars,
   loadScalpV4DeploymentSymbols,
   runScalpV4WeeklyRegimeBuild,
   SCALP_V4_CLASSIFIER_VERSION,
   upsertScalpV4RegimeSnapshots,
   type ScalpV4Venue,
 } from "../lib/scalp-v4";
-import { loadScalpCandleHistory } from "../lib/scalp/candleHistory";
 
 function parseArgs(argv: string[]): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
@@ -37,6 +36,19 @@ function csv(value: unknown): string[] {
 
 function venue(value: unknown): ScalpV4Venue {
   return String(value || "").toLowerCase() === "capital" ? "capital" : "bitget";
+}
+
+const WEEK_MS = 7 * 24 * 60 * 60_000;
+const HISTORY_WEEKS = Math.max(64, Math.min(156, Math.floor(Number(process.env.SCALP_V4_INCREMENTAL_BOOTSTRAP_WEEKS || 72))));
+
+async function loadWeekly(symbol: string, v: ScalpV4Venue, fromMs: number, toMs: number) {
+  return loadOrRefreshScalpV4WeeklyBars({
+    symbol,
+    venue: v,
+    fromMs,
+    toMs,
+    auditSource: "script_scalp_v4_build_regimes",
+  }).catch(() => []);
 }
 
 async function main() {
@@ -79,17 +91,19 @@ async function main() {
   // Explicit-symbols path retained for selective re-builds.
   const symbols = explicitSymbols;
   const venues = explicitVenues || ["bitget", "capital"];
+  const toMs = Date.now();
+  const fromMs = Math.max(0, toMs - HISTORY_WEEKS * WEEK_MS);
   const shared = {
-    usdJpy: await loadScalpCandleHistory("USDJPY", "1m").then((row) => buildScalpV4WeeklyBars(row.record?.candles || [])).catch(() => []),
-    audJpy: await loadScalpCandleHistory("AUDJPY", "1m").then((row) => buildScalpV4WeeklyBars(row.record?.candles || [])).catch(() => []),
-    btcUsdt: await loadScalpCandleHistory("BTCUSDT", "1m").then((row) => buildScalpV4WeeklyBars(row.record?.candles || [])).catch(() => []),
+    usdJpy: await loadWeekly("USDJPY", "capital", fromMs, toMs),
+    audJpy: await loadWeekly("AUDJPY", "capital", fromMs, toMs),
+    btcUsdt: await loadWeekly("BTCUSDT", "bitget", fromMs, toMs),
   };
   const results: unknown[] = [];
   const rowsToSave: ReturnType<typeof applyScalpV4Hysteresis> = [];
   let saved = 0;
   for (const v of venues) {
     for (const symbol of symbols) {
-      const weeklyBars = await loadScalpCandleHistory(symbol, "1m").then((row) => buildScalpV4WeeklyBars(row.record?.candles || [])).catch(() => []);
+      const weeklyBars = await loadWeekly(symbol, v, fromMs, toMs);
       if (!weeklyBars.length) {
         results.push({ venue: v, symbol, skipped: true, reason: "missing_symbol_history" });
         continue;

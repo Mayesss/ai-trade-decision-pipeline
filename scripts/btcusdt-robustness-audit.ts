@@ -2,7 +2,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { loadScalpCandleHistory } from '../lib/scalp/candleHistory';
+import { loadScalpCandleHistoryTail } from '../lib/scalp/candleHistory';
 import { pipSizeForScalpSymbol } from '../lib/scalp/marketData';
 import { defaultScalpReplayConfig, runScalpReplay } from '../lib/scalp/replay/harness';
 import type {
@@ -587,8 +587,18 @@ async function main() {
     await mkdir(outputRoot, { recursive: true });
 
     const [hist15m, hist1m] = await Promise.all([
-        loadScalpCandleHistory(BTC_SYMBOL, '15m', { backend: 'pg' }),
-        loadScalpCandleHistory(BTC_SYMBOL, '1m', { backend: 'pg' }),
+        loadScalpCandleHistoryTail(BTC_SYMBOL, '15m', 365 * 24 * 4 + 96, {
+            backend: 'pg',
+            readOrder: ['pg'],
+            maxBrokerRangeDays: 31,
+            auditSource: 'script_btcusdt_robustness_audit',
+        }),
+        loadScalpCandleHistoryTail(BTC_SYMBOL, '1m', 365 * 24 * 60 + 1440, {
+            backend: 'pg',
+            readOrder: ['pg'],
+            maxBrokerRangeDays: 31,
+            auditSource: 'script_btcusdt_robustness_audit',
+        }),
     ]);
 
     const rows15m = (hist15m.record?.candles || []) as CandleRow[];

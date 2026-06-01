@@ -1,16 +1,41 @@
 import { empty, join, raw, sql } from './pg/sql';
 
+import {
+    fetchCapitalCandlesByEpicDateRange,
+    resolveCapitalEpicRuntime,
+} from '../capital';
+import { kvGetJson, kvMGetJson, kvSetJson } from '../kv';
+import { fetchBitgetCandlesByEpicDateRange } from './bitgetHistory';
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
 import type { ScalpCandle } from './types';
 
 export type CandleHistoryBackend = 'pg';
+export type ScalpCandleHistorySource = 'broker' | 'kv' | 'pg';
+export type ScalpCandleHistoryVenue = 'bitget' | 'capital';
+export type ScalpCandleHistoryReadSource = ScalpCandleHistorySource;
+
+export interface ScalpCandleHistoryDiagnostics {
+    source: ScalpCandleHistorySource;
+    fallbacksTried: string[];
+    coverageRatio?: number;
+    storageRef: string;
+}
+
+export interface ScalpCandleHistoryReadOptions {
+    backend?: CandleHistoryBackend;
+    venue?: ScalpCandleHistoryVenue;
+    readOrder?: ScalpCandleHistorySource[];
+    maxBrokerRangeDays?: number;
+    requireCoverageRatio?: number;
+    auditSource?: string;
+}
 
 export interface ScalpCandleHistoryRecord {
     version: 1;
     symbol: string;
     timeframe: string;
     epic: string | null;
-    source: 'bitget';
+    source: ScalpCandleHistoryVenue;
     updatedAtMs: number;
     candles: ScalpCandle[];
 }
@@ -19,6 +44,7 @@ export interface ScalpCandleHistoryLoadResult {
     backend: CandleHistoryBackend;
     storageRef: string;
     record: ScalpCandleHistoryRecord | null;
+    diagnostics?: ScalpCandleHistoryDiagnostics;
 }
 
 export interface ScalpCandleHistorySaveResult {
@@ -48,6 +74,21 @@ export interface ScalpCandleHistoryStatsLoadResult {
 const CANDLE_HISTORY_VERSION = 1 as const;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
+const DEFAULT_READ_ORDER: ScalpCandleHistorySource[] = ['broker', 'kv', 'pg'];
+const DEFAULT_REQUIRE_COVERAGE_RATIO = 0.8;
+const DEFAULT_MAX_BROKER_RANGE_DAYS = 14;
+const DEFAULT_KV_TTL_SECONDS = 400 * 24 * 60 * 60;
+
+export interface ScalpCandleHistoryFreshnessStats {
+    symbol: string;
+    timeframe: string;
+    fromTsMs: number;
+    toTsMs: number;
+    latestCandleTsMs: number | null;
+    candlesInWindow: number;
+    storageRef: string;
+    diagnostics: ScalpCandleHistoryDiagnostics;
+}
 
 function normalizeSymbol(value: string): string {
     return String(value || '')
@@ -73,7 +114,100 @@ function normalizeHistorySource(value: unknown, fallback: ScalpCandleHistoryReco
         .trim()
         .toLowerCase();
     if (normalized === 'bitget') return 'bitget';
+    if (normalized === 'capital') return 'capital';
     return fallback;
+}
+
+function normalizeVenue(value: unknown): ScalpCandleHistoryVenue {
+    return String(value || '').trim().toLowerCase() === 'capital' ? 'capital' : 'bitget';
+}
+
+function inferVenueForSymbol(symbol: string): ScalpCandleHistoryVenue {
+    const normalized = normalizeSymbol(symbol);
+    if (/^[A-Z]{6}$/.test(normalized) && !normalized.endsWith('USDT')) return 'capital';
+    return 'bitget';
+}
+
+function candleHistoryKvTtlSeconds(): number {
+    const raw = Math.floor(Number(process.env.SCALP_CANDLE_HISTORY_KV_TTL_SECONDS || DEFAULT_KV_TTL_SECONDS));
+    return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_KV_TTL_SECONDS;
+}
+
+function normalizeReadOrder(value: unknown): ScalpCandleHistorySource[] {
+    const raw = Array.isArray(value) && value.length
+        ? value
+        : String(process.env.SCALP_CANDLE_HISTORY_READ_ORDER || '')
+            .split(',')
+            .map((row) => row.trim())
+            .filter(Boolean);
+    const normalized = (raw.length ? raw : DEFAULT_READ_ORDER)
+        .map((row) => String(row || '').trim().toLowerCase())
+        .filter((row): row is ScalpCandleHistorySource => row === 'broker' || row === 'kv' || row === 'pg');
+    return normalized.length ? Array.from(new Set(normalized)) : DEFAULT_READ_ORDER;
+}
+
+function historyKvKey(symbol: string, timeframe: string, weekStartMs: number): string {
+    return `scalp:candles:v1:${symbol}:${timeframe}:${weekStartMs}`;
+}
+
+function weekStartsForRange(fromTsMs: number, toTsMs: number): number[] {
+    const fromMs = Math.max(0, Math.floor(Number(fromTsMs) || 0));
+    const toMs = Math.max(fromMs + 1, Math.floor(Number(toTsMs) || 0));
+    const starts: number[] = [];
+    let cursor = weekStartMondayUtcMs(fromMs);
+    const end = weekStartMondayUtcMs(Math.max(fromMs, toMs - 1));
+    while (cursor <= end) {
+        starts.push(cursor);
+        cursor += ONE_WEEK_MS;
+    }
+    return starts;
+}
+
+function expectedCandleCount(fromTsMs: number, toTsMs: number, timeframe: string): number {
+    const tfMs = Math.max(1, timeframeToMs(timeframe));
+    const span = Math.max(0, Math.floor(Number(toTsMs) || 0) - Math.floor(Number(fromTsMs) || 0));
+    return Math.max(1, Math.floor(span / tfMs));
+}
+
+function filterCandlesInRange(candles: ScalpCandle[], fromTsMs: number, toTsMs: number): ScalpCandle[] {
+    const fromMs = Math.max(0, Math.floor(Number(fromTsMs) || 0));
+    const toMs = Math.max(fromMs + 1, Math.floor(Number(toTsMs) || 0));
+    return dedupeSortCandles((candles || []).filter((row) => {
+        const ts = Number(row?.[0]);
+        return Number.isFinite(ts) && ts >= fromMs && ts < toMs;
+    }));
+}
+
+function coverageRatioFor(candles: ScalpCandle[], fromTsMs: number, toTsMs: number, timeframe: string): number {
+    return Math.min(1, candles.length / Math.max(1, expectedCandleCount(fromTsMs, toTsMs, timeframe)));
+}
+
+function shouldLogCandleHistory(): boolean {
+    const raw = String(process.env.SCALP_CANDLE_HISTORY_AUDIT_LOG || '').trim().toLowerCase();
+    return ['1', 'true', 'yes', 'on'].includes(raw);
+}
+
+function logCandleHistory(event: string, payload: Record<string, unknown>): void {
+    if (!shouldLogCandleHistory() && event !== 'full_history_read_warning') return;
+    try {
+        console.info(`[scalp-candle-history] ${JSON.stringify({ event, ...payload })}`);
+    } catch {
+        console.info('[scalp-candle-history]', event, payload);
+    }
+}
+
+function maybeWarnFullHistoryRead(symbol: string, timeframe: string, auditSource?: string): void {
+    const env = String(process.env.NODE_ENV || '').trim().toLowerCase();
+    const warnEnabled = env === 'production' || ['1', 'true', 'yes', 'on'].includes(
+        String(process.env.SCALP_CANDLE_HISTORY_WARN_FULL_READS || '').trim().toLowerCase(),
+    );
+    if (!warnEnabled) return;
+    logCandleHistory('full_history_read_warning', {
+        symbol,
+        timeframe,
+        auditSource: auditSource || null,
+        message: 'Full candle-history read requested; prefer range/tail/stats helpers.',
+    });
 }
 
 function normalizeCandleRow(row: unknown): ScalpCandle | null {
@@ -222,6 +356,76 @@ function rowsToRecord(params: {
     };
 }
 
+function recordFromCandles(params: {
+    symbol: string;
+    timeframe: string;
+    epic: string | null;
+    source: ScalpCandleHistoryRecord['source'];
+    candles: ScalpCandle[];
+    updatedAtMs?: number;
+}): ScalpCandleHistoryRecord | null {
+    const candles = dedupeSortCandles(params.candles || []);
+    if (!candles.length) return null;
+    return {
+        version: CANDLE_HISTORY_VERSION,
+        symbol: params.symbol,
+        timeframe: params.timeframe,
+        epic: params.epic,
+        source: params.source,
+        updatedAtMs: Number.isFinite(Number(params.updatedAtMs)) ? Math.floor(Number(params.updatedAtMs)) : Date.now(),
+        candles,
+    };
+}
+
+function buildLoadResult(params: {
+    symbol: string;
+    timeframe: string;
+    storageRef: string;
+    record: ScalpCandleHistoryRecord | null;
+    source: ScalpCandleHistorySource;
+    fallbacksTried: string[];
+    coverageRatio?: number;
+}): ScalpCandleHistoryLoadResult {
+    return {
+        backend: 'pg',
+        storageRef: params.storageRef,
+        record: params.record,
+        diagnostics: {
+            source: params.source,
+            fallbacksTried: params.fallbacksTried,
+            coverageRatio: params.coverageRatio,
+            storageRef: params.storageRef,
+        },
+    };
+}
+
+async function saveRecordToKv(record: ScalpCandleHistoryRecord): Promise<void> {
+    const weekRows = candlesToWeeklyRows(record);
+    await Promise.all(
+        weekRows.map(async (row) => {
+            const key = historyKvKey(row.symbol, row.timeframe, row.weekStartMs);
+            const existing = await kvGetJson<ScalpCandleHistoryRecord>(key).catch(() => null);
+            const existingCandles = Array.isArray(existing?.candles)
+                ? existing.candles.map((entry) => normalizeCandleRow(entry)).filter((entry): entry is ScalpCandle => Boolean(entry))
+                : [];
+            const candles = dedupeSortCandles([...existingCandles, ...row.candles]);
+            return kvSetJson(
+                key,
+                {
+                    version: CANDLE_HISTORY_VERSION,
+                    symbol: row.symbol,
+                    timeframe: row.timeframe,
+                    epic: row.epic || existing?.epic || null,
+                    source: row.source,
+                    updatedAtMs: Date.now(),
+                    candles,
+                } satisfies ScalpCandleHistoryRecord,
+                candleHistoryKvTtlSeconds(),
+            ).catch(() => null);
+        }),
+    );
+}
+
 async function loadFromPg(symbol: string, timeframe: string): Promise<ScalpCandleHistoryLoadResult> {
     const db = scalpPrisma();
     const rows = await db.$queryRaw<
@@ -303,6 +507,144 @@ async function loadFromPgRange(
         backend: 'pg',
         storageRef: `scalp_candle_history_weeks:${symbol}:${timeframe}:${fromMs}-${toMs}`,
         record,
+    };
+}
+
+async function loadFromPgTail(
+    symbol: string,
+    timeframe: string,
+    candleLimit: number,
+): Promise<ScalpCandleHistoryLoadResult> {
+    const limit = Math.max(1, Math.floor(Number(candleLimit) || 1));
+    const tfMs = Math.max(1, timeframeToMs(timeframe));
+    const weekLimit = Math.max(1, Math.min(260, Math.ceil((limit * tfMs) / ONE_WEEK_MS) + 1));
+    const db = scalpPrisma();
+    const rows = await db.$queryRaw<
+        Array<{
+            epic: string | null;
+            source: string | null;
+            updatedAtMs: bigint | number | null;
+            weekStartMs: bigint | number | null;
+            candles: unknown;
+        }>
+    >(sql`
+        SELECT *
+        FROM (
+            SELECT
+                epic,
+                source,
+                (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint AS "updatedAtMs",
+                (EXTRACT(EPOCH FROM week_start) * 1000)::bigint AS "weekStartMs",
+                candles_json AS candles
+            FROM scalp_candle_history_weeks
+            WHERE symbol = ${symbol}
+              AND timeframe = ${timeframe}
+            ORDER BY week_start DESC
+            LIMIT ${weekLimit}
+        ) recent
+        ORDER BY "weekStartMs" ASC;
+    `);
+    const record = rowsToRecord({
+        symbol,
+        timeframe,
+        rows: rows.map((row) => ({
+            epic: row.epic,
+            source: row.source,
+            updatedAtMs: Number(row.updatedAtMs || 0),
+            candles: row.candles,
+        })),
+    });
+    return {
+        backend: 'pg',
+        storageRef: `scalp_candle_history_weeks:${symbol}:${timeframe}:tail:${limit}`,
+        record: record ? { ...record, candles: record.candles.slice(-limit) } : null,
+    };
+}
+
+async function loadFromKvRange(
+    symbol: string,
+    timeframe: string,
+    fromTsMs: number,
+    toTsMs: number,
+): Promise<ScalpCandleHistoryLoadResult> {
+    const weekStarts = weekStartsForRange(fromTsMs, toTsMs);
+    const keys = weekStarts.map((weekStartMs) => historyKvKey(symbol, timeframe, weekStartMs));
+    const rows = keys.length === 1
+        ? [await kvGetJson<ScalpCandleHistoryRecord>(keys[0]!)]
+        : await kvMGetJson<ScalpCandleHistoryRecord>(keys);
+    const record = rowsToRecord({
+        symbol,
+        timeframe,
+        rows: rows
+            .map((row) => ({
+                epic: row?.epic || null,
+                source: row?.source || null,
+                updatedAtMs: row?.updatedAtMs || null,
+                candles: row?.candles || [],
+            })),
+    });
+    return {
+        backend: 'pg',
+        storageRef: `kv:${symbol}:${timeframe}:${weekStarts[0] ?? 0}-${weekStarts.at(-1) ?? 0}`,
+        record: record ? { ...record, candles: filterCandlesInRange(record.candles, fromTsMs, toTsMs) } : null,
+    };
+}
+
+async function loadFromBrokerRange(
+    symbol: string,
+    timeframe: string,
+    fromTsMs: number,
+    toTsMs: number,
+    opts: ScalpCandleHistoryReadOptions,
+): Promise<ScalpCandleHistoryLoadResult> {
+    const venue = opts.venue ? normalizeVenue(opts.venue) : inferVenueForSymbol(symbol);
+    const fromMs = Math.max(0, Math.floor(Number(fromTsMs) || 0));
+    const toMs = Math.max(fromMs + 1, Math.floor(Number(toTsMs) || 0));
+    const maxDays = Math.max(1, Math.floor(Number(opts.maxBrokerRangeDays || DEFAULT_MAX_BROKER_RANGE_DAYS)));
+    if (toMs - fromMs > maxDays * ONE_DAY_MS) {
+        throw new Error(`broker_range_too_wide:${maxDays}d`);
+    }
+    if (venue === 'capital') {
+        const resolved = await resolveCapitalEpicRuntime(symbol);
+        const rows = await fetchCapitalCandlesByEpicDateRange(resolved.epic, timeframe, fromMs, toMs, {
+            maxPerRequest: 1000,
+            maxRequests: Math.max(20, Math.ceil((toMs - fromMs) / Math.max(1, timeframeToMs(timeframe)) / 900)),
+        });
+        const candles = filterCandlesInRange(
+            dedupeSortCandles(rows.map((row) => normalizeCandleRow(row)).filter((row): row is ScalpCandle => Boolean(row))),
+            fromMs,
+            toMs,
+        );
+        return {
+            backend: 'pg',
+            storageRef: `broker:capital:${symbol}:${timeframe}:${fromMs}-${toMs}`,
+            record: recordFromCandles({
+                symbol,
+                timeframe,
+                epic: resolved.epic,
+                source: 'capital',
+                candles,
+            }),
+        };
+    }
+    const candles = filterCandlesInRange(
+        await fetchBitgetCandlesByEpicDateRange(symbol, timeframe, fromMs, toMs, {
+            maxPerRequest: 200,
+            maxRequests: Math.max(40, Math.ceil((toMs - fromMs) / Math.max(1, timeframeToMs(timeframe)) / 160)),
+        }),
+        fromMs,
+        toMs,
+    );
+    return {
+        backend: 'pg',
+        storageRef: `broker:bitget:${symbol}:${timeframe}:${fromMs}-${toMs}`,
+        record: recordFromCandles({
+            symbol,
+            timeframe,
+            epic: symbol,
+            source: 'bitget',
+            candles,
+        }),
     };
 }
 
@@ -437,6 +779,79 @@ async function loadFromPgStatsBulk(symbols: string[], timeframe: string): Promis
     });
 }
 
+async function loadFromPgFreshnessStats(
+    symbol: string,
+    timeframe: string,
+    fromTsMs: number,
+    toTsMs: number,
+): Promise<ScalpCandleHistoryFreshnessStats> {
+    const fromMs = Math.max(0, Math.floor(Number(fromTsMs) || 0));
+    const toMs = Math.max(fromMs + 1, Math.floor(Number(toTsMs) || 0));
+    const db = scalpPrisma();
+    const rows = await db.$queryRaw<
+        Array<{
+            weekStartMs: bigint | number | null;
+            candleCount: bigint | number | null;
+            firstTsMs: bigint | number | null;
+            lastTsMs: bigint | number | null;
+        }>
+    >(sql`
+        SELECT
+            (EXTRACT(EPOCH FROM week_start) * 1000)::bigint AS "weekStartMs",
+            candle_count::bigint AS "candleCount",
+            first_ts_ms::bigint AS "firstTsMs",
+            last_ts_ms::bigint AS "lastTsMs"
+        FROM scalp_candle_history_weeks
+        WHERE symbol = ${symbol}
+          AND timeframe = ${timeframe}
+          AND week_start < to_timestamp(${toMs} / 1000.0)
+          AND (week_start + interval '7 day') > to_timestamp(${fromMs} / 1000.0)
+          AND candle_count > 0
+        ORDER BY week_start ASC;
+    `);
+    const tfMs = Math.max(1, timeframeToMs(timeframe));
+    let latestCandleTsMs: number | null = null;
+    let candlesInWindow = 0;
+    for (const row of rows) {
+        const weekStartMs = Number(row.weekStartMs || 0);
+        const firstTsMs = Number(row.firstTsMs || 0);
+        const lastTsMs = Number(row.lastTsMs || 0);
+        const candleCount = Math.max(0, Math.floor(Number(row.candleCount || 0)));
+        if (!Number.isFinite(weekStartMs) || !Number.isFinite(firstTsMs) || !Number.isFinite(lastTsMs) || candleCount <= 0) {
+            continue;
+        }
+        const rowFromMs = Math.max(fromMs, firstTsMs);
+        const rowToInclusiveMs = Math.min(toMs - 1, lastTsMs);
+        if (rowToInclusiveMs < rowFromMs) continue;
+        const startIndex = Math.max(0, Math.ceil((rowFromMs - firstTsMs) / tfMs));
+        const endIndex = Math.min(candleCount - 1, Math.floor((rowToInclusiveMs - firstTsMs) / tfMs));
+        if (endIndex < startIndex) continue;
+        const latestInRowMs = rowToInclusiveMs;
+        latestCandleTsMs =
+            latestCandleTsMs === null
+                ? latestInRowMs
+                : Math.max(latestCandleTsMs, latestInRowMs);
+        const coversWholeStoredWeek = fromMs <= firstTsMs && toMs > lastTsMs;
+        candlesInWindow += coversWholeStoredWeek
+            ? candleCount
+            : endIndex - startIndex + 1;
+    }
+    return {
+        symbol,
+        timeframe,
+        fromTsMs: fromMs,
+        toTsMs: toMs,
+        latestCandleTsMs,
+        candlesInWindow,
+        storageRef: `scalp_candle_history_weeks:freshness:${symbol}:${timeframe}:${fromMs}-${toMs}`,
+        diagnostics: {
+            source: 'pg',
+            fallbacksTried: ['pg'],
+            storageRef: `scalp_candle_history_weeks:freshness:${symbol}:${timeframe}:${fromMs}-${toMs}`,
+        },
+    };
+}
+
 async function saveToPg(record: ScalpCandleHistoryRecord): Promise<ScalpCandleHistorySaveResult> {
     await saveToPgBulk([record]);
     return {
@@ -539,6 +954,18 @@ async function saveToPgBulk(records: ScalpCandleHistoryRecord[]): Promise<ScalpC
                             updated_at = NOW();
                     `,
                 );
+                await kvSetJson(
+                    historyKvKey(row.symbol, row.timeframe, row.weekStartMs),
+                    {
+                        version: CANDLE_HISTORY_VERSION,
+                        symbol: row.symbol,
+                        timeframe: row.timeframe,
+                        epic: row.epic,
+                        source: row.source,
+                        updatedAtMs: Date.now(),
+                        candles: candlesForWrite,
+                    } satisfies ScalpCandleHistoryRecord,
+                ).catch(() => null);
             }
         }
     }
@@ -570,7 +997,7 @@ async function listHistorySymbolsFromPg(timeframe: string): Promise<string[]> {
 export async function loadScalpCandleHistory(
     symbolRaw: string,
     timeframeRaw: string,
-    opts: { backend?: CandleHistoryBackend } = {},
+    opts: ScalpCandleHistoryReadOptions = {},
 ): Promise<ScalpCandleHistoryLoadResult> {
     const symbol = normalizeSymbol(symbolRaw);
     const timeframe = normalizeTimeframe(timeframeRaw);
@@ -582,7 +1009,16 @@ export async function loadScalpCandleHistory(
         throw new Error('scalp_pg_not_configured_for_candle_history');
     }
     void backend;
-    return loadFromPg(symbol, timeframe);
+    maybeWarnFullHistoryRead(symbol, timeframe, opts.auditSource);
+    const result = await loadFromPg(symbol, timeframe);
+    return buildLoadResult({
+        symbol,
+        timeframe,
+        storageRef: result.storageRef,
+        record: result.record,
+        source: 'pg',
+        fallbacksTried: ['pg'],
+    });
 }
 
 export async function loadScalpCandleHistoryInRange(
@@ -590,19 +1026,164 @@ export async function loadScalpCandleHistoryInRange(
     timeframeRaw: string,
     fromTsMs: number,
     toTsMs: number,
-    opts: { backend?: CandleHistoryBackend } = {},
+    opts: ScalpCandleHistoryReadOptions = {},
+): Promise<ScalpCandleHistoryLoadResult> {
+    return loadScalpCandleHistoryRange(symbolRaw, timeframeRaw, fromTsMs, toTsMs, opts);
+}
+
+export async function loadScalpCandleHistoryRange(
+    symbolRaw: string,
+    timeframeRaw: string,
+    fromTsMs: number,
+    toTsMs: number,
+    opts: ScalpCandleHistoryReadOptions = {},
 ): Promise<ScalpCandleHistoryLoadResult> {
     const symbol = normalizeSymbol(symbolRaw);
     const timeframe = normalizeTimeframe(timeframeRaw);
     if (!symbol) {
         throw new Error('Invalid candle-history symbol');
     }
-    const backend = resolveBackend(opts.backend);
-    if (!isScalpPgConfigured()) {
-        throw new Error('scalp_pg_not_configured_for_candle_history');
+    const fromMs = Math.max(0, Math.floor(Number(fromTsMs) || 0));
+    const toMs = Math.max(fromMs + 1, Math.floor(Number(toTsMs) || 0));
+    const readOrder = normalizeReadOrder(opts.readOrder);
+    const requireCoverageRatio = Math.max(
+        0,
+        Math.min(1, Number(opts.requireCoverageRatio ?? DEFAULT_REQUIRE_COVERAGE_RATIO)),
+    );
+    const fallbacksTried: string[] = [];
+    let lastResult: ScalpCandleHistoryLoadResult | null = null;
+    let bestResult: ScalpCandleHistoryLoadResult | null = null;
+    let bestCoverageRatio = -1;
+    for (const source of readOrder) {
+        if (source === 'pg' && !isScalpPgConfigured()) continue;
+        try {
+            fallbacksTried.push(source);
+            const result =
+                source === 'broker'
+                    ? await loadFromBrokerRange(symbol, timeframe, fromMs, toMs, opts)
+                    : source === 'kv'
+                      ? await loadFromKvRange(symbol, timeframe, fromMs, toMs)
+                      : await loadFromPgRange(symbol, timeframe, fromMs, toMs);
+            const candles = filterCandlesInRange(result.record?.candles || [], fromMs, toMs);
+            const coverageRatio = coverageRatioFor(candles, fromMs, toMs, timeframe);
+            const normalizedRecord = result.record ? { ...result.record, candles } : null;
+            lastResult = buildLoadResult({
+                symbol,
+                timeframe,
+                storageRef: result.storageRef,
+                record: normalizedRecord,
+                source,
+                fallbacksTried: [...fallbacksTried],
+                coverageRatio,
+            });
+            if (coverageRatio > bestCoverageRatio) {
+                bestCoverageRatio = coverageRatio;
+                bestResult = lastResult;
+            }
+            if (normalizedRecord && candles.length > 0 && coverageRatio >= requireCoverageRatio) {
+                if (source === 'broker') void saveRecordToKv(normalizedRecord).catch(() => null);
+                logCandleHistory('range_loaded', {
+                    auditSource: opts.auditSource || null,
+                    source,
+                    symbol,
+                    timeframe,
+                    fromTsMs: fromMs,
+                    toTsMs: toMs,
+                    candles: candles.length,
+                    coverageRatio,
+                    storageRef: result.storageRef,
+                });
+                return lastResult;
+            }
+        } catch (err) {
+            logCandleHistory('range_source_failed', {
+                auditSource: opts.auditSource || null,
+                source,
+                symbol,
+                timeframe,
+                fromTsMs: fromMs,
+                toTsMs: toMs,
+                message: err instanceof Error ? err.message : String(err),
+            });
+        }
     }
-    void backend;
-    return loadFromPgRange(symbol, timeframe, fromTsMs, toTsMs);
+    return bestResult || lastResult || buildLoadResult({
+        symbol,
+        timeframe,
+        storageRef: `missing:${symbol}:${timeframe}:${fromMs}-${toMs}`,
+        record: null,
+        source: 'pg',
+        fallbacksTried,
+        coverageRatio: 0,
+    });
+}
+
+export async function loadScalpCandleHistoryTail(
+    symbolRaw: string,
+    timeframeRaw: string,
+    candleLimit: number,
+    opts: ScalpCandleHistoryReadOptions = {},
+): Promise<ScalpCandleHistoryLoadResult> {
+    const symbol = normalizeSymbol(symbolRaw);
+    const timeframe = normalizeTimeframe(timeframeRaw);
+    if (!symbol) throw new Error('Invalid candle-history symbol');
+    const limit = Math.max(1, Math.floor(Number(candleLimit) || 1));
+    const tfMs = Math.max(1, timeframeToMs(timeframe));
+    const toMs = Date.now();
+    const fromMs = Math.max(0, toMs - (limit + 20) * tfMs);
+    const range = await loadScalpCandleHistoryRange(symbol, timeframe, fromMs, toMs, {
+        ...opts,
+        requireCoverageRatio: opts.requireCoverageRatio ?? 0.2,
+    });
+    if (!(range.record?.candles?.length) && isScalpPgConfigured()) {
+        const pgTail = await loadFromPgTail(symbol, timeframe, limit);
+        return buildLoadResult({
+            symbol,
+            timeframe,
+            storageRef: `${pgTail.storageRef}:tail:${limit}`,
+            record: pgTail.record,
+            source: 'pg',
+            fallbacksTried: [...(range.diagnostics?.fallbacksTried || []), 'pg_tail'],
+            coverageRatio: pgTail.record?.candles?.length ? 1 : 0,
+        });
+    }
+    const candles = (range.record?.candles || []).slice(-limit);
+    return {
+        ...range,
+        storageRef: `${range.storageRef}:tail:${limit}`,
+        record: range.record ? { ...range.record, candles } : null,
+        diagnostics: range.diagnostics
+            ? { ...range.diagnostics, storageRef: `${range.storageRef}:tail:${limit}` }
+            : undefined,
+    };
+}
+
+export async function loadScalpCandleHistoryFreshnessStats(
+    symbolRaw: string,
+    timeframeRaw: string,
+    fromTsMs: number,
+    toTsMs: number,
+    opts: ScalpCandleHistoryReadOptions = {},
+): Promise<ScalpCandleHistoryFreshnessStats> {
+    const symbol = normalizeSymbol(symbolRaw);
+    const timeframe = normalizeTimeframe(timeframeRaw);
+    if (!symbol) throw new Error('Invalid candle-history symbol');
+    if (!isScalpPgConfigured()) throw new Error('scalp_pg_not_configured_for_candle_history');
+    void opts;
+    return loadFromPgFreshnessStats(symbol, timeframe, fromTsMs, toTsMs);
+}
+
+export async function loadScalpCandleHistoryWeeklyBars(
+    symbolRaw: string,
+    timeframeRaw: string,
+    fromTsMs: number,
+    toTsMs: number,
+    opts: ScalpCandleHistoryReadOptions = {},
+): Promise<ScalpCandleHistoryLoadResult> {
+    return loadScalpCandleHistoryRange(symbolRaw, timeframeRaw, fromTsMs, toTsMs, {
+        ...opts,
+        requireCoverageRatio: opts.requireCoverageRatio ?? 0.2,
+    });
 }
 
 export async function saveScalpCandleHistory(

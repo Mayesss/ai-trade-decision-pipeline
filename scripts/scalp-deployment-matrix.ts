@@ -2,7 +2,7 @@
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { loadScalpCandleHistory, type CandleHistoryBackend } from '../lib/scalp/candleHistory';
+import { loadScalpCandleHistoryRange, type CandleHistoryBackend } from '../lib/scalp/candleHistory';
 import { resolveScalpDeployment, normalizeScalpTuneId } from '../lib/scalp/deployments';
 import { upsertScalpDeploymentRegistryEntry } from '../lib/scalp/deploymentRegistry';
 import { pipSizeForScalpSymbol } from '../lib/scalp/marketData';
@@ -435,7 +435,12 @@ async function main() {
     );
 
     for (const symbol of symbols) {
-        const history = await loadScalpCandleHistory(symbol, '1m', { backend: historyBackend });
+        const history = await loadScalpCandleHistoryRange(symbol, '1m', fromMs, nowMs, {
+            backend: historyBackend,
+            readOrder: ['pg'],
+            maxBrokerRangeDays: Math.min(31, Math.max(1, days)),
+            auditSource: 'script_scalp_deployment_matrix',
+        });
         const rows = (history.record?.candles || []).filter((row) => row[0] >= fromMs && row[0] <= nowMs) as Array<
             [number, number, number, number, number, number]
         >;

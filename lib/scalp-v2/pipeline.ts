@@ -5,7 +5,10 @@ import {
   fetchCapitalOpenPositionSnapshots,
 } from "../capital";
 import { bitgetFetch, resolveProductType } from "../bitget";
-import { loadScalpCandleHistoryInRange } from "../scalp/candleHistory";
+import {
+  loadScalpCandleHistoryFreshnessStats,
+  loadScalpCandleHistoryInRange,
+} from "../scalp/candleHistory";
 import { pipSizeForScalpSymbol } from "../scalp/marketData";
 import { inScalpEntrySessionProfileWindow } from "../scalp/sessions";
 import { loadScalpSymbolMarketMetadataBulk } from "../scalp/symbolMarketMetadataStore";
@@ -2344,28 +2347,15 @@ async function evaluateResearchFreshnessRow(params: {
       ? params.policy.maxLagCapitalMs
       : params.policy.maxLagBitgetMs;
 
-  const history = await loadScalpCandleHistoryInRange(
+  const freshnessStats = await loadScalpCandleHistoryFreshnessStats(
     params.scope.symbol,
     "1m",
     fromTs,
     params.windowToTs,
+    { auditSource: "v2_research_freshness" },
   ).catch(() => null);
-
-  const candles = Array.isArray(history?.record?.candles)
-    ? history.record.candles
-    : [];
-  let latestCandleTsMs: number | null = null;
-  let candlesInWindow = 0;
-
-  for (const candle of candles) {
-    const ts = Math.floor(Number(candle?.[0] || 0));
-    if (!Number.isFinite(ts)) continue;
-    if (ts < fromTs || ts >= params.windowToTs) continue;
-    candlesInWindow += 1;
-    if (latestCandleTsMs === null || ts > latestCandleTsMs) {
-      latestCandleTsMs = ts;
-    }
-  }
+  const latestCandleTsMs = freshnessStats?.latestCandleTsMs ?? null;
+  const candlesInWindow = freshnessStats?.candlesInWindow ?? 0;
 
   if (latestCandleTsMs === null) {
     return {

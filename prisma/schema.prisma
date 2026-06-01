@@ -460,6 +460,25 @@ model ScalpRegimeTransition {
   @@map("scalp_regime_transitions")
 }
 
+model ScalpV4WeeklyBar {
+  venue     String
+  symbol    String
+  weekStart DateTime @map("week_start") @db.Timestamptz(3)
+  open      Decimal  @db.Decimal(20, 8)
+  high      Decimal  @db.Decimal(20, 8)
+  low       Decimal  @db.Decimal(20, 8)
+  close     Decimal  @db.Decimal(20, 8)
+  volume    Decimal  @default(0) @db.Decimal(30, 8)
+  source    String   @default("candle_history")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@id([venue, symbol, weekStart])
+  @@index([venue, symbol, weekStart(sort: Desc)], map: "scalp_v4_weekly_bars_lookup_idx")
+  @@index([symbol, weekStart(sort: Desc)], map: "scalp_v4_weekly_bars_symbol_week_idx")
+  @@map("scalp_v4_weekly_bars")
+}
+
 model ScalpRegimeWalkforwardResult {
   id                 BigInt   @id @default(autoincrement())
   candidateId        BigInt?  @map("candidate_id")

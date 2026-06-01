@@ -7,6 +7,7 @@ import type {
   ScalpV4RegimeEnvelope,
   ScalpV4RegimeSnapshot,
   ScalpV4Venue,
+  ScalpV4WeeklyBar,
 } from "./types";
 import { startOfUtcWeekMondayMs } from "./week";
 
@@ -145,6 +146,189 @@ export async function loadScalpV4SymbolsWithSnapshotForWeek(params: {
       AND week_start = ${new Date(params.weekStartMs)};
   `);
   return new Set(rows.map((row) => `${normalizeVenue(row.venue)}:${normalizeSymbol(row.symbol)}`));
+}
+
+export async function loadScalpV4WeeklyBars(params: {
+  venue: ScalpV4Venue;
+  symbol: string;
+  fromMs: number;
+  toMs: number;
+}): Promise<ScalpV4WeeklyBar[]> {
+  if (!isScalpPgConfigured()) return [];
+  const venue = normalizeVenue(params.venue);
+  const symbol = normalizeSymbol(params.symbol);
+  if (!symbol) return [];
+  const fromMs = Math.max(0, Math.floor(Number(params.fromMs) || 0));
+  const toMs = Math.max(fromMs, Math.floor(Number(params.toMs) || Date.now()));
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{
+    weekStart: Date;
+    open: unknown;
+    high: unknown;
+    low: unknown;
+    close: unknown;
+    volume: unknown;
+  }>>(sql`
+    SELECT
+      week_start AS "weekStart",
+      open,
+      high,
+      low,
+      close,
+      volume
+    FROM scalp_v4_weekly_bars
+    WHERE venue = ${venue}
+      AND symbol = ${symbol}
+      AND week_start >= ${new Date(fromMs)}
+      AND week_start < ${new Date(toMs)}
+    ORDER BY week_start ASC;
+  `);
+  return rows
+    .map((row) => ({
+      weekStartMs: row.weekStart.getTime(),
+      open: Number(row.open),
+      high: Number(row.high),
+      low: Number(row.low),
+      close: Number(row.close),
+      volume: Number(row.volume || 0),
+    }))
+    .filter((row) =>
+      row.weekStartMs > 0 &&
+      [row.open, row.high, row.low, row.close, row.volume].every((value) => Number.isFinite(value)),
+    );
+}
+
+export async function upsertScalpV4WeeklyBars(params: {
+  venue: ScalpV4Venue;
+  symbol: string;
+  bars: ScalpV4WeeklyBar[];
+  source?: string;
+}): Promise<number> {
+  if (!isScalpPgConfigured()) return 0;
+  const venue = normalizeVenue(params.venue);
+  const symbol = normalizeSymbol(params.symbol);
+  const bars = (params.bars || []).filter((row) =>
+    row.weekStartMs > 0 &&
+    [row.open, row.high, row.low, row.close, row.volume].every((value) => Number.isFinite(Number(value))),
+  );
+  if (!symbol || !bars.length) return 0;
+  const source = String(params.source || "candle_history").trim() || "candle_history";
+  const db = scalpPrisma();
+  const values = bars.map((row) => sql`(
+    ${venue},
+    ${symbol},
+    ${new Date(row.weekStartMs)},
+    ${row.open},
+    ${row.high},
+    ${row.low},
+    ${row.close},
+    ${row.volume},
+    ${source}
+  )`);
+  await db.$executeRaw(sql`
+    INSERT INTO scalp_v4_weekly_bars(
+      venue,
+      symbol,
+      week_start,
+      open,
+      high,
+      low,
+      close,
+      volume,
+      source
+    ) VALUES ${join(values, ",")}
+    ON CONFLICT(venue, symbol, week_start)
+    DO UPDATE SET
+      open = EXCLUDED.open,
+      high = EXCLUDED.high,
+      low = EXCLUDED.low,
+      close = EXCLUDED.close,
+      volume = EXCLUDED.volume,
+      source = EXCLUDED.source,
+      updated_at = NOW();
+  `);
+  return bars.length;
+}
+
+export async function backfillScalpV4WeeklyBarsFromCandleHistory(params: {
+  venue: ScalpV4Venue;
+  symbol: string;
+  fromMs: number;
+  toMs: number;
+}): Promise<number> {
+  if (!isScalpPgConfigured()) return 0;
+  const venue = normalizeVenue(params.venue);
+  const symbol = normalizeSymbol(params.symbol);
+  if (!symbol) return 0;
+  const fromMs = Math.max(0, Math.floor(Number(params.fromMs) || 0));
+  const toMs = Math.max(fromMs, Math.floor(Number(params.toMs) || Date.now()));
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<Array<{ inserted: bigint | number | null }>>(sql`
+    WITH candles AS (
+      SELECT
+        w.week_start,
+        (c.value->>0)::bigint AS ts_ms,
+        (c.value->>1)::numeric AS open,
+        (c.value->>2)::numeric AS high,
+        (c.value->>3)::numeric AS low,
+        (c.value->>4)::numeric AS close,
+        COALESCE((c.value->>5)::numeric, 0) AS volume
+      FROM scalp_candle_history_weeks w
+      CROSS JOIN LATERAL jsonb_array_elements(w.candles_json) AS c(value)
+      WHERE w.symbol = ${symbol}
+        AND w.timeframe = '1m'
+        AND w.week_start >= ${new Date(fromMs)}
+        AND w.week_start < ${new Date(toMs)}
+        AND jsonb_typeof(w.candles_json) = 'array'
+    ),
+    weekly AS (
+      SELECT
+        week_start,
+        (array_agg(open ORDER BY ts_ms ASC))[1] AS open,
+        MAX(high) AS high,
+        MIN(low) AS low,
+        (array_agg(close ORDER BY ts_ms DESC))[1] AS close,
+        SUM(volume) AS volume
+      FROM candles
+      GROUP BY week_start
+    ),
+    upserted AS (
+      INSERT INTO scalp_v4_weekly_bars(
+        venue,
+        symbol,
+        week_start,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        source
+      )
+      SELECT
+        ${venue},
+        ${symbol},
+        week_start,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        'pg_aggregate'
+      FROM weekly
+      ON CONFLICT(venue, symbol, week_start)
+      DO UPDATE SET
+        open = EXCLUDED.open,
+        high = EXCLUDED.high,
+        low = EXCLUDED.low,
+        close = EXCLUDED.close,
+        volume = EXCLUDED.volume,
+        source = EXCLUDED.source,
+        updated_at = NOW()
+      RETURNING 1
+    )
+    SELECT COUNT(*)::bigint AS inserted FROM upserted;
+  `);
+  return Math.max(0, Math.floor(Number(rows[0]?.inserted || 0)));
 }
 
 export function resolveScalpV4SnapshotTtlMs(venue: unknown): number {

@@ -5,7 +5,7 @@ import { empty, join, raw, sql } from './pg/sql';
 
 import { bitgetFetch, resolveProductType } from '../bitget';
 import { fetchBitgetCandlesByEpicDateRange } from './bitgetHistory';
-import { listScalpCandleHistorySymbols, loadScalpCandleHistory, mergeScalpCandleHistory, normalizeHistoryTimeframe, saveScalpCandleHistory, timeframeToMs } from './candleHistory';
+import { listScalpCandleHistorySymbols, loadScalpCandleHistoryTail, mergeScalpCandleHistory, normalizeHistoryTimeframe, saveScalpCandleHistory, timeframeToMs } from './candleHistory';
 import { loadScalpDeploymentRegistry } from './deploymentRegistry';
 import { pipSizeForScalpSymbol } from './marketData';
 import { isScalpPgConfigured, scalpPrisma } from './pg/client';
@@ -771,7 +771,11 @@ async function loadSymbolHistoryStats(symbol: string, nowMs: number): Promise<Sy
         };
     }
 
-    const history = await loadScalpCandleHistory(normalized, '1m');
+    const history = await loadScalpCandleHistoryTail(normalized, '1m', 12_000, {
+        auditSource: 'symbol_discovery_quality',
+        maxBrokerRangeDays: 10,
+        requireCoverageRatio: 0.2,
+    });
     const candles = history.record?.candles || [];
     const fromTs = candles.length ? Number(candles[0]?.[0]) : null;
     const toTs = candles.length ? Number(candles[candles.length - 1]?.[0]) : null;
@@ -1452,7 +1456,11 @@ async function runScalpSymbolHistorySeedStage(params: {
     for (const symbol of candidateSymbols.slice(0, seedEvaluationCap)) {
         if (eligibleTargets.length >= targetCount) break;
         try {
-            const history = await loadScalpCandleHistory(symbol, cfg.timeframe);
+            const history = await loadScalpCandleHistoryTail(symbol, cfg.timeframe, Math.max(2000, Math.ceil(effectiveTargetHistoryDays * 24 * 60 * 60_000 / Math.max(1, tfMs))), {
+                auditSource: 'symbol_discovery_seed',
+                maxBrokerRangeDays: Math.min(120, Math.max(1, effectiveTargetHistoryDays)),
+                requireCoverageRatio: 0.2,
+            });
             const existing = history.record?.candles || [];
             const strategies = resolveRecommendedStrategiesForSymbol(symbol, params.policy.strategyAllowlist).filter((id) =>
                 params.knownStrategyIds.has(id),

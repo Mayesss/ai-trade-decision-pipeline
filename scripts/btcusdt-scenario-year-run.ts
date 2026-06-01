@@ -77,7 +77,7 @@ async function main() {
     }
 
     // Important: import replay/strategy modules after env is set. Blocked-hour variants are resolved at module load.
-    const [{ loadScalpCandleHistory }, { resolveScalpDeployment }, { pipSizeForScalpSymbol }, replayHarness, guardDefaults] =
+    const [{ loadScalpCandleHistoryTail }, { resolveScalpDeployment }, { pipSizeForScalpSymbol }, replayHarness, guardDefaults] =
         await Promise.all([
             import('../lib/scalp/candleHistory'),
             import('../lib/scalp/deployments'),
@@ -89,8 +89,18 @@ async function main() {
     const { applySymbolGuardRiskDefaultsToReplayRuntime } = guardDefaults;
 
     const [h15, h1] = await Promise.all([
-        loadScalpCandleHistory(symbol, '15m', { backend: 'pg' }),
-        loadScalpCandleHistory(symbol, '1m', { backend: 'pg' }),
+        loadScalpCandleHistoryTail(symbol, '15m', 365 * 24 * 4 + 96, {
+            backend: 'pg',
+            readOrder: ['pg'],
+            maxBrokerRangeDays: 31,
+            auditSource: 'script_btcusdt_scenario_year_run',
+        }),
+        loadScalpCandleHistoryTail(symbol, '1m', 365 * 24 * 60 + 1440, {
+            backend: 'pg',
+            readOrder: ['pg'],
+            maxBrokerRangeDays: 31,
+            auditSource: 'script_btcusdt_scenario_year_run',
+        }),
     ]);
     const rows15 = (h15.record?.candles || []) as CandleRow[];
     const rows1 = (h1.record?.candles || []) as CandleRow[];

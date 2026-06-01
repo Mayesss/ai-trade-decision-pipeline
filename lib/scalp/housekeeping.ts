@@ -2,9 +2,6 @@ import { empty, join, raw, sql } from './pg/sql';
 
 import {
   listScalpCandleHistorySymbols,
-  loadScalpCandleHistory,
-  saveScalpCandleHistory,
-  type ScalpCandleHistoryRecord,
 } from "./candleHistory";
 import { getScalpStrategyConfig } from "./config";
 import { isScalpPgConfigured, scalpPrisma } from "./pg/client";
@@ -292,16 +289,6 @@ interface PgOrphanedDeploymentPruneResult {
   prunedDeploymentIds: string[];
 }
 
-function toRecordSummary(record: ScalpCandleHistoryRecord | null): {
-  epic: string | null;
-  source: "bitget";
-} {
-  return {
-    epic: record?.epic ?? null,
-    source: "bitget",
-  };
-}
-
 async function pruneCandleHistoryRollingWeeks(params: {
   nowMs: number;
   dryRun: boolean;
@@ -320,30 +307,32 @@ async function pruneCandleHistoryRollingWeeks(params: {
 
   let symbolsPruned = 0;
   let candlesDeleted = 0;
+  const db = isScalpPgConfigured() ? scalpPrisma() : null;
+  const currentWeekStartMs = startOfWeekMondayUtc(params.nowMs);
+  const cutoffWeekStartMs =
+    currentWeekStartMs - (Math.max(1, Math.floor(Number(params.keepWeeks) || 1)) - 1) * ONE_WEEK_MS;
   for (const symbol of symbols) {
     if (params.skipSymbols?.has(symbol)) continue;
-    const loaded = await loadScalpCandleHistory(symbol, params.timeframe);
-    const record = loaded.record;
-    if (!record || !record.candles.length) continue;
-
-    const pruned = pruneScalpCandlesToRollingWeeks({
-      candles: record.candles,
-      nowMs: params.nowMs,
-      keepWeeks: params.keepWeeks,
-    });
-    if (pruned.removedCount <= 0) continue;
+    if (!db) continue;
+    const [countRow] = await db.$queryRaw<Array<{ candleCount: bigint | number | null }>>(sql`
+      SELECT COALESCE(SUM(candle_count), 0)::bigint AS "candleCount"
+      FROM scalp_candle_history_weeks
+      WHERE symbol = ${symbol}
+        AND timeframe = ${params.timeframe}
+        AND week_start < to_timestamp(${cutoffWeekStartMs} / 1000.0);
+    `);
+    const removedCount = Math.max(0, Number(countRow?.candleCount || 0));
+    if (removedCount <= 0) continue;
 
     symbolsPruned += 1;
-    candlesDeleted += pruned.removedCount;
+    candlesDeleted += removedCount;
     if (!params.dryRun) {
-      const recordSummary = toRecordSummary(record);
-      await saveScalpCandleHistory({
-        symbol: record.symbol,
-        timeframe: record.timeframe,
-        epic: recordSummary.epic,
-        source: recordSummary.source,
-        candles: pruned.candles,
-      });
+      await db.$executeRaw(sql`
+        DELETE FROM scalp_candle_history_weeks
+        WHERE symbol = ${symbol}
+          AND timeframe = ${params.timeframe}
+          AND week_start < to_timestamp(${cutoffWeekStartMs} / 1000.0);
+      `);
     }
   }
 

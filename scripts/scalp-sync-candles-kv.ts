@@ -1,10 +1,16 @@
-import { loadScalpCandleHistory, saveScalpCandleHistory } from '../lib/scalp/candleHistory';
+import {
+    loadScalpCandleHistory,
+    loadScalpCandleHistoryRange,
+    loadScalpCandleHistoryStatsBulk,
+    saveScalpCandleHistory,
+} from '../lib/scalp/candleHistory';
 
 type CliArgs = {
     symbols: string[];
     timeframes: string[];
     maxDays: number | null;
     dryRun: boolean;
+    allowFullHistory: boolean;
 };
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -75,6 +81,7 @@ function parseArgs(argv: string[]): CliArgs {
         timeframes: timeframes.length ? Array.from(new Set(timeframes)) : ['1m', '15m'],
         maxDays: parsePositiveInt(out.maxDays),
         dryRun: parseBool(out.dryRun, false),
+        allowFullHistory: parseBool(out.allowFullHistory, false),
     };
 }
 
@@ -87,11 +94,24 @@ async function main(): Promise<void> {
     const args = parseArgs(process.argv.slice(2));
     const nowMs = Date.now();
     const minTs = args.maxDays ? nowMs - args.maxDays * ONE_DAY_MS : null;
+    if (minTs === null && !args.allowFullHistory) {
+        throw new Error('Refusing full candle-history sync without --allowFullHistory. Prefer --maxDays for bounded syncs.');
+    }
 
     const rows: Array<Record<string, unknown>> = [];
     for (const symbol of args.symbols) {
         for (const timeframe of args.timeframes) {
-            const source = await loadScalpCandleHistory(symbol, timeframe, { backend: 'pg' });
+            const source =
+                minTs === null
+                    ? await loadScalpCandleHistory(symbol, timeframe, {
+                          backend: 'pg',
+                          auditSource: 'script_scalp_sync_candles_kv_full',
+                      })
+                    : await loadScalpCandleHistoryRange(symbol, timeframe, minTs, nowMs, {
+                          backend: 'pg',
+                          readOrder: ['pg'],
+                          auditSource: 'script_scalp_sync_candles_kv_range',
+                      });
             const sourceCandles = source.record?.candles || [];
             const filteredCandles =
                 minTs === null ? sourceCandles : sourceCandles.filter((row) => Number(row[0]) >= Number(minTs));
@@ -113,15 +133,15 @@ async function main(): Promise<void> {
                         symbol,
                         timeframe,
                         epic: source.record.epic,
-                        source: 'bitget',
+                        source: source.record.source,
                         candles: filteredCandles,
                     },
                     { backend: 'pg' },
                 );
             }
 
-            const target = args.dryRun ? null : await loadScalpCandleHistory(symbol, timeframe, { backend: 'pg' });
-            const targetCount = target?.record?.candles?.length ?? null;
+            const [targetStats] = args.dryRun ? [null] : await loadScalpCandleHistoryStatsBulk([symbol], timeframe, { backend: 'pg' });
+            const targetCount = targetStats?.candleCount ?? null;
             rows.push({
                 symbol,
                 timeframe,

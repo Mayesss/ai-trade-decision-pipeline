@@ -7,7 +7,8 @@ import {
 } from "../../../../lib/scalp/bitgetHistory";
 import {
   type CandleHistoryBackend,
-  loadScalpCandleHistory,
+  loadScalpCandleHistoryRange,
+  loadScalpCandleHistoryTail,
   normalizeHistoryTimeframe,
 } from "../../../../lib/scalp/candleHistory";
 import {
@@ -377,11 +378,35 @@ async function loadStoredHistoryRowsForTimeframe(params: {
   toTsMs: number | null;
   lookbackCandles: number;
 }): Promise<any[]> {
-  const history = await loadScalpCandleHistory(
-    params.symbol,
-    params.timeframe,
-    { backend: params.backend },
-  );
+  const history =
+    params.hasEffectiveRange &&
+    params.fromTsMs !== null &&
+    params.toTsMs !== null
+      ? await loadScalpCandleHistoryRange(
+          params.symbol,
+          params.timeframe,
+          params.fromTsMs,
+          params.toTsMs,
+          {
+            backend: params.backend,
+            venue: "bitget",
+            readOrder: ["pg"],
+            maxBrokerRangeDays: MAX_DATE_RANGE_DAYS,
+            auditSource: "scalp_backtest_dual_timeframe",
+          },
+        )
+      : await loadScalpCandleHistoryTail(
+          params.symbol,
+          params.timeframe,
+          lookbackLimitForTimeframe(params.lookbackCandles, params.timeframe),
+          {
+            backend: params.backend,
+            venue: "bitget",
+            readOrder: ["pg"],
+            maxBrokerRangeDays: 7,
+            auditSource: "scalp_backtest_dual_timeframe",
+          },
+        );
   return selectStoredHistoryRows({
     rows: history.record?.candles ?? [],
     hasEffectiveRange: params.hasEffectiveRange,
@@ -981,11 +1006,35 @@ export default async function handler(
     if (!useCachedRows && useStoredHistory) {
       const startedAtMs = Date.now();
       try {
-        const storedHistory = await loadScalpCandleHistory(
-          symbol,
-          requestedHistoryTf,
-          { backend: requestedHistoryBackend },
-        );
+        const storedHistory =
+          hasEffectiveRange &&
+          effectiveRequestedFromTsMs !== null &&
+          effectiveRequestedToTsMs !== null
+            ? await loadScalpCandleHistoryRange(
+                symbol,
+                requestedHistoryTf,
+                effectiveRequestedFromTsMs,
+                effectiveRequestedToTsMs,
+                {
+                  backend: requestedHistoryBackend,
+                  venue: "bitget",
+                  readOrder: ["pg"],
+                  maxBrokerRangeDays: MAX_DATE_RANGE_DAYS,
+                  auditSource: "scalp_backtest_stored_history",
+                },
+              )
+            : await loadScalpCandleHistoryTail(
+                symbol,
+                requestedHistoryTf,
+                lookbackLimitForTimeframe(lookbackCandles, requestedHistoryTf),
+                {
+                  backend: requestedHistoryBackend,
+                  venue: "bitget",
+                  readOrder: ["pg"],
+                  maxBrokerRangeDays: 7,
+                  auditSource: "scalp_backtest_stored_history",
+                },
+              );
         storedHistoryRows = selectStoredHistoryRows({
           rows: storedHistory.record?.candles ?? [],
           hasEffectiveRange,
