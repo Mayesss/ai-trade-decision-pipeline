@@ -298,7 +298,7 @@ export default function ScalpV5Dashboard() {
     return deploymentRows.filter((r) => r.gate.decision === decisionFilter);
   }, [deploymentRows, decisionFilter]);
 
-  const activityRows = useMemo(() => (recent ? recent.recentTrades.slice(0, 40) : []), [recent]);
+  const activityRows = useMemo(() => (recent ? recent.recentTrades.slice(0, 10) : []), [recent]);
 
   // Hide evaluator section once this week's evaluation pass is complete —
   // the panel is only useful while there's still work to do.
