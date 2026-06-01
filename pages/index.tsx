@@ -136,6 +136,48 @@ interface RecentResp {
   recentTrades: TradeRow[];
 }
 
+interface NeonUsageResp {
+  ok: boolean;
+  configured: boolean;
+  generatedAtMs: number;
+  message?: string;
+  requiredEnv?: {
+    NEON_API_KEY: boolean;
+    NEON_PROJECT_ID: boolean;
+    NEON_ORG_ID: boolean;
+  };
+  project?: {
+    id: string;
+    name: string | null;
+    dataTransferBytes: number;
+    allowanceBytes: number;
+    allowanceGb: number;
+    allowanceUsedPct: number | null;
+  };
+  branch?: {
+    id: string;
+    name: string | null;
+    dataTransferBytes: number | null;
+  } | null;
+  consumption24h?: {
+    available: boolean;
+    error: string | null;
+    from: string;
+    to: string;
+    granularity: string;
+    publicNetworkTransferBytes: number;
+    privateNetworkTransferBytes: number;
+    totalNetworkTransferBytes: number;
+    hourly: Array<{
+      timeframeStart: string | null;
+      timeframeEnd: string | null;
+      publicNetworkTransferBytes: number;
+      privateNetworkTransferBytes: number;
+      totalNetworkTransferBytes: number;
+    }>;
+  };
+}
+
 const DECISION_ORDER: V5GateDecision[] = [
   "allow",
   "block_negative",
@@ -153,6 +195,7 @@ export default function ScalpV5Dashboard() {
   const [gateState, setGateState] = useState<GateStateResp | null>(null);
   const [deployments, setDeployments] = useState<DeploymentsResp | null>(null);
   const [recent, setRecent] = useState<RecentResp | null>(null);
+  const [neonUsage, setNeonUsage] = useState<NeonUsageResp | null>(null);
 
   const [expandedDeployments, setExpandedDeployments] = useState<Set<string>>(new Set());
   const [showAllInactive, setShowAllInactive] = useState(false);
@@ -183,16 +226,17 @@ export default function ScalpV5Dashboard() {
   // coverage typically lands first (~50ms), deployments last (the heavy one).
   // UI sections render as data arrives.
   const loader = useCallback(async (headers: Record<string, string>) => {
-    const [c, g, d, rc] = await Promise.all([
+    const [c, g, d, rc, nu] = await Promise.all([
       fetchOne<CoverageResp>("/api/scalp/v5/coverage", headers, setCoverage),
       fetchOne<GateStateResp>("/api/scalp/v5/gate-state", headers, setGateState),
       fetchOne<DeploymentsResp>("/api/scalp/v5/deployments", headers, setDeployments),
       fetchOne<RecentResp>("/api/scalp/v4/recent", headers, setRecent),
+      fetchOne<NeonUsageResp>("/api/scalp/ops/neon-usage", headers, setNeonUsage),
     ]);
-    if (c.unauthorized || g.unauthorized || d.unauthorized || rc.unauthorized) {
+    if (c.unauthorized || g.unauthorized || d.unauthorized || rc.unauthorized || nu.unauthorized) {
       return { unauthorized: true };
     }
-    return { error: c.error || g.error || d.error || rc.error };
+    return { error: c.error || g.error || d.error || rc.error || nu.error };
   }, []);
 
   const access = useAdminSecretLoader(loader);
@@ -315,6 +359,9 @@ export default function ScalpV5Dashboard() {
 
       <WeekNetRTrack dailyNetR={recent?.dailyNetR ?? null} recentTrades={recent?.recentTrades ?? null} />
 
+      <SectionHeader title="neon usage · network transfer" />
+      {neonUsage ? <NeonUsageCompact data={neonUsage} /> : <Skeleton label="loading neon usage" />}
+
       <SessionTimeline sessionCounts={sessionCounts} />
 
       <SectionHeader title="deployments · live cell evidence" />
@@ -393,9 +440,94 @@ export default function ScalpV5Dashboard() {
       )}
 
       <div className="border-t border-zinc-800 pt-2 mt-6 text-zinc-600">
-        sources /api/scalp/v5/coverage · /gate-state · /deployments · /api/scalp/v4/recent
+        sources /api/scalp/v5/coverage · /gate-state · /deployments · /api/scalp/v4/recent · /api/scalp/ops/neon-usage
       </div>
     </PageShell>
+  );
+}
+
+function fmtBytes(bytes: number | null | undefined): string {
+  const n = Number(bytes || 0);
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = n;
+  let idx = 0;
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx += 1;
+  }
+  const digits = idx <= 1 ? 0 : value < 10 ? 2 : value < 100 ? 1 : 0;
+  return `${value.toFixed(digits)} ${units[idx]}`;
+}
+
+function NeonUsageCompact({ data }: { data: NeonUsageResp }) {
+  if (!data.configured) {
+    return (
+      <div className="mt-1 pl-2 text-zinc-500">
+        not configured · set <span className="text-zinc-400">NEON_API_KEY</span> and{" "}
+        <span className="text-zinc-400">NEON_PROJECT_ID</span>
+      </div>
+    );
+  }
+  const project = data.project;
+  const usedPct = project?.allowanceUsedPct ?? null;
+  const pctLabel = usedPct === null ? "—" : `${usedPct.toFixed(1)}%`;
+  const pctClass =
+    usedPct === null
+      ? "text-zinc-500"
+      : usedPct >= 100
+        ? "text-rose-400"
+        : usedPct >= 80
+          ? "text-amber-400"
+          : "text-emerald-400";
+  const hourlyTotals = data.consumption24h?.hourly.map((row) => row.totalNetworkTransferBytes) || [];
+  const hourlyUnavailableLabel = data.consumption24h?.error
+    ? "hourly unavailable on this Neon API plan/key"
+    : "set NEON_ORG_ID for hourly breakdown";
+  return (
+    <div className="mt-1 pl-2 grid grid-cols-[auto_1fr] md:grid-cols-[10rem_1fr] gap-x-3 gap-y-0.5 items-baseline">
+      <span className="text-zinc-500">billing period</span>
+      <span className="flex flex-wrap gap-x-3">
+        <span>
+          <span className="text-zinc-100">{fmtBytes(project?.dataTransferBytes)}</span>
+          <span className="text-zinc-500"> / {project?.allowanceGb?.toFixed(0) ?? "—"} GB</span>
+        </span>
+        <span className={pctClass}>{pctLabel}</span>
+        <span className="text-zinc-500">{project?.name || project?.id || "project"}</span>
+        {data.branch?.dataTransferBytes !== null && data.branch?.dataTransferBytes !== undefined ? (
+          <span>
+            <span className="text-zinc-500">branch </span>
+            <span className="text-zinc-300">{fmtBytes(data.branch.dataTransferBytes)}</span>
+          </span>
+        ) : null}
+      </span>
+      <span className="text-zinc-500">last 24h</span>
+      <span className="flex flex-wrap gap-x-3">
+        {data.consumption24h?.available ? (
+          <>
+            <span>
+              <span className="text-zinc-100">{fmtBytes(data.consumption24h.totalNetworkTransferBytes)}</span>
+              <span className="text-zinc-500"> total</span>
+            </span>
+            <span>
+              <span className="text-sky-300">{fmtBytes(data.consumption24h.publicNetworkTransferBytes)}</span>
+              <span className="text-zinc-500"> public</span>
+            </span>
+            <span>
+              <span className="text-zinc-300">{fmtBytes(data.consumption24h.privateNetworkTransferBytes)}</span>
+              <span className="text-zinc-500"> private</span>
+            </span>
+            <span className="text-emerald-400 font-mono whitespace-pre" title={hourlyTotals.map(fmtBytes).join(" / ")}>
+              {sparkline(hourlyTotals)}
+            </span>
+          </>
+        ) : (
+          <span className="text-zinc-500" title={data.consumption24h?.error || undefined}>
+            {hourlyUnavailableLabel}
+          </span>
+        )}
+      </span>
+    </div>
   );
 }
 
@@ -1134,9 +1266,9 @@ function WeekNetRTrack({
           trades: Number.isFinite(row.trades) ? row.trades : 0,
         });
       }
-      return byDay;
     }
     if (!recentTrades) return byDay;
+    const recentByDay = new Map<number, { netR: number; trades: number }>();
     for (const t of recentTrades) {
       // The ledger-sourced closes carry the realized rMultiple as "trade_close".
       // Journal "trade" rows are usually opens (rMultiple null) but accept them
@@ -1144,8 +1276,14 @@ function WeekNetRTrack({
       if (t.eventKind !== "trade_close" && t.eventKind !== "trade") continue;
       if (t.rMultiple == null || !Number.isFinite(t.rMultiple)) continue;
       const dayStart = Math.floor(t.tsMs / DAY_MS) * DAY_MS;
-      const prev = byDay.get(dayStart) || { netR: 0, trades: 0 };
-      byDay.set(dayStart, { netR: prev.netR + t.rMultiple, trades: prev.trades + 1 });
+      const prev = recentByDay.get(dayStart) || { netR: 0, trades: 0 };
+      recentByDay.set(dayStart, { netR: prev.netR + t.rMultiple, trades: prev.trades + 1 });
+    }
+    for (const [dayStart, recentAgg] of recentByDay) {
+      const dailyAgg = byDay.get(dayStart);
+      if (!dailyAgg || recentAgg.trades > dailyAgg.trades) {
+        byDay.set(dayStart, recentAgg);
+      }
     }
     return byDay;
   }, [dailyNetR, recentTrades]);
