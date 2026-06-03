@@ -37,6 +37,12 @@ import {
   resolveModelGuidedComposerExecutionPlanFromTuneId,
 } from "./composerExecution";
 import {
+  DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID,
+  buildScalpV2DayModelComposerGrid,
+  isDayModelGuidedComposerStrategyId,
+  parseDayComposerTuneId,
+} from "./dayComposer";
+import {
   ENTRY_TRIGGER_COMPAT,
   resolveEntryTriggerOverrides,
 } from "./entryTriggerPresets";
@@ -128,7 +134,6 @@ import {
   normalizeReasonCodes,
 } from "./logic";
 import {
-  buildScalpV2ModelGuidedComposerGrid,
   toScalpV2ResearchCursorKey,
 } from "./research";
 import { runScalpV2LoadCandlesPipelineJob } from "./pipelineJobsAdapter";
@@ -211,7 +216,8 @@ function buildResearchWarmUpScopeHash(params: {
     .sort((a, b) => a[0].localeCompare(b[0]));
   const payload = JSON.stringify({
     version: RESEARCH_WARM_UP_SCOPE_HASH_VERSION,
-    strategyId: MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
+    strategyId: DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID,
+    dayComposerVersion: "day_model_guided_composer_v1_r1",
     maxCandidatesPerSession: Math.max(
       1,
       Math.floor(Number(params.maxCandidatesPerSession) || 1),
@@ -3070,7 +3076,7 @@ export async function runScalpV2ResearchJob(params: {
 	      v3PriorScore?: number;
 	      v3TemporalFilter?: ScalpV2V3TemporalFilter | null;
 	      v3Ranking?: Record<string, unknown> | null;
-	      dsl: ReturnType<typeof buildScalpV2ModelGuidedComposerGrid>[number];
+	      dsl: any;
 	    };
 
 	    let allCandidates: InMemoryCandidate[] = [];
@@ -3084,24 +3090,23 @@ export async function runScalpV2ResearchJob(params: {
 
 	      for (const scope of scopes) {
 	        generatedScopeCount += 1;
-	        const v3TemporalBudget = v3Enabled
-	          ? Math.max(
-	              0,
-	              Math.min(
-	                maxCandidatesPerSession - 1,
-	                Math.floor(maxCandidatesPerSession * v3Cfg.temporalVariantQuotaPct),
-	              ),
-	            )
-	          : 0;
+	        const v3TemporalBudget = 0;
 	        const baseCandidateBudget = Math.max(
 	          1,
 	          maxCandidatesPerSession - v3TemporalBudget,
 	        );
-	        const composerCandidates = buildScalpV2ModelGuidedComposerGrid({
+	        const composerCandidates = buildScalpV2DayModelComposerGrid({
 	          venue: scope.venue,
 	          symbol: scope.symbol,
 	          entrySessionProfile: scope.session,
-	          maxCandidates: baseCandidateBudget,
+	          maxCandidates: Math.min(
+	            baseCandidateBudget,
+	            toPositiveInt(
+	              process.env.SCALP_V2_DAY_COMPOSER_MAX_CANDIDATES_PER_SCOPE,
+	              120,
+	              2_000,
+	            ),
+	          ),
 	        });
 	        poolSizeTotal += composerCandidates.length;
 	        const scopeCandidates: InMemoryCandidate[] = [];
@@ -3135,7 +3140,7 @@ export async function runScalpV2ResearchJob(params: {
 	            venue: scope.venue,
 	            symbol: scope.symbol,
 	            session: scope.session,
-	            strategyId: MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
+	            strategyId: DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID,
 	            tuneId: dsl.tuneId,
 	            candidateId: dsl.candidateId,
 	            score,
@@ -3220,7 +3225,7 @@ export async function runScalpV2ResearchJob(params: {
 
       // Deployment variants
       try {
-        const enabledDeployments = enabledDeploymentsForWarmUp;
+        const enabledDeployments: typeof enabledDeploymentsForWarmUp = [];
         const existingTuneIds = new Set(allCandidates.map((c) => c.tuneId));
         for (const dep of enabledDeployments) {
           if (!isScalpV2RuntimeSymbolInScope({ runtime, venue: dep.venue, symbol: dep.symbol })) continue;
@@ -3326,9 +3331,12 @@ export async function runScalpV2ResearchJob(params: {
         metadata: {
           discoveredAtMs: nowTs,
           researchWindowToTs: windowToTs,
-          source: "model_guided_composer",
+          source: "day_model_guided_composer",
           researchCandidateId: c.candidateId,
-          researchDsl: c.dsl.blocksByFamily,
+          researchDsl: c.dsl.dayBlocksByFamily,
+          legacyResearchDsl: c.dsl.blocksByFamily,
+          dayComposerPlan: c.dsl.dayComposerPlan,
+          dayComposerBehaviorFingerprint: c.dsl.behaviorFingerprint,
           researchReferences: c.dsl.referenceStrategyIds,
 	          researchSupportScore: c.dsl.supportScore,
 	          researchRegimeGateId: c.dsl.regimeGateId || null,
@@ -3503,6 +3511,8 @@ export async function runScalpV2ResearchJob(params: {
       for (const row of chunkRows) {
         const meta = row.metadata || {};
         const dslRaw = (meta.researchDsl || {}) as Record<string, string[]>;
+        const dayPlan = parseDayComposerTuneId(row.tuneId);
+        const dayDslRaw = asRecord(meta.researchDsl || {});
         allCandidates.push({
           rowId: row.id,
           venue: row.venue as ScalpV2Venue,
@@ -3535,10 +3545,26 @@ export async function runScalpV2ResearchJob(params: {
               exit_rule: dslRaw.exit_rule || [],
               risk_rule: dslRaw.risk_rule || [],
             },
+            dayBlocksByFamily: {
+              context: Array.isArray(dayDslRaw.context) ? dayDslRaw.context as any : [dayPlan.contextId],
+              level: Array.isArray(dayDslRaw.level) ? dayDslRaw.level as any : [dayPlan.levelId],
+              trigger: Array.isArray(dayDslRaw.trigger) ? dayDslRaw.trigger as any : [dayPlan.triggerId],
+              confirmation: Array.isArray(dayDslRaw.confirmation) ? dayDslRaw.confirmation as any : [dayPlan.confirmationId],
+              management: Array.isArray(dayDslRaw.management) ? dayDslRaw.management as any : [dayPlan.managementId],
+            },
             referenceStrategyIds: (meta.researchReferences || []) as string[],
             supportScore: Number(meta.researchSupportScore) || 0,
             generatedAtMs: Number(meta.discoveredAtMs) || nowTs,
             model: (meta.composerModel || {}) as any,
+            dayComposerPlan: asRecord(meta.dayComposerPlan) as any || dayPlan,
+            behaviorFingerprint: String(meta.dayComposerBehaviorFingerprint || [
+              dayPlan.contextId,
+              dayPlan.levelId,
+              dayPlan.triggerId,
+              dayPlan.confirmationId,
+              dayPlan.managementId,
+            ].join("|")),
+            compatibilityReasonCodes: [],
             regimeGateId: (meta.researchRegimeGateId as string) || undefined,
           },
         });
@@ -5998,6 +6024,26 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       });
     }
 
+    let legacyComposerRetiredFlat = 0;
+    let legacyComposerManagementOnly = 0;
+    for (const row of drafts) {
+      if (row.strategyId !== MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID) continue;
+      const hasOpenPosition = openPositionDeploymentIds.has(row.deploymentId);
+      row.eligible = false;
+      row.shadowEligible = false;
+      row.enabled = Boolean(row.currentlyEnabled && hasOpenPosition);
+      row.reason = hasOpenPosition
+        ? "legacy_composer_retired_management_only"
+        : "legacy_composer_retired_flat_disabled";
+      row.lifecycle.state = "retired";
+      row.entryBlockReasonCodes = normalizeReasonCodes([
+        ...row.entryBlockReasonCodes,
+        "LEGACY_COMPOSER_RETIRED_NEW_ENTRIES_BLOCKED",
+      ]);
+      if (hasOpenPosition) legacyComposerManagementOnly += 1;
+      else legacyComposerRetiredFlat += 1;
+    }
+
     // Winner shortlist: pick the best fully-eligible candidate per scope key,
     // then cap to maxEnabledDeployments for live slots.
     const winnerBySymbolStrategySession = new Map<string, PromotionDraft>();
@@ -6181,6 +6227,21 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     }
 
     for (const row of drafts) {
+      if (row.strategyId === MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID) {
+        const hasOpenPosition = openPositionDeploymentIds.has(row.deploymentId);
+        row.eligible = false;
+        row.shadowEligible = false;
+        row.enabled = Boolean(row.currentlyEnabled && hasOpenPosition);
+        row.reason = hasOpenPosition
+          ? "legacy_composer_retired_management_only"
+          : "legacy_composer_retired_flat_disabled";
+        row.lifecycle.state = "retired";
+        row.entryBlockReasonCodes = normalizeReasonCodes([
+          ...row.entryBlockReasonCodes,
+          "LEGACY_COMPOSER_RETIRED_NEW_ENTRIES_BLOCKED",
+        ]);
+        continue;
+      }
       if (!row.enabled && row.currentlyEnabled) {
         row.lifecycle.lastSeatReleaseAtMs = row.lifecycle.lastSeatReleaseAtMs || nowTs;
       }
@@ -6473,6 +6534,8 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       demotedByUniqueness,
       demotedByBrokerEntryOverlap,
       managementOnlyByBrokerEntryOverlap,
+      legacyComposerRetiredFlat,
+      legacyComposerManagementOnly,
       demotedByEnabledCap: capOut.demoted,
       exactLosers: drafts.filter((row) => row.exactLoser).length,
       neighborSuspended: neighborSuspended.size,
@@ -6865,6 +6928,11 @@ export async function runScalpV2ExecuteJob(params: {
     // state. Open-position membership is the only override.
     const eligibleAfterCheapFilter = executableDeployments.filter((deployment) => {
       if (openPositionDeploymentIds.has(deployment.deploymentId)) return true;
+      if (deployment.strategyId === MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID) {
+        cheapSkipReasonCounts.LEGACY_COMPOSER_RETIRED_NEW_ENTRIES_BLOCKED =
+          (cheapSkipReasonCounts.LEGACY_COMPOSER_RETIRED_NEW_ENTRIES_BLOCKED || 0) + 1;
+        return false;
+      }
       if (sundayBlock.blocked) {
         cheapSkipReasonCounts.SUNDAY_BLOCK =
           (cheapSkipReasonCounts.SUNDAY_BLOCK || 0) + 1;
@@ -7075,6 +7143,8 @@ export async function runScalpV2ExecuteJob(params: {
 	        const promotionEntryBlockReasonCodes = normalizeReasonCodes(
 	          asRecord(deployment.promotionGate).entryBlockReasonCodes,
 	        );
+	        const legacyComposerRetired =
+	          deployment.strategyId === MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID;
 	        // Sunday UTC = v5 evaluation+promotion day. No new entries;
 	        // existing positions still get managed/reconciled. Monday
 	        // resumes trading against the freshly-validated evidence
@@ -7087,6 +7157,7 @@ export async function runScalpV2ExecuteJob(params: {
 	          v4RegimeGate.blocked ||
 	          v5Gate.blocked ||
 	          v5OwnedMissingEvidenceReasonCodes.length > 0 ||
+	          legacyComposerRetired ||
 	          sundayBlock.blocked
 	        );
 	        const entryBlockReasonCodes = normalizeReasonCodes([
@@ -7095,6 +7166,7 @@ export async function runScalpV2ExecuteJob(params: {
 	          ...(v4RegimeGate.blocked ? v4RegimeGate.reasonCodes : []),
 	          ...(v5Gate.blocked || v5Gate.shadowOnly ? v5Gate.reasonCodes : []),
 	          ...v5OwnedMissingEvidenceReasonCodes,
+	          ...(legacyComposerRetired ? ["LEGACY_COMPOSER_RETIRED_NEW_ENTRIES_BLOCKED"] : []),
 	          ...(sundayBlock.blocked ? sundayBlock.reasonCodes : []),
 	        ]);
 	        const hasOpenPosition = openPositionDeploymentIds.has(deployment.deploymentId);
@@ -7109,7 +7181,7 @@ export async function runScalpV2ExecuteJob(params: {
 	          }
 	          continue;
 	        }
-	        const configOverride = buildScalpV2ExecuteConfigOverride({
+	        const configOverrideBase = buildScalpV2ExecuteConfigOverride({
 	          entrySessionProfile: deployment.entrySessionProfile,
 	          riskProfile: rp,
 	          entryTriggerOverrides: entryOverrides,
@@ -7119,6 +7191,24 @@ export async function runScalpV2ExecuteJob(params: {
 	          temporalFilter,
 	          entryBlockReasonCodes,
 	        });
+	        const dayManagement = isDayModelGuidedComposerStrategyId(deployment.strategyId)
+	          ? parseDayComposerTuneId(deployment.tuneId).managementId
+	          : null;
+	        const configOverride = dayManagement
+	          ? {
+	              ...configOverrideBase,
+	              risk: {
+	                ...(configOverrideBase.risk || {}),
+	                maxTradesPerSymbolPerDay: 1,
+	                timeStopBars:
+	                  dayManagement === "trail_after_1r_time_8h" ? 32 : 24,
+	                ...(dayManagement === "trail_after_1r_time_8h" && {
+	                  trailStartR: 1,
+	                  trailAtrMult: 1.8,
+	                }),
+	              },
+	            }
+	          : configOverrideBase;
         const runtimeSnapshot = buildScalpV2RuntimeSnapshotForDeployment({
           strategyId: deployment.strategyId,
         });

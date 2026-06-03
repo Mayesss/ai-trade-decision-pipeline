@@ -223,6 +223,24 @@ function buildSetupId(state: ScalpSessionState): string | null {
   return `scalp:${hashForSetup(seed)}`;
 }
 
+function buildStructureLevelSetupId(
+  state: ScalpSessionState,
+  intent: Extract<ScalpStrategyEntryIntent, { model: "structure_level" }>,
+): string | null {
+  const setupKey = String(intent.setupKey || "").trim();
+  if (!setupKey) return null;
+  const seed = [
+    state.symbol,
+    state.deploymentId,
+    state.dayKey,
+    state.strategyId,
+    state.tuneId,
+    intent.side,
+    setupKey,
+  ].join(":");
+  return `structure:${hashForSetup(seed)}`;
+}
+
 function scalpDeploymentOwnershipToken(deploymentId: string): string {
   return hashForSetup(`deployment:${deploymentId}`).slice(0, 10);
 }
@@ -382,61 +400,90 @@ export function buildScalpEntryPlan(params: {
   const entryIntent = params.entryIntent ?? resolveLegacyIfvgEntryIntent(state);
   if (!entryIntent)
     return { plan: null, reasonCodes: ["ENTRY_PLAN_NOT_READY"] };
-  if (entryIntent.model !== "ifvg_touch") {
+  const pipSize = pipSizeForScalpSymbol(state.symbol, params.market.symbolMeta);
+  const price = toFinite(params.market.quote.price);
+
+  let setupId: string | null = null;
+  let side: "BUY" | "SELL";
+  let orderType: "MARKET" | "LIMIT";
+  let limitLevel: number | null;
+  let entryReferencePrice: number;
+  let stopPrice: number;
+  const intentReasonCodes: string[] = [];
+
+  if (entryIntent.model === "ifvg_touch") {
+    const ifvg = state.ifvg;
+    const sweep = state.sweep;
+    if (!ifvg || !sweep)
+      return { plan: null, reasonCodes: ["ENTRY_PLAN_MISSING_SETUP"] };
+    const ifvgExpiresAtMs = Number(ifvg.expiresAtMs);
+    if (
+      Number.isFinite(ifvgExpiresAtMs) &&
+      ifvgExpiresAtMs > 0 &&
+      params.market.nowMs >= ifvgExpiresAtMs
+    ) {
+      return { plan: null, reasonCodes: ["ENTRY_PLAN_IFVG_EXPIRED"] };
+    }
+    if (!ifvg.touched)
+      return { plan: null, reasonCodes: ["ENTRY_PLAN_IFVG_NOT_TOUCHED"] };
+
+    setupId = buildSetupId(state);
+    if (!setupId)
+      return { plan: null, reasonCodes: ["ENTRY_PLAN_SETUP_ID_FAILED"] };
+    side = sideFromDirection(ifvg.direction);
+    orderType = params.cfg.execution.entryOrderType;
+    limitLevel =
+      orderType === "LIMIT"
+        ? entryPriceForLimit({
+            side,
+            ifvgLow: ifvg.low,
+            ifvgHigh: ifvg.high,
+            entryMode: ifvg.entryMode,
+          })
+        : null;
+    entryReferencePrice =
+      orderType === "LIMIT" ? toFinite(limitLevel) : price;
+    const stopBufferAbs = Math.max(
+      params.cfg.risk.stopBufferPips * pipSize,
+      params.cfg.risk.stopBufferSpreadMult *
+        Math.max(0, params.market.quote.spreadAbs),
+    );
+    stopPrice =
+      side === "BUY"
+        ? sweep.sweepPrice - stopBufferAbs
+        : sweep.sweepPrice + stopBufferAbs;
+    intentReasonCodes.push("ENTRY_INTENT_IFVG_TOUCH");
+  } else if (entryIntent.model === "structure_level") {
+    setupId = buildStructureLevelSetupId(state, entryIntent);
+    if (!setupId)
+      return { plan: null, reasonCodes: ["ENTRY_PLAN_SETUP_ID_FAILED"] };
+    side = entryIntent.side;
+    orderType = entryIntent.entryMode === "limit_retest" ? "LIMIT" : "MARKET";
+    entryReferencePrice = toFinite(entryIntent.entryReferencePrice);
+    limitLevel = orderType === "LIMIT" ? entryReferencePrice : null;
+    stopPrice = toFinite(entryIntent.stopPrice);
+    intentReasonCodes.push(
+      "ENTRY_INTENT_STRUCTURE_LEVEL",
+      ...(Array.isArray(entryIntent.reasonCodes)
+        ? entryIntent.reasonCodes
+            .map(normalizeReasonFragment)
+            .filter((code): code is string => Boolean(code))
+        : []),
+    );
+  } else {
     return { plan: null, reasonCodes: ["ENTRY_PLAN_UNSUPPORTED_INTENT"] };
   }
-  const ifvg = state.ifvg;
-  const sweep = state.sweep;
-  if (!ifvg || !sweep)
-    return { plan: null, reasonCodes: ["ENTRY_PLAN_MISSING_SETUP"] };
-  const ifvgExpiresAtMs = Number(ifvg.expiresAtMs);
-  if (
-    Number.isFinite(ifvgExpiresAtMs) &&
-    ifvgExpiresAtMs > 0 &&
-    params.market.nowMs >= ifvgExpiresAtMs
-  ) {
-    return { plan: null, reasonCodes: ["ENTRY_PLAN_IFVG_EXPIRED"] };
-  }
-  if (!ifvg.touched)
-    return { plan: null, reasonCodes: ["ENTRY_PLAN_IFVG_NOT_TOUCHED"] };
 
-  const setupId = buildSetupId(state);
-  if (!setupId)
-    return { plan: null, reasonCodes: ["ENTRY_PLAN_SETUP_ID_FAILED"] };
   const dealReference = buildScalpDealReference({
     deploymentId: state.deploymentId,
     setupId,
     dayKey: state.dayKey,
   });
-  const side = sideFromDirection(ifvg.direction);
-  const pipSize = pipSizeForScalpSymbol(state.symbol, params.market.symbolMeta);
-  const price = toFinite(params.market.quote.price);
 
-  const orderType = params.cfg.execution.entryOrderType;
-  const limitLevel =
-    orderType === "LIMIT"
-      ? entryPriceForLimit({
-          side,
-          ifvgLow: ifvg.low,
-          ifvgHigh: ifvg.high,
-          entryMode: ifvg.entryMode,
-        })
-      : null;
-  const entryReferencePrice =
-    orderType === "LIMIT" ? toFinite(limitLevel) : price;
   if (!(Number.isFinite(entryReferencePrice) && entryReferencePrice > 0)) {
     return { plan: null, reasonCodes: ["ENTRY_PLAN_INVALID_ENTRY_PRICE"] };
   }
 
-  const stopBufferAbs = Math.max(
-    params.cfg.risk.stopBufferPips * pipSize,
-    params.cfg.risk.stopBufferSpreadMult *
-      Math.max(0, params.market.quote.spreadAbs),
-  );
-  const stopPrice =
-    side === "BUY"
-      ? sweep.sweepPrice - stopBufferAbs
-      : sweep.sweepPrice + stopBufferAbs;
   if (!(Number.isFinite(stopPrice) && stopPrice > 0)) {
     return { plan: null, reasonCodes: ["ENTRY_PLAN_INVALID_STOP"] };
   }
@@ -558,13 +605,26 @@ export function buildScalpEntryPlan(params: {
       ? Math.max(1, Math.min(bitgetLeverageCap, Math.ceil(notionalUsd / Number(marginBudgetUsd))))
       : params.cfg.execution.defaultLeverage;
 
+  const explicitTakeProfitPrice =
+    entryIntent.model === "structure_level"
+      ? toFinite(entryIntent.takeProfitPrice, NaN)
+      : NaN;
   const takeProfitPrice =
-    side === "BUY"
-      ? entryReferencePrice + riskAbs * params.cfg.risk.takeProfitR
-      : entryReferencePrice - riskAbs * params.cfg.risk.takeProfitR;
+    Number.isFinite(explicitTakeProfitPrice) && explicitTakeProfitPrice > 0
+      ? explicitTakeProfitPrice
+      : side === "BUY"
+        ? entryReferencePrice + riskAbs * params.cfg.risk.takeProfitR
+        : entryReferencePrice - riskAbs * params.cfg.risk.takeProfitR;
 
   if (!(Number.isFinite(takeProfitPrice) && takeProfitPrice > 0)) {
     return { plan: null, reasonCodes: ["ENTRY_PLAN_INVALID_TP"] };
+  }
+  const targetIsFavorable =
+    side === "BUY"
+      ? takeProfitPrice > entryReferencePrice
+      : takeProfitPrice < entryReferencePrice;
+  if (!targetIsFavorable) {
+    return { plan: null, reasonCodes: ["ENTRY_PLAN_TP_NOT_FAVORABLE"] };
   }
 
   return {
@@ -587,7 +647,7 @@ export function buildScalpEntryPlan(params: {
       leverage,
     },
     reasonCodes: [
-      "ENTRY_INTENT_IFVG_TOUCH",
+      ...intentReasonCodes,
       "ENTRY_PLAN_READY",
       ...(venue === "bitget" ? ["BITGET_MARGIN_AWARE_SIZING"] : []),
       ...(leverageCapActive ? ["ENTRY_PLAN_ASSET_LEVERAGE_CAP_ACTIVE"] : []),

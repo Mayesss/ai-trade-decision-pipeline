@@ -1,5 +1,6 @@
 import { isScalpPgConfigured, scalpPrisma } from "../scalp/pg/client";
 import { sql } from "../scalp/pg/sql";
+import { DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID } from "../scalp-v2/dayComposer";
 import {
   getScalpV2DefaultRiskProfile,
   getScalpV2RuntimeConfig,
@@ -1863,6 +1864,7 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
       promotion_gate   AS "promotionGate"
     FROM scalp_v2_deployments
     WHERE candidate_id IS NOT NULL
+      AND strategy_id = ${DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID}
       AND v5_enabled = TRUE
       AND v5_evaluated_at IS NOT NULL
       AND v5_evaluated_at >= ${staleBefore}

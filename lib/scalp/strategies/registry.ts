@@ -14,6 +14,7 @@ import { relativeValueSpreadProxyM15M3Strategy } from './relativeValueSpreadProx
 import { sessionSeasonalityBiasM15M3Strategy } from './sessionSeasonalityBiasM15M3';
 import { trendDayReaccelerationM15M3Strategy } from './trendDayReaccelerationM15M3';
 import { modelGuidedComposerV2Strategy } from './modelGuidedComposerV2';
+import { dayModelGuidedComposerV1Strategy } from './dayModelGuidedComposerV1';
 import { TIMEFRAME_VARIANT_STRATEGIES } from './timeframeVariants';
 import type { ScalpStrategyDefinition } from './types';
 
@@ -34,6 +35,7 @@ const BASE_REGISTRY: Record<string, ScalpStrategyDefinition> = {
     [sessionSeasonalityBiasM15M3Strategy.id]: sessionSeasonalityBiasM15M3Strategy,
     [adaptiveMetaSelectorM15M3Strategy.id]: adaptiveMetaSelectorM15M3Strategy,
     [modelGuidedComposerV2Strategy.id]: modelGuidedComposerV2Strategy,
+    [dayModelGuidedComposerV1Strategy.id]: dayModelGuidedComposerV1Strategy,
 };
 
 // Merge timeframe-variant strategies into the registry

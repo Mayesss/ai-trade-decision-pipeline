@@ -7,9 +7,21 @@ import type {
     ScalpStrategyConfig,
 } from '../types';
 
-export type ScalpStrategyEntryIntent = {
-    model: 'ifvg_touch';
-};
+export type ScalpStrategyEntryIntent =
+    | {
+          model: 'ifvg_touch';
+      }
+    | {
+          model: 'structure_level';
+          side: 'BUY' | 'SELL';
+          entryMode: 'market' | 'limit_retest';
+          entryReferencePrice: number;
+          stopPrice: number;
+          takeProfitPrice?: number | null;
+          setupKey: string;
+          reasonCodes?: string[];
+          metadata?: Record<string, unknown>;
+      };
 
 export interface ScalpStrategyPhaseInput {
     state: ScalpSessionState;
