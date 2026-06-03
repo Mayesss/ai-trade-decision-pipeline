@@ -38,6 +38,27 @@ const LEGACY_COMPOSER_RETIRED_METADATA = Object.freeze({
   retiredReason: "legacy_composer_replaced_by_day_model_guided_composer_v1",
 });
 
+function appendVisibleCandidateWhere(
+  where: string[],
+  values: unknown[],
+  alias = "c",
+): void {
+  values.push(RETIRED_LEGACY_COMPOSER_STRATEGY_ID);
+  where.push(`${alias}.strategy_id <> $${values.length}`);
+  where.push(`
+    NOT EXISTS (
+      SELECT 1
+      FROM scalp_v2_deployments retired_d
+      WHERE retired_d.venue = ${alias}.venue
+        AND retired_d.symbol = ${alias}.symbol
+        AND retired_d.strategy_id = ${alias}.strategy_id
+        AND retired_d.tune_id = ${alias}.tune_id
+        AND retired_d.entry_session_profile = ${alias}.entry_session_profile
+        AND retired_d.retired_at IS NOT NULL
+    )
+  `);
+}
+
 function toMs(value: unknown): number {
   if (value instanceof Date) return value.getTime();
   const n = Number(value);
@@ -589,6 +610,7 @@ export async function listScalpV2Candidates(params: {
   const where: string[] = [];
   const values: unknown[] = [];
   const discoveredOnly = normalizeCandidateStatus(params.status) === "discovered";
+  appendVisibleCandidateWhere(where, values, "c");
   if (discoveredOnly) {
     await ensureCandidateResearchLeaseColumns().catch(() => false);
   }
@@ -598,8 +620,6 @@ export async function listScalpV2Candidates(params: {
   }
   if (discoveredOnly) {
     where.push(`(c.research_lease_until IS NULL OR c.research_lease_until < NOW())`);
-    values.push(RETIRED_LEGACY_COMPOSER_STRATEGY_ID);
-    where.push(`c.strategy_id <> $${values.length}`);
   }
   if (params.venue) {
     values.push(params.venue);
@@ -766,6 +786,7 @@ export async function paginateScalpV2Candidates(params: {
   const offset = Math.max(0, Math.floor(params.offset || 0));
   const candidateWhere: string[] = [];
   const values: unknown[] = [];
+  appendVisibleCandidateWhere(candidateWhere, values, "c");
   if (params.session) {
     values.push(params.session);
     candidateWhere.push(`c.entry_session_profile = $${values.length}`);
@@ -1098,6 +1119,16 @@ export async function listScalpV2DiscoveredSymbols(): Promise<string[]> {
     WHERE status = 'discovered'
       AND strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
       AND (research_lease_until IS NULL OR research_lease_until < NOW())
+      AND NOT EXISTS (
+        SELECT 1
+        FROM scalp_v2_deployments retired_d
+        WHERE retired_d.venue = scalp_v2_candidates.venue
+          AND retired_d.symbol = scalp_v2_candidates.symbol
+          AND retired_d.strategy_id = scalp_v2_candidates.strategy_id
+          AND retired_d.tune_id = scalp_v2_candidates.tune_id
+          AND retired_d.entry_session_profile = scalp_v2_candidates.entry_session_profile
+          AND retired_d.retired_at IS NOT NULL
+      )
     GROUP BY symbol
     ORDER BY
       BOOL_OR(
@@ -1138,7 +1169,17 @@ export async function countScalpV2CandidatesByStatus(params: {
       SELECT COUNT(*)::bigint AS cnt
       FROM scalp_v2_candidates
       WHERE status = ${status}
-        AND (${status} <> 'discovered' OR strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID})
+        AND strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
+        AND NOT EXISTS (
+          SELECT 1
+          FROM scalp_v2_deployments retired_d
+          WHERE retired_d.venue = scalp_v2_candidates.venue
+            AND retired_d.symbol = scalp_v2_candidates.symbol
+            AND retired_d.strategy_id = scalp_v2_candidates.strategy_id
+            AND retired_d.tune_id = scalp_v2_candidates.tune_id
+            AND retired_d.entry_session_profile = scalp_v2_candidates.entry_session_profile
+            AND retired_d.retired_at IS NOT NULL
+        )
         AND symbol IN (${join(symbols)});
     `);
     return Math.max(0, Math.floor(Number(row?.cnt || 0)));
@@ -1147,7 +1188,17 @@ export async function countScalpV2CandidatesByStatus(params: {
     SELECT COUNT(*)::bigint AS cnt
     FROM scalp_v2_candidates
     WHERE status = ${status}
-      AND (${status} <> 'discovered' OR strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID});
+      AND strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM scalp_v2_deployments retired_d
+        WHERE retired_d.venue = scalp_v2_candidates.venue
+          AND retired_d.symbol = scalp_v2_candidates.symbol
+          AND retired_d.strategy_id = scalp_v2_candidates.strategy_id
+          AND retired_d.tune_id = scalp_v2_candidates.tune_id
+          AND retired_d.entry_session_profile = scalp_v2_candidates.entry_session_profile
+          AND retired_d.retired_at IS NOT NULL
+      );
   `);
   return Math.max(0, Math.floor(Number(row?.cnt || 0)));
 }
@@ -2013,9 +2064,103 @@ export async function upsertScalpV2Deployments(params: {
   return params.rows.length;
 }
 
+export async function orphanRetiredLegacyComposerDeployments(params: {
+  nowMs?: number;
+} = {}): Promise<{
+  updated: number;
+  orphanedFlat: number;
+  openManagementOnly: number;
+}> {
+  if (!isScalpPgConfigured()) {
+    return { updated: 0, orphanedFlat: 0, openManagementOnly: 0 };
+  }
+  const db = scalpPrisma();
+  const nowMs = Math.max(0, Math.floor(Number(params.nowMs) || Date.now()));
+  const rows = await db.$queryRaw<
+    Array<{
+      updated: bigint | number;
+      orphanedFlat: bigint | number;
+      openManagementOnly: bigint | number;
+    }>
+  >(sql`
+    WITH legacy AS (
+      SELECT
+        d.deployment_id,
+        EXISTS (
+          SELECT 1
+          FROM scalp_v2_positions p
+          WHERE p.deployment_id = d.deployment_id
+            AND p.status = 'open'
+        ) AS has_open_position
+      FROM scalp_v2_deployments d
+      WHERE d.strategy_id = ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
+    ),
+    updated AS (
+      UPDATE scalp_v2_deployments d
+      SET
+        candidate_id = CASE WHEN legacy.has_open_position THEN d.candidate_id ELSE NULL END,
+        enabled = CASE WHEN legacy.has_open_position THEN d.enabled ELSE FALSE END,
+        live_mode = CASE WHEN legacy.has_open_position THEN d.live_mode ELSE 'shadow' END,
+        v5_evaluated_at = NULL,
+        v5_lease_until = NULL,
+        v5_cell_evidence = NULL,
+        v5_enabled = FALSE,
+        v5_replay_checkpoint = NULL,
+        retired_at = CASE
+          WHEN legacy.has_open_position THEN d.retired_at
+          ELSE COALESCE(d.retired_at, NOW())
+        END,
+        promotion_gate = COALESCE(d.promotion_gate, '{}'::jsonb) || jsonb_build_object(
+          'eligible', false,
+          'shadowEligible', false,
+          'reason', CASE
+            WHEN legacy.has_open_position THEN 'legacy_composer_retired_management_only'
+            ELSE 'legacy_composer_retired_orphaned'
+          END,
+          'source', 'legacy_composer_retirement',
+          'retiredAtMs', ${nowMs}::bigint,
+          'entryBlockReasonCodes', jsonb_build_array('LEGACY_COMPOSER_RETIRED_NEW_ENTRIES_BLOCKED'),
+          'brokerSeat', jsonb_build_object('status', 'management_only'),
+          'lifecycle', jsonb_build_object('state', 'retired')
+        ),
+        updated_at = NOW()
+      FROM legacy
+      WHERE d.deployment_id = legacy.deployment_id
+        AND (
+          d.candidate_id IS NOT NULL
+          OR d.enabled IS TRUE
+          OR d.live_mode <> 'shadow'
+          OR d.v5_evaluated_at IS NOT NULL
+          OR d.v5_lease_until IS NOT NULL
+          OR d.v5_cell_evidence IS NOT NULL
+          OR d.v5_enabled IS TRUE
+          OR d.v5_replay_checkpoint IS NOT NULL
+          OR d.retired_at IS NULL
+          OR COALESCE(d.promotion_gate->>'reason', '') NOT IN (
+            'legacy_composer_retired_management_only',
+            'legacy_composer_retired_orphaned'
+          )
+        )
+      RETURNING legacy.has_open_position
+    )
+    SELECT
+      COUNT(*)::bigint AS updated,
+      COUNT(*) FILTER (WHERE NOT has_open_position)::bigint AS "orphanedFlat",
+      COUNT(*) FILTER (WHERE has_open_position)::bigint AS "openManagementOnly"
+    FROM updated;
+  `);
+  const row = rows[0];
+  return {
+    updated: Math.max(0, Math.floor(Number(row?.updated || 0))),
+    orphanedFlat: Math.max(0, Math.floor(Number(row?.orphanedFlat || 0))),
+    openManagementOnly: Math.max(0, Math.floor(Number(row?.openManagementOnly || 0))),
+  };
+}
+
 export async function listScalpV2Deployments(params: {
   enabledOnly?: boolean;
   liveOnly?: boolean;
+  includeRetired?: boolean;
   venue?: ScalpV2Venue;
   session?: ScalpV2Session;
   compactPromotionGate?: boolean;
@@ -2027,6 +2172,9 @@ export async function listScalpV2Deployments(params: {
   const where: string[] = [];
   const values: unknown[] = [];
 
+  if (!params.includeRetired) {
+    where.push(`retired_at IS NULL`);
+  }
   if (params.enabledOnly) {
     values.push(true);
     where.push(`enabled = $${values.length}`);
@@ -3031,12 +3179,22 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
         COUNT(*)::bigint AS candidates,
         COUNT(*) FILTER (
           WHERE status = 'discovered'
-            AND strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
         )::bigint AS "discoveredCandidates",
         COUNT(*) FILTER (WHERE status = 'evaluated')::bigint AS "evaluatedCandidates",
         COUNT(*) FILTER (WHERE status = 'promoted')::bigint AS "promotedCandidates",
         COUNT(*) FILTER (WHERE status = 'rejected')::bigint AS "rejectedCandidates"
-      FROM scalp_v2_candidates
+      FROM scalp_v2_candidates c
+      WHERE c.strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
+        AND NOT EXISTS (
+          SELECT 1
+          FROM scalp_v2_deployments retired_d
+          WHERE retired_d.venue = c.venue
+            AND retired_d.symbol = c.symbol
+            AND retired_d.strategy_id = c.strategy_id
+            AND retired_d.tune_id = c.tune_id
+            AND retired_d.entry_session_profile = c.entry_session_profile
+            AND retired_d.retired_at IS NOT NULL
+        )
     ),
     v3_candidate_stats AS (
       SELECT

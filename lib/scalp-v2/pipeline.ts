@@ -105,6 +105,7 @@ import {
   loadScalpV2EvaluatedCandidateKeys,
   listScalpV2DiscoveredSymbols,
   loadScalpV2WarmUpState,
+  orphanRetiredLegacyComposerDeployments,
   upsertScalpV2WarmUpState,
   loadScalpV2PreviousWeekResults,
   loadScalpV2CandidateWeeklyCache,
@@ -6355,6 +6356,9 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     if (rowsToUpsert.length > 0) {
       await upsertScalpV2Deployments({ rows: rowsToUpsert });
     }
+    const legacyComposerOrphaned = await orphanRetiredLegacyComposerDeployments({
+      nowMs: nowTs,
+    }).catch(() => ({ updated: 0, orphanedFlat: 0, openManagementOnly: 0 }));
 
     const promotedIds = drafts
       .filter((row) => row.candidateId !== null && row.enabled)
@@ -6553,6 +6557,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       managementOnlyByBrokerEntryOverlap,
       legacyComposerRetiredFlat,
       legacyComposerManagementOnly,
+      legacyComposerOrphaned,
       demotedByEnabledCap: capOut.demoted,
       exactLosers: drafts.filter((row) => row.exactLoser).length,
       neighborSuspended: neighborSuspended.size,

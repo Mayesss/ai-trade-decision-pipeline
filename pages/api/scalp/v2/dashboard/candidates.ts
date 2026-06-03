@@ -79,6 +79,7 @@ export default async function handler(
       rows: result.rows,
       total: result.total,
       state,
+      visibleOnly: true,
       offset,
       limit,
     });
