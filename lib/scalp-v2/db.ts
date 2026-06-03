@@ -32,6 +32,12 @@ import type {
   ScalpV2WorkerStageWeeklyMetrics,
 } from "./types";
 
+const RETIRED_LEGACY_COMPOSER_STRATEGY_ID = "model_guided_composer_v2";
+const LEGACY_COMPOSER_RETIRED_METADATA = Object.freeze({
+  retiredBy: "legacy_composer_retirement",
+  retiredReason: "legacy_composer_replaced_by_day_model_guided_composer_v1",
+});
+
 function toMs(value: unknown): number {
   if (value instanceof Date) return value.getTime();
   const n = Number(value);
@@ -454,7 +460,24 @@ export async function upsertScalpV2Candidates(params: {
   const db = scalpPrisma();
 
   for (let offset = 0; offset < params.rows.length; offset += UPSERT_CANDIDATE_BATCH_SIZE) {
-    const batch = params.rows.slice(offset, offset + UPSERT_CANDIDATE_BATCH_SIZE);
+    const batch = params.rows.slice(offset, offset + UPSERT_CANDIDATE_BATCH_SIZE).map((row) => {
+      const isRetiredLegacy =
+        String(row.strategyId || "").trim().toLowerCase() === RETIRED_LEGACY_COMPOSER_STRATEGY_ID;
+      if (!isRetiredLegacy || row.status !== "discovered") return row;
+      return {
+        ...row,
+        status: "rejected" as ScalpV2CandidateStatus,
+        reasonCodes: normalizeReasonCodes([
+          ...(row.reasonCodes || []),
+          "LEGACY_COMPOSER_RETIRED_DISCOVERY_BLOCKED",
+        ]),
+        metadata: {
+          ...(row.metadata || {}),
+          ...LEGACY_COMPOSER_RETIRED_METADATA,
+          retiredAtMs: Date.now(),
+        },
+      };
+    });
     const values = batch.map((row) =>
       sql`(
         ${row.venue},
@@ -575,6 +598,8 @@ export async function listScalpV2Candidates(params: {
   }
   if (discoveredOnly) {
     where.push(`(c.research_lease_until IS NULL OR c.research_lease_until < NOW())`);
+    values.push(RETIRED_LEGACY_COMPOSER_STRATEGY_ID);
+    where.push(`c.strategy_id <> $${values.length}`);
   }
   if (params.venue) {
     values.push(params.venue);
@@ -703,6 +728,7 @@ export async function claimScalpV2ResearchCandidateLeases(params: {
       FROM scalp_v2_candidates c
       INNER JOIN requested r ON r.id = c.id
       WHERE c.status = 'discovered'
+        AND c.strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
         AND (
           c.research_lease_until IS NULL
           OR c.research_lease_until < NOW()
@@ -1070,6 +1096,7 @@ export async function listScalpV2DiscoveredSymbols(): Promise<string[]> {
     SELECT symbol
     FROM scalp_v2_candidates
     WHERE status = 'discovered'
+      AND strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
       AND (research_lease_until IS NULL OR research_lease_until < NOW())
     GROUP BY symbol
     ORDER BY
@@ -1111,6 +1138,7 @@ export async function countScalpV2CandidatesByStatus(params: {
       SELECT COUNT(*)::bigint AS cnt
       FROM scalp_v2_candidates
       WHERE status = ${status}
+        AND (${status} <> 'discovered' OR strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID})
         AND symbol IN (${join(symbols)});
     `);
     return Math.max(0, Math.floor(Number(row?.cnt || 0)));
@@ -1118,7 +1146,8 @@ export async function countScalpV2CandidatesByStatus(params: {
   const [row] = await db.$queryRaw<Array<{ cnt: bigint | number }>>(sql`
     SELECT COUNT(*)::bigint AS cnt
     FROM scalp_v2_candidates
-    WHERE status = ${status};
+    WHERE status = ${status}
+      AND (${status} <> 'discovered' OR strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID});
   `);
   return Math.max(0, Math.floor(Number(row?.cnt || 0)));
 }
@@ -1719,6 +1748,10 @@ export async function updateScalpV2CandidateStatuses(params: {
   const db = scalpPrisma();
   const ids = Array.from(new Set(params.ids.map((id) => Math.floor(id)).filter((id) => id > 0)));
   if (!ids.length) return 0;
+  const discoveryAllowedFilter =
+    params.status === "discovered"
+      ? sql`AND strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}`
+      : sql``;
 
   if (params.metadataPatch && Object.keys(params.metadataPatch).length > 0) {
     await db.$executeRaw(sql`
@@ -1730,7 +1763,8 @@ export async function updateScalpV2CandidateStatuses(params: {
         research_claimed_at = CASE WHEN ${params.status} <> 'discovered' THEN NULL ELSE research_claimed_at END,
         research_lease_until = CASE WHEN ${params.status} <> 'discovered' THEN NULL ELSE research_lease_until END,
         updated_at = NOW()
-      WHERE id = ANY(${ids}::int[]);
+      WHERE id = ANY(${ids}::int[])
+        ${discoveryAllowedFilter};
     `);
   } else {
     await db.$executeRaw(sql`
@@ -1741,10 +1775,19 @@ export async function updateScalpV2CandidateStatuses(params: {
         research_claimed_at = CASE WHEN ${params.status} <> 'discovered' THEN NULL ELSE research_claimed_at END,
         research_lease_until = CASE WHEN ${params.status} <> 'discovered' THEN NULL ELSE research_lease_until END,
         updated_at = NOW()
-      WHERE id = ANY(${ids}::int[]);
+      WHERE id = ANY(${ids}::int[])
+        ${discoveryAllowedFilter};
     `);
   }
-  return ids.length;
+  if (params.status !== "discovered") return ids.length;
+  const updatedRows = await db.$queryRaw<Array<{ count: bigint }>>(sql`
+    SELECT COUNT(*)::bigint AS count
+    FROM scalp_v2_candidates
+    WHERE id = ANY(${ids}::int[])
+      AND status = 'discovered'
+      AND strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID};
+  `);
+  return Math.max(0, Number(updatedRows[0]?.count || 0));
 }
 
 export async function backfillScalpV2DeploymentHoldout(params: {
@@ -1838,6 +1881,7 @@ export async function requeueScalpV2DeploymentCandidatesForWindow(params: {
       INNER JOIN scalp_v2_deployments d
         ON d.candidate_id = c.id
       WHERE c.status <> 'discovered'
+        AND c.strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
         AND (
           (c.metadata_json->'worker'->>'windowToTs') IS NULL
           OR (c.metadata_json->'worker'->>'windowToTs')::bigint <> ${windowToTs}
@@ -2985,7 +3029,10 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
     WITH candidate_stats AS (
       SELECT
         COUNT(*)::bigint AS candidates,
-        COUNT(*) FILTER (WHERE status = 'discovered')::bigint AS "discoveredCandidates",
+        COUNT(*) FILTER (
+          WHERE status = 'discovered'
+            AND strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
+        )::bigint AS "discoveredCandidates",
         COUNT(*) FILTER (WHERE status = 'evaluated')::bigint AS "evaluatedCandidates",
         COUNT(*) FILTER (WHERE status = 'promoted')::bigint AS "promotedCandidates",
         COUNT(*) FILTER (WHERE status = 'rejected')::bigint AS "rejectedCandidates"

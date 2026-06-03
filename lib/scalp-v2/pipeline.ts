@@ -6881,6 +6881,11 @@ export async function runScalpV2ExecuteJob(params: {
       const staleCandidateIds = Array.from(
         new Set(
           staleDeployments
+            .filter(
+              (row) =>
+                String(row.deployment.strategyId || "").trim().toLowerCase() !==
+                MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
+            )
             .map((row) => Math.floor(Number(row.deployment.candidateId) || 0))
             .filter((id) => id > 0),
         ),
