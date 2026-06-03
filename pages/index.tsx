@@ -190,6 +190,54 @@ interface NeonUsageResp {
   };
 }
 
+interface ResearchHealthResp {
+  ok: boolean;
+  mode: "scalp_v2";
+  nowMs: number;
+  staleLockMinutes: number;
+  health: {
+    staleThresholdMs: number;
+    stale: boolean;
+    approachingStale: boolean;
+    lockAgeMs: number | null;
+    heartbeatAgeMs: number | null;
+  };
+  queue?: {
+    total: number;
+    processed: number;
+    discovered: number;
+    evaluated: number;
+    promoted: number;
+    rejected: number;
+  };
+  job: {
+    status: string;
+    attempts: number;
+    locked: boolean;
+    lockedAtMs: number | null;
+    updatedAtMs: number | null;
+    nextRunAtMs: number | null;
+    phase: string | null;
+    reason: string | null;
+    progress: {
+      processedSoFar: number;
+      totalSelected: number;
+      skippedByCache: number;
+      skippedByClearFail: number;
+      skippedByNetRPreFilter: number;
+      stageCPass: number;
+      persisted: number;
+      replayErrors: number;
+    };
+    log: unknown[];
+  } | null;
+  hint: {
+    tone: "ok" | "warn" | "critical" | "info";
+    label: string;
+    detail: string | null;
+  };
+}
+
 type DeploymentScope = "live" | "enabled" | "inactive" | "all";
 
 const DECISION_ORDER: V5GateDecision[] = [
@@ -210,6 +258,7 @@ export default function ScalpV5Dashboard() {
   const [deployments, setDeployments] = useState<DeploymentsResp | null>(null);
   const [recent, setRecent] = useState<RecentResp | null>(null);
   const [neonUsage, setNeonUsage] = useState<NeonUsageResp | null>(null);
+  const [researchHealth, setResearchHealth] = useState<ResearchHealthResp | null>(null);
 
   const [expandedDeployments, setExpandedDeployments] = useState<Set<string>>(new Set());
   const [decisionFilter, setDecisionFilter] = useState<V5GateDecision | null>(null);
@@ -243,16 +292,17 @@ export default function ScalpV5Dashboard() {
   // Fire small endpoints in parallel. Deployments are intentionally excluded:
   // that endpoint can carry large evidence payloads and is loaded on demand.
   const loader = useCallback(async (headers: Record<string, string>) => {
-    const [c, g, rc, nu] = await Promise.all([
+    const [c, g, rc, nu, rh] = await Promise.all([
       fetchOne<CoverageResp>("/api/scalp/v5/coverage", headers, setCoverage),
       fetchOne<GateStateResp>("/api/scalp/v5/gate-state", headers, setGateState),
       fetchOne<RecentResp>("/api/scalp/v4/recent", headers, setRecent),
       fetchOne<NeonUsageResp>("/api/scalp/ops/neon-usage", headers, setNeonUsage),
+      fetchOne<ResearchHealthResp>("/api/scalp/v2/ops/research-health", headers, setResearchHealth),
     ]);
-    if (c.unauthorized || g.unauthorized || rc.unauthorized || nu.unauthorized) {
+    if (c.unauthorized || g.unauthorized || rc.unauthorized || nu.unauthorized || rh.unauthorized) {
       return { unauthorized: true };
     }
-    return { error: c.error || g.error || rc.error || nu.error };
+    return { error: c.error || g.error || rc.error || nu.error || rh.error };
   }, []);
 
   const access = useAdminSecretLoader(loader);
@@ -308,6 +358,13 @@ export default function ScalpV5Dashboard() {
     if (total === 0) return false;
     return coverage.progress.evaluatedThisWeek >= total;
   }, [coverage]);
+
+  const showResearchProgress = Boolean(
+    coverage &&
+      coverage.coverage.totalDeployments === 0 &&
+      researchHealth &&
+      ((researchHealth.queue?.total || 0) > 0 || researchHealth.job),
+  );
 
   const sessionCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -385,7 +442,12 @@ export default function ScalpV5Dashboard() {
         <pre className="mt-3 whitespace-pre-wrap text-rose-400">⚠ {access.error}</pre>
       ) : null}
 
-      {evaluatorComplete ? null : (
+      {evaluatorComplete ? null : showResearchProgress ? (
+        <>
+          <SectionHeader title="research · day composer backtests" />
+          {researchHealth ? <ResearchProgress data={researchHealth} /> : <Skeleton label="loading research progress" />}
+        </>
+      ) : (
         <>
           <SectionHeader
             title={`evaluator · holdout=${coverage?.config.holdoutWeeks ?? "—"}w  minTrades/cell=${coverage?.config.minTradesPerCell ?? "—"}`}
@@ -471,7 +533,7 @@ export default function ScalpV5Dashboard() {
       )}
 
       <div className="border-t border-zinc-800 pt-2 mt-6 text-zinc-600">
-        sources /api/scalp/v5/coverage · /gate-state · /deployments · /api/scalp/v4/recent · /api/scalp/ops/neon-usage
+        sources /api/scalp/v5/coverage · /gate-state · /deployments · /api/scalp/v4/recent · /api/scalp/v2/ops/research-health · /api/scalp/ops/neon-usage
       </div>
     </PageShell>
   );
@@ -777,6 +839,134 @@ function EvaluatorProgress({ data }: { data: CoverageResp }) {
             <span className="text-zinc-500"> at {p.ratePerHour.toFixed(1)}/hr · {p.remainingThisWeek} remaining</span>
           </>
         )}
+      </span>
+    </div>
+  );
+}
+
+function fmtDurationMs(ms: number | null | undefined): string {
+  const n = Number(ms);
+  if (ms === null || ms === undefined || !Number.isFinite(n) || n < 0) return "—";
+  if (n < 60_000) return `${Math.max(0, Math.floor(n / 1000))}s`;
+  const minutes = Math.floor(n / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+function ResearchProgress({ data }: { data: ResearchHealthResp }) {
+  const q = data.queue || {
+    total: 0,
+    processed: 0,
+    discovered: 0,
+    evaluated: 0,
+    promoted: 0,
+    rejected: 0,
+  };
+  const total = Math.max(0, Math.floor(Number(q.total || 0)));
+  const done = Math.max(0, Math.floor(Number(q.processed || 0)));
+  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  const job = data.job;
+  const batch = job?.progress || null;
+  const batchTotal = Math.max(0, Math.floor(Number(batch?.totalSelected || 0)));
+  const batchDone = Math.max(0, Math.floor(Number(batch?.processedSoFar || 0)));
+  const batchPct = batchTotal > 0 ? Math.min(100, Math.round((batchDone / batchTotal) * 100)) : 0;
+  const skipped =
+    Math.max(0, Math.floor(Number(batch?.skippedByCache || 0))) +
+    Math.max(0, Math.floor(Number(batch?.skippedByClearFail || 0))) +
+    Math.max(0, Math.floor(Number(batch?.skippedByNetRPreFilter || 0)));
+  const status = String(job?.status || "unknown").toLowerCase();
+  const statusClass =
+    data.health.stale || data.hint.tone === "critical"
+      ? "text-rose-400"
+      : data.health.approachingStale || data.hint.tone === "warn"
+        ? "text-amber-400"
+        : status === "running" || data.hint.tone === "ok"
+          ? "text-emerald-400"
+          : "text-zinc-400";
+  return (
+    <div className="mt-2 pl-2 grid grid-cols-[auto_1fr] md:grid-cols-[10rem_1fr] gap-x-3 items-baseline">
+      <span className="text-zinc-500">queue</span>
+      <span className="flex flex-wrap items-baseline gap-x-2">
+        <span>
+          <span className={pct >= 100 ? "text-emerald-400" : "text-zinc-100"}>{done}</span>
+          <span className="text-zinc-500">/{total}</span>
+        </span>
+        <span className={`font-mono whitespace-pre ${pct >= 100 ? "text-emerald-400" : "text-sky-400"}`}>
+          {bar(done, total || 1, 30)}
+        </span>
+        <span className="text-zinc-500">{pct}%</span>
+        <span className="text-zinc-500">pending </span>
+        <span className="text-zinc-100">{q.discovered}</span>
+        <span className="text-zinc-500">rejected </span>
+        <span className="text-zinc-100">{q.rejected}</span>
+        <span className="text-zinc-500">evaluated </span>
+        <span className="text-zinc-100">{q.evaluated}</span>
+        <span className="text-zinc-500">promoted </span>
+        <span className="text-zinc-100">{q.promoted}</span>
+      </span>
+
+      <span className="text-zinc-500">worker</span>
+      <span className="flex flex-wrap items-baseline gap-x-3">
+        <span className={statusClass}>{status}</span>
+        <span>
+          <span className="text-zinc-500">phase </span>
+          <span className="text-zinc-100">{job?.phase || "—"}</span>
+        </span>
+        <span>
+          <span className="text-zinc-500">reason </span>
+          <span className="text-zinc-100">{job?.reason || "—"}</span>
+        </span>
+        <span>
+          <span className="text-zinc-500">updated </span>
+          <span className="text-zinc-100">{fmtAgo(job?.updatedAtMs)}</span>
+        </span>
+      </span>
+
+      <span className="text-zinc-500">batch</span>
+      <span className="flex flex-wrap items-baseline gap-x-2">
+        {batch ? (
+          <>
+            <span>
+              <span className={batchPct >= 100 ? "text-emerald-400" : "text-zinc-100"}>{batchDone}</span>
+              <span className="text-zinc-500">/{batchTotal}</span>
+            </span>
+            <span className={`font-mono whitespace-pre ${batchPct >= 100 ? "text-emerald-400" : "text-sky-400"}`}>
+              {bar(batchDone, batchTotal || 1, 20)}
+            </span>
+            <span className="text-zinc-500">{batchPct}%</span>
+            <span className="text-zinc-500">stageC </span>
+            <span className="text-zinc-100">{batch.stageCPass}</span>
+            <span className="text-zinc-500">persisted </span>
+            <span className="text-zinc-100">{batch.persisted}</span>
+            <span className={batch.replayErrors > 0 ? "text-rose-400" : "text-zinc-500"}>
+              errors {batch.replayErrors}
+            </span>
+            {skipped > 0 ? (
+              <>
+                <span className="text-zinc-500">skipped </span>
+                <span className="text-zinc-100">{skipped}</span>
+              </>
+            ) : null}
+          </>
+        ) : (
+          <span className="text-zinc-500">no current batch</span>
+        )}
+      </span>
+
+      <span className="text-zinc-500">health</span>
+      <span className="flex flex-wrap items-baseline gap-x-3" title={data.hint.detail || undefined}>
+        <span className={statusClass}>{data.hint.label}</span>
+        <span>
+          <span className="text-zinc-500">heartbeat </span>
+          <span className="text-zinc-100">{fmtDurationMs(data.health.heartbeatAgeMs)}</span>
+        </span>
+        <span>
+          <span className="text-zinc-500">lock </span>
+          <span className="text-zinc-100">{fmtDurationMs(data.health.lockAgeMs)}</span>
+        </span>
+        {data.hint.detail ? <span className="text-zinc-500">{data.hint.detail}</span> : null}
       </span>
     </div>
   );

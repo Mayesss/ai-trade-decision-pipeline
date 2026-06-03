@@ -3,10 +3,21 @@ export const config = { runtime: "nodejs" };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
-import { listScalpV2Jobs } from "../../../../../lib/scalp-v2/db";
+import {
+  countScalpV2CandidatesByStatus,
+  listScalpV2Jobs,
+} from "../../../../../lib/scalp-v2/db";
 import { setNoStoreHeaders } from "../../../../../lib/scalp-v2/http";
+import type { ScalpV2CandidateStatus } from "../../../../../lib/scalp-v2/types";
 
 type HintTone = "ok" | "warn" | "critical" | "info";
+
+const CANDIDATE_STATUSES: ScalpV2CandidateStatus[] = [
+  "discovered",
+  "evaluated",
+  "promoted",
+  "rejected",
+];
 
 function toPositiveInt(value: unknown, fallback: number, max: number): number {
   const n = Math.floor(Number(value));
@@ -133,7 +144,35 @@ export default async function handler(
     const nowMs = Date.now();
     const staleLockMinutes = resolveScalpV2JobLockStaleMinutes();
     const staleThresholdMs = staleLockMinutes * 60_000;
-    const jobs = await listScalpV2Jobs({ limit: 50 });
+    const [jobs, ...candidateCounts] = await Promise.all([
+      listScalpV2Jobs({ limit: 50 }),
+      ...CANDIDATE_STATUSES.map((status) =>
+        countScalpV2CandidatesByStatus({ status }),
+      ),
+    ]);
+    const statusCounts = CANDIDATE_STATUSES.reduce<Record<ScalpV2CandidateStatus, number>>(
+      (acc, status, idx) => {
+        acc[status] = Math.max(0, Math.floor(Number(candidateCounts[idx] || 0)));
+        return acc;
+      },
+      {
+        discovered: 0,
+        evaluated: 0,
+        promoted: 0,
+        rejected: 0,
+      },
+    );
+    const processedCandidates =
+      statusCounts.evaluated + statusCounts.promoted + statusCounts.rejected;
+    const totalCandidates = processedCandidates + statusCounts.discovered;
+    const queue = {
+      total: totalCandidates,
+      processed: processedCandidates,
+      discovered: statusCounts.discovered,
+      evaluated: statusCounts.evaluated,
+      promoted: statusCounts.promoted,
+      rejected: statusCounts.rejected,
+    };
     const researchJob =
       jobs.find(
         (job) => String(job?.jobKind || "").trim().toLowerCase() === "research",
@@ -153,6 +192,7 @@ export default async function handler(
           heartbeatAgeMs: null,
         },
         job: null,
+        queue,
         hint: {
           tone: "info",
           label: "Research health unavailable",
@@ -241,6 +281,7 @@ export default async function handler(
         },
         log: Array.isArray(payload.log) ? payload.log.slice(-30) : [],
       },
+      queue,
       hint,
     });
   } catch (err: any) {
