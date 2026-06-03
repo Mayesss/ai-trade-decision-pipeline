@@ -3508,7 +3508,24 @@ export async function runScalpV2ResearchJob(params: {
         }).catch(() => [] as Awaited<ReturnType<typeof listScalpV2Candidates>>),
       );
 
-      for (const row of chunkRows) {
+      const legacyComposerRows = chunkRows.filter(
+        (row) => row.strategyId === MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
+      );
+      if (legacyComposerRows.length > 0) {
+        await updateScalpV2CandidateStatuses({
+          ids: legacyComposerRows.map((row) => row.id),
+          status: "rejected",
+          metadataPatch: {
+            retiredAtMs: nowTs,
+            retiredBy: "legacy_composer_retirement",
+            retiredReason: "legacy_composer_replaced_by_day_model_guided_composer_v1",
+          },
+        });
+      }
+
+      for (const row of chunkRows.filter(
+        (candidate) => candidate.strategyId !== MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
+      )) {
         const meta = row.metadata || {};
         const dslRaw = (meta.researchDsl || {}) as Record<string, string[]>;
         const dayPlan = parseDayComposerTuneId(row.tuneId);
