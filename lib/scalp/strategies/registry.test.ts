@@ -18,6 +18,7 @@ import { SESSION_SEASONALITY_BIAS_M15_M3_STRATEGY_ID } from './sessionSeasonalit
 import { TREND_DAY_REACCELERATION_M15_M3_STRATEGY_ID } from './trendDayReaccelerationM15M3';
 import { modelGuidedComposerV2Strategy } from './modelGuidedComposerV2';
 import { DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID } from '../../scalp-v2/dayComposer';
+import { SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID } from '../../scalp-v2/sessionStructureComposer';
 import {
     DEFAULT_SCALP_STRATEGY_ID,
     getDefaultScalpStrategy,
@@ -55,6 +56,7 @@ test('strategy registry exposes unique ids and supports lookup', () => {
     assert.ok(ids.includes(ADAPTIVE_META_SELECTOR_M15_M3_STRATEGY_ID), 'expected adaptive meta-selector strategy in registry');
     assert.ok(ids.includes(modelGuidedComposerV2Strategy.id), 'expected model-guided composer strategy in registry');
     assert.ok(ids.includes(DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID), 'expected day composer strategy in registry');
+    assert.ok(ids.includes(SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID), 'expected session composer strategy in registry');
     const uniqueIds = new Set(ids);
     assert.equal(ids.length, uniqueIds.size, 'strategy IDs must be unique');
     for (const id of ids) {

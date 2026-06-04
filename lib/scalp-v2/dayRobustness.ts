@@ -12,7 +12,10 @@ import type {
 } from "../scalp/replay/types";
 import type { ScalpCandle } from "../scalp/types";
 import { loadScalpSymbolMarketMetadataBulk } from "../scalp/symbolMarketMetadataStore";
-import { DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID, parseDayComposerTuneId } from "./dayComposer";
+import {
+  SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID,
+  parseSessionStructureComposerTuneId,
+} from "./sessionStructureComposer";
 import { buildScalpV2ExecuteConfigOverride } from "./executeConfigOverride";
 import { toDeploymentId } from "./logic";
 import { isScalpPgConfigured, scalpPrisma, sql } from "./pg";
@@ -24,7 +27,7 @@ import { startOfScalpV2WeekMondayUtc } from "./weekWindows";
 const ONE_DAY_MS = 24 * 60 * 60_000;
 const ONE_WEEK_MS = 7 * ONE_DAY_MS;
 
-export const DAY_ROBUSTNESS_VERSION = "day_robustness_v1";
+export const DAY_ROBUSTNESS_VERSION = "session_finalist_robustness_v1";
 
 export interface DayRobustnessPolicy {
   enabled: boolean;
@@ -134,7 +137,7 @@ export function resolveDayRobustnessPolicy(): DayRobustnessPolicy {
 }
 
 export function isDayRobustnessRequired(strategyId: unknown, policy = resolveDayRobustnessPolicy()): boolean {
-  return policy.enabled && String(strategyId || "").trim().toLowerCase() === DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID;
+  return policy.enabled && String(strategyId || "").trim().toLowerCase() === SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID;
 }
 
 export function readDayRobustnessEvidence(metadata: unknown): DayRobustnessEvidence | null {
@@ -380,7 +383,7 @@ export async function claimDayRobustnessCandidates(params: {
       SELECT c.id
       FROM scalp_v2_candidates c
       WHERE c.status = 'evaluated'
-        AND c.strategy_id = ${DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID}
+        AND c.strategy_id = ${SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID}
         AND COALESCE((c.metadata_json->'worker'->'stageC'->>'passed')::boolean, false)
         AND COALESCE((c.metadata_json->'worker'->>'windowToTs')::bigint, 0) = ${windowToTs}
         AND (
@@ -555,7 +558,7 @@ export async function runDayRobustnessBatch(params: {
         session: candidate.entrySessionProfile,
       });
       const base = defaultScalpReplayConfig(candidate.symbol);
-      const dayManagement = parseDayComposerTuneId(candidate.tuneId).managementId;
+      const sessionManagement = parseSessionStructureComposerTuneId(candidate.tuneId).managementId;
       const configOverride = buildScalpV2ExecuteConfigOverride({
         entrySessionProfile: candidate.entrySessionProfile,
         riskProfile: runtime.riskProfile as ScalpV2RiskProfile,
@@ -572,11 +575,16 @@ export async function runDayRobustnessBatch(params: {
           ...configOverride,
           risk: {
             ...(configOverride.risk || {}),
-            maxTradesPerSymbolPerDay: 1,
-            timeStopBars: dayManagement === "trail_after_1r_time_8h" ? 32 : 24,
-            ...(dayManagement === "trail_after_1r_time_8h" && {
-              trailStartR: 1,
-              trailAtrMult: 1.8,
+            maxTradesPerSymbolPerDay: 2,
+            timeStopBars:
+              sessionManagement === "fixed_1_5r_time_2h"
+                ? 8
+                : sessionManagement === "trail_after_0_8r_time_3h"
+                  ? 12
+                  : 16,
+            ...(sessionManagement === "trail_after_0_8r_time_3h" && {
+              trailStartR: 0.8,
+              trailAtrMult: 1.6,
             }),
           },
         },

@@ -1,3 +1,3 @@
 export const DEFAULT_SCALP_V2_TUNE_ID = "default";
 
-export const DEFAULT_SCALP_V2_STRATEGY_ID = "day_model_guided_composer_v1";
+export const DEFAULT_SCALP_V2_STRATEGY_ID = "session_structure_composer_v1";

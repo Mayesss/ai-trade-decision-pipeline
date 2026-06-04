@@ -8,6 +8,7 @@ import {
   type DayRobustnessPolicy,
 } from "./dayRobustness";
 import { DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID } from "./dayComposer";
+import { SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID } from "./sessionStructureComposer";
 import type { ScalpReplayTrade } from "../scalp/replay/types";
 
 const policy: DayRobustnessPolicy = {
@@ -48,9 +49,9 @@ function trade(exitTs: number, rMultiple: number): ScalpReplayTrade {
   };
 }
 
-test("day robustness promotion gate requires evidence for day composer only", () => {
+test("finalist robustness promotion gate requires evidence for session composer only", () => {
   const missing = evaluateDayRobustnessForPromotion({
-    strategyId: DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID,
+    strategyId: SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID,
     metadata: {},
     policy,
     nowMs: 1000,
@@ -59,14 +60,14 @@ test("day robustness promotion gate requires evidence for day composer only", ()
   assert.equal(missing.passed, false);
   assert.equal(missing.reason, "DAY_ROBUSTNESS_MISSING");
 
-  const other = evaluateDayRobustnessForPromotion({
-    strategyId: "regime_pullback_m15_m3",
+  const retiredDay = evaluateDayRobustnessForPromotion({
+    strategyId: DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID,
     metadata: {},
     policy,
     nowMs: 1000,
   });
-  assert.equal(other.required, false);
-  assert.equal(other.passed, true);
+  assert.equal(retiredDay.required, false);
+  assert.equal(retiredDay.passed, true);
 });
 
 test("day robustness evidence passes and round-trips through promotion check", () => {
@@ -102,7 +103,7 @@ test("day robustness evidence passes and round-trips through promotion check", (
   assert.equal(evidence.totalWindows, 2);
 
   const check = evaluateDayRobustnessForPromotion({
-    strategyId: DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID,
+    strategyId: SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID,
     metadata: { worker: { robustness: evidence } },
     policy,
     nowMs: toTs + 2_000,
@@ -133,7 +134,7 @@ test("day robustness failed or stale evidence blocks promotion", () => {
   assert.equal(evidence.passed, false);
 
   const failed = evaluateDayRobustnessForPromotion({
-    strategyId: DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID,
+    strategyId: SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID,
     metadata: { worker: { robustness: evidence } },
     policy,
     nowMs: 11_000,
@@ -143,7 +144,7 @@ test("day robustness failed or stale evidence blocks promotion", () => {
   assert.equal(failed.reason, "DAY_ROBUSTNESS_FAILED");
 
   const stale = evaluateDayRobustnessForPromotion({
-    strategyId: DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID,
+    strategyId: SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID,
     metadata: { worker: { robustness: { ...evidence, passed: true, reasonCodes: [] } } },
     policy,
     nowMs: 30 * 24 * 60 * 60_000,

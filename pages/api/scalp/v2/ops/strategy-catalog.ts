@@ -9,6 +9,11 @@ import {
   listScalpStrategies,
 } from "../../../../../lib/scalp/strategies/registry";
 
+const RETIRED_CATALOG_STRATEGY_IDS = new Set([
+  "model_guided_composer_v2",
+  "day_model_guided_composer_v1",
+]);
+
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse,
@@ -24,6 +29,7 @@ export default async function handler(
   try {
     const defaultStrategy = getDefaultScalpStrategy();
     const strategies = listScalpStrategies()
+      .filter((strategy) => !RETIRED_CATALOG_STRATEGY_IDS.has(strategy.id))
       .map((strategy) => ({
         strategyId: strategy.id,
         shortName: strategy.shortName || strategy.id,

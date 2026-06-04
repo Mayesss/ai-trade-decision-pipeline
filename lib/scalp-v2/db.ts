@@ -33,9 +33,14 @@ import type {
 } from "./types";
 
 const RETIRED_LEGACY_COMPOSER_STRATEGY_ID = "model_guided_composer_v2";
-const LEGACY_COMPOSER_RETIRED_METADATA = Object.freeze({
-  retiredBy: "legacy_composer_retirement",
-  retiredReason: "legacy_composer_replaced_by_day_model_guided_composer_v1",
+const RETIRED_DAY_COMPOSER_STRATEGY_ID = "day_model_guided_composer_v1";
+const RETIRED_COMPOSER_STRATEGY_IDS = Object.freeze([
+  RETIRED_LEGACY_COMPOSER_STRATEGY_ID,
+  RETIRED_DAY_COMPOSER_STRATEGY_ID,
+]);
+const COMPOSER_RETIRED_METADATA = Object.freeze({
+  retiredBy: "composer_family_retirement",
+  retiredReason: "composer_replaced_by_session_structure_composer_v1",
 });
 
 function appendVisibleCandidateWhere(
@@ -43,8 +48,8 @@ function appendVisibleCandidateWhere(
   values: unknown[],
   alias = "c",
 ): void {
-  values.push(RETIRED_LEGACY_COMPOSER_STRATEGY_ID);
-  where.push(`${alias}.strategy_id <> $${values.length}`);
+  values.push(RETIRED_COMPOSER_STRATEGY_IDS);
+  where.push(`${alias}.strategy_id <> ALL($${values.length}::text[])`);
   where.push(`
     NOT EXISTS (
       SELECT 1
@@ -485,19 +490,20 @@ export async function upsertScalpV2Candidates(params: {
 
   for (let offset = 0; offset < params.rows.length; offset += UPSERT_CANDIDATE_BATCH_SIZE) {
     const batch = params.rows.slice(offset, offset + UPSERT_CANDIDATE_BATCH_SIZE).map((row) => {
-      const isRetiredLegacy =
-        String(row.strategyId || "").trim().toLowerCase() === RETIRED_LEGACY_COMPOSER_STRATEGY_ID;
-      if (!isRetiredLegacy || row.status !== "discovered") return row;
+      const isRetiredComposer = RETIRED_COMPOSER_STRATEGY_IDS.includes(
+        String(row.strategyId || "").trim().toLowerCase(),
+      );
+      if (!isRetiredComposer || row.status !== "discovered") return row;
       return {
         ...row,
         status: "rejected" as ScalpV2CandidateStatus,
         reasonCodes: normalizeReasonCodes([
           ...(row.reasonCodes || []),
-          "LEGACY_COMPOSER_RETIRED_DISCOVERY_BLOCKED",
+          "COMPOSER_RETIRED_DISCOVERY_BLOCKED",
         ]),
         metadata: {
           ...(row.metadata || {}),
-          ...LEGACY_COMPOSER_RETIRED_METADATA,
+          ...COMPOSER_RETIRED_METADATA,
           retiredAtMs: Date.now(),
         },
       };
@@ -751,7 +757,7 @@ export async function claimScalpV2ResearchCandidateLeases(params: {
       FROM scalp_v2_candidates c
       INNER JOIN requested r ON r.id = c.id
       WHERE c.status = 'discovered'
-        AND c.strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
+        AND c.strategy_id <> ALL(${RETIRED_COMPOSER_STRATEGY_IDS}::text[])
         AND (
           c.research_lease_until IS NULL
           OR c.research_lease_until < NOW()
@@ -1120,7 +1126,7 @@ export async function listScalpV2DiscoveredSymbols(): Promise<string[]> {
     SELECT symbol
     FROM scalp_v2_candidates
     WHERE status = 'discovered'
-      AND strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
+      AND strategy_id <> ALL(${RETIRED_COMPOSER_STRATEGY_IDS}::text[])
       AND (research_lease_until IS NULL OR research_lease_until < NOW())
       AND NOT EXISTS (
         SELECT 1
@@ -1172,7 +1178,7 @@ export async function countScalpV2CandidatesByStatus(params: {
       SELECT COUNT(*)::bigint AS cnt
       FROM scalp_v2_candidates
       WHERE status = ${status}
-        AND strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
+        AND strategy_id <> ALL(${RETIRED_COMPOSER_STRATEGY_IDS}::text[])
         AND NOT EXISTS (
           SELECT 1
           FROM scalp_v2_deployments retired_d
@@ -1191,7 +1197,7 @@ export async function countScalpV2CandidatesByStatus(params: {
     SELECT COUNT(*)::bigint AS cnt
     FROM scalp_v2_candidates
     WHERE status = ${status}
-      AND strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
+      AND strategy_id <> ALL(${RETIRED_COMPOSER_STRATEGY_IDS}::text[])
       AND NOT EXISTS (
         SELECT 1
         FROM scalp_v2_deployments retired_d
@@ -1804,7 +1810,7 @@ export async function updateScalpV2CandidateStatuses(params: {
   if (!ids.length) return 0;
   const discoveryAllowedFilter =
     params.status === "discovered"
-      ? sql`AND strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}`
+      ? sql`AND strategy_id <> ALL(${RETIRED_COMPOSER_STRATEGY_IDS}::text[])`
       : sql``;
 
   if (params.metadataPatch && Object.keys(params.metadataPatch).length > 0) {
@@ -1839,7 +1845,7 @@ export async function updateScalpV2CandidateStatuses(params: {
     FROM scalp_v2_candidates
     WHERE id = ANY(${ids}::int[])
       AND status = 'discovered'
-      AND strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID};
+      AND strategy_id <> ALL(${RETIRED_COMPOSER_STRATEGY_IDS}::text[]);
   `);
   return Math.max(0, Number(updatedRows[0]?.count || 0));
 }
@@ -1935,7 +1941,7 @@ export async function requeueScalpV2DeploymentCandidatesForWindow(params: {
       INNER JOIN scalp_v2_deployments d
         ON d.candidate_id = c.id
       WHERE c.status <> 'discovered'
-        AND c.strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
+        AND c.strategy_id <> ALL(${RETIRED_COMPOSER_STRATEGY_IDS}::text[])
         AND (
           (c.metadata_json->'worker'->>'windowToTs') IS NULL
           OR (c.metadata_json->'worker'->>'windowToTs')::bigint <> ${windowToTs}
@@ -2096,7 +2102,7 @@ export async function orphanRetiredLegacyComposerDeployments(params: {
             AND p.status = 'open'
         ) AS has_open_position
       FROM scalp_v2_deployments d
-      WHERE d.strategy_id = ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
+      WHERE d.strategy_id = ANY(${RETIRED_COMPOSER_STRATEGY_IDS}::text[])
     ),
     updated AS (
       UPDATE scalp_v2_deployments d
@@ -2117,12 +2123,12 @@ export async function orphanRetiredLegacyComposerDeployments(params: {
           'eligible', false,
           'shadowEligible', false,
           'reason', CASE
-            WHEN legacy.has_open_position THEN 'legacy_composer_retired_management_only'
-            ELSE 'legacy_composer_retired_orphaned'
+            WHEN legacy.has_open_position THEN 'composer_retired_management_only'
+            ELSE 'composer_retired_orphaned'
           END,
-          'source', 'legacy_composer_retirement',
+          'source', 'composer_family_retirement',
           'retiredAtMs', ${nowMs}::bigint,
-          'entryBlockReasonCodes', jsonb_build_array('LEGACY_COMPOSER_RETIRED_NEW_ENTRIES_BLOCKED'),
+          'entryBlockReasonCodes', jsonb_build_array('COMPOSER_RETIRED_NEW_ENTRIES_BLOCKED'),
           'brokerSeat', jsonb_build_object('status', 'management_only'),
           'lifecycle', jsonb_build_object('state', 'retired')
         ),
@@ -2141,7 +2147,9 @@ export async function orphanRetiredLegacyComposerDeployments(params: {
           OR d.retired_at IS NULL
           OR COALESCE(d.promotion_gate->>'reason', '') NOT IN (
             'legacy_composer_retired_management_only',
-            'legacy_composer_retired_orphaned'
+            'legacy_composer_retired_orphaned',
+            'composer_retired_management_only',
+            'composer_retired_orphaned'
           )
         )
       RETURNING legacy.has_open_position
@@ -3187,7 +3195,7 @@ export async function loadScalpV2Summary(): Promise<Record<string, unknown>> {
         COUNT(*) FILTER (WHERE status = 'promoted')::bigint AS "promotedCandidates",
         COUNT(*) FILTER (WHERE status = 'rejected')::bigint AS "rejectedCandidates"
       FROM scalp_v2_candidates c
-      WHERE c.strategy_id <> ${RETIRED_LEGACY_COMPOSER_STRATEGY_ID}
+      WHERE c.strategy_id <> ALL(${RETIRED_COMPOSER_STRATEGY_IDS}::text[])
         AND NOT EXISTS (
           SELECT 1
           FROM scalp_v2_deployments retired_d

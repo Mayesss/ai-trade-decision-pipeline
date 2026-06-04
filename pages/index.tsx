@@ -450,7 +450,7 @@ export default function ScalpV5Dashboard() {
 
       {evaluatorComplete ? null : showResearchProgress ? (
         <>
-          <SectionHeader title="research · day composer backtests" />
+          <SectionHeader title="research · session composer backtests" />
           {researchHealth ? <ResearchProgress data={researchHealth} /> : <Skeleton label="loading research progress" />}
         </>
       ) : (

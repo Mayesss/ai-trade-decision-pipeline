@@ -1,6 +1,6 @@
 import { isScalpPgConfigured, scalpPrisma } from "../scalp/pg/client";
 import { sql } from "../scalp/pg/sql";
-import { DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID } from "../scalp-v2/dayComposer";
+import { SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID } from "../scalp-v2/sessionStructureComposer";
 import {
   evaluateDayRobustnessForPromotion,
   resolveDayRobustnessPolicy,
@@ -153,7 +153,7 @@ export async function loadScalpV5DeploymentsForEvaluation(params: {
       SELECT d.deployment_id
       FROM scalp_v2_deployments d
       WHERE d.candidate_id IS NOT NULL
-        AND d.strategy_id = ${DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID}
+        AND d.strategy_id = ${SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID}
         AND (${directDeploymentFilter} = FALSE OR d.deployment_id = ANY(${deploymentIds}::text[]))
         AND NOT EXISTS (
           SELECT 1
@@ -396,7 +396,7 @@ export async function selectScalpV5DeploymentsNeedingAdvancement(params: {
       END AS reason
     FROM scalp_v2_deployments d
     WHERE d.candidate_id IS NOT NULL
-      AND d.strategy_id = ${DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID}
+      AND d.strategy_id = ${SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID}
       AND (${onlyEnabled} = FALSE OR d.enabled = TRUE)
       AND NOT EXISTS (
         SELECT 1
@@ -538,7 +538,7 @@ export async function cullBottomPerformersScalpV5Deployments(params: {
         ) AS total_trades
       FROM scalp_v2_deployments d
       WHERE d.candidate_id IS NOT NULL
-        AND d.strategy_id = ${DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID}
+        AND d.strategy_id = ${SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID}
         AND d.v5_evaluated_at IS NOT NULL
         AND NOT EXISTS (
           SELECT 1
@@ -565,7 +565,7 @@ export async function cullBottomPerformersScalpV5Deployments(params: {
     SELECT COUNT(*)::bigint AS count
     FROM scalp_v2_deployments d
     WHERE d.candidate_id IS NOT NULL
-      AND d.strategy_id = ${DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID}
+      AND d.strategy_id = ${SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID}
       AND NOT EXISTS (
         SELECT 1
         FROM scalp_v2_candidates c
@@ -859,7 +859,7 @@ export async function listScalpV5StageCRankedRefillCandidates(params: {
         ) AS stage_c_trades
       FROM scalp_v2_candidates c
       WHERE c.status IN ('evaluated', 'rejected')
-        AND c.strategy_id = ${DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID}
+        AND c.strategy_id = ${SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID}
         AND COALESCE(c.metadata_json->'scopeRemoval'->>'reason', '') <> 'bitget_symbol_removed_no_candles'
         AND NOT EXISTS (
           SELECT 1
@@ -1073,7 +1073,7 @@ export async function listScalpV5WinnerMutationRefillCandidates(params: {
         ) AS stage_c_trades
       FROM scalp_v2_candidates c
       WHERE c.status IN ('evaluated', 'rejected')
-        AND c.strategy_id = ${DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID}
+        AND c.strategy_id = ${SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID}
         AND COALESCE(c.metadata_json->'scopeRemoval'->>'reason', '') <> 'bitget_symbol_removed_no_candles'
         AND NOT EXISTS (
           SELECT 1 FROM scalp_v2_deployments d WHERE d.candidate_id = c.id
@@ -1269,7 +1269,7 @@ export async function listScalpV5ExplorationRefillCandidates(params: {
         ) AS stage_c_trades
       FROM scalp_v2_candidates c
       WHERE c.status IN ('evaluated', 'rejected')
-        AND c.strategy_id = ${DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID}
+        AND c.strategy_id = ${SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID}
         AND COALESCE(c.metadata_json->'scopeRemoval'->>'reason', '') <> 'bitget_symbol_removed_no_candles'
         AND NOT EXISTS (
           SELECT 1 FROM scalp_v2_deployments d WHERE d.candidate_id = c.id
@@ -1706,7 +1706,7 @@ export async function getScalpV5EvaluationQueueStats(params: {
       COUNT(*) FILTER (WHERE d.v5_lease_until IS NOT NULL AND d.v5_lease_until > NOW())::bigint AS leased
     FROM scalp_v2_deployments d
     WHERE d.candidate_id IS NOT NULL
-      AND d.strategy_id = ${DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID}
+      AND d.strategy_id = ${SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID}
       AND NOT EXISTS (
         SELECT 1
         FROM scalp_v2_candidates c
@@ -1881,7 +1881,7 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
     FROM scalp_v2_deployments d
     INNER JOIN scalp_v2_candidates c ON c.id = d.candidate_id
     WHERE d.candidate_id IS NOT NULL
-      AND d.strategy_id = ${DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID}
+      AND d.strategy_id = ${SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID}
       AND d.v5_enabled = TRUE
       AND d.v5_evaluated_at IS NOT NULL
       AND d.v5_evaluated_at >= ${staleBefore}
@@ -1908,7 +1908,7 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
 
   for (const row of candidates) {
     const dayRobustness = evaluateDayRobustnessForPromotion({
-      strategyId: DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID,
+      strategyId: SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID,
       metadata: row.candidateMetadata,
       policy: dayRobustnessPolicy,
       nowMs,

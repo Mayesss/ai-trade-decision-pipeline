@@ -49,8 +49,8 @@ const SCALP_V2_CATALOG_STRATEGIES: readonly ScalpV2CatalogStrategy[] =
       shortName: "Adaptive Meta Selector",
     },
     {
-      id: "day_model_guided_composer_v1",
-      shortName: "Day Composer V1",
+      id: "session_structure_composer_v1",
+      shortName: "Session Composer V1",
     },
   ]);
 

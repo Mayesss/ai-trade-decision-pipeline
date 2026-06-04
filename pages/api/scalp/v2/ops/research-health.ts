@@ -7,7 +7,7 @@ import {
   countScalpV2CandidatesByStatus,
   listScalpV2Jobs,
 } from "../../../../../lib/scalp-v2/db";
-import { DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID } from "../../../../../lib/scalp-v2/dayComposer";
+import { SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID } from "../../../../../lib/scalp-v2/sessionStructureComposer";
 import { setNoStoreHeaders } from "../../../../../lib/scalp-v2/http";
 import { isScalpPgConfigured, scalpPrisma, sql } from "../../../../../lib/scalp-v2/pg";
 import type { ScalpV2CandidateStatus } from "../../../../../lib/scalp-v2/types";
@@ -76,7 +76,7 @@ async function loadDayRobustnessQueue(): Promise<{
       )::bigint AS failed
     FROM scalp_v2_candidates
     WHERE status = 'evaluated'
-      AND strategy_id = ${DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID}
+      AND strategy_id = ${SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID}
       AND COALESCE((metadata_json->'worker'->'stageC'->>'passed')::boolean, false);
   `);
   return {
