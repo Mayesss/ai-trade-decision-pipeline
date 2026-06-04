@@ -24,12 +24,18 @@
  *   BULK_V5_STALE_OLDER_THAN_HOURS=144 — v5 only: re-evaluate rows whose evidence is older than this
  *   BULK_V5_SHARD_COUNT=1         — v5 only: split deployments across N parallel processes
  *   BULK_V5_SHARD_INDEX=0         — v5 only: which shard this process owns (0..count-1)
+ *   BULK_RUN_DAY_ROBUSTNESS=1     — v2 only: run day finalist robustness after full bulk drain
+ *   BULK_DAY_ROBUSTNESS_BATCH_SIZE=120 — v2 only: finalist robustness rows per batch
+ *   BULK_DAY_ROBUSTNESS_MAX_BATCHES=0 — v2 only: 0 means run until robustness queue is empty
  */
 import nextEnv from '@next/env';
 import os from 'node:os';
 
 import {
+  claimScalpV2Job,
   countScalpV2CandidatesByStatus,
+  finalizeScalpV2Job,
+  heartbeatScalpV2Job,
   loadScalpV2WarmUpState,
 } from '../lib/scalp-v2/db';
 import { isScalpPgConfigured } from '../lib/scalp-v2/pg';
@@ -178,6 +184,7 @@ let totalSucceeded = 0;
 let batchCount = 0;
 let lastPending = -1;
 let lowProgressStreak = 0;
+let v2BulkDrained = false;
 
 // Persistent across all batches in this process — symbol candle history is
 // loaded from Neon at most once per symbol per bulk run instead of every batch.
@@ -304,6 +311,15 @@ async function getRunScalpV5EvaluationBatch() {
   return runScalpV5EvaluationBatch;
 }
 
+let dayRobustnessModule: typeof import('../lib/scalp-v2/dayRobustness') | null = null;
+
+async function getDayRobustnessModule() {
+  if (!dayRobustnessModule) {
+    dayRobustnessModule = await import('../lib/scalp-v2/dayRobustness');
+  }
+  return dayRobustnessModule;
+}
+
 function currentWindowToTs(): number {
   return resolveScalpV2CompletedWeekWindowToUtc(Date.now());
 }
@@ -344,6 +360,162 @@ function logV4Progress(event: ScalpV4WalkforwardProgressEvent): void {
     return;
   }
   console.log(`${prefix} reason=${event.reason || 'unknown'} cache=${event.candleCacheSize} ${counts}`);
+}
+
+async function runPostBulkDayRobustnessOnce(): Promise<void> {
+  if (BULK_RESEARCH_VERSION !== 'v2') return;
+  if (!envBool('BULK_RUN_DAY_ROBUSTNESS', true)) {
+    console.log('\nDay finalist robustness: disabled by BULK_RUN_DAY_ROBUSTNESS=0.');
+    return;
+  }
+
+  const mod = await getDayRobustnessModule();
+  const policy = mod.resolveDayRobustnessPolicy();
+  if (!policy.enabled) {
+    console.log('\nDay finalist robustness: disabled by SCALP_DAY_ROBUSTNESS_ENABLED=0.');
+    return;
+  }
+
+  const windowToTs = currentWindowToTs();
+  const dedupeScope = String(windowToTs);
+  const owner = `bulk-day-robustness:${process.pid}:${Date.now().toString(36)}`;
+  const claimed = await claimScalpV2Job({
+    jobKind: 'robustness',
+    lockOwner: owner,
+    dedupeScope,
+    allowSucceededRetry: false,
+  });
+  if (!claimed) {
+    console.log('\nDay finalist robustness: already running or completed for this weekly window by another bulk process.');
+    return;
+  }
+
+  const limit = Math.max(
+    1,
+    Math.min(
+      5_000,
+      Math.floor(envNumber('BULK_DAY_ROBUSTNESS_BATCH_SIZE', envNumber('DAY_ROBUSTNESS_BATCH_SIZE', policy.maxCandidates))),
+    ),
+  );
+  const maxBatches = Math.max(
+    0,
+    Math.min(
+      10_000,
+      Math.floor(envNumber('BULK_DAY_ROBUSTNESS_MAX_BATCHES', envNumber('DAY_ROBUSTNESS_MAX_BATCHES', 0))),
+    ),
+  );
+  const extended = envBool('BULK_DAY_ROBUSTNESS_EXTENDED', envBool('DAY_ROBUSTNESS_EXTENDED', false));
+  const includeFailed = envBool('BULK_DAY_ROBUSTNESS_INCLUDE_FAILED', envBool('DAY_ROBUSTNESS_INCLUDE_FAILED', false));
+
+  let selected = 0;
+  let processed = 0;
+  let passed = 0;
+  let failed = 0;
+  let errors = 0;
+  let batches = 0;
+  const startedAt = Date.now();
+
+  console.log(
+    `\nDay finalist robustness: claimed singleton window=${new Date(windowToTs).toISOString()} batchSize=${limit} maxBatches=${maxBatches || 'until-empty'} weeks=${extended ? policy.extendedWeeks : policy.weeks}`,
+  );
+
+  try {
+    while (maxBatches <= 0 || batches < maxBatches) {
+      batches += 1;
+      console.log(`\n--- Robustness batch ${batches} ---`);
+      const result = await mod.runDayRobustnessBatch({
+        windowToTs,
+        limit,
+        extended,
+        includeFailed,
+        lockOwner: owner,
+        onProgress(event) {
+          const phase = String(event.phase || '');
+          if (phase !== 'candidate_done' && phase !== 'candidate_error') return;
+          const item = Number(event.processed || 0);
+          const total = Number(event.total || 0);
+          if (phase === 'candidate_done') {
+            console.log(
+              `  ${item}/${total} ${event.symbol} passed=${event.passed} trades=${event.trades} netR=${Number(event.netR || 0).toFixed(2)}`,
+            );
+            return;
+          }
+          console.log(`  ${item}/${total} ${event.symbol} error=${event.error || 'unknown'}`);
+        },
+      });
+
+      selected += result.selected;
+      processed += result.processed;
+      passed += result.passed;
+      failed += result.failed;
+      errors += result.errors;
+
+      await heartbeatScalpV2Job({
+        jobKind: 'robustness',
+        lockOwner: owner,
+        dedupeScope,
+        details: {
+          phase: 'running',
+          windowToTs,
+          batches,
+          selected,
+          processed,
+          passed,
+          failed,
+          errors,
+          updatedAt: new Date().toISOString(),
+        },
+      });
+
+      console.log(
+        `  robustness batch done selected=${result.selected} processed=${result.processed} passed=${result.passed} failed=${result.failed} errors=${result.errors}`,
+      );
+      if (result.selected === 0) break;
+    }
+
+    await finalizeScalpV2Job({
+      jobKind: 'robustness',
+      lockOwner: owner,
+      dedupeScope,
+      ok: errors <= 0,
+      details: {
+        phase: 'complete',
+        windowToTs,
+        batches,
+        selected,
+        processed,
+        passed,
+        failed,
+        errors,
+        durationMs: Date.now() - startedAt,
+        completedAt: new Date().toISOString(),
+      },
+    });
+
+    console.log(
+      `\nDay finalist robustness complete: batches=${batches} selected=${selected} processed=${processed} passed=${passed} failed=${failed} errors=${errors}`,
+    );
+  } catch (err) {
+    await finalizeScalpV2Job({
+      jobKind: 'robustness',
+      lockOwner: owner,
+      dedupeScope,
+      ok: false,
+      details: {
+        phase: 'failed',
+        windowToTs,
+        batches,
+        selected,
+        processed,
+        passed,
+        failed,
+        errors,
+        error: err instanceof Error ? err.message : String(err),
+        failedAt: new Date().toISOString(),
+      },
+    });
+    throw err;
+  }
 }
 
 async function runBatch(): Promise<boolean> {
@@ -657,10 +829,12 @@ async function runBatch(): Promise<boolean> {
       console.log(`\n  Current selection exhausted, but ${pending} discovered candidates remain — continuing...`);
       return true;
     }
+    v2BulkDrained = true;
     console.log('\n  ALL CANDIDATES EVALUATED — done!');
     return false;
   }
   if (pending === 0 && result.processed === 0) {
+    v2BulkDrained = true;
     console.log('\n  No more work — done!');
     return false;
   }
@@ -733,6 +907,12 @@ async function main() {
   let cont = true;
   while (cont) {
     cont = await runBatch();
+  }
+
+  if (v2BulkDrained) {
+    await runPostBulkDayRobustnessOnce();
+  } else if (BULK_RESEARCH_VERSION === 'v2' && envBool('BULK_RUN_DAY_ROBUSTNESS', true)) {
+    console.log('\nDay finalist robustness skipped: bulk did not fully drain in this process.');
   }
 
   const totalMin = ((Date.now() - globalStart) / 60000).toFixed(1);

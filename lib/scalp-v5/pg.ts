@@ -2,6 +2,10 @@ import { isScalpPgConfigured, scalpPrisma } from "../scalp/pg/client";
 import { sql } from "../scalp/pg/sql";
 import { DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID } from "../scalp-v2/dayComposer";
 import {
+  evaluateDayRobustnessForPromotion,
+  resolveDayRobustnessPolicy,
+} from "../scalp-v2/dayRobustness";
+import {
   getScalpV2DefaultRiskProfile,
   getScalpV2RuntimeConfig,
   isScalpV2RuntimeSymbolInScope,
@@ -1775,6 +1779,8 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
   // see which v5-side criterion is binding.
   funnel: {
     candidates: number;        // passed v5_enabled + freshness + lease checks
+    failedDayRobustnessMissing: number;
+    failedDayRobustnessFailed: number;
     failedTotalNetR: number;
     failedTotalTrades: number;
     failedPositiveWeeks: number;
@@ -1788,6 +1794,8 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
 }> {
   const emptyFunnel = {
     candidates: 0,
+    failedDayRobustnessMissing: 0,
+    failedDayRobustnessFailed: 0,
     failedTotalNetR: 0,
     failedTotalTrades: 0,
     failedPositiveWeeks: 0,
@@ -1859,6 +1867,7 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
     liveMode: string | null;
     v5CellEvidence: unknown;
     promotionGate: unknown;
+    candidateMetadata: unknown;
   };
   const candidates = await db.$queryRaw<CandidateRow[]>(sql`
     SELECT
@@ -1867,24 +1876,27 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
       enabled          AS "enabled",
       live_mode        AS "liveMode",
       v5_cell_evidence AS "v5CellEvidence",
-      promotion_gate   AS "promotionGate"
-    FROM scalp_v2_deployments
-    WHERE candidate_id IS NOT NULL
-      AND strategy_id = ${DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID}
-      AND v5_enabled = TRUE
-      AND v5_evaluated_at IS NOT NULL
-      AND v5_evaluated_at >= ${staleBefore}
-      AND (v5_lease_until IS NULL OR v5_lease_until < NOW())
+      d.promotion_gate AS "promotionGate",
+      c.metadata_json  AS "candidateMetadata"
+    FROM scalp_v2_deployments d
+    INNER JOIN scalp_v2_candidates c ON c.id = d.candidate_id
+    WHERE d.candidate_id IS NOT NULL
+      AND d.strategy_id = ${DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID}
+      AND d.v5_enabled = TRUE
+      AND d.v5_evaluated_at IS NOT NULL
+      AND d.v5_evaluated_at >= ${staleBefore}
+      AND (d.v5_lease_until IS NULL OR d.v5_lease_until < NOW())
       AND (
-        enabled = FALSE
-        OR live_mode IS DISTINCT FROM 'live'
-        OR promotion_gate->>'source' IS DISTINCT FROM 'v5_cell_evidence'
-        OR promotion_gate->'v5Promotion' IS NULL
+        d.enabled = FALSE
+        OR d.live_mode IS DISTINCT FROM 'live'
+        OR d.promotion_gate->>'source' IS DISTINCT FROM 'v5_cell_evidence'
+        OR d.promotion_gate->'v5Promotion' IS NULL
       )
-    ORDER BY v5_evaluated_at DESC;
+    ORDER BY d.v5_evaluated_at DESC;
   `);
 
   const funnel = { ...emptyFunnel, candidates: candidates.length };
+  const dayRobustnessPolicy = resolveDayRobustnessPolicy();
   const qualifiedRows: Array<{
     deploymentId: string;
     candidateId: number | null;
@@ -1895,6 +1907,18 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
   }> = [];
 
   for (const row of candidates) {
+    const dayRobustness = evaluateDayRobustnessForPromotion({
+      strategyId: DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID,
+      metadata: row.candidateMetadata,
+      policy: dayRobustnessPolicy,
+      nowMs,
+    });
+    if (!dayRobustness.passed) {
+      if (dayRobustness.reason === "DAY_ROBUSTNESS_MISSING") funnel.failedDayRobustnessMissing += 1;
+      else funnel.failedDayRobustnessFailed += 1;
+      continue;
+    }
+
     const evidence = (row.v5CellEvidence && typeof row.v5CellEvidence === "object" && !Array.isArray(row.v5CellEvidence))
       ? (row.v5CellEvidence as ScalpV5CellEvidence)
       : null;
@@ -2001,6 +2025,10 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
             promotedAtMs,
             metrics: row.metrics,
             thresholds,
+            dayRobustness: {
+              required: dayRobustnessPolicy.enabled,
+              policy: dayRobustnessPolicy,
+            },
             passReason: row.passReason,
             liveMode,
             runtimeLiveEnabled,

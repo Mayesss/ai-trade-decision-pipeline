@@ -363,11 +363,13 @@ export async function claimScalpV2Job(params: {
   jobKind: ScalpV2JobKind;
   lockOwner: string;
   dedupeScope?: string;
+  allowSucceededRetry?: boolean;
 }): Promise<boolean> {
   if (!isScalpPgConfigured()) return true;
   const db = scalpPrisma();
   const dedupeKey = `${params.jobKind}:${normalizeJobDedupeScope(params.dedupeScope)}`;
   const staleLockMinutes = resolveScalpV2JobLockStaleMinutes();
+  const allowSucceededRetry = params.allowSucceededRetry !== false;
   await db.$executeRaw(sql`
     INSERT INTO scalp_v2_jobs(
       job_kind,
@@ -402,6 +404,7 @@ export async function claimScalpV2Job(params: {
       updated_at = NOW()
     WHERE job_kind = ${params.jobKind}
       AND dedupe_key = ${dedupeKey}
+      AND (${allowSucceededRetry} OR status <> 'succeeded')
       AND (
         status <> 'running'
         OR locked_at < NOW() - (${staleLockMinutes} * INTERVAL '1 minute')
@@ -3417,6 +3420,8 @@ export async function listScalpV2Jobs(params: {
             ? "worker"
         : String(row.jobKind || "").trim().toLowerCase() === "research"
             ? "research"
+        : String(row.jobKind || "").trim().toLowerCase() === "robustness"
+            ? "robustness"
         : String(row.jobKind || "").trim().toLowerCase() === "promote"
             ? "promote"
         : String(row.jobKind || "").trim().toLowerCase() === "execute"

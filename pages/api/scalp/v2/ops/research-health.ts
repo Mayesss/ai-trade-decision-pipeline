@@ -7,7 +7,9 @@ import {
   countScalpV2CandidatesByStatus,
   listScalpV2Jobs,
 } from "../../../../../lib/scalp-v2/db";
+import { DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID } from "../../../../../lib/scalp-v2/dayComposer";
 import { setNoStoreHeaders } from "../../../../../lib/scalp-v2/http";
+import { isScalpPgConfigured, scalpPrisma, sql } from "../../../../../lib/scalp-v2/pg";
 import type { ScalpV2CandidateStatus } from "../../../../../lib/scalp-v2/types";
 
 type HintTone = "ok" | "warn" | "critical" | "info";
@@ -44,6 +46,45 @@ function asFiniteMs(value: unknown): number | null {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return null;
   return Math.floor(n);
+}
+
+async function loadDayRobustnessQueue(): Promise<{
+  stageCPassed: number;
+  missing: number;
+  passed: number;
+  failed: number;
+}> {
+  if (!isScalpPgConfigured()) return { stageCPassed: 0, missing: 0, passed: 0, failed: 0 };
+  const db = scalpPrisma();
+  const [row] = await db.$queryRaw<Array<{
+    stageCPassed: bigint | number;
+    missing: bigint | number;
+    passed: bigint | number;
+    failed: bigint | number;
+  }>>(sql`
+    SELECT
+      COUNT(*)::bigint AS "stageCPassed",
+      COUNT(*) FILTER (
+        WHERE metadata_json->'worker'->'robustness' IS NULL
+      )::bigint AS missing,
+      COUNT(*) FILTER (
+        WHERE COALESCE((metadata_json->'worker'->'robustness'->>'passed')::boolean, false)
+      )::bigint AS passed,
+      COUNT(*) FILTER (
+        WHERE metadata_json->'worker'->'robustness' IS NOT NULL
+          AND COALESCE((metadata_json->'worker'->'robustness'->>'passed')::boolean, false) = false
+      )::bigint AS failed
+    FROM scalp_v2_candidates
+    WHERE status = 'evaluated'
+      AND strategy_id = ${DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID}
+      AND COALESCE((metadata_json->'worker'->'stageC'->>'passed')::boolean, false);
+  `);
+  return {
+    stageCPassed: Math.max(0, Math.floor(Number(row?.stageCPassed || 0))),
+    missing: Math.max(0, Math.floor(Number(row?.missing || 0))),
+    passed: Math.max(0, Math.floor(Number(row?.passed || 0))),
+    failed: Math.max(0, Math.floor(Number(row?.failed || 0))),
+  };
 }
 
 function formatAgeMinutes(ms: number | null): string {
@@ -144,8 +185,9 @@ export default async function handler(
     const nowMs = Date.now();
     const staleLockMinutes = resolveScalpV2JobLockStaleMinutes();
     const staleThresholdMs = staleLockMinutes * 60_000;
-    const [jobs, ...candidateCounts] = await Promise.all([
+    const [jobs, robustness, ...candidateCounts] = await Promise.all([
       listScalpV2Jobs({ limit: 50 }),
+      loadDayRobustnessQueue(),
       ...CANDIDATE_STATUSES.map((status) =>
         countScalpV2CandidatesByStatus({ status }),
       ),
@@ -193,6 +235,7 @@ export default async function handler(
         },
         job: null,
         queue,
+        robustness,
         hint: {
           tone: "info",
           label: "Research health unavailable",
@@ -282,6 +325,7 @@ export default async function handler(
         log: Array.isArray(payload.log) ? payload.log.slice(-30) : [],
       },
       queue,
+      robustness,
       hint,
     });
   } catch (err: any) {

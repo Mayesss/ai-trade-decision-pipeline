@@ -43,6 +43,10 @@ import {
   parseDayComposerTuneId,
 } from "./dayComposer";
 import {
+  evaluateDayRobustnessForPromotion,
+  resolveDayRobustnessPolicy,
+} from "./dayRobustness";
+import {
   ENTRY_TRIGGER_COMPAT,
   resolveEntryTriggerOverrides,
 } from "./entryTriggerPresets";
@@ -5770,6 +5774,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       weeklyGateReason: string | null;
       workerStageCPass: boolean;
       workerStageReason: string | null;
+      dayRobustness: Record<string, unknown> | null;
 	      workerStages: Record<string, unknown> | null;
 	      v3TemporalFilter: ScalpV2V3TemporalFilter | null;
 	      v3Holdout: Record<string, unknown> | null;
@@ -5789,6 +5794,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 
     let skippedWorkerMissing = 0;
     const drafts: PromotionDraft[] = [];
+    const dayRobustnessPolicy = resolveDayRobustnessPolicy();
     for (const deploymentId of consideredDeploymentIds) {
       const candidate = candidateByDeploymentId.get(deploymentId) || null;
       const existing = existingByDeploymentId.get(deploymentId) || null;
@@ -5864,6 +5870,13 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         workerStages: workerGate.workerStages,
         requiredWeeks: policy.minCompletedWeeks,
         nowTs,
+      });
+      const dayRobustness = evaluateDayRobustnessForPromotion({
+        strategyId,
+        metadata: candidate?.metadata || {},
+        policy: dayRobustnessPolicy,
+        nowMs: nowTs,
+        windowToTs,
       });
       const freshness = workerFreshness.freshness;
       const weeklyRows: WeeklyAggregationRow[] = [];
@@ -5966,6 +5979,10 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         reason = workerGate.reason || "worker_stage_c_failed";
       } else if (!workerFreshness.ready) {
         reason = workerFreshness.reason || "worker_stage_c_freshness_incomplete";
+	      } else if (!dayRobustness.passed) {
+	        reason = dayRobustness.reason === "DAY_ROBUSTNESS_MISSING"
+	          ? "day_robustness_missing"
+	          : "day_robustness_failed";
 	      } else if (backtestFourWeekGateFailed) {
 	        reason = "backtest_4w_net_r_below_threshold";
 	      } else if (!holdoutPassed) {
@@ -6017,6 +6034,15 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         weeklyGateReason: weeklyGate.reason,
 	        workerStageCPass: workerGate.stageCPass,
 	        workerStageReason: workerGate.reason,
+	        dayRobustness: dayRobustness.required
+	          ? {
+	              required: true,
+	              passed: dayRobustness.passed,
+	              reason: dayRobustness.reason,
+	              evidence: dayRobustness.evidence,
+	              policy: dayRobustnessPolicy,
+	            }
+	          : null,
 	        workerStages: workerStagesRecord,
 	        v3TemporalFilter,
 	        v3Holdout: Object.keys(asRecord(v3Holdout)).length > 0 ? v3Holdout : null,
@@ -6291,6 +6317,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
           freshness: row.freshness,
 	          weekly: row.weeklyMetrics,
 	          worker: row.workerStages,
+	          dayRobustness: row.dayRobustness,
 	          holdout: row.v3Holdout,
 	          drift: row.v3Drift,
 	          v3ValidationStatus: row.v3ValidationStatus,

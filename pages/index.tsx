@@ -210,6 +210,12 @@ interface ResearchHealthResp {
     promoted: number;
     rejected: number;
   };
+  robustness?: {
+    stageCPassed: number;
+    missing: number;
+    passed: number;
+    failed: number;
+  };
   job: {
     status: string;
     attempts: number;
@@ -967,6 +973,30 @@ function ResearchProgress({ data }: { data: ResearchHealthResp }) {
           <span className="text-zinc-100">{fmtDurationMs(data.health.lockAgeMs)}</span>
         </span>
         {data.hint.detail ? <span className="text-zinc-500">{data.hint.detail}</span> : null}
+      </span>
+
+      <span className="text-zinc-500">robustness</span>
+      <span className="flex flex-wrap items-baseline gap-x-3">
+        <span>
+          <span className="text-zinc-100">{data.robustness?.stageCPassed ?? 0}</span>
+          <span className="text-zinc-500"> stageC finalists</span>
+        </span>
+        <span>
+          <span className={(data.robustness?.missing ?? 0) > 0 ? "text-amber-400" : "text-zinc-500"}>
+            {data.robustness?.missing ?? 0}
+          </span>
+          <span className="text-zinc-500"> pending</span>
+        </span>
+        <span>
+          <span className="text-emerald-400">{data.robustness?.passed ?? 0}</span>
+          <span className="text-zinc-500"> passed</span>
+        </span>
+        <span>
+          <span className={(data.robustness?.failed ?? 0) > 0 ? "text-rose-400" : "text-zinc-500"}>
+            {data.robustness?.failed ?? 0}
+          </span>
+          <span className="text-zinc-500"> failed</span>
+        </span>
       </span>
     </div>
   );
