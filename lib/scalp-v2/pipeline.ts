@@ -3100,6 +3100,7 @@ export async function runScalpV2ResearchJob(params: {
 	      v3PriorScore?: number;
 	      v3TemporalFilter?: ScalpV2V3TemporalFilter | null;
 	      v3Ranking?: Record<string, unknown> | null;
+	      researchAttempts?: number;
 	      dsl: any;
 	    };
 
@@ -3576,6 +3577,7 @@ export async function runScalpV2ResearchJob(params: {
 	            Object.keys(asRecord(meta.v3Ranking)).length > 0
 	              ? asRecord(meta.v3Ranking)
 	              : null,
+	          researchAttempts: Math.max(0, Math.floor(Number(row.researchAttempts) || 0)),
 	          dsl: {
             candidateId: String(meta.researchCandidateId || row.tuneId),
             tuneId: row.tuneId,
@@ -4157,6 +4159,17 @@ export async function runScalpV2ResearchJob(params: {
     let newestWeekReplayReuses = 0;
     let stageBCacheHits = 0;
     let stageCCacheHits = 0;
+    const coverageDeferMaxAttempts = Math.max(
+      1,
+      Math.min(
+        100,
+        toPositiveInt(
+          process.env.SCALP_V2_RESEARCH_COVERAGE_DEFER_MAX_ATTEMPTS,
+          3,
+          100,
+        ),
+      ),
+    );
 
     let timeBudgetExhausted = false;
 
@@ -5167,6 +5180,16 @@ export async function runScalpV2ResearchJob(params: {
           runtime.stageResults[params.stage.id] = stageResult;
           if (shouldDeferWorkerStageForCoverage(stageResult)) {
             deferredByCandleCoverage += 1;
+            const attemptsAfterClaim = Math.max(
+              1,
+              Math.floor(Number(runtime.candidate.researchAttempts) || 0) + 1,
+            );
+            if (attemptsAfterClaim >= coverageDeferMaxAttempts) {
+              finalizedCoverageDeferrals += 1;
+              markDownstreamBlocked(runtime, params.stage.id);
+              finalizeCandidateRuntime(runtime);
+              continue;
+            }
             const minStageResult =
               minPersistStage === "a"
                 ? runtime.stageResults.a

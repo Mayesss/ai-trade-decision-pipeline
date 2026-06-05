@@ -669,6 +669,7 @@ export async function listScalpV2Candidates(params: {
       status: string;
       reasonCodes: string[];
       metadataJson: unknown;
+      researchAttempts: number;
       deploymentId: string | null;
       deploymentEnabled: boolean | null;
       createdAt: Date;
@@ -687,6 +688,7 @@ export async function listScalpV2Candidates(params: {
         c.status,
         c.reason_codes AS "reasonCodes",
         c.metadata_json AS "metadataJson",
+        COALESCE(c.research_attempts, 0)::int AS "researchAttempts",
         d.deployment_id AS "deploymentId",
         d.enabled AS "deploymentEnabled",
         c.created_at AS "createdAt",
@@ -716,6 +718,7 @@ export async function listScalpV2Candidates(params: {
     status: normalizeCandidateStatus(row.status),
     reasonCodes: normalizeReasonCodes(row.reasonCodes || []),
     metadata: asRecord(row.metadataJson),
+    researchAttempts: Math.max(0, Math.floor(Number(row.researchAttempts) || 0)),
     deploymentId: String(row.deploymentId || "").trim() || null,
     deploymentEnabled:
       typeof row.deploymentEnabled === "boolean"

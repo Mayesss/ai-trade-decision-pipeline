@@ -127,6 +127,7 @@ export interface ScalpV2Candidate {
   status: ScalpV2CandidateStatus;
   reasonCodes: string[];
   metadata: Record<string, unknown>;
+  researchAttempts?: number;
   deploymentId?: string | null;
   deploymentEnabled?: boolean | null;
   createdAtMs: number;
