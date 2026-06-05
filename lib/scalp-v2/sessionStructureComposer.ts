@@ -63,6 +63,36 @@ export interface SessionStructureComposerPlan {
   digest: string;
 }
 
+export interface SessionStructureAdaptivePriorEntry {
+  score: number;
+  samples: number;
+  stageAPass: number;
+  stageBPass: number;
+  stageCPass: number;
+}
+
+export interface SessionStructureAdaptivePriorSet {
+  version: string;
+  generatedAtMs: number;
+  windowToTs: number;
+  minSamples: number;
+  global: Record<string, SessionStructureAdaptivePriorEntry>;
+  scoped: Record<string, Record<string, SessionStructureAdaptivePriorEntry>>;
+  diagnostics: {
+    rows: number;
+    scoredKeys: number;
+    stageAPass: number;
+    stageBPass: number;
+    stageCPass: number;
+  };
+}
+
+export interface SessionStructureAdaptiveScoreTrace {
+  adjustment: number;
+  keys: string[];
+  matchedKeys: string[];
+}
+
 export interface SessionStructureComposerCandidateDslSpec {
   candidateId: string;
   tuneId: string;
@@ -84,6 +114,7 @@ export interface SessionStructureComposerCandidateDslSpec {
   compatibilityReasonCodes: string[];
   model: ScalpV2ComposerModelScore;
   sessionComposerPlan: SessionStructureComposerPlan;
+  adaptivePrior?: SessionStructureAdaptiveScoreTrace | null;
   regimeGateId?: string | null;
 }
 
@@ -363,6 +394,7 @@ function scoreCombo(params: {
   triggerId: SessionStructureTriggerBlockId;
   confirmationId: SessionStructureConfirmationBlockId;
   managementId: SessionStructureManagementBlockId;
+  adaptivePriors?: SessionStructureAdaptivePriorSet | null;
 }): number {
   const contextWeight: Record<SessionStructureContextBlockId, number> = {
     m30_session_momentum: 0.2,
@@ -435,6 +467,17 @@ function scoreCombo(params: {
     params.confirmationId,
     params.managementId,
   ].join(":");
+  const adaptive = resolveSessionStructureAdaptiveScore({
+    priors: params.adaptivePriors || null,
+    venue: params.venue,
+    symbol: params.symbol,
+    session: params.session,
+    contextId: params.contextId,
+    levelId: params.levelId,
+    triggerId: params.triggerId,
+    confirmationId: params.confirmationId,
+    managementId: params.managementId,
+  });
   return (
     contextWeight[params.contextId] +
     levelWeight[params.levelId] +
@@ -443,6 +486,7 @@ function scoreCombo(params: {
     managementWeight[params.managementId] +
     preferredPairBonus +
     -duplicateClusterPenalty +
+    (adaptive?.adjustment || 0) +
     deterministicScore(seed) * 0.02
   );
 }
@@ -455,6 +499,98 @@ function sessionStructureLevelFamily(levelId: SessionStructureLevelBlockId): str
 function sessionStructureTriggerFamily(triggerId: SessionStructureTriggerBlockId): string {
   if (isSessionStructureBreakoutRetestTrigger(triggerId)) return "breakout_retest";
   return triggerId;
+}
+
+function sessionStructureAdaptiveScopeKey(params: {
+  venue: ScalpV2Venue;
+  symbol: string;
+  session: ScalpV2Session;
+}): string {
+  return [params.venue, String(params.symbol || "").trim().toUpperCase(), params.session].join(":");
+}
+
+export function sessionStructureAdaptiveKeys(
+  plan: Omit<SessionStructureComposerPlan, "digest">,
+): string[] {
+  const levelFamily = sessionStructureLevelFamily(plan.levelId);
+  const triggerFamily = sessionStructureTriggerFamily(plan.triggerId);
+  const fingerprint = sessionStructureBehaviorFingerprint(plan);
+  return [
+    `behavior:${fingerprint}`,
+    `cluster:${plan.contextId}|${levelFamily}|${triggerFamily}`,
+    `context:${plan.contextId}`,
+    `level:${plan.levelId}`,
+    `level_family:${levelFamily}`,
+    `trigger:${plan.triggerId}`,
+    `trigger_family:${triggerFamily}`,
+    `confirmation:${plan.confirmationId}`,
+    `management:${plan.managementId}`,
+  ];
+}
+
+function clampScore(value: number, min: number, max: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(min, Math.min(max, n));
+}
+
+function resolveSessionStructureAdaptiveScore(params: {
+  priors?: SessionStructureAdaptivePriorSet | null;
+  venue: ScalpV2Venue;
+  symbol: string;
+  session: ScalpV2Session;
+  contextId: SessionStructureContextBlockId;
+  levelId: SessionStructureLevelBlockId;
+  triggerId: SessionStructureTriggerBlockId;
+  confirmationId: SessionStructureConfirmationBlockId;
+  managementId: SessionStructureManagementBlockId;
+}): SessionStructureAdaptiveScoreTrace | null {
+  const priors = params.priors;
+  if (!priors) return null;
+  const keys = sessionStructureAdaptiveKeys({
+    contextId: params.contextId,
+    levelId: params.levelId,
+    triggerId: params.triggerId,
+    confirmationId: params.confirmationId,
+    managementId: params.managementId,
+  });
+  const scoped = priors.scoped[sessionStructureAdaptiveScopeKey(params)] || {};
+  const weights: Record<string, number> = {
+    behavior: 0.12,
+    cluster: 0.08,
+    context: 0.03,
+    level: 0.04,
+    level_family: 0.018,
+    trigger: 0.04,
+    trigger_family: 0.018,
+    confirmation: 0.03,
+    management: 0.03,
+  };
+  let adjustment = 0;
+  const matchedKeys: string[] = [];
+  for (const key of keys) {
+    const prefix = key.split(":")[0] || "";
+    const weight = weights[prefix] || 0;
+    if (weight <= 0) continue;
+    const scopedEntry = scoped[key];
+    const globalEntry = priors.global[key];
+    if (!scopedEntry && !globalEntry) continue;
+    matchedKeys.push(key);
+    const scopedScore = scopedEntry ? clampScore(scopedEntry.score, -1, 1) : 0;
+    const globalScore = globalEntry ? clampScore(globalEntry.score, -1, 1) : 0;
+    const score =
+      scopedEntry && globalEntry
+        ? scopedScore * 0.65 + globalScore * 0.35
+        : scopedEntry
+          ? scopedScore
+          : globalScore * 0.75;
+    adjustment += weight * score;
+  }
+  return {
+    adjustment: clampScore(adjustment, -0.14, 0.2),
+    keys,
+    matchedKeys,
+  };
 }
 
 function sessionStructureDiversityClusterKey(row: SessionStructureComposerCandidateDslSpec): string {
@@ -520,6 +656,7 @@ export function buildScalpV2SessionStructureComposerGrid(params: {
   entrySessionProfile: ScalpV2Session;
   maxCandidates?: number;
   generatedAtMs?: number;
+  adaptivePriors?: SessionStructureAdaptivePriorSet | null;
 }): SessionStructureComposerCandidateDslSpec[] {
   const maxCandidates = Math.max(1, Math.min(2_000, Math.floor(Number(params.maxCandidates || 60))));
   const generatedAtMs = Math.floor(Number(params.generatedAtMs || Date.now()));
@@ -568,6 +705,7 @@ export function buildScalpV2SessionStructureComposerGrid(params: {
               triggerId,
               confirmationId,
               managementId,
+              adaptivePriors: params.adaptivePriors || null,
             });
             const compositeScore = Math.max(0, Math.min(1, rawScore));
             const model: ScalpV2ComposerModelScore = {
@@ -587,6 +725,17 @@ export function buildScalpV2SessionStructureComposerGrid(params: {
               managementId,
               digest,
             };
+            const adaptivePrior = resolveSessionStructureAdaptiveScore({
+              priors: params.adaptivePriors || null,
+              venue: params.venue,
+              symbol: params.symbol,
+              session: params.entrySessionProfile,
+              contextId,
+              levelId,
+              triggerId,
+              confirmationId,
+              managementId,
+            });
             byFingerprint.set(fingerprint, {
               candidateId: tuneId,
               tuneId,
@@ -613,6 +762,7 @@ export function buildScalpV2SessionStructureComposerGrid(params: {
               compatibilityReasonCodes: compat.reasonCodes,
               model,
               sessionComposerPlan: plan,
+              adaptivePrior,
               regimeGateId: null,
             });
           }

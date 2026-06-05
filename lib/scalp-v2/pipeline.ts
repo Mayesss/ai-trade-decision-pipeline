@@ -48,6 +48,10 @@ import {
   parseSessionStructureComposerTuneId,
 } from "./sessionStructureComposer";
 import {
+  fingerprintSessionStructureAdaptivePriors,
+  loadSessionStructureAdaptivePriors,
+} from "./sessionStructureAdaptiveSearch";
+import {
   evaluateDayRobustnessForPromotion,
   resolveDayRobustnessPolicy,
 } from "./dayRobustness";
@@ -197,7 +201,7 @@ function hashScoreSeed(value: string): number {
   return positive % 1000;
 }
 
-const RESEARCH_WARM_UP_SCOPE_HASH_VERSION = "session_structure_v1_1_guided_sha256_r1";
+const RESEARCH_WARM_UP_SCOPE_HASH_VERSION = "session_structure_v1_2_adaptive_sha256_r1";
 
 function isRetiredComposerStrategyId(strategyId: unknown): boolean {
   const normalized = String(strategyId || "").trim().toLowerCase();
@@ -221,6 +225,7 @@ function buildResearchWarmUpScopeHash(params: {
   }>;
   maxCandidatesPerSession: number;
   enabledDeploymentVariantSeeds: string[];
+  adaptivePriorFingerprint: string;
 }): string {
   const normalizedScopes = params.scopes
     .map((row) => `${row.venue}:${row.symbol}:${row.session}`)
@@ -241,7 +246,11 @@ function buildResearchWarmUpScopeHash(params: {
   const payload = JSON.stringify({
     version: RESEARCH_WARM_UP_SCOPE_HASH_VERSION,
     strategyId: SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID,
-    sessionComposerVersion: "session_structure_composer_v1_1_guided_r1",
+    sessionComposerVersion: "session_structure_composer_v1_2_adaptive_r1",
+    adaptivePriorFingerprint: crypto
+      .createHash("sha256")
+      .update(params.adaptivePriorFingerprint || "adaptive:none")
+      .digest("hex"),
     maxCandidatesPerSession: Math.max(
       1,
       Math.floor(Number(params.maxCandidatesPerSession) || 1),
@@ -3057,10 +3066,35 @@ export async function runScalpV2ResearchJob(params: {
         (dep) =>
           `${dep.venue}:${dep.symbol}:${dep.strategyId}:${dep.tuneId}:${dep.entrySessionProfile}`,
       );
+    const adaptiveSearchEnabled = envBool(
+      "SCALP_V2_SESSION_ADAPTIVE_SEARCH_ENABLED",
+      true,
+    );
+    const adaptivePriors = adaptiveSearchEnabled
+      ? await withTiming("warmup.load_session_adaptive_priors", () =>
+          loadSessionStructureAdaptivePriors({
+            windowToTs,
+            nowMs: nowTs,
+            limit: toPositiveInt(
+              process.env.SCALP_V2_SESSION_ADAPTIVE_SEARCH_MAX_ROWS,
+              50_000,
+              100_000,
+            ),
+            minSamples: toPositiveInt(
+              process.env.SCALP_V2_SESSION_ADAPTIVE_SEARCH_MIN_SAMPLES,
+              8,
+              100,
+            ),
+          }).catch(() => null),
+        )
+      : null;
+    const adaptivePriorFingerprint =
+      fingerprintSessionStructureAdaptivePriors(adaptivePriors);
     const scopeHash = buildResearchWarmUpScopeHash({
       scopes,
       maxCandidatesPerSession,
       enabledDeploymentVariantSeeds,
+      adaptivePriorFingerprint,
     });
     const warmUpState = await withTiming("warmup.load_state", () =>
       loadScalpV2WarmUpState({ windowToTs }).catch(() => null),
@@ -3132,6 +3166,7 @@ export async function runScalpV2ResearchJob(params: {
 	              2_000,
 	            ),
 	          ),
+	          adaptivePriors,
 	        });
 	        poolSizeTotal += composerCandidates.length;
 	        const scopeCandidates: InMemoryCandidate[] = [];
@@ -3362,6 +3397,14 @@ export async function runScalpV2ResearchJob(params: {
           legacyResearchDsl: c.dsl.blocksByFamily,
           sessionComposerPlan: c.dsl.sessionComposerPlan,
           sessionComposerBehaviorFingerprint: c.dsl.behaviorFingerprint,
+          sessionComposerAdaptiveSearch: c.dsl.adaptivePrior
+            ? {
+                version: adaptivePriors?.version || null,
+                adjustment: c.dsl.adaptivePrior.adjustment,
+                matchedKeys: c.dsl.adaptivePrior.matchedKeys,
+                keys: c.dsl.adaptivePrior.keys,
+              }
+            : null,
           researchReferences: c.dsl.referenceStrategyIds,
 	          researchSupportScore: c.dsl.supportScore,
 	          researchRegimeGateId: c.dsl.regimeGateId || null,
@@ -3392,6 +3435,22 @@ export async function runScalpV2ResearchJob(params: {
 	        v3TemporalVariantsGenerated,
 	        v3SingleAxisTemporalResultCount,
 	        v3SlotWeekdayCombosEnabled,
+	        adaptiveSearch: adaptivePriors
+	          ? {
+	              enabled: adaptiveSearchEnabled,
+	              version: adaptivePriors.version,
+	              fingerprint: crypto
+	                .createHash("sha256")
+	                .update(adaptivePriorFingerprint)
+	                .digest("hex"),
+	              diagnostics: adaptivePriors.diagnostics,
+	            }
+	          : {
+	              enabled: adaptiveSearchEnabled,
+	              version: null,
+	              fingerprint: null,
+	              diagnostics: null,
+	            },
 	        scopeHash,
         scopeHashVersion: RESEARCH_WARM_UP_SCOPE_HASH_VERSION,
         configuredBatchSize,

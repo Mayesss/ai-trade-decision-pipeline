@@ -9,6 +9,7 @@ import {
   parseSessionStructureComposerTuneId,
   validateSessionStructureCompatibility,
 } from "../../scalp-v2/sessionStructureComposer";
+import { buildSessionStructureAdaptivePriorsFromRows } from "../../scalp-v2/sessionStructureAdaptiveSearch";
 
 test("session structure composer tune id build/parse round-trips", () => {
   const tuneId = buildSessionStructureComposerTuneId({
@@ -117,4 +118,51 @@ test("session structure grid is deterministic, capped, and deduped by behavior f
   assert.ok(new Set(a.map((row) => row.sessionComposerPlan.contextId)).has("atr_low_chop_avoid"));
   assert.ok(new Set(a.map((row) => row.sessionComposerPlan.levelId)).has("opening_range_45m"));
   assert.ok(new Set(a.map((row) => row.sessionComposerPlan.triggerId)).has("breakout_retest_hold_tight"));
+});
+
+test("session structure adaptive priors bias the next generated grid", () => {
+  const winningPlan = {
+    contextId: "ny_continuation",
+    levelId: "opening_range_60m",
+    triggerId: "breakout_retest_hold_tight",
+    confirmationId: "retest_wick_rejection",
+    managementId: "trail_after_0_8r_time_3h",
+    digest: "abc1234567",
+  } as const;
+  const rows = Array.from({ length: 12 }, () => ({
+    venue: "capital" as const,
+    symbol: "EURUSD",
+    session: "berlin" as const,
+    metadata: {
+      sessionComposerPlan: winningPlan,
+      worker: {
+        windowToTs: 1,
+        stageA: { passed: true, netR: 2, trades: 18 },
+        stageB: { passed: true, netR: 3, trades: 28 },
+        stageC: { passed: true, netR: 5, trades: 42 },
+      },
+    },
+  }));
+  const priors = buildSessionStructureAdaptivePriorsFromRows({
+    rows,
+    windowToTs: 1,
+    nowMs: 2,
+    minSamples: 4,
+  });
+  const adaptiveGrid = buildScalpV2SessionStructureComposerGrid({
+    venue: "capital",
+    symbol: "EURUSD",
+    entrySessionProfile: "berlin",
+    maxCandidates: 60,
+    generatedAtMs: 1,
+    adaptivePriors: priors,
+  });
+  const nearNeighbor = adaptiveGrid.find((row) =>
+    row.sessionComposerPlan.contextId === winningPlan.contextId &&
+    row.sessionComposerPlan.levelId.startsWith("opening_range_") &&
+    row.sessionComposerPlan.triggerId.startsWith("breakout_retest_hold")
+  );
+  assert.ok(nearNeighbor);
+  assert.ok((nearNeighbor.adaptivePrior?.adjustment || 0) > 0);
+  assert.ok((nearNeighbor.adaptivePrior?.matchedKeys.length || 0) > 0);
 });
