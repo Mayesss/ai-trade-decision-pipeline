@@ -1,11 +1,11 @@
 /**
- * Local bulk research runner. Defaults to the latest research version (v4).
- * Set BULK_RESEARCH_VERSION=v2 only for intentional legacy v2/v3 drains.
+ * Local bulk research runner. Defaults to v2/session-composer research.
+ * Set BULK_RESEARCH_VERSION=v4 only for explicit v4 regime diagnostics.
  *
  * Usage: npx tsx scripts/research-local-bulk.ts
  *
  * Options (env vars):
- *   BULK_RESEARCH_VERSION=v4      — v4 by default; use v2 for legacy v2/v3
+ *   BULK_RESEARCH_VERSION=v2      — v2 by default; use v4/v5 explicitly
  *   BULK_SYMBOLS_PER_BATCH=4      — v2 only: symbols to process per batch
  *   BULK_CANDIDATE_BATCH_SIZE=100 — candidate rows per research call
  *   BULK_BACKTEST_CONCURRENCY=4   — v2 only: replay concurrency
@@ -14,6 +14,7 @@
  *   BULK_SHARD_COUNT=4            — v2 only: split symbols across N processes
  *   BULK_SHARD_INDEX=0            — v2 only: shard index for this process
  *   BULK_WORK_LEASES=1            — v2 only: claim candidate rows
+ *   BULK_RUN_V4_WALKFORWARD=0     — v4 only: run candidate envelopes only when set to 1
  *   BULK_V4_FORCE_VALIDITY=1      — v4 only: override classifier validity
  *   BULK_V4_CANDIDATE_FETCH_LIMIT=1000 — v4 only: candidate scan window before claiming work
  *   BULK_V4_CANDLE_CACHE_SOFT_CAP=16 — v4 only: cached 2-year symbol ranges
@@ -62,12 +63,13 @@ if (process.env.SCALP_PG_USE_HTTP === undefined) {
 type BulkResearchVersion = 'v2' | 'v4' | 'v5';
 
 function resolveBulkResearchVersion(): BulkResearchVersion {
-  const raw = String(process.env.BULK_RESEARCH_VERSION || process.env.SCALP_RESEARCH_VERSION || 'v4')
+  const raw = String(process.env.BULK_RESEARCH_VERSION || process.env.SCALP_RESEARCH_VERSION || 'v2')
     .trim()
     .toLowerCase();
   if (raw === 'v5') return 'v5';
   if (raw === 'v2' || raw === 'legacy' || raw === 'legacy_v2') return 'v2';
-  return 'v4';
+  if (raw === 'v4') return 'v4';
+  return 'v2';
 }
 
 const BULK_RESEARCH_VERSION = resolveBulkResearchVersion();
@@ -134,6 +136,7 @@ function envNumber(name: string, fallback: number): number {
 
 const DISABLE_TIME_BUDGET = envBool('BULK_DISABLE_TIME_BUDGET', true);
 const WORK_LEASES = envBool('BULK_WORK_LEASES', true);
+const BULK_RUN_V4_WALKFORWARD = envBool('BULK_RUN_V4_WALKFORWARD', false);
 const BULK_V4_FORCE_VALIDITY = envBool('BULK_V4_FORCE_VALIDITY', false);
 const BULK_V4_BACKFILL_CANDLES = envBool('BULK_V4_BACKFILL_CANDLES', true);
 const WORK_LEASE_MINUTES = Math.max(
@@ -255,6 +258,7 @@ let runScalpV4ResearchJob: ((params?: {
   candleBackfillMaxRequestsPerChunk?: number;
   workClaimLeaseMs?: number;
   progressIntervalMs?: number;
+  runWalkforward?: boolean;
   onProgress?: (event: ScalpV4WalkforwardProgressEvent) => void;
 }) => Promise<ScalpV4ResearchJobResult>) | null = null;
 
@@ -591,6 +595,7 @@ async function runBatch(): Promise<boolean> {
       candleBackfillMaxRequestsPerChunk: BULK_V4_BACKFILL_MAX_REQUESTS_PER_CHUNK,
       workClaimLeaseMs: BULK_V4_WORK_LEASE_MINUTES * 60 * 1000,
       progressIntervalMs: BULK_V4_PROGRESS_LOG_SECONDS * 1000,
+      runWalkforward: BULK_RUN_V4_WALKFORWARD,
       onProgress: BULK_V4_PROGRESS_LOG_SECONDS > 0 ? logV4Progress : undefined,
     });
     const elapsed = ((Date.now() - batchStart) / 1000).toFixed(1);
@@ -645,6 +650,9 @@ async function runBatch(): Promise<boolean> {
         );
       }
       console.log('\n  No v4 walkforward candidates processed — done for now.');
+      if (!BULK_RUN_V4_WALKFORWARD) {
+        console.log('  V4 candidate walkforward is disabled. Set BULK_RUN_V4_WALKFORWARD=1 for an explicit diagnostic run.');
+      }
       return false;
     }
     return true;
@@ -877,6 +885,7 @@ async function main() {
       console.log(`V5 shard: 1/1 (single process; set BULK_V5_SHARD_COUNT=N for parallel runs)`);
     }
   } else if (BULK_RESEARCH_VERSION === 'v4') {
+    console.log(`V4 candidate walkforward: ${BULK_RUN_V4_WALKFORWARD ? 'enabled' : 'disabled (regime build only)'}`);
     console.log(`V4 candidate fetch limit: ${BULK_V4_CANDIDATE_FETCH_LIMIT}`);
     console.log(`V4 force validity: ${BULK_V4_FORCE_VALIDITY ? 'enabled' : 'disabled'}`);
     console.log(`V4 candle cache soft cap: ${PERSISTENT_V4_CANDLE_CACHE_SOFT_CAP} symbol ranges`);

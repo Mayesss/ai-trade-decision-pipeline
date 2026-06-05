@@ -42,28 +42,30 @@ export async function runScalpV4ResearchJob(params: {
   candleBackfillMaxRequestsPerChunk?: number;
   workClaimLeaseMs?: number;
   progressIntervalMs?: number;
+  runWalkforward?: boolean;
   onProgress?: (event: ScalpV4WalkforwardProgressEvent) => void;
 } = {}): Promise<ScalpV4ResearchJobResult> {
   const weeklyBuild = await ensureScalpV4WeeklyRegimesBuilt({
     classifierVersion: params.classifierVersion,
     forceValidity: params.forceValidity,
   });
+  const runWalkforward = params.runWalkforward !== false;
   const walkforward = await runScalpV4WalkforwardSweep({
     classifierVersion: params.classifierVersion,
     forceValidity: params.forceValidity,
-    maxCandidatesPerCall: params.maxCandidatesPerCall,
-    candidateFetchLimit: params.candidateFetchLimit,
+    maxCandidatesPerCall: runWalkforward ? params.maxCandidatesPerCall : 0,
+    candidateFetchLimit: runWalkforward ? params.candidateFetchLimit : 0,
     effectiveTrials: params.effectiveTrials,
     windowToMs: params.windowToMs,
-    candleCacheRef: params.candleCacheRef,
-    candleCacheSoftCap: params.candleCacheSoftCap,
-    autoBackfillCandles: params.autoBackfillCandles,
+    candleCacheRef: runWalkforward ? params.candleCacheRef : undefined,
+    candleCacheSoftCap: runWalkforward ? params.candleCacheSoftCap : undefined,
+    autoBackfillCandles: runWalkforward ? params.autoBackfillCandles : false,
     minCandleCoverageRatio: params.minCandleCoverageRatio,
     candleBackfillChunkWeeks: params.candleBackfillChunkWeeks,
-    candleBackfillMaxRequestsPerChunk: params.candleBackfillMaxRequestsPerChunk,
+    candleBackfillMaxRequestsPerChunk: runWalkforward ? params.candleBackfillMaxRequestsPerChunk : 0,
     workClaimLeaseMs: params.workClaimLeaseMs,
-    progressIntervalMs: params.progressIntervalMs,
-    onProgress: params.onProgress,
+    progressIntervalMs: runWalkforward ? params.progressIntervalMs : 0,
+    onProgress: runWalkforward ? params.onProgress : undefined,
   });
   return {
     ok: true,
