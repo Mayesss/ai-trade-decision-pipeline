@@ -364,6 +364,8 @@ export async function claimDayRobustnessCandidates(params: {
   const leaseMs = Math.max(60_000, Math.min(24 * 60 * 60_000, Math.floor(Number(params.leaseMs || policy.leaseMs))));
   const windowToTs = Math.floor(Number(params.windowToTs || 0));
   const includeFailed = Boolean(params.includeFailed);
+  const clusterDedupe = envBool("SCALP_DAY_ROBUSTNESS_CLUSTER_DEDUPE_ENABLED", true);
+  const claimPoolLimit = Math.max(limit, Math.min(25_000, limit * (clusterDedupe ? 20 : 1)));
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{
     id: number | bigint;
@@ -379,8 +381,16 @@ export async function claimDayRobustnessCandidates(params: {
     createdAt: Date;
     updatedAt: Date;
   }>>(sql`
-    WITH claimable AS (
-      SELECT c.id
+    WITH eligible AS (
+      SELECT
+        c.id,
+        c.venue,
+        c.symbol,
+        c.entry_session_profile,
+        c.metadata_json,
+        c.score,
+        COALESCE((c.metadata_json->'worker'->'stageC'->>'netR')::double precision, -999) AS stage_c_net_r,
+        COALESCE((c.metadata_json->'worker'->'stageC'->>'trades')::int, 0) AS stage_c_trades
       FROM scalp_v2_candidates c
       WHERE c.status = 'evaluated'
         AND c.strategy_id = ${SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID}
@@ -404,8 +414,47 @@ export async function claimDayRobustnessCandidates(params: {
         COALESCE((c.metadata_json->'worker'->'stageC'->>'netR')::double precision, -999) DESC,
         COALESCE((c.metadata_json->'worker'->'stageC'->>'trades')::int, 0) DESC,
         c.score DESC
-      LIMIT ${limit}
+      LIMIT ${claimPoolLimit}
       FOR UPDATE SKIP LOCKED
+    ),
+    ranked AS (
+      SELECT
+        id,
+        row_number() OVER (
+          PARTITION BY
+            venue,
+            symbol,
+            entry_session_profile,
+            COALESCE(metadata_json->'sessionComposerPlan'->>'contextId', ''),
+            CASE
+              WHEN COALESCE(metadata_json->'sessionComposerPlan'->>'levelId', '') LIKE 'opening_range_%'
+                THEN 'opening_range'
+              ELSE COALESCE(metadata_json->'sessionComposerPlan'->>'levelId', '')
+            END,
+            CASE
+              WHEN COALESCE(metadata_json->'sessionComposerPlan'->>'triggerId', '') LIKE 'breakout_retest_hold%'
+                THEN 'breakout_retest'
+              ELSE COALESCE(metadata_json->'sessionComposerPlan'->>'triggerId', '')
+            END
+          ORDER BY
+            stage_c_net_r DESC,
+            stage_c_trades DESC,
+            score DESC
+        ) AS cluster_rank,
+        stage_c_net_r,
+        stage_c_trades,
+        score
+      FROM eligible
+    ),
+    claimable AS (
+      SELECT id
+      FROM ranked
+      WHERE (${clusterDedupe} = FALSE OR cluster_rank = 1)
+      ORDER BY
+        stage_c_net_r DESC,
+        stage_c_trades DESC,
+        score DESC
+      LIMIT ${limit}
     ),
     updated AS (
       UPDATE scalp_v2_candidates c

@@ -17,11 +17,17 @@ export type SessionStructureContextBlockId =
   | "h1_directional_bias"
   | "opening_drive"
   | "atr_expansion"
-  | "vwap_balance_shift";
+  | "vwap_balance_shift"
+  | "london_open_drive"
+  | "ny_continuation"
+  | "atr_low_chop_avoid";
 
 export type SessionStructureLevelBlockId =
   | "session_vwap"
+  | "opening_range_15m"
   | "opening_range_30m"
+  | "opening_range_45m"
+  | "opening_range_60m"
   | "previous_session_hl"
   | "asia_range_hl"
   | "prior_day_hl"
@@ -29,6 +35,8 @@ export type SessionStructureLevelBlockId =
 
 export type SessionStructureTriggerBlockId =
   | "breakout_retest_hold"
+  | "breakout_retest_hold_tight"
+  | "breakout_retest_hold_loose"
   | "vwap_pullback_continuation"
   | "sweep_reclaim"
   | "failed_breakout_return";
@@ -37,7 +45,8 @@ export type SessionStructureConfirmationBlockId =
   | "m15_close_acceptance"
   | "m30_close_acceptance"
   | "body_atr_expansion"
-  | "volume_expansion_20";
+  | "volume_expansion_20"
+  | "retest_wick_rejection";
 
 export type SessionStructureManagementBlockId =
   | "fixed_1_5r_time_2h"
@@ -85,12 +94,18 @@ export const SESSION_STRUCTURE_CONTEXT_BLOCKS: readonly SessionStructureContextB
     "opening_drive",
     "atr_expansion",
     "vwap_balance_shift",
+    "london_open_drive",
+    "ny_continuation",
+    "atr_low_chop_avoid",
   ]);
 
 export const SESSION_STRUCTURE_LEVEL_BLOCKS: readonly SessionStructureLevelBlockId[] =
   Object.freeze([
     "session_vwap",
+    "opening_range_15m",
     "opening_range_30m",
+    "opening_range_45m",
+    "opening_range_60m",
     "previous_session_hl",
     "asia_range_hl",
     "prior_day_hl",
@@ -100,6 +115,8 @@ export const SESSION_STRUCTURE_LEVEL_BLOCKS: readonly SessionStructureLevelBlock
 export const SESSION_STRUCTURE_TRIGGER_BLOCKS: readonly SessionStructureTriggerBlockId[] =
   Object.freeze([
     "breakout_retest_hold",
+    "breakout_retest_hold_tight",
+    "breakout_retest_hold_loose",
     "vwap_pullback_continuation",
     "sweep_reclaim",
     "failed_breakout_return",
@@ -111,6 +128,7 @@ export const SESSION_STRUCTURE_CONFIRMATION_BLOCKS: readonly SessionStructureCon
     "m30_close_acceptance",
     "body_atr_expansion",
     "volume_expansion_20",
+    "retest_wick_rejection",
   ]);
 
 export const SESSION_STRUCTURE_MANAGEMENT_BLOCKS: readonly SessionStructureManagementBlockId[] =
@@ -127,11 +145,17 @@ const CONTEXT_CODE: Record<SessionStructureContextBlockId, string> = {
   opening_drive: "opdrv",
   atr_expansion: "atrexp",
   vwap_balance_shift: "vwbal",
+  london_open_drive: "londrv",
+  ny_continuation: "nycont",
+  atr_low_chop_avoid: "atrnochop",
 };
 
 const LEVEL_CODE: Record<SessionStructureLevelBlockId, string> = {
   session_vwap: "svwap",
+  opening_range_15m: "orb15",
   opening_range_30m: "orb30",
+  opening_range_45m: "orb45",
+  opening_range_60m: "orb60",
   previous_session_hl: "psesshl",
   asia_range_hl: "asiahl",
   prior_day_hl: "pdhpdl",
@@ -140,6 +164,8 @@ const LEVEL_CODE: Record<SessionStructureLevelBlockId, string> = {
 
 const TRIGGER_CODE: Record<SessionStructureTriggerBlockId, string> = {
   breakout_retest_hold: "brkret",
+  breakout_retest_hold_tight: "brktit",
+  breakout_retest_hold_loose: "brkloo",
   vwap_pullback_continuation: "vwpb",
   sweep_reclaim: "sweep",
   failed_breakout_return: "fbr",
@@ -150,6 +176,7 @@ const CONFIRMATION_CODE: Record<SessionStructureConfirmationBlockId, string> = {
   m30_close_acceptance: "m30acc",
   body_atr_expansion: "bodyatr",
   volume_expansion_20: "vol20",
+  retest_wick_rejection: "wickrej",
 };
 
 const MANAGEMENT_CODE: Record<SessionStructureManagementBlockId, string> = {
@@ -247,9 +274,26 @@ export function sessionStructureBehaviorFingerprint(
   ].join("|");
 }
 
+function isSessionStructureBreakoutRetestTrigger(triggerId: SessionStructureTriggerBlockId): boolean {
+  return (
+    triggerId === "breakout_retest_hold" ||
+    triggerId === "breakout_retest_hold_tight" ||
+    triggerId === "breakout_retest_hold_loose"
+  );
+}
+
+function isSessionStructureOpeningRangeLevel(levelId: SessionStructureLevelBlockId): boolean {
+  return (
+    levelId === "opening_range_15m" ||
+    levelId === "opening_range_30m" ||
+    levelId === "opening_range_45m" ||
+    levelId === "opening_range_60m"
+  );
+}
+
 export function isSessionStructureHighLowLevel(levelId: SessionStructureLevelBlockId): boolean {
   return (
-    levelId === "opening_range_30m" ||
+    isSessionStructureOpeningRangeLevel(levelId) ||
     levelId === "previous_session_hl" ||
     levelId === "asia_range_hl" ||
     levelId === "prior_day_hl" ||
@@ -275,10 +319,26 @@ export function validateSessionStructureCompatibility(params: {
     reasonCodes.push("SESSION_COMPOSER_INCOMPAT_TRIGGER_REQUIRES_HIGH_LOW_LEVEL");
   }
   if (
-    params.triggerId === "breakout_retest_hold" &&
-    !["opening_range_30m", "previous_session_hl", "intraday_swing_hl"].includes(params.levelId)
+    isSessionStructureBreakoutRetestTrigger(params.triggerId) &&
+    !(
+      isSessionStructureOpeningRangeLevel(params.levelId) ||
+      params.levelId === "previous_session_hl" ||
+      params.levelId === "intraday_swing_hl"
+    )
   ) {
     reasonCodes.push("SESSION_COMPOSER_INCOMPAT_BREAKOUT_RETEST_PREFERS_INTRADAY_HL");
+  }
+  if (
+    params.confirmationId === "retest_wick_rejection" &&
+    !isSessionStructureHighLowLevel(params.levelId)
+  ) {
+    reasonCodes.push("SESSION_COMPOSER_INCOMPAT_WICK_REJECTION_REQUIRES_HIGH_LOW_LEVEL");
+  }
+  if (
+    params.triggerId === "failed_breakout_return" &&
+    params.managementId === "target_next_session_level"
+  ) {
+    reasonCodes.push("SESSION_COMPOSER_INCOMPAT_FAILED_BREAKOUT_TARGET_LEVEL_GEOMETRY_WEAK");
   }
   if (
     params.managementId === "target_next_session_level" &&
@@ -310,10 +370,16 @@ function scoreCombo(params: {
     opening_drive: 0.18,
     atr_expansion: 0.16,
     vwap_balance_shift: 0.19,
+    london_open_drive: 0.22,
+    ny_continuation: 0.21,
+    atr_low_chop_avoid: 0.2,
   };
   const levelWeight: Record<SessionStructureLevelBlockId, number> = {
     session_vwap: 0.22,
+    opening_range_15m: 0.21,
     opening_range_30m: 0.2,
+    opening_range_45m: 0.205,
+    opening_range_60m: 0.195,
     previous_session_hl: 0.19,
     asia_range_hl: 0.15,
     prior_day_hl: 0.13,
@@ -321,6 +387,8 @@ function scoreCombo(params: {
   };
   const triggerWeight: Record<SessionStructureTriggerBlockId, number> = {
     breakout_retest_hold: 0.22,
+    breakout_retest_hold_tight: 0.215,
+    breakout_retest_hold_loose: 0.205,
     vwap_pullback_continuation: 0.21,
     sweep_reclaim: 0.13,
     failed_breakout_return: 0.08,
@@ -330,6 +398,7 @@ function scoreCombo(params: {
     m30_close_acceptance: 0.17,
     body_atr_expansion: 0.16,
     volume_expansion_20: 0.14,
+    retest_wick_rejection: 0.18,
   };
   const managementWeight: Record<SessionStructureManagementBlockId, number> = {
     fixed_1_5r_time_2h: 0.18,
@@ -339,9 +408,22 @@ function scoreCombo(params: {
   };
   const preferredPairBonus =
     (params.levelId === "session_vwap" && params.triggerId === "vwap_pullback_continuation") ||
-    ((params.levelId === "opening_range_30m" || params.levelId === "previous_session_hl") &&
-      params.triggerId === "breakout_retest_hold")
+    ((isSessionStructureOpeningRangeLevel(params.levelId) || params.levelId === "previous_session_hl") &&
+      isSessionStructureBreakoutRetestTrigger(params.triggerId)) ||
+    (params.levelId === "prior_day_hl" && params.triggerId === "sweep_reclaim") ||
+    (params.contextId === "vwap_balance_shift" &&
+      params.levelId === "session_vwap" &&
+      params.triggerId === "vwap_pullback_continuation") ||
+    (params.contextId === "atr_low_chop_avoid" &&
+      isSessionStructureOpeningRangeLevel(params.levelId) &&
+      isSessionStructureBreakoutRetestTrigger(params.triggerId))
       ? 0.08
+      : 0;
+  const duplicateClusterPenalty =
+    params.contextId === "h1_directional_bias" &&
+    params.levelId === "opening_range_30m" &&
+    params.triggerId === "breakout_retest_hold"
+      ? 0.035
       : 0;
   const seed = [
     params.venue,
@@ -360,7 +442,75 @@ function scoreCombo(params: {
     confirmationWeight[params.confirmationId] +
     managementWeight[params.managementId] +
     preferredPairBonus +
+    -duplicateClusterPenalty +
     deterministicScore(seed) * 0.02
+  );
+}
+
+function sessionStructureLevelFamily(levelId: SessionStructureLevelBlockId): string {
+  if (isSessionStructureOpeningRangeLevel(levelId)) return "opening_range";
+  return levelId;
+}
+
+function sessionStructureTriggerFamily(triggerId: SessionStructureTriggerBlockId): string {
+  if (isSessionStructureBreakoutRetestTrigger(triggerId)) return "breakout_retest";
+  return triggerId;
+}
+
+function sessionStructureDiversityClusterKey(row: SessionStructureComposerCandidateDslSpec): string {
+  const plan = row.sessionComposerPlan;
+  return [
+    row.venue,
+    row.symbol,
+    row.entrySessionProfile,
+    plan.contextId,
+    sessionStructureLevelFamily(plan.levelId),
+    sessionStructureTriggerFamily(plan.triggerId),
+  ].join("|");
+}
+
+function selectDiverseSessionStructureCandidates(
+  rows: SessionStructureComposerCandidateDslSpec[],
+  maxCandidates: number,
+): SessionStructureComposerCandidateDslSpec[] {
+  const clusters = new Map<string, SessionStructureComposerCandidateDslSpec[]>();
+  for (const row of rows) {
+    const key = sessionStructureDiversityClusterKey(row);
+    const bucket = clusters.get(key) || [];
+    bucket.push(row);
+    clusters.set(key, bucket);
+  }
+  const orderedClusters = Array.from(clusters.values())
+    .map((bucket) =>
+      bucket.sort(
+        (a, b) =>
+          b.model.compositeScore - a.model.compositeScore ||
+          a.behaviorFingerprint.localeCompare(b.behaviorFingerprint),
+      ),
+    )
+    .sort(
+      (a, b) =>
+        (b[0]?.model.compositeScore || 0) - (a[0]?.model.compositeScore || 0) ||
+        (a[0]?.behaviorFingerprint || "").localeCompare(b[0]?.behaviorFingerprint || ""),
+    );
+  const out: SessionStructureComposerCandidateDslSpec[] = [];
+  let depth = 0;
+  while (out.length < maxCandidates) {
+    let added = false;
+    for (const bucket of orderedClusters) {
+      const row = bucket[depth];
+      if (!row) continue;
+      out.push(row);
+      added = true;
+      if (out.length >= maxCandidates) break;
+    }
+    if (!added) break;
+    depth += 1;
+  }
+  return out.sort(
+    (a, b) =>
+      b.model.compositeScore - a.model.compositeScore ||
+      a.behaviorFingerprint.localeCompare(b.behaviorFingerprint),
   );
 }
 
@@ -471,11 +621,10 @@ export function buildScalpV2SessionStructureComposerGrid(params: {
     }
   }
 
-  return Array.from(byFingerprint.values())
-    .sort(
-      (a, b) =>
-        b.model.compositeScore - a.model.compositeScore ||
-        a.behaviorFingerprint.localeCompare(b.behaviorFingerprint),
-    )
-    .slice(0, maxCandidates);
+  const sorted = Array.from(byFingerprint.values()).sort(
+    (a, b) =>
+      b.model.compositeScore - a.model.compositeScore ||
+      a.behaviorFingerprint.localeCompare(b.behaviorFingerprint),
+  );
+  return selectDiverseSessionStructureCandidates(sorted, maxCandidates);
 }

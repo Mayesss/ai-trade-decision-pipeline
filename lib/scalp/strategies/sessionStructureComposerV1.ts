@@ -3,6 +3,7 @@ import {
   parseSessionStructureComposerTuneId,
   type SessionStructureLevelBlockId,
   type SessionStructureManagementBlockId,
+  type SessionStructureTriggerBlockId,
 } from "../../scalp-v2/sessionStructureComposer";
 import {
   inScalpEntrySessionProfileWindow,
@@ -141,11 +142,29 @@ function computeLevels(params: {
     params.sessionStartMs,
     "previous_session_hl",
   );
-  const openingRange = windowLevel(
+  const openingRange15 = windowLevel(
+    params.candles,
+    params.sessionStartMs,
+    params.sessionStartMs + 15 * 60_000,
+    "opening_range_15m",
+  );
+  const openingRange30 = windowLevel(
     params.candles,
     params.sessionStartMs,
     params.sessionStartMs + 30 * 60_000,
     "opening_range_30m",
+  );
+  const openingRange45 = windowLevel(
+    params.candles,
+    params.sessionStartMs,
+    params.sessionStartMs + 45 * 60_000,
+    "opening_range_45m",
+  );
+  const openingRange60 = windowLevel(
+    params.candles,
+    params.sessionStartMs,
+    params.sessionStartMs + 60 * 60_000,
+    "opening_range_60m",
   );
   const vwap = sessionVwap(params.candles, params.sessionStartMs, params.nowMs);
   return {
@@ -155,7 +174,10 @@ function computeLevels(params: {
       mid: vwap,
       label: "session_vwap",
     },
-    opening_range_30m: openingRange,
+    opening_range_15m: openingRange15,
+    opening_range_30m: openingRange30,
+    opening_range_45m: openingRange45,
+    opening_range_60m: openingRange60,
     previous_session_hl: previousSession,
     asia_range_hl: asia,
     prior_day_hl: priorDay,
@@ -188,16 +210,25 @@ function directionFromContext(params: {
     if (close(h1Last) >= close(h1Prev)) return "BUY";
     return "SELL";
   }
-  if (params.plan.contextId === "opening_drive") {
+  if (params.plan.contextId === "opening_drive" || params.plan.contextId === "london_open_drive") {
     const mid = params.openingRange.mid;
     if (mid === null) return null;
-    if (close(params.last) > mid) return "BUY";
-    if (close(params.last) < mid) return "SELL";
+    const body = candleBody(params.last);
+    const minBody = params.plan.contextId === "london_open_drive" ? 0.0000001 : 0;
+    if (body < minBody) return null;
+    if (close(params.last) > mid && close(params.last) >= open(params.last)) return "BUY";
+    if (close(params.last) < mid && close(params.last) <= open(params.last)) return "SELL";
     return null;
   }
   if (params.plan.contextId === "atr_expansion") {
     if (params.atrPercentile === null || params.atrPercentile < 45) return null;
     return close(params.last) >= open(params.last) ? "BUY" : "SELL";
+  }
+  if (params.plan.contextId === "atr_low_chop_avoid") {
+    if (params.atrPercentile === null || params.atrPercentile < 35) return null;
+    if (close(params.last) > close(params.prev) && close(params.last) >= open(params.last)) return "BUY";
+    if (close(params.last) < close(params.prev) && close(params.last) <= open(params.last)) return "SELL";
+    return null;
   }
   if (params.plan.contextId === "vwap_balance_shift") {
     if (params.vwap === null) return null;
@@ -205,7 +236,21 @@ function directionFromContext(params: {
     if (close(params.prev) >= params.vwap && close(params.last) < params.vwap) return "SELL";
     return close(params.last) >= params.vwap ? "BUY" : "SELL";
   }
+  if (params.plan.contextId === "ny_continuation") {
+    const h1Last = params.h1[params.h1.length - 1];
+    const h1Prev = params.h1[params.h1.length - 2];
+    if (!h1Last || !h1Prev || params.vwap === null) return null;
+    if (close(h1Last) >= close(h1Prev) && close(params.last) >= params.vwap) return "BUY";
+    if (close(h1Last) < close(h1Prev) && close(params.last) <= params.vwap) return "SELL";
+    return null;
+  }
   return "BOTH";
+}
+
+function breakoutRetestTolerance(triggerId: SessionStructureTriggerBlockId): number {
+  if (triggerId === "breakout_retest_hold_tight") return 0.18;
+  if (triggerId === "breakout_retest_hold_loose") return 0.55;
+  return 0.35;
 }
 
 function chooseTriggerSide(params: {
@@ -222,9 +267,14 @@ function chooseTriggerSide(params: {
   const midpoint = params.level.mid;
   const canBuy = params.contextSide === "BUY" || params.contextSide === "BOTH";
   const canSell = params.contextSide === "SELL" || params.contextSide === "BOTH";
-  if (params.plan.triggerId === "breakout_retest_hold") {
-    if (canBuy && levelHigh !== null && close(params.prev) > levelHigh && low(params.last) <= levelHigh + params.atrAbs * 0.35 && close(params.last) > levelHigh) return "BUY";
-    if (canSell && levelLow !== null && close(params.prev) < levelLow && high(params.last) >= levelLow - params.atrAbs * 0.35 && close(params.last) < levelLow) return "SELL";
+  if (
+    params.plan.triggerId === "breakout_retest_hold" ||
+    params.plan.triggerId === "breakout_retest_hold_tight" ||
+    params.plan.triggerId === "breakout_retest_hold_loose"
+  ) {
+    const tolerance = params.atrAbs * breakoutRetestTolerance(params.plan.triggerId);
+    if (canBuy && levelHigh !== null && close(params.prev) > levelHigh && low(params.last) <= levelHigh + tolerance && close(params.last) > levelHigh) return "BUY";
+    if (canSell && levelLow !== null && close(params.prev) < levelLow && high(params.last) >= levelLow - tolerance && close(params.last) < levelLow) return "SELL";
   }
   if (params.plan.triggerId === "vwap_pullback_continuation" && midpoint !== null) {
     if (canBuy && low(params.last) <= midpoint && close(params.last) > midpoint && close(params.last) > open(params.last)) return "BUY";
@@ -274,6 +324,16 @@ function confirmationPasses(params: {
       : 0;
     return current > 0 && avg > 0 && current >= avg * 1.1;
   }
+  if (params.plan.confirmationId === "retest_wick_rejection") {
+    if (levelRef === null) return false;
+    const body = Math.max(candleBody(params.last), params.atrAbs * 0.05);
+    const lowerWick = Math.min(open(params.last), close(params.last)) - low(params.last);
+    const upperWick = high(params.last) - Math.max(open(params.last), close(params.last));
+    if (params.side === "BUY") {
+      return low(params.last) <= levelRef && close(params.last) > levelRef && lowerWick >= body * 0.55;
+    }
+    return high(params.last) >= levelRef && close(params.last) < levelRef && upperWick >= body * 0.55;
+  }
   return false;
 }
 
@@ -292,7 +352,10 @@ function targetForManagement(params: {
   if (params.managementId === "target_next_session_level") {
     const levelTargets = [
       params.levels.previous_session_hl,
+      params.levels.opening_range_15m,
       params.levels.opening_range_30m,
+      params.levels.opening_range_45m,
+      params.levels.opening_range_60m,
       params.levels.asia_range_hl,
       params.levels.prior_day_hl,
       params.levels.intraday_swing_hl,

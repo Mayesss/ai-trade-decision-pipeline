@@ -31,6 +31,26 @@ test("session structure composer tune id build/parse round-trips", () => {
   assert.equal(isSessionStructureComposerStrategyId(SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID), true);
 });
 
+test("session structure composer V1.1 tune blocks round-trip", () => {
+  const tuneId = buildSessionStructureComposerTuneId({
+    contextId: "atr_low_chop_avoid",
+    levelId: "opening_range_45m",
+    triggerId: "breakout_retest_hold_tight",
+    confirmationId: "retest_wick_rejection",
+    managementId: "trail_after_0_8r_time_3h",
+    digest: "1234567890abcdef",
+  });
+  assert.equal(tuneId, "ssc_atrnochop_orb45_brktit_wickrej_trl08r3h_1234567890");
+  assert.deepEqual(parseSessionStructureComposerTuneId(tuneId), {
+    contextId: "atr_low_chop_avoid",
+    levelId: "opening_range_45m",
+    triggerId: "breakout_retest_hold_tight",
+    confirmationId: "retest_wick_rejection",
+    managementId: "trail_after_0_8r_time_3h",
+    digest: "1234567890",
+  });
+});
+
 test("session structure compatibility rejects invalid no-op combinations", () => {
   assert.equal(
     validateSessionStructureCompatibility({
@@ -62,6 +82,16 @@ test("session structure compatibility rejects invalid no-op combinations", () =>
     }).compatible,
     true,
   );
+  assert.equal(
+    validateSessionStructureCompatibility({
+      contextId: "atr_low_chop_avoid",
+      levelId: "opening_range_15m",
+      triggerId: "breakout_retest_hold_tight",
+      confirmationId: "retest_wick_rejection",
+      managementId: "fixed_2r_time_4h",
+    }).compatible,
+    true,
+  );
 });
 
 test("session structure grid is deterministic, capped, and deduped by behavior fingerprint", () => {
@@ -84,4 +114,7 @@ test("session structure grid is deterministic, capped, and deduped by behavior f
   assert.equal(new Set(a.map((row) => row.behaviorFingerprint)).size, a.length);
   assert.ok(a.every((row) => row.tuneId.startsWith("ssc_")));
   assert.ok(a.every((row) => row.model.version === "session_structure_composer_v1"));
+  assert.ok(new Set(a.map((row) => row.sessionComposerPlan.contextId)).has("atr_low_chop_avoid"));
+  assert.ok(new Set(a.map((row) => row.sessionComposerPlan.levelId)).has("opening_range_45m"));
+  assert.ok(new Set(a.map((row) => row.sessionComposerPlan.triggerId)).has("breakout_retest_hold_tight"));
 });

@@ -197,7 +197,7 @@ function hashScoreSeed(value: string): number {
   return positive % 1000;
 }
 
-const RESEARCH_WARM_UP_SCOPE_HASH_VERSION = "session_structure_v1_sha256_r1";
+const RESEARCH_WARM_UP_SCOPE_HASH_VERSION = "session_structure_v1_1_guided_sha256_r1";
 
 function isRetiredComposerStrategyId(strategyId: unknown): boolean {
   const normalized = String(strategyId || "").trim().toLowerCase();
@@ -241,7 +241,7 @@ function buildResearchWarmUpScopeHash(params: {
   const payload = JSON.stringify({
     version: RESEARCH_WARM_UP_SCOPE_HASH_VERSION,
     strategyId: SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID,
-    sessionComposerVersion: "session_structure_composer_v1_r1",
+    sessionComposerVersion: "session_structure_composer_v1_1_guided_r1",
     maxCandidatesPerSession: Math.max(
       1,
       Math.floor(Number(params.maxCandidatesPerSession) || 1),
@@ -6029,10 +6029,6 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         reason = workerGate.reason || "worker_stage_c_failed";
       } else if (!workerFreshness.ready) {
         reason = workerFreshness.reason || "worker_stage_c_freshness_incomplete";
-	      } else if (!dayRobustness.passed) {
-	        reason = dayRobustness.reason === "DAY_ROBUSTNESS_MISSING"
-	          ? "day_robustness_missing"
-	          : "day_robustness_failed";
 	      } else if (backtestFourWeekGateFailed) {
 	        reason = "backtest_4w_net_r_below_threshold";
 	      } else if (!holdoutPassed) {

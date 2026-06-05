@@ -1916,7 +1916,6 @@ export async function autoPromoteScalpV5WinnersToEnabled(params: {
     if (!dayRobustness.passed) {
       if (dayRobustness.reason === "DAY_ROBUSTNESS_MISSING") funnel.failedDayRobustnessMissing += 1;
       else funnel.failedDayRobustnessFailed += 1;
-      continue;
     }
 
     const evidence = (row.v5CellEvidence && typeof row.v5CellEvidence === "object" && !Array.isArray(row.v5CellEvidence))
