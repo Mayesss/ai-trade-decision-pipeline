@@ -11,6 +11,16 @@ import {
 } from "../../scalp-v2/sessionStructureComposer";
 import { buildSessionStructureAdaptivePriorsFromRows } from "../../scalp-v2/sessionStructureAdaptiveSearch";
 
+function composerFamilyKey(row: ReturnType<typeof buildScalpV2SessionStructureComposerGrid>[number]): string {
+  const level = row.sessionComposerPlan.levelId.startsWith("opening_range_")
+    ? "opening_range"
+    : row.sessionComposerPlan.levelId;
+  const trigger = row.sessionComposerPlan.triggerId.startsWith("breakout_retest_hold")
+    ? "breakout_retest"
+    : row.sessionComposerPlan.triggerId;
+  return `${level}|${trigger}`;
+}
+
 test("session structure composer tune id build/parse round-trips", () => {
   const tuneId = buildSessionStructureComposerTuneId({
     contextId: "m30_session_momentum",
@@ -118,6 +128,13 @@ test("session structure grid is deterministic, capped, and deduped by behavior f
   assert.ok(new Set(a.map((row) => row.sessionComposerPlan.contextId)).has("atr_low_chop_avoid"));
   assert.ok(new Set(a.map((row) => row.sessionComposerPlan.levelId)).has("opening_range_45m"));
   assert.ok(new Set(a.map((row) => row.sessionComposerPlan.triggerId)).has("breakout_retest_hold_tight"));
+  const familyCounts = new Map<string, number>();
+  for (const row of a) {
+    const key = composerFamilyKey(row);
+    familyCounts.set(key, (familyCounts.get(key) || 0) + 1);
+  }
+  assert.ok(Math.max(...familyCounts.values()) <= 11);
+  assert.ok(a.every((row) => row.novelty?.strategyFamilyKey));
 });
 
 test("session structure adaptive priors bias the next generated grid", () => {
@@ -158,11 +175,20 @@ test("session structure adaptive priors bias the next generated grid", () => {
     adaptivePriors: priors,
   });
   const nearNeighbor = adaptiveGrid.find((row) =>
-    row.sessionComposerPlan.contextId === winningPlan.contextId &&
     row.sessionComposerPlan.levelId.startsWith("opening_range_") &&
-    row.sessionComposerPlan.triggerId.startsWith("breakout_retest_hold")
+    row.sessionComposerPlan.triggerId.startsWith("breakout_retest_hold") &&
+    (row.adaptivePrior?.matchedKeys || []).some((key) => key === "level_family:opening_range")
   );
   assert.ok(nearNeighbor);
   assert.ok((nearNeighbor.adaptivePrior?.adjustment || 0) > 0);
-  assert.ok((nearNeighbor.adaptivePrior?.matchedKeys.length || 0) > 0);
+  const lanes = new Map<string, number>();
+  const familyCounts = new Map<string, number>();
+  for (const row of adaptiveGrid) {
+    lanes.set(row.novelty?.lane || "none", (lanes.get(row.novelty?.lane || "none") || 0) + 1);
+    const key = composerFamilyKey(row);
+    familyCounts.set(key, (familyCounts.get(key) || 0) + 1);
+  }
+  assert.ok((lanes.get("exploit") || 0) > 0);
+  assert.ok((lanes.get("explore") || 0) >= 10);
+  assert.ok(Math.max(...familyCounts.values()) <= 11);
 });

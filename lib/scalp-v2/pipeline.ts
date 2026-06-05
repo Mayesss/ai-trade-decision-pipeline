@@ -201,7 +201,7 @@ function hashScoreSeed(value: string): number {
   return positive % 1000;
 }
 
-const RESEARCH_WARM_UP_SCOPE_HASH_VERSION = "session_structure_v1_2_adaptive_sha256_r1";
+const RESEARCH_WARM_UP_SCOPE_HASH_VERSION = "session_structure_v1_3_adaptive_novelty_sha256_r1";
 
 function isRetiredComposerStrategyId(strategyId: unknown): boolean {
   const normalized = String(strategyId || "").trim().toLowerCase();
@@ -226,6 +226,7 @@ function buildResearchWarmUpScopeHash(params: {
   maxCandidatesPerSession: number;
   enabledDeploymentVariantSeeds: string[];
   adaptivePriorFingerprint: string;
+  noveltyBudgetFingerprint: string;
 }): string {
   const normalizedScopes = params.scopes
     .map((row) => `${row.venue}:${row.symbol}:${row.session}`)
@@ -246,10 +247,14 @@ function buildResearchWarmUpScopeHash(params: {
   const payload = JSON.stringify({
     version: RESEARCH_WARM_UP_SCOPE_HASH_VERSION,
     strategyId: SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID,
-    sessionComposerVersion: "session_structure_composer_v1_2_adaptive_r1",
+    sessionComposerVersion: "session_structure_composer_v1_3_adaptive_novelty_r1",
     adaptivePriorFingerprint: crypto
       .createHash("sha256")
       .update(params.adaptivePriorFingerprint || "adaptive:none")
+      .digest("hex"),
+    noveltyBudgetFingerprint: crypto
+      .createHash("sha256")
+      .update(params.noveltyBudgetFingerprint || "novelty:none")
       .digest("hex"),
     maxCandidatesPerSession: Math.max(
       1,
@@ -3090,11 +3095,39 @@ export async function runScalpV2ResearchJob(params: {
       : null;
     const adaptivePriorFingerprint =
       fingerprintSessionStructureAdaptivePriors(adaptivePriors);
+    const envNumberOr = (name: string, fallback: number): number => {
+      const raw = String(process.env[name] || "").trim();
+      if (!raw) return fallback;
+      const value = Number(raw);
+      return Number.isFinite(value) ? value : fallback;
+    };
+    const noveltyBudget = {
+      enabled: envBool("SCALP_V2_SESSION_NOVELTY_BUDGET_ENABLED", true),
+      exploitPct: envNumberOr("SCALP_V2_SESSION_NOVELTY_EXPLOIT_PCT", 0.55),
+      adjacentPct: envNumberOr("SCALP_V2_SESSION_NOVELTY_ADJACENT_PCT", 0.25),
+      explorePct: envNumberOr("SCALP_V2_SESSION_NOVELTY_EXPLORE_PCT", 0.2),
+      maxPerCluster: toPositiveInt(
+        process.env.SCALP_V2_SESSION_NOVELTY_MAX_PER_CLUSTER,
+        Math.max(1, Math.ceil(maxCandidatesPerSession * 0.08)),
+        maxCandidatesPerSession,
+      ),
+      maxPerFamily: toPositiveInt(
+        process.env.SCALP_V2_SESSION_NOVELTY_MAX_PER_FAMILY,
+        Math.max(1, Math.ceil(maxCandidatesPerSession * 0.18)),
+        maxCandidatesPerSession,
+      ),
+      exploitAdjustmentThreshold: envNumberOr(
+        "SCALP_V2_SESSION_NOVELTY_EXPLOIT_ADJ_THRESHOLD",
+        0.05,
+      ),
+    };
+    const noveltyBudgetFingerprint = JSON.stringify(noveltyBudget);
     const scopeHash = buildResearchWarmUpScopeHash({
       scopes,
       maxCandidatesPerSession,
       enabledDeploymentVariantSeeds,
       adaptivePriorFingerprint,
+      noveltyBudgetFingerprint,
     });
     const warmUpState = await withTiming("warmup.load_state", () =>
       loadScalpV2WarmUpState({ windowToTs }).catch(() => null),
@@ -3167,6 +3200,7 @@ export async function runScalpV2ResearchJob(params: {
 	            ),
 	          ),
 	          adaptivePriors,
+	          noveltyBudget,
 	        });
 	        poolSizeTotal += composerCandidates.length;
 	        const scopeCandidates: InMemoryCandidate[] = [];
@@ -3405,6 +3439,12 @@ export async function runScalpV2ResearchJob(params: {
                 keys: c.dsl.adaptivePrior.keys,
               }
             : null,
+          sessionComposerNovelty: c.dsl.novelty
+            ? {
+                ...c.dsl.novelty,
+                budget: noveltyBudget,
+              }
+            : null,
           researchReferences: c.dsl.referenceStrategyIds,
 	          researchSupportScore: c.dsl.supportScore,
 	          researchRegimeGateId: c.dsl.regimeGateId || null,
@@ -3451,6 +3491,7 @@ export async function runScalpV2ResearchJob(params: {
 	              fingerprint: null,
 	              diagnostics: null,
 	            },
+	        noveltyBudget,
 	        scopeHash,
         scopeHashVersion: RESEARCH_WARM_UP_SCOPE_HASH_VERSION,
         configuredBatchSize,

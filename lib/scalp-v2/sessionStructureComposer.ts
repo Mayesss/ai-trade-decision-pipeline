@@ -93,6 +93,26 @@ export interface SessionStructureAdaptiveScoreTrace {
   matchedKeys: string[];
 }
 
+export type SessionStructureNoveltyLane = "exploit" | "adjacent" | "explore";
+
+export interface SessionStructureNoveltyBudget {
+  enabled?: boolean;
+  exploitPct?: number;
+  adjacentPct?: number;
+  explorePct?: number;
+  maxPerCluster?: number;
+  maxPerFamily?: number;
+  exploitAdjustmentThreshold?: number;
+}
+
+export interface SessionStructureNoveltyTrace {
+  lane: SessionStructureNoveltyLane;
+  strategyClusterKey: string;
+  strategyFamilyKey: string;
+  familyRank: number;
+  clusterRank: number;
+}
+
 export interface SessionStructureComposerCandidateDslSpec {
   candidateId: string;
   tuneId: string;
@@ -115,6 +135,7 @@ export interface SessionStructureComposerCandidateDslSpec {
   model: ScalpV2ComposerModelScore;
   sessionComposerPlan: SessionStructureComposerPlan;
   adaptivePrior?: SessionStructureAdaptiveScoreTrace | null;
+  novelty?: SessionStructureNoveltyTrace | null;
   regimeGateId?: string | null;
 }
 
@@ -596,19 +617,61 @@ function resolveSessionStructureAdaptiveScore(params: {
 function sessionStructureDiversityClusterKey(row: SessionStructureComposerCandidateDslSpec): string {
   const plan = row.sessionComposerPlan;
   return [
-    row.venue,
-    row.symbol,
-    row.entrySessionProfile,
     plan.contextId,
     sessionStructureLevelFamily(plan.levelId),
     sessionStructureTriggerFamily(plan.triggerId),
   ].join("|");
 }
 
+function sessionStructureFamilyKey(row: SessionStructureComposerCandidateDslSpec): string {
+  const plan = row.sessionComposerPlan;
+  return [
+    sessionStructureLevelFamily(plan.levelId),
+    sessionStructureTriggerFamily(plan.triggerId),
+  ].join("|");
+}
+
+function sessionStructureNoveltyLane(row: SessionStructureComposerCandidateDslSpec): SessionStructureNoveltyLane {
+  const adjustment = Number(row.adaptivePrior?.adjustment || 0);
+  const matched = (row.adaptivePrior?.matchedKeys || []).length > 0;
+  if (matched && adjustment >= 0.05) return "exploit";
+  if (matched || adjustment > 0) return "adjacent";
+  return "explore";
+}
+
+function normalizeNoveltyBudget(
+  budget: SessionStructureNoveltyBudget | null | undefined,
+  maxCandidates: number,
+  hasAdaptiveSignal: boolean,
+): Required<SessionStructureNoveltyBudget> {
+  const enabled = budget?.enabled !== false;
+  const exploitPct = hasAdaptiveSignal ? clampScore(Number(budget?.exploitPct ?? 0.55), 0, 1) : 0;
+  const adjacentPct = hasAdaptiveSignal ? clampScore(Number(budget?.adjacentPct ?? 0.25), 0, 1) : 0;
+  const explorePctRaw = Number(budget?.explorePct);
+  const explorePct = Number.isFinite(explorePctRaw)
+    ? clampScore(explorePctRaw, 0, 1)
+    : Math.max(0, 1 - exploitPct - adjacentPct);
+  return {
+    enabled,
+    exploitPct,
+    adjacentPct,
+    explorePct,
+    maxPerCluster: Math.max(1, Math.min(maxCandidates, Math.floor(Number(budget?.maxPerCluster || Math.ceil(maxCandidates * 0.08))))),
+    maxPerFamily: Math.max(1, Math.min(maxCandidates, Math.floor(Number(budget?.maxPerFamily || Math.ceil(maxCandidates * 0.18))))),
+    exploitAdjustmentThreshold: clampScore(Number(budget?.exploitAdjustmentThreshold ?? 0.05), -1, 1),
+  };
+}
+
 function selectDiverseSessionStructureCandidates(
   rows: SessionStructureComposerCandidateDslSpec[],
   maxCandidates: number,
+  noveltyBudget?: SessionStructureNoveltyBudget | null,
 ): SessionStructureComposerCandidateDslSpec[] {
+  const hasAdaptiveSignal = rows.some((row) => (row.adaptivePrior?.matchedKeys || []).length > 0);
+  const budget = normalizeNoveltyBudget(noveltyBudget, maxCandidates, hasAdaptiveSignal);
+  if (budget.enabled) {
+    return selectNovelSessionStructureCandidates(rows, maxCandidates, budget);
+  }
   const clusters = new Map<string, SessionStructureComposerCandidateDslSpec[]>();
   for (const row of rows) {
     const key = sessionStructureDiversityClusterKey(row);
@@ -650,6 +713,114 @@ function selectDiverseSessionStructureCandidates(
   );
 }
 
+function selectNovelSessionStructureCandidates(
+  rows: SessionStructureComposerCandidateDslSpec[],
+  maxCandidates: number,
+  budget: Required<SessionStructureNoveltyBudget>,
+): SessionStructureComposerCandidateDslSpec[] {
+  const sorted = rows.slice().sort(
+    (a, b) =>
+      b.model.compositeScore - a.model.compositeScore ||
+      a.behaviorFingerprint.localeCompare(b.behaviorFingerprint),
+  );
+  const clusterRank = new Map<string, Map<string, number>>();
+  const familyRank = new Map<string, Map<string, number>>();
+  for (const row of sorted) {
+    const clusterKey = sessionStructureDiversityClusterKey(row);
+    const familyKey = sessionStructureFamilyKey(row);
+    const cBucket = clusterRank.get(clusterKey) || new Map<string, number>();
+    cBucket.set(row.behaviorFingerprint, cBucket.size + 1);
+    clusterRank.set(clusterKey, cBucket);
+    const fBucket = familyRank.get(familyKey) || new Map<string, number>();
+    fBucket.set(row.behaviorFingerprint, fBucket.size + 1);
+    familyRank.set(familyKey, fBucket);
+  }
+
+  const targetExploit = Math.floor(maxCandidates * budget.exploitPct);
+  const targetAdjacent = Math.floor(maxCandidates * budget.adjacentPct);
+  const targetExplore = Math.max(0, maxCandidates - targetExploit - targetAdjacent);
+  const laneTargets: Record<SessionStructureNoveltyLane, number> = {
+    exploit: targetExploit,
+    adjacent: targetAdjacent,
+    explore: targetExplore,
+  };
+  const byLane: Record<SessionStructureNoveltyLane, SessionStructureComposerCandidateDslSpec[]> = {
+    exploit: [],
+    adjacent: [],
+    explore: [],
+  };
+  for (const row of sorted) {
+    const lane = sessionStructureNoveltyLane(row);
+    const effectiveLane =
+      lane === "exploit" && Number(row.adaptivePrior?.adjustment || 0) < budget.exploitAdjustmentThreshold
+        ? "adjacent"
+        : lane;
+    byLane[effectiveLane].push(row);
+  }
+
+  const selected = new Map<string, SessionStructureComposerCandidateDslSpec>();
+  const familyCounts = new Map<string, number>();
+  const clusterCounts = new Map<string, number>();
+  const take = (
+    row: SessionStructureComposerCandidateDslSpec,
+    enforceFamily: boolean,
+    enforceCluster: boolean,
+  ): boolean => {
+    if (selected.has(row.behaviorFingerprint)) return false;
+    const familyKey = sessionStructureFamilyKey(row);
+    const clusterKey = sessionStructureDiversityClusterKey(row);
+    if (enforceFamily && (familyCounts.get(familyKey) || 0) >= budget.maxPerFamily) return false;
+    if (enforceCluster && (clusterCounts.get(clusterKey) || 0) >= budget.maxPerCluster) return false;
+    const lane = sessionStructureNoveltyLane(row);
+    selected.set(row.behaviorFingerprint, {
+      ...row,
+      novelty: {
+        lane,
+        strategyClusterKey: clusterKey,
+        strategyFamilyKey: familyKey,
+        clusterRank: clusterRank.get(clusterKey)?.get(row.behaviorFingerprint) || 0,
+        familyRank: familyRank.get(familyKey)?.get(row.behaviorFingerprint) || 0,
+      },
+    });
+    familyCounts.set(familyKey, (familyCounts.get(familyKey) || 0) + 1);
+    clusterCounts.set(clusterKey, (clusterCounts.get(clusterKey) || 0) + 1);
+    return true;
+  };
+
+  const pickFromLane = (lane: SessionStructureNoveltyLane, target: number): void => {
+    if (target <= 0) return;
+    for (const row of byLane[lane]) {
+      if (selected.size >= maxCandidates) return;
+      const laneCount = Array.from(selected.values()).filter((selectedRow) => selectedRow.novelty?.lane === lane).length;
+      if (laneCount >= target) return;
+      take(row, true, true);
+    }
+  };
+
+  pickFromLane("exploit", laneTargets.exploit);
+  pickFromLane("adjacent", laneTargets.adjacent);
+  pickFromLane("explore", laneTargets.explore);
+
+  for (const row of sorted) {
+    if (selected.size >= maxCandidates) break;
+    take(row, true, true);
+  }
+  for (const row of sorted) {
+    if (selected.size >= maxCandidates) break;
+    take(row, false, true);
+  }
+  for (const row of sorted) {
+    if (selected.size >= maxCandidates) break;
+    take(row, false, false);
+  }
+
+  return Array.from(selected.values()).sort(
+    (a, b) =>
+      b.model.compositeScore - a.model.compositeScore ||
+      a.behaviorFingerprint.localeCompare(b.behaviorFingerprint),
+  );
+}
+
 export function buildScalpV2SessionStructureComposerGrid(params: {
   venue: ScalpV2Venue;
   symbol: string;
@@ -657,6 +828,7 @@ export function buildScalpV2SessionStructureComposerGrid(params: {
   maxCandidates?: number;
   generatedAtMs?: number;
   adaptivePriors?: SessionStructureAdaptivePriorSet | null;
+  noveltyBudget?: SessionStructureNoveltyBudget | null;
 }): SessionStructureComposerCandidateDslSpec[] {
   const maxCandidates = Math.max(1, Math.min(2_000, Math.floor(Number(params.maxCandidates || 60))));
   const generatedAtMs = Math.floor(Number(params.generatedAtMs || Date.now()));
@@ -776,5 +948,5 @@ export function buildScalpV2SessionStructureComposerGrid(params: {
       b.model.compositeScore - a.model.compositeScore ||
       a.behaviorFingerprint.localeCompare(b.behaviorFingerprint),
   );
-  return selectDiverseSessionStructureCandidates(sorted, maxCandidates);
+  return selectDiverseSessionStructureCandidates(sorted, maxCandidates, params.noveltyBudget || null);
 }
