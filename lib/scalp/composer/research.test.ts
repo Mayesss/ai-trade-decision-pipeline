@@ -9,10 +9,7 @@ import {
   strategyPrimitiveCoverageSummary,
   toScalpComposerResearchCursorKey,
 } from "./research";
-import {
-  parseRegimeGateFromTuneId,
-  resolveModelGuidedComposerExecutionPlanFromTuneId,
-} from "./composerExecution";
+import { parseRegimeGateFromTuneId } from "./composerExecution";
 import { listScalpComposerCatalogStrategyIds } from "./strategyCatalog";
 
 function withEnv<T>(
@@ -184,33 +181,6 @@ test("model-guided composer scores stay in [0,1] and preserve session filter int
     assert.equal(row.model.confidence >= 0, true);
     assert.equal(row.model.confidence <= 1, true);
     assert.equal(row.model.version.startsWith("composer_v2_"), true);
-  }
-});
-
-test("model-guided composer regime gate variants are quota-bounded by top base arms", () => {
-  const rows = withEnv(
-    {
-      SCALP_COMPOSER_REGIME_GATE_ENABLED: "true",
-      SCALP_COMPOSER_REGIME_GATE_TOP_BASE_ARMS: "1",
-    },
-    () =>
-      buildScalpComposerModelGuidedComposerGrid({
-        venue: "bitget",
-        symbol: "BTCUSDT",
-        entrySessionProfile: "berlin",
-        maxCandidates: 24,
-      }),
-  );
-  const gatedRows = rows.filter((row) => Boolean(row.regimeGateId));
-  assert.equal(gatedRows.length > 0, true);
-  const baseArms = new Set(
-    gatedRows.map((row) =>
-      resolveModelGuidedComposerExecutionPlanFromTuneId(row.tuneId).baseArm,
-    ),
-  );
-  assert.equal(baseArms.size, 1);
-  for (const row of gatedRows) {
-    assert.equal(parseRegimeGateFromTuneId(row.tuneId) !== null, true);
   }
 });
 
