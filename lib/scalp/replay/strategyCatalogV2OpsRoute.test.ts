@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import strategyCatalogHandler from "../../../pages/api/scalp/v2/ops/strategy-catalog";
+import strategyCatalogHandler from "../../../pages/api/scalp/composer/ops/strategy-catalog";
 
 type MockReq = {
   method: string;
@@ -56,7 +56,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 test("v2 strategy catalog returns strategy options for backtest selector", async () => {
-  const req = createReq("/api/scalp/v2/ops/strategy-catalog");
+  const req = createReq("/api/scalp/composer/ops/strategy-catalog");
   const res = createRes();
   await strategyCatalogHandler(req as any, res as any);
   const body = asRecord(res.body);

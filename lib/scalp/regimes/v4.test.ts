@@ -2,26 +2,26 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  applyScalpV4Hysteresis,
-  assessScalpV4CandleCoverage,
+  applyScalpRegimeHysteresis,
+  assessScalpRegimeCandleCoverage,
   bootstrapP05Expectancy,
-  buildScalpV4ClassifierValidityReport,
-  buildScalpV4RegimeEnvelope,
-  buildScalpV4WeeklyBars,
-  classifyScalpV4RawRegimes,
-  resolveScalpV4EnvelopeBlock,
+  buildScalpRegimeClassifierValidityReport,
+  buildScalpRegimeEnvelope,
+  buildScalpRegimeWeeklyBars,
+  classifyScalpRegimeRawRegimes,
+  resolveScalpRegimeEnvelopeBlock,
   startOfUtcWeekMondayMs,
   validityWeekStartFromCompletedWeekMs,
-  type ScalpV4RawRegimeLabel,
-  type ScalpV4RegimeSnapshot,
-  type ScalpV4CellId,
-  type ScalpV4WeeklyBar,
+  type ScalpRegimeRawRegimeLabel,
+  type ScalpRegimeSnapshot,
+  type ScalpRegimeCellId,
+  type ScalpRegimeWeeklyBar,
 } from "./index";
 
 const WEEK = 7 * 24 * 60 * 60 * 1000;
 const MINUTE = 60_000;
 
-function weeklyBar(idx: number, close: number, range = 1): ScalpV4WeeklyBar {
+function weeklyBar(idx: number, close: number, range = 1): ScalpRegimeWeeklyBar {
   const weekStartMs = Date.UTC(2024, 0, 1) + idx * WEEK;
   return {
     weekStartMs,
@@ -33,7 +33,7 @@ function weeklyBar(idx: number, close: number, range = 1): ScalpV4WeeklyBar {
   };
 }
 
-function rawLabel(idx: number, rawCellId: ScalpV4RawRegimeLabel["rawCellId"]): ScalpV4RawRegimeLabel {
+function rawLabel(idx: number, rawCellId: ScalpRegimeRawRegimeLabel["rawCellId"]): ScalpRegimeRawRegimeLabel {
   return {
     weekStartMs: Date.UTC(2026, 0, 5) + idx * WEEK,
     classifierVersion: "test",
@@ -58,7 +58,7 @@ test("weekly regime label is valid for the week after completed data", () => {
 test("hysteresis requires strict consecutive raw-cell observations before flipping", () => {
   const a = "vol=mid|trend=choppy|risk=neutral";
   const b = "vol=high|trend=choppy|risk=neutral";
-  const rows = applyScalpV4Hysteresis(
+  const rows = applyScalpRegimeHysteresis(
     [
       rawLabel(0, a),
       rawLabel(1, b),
@@ -93,14 +93,14 @@ test("classifier labels unknown during warmup and does not let future bars chang
     trendSlowWeeks: 6,
     adxWeeks: 3,
   };
-  const first = classifyScalpV4RawRegimes({
+  const first = classifyScalpRegimeRawRegimes({
     venue: "capital",
     symbol: "EURUSD",
     weeklyBars: bars,
     marketContext: market,
     options: opts,
   });
-  const extended = classifyScalpV4RawRegimes({
+  const extended = classifyScalpRegimeRawRegimes({
     venue: "capital",
     symbol: "EURUSD",
     weeklyBars: [...bars, weeklyBar(18, 80, 6), weeklyBar(19, 82, 7)],
@@ -120,7 +120,7 @@ test("classifier labels unknown during warmup and does not let future bars chang
 test("synthetic envelope identifies the one profitable cell and reports cross-regime trades", () => {
   const cellA = "vol=mid|trend=choppy|risk=neutral";
   const cellB = "vol=high|trend=trending_up|risk=risk_on";
-  const snapshots: ScalpV4RegimeSnapshot[] = Array.from({ length: 24 }, (_, idx) => {
+  const snapshots: ScalpRegimeSnapshot[] = Array.from({ length: 24 }, (_, idx) => {
     const cellId = idx < 8 || (idx >= 16 && idx < 20) ? cellA : cellB;
     return {
       ...rawLabel(idx, cellId),
@@ -144,7 +144,7 @@ test("synthetic envelope identifies the one profitable cell and reports cross-re
       })),
     };
   });
-  const envelope = buildScalpV4RegimeEnvelope({
+  const envelope = buildScalpRegimeEnvelope({
     classifierVersion: "test",
     snapshots,
     windows,
@@ -172,7 +172,7 @@ test("bootstrap is deterministic for the same seed and block size", () => {
 });
 
 test("classifier validity fails for too few epochs", () => {
-  const cell = "vol=mid|trend=choppy|risk=neutral" as ScalpV4CellId;
+  const cell = "vol=mid|trend=choppy|risk=neutral" as ScalpRegimeCellId;
   const snapshots = Array.from({ length: 20 }, (_, idx) => ({
     ...rawLabel(idx, cell),
     cellId: cell,
@@ -180,7 +180,7 @@ test("classifier validity fails for too few epochs", () => {
     pendingWeeks: 0,
     transition: null,
   }));
-  const report = buildScalpV4ClassifierValidityReport({
+  const report = buildScalpRegimeClassifierValidityReport({
     snapshots,
     minEpochs: 3,
     maxEpochs: 12,
@@ -190,8 +190,8 @@ test("classifier validity fails for too few epochs", () => {
 });
 
 test("classifier validity fails for too many epochs", () => {
-  const a = "vol=mid|trend=choppy|risk=neutral" as ScalpV4CellId;
-  const b = "vol=high|trend=trending_up|risk=risk_on" as ScalpV4CellId;
+  const a = "vol=mid|trend=choppy|risk=neutral" as ScalpRegimeCellId;
+  const b = "vol=high|trend=trending_up|risk=risk_on" as ScalpRegimeCellId;
   const snapshots = Array.from({ length: 14 }, (_, idx) => {
     const cell = idx % 2 === 0 ? a : b;
     return {
@@ -202,7 +202,7 @@ test("classifier validity fails for too many epochs", () => {
       transition: null,
     };
   });
-  const report = buildScalpV4ClassifierValidityReport({
+  const report = buildScalpRegimeClassifierValidityReport({
     snapshots,
     minEpochs: 3,
     maxEpochs: 12,
@@ -212,8 +212,8 @@ test("classifier validity fails for too many epochs", () => {
 });
 
 test("classifier validity fails when market behavior summaries are empty", () => {
-  const a = "vol=mid|trend=choppy|risk=neutral" as ScalpV4CellId;
-  const b = "vol=high|trend=trending_up|risk=risk_on" as ScalpV4CellId;
+  const a = "vol=mid|trend=choppy|risk=neutral" as ScalpRegimeCellId;
+  const b = "vol=high|trend=trending_up|risk=risk_on" as ScalpRegimeCellId;
   const sequence = [a, a, b, b, a, a];
   const snapshots = sequence.map((cell, idx) => ({
     ...rawLabel(idx, cell),
@@ -222,7 +222,7 @@ test("classifier validity fails when market behavior summaries are empty", () =>
     pendingWeeks: 0,
     transition: null,
   }));
-  const report = buildScalpV4ClassifierValidityReport({
+  const report = buildScalpRegimeClassifierValidityReport({
     snapshots,
     marketBarsByName: { EURUSD: [] },
     minEpochs: 3,
@@ -233,7 +233,7 @@ test("classifier validity fails when market behavior summaries are empty", () =>
 });
 
 test("shadow mode records v4 reasons without hard blocking", () => {
-  const gate = resolveScalpV4EnvelopeBlock({
+  const gate = resolveScalpRegimeEnvelopeBlock({
     enabled: true,
     hardGate: false,
     envelope: { eligible: true, allowedCells: ["vol=mid|trend=choppy|risk=neutral"] },
@@ -244,7 +244,7 @@ test("shadow mode records v4 reasons without hard blocking", () => {
   assert.equal(gate.shadowOnly, true);
   assert.ok(gate.reasonCodes.includes("V4_REGIME_ENVELOPE_BLOCKED_SHADOW"));
 
-  const hard = resolveScalpV4EnvelopeBlock({
+  const hard = resolveScalpRegimeEnvelopeBlock({
     enabled: true,
     hardGate: true,
     envelope: { eligible: true, allowedCells: ["vol=mid|trend=choppy|risk=neutral"] },
@@ -262,7 +262,7 @@ test("candle coverage requires enough candles and range edges", () => {
     const price = 100 + idx * 0.0001;
     return [fromMs + idx * MINUTE, price, price, price, price, 1] as const;
   });
-  const covered = assessScalpV4CandleCoverage({
+  const covered = assessScalpRegimeCandleCoverage({
     candles: dense.map((row) => [...row] as [number, number, number, number, number, number]),
     fromMs,
     toMs,
@@ -271,7 +271,7 @@ test("candle coverage requires enough candles and range edges", () => {
   assert.equal(covered.ok, true);
 
   const late = dense.slice(8 * 24 * 60);
-  const missingStart = assessScalpV4CandleCoverage({
+  const missingStart = assessScalpRegimeCandleCoverage({
     candles: late.map((row) => [...row] as [number, number, number, number, number, number]),
     fromMs,
     toMs,

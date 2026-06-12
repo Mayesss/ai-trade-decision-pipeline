@@ -3,10 +3,10 @@
  * applied both at research backtest time and at promotion/execution.
  *
  * Research overrides affect ScalpReplayRuntimeConfig.strategy fields.
- * Deployment overrides affect ScalpV2RiskProfile fields.
+ * Deployment overrides affect ScalpComposerRiskProfile fields.
  */
 
-import type { ScalpV2RiskProfile } from "./types";
+import type { ScalpComposerRiskProfile } from "./types";
 
 export type RiskRuleBlockId =
   | "risk_pct_equity_sizing"
@@ -17,7 +17,7 @@ export type RiskRuleBlockId =
   | "risk_leverage_cap"
   | "risk_adaptive_lock_period";
 
-export type RiskRuleOverrides = Partial<ScalpV2RiskProfile>;
+export type RiskRuleOverrides = Partial<ScalpComposerRiskProfile>;
 
 /**
  * Backtest-compatible overrides — field names match
@@ -149,9 +149,9 @@ export function resolveRiskRuleOverrides(
  * Merge risk rule overrides into an existing risk profile.
  */
 export function mergeRiskProfileWithOverrides(
-  base: ScalpV2RiskProfile,
+  base: ScalpComposerRiskProfile,
   overrides: RiskRuleOverrides,
-): ScalpV2RiskProfile {
+): ScalpComposerRiskProfile {
   return {
     riskPerTradePct: overrides.riskPerTradePct ?? base.riskPerTradePct,
     maxOpenPositionsPerSymbol: overrides.maxOpenPositionsPerSymbol ?? base.maxOpenPositionsPerSymbol,

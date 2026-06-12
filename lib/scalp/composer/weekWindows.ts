@@ -98,40 +98,40 @@ function utcMsFromZonedClock(params: {
   return guessMs;
 }
 
-export function resolveScalpV2WeekCompleteConfig(): {
+export function resolveScalpComposerWeekCompleteConfig(): {
   finalSession: WeekCompleteSession;
   graceMinutes: number;
 } {
   return {
     finalSession: parseWeekCompleteSession(
-      process.env.SCALP_V2_WEEK_COMPLETE_FINAL_SESSION,
+      process.env.SCALP_COMPOSER_WEEK_COMPLETE_FINAL_SESSION,
     ),
     graceMinutes: parseGraceMinutes(
-      process.env.SCALP_V2_WEEK_COMPLETE_GRACE_MINUTES,
+      process.env.SCALP_COMPOSER_WEEK_COMPLETE_GRACE_MINUTES,
     ),
   };
 }
 
-export function startOfScalpV2UtcDay(tsMs: number): number {
+export function startOfScalpComposerUtcDay(tsMs: number): number {
   const d = new Date(tsMs);
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
 }
 
-export function startOfScalpV2WeekMondayUtc(tsMs: number): number {
-  const dayStartMs = startOfScalpV2UtcDay(tsMs);
+export function startOfScalpComposerWeekMondayUtc(tsMs: number): number {
+  const dayStartMs = startOfScalpComposerUtcDay(tsMs);
   const dayOfWeek = new Date(dayStartMs).getUTCDay();
   const daysSinceMonday = (dayOfWeek + 6) % 7;
   return dayStartMs - daysSinceMonday * DAY_MS;
 }
 
-export function isScalpV2UtcSunday(tsMs: number): boolean {
-  return new Date(startOfScalpV2UtcDay(tsMs)).getUTCDay() === 0;
+export function isScalpComposerUtcSunday(tsMs: number): boolean {
+  return new Date(startOfScalpComposerUtcDay(tsMs)).getUTCDay() === 0;
 }
 
-export function resolveScalpV2WeekCompleteAtUtc(tsMs: number): number {
-  const weekStartMs = startOfScalpV2WeekMondayUtc(tsMs);
+export function resolveScalpComposerWeekCompleteAtUtc(tsMs: number): number {
+  const weekStartMs = startOfScalpComposerWeekMondayUtc(tsMs);
   const saturdayNoonUtcMs = weekStartMs + 5 * DAY_MS + 12 * 60 * MINUTE_MS;
-  const { finalSession, graceMinutes } = resolveScalpV2WeekCompleteConfig();
+  const { finalSession, graceMinutes } = resolveScalpComposerWeekCompleteConfig();
   const definition = WEEK_COMPLETE_SESSION_DEFINITIONS[finalSession];
   const finalSessionLocalSaturday = partsForTimeZone(
     saturdayNoonUtcMs,
@@ -147,10 +147,10 @@ export function resolveScalpV2WeekCompleteAtUtc(tsMs: number): number {
   return finalSessionCloseMs + graceMinutes * MINUTE_MS;
 }
 
-export function resolveScalpV2CompletedWeekWindowToUtc(tsMs: number): number {
-  const mondayStartMs = startOfScalpV2WeekMondayUtc(tsMs);
+export function resolveScalpComposerCompletedWeekWindowToUtc(tsMs: number): number {
+  const mondayStartMs = startOfScalpComposerWeekMondayUtc(tsMs);
   // V2 rolls completed-week windows once the configured final Saturday
   // session has closed and a grace period has elapsed.
-  const weekCompleteAtMs = resolveScalpV2WeekCompleteAtUtc(tsMs);
+  const weekCompleteAtMs = resolveScalpComposerWeekCompleteAtUtc(tsMs);
   return tsMs >= weekCompleteAtMs ? mondayStartMs + WEEK_MS : mondayStartMs;
 }

@@ -1,4 +1,4 @@
-export function shouldContinueScalpV2LoadCandles(params: {
+export function shouldContinueScalpComposerLoadCandles(params: {
   busy: boolean;
   autoContinue: boolean;
   pendingAfter: number;
@@ -13,7 +13,7 @@ export function shouldContinueScalpV2LoadCandles(params: {
   );
 }
 
-export function shouldTriggerScalpV2LoadCandlesSuccessor(params: {
+export function shouldTriggerScalpComposerLoadCandlesSuccessor(params: {
   ok: boolean;
   busy: boolean;
   autoSuccessor: boolean;

@@ -4,21 +4,21 @@ import type { EntryTriggerOverrides } from "./entryTriggerPresets";
 import type { ExitRuleOverrides } from "./exitRulePresets";
 import type { RiskRuleReplayOverrides } from "./riskRulePresets";
 import type { StateMachineOverrides } from "./stateMachinePresets";
-import type { ScalpV2RiskProfile, ScalpV2Session } from "./types";
-import type { ScalpV2V3TemporalFilter } from "../evidence";
+import type { ScalpComposerRiskProfile, ScalpComposerSession } from "./types";
+import type { ScalpComposerV3TemporalFilter } from "../evidence";
 
 function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
 }
 
-export function buildScalpV2ExecuteConfigOverride(params: {
-  entrySessionProfile: ScalpV2Session;
-  riskProfile: ScalpV2RiskProfile;
+export function buildScalpComposerExecuteConfigOverride(params: {
+  entrySessionProfile: ScalpComposerSession;
+  riskProfile: ScalpComposerRiskProfile;
   entryTriggerOverrides?: EntryTriggerOverrides;
   exitRuleOverrides?: ExitRuleOverrides;
   riskRuleReplayOverrides?: RiskRuleReplayOverrides;
   stateMachineOverrides: StateMachineOverrides;
-  temporalFilter?: ScalpV2V3TemporalFilter | null;
+  temporalFilter?: ScalpComposerV3TemporalFilter | null;
   entryBlockReasonCodes?: string[];
 }): ScalpStrategyConfigOverride {
   const entry = params.entryTriggerOverrides || {};

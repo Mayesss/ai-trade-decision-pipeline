@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  isScalpV2PromoteEnabled,
-  isScalpV5OwnedPromotionGate,
-  resolveScalpV2ExecuteDryRunForDeployment,
-  runScalpV2PromoteJob,
-  shouldRunScalpV2ExecuteCycleForDeployment,
+  isScalpComposerPromoteEnabled,
+  isScalpResearchOwnedPromotionGate,
+  resolveScalpComposerExecuteDryRunForDeployment,
+  runScalpComposerPromoteJob,
+  shouldRunScalpComposerExecuteCycleForDeployment,
 } from "./pipeline";
 
 function withEnv<T>(key: string, value: string | undefined, fn: () => T): T {
@@ -37,21 +37,21 @@ async function withEnvAsync<T>(
   }
 }
 
-test("SCALP_V2_PROMOTE_ENABLED defaults to false", () => {
-  withEnv("SCALP_V2_PROMOTE_ENABLED", undefined, () => {
-    assert.equal(isScalpV2PromoteEnabled(), false);
+test("SCALP_COMPOSER_PROMOTE_ENABLED defaults to false", () => {
+  withEnv("SCALP_COMPOSER_PROMOTE_ENABLED", undefined, () => {
+    assert.equal(isScalpComposerPromoteEnabled(), false);
   });
 });
 
-test("SCALP_V2_PROMOTE_ENABLED=true restores the legacy promote path", () => {
-  withEnv("SCALP_V2_PROMOTE_ENABLED", "true", () => {
-    assert.equal(isScalpV2PromoteEnabled(), true);
+test("SCALP_COMPOSER_PROMOTE_ENABLED=true restores the legacy promote path", () => {
+  withEnv("SCALP_COMPOSER_PROMOTE_ENABLED", "true", () => {
+    assert.equal(isScalpComposerPromoteEnabled(), true);
   });
 });
 
-test("runScalpV2PromoteJob skips before taking the v2 promote lock by default", async () => {
-  await withEnvAsync("SCALP_V2_PROMOTE_ENABLED", undefined, async () => {
-    const job = await runScalpV2PromoteJob();
+test("runScalpComposerPromoteJob skips before taking the v2 promote lock by default", async () => {
+  await withEnvAsync("SCALP_COMPOSER_PROMOTE_ENABLED", undefined, async () => {
+    const job = await runScalpComposerPromoteJob();
     assert.equal(job.ok, true);
     assert.equal(job.busy, false);
     assert.equal(job.processed, 0);
@@ -59,16 +59,16 @@ test("runScalpV2PromoteJob skips before taking the v2 promote lock by default", 
   });
 });
 
-test("isScalpV5OwnedPromotionGate detects v5-owned promotion markers", () => {
-  assert.equal(isScalpV5OwnedPromotionGate({ source: "v5_cell_evidence" }), true);
-  assert.equal(isScalpV5OwnedPromotionGate({ v5Promotion: { promotedAtMs: 1 } }), true);
-  assert.equal(isScalpV5OwnedPromotionGate({ source: "v2_forward_evidence" }), false);
-  assert.equal(isScalpV5OwnedPromotionGate(null), false);
+test("isScalpResearchOwnedPromotionGate detects v5-owned promotion markers", () => {
+  assert.equal(isScalpResearchOwnedPromotionGate({ source: "v5_cell_evidence" }), true);
+  assert.equal(isScalpResearchOwnedPromotionGate({ v5Promotion: { promotedAtMs: 1 } }), true);
+  assert.equal(isScalpResearchOwnedPromotionGate({ source: "v2_forward_evidence" }), false);
+  assert.equal(isScalpResearchOwnedPromotionGate(null), false);
 });
 
-test("v5-owned live deployments bypass SCALP_V2_LIVE_ENABLED in execute dry-run resolution", () => {
+test("v5-owned live deployments bypass SCALP_COMPOSER_LIVE_ENABLED in execute dry-run resolution", () => {
   assert.equal(
-    resolveScalpV2ExecuteDryRunForDeployment({
+    resolveScalpComposerExecuteDryRunForDeployment({
       effectiveDryRun: false,
       runtimeLiveEnabled: false,
       deploymentLiveMode: "live",
@@ -77,7 +77,7 @@ test("v5-owned live deployments bypass SCALP_V2_LIVE_ENABLED in execute dry-run 
     false,
   );
   assert.equal(
-    resolveScalpV2ExecuteDryRunForDeployment({
+    resolveScalpComposerExecuteDryRunForDeployment({
       effectiveDryRun: false,
       runtimeLiveEnabled: false,
       deploymentLiveMode: "live",
@@ -86,7 +86,7 @@ test("v5-owned live deployments bypass SCALP_V2_LIVE_ENABLED in execute dry-run 
     true,
   );
   assert.equal(
-    resolveScalpV2ExecuteDryRunForDeployment({
+    resolveScalpComposerExecuteDryRunForDeployment({
       effectiveDryRun: true,
       runtimeLiveEnabled: false,
       deploymentLiveMode: "live",
@@ -95,7 +95,7 @@ test("v5-owned live deployments bypass SCALP_V2_LIVE_ENABLED in execute dry-run 
     true,
   );
   assert.equal(
-    resolveScalpV2ExecuteDryRunForDeployment({
+    resolveScalpComposerExecuteDryRunForDeployment({
       effectiveDryRun: false,
       runtimeLiveEnabled: false,
       deploymentLiveMode: "shadow",
@@ -107,21 +107,21 @@ test("v5-owned live deployments bypass SCALP_V2_LIVE_ENABLED in execute dry-run 
 
 test("execute cycle skips entry-blocked flat deployments but still manages open positions", () => {
   assert.equal(
-    shouldRunScalpV2ExecuteCycleForDeployment({
+    shouldRunScalpComposerExecuteCycleForDeployment({
       entryBlocked: false,
       hasOpenPosition: false,
     }),
     true,
   );
   assert.equal(
-    shouldRunScalpV2ExecuteCycleForDeployment({
+    shouldRunScalpComposerExecuteCycleForDeployment({
       entryBlocked: true,
       hasOpenPosition: false,
     }),
     false,
   );
   assert.equal(
-    shouldRunScalpV2ExecuteCycleForDeployment({
+    shouldRunScalpComposerExecuteCycleForDeployment({
       entryBlocked: true,
       hasOpenPosition: true,
     }),

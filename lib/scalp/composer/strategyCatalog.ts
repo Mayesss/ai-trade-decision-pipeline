@@ -1,9 +1,9 @@
-export interface ScalpV2CatalogStrategy {
+export interface ScalpComposerCatalogStrategy {
   id: string;
   shortName: string;
 }
 
-const SCALP_V2_CATALOG_STRATEGIES: readonly ScalpV2CatalogStrategy[] =
+const SCALP_COMPOSER_CATALOG_STRATEGIES: readonly ScalpComposerCatalogStrategy[] =
   Object.freeze([
     { id: "regime_pullback_m15_m3", shortName: "Regime Pullback" },
     {
@@ -54,10 +54,10 @@ const SCALP_V2_CATALOG_STRATEGIES: readonly ScalpV2CatalogStrategy[] =
     },
   ]);
 
-export function listScalpV2CatalogStrategies(): ScalpV2CatalogStrategy[] {
-  return SCALP_V2_CATALOG_STRATEGIES.slice();
+export function listScalpComposerCatalogStrategies(): ScalpComposerCatalogStrategy[] {
+  return SCALP_COMPOSER_CATALOG_STRATEGIES.slice();
 }
 
-export function listScalpV2CatalogStrategyIds(): string[] {
-  return SCALP_V2_CATALOG_STRATEGIES.map((row) => row.id);
+export function listScalpComposerCatalogStrategyIds(): string[] {
+  return SCALP_COMPOSER_CATALOG_STRATEGIES.map((row) => row.id);
 }

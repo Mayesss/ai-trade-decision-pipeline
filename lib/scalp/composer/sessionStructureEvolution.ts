@@ -20,7 +20,7 @@ import {
   validateSessionStructureCompatibility,
   type SessionStructureComposerPlan,
 } from "./sessionStructureComposer";
-import type { ScalpV2Session, ScalpV2Venue } from "./types";
+import type { ScalpComposerSession, ScalpComposerVenue } from "./types";
 
 export const SESSION_STRUCTURE_EVOLUTION_VERSION =
   "session_structure_evolution_v1";
@@ -35,9 +35,9 @@ export type SessionStructureEvolutionOp = "mutation" | "crossover";
 
 export interface SessionStructureSurvivor {
   scopeKey: string;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
   genome: SessionStructureGenome;
   fingerprint: string;
   tuneId: string;
@@ -88,9 +88,9 @@ export interface SessionStructureOffspring {
 }
 
 type SurvivorRow = {
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
   tuneId: string;
   metadata: Record<string, unknown>;
 };
@@ -125,25 +125,25 @@ function envFiniteOr(name: string, fallback: number): number {
 
 export function resolveSessionStructureEvolutionConfig(): SessionStructureEvolutionConfig {
   return {
-    enabled: envBool("SCALP_V2_SESSION_EVOLUTION_ENABLED", true),
-    topKScoped: envInt("SCALP_V2_SESSION_EVOLUTION_TOP_K_SCOPED", 8, 1, 50),
-    topKGlobal: envInt("SCALP_V2_SESSION_EVOLUTION_TOP_K_GLOBAL", 24, 1, 200),
-    maxRows: envInt("SCALP_V2_SESSION_EVOLUTION_MAX_ROWS", 5_000, 1, 100_000),
-    minTrades: envInt("SCALP_V2_SESSION_EVOLUTION_MIN_TRADES", 8, 0, 10_000),
+    enabled: envBool("SCALP_COMPOSER_SESSION_EVOLUTION_ENABLED", true),
+    topKScoped: envInt("SCALP_COMPOSER_SESSION_EVOLUTION_TOP_K_SCOPED", 8, 1, 50),
+    topKGlobal: envInt("SCALP_COMPOSER_SESSION_EVOLUTION_TOP_K_GLOBAL", 24, 1, 200),
+    maxRows: envInt("SCALP_COMPOSER_SESSION_EVOLUTION_MAX_ROWS", 5_000, 1, 100_000),
+    minTrades: envInt("SCALP_COMPOSER_SESSION_EVOLUTION_MIN_TRADES", 8, 0, 10_000),
     maxOffspringPerSurvivor: envInt(
-      "SCALP_V2_SESSION_EVOLUTION_MAX_OFFSPRING_PER_SURVIVOR",
+      "SCALP_COMPOSER_SESSION_EVOLUTION_MAX_OFFSPRING_PER_SURVIVOR",
       12,
       1,
       200,
     ),
     maxOffspringPerCycle: envInt(
-      "SCALP_V2_SESSION_EVOLUTION_MAX_OFFSPRING_PER_CYCLE",
+      "SCALP_COMPOSER_SESSION_EVOLUTION_MAX_OFFSPRING_PER_CYCLE",
       200,
       1,
       5_000,
     ),
     maxCrossoverPartners: envInt(
-      "SCALP_V2_SESSION_EVOLUTION_MAX_CROSSOVER_PARTNERS",
+      "SCALP_COMPOSER_SESSION_EVOLUTION_MAX_CROSSOVER_PARTNERS",
       4,
       0,
       50,
@@ -155,8 +155,8 @@ export function resolveSessionStructureEvolutionConfig(): SessionStructureEvolut
     // usually breaks it). With all current survivors negative this yields zero
     // breeders → evolution sleeps; it auto-reactivates around a genuinely
     // significant winner. Set to -Infinity to breed from least-bad again.
-    minFitness: envFiniteOr("SCALP_V2_SESSION_EVOLUTION_MIN_FITNESS", 0),
-    globalCrossover: envBool("SCALP_V2_SESSION_EVOLUTION_GLOBAL_CROSSOVER", false),
+    minFitness: envFiniteOr("SCALP_COMPOSER_SESSION_EVOLUTION_MIN_FITNESS", 0),
+    globalCrossover: envBool("SCALP_COMPOSER_SESSION_EVOLUTION_GLOBAL_CROSSOVER", false),
   };
 }
 
@@ -617,9 +617,9 @@ export function generateOffspring(params: {
 /** Builder-facing helper: the canonical tuneId for an offspring in a scope. */
 export function offspringTuneId(params: {
   genome: SessionStructureGenome;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
 }): string {
   const fingerprint = sessionStructureBehaviorFingerprint(params.genome);
   const digest = crypto

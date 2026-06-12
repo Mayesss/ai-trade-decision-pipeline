@@ -9,7 +9,7 @@
 // cell." Same negative-screen behavior, fresher data, no 2-year compute.
 
 import type { ScalpReplayTrade } from "../replay/types";
-import type { ScalpV4CellId } from "../regimes/types";
+import type { ScalpRegimeCellId } from "../regimes/types";
 import { startOfUtcWeekMondayMs } from "../regimes/week";
 
 // r3 added the parallel per-week trade-count / win / loss arrays so the
@@ -19,12 +19,12 @@ import { startOfUtcWeekMondayMs } from "../regimes/week";
 // loaded with r2 evidence falls back to a full replay on its next
 // evaluation — the incremental path needs r3 to operate. Bumping to r4+
 // requires another invalidation pass.
-export const SCALP_V5_VERSION = "scalp_v5_cell_evidence_r3" as const;
-export type ScalpV5EvidenceVersion =
+export const SCALP_RESEARCH_VERSION = "scalp_v5_cell_evidence_r3" as const;
+export type ScalpResearchEvidenceVersion =
   | "scalp_v5_cell_evidence_r2"
-  | typeof SCALP_V5_VERSION;
+  | typeof SCALP_RESEARCH_VERSION;
 
-export interface ScalpV5CellStat {
+export interface ScalpResearchCellStat {
   trades: number;
   netR: number;
   expectancyR: number;
@@ -39,34 +39,34 @@ export interface ScalpV5CellStat {
   weeklyLosses: number[];
 }
 
-export interface ScalpV5CellEvidence {
-  version: ScalpV5EvidenceVersion;
+export interface ScalpResearchCellEvidence {
+  version: ScalpResearchEvidenceVersion;
   classifierVersion: string;
   evaluatedAtMs: number;
   holdoutFromMs: number;
   holdoutToMs: number;
   minTradesPerCell: number;
-  cells: Record<string, ScalpV5CellStat>;
+  cells: Record<string, ScalpResearchCellStat>;
   // Cells in `cells` that meet the trade-count threshold AND have
   // expectancyR > 0. The live entry gate checks against this set.
   eligibleCells: string[];
 }
 
-export interface ScalpV5Config {
+export interface ScalpResearchConfig {
   classifierVersion: string;
   holdoutWeeks: number;
   minTradesPerCell: number;
 }
 
-export interface ScalpV5GateResult {
+export interface ScalpResearchGateResult {
   blocked: boolean;
   shadowOnly: boolean;
   reasonCodes: string[];
   matchedCellId: string | null;
-  evidence: ScalpV5CellStat | null;
+  evidence: ScalpResearchCellStat | null;
 }
 
-export interface ScalpV5PromotionThresholds {
+export interface ScalpResearchPromotionThresholds {
   minTotalNetR: number;
   minTotalTrades: number;
   minPositiveWeeks: number;
@@ -83,7 +83,7 @@ export interface ScalpV5PromotionThresholds {
   minConsistencyActiveCells?: number;
 }
 
-export interface ScalpV5PromotionMetrics {
+export interface ScalpResearchPromotionMetrics {
   totalNetR: number;
   totalTrades: number;
   positiveWeeks: number;
@@ -96,7 +96,7 @@ export interface ScalpV5PromotionMetrics {
   activeCells: number;
 }
 
-export interface ScalpV5PromotionEvaluation {
+export interface ScalpResearchPromotionEvaluation {
   qualified: boolean;
   reason:
     | "v5_strict_passed"
@@ -106,29 +106,29 @@ export interface ScalpV5PromotionEvaluation {
     | "v5_positive_weeks_below_threshold"
     | "v5_worst_week_below_threshold"
     | "v5_trailing_4w_net_r_below_threshold";
-  metrics: ScalpV5PromotionMetrics;
+  metrics: ScalpResearchPromotionMetrics;
 }
 
-export function isScalpV5Enabled(): boolean {
-  // Default ON. Set SCALP_V5_ENABLED=0 to disable the gate entirely (e.g.
+export function isScalpResearchEnabled(): boolean {
+  // Default ON. Set SCALP_RESEARCH_ENABLED=0 to disable the gate entirely (e.g.
   // before evidence has been evaluated on a fresh deployment).
-  const raw = String(process.env.SCALP_V5_ENABLED ?? "true").trim().toLowerCase();
+  const raw = String(process.env.SCALP_RESEARCH_ENABLED ?? "true").trim().toLowerCase();
   return !["0", "false", "no", "off"].includes(raw);
 }
 
-export function isScalpV5HardGateEnabled(): boolean {
+export function isScalpResearchHardGateEnabled(): boolean {
   // Default ON — v5 blocks at the live entry path, no shadow mode.
-  // Set SCALP_V5_HARD_GATE=0 to downgrade to shadow logging only.
-  const raw = String(process.env.SCALP_V5_HARD_GATE ?? "true").trim().toLowerCase();
+  // Set SCALP_RESEARCH_HARD_GATE=0 to downgrade to shadow logging only.
+  const raw = String(process.env.SCALP_RESEARCH_HARD_GATE ?? "true").trim().toLowerCase();
   return !["0", "false", "no", "off"].includes(raw);
 }
 
-export function resolveScalpV5Config(): ScalpV5Config {
-  const holdoutWeeksRaw = Number(process.env.SCALP_V5_HOLDOUT_WEEKS);
-  const minTradesRaw = Number(process.env.SCALP_V5_MIN_TRADES_PER_CELL);
+export function resolveScalpResearchConfig(): ScalpResearchConfig {
+  const holdoutWeeksRaw = Number(process.env.SCALP_RESEARCH_HOLDOUT_WEEKS);
+  const minTradesRaw = Number(process.env.SCALP_RESEARCH_MIN_TRADES_PER_CELL);
   return {
     classifierVersion:
-      String(process.env.SCALP_V5_CLASSIFIER_VERSION || "").trim() ||
+      String(process.env.SCALP_RESEARCH_CLASSIFIER_VERSION || "").trim() ||
       "scalp_v4_macro_weekly_r1",
     holdoutWeeks: Number.isFinite(holdoutWeeksRaw) && holdoutWeeksRaw > 0
       ? Math.max(1, Math.min(52, Math.floor(holdoutWeeksRaw)))
@@ -139,7 +139,7 @@ export function resolveScalpV5Config(): ScalpV5Config {
   };
 }
 
-export function resolveScalpV5EvidenceFreshness(params: {
+export function resolveScalpResearchEvidenceFreshness(params: {
   evaluatedAtMs: number | null | undefined;
   nowMs: number;
   staleOlderThanMs: number;
@@ -161,10 +161,10 @@ export function resolveScalpV5EvidenceFreshness(params: {
   };
 }
 
-export function evaluateScalpV5PromotionEvidence(params: {
-  evidence: ScalpV5CellEvidence | null;
-  thresholds: ScalpV5PromotionThresholds;
-}): ScalpV5PromotionEvaluation {
+export function evaluateScalpResearchPromotionEvidence(params: {
+  evidence: ScalpResearchCellEvidence | null;
+  thresholds: ScalpResearchPromotionThresholds;
+}): ScalpResearchPromotionEvaluation {
   const cells = params.evidence?.cells || {};
   let totalNetR = 0;
   let totalTrades = 0;
@@ -174,7 +174,7 @@ export function evaluateScalpV5PromotionEvidence(params: {
   const weeklySums: number[] = [];
   for (const cellValue of Object.values(cells)) {
     const cell = cellValue && typeof cellValue === "object" && !Array.isArray(cellValue)
-      ? (cellValue as ScalpV5CellStat)
+      ? (cellValue as ScalpResearchCellStat)
       : null;
     if (!cell) continue;
     totalNetR += Number(cell.netR) || 0;
@@ -188,7 +188,7 @@ export function evaluateScalpV5PromotionEvidence(params: {
       weeklySums[idx] = (weeklySums[idx] ?? 0) + (Number(weekly[idx]) || 0);
     }
   }
-  const metrics: ScalpV5PromotionMetrics = {
+  const metrics: ScalpResearchPromotionMetrics = {
     totalNetR,
     totalTrades,
     positiveWeeks: weeklySums.filter((value) => value > 0).length,
@@ -248,13 +248,13 @@ export function evaluateScalpV5PromotionEvidence(params: {
 
 export interface TaggedReplayTrade {
   trade: ScalpReplayTrade;
-  cellId: ScalpV4CellId | null;
+  cellId: ScalpRegimeCellId | null;
   weekStartMs: number;
 }
 
 export function tagTradesWithCells(params: {
   trades: ScalpReplayTrade[];
-  snapshotsByWeekStart: Map<number, ScalpV4CellId>;
+  snapshotsByWeekStart: Map<number, ScalpRegimeCellId>;
 }): TaggedReplayTrade[] {
   const out: TaggedReplayTrade[] = [];
   for (const trade of params.trades) {
@@ -267,14 +267,14 @@ export function tagTradesWithCells(params: {
 
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
-export function buildScalpV5CellEvidence(params: {
+export function buildScalpResearchCellEvidence(params: {
   tagged: TaggedReplayTrade[];
   classifierVersion: string;
   evaluatedAtMs: number;
   holdoutFromMs: number;
   holdoutToMs: number;
   minTradesPerCell: number;
-}): ScalpV5CellEvidence {
+}): ScalpResearchCellEvidence {
   // The holdout window is week-aligned (caller responsibility); compute the
   // count of weeks once so weeklyNetR arrays are all the same length and
   // align by index across cells.
@@ -325,7 +325,7 @@ export function buildScalpV5CellEvidence(params: {
     if (r > 0) bucket.weeklyWins[weekIdx] = (bucket.weeklyWins[weekIdx] ?? 0) + 1;
     else if (r < 0) bucket.weeklyLosses[weekIdx] = (bucket.weeklyLosses[weekIdx] ?? 0) + 1;
   }
-  const cells: Record<string, ScalpV5CellStat> = {};
+  const cells: Record<string, ScalpResearchCellStat> = {};
   const eligibleCells: string[] = [];
   for (const [cellId, b] of buckets.entries()) {
     const expectancyR = b.trades > 0 ? b.netR / b.trades : 0;
@@ -345,7 +345,7 @@ export function buildScalpV5CellEvidence(params: {
     }
   }
   return {
-    version: SCALP_V5_VERSION,
+    version: SCALP_RESEARCH_VERSION,
     classifierVersion: params.classifierVersion,
     evaluatedAtMs: params.evaluatedAtMs,
     holdoutFromMs: params.holdoutFromMs,
@@ -356,16 +356,16 @@ export function buildScalpV5CellEvidence(params: {
   };
 }
 
-export function resolveScalpV5EntryBlock(params: {
+export function resolveScalpResearchEntryBlock(params: {
   enabled: boolean;
   hardGate: boolean;
-  evidence: ScalpV5CellEvidence | null;
-  currentCellId: ScalpV4CellId | null;
+  evidence: ScalpResearchCellEvidence | null;
+  currentCellId: ScalpRegimeCellId | null;
   stale: boolean;
   minTradesPerCell: number;
   allowThinPositiveCell?: boolean;
   minThinCellTrades?: number;
-}): ScalpV5GateResult {
+}): ScalpResearchGateResult {
   if (!params.enabled) {
     return { blocked: false, shadowOnly: false, reasonCodes: [], matchedCellId: null, evidence: null };
   }
@@ -386,7 +386,7 @@ export function resolveScalpV5EntryBlock(params: {
   if (params.stale || !params.currentCellId) {
     reasonCodes.push("V5_CELL_DATA_STALE");
   }
-  let cellStat: ScalpV5CellStat | null = null;
+  let cellStat: ScalpResearchCellStat | null = null;
   if (params.currentCellId) {
     cellStat = params.evidence.cells[params.currentCellId] ?? null;
     if (!cellStat) {
@@ -424,17 +424,17 @@ export function resolveScalpV5EntryBlock(params: {
 // the full 12 weeks of candles.
 //
 // Contract: existing.holdoutToMs MUST equal newHoldoutToMs - ONE_WEEK_MS,
-// and existing.version MUST be the current SCALP_V5_VERSION. Callers are
+// and existing.version MUST be the current SCALP_RESEARCH_VERSION. Callers are
 // responsible for validating these (else the per-week arrays don't align).
 export function mergeIncrementalCellEvidence(params: {
-  existing: ScalpV5CellEvidence;
+  existing: ScalpResearchCellEvidence;
   newWeekTagged: TaggedReplayTrade[];
   newHoldoutFromMs: number;
   newHoldoutToMs: number;
   classifierVersion: string;
   evaluatedAtMs: number;
   minTradesPerCell: number;
-}): ScalpV5CellEvidence {
+}): ScalpResearchCellEvidence {
   const totalWeeks = Math.max(
     1,
     Math.round((params.newHoldoutToMs - params.newHoldoutFromMs) / ONE_WEEK_MS),
@@ -459,7 +459,7 @@ export function mergeIncrementalCellEvidence(params: {
   }
 
   // Drop oldest week + push new week per existing cell.
-  const updatedCells: Record<string, ScalpV5CellStat> = {};
+  const updatedCells: Record<string, ScalpResearchCellStat> = {};
   for (const [cellId, oldStat] of Object.entries(params.existing.cells)) {
     const droppedTrades = oldStat.weeklyTrades[0] ?? 0;
     const droppedNetR = oldStat.weeklyNetR[0] ?? 0;
@@ -522,7 +522,7 @@ export function mergeIncrementalCellEvidence(params: {
   }
 
   return {
-    version: SCALP_V5_VERSION,
+    version: SCALP_RESEARCH_VERSION,
     classifierVersion: params.classifierVersion,
     evaluatedAtMs: params.evaluatedAtMs,
     holdoutFromMs: params.newHoldoutFromMs,
@@ -538,12 +538,12 @@ export function mergeIncrementalCellEvidence(params: {
 // it overnight. We block new entries throughout Sunday UTC so trading uses
 // only freshly-validated evidence starting Monday. Existing positions are
 // not affected (this is an entry-side block only). Defaults to ON; set
-// SCALP_V5_SUNDAY_NO_TRADE=0 to disable.
-export function resolveScalpV5SundayBlock(nowMs: number): {
+// SCALP_RESEARCH_SUNDAY_NO_TRADE=0 to disable.
+export function resolveScalpResearchSundayBlock(nowMs: number): {
   blocked: boolean;
   reasonCodes: string[];
 } {
-  const raw = String(process.env.SCALP_V5_SUNDAY_NO_TRADE ?? "").trim().toLowerCase();
+  const raw = String(process.env.SCALP_RESEARCH_SUNDAY_NO_TRADE ?? "").trim().toLowerCase();
   if (["0", "false", "no", "off"].includes(raw)) {
     return { blocked: false, reasonCodes: [] };
   }

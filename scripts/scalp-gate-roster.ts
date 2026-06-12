@@ -24,11 +24,11 @@ import { runScalpReplay } from "../lib/scalp/replay/harness";
 import type { ScalpReplayCandle } from "../lib/scalp/replay/types";
 import type { ScalpCandle } from "../lib/scalp/types";
 import { ensureScalpSymbolMarketMetadata } from "../lib/scalp/symbolMarketMetadataSync";
-import { loadScalpV4RegimeSnapshotsBulk } from "../lib/scalp/regimes/pg";
-import type { ScalpV4CellId, ScalpV4Venue } from "../lib/scalp/regimes/types";
+import { loadScalpRegimeSnapshotsBulk } from "../lib/scalp/regimes/pg";
+import type { ScalpRegimeCellId, ScalpRegimeVenue } from "../lib/scalp/regimes/types";
 import { buildDeploymentRuntime, resolveHoldoutWindow } from "../lib/scalp/research/evaluator";
-import { buildScalpV5CellEvidence, resolveScalpV5Config, tagTradesWithCells } from "../lib/scalp/research";
-import type { ScalpV5DeploymentRow } from "../lib/scalp/research/pg";
+import { buildScalpResearchCellEvidence, resolveScalpResearchConfig, tagTradesWithCells } from "../lib/scalp/research";
+import type { ScalpResearchDeploymentRow } from "../lib/scalp/research/pg";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());
@@ -55,17 +55,17 @@ type Metrics = {
   positiveWeeks: number; weeks: number; worstWeek: number; pass: boolean;
 };
 
-async function analyze(row: ScalpV5DeploymentRow, cfg: ReturnType<typeof resolveScalpV5Config>, nowMs: number, from: number, to: number): Promise<Metrics | null> {
+async function analyze(row: ScalpResearchDeploymentRow, cfg: ReturnType<typeof resolveScalpResearchConfig>, nowMs: number, from: number, to: number): Promise<Metrics | null> {
   const { runtime } = buildDeploymentRuntime(row);
   const history = await loadScalpCandleHistoryInRange(row.symbol, "1m", from, to);
   const raw = (history?.record?.candles || []) as ScalpCandle[];
   if (!raw.length) return null;
   await ensureScalpSymbolMarketMetadata(row.symbol, { fetchIfMissing: true }).catch(() => null);
   const replay = await runScalpReplay({ candles: toReplayCandles(raw, runtime.defaultSpreadPips), pipSize: pipSizeForScalpSymbol(row.symbol), config: runtime, captureTimeline: false });
-  const snaps = (await loadScalpV4RegimeSnapshotsBulk({ pairs: [{ venue: row.venue as ScalpV4Venue, symbol: row.symbol }], classifierVersion: cfg.classifierVersion, fromMs: from, toMs: to })).get(`${row.venue}:${row.symbol}`) || [];
-  const byWeek = new Map<number, ScalpV4CellId>();
+  const snaps = (await loadScalpRegimeSnapshotsBulk({ pairs: [{ venue: row.venue as ScalpRegimeVenue, symbol: row.symbol }], classifierVersion: cfg.classifierVersion, fromMs: from, toMs: to })).get(`${row.venue}:${row.symbol}`) || [];
+  const byWeek = new Map<number, ScalpRegimeCellId>();
   for (const s of snaps) byWeek.set(s.weekStartMs, s.cellId);
-  const ev = buildScalpV5CellEvidence({ tagged: tagTradesWithCells({ trades: replay.trades, snapshotsByWeekStart: byWeek }), classifierVersion: cfg.classifierVersion, evaluatedAtMs: nowMs, holdoutFromMs: from, holdoutToMs: to, minTradesPerCell: cfg.minTradesPerCell });
+  const ev = buildScalpResearchCellEvidence({ tagged: tagTradesWithCells({ trades: replay.trades, snapshotsByWeekStart: byWeek }), classifierVersion: cfg.classifierVersion, evaluatedAtMs: nowMs, holdoutFromMs: from, holdoutToMs: to, minTradesPerCell: cfg.minTradesPerCell });
   let netR = 0, trades = 0, wins = 0, losses = 0; const weeks: number[] = [];
   for (const ck of ev.eligibleCells) {
     const c = ev.cells[ck]; if (!c) continue;
@@ -82,14 +82,14 @@ async function analyze(row: ScalpV5DeploymentRow, cfg: ReturnType<typeof resolve
 async function main() {
   if (!isScalpPgConfigured()) throw new Error("scalp_pg_not_configured");
   const db = scalpPrisma();
-  const cfg = resolveScalpV5Config();
+  const cfg = resolveScalpResearchConfig();
   const nowMs = Date.now();
   const { holdoutFromMs, holdoutToMs } = resolveHoldoutWindow(nowMs, cfg.holdoutWeeks);
 
   const idsFile = argVal("--ids");
   const candidateIds = idsFile ? readFileSync(idsFile, "utf8").split("\n").map((s) => s.trim()).filter(Boolean) : [];
 
-  const rows = await db.$queryRaw<Array<ScalpV5DeploymentRow & { riskProfile: unknown }>>(sql`
+  const rows = await db.$queryRaw<Array<ScalpResearchDeploymentRow & { riskProfile: unknown }>>(sql`
     SELECT deployment_id AS "deploymentId", venue, symbol, strategy_id AS "strategyId", tune_id AS "tuneId",
            entry_session_profile AS "entrySessionProfile", enabled, live_mode AS "liveMode", v5_enabled AS "v5Enabled",
            NULL::bigint AS "v5EvaluatedAtMs", COALESCE(promotion_gate,'{}'::jsonb) AS "promotionGate", COALESCE(risk_profile,'{}'::jsonb) AS "riskProfile"
@@ -99,7 +99,7 @@ async function main() {
 
   const results: Metrics[] = [];
   for (const row of rows) {
-    const m = await analyze(row as ScalpV5DeploymentRow, cfg, nowMs, holdoutFromMs, holdoutToMs).catch(() => null);
+    const m = await analyze(row as ScalpResearchDeploymentRow, cfg, nowMs, holdoutFromMs, holdoutToMs).catch(() => null);
     if (m) results.push(m);
   }
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  buildScalpV2SessionStructureComposerGrid,
+  buildScalpComposerSessionStructureComposerGrid,
   sessionStructureBehaviorFingerprint,
   validateSessionStructureCompatibility,
   type SessionStructureComposerCandidateDslSpec,
@@ -237,7 +237,7 @@ test("builder tags offspring cells and assigns the canonical (non-minted) tuneId
     scopedSurvivors: [survivor],
     config: { maxOffspringPerSurvivor: 100, maxOffspringPerCycle: 1000, maxCrossoverPartners: 0, globalCrossover: false },
   });
-  const grid = buildScalpV2SessionStructureComposerGrid({
+  const grid = buildScalpComposerSessionStructureComposerGrid({
     venue: "bitget",
     symbol: "BTCUSDT",
     entrySessionProfile: "berlin",
@@ -269,14 +269,14 @@ test("builder tags offspring cells and assigns the canonical (non-minted) tuneId
 
 test("DETERMINISM + COLD-START: no offspring → identical to baseline", () => {
   const base = () =>
-    buildScalpV2SessionStructureComposerGrid({
+    buildScalpComposerSessionStructureComposerGrid({
       venue: "bitget",
       symbol: "BTCUSDT",
       entrySessionProfile: "berlin",
       maxCandidates: 40,
       generatedAtMs: 1,
     }).map((row) => row.tuneId);
-  const withNull = buildScalpV2SessionStructureComposerGrid({
+  const withNull = buildScalpComposerSessionStructureComposerGrid({
     venue: "bitget",
     symbol: "BTCUSDT",
     entrySessionProfile: "berlin",
@@ -288,7 +288,7 @@ test("DETERMINISM + COLD-START: no offspring → identical to baseline", () => {
   assert.deepEqual(base(), base());
   assert.deepEqual(withNull, base());
   // and none are tagged
-  const grid = buildScalpV2SessionStructureComposerGrid({
+  const grid = buildScalpComposerSessionStructureComposerGrid({
     venue: "bitget",
     symbol: "BTCUSDT",
     entrySessionProfile: "berlin",

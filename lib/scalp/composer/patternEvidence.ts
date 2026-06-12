@@ -1,19 +1,19 @@
 import type { ScalpReplayTrade } from "../replay/types";
-import type { ScalpV2Session, ScalpV2Venue } from "./types";
+import type { ScalpComposerSession, ScalpComposerVenue } from "./types";
 
-export const SCALP_V2_PATTERN_EVIDENCE_VERSION = "scalp_v2_pattern_evidence_r1";
-export const SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED =
+export const SCALP_COMPOSER_PATTERN_EVIDENCE_VERSION = "scalp_v2_pattern_evidence_r1";
+export const SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED =
   "stage_c_passed_survivors";
-export const SCALP_V2_PATTERN_EVIDENCE_SURVIVOR_WARNING =
+export const SCALP_COMPOSER_PATTERN_EVIDENCE_SURVIVOR_WARNING =
   "Survivor-only stage-C-passed population; use for pattern comparison, not unbiased universe expectancy.";
 
 const DEFAULT_BUCKET_MINUTES = 60;
 
-export interface ScalpV2PatternCandidateSummary {
+export interface ScalpComposerPatternCandidateSummary {
   candidateId: number | null;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
   behaviorFingerprint: string;
   windowToTs: number;
   stageCLowerBoundR: number | null;
@@ -21,13 +21,13 @@ export interface ScalpV2PatternCandidateSummary {
   stageCTrades: number;
 }
 
-export interface ScalpV2PatternTradeVector {
+export interface ScalpComposerPatternTradeVector {
   candidateId: number | null;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
   strategyId: string;
   tuneId: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
   windowToTs: number;
   stageId: "c";
   replayTradeIndex: number;
@@ -43,10 +43,10 @@ export interface ScalpV2PatternTradeVector {
   grossRMultiple: number | null;
 }
 
-export interface ScalpV2PatternEdge {
+export interface ScalpComposerPatternEdge {
   patternKey: string;
-  venue: ScalpV2Venue;
-  session: ScalpV2Session;
+  venue: ScalpComposerVenue;
+  session: ScalpComposerSession;
   behaviorFingerprint: string;
   windowToTs: number;
   bucketMinutes: number;
@@ -109,9 +109,9 @@ function lowerBound(values: number[]): {
   };
 }
 
-export function buildScalpV2PatternKey(params: {
-  venue: ScalpV2Venue | string;
-  session: ScalpV2Session | string;
+export function buildScalpComposerPatternKey(params: {
+  venue: ScalpComposerVenue | string;
+  session: ScalpComposerSession | string;
   behaviorFingerprint: string;
 }): string {
   return [
@@ -121,7 +121,7 @@ export function buildScalpV2PatternKey(params: {
   ].join(":");
 }
 
-export function scalpV2PatternBucketStartTs(
+export function scalpComposerPatternBucketStartTs(
   ts: number,
   bucketMinutes = DEFAULT_BUCKET_MINUTES,
 ): number {
@@ -129,26 +129,26 @@ export function scalpV2PatternBucketStartTs(
   return Math.floor(Math.max(0, Math.floor(Number(ts) || 0)) / bucketMs) * bucketMs;
 }
 
-export function extractScalpV2PatternTradeVectors(params: {
+export function extractScalpComposerPatternTradeVectors(params: {
   candidateId: number | null;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
   strategyId: string;
   tuneId: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
   windowToTs: number;
   behaviorFingerprint: string;
   trades: ScalpReplayTrade[];
   bucketMinutes?: number;
-}): ScalpV2PatternTradeVector[] {
+}): ScalpComposerPatternTradeVector[] {
   const behaviorFingerprint = String(params.behaviorFingerprint || "").trim();
   if (!behaviorFingerprint) return [];
-  const venue = String(params.venue || "").trim().toLowerCase() as ScalpV2Venue;
-  const session = String(params.session || "").trim().toLowerCase() as ScalpV2Session;
+  const venue = String(params.venue || "").trim().toLowerCase() as ScalpComposerVenue;
+  const session = String(params.session || "").trim().toLowerCase() as ScalpComposerSession;
   const symbol = String(params.symbol || "").trim().toUpperCase();
   const strategyId = String(params.strategyId || "").trim().toLowerCase();
   const tuneId = String(params.tuneId || "").trim().toLowerCase();
-  const patternKey = buildScalpV2PatternKey({ venue, session, behaviorFingerprint });
+  const patternKey = buildScalpComposerPatternKey({ venue, session, behaviorFingerprint });
   const bucketMinutes = Math.max(1, Math.floor(params.bucketMinutes || DEFAULT_BUCKET_MINUTES));
   const windowToTs = Math.floor(Number(params.windowToTs) || 0);
 
@@ -166,7 +166,7 @@ export function extractScalpV2PatternTradeVectors(params: {
     patternKey,
     entryTs: Math.floor(Number(trade.entryTs) || 0),
     exitTs: Math.floor(Number(trade.exitTs) || 0),
-    bucketStartTs: scalpV2PatternBucketStartTs(trade.exitTs, bucketMinutes),
+    bucketStartTs: scalpComposerPatternBucketStartTs(trade.exitTs, bucketMinutes),
     side: trade.side === "SELL" ? "SELL" : "BUY",
     exitReason: String(trade.exitReason || "UNKNOWN"),
     rMultiple: finite(trade.rMultiple),
@@ -177,7 +177,7 @@ export function extractScalpV2PatternTradeVectors(params: {
   }));
 }
 
-export function selectScalpV2PatternRepresentativeCandidates<T extends ScalpV2PatternCandidateSummary>(
+export function selectScalpComposerPatternRepresentativeCandidates<T extends ScalpComposerPatternCandidateSummary>(
   candidates: T[],
 ): T[] {
   const byKey = new Map<string, T>();
@@ -198,8 +198,8 @@ export function selectScalpV2PatternRepresentativeCandidates<T extends ScalpV2Pa
 }
 
 function comparePatternCandidateRank(
-  a: ScalpV2PatternCandidateSummary,
-  b: ScalpV2PatternCandidateSummary,
+  a: ScalpComposerPatternCandidateSummary,
+  b: ScalpComposerPatternCandidateSummary,
 ): number {
   const aLb = Number.isFinite(Number(a.stageCLowerBoundR))
     ? Number(a.stageCLowerBoundR)
@@ -216,20 +216,20 @@ function comparePatternCandidateRank(
   return bTrades - aTrades;
 }
 
-export function aggregateScalpV2PatternEdges(params: {
-  trades: ScalpV2PatternTradeVector[];
+export function aggregateScalpComposerPatternEdges(params: {
+  trades: ScalpComposerPatternTradeVector[];
   candidateCount: number;
   representativeCandidateCount: number;
   candidateCountsByPattern?: Map<string, number> | Record<string, number>;
   representativeCandidateCountsByPattern?: Map<string, number> | Record<string, number>;
   bucketMinutes?: number;
   populationScope?: string;
-}): ScalpV2PatternEdge[] {
+}): ScalpComposerPatternEdge[] {
   const bucketMinutes = Math.max(1, Math.floor(params.bucketMinutes || DEFAULT_BUCKET_MINUTES));
   const populationScope =
     String(params.populationScope || "").trim() ||
-    SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED;
-  const byPattern = new Map<string, ScalpV2PatternTradeVector[]>();
+    SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED;
+  const byPattern = new Map<string, ScalpComposerPatternTradeVector[]>();
   for (const trade of params.trades || []) {
     if (!trade.patternKey) continue;
     const rows = byPattern.get(trade.patternKey) || [];
@@ -267,12 +267,12 @@ function lookupPatternCount(
 
 function aggregateOnePattern(params: {
   patternKey: string;
-  rows: ScalpV2PatternTradeVector[];
+  rows: ScalpComposerPatternTradeVector[];
   candidateCount: number;
   representativeCandidateCount: number;
   bucketMinutes: number;
   populationScope: string;
-}): ScalpV2PatternEdge {
+}): ScalpComposerPatternEdge {
   const first = params.rows[0]!;
   const rawStats = lowerBound(params.rows.map((row) => row.rMultiple));
   const bucketReturns = new Map<number, number>();
@@ -337,11 +337,11 @@ function aggregateOnePattern(params: {
     bucketLowerBoundR: bucketStats.lowerBoundR,
     leaveOneSymbolOutBucketLowerBoundR,
     scoreJson: {
-      version: SCALP_V2_PATTERN_EVIDENCE_VERSION,
-      survivorOnly: params.populationScope === SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
+      version: SCALP_COMPOSER_PATTERN_EVIDENCE_VERSION,
+      survivorOnly: params.populationScope === SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
       warning:
-        params.populationScope === SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED
-          ? SCALP_V2_PATTERN_EVIDENCE_SURVIVOR_WARNING
+        params.populationScope === SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED
+          ? SCALP_COMPOSER_PATTERN_EVIDENCE_SURVIVOR_WARNING
           : null,
       authoritativeMetric: "bucketLowerBoundR",
       rawLowerBoundRLabel: "naive_trade_level_lower_bound",

@@ -15,15 +15,15 @@ async function exists(filePath: string): Promise<boolean> {
 test("scalp v2 cron route files exist for active and compatibility handlers", async () => {
   const root = process.cwd();
   const expectedRouteFiles = [
-    "pages/api/scalp/v2/cron/cycle.ts",
-    "pages/api/scalp/v2/cron/execute.ts",
-    "pages/api/scalp/v2/cron/reconcile.ts",
-    "pages/api/scalp/v2/cron/load-candles.ts",
-    "pages/api/scalp/v2/cron/research.ts",
-    "pages/api/scalp/v2/cron/promote.ts",
-    "pages/api/scalp/v2/cron/discover.ts",
-    "pages/api/scalp/v2/cron/evaluate.ts",
-    "pages/api/scalp/v2/cron/worker.ts",
+    "pages/api/scalp/composer/cron/cycle.ts",
+    "pages/api/scalp/composer/cron/execute.ts",
+    "pages/api/scalp/composer/cron/reconcile.ts",
+    "pages/api/scalp/composer/cron/load-candles.ts",
+    "pages/api/scalp/composer/cron/research.ts",
+    "pages/api/scalp/composer/cron/promote.ts",
+    "pages/api/scalp/composer/cron/discover.ts",
+    "pages/api/scalp/composer/cron/evaluate.ts",
+    "pages/api/scalp/composer/cron/worker.ts",
   ];
 
   for (const relativePath of expectedRouteFiles) {
@@ -39,9 +39,9 @@ test("scalp v2 cron route files exist for active and compatibility handlers", as
 test("production cron paths avoid direct full candle-history reads", async () => {
   const root = process.cwd();
   const checkedFiles = [
-    "pages/api/scalp/v2/cron/execute.ts",
+    "pages/api/scalp/composer/cron/execute.ts",
     "lib/scalp/composer/pipeline.ts",
-    "pages/api/scalp/v4/cron/build-regimes.ts",
+    "pages/api/scalp/regimes/cron/build-regimes.ts",
     "lib/scalp/regimes/build.ts",
   ];
 

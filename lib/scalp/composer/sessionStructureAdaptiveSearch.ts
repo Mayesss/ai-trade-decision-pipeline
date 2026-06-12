@@ -6,15 +6,15 @@ import {
   type SessionStructureAdaptivePriorSet,
   type SessionStructureComposerPlan,
 } from "./sessionStructureComposer";
-import type { ScalpV2Session, ScalpV2Venue } from "./types";
+import type { ScalpComposerSession, ScalpComposerVenue } from "./types";
 
 export const SESSION_STRUCTURE_ADAPTIVE_SEARCH_VERSION =
   "session_structure_adaptive_search_v1";
 
 type CandidateResultRow = {
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
   metadata: Record<string, unknown>;
 };
 
@@ -49,11 +49,11 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
 
-export function normalizeVenue(value: unknown): ScalpV2Venue {
+export function normalizeVenue(value: unknown): ScalpComposerVenue {
   return String(value || "").trim().toLowerCase() === "capital" ? "capital" : "bitget";
 }
 
-export function normalizeSession(value: unknown): ScalpV2Session {
+export function normalizeSession(value: unknown): ScalpComposerSession {
   const raw = String(value || "").trim().toLowerCase();
   if (raw === "tokyo") return "tokyo";
   if (raw === "newyork") return "newyork";
@@ -345,9 +345,9 @@ function sigmoid(x: number): number {
  */
 export function predictSessionStructureStageAPass(params: {
   plan: Omit<SessionStructureComposerPlan, "digest">;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
   priors: SessionStructureAdaptivePriorSet | null | undefined;
 }): SessionStructureStageAPrediction {
   const priors = params.priors;

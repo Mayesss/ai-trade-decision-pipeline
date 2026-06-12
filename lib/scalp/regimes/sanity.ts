@@ -1,11 +1,11 @@
-import { countScalpV4Epochs } from "./classifier";
-import type { ScalpV4RegimeSnapshot, ScalpV4WeeklyBar } from "./types";
+import { countScalpRegimeEpochs } from "./classifier";
+import type { ScalpRegimeSnapshot, ScalpRegimeWeeklyBar } from "./types";
 
 function mean(values: number[]): number {
   return values.length ? values.reduce((acc, row) => acc + row, 0) / values.length : 0;
 }
 
-function weeklyReturns(bars: ScalpV4WeeklyBar[]): Map<number, number> {
+function weeklyReturns(bars: ScalpRegimeWeeklyBar[]): Map<number, number> {
   const out = new Map<number, number>();
   for (let idx = 1; idx < bars.length; idx += 1) {
     const prev = bars[idx - 1]!;
@@ -15,9 +15,9 @@ function weeklyReturns(bars: ScalpV4WeeklyBar[]): Map<number, number> {
   return out;
 }
 
-export function buildScalpV4ClassifierValidityReport(params: {
-  snapshots: ScalpV4RegimeSnapshot[];
-  marketBarsByName?: Record<string, ScalpV4WeeklyBar[]>;
+export function buildScalpRegimeClassifierValidityReport(params: {
+  snapshots: ScalpRegimeSnapshot[];
+  marketBarsByName?: Record<string, ScalpRegimeWeeklyBar[]>;
   minEpochs?: number;
   maxEpochs?: number;
 }): {
@@ -30,7 +30,7 @@ export function buildScalpV4ClassifierValidityReport(params: {
   const minEpochs = Math.max(1, Math.floor(params.minEpochs || 3));
   const maxEpochs = Math.max(minEpochs, Math.floor(params.maxEpochs || 12));
   const snapshots = (params.snapshots || []).filter((row) => row.cellId !== "unknown");
-  const epochCount = countScalpV4Epochs(snapshots);
+  const epochCount = countScalpRegimeEpochs(snapshots);
   const cellCount = new Set(snapshots.map((row) => row.cellId)).size;
   const marketSummaries: Record<string, Record<string, { weeks: number; meanReturnPct: number; realizedVolPct: number }>> = {};
   for (const [name, bars] of Object.entries(params.marketBarsByName || {})) {

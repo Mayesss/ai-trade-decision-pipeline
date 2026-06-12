@@ -1,28 +1,28 @@
 import { loadScalpCandleHistoryWeeklyBars } from "../candleHistory";
 import {
-  applyScalpV4Hysteresis,
-  buildScalpV4WeeklyBars,
-  classifyScalpV4RawRegimes,
-  SCALP_V4_CLASSIFIER_VERSION,
+  applyScalpRegimeHysteresis,
+  buildScalpRegimeWeeklyBars,
+  classifyScalpRegimeRawRegimes,
+  SCALP_REGIME_CLASSIFIER_VERSION,
 } from "./classifier";
 import {
-  backfillScalpV4WeeklyBarsFromCandleHistory,
-  loadScalpV4WeeklyBars,
-  loadScalpV4DeploymentSymbols,
-  loadScalpV4SymbolsWithSnapshotForWeek,
-  upsertScalpV4WeeklyBars,
-  upsertScalpV4RegimeSnapshots,
+  backfillScalpRegimeWeeklyBarsFromCandleHistory,
+  loadScalpRegimeWeeklyBars,
+  loadScalpRegimeDeploymentSymbols,
+  loadScalpRegimeSymbolsWithSnapshotForWeek,
+  upsertScalpRegimeWeeklyBars,
+  upsertScalpRegimeSnapshots,
 } from "./pg";
-import { buildScalpV4ClassifierValidityReport } from "./sanity";
-import type { ScalpV4MarketContext, ScalpV4Venue, ScalpV4WeeklyBar } from "./types";
-import { SCALP_V4_ONE_WEEK_MS, startOfUtcWeekMondayMs } from "./week";
+import { buildScalpRegimeClassifierValidityReport } from "./sanity";
+import type { ScalpRegimeMarketContext, ScalpRegimeVenue, ScalpRegimeWeeklyBar } from "./types";
+import { SCALP_REGIME_ONE_WEEK_MS, startOfUtcWeekMondayMs } from "./week";
 
 const V4_INCREMENTAL_BOOTSTRAP_WEEKS = Math.max(
   64,
-  Math.min(156, Math.floor(Number(process.env.SCALP_V4_INCREMENTAL_BOOTSTRAP_WEEKS || 72))),
+  Math.min(156, Math.floor(Number(process.env.SCALP_REGIME_INCREMENTAL_BOOTSTRAP_WEEKS || 72))),
 );
 
-export interface ScalpV4WeeklyBuildResult {
+export interface ScalpRegimeWeeklyBuildResult {
   built: boolean;
   reason: string | null;
   classifierVersion: string;
@@ -30,20 +30,20 @@ export interface ScalpV4WeeklyBuildResult {
   symbolsRequested: number;
   symbolsClassified: number;
   symbolsSaved: number;
-  validityFailures: Array<{ venue: ScalpV4Venue; symbol: string; reason: string | null; epochCount: number; cellCount: number }>;
+  validityFailures: Array<{ venue: ScalpRegimeVenue; symbol: string; reason: string | null; epochCount: number; cellCount: number }>;
   sharedCoverage: { usdJpyWeeks: number; audJpyWeeks: number; btcUsdtWeeks: number };
 }
 
-export async function loadOrRefreshScalpV4WeeklyBars(params: {
+export async function loadOrRefreshScalpRegimeWeeklyBars(params: {
   symbol: string;
-  venue: ScalpV4Venue;
+  venue: ScalpRegimeVenue;
   fromMs: number;
   toMs: number;
   classificationWeekStartMs?: number;
   auditSource?: string;
-}): Promise<ScalpV4WeeklyBar[]> {
+}): Promise<ScalpRegimeWeeklyBar[]> {
   const classificationWeekStartMs = params.classificationWeekStartMs ?? startOfUtcWeekMondayMs(params.toMs);
-  const recentFromMs = Math.max(0, classificationWeekStartMs - SCALP_V4_ONE_WEEK_MS);
+  const recentFromMs = Math.max(0, classificationWeekStartMs - SCALP_REGIME_ONE_WEEK_MS);
   try {
     const recentHistory = await loadScalpCandleHistoryWeeklyBars(
       params.symbol,
@@ -57,9 +57,9 @@ export async function loadOrRefreshScalpV4WeeklyBars(params: {
         auditSource: params.auditSource || "v4_regime_build_recent",
       },
     );
-    const recentBars = buildScalpV4WeeklyBars(recentHistory.record?.candles || []);
+    const recentBars = buildScalpRegimeWeeklyBars(recentHistory.record?.candles || []);
     if (recentBars.length > 0) {
-      await upsertScalpV4WeeklyBars({
+      await upsertScalpRegimeWeeklyBars({
         venue: params.venue,
         symbol: params.symbol,
         bars: recentBars,
@@ -70,8 +70,8 @@ export async function loadOrRefreshScalpV4WeeklyBars(params: {
     // A broker/KV/PG recent refresh failure should not block reading compact bars.
   }
 
-  const toWeekMs = startOfUtcWeekMondayMs(params.toMs) + SCALP_V4_ONE_WEEK_MS;
-  let compactBars = await loadScalpV4WeeklyBars({
+  const toWeekMs = startOfUtcWeekMondayMs(params.toMs) + SCALP_REGIME_ONE_WEEK_MS;
+  let compactBars = await loadScalpRegimeWeeklyBars({
     venue: params.venue,
     symbol: params.symbol,
     fromMs: params.fromMs,
@@ -79,13 +79,13 @@ export async function loadOrRefreshScalpV4WeeklyBars(params: {
   }).catch(() => []);
 
   if (compactBars.length < V4_INCREMENTAL_BOOTSTRAP_WEEKS) {
-    await backfillScalpV4WeeklyBarsFromCandleHistory({
+    await backfillScalpRegimeWeeklyBarsFromCandleHistory({
       venue: params.venue,
       symbol: params.symbol,
       fromMs: params.fromMs,
       toMs: toWeekMs,
     }).catch(() => 0);
-    compactBars = await loadScalpV4WeeklyBars({
+    compactBars = await loadScalpRegimeWeeklyBars({
       venue: params.venue,
       symbol: params.symbol,
       fromMs: params.fromMs,
@@ -99,15 +99,15 @@ export async function loadOrRefreshScalpV4WeeklyBars(params: {
     .filter((row) => row.weekStartMs < classificationWeekStartMs);
 }
 
-export async function runScalpV4WeeklyRegimeBuild(params: {
-  symbols?: Array<{ venue: ScalpV4Venue; symbol: string }>;
+export async function runScalpRegimeWeeklyRegimeBuild(params: {
+  symbols?: Array<{ venue: ScalpRegimeVenue; symbol: string }>;
   classifierVersion?: string;
   forceValidity?: boolean;
-}): Promise<ScalpV4WeeklyBuildResult> {
-  const classifierVersion = params.classifierVersion || SCALP_V4_CLASSIFIER_VERSION;
+}): Promise<ScalpRegimeWeeklyBuildResult> {
+  const classifierVersion = params.classifierVersion || SCALP_REGIME_CLASSIFIER_VERSION;
   const targets = params.symbols && params.symbols.length > 0
     ? params.symbols
-    : await loadScalpV4DeploymentSymbols();
+    : await loadScalpRegimeDeploymentSymbols();
   const weekStartMs = startOfUtcWeekMondayMs(Date.now());
   const fromMs = Math.max(0, weekStartMs - V4_INCREMENTAL_BOOTSTRAP_WEEKS * 7 * 24 * 60 * 60_000);
   const toMs = Date.now();
@@ -124,16 +124,16 @@ export async function runScalpV4WeeklyRegimeBuild(params: {
       sharedCoverage: { usdJpyWeeks: 0, audJpyWeeks: 0, btcUsdtWeeks: 0 },
     };
   }
-  const shared: ScalpV4MarketContext = {
-    usdJpy: await loadOrRefreshScalpV4WeeklyBars({ symbol: "USDJPY", venue: "capital", fromMs, toMs, classificationWeekStartMs: weekStartMs }),
-    audJpy: await loadOrRefreshScalpV4WeeklyBars({ symbol: "AUDJPY", venue: "capital", fromMs, toMs, classificationWeekStartMs: weekStartMs }),
-    btcUsdt: await loadOrRefreshScalpV4WeeklyBars({ symbol: "BTCUSDT", venue: "bitget", fromMs, toMs, classificationWeekStartMs: weekStartMs }),
+  const shared: ScalpRegimeMarketContext = {
+    usdJpy: await loadOrRefreshScalpRegimeWeeklyBars({ symbol: "USDJPY", venue: "capital", fromMs, toMs, classificationWeekStartMs: weekStartMs }),
+    audJpy: await loadOrRefreshScalpRegimeWeeklyBars({ symbol: "AUDJPY", venue: "capital", fromMs, toMs, classificationWeekStartMs: weekStartMs }),
+    btcUsdt: await loadOrRefreshScalpRegimeWeeklyBars({ symbol: "BTCUSDT", venue: "bitget", fromMs, toMs, classificationWeekStartMs: weekStartMs }),
   };
-  const validityFailures: ScalpV4WeeklyBuildResult["validityFailures"] = [];
+  const validityFailures: ScalpRegimeWeeklyBuildResult["validityFailures"] = [];
   const allSnapshots = [];
   let classified = 0;
   for (const target of targets) {
-    const weeklyBars = await loadOrRefreshScalpV4WeeklyBars({
+    const weeklyBars = await loadOrRefreshScalpRegimeWeeklyBars({
       symbol: target.symbol,
       venue: target.venue,
       fromMs,
@@ -141,15 +141,15 @@ export async function runScalpV4WeeklyRegimeBuild(params: {
       classificationWeekStartMs: weekStartMs,
     });
     if (!weeklyBars.length) continue;
-    const raw = classifyScalpV4RawRegimes({
+    const raw = classifyScalpRegimeRawRegimes({
       venue: target.venue,
       symbol: target.symbol,
       weeklyBars,
       marketContext: shared,
       options: { classifierVersion },
     });
-    const snapshots = applyScalpV4Hysteresis(raw);
-    const validity = buildScalpV4ClassifierValidityReport({
+    const snapshots = applyScalpRegimeHysteresis(raw);
+    const validity = buildScalpRegimeClassifierValidityReport({
       snapshots,
       marketBarsByName: {
         [target.symbol]: weeklyBars,
@@ -172,7 +172,7 @@ export async function runScalpV4WeeklyRegimeBuild(params: {
     const currentSnapshot = snapshots.find((row) => row.weekStartMs === weekStartMs);
     if (currentSnapshot) allSnapshots.push(currentSnapshot);
   }
-  const saved = allSnapshots.length > 0 ? await upsertScalpV4RegimeSnapshots(allSnapshots) : 0;
+  const saved = allSnapshots.length > 0 ? await upsertScalpRegimeSnapshots(allSnapshots) : 0;
   return {
     built: saved > 0,
     reason: validityFailures.length > 0 && saved === 0 ? "all_symbols_failed_validity" : null,
@@ -190,20 +190,20 @@ export async function runScalpV4WeeklyRegimeBuild(params: {
   };
 }
 
-export async function ensureScalpV4WeeklyRegimesBuilt(params: {
+export async function ensureScalpRegimeWeeklyRegimesBuilt(params: {
   classifierVersion?: string;
   forceValidity?: boolean;
-} = {}): Promise<{ skipped: boolean; reason: string; result?: ScalpV4WeeklyBuildResult }> {
-  const classifierVersion = params.classifierVersion || SCALP_V4_CLASSIFIER_VERSION;
+} = {}): Promise<{ skipped: boolean; reason: string; result?: ScalpRegimeWeeklyBuildResult }> {
+  const classifierVersion = params.classifierVersion || SCALP_REGIME_CLASSIFIER_VERSION;
   const weekStartMs = startOfUtcWeekMondayMs(Date.now());
-  const targets = await loadScalpV4DeploymentSymbols();
+  const targets = await loadScalpRegimeDeploymentSymbols();
   if (!targets.length) return { skipped: true, reason: "no_deployment_symbols" };
-  const present = await loadScalpV4SymbolsWithSnapshotForWeek({ classifierVersion, weekStartMs });
+  const present = await loadScalpRegimeSymbolsWithSnapshotForWeek({ classifierVersion, weekStartMs });
   const missing = targets.filter((row) => !present.has(`${row.venue}:${row.symbol}`));
   if (missing.length === 0) {
     return { skipped: true, reason: "regimes_already_built_for_week" };
   }
-  const result = await runScalpV4WeeklyRegimeBuild({
+  const result = await runScalpRegimeWeeklyRegimeBuild({
     symbols: missing,
     classifierVersion,
     forceValidity: params.forceValidity,

@@ -3,7 +3,7 @@ import {
   MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
 } from "../composer/composerExecution";
 import { resolveRegimeGateRule } from "../composer/regimeGatePresets";
-import { evaluateScalpV2V3TemporalFilter } from "../evidence";
+import { evaluateScalpComposerV3TemporalFilter } from "../evidence";
 import {
   inScalpEntrySessionProfileWindow,
   normalizeScalpEntrySessionProfile,
@@ -139,7 +139,7 @@ function applyDelegate(input: ScalpStrategyPhaseInput): ScalpStrategyPhaseOutput
         .map((code) => String(code || "").trim().toUpperCase())
         .filter(Boolean)
     : [];
-  const temporal = evaluateScalpV2V3TemporalFilter({
+  const temporal = evaluateScalpComposerV3TemporalFilter({
     nowMs: input.nowMs,
     session: entrySessionProfile,
     filter: {

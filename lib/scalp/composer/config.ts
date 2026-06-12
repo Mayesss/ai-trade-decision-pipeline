@@ -1,24 +1,24 @@
 import type {
-  ScalpV2BudgetConfig,
-  ScalpV2RiskProfile,
-  ScalpV2RuntimeConfig,
-  ScalpV2Session,
-  ScalpV2Venue,
+  ScalpComposerBudgetConfig,
+  ScalpComposerRiskProfile,
+  ScalpComposerRuntimeConfig,
+  ScalpComposerSession,
+  ScalpComposerVenue,
 } from "./types";
 import {
-  DEFAULT_SCALP_V2_STRATEGY_ID,
-  DEFAULT_SCALP_V2_TUNE_ID,
+  DEFAULT_SCALP_COMPOSER_STRATEGY_ID,
+  DEFAULT_SCALP_COMPOSER_TUNE_ID,
 } from "./constants";
 
-const DEFAULT_SESSIONS: ScalpV2Session[] = [
+const DEFAULT_SESSIONS: ScalpComposerSession[] = [
   "tokyo",
   "berlin",
   "newyork",
   "pacific",
   "sydney",
 ];
-const DEFAULT_VENUES: ScalpV2Venue[] = ["bitget", "capital"];
-const FIXED_SCOPE_SYMBOLS_BY_VENUE: Record<ScalpV2Venue, string[]> =
+const DEFAULT_VENUES: ScalpComposerVenue[] = ["bitget", "capital"];
+const FIXED_SCOPE_SYMBOLS_BY_VENUE: Record<ScalpComposerVenue, string[]> =
   Object.freeze({
     bitget: [
       "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
@@ -59,7 +59,7 @@ function toNumber(value: string | undefined, fallback: number): number {
   return n;
 }
 
-function parseVenue(value: unknown): ScalpV2Venue | null {
+function parseVenue(value: unknown): ScalpComposerVenue | null {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
@@ -68,7 +68,7 @@ function parseVenue(value: unknown): ScalpV2Venue | null {
   return null;
 }
 
-function parseSession(value: unknown): ScalpV2Session | null {
+function parseSession(value: unknown): ScalpComposerSession | null {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
@@ -96,17 +96,17 @@ function parseCsvUnique(value: string | undefined): string[] {
   return Array.from(new Set(out));
 }
 
-function parseVenues(value: string | undefined): ScalpV2Venue[] {
+function parseVenues(value: string | undefined): ScalpComposerVenue[] {
   const parsed = parseCsvUnique(value)
     .map(parseVenue)
-    .filter((row): row is ScalpV2Venue => Boolean(row));
+    .filter((row): row is ScalpComposerVenue => Boolean(row));
   return parsed.length > 0 ? parsed : DEFAULT_VENUES.slice();
 }
 
-function parseSessions(value: string | undefined): ScalpV2Session[] {
+function parseSessions(value: string | undefined): ScalpComposerSession[] {
   const parsed = parseCsvUnique(value)
     .map(parseSession)
-    .filter((row): row is ScalpV2Session => Boolean(row));
+    .filter((row): row is ScalpComposerSession => Boolean(row));
   return parsed.length > 0 ? parsed : DEFAULT_SESSIONS.slice();
 }
 
@@ -124,7 +124,7 @@ function normalizeSymbols(values: string[]): string[] {
 }
 
 function parseSeedSymbols(
-  venue: ScalpV2Venue,
+  venue: ScalpComposerVenue,
   value: string | undefined,
 ): string[] {
   const fromEnv = normalizeSymbols(parseCsvUnique(value));
@@ -133,7 +133,7 @@ function parseSeedSymbols(
 }
 
 function parseSeedLiveSymbols(
-  venue: ScalpV2Venue,
+  venue: ScalpComposerVenue,
   value: string | undefined,
 ): string[] {
   const fromEnv = normalizeSymbols(parseCsvUnique(value));
@@ -142,7 +142,7 @@ function parseSeedLiveSymbols(
 }
 
 function clampVenueSeedSymbols(params: {
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbols: string[];
   enforceFixedScope: boolean;
 }): string[] {
@@ -154,14 +154,14 @@ function clampVenueSeedSymbols(params: {
   return intersected.length > 0 ? intersected : allowed.slice();
 }
 
-export function isScalpV2FixedSeedScopeEnabled(): boolean {
-  return toBool(process.env.SCALP_V2_FORCE_FIXED_SEED_SCOPE, true);
+export function isScalpComposerFixedSeedScopeEnabled(): boolean {
+  return toBool(process.env.SCALP_COMPOSER_FORCE_FIXED_SEED_SCOPE, true);
 }
 
-export function applyScalpV2FixedSeedScope(
-  runtime: ScalpV2RuntimeConfig,
-): ScalpV2RuntimeConfig {
-  const enforceFixedScope = isScalpV2FixedSeedScopeEnabled();
+export function applyScalpComposerFixedSeedScope(
+  runtime: ScalpComposerRuntimeConfig,
+): ScalpComposerRuntimeConfig {
+  const enforceFixedScope = isScalpComposerFixedSeedScopeEnabled();
   if (!enforceFixedScope) return runtime;
   return {
     ...runtime,
@@ -192,9 +192,9 @@ export function applyScalpV2FixedSeedScope(
   };
 }
 
-export function isScalpV2RuntimeSymbolInScope(params: {
-  runtime: ScalpV2RuntimeConfig;
-  venue: ScalpV2Venue;
+export function isScalpComposerRuntimeSymbolInScope(params: {
+  runtime: ScalpComposerRuntimeConfig;
+  venue: ScalpComposerVenue;
   symbol: string;
   includeLiveSeeds?: boolean;
 }): boolean {
@@ -210,68 +210,68 @@ export function isScalpV2RuntimeSymbolInScope(params: {
   return seedSymbols.has(symbol);
 }
 
-export function getScalpV2DefaultBudgets(): ScalpV2BudgetConfig {
+export function getScalpComposerDefaultBudgets(): ScalpComposerBudgetConfig {
   return {
     maxCandidatesTotal: Math.max(
       1,
-      Math.min(6_000, toPositiveInt(process.env.SCALP_V2_MAX_CANDIDATES_TOTAL, 6_000)),
+      Math.min(6_000, toPositiveInt(process.env.SCALP_COMPOSER_MAX_CANDIDATES_TOTAL, 6_000)),
     ),
     maxCandidatesPerSymbol: Math.max(
       1,
-      Math.min(50, toPositiveInt(process.env.SCALP_V2_MAX_CANDIDATES_PER_SYMBOL, 16)),
+      Math.min(50, toPositiveInt(process.env.SCALP_COMPOSER_MAX_CANDIDATES_PER_SYMBOL, 16)),
     ),
     maxEnabledDeployments: Math.max(
       1,
-      Math.min(200, toPositiveInt(process.env.SCALP_V2_MAX_ENABLED_DEPLOYMENTS, 12)),
+      Math.min(200, toPositiveInt(process.env.SCALP_COMPOSER_MAX_ENABLED_DEPLOYMENTS, 12)),
     ),
   };
 }
 
-export function getScalpV2DefaultRiskProfile(): ScalpV2RiskProfile {
+export function getScalpComposerDefaultRiskProfile(): ScalpComposerRiskProfile {
   return {
     riskPerTradePct: Math.max(
       0.01,
-      Math.min(5, toNumber(process.env.SCALP_V2_RISK_PER_TRADE_PCT, 0.35)),
+      Math.min(5, toNumber(process.env.SCALP_COMPOSER_RISK_PER_TRADE_PCT, 0.35)),
     ),
     maxOpenPositionsPerSymbol: Math.max(
       1,
-      Math.min(5, toPositiveInt(process.env.SCALP_V2_MAX_OPEN_POSITIONS_PER_SYMBOL, 1)),
+      Math.min(5, toPositiveInt(process.env.SCALP_COMPOSER_MAX_OPEN_POSITIONS_PER_SYMBOL, 1)),
     ),
-    autoPauseDailyR: Math.min(-0.1, toNumber(process.env.SCALP_V2_AUTO_PAUSE_DAILY_R, -3)),
-    autoPause30dR: Math.min(-0.1, toNumber(process.env.SCALP_V2_AUTO_PAUSE_30D_R, -8)),
+    autoPauseDailyR: Math.min(-0.1, toNumber(process.env.SCALP_COMPOSER_AUTO_PAUSE_DAILY_R, -3)),
+    autoPause30dR: Math.min(-0.1, toNumber(process.env.SCALP_COMPOSER_AUTO_PAUSE_30D_R, -8)),
   };
 }
 
-export function getScalpV2RuntimeConfig(): ScalpV2RuntimeConfig {
-  const supportedVenues = parseVenues(process.env.SCALP_V2_SUPPORTED_VENUES);
-  const supportedSessions = parseSessions(process.env.SCALP_V2_SUPPORTED_SESSIONS);
+export function getScalpComposerRuntimeConfig(): ScalpComposerRuntimeConfig {
+  const supportedVenues = parseVenues(process.env.SCALP_COMPOSER_SUPPORTED_VENUES);
+  const supportedSessions = parseSessions(process.env.SCALP_COMPOSER_SUPPORTED_SESSIONS);
 
-  const seedSymbolsByVenue: Record<ScalpV2Venue, string[]> = {
-    bitget: parseSeedSymbols("bitget", process.env.SCALP_V2_SEED_SYMBOLS_BITGET),
-    capital: parseSeedSymbols("capital", process.env.SCALP_V2_SEED_SYMBOLS_CAPITAL),
+  const seedSymbolsByVenue: Record<ScalpComposerVenue, string[]> = {
+    bitget: parseSeedSymbols("bitget", process.env.SCALP_COMPOSER_SEED_SYMBOLS_BITGET),
+    capital: parseSeedSymbols("capital", process.env.SCALP_COMPOSER_SEED_SYMBOLS_CAPITAL),
   };
-  const seedLiveSymbolsByVenue: Record<ScalpV2Venue, string[]> = {
+  const seedLiveSymbolsByVenue: Record<ScalpComposerVenue, string[]> = {
     bitget: parseSeedLiveSymbols(
       "bitget",
-      process.env.SCALP_V2_SEED_LIVE_SYMBOLS_BITGET,
+      process.env.SCALP_COMPOSER_SEED_LIVE_SYMBOLS_BITGET,
     ),
     capital: parseSeedLiveSymbols(
       "capital",
-      process.env.SCALP_V2_SEED_LIVE_SYMBOLS_CAPITAL,
+      process.env.SCALP_COMPOSER_SEED_LIVE_SYMBOLS_CAPITAL,
     ),
   };
 
-  const runtime: ScalpV2RuntimeConfig = {
-    enabled: toBool(process.env.SCALP_V2_ENABLED, true),
-    liveEnabled: toBool(process.env.SCALP_V2_LIVE_ENABLED, false),
-    dryRunDefault: toBool(process.env.SCALP_V2_DRY_RUN_DEFAULT, true),
+  const runtime: ScalpComposerRuntimeConfig = {
+    enabled: toBool(process.env.SCALP_COMPOSER_ENABLED, true),
+    liveEnabled: toBool(process.env.SCALP_COMPOSER_LIVE_ENABLED, false),
+    dryRunDefault: toBool(process.env.SCALP_COMPOSER_DRY_RUN_DEFAULT, true),
     defaultStrategyId: String(
-      process.env.SCALP_V2_DEFAULT_STRATEGY_ID || DEFAULT_SCALP_V2_STRATEGY_ID,
+      process.env.SCALP_COMPOSER_DEFAULT_STRATEGY_ID || DEFAULT_SCALP_COMPOSER_STRATEGY_ID,
     )
       .trim()
       .toLowerCase(),
     defaultTuneId: String(
-      process.env.SCALP_V2_DEFAULT_TUNE_ID || DEFAULT_SCALP_V2_TUNE_ID,
+      process.env.SCALP_COMPOSER_DEFAULT_TUNE_ID || DEFAULT_SCALP_COMPOSER_TUNE_ID,
     )
       .trim()
       .toLowerCase(),
@@ -279,8 +279,8 @@ export function getScalpV2RuntimeConfig(): ScalpV2RuntimeConfig {
     supportedSessions,
     seedSymbolsByVenue,
     seedLiveSymbolsByVenue,
-    budgets: getScalpV2DefaultBudgets(),
-    riskProfile: getScalpV2DefaultRiskProfile(),
+    budgets: getScalpComposerDefaultBudgets(),
+    riskProfile: getScalpComposerDefaultRiskProfile(),
     prunedScopes: {},
     scopePruneMeta: {
       lastPruneWindowToTs: null,
@@ -289,5 +289,5 @@ export function getScalpV2RuntimeConfig(): ScalpV2RuntimeConfig {
       lastNewlyPrunedScopeCount: 0,
     },
   };
-  return applyScalpV2FixedSeedScope(runtime);
+  return applyScalpComposerFixedSeedScope(runtime);
 }

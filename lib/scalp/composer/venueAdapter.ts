@@ -3,8 +3,8 @@ import {
   type ScalpVenueAdapter,
 } from "../adapters";
 
-import type { ScalpV2Venue } from "./types";
+import type { ScalpComposerVenue } from "./types";
 
-export function getScalpV2VenueAdapter(venue: ScalpV2Venue): ScalpVenueAdapter {
+export function getScalpComposerVenueAdapter(venue: ScalpComposerVenue): ScalpVenueAdapter {
   return getScalpVenueAdapter(venue);
 }

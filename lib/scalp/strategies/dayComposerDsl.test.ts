@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID,
   buildDayComposerTuneId,
-  buildScalpV2DayModelComposerGrid,
+  buildScalpComposerDayModelComposerGrid,
   isDayModelGuidedComposerStrategyId,
   parseDayComposerTuneId,
   validateDayComposerCompatibility,
@@ -65,14 +65,14 @@ test("day composer compatibility rejects invalid no-op combinations", () => {
 });
 
 test("day composer grid is deterministic and deduped by behavior fingerprint", () => {
-  const a = buildScalpV2DayModelComposerGrid({
+  const a = buildScalpComposerDayModelComposerGrid({
     venue: "capital",
     symbol: "EURUSD",
     entrySessionProfile: "berlin",
     maxCandidates: 120,
     generatedAtMs: 1,
   });
-  const b = buildScalpV2DayModelComposerGrid({
+  const b = buildScalpComposerDayModelComposerGrid({
     venue: "capital",
     symbol: "EURUSD",
     entrySessionProfile: "berlin",

@@ -25,8 +25,8 @@ import type {
 } from "../replay/types";
 
 import {
-  getScalpV2RuntimeConfig,
-  isScalpV2RuntimeSymbolInScope,
+  getScalpComposerRuntimeConfig,
+  isScalpComposerRuntimeSymbolInScope,
 } from "./config";
 import {
   MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
@@ -43,7 +43,7 @@ import {
 } from "./dayComposer";
 import {
   SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID,
-  buildScalpV2SessionStructureComposerGrid,
+  buildScalpComposerSessionStructureComposerGrid,
   isSessionStructureComposerStrategyId,
   parseSessionStructureComposerTuneId,
 } from "./sessionStructureComposer";
@@ -83,107 +83,107 @@ import {
   resolveStateMachineReplayOverrides,
   STATE_MACHINE_RESEARCH_PROFILES,
 } from "./stateMachinePresets";
-import { buildScalpV2ExecuteConfigOverride } from "./executeConfigOverride";
-import { runScalpV2ExecuteCycle } from "./executeAdapter";
-import { createScalpV2ExecutionPersistenceAdapter } from "./executionPersistence";
+import { buildScalpComposerExecuteConfigOverride } from "./executeConfigOverride";
+import { runScalpComposerExecuteCycle } from "./executeAdapter";
+import { createScalpComposerExecutionPersistenceAdapter } from "./executionPersistence";
 import {
-  buildScalpV2V3TemporalVariants,
-  computeScalpV2V3Bootstrap,
-  computeScalpV2V3Drift,
-  computeScalpV2V3EdgeScore,
-  computeScalpV2V3Holdout,
-  computeScalpV2V3PriorScore,
-  evaluateScalpV2V3NewsBlackout,
-  isScalpV2V3ResearchEnabled,
-  resolveScalpV2V3Config,
-  scalpV2V3EntryWindowsOverlap,
-  synthesizeScalpV2V3HoldoutFromStages,
-  type ScalpV2V3TemporalFilter,
+  buildScalpComposerV3TemporalVariants,
+  computeScalpComposerV3Bootstrap,
+  computeScalpComposerV3Drift,
+  computeScalpComposerV3EdgeScore,
+  computeScalpComposerV3Holdout,
+  computeScalpComposerV3PriorScore,
+  evaluateScalpComposerV3NewsBlackout,
+  isScalpComposerV3ResearchEnabled,
+  resolveScalpComposerV3Config,
+  scalpComposerV3EntryWindowsOverlap,
+  synthesizeScalpComposerV3HoldoutFromStages,
+  type ScalpComposerV3TemporalFilter,
 } from "../evidence";
 import {
-  isScalpV4Enabled,
-  isScalpV4HardGateEnabled,
-  loadScalpV4CurrentRegimeSnapshot,
-  resolveScalpV4EnvelopeBlock,
+  isScalpRegimeEnabled,
+  isScalpRegimeHardGateEnabled,
+  loadScalpRegimeCurrentRegimeSnapshot,
+  resolveScalpRegimeEnvelopeBlock,
 } from "../regimes";
 import {
-  isScalpV5Enabled,
-  isScalpV5HardGateEnabled,
-  resolveScalpV5EvidenceFreshness,
-  resolveScalpV5Config,
-  resolveScalpV5EntryBlock,
-  resolveScalpV5SundayBlock,
+  isScalpResearchEnabled,
+  isScalpResearchHardGateEnabled,
+  resolveScalpResearchEvidenceFreshness,
+  resolveScalpResearchConfig,
+  resolveScalpResearchEntryBlock,
+  resolveScalpResearchSundayBlock,
 } from "../research";
-import { loadScalpV5DeploymentEvidence } from "../research/pg";
+import { loadScalpResearchDeploymentEvidence } from "../research/pg";
 import {
-  appendScalpV2ExecutionEvent,
-  backfillScalpV2DeploymentHoldout,
-  buildScalpV2JobResult,
-  claimScalpV2ResearchCandidateLeases,
-  claimScalpV2Job,
-  countScalpV2CandidatesByStatus,
-  enforceScalpV2EnabledCap,
-  finalizeScalpV2Job,
-  heartbeatScalpV2Job,
-  listScalpV2Candidates,
-  loadScalpV2EvaluatedCandidateKeys,
-  listScalpV2DiscoveredSymbols,
-  loadScalpV2WarmUpState,
+  appendScalpComposerExecutionEvent,
+  backfillScalpComposerDeploymentHoldout,
+  buildScalpComposerJobResult,
+  claimScalpComposerResearchCandidateLeases,
+  claimScalpComposerJob,
+  countScalpComposerCandidatesByStatus,
+  enforceScalpComposerEnabledCap,
+  finalizeScalpComposerJob,
+  heartbeatScalpComposerJob,
+  listScalpComposerCandidates,
+  loadScalpComposerEvaluatedCandidateKeys,
+  listScalpComposerDiscoveredSymbols,
+  loadScalpComposerWarmUpState,
   orphanRetiredLegacyComposerDeployments,
-  upsertScalpV2WarmUpState,
-  loadScalpV2PreviousWeekResults,
-  loadScalpV2CandidateWeeklyCache,
-  upsertScalpV2CandidateWeeklyCache,
-  replaceScalpV2PatternTradeVectors,
-  pruneScalpV2WeeklyCache,
-  loadScalpV2ScopeWindowStageStats,
-  listScalpV2Deployments,
-  listScalpV2LedgerRows,
-  listScalpV2OpenPositions,
-  listScalpV2ResearchCursors,
-  loadScalpV2ResearchCursor,
-  loadScalpV2RuntimeConfig,
-  requeueScalpV2DeploymentCandidatesForWindow,
-  snapshotScalpV2DailyMetrics,
+  upsertScalpComposerWarmUpState,
+  loadScalpComposerPreviousWeekResults,
+  loadScalpComposerCandidateWeeklyCache,
+  upsertScalpComposerCandidateWeeklyCache,
+  replaceScalpComposerPatternTradeVectors,
+  pruneScalpComposerWeeklyCache,
+  loadScalpComposerScopeWindowStageStats,
+  listScalpComposerDeployments,
+  listScalpComposerLedgerRows,
+  listScalpComposerOpenPositions,
+  listScalpComposerResearchCursors,
+  loadScalpComposerResearchCursor,
+  loadScalpComposerRuntimeConfig,
+  requeueScalpComposerDeploymentCandidatesForWindow,
+  snapshotScalpComposerDailyMetrics,
   toDeploymentId,
-  updateScalpV2CandidateStatuses,
-  upsertScalpV2Candidates,
-  upsertScalpV2Deployments,
-  upsertScalpV2PositionSnapshot,
-  upsertScalpV2ResearchCursor,
-  upsertScalpV2ResearchHighlights,
-  upsertScalpV2RuntimeConfig,
+  updateScalpComposerCandidateStatuses,
+  upsertScalpComposerCandidates,
+  upsertScalpComposerDeployments,
+  upsertScalpComposerPositionSnapshot,
+  upsertScalpComposerResearchCursor,
+  upsertScalpComposerResearchHighlights,
+  upsertScalpComposerRuntimeConfig,
 } from "./db";
 import {
-  extractScalpV2PatternTradeVectors,
-  type ScalpV2PatternTradeVector,
+  extractScalpComposerPatternTradeVectors,
+  type ScalpComposerPatternTradeVector,
 } from "./patternEvidence";
 import {
-  isScalpV2DiscoverSymbolAllowed,
-  isScalpV2SundayUtc,
+  isScalpComposerDiscoverSymbolAllowed,
+  isScalpComposerSundayUtc,
   normalizeReasonCodes,
 } from "./logic";
 import {
-  toScalpV2ResearchCursorKey,
+  toScalpComposerResearchCursorKey,
 } from "./research";
-import { runScalpV2LoadCandlesPipelineJob } from "./pipelineJobsAdapter";
-import { inferScalpV2AssetCategory, minSpreadPipsForCategory } from "./symbolInfo";
-import { getScalpV2VenueAdapter } from "./venueAdapter";
+import { runScalpComposerLoadCandlesPipelineJob } from "./pipelineJobsAdapter";
+import { inferScalpComposerAssetCategory, minSpreadPipsForCategory } from "./symbolInfo";
+import { getScalpComposerVenueAdapter } from "./venueAdapter";
 import {
-  resolveScalpV2CompletedWeekWindowToUtc,
-  startOfScalpV2WeekMondayUtc,
+  resolveScalpComposerCompletedWeekWindowToUtc,
+  startOfScalpComposerWeekMondayUtc,
 } from "./weekWindows";
 import type {
-  ScalpV2Deployment,
-  ScalpV2CandidateStatus,
-  ScalpV2ExecutionEvent,
-  ScalpV2JobKind,
-  ScalpV2JobResult,
-  ScalpV2RuntimeConfig,
-  ScalpV2RuntimePrunedScopeEntry,
-  ScalpV2Session,
-  ScalpV2Venue,
-  ScalpV2WorkerStageWeeklyMetrics,
+  ScalpComposerDeployment,
+  ScalpComposerCandidateStatus,
+  ScalpComposerExecutionEvent,
+  ScalpComposerJobKind,
+  ScalpComposerJobResult,
+  ScalpComposerRuntimeConfig,
+  ScalpComposerRuntimePrunedScopeEntry,
+  ScalpComposerSession,
+  ScalpComposerVenue,
+  ScalpComposerWorkerStageWeeklyMetrics,
 } from "./types";
 
 type ExecuteDeploymentFreshnessGate = {
@@ -235,9 +235,9 @@ function sessionStructureTimeStopBars(managementId: string): number {
 
 function buildResearchWarmUpScopeHash(params: {
   scopes: Array<{
-    venue: ScalpV2Venue;
+    venue: ScalpComposerVenue;
     symbol: string;
-    session: ScalpV2Session;
+    session: ScalpComposerSession;
   }>;
   maxCandidatesPerSession: number;
   enabledDeploymentVariantSeeds: string[];
@@ -308,7 +308,7 @@ const LIFECYCLE_SUSPEND_WINDOW_MS = 180 * ONE_DAY_MS;
 const DEFAULT_SCOPE_PRUNE_TTL_DAYS = 28;
 
 
-type ScalpV2ScopePrunePolicy = {
+type ScalpComposerScopePrunePolicy = {
   enabled: boolean;
   ttlMs: number;
   ttlDays: number;
@@ -317,10 +317,10 @@ type ScalpV2ScopePrunePolicy = {
   requiredWindows: number;
 };
 
-function toScalpV2ScopeKey(params: {
-  venue: ScalpV2Venue;
+function toScalpComposerScopeKey(params: {
+  venue: ScalpComposerVenue;
   symbol: string;
-  session: ScalpV2Session;
+  session: ScalpComposerSession;
 }): string {
   const venue = String(params.venue || "bitget").trim().toLowerCase();
   const symbol = String(params.symbol || "").trim().toUpperCase();
@@ -328,14 +328,14 @@ function toScalpV2ScopeKey(params: {
   return `${venue}:${symbol}:${session}`;
 }
 
-function normalizeScopeVenue(value: unknown): ScalpV2Venue | null {
+function normalizeScopeVenue(value: unknown): ScalpComposerVenue | null {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "bitget") return "bitget";
   if (normalized === "capital") return "capital";
   return null;
 }
 
-function normalizeScopeSession(value: unknown): ScalpV2Session | null {
+function normalizeScopeSession(value: unknown): ScalpComposerSession | null {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "tokyo") return "tokyo";
   if (normalized === "berlin") return "berlin";
@@ -346,11 +346,11 @@ function normalizeScopeSession(value: unknown): ScalpV2Session | null {
 }
 
 function normalizeActivePrunedScopes(
-  runtime: ScalpV2RuntimeConfig,
+  runtime: ScalpComposerRuntimeConfig,
   nowTs: number,
-): Record<string, ScalpV2RuntimePrunedScopeEntry> {
+): Record<string, ScalpComposerRuntimePrunedScopeEntry> {
   const raw = asRecord(runtime.prunedScopes);
-  const out: Record<string, ScalpV2RuntimePrunedScopeEntry> = {};
+  const out: Record<string, ScalpComposerRuntimePrunedScopeEntry> = {};
   for (const value of Object.values(raw)) {
     const row = asRecord(value);
     const venue = normalizeScopeVenue(row.venue);
@@ -368,7 +368,7 @@ function normalizeActivePrunedScopes(
           .filter((entry) => Number.isFinite(entry) && entry > 0)
       : [];
     const thresholdsRow = asRecord(row.thresholds);
-    const key = toScalpV2ScopeKey({ venue, symbol, session });
+    const key = toScalpComposerScopeKey({ venue, symbol, session });
     out[key] = {
       venue,
       symbol,
@@ -399,20 +399,20 @@ function normalizeActivePrunedScopes(
   return out;
 }
 
-function resolveScalpV2ScopePrunePolicy(): ScalpV2ScopePrunePolicy {
+function resolveScalpComposerScopePrunePolicy(): ScalpComposerScopePrunePolicy {
   const ttlDays = Math.max(
     7,
     Math.min(
       180,
       toPositiveInt(
-        process.env.SCALP_V2_SCOPE_PRUNE_TTL_DAYS,
+        process.env.SCALP_COMPOSER_SCOPE_PRUNE_TTL_DAYS,
         DEFAULT_SCOPE_PRUNE_TTL_DAYS,
         180,
       ),
     ),
   );
   return {
-    enabled: envBool("SCALP_V2_SCOPE_PRUNE_ENABLED", true),
+    enabled: envBool("SCALP_COMPOSER_SCOPE_PRUNE_ENABLED", true),
     ttlMs: ttlDays * ONE_DAY_MS,
     ttlDays,
     minCandidatesPerWindow: Math.max(
@@ -420,7 +420,7 @@ function resolveScalpV2ScopePrunePolicy(): ScalpV2ScopePrunePolicy {
       Math.min(
         1_000,
         toPositiveInt(
-          process.env.SCALP_V2_SCOPE_PRUNE_MIN_CANDIDATES_PER_WINDOW,
+          process.env.SCALP_COMPOSER_SCOPE_PRUNE_MIN_CANDIDATES_PER_WINDOW,
           60,
           1_000,
         ),
@@ -430,28 +430,28 @@ function resolveScalpV2ScopePrunePolicy(): ScalpV2ScopePrunePolicy {
       0,
       Math.min(
         100,
-        toFinite(process.env.SCALP_V2_SCOPE_PRUNE_MIN_STAGE_A_FAIL_PCT, 85),
+        toFinite(process.env.SCALP_COMPOSER_SCOPE_PRUNE_MIN_STAGE_A_FAIL_PCT, 85),
       ),
     ),
     requiredWindows: Math.max(
       2,
       Math.min(
         4,
-        toPositiveInt(process.env.SCALP_V2_SCOPE_PRUNE_REQUIRED_WINDOWS, 2, 4),
+        toPositiveInt(process.env.SCALP_COMPOSER_SCOPE_PRUNE_REQUIRED_WINDOWS, 2, 4),
       ),
     ),
   };
 }
 
-async function runScalpV2ScopePrunePass(params: {
-  runtime: ScalpV2RuntimeConfig;
+async function runScalpComposerScopePrunePass(params: {
+  runtime: ScalpComposerRuntimeConfig;
   windowToTs: number;
   nowTs: number;
 }): Promise<{
-  runtime: ScalpV2RuntimeConfig;
+  runtime: ScalpComposerRuntimeConfig;
   details: Record<string, unknown>;
 }> {
-  const policy = resolveScalpV2ScopePrunePolicy();
+  const policy = resolveScalpComposerScopePrunePolicy();
   const activeScopes = normalizeActivePrunedScopes(params.runtime, params.nowTs);
   const meta = asRecord(params.runtime.scopePruneMeta);
   const lastPruneWindowToTs = Math.floor(Number(meta.lastPruneWindowToTs));
@@ -488,7 +488,7 @@ async function runScalpV2ScopePrunePass(params: {
     };
   }
 
-  const snapshots = await loadScalpV2ScopeWindowStageStats({
+  const snapshots = await loadScalpComposerScopeWindowStageStats({
     latestWindowCount: policy.requiredWindows,
   });
   const windows = Array.from(
@@ -503,7 +503,7 @@ async function runScalpV2ScopePrunePass(params: {
   const byScope = new Map<string, Map<number, (typeof snapshots)[number]>>();
   for (const row of snapshots) {
     if (!requiredWindows.includes(row.windowToTs)) continue;
-    const key = toScalpV2ScopeKey({
+    const key = toScalpComposerScopeKey({
       venue: row.venue,
       symbol: row.symbol,
       session: row.session,
@@ -513,7 +513,7 @@ async function runScalpV2ScopePrunePass(params: {
     byScope.set(key, perWindow);
   }
 
-  const nextPrunedScopes: Record<string, ScalpV2RuntimePrunedScopeEntry> = {
+  const nextPrunedScopes: Record<string, ScalpComposerRuntimePrunedScopeEntry> = {
     ...activeScopes,
   };
   const candidateScopeCount = byScope.size;
@@ -574,7 +574,7 @@ async function runScalpV2ScopePrunePass(params: {
     }
   }
 
-  const updatedRuntime = await upsertScalpV2RuntimeConfig({
+  const updatedRuntime = await upsertScalpComposerRuntimeConfig({
     ...params.runtime,
     prunedScopes: nextPrunedScopes,
     scopePruneMeta: {
@@ -621,7 +621,7 @@ interface V2PromotionLifecycle {
   lastSeatReleaseAtMs: number | null;
 }
 
-interface ScalpV2PromotionPolicy {
+interface ScalpComposerPromotionPolicy {
   minCompletedWeeks: number;
   minTradesPerWeek: number;
   minTotalTrades: number;
@@ -678,10 +678,10 @@ type WeeklyRobustnessMetrics = {
   evaluatedAtMs: number;
 };
 
-type ScalpV2WorkerStageId = "a" | "b" | "c";
+type ScalpComposerWorkerStageId = "a" | "b" | "c";
 
-type ScalpV2WorkerStagePolicy = {
-  id: ScalpV2WorkerStageId;
+type ScalpComposerWorkerStagePolicy = {
+  id: ScalpComposerWorkerStageId;
   weeks: number;
   minTrades: number;
   minNetR: number;
@@ -690,13 +690,13 @@ type ScalpV2WorkerStagePolicy = {
   maxDrawdownR: number;
 };
 
-type ScalpV2WorkerPolicy = {
+type ScalpComposerWorkerPolicy = {
   allowSunday: boolean;
   maxBatchSize: number;
   maxCandidatesPerSession: number;
-  stageA: ScalpV2WorkerStagePolicy;
-  stageB: ScalpV2WorkerStagePolicy;
-  stageC: ScalpV2WorkerStagePolicy;
+  stageA: ScalpComposerWorkerStagePolicy;
+  stageB: ScalpComposerWorkerStagePolicy;
+  stageC: ScalpComposerWorkerStagePolicy;
   minCandles: number;
   maxHighlightsPerRun: number;
   earlyAbortAfterPct: number;
@@ -706,8 +706,8 @@ type ScalpV2WorkerPolicy = {
   stage0ClearFailNetRMult: number;
 };
 
-type ScalpV2WorkerStageResult = {
-  id: ScalpV2WorkerStageId;
+type ScalpComposerWorkerStageResult = {
+  id: ScalpComposerWorkerStageId;
   weeks: number;
   fromTs: number;
   toTs: number;
@@ -756,7 +756,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 // `dsl`/`weekly`/`worker` are intentionally not compared — they are computed
 // snapshots redundant with candidate.metadata_json and not load-bearing for
 // strategy behavior. Decision changes are captured by the explicit fields below.
-function isScalpV2DeploymentUpsertNeeded(
+function isScalpComposerDeploymentUpsertNeeded(
   existing:
     | {
         candidateId: number | null;
@@ -857,11 +857,11 @@ function envBool(name: string, fallback: boolean): boolean {
   return fallback;
 }
 
-export function isScalpV2PromoteEnabled(): boolean {
-  return envBool("SCALP_V2_PROMOTE_ENABLED", false);
+export function isScalpComposerPromoteEnabled(): boolean {
+  return envBool("SCALP_COMPOSER_PROMOTE_ENABLED", false);
 }
 
-export function isScalpV5OwnedPromotionGate(value: unknown): boolean {
+export function isScalpResearchOwnedPromotionGate(value: unknown): boolean {
   const gate = asRecord(value);
   return (
     String(gate.source || "").trim().toLowerCase() === "v5_cell_evidence" ||
@@ -869,7 +869,7 @@ export function isScalpV5OwnedPromotionGate(value: unknown): boolean {
   );
 }
 
-export function isScalpV5ConsistencyExceptionPromotionGate(value: unknown): boolean {
+export function isScalpResearchConsistencyExceptionPromotionGate(value: unknown): boolean {
   const gate = asRecord(value);
   const promotion = asRecord(gate.v5Promotion);
   const reason = String(gate.reason || promotion.passReason || "")
@@ -878,7 +878,7 @@ export function isScalpV5ConsistencyExceptionPromotionGate(value: unknown): bool
   return reason === "v5_consistency_exception_passed";
 }
 
-export function shouldRunScalpV2ExecuteCycleForDeployment(params: {
+export function shouldRunScalpComposerExecuteCycleForDeployment(params: {
   entryBlocked: boolean;
   hasOpenPosition: boolean;
 }): boolean {
@@ -886,7 +886,7 @@ export function shouldRunScalpV2ExecuteCycleForDeployment(params: {
   return !params.entryBlocked;
 }
 
-export function resolveScalpV2ExecuteDryRunForDeployment(params: {
+export function resolveScalpComposerExecuteDryRunForDeployment(params: {
   effectiveDryRun: boolean;
   runtimeLiveEnabled: boolean;
   deploymentLiveMode: unknown;
@@ -921,12 +921,12 @@ function toNonNegativeInt(value: unknown, fallback: number, max = 100_000): numb
   return Math.max(0, Math.min(max, n));
 }
 
-function resolvePromotionPolicy(): ScalpV2PromotionPolicy {
+function resolvePromotionPolicy(): ScalpComposerPromotionPolicy {
   const minCompletedWeeks = Math.max(
     12,
     Math.min(
       52,
-      toPositiveInt(process.env.SCALP_V2_PROMOTION_MIN_COMPLETED_WEEKS, 12, 52),
+      toPositiveInt(process.env.SCALP_COMPOSER_PROMOTION_MIN_COMPLETED_WEEKS, 12, 52),
     ),
   );
   const minTradesPerWeek = Math.max(
@@ -935,7 +935,7 @@ function resolvePromotionPolicy(): ScalpV2PromotionPolicy {
       500,
       Math.floor(
         toFinite(
-          process.env.SCALP_V2_PROMOTION_MIN_TRADES_PER_WEEK,
+          process.env.SCALP_COMPOSER_PROMOTION_MIN_TRADES_PER_WEEK,
           2,
         ),
       ),
@@ -949,7 +949,7 @@ function resolvePromotionPolicy(): ScalpV2PromotionPolicy {
       0,
       Math.floor(
         toFinite(
-          process.env.SCALP_V2_PROMOTION_MIN_TOTAL_TRADES,
+          process.env.SCALP_COMPOSER_PROMOTION_MIN_TOTAL_TRADES,
           minTotalTradesDefault,
         ),
       ),
@@ -958,39 +958,39 @@ function resolvePromotionPolicy(): ScalpV2PromotionPolicy {
       2,
       Math.min(
         104,
-        toPositiveInt(process.env.SCALP_V2_PROMOTION_MIN_SLICES, 8, 104),
+        toPositiveInt(process.env.SCALP_COMPOSER_PROMOTION_MIN_SLICES, 8, 104),
       ),
     ),
     minProfitablePct: toBoundedPercent(
-      process.env.SCALP_V2_PROMOTION_MIN_PROFITABLE_PCT,
+      process.env.SCALP_COMPOSER_PROMOTION_MIN_PROFITABLE_PCT,
       55,
     ),
     minMedianExpectancyR: toFinite(
-      process.env.SCALP_V2_PROMOTION_MIN_MEDIAN_EXPECTANCY_R,
+      process.env.SCALP_COMPOSER_PROMOTION_MIN_MEDIAN_EXPECTANCY_R,
       0.02,
     ),
     minP25ExpectancyR: toFinite(
-      process.env.SCALP_V2_PROMOTION_MIN_P25_EXPECTANCY_R,
+      process.env.SCALP_COMPOSER_PROMOTION_MIN_P25_EXPECTANCY_R,
       -0.02,
     ),
     minWorstNetR: toFinite(
-      process.env.SCALP_V2_PROMOTION_MIN_WORST_NET_R,
+      process.env.SCALP_COMPOSER_PROMOTION_MIN_WORST_NET_R,
       -1.5,
     ),
     maxTopWeekPnlConcentrationPct: toBoundedPercent(
-      process.env.SCALP_V2_PROMOTION_MAX_TOP_WEEK_PNL_CONCENTRATION_PCT,
+      process.env.SCALP_COMPOSER_PROMOTION_MAX_TOP_WEEK_PNL_CONCENTRATION_PCT,
       55,
     ),
-    minFourWeekNetR: toFinite(process.env.SCALP_V2_PROMOTION_MIN_4W_NET_R, 4),
+    minFourWeekNetR: toFinite(process.env.SCALP_COMPOSER_PROMOTION_MIN_4W_NET_R, 4),
     // Stage-C statistical-significance gate: require the 95% one-sided lower
     // confidence bound of per-trade expectancy (meanR - 1.64*stderrR, computed
-    // in computeScalpV2V3EdgeScore) to clear this floor before a candidate can
+    // in computeScalpComposerV3EdgeScore) to clear this floor before a candidate can
     // promote. Defends against statistically-insignificant edges that clear the
     // raw netR threshold purely on variance. Default -0.05 (a slightly-negative
     // worst-case edge is tolerated) BUT only when backed by the higher trade
     // count below, so the looser bound rests on a more reliable estimate.
     minStageCLowerBoundR: toFinite(
-      process.env.SCALP_V2_PROMOTION_MIN_STAGE_C_LOWER_BOUND_R,
+      process.env.SCALP_COMPOSER_PROMOTION_MIN_STAGE_C_LOWER_BOUND_R,
       -0.05,
     ),
     // Trade-count floor coupled to the relaxed lower-bound gate above. Stage C's
@@ -999,21 +999,21 @@ function resolvePromotionPolicy(): ScalpV2PromotionPolicy {
     minStageCTradesForPromotion: Math.max(
       0,
       Math.floor(
-        toFinite(process.env.SCALP_V2_PROMOTION_MIN_STAGE_C_TRADES, 40),
+        toFinite(process.env.SCALP_COMPOSER_PROMOTION_MIN_STAGE_C_TRADES, 40),
       ),
     ),
     fourWeekGroupCount: Math.max(
       1,
       Math.min(
         13,
-        toPositiveInt(process.env.SCALP_V2_PROMOTION_4W_GROUP_COUNT, 3, 13),
+        toPositiveInt(process.env.SCALP_COMPOSER_PROMOTION_4W_GROUP_COUNT, 3, 13),
       ),
     ),
     fourWeekGroupSize: Math.max(
       2,
       Math.min(
         8,
-        toPositiveInt(process.env.SCALP_V2_PROMOTION_4W_GROUP_SIZE, 4, 8),
+        toPositiveInt(process.env.SCALP_COMPOSER_PROMOTION_4W_GROUP_SIZE, 4, 8),
       ),
     ),
     exactLoserSuspendMs:
@@ -1022,7 +1022,7 @@ function resolvePromotionPolicy(): ScalpV2PromotionPolicy {
         Math.min(
           52,
           toPositiveInt(
-            process.env.SCALP_V2_PROMOTION_EXACT_LOSER_SUSPEND_WEEKS,
+            process.env.SCALP_COMPOSER_PROMOTION_EXACT_LOSER_SUSPEND_WEEKS,
             12,
             52,
           ),
@@ -1034,7 +1034,7 @@ function resolvePromotionPolicy(): ScalpV2PromotionPolicy {
         Math.min(
           52,
           toPositiveInt(
-            process.env.SCALP_V2_PROMOTION_NEIGHBOR_SUSPEND_WEEKS,
+            process.env.SCALP_COMPOSER_PROMOTION_NEIGHBOR_SUSPEND_WEEKS,
             8,
             52,
           ),
@@ -1045,7 +1045,7 @@ function resolvePromotionPolicy(): ScalpV2PromotionPolicy {
         7,
         Math.min(
           365,
-          toPositiveInt(process.env.SCALP_V2_PROMOTION_RETIRE_DAYS, 180, 365),
+          toPositiveInt(process.env.SCALP_COMPOSER_PROMOTION_RETIRE_DAYS, 180, 365),
         ),
       ) * ONE_DAY_MS,
     retireOnSuspensionCount: Math.max(
@@ -1053,7 +1053,7 @@ function resolvePromotionPolicy(): ScalpV2PromotionPolicy {
       Math.min(
         10,
         toPositiveInt(
-          process.env.SCALP_V2_PROMOTION_RETIRE_ON_SUSPENSION_COUNT,
+          process.env.SCALP_COMPOSER_PROMOTION_RETIRE_ON_SUSPENSION_COUNT,
           3,
           10,
         ),
@@ -1062,14 +1062,14 @@ function resolvePromotionPolicy(): ScalpV2PromotionPolicy {
   };
 }
 
-function resolveWorkerPolicy(): ScalpV2WorkerPolicy {
+function resolveWorkerPolicy(): ScalpComposerWorkerPolicy {
   return {
-    allowSunday: envBool("SCALP_V2_ALLOW_SUNDAY_WORKER", false),
+    allowSunday: envBool("SCALP_COMPOSER_ALLOW_SUNDAY_WORKER", false),
     maxBatchSize: Math.max(
       1,
       Math.min(
         600,
-        toPositiveInt(process.env.SCALP_V2_WORKER_BATCH_SIZE, 12, 600),
+        toPositiveInt(process.env.SCALP_COMPOSER_WORKER_BATCH_SIZE, 12, 600),
       ),
     ),
     maxCandidatesPerSession: Math.max(
@@ -1077,7 +1077,7 @@ function resolveWorkerPolicy(): ScalpV2WorkerPolicy {
       Math.min(
         128,
         toPositiveInt(
-          process.env.SCALP_V2_WORKER_MAX_CANDIDATES_PER_SESSION,
+          process.env.SCALP_COMPOSER_WORKER_MAX_CANDIDATES_PER_SESSION,
           24,
           128,
         ),
@@ -1091,18 +1091,18 @@ function resolveWorkerPolicy(): ScalpV2WorkerPolicy {
         Math.min(
           10_000,
           Math.floor(
-            toFinite(process.env.SCALP_V2_WORKER_STAGE_A_MIN_TRADES, 4),
+            toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_A_MIN_TRADES, 4),
           ),
         ),
       ),
-      minNetR: toFinite(process.env.SCALP_V2_WORKER_STAGE_A_MIN_NET_R, 0.2),
+      minNetR: toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_A_MIN_NET_R, 0.2),
       minConsecutiveWinningWeeks: Math.max(
         0,
         Math.min(
           4,
           Math.floor(
             toFinite(
-              process.env.SCALP_V2_WORKER_STAGE_A_MIN_CONSEC_WIN_WEEKS,
+              process.env.SCALP_COMPOSER_WORKER_STAGE_A_MIN_CONSEC_WIN_WEEKS,
               1,
             ),
           ),
@@ -1110,11 +1110,11 @@ function resolveWorkerPolicy(): ScalpV2WorkerPolicy {
       ),
       minProfitFactor: Math.max(
         0,
-        toFinite(process.env.SCALP_V2_WORKER_STAGE_A_MIN_PROFIT_FACTOR, 1.01),
+        toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_A_MIN_PROFIT_FACTOR, 1.01),
       ),
       maxDrawdownR: Math.max(
         0.1,
-        toFinite(process.env.SCALP_V2_WORKER_STAGE_A_MAX_DD_R, 8),
+        toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_A_MAX_DD_R, 8),
       ),
     },
     stageB: {
@@ -1125,18 +1125,18 @@ function resolveWorkerPolicy(): ScalpV2WorkerPolicy {
         Math.min(
           10_000,
           Math.floor(
-            toFinite(process.env.SCALP_V2_WORKER_STAGE_B_MIN_TRADES, 14),
+            toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_B_MIN_TRADES, 14),
           ),
         ),
       ),
-      minNetR: toFinite(process.env.SCALP_V2_WORKER_STAGE_B_MIN_NET_R, 1),
+      minNetR: toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_B_MIN_NET_R, 1),
       minConsecutiveWinningWeeks: Math.max(
         0,
         Math.min(
           6,
           Math.floor(
             toFinite(
-              process.env.SCALP_V2_WORKER_STAGE_B_MIN_CONSEC_WIN_WEEKS,
+              process.env.SCALP_COMPOSER_WORKER_STAGE_B_MIN_CONSEC_WIN_WEEKS,
               3,
             ),
           ),
@@ -1144,11 +1144,11 @@ function resolveWorkerPolicy(): ScalpV2WorkerPolicy {
       ),
       minProfitFactor: Math.max(
         0,
-        toFinite(process.env.SCALP_V2_WORKER_STAGE_B_MIN_PROFIT_FACTOR, 1.03),
+        toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_B_MIN_PROFIT_FACTOR, 1.03),
       ),
       maxDrawdownR: Math.max(
         0.1,
-        toFinite(process.env.SCALP_V2_WORKER_STAGE_B_MAX_DD_R, 10),
+        toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_B_MAX_DD_R, 10),
       ),
     },
     stageC: {
@@ -1159,18 +1159,18 @@ function resolveWorkerPolicy(): ScalpV2WorkerPolicy {
         Math.min(
           20_000,
           Math.floor(
-            toFinite(process.env.SCALP_V2_WORKER_STAGE_C_MIN_TRADES, 24),
+            toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_C_MIN_TRADES, 24),
           ),
         ),
       ),
-      minNetR: toFinite(process.env.SCALP_V2_WORKER_STAGE_C_MIN_NET_R, 2),
+      minNetR: toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_C_MIN_NET_R, 2),
       minConsecutiveWinningWeeks: Math.max(
         0,
         Math.min(
           12,
           Math.floor(
             toFinite(
-              process.env.SCALP_V2_WORKER_STAGE_C_MIN_CONSEC_WIN_WEEKS,
+              process.env.SCALP_COMPOSER_WORKER_STAGE_C_MIN_CONSEC_WIN_WEEKS,
               4,
             ),
           ),
@@ -1178,25 +1178,25 @@ function resolveWorkerPolicy(): ScalpV2WorkerPolicy {
       ),
       minProfitFactor: Math.max(
         0,
-        toFinite(process.env.SCALP_V2_WORKER_STAGE_C_MIN_PROFIT_FACTOR, 1.05),
+        toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_C_MIN_PROFIT_FACTOR, 1.05),
       ),
       maxDrawdownR: Math.max(
         0.1,
-        toFinite(process.env.SCALP_V2_WORKER_STAGE_C_MAX_DD_R, 12),
+        toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_C_MAX_DD_R, 12),
       ),
     },
     minCandles: Math.max(
       120,
       Math.min(
         2_000_000,
-        toPositiveInt(process.env.SCALP_V2_WORKER_MIN_CANDLES, 8_000, 2_000_000),
+        toPositiveInt(process.env.SCALP_COMPOSER_WORKER_MIN_CANDLES, 8_000, 2_000_000),
       ),
     ),
     maxHighlightsPerRun: Math.max(
       1,
       Math.min(
         500,
-        toPositiveInt(process.env.SCALP_V2_WORKER_MAX_HIGHLIGHTS_PER_RUN, 120, 500),
+        toPositiveInt(process.env.SCALP_COMPOSER_WORKER_MAX_HIGHLIGHTS_PER_RUN, 120, 500),
       ),
     ),
     // Abort a full-stage replay this fraction of the way through if netR is
@@ -1205,33 +1205,33 @@ function resolveWorkerPolicy(): ScalpV2WorkerPolicy {
       5,
       Math.min(
         100,
-        toPositiveInt(process.env.SCALP_V2_WORKER_EARLY_ABORT_AFTER_PCT, 35, 100),
+        toPositiveInt(process.env.SCALP_COMPOSER_WORKER_EARLY_ABORT_AFTER_PCT, 35, 100),
       ),
     ),
     earlyAbortNetRMult: Math.min(
       0,
-      toFinite(process.env.SCALP_V2_WORKER_EARLY_ABORT_NET_R_MULT, -2),
+      toFinite(process.env.SCALP_COMPOSER_WORKER_EARLY_ABORT_NET_R_MULT, -2),
     ),
     // Stage-0: a cheap freshest-N-week replay before the full stage-A replay;
     // drops clear-fails (netR < minNetR * stage0ClearFailNetRMult).
-    stage0Enabled: envBool("SCALP_V2_WORKER_STAGE0_ENABLED", true),
+    stage0Enabled: envBool("SCALP_COMPOSER_WORKER_STAGE0_ENABLED", true),
     stage0Weeks: Math.max(
       1,
-      Math.min(4, toPositiveInt(process.env.SCALP_V2_WORKER_STAGE0_WEEKS, 1, 4)),
+      Math.min(4, toPositiveInt(process.env.SCALP_COMPOSER_WORKER_STAGE0_WEEKS, 1, 4)),
     ),
     stage0ClearFailNetRMult: Math.min(
       0,
-      toFinite(process.env.SCALP_V2_WORKER_STAGE0_CLEAR_FAIL_NET_R_MULT, -2),
+      toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE0_CLEAR_FAIL_NET_R_MULT, -2),
     ),
   };
 }
 
 function resolveNewestWeekMinCandles(params: {
   symbol: string;
-  workerPolicy: ScalpV2WorkerPolicy;
+  workerPolicy: ScalpComposerWorkerPolicy;
 }): number {
   const symbol = String(params.symbol || "").trim().toUpperCase();
-  const category = inferScalpV2AssetCategory(symbol);
+  const category = inferScalpComposerAssetCategory(symbol);
   const defaultByCategory =
     category === "forex" ||
     category === "commodity" ||
@@ -1241,14 +1241,14 @@ function resolveNewestWeekMinCandles(params: {
         ? 8_000
         : 4_000;
   const defaultMin = Math.min(params.workerPolicy.minCandles, defaultByCategory);
-  const categoryEnvName = `SCALP_V2_WORKER_LATEST_WEEK_MIN_CANDLES_${category.toUpperCase()}`;
+  const categoryEnvName = `SCALP_COMPOSER_WORKER_LATEST_WEEK_MIN_CANDLES_${category.toUpperCase()}`;
   return Math.max(
     120,
     Math.min(
       2_000_000,
       toPositiveInt(
         process.env[categoryEnvName] ??
-          process.env.SCALP_V2_WORKER_LATEST_WEEK_MIN_CANDLES,
+          process.env.SCALP_COMPOSER_WORKER_LATEST_WEEK_MIN_CANDLES,
         defaultMin,
         2_000_000,
       ),
@@ -1298,7 +1298,7 @@ function filterSundayReplayCandles(candles: ScalpReplayCandle[]): ScalpReplayCan
     { nonSunday: ScalpReplayCandle[]; sunday: ScalpReplayCandle[] }
   >();
   for (const row of candles || []) {
-    const weekStart = startOfScalpV2WeekMondayUtc(row.ts);
+    const weekStart = startOfScalpComposerWeekMondayUtc(row.ts);
     const bucket =
       byWeek.get(weekStart) || { nonSunday: [], sunday: [] };
     if (new Date(row.ts).getUTCDay() === 0) {
@@ -1339,7 +1339,7 @@ function buildWorkerStageWeeklyMetrics(params: {
   trades: ScalpReplayTrade[];
   weekStartTs: number;
   weekToTs: number;
-}): ScalpV2WorkerStageWeeklyMetrics {
+}): ScalpComposerWorkerStageWeeklyMetrics {
   const weekStartTs = Math.floor(Number(params.weekStartTs) || 0);
   const weekToTs = Math.floor(Number(params.weekToTs) || 0);
   const sortedTrades = [...(params.trades || [])].sort(
@@ -1415,8 +1415,8 @@ function buildWorkerStageWeeklyMetricsMap(params: {
   trades: ScalpReplayTrade[];
   fromTs: number;
   toTs: number;
-}): Map<number, ScalpV2WorkerStageWeeklyMetrics> {
-  const out = new Map<number, ScalpV2WorkerStageWeeklyMetrics>();
+}): Map<number, ScalpComposerWorkerStageWeeklyMetrics> {
+  const out = new Map<number, ScalpComposerWorkerStageWeeklyMetrics>();
   const weekStarts = listWeekStarts({
     fromTs: params.fromTs,
     toTs: params.toTs,
@@ -1439,7 +1439,7 @@ function buildWorkerStageWeeklyMetricsMap(params: {
 function aggregateStageFromWeeklyMetrics(params: {
   fromTs: number;
   toTs: number;
-  weeklyByStart: Map<number, ScalpV2WorkerStageWeeklyMetrics>;
+  weeklyByStart: Map<number, ScalpComposerWorkerStageWeeklyMetrics>;
 }): {
   trades: number;
   netR: number;
@@ -1548,8 +1548,8 @@ function aggregateStageFromWeeklyMetrics(params: {
 }
 
 function hasReusableWeeklyCacheMetrics(
-  metrics: ScalpV2WorkerStageWeeklyMetrics | null | undefined,
-): metrics is ScalpV2WorkerStageWeeklyMetrics {
+  metrics: ScalpComposerWorkerStageWeeklyMetrics | null | undefined,
+): metrics is ScalpComposerWorkerStageWeeklyMetrics {
   if (!metrics) return false;
   return (
     Number.isFinite(Number(metrics.trades)) &&
@@ -1569,7 +1569,7 @@ function hasReusableWeeklyCacheMetrics(
 }
 
 function shouldDeferWorkerStageForCoverage(
-  stageResult: ScalpV2WorkerStageResult,
+  stageResult: ScalpComposerWorkerStageResult,
 ): boolean {
   if (stageResult.executed) return false;
   return [
@@ -1580,8 +1580,8 @@ function shouldDeferWorkerStageForCoverage(
 }
 
 function evaluateWorkerStageGate(params: {
-  stage: ScalpV2WorkerStagePolicy;
-  stageResult: ScalpV2WorkerStageResult;
+  stage: ScalpComposerWorkerStagePolicy;
+  stageResult: ScalpComposerWorkerStageResult;
 }): { passed: boolean; reason: string | null } {
   const { stageResult, stage } = params;
   if (!stageResult.executed) {
@@ -1609,11 +1609,11 @@ function evaluateWorkerStageGate(params: {
 }
 
 function buildWorkerStageSkeleton(params: {
-  stage: ScalpV2WorkerStagePolicy;
+  stage: ScalpComposerWorkerStagePolicy;
   fromTs: number;
   toTs: number;
   reason: string;
-}): ScalpV2WorkerStageResult {
+}): ScalpComposerWorkerStageResult {
   return {
     id: params.stage.id,
     weeks: params.stage.weeks,
@@ -1783,12 +1783,12 @@ function resolveWorkerStageCFreshness(params: {
 }
 
 function resolveExecuteDeploymentFreshnessGate(params: {
-  deployment: ScalpV2Deployment;
+  deployment: ScalpComposerDeployment;
   nowTs: number;
   requiredWeeks: number;
 }): ExecuteDeploymentFreshnessGate {
   const requiredWeeks = Math.max(1, Math.min(52, Math.floor(params.requiredWeeks || 12)));
-  const expectedWindowToTs = resolveScalpV2CompletedWeekWindowToUtc(params.nowTs);
+  const expectedWindowToTs = resolveScalpComposerCompletedWeekWindowToUtc(params.nowTs);
   const promotionGate = asRecord(params.deployment.promotionGate);
   const freshness = asRecord(promotionGate.freshness);
   const worker = asRecord(promotionGate.worker);
@@ -1822,7 +1822,7 @@ function resolveExecuteDeploymentFreshnessGate(params: {
     Math.min(
       requiredWeeks,
       toNonNegativeInt(
-        process.env.SCALP_V2_EXECUTE_MIN_NON_ZERO_STAGE_C_WEEKS,
+        process.env.SCALP_COMPOSER_EXECUTE_MIN_NON_ZERO_STAGE_C_WEEKS,
         0,
         requiredWeeks,
       ),
@@ -2049,7 +2049,7 @@ function buildFreshness(params: {
   nowTs: number;
 }): PromotionFreshness {
   const requiredWeeks = Math.max(1, Math.min(52, params.requiredWeeks));
-  const windowToTs = resolveScalpV2CompletedWeekWindowToUtc(params.nowTs);
+  const windowToTs = resolveScalpComposerCompletedWeekWindowToUtc(params.nowTs);
   const windowFromTs = windowToTs - requiredWeeks * ONE_WEEK_MS;
   let completedWeeks = 0;
   const missingWeekStarts: number[] = [];
@@ -2140,7 +2140,7 @@ function longestConsecutiveWinningWeeks(rows: WeeklyAggregationRow[]): number {
 
 function evaluateWeeklyGate(params: {
   metrics: WeeklyRobustnessMetrics | null;
-  policy: ScalpV2PromotionPolicy;
+  policy: ScalpComposerPromotionPolicy;
 }): { passed: boolean; reason: string | null } {
   const metrics = params.metrics;
   const policy = params.policy;
@@ -2181,18 +2181,18 @@ function evaluateWeeklyGate(params: {
 
 function buildEvent(params: {
   deploymentId: string;
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
   strategyId: string;
   tuneId: string;
-  entrySessionProfile: ScalpV2Session;
-  eventType: ScalpV2ExecutionEvent["eventType"];
+  entrySessionProfile: ScalpComposerSession;
+  eventType: ScalpComposerExecutionEvent["eventType"];
   tsMs?: number;
   reasonCodes?: string[];
   brokerRef?: string | null;
   rawPayload?: Record<string, unknown>;
-  sourceOfTruth?: ScalpV2ExecutionEvent["sourceOfTruth"];
-}): ScalpV2ExecutionEvent {
+  sourceOfTruth?: ScalpComposerExecutionEvent["sourceOfTruth"];
+}): ScalpComposerExecutionEvent {
   return {
     id: crypto.randomUUID(),
     tsMs: Number.isFinite(Number(params.tsMs)) && Number(params.tsMs) > 0
@@ -2218,31 +2218,31 @@ function lockOwner(jobKind: string): string {
 
 function toDeploymentSessionKey(
   deploymentId: string,
-  entrySessionProfile: ScalpV2Session,
+  entrySessionProfile: ScalpComposerSession,
 ): string {
   return `${deploymentId}::${entrySessionProfile}`;
 }
 
 async function updateResearchCursorSafe(params: {
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
-  entrySessionProfile: ScalpV2Session;
+  entrySessionProfile: ScalpComposerSession;
   phase: "scan" | "score" | "validate" | "promote";
   lastCandidateOffset?: number;
   lastWeekStartMs?: number | null;
   progress?: Record<string, unknown>;
 }): Promise<void> {
-  const cursorKey = toScalpV2ResearchCursorKey({
+  const cursorKey = toScalpComposerResearchCursorKey({
     venue: params.venue,
     symbol: params.symbol,
     entrySessionProfile: params.entrySessionProfile,
   });
   const existingCursor =
     params.lastCandidateOffset === undefined || params.lastWeekStartMs === undefined
-      ? await loadScalpV2ResearchCursor({ cursorKey }).catch(() => null)
+      ? await loadScalpComposerResearchCursor({ cursorKey }).catch(() => null)
       : null;
 
-  await upsertScalpV2ResearchCursor({
+  await upsertScalpComposerResearchCursor({
     cursorKey,
     venue: params.venue,
     symbol: params.symbol,
@@ -2260,12 +2260,12 @@ async function updateResearchCursorSafe(params: {
   }).catch(() => undefined);
 }
 
-type ScalpV2RuntimeLoadScope = {
-  venue: ScalpV2Venue;
+type ScalpComposerRuntimeLoadScope = {
+  venue: ScalpComposerVenue;
   symbol: string;
 };
 
-type ScalpV2ResearchFreshnessPolicy = {
+type ScalpComposerResearchFreshnessPolicy = {
   enabled: boolean;
   retries: number;
   loadBatchSize: number;
@@ -2278,8 +2278,8 @@ type ScalpV2ResearchFreshnessPolicy = {
   stalePreviewLimit: number;
 };
 
-type ScalpV2ResearchFreshnessRow = {
-  venue: ScalpV2Venue;
+type ScalpComposerResearchFreshnessRow = {
+  venue: ScalpComposerVenue;
   symbol: string;
   ready: boolean;
   latestCandleTsMs: number | null;
@@ -2288,7 +2288,7 @@ type ScalpV2ResearchFreshnessRow = {
   reason: string | null;
 };
 
-type ScalpV2ResearchFreshnessAttempt = {
+type ScalpComposerResearchFreshnessAttempt = {
   retryIndex: number;
   staleBefore: number;
   staleAfter: number;
@@ -2298,7 +2298,7 @@ type ScalpV2ResearchFreshnessAttempt = {
   loadedScopes: number;
 };
 
-type ScalpV2ResearchFreshnessGateResult = {
+type ScalpComposerResearchFreshnessGateResult = {
   applied: boolean;
   ready: boolean;
   reason: string | null;
@@ -2306,9 +2306,9 @@ type ScalpV2ResearchFreshnessGateResult = {
   staleCount: number;
   retriesConfigured: number;
   retriesUsed: number;
-  attempts: ScalpV2ResearchFreshnessAttempt[];
+  attempts: ScalpComposerResearchFreshnessAttempt[];
   stalePreview: Array<{
-    venue: ScalpV2Venue;
+    venue: ScalpComposerVenue;
     symbol: string;
     reason: string | null;
     latestCandleTsMs: number | null;
@@ -2335,30 +2335,30 @@ function normalizeRuntimeScopeSymbol(value: unknown): string {
 }
 
 function collectRuntimeLoadScopes(
-  runtime: ScalpV2RuntimeConfig,
-): ScalpV2RuntimeLoadScope[] {
-  const out = new Map<string, ScalpV2RuntimeLoadScope>();
+  runtime: ScalpComposerRuntimeConfig,
+): ScalpComposerRuntimeLoadScope[] {
+  const out = new Map<string, ScalpComposerRuntimeLoadScope>();
   for (const venue of runtime.supportedVenues) {
     const seedSymbols = runtime.seedSymbolsByVenue[venue] || [];
     const liveSymbols = runtime.seedLiveSymbolsByVenue[venue] || [];
     for (const rawSymbol of [...seedSymbols, ...liveSymbols]) {
       const symbol = normalizeRuntimeScopeSymbol(rawSymbol);
       if (!symbol) continue;
-      if (!isScalpV2DiscoverSymbolAllowed(venue, symbol)) continue;
-      if (!isScalpV2RuntimeSymbolInScope({ runtime, venue, symbol })) continue;
+      if (!isScalpComposerDiscoverSymbolAllowed(venue, symbol)) continue;
+      if (!isScalpComposerRuntimeSymbolInScope({ runtime, venue, symbol })) continue;
       out.set(`${venue}:${symbol}`, { venue, symbol });
     }
   }
   return Array.from(out.values());
 }
 
-function resolveResearchFreshnessPolicy(): ScalpV2ResearchFreshnessPolicy {
+function resolveResearchFreshnessPolicy(): ScalpComposerResearchFreshnessPolicy {
   const bitgetLagHours = Math.max(
     1,
     Math.min(
       24 * 7,
       toPositiveInt(
-        process.env.SCALP_V2_RESEARCH_FRESHNESS_MAX_LAG_HOURS_BITGET,
+        process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_MAX_LAG_HOURS_BITGET,
         36,
         24 * 7,
       ),
@@ -2369,16 +2369,16 @@ function resolveResearchFreshnessPolicy(): ScalpV2ResearchFreshnessPolicy {
     Math.min(
       24 * 7,
       toPositiveInt(
-        process.env.SCALP_V2_RESEARCH_FRESHNESS_MAX_LAG_HOURS_CAPITAL,
+        process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_MAX_LAG_HOURS_CAPITAL,
         84,
         24 * 7,
       ),
     ),
   );
   return {
-    enabled: envBool("SCALP_V2_RESEARCH_FRESHNESS_GATE_ENABLED", true),
+    enabled: envBool("SCALP_COMPOSER_RESEARCH_FRESHNESS_GATE_ENABLED", true),
     retries: toNonNegativeInt(
-      process.env.SCALP_V2_RESEARCH_FRESHNESS_RETRIES,
+      process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_RETRIES,
       2,
       12,
     ),
@@ -2387,7 +2387,7 @@ function resolveResearchFreshnessPolicy(): ScalpV2ResearchFreshnessPolicy {
       Math.min(
         120,
         toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_FRESHNESS_LOAD_BATCH_SIZE,
+          process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_LOAD_BATCH_SIZE,
           4,
           120,
         ),
@@ -2398,7 +2398,7 @@ function resolveResearchFreshnessPolicy(): ScalpV2ResearchFreshnessPolicy {
       Math.min(
         20,
         toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_FRESHNESS_LOAD_MAX_ATTEMPTS,
+          process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_LOAD_MAX_ATTEMPTS,
           5,
           20,
         ),
@@ -2409,7 +2409,7 @@ function resolveResearchFreshnessPolicy(): ScalpV2ResearchFreshnessPolicy {
       Math.min(
         120,
         toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_FRESHNESS_MAX_HOPS_PER_RETRY,
+          process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_MAX_HOPS_PER_RETRY,
           24,
           120,
         ),
@@ -2422,7 +2422,7 @@ function resolveResearchFreshnessPolicy(): ScalpV2ResearchFreshnessPolicy {
       Math.min(
         20_000,
         toNonNegativeInt(
-          process.env.SCALP_V2_RESEARCH_FRESHNESS_MIN_WEEK_CANDLES_BITGET,
+          process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_MIN_WEEK_CANDLES_BITGET,
           1_200,
           20_000,
         ),
@@ -2433,7 +2433,7 @@ function resolveResearchFreshnessPolicy(): ScalpV2ResearchFreshnessPolicy {
       Math.min(
         20_000,
         toNonNegativeInt(
-          process.env.SCALP_V2_RESEARCH_FRESHNESS_MIN_WEEK_CANDLES_CAPITAL,
+          process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_MIN_WEEK_CANDLES_CAPITAL,
           600,
           20_000,
         ),
@@ -2444,7 +2444,7 @@ function resolveResearchFreshnessPolicy(): ScalpV2ResearchFreshnessPolicy {
       Math.min(
         100,
         toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_FRESHNESS_STALE_PREVIEW_LIMIT,
+          process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_STALE_PREVIEW_LIMIT,
           20,
           100,
         ),
@@ -2454,10 +2454,10 @@ function resolveResearchFreshnessPolicy(): ScalpV2ResearchFreshnessPolicy {
 }
 
 async function evaluateResearchFreshnessRow(params: {
-  scope: ScalpV2RuntimeLoadScope;
+  scope: ScalpComposerRuntimeLoadScope;
   windowToTs: number;
-  policy: ScalpV2ResearchFreshnessPolicy;
-}): Promise<ScalpV2ResearchFreshnessRow> {
+  policy: ScalpComposerResearchFreshnessPolicy;
+}): Promise<ScalpComposerResearchFreshnessRow> {
   const fromTs = params.windowToTs - ONE_WEEK_MS;
   const minWindowCandles =
     params.scope.venue === "capital"
@@ -2525,11 +2525,11 @@ async function evaluateResearchFreshnessRow(params: {
 }
 
 async function evaluateResearchFreshness(params: {
-  scopes: ScalpV2RuntimeLoadScope[];
+  scopes: ScalpComposerRuntimeLoadScope[];
   windowToTs: number;
-  policy: ScalpV2ResearchFreshnessPolicy;
-}): Promise<ScalpV2ResearchFreshnessRow[]> {
-  const rows: ScalpV2ResearchFreshnessRow[] = [];
+  policy: ScalpComposerResearchFreshnessPolicy;
+}): Promise<ScalpComposerResearchFreshnessRow[]> {
+  const rows: ScalpComposerResearchFreshnessRow[] = [];
   for (const scope of params.scopes) {
     rows.push(
       await evaluateResearchFreshnessRow({
@@ -2543,8 +2543,8 @@ async function evaluateResearchFreshness(params: {
 }
 
 async function refreshResearchFreshnessScopes(params: {
-  scopes: ScalpV2RuntimeLoadScope[];
-  policy: ScalpV2ResearchFreshnessPolicy;
+  scopes: ScalpComposerRuntimeLoadScope[];
+  policy: ScalpComposerResearchFreshnessPolicy;
 }): Promise<{
   runs: number;
   failedRuns: number;
@@ -2562,7 +2562,7 @@ async function refreshResearchFreshnessScopes(params: {
   let offset = 0;
 
   while (offset < params.scopes.length && runs < params.policy.maxHopsPerRetry) {
-    const result = await runScalpV2LoadCandlesPipelineJob({
+    const result = await runScalpComposerLoadCandlesPipelineJob({
       scopes: params.scopes,
       batchSize: params.policy.loadBatchSize,
       maxAttempts: params.policy.loadMaxAttempts,
@@ -2586,11 +2586,11 @@ async function refreshResearchFreshnessScopes(params: {
   return { runs, failedRuns, failedScopes, loadedScopes };
 }
 
-async function runScalpV2SundayResearchFreshnessGate(params: {
-  runtime: ScalpV2RuntimeConfig;
+async function runScalpComposerSundayResearchFreshnessGate(params: {
+  runtime: ScalpComposerRuntimeConfig;
   nowTs: number;
   windowToTs: number;
-}): Promise<ScalpV2ResearchFreshnessGateResult> {
+}): Promise<ScalpComposerResearchFreshnessGateResult> {
   const policy = resolveResearchFreshnessPolicy();
   const policySummary = {
     retries: policy.retries,
@@ -2602,7 +2602,7 @@ async function runScalpV2SundayResearchFreshnessGate(params: {
     minWindowCandlesBitget: policy.minWindowCandlesBitget,
     minWindowCandlesCapital: policy.minWindowCandlesCapital,
   };
-  if (!policy.enabled || !isScalpV2SundayUtc(params.nowTs)) {
+  if (!policy.enabled || !isScalpComposerSundayUtc(params.nowTs)) {
     return {
       applied: false,
       ready: true,
@@ -2639,7 +2639,7 @@ async function runScalpV2SundayResearchFreshnessGate(params: {
     policy,
   });
   let stale = rows.filter((row) => !row.ready);
-  const attempts: ScalpV2ResearchFreshnessAttempt[] = [];
+  const attempts: ScalpComposerResearchFreshnessAttempt[] = [];
   let retriesUsed = 0;
 
   for (
@@ -2701,15 +2701,15 @@ async function runScalpV2SundayResearchFreshnessGate(params: {
 /**
  * Discover is now a thin delegate to the evaluate job. The old discover job
  * generated the same composer grid as evaluate but with a weaker scoring model
- * and an env-gated persistence toggle (SCALP_V2_DISCOVER_PERSIST_CANDIDATES)
+ * and an env-gated persistence toggle (SCALP_COMPOSER_DISCOVER_PERSIST_CANDIDATES)
  * that defaulted to false — making it a no-op in production. Evaluate already
  * does cursor-based windowing, better scoring, and always persists.
  *
- * Kept as a named export so the /api/scalp/v2/cron/discover endpoint and
- * runScalpV2FullAutoCycle continue to work without changes.
+ * Kept as a named export so the /api/scalp/composer/cron/discover endpoint and
+ * runScalpComposerFullAutoCycle continue to work without changes.
  */
-export async function runScalpV2DiscoverJob(): Promise<ScalpV2JobResult> {
-  const result = await runScalpV2ResearchJob();
+export async function runScalpComposerDiscoverJob(): Promise<ScalpComposerJobResult> {
+  const result = await runScalpComposerResearchJob();
   return {
     ...result,
     jobKind: "discover",
@@ -2726,7 +2726,7 @@ export async function runScalpV2DiscoverJob(): Promise<ScalpV2JobResult> {
  * (default: stage A). No cursor or batch-size throttling — the cache
  * ensures each candidate is only backtested once per week window.
  */
-export async function runScalpV2ResearchJob(params: {
+export async function runScalpComposerResearchJob(params: {
   batchSize?: number;
   debugTiming?: boolean;
   lockScope?: string;
@@ -2736,27 +2736,27 @@ export async function runScalpV2ResearchJob(params: {
   // of being re-fetched on every batch. Cron callers omit it; behavior is
   // identical to before for them.
   candleCacheRef?: Map<string, ScalpReplayCandle[]>;
-} = {}): Promise<ScalpV2JobResult> {
+} = {}): Promise<ScalpComposerJobResult> {
   const researchWorkLeasesEnabled = envBool(
-    "SCALP_V2_RESEARCH_WORK_LEASES_ENABLED",
+    "SCALP_COMPOSER_RESEARCH_WORK_LEASES_ENABLED",
     true,
   );
   const owner = lockOwner("research");
   const researchLockScope =
     String(
       params.lockScope ||
-        process.env.SCALP_V2_RESEARCH_LOCK_SCOPE ||
+        process.env.SCALP_COMPOSER_RESEARCH_LOCK_SCOPE ||
         (researchWorkLeasesEnabled ? `lease:${owner}` : "singleton"),
     )
       .trim()
       .toLowerCase() || "singleton";
-  const claimed = await claimScalpV2Job({
+  const claimed = await claimScalpComposerJob({
     jobKind: "research",
     lockOwner: owner,
     dedupeScope: researchLockScope,
   });
   if (!claimed) {
-    return buildScalpV2JobResult({
+    return buildScalpComposerJobResult({
       jobKind: "research",
       processed: 0,
       succeeded: 0,
@@ -2774,7 +2774,7 @@ export async function runScalpV2ResearchJob(params: {
   let details: Record<string, unknown> = {};
   const debugTiming =
     params.debugTiming === true ||
-    envBool("SCALP_V2_RESEARCH_DEBUG_TIMING", false);
+    envBool("SCALP_COMPOSER_RESEARCH_DEBUG_TIMING", false);
   type ResearchTimingStat = { count: number; totalMs: number; maxMs: number };
   const timingStats = new Map<string, ResearchTimingStat>();
   function recordTiming(label: string, startedAtMs: number): void {
@@ -2829,7 +2829,7 @@ export async function runScalpV2ResearchJob(params: {
     Math.min(
       120_000,
       toPositiveInt(
-        process.env.SCALP_V2_RESEARCH_HEARTBEAT_MIN_INTERVAL_MS,
+        process.env.SCALP_COMPOSER_RESEARCH_HEARTBEAT_MIN_INTERVAL_MS,
         15_000,
         120_000,
       ),
@@ -2879,7 +2879,7 @@ export async function runScalpV2ResearchJob(params: {
         progressPayload.weeklyTotal = stickyDiscoveredTotal;
       }
     }
-    await heartbeatScalpV2Job({
+    await heartbeatScalpComposerJob({
       jobKind: "research",
       lockOwner: owner,
       dedupeScope: researchLockScope,
@@ -2911,12 +2911,12 @@ export async function runScalpV2ResearchJob(params: {
 
   try {
     let runtime = await withTiming("runtime.load_config", () =>
-      loadScalpV2RuntimeConfig(),
+      loadScalpComposerRuntimeConfig(),
     );
     const discoveredAtRuntimeLoad = await withTiming(
       "runtime.count_discovered",
       () =>
-        countScalpV2CandidatesByStatus({
+        countScalpComposerCandidatesByStatus({
           status: "discovered",
         }).catch(() => -1),
     );
@@ -2937,9 +2937,9 @@ export async function runScalpV2ResearchJob(params: {
     if (!runtime.enabled) {
       details = attachTimingDetails({
         skipped: true,
-        reason: "SCALP_V2_DISABLED",
+        reason: "SCALP_COMPOSER_DISABLED",
       });
-      return buildScalpV2JobResult({
+      return buildScalpComposerJobResult({
         jobKind: "research",
         processed,
         succeeded,
@@ -2951,9 +2951,9 @@ export async function runScalpV2ResearchJob(params: {
 
     const workerPolicy = resolveWorkerPolicy();
     const nowTs = nowMs();
-    const windowToTs = resolveScalpV2CompletedWeekWindowToUtc(nowTs);
+    const windowToTs = resolveScalpComposerCompletedWeekWindowToUtc(nowTs);
     const freshnessGate = await withTiming("research.freshness_gate", () =>
-      runScalpV2SundayResearchFreshnessGate({
+      runScalpComposerSundayResearchFreshnessGate({
         runtime,
         nowTs,
         windowToTs,
@@ -2977,7 +2977,7 @@ export async function runScalpV2ResearchJob(params: {
           freshnessGate.reason || "research_candle_freshness_gate_failed",
         freshnessGate,
       });
-      return buildScalpV2JobResult({
+      return buildScalpComposerJobResult({
         jobKind: "research",
         processed,
         succeeded,
@@ -2987,7 +2987,7 @@ export async function runScalpV2ResearchJob(params: {
       });
     }
     const scopePrune = await withTiming("research.scope_prune", () =>
-      runScalpV2ScopePrunePass({
+      runScalpComposerScopePrunePass({
         runtime,
         windowToTs,
         nowTs,
@@ -3004,7 +3004,7 @@ export async function runScalpV2ResearchJob(params: {
     const activePrunedScopes = normalizeActivePrunedScopes(runtime, nowTs);
     const jobStartMs = nowMs();
     const disableTimeBudget = envBool(
-      "SCALP_V2_RESEARCH_DISABLE_TIME_BUDGET",
+      "SCALP_COMPOSER_RESEARCH_DISABLE_TIME_BUDGET",
       false,
     );
     const timeBudgetMs = disableTimeBudget
@@ -3014,7 +3014,7 @@ export async function runScalpV2ResearchJob(params: {
           Math.min(
             780_000,
             toPositiveInt(
-              process.env.SCALP_V2_RESEARCH_TIME_BUDGET_MS,
+              process.env.SCALP_COMPOSER_RESEARCH_TIME_BUDGET_MS,
               650_000,
               780_000,
             ),
@@ -3025,7 +3025,7 @@ export async function runScalpV2ResearchJob(params: {
       Math.min(
         24 * 60 * 60 * 1000,
         toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_WORK_LEASE_MS,
+          process.env.SCALP_COMPOSER_RESEARCH_WORK_LEASE_MS,
           disableTimeBudget
             ? 2 * 60 * 60 * 1000
             : Math.max(30 * 60 * 1000, timeBudgetMs + 2 * 60_000),
@@ -3038,15 +3038,15 @@ export async function runScalpV2ResearchJob(params: {
 
     const maxCandidatesPerSession = 840;
     const minPersistStageRaw = String(
-      process.env.SCALP_V2_RESEARCH_MIN_PERSIST_STAGE || "a",
+      process.env.SCALP_COMPOSER_RESEARCH_MIN_PERSIST_STAGE || "a",
     ).trim().toLowerCase();
-    const minPersistStage: ScalpV2WorkerStageId =
+    const minPersistStage: ScalpComposerWorkerStageId =
       minPersistStageRaw === "c" ? "c" : minPersistStageRaw === "b" ? "b" : "a";
     const configuredBatchSize = Math.max(
       1,
       Math.min(
         10_000,
-        toPositiveInt(process.env.SCALP_V2_RESEARCH_BATCH_SIZE, 100, 10_000),
+        toPositiveInt(process.env.SCALP_COMPOSER_RESEARCH_BATCH_SIZE, 100, 10_000),
       ),
     );
     const effectiveBatchSize = Math.max(
@@ -3059,9 +3059,9 @@ export async function runScalpV2ResearchJob(params: {
 
     // --- Build scopes ---
     const scopes: Array<{
-      venue: ScalpV2Venue;
+      venue: ScalpComposerVenue;
       symbol: string;
-      session: ScalpV2Session;
+      session: ScalpComposerSession;
     }> = [];
     let scopeSymbolsVisited = 0;
     let droppedByVenuePolicy = 0;
@@ -3079,13 +3079,13 @@ export async function runScalpV2ResearchJob(params: {
         });
         const symbol = String(symbolRaw || "").trim().toUpperCase();
         if (!symbol) continue;
-        if (!isScalpV2DiscoverSymbolAllowed(venue, symbol)) {
+        if (!isScalpComposerDiscoverSymbolAllowed(venue, symbol)) {
           droppedByVenuePolicy += 1;
           continue;
         }
-        if (!isScalpV2RuntimeSymbolInScope({ runtime, venue, symbol })) continue;
+        if (!isScalpComposerRuntimeSymbolInScope({ runtime, venue, symbol })) continue;
         for (const session of runtime.supportedSessions) {
-          const scopeKey = toScalpV2ScopeKey({ venue, symbol, session });
+          const scopeKey = toScalpComposerScopeKey({ venue, symbol, session });
           if (activePrunedScopes[scopeKey]) {
             droppedByScopePrune += 1;
             continue;
@@ -3103,7 +3103,7 @@ export async function runScalpV2ResearchJob(params: {
         freshnessGate,
         scopePrune: scopePrune.details,
       });
-      return buildScalpV2JobResult({
+      return buildScalpComposerJobResult({
         jobKind: "research",
         processed: 0,
         succeeded: 0,
@@ -3121,8 +3121,8 @@ export async function runScalpV2ResearchJob(params: {
       workerPolicy.stageB,
       workerPolicy.stageC,
     ] as const;
-    const v3Cfg = resolveScalpV2V3Config();
-    const v3Enabled = isScalpV2V3ResearchEnabled();
+    const v3Cfg = resolveScalpComposerV3Config();
+    const v3Enabled = isScalpComposerV3ResearchEnabled();
     const trainingWindowToTs = v3Enabled
       ? windowToTs - v3Cfg.holdoutWeeks * ONE_WEEK_MS
       : windowToTs;
@@ -3131,14 +3131,14 @@ export async function runScalpV2ResearchJob(params: {
     const enabledDeploymentsForWarmUp = await withTiming(
       "warmup.load_enabled_deployments",
       () =>
-        listScalpV2Deployments({
+        listScalpComposerDeployments({
           enabledOnly: true,
           limit: 500,
-        }).catch(() => [] as Awaited<ReturnType<typeof listScalpV2Deployments>>),
+        }).catch(() => [] as Awaited<ReturnType<typeof listScalpComposerDeployments>>),
     );
     const enabledDeploymentVariantSeeds = enabledDeploymentsForWarmUp
       .filter((dep) =>
-        isScalpV2RuntimeSymbolInScope({
+        isScalpComposerRuntimeSymbolInScope({
           runtime,
           venue: dep.venue,
           symbol: dep.symbol,
@@ -3149,7 +3149,7 @@ export async function runScalpV2ResearchJob(params: {
           `${dep.venue}:${dep.symbol}:${dep.strategyId}:${dep.tuneId}:${dep.entrySessionProfile}`,
       );
     const adaptiveSearchEnabled = envBool(
-      "SCALP_V2_SESSION_ADAPTIVE_SEARCH_ENABLED",
+      "SCALP_COMPOSER_SESSION_ADAPTIVE_SEARCH_ENABLED",
       true,
     );
     const adaptivePriors = adaptiveSearchEnabled
@@ -3158,12 +3158,12 @@ export async function runScalpV2ResearchJob(params: {
             windowToTs,
             nowMs: nowTs,
             limit: toPositiveInt(
-              process.env.SCALP_V2_SESSION_ADAPTIVE_SEARCH_MAX_ROWS,
+              process.env.SCALP_COMPOSER_SESSION_ADAPTIVE_SEARCH_MAX_ROWS,
               50_000,
               100_000,
             ),
             minSamples: toPositiveInt(
-              process.env.SCALP_V2_SESSION_ADAPTIVE_SEARCH_MIN_SAMPLES,
+              process.env.SCALP_COMPOSER_SESSION_ADAPTIVE_SEARCH_MIN_SAMPLES,
               8,
               100,
             ),
@@ -3196,34 +3196,34 @@ export async function runScalpV2ResearchJob(params: {
           )
         : null;
     const noveltyBudget = {
-      enabled: envBool("SCALP_V2_SESSION_NOVELTY_BUDGET_ENABLED", true),
-      exploitPct: envNumberOr("SCALP_V2_SESSION_NOVELTY_EXPLOIT_PCT", 0.55),
-      adjacentPct: envNumberOr("SCALP_V2_SESSION_NOVELTY_ADJACENT_PCT", 0.25),
-      explorePct: envNumberOr("SCALP_V2_SESSION_NOVELTY_EXPLORE_PCT", 0.2),
+      enabled: envBool("SCALP_COMPOSER_SESSION_NOVELTY_BUDGET_ENABLED", true),
+      exploitPct: envNumberOr("SCALP_COMPOSER_SESSION_NOVELTY_EXPLOIT_PCT", 0.55),
+      adjacentPct: envNumberOr("SCALP_COMPOSER_SESSION_NOVELTY_ADJACENT_PCT", 0.25),
+      explorePct: envNumberOr("SCALP_COMPOSER_SESSION_NOVELTY_EXPLORE_PCT", 0.2),
       maxPerCluster: toPositiveInt(
-        process.env.SCALP_V2_SESSION_NOVELTY_MAX_PER_CLUSTER,
+        process.env.SCALP_COMPOSER_SESSION_NOVELTY_MAX_PER_CLUSTER,
         Math.max(1, Math.ceil(maxCandidatesPerSession * 0.08)),
         maxCandidatesPerSession,
       ),
       maxPerFamily: toPositiveInt(
-        process.env.SCALP_V2_SESSION_NOVELTY_MAX_PER_FAMILY,
+        process.env.SCALP_COMPOSER_SESSION_NOVELTY_MAX_PER_FAMILY,
         Math.max(1, Math.ceil(maxCandidatesPerSession * 0.18)),
         maxCandidatesPerSession,
       ),
       exploitAdjustmentThreshold: envNumberOr(
-        "SCALP_V2_SESSION_NOVELTY_EXPLOIT_ADJ_THRESHOLD",
+        "SCALP_COMPOSER_SESSION_NOVELTY_EXPLOIT_ADJ_THRESHOLD",
         0.05,
       ),
       // Evolution reserved slice (carved from explore) + explore floor. Env-only
       // so the budget (and thus the warm-up hash) stays stable; when no offspring
       // exist the reserved pass simply finds none and explore is untouched.
       evolutionPct: evolutionConfig.enabled
-        ? envNumberOr("SCALP_V2_SESSION_EVOLUTION_PCT", 0.15)
+        ? envNumberOr("SCALP_COMPOSER_SESSION_EVOLUTION_PCT", 0.15)
         : 0,
-      minExplorePct: envNumberOr("SCALP_V2_SESSION_NOVELTY_MIN_EXPLORE_PCT", 0.05),
+      minExplorePct: envNumberOr("SCALP_COMPOSER_SESSION_NOVELTY_MIN_EXPLORE_PCT", 0.05),
     };
     const evolutionScoreBoost = envNumberOr(
-      "SCALP_V2_SESSION_EVOLUTION_SCORE_BOOST",
+      "SCALP_COMPOSER_SESSION_EVOLUTION_SCORE_BOOST",
       0.06,
     );
     const noveltyBudgetFingerprint = JSON.stringify(noveltyBudget);
@@ -3234,14 +3234,14 @@ export async function runScalpV2ResearchJob(params: {
       noveltyBudgetFingerprint,
     });
     const warmUpState = await withTiming("warmup.load_state", () =>
-      loadScalpV2WarmUpState({ windowToTs }).catch(() => null),
+      loadScalpComposerWarmUpState({ windowToTs }).catch(() => null),
     );
     const warmUpComplete = warmUpState !== null && warmUpState.scopeHash === scopeHash;
     const v3SingleAxisTemporalResultCount = v3Enabled
       ? (
           await withTiming("warmup.load_v3_combo_readiness", () =>
-            listScalpV2Candidates({ limit: 10_000 }).catch(
-              () => [] as Awaited<ReturnType<typeof listScalpV2Candidates>>,
+            listScalpComposerCandidates({ limit: 10_000 }).catch(
+              () => [] as Awaited<ReturnType<typeof listScalpComposerCandidates>>,
             ),
           )
         ).filter((row) => {
@@ -3261,15 +3261,15 @@ export async function runScalpV2ResearchJob(params: {
 
 	    type InMemoryCandidate = {
 	      rowId?: number;
-	      venue: ScalpV2Venue;
+	      venue: ScalpComposerVenue;
 	      symbol: string;
-	      session: ScalpV2Session;
+	      session: ScalpComposerSession;
 	      strategyId: string;
 	      tuneId: string;
 	      candidateId: string;
 	      score: number;
 	      v3PriorScore?: number;
-	      v3TemporalFilter?: ScalpV2V3TemporalFilter | null;
+	      v3TemporalFilter?: ScalpComposerV3TemporalFilter | null;
 	      v3Ranking?: Record<string, unknown> | null;
 	      researchAttempts?: number;
 	      dsl: any;
@@ -3302,14 +3302,14 @@ export async function runScalpV2ResearchJob(params: {
 	              config: evolutionConfig,
 	            })
 	          : null;
-	        const composerCandidates = buildScalpV2SessionStructureComposerGrid({
+	        const composerCandidates = buildScalpComposerSessionStructureComposerGrid({
 	          venue: scope.venue,
 	          symbol: scope.symbol,
 	          entrySessionProfile: scope.session,
 	          maxCandidates: Math.min(
 	            baseCandidateBudget,
 	            toPositiveInt(
-	              process.env.SCALP_V2_SESSION_COMPOSER_MAX_CANDIDATES_PER_SCOPE,
+	              process.env.SCALP_COMPOSER_SESSION_COMPOSER_MAX_CANDIDATES_PER_SCOPE,
 	              60,
 	              2_000,
 	            ),
@@ -3329,7 +3329,7 @@ export async function runScalpV2ResearchJob(params: {
 	            : 0;
 	          const supportNorm = Math.max(0, Math.min(12, supportScore)) / 12;
 	          const v3Ranking = v3Enabled
-	            ? computeScalpV2V3PriorScore({
+	            ? computeScalpComposerV3PriorScore({
 	                compositeScore: model.compositeScore,
 	                confidence: model.confidence,
 	                supportScore,
@@ -3370,7 +3370,7 @@ export async function runScalpV2ResearchJob(params: {
 	          for (const baseCandidate of scopeCandidates) {
 	            if (v3TemporalVariantsGenerated >= v3TemporalBudget * generatedScopeCount) break;
 	            const plan = resolveModelGuidedComposerExecutionPlanFromTuneId(baseCandidate.tuneId);
-	            const variants = buildScalpV2V3TemporalVariants({
+	            const variants = buildScalpComposerV3TemporalVariants({
 	              baseTuneId: baseCandidate.tuneId,
 	              session: scope.session,
 	              venue: scope.venue,
@@ -3396,7 +3396,7 @@ export async function runScalpV2ResearchJob(params: {
 	              const seed = `${scope.venue}:${scope.symbol}:${scope.session}:${tuneId}`;
 	              const model = baseCandidate.dsl.model;
 	              const supportScore = Number(baseCandidate.dsl.supportScore) || 0;
-	              const v3Ranking = computeScalpV2V3PriorScore({
+	              const v3Ranking = computeScalpComposerV3PriorScore({
 	                compositeScore: model.compositeScore,
 	                confidence: model.confidence,
 	                supportScore,
@@ -3439,7 +3439,7 @@ export async function runScalpV2ResearchJob(params: {
         const enabledDeployments: typeof enabledDeploymentsForWarmUp = [];
         const existingTuneIds = new Set(allCandidates.map((c) => c.tuneId));
         for (const dep of enabledDeployments) {
-          if (!isScalpV2RuntimeSymbolInScope({ runtime, venue: dep.venue, symbol: dep.symbol })) continue;
+          if (!isScalpComposerRuntimeSymbolInScope({ runtime, venue: dep.venue, symbol: dep.symbol })) continue;
           const session = dep.entrySessionProfile;
           const plan = resolveModelGuidedComposerExecutionPlanFromTuneId(dep.tuneId);
           const depDsl = asRecord(asRecord(dep.promotionGate).dsl || {});
@@ -3482,7 +3482,7 @@ export async function runScalpV2ResearchJob(params: {
                 existingTuneIds.add(variantTuneId);
                 const variantScore = 90 + hashScoreSeed(variantTuneId) / 1000;
                 allCandidates.push({
-                  venue: dep.venue as ScalpV2Venue,
+                  venue: dep.venue as ScalpComposerVenue,
                   symbol: dep.symbol,
                   session,
                   strategyId: dep.strategyId,
@@ -3492,7 +3492,7 @@ export async function runScalpV2ResearchJob(params: {
                   dsl: {
                     candidateId: variantTuneId,
                     tuneId: variantTuneId,
-                    venue: dep.venue as ScalpV2Venue,
+                    venue: dep.venue as ScalpComposerVenue,
                     symbol: dep.symbol,
                     entrySessionProfile: session,
                     blocksByFamily: {
@@ -3525,7 +3525,7 @@ export async function runScalpV2ResearchJob(params: {
           poolSizeTotal,
           scopePrune: scopePrune.details,
         });
-        return buildScalpV2JobResult({ jobKind: "research", processed: 0, succeeded: 0, failed: 0, pendingAfter: 0, details });
+        return buildScalpComposerJobResult({ jobKind: "research", processed: 0, succeeded: 0, failed: 0, pendingAfter: 0, details });
       }
 
       // Persist all candidates as "discovered" (upsert — safe for partial reruns)
@@ -3538,7 +3538,7 @@ export async function runScalpV2ResearchJob(params: {
         entrySessionProfile: c.session,
         score: c.score,
         status: "discovered" as const,
-        reasonCodes: ["SCALP_V2_WARM_UP"],
+        reasonCodes: ["SCALP_COMPOSER_WARM_UP"],
         metadata: {
           discoveredAtMs: nowTs,
           researchWindowToTs: windowToTs,
@@ -3577,12 +3577,12 @@ export async function runScalpV2ResearchJob(params: {
 	        },
 	      }));
       await withTiming("warmup.persist_candidates", () =>
-        upsertScalpV2Candidates({ rows }),
+        upsertScalpComposerCandidates({ rows }),
       );
 
       // Save fingerprint so subsequent runs skip generation entirely
       await withTiming("warmup.persist_state", () =>
-        upsertScalpV2WarmUpState({
+        upsertScalpComposerWarmUpState({
           windowToTs,
           scopeHash,
           candidateCount: allCandidates.length,
@@ -3620,7 +3620,7 @@ export async function runScalpV2ResearchJob(params: {
         configuredBatchSize,
         effectiveBatchSize,
       });
-      return buildScalpV2JobResult({
+      return buildScalpComposerJobResult({
         jobKind: "research",
         processed: 0,
         succeeded: 0,
@@ -3632,15 +3632,15 @@ export async function runScalpV2ResearchJob(params: {
 
     // --- BACKTEST RUN: warm-up complete, skip generation entirely ---
     const deploymentRolloverRequeueEnabled = envBool(
-      "SCALP_V2_RESEARCH_DEPLOYMENT_ROLLOVER_REQUEUE_ENABLED",
+      "SCALP_COMPOSER_RESEARCH_DEPLOYMENT_ROLLOVER_REQUEUE_ENABLED",
       true,
     );
     const deploymentRolloverPreviousWindowOnly = envBool(
-      "SCALP_V2_RESEARCH_DEPLOYMENT_ROLLOVER_PREVIOUS_WINDOW_ONLY",
+      "SCALP_COMPOSER_RESEARCH_DEPLOYMENT_ROLLOVER_PREVIOUS_WINDOW_ONLY",
       true,
     );
     const deploymentRolloverIncludeDisabled = envBool(
-      "SCALP_V2_RESEARCH_DEPLOYMENT_ROLLOVER_INCLUDE_DISABLED",
+      "SCALP_COMPOSER_RESEARCH_DEPLOYMENT_ROLLOVER_INCLUDE_DISABLED",
       true,
     );
     let deploymentRolloverRequeued = 0;
@@ -3652,7 +3652,7 @@ export async function runScalpV2ResearchJob(params: {
       deploymentRolloverRequeued = await withTiming(
         "research.rollover_requeue",
         () =>
-          requeueScalpV2DeploymentCandidatesForWindow({
+          requeueScalpComposerDeploymentCandidatesForWindow({
             windowToTs,
             previousWindowOnly: deploymentRolloverPreviousWindowOnly,
             includeDisabledDeployments: deploymentRolloverIncludeDisabled,
@@ -3672,22 +3672,22 @@ export async function runScalpV2ResearchJob(params: {
     // Find the next symbol(s) that still have "discovered" candidates, load only those.
     await emitResearchHeartbeat({ phase: "load_backtest_chunk", force: true });
     const maxSymbolsPerRun = Math.max(1, Math.min(50,
-      toPositiveInt(process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN, 1, 50)));
+      toPositiveInt(process.env.SCALP_COMPOSER_RESEARCH_MAX_SYMBOLS_PER_RUN, 1, 50)));
     const discoveredSymbols = await withTiming("research.list_discovered_symbols", () =>
-      listScalpV2DiscoveredSymbols().catch(() => [] as string[]),
+      listScalpComposerDiscoveredSymbols().catch(() => [] as string[]),
     );
     const symbolShardCount = Math.max(
       1,
       Math.min(
         128,
-        toPositiveInt(process.env.SCALP_V2_RESEARCH_SYMBOL_SHARD_COUNT, 1, 128),
+        toPositiveInt(process.env.SCALP_COMPOSER_RESEARCH_SYMBOL_SHARD_COUNT, 1, 128),
       ),
     );
     const symbolShardIndex = Math.max(
       0,
       Math.min(
         symbolShardCount - 1,
-        Math.floor(Number(process.env.SCALP_V2_RESEARCH_SYMBOL_SHARD_INDEX) || 0),
+        Math.floor(Number(process.env.SCALP_COMPOSER_RESEARCH_SYMBOL_SHARD_INDEX) || 0),
       ),
     );
     const shardSymbol = (symbol: string): number => {
@@ -3701,7 +3701,7 @@ export async function runScalpV2ResearchJob(params: {
     const symbolsThisRun = discoveredSymbolsForShard.slice(0, maxSymbolsPerRun);
     if (symbolsThisRun.length === 0) {
       const pendingAfter = await withTiming("research.count_discovered", () =>
-        countScalpV2CandidatesByStatus({
+        countScalpComposerCandidatesByStatus({
           status: "discovered",
         }).catch(() => -1),
       );
@@ -3722,7 +3722,7 @@ export async function runScalpV2ResearchJob(params: {
         pendingAfter: pendingResolved,
         scopePrune: scopePrune.details,
       });
-      return buildScalpV2JobResult({
+      return buildScalpComposerJobResult({
         jobKind: "research",
         processed: 0,
         succeeded: 0,
@@ -3736,7 +3736,7 @@ export async function runScalpV2ResearchJob(params: {
         return 0;
       }
       const discoveredCount = await withTiming("research.count_discovered", () =>
-        countScalpV2CandidatesByStatus({
+        countScalpComposerCandidatesByStatus({
           status: "discovered",
           symbols: symbolShardCount > 1 ? discoveredSymbolsForShard : undefined,
         }).catch(() => -1),
@@ -3749,11 +3749,11 @@ export async function runScalpV2ResearchJob(params: {
 
     if (symbolsThisRun.length > 0) {
       const chunkRows = await withTiming("research.load_discovered_chunk", () =>
-        listScalpV2Candidates({
+        listScalpComposerCandidates({
           status: "discovered",
           symbols: symbolsThisRun,
           limit: 5_000,
-        }).catch(() => [] as Awaited<ReturnType<typeof listScalpV2Candidates>>),
+        }).catch(() => [] as Awaited<ReturnType<typeof listScalpComposerCandidates>>),
       );
 
       const retiredComposerRows = chunkRows.filter(
@@ -3762,7 +3762,7 @@ export async function runScalpV2ResearchJob(params: {
           row.strategyId === DAY_MODEL_GUIDED_COMPOSER_V1_STRATEGY_ID,
       );
       if (retiredComposerRows.length > 0) {
-        await updateScalpV2CandidateStatuses({
+        await updateScalpComposerCandidateStatuses({
           ids: retiredComposerRows.map((row) => row.id),
           status: "rejected",
           metadataPatch: {
@@ -3784,9 +3784,9 @@ export async function runScalpV2ResearchJob(params: {
         const sessionDslRaw = asRecord(meta.researchDsl || {});
         allCandidates.push({
           rowId: row.id,
-          venue: row.venue as ScalpV2Venue,
+          venue: row.venue as ScalpComposerVenue,
           symbol: row.symbol,
-          session: row.entrySessionProfile as ScalpV2Session,
+          session: row.entrySessionProfile as ScalpComposerSession,
           strategyId: row.strategyId,
 	          tuneId: row.tuneId,
 	          candidateId: String(meta.researchCandidateId || row.tuneId),
@@ -3794,7 +3794,7 @@ export async function runScalpV2ResearchJob(params: {
 	          v3PriorScore: Number(asRecord(meta.v3Ranking).priorScore) || undefined,
 	          v3TemporalFilter:
 	            Object.keys(asRecord(meta.v3TemporalFilter)).length > 0
-	              ? (asRecord(meta.v3TemporalFilter) as ScalpV2V3TemporalFilter)
+	              ? (asRecord(meta.v3TemporalFilter) as ScalpComposerV3TemporalFilter)
 	              : null,
 	          v3Ranking:
 	            Object.keys(asRecord(meta.v3Ranking)).length > 0
@@ -3804,9 +3804,9 @@ export async function runScalpV2ResearchJob(params: {
 	          dsl: {
             candidateId: String(meta.researchCandidateId || row.tuneId),
             tuneId: row.tuneId,
-            venue: row.venue as ScalpV2Venue,
+            venue: row.venue as ScalpComposerVenue,
             symbol: row.symbol,
-            entrySessionProfile: row.entrySessionProfile as ScalpV2Session,
+            entrySessionProfile: row.entrySessionProfile as ScalpComposerSession,
             blocksByFamily: {
               pattern: dslRaw.pattern || [],
               session_filter: dslRaw.session_filter || [],
@@ -3841,7 +3841,7 @@ export async function runScalpV2ResearchJob(params: {
       }
     }
     const evaluatedKeys = await withTiming("research.load_evaluated_keys", () =>
-      loadScalpV2EvaluatedCandidateKeys({ windowToTs }).catch(
+      loadScalpComposerEvaluatedCandidateKeys({ windowToTs }).catch(
         () => new Set<string>(),
       ),
     );
@@ -3874,7 +3874,7 @@ export async function runScalpV2ResearchJob(params: {
         pendingAfter,
         scopePrune: scopePrune.details,
       });
-      return buildScalpV2JobResult({
+      return buildScalpComposerJobResult({
         jobKind: "research",
         processed: 0,
         succeeded: 0,
@@ -3894,7 +3894,7 @@ export async function runScalpV2ResearchJob(params: {
       },
     });
     const previousResults = await withTiming("research.load_previous_results", () =>
-      loadScalpV2PreviousWeekResults({
+      loadScalpComposerPreviousWeekResults({
         currentWindowToTs: windowToTs,
         symbols: Array.from(new Set(notYetEvaluated.map((row) => row.symbol))),
         tuneIds: Array.from(new Set(notYetEvaluated.map((row) => row.tuneId))),
@@ -3924,9 +3924,9 @@ export async function runScalpV2ResearchJob(params: {
     type SmartSkipEntry = {
       candidate: InMemoryCandidate;
       reasonCode:
-        | "SCALP_V2_SMART_SKIP_NETR_PREFILTER"
-        | "SCALP_V2_SMART_SKIP_CLEAR_FAIL_NET_R"
-        | "SCALP_V2_SMART_SKIP_CLEAR_FAIL_TRADES";
+        | "SCALP_COMPOSER_SMART_SKIP_NETR_PREFILTER"
+        | "SCALP_COMPOSER_SMART_SKIP_CLEAR_FAIL_NET_R"
+        | "SCALP_COMPOSER_SMART_SKIP_CLEAR_FAIL_TRADES";
       stageReason:
         | "smart_skip_net_r_prefilter"
         | "smart_skip_clear_fail_net_r"
@@ -3994,7 +3994,7 @@ export async function runScalpV2ResearchJob(params: {
           skippedByNetRPreFilter += 1;
           smartSkipped.push({
             candidate: c,
-            reasonCode: "SCALP_V2_SMART_SKIP_NETR_PREFILTER",
+            reasonCode: "SCALP_COMPOSER_SMART_SKIP_NETR_PREFILTER",
             stageReason: "smart_skip_net_r_prefilter",
             previousWindowToTs: Math.floor(Number(prev.windowToTs) || 0),
             previousStageANetR: prev.stageANetR,
@@ -4022,7 +4022,7 @@ export async function runScalpV2ResearchJob(params: {
         skippedByClearFail += 1;
         smartSkipped.push({
           candidate: c,
-          reasonCode: "SCALP_V2_SMART_SKIP_CLEAR_FAIL_NET_R",
+          reasonCode: "SCALP_COMPOSER_SMART_SKIP_CLEAR_FAIL_NET_R",
           stageReason: "smart_skip_clear_fail_net_r",
           previousWindowToTs: Math.floor(Number(prev.windowToTs) || 0),
           previousStageANetR: prev.stageANetR,
@@ -4036,7 +4036,7 @@ export async function runScalpV2ResearchJob(params: {
         skippedByClearFail += 1;
         smartSkipped.push({
           candidate: c,
-          reasonCode: "SCALP_V2_SMART_SKIP_CLEAR_FAIL_TRADES",
+          reasonCode: "SCALP_COMPOSER_SMART_SKIP_CLEAR_FAIL_TRADES",
           stageReason: "smart_skip_clear_fail_trades",
           previousWindowToTs: Math.floor(Number(prev.windowToTs) || 0),
           previousStageANetR: prev.stageANetR,
@@ -4075,7 +4075,7 @@ export async function runScalpV2ResearchJob(params: {
           0,
           Math.floor(Number(entry.previousStageATrades) || 0),
         );
-        const stageA: ScalpV2WorkerStageResult = {
+        const stageA: ScalpComposerWorkerStageResult = {
           ...buildWorkerStageSkeleton({
             stage: workerPolicy.stageA,
             fromTs: stageAFromTs,
@@ -4121,7 +4121,7 @@ export async function runScalpV2ResearchJob(params: {
           entrySessionProfile: c.session,
           score: c.score,
           status: "rejected" as const,
-          reasonCodes: ["SCALP_V2_RESEARCH_INLINE", entry.reasonCode],
+          reasonCodes: ["SCALP_COMPOSER_RESEARCH_INLINE", entry.reasonCode],
 	          metadata: {
 	            evaluatedAtMs: nowTs,
 	            evaluator: "v2_research_inline",
@@ -4140,7 +4140,7 @@ export async function runScalpV2ResearchJob(params: {
 
       try {
         await withTiming("research.persist_smart_skips", () =>
-          upsertScalpV2Candidates({ rows }),
+          upsertScalpComposerCandidates({ rows }),
         );
         return rows.length;
       } catch {
@@ -4148,7 +4148,7 @@ export async function runScalpV2ResearchJob(params: {
         for (const row of rows) {
           try {
             await withTiming("research.persist_smart_skip_single", () =>
-              upsertScalpV2Candidates({ rows: [row] }),
+              upsertScalpComposerCandidates({ rows: [row] }),
             );
             persisted += 1;
           } catch {
@@ -4207,8 +4207,8 @@ export async function runScalpV2ResearchJob(params: {
           score: c.score,
           status: "rejected" as const,
           reasonCodes: [
-            "SCALP_V2_RESEARCH_INLINE",
-            "SCALP_V2_SURROGATE_SKIP_LOW_PASS_PROB",
+            "SCALP_COMPOSER_RESEARCH_INLINE",
+            "SCALP_COMPOSER_SURROGATE_SKIP_LOW_PASS_PROB",
           ],
           metadata: {
             evaluatedAtMs: nowTs,
@@ -4227,7 +4227,7 @@ export async function runScalpV2ResearchJob(params: {
       });
       try {
         await withTiming("research.persist_surrogate_skips", () =>
-          upsertScalpV2Candidates({ rows }),
+          upsertScalpComposerCandidates({ rows }),
         );
         return rows.length;
       } catch {
@@ -4235,7 +4235,7 @@ export async function runScalpV2ResearchJob(params: {
         for (const row of rows) {
           try {
             await withTiming("research.persist_surrogate_skip_single", () =>
-              upsertScalpV2Candidates({ rows: [row] }),
+              upsertScalpComposerCandidates({ rows: [row] }),
             );
             persisted += 1;
           } catch {
@@ -4279,7 +4279,7 @@ export async function runScalpV2ResearchJob(params: {
         pendingAfter,
         scopePrune: scopePrune.details,
       });
-      return buildScalpV2JobResult({
+      return buildScalpComposerJobResult({
         jobKind: "research",
         processed: smartSkippedPersisted,
         succeeded: 0,
@@ -4396,7 +4396,7 @@ export async function runScalpV2ResearchJob(params: {
         .filter((id) => id > 0);
       leaseClaimsAttempted = Math.min(effectiveBatchSize, candidateIdsForClaim.length);
       const claimedIds = await withTiming("research.claim_candidate_leases", () =>
-        claimScalpV2ResearchCandidateLeases({
+        claimScalpComposerResearchCandidateLeases({
           candidateIds: candidateIdsForClaim,
           lockOwner: owner,
           limit: effectiveBatchSize,
@@ -4437,7 +4437,7 @@ export async function runScalpV2ResearchJob(params: {
         pendingAfter,
         scopePrune: scopePrune.details,
       });
-      return buildScalpV2JobResult({
+      return buildScalpComposerJobResult({
         jobKind: "research",
         processed: smartSkippedPersisted,
         succeeded: 0,
@@ -4454,7 +4454,7 @@ export async function runScalpV2ResearchJob(params: {
       () =>
         symbolShardCount > 1 && discoveredSymbolsForShard.length === 0
           ? Promise.resolve(0)
-          : countScalpV2CandidatesByStatus({
+          : countScalpComposerCandidatesByStatus({
               status: "discovered",
               symbols: symbolShardCount > 1 ? discoveredSymbolsForShard : undefined,
             }).catch(() => -1),
@@ -4490,7 +4490,7 @@ export async function runScalpV2ResearchJob(params: {
       ),
     );
     const windowSliceCacheEnabled = envBool(
-      "SCALP_V2_RESEARCH_WINDOW_SLICE_CACHE_ENABLED",
+      "SCALP_COMPOSER_RESEARCH_WINDOW_SLICE_CACHE_ENABLED",
       true,
     );
     const candleCache =
@@ -4560,7 +4560,7 @@ export async function runScalpV2ResearchJob(params: {
       Math.min(
         100,
         toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_COVERAGE_DEFER_MAX_ATTEMPTS,
+          process.env.SCALP_COMPOSER_RESEARCH_COVERAGE_DEFER_MAX_ATTEMPTS,
           3,
           100,
         ),
@@ -4573,14 +4573,14 @@ export async function runScalpV2ResearchJob(params: {
       `${candidate.venue}:${candidate.symbol}:${candidate.strategyId}:${candidate.tuneId}:${candidate.session}`.toLowerCase();
     const candidateWeeklyCache = new Map<
       string,
-      Map<number, ScalpV2WorkerStageWeeklyMetrics>
+      Map<number, ScalpComposerWorkerStageWeeklyMetrics>
     >();
     const candidateWeeklyCacheKeys: Array<{
-      venue: ScalpV2Venue;
+      venue: ScalpComposerVenue;
       symbol: string;
       strategyId: string;
       tuneId: string;
-      session: ScalpV2Session;
+      session: ScalpComposerSession;
     }> = [];
     const seenCacheKeys = new Set<string>();
     for (const c of chunked) {
@@ -4596,7 +4596,7 @@ export async function runScalpV2ResearchJob(params: {
       });
     }
     function mergeCandidateWeeklyCache(
-      rows: Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>,
+      rows: Map<string, Map<number, ScalpComposerWorkerStageWeeklyMetrics>>,
     ) {
       for (const [key, perWeek] of rows.entries()) {
         let existing = candidateWeeklyCache.get(key);
@@ -4631,19 +4631,19 @@ export async function runScalpV2ResearchJob(params: {
       }
       if (!keys.length) return 0;
       const loaded = await withTiming(params.label, () =>
-        loadScalpV2CandidateWeeklyCache({
+        loadScalpComposerCandidateWeeklyCache({
           keys,
           fromWeekStartTs: params.fromTs,
           toWeekStartTs: params.toTs,
         }).catch(
-          () => new Map<string, Map<number, ScalpV2WorkerStageWeeklyMetrics>>(),
+          () => new Map<string, Map<number, ScalpComposerWorkerStageWeeklyMetrics>>(),
         ),
       );
       mergeCandidateWeeklyCache(loaded);
       return loaded.size;
     }
 
-    const newestWeekStart = startOfScalpV2WeekMondayUtc(
+    const newestWeekStart = startOfScalpComposerWeekMondayUtc(
       trainingWindowToTs - ONE_WEEK_MS,
     );
     const initialCacheHits = await loadCandidateWeeklyCacheRange({
@@ -4673,29 +4673,29 @@ export async function runScalpV2ResearchJob(params: {
     }
 
     const pendingCacheWrites: Array<{
-      venue: ScalpV2Venue;
+      venue: ScalpComposerVenue;
       symbol: string;
       strategyId: string;
       tuneId: string;
-      session: ScalpV2Session;
+      session: ScalpComposerSession;
       weekStartTs: number;
       weekToTs: number;
-      metrics: ScalpV2WorkerStageWeeklyMetrics;
+      metrics: ScalpComposerWorkerStageWeeklyMetrics;
     }> = [];
     const pendingCacheWriteKeys = new Set<string>();
     const pendingPatternTradeVectorWrites: Array<{
       identity: {
-        venue: ScalpV2Venue;
+        venue: ScalpComposerVenue;
         symbol: string;
         strategyId: string;
         tuneId: string;
-        session: ScalpV2Session;
+        session: ScalpComposerSession;
         windowToTs: number;
         stageId: "c";
       };
-      rows: ScalpV2PatternTradeVector[];
+      rows: ScalpComposerPatternTradeVector[];
     }> = [];
-    type CandidateUpsertRow = Parameters<typeof upsertScalpV2Candidates>[0]["rows"][number];
+    type CandidateUpsertRow = Parameters<typeof upsertScalpComposerCandidates>[0]["rows"][number];
     type PendingCandidateUpsert = {
       mode: "evaluated" | "rejected";
       row: CandidateUpsertRow;
@@ -4715,7 +4715,7 @@ export async function runScalpV2ResearchJob(params: {
 
       try {
         await withTiming("research.upsert_candidates_batch", () =>
-          upsertScalpV2Candidates({
+          upsertScalpComposerCandidates({
             rows: rows.map((entry) => entry.row),
           }),
         );
@@ -4728,7 +4728,7 @@ export async function runScalpV2ResearchJob(params: {
         for (const entry of rows) {
           try {
             await withTiming("research.upsert_candidates_single", () =>
-              upsertScalpV2Candidates({
+              upsertScalpComposerCandidates({
                 rows: [entry.row],
               }),
             );
@@ -4751,7 +4751,7 @@ export async function runScalpV2ResearchJob(params: {
       for (const row of rows) {
         try {
           await withTiming("research.upsert_pattern_trade_vectors", () =>
-            replaceScalpV2PatternTradeVectors(row).catch(() => 0),
+            replaceScalpComposerPatternTradeVectors(row).catch(() => 0),
           );
         } catch {
           persistErrors += 1;
@@ -4764,7 +4764,7 @@ export async function runScalpV2ResearchJob(params: {
       Math.min(
         16,
         toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY_MAX,
+          process.env.SCALP_COMPOSER_RESEARCH_BACKTEST_CONCURRENCY_MAX,
           4,
           16,
         ),
@@ -4775,7 +4775,7 @@ export async function runScalpV2ResearchJob(params: {
       Math.min(
         backtestConcurrencyMax,
         toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY,
+          process.env.SCALP_COMPOSER_RESEARCH_BACKTEST_CONCURRENCY,
           1,
           backtestConcurrencyMax,
         ),
@@ -4787,9 +4787,9 @@ export async function runScalpV2ResearchJob(params: {
       deploymentId: string;
       replayConfig: any;
       symbolPipSize: number;
-      stageResults: Record<ScalpV2WorkerStageId, ScalpV2WorkerStageResult>;
+      stageResults: Record<ScalpComposerWorkerStageId, ScalpComposerWorkerStageResult>;
       newestWeekReplayAttempted: boolean;
-      newestWeekMetrics: ScalpV2WorkerStageWeeklyMetrics | null;
+      newestWeekMetrics: ScalpComposerWorkerStageWeeklyMetrics | null;
       newestWeekCandleCount: number;
       cachedWeekStarts: Set<number>;
       finalized: boolean;
@@ -4800,8 +4800,8 @@ export async function runScalpV2ResearchJob(params: {
     );
 
     function buildBlockedStageResult(
-      stageId: ScalpV2WorkerStageId,
-    ): ScalpV2WorkerStageResult {
+      stageId: ScalpComposerWorkerStageId,
+    ): ScalpComposerWorkerStageResult {
       const stage = stagePolicyById.get(stageId)!;
       const fromTs = trainingWindowToTs - stage.weeks * ONE_WEEK_MS;
       return buildWorkerStageSkeleton({
@@ -4814,7 +4814,7 @@ export async function runScalpV2ResearchJob(params: {
 
     function markDownstreamBlocked(
       runtime: StageCandidateRuntime,
-      fromStageId: ScalpV2WorkerStageId,
+      fromStageId: ScalpComposerWorkerStageId,
     ) {
       if (fromStageId === "a") {
         runtime.stageResults.b = buildBlockedStageResult("b");
@@ -4826,7 +4826,7 @@ export async function runScalpV2ResearchJob(params: {
 
     function finalizeCandidateWithStageReason(
       runtime: StageCandidateRuntime,
-      stage: ScalpV2WorkerStagePolicy,
+      stage: ScalpComposerWorkerStagePolicy,
       reason: string,
     ) {
       runtime.stageResults[stage.id] = buildWorkerStageSkeleton({
@@ -4840,8 +4840,8 @@ export async function runScalpV2ResearchJob(params: {
     }
 
     function updateStageCounters(
-      stageId: ScalpV2WorkerStageId,
-      stageResult: ScalpV2WorkerStageResult,
+      stageId: ScalpComposerWorkerStageId,
+      stageResult: ScalpComposerWorkerStageResult,
     ) {
       if (stageId === "a") {
         if (stageResult.passed) stageAPass += 1;
@@ -4888,7 +4888,7 @@ export async function runScalpV2ResearchJob(params: {
           candidate.symbol,
           meta ?? undefined,
         );
-        const category = inferScalpV2AssetCategory(candidate.symbol);
+        const category = inferScalpComposerAssetCategory(candidate.symbol);
         const categoryFloor = minSpreadPipsForCategory(category);
         const baseReplayConfig = defaultScalpReplayConfig(candidate.symbol);
         const tickSpreadPips = meta?.tickSize ? meta.tickSize / symbolPipSize : 0;
@@ -4923,7 +4923,7 @@ export async function runScalpV2ResearchJob(params: {
 
     async function ensureRuntimeNewestWeekMetrics(
       runtime: StageCandidateRuntime,
-    ): Promise<ScalpV2WorkerStageWeeklyMetrics | null> {
+    ): Promise<ScalpComposerWorkerStageWeeklyMetrics | null> {
       if (runtime.newestWeekReplayAttempted) {
         if (runtime.newestWeekMetrics) newestWeekReplayReuses += 1;
         return runtime.newestWeekMetrics;
@@ -4981,7 +4981,7 @@ export async function runScalpV2ResearchJob(params: {
 
     function enqueueCandidateWeekCacheWrite(params: {
       runtime: StageCandidateRuntime;
-      metrics: ScalpV2WorkerStageWeeklyMetrics;
+      metrics: ScalpComposerWorkerStageWeeklyMetrics;
       weekStartTs: number;
     }) {
       const cacheKey = candidateCacheKey(params.runtime.candidate);
@@ -5016,7 +5016,7 @@ export async function runScalpV2ResearchJob(params: {
       const candidate = params.runtime.candidate;
       const behaviorFingerprint = String(candidate.dsl?.behaviorFingerprint || "").trim();
       if (!behaviorFingerprint) return;
-      const rows = extractScalpV2PatternTradeVectors({
+      const rows = extractScalpComposerPatternTradeVectors({
         candidateId: Number.isFinite(Number(candidate.rowId)) ? Number(candidate.rowId) : null,
         venue: candidate.venue,
         symbol: candidate.symbol,
@@ -5044,8 +5044,8 @@ export async function runScalpV2ResearchJob(params: {
 
     async function evaluateCandidateStage(
       runtime: StageCandidateRuntime,
-      stage: ScalpV2WorkerStagePolicy,
-    ): Promise<ScalpV2WorkerStageResult> {
+      stage: ScalpComposerWorkerStagePolicy,
+    ): Promise<ScalpComposerWorkerStageResult> {
       const candidate = runtime.candidate;
       let symbolCandles = candleCache.get(candidate.symbol) ?? [];
       const stageToTs = trainingWindowToTs;
@@ -5078,8 +5078,8 @@ export async function runScalpV2ResearchJob(params: {
       const cacheKey = candidateCacheKey(candidate);
       const cachedWeeks =
         candidateWeeklyCache.get(cacheKey) ||
-        new Map<number, ScalpV2WorkerStageWeeklyMetrics>();
-      let weeklyByStart = new Map<number, ScalpV2WorkerStageWeeklyMetrics>();
+        new Map<number, ScalpComposerWorkerStageWeeklyMetrics>();
+      let weeklyByStart = new Map<number, ScalpComposerWorkerStageWeeklyMetrics>();
       let missingPriorWeeks = false;
       for (const weekStart of priorWeekStarts) {
         const cached = cachedWeeks.get(weekStart);
@@ -5119,7 +5119,7 @@ export async function runScalpV2ResearchJob(params: {
         if (extended?.record?.candles) {
           const meta = symbolMetadataMap.get(candidate.symbol) ?? null;
           const pip = pipSizeForScalpSymbol(candidate.symbol, meta ?? undefined);
-          const cat = inferScalpV2AssetCategory(candidate.symbol);
+          const cat = inferScalpComposerAssetCategory(candidate.symbol);
           const floor = minSpreadPipsForCategory(cat);
           const base = defaultScalpReplayConfig(candidate.symbol);
           const tick = meta?.tickSize ? meta.tickSize / pip : 0;
@@ -5147,7 +5147,7 @@ export async function runScalpV2ResearchJob(params: {
         for (const candle of stageCandles) {
           const ts = Math.floor(Number(candle.ts) || 0);
           if (!Number.isFinite(ts) || ts < fromTs || ts >= stageToTs) continue;
-          observedWeeks.add(startOfScalpV2WeekMondayUtc(ts));
+          observedWeeks.add(startOfScalpComposerWeekMondayUtc(ts));
         }
         const missingCoverageWeeks = stageWeekStarts.filter(
           (weekStart) => !observedWeeks.has(weekStart),
@@ -5264,7 +5264,7 @@ export async function runScalpV2ResearchJob(params: {
 	              metrics.netR,
 	            ]),
 	          );
-	          const ranking = computeScalpV2V3EdgeScore({
+	          const ranking = computeScalpComposerV3EdgeScore({
 	            trades: fullReplay.trades,
 	            weeklyNetR,
 	            minVariantTrades: v3Cfg.minVariantTrades,
@@ -5277,7 +5277,7 @@ export async function runScalpV2ResearchJob(params: {
 	            aggregate.netR >= stage.minNetR * 0.5
 	          ) {
 	            v3Bootstrap =
-	              (computeScalpV2V3Bootstrap({
+	              (computeScalpComposerV3Bootstrap({
 	                trades: fullReplay.trades,
 	                resamples: v3Cfg.bootstrapResamples,
 	                seed: `${candidate.symbol}:${candidate.tuneId}:${windowToTs}`,
@@ -5305,7 +5305,7 @@ export async function runScalpV2ResearchJob(params: {
 	              if (extended?.record?.candles) {
 	                const meta = symbolMetadataMap.get(candidate.symbol) ?? null;
 	                const pip = pipSizeForScalpSymbol(candidate.symbol, meta ?? undefined);
-	                const cat = inferScalpV2AssetCategory(candidate.symbol);
+	                const cat = inferScalpComposerAssetCategory(candidate.symbol);
 	                const floor = minSpreadPipsForCategory(cat);
 	                const base = defaultScalpReplayConfig(candidate.symbol);
 	                const tick = meta?.tickSize ? meta.tickSize / pip : 0;
@@ -5335,7 +5335,7 @@ export async function runScalpV2ResearchJob(params: {
 	                captureTimeline: false,
 	              }),
 	            );
-	            const holdout = computeScalpV2V3Holdout({
+	            const holdout = computeScalpComposerV3Holdout({
 	              trades: holdoutReplay.trades,
 	              windowToTs,
 	              holdoutWeeks: v3Cfg.holdoutWeeks,
@@ -5386,7 +5386,7 @@ export async function runScalpV2ResearchJob(params: {
         });
       }
 
-      const stageResult: ScalpV2WorkerStageResult = {
+      const stageResult: ScalpComposerWorkerStageResult = {
         id: stage.id,
         weeks: stage.weeks,
         fromTs,
@@ -5488,8 +5488,8 @@ export async function runScalpV2ResearchJob(params: {
 	            score: finalScore,
             status: "rejected",
             reasonCodes: [
-              "SCALP_V2_RESEARCH_INLINE",
-              `SCALP_V2_BELOW_MIN_STAGE_${minPersistStage.toUpperCase()}`,
+              "SCALP_COMPOSER_RESEARCH_INLINE",
+              `SCALP_COMPOSER_BELOW_MIN_STAGE_${minPersistStage.toUpperCase()}`,
             ],
             metadata: {
               evaluatedAtMs: nowTs,
@@ -5534,10 +5534,10 @@ export async function runScalpV2ResearchJob(params: {
 	          score: finalScore,
           status: "evaluated",
           reasonCodes: [
-            "SCALP_V2_RESEARCH_INLINE",
+            "SCALP_COMPOSER_RESEARCH_INLINE",
             finalPass
-              ? "SCALP_V2_WORKER_STAGE_C_PASS"
-              : "SCALP_V2_WORKER_STAGE_C_FAIL",
+              ? "SCALP_COMPOSER_WORKER_STAGE_C_PASS"
+              : "SCALP_COMPOSER_WORKER_STAGE_C_FAIL",
           ],
           metadata,
         },
@@ -5629,7 +5629,7 @@ export async function runScalpV2ResearchJob(params: {
     );
 
     async function runBarrierStage(params: {
-      stage: ScalpV2WorkerStagePolicy;
+      stage: ScalpComposerWorkerStagePolicy;
       candidates: StageCandidateRuntime[];
     }): Promise<StageCandidateRuntime[]> {
       const passers: StageCandidateRuntime[] = [];
@@ -5806,7 +5806,7 @@ export async function runScalpV2ResearchJob(params: {
 
         if (pendingCacheWrites.length >= 50) {
           await withTiming("research.upsert_weekly_cache_flush", () =>
-            upsertScalpV2CandidateWeeklyCache({ rows: pendingCacheWrites }).catch(
+            upsertScalpComposerCandidateWeeklyCache({ rows: pendingCacheWrites }).catch(
               () => 0,
             ),
           );
@@ -5872,13 +5872,13 @@ export async function runScalpV2ResearchJob(params: {
     // Flush remaining cache writes
     if (pendingCacheWrites.length > 0) {
       await withTiming("research.upsert_weekly_cache_flush", () =>
-        upsertScalpV2CandidateWeeklyCache({ rows: pendingCacheWrites }).catch(() => 0),
+        upsertScalpComposerCandidateWeeklyCache({ rows: pendingCacheWrites }).catch(() => 0),
       );
     }
     // Prune cache rows older than stage C window + 2 week margin
     const cacheRetentionTs = windowToTs - (workerPolicy.stageC.weeks + 2) * ONE_WEEK_MS;
     await withTiming("research.prune_weekly_cache", () =>
-      pruneScalpV2WeeklyCache({ olderThanTs: cacheRetentionTs }).catch(() => 0),
+      pruneScalpComposerWeeklyCache({ olderThanTs: cacheRetentionTs }).catch(() => 0),
     );
 
     const remaining = Math.max(0, chunked.length - processed);
@@ -5969,7 +5969,7 @@ export async function runScalpV2ResearchJob(params: {
       },
     });
 
-    return buildScalpV2JobResult({
+    return buildScalpComposerJobResult({
       jobKind: "research",
       processed: processed + smartSkippedPersisted + surrogateSkippedPersisted,
       succeeded,
@@ -5981,7 +5981,7 @@ export async function runScalpV2ResearchJob(params: {
     ok = false;
     failed = Math.max(1, failed);
     details = attachTimingDetails({ error: err?.message || String(err) });
-    return buildScalpV2JobResult({
+    return buildScalpComposerJobResult({
       jobKind: "research",
       processed,
       succeeded,
@@ -5990,7 +5990,7 @@ export async function runScalpV2ResearchJob(params: {
       details,
     });
   } finally {
-    await finalizeScalpV2Job({
+    await finalizeScalpComposerJob({
       jobKind: "research",
       lockOwner: owner,
       ok,
@@ -6004,10 +6004,10 @@ export async function runScalpV2ResearchJob(params: {
  * Evaluate is now a thin delegate to the unified research job.
  * Kept for backward compatibility with cron routes and FullAutoCycle.
  */
-export async function runScalpV2EvaluateJob(params: {
+export async function runScalpComposerEvaluateJob(params: {
   batchSize?: number;
-} = {}): Promise<ScalpV2JobResult> {
-  const result = await runScalpV2ResearchJob({ batchSize: params.batchSize });
+} = {}): Promise<ScalpComposerJobResult> {
+  const result = await runScalpComposerResearchJob({ batchSize: params.batchSize });
   return {
     ...result,
     jobKind: "evaluate",
@@ -6019,10 +6019,10 @@ export async function runScalpV2EvaluateJob(params: {
  * Worker is now a thin delegate to the unified research job.
  * Kept for backward compatibility with cron routes and FullAutoCycle.
  */
-export async function runScalpV2WorkerJob(params: {
+export async function runScalpComposerWorkerJob(params: {
   batchSize?: number;
-} = {}): Promise<ScalpV2JobResult> {
-  const result = await runScalpV2ResearchJob({ batchSize: params.batchSize });
+} = {}): Promise<ScalpComposerJobResult> {
+  const result = await runScalpComposerResearchJob({ batchSize: params.batchSize });
   return {
     ...result,
     jobKind: "worker",
@@ -6031,15 +6031,15 @@ export async function runScalpV2WorkerJob(params: {
 }
 
 // --- Legacy evaluate/worker implementations removed ---
-// Both now delegate to runScalpV2ResearchJob which handles
+// Both now delegate to runScalpComposerResearchJob which handles
 // candidate generation, cache-based dedup, and inline backtesting
 // in a single pass with no cursor or batch-size throttling.
 
 function _legacyEvaluateRemoved(): never {
-  // The old runScalpV2EvaluateJob (cursor-based, no backtest) and
-  // runScalpV2WorkerJob (DB-loaded candidates, separate backtest)
+  // The old runScalpComposerEvaluateJob (cursor-based, no backtest) and
+  // runScalpComposerWorkerJob (DB-loaded candidates, separate backtest)
   // have been replaced by the unified research job above.
-  throw new Error("Legacy evaluate/worker removed — use runScalpV2ResearchJob");
+  throw new Error("Legacy evaluate/worker removed — use runScalpComposerResearchJob");
 }
 // Marker to prevent accidental re-addition. If TypeScript shows this as
 // unused, that's expected — it exists purely as a code-archaeology marker.
@@ -6049,9 +6049,9 @@ void _legacyEvaluateRemoved;
 // Removed in Phase 2 simplification — both now delegate to research.
 
 const _legacyCodeRemoved = true; void _legacyCodeRemoved;
-export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
-  if (!isScalpV2PromoteEnabled()) {
-    return buildScalpV2JobResult({
+export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResult> {
+  if (!isScalpComposerPromoteEnabled()) {
+    return buildScalpComposerJobResult({
       jobKind: "promote",
       processed: 0,
       succeeded: 0,
@@ -6061,15 +6061,15 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       details: {
         skipped: true,
         reason: "scalp_v2_promote_disabled",
-        env: "SCALP_V2_PROMOTE_ENABLED",
+        env: "SCALP_COMPOSER_PROMOTE_ENABLED",
       },
     });
   }
 
   const owner = lockOwner("promote");
-  const claimed = await claimScalpV2Job({ jobKind: "promote", lockOwner: owner });
+  const claimed = await claimScalpComposerJob({ jobKind: "promote", lockOwner: owner });
   if (!claimed) {
-    return buildScalpV2JobResult({
+    return buildScalpComposerJobResult({
       jobKind: "promote",
       processed: 0,
       succeeded: 0,
@@ -6087,18 +6087,18 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
   let details: Record<string, unknown> = {};
 
   try {
-    const runtime = await loadScalpV2RuntimeConfig();
+    const runtime = await loadScalpComposerRuntimeConfig();
     const nowTs = nowMs();
     const activePrunedScopes = normalizeActivePrunedScopes(runtime, nowTs);
     const policy = resolvePromotionPolicy();
     const requireWinnerShortlist = envBool(
-      "SCALP_V2_REQUIRE_WINNER_SHORTLIST",
+      "SCALP_COMPOSER_REQUIRE_WINNER_SHORTLIST",
       true,
     );
-    const allCandidatesRaw = await listScalpV2Candidates({ limit: 10_000 });
+    const allCandidatesRaw = await listScalpComposerCandidates({ limit: 10_000 });
     const allCandidates = allCandidatesRaw.filter((row) => {
       if (
-        !isScalpV2RuntimeSymbolInScope({
+        !isScalpComposerRuntimeSymbolInScope({
           runtime,
           venue: row.venue,
           symbol: row.symbol,
@@ -6106,7 +6106,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       ) {
         return false;
       }
-      const scopeKey = toScalpV2ScopeKey({
+      const scopeKey = toScalpComposerScopeKey({
         venue: row.venue,
         symbol: row.symbol,
         session: row.entrySessionProfile,
@@ -6119,7 +6119,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       allCandidatesRaw.length - allCandidates.length,
     );
     const filteredCandidatesByScopePrune = allCandidatesRaw.filter((row) => {
-      const scopeKey = toScalpV2ScopeKey({
+      const scopeKey = toScalpComposerScopeKey({
         venue: row.venue,
         symbol: row.symbol,
         session: row.entrySessionProfile,
@@ -6132,12 +6132,12 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         row.status === "promoted" ||
         row.status === "rejected",
     );
-	    const existingDeploymentsRaw = await listScalpV2Deployments({
+	    const existingDeploymentsRaw = await listScalpComposerDeployments({
 	      limit: 10_000,
 	      compactPromotionGate: true,
 	    });
     const existingDeployments = existingDeploymentsRaw.filter((row) =>
-      isScalpV2RuntimeSymbolInScope({
+      isScalpComposerRuntimeSymbolInScope({
         runtime,
         venue: row.venue,
         symbol: row.symbol,
@@ -6151,15 +6151,15 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 	    const offScopeEnabledDeployments = existingDeploymentsRaw.filter(
       (row) =>
         row.enabled &&
-        !isScalpV2RuntimeSymbolInScope({
+        !isScalpComposerRuntimeSymbolInScope({
           runtime,
           venue: row.venue,
           symbol: row.symbol,
           includeLiveSeeds: true,
         }),
 	    );
-	    const v3Cfg = resolveScalpV2V3Config();
-	    const v3Enabled = isScalpV2V3ResearchEnabled();
+	    const v3Cfg = resolveScalpComposerV3Config();
+	    const v3Enabled = isScalpComposerV3ResearchEnabled();
 	    const v3HoldoutCompletedCandidates = allCandidates.filter((row) =>
 	      Boolean(asRecord(asRecord(row.metadata).worker).holdout),
 	    ).length;
@@ -6189,7 +6189,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 	        const stageB = asRecord(worker.stageB);
 	        const stageC = asRecord(worker.stageC);
 	        if (!Object.keys(stageB).length || !Object.keys(stageC).length) continue;
-	        const synthesized = synthesizeScalpV2V3HoldoutFromStages({
+	        const synthesized = synthesizeScalpComposerV3HoldoutFromStages({
 	          stageB: {
 	            netR: Number(stageB.netR) || 0,
 	            trades: Number(stageB.trades) || 0,
@@ -6222,7 +6222,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 	        });
 	      }
 	      if (backfillRows.length > 0) {
-	        v3HoldoutBackfilled = await backfillScalpV2DeploymentHoldout({
+	        v3HoldoutBackfilled = await backfillScalpComposerDeploymentHoldout({
 	          rows: backfillRows,
 	        });
 	      }
@@ -6235,7 +6235,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 	      v3PendingEnabledDeployments.length > 0 &&
 	      !v3Cfg.promotionFreezeBypass;
     if (offScopeEnabledDeployments.length > 0) {
-      await upsertScalpV2Deployments({
+      await upsertScalpComposerDeployments({
         rows: offScopeEnabledDeployments.map((row) => ({
           candidateId: row.candidateId,
           venue: row.venue,
@@ -6265,7 +6265,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         filteredDeploymentsOutOfScope,
         demotedOutOfScopeEnabled: offScopeEnabledDeployments.length,
       };
-      return buildScalpV2JobResult({
+      return buildScalpComposerJobResult({
         jobKind: "promote",
         processed: 0,
         succeeded: 0,
@@ -6298,7 +6298,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     );
     if (!consideredDeploymentIds.length) {
       details = { promoted: 0, reason: "no_considered_deployments" };
-      return buildScalpV2JobResult({
+      return buildScalpComposerJobResult({
         jobKind: "promote",
         processed: 0,
         succeeded: 0,
@@ -6308,16 +6308,16 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       });
     }
 
-    const windowToTs = resolveScalpV2CompletedWeekWindowToUtc(nowTs);
+    const windowToTs = resolveScalpComposerCompletedWeekWindowToUtc(nowTs);
     const windowFromTs = windowToTs - policy.minCompletedWeeks * ONE_WEEK_MS;
-    const ledgerRows = await listScalpV2LedgerRows({
+    const ledgerRows = await listScalpComposerLedgerRows({
       deploymentIds: consideredDeploymentIds,
       fromTsMs: windowFromTs,
       toTsMs: windowToTs,
       limit: Math.max(50_000, consideredDeploymentIds.length * 5_000),
     });
     const openPositionDeploymentIds = new Set(
-      (await listScalpV2OpenPositions().catch(() => []))
+      (await listScalpComposerOpenPositions().catch(() => []))
         .map((row) => String(row.deploymentId || "").trim())
         .filter(Boolean),
     );
@@ -6327,14 +6327,14 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     >();
     const sessionEvidenceByDeployment = new Map<
       string,
-      Map<ScalpV2Session, number>
+      Map<ScalpComposerSession, number>
     >();
     for (const row of ledgerRows) {
       const deploymentId = String(row.deploymentId || "").trim();
       if (!deploymentId) continue;
       const tsExitMs = Math.floor(Number(row.tsExitMs) || 0);
       if (!Number.isFinite(tsExitMs) || tsExitMs <= 0) continue;
-      const weekStartTs = startOfScalpV2WeekMondayUtc(tsExitMs);
+      const weekStartTs = startOfScalpComposerWeekMondayUtc(tsExitMs);
       if (weekStartTs < windowFromTs || weekStartTs >= windowToTs) continue;
       const entrySessionProfile = row.entrySessionProfile;
       const sessionKey = toDeploymentSessionKey(deploymentId, entrySessionProfile);
@@ -6358,22 +6358,22 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     type PromotionDraft = {
       deploymentId: string;
       candidateId: number | null;
-      candidateStatus: ScalpV2CandidateStatus | null;
-      venue: ScalpV2Venue;
+      candidateStatus: ScalpComposerCandidateStatus | null;
+      venue: ScalpComposerVenue;
       symbol: string;
       strategyId: string;
       tuneId: string;
-      entrySessionProfile: ScalpV2Session;
+      entrySessionProfile: ScalpComposerSession;
       score: number;
       currentlyEnabled: boolean;
       droppedByBudget: boolean;
       lifecycle: V2PromotionLifecycle;
       suppressed: boolean;
       strictSessionEvidence: {
-        expected: ScalpV2Session;
+        expected: ScalpComposerSession;
         matchedTrades: number;
         mismatchedTrades: number;
-        mismatchedSessions: ScalpV2Session[];
+        mismatchedSessions: ScalpComposerSession[];
       };
       freshness: PromotionFreshness;
       weeklyMetrics: WeeklyRobustnessMetrics | null;
@@ -6384,7 +6384,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       workerStageReason: string | null;
       dayRobustness: Record<string, unknown> | null;
 	      workerStages: Record<string, unknown> | null;
-	      v3TemporalFilter: ScalpV2V3TemporalFilter | null;
+	      v3TemporalFilter: ScalpComposerV3TemporalFilter | null;
 	      v3Holdout: Record<string, unknown> | null;
 	      v3Drift: Record<string, unknown> | null;
 	      v3ValidationStatus: "validated" | "stale" | "pending";
@@ -6406,7 +6406,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     for (const deploymentId of consideredDeploymentIds) {
       const candidate = candidateByDeploymentId.get(deploymentId) || null;
       const existing = existingByDeploymentId.get(deploymentId) || null;
-      const venue = (candidate?.venue || existing?.venue) as ScalpV2Venue | undefined;
+      const venue = (candidate?.venue || existing?.venue) as ScalpComposerVenue | undefined;
       const symbol = String(candidate?.symbol || existing?.symbol || "")
         .trim()
         .toUpperCase();
@@ -6420,7 +6420,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
         .toLowerCase();
       const entrySessionProfile = (candidate?.entrySessionProfile ||
         existing?.entrySessionProfile ||
-        "berlin") as ScalpV2Session;
+        "berlin") as ScalpComposerSession;
       if (
         !venue ||
         !symbol ||
@@ -6528,9 +6528,9 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 	      );
 	      const v3TemporalFilter =
 	        Object.keys(candidateTemporalFilter).length > 0
-	          ? (candidateTemporalFilter as ScalpV2V3TemporalFilter)
+	          ? (candidateTemporalFilter as ScalpComposerV3TemporalFilter)
 	          : Object.keys(existingTemporalFilter).length > 0
-	            ? (existingTemporalFilter as ScalpV2V3TemporalFilter)
+	            ? (existingTemporalFilter as ScalpComposerV3TemporalFilter)
 	            : null;
 	      const v3Holdout = asRecord(asRecord(candidate?.metadata || {}).worker).holdout
 	        ? asRecord(asRecord(candidate?.metadata || {}).worker).holdout as Record<string, unknown>
@@ -6566,7 +6566,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 	        !Number.isFinite(stageCTrades) ||
 	        stageCTrades >= policy.minStageCTradesForPromotion;
 	      const drift = existing
-	        ? computeScalpV2V3Drift({
+	        ? computeScalpComposerV3Drift({
 	            deployment: existing,
 	            ledgerRows: ledgerRows
 	              .filter((row) => row.deploymentId === deploymentId)
@@ -6765,13 +6765,13 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 
     let demotedByBrokerEntryOverlap = 0;
     let managementOnlyByBrokerEntryOverlap = 0;
-    const entrySeatWinnersByVenue = new Map<ScalpV2Venue, PromotionDraft[]>();
+    const entrySeatWinnersByVenue = new Map<ScalpComposerVenue, PromotionDraft[]>();
     for (const row of drafts
       .filter((draft) => draft.enabled)
       .sort((a, b) => b.score - a.score)) {
       const winners = entrySeatWinnersByVenue.get(row.venue) || [];
       const overlappingWinner = winners.find((winner) =>
-        scalpV2V3EntryWindowsOverlap({
+        scalpComposerV3EntryWindowsOverlap({
           nowMs: nowTs,
           a: {
             session: winner.entrySessionProfile,
@@ -6932,7 +6932,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       }
     }
 
-    const rows: Parameters<typeof upsertScalpV2Deployments>[0]["rows"] = drafts.map(
+    const rows: Parameters<typeof upsertScalpComposerDeployments>[0]["rows"] = drafts.map(
       (row) => ({
         candidateId: row.candidateId,
         venue: row.venue,
@@ -7015,11 +7015,11 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     const rowsToUpsert = rows.filter((row, idx) => {
       const draft = drafts[idx]!;
       const existing = existingByDeploymentId.get(draft.deploymentId);
-      return isScalpV2DeploymentUpsertNeeded(existing, row);
+      return isScalpComposerDeploymentUpsertNeeded(existing, row);
     });
     const deploymentsUpsertSkipped = rows.length - rowsToUpsert.length;
     if (rowsToUpsert.length > 0) {
-      await upsertScalpV2Deployments({ rows: rowsToUpsert });
+      await upsertScalpComposerDeployments({ rows: rowsToUpsert });
     }
     const legacyComposerOrphaned = await orphanRetiredLegacyComposerDeployments({
       nowMs: nowTs,
@@ -7038,21 +7038,21 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       )
       .map((row) => Number(row.candidateId));
     if (promotedIds.length > 0) {
-      await updateScalpV2CandidateStatuses({
+      await updateScalpComposerCandidateStatuses({
         ids: promotedIds,
         status: "promoted",
         metadataPatch: { promotedAtMs: nowTs },
       });
     }
     if (notPromotedIds.length > 0) {
-      await updateScalpV2CandidateStatuses({
+      await updateScalpComposerCandidateStatuses({
         ids: notPromotedIds,
         status: "evaluated",
         metadataPatch: { evaluatedAtMs: nowTs },
       });
     }
 
-    const capOut = await enforceScalpV2EnabledCap({
+    const capOut = await enforceScalpComposerEnabledCap({
       maxEnabledDeployments: runtime.budgets.maxEnabledDeployments,
     });
 
@@ -7096,16 +7096,16 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
           remarkable: true,
         };
       });
-    const highlightsUpserted = await upsertScalpV2ResearchHighlights({
+    const highlightsUpserted = await upsertScalpComposerResearchHighlights({
       rows: highlightRows,
     }).catch(() => 0);
 
     const cursorAggregates = new Map<
       string,
       {
-        venue: ScalpV2Venue;
+        venue: ScalpComposerVenue;
         symbol: string;
-        entrySessionProfile: ScalpV2Session;
+        entrySessionProfile: ScalpComposerSession;
         considered: number;
         eligible: number;
         enabled: number;
@@ -7133,13 +7133,13 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     }
     const aggregateRows = Array.from(cursorAggregates.values());
     const existingCursors = aggregateRows.length > 0
-      ? await listScalpV2ResearchCursors({ limit: 10_000 }).catch(() => [])
+      ? await listScalpComposerResearchCursors({ limit: 10_000 }).catch(() => [])
       : [];
     const existingCursorByKey = new Map(
       existingCursors.map((c) => [c.cursorKey, c]),
     );
     const cursorWriteCandidates = aggregateRows.map((row) => {
-      const cursorKey = toScalpV2ResearchCursorKey({
+      const cursorKey = toScalpComposerResearchCursorKey({
         venue: row.venue,
         symbol: row.symbol,
         entrySessionProfile: row.entrySessionProfile,
@@ -7255,7 +7255,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       liveEnabled: runtime.liveEnabled,
     };
 
-    return buildScalpV2JobResult({
+    return buildScalpComposerJobResult({
       jobKind: "promote",
       processed,
       succeeded,
@@ -7267,7 +7267,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
     ok = false;
     failed = Math.max(1, failed);
     details = { error: err?.message || String(err) };
-    return buildScalpV2JobResult({
+    return buildScalpComposerJobResult({
       jobKind: "promote",
       processed,
       succeeded,
@@ -7276,7 +7276,7 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
       details,
     });
   } finally {
-    await finalizeScalpV2Job({
+    await finalizeScalpComposerJob({
       jobKind: "promote",
       lockOwner: owner,
       ok,
@@ -7319,7 +7319,7 @@ function pickCapitalSnapshotBySymbol(
   return snapshots.find((row) => String(row.epic || "").trim().toUpperCase() === target) || null;
 }
 
-function buildScalpV2RuntimeSnapshotForDeployment(params: {
+function buildScalpComposerRuntimeSnapshotForDeployment(params: {
   strategyId: string;
 }): ScalpStrategyRuntimeSnapshot {
   const strategyId = String(params.strategyId || "").trim().toLowerCase();
@@ -7342,15 +7342,15 @@ function buildScalpV2RuntimeSnapshotForDeployment(params: {
   };
 }
 
-export async function runScalpV2ExecuteJob(params: {
+export async function runScalpComposerExecuteJob(params: {
   dryRun?: boolean;
-  session?: ScalpV2Session;
-  venue?: ScalpV2Venue;
-} = {}): Promise<ScalpV2JobResult> {
+  session?: ScalpComposerSession;
+  venue?: ScalpComposerVenue;
+} = {}): Promise<ScalpComposerJobResult> {
   const owner = lockOwner("execute");
-  const claimed = await claimScalpV2Job({ jobKind: "execute", lockOwner: owner });
+  const claimed = await claimScalpComposerJob({ jobKind: "execute", lockOwner: owner });
   if (!claimed) {
-    return buildScalpV2JobResult({
+    return buildScalpComposerJobResult({
       jobKind: "execute",
       processed: 0,
       succeeded: 0,
@@ -7368,11 +7368,11 @@ export async function runScalpV2ExecuteJob(params: {
   let details: Record<string, unknown> = {};
 
   try {
-    const runtime = await loadScalpV2RuntimeConfig();
+    const runtime = await loadScalpComposerRuntimeConfig();
     const effectiveDryRun = params.dryRun ?? runtime.dryRunDefault;
     const nowTs = nowMs();
-    const allowSundayExecute = envBool("SCALP_V2_ALLOW_SUNDAY_EXECUTE", false);
-    if (!allowSundayExecute && isScalpV2SundayUtc(nowTs)) {
+    const allowSundayExecute = envBool("SCALP_COMPOSER_ALLOW_SUNDAY_EXECUTE", false);
+    if (!allowSundayExecute && isScalpComposerSundayUtc(nowTs)) {
       details = {
         executedDeployments: 0,
         skipped: true,
@@ -7380,7 +7380,7 @@ export async function runScalpV2ExecuteJob(params: {
         sundayUtc: true,
         allowSundayExecute,
       };
-      return buildScalpV2JobResult({
+      return buildScalpComposerJobResult({
         jobKind: "execute",
         processed: 0,
         succeeded: 0,
@@ -7390,14 +7390,14 @@ export async function runScalpV2ExecuteJob(params: {
       });
     }
 
-    const deployments = await listScalpV2Deployments({
+    const deployments = await listScalpComposerDeployments({
       enabledOnly: true,
       venue: params.venue,
       session: params.session,
       limit: 500,
     });
     const scopedDeployments = deployments.filter((deployment) =>
-      isScalpV2RuntimeSymbolInScope({
+      isScalpComposerRuntimeSymbolInScope({
         runtime,
         venue: deployment.venue,
         symbol: deployment.symbol,
@@ -7415,7 +7415,7 @@ export async function runScalpV2ExecuteJob(params: {
             : "no_enabled_deployments",
         filteredOutOfScope,
       };
-      return buildScalpV2JobResult({
+      return buildScalpComposerJobResult({
         jobKind: "execute",
         processed: 0,
         succeeded: 0,
@@ -7425,7 +7425,7 @@ export async function runScalpV2ExecuteJob(params: {
       });
     }
 
-    const openPositions = await listScalpV2OpenPositions().catch(() => []);
+    const openPositions = await listScalpComposerOpenPositions().catch(() => []);
     const openPositionDeploymentIds = new Set(
       openPositions.map((position) => String(position.deploymentId || "").trim()).filter(Boolean),
     );
@@ -7434,7 +7434,7 @@ export async function runScalpV2ExecuteJob(params: {
     // entry session is currently open should be considered for entry work.
     // Open-position deployments bypass this filter so exits/trailing/reconcile
     // still run outside the entry window.
-    const sundayBlock = resolveScalpV5SundayBlock(nowTs);
+    const sundayBlock = resolveScalpResearchSundayBlock(nowTs);
     const cheapSkipReasonCounts: Record<string, number> = {};
     const sessionScopedDeployments = scopedDeployments.filter((deployment) => {
       if (openPositionDeploymentIds.has(deployment.deploymentId)) return true;
@@ -7483,7 +7483,7 @@ export async function runScalpV2ExecuteJob(params: {
         v5FreshnessBypassedDeployments: 0,
         freshnessReasonCounts: {},
       };
-      return buildScalpV2JobResult({
+      return buildScalpComposerJobResult({
         jobKind: "execute",
         processed: 0,
         succeeded: 0,
@@ -7496,7 +7496,7 @@ export async function runScalpV2ExecuteJob(params: {
     const executeRequiredWeeks = resolvePromotionPolicy().minCompletedWeeks;
     const freshnessChecks = sessionScopedDeployments.map((deployment) => ({
       deployment,
-      v5Owned: isScalpV5OwnedPromotionGate(deployment.promotionGate),
+      v5Owned: isScalpResearchOwnedPromotionGate(deployment.promotionGate),
       freshness: resolveExecuteDeploymentFreshnessGate({
         deployment,
         nowTs,
@@ -7520,7 +7520,7 @@ export async function runScalpV2ExecuteJob(params: {
     let freshnessDemoted = 0;
     let freshnessRequeuedCandidates = 0;
     if (staleDeployments.length > 0) {
-      freshnessDemoted = await upsertScalpV2Deployments({
+      freshnessDemoted = await upsertScalpComposerDeployments({
         rows: staleDeployments.map((row) => {
           const gate = asRecord(row.deployment.promotionGate);
           return {
@@ -7562,8 +7562,8 @@ export async function runScalpV2ExecuteJob(params: {
       if (staleCandidateIds.length > 0) {
         const expectedWindowToTs =
           staleDeployments[0]?.freshness.expectedWindowToTs ||
-          resolveScalpV2CompletedWeekWindowToUtc(nowTs);
-        freshnessRequeuedCandidates = await updateScalpV2CandidateStatuses({
+          resolveScalpComposerCompletedWeekWindowToUtc(nowTs);
+        freshnessRequeuedCandidates = await updateScalpComposerCandidateStatuses({
           ids: staleCandidateIds,
           status: "discovered",
           metadataPatch: {
@@ -7594,7 +7594,7 @@ export async function runScalpV2ExecuteJob(params: {
         cheapSkipReasonCounts,
         postCheapFilterDeployments: 0,
       };
-      return buildScalpV2JobResult({
+      return buildScalpComposerJobResult({
         jobKind: "execute",
         processed: 0,
         succeeded: 0,
@@ -7669,7 +7669,7 @@ export async function runScalpV2ExecuteJob(params: {
         freshnessReasonCounts,
         executeFreshnessWeeks: executeRequiredWeeks,
       };
-      return buildScalpV2JobResult({
+      return buildScalpComposerJobResult({
         jobKind: "execute",
         processed: 0,
         succeeded: 0,
@@ -7679,8 +7679,8 @@ export async function runScalpV2ExecuteJob(params: {
       });
     }
 
-    const bitgetAdapter = getScalpV2VenueAdapter("bitget");
-    const capitalAdapter = getScalpV2VenueAdapter("capital");
+    const bitgetAdapter = getScalpComposerVenueAdapter("bitget");
+    const capitalAdapter = getScalpComposerVenueAdapter("capital");
     const bitgetSnapshots = await bitgetAdapter.broker.fetchOpenPositionSnapshots().catch(() => []);
     const capitalSnapshots = await capitalAdapter.broker.fetchOpenPositionSnapshots().catch(() => []);
 
@@ -7708,24 +7708,24 @@ export async function runScalpV2ExecuteJob(params: {
     // v4Enabled / v5Enabled are env-derived, so we hoist them out of the
     // loop alongside `needsRegimeSnapshot` — they were being re-read on
     // every iteration for no reason.
-    const v4Enabled = isScalpV4Enabled();
-    const v5Enabled = isScalpV5Enabled();
+    const v4Enabled = isScalpRegimeEnabled();
+    const v5Enabled = isScalpResearchEnabled();
     const needsRegimeSnapshot = v4Enabled || v5Enabled;
     const newsBlackoutCache = new Map<
       string,
-      Promise<Awaited<ReturnType<typeof evaluateScalpV2V3NewsBlackout>>>
+      Promise<Awaited<ReturnType<typeof evaluateScalpComposerV3NewsBlackout>>>
     >();
     const v4RegimeCache = new Map<
       string,
-      Promise<Awaited<ReturnType<typeof loadScalpV4CurrentRegimeSnapshot>>>
+      Promise<Awaited<ReturnType<typeof loadScalpRegimeCurrentRegimeSnapshot>>>
     >();
-    const symbolCacheKey = (venue: ScalpV2Venue, symbol: string): string =>
+    const symbolCacheKey = (venue: ScalpComposerVenue, symbol: string): string =>
       `${venue}:${symbol}`;
-    const getCachedNewsBlackout = (venue: ScalpV2Venue, symbol: string) => {
+    const getCachedNewsBlackout = (venue: ScalpComposerVenue, symbol: string) => {
       const key = symbolCacheKey(venue, symbol);
       let pending = newsBlackoutCache.get(key);
       if (!pending) {
-        pending = evaluateScalpV2V3NewsBlackout({
+        pending = evaluateScalpComposerV3NewsBlackout({
           venue,
           symbol,
           nowMs: nowTs,
@@ -7735,21 +7735,21 @@ export async function runScalpV2ExecuteJob(params: {
           tier: null,
           staleData: true,
           activeEvents: [],
-        })) as Promise<Awaited<ReturnType<typeof evaluateScalpV2V3NewsBlackout>>>;
+        })) as Promise<Awaited<ReturnType<typeof evaluateScalpComposerV3NewsBlackout>>>;
         newsBlackoutCache.set(key, pending);
       }
       return pending;
     };
-    const getCachedV4Regime = (venue: ScalpV2Venue, symbol: string) => {
+    const getCachedV4Regime = (venue: ScalpComposerVenue, symbol: string) => {
       const key = symbolCacheKey(venue, symbol);
       let pending = v4RegimeCache.get(key);
       if (!pending) {
-        pending = loadScalpV4CurrentRegimeSnapshot({
+        pending = loadScalpRegimeCurrentRegimeSnapshot({
           venue,
           symbol,
           nowMs: nowTs,
         }).catch(() => ({ cellId: null, stale: true, snapshot: null })) as Promise<
-          Awaited<ReturnType<typeof loadScalpV4CurrentRegimeSnapshot>>
+          Awaited<ReturnType<typeof loadScalpRegimeCurrentRegimeSnapshot>>
         >;
         v4RegimeCache.set(key, pending);
       }
@@ -7762,8 +7762,8 @@ export async function runScalpV2ExecuteJob(params: {
 
     for (const deployment of eligibleAfterCheapFilter) {
       processed += 1;
-      const v5Owned = isScalpV5OwnedPromotionGate(deployment.promotionGate);
-      const deploymentDryRun = resolveScalpV2ExecuteDryRunForDeployment({
+      const v5Owned = isScalpResearchOwnedPromotionGate(deployment.promotionGate);
+      const deploymentDryRun = resolveScalpComposerExecuteDryRunForDeployment({
         effectiveDryRun,
         runtimeLiveEnabled: runtime.liveEnabled,
         deploymentLiveMode: deployment.liveMode,
@@ -7787,7 +7787,7 @@ export async function runScalpV2ExecuteJob(params: {
 	        const temporalFilterRaw = asRecord(deployment.promotionGate).v3TemporalFilter;
 	        const temporalFilter =
 	          Object.keys(asRecord(temporalFilterRaw)).length > 0
-	            ? (asRecord(temporalFilterRaw) as ScalpV2V3TemporalFilter)
+	            ? (asRecord(temporalFilterRaw) as ScalpComposerV3TemporalFilter)
 	            : null;
 	        // News blackout + v4 regime are now served from per-tick caches
 	        // (keyed by venue+symbol). v4Enabled / v5Enabled / needsRegimeSnapshot
@@ -7800,32 +7800,32 @@ export async function runScalpV2ExecuteJob(params: {
 	        const v4CurrentRegime = needsRegimeSnapshot
 	          ? await getCachedV4Regime(deployment.venue, deployment.symbol)
 	          : { cellId: null, stale: false, snapshot: null };
-	        const v4RegimeGate = resolveScalpV4EnvelopeBlock({
+	        const v4RegimeGate = resolveScalpRegimeEnvelopeBlock({
 	          enabled: v4Enabled && !v5Owned,
-	          hardGate: isScalpV4HardGateEnabled(),
+	          hardGate: isScalpRegimeHardGateEnabled(),
 	          envelope: asRecord(deployment.promotionGate).regimeEnvelope,
 	          currentCellId: v4CurrentRegime.cellId,
 	          stale: Boolean(v4CurrentRegime.stale),
 	        });
-	        const v5Cfg = resolveScalpV5Config();
+	        const v5Cfg = resolveScalpResearchConfig();
 	        const v5Stored = v5Enabled
-	          ? await loadScalpV5DeploymentEvidence({
+	          ? await loadScalpResearchDeploymentEvidence({
 	              deploymentId: deployment.deploymentId,
 	            }).catch(() => null)
 	          : null;
-	        const v5EvidenceFreshness = resolveScalpV5EvidenceFreshness({
+	        const v5EvidenceFreshness = resolveScalpResearchEvidenceFreshness({
 	          evaluatedAtMs: v5Stored?.v5EvaluatedAtMs ?? null,
 	          nowMs: nowTs,
 	          staleOlderThanMs: 14 * 24 * 60 * 60_000,
 	        });
-	        const v5Gate = resolveScalpV5EntryBlock({
+	        const v5Gate = resolveScalpResearchEntryBlock({
 	          enabled: v5Enabled && Boolean(v5Stored?.v5Enabled),
-	          hardGate: isScalpV5HardGateEnabled(),
+	          hardGate: isScalpResearchHardGateEnabled(),
 	          evidence: v5Stored?.evidence ?? null,
 	          currentCellId: v4CurrentRegime.cellId,
 	          stale: Boolean(v4CurrentRegime.stale) || v5EvidenceFreshness.stale,
 	          minTradesPerCell: v5Cfg.minTradesPerCell,
-	          allowThinPositiveCell: isScalpV5ConsistencyExceptionPromotionGate(deployment.promotionGate),
+	          allowThinPositiveCell: isScalpResearchConsistencyExceptionPromotionGate(deployment.promotionGate),
 	          minThinCellTrades: 3,
 	        });
 	        const v5OwnedMissingEvidenceReasonCodes = v5Owned && v5Enabled && !v5Stored?.evidence
@@ -7860,7 +7860,7 @@ export async function runScalpV2ExecuteJob(params: {
 	          ...(sundayBlock.blocked ? sundayBlock.reasonCodes : []),
 	        ]);
 	        const hasOpenPosition = openPositionDeploymentIds.has(deployment.deploymentId);
-	        if (!shouldRunScalpV2ExecuteCycleForDeployment({
+	        if (!shouldRunScalpComposerExecuteCycleForDeployment({
 	          entryBlocked: hardEntryBlocked,
 	          hasOpenPosition,
 	        })) {
@@ -7871,7 +7871,7 @@ export async function runScalpV2ExecuteJob(params: {
 	          }
 	          continue;
 	        }
-	        const configOverrideBase = buildScalpV2ExecuteConfigOverride({
+	        const configOverrideBase = buildScalpComposerExecuteConfigOverride({
 	          entrySessionProfile: deployment.entrySessionProfile,
 	          riskProfile: rp,
 	          entryTriggerOverrides: entryOverrides,
@@ -7915,13 +7915,13 @@ export async function runScalpV2ExecuteJob(params: {
 	              },
 	            }
 	          : configOverrideBase;
-        const runtimeSnapshot = buildScalpV2RuntimeSnapshotForDeployment({
+        const runtimeSnapshot = buildScalpComposerRuntimeSnapshotForDeployment({
           strategyId: deployment.strategyId,
         });
-        const persistence = createScalpV2ExecutionPersistenceAdapter({
+        const persistence = createScalpComposerExecutionPersistenceAdapter({
           runtimeSnapshot,
         });
-        const result = await runScalpV2ExecuteCycle({
+        const result = await runScalpComposerExecuteCycle({
           venue: deployment.venue,
           symbol: deployment.symbol,
           strategyId: deployment.strategyId,
@@ -7940,7 +7940,7 @@ export async function runScalpV2ExecuteJob(params: {
         });
         executedCycleDeployments += 1;
 
-        await appendScalpV2ExecutionEvent(
+        await appendScalpComposerExecutionEvent(
           buildEvent({
             deploymentId: deployment.deploymentId,
             venue: deployment.venue,
@@ -7977,7 +7977,7 @@ export async function runScalpV2ExecuteJob(params: {
           deployment.venue === "capital"
             ? pickCapitalSnapshotBySymbol(capitalSnapshots, deployment.symbol)
             : pickBitgetSnapshotBySymbol(bitgetSnapshots, deployment.symbol);
-        await upsertScalpV2PositionSnapshot({
+        await upsertScalpComposerPositionSnapshot({
           deploymentId: deployment.deploymentId,
           venue: deployment.venue,
           symbol: deployment.symbol,
@@ -7994,7 +7994,7 @@ export async function runScalpV2ExecuteJob(params: {
         succeeded += 1;
       } catch (err: any) {
         failed += 1;
-        await appendScalpV2ExecutionEvent(
+        await appendScalpComposerExecutionEvent(
           buildEvent({
             deploymentId: deployment.deploymentId,
             venue: deployment.venue,
@@ -8003,7 +8003,7 @@ export async function runScalpV2ExecuteJob(params: {
             tuneId: deployment.tuneId,
             entrySessionProfile: deployment.entrySessionProfile,
             eventType: "order_rejected",
-            reasonCodes: ["SCALP_V2_EXECUTION_ERROR"],
+            reasonCodes: ["SCALP_COMPOSER_EXECUTION_ERROR"],
             sourceOfTruth: "system",
             rawPayload: {
               message: err?.message || String(err),
@@ -8066,7 +8066,7 @@ export async function runScalpV2ExecuteJob(params: {
       executeFreshnessWeeks: executeRequiredWeeks,
     };
 
-    return buildScalpV2JobResult({
+    return buildScalpComposerJobResult({
       jobKind: "execute",
       processed,
       succeeded,
@@ -8078,7 +8078,7 @@ export async function runScalpV2ExecuteJob(params: {
     ok = false;
     failed = Math.max(1, failed);
     details = { error: err?.message || String(err) };
-    return buildScalpV2JobResult({
+    return buildScalpComposerJobResult({
       jobKind: "execute",
       processed,
       succeeded,
@@ -8087,8 +8087,8 @@ export async function runScalpV2ExecuteJob(params: {
       details,
     });
   } finally {
-    await snapshotScalpV2DailyMetrics().catch(() => undefined);
-    await finalizeScalpV2Job({
+    await snapshotScalpComposerDailyMetrics().catch(() => undefined);
+    await finalizeScalpComposerJob({
       jobKind: "execute",
       lockOwner: owner,
       ok,
@@ -8098,7 +8098,7 @@ export async function runScalpV2ExecuteJob(params: {
 }
 
 function snapshotExists(params: {
-  venue: ScalpV2Venue;
+  venue: ScalpComposerVenue;
   symbol: string;
   side: "long" | "short" | null;
   dealId: string | null;
@@ -8198,14 +8198,14 @@ function classifyBitgetClose(params: {
   const takeProfit = toFiniteOrNull(params.entry?.presetStopSurplusPrice);
   if (closePrice !== null && stop !== null) {
     const nearStop = Math.abs(closePrice - stop) <= Math.max(0.02, Math.abs(stop) * 0.0015);
-    if (nearStop) return { reasonCode: "SCALP_V2_RECONCILE_SL", source: source || "SYS" };
+    if (nearStop) return { reasonCode: "SCALP_COMPOSER_RECONCILE_SL", source: source || "SYS" };
   }
   if (closePrice !== null && takeProfit !== null) {
     const nearTakeProfit = Math.abs(closePrice - takeProfit) <= Math.max(0.02, Math.abs(takeProfit) * 0.0015);
-    if (nearTakeProfit) return { reasonCode: "SCALP_V2_RECONCILE_TP", source: source || "SYS" };
+    if (nearTakeProfit) return { reasonCode: "SCALP_COMPOSER_RECONCILE_TP", source: source || "SYS" };
   }
-  if (source === "SYS") return { reasonCode: "SCALP_V2_RECONCILE_BROKER_CLOSE", source };
-  return { reasonCode: "SCALP_V2_RECONCILE_MANUAL_CLOSE", source: source || "UNKNOWN" };
+  if (source === "SYS") return { reasonCode: "SCALP_COMPOSER_RECONCILE_BROKER_CLOSE", source };
+  return { reasonCode: "SCALP_COMPOSER_RECONCILE_MANUAL_CLOSE", source: source || "UNKNOWN" };
 }
 
 function computeRMultipleFromBitgetOrders(params: {
@@ -8248,7 +8248,7 @@ async function enrichMissingBitgetPositionClose(params: {
   const base = {
     rMultiple: 0,
     pnlUsd: null,
-    reasonCodes: ["SCALP_V2_RECONCILE_CLOSE"],
+    reasonCodes: ["SCALP_COMPOSER_RECONCILE_CLOSE"],
     rawPayload: {},
     brokerRef: null,
     tsExitMs: null,
@@ -8265,7 +8265,7 @@ async function enrichMissingBitgetPositionClose(params: {
     rMultiple: Number.isFinite(Number(brokerClose.rMultiple)) ? Number(brokerClose.rMultiple) : 0,
     pnlUsd: brokerClose.pnlUsd,
     reasonCodes: [
-      "SCALP_V2_RECONCILE_CLOSE",
+      "SCALP_COMPOSER_RECONCILE_CLOSE",
       ...brokerClose.reasonCodes,
     ],
     rawPayload: brokerClose.rawPayload,
@@ -8307,23 +8307,23 @@ function classifyCapitalCloseSource(source: string): {
 } {
   const normalized = normalizeBrokerText(source);
   if (normalized === "TP" || normalized.includes("PROFIT")) {
-    return { reasonCode: "SCALP_V2_RECONCILE_TP", source: normalized || "TP" };
+    return { reasonCode: "SCALP_COMPOSER_RECONCILE_TP", source: normalized || "TP" };
   }
   if (
     normalized === "SL" ||
     normalized.includes("STOP") ||
     normalized.includes("LOSS")
   ) {
-    return { reasonCode: "SCALP_V2_RECONCILE_SL", source: normalized || "SL" };
+    return { reasonCode: "SCALP_COMPOSER_RECONCILE_SL", source: normalized || "SL" };
   }
   if (normalized === "USER" || normalized.includes("MANUAL")) {
     return {
-      reasonCode: "SCALP_V2_RECONCILE_MANUAL_CLOSE",
+      reasonCode: "SCALP_COMPOSER_RECONCILE_MANUAL_CLOSE",
       source: normalized || "USER",
     };
   }
   return {
-    reasonCode: "SCALP_V2_RECONCILE_BROKER_CLOSE",
+    reasonCode: "SCALP_COMPOSER_RECONCILE_BROKER_CLOSE",
     source: normalized || "UNKNOWN",
   };
 }
@@ -8344,7 +8344,7 @@ async function enrichMissingCapitalPositionClose(params: {
   const base = {
     rMultiple: 0,
     pnlUsd: null,
-    reasonCodes: ["SCALP_V2_RECONCILE_CLOSE"],
+    reasonCodes: ["SCALP_COMPOSER_RECONCILE_CLOSE"],
     rawPayload: {},
     brokerRef: null,
     tsExitMs: null,
@@ -8396,11 +8396,11 @@ async function enrichMissingCapitalPositionClose(params: {
     side: params.side,
     details: closeActivity.details,
   });
-  if (rMultiple === null && classification.reasonCode === "SCALP_V2_RECONCILE_TP") {
+  if (rMultiple === null && classification.reasonCode === "SCALP_COMPOSER_RECONCILE_TP") {
     rMultiple = 1;
   } else if (
     rMultiple === null &&
-    classification.reasonCode === "SCALP_V2_RECONCILE_SL"
+    classification.reasonCode === "SCALP_COMPOSER_RECONCILE_SL"
   ) {
     rMultiple = -1;
   }
@@ -8409,8 +8409,8 @@ async function enrichMissingCapitalPositionClose(params: {
     rMultiple: Number.isFinite(Number(rMultiple)) ? Number(rMultiple) : 0,
     pnlUsd: null,
     reasonCodes: [
-      "SCALP_V2_RECONCILE_CLOSE",
-      "SCALP_V2_RECONCILE_BROKER_HISTORY",
+      "SCALP_COMPOSER_RECONCILE_CLOSE",
+      "SCALP_COMPOSER_RECONCILE_BROKER_HISTORY",
       classification.reasonCode,
     ],
     rawPayload: {
@@ -8429,11 +8429,11 @@ async function enrichMissingCapitalPositionClose(params: {
   };
 }
 
-export async function runScalpV2ReconcileJob(): Promise<ScalpV2JobResult> {
+export async function runScalpComposerReconcileJob(): Promise<ScalpComposerJobResult> {
   const owner = lockOwner("reconcile");
-  const claimed = await claimScalpV2Job({ jobKind: "reconcile", lockOwner: owner });
+  const claimed = await claimScalpComposerJob({ jobKind: "reconcile", lockOwner: owner });
   if (!claimed) {
-    return buildScalpV2JobResult({
+    return buildScalpComposerJobResult({
       jobKind: "reconcile",
       processed: 0,
       succeeded: 0,
@@ -8451,8 +8451,8 @@ export async function runScalpV2ReconcileJob(): Promise<ScalpV2JobResult> {
   let details: Record<string, unknown> = {};
 
   try {
-    const openPositions = await listScalpV2OpenPositions();
-    const bitgetAdapter = getScalpV2VenueAdapter("bitget");
+    const openPositions = await listScalpComposerOpenPositions();
+    const bitgetAdapter = getScalpComposerVenueAdapter("bitget");
     const bitgetSnapshots = await bitgetAdapter.broker.fetchOpenPositionSnapshots();
     const capitalSnapshots = await fetchCapitalOpenPositionSnapshots().catch(() => []);
 
@@ -8489,7 +8489,7 @@ export async function runScalpV2ReconcileJob(): Promise<ScalpV2JobResult> {
                 updatedAtMs: position.updatedAtMs,
                 nowTs: nowMs(),
               });
-        await appendScalpV2ExecutionEvent(
+        await appendScalpComposerExecutionEvent(
           buildEvent({
             deploymentId: position.deploymentId,
             venue: position.venue,
@@ -8513,7 +8513,7 @@ export async function runScalpV2ReconcileJob(): Promise<ScalpV2JobResult> {
           }),
         );
 
-        await upsertScalpV2PositionSnapshot({
+        await upsertScalpComposerPositionSnapshot({
           deploymentId: position.deploymentId,
           venue: position.venue,
           symbol: position.symbol,
@@ -8536,14 +8536,14 @@ export async function runScalpV2ReconcileJob(): Promise<ScalpV2JobResult> {
       }
     }
 
-    await snapshotScalpV2DailyMetrics().catch(() => undefined);
+    await snapshotScalpComposerDailyMetrics().catch(() => undefined);
 
     details = {
       examinedOpenPositions: openPositions.length,
       reconciled: Math.max(0, succeeded - (openPositions.length - processed)),
     };
 
-    return buildScalpV2JobResult({
+    return buildScalpComposerJobResult({
       jobKind: "reconcile",
       processed,
       succeeded,
@@ -8555,7 +8555,7 @@ export async function runScalpV2ReconcileJob(): Promise<ScalpV2JobResult> {
     ok = false;
     failed = Math.max(1, failed);
     details = { error: err?.message || String(err) };
-    return buildScalpV2JobResult({
+    return buildScalpComposerJobResult({
       jobKind: "reconcile",
       processed,
       succeeded,
@@ -8564,7 +8564,7 @@ export async function runScalpV2ReconcileJob(): Promise<ScalpV2JobResult> {
       details,
     });
   } finally {
-    await finalizeScalpV2Job({
+    await finalizeScalpComposerJob({
       jobKind: "reconcile",
       lockOwner: owner,
       ok,
@@ -8573,24 +8573,24 @@ export async function runScalpV2ReconcileJob(): Promise<ScalpV2JobResult> {
   }
 }
 
-export async function runScalpV2FullAutoCycle(params: {
+export async function runScalpComposerFullAutoCycle(params: {
   executeDryRun?: boolean;
-  venue?: ScalpV2Venue;
-  session?: ScalpV2Session;
+  venue?: ScalpComposerVenue;
+  session?: ScalpComposerSession;
   researchBatchSize?: number;
 } = {}): Promise<{
-  discover: ScalpV2JobResult;
-  evaluate: ScalpV2JobResult;
-  worker: ScalpV2JobResult;
-  promote: ScalpV2JobResult;
-  execute: ScalpV2JobResult;
-  reconcile: ScalpV2JobResult;
+  discover: ScalpComposerJobResult;
+  evaluate: ScalpComposerJobResult;
+  worker: ScalpComposerJobResult;
+  promote: ScalpComposerJobResult;
+  execute: ScalpComposerJobResult;
+  reconcile: ScalpComposerJobResult;
 }> {
   // research replaces both evaluate + worker in a single in-memory pass
   const skippedStub = (
-    jobKind: ScalpV2JobKind,
+    jobKind: ScalpComposerJobKind,
     reason = "handled_by_dedicated_cron",
-  ): ScalpV2JobResult => ({
+  ): ScalpComposerJobResult => ({
     ok: true,
     busy: false,
     jobKind,
@@ -8606,32 +8606,32 @@ export async function runScalpV2FullAutoCycle(params: {
       10_000,
       toPositiveInt(
         params.researchBatchSize,
-        toPositiveInt(process.env.SCALP_V2_RESEARCH_BATCH_SIZE, 100, 10_000),
+        toPositiveInt(process.env.SCALP_COMPOSER_RESEARCH_BATCH_SIZE, 100, 10_000),
         10_000,
       ),
     ),
   );
-  const research = await runScalpV2ResearchJob({
+  const research = await runScalpComposerResearchJob({
     batchSize: cycleResearchBatchSize,
   });
-  const discover: ScalpV2JobResult = {
+  const discover: ScalpComposerJobResult = {
     ...research,
     jobKind: "discover",
     details: { ...research.details, delegatedTo: "research" },
   };
-  const evaluate: ScalpV2JobResult = {
+  const evaluate: ScalpComposerJobResult = {
     ...research,
     jobKind: "evaluate",
     details: { ...research.details, delegatedTo: "research" },
   };
-  const worker: ScalpV2JobResult = {
+  const worker: ScalpComposerJobResult = {
     ...research,
     jobKind: "worker",
     details: { ...research.details, delegatedTo: "research" },
   };
   const promote =
     research.ok && !research.busy && research.pendingAfter <= 0
-      ? await runScalpV2PromoteJob()
+      ? await runScalpComposerPromoteJob()
       : skippedStub("promote", "research_pending");
 
   // Execute and reconcile run on their own dedicated crons (every 1m and 2m

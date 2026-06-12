@@ -9,12 +9,12 @@ import {
 } from "../candleHistory";
 import { ensureScalpSymbolMarketMetadata } from "../symbolMarketMetadataSync";
 import type { ScalpCandle } from "../types";
-import type { ScalpV4Venue } from "./types";
+import type { ScalpRegimeVenue } from "./types";
 
 const ONE_MINUTE_MS = 60_000;
 const WEEK = 7 * 24 * 60 * 60 * 1000;
 
-export interface ScalpV4CandleCoverageStatus {
+export interface ScalpRegimeCandleCoverageStatus {
   ok: boolean;
   reason: string | null;
   candleCount: number;
@@ -24,9 +24,9 @@ export interface ScalpV4CandleCoverageStatus {
   lastTsMs: number | null;
 }
 
-export interface ScalpV4CandleCoverageEnsureResult {
+export interface ScalpRegimeCandleCoverageEnsureResult {
   candles: ScalpCandle[];
-  coverage: ScalpV4CandleCoverageStatus;
+  coverage: ScalpRegimeCandleCoverageStatus;
   fetchedCandles: number;
   savedChunks: number;
   attempted: boolean;
@@ -59,12 +59,12 @@ function normalizeFetchedCandles(rows: unknown[]): ScalpCandle[] {
     .sort((a, b) => a[0] - b[0]);
 }
 
-export function assessScalpV4CandleCoverage(params: {
+export function assessScalpRegimeCandleCoverage(params: {
   candles: ScalpCandle[];
   fromMs: number;
   toMs: number;
   minCoverageRatio: number;
-}): ScalpV4CandleCoverageStatus {
+}): ScalpRegimeCandleCoverageStatus {
   const fromMs = Math.max(0, Math.floor(Number(params.fromMs) || 0));
   const toMs = Math.max(fromMs + ONE_MINUTE_MS, Math.floor(Number(params.toMs) || 0));
   const candles = (params.candles || [])
@@ -104,7 +104,7 @@ export function assessScalpV4CandleCoverage(params: {
 }
 
 async function fetchRange(params: {
-  venue: ScalpV4Venue;
+  venue: ScalpRegimeVenue;
   symbol: string;
   fromMs: number;
   toMs: number;
@@ -144,8 +144,8 @@ async function fetchRange(params: {
   return { epic, candles };
 }
 
-export async function ensureScalpV4CandleCoverage(params: {
-  venue: ScalpV4Venue;
+export async function ensureScalpRegimeCandleCoverage(params: {
+  venue: ScalpRegimeVenue;
   symbol: string;
   fromMs: number;
   toMs: number;
@@ -153,12 +153,12 @@ export async function ensureScalpV4CandleCoverage(params: {
   minCoverageRatio?: number;
   chunkWeeks?: number;
   maxRequestsPerChunk?: number;
-}): Promise<ScalpV4CandleCoverageEnsureResult> {
+}): Promise<ScalpRegimeCandleCoverageEnsureResult> {
   const fromMs = Math.max(0, Math.floor(Number(params.fromMs) || 0));
   const toMs = Math.max(fromMs + ONE_MINUTE_MS, Math.floor(Number(params.toMs) || 0));
   const minCoverageRatio = Math.max(0.1, Math.min(1, Number(params.minCoverageRatio) || 0.65));
   const initialCandles = params.existingCandles || [];
-  const initialCoverage = assessScalpV4CandleCoverage({
+  const initialCoverage = assessScalpRegimeCandleCoverage({
     candles: initialCandles,
     fromMs,
     toMs,
@@ -213,7 +213,7 @@ export async function ensureScalpV4CandleCoverage(params: {
 
   const reloaded = await loadScalpCandleHistoryInRange(params.symbol, "1m", fromMs, toMs);
   const candles = (reloaded.record?.candles || []) as ScalpCandle[];
-  const coverage = assessScalpV4CandleCoverage({
+  const coverage = assessScalpRegimeCandleCoverage({
     candles,
     fromMs,
     toMs,

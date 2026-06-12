@@ -1467,7 +1467,7 @@ function toUiScalpSummaryFromV2(
       tune: tuneId || "default",
       cronSchedule: null,
       cronRoute: "execute-deployments",
-      cronPath: "/api/scalp/v2/cron/execute?dryRun=false",
+      cronPath: "/api/scalp/composer/cron/execute?dryRun=false",
       dayKey,
       state:
         String(sessionState.state || "").trim() ||
@@ -2090,30 +2090,30 @@ const SCALP_CRON_PIPELINE_DEFINITIONS: Record<
   ScalpCronPipelineDefinition
 > = {
   scalp_research: {
-    primaryPathname: "/api/scalp/v2/cron/research",
-    matchPathnames: ["/api/scalp/v2/cron/research"],
-    fallbackInvokePath: "/api/scalp/v2/cron/research?batchSize=100",
+    primaryPathname: "/api/scalp/composer/cron/research",
+    matchPathnames: ["/api/scalp/composer/cron/research"],
+    fallbackInvokePath: "/api/scalp/composer/cron/research?batchSize=100",
   },
   scalp_promote: {
-    primaryPathname: "/api/scalp/v2/cron/promote",
-    matchPathnames: ["/api/scalp/v2/cron/promote"],
-    fallbackInvokePath: "/api/scalp/v2/cron/promote?dryRun=false",
+    primaryPathname: "/api/scalp/composer/cron/promote",
+    matchPathnames: ["/api/scalp/composer/cron/promote"],
+    fallbackInvokePath: "/api/scalp/composer/cron/promote?dryRun=false",
   },
   scalp_execute: {
-    primaryPathname: "/api/scalp/v2/cron/execute",
-    matchPathnames: ["/api/scalp/v2/cron/execute"],
-    fallbackInvokePath: "/api/scalp/v2/cron/execute?dryRun=false",
+    primaryPathname: "/api/scalp/composer/cron/execute",
+    matchPathnames: ["/api/scalp/composer/cron/execute"],
+    fallbackInvokePath: "/api/scalp/composer/cron/execute?dryRun=false",
   },
   scalp_reconcile: {
-    primaryPathname: "/api/scalp/v2/cron/reconcile",
-    matchPathnames: ["/api/scalp/v2/cron/reconcile"],
-    fallbackInvokePath: "/api/scalp/v2/cron/reconcile",
+    primaryPathname: "/api/scalp/composer/cron/reconcile",
+    matchPathnames: ["/api/scalp/composer/cron/reconcile"],
+    fallbackInvokePath: "/api/scalp/composer/cron/reconcile",
   },
   scalp_cycle: {
-    primaryPathname: "/api/scalp/v2/cron/cycle",
-    matchPathnames: ["/api/scalp/v2/cron/cycle"],
+    primaryPathname: "/api/scalp/composer/cron/cycle",
+    matchPathnames: ["/api/scalp/composer/cron/cycle"],
     fallbackInvokePath:
-      "/api/scalp/v2/cron/cycle?dryRun=false",
+      "/api/scalp/composer/cron/cycle?dryRun=false",
   },
 };
 
@@ -2165,18 +2165,18 @@ function normalizeInvokePathForScalpCronNow(
   const pathname = parseCronPathname(value);
   const isDiscoverCron =
     rowId === "scalp_discover" ||
-    pathname === "/api/scalp/v2/cron/discover";
+    pathname === "/api/scalp/composer/cron/discover";
   const isDryRunOverridableCron =
     rowId === "scalp_discover" ||
     rowId === "scalp_evaluate" ||
     rowId === "scalp_promote" ||
     rowId === "scalp_execute" ||
     rowId === "scalp_cycle" ||
-    pathname === "/api/scalp/v2/cron/discover" ||
-    pathname === "/api/scalp/v2/cron/evaluate" ||
-    pathname === "/api/scalp/v2/cron/promote" ||
-    pathname === "/api/scalp/v2/cron/execute" ||
-    pathname === "/api/scalp/v2/cron/cycle";
+    pathname === "/api/scalp/composer/cron/discover" ||
+    pathname === "/api/scalp/composer/cron/evaluate" ||
+    pathname === "/api/scalp/composer/cron/promote" ||
+    pathname === "/api/scalp/composer/cron/execute" ||
+    pathname === "/api/scalp/composer/cron/cycle";
   if (!isDiscoverCron && !isDryRunOverridableCron) return value;
   try {
     const absolute = /^https?:\/\//i.test(value);
@@ -3042,7 +3042,7 @@ export default function Home() {
       });
       if (session !== "all") params.set("session", session);
       const res = await fetch(
-        `/api/scalp/v2/dashboard/candidates?${params.toString()}`,
+        `/api/scalp/composer/dashboard/candidates?${params.toString()}`,
         { headers: buildAdminHeaders(), cache: "no-store" },
       );
       if (!res.ok) return;
@@ -3104,7 +3104,7 @@ export default function Home() {
             });
             if (session !== "all") params.set("session", session);
             const res = await fetch(
-              `/api/scalp/v2/dashboard/candidates?${params.toString()}`,
+              `/api/scalp/composer/dashboard/candidates?${params.toString()}`,
               { headers: buildAdminHeaders(), cache: "no-store" },
             );
             if (!res.ok) return;
@@ -3162,7 +3162,7 @@ export default function Home() {
         params.set("fresh", "true");
       }
       const summaryRes = await fetch(
-        `/api/scalp/v2/dashboard/summary?${params.toString()}`,
+        `/api/scalp/composer/dashboard/summary?${params.toString()}`,
         {
           headers: buildAdminHeaders(),
           cache: "no-store",
@@ -3189,7 +3189,7 @@ export default function Home() {
       setScalpSummary(summaryJson);
       try {
         const researchHealthRes = await fetch(
-          "/api/scalp/v2/ops/research-health",
+          "/api/scalp/composer/ops/research-health",
           {
             headers: buildAdminHeaders(),
             cache: "no-store",
@@ -3365,7 +3365,7 @@ export default function Home() {
         ? "manual_panic_stop_from_ui"
         : "manual_panic_stop_release_from_ui";
       const updatedBy = "ui:panic-stop";
-      const res = await fetch("/api/scalp/v2/control", {
+      const res = await fetch("/api/scalp/composer/control", {
         method: "POST",
         headers: {
           ...(buildAdminHeaders() || {}),

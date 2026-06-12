@@ -1,6 +1,6 @@
 import type { NextApiResponse } from "next";
 
-import type { ScalpV2Session, ScalpV2Venue } from "./types";
+import type { ScalpComposerSession, ScalpComposerVenue } from "./types";
 
 export function firstQueryValue(
   value: string | string[] | undefined,
@@ -35,7 +35,7 @@ export function parseIntBounded(
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
-export function parseVenue(value: string | string[] | undefined): ScalpV2Venue | undefined {
+export function parseVenue(value: string | string[] | undefined): ScalpComposerVenue | undefined {
   const first = firstQueryValue(value);
   if (!first) return undefined;
   const normalized = first.toLowerCase();
@@ -44,7 +44,7 @@ export function parseVenue(value: string | string[] | undefined): ScalpV2Venue |
   return undefined;
 }
 
-export function parseSession(value: string | string[] | undefined): ScalpV2Session | undefined {
+export function parseSession(value: string | string[] | undefined): ScalpComposerSession | undefined {
   const first = firstQueryValue(value);
   if (!first) return undefined;
   const normalized = first.toLowerCase();

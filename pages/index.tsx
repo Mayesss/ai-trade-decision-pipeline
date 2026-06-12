@@ -21,7 +21,7 @@ import {
 } from "../components/scalp/shared";
 import { WeeklyNetRTrack } from "../components/scalp/WeeklyNetRTrack";
 
-// ─── types (mirror the four /api/scalp/v5/* endpoints + /api/scalp/v4/recent)
+// ─── types (mirror the four /api/scalp/research/* endpoints + /api/scalp/regimes/recent)
 
 interface CoverageResp {
   ok: boolean;
@@ -284,7 +284,7 @@ const DECISION_ORDER: V5GateDecision[] = [
 
 // ─── page ────────────────────────────────────────────────────────────────────
 
-export default function ScalpV5Dashboard() {
+export default function ScalpResearchDashboard() {
   // Four independent slices so a slow endpoint doesn't gate the others.
   const [coverage, setCoverage] = useState<CoverageResp | null>(null);
   const [gateState, setGateState] = useState<GateStateResp | null>(null);
@@ -326,11 +326,11 @@ export default function ScalpV5Dashboard() {
   // that endpoint can carry large evidence payloads and is loaded on demand.
   const loader = useCallback(async (headers: Record<string, string>) => {
     const [c, g, rc, nu, rh] = await Promise.all([
-      fetchOne<CoverageResp>("/api/scalp/v5/coverage", headers, setCoverage),
-      fetchOne<GateStateResp>("/api/scalp/v5/gate-state", headers, setGateState),
-      fetchOne<RecentResp>("/api/scalp/v4/recent", headers, setRecent),
+      fetchOne<CoverageResp>("/api/scalp/research/coverage", headers, setCoverage),
+      fetchOne<GateStateResp>("/api/scalp/research/gate-state", headers, setGateState),
+      fetchOne<RecentResp>("/api/scalp/regimes/recent", headers, setRecent),
       fetchOne<NeonUsageResp>("/api/scalp/ops/neon-usage", headers, setNeonUsage),
-      fetchOne<ResearchHealthResp>("/api/scalp/v2/ops/research-health", headers, setResearchHealth),
+      fetchOne<ResearchHealthResp>("/api/scalp/composer/ops/research-health", headers, setResearchHealth),
     ]);
     if (c.unauthorized || g.unauthorized || rc.unauthorized || nu.unauthorized || rh.unauthorized) {
       return { unauthorized: true };
@@ -348,7 +348,7 @@ export default function ScalpV5Dashboard() {
       setDeploymentsLoading(true);
       setDeploymentsError(null);
       const attempt = await fetchOne<DeploymentsResp>(
-        `/api/scalp/v5/deployments?scope=${encodeURIComponent(scope)}&limit=${limit}&offset=${offset}`,
+        `/api/scalp/research/deployments?scope=${encodeURIComponent(scope)}&limit=${limit}&offset=${offset}`,
         headers,
         setDeployments,
       );
@@ -566,7 +566,7 @@ export default function ScalpV5Dashboard() {
       )}
 
       <div className="border-t border-zinc-800 pt-2 mt-6 text-zinc-600">
-        sources /api/scalp/v5/coverage · /gate-state · /deployments · /api/scalp/v4/recent · /api/scalp/v2/ops/research-health · /api/scalp/ops/neon-usage
+        sources /api/scalp/research/coverage · /gate-state · /deployments · /api/scalp/regimes/recent · /api/scalp/composer/ops/research-health · /api/scalp/ops/neon-usage
       </div>
     </PageShell>
   );

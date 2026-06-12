@@ -1,5 +1,5 @@
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-export const SCALP_V4_ONE_WEEK_MS = 7 * ONE_DAY_MS;
+export const SCALP_REGIME_ONE_WEEK_MS = 7 * ONE_DAY_MS;
 
 export function startOfUtcDayMs(tsMs: number): number {
   const d = new Date(Math.floor(Number(tsMs) || 0));
@@ -13,11 +13,11 @@ export function startOfUtcWeekMondayMs(tsMs: number): number {
 }
 
 export function completedPriorWeekStartForDecisionMs(nowMs: number): number {
-  return startOfUtcWeekMondayMs(nowMs) - SCALP_V4_ONE_WEEK_MS;
+  return startOfUtcWeekMondayMs(nowMs) - SCALP_REGIME_ONE_WEEK_MS;
 }
 
 export function validityWeekStartFromCompletedWeekMs(completedWeekStartMs: number): number {
-  return startOfUtcWeekMondayMs(completedWeekStartMs) + SCALP_V4_ONE_WEEK_MS;
+  return startOfUtcWeekMondayMs(completedWeekStartMs) + SCALP_REGIME_ONE_WEEK_MS;
 }
 
 export function weekStartForEntryMs(entryTsMs: number): number {

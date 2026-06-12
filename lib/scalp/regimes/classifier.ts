@@ -1,23 +1,23 @@
 import {
-  SCALP_V4_ONE_WEEK_MS,
+  SCALP_REGIME_ONE_WEEK_MS,
   startOfUtcWeekMondayMs,
   validityWeekStartFromCompletedWeekMs,
 } from "./week";
 import type {
-  ScalpV4AxisBucket,
-  ScalpV4Candle,
-  ScalpV4CellId,
-  ScalpV4ClassifierOptions,
-  ScalpV4MarketContext,
-  ScalpV4RawRegimeLabel,
-  ScalpV4RegimeSnapshot,
-  ScalpV4RiskAxis,
-  ScalpV4TrendAxis,
-  ScalpV4Venue,
-  ScalpV4WeeklyBar,
+  ScalpRegimeAxisBucket,
+  ScalpRegimeCandle,
+  ScalpRegimeCellId,
+  ScalpRegimeClassifierOptions,
+  ScalpRegimeMarketContext,
+  ScalpRegimeRawRegimeLabel,
+  ScalpRegimeSnapshot,
+  ScalpRegimeRiskAxis,
+  ScalpRegimeTrendAxis,
+  ScalpRegimeVenue,
+  ScalpRegimeWeeklyBar,
 } from "./types";
 
-export const SCALP_V4_CLASSIFIER_VERSION = "scalp_v4_macro_weekly_r1";
+export const SCALP_REGIME_CLASSIFIER_VERSION = "scalp_v4_macro_weekly_r1";
 
 const DEFAULTS = {
   minVolLookbackWeeks: 26,
@@ -47,20 +47,20 @@ function percentileRank(values: number[], current: number): number | null {
   return (count / rows.length) * 100;
 }
 
-function axisFromPctile(pctile: number | null): ScalpV4AxisBucket {
+function axisFromPctile(pctile: number | null): ScalpRegimeAxisBucket {
   if (pctile === null) return "unknown";
   if (pctile < 33.333) return "low";
   if (pctile < 66.667) return "mid";
   return "high";
 }
 
-function cellId(volAxis: ScalpV4AxisBucket, trendAxis: ScalpV4TrendAxis, riskAxis: ScalpV4RiskAxis): ScalpV4CellId {
+function cellId(volAxis: ScalpRegimeAxisBucket, trendAxis: ScalpRegimeTrendAxis, riskAxis: ScalpRegimeRiskAxis): ScalpRegimeCellId {
   if (volAxis === "unknown" || trendAxis === "unknown" || riskAxis === "unknown") return "unknown";
-  return `vol=${volAxis}|trend=${trendAxis}|risk=${riskAxis}` as ScalpV4CellId;
+  return `vol=${volAxis}|trend=${trendAxis}|risk=${riskAxis}` as ScalpRegimeCellId;
 }
 
-export function normalizeScalpV4Candles(rows: Array<ScalpV4Candle | [number, number, number, number, number, number?]>): ScalpV4Candle[] {
-  const normalized: ScalpV4Candle[] = [];
+export function normalizeScalpRegimeCandles(rows: Array<ScalpRegimeCandle | [number, number, number, number, number, number?]>): ScalpRegimeCandle[] {
+  const normalized: ScalpRegimeCandle[] = [];
   for (const row of rows || []) {
     const raw = Array.isArray(row)
       ? { ts: row[0], open: row[1], high: row[2], low: row[3], close: row[4], volume: row[5] }
@@ -77,9 +77,9 @@ export function normalizeScalpV4Candles(rows: Array<ScalpV4Candle | [number, num
   return normalized.sort((a, b) => a.ts - b.ts);
 }
 
-export function buildScalpV4WeeklyBars(candles: Array<ScalpV4Candle | [number, number, number, number, number, number?]>): ScalpV4WeeklyBar[] {
-  const byWeek = new Map<number, ScalpV4Candle[]>();
-  for (const candle of normalizeScalpV4Candles(candles)) {
+export function buildScalpRegimeWeeklyBars(candles: Array<ScalpRegimeCandle | [number, number, number, number, number, number?]>): ScalpRegimeWeeklyBar[] {
+  const byWeek = new Map<number, ScalpRegimeCandle[]>();
+  for (const candle of normalizeScalpRegimeCandles(candles)) {
     const weekStartMs = startOfUtcWeekMondayMs(candle.ts);
     const bucket = byWeek.get(weekStartMs) || [];
     bucket.push(candle);
@@ -100,12 +100,12 @@ export function buildScalpV4WeeklyBars(candles: Array<ScalpV4Candle | [number, n
     });
 }
 
-function trueRange(bar: ScalpV4WeeklyBar, prevClose: number | null): number {
+function trueRange(bar: ScalpRegimeWeeklyBar, prevClose: number | null): number {
   if (prevClose === null || !Number.isFinite(prevClose)) return bar.high - bar.low;
   return Math.max(bar.high - bar.low, Math.abs(bar.high - prevClose), Math.abs(bar.low - prevClose));
 }
 
-function atrPctSeries(bars: ScalpV4WeeklyBar[], period: number): Array<number | null> {
+function atrPctSeries(bars: ScalpRegimeWeeklyBar[], period: number): Array<number | null> {
   const tr: number[] = [];
   for (let idx = 0; idx < bars.length; idx += 1) {
     tr.push(trueRange(bars[idx]!, idx > 0 ? bars[idx - 1]!.close : null));
@@ -117,12 +117,12 @@ function atrPctSeries(bars: ScalpV4WeeklyBar[], period: number): Array<number | 
   });
 }
 
-function sma(bars: ScalpV4WeeklyBar[], idx: number, period: number): number | null {
+function sma(bars: ScalpRegimeWeeklyBar[], idx: number, period: number): number | null {
   if (idx + 1 < period) return null;
   return mean(bars.slice(idx + 1 - period, idx + 1).map((row) => row.close));
 }
 
-function adxSeries(bars: ScalpV4WeeklyBar[], period: number): Array<number | null> {
+function adxSeries(bars: ScalpRegimeWeeklyBar[], period: number): Array<number | null> {
   const dx: Array<number | null> = [null];
   for (let idx = 1; idx < bars.length; idx += 1) {
     const prev = bars[idx - 1]!;
@@ -147,7 +147,7 @@ function adxSeries(bars: ScalpV4WeeklyBar[], period: number): Array<number | nul
   });
 }
 
-function resolveTrendAxis(bars: ScalpV4WeeklyBar[], idx: number, opts: typeof DEFAULTS): { axis: ScalpV4TrendAxis; strength: number | null } {
+function resolveTrendAxis(bars: ScalpRegimeWeeklyBar[], idx: number, opts: typeof DEFAULTS): { axis: ScalpRegimeTrendAxis; strength: number | null } {
   const fast = sma(bars, idx, opts.trendFastWeeks);
   const slow = sma(bars, idx, opts.trendSlowWeeks);
   const prevFast = sma(bars, idx - 1, opts.trendFastWeeks);
@@ -165,8 +165,8 @@ function resolveTrendAxis(bars: ScalpV4WeeklyBar[], idx: number, opts: typeof DE
   return { axis: "choppy", strength };
 }
 
-function weeklyDirection(bars: ScalpV4WeeklyBar[], validWeekStartMs: number, lookbackWeeks: number): number | null {
-  const completedWeekStart = validWeekStartMs - SCALP_V4_ONE_WEEK_MS;
+function weeklyDirection(bars: ScalpRegimeWeeklyBar[], validWeekStartMs: number, lookbackWeeks: number): number | null {
+  const completedWeekStart = validWeekStartMs - SCALP_REGIME_ONE_WEEK_MS;
   const idx = bars.findIndex((row) => row.weekStartMs === completedWeekStart);
   if (idx < lookbackWeeks || idx < 0) return null;
   const prev = bars[idx - lookbackWeeks]!;
@@ -175,7 +175,7 @@ function weeklyDirection(bars: ScalpV4WeeklyBar[], validWeekStartMs: number, loo
   return (cur.close - prev.close) / prev.close;
 }
 
-function resolveFxRiskAxis(validWeekStartMs: number, ctx: ScalpV4MarketContext): { axis: ScalpV4RiskAxis; strength: number | null; weeks: number } {
+function resolveFxRiskAxis(validWeekStartMs: number, ctx: ScalpRegimeMarketContext): { axis: ScalpRegimeRiskAxis; strength: number | null; weeks: number } {
   const usdJpy = ctx.usdJpy || [];
   const audJpy = ctx.audJpy || [];
   const u = weeklyDirection(usdJpy, validWeekStartMs, 4);
@@ -188,9 +188,9 @@ function resolveFxRiskAxis(validWeekStartMs: number, ctx: ScalpV4MarketContext):
   return { axis: "neutral", strength, weeks };
 }
 
-function resolveCryptoRiskAxis(validWeekStartMs: number, ctx: ScalpV4MarketContext): { axis: ScalpV4RiskAxis; strength: number | null; weeks: number } {
+function resolveCryptoRiskAxis(validWeekStartMs: number, ctx: ScalpRegimeMarketContext): { axis: ScalpRegimeRiskAxis; strength: number | null; weeks: number } {
   const btc = ctx.btcUsdt || [];
-  const completedWeekStart = validWeekStartMs - SCALP_V4_ONE_WEEK_MS;
+  const completedWeekStart = validWeekStartMs - SCALP_REGIME_ONE_WEEK_MS;
   const idx = btc.findIndex((row) => row.weekStartMs === completedWeekStart);
   if (idx < 26) return { axis: "unknown", strength: null, weeks: btc.length };
   const atrPct = atrPctSeries(btc, 14);
@@ -207,18 +207,18 @@ function resolveCryptoRiskAxis(validWeekStartMs: number, ctx: ScalpV4MarketConte
   return { axis: "neutral", strength, weeks: btc.length };
 }
 
-export function classifyScalpV4RawRegimes(params: {
-  venue: ScalpV4Venue;
+export function classifyScalpRegimeRawRegimes(params: {
+  venue: ScalpRegimeVenue;
   symbol: string;
-  weeklyBars: ScalpV4WeeklyBar[];
-  marketContext?: ScalpV4MarketContext;
-  options?: ScalpV4ClassifierOptions;
-}): ScalpV4RawRegimeLabel[] {
+  weeklyBars: ScalpRegimeWeeklyBar[];
+  marketContext?: ScalpRegimeMarketContext;
+  options?: ScalpRegimeClassifierOptions;
+}): ScalpRegimeRawRegimeLabel[] {
   const opts = { ...DEFAULTS, ...(params.options || {}) };
-  const classifierVersion = params.options?.classifierVersion || SCALP_V4_CLASSIFIER_VERSION;
+  const classifierVersion = params.options?.classifierVersion || SCALP_REGIME_CLASSIFIER_VERSION;
   const bars = (params.weeklyBars || []).slice().sort((a, b) => a.weekStartMs - b.weekStartMs);
   const atrPct = atrPctSeries(bars, 14);
-  const out: ScalpV4RawRegimeLabel[] = [];
+  const out: ScalpRegimeRawRegimeLabel[] = [];
   for (let idx = 0; idx < bars.length; idx += 1) {
     const completedBar = bars[idx]!;
     const validWeekStartMs = validityWeekStartFromCompletedWeekMs(completedBar.weekStartMs);
@@ -257,7 +257,7 @@ export function classifyScalpV4RawRegimes(params: {
       sourceCoverage: {
         symbolWeeks: idx + 1,
         riskWeeks: risk.weeks,
-        warmupComplete: Boolean(rawCellId && rawCellId !== ("unknown" as ScalpV4CellId)),
+        warmupComplete: Boolean(rawCellId && rawCellId !== ("unknown" as ScalpRegimeCellId)),
         postWarmupUnknown: rawCellId === "unknown" && warmupEnoughForKnown,
       },
       details: {
@@ -270,17 +270,17 @@ export function classifyScalpV4RawRegimes(params: {
   return out;
 }
 
-export function applyScalpV4Hysteresis(
-  rawLabels: ScalpV4RawRegimeLabel[],
-  options: Pick<ScalpV4ClassifierOptions, "hysteresisWeeks"> = {},
-): ScalpV4RegimeSnapshot[] {
+export function applyScalpRegimeHysteresis(
+  rawLabels: ScalpRegimeRawRegimeLabel[],
+  options: Pick<ScalpRegimeClassifierOptions, "hysteresisWeeks"> = {},
+): ScalpRegimeSnapshot[] {
   const required = Math.max(1, Math.floor(options.hysteresisWeeks || DEFAULTS.hysteresisWeeks));
-  let confirmed: ScalpV4CellId | null = null;
-  let pending: ScalpV4CellId | null = null;
+  let confirmed: ScalpRegimeCellId | null = null;
+  let pending: ScalpRegimeCellId | null = null;
   let pendingWeeks = 0;
-  const out: ScalpV4RegimeSnapshot[] = [];
+  const out: ScalpRegimeSnapshot[] = [];
   for (const raw of rawLabels.slice().sort((a, b) => a.weekStartMs - b.weekStartMs)) {
-    let transition: ScalpV4RegimeSnapshot["transition"] = null;
+    let transition: ScalpRegimeSnapshot["transition"] = null;
     if (raw.rawCellId === "unknown") {
       out.push({ ...raw, cellId: confirmed || "unknown", pendingCellId: pending, pendingWeeks, transition });
       continue;
@@ -316,9 +316,9 @@ export function applyScalpV4Hysteresis(
   return out;
 }
 
-export function countScalpV4Epochs(snapshots: ScalpV4RegimeSnapshot[]): number {
+export function countScalpRegimeEpochs(snapshots: ScalpRegimeSnapshot[]): number {
   let epochs = 0;
-  let prev: ScalpV4CellId | null = null;
+  let prev: ScalpRegimeCellId | null = null;
   for (const row of snapshots) {
     if (row.cellId === "unknown") continue;
     if (row.cellId !== prev) {

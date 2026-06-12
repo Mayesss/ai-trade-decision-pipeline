@@ -3,10 +3,10 @@ import {
   resolveScalpV1ResearchHardCaps,
 } from "../v1CostBrake";
 
-export function clampScalpV2HardCap(value: number, hardCap: number): number {
+export function clampScalpComposerHardCap(value: number, hardCap: number): number {
   return clampScalpV1HardCap(value, hardCap);
 }
 
-export function resolveScalpV2ResearchHardCaps() {
+export function resolveScalpComposerResearchHardCaps() {
   return resolveScalpV1ResearchHardCaps();
 }

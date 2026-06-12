@@ -13,7 +13,7 @@ import nextEnv from "@next/env";
 
 import { isScalpPgConfigured, scalpPrisma } from "../lib/scalp/pg/client";
 import { sql } from "../lib/scalp/pg/sql";
-import { runScalpV5EvaluationBatch } from "../lib/scalp/research/evaluator";
+import { runScalpResearchEvaluationBatch } from "../lib/scalp/research/evaluator";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());
@@ -38,7 +38,7 @@ async function main() {
   console.log(`Re-evaluating ${deploymentIds.length} Capital deployments (full, spread-charged)...`);
   console.log(`  ${rows.map((r) => r.symbol).join(", ")}`);
 
-  const result = await runScalpV5EvaluationBatch({
+  const result = await runScalpResearchEvaluationBatch({
     deploymentIds,
     preflightCandles: false,
     nowMs: Date.now(),

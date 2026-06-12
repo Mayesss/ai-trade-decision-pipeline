@@ -3,25 +3,25 @@ import type { NextApiRequest, NextApiResponse } from "next";
 export type AdminAccessResult = { ok: boolean; required: boolean };
 const UNAUTHENTICATED_CRON_ROUTES = new Set<string>([
   "/api/swing/analyze",
-  "/api/scalp/v2/cron/discover",
-  "/api/scalp/v2/cron/load-candles",
-  "/api/scalp/v2/cron/evaluate",
-  "/api/scalp/v2/cron/worker",
-  "/api/scalp/v2/cron/promote",
-  "/api/scalp/v2/cron/execute",
-  "/api/scalp/v2/cron/reconcile",
-  "/api/scalp/v2/cron/research",
-  "/api/scalp/v2/cron/cycle",
+  "/api/scalp/composer/cron/discover",
+  "/api/scalp/composer/cron/load-candles",
+  "/api/scalp/composer/cron/evaluate",
+  "/api/scalp/composer/cron/worker",
+  "/api/scalp/composer/cron/promote",
+  "/api/scalp/composer/cron/execute",
+  "/api/scalp/composer/cron/reconcile",
+  "/api/scalp/composer/cron/research",
+  "/api/scalp/composer/cron/cycle",
   // v5 crons. Same pattern as the v2 list above — Vercel cron requests don't
   // carry x-admin-access-secret, so these routes have to be admin-secret-
   // exempt or the handlers 401 and the cron silently no-ops.
-  "/api/scalp/v5/cron/evaluate",
-  "/api/scalp/v5/cron/promote",
-  "/api/scalp/v5/cron/trim-tail",
-  "/api/scalp/v5/cron/cull-bottom",
-  "/api/scalp/v5/cron/load-live-candles",
-  "/api/scalp/v5/cron/preflight-candles",
-  "/api/scalp/v4/cron/build-regimes",
+  "/api/scalp/research/cron/evaluate",
+  "/api/scalp/research/cron/promote",
+  "/api/scalp/research/cron/trim-tail",
+  "/api/scalp/research/cron/cull-bottom",
+  "/api/scalp/research/cron/load-live-candles",
+  "/api/scalp/research/cron/preflight-candles",
+  "/api/scalp/regimes/cron/build-regimes",
 ]);
 
 function firstHeaderValue(value: string | string[] | undefined): string {

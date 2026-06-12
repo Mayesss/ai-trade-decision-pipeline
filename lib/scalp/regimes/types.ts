@@ -1,8 +1,8 @@
-export type ScalpV4Venue = "bitget" | "capital";
+export type ScalpRegimeVenue = "bitget" | "capital";
 
-export interface ScalpV4ResearchCandidate {
+export interface ScalpRegimeResearchCandidate {
   id: number;
-  venue: ScalpV4Venue;
+  venue: ScalpRegimeVenue;
   symbol: string;
   strategyId: string;
   tuneId: string;
@@ -10,15 +10,15 @@ export interface ScalpV4ResearchCandidate {
   metadata: Record<string, unknown>;
 }
 
-export type ScalpV4AxisBucket = "low" | "mid" | "high" | "unknown";
-export type ScalpV4TrendAxis = "trending_up" | "trending_down" | "choppy" | "unknown";
-export type ScalpV4RiskAxis = "risk_on" | "risk_off" | "neutral" | "unknown";
+export type ScalpRegimeAxisBucket = "low" | "mid" | "high" | "unknown";
+export type ScalpRegimeTrendAxis = "trending_up" | "trending_down" | "choppy" | "unknown";
+export type ScalpRegimeRiskAxis = "risk_on" | "risk_off" | "neutral" | "unknown";
 
-export type ScalpV4CellId =
-  | `vol=${Exclude<ScalpV4AxisBucket, "unknown">}|trend=${Exclude<ScalpV4TrendAxis, "unknown">}|risk=${Exclude<ScalpV4RiskAxis, "unknown">}`
+export type ScalpRegimeCellId =
+  | `vol=${Exclude<ScalpRegimeAxisBucket, "unknown">}|trend=${Exclude<ScalpRegimeTrendAxis, "unknown">}|risk=${Exclude<ScalpRegimeRiskAxis, "unknown">}`
   | "unknown";
 
-export interface ScalpV4Candle {
+export interface ScalpRegimeCandle {
   ts: number;
   open: number;
   high: number;
@@ -27,7 +27,7 @@ export interface ScalpV4Candle {
   volume?: number;
 }
 
-export interface ScalpV4WeeklyBar {
+export interface ScalpRegimeWeeklyBar {
   weekStartMs: number;
   open: number;
   high: number;
@@ -36,15 +36,15 @@ export interface ScalpV4WeeklyBar {
   volume: number;
 }
 
-export interface ScalpV4RawRegimeLabel {
+export interface ScalpRegimeRawRegimeLabel {
   weekStartMs: number;
   classifierVersion: string;
-  venue: ScalpV4Venue;
+  venue: ScalpRegimeVenue;
   symbol: string;
-  volAxis: ScalpV4AxisBucket;
-  trendAxis: ScalpV4TrendAxis;
-  riskAxis: ScalpV4RiskAxis;
-  rawCellId: ScalpV4CellId;
+  volAxis: ScalpRegimeAxisBucket;
+  trendAxis: ScalpRegimeTrendAxis;
+  riskAxis: ScalpRegimeRiskAxis;
+  rawCellId: ScalpRegimeCellId;
   confidence: {
     volDistancePct: number | null;
     trendStrength: number | null;
@@ -59,17 +59,17 @@ export interface ScalpV4RawRegimeLabel {
   details: Record<string, unknown>;
 }
 
-export interface ScalpV4RegimeSnapshot extends ScalpV4RawRegimeLabel {
-  cellId: ScalpV4CellId;
-  pendingCellId: ScalpV4CellId | null;
+export interface ScalpRegimeSnapshot extends ScalpRegimeRawRegimeLabel {
+  cellId: ScalpRegimeCellId;
+  pendingCellId: ScalpRegimeCellId | null;
   pendingWeeks: number;
   transition: {
-    fromCellId: ScalpV4CellId | null;
-    toCellId: ScalpV4CellId | null;
+    fromCellId: ScalpRegimeCellId | null;
+    toCellId: ScalpRegimeCellId | null;
   } | null;
 }
 
-export interface ScalpV4ClassifierOptions {
+export interface ScalpRegimeClassifierOptions {
   classifierVersion?: string;
   minVolLookbackWeeks?: number;
   preferredVolLookbackWeeks?: number;
@@ -79,26 +79,26 @@ export interface ScalpV4ClassifierOptions {
   adxWeeks?: number;
 }
 
-export interface ScalpV4MarketContext {
-  usdJpy?: ScalpV4WeeklyBar[];
-  audJpy?: ScalpV4WeeklyBar[];
-  btcUsdt?: ScalpV4WeeklyBar[];
+export interface ScalpRegimeMarketContext {
+  usdJpy?: ScalpRegimeWeeklyBar[];
+  audJpy?: ScalpRegimeWeeklyBar[];
+  btcUsdt?: ScalpRegimeWeeklyBar[];
 }
 
-export interface ScalpV4TradeLike {
+export interface ScalpRegimeTradeLike {
   entryTs: number;
   exitTs: number;
   rMultiple: number;
 }
 
-export interface ScalpV4WindowResult {
+export interface ScalpRegimeWindowResult {
   windowStartMs: number;
   windowEndMs: number;
-  trades: ScalpV4TradeLike[];
+  trades: ScalpRegimeTradeLike[];
 }
 
-export interface ScalpV4CellAggregate {
-  cellId: ScalpV4CellId;
+export interface ScalpRegimeCellAggregate {
+  cellId: ScalpRegimeCellId;
   windows: number;
   trades: number;
   distinctEpochCount: number;
@@ -120,7 +120,7 @@ export interface ScalpV4CellAggregate {
   reason: string | null;
 }
 
-export interface ScalpV4RegimeEnvelope {
+export interface ScalpRegimeEnvelope {
   version: "scalp_v4_regime_envelope_r1";
   classifierVersion: string;
   evaluatedAtMs: number;
@@ -130,19 +130,19 @@ export interface ScalpV4RegimeEnvelope {
     | "no_passing_cells"
     | "regime_overbroad_pending_review"
     | "regime_overbroad_auto_rejected";
-  allowedCells: ScalpV4CellId[];
+  allowedCells: ScalpRegimeCellId[];
   occupiedCells: number;
   strictPassingCells: number;
   relaxedPassingCells: number;
   overbroad: boolean;
   overbroadReviewUntilMs: number | null;
-  thresholds: ScalpV4EnvelopeThresholds;
-  cells: ScalpV4CellAggregate[];
+  thresholds: ScalpRegimeEnvelopeThresholds;
+  cells: ScalpRegimeCellAggregate[];
 }
 
 // Per-cell cumulative stats — incrementally updated each sweep when a new
 // window is appended. Lets future sweeps skip re-replaying historical windows.
-export interface ScalpV4CellCumulativeStat {
+export interface ScalpRegimeCellCumulativeStat {
   trades: number;
   netR: number;
   maxDrawdownR: number;
@@ -152,16 +152,16 @@ export interface ScalpV4CellCumulativeStat {
   windowNetR: number[];                 // per-window total R for this cell
 }
 
-export interface ScalpV4IncrementalState {
+export interface ScalpRegimeIncrementalState {
   version: "scalp_v4_incremental_r1";
   classifierVersion: string;
   windowFromMs: number;                 // earliest window start ever included
   lastWindowEndMs: number;              // latest window end already aggregated
-  cells: Record<string, ScalpV4CellCumulativeStat>;
+  cells: Record<string, ScalpRegimeCellCumulativeStat>;
   synthesizedAt?: number;               // set when cell stats were backfilled from envelope (not from real per-window data)
 }
 
-export interface ScalpV4EnvelopeThresholds {
+export interface ScalpRegimeEnvelopeThresholds {
   minCellWindows: number;
   minCellTrades: number;
   minDistinctEpochs: number;

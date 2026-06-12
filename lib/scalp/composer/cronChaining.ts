@@ -1,4 +1,4 @@
 export {
-  invokeCronEndpointDetached as invokeScalpV2CronEndpointDetached,
-  type CronInvokeResult as ScalpV2CronInvokeResult,
+  invokeCronEndpointDetached as invokeScalpComposerCronEndpointDetached,
+  type CronInvokeResult as ScalpComposerCronInvokeResult,
 } from "../cronChaining";

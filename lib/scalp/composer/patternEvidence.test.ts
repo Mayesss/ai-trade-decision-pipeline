@@ -2,18 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
-  aggregateScalpV2PatternEdges,
-  buildScalpV2PatternKey,
-  selectScalpV2PatternRepresentativeCandidates,
-  type ScalpV2PatternCandidateSummary,
-  type ScalpV2PatternTradeVector,
+  SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
+  aggregateScalpComposerPatternEdges,
+  buildScalpComposerPatternKey,
+  selectScalpComposerPatternRepresentativeCandidates,
+  type ScalpComposerPatternCandidateSummary,
+  type ScalpComposerPatternTradeVector,
 } from "./patternEvidence";
 
 function candidate(
   id: number,
-  overrides: Partial<ScalpV2PatternCandidateSummary> = {},
-): ScalpV2PatternCandidateSummary {
+  overrides: Partial<ScalpComposerPatternCandidateSummary> = {},
+): ScalpComposerPatternCandidateSummary {
   return {
     candidateId: id,
     venue: "capital",
@@ -33,7 +33,7 @@ function trade(
   bucketStartTs: number,
   rMultiple: number,
   index: number,
-): ScalpV2PatternTradeVector {
+): ScalpComposerPatternTradeVector {
   const behaviorFingerprint = "ctx|level|trigger|confirm|manage";
   return {
     candidateId: index,
@@ -46,7 +46,7 @@ function trade(
     stageId: "c",
     replayTradeIndex: index,
     behaviorFingerprint,
-    patternKey: buildScalpV2PatternKey({
+    patternKey: buildScalpComposerPatternKey({
       venue: "capital",
       session: "berlin",
       behaviorFingerprint,
@@ -62,7 +62,7 @@ function trade(
   };
 }
 
-test("selectScalpV2PatternRepresentativeCandidates keeps best clone per symbol pattern window", () => {
+test("selectScalpComposerPatternRepresentativeCandidates keeps best clone per symbol pattern window", () => {
   const rows = [
     candidate(1, { stageCLowerBoundR: -0.01, stageCNetR: 8, stageCTrades: 40 }),
     candidate(2, { stageCLowerBoundR: 0.03, stageCNetR: 3, stageCTrades: 30 }),
@@ -74,14 +74,14 @@ test("selectScalpV2PatternRepresentativeCandidates keeps best clone per symbol p
     }),
   ];
 
-  const reps = selectScalpV2PatternRepresentativeCandidates(rows);
+  const reps = selectScalpComposerPatternRepresentativeCandidates(rows);
 
   assert.equal(reps.length, 2);
   assert.equal(reps.find((row) => row.symbol === "EURUSD")?.candidateId, 2);
   assert.equal(reps.find((row) => row.symbol === "GBPUSD")?.candidateId, 3);
 });
 
-test("aggregateScalpV2PatternEdges uses 1h bucket observations as authoritative sample", () => {
+test("aggregateScalpComposerPatternEdges uses 1h bucket observations as authoritative sample", () => {
   const bucket = Date.UTC(2026, 0, 1, 8);
   const rows = [
     trade("EURUSD", bucket, 0.5, 1),
@@ -90,7 +90,7 @@ test("aggregateScalpV2PatternEdges uses 1h bucket observations as authoritative 
     trade("EURUSD", bucket + 60 * 60_000, 0.3, 4),
   ];
 
-  const [edge] = aggregateScalpV2PatternEdges({
+  const [edge] = aggregateScalpComposerPatternEdges({
     trades: rows,
     candidateCount: 4,
     representativeCandidateCount: 3,
@@ -104,7 +104,7 @@ test("aggregateScalpV2PatternEdges uses 1h bucket observations as authoritative 
   assert.ok(edge.bucketLowerBoundR !== edge.rawLowerBoundR);
 });
 
-test("aggregateScalpV2PatternEdges computes symbol breadth and leave-one-symbol-out lower bound", () => {
+test("aggregateScalpComposerPatternEdges computes symbol breadth and leave-one-symbol-out lower bound", () => {
   const bucket = Date.UTC(2026, 0, 1, 8);
   const rows = [
     trade("EURUSD", bucket, 2, 1),
@@ -113,7 +113,7 @@ test("aggregateScalpV2PatternEdges computes symbol breadth and leave-one-symbol-
     trade("USDJPY", bucket + 60 * 60_000, 0.1, 4),
   ];
 
-  const [edge] = aggregateScalpV2PatternEdges({
+  const [edge] = aggregateScalpComposerPatternEdges({
     trades: rows,
     candidateCount: 3,
     representativeCandidateCount: 3,
@@ -128,15 +128,15 @@ test("aggregateScalpV2PatternEdges computes symbol breadth and leave-one-symbol-
   assert.ok(edge.leaveOneSymbolOutBucketLowerBoundR! < edge.bucketLowerBoundR);
 });
 
-test("aggregateScalpV2PatternEdges labels stage-C-passed survivor-only evidence", () => {
-  const [edge] = aggregateScalpV2PatternEdges({
+test("aggregateScalpComposerPatternEdges labels stage-C-passed survivor-only evidence", () => {
+  const [edge] = aggregateScalpComposerPatternEdges({
     trades: [trade("EURUSD", Date.UTC(2026, 0, 1, 8), 1, 1)],
     candidateCount: 1,
     representativeCandidateCount: 1,
-    populationScope: SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
+    populationScope: SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
   });
 
-  assert.equal(edge.populationScope, SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED);
+  assert.equal(edge.populationScope, SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED);
   assert.equal(edge.scoreJson.survivorOnly, true);
   assert.match(String(edge.scoreJson.warning), /Survivor-only/);
 });
