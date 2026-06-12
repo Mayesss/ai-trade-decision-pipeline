@@ -50,5 +50,8 @@
     "baseline-browser-mapping": "^2.9.19",
     "prisma": "^6.16.0",
     "tsx": "^4.21.0"
+  },
+  "overrides": {
+    "pg-cloudflare": "file:stubs/pg-cloudflare"
   }
 }
