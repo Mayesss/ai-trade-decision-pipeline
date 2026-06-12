@@ -35,7 +35,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     );
     const staleBefore = new Date(nowMs - staleThresholdMs);
     // The evaluator week starts on SUNDAY UTC, not Monday — because the
-    // weekly rollover (scripts/scalp-v5-sunday.ts) runs on Sunday and
+    // weekly rollover (scripts/scalp-research-sunday.ts) runs on Sunday and
     // writes v5_evaluated_at = NOW() then. If we used the standard
     // Monday boundary, every Monday 00:00 UTC the dashboard's "this
     // week N/total" widget would reset to 0 even though Sunday's

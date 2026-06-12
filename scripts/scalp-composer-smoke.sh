@@ -18,7 +18,7 @@ usage() {
 Scalp v2 smoke test runner (safe mode by default).
 
 Usage:
-  scripts/scalp-v2-smoke.sh [options]
+  scripts/scalp-composer-smoke.sh [options]
 
 Options:
   --base-url <url>         API base URL (default: http://localhost:3000)
@@ -40,8 +40,8 @@ Environment overrides:
   RUN_LOAD_MAINTENANCE
 
 Examples:
-  scripts/scalp-v2-smoke.sh
-  scripts/scalp-v2-smoke.sh --base-url https://my-app.vercel.app --admin-secret "$ADMIN_ACCESS_SECRET"
+  scripts/scalp-composer-smoke.sh
+  scripts/scalp-composer-smoke.sh --base-url https://my-app.vercel.app --admin-secret "$ADMIN_ACCESS_SECRET"
 EOF
 }
 

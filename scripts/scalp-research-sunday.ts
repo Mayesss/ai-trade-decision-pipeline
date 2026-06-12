@@ -233,7 +233,7 @@ async function main() {
   }
 
   console.log(
-    `scalp-v5-sunday dryRun=${dryRun} targetNewSeats=${targetNewSeats} evalLimit=${evalLimit} maxEvalBatches=${maxEvalBatches || "unlimited"}`,
+    `scalp-research-sunday dryRun=${dryRun} targetNewSeats=${targetNewSeats} evalLimit=${evalLimit} maxEvalBatches=${maxEvalBatches || "unlimited"}`,
   );
 
   const summary: Record<string, unknown> = {
@@ -502,7 +502,7 @@ async function main() {
 
   summary.queueAfter = await getScalpV5EvaluationQueueStats({ staleOlderThanMs });
 
-  console.log("\n=== scalp-v5-sunday summary ===");
+  console.log("\n=== scalp-research-sunday summary ===");
   console.log(JSON.stringify(summary, null, 2));
 }
 

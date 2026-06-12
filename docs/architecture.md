@@ -73,7 +73,7 @@ and close naturally via the execute cron. The gates only block NEW entries.
 | `0 6 * * 0` | `/api/scalp/v5/cron/trim-tail` | v5 | Weekly: retire consistently-failing rows |
 
 The weekly Sunday rollover (evidence advancement + cull + refill + promote) runs
-from the terminal via [`scripts/scalp-v5-sunday.ts`](../scripts/scalp-v5-sunday.ts)
+from the terminal via [`scripts/scalp-research-sunday.ts`](../scripts/scalp-research-sunday.ts)
 instead of a vercel cron — too long-running for the serverless function timeout
 and easier to monitor / re-run locally.
 

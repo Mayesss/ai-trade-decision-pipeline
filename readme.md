@@ -639,7 +639,7 @@ node --import tsx scripts/scalp-replay-matrix.ts \
 
 ### Why
 
-The earlier v4 layer ran a full 104-week walk-forward per stage-C survivor every week to compute per-regime-cell expectancy, then gated entries on "current cell is in an `eligible` envelope." Empirical post-mortem (`scripts/scalp-v4-cell-stability.ts`): sign agreement between older-half and newer-half per-cell expectancy was only ~67% with pearson r ≈ 0.39, so the 2-year walk's *positive* prediction was ~52% (coin flip) while its *negative* prediction was ~75%. Most of v4's value was a kill-switch on live deployments, and computing it across 698+ stage-C survivors every Monday was ~290 compute-hours for a coin-flip selection signal.
+The earlier v4 layer ran a full 104-week walk-forward per stage-C survivor every week to compute per-regime-cell expectancy, then gated entries on "current cell is in an `eligible` envelope." Empirical post-mortem (`scripts/scalp-regimes-cell-stability.ts`): sign agreement between older-half and newer-half per-cell expectancy was only ~67% with pearson r ≈ 0.39, so the 2-year walk's *positive* prediction was ~52% (coin flip) while its *negative* prediction was ~75%. Most of v4's value was a kill-switch on live deployments, and computing it across 698+ stage-C survivors every Monday was ~290 compute-hours for a coin-flip selection signal.
 
 v5 replaces the weekly 2-year walk with a cheaper, fresher signal:
 

@@ -17,7 +17,7 @@
  * new half, then aggregate sign agreement + Pearson correlation + the
  * (+/+, +/-, -/+, -/-) quadrant distribution.
  *
- * Run: npx tsx scripts/scalp-v4-cell-stability.ts
+ * Run: npx tsx scripts/scalp-regimes-cell-stability.ts
  *   MIN_WINDOWS=12 to require ≥12 chronological windows per pair
  *   CELL=vol=high|trend=trending_up|risk=risk_on to drill into one cell
  */
