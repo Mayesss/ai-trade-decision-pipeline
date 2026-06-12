@@ -48,7 +48,10 @@
     "scalp:v4:build-regimes": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v4-build-regimes.ts",
     "scalp:v4:backfill": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v4-backfill-walkforward.ts",
     "scalp:v4:reevaluate": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v4-reevaluate-envelopes.ts",
-    "scalp:v4:backfill-incremental": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v4-backfill-incremental-state.ts"
+    "scalp:v4:backfill-incremental": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v4-backfill-incremental-state.ts",
+    "bulk:research": "node --import tsx scripts/research-local-bulk.ts",
+    "bulk:research:v4": "BULK_RESEARCH_VERSION=v4 BULK_RUN_V4_WALKFORWARD=1 node --import tsx scripts/research-local-bulk.ts",
+    "bulk:research:v5": "BULK_RESEARCH_VERSION=v5 node --import tsx scripts/research-local-bulk.ts"
   },
   "devDependencies": {
     "@types/pg": "^8.20.0",
