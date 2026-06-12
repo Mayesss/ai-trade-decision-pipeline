@@ -14,8 +14,8 @@ export const config = { runtime: "nodejs", maxDuration: 800 };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
-import { setNoStoreHeaders } from "../../../../../lib/scalp-v2/http";
-import { runScalpV5EvaluationBatch } from "../../../../../lib/scalp-v5/evaluator";
+import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
+import { runScalpV5EvaluationBatch } from "../../../../../lib/scalp/research/evaluator";
 
 function firstQueryValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? String(value[0] || "") : String(value || "");

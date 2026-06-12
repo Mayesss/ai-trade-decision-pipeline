@@ -228,12 +228,39 @@ interface ResearchHealthResp {
     progress: {
       processedSoFar: number;
       totalSelected: number;
+      selectedTotal: number;
+      discoveredTotal: number;
+      workerStage: string | null;
+      workerStageProcessed: number;
+      workerStageTotal: number;
       skippedByCache: number;
       skippedByClearFail: number;
       skippedByNetRPreFilter: number;
+      smartSkippedPersisted: number;
+      surrogateSkippedPersisted: number;
+      stageAPass: number;
+      stageAFail: number;
+      stageBPass: number;
+      stageBFail: number;
       stageCPass: number;
+      stageCFail: number;
       persisted: number;
       replayErrors: number;
+      persistErrors: number;
+      stage0Replays: number;
+      stage0Skipped: number;
+      incrementalStageReplays: number;
+      fullStageReplays: number;
+      earlyAbortedStageReplays: number;
+      cachedStageReuses: number;
+      newestWeekReplayReuses: number;
+      stageBCacheHits: number;
+      stageCCacheHits: number;
+      deferredByCandleCoverage: number;
+      finalizedCoverageDeferrals: number;
+      pendingAfter: number;
+      remaining: number;
+      timeBudgetExhausted: boolean;
     };
     log: unknown[];
   } | null;
@@ -862,6 +889,7 @@ function fmtDurationMs(ms: number | null | undefined): string {
 }
 
 function ResearchProgress({ data }: { data: ResearchHealthResp }) {
+  const n = (value: unknown) => Math.max(0, Math.floor(Number(value) || 0));
   const q = data.queue || {
     total: 0,
     processed: 0,
@@ -875,13 +903,25 @@ function ResearchProgress({ data }: { data: ResearchHealthResp }) {
   const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
   const job = data.job;
   const batch = job?.progress || null;
-  const batchTotal = Math.max(0, Math.floor(Number(batch?.totalSelected || 0)));
-  const batchDone = Math.max(0, Math.floor(Number(batch?.processedSoFar || 0)));
+  const batchTotal = n(batch?.totalSelected);
+  const batchDone = n(batch?.processedSoFar);
   const batchPct = batchTotal > 0 ? Math.min(100, Math.round((batchDone / batchTotal) * 100)) : 0;
+  const stageTotal = n(batch?.workerStageTotal);
+  const stageDone = n(batch?.workerStageProcessed);
+  const stagePct = stageTotal > 0 ? Math.min(100, Math.round((stageDone / stageTotal) * 100)) : 0;
   const skipped =
-    Math.max(0, Math.floor(Number(batch?.skippedByCache || 0))) +
-    Math.max(0, Math.floor(Number(batch?.skippedByClearFail || 0))) +
-    Math.max(0, Math.floor(Number(batch?.skippedByNetRPreFilter || 0)));
+    n(batch?.skippedByCache) +
+    n(batch?.skippedByClearFail) +
+    n(batch?.skippedByNetRPreFilter) +
+    n(batch?.smartSkippedPersisted) +
+    n(batch?.surrogateSkippedPersisted);
+  const replayTotal =
+    n(batch?.fullStageReplays) +
+    n(batch?.incrementalStageReplays) +
+    n(batch?.cachedStageReuses) +
+    n(batch?.newestWeekReplayReuses);
+  const cacheTotal = n(batch?.stageBCacheHits) + n(batch?.stageCCacheHits);
+  const errors = n(batch?.replayErrors) + n(batch?.persistErrors);
   const status = String(job?.status || "unknown").toLowerCase();
   const statusClass =
     data.health.stale || data.hint.tone === "critical"
@@ -942,13 +982,20 @@ function ResearchProgress({ data }: { data: ResearchHealthResp }) {
               {bar(batchDone, batchTotal || 1, 20)}
             </span>
             <span className="text-zinc-500">{batchPct}%</span>
-            <span className="text-zinc-500">stageC </span>
-            <span className="text-zinc-100">{batch.stageCPass}</span>
+            {batch.workerStage ? (
+              <>
+                <span className="text-zinc-500">stage </span>
+                <span className="text-zinc-100">{batch.workerStage}</span>
+                <span className="text-zinc-500">{stageDone}/{stageTotal}</span>
+                <span className="text-zinc-500">{stagePct}%</span>
+              </>
+            ) : null}
             <span className="text-zinc-500">persisted </span>
             <span className="text-zinc-100">{batch.persisted}</span>
-            <span className={batch.replayErrors > 0 ? "text-rose-400" : "text-zinc-500"}>
-              errors {batch.replayErrors}
+            <span className={errors > 0 ? "text-rose-400" : "text-zinc-500"}>
+              errors {errors}
             </span>
+            {batch.timeBudgetExhausted ? <span className="text-amber-400">budget hit</span> : null}
             {skipped > 0 ? (
               <>
                 <span className="text-zinc-500">skipped </span>
@@ -958,6 +1005,111 @@ function ResearchProgress({ data }: { data: ResearchHealthResp }) {
           </>
         ) : (
           <span className="text-zinc-500">no current batch</span>
+        )}
+      </span>
+
+      <span className="text-zinc-500">stage gates</span>
+      <span className="flex flex-wrap items-baseline gap-x-3">
+        {batch ? (
+          <>
+            <span>
+              <span className="text-zinc-500">A </span>
+              <span className="text-emerald-400">{n(batch.stageAPass)}</span>
+              <span className="text-zinc-500">/</span>
+              <span className={n(batch.stageAFail) > 0 ? "text-rose-400" : "text-zinc-500"}>{n(batch.stageAFail)}</span>
+            </span>
+            <span>
+              <span className="text-zinc-500">B </span>
+              <span className="text-emerald-400">{n(batch.stageBPass)}</span>
+              <span className="text-zinc-500">/</span>
+              <span className={n(batch.stageBFail) > 0 ? "text-rose-400" : "text-zinc-500"}>{n(batch.stageBFail)}</span>
+            </span>
+            <span>
+              <span className="text-zinc-500">C </span>
+              <span className="text-emerald-400">{n(batch.stageCPass)}</span>
+              <span className="text-zinc-500">/</span>
+              <span className={n(batch.stageCFail) > 0 ? "text-rose-400" : "text-zinc-500"}>{n(batch.stageCFail)}</span>
+            </span>
+            <span className="text-zinc-500">pass/fail</span>
+          </>
+        ) : (
+          <span className="text-zinc-500">no stage data</span>
+        )}
+      </span>
+
+      <span className="text-zinc-500">replay</span>
+      <span className="flex flex-wrap items-baseline gap-x-3">
+        {batch ? (
+          <>
+            <span>
+              <span className="text-zinc-500">runs </span>
+              <span className="text-zinc-100">{replayTotal}</span>
+            </span>
+            <span>
+              <span className="text-zinc-500">full </span>
+              <span className="text-zinc-100">{n(batch.fullStageReplays)}</span>
+            </span>
+            <span>
+              <span className="text-zinc-500">incr </span>
+              <span className="text-zinc-100">{n(batch.incrementalStageReplays)}</span>
+            </span>
+            <span>
+              <span className="text-zinc-500">cached </span>
+              <span className="text-zinc-100">{n(batch.cachedStageReuses)}</span>
+            </span>
+            <span>
+              <span className="text-zinc-500">stage0 </span>
+              <span className="text-zinc-100">{n(batch.stage0Replays)}</span>
+              <span className="text-zinc-500">/</span>
+              <span className={n(batch.stage0Skipped) > 0 ? "text-amber-400" : "text-zinc-500"}>{n(batch.stage0Skipped)}</span>
+            </span>
+            <span>
+              <span className="text-zinc-500">early abort </span>
+              <span className={n(batch.earlyAbortedStageReplays) > 0 ? "text-amber-400" : "text-zinc-500"}>{n(batch.earlyAbortedStageReplays)}</span>
+            </span>
+          </>
+        ) : (
+          <span className="text-zinc-500">no replay data</span>
+        )}
+      </span>
+
+      <span className="text-zinc-500">filters</span>
+      <span className="flex flex-wrap items-baseline gap-x-3">
+        {batch ? (
+          <>
+            <span>
+              <span className="text-zinc-500">cache </span>
+              <span className="text-zinc-100">{n(batch.skippedByCache)}</span>
+            </span>
+            <span>
+              <span className="text-zinc-500">clear-fail </span>
+              <span className="text-zinc-100">{n(batch.skippedByClearFail)}</span>
+            </span>
+            <span>
+              <span className="text-zinc-500">netR </span>
+              <span className="text-zinc-100">{n(batch.skippedByNetRPreFilter)}</span>
+            </span>
+            <span>
+              <span className="text-zinc-500">smart </span>
+              <span className="text-zinc-100">{n(batch.smartSkippedPersisted)}</span>
+            </span>
+            <span>
+              <span className="text-zinc-500">surrogate </span>
+              <span className="text-zinc-100">{n(batch.surrogateSkippedPersisted)}</span>
+            </span>
+            <span>
+              <span className="text-zinc-500">cache hits B/C </span>
+              <span className="text-zinc-100">{cacheTotal}</span>
+            </span>
+            <span>
+              <span className="text-zinc-500">coverage defers </span>
+              <span className={n(batch.deferredByCandleCoverage) > 0 ? "text-amber-400" : "text-zinc-500"}>{n(batch.deferredByCandleCoverage)}</span>
+              <span className="text-zinc-500">/</span>
+              <span className={n(batch.finalizedCoverageDeferrals) > 0 ? "text-amber-400" : "text-zinc-500"}>{n(batch.finalizedCoverageDeferrals)}</span>
+            </span>
+          </>
+        ) : (
+          <span className="text-zinc-500">no filter data</span>
         )}
       </span>
 

@@ -4,7 +4,7 @@ import {
   getScalpStrategyPreferredTimeframes,
   resolveScalpStrategyIdForSymbol,
 } from "../strategies/registry";
-import { isModelGuidedComposerStrategyId, resolveScalpExecutionStrategyId } from "../../scalp-v2/composerExecution";
+import { isModelGuidedComposerStrategyId, resolveScalpExecutionStrategyId } from "../composer/composerExecution";
 import { applySymbolGuardRiskDefaultsToReplayRuntime } from "../strategies/guardDefaults";
 import {
   applyScalpStrategyConfigOverride,

@@ -6,18 +6,18 @@ import { requireAdminAccess } from "../../../../../lib/admin";
 import {
   invokeScalpV2CronEndpointDetached,
   type ScalpV2CronInvokeResult,
-} from "../../../../../lib/scalp-v2/cronChaining";
+} from "../../../../../lib/scalp/composer/cronChaining";
 import {
   clampScalpV2HardCap,
   resolveScalpV2ResearchHardCaps,
-} from "../../../../../lib/scalp-v2/costControls";
+} from "../../../../../lib/scalp/composer/costControls";
 import {
   parseBool,
   parseIntBounded,
   setNoStoreHeaders,
-} from "../../../../../lib/scalp-v2/http";
-import { runScalpV2ResearchJob } from "../../../../../lib/scalp-v2/pipeline";
-import { runScalpV4ResearchJob } from "../../../../../lib/scalp-v4";
+} from "../../../../../lib/scalp/composer/http";
+import { runScalpV2ResearchJob } from "../../../../../lib/scalp/composer/pipeline";
+import { runScalpV4ResearchJob } from "../../../../../lib/scalp/regimes";
 
 export default async function handler(
   req: NextApiRequest,

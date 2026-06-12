@@ -11,12 +11,12 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { requireAdminAccess } from "../../../../../lib/admin";
 import { scalpPrisma } from "../../../../../lib/scalp/pg/client";
 import { sql } from "../../../../../lib/scalp/pg/sql";
-import { setNoStoreHeaders } from "../../../../../lib/scalp-v2/http";
+import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
 import {
   runScalpV4WeeklyRegimeBuild,
   SCALP_V4_CLASSIFIER_VERSION,
   type ScalpV4Venue,
-} from "../../../../../lib/scalp-v4";
+} from "../../../../../lib/scalp/regimes";
 
 function firstQueryValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? String(value[0] || "") : String(value || "");

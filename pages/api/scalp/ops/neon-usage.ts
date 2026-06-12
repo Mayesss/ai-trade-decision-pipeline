@@ -3,7 +3,7 @@ export const config = { runtime: "nodejs" };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../lib/admin";
-import { setNoStoreHeaders } from "../../../../lib/scalp-v2/http";
+import { setNoStoreHeaders } from "../../../../lib/scalp/composer/http";
 
 const NEON_API_BASE = "https://console.neon.tech/api/v2";
 const DEFAULT_TRANSFER_ALLOWANCE_GB = 100;

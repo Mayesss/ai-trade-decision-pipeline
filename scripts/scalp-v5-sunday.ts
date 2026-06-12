@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import nextEnv from "@next/env";
 
-import { isScalpPgConfigured } from "../lib/scalp-v2/pg";
+import { isScalpPgConfigured } from "../lib/scalp/composer/pg";
 import {
   loadScalpV4DeploymentSymbols,
   runScalpV4WeeklyRegimeBuild,
-} from "../lib/scalp-v4";
-import { runScalpV5CandlePreflight } from "../lib/scalp-v5/candlePreflight";
-import { runScalpV5EvaluationBatch } from "../lib/scalp-v5/evaluator";
+} from "../lib/scalp/regimes";
+import { runScalpV5CandlePreflight } from "../lib/scalp/research/candlePreflight";
+import { runScalpV5EvaluationBatch } from "../lib/scalp/research/evaluator";
 import {
   autoPromoteScalpV5WinnersToEnabled,
   cullBottomPerformersScalpV5Deployments,
@@ -15,7 +15,7 @@ import {
   refillScalpV5DeploymentsMixed,
   retireConsistentlyFailingScalpV5Deployments,
   selectScalpV5DeploymentsNeedingAdvancement,
-} from "../lib/scalp-v5/pg";
+} from "../lib/scalp/research/pg";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());

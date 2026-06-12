@@ -84,6 +84,7 @@ test('evaluateRiskCapBudget blocks when portfolio risk would breach cap', () => 
                 {
                     epic: 'CS.D.EURUSD.MINI.IP',
                     dealId: '1',
+                    dealReference: null,
                     side: 'long',
                     entryPrice: 1.1,
                     leverage: 2,
@@ -91,6 +92,7 @@ test('evaluateRiskCapBudget blocks when portfolio risk would breach cap', () => 
                     pnlPct: 0,
                     bid: 1.101,
                     offer: 1.102,
+                    createdAtMs: null,
                     updatedAtMs: Date.now(),
                 },
             ],

@@ -6,9 +6,9 @@ import { requireAdminAccess } from "../../../../lib/admin";
 import {
   loadScalpV2RuntimeConfig,
   upsertScalpV2RuntimeConfig,
-} from "../../../../lib/scalp-v2/db";
-import { setNoStoreHeaders } from "../../../../lib/scalp-v2/http";
-import type { ScalpV2RuntimeConfig } from "../../../../lib/scalp-v2/types";
+} from "../../../../lib/scalp/composer/db";
+import { setNoStoreHeaders } from "../../../../lib/scalp/composer/http";
+import type { ScalpV2RuntimeConfig } from "../../../../lib/scalp/composer/types";
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};

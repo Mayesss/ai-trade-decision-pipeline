@@ -17,8 +17,8 @@ import type { ScalpCandle } from "../lib/scalp/types";
 import {
   assessScalpV4CandleCoverage,
   type ScalpV4CandleCoverageStatus,
-} from "../lib/scalp-v4/candleCoverage";
-import type { ScalpV4Venue } from "../lib/scalp-v4/types";
+} from "../lib/scalp/regimes/candleCoverage";
+import type { ScalpV4Venue } from "../lib/scalp/regimes/types";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());

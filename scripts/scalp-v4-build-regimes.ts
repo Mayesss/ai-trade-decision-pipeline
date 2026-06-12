@@ -9,7 +9,7 @@ import {
   SCALP_V4_CLASSIFIER_VERSION,
   upsertScalpV4RegimeSnapshots,
   type ScalpV4Venue,
-} from "../lib/scalp-v4";
+} from "../lib/scalp/regimes";
 
 function parseArgs(argv: string[]): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};

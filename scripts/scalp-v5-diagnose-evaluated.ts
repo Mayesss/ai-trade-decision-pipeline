@@ -9,7 +9,7 @@ import nextEnv from "@next/env";
 
 import { isScalpPgConfigured, scalpPrisma } from "../lib/scalp/pg/client";
 import { sql } from "../lib/scalp/pg/sql";
-import { startOfUtcWeekMondayMs } from "../lib/scalp-v4/week";
+import { startOfUtcWeekMondayMs } from "../lib/scalp/regimes/week";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());

@@ -8,7 +8,7 @@ import {
   runScalpV4WalkForward,
   SCALP_V4_CLASSIFIER_VERSION,
   upsertScalpV4WalkforwardResult,
-} from "../lib/scalp-v4";
+} from "../lib/scalp/regimes";
 import { loadScalpCandleHistoryInRange } from "../lib/scalp/candleHistory";
 import { resolveScalpDeployment } from "../lib/scalp/deployments";
 import { pipSizeForScalpSymbol } from "../lib/scalp/marketData";

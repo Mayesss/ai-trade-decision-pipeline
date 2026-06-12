@@ -8,12 +8,12 @@ export const config = { runtime: "nodejs" };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../lib/admin";
-import { setNoStoreHeaders } from "../../../../lib/scalp-v2/http";
+import { setNoStoreHeaders } from "../../../../lib/scalp/composer/http";
 import {
   loadV5DashboardData,
   shapeCellsForDeployment,
   type V5DashboardScope,
-} from "../../../../lib/scalp-v5/dashboardLoader";
+} from "../../../../lib/scalp/research/dashboardLoader";
 
 function firstQueryValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? String(value[0] || "") : String(value || "");

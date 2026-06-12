@@ -11,11 +11,11 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { requireAdminAccess } from "../../../../lib/admin";
 import { scalpPrisma } from "../../../../lib/scalp/pg/client";
 import { sql } from "../../../../lib/scalp/pg/sql";
-import { resolveScalpV4FailClosedStaleMs } from "../../../../lib/scalp-v4/pg";
-import { startOfUtcWeekMondayMs } from "../../../../lib/scalp-v4/week";
-import { setNoStoreHeaders } from "../../../../lib/scalp-v2/http";
-import { resolveScalpV5Config, type ScalpV5CellStat } from "../../../../lib/scalp-v5";
-import { decideV5Gate, type V5GateDecision } from "../../../../lib/scalp-v5/dashboardLoader";
+import { resolveScalpV4FailClosedStaleMs } from "../../../../lib/scalp/regimes/pg";
+import { startOfUtcWeekMondayMs } from "../../../../lib/scalp/regimes/week";
+import { setNoStoreHeaders } from "../../../../lib/scalp/composer/http";
+import { resolveScalpV5Config, type ScalpV5CellStat } from "../../../../lib/scalp/research";
+import { decideV5Gate, type V5GateDecision } from "../../../../lib/scalp/research/dashboardLoader";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;

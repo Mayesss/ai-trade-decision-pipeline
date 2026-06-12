@@ -51,7 +51,7 @@ test('buildCronAuthHeaders forwards request auth when env admin secret is absent
                     'x-admin-access-secret': 'forwarded-admin',
                     authorization: 'Bearer forwarded-token',
                 },
-            } as NextApiRequest;
+            } as unknown as NextApiRequest;
             const headers = buildCronAuthHeaders(req);
             assert.equal(headers['x-admin-access-secret'], 'forwarded-admin');
             assert.equal(headers.authorization, undefined);
@@ -73,7 +73,7 @@ test('buildCronAuthHeaders forwards deployment protection context from request w
                     cookie: '__vercel_jwt=abc123; foo=bar',
                     'x-vercel-protection-bypass': 'forwarded-bypass',
                 },
-            } as NextApiRequest;
+            } as unknown as NextApiRequest;
             const headers = buildCronAuthHeaders(req);
             assert.equal(headers.authorization, 'Bearer forwarded-token');
             assert.equal(headers.cookie, '__vercel_jwt=abc123; foo=bar');

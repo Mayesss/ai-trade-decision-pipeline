@@ -8,8 +8,8 @@ export const config = { runtime: "nodejs" };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../lib/admin";
-import { setNoStoreHeaders } from "../../../../lib/scalp-v2/http";
-import { loadV5DashboardData } from "../../../../lib/scalp-v5/dashboardLoader";
+import { setNoStoreHeaders } from "../../../../lib/scalp/composer/http";
+import { loadV5DashboardData } from "../../../../lib/scalp/research/dashboardLoader";
 
 interface SymbolRegimeBucket {
   venue: string;

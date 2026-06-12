@@ -6,11 +6,11 @@ import { requireAdminAccess } from "../../../../../lib/admin";
 import {
   countScalpV2CandidatesByStatus,
   listScalpV2Jobs,
-} from "../../../../../lib/scalp-v2/db";
-import { SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID } from "../../../../../lib/scalp-v2/sessionStructureComposer";
-import { setNoStoreHeaders } from "../../../../../lib/scalp-v2/http";
-import { isScalpPgConfigured, scalpPrisma, sql } from "../../../../../lib/scalp-v2/pg";
-import type { ScalpV2CandidateStatus } from "../../../../../lib/scalp-v2/types";
+} from "../../../../../lib/scalp/composer/db";
+import { SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID } from "../../../../../lib/scalp/composer/sessionStructureComposer";
+import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
+import { isScalpPgConfigured, scalpPrisma, sql } from "../../../../../lib/scalp/composer/pg";
+import type { ScalpV2CandidateStatus } from "../../../../../lib/scalp/composer/types";
 
 type HintTone = "ok" | "warn" | "critical" | "info";
 
@@ -46,6 +46,14 @@ function asFiniteMs(value: unknown): number | null {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return null;
   return Math.floor(n);
+}
+
+function nonNegativeInt(...values: unknown[]): number {
+  for (const value of values) {
+    const n = Math.floor(Number(value));
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return 0;
 }
 
 async function loadDayRobustnessQueue(): Promise<{
@@ -304,23 +312,45 @@ export default async function handler(
         phase,
         reason,
         progress: {
-          processedSoFar: Math.max(
-            0,
-            Math.floor(Number(progress.processedSoFar || 0)),
+          processedSoFar: nonNegativeInt(progress.processedSoFar, payload.processedCandidates),
+          totalSelected: nonNegativeInt(
+            progress.selectedCandidates,
+            progress.totalSelected,
+            payload.backtested,
           ),
-          totalSelected: Math.max(
-            0,
-            Math.floor(Number(progress.selectedCandidates || progress.totalSelected || 0)),
-          ),
-          skippedByCache: Math.max(0, Math.floor(Number(progress.skippedByCache || 0))),
-          skippedByClearFail: Math.max(0, Math.floor(Number(progress.skippedByClearFail || 0))),
-          skippedByNetRPreFilter: Math.max(0, Math.floor(Number(progress.skippedByNetRPreFilter || 0))),
-          stageCPass: Math.max(0, Math.floor(Number(progress.stageCPass || 0))),
-          persisted: Math.max(0, Math.floor(Number(progress.persisted || 0))),
-          replayErrors: Math.max(
-            0,
-            Math.floor(Number(progress.replayErrors || 0)),
-          ),
+          selectedTotal: nonNegativeInt(progress.selectedTotal, payload.totalCandidates),
+          discoveredTotal: nonNegativeInt(progress.discoveredTotal),
+          workerStage: String(progress.workerStage || "").trim() || null,
+          workerStageProcessed: nonNegativeInt(progress.workerStageProcessed),
+          workerStageTotal: nonNegativeInt(progress.workerStageTotal),
+          skippedByCache: nonNegativeInt(progress.skippedByCache, payload.skippedByCache),
+          skippedByClearFail: nonNegativeInt(progress.skippedByClearFail, payload.skippedByClearFail),
+          skippedByNetRPreFilter: nonNegativeInt(progress.skippedByNetRPreFilter, payload.skippedByNetRPreFilter),
+          smartSkippedPersisted: nonNegativeInt(progress.smartSkippedPersisted, payload.smartSkippedPersisted),
+          surrogateSkippedPersisted: nonNegativeInt(progress.surrogateSkippedPersisted, payload.surrogateSkippedPersisted),
+          stageAPass: nonNegativeInt(progress.stageAPass, payload.stageAPass),
+          stageAFail: nonNegativeInt(progress.stageAFail, payload.stageAFail),
+          stageBPass: nonNegativeInt(progress.stageBPass, payload.stageBPass),
+          stageBFail: nonNegativeInt(progress.stageBFail, payload.stageBFail),
+          stageCPass: nonNegativeInt(progress.stageCPass, payload.stageCPass),
+          stageCFail: nonNegativeInt(progress.stageCFail, payload.stageCFail),
+          persisted: nonNegativeInt(progress.persisted, payload.persistedCount),
+          replayErrors: nonNegativeInt(progress.replayErrors, payload.replayErrors),
+          persistErrors: nonNegativeInt(progress.persistErrors, payload.persistErrors),
+          stage0Replays: nonNegativeInt(progress.stage0Replays, payload.stage0Replays),
+          stage0Skipped: nonNegativeInt(progress.stage0Skipped, payload.stage0Skipped),
+          incrementalStageReplays: nonNegativeInt(progress.incrementalStageReplays, payload.incrementalStageReplays),
+          fullStageReplays: nonNegativeInt(progress.fullStageReplays, payload.fullStageReplays),
+          earlyAbortedStageReplays: nonNegativeInt(progress.earlyAbortedStageReplays, payload.earlyAbortedStageReplays),
+          cachedStageReuses: nonNegativeInt(progress.cachedStageReuses, payload.cachedStageReuses),
+          newestWeekReplayReuses: nonNegativeInt(progress.newestWeekReplayReuses, payload.newestWeekReplayReuses),
+          stageBCacheHits: nonNegativeInt(progress.stageBCacheHits, payload.stageBCacheHits),
+          stageCCacheHits: nonNegativeInt(progress.stageCCacheHits, payload.stageCCacheHits),
+          deferredByCandleCoverage: nonNegativeInt(progress.deferredByCandleCoverage, payload.deferredByCandleCoverage),
+          finalizedCoverageDeferrals: nonNegativeInt(progress.finalizedCoverageDeferrals, payload.finalizedCoverageDeferrals),
+          pendingAfter: nonNegativeInt(payload.pendingAfter),
+          remaining: nonNegativeInt(payload.remaining),
+          timeBudgetExhausted: Boolean(payload.timeBudgetExhausted),
         },
         log: Array.isArray(payload.log) ? payload.log.slice(-30) : [],
       },

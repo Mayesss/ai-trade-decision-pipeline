@@ -33,7 +33,7 @@
     "db:pg:backfill:weekly-metrics": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-backfill-weekly-metrics-from-research.ts --apply",
     "test:ts": "node --import tsx --test",
     "test:forex": "node --import tsx --test lib/forex/*.test.ts lib/forex/modules/*.test.ts lib/forex/replay/*.test.ts",
-    "test:scalp": "node --import tsx --test lib/scalp/replay/*.test.ts lib/scalp/strategies/*.test.ts lib/scalp-v3/*.test.ts lib/scalp-v4/*.test.ts lib/scalp-v5/*.test.ts",
+    "test:scalp": "node --import tsx --test lib/scalp/replay/*.test.ts lib/scalp/strategies/*.test.ts lib/scalp/evidence/*.test.ts lib/scalp/regimes/*.test.ts lib/scalp/research/*.test.ts",
     "replay:run": "node --import tsx scripts/forex-replay.ts --input data/replay/eurusd.sample.json --outDir /tmp/forex-replay",
     "replay:matrix": "node --import tsx scripts/forex-replay-matrix.ts --fixtures core --fixturesIndex data/replay/fixtures/index.json --outDir /tmp/forex-replay-matrix",
     "replay:scalp": "node --import tsx scripts/scalp-replay.ts --input data/scalp-replay/fixtures/eurusd.sample.json --outDir /tmp/scalp-replay",
@@ -44,10 +44,14 @@
     "scalp:sync-candles-kv": "node --import tsx scripts/scalp-sync-candles-kv.ts",
     "scalp:purge-capital-traces": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-purge-capital-traces.ts",
     "scalp:v5:sunday": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v5-sunday.ts",
+    "scalp:v2:pattern-evidence": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v2-pattern-evidence.ts --backfill --aggregate --bucketMinutes 60",
     "scalp:v4:build-regimes": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v4-build-regimes.ts",
     "scalp:v4:backfill": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v4-backfill-walkforward.ts",
     "scalp:v4:reevaluate": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v4-reevaluate-envelopes.ts",
-    "scalp:v4:backfill-incremental": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v4-backfill-incremental-state.ts"
+    "scalp:v4:backfill-incremental": "node scripts/with-db-env.mjs node --import tsx scripts/scalp-v4-backfill-incremental-state.ts",
+    "bulk:research": "node --import tsx scripts/research-local-bulk.ts",
+    "bulk:research:v4": "BULK_RESEARCH_VERSION=v4 BULK_RUN_V4_WALKFORWARD=1 node --import tsx scripts/research-local-bulk.ts",
+    "bulk:research:v5": "BULK_RESEARCH_VERSION=v5 node --import tsx scripts/research-local-bulk.ts"
   },
   "devDependencies": {
     "@types/pg": "^8.20.0",

@@ -7,10 +7,6 @@ import {
 } from "../adaptive/features";
 import { mineAdaptivePatternStats } from "../adaptive/mining";
 import { computeEdge, computeHybridPriorScore } from "../adaptive/priors";
-import {
-  evaluateAdaptivePromotionDelta,
-  shouldBreakAdaptivePromotionLock,
-} from "../pipelineJobs";
 import type { ScalpCandle } from "../types";
 
 function buildSyntheticMinuteCandles(params: {
@@ -96,62 +92,6 @@ test("adaptive priors follow configured formula", () => {
   assert.ok(hybrid.wSession >= 0);
   assert.ok(hybrid.wGlobal >= 0);
   assert.ok(hybrid.confidence > 0.5);
-});
-
-test("adaptive lock-break and delta gate predicates behave as expected", () => {
-  assert.equal(
-    shouldBreakAdaptivePromotionLock({
-      latestWeeklyNetR: -1.6,
-      latestWeeklyMaxDrawdownR: 1.1,
-      baselineMaxDrawdownR: 1.2,
-    }),
-    true,
-  );
-  assert.equal(
-    shouldBreakAdaptivePromotionLock({
-      latestWeeklyNetR: -0.2,
-      latestWeeklyMaxDrawdownR: 1.6,
-      baselineMaxDrawdownR: 1.0,
-    }),
-    true,
-  );
-  assert.equal(
-    shouldBreakAdaptivePromotionLock({
-      latestWeeklyNetR: 0.2,
-      latestWeeklyMaxDrawdownR: 1.2,
-      baselineMaxDrawdownR: 1.1,
-    }),
-    false,
-  );
-
-  const pass = evaluateAdaptivePromotionDelta({
-    candidateExpectancyR: 0.12,
-    incumbentExpectancyR: 0.08,
-    candidateMaxDrawdownR: 1.1,
-    incumbentMaxDrawdownR: 1.2,
-    minExpectancyDeltaR: 0.02,
-  });
-  assert.equal(pass.passed, true);
-
-  const failExpectancy = evaluateAdaptivePromotionDelta({
-    candidateExpectancyR: 0.09,
-    incumbentExpectancyR: 0.08,
-    candidateMaxDrawdownR: 1.0,
-    incumbentMaxDrawdownR: 1.1,
-    minExpectancyDeltaR: 0.02,
-  });
-  assert.equal(failExpectancy.passed, false);
-  assert.equal(failExpectancy.reason, "adaptive_expectancy_delta_not_met");
-
-  const failDrawdown = evaluateAdaptivePromotionDelta({
-    candidateExpectancyR: 0.13,
-    incumbentExpectancyR: 0.08,
-    candidateMaxDrawdownR: 1.4,
-    incumbentMaxDrawdownR: 1.2,
-    minExpectancyDeltaR: 0.02,
-  });
-  assert.equal(failDrawdown.passed, false);
-  assert.equal(failDrawdown.reason, "adaptive_drawdown_worse_than_incumbent");
 });
 
 test("adaptive feature context is stable for identical candles", () => {

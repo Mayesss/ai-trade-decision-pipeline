@@ -3,15 +3,15 @@ export const config = { runtime: "nodejs" };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../lib/admin";
-import { listScalpV2Deployments } from "../../../../lib/scalp-v2/db";
-import { setNoStoreHeaders } from "../../../../lib/scalp-v2/http";
+import { listScalpV2Deployments } from "../../../../lib/scalp/composer/db";
+import { setNoStoreHeaders } from "../../../../lib/scalp/composer/http";
 import {
   classifyScalpV4DeploymentStatus,
   resolveScalpV4FailClosedStaleMs,
   SCALP_V4_CLASSIFIER_VERSION,
   startOfUtcWeekMondayMs,
   type ScalpV4DeploymentStatus,
-} from "../../../../lib/scalp-v4";
+} from "../../../../lib/scalp/regimes";
 import { scalpPrisma } from "../../../../lib/scalp/pg/client";
 import { sql } from "../../../../lib/scalp/pg/sql";
 

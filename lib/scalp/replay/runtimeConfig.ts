@@ -1,7 +1,7 @@
 import { applyScalpStrategyConfigOverride, getScalpStrategyConfig, type ScalpStrategyConfigOverride } from '../config';
 import type { ScalpDeploymentRef } from '../types';
 import { getScalpStrategyPreferredTimeframes } from '../strategies/registry';
-import { resolveScalpExecutionStrategyId } from '../../scalp-v2/composerExecution';
+import { resolveScalpExecutionStrategyId } from '../composer/composerExecution';
 import { defaultScalpReplayConfig } from './harness';
 import type { ScalpReplayRuntimeConfig } from './types';
 

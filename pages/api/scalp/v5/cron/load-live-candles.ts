@@ -11,9 +11,9 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { requireAdminAccess } from "../../../../../lib/admin";
 import { scalpPrisma } from "../../../../../lib/scalp/pg/client";
 import { sql } from "../../../../../lib/scalp/pg/sql";
-import { setNoStoreHeaders } from "../../../../../lib/scalp-v2/http";
-import { runScalpV2LoadCandlesPipelineJob } from "../../../../../lib/scalp-v2/pipelineJobsAdapter";
-import type { ScalpV2Venue } from "../../../../../lib/scalp-v2/types";
+import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
+import { runScalpV2LoadCandlesPipelineJob } from "../../../../../lib/scalp/composer/pipelineJobsAdapter";
+import type { ScalpV2Venue } from "../../../../../lib/scalp/composer/types";
 
 function firstQueryValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? String(value[0] || "") : String(value || "");

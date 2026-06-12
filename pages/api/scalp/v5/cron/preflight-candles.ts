@@ -6,8 +6,8 @@ export const config = { runtime: "nodejs", maxDuration: 800 };
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../../lib/admin";
-import { setNoStoreHeaders } from "../../../../../lib/scalp-v2/http";
-import { runScalpV5CandlePreflight } from "../../../../../lib/scalp-v5/candlePreflight";
+import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
+import { runScalpV5CandlePreflight } from "../../../../../lib/scalp/research/candlePreflight";
 
 function firstQueryValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? String(value[0] || "") : String(value || "");

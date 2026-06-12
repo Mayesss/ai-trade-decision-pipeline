@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildSessionStructureComposerTuneId } from "../../scalp-v2/sessionStructureComposer";
+import { buildSessionStructureComposerTuneId } from "../composer/sessionStructureComposer";
 import { getScalpStrategyConfig } from "../config";
 import { buildScalpSessionWindows } from "../sessions";
 import { createInitialScalpSessionState, deriveScalpDayKey } from "../stateMachine";

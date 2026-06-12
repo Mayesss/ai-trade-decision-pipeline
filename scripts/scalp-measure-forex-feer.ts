@@ -22,9 +22,9 @@ import { runScalpReplay } from "../lib/scalp/replay/harness";
 import type { ScalpReplayCandle } from "../lib/scalp/replay/types";
 import type { ScalpCandle } from "../lib/scalp/types";
 import { ensureScalpSymbolMarketMetadata } from "../lib/scalp/symbolMarketMetadataSync";
-import { buildDeploymentRuntime, resolveHoldoutWindow } from "../lib/scalp-v5/evaluator";
-import { resolveScalpV5Config } from "../lib/scalp-v5/index";
-import type { ScalpV5DeploymentRow } from "../lib/scalp-v5/pg";
+import { buildDeploymentRuntime, resolveHoldoutWindow } from "../lib/scalp/research/evaluator";
+import { resolveScalpV5Config } from "../lib/scalp/research";
+import type { ScalpV5DeploymentRow } from "../lib/scalp/research/pg";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());

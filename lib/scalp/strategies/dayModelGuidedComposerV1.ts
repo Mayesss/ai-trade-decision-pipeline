@@ -3,7 +3,7 @@ import {
   parseDayComposerTuneId,
   type DayComposerLevelBlockId,
   type DayComposerManagementBlockId,
-} from "../../scalp-v2/dayComposer";
+} from "../composer/dayComposer";
 import {
   inScalpEntrySessionProfileWindow,
   normalizeScalpEntrySessionProfile,

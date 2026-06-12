@@ -10,11 +10,11 @@ import {
   listScalpV2ResearchHighlights,
   loadScalpV2RuntimeConfig,
   loadScalpV2Summary,
-} from "../../../../../lib/scalp-v2/db";
+} from "../../../../../lib/scalp/composer/db";
 import {
   parseIntBounded,
   setNoStoreHeaders,
-} from "../../../../../lib/scalp-v2/http";
+} from "../../../../../lib/scalp/composer/http";
 
 export default async function handler(
   req: NextApiRequest,

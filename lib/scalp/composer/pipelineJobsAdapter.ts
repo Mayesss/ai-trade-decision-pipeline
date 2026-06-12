@@ -1,0 +1,368 @@
+import {
+  fetchCapitalCandlesByEpicDateRange,
+  resolveCapitalEpicRuntime,
+} from "../../capital";
+import {
+  loadScalpCandleHistoryStatsBulk,
+  saveScalpCandleHistory,
+} from "../candleHistory";
+import { fetchBitgetCandlesByEpicDateRange } from "../bitgetHistory";
+import { isScalpPgConfigured, scalpPrisma } from "../pg/client";
+import { sql } from "../pg/sql";
+
+import type { ScalpV2Venue } from "./types";
+
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+function normalizeSymbol(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9._-]/g, "");
+}
+
+function toPositiveInt(value: unknown, fallback: number, max: number): number {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.max(1, Math.min(max, n));
+}
+
+function resolveLoadCandlesFetchUpperBoundMs(nowMs: number): number {
+  const safeNowMs = Math.max(0, Math.floor(Number(nowMs) || 0));
+  const date = new Date(safeNowMs);
+  const dayStartMs = Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate(),
+  );
+  if (new Date(dayStartMs).getUTCDay() !== 0) return safeNowMs;
+  return Math.max(0, dayStartMs - 1);
+}
+
+type ScalpV2LoadCandlesScope = {
+  venue: ScalpV2Venue;
+  symbol: string;
+};
+
+type ScalpV2LoadCandlesResult = {
+  ok: boolean;
+  busy: boolean;
+  jobKind: "load_candles";
+  processed: number;
+  succeeded: number;
+  retried: number;
+  failed: number;
+  pendingAfter: number;
+  downstreamRequested: boolean;
+  progressLabel: string;
+  details: Record<string, unknown>;
+};
+
+async function writeScalpCandleLoadAudit(params: {
+  source: string;
+  trigger?: string | null;
+  startedAtMs: number;
+  finishedAtMs: number;
+  scopes: ScalpV2LoadCandlesScope[];
+  jobParams: Record<string, unknown>;
+  result: ScalpV2LoadCandlesResult;
+}): Promise<void> {
+  if (!isScalpPgConfigured()) return;
+  const db = scalpPrisma();
+  const details = (params.result.details || {}) as Record<string, unknown>;
+  const errors = Array.isArray(details.errors) ? details.errors : [];
+  await db.$executeRaw(sql`
+    INSERT INTO scalp_candle_load_runs(
+      source,
+      trigger,
+      ok,
+      started_at,
+      finished_at,
+      scope_count,
+      processed,
+      succeeded,
+      failed,
+      params_json,
+      result_json,
+      errors_json
+    )
+    VALUES(
+      ${params.source},
+      ${params.trigger || null},
+      ${params.result.ok},
+      to_timestamp(${params.startedAtMs} / 1000.0),
+      to_timestamp(${params.finishedAtMs} / 1000.0),
+      ${params.scopes.length},
+      ${params.result.processed},
+      ${params.result.succeeded},
+      ${params.result.failed},
+      ${JSON.stringify(params.jobParams)}::jsonb,
+      ${JSON.stringify(params.result)}::jsonb,
+      ${JSON.stringify(errors)}::jsonb
+    );
+  `);
+}
+
+function normalizeScopes(params: {
+  scopes?: ScalpV2LoadCandlesScope[];
+  symbols?: string[];
+}): ScalpV2LoadCandlesScope[] {
+  const out = new Map<string, ScalpV2LoadCandlesScope>();
+  for (const scope of params.scopes || []) {
+    const venue = scope.venue === "capital" ? "capital" : "bitget";
+    const symbol = normalizeSymbol(scope.symbol);
+    if (!symbol) continue;
+    out.set(`${venue}:${symbol}`, { venue, symbol });
+  }
+  for (const symbolRaw of params.symbols || []) {
+    const symbol = normalizeSymbol(symbolRaw);
+    if (!symbol) continue;
+    out.set(`bitget:${symbol}`, { venue: "bitget", symbol });
+  }
+  return Array.from(out.values());
+}
+
+// V2-native load-candles job used by /api/scalp/v2/cron/load-candles.
+export async function runScalpV2LoadCandlesPipelineJob(params: {
+  batchSize?: number;
+  maxAttempts?: number;
+  offset?: number;
+  scopes?: ScalpV2LoadCandlesScope[];
+  symbols?: string[];
+  auditSource?: string;
+  auditTrigger?: string | null;
+}): Promise<ScalpV2LoadCandlesResult> {
+  const startedAtMs = Date.now();
+  const scopes = normalizeScopes(params);
+  const batchSize = toPositiveInt(params.batchSize, 6, 200);
+  const maxAttempts = toPositiveInt(params.maxAttempts, 5, 30);
+  const offset = Math.max(
+    0,
+    Math.min(
+      scopes.length,
+      Math.floor(Number(params.offset) || 0),
+    ),
+  );
+  // Stage C evaluates 12 completed weeks; cold-start candle bootstraps
+  // should cover at least that horizon plus one buffer week.
+  const minColdStartLookbackDays = 14 * 7;
+  const lookbackDays = toPositiveInt(
+    process.env.SCALP_V2_LOAD_CANDLES_LOOKBACK_DAYS,
+    minColdStartLookbackDays,
+    365,
+  );
+  // Backward-compatible alias: some deployments mistakenly used CALP_*.
+  const staleRecoveryDaysRaw =
+    process.env.SCALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS ??
+    process.env.CALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS;
+  const staleRecoveryDays = Math.max(
+    1,
+    Math.min(
+      lookbackDays,
+      toPositiveInt(staleRecoveryDaysRaw, 14, 365),
+    ),
+  );
+  const fetchWindowMinutes = toPositiveInt(
+    process.env.SCALP_V2_LOAD_CANDLES_FETCH_WINDOW_MINUTES,
+    360,
+    525_600,
+  );
+  // Overlap window for incremental fetches: how far back we re-fetch on each
+  // cron run. 24h means a single missed 2h tick (e.g. transient cron skip)
+  // is fully recovered on the next run with no gaps. Previously 180 min,
+  // which left a hole if a cron tick was skipped. Override via
+  // SCALP_V2_LOAD_CANDLES_INCREMENTAL_OVERLAP_MINUTES if rate limits become
+  // a problem on a particular venue.
+  const incrementalOverlapMinutes = toPositiveInt(
+    process.env.SCALP_V2_LOAD_CANDLES_INCREMENTAL_OVERLAP_MINUTES,
+    1_440,
+    10_080,
+  );
+  const staleRecoveryMs = staleRecoveryDays * ONE_DAY_MS;
+  const incrementalOverlapMs = incrementalOverlapMinutes * 60 * 1000;
+  const toTsMs = resolveLoadCandlesFetchUpperBoundMs(Date.now());
+  const fromTsMs = Math.max(0, toTsMs - lookbackDays * ONE_DAY_MS);
+  const selected = scopes.slice(offset, offset + batchSize);
+
+  let processed = 0;
+  let succeeded = 0;
+  let failed = 0;
+  const errors: Array<{
+    venue: string;
+    symbol: string;
+    message: string;
+    fetchFromTsMs?: number;
+    fetchToTsMs?: number;
+    existingLatestTsMs?: number | null;
+  }> = [];
+  const perScope: Array<{
+    venue: string;
+    symbol: string;
+    fetchFromTsMs: number;
+    fetchToTsMs: number;
+    fetchWindowFromTsMs: number;
+    staleRecoveryFromTsMs: number;
+    staleRecoveryApplied: boolean;
+    coldStartBootstrap: boolean;
+    existingCount: number;
+    incomingCount: number;
+    mergedCount: number;
+    existingLatestTsMs: number | null;
+  }> = [];
+  const statsRows = await loadScalpCandleHistoryStatsBulk(
+    Array.from(new Set(selected.map((scope) => scope.symbol))),
+    "1m",
+  ).catch(() => []);
+  const statsBySymbol = new Map<
+    string,
+    { toTsMs: number | null; candleCount: number }
+  >();
+  for (const row of statsRows || []) {
+    const symbol = normalizeSymbol(row.symbol);
+    if (!symbol) continue;
+    statsBySymbol.set(symbol, {
+      toTsMs: Number.isFinite(Number(row.toTsMs))
+        ? Math.floor(Number(row.toTsMs))
+        : null,
+      candleCount: Math.max(0, Math.floor(Number(row.candleCount) || 0)),
+    });
+  }
+
+  for (const scope of selected) {
+    processed += 1;
+    try {
+      const stats = statsBySymbol.get(scope.symbol);
+      const existingCount = Math.max(
+        0,
+        Math.floor(Number(stats?.candleCount) || 0),
+      );
+      const existingLatestTsMsRaw = Number(stats?.toTsMs || 0);
+      const existingLatestTsMs =
+        Number.isFinite(existingLatestTsMsRaw) && existingLatestTsMsRaw > 0
+          ? Math.floor(existingLatestTsMsRaw)
+          : null;
+      const coldStartBootstrap = !existingLatestTsMs || existingCount <= 0;
+      const fetchWindowFromTsMs = Math.max(
+        fromTsMs,
+        toTsMs - fetchWindowMinutes * 60 * 1000,
+      );
+      const staleRecoveryFromTsMs = Math.max(0, toTsMs - staleRecoveryMs);
+      // Cold-start scopes need a full lookback bootstrap; incremental windows
+      // are used only after at least one valid latest candle is present.
+      const incrementalFromTsMs = coldStartBootstrap
+        ? fromTsMs
+        : Math.max(fromTsMs, existingLatestTsMs - incrementalOverlapMs);
+      const staleRecoveryApplied =
+        !coldStartBootstrap && existingLatestTsMs < fetchWindowFromTsMs;
+      const fetchFromTsMs = coldStartBootstrap
+        ? fromTsMs
+        : staleRecoveryApplied
+          ? Math.max(incrementalFromTsMs, staleRecoveryFromTsMs)
+          : Math.max(fetchWindowFromTsMs, incrementalFromTsMs);
+      const fetchToTsMs = toTsMs;
+      let epic = scope.symbol;
+      let incoming: Array<[number, number, number, number, number, number]> = [];
+      if (fetchToTsMs > fetchFromTsMs) {
+        if (scope.venue === "capital") {
+          const resolved = await resolveCapitalEpicRuntime(scope.symbol);
+          epic = String(resolved.epic || scope.symbol).trim().toUpperCase();
+          incoming = (await fetchCapitalCandlesByEpicDateRange(
+            epic,
+            "1m",
+            fetchFromTsMs,
+            fetchToTsMs,
+            {
+              maxRequests: Math.max(40, maxAttempts * 30),
+            },
+          )) as Array<[number, number, number, number, number, number]>;
+        } else {
+          incoming = await fetchBitgetCandlesByEpicDateRange(
+            scope.symbol,
+            "1m",
+            fetchFromTsMs,
+            fetchToTsMs,
+            {
+              maxRequests: Math.max(60, maxAttempts * 80),
+            },
+          );
+        }
+      }
+      if (incoming.length > 0) {
+        await saveScalpCandleHistory({
+          symbol: scope.symbol,
+          timeframe: "1m",
+          epic,
+          source: "bitget",
+          candles: incoming,
+        });
+      }
+      perScope.push({
+        venue: scope.venue,
+        symbol: scope.symbol,
+        fetchFromTsMs,
+        fetchToTsMs,
+        fetchWindowFromTsMs,
+        staleRecoveryFromTsMs,
+        staleRecoveryApplied,
+        coldStartBootstrap,
+        existingCount,
+        incomingCount: incoming.length,
+        mergedCount: incoming.length,
+        existingLatestTsMs,
+      });
+      succeeded += 1;
+    } catch (err: any) {
+      failed += 1;
+      errors.push({
+        venue: scope.venue,
+        symbol: scope.symbol,
+        message: err?.message || String(err),
+      });
+    }
+  }
+
+  const nextOffset = offset + processed;
+  const result: ScalpV2LoadCandlesResult = {
+    ok: failed <= 0,
+    busy: false,
+    jobKind: "load_candles",
+    processed,
+    succeeded,
+    retried: 0,
+    failed,
+    pendingAfter: Math.max(0, scopes.length - nextOffset),
+    downstreamRequested: false,
+    progressLabel: `v2_native_load_candles:${succeeded}/${processed}`,
+    details: {
+      lookbackDays,
+      timeframe: "1m",
+      fromTsMs,
+      toTsMs,
+      staleRecoveryDays,
+      fetchWindowMinutes,
+      incrementalOverlapMinutes,
+      maxAttempts,
+      batchSize,
+      offset,
+      nextOffset,
+      scopeCount: scopes.length,
+      perScope,
+      errors,
+    },
+  };
+  await writeScalpCandleLoadAudit({
+    source: String(params.auditSource || "v2_native_load_candles").trim() || "v2_native_load_candles",
+    trigger: params.auditTrigger || null,
+    startedAtMs,
+    finishedAtMs: Date.now(),
+    scopes,
+    jobParams: {
+      batchSize,
+      maxAttempts,
+      offset,
+      scopeCount: scopes.length,
+    },
+    result,
+  }).catch(() => undefined);
+  return result;
+}

@@ -1,9 +1,9 @@
 import {
   resolveModelGuidedComposerExecutionPlanFromTuneId,
   MODEL_GUIDED_COMPOSER_V2_STRATEGY_ID,
-} from "../../scalp-v2/composerExecution";
-import { resolveRegimeGateRule } from "../../scalp-v2/regimeGatePresets";
-import { evaluateScalpV2V3TemporalFilter } from "../../scalp-v3";
+} from "../composer/composerExecution";
+import { resolveRegimeGateRule } from "../composer/regimeGatePresets";
+import { evaluateScalpV2V3TemporalFilter } from "../evidence";
 import {
   inScalpEntrySessionProfileWindow,
   normalizeScalpEntrySessionProfile,
