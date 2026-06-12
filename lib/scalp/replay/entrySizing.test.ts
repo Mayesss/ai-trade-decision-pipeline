@@ -77,7 +77,9 @@ function withBitgetSizingEnv<T>(env: Record<string, string>, fn: () => T): T {
 }
 
 function assertAlmostEqual(actual: number | undefined, expected: number, tolerance = 1e-9) {
-  assert.equal(typeof actual, "number");
+  if (typeof actual !== "number") {
+    assert.fail(`expected a number but received ${typeof actual}`);
+  }
   assert.ok(
     Math.abs(actual - expected) <= tolerance,
     `${actual} not within ${tolerance} of ${expected}`,

@@ -29,8 +29,8 @@ test('computeAdaptiveGates supports atrFloorScale to avoid over-strict ATR floor
         symbol: 'EURUSD',
         last: 1.18,
         orderbook: {
-            bids: [[1.1799, 5_000_000]],
-            asks: [[1.1801, 5_000_000]],
+            bids: [[1.1799, 5_000_000]] as [number, number][],
+            asks: [[1.1801, 5_000_000]] as [number, number][],
         },
         notionalUSDT: 100,
         atrAbsMacro: 0.0048,
