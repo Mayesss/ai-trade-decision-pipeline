@@ -137,7 +137,7 @@ function parseEvidence(value: unknown): ScalpResearchCellEvidence | null {
   return {
     // Preserve whichever version was written; the type accepts the current
     // version constant but at runtime we coerce. r2 rows show up here too
-    // and the incremental evaluator checks `version !== SCALP_V5_VERSION`
+    // and the incremental evaluator checks `version !== SCALP_RESEARCH_VERSION`
     // to know to fall back to full replay.
     version: (rec.version as ScalpResearchCellEvidence["version"]) ?? "scalp_v5_cell_evidence_r3",
     classifierVersion: String(rec.classifierVersion || ""),

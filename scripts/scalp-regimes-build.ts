@@ -6,7 +6,7 @@ import {
   loadOrRefreshScalpRegimeWeeklyBars,
   loadScalpRegimeDeploymentSymbols,
   runScalpRegimeWeeklyRegimeBuild,
-  SCALP_V4_CLASSIFIER_VERSION,
+  SCALP_REGIME_CLASSIFIER_VERSION,
   upsertScalpRegimeSnapshots,
   type ScalpRegimeVenue,
 } from "../lib/scalp/regimes";
@@ -39,7 +39,7 @@ function venue(value: unknown): ScalpRegimeVenue {
 }
 
 const WEEK_MS = 7 * 24 * 60 * 60_000;
-const HISTORY_WEEKS = Math.max(64, Math.min(156, Math.floor(Number(process.env.SCALP_V4_INCREMENTAL_BOOTSTRAP_WEEKS || 72))));
+const HISTORY_WEEKS = Math.max(64, Math.min(156, Math.floor(Number(process.env.SCALP_REGIME_INCREMENTAL_BOOTSTRAP_WEEKS || 72))));
 
 async function loadWeekly(symbol: string, v: ScalpRegimeVenue, fromMs: number, toMs: number) {
   return loadOrRefreshScalpRegimeWeeklyBars({
@@ -57,7 +57,7 @@ async function main() {
   const force = Boolean(args.force || args.forceValidity);
   const explicitVenues = args.venues || args.venue ? csv(args.venues || args.venue).map(venue) : null;
   const explicitSymbols = args.symbols ? csv(args.symbols) : null;
-  const classifierVersion = String(args.classifierVersion || SCALP_V4_CLASSIFIER_VERSION);
+  const classifierVersion = String(args.classifierVersion || SCALP_REGIME_CLASSIFIER_VERSION);
 
   // Default path: auto-discover from deployments and apply.
   if (!explicitSymbols) {

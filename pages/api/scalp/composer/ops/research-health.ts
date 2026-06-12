@@ -32,7 +32,7 @@ function resolveScalpComposerJobLockStaleMinutes(): number {
     2,
     Math.min(
       120,
-      toPositiveInt(process.env.SCALP_V2_JOB_LOCK_STALE_MINUTES, 10, 120),
+      toPositiveInt(process.env.SCALP_COMPOSER_JOB_LOCK_STALE_MINUTES, 10, 120),
     ),
   );
 }

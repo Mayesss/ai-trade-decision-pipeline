@@ -27,7 +27,7 @@ import { loadScalpRegimeSnapshotsBulk } from "../regimes/pg";
 import type { ScalpRegimeCellId, ScalpRegimeVenue } from "../regimes/types";
 import { startOfUtcWeekMondayMs } from "../regimes/week";
 import {
-  SCALP_V5_VERSION,
+  SCALP_RESEARCH_VERSION,
   buildScalpResearchCellEvidence,
   mergeIncrementalCellEvidence,
   resolveScalpResearchConfig,
@@ -183,7 +183,7 @@ export async function evaluateScalpResearchForDeployment(params: {
     : null;
   const canIncremental =
     evidence !== null &&
-    evidence.version === SCALP_V5_VERSION &&
+    evidence.version === SCALP_RESEARCH_VERSION &&
     evidence.holdoutToMs === holdoutToMs - WEEK_MS &&
     evidence.holdoutFromMs === holdoutFromMs - WEEK_MS &&
     evidence.classifierVersion === cfg.classifierVersion &&

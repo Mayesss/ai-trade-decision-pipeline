@@ -1,7 +1,7 @@
 // /api/scalp/regimes/cron/build-regimes — refresh current-week regime snapshots.
 //
 // v4/v5 live entry gates fail closed when the current regime snapshot is older
-// than SCALP_V4_FAIL_CLOSED_STALE_MS (default 2h). Keep this cron tighter than
+// than SCALP_REGIME_FAIL_CLOSED_STALE_MS (default 2h). Keep this cron tighter than
 // that TTL so otherwise-good v5 deployments do not all block as stale.
 
 export const config = { runtime: "nodejs", maxDuration: 800 };
@@ -14,7 +14,7 @@ import { sql } from "../../../../../lib/scalp/pg/sql";
 import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
 import {
   runScalpRegimeWeeklyRegimeBuild,
-  SCALP_V4_CLASSIFIER_VERSION,
+  SCALP_REGIME_CLASSIFIER_VERSION,
   type ScalpRegimeVenue,
 } from "../../../../../lib/scalp/regimes";
 
@@ -63,7 +63,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const liveOnly = parseBool(req.query.liveOnly, true);
     const forceValidity = parseBool(req.query.forceValidity, true);
     const classifierVersion =
-      firstQueryValue(req.query.classifierVersion).trim() || SCALP_V4_CLASSIFIER_VERSION;
+      firstQueryValue(req.query.classifierVersion).trim() || SCALP_REGIME_CLASSIFIER_VERSION;
     const symbols = liveOnly ? await loadLiveDeploymentSymbols() : undefined;
 
     const result = await runScalpRegimeWeeklyRegimeBuild({

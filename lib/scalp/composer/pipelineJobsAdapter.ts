@@ -147,13 +147,13 @@ export async function runScalpComposerLoadCandlesPipelineJob(params: {
   // should cover at least that horizon plus one buffer week.
   const minColdStartLookbackDays = 14 * 7;
   const lookbackDays = toPositiveInt(
-    process.env.SCALP_V2_LOAD_CANDLES_LOOKBACK_DAYS,
+    process.env.SCALP_COMPOSER_LOAD_CANDLES_LOOKBACK_DAYS,
     minColdStartLookbackDays,
     365,
   );
   // Backward-compatible alias: some deployments mistakenly used CALP_*.
   const staleRecoveryDaysRaw =
-    process.env.SCALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS ??
+    process.env.SCALP_COMPOSER_LOAD_CANDLES_STALE_RECOVERY_DAYS ??
     process.env.CALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS;
   const staleRecoveryDays = Math.max(
     1,
@@ -163,7 +163,7 @@ export async function runScalpComposerLoadCandlesPipelineJob(params: {
     ),
   );
   const fetchWindowMinutes = toPositiveInt(
-    process.env.SCALP_V2_LOAD_CANDLES_FETCH_WINDOW_MINUTES,
+    process.env.SCALP_COMPOSER_LOAD_CANDLES_FETCH_WINDOW_MINUTES,
     360,
     525_600,
   );
@@ -171,10 +171,10 @@ export async function runScalpComposerLoadCandlesPipelineJob(params: {
   // cron run. 24h means a single missed 2h tick (e.g. transient cron skip)
   // is fully recovered on the next run with no gaps. Previously 180 min,
   // which left a hole if a cron tick was skipped. Override via
-  // SCALP_V2_LOAD_CANDLES_INCREMENTAL_OVERLAP_MINUTES if rate limits become
+  // SCALP_COMPOSER_LOAD_CANDLES_INCREMENTAL_OVERLAP_MINUTES if rate limits become
   // a problem on a particular venue.
   const incrementalOverlapMinutes = toPositiveInt(
-    process.env.SCALP_V2_LOAD_CANDLES_INCREMENTAL_OVERLAP_MINUTES,
+    process.env.SCALP_COMPOSER_LOAD_CANDLES_INCREMENTAL_OVERLAP_MINUTES,
     1_440,
     10_080,
   );

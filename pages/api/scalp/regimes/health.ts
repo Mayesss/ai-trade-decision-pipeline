@@ -7,7 +7,7 @@ import { setNoStoreHeaders } from "../../../../lib/scalp/composer/http";
 import {
   isScalpRegimeEnabled,
   isScalpRegimeHardGateEnabled,
-  SCALP_V4_CLASSIFIER_VERSION,
+  SCALP_REGIME_CLASSIFIER_VERSION,
   startOfUtcWeekMondayMs,
 } from "../../../../lib/scalp/regimes";
 import { scalpPrisma } from "../../../../lib/scalp/pg/client";
@@ -20,7 +20,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const db = scalpPrisma();
-    const classifierVersion = SCALP_V4_CLASSIFIER_VERSION;
+    const classifierVersion = SCALP_REGIME_CLASSIFIER_VERSION;
     const nowMs = Date.now();
     const currentWeekStartMs = startOfUtcWeekMondayMs(nowMs);
     const previousWeekStartMs = currentWeekStartMs - 7 * 24 * 60 * 60_000;

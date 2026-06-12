@@ -79,9 +79,9 @@ test("candidate DSL grid is bounded and deterministic for same context", () => {
 test("candidate DSL grid novelty quota changes candidate mix deterministically", () => {
   const noNovelty = withEnv(
     {
-      SCALP_V2_NOVELTY_PATTERN_POOL_SIZE: "4",
-      SCALP_V2_NOVELTY_QUOTA_PCT: "0",
-      SCALP_V2_NOVELTY_MIN_SLOTS: "0",
+      SCALP_COMPOSER_NOVELTY_PATTERN_POOL_SIZE: "4",
+      SCALP_COMPOSER_NOVELTY_QUOTA_PCT: "0",
+      SCALP_COMPOSER_NOVELTY_MIN_SLOTS: "0",
     },
     () =>
       buildScalpComposerCandidateDslGrid({
@@ -93,9 +93,9 @@ test("candidate DSL grid novelty quota changes candidate mix deterministically",
   );
   const withNovelty = withEnv(
     {
-      SCALP_V2_NOVELTY_PATTERN_POOL_SIZE: "4",
-      SCALP_V2_NOVELTY_QUOTA_PCT: "0.5",
-      SCALP_V2_NOVELTY_MIN_SLOTS: "2",
+      SCALP_COMPOSER_NOVELTY_PATTERN_POOL_SIZE: "4",
+      SCALP_COMPOSER_NOVELTY_QUOTA_PCT: "0.5",
+      SCALP_COMPOSER_NOVELTY_MIN_SLOTS: "2",
     },
     () =>
       buildScalpComposerCandidateDslGrid({
@@ -190,8 +190,8 @@ test("model-guided composer scores stay in [0,1] and preserve session filter int
 test("model-guided composer regime gate variants are quota-bounded by top base arms", () => {
   const rows = withEnv(
     {
-      SCALP_V2_REGIME_GATE_ENABLED: "true",
-      SCALP_V2_REGIME_GATE_TOP_BASE_ARMS: "1",
+      SCALP_COMPOSER_REGIME_GATE_ENABLED: "true",
+      SCALP_COMPOSER_REGIME_GATE_TOP_BASE_ARMS: "1",
     },
     () =>
       buildScalpComposerModelGuidedComposerGrid({
@@ -217,8 +217,8 @@ test("model-guided composer regime gate variants are quota-bounded by top base a
 test("model-guided composer can disable regime gate variants entirely", () => {
   const rows = withEnv(
     {
-      SCALP_V2_REGIME_GATE_ENABLED: "false",
-      SCALP_V2_REGIME_GATE_TOP_BASE_ARMS: "12",
+      SCALP_COMPOSER_REGIME_GATE_ENABLED: "false",
+      SCALP_COMPOSER_REGIME_GATE_TOP_BASE_ARMS: "12",
     },
     () =>
       buildScalpComposerModelGuidedComposerGrid({

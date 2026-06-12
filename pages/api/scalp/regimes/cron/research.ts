@@ -59,7 +59,7 @@ export default async function handler(
     );
     const effectiveTrials = parseIntBounded(
       req.query.effectiveTrials,
-      Math.max(1, Math.floor(Number(process.env.SCALP_V4_EFFECTIVE_TRIALS || 2_500_000))),
+      Math.max(1, Math.floor(Number(process.env.SCALP_REGIME_EFFECTIVE_TRIALS || 2_500_000))),
       1,
       100_000_000,
     );
@@ -72,19 +72,19 @@ export default async function handler(
       : undefined;
     const candleBackfillChunkWeeks = parseIntBounded(
       req.query.candleBackfillChunkWeeks,
-      Math.max(1, Math.floor(Number(process.env.SCALP_V4_CANDLE_BACKFILL_CHUNK_WEEKS || 8))),
+      Math.max(1, Math.floor(Number(process.env.SCALP_REGIME_CANDLE_BACKFILL_CHUNK_WEEKS || 8))),
       1,
       26,
     );
     const candleBackfillMaxRequestsPerChunk = parseIntBounded(
       req.query.candleBackfillMaxRequestsPerChunk,
-      Math.max(40, Math.floor(Number(process.env.SCALP_V4_CANDLE_BACKFILL_MAX_REQUESTS_PER_CHUNK || 1200))),
+      Math.max(40, Math.floor(Number(process.env.SCALP_REGIME_CANDLE_BACKFILL_MAX_REQUESTS_PER_CHUNK || 1200))),
       40,
       5000,
     );
     const workClaimLeaseMinutes = parseIntBounded(
       req.query.workClaimLeaseMinutes,
-      Math.max(5, Math.floor(Number(process.env.SCALP_V4_WORK_LEASE_MINUTES || 120))),
+      Math.max(5, Math.floor(Number(process.env.SCALP_REGIME_WORK_LEASE_MINUTES || 120))),
       5,
       24 * 60,
     );

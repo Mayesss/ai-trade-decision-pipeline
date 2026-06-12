@@ -1,10 +1,10 @@
 import type { ScalpReplayTrade } from "../replay/types";
 import type { ScalpComposerSession, ScalpComposerVenue } from "./types";
 
-export const SCALP_V2_PATTERN_EVIDENCE_VERSION = "scalp_v2_pattern_evidence_r1";
-export const SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED =
+export const SCALP_COMPOSER_PATTERN_EVIDENCE_VERSION = "scalp_v2_pattern_evidence_r1";
+export const SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED =
   "stage_c_passed_survivors";
-export const SCALP_V2_PATTERN_EVIDENCE_SURVIVOR_WARNING =
+export const SCALP_COMPOSER_PATTERN_EVIDENCE_SURVIVOR_WARNING =
   "Survivor-only stage-C-passed population; use for pattern comparison, not unbiased universe expectancy.";
 
 const DEFAULT_BUCKET_MINUTES = 60;
@@ -228,7 +228,7 @@ export function aggregateScalpComposerPatternEdges(params: {
   const bucketMinutes = Math.max(1, Math.floor(params.bucketMinutes || DEFAULT_BUCKET_MINUTES));
   const populationScope =
     String(params.populationScope || "").trim() ||
-    SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED;
+    SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED;
   const byPattern = new Map<string, ScalpComposerPatternTradeVector[]>();
   for (const trade of params.trades || []) {
     if (!trade.patternKey) continue;
@@ -337,11 +337,11 @@ function aggregateOnePattern(params: {
     bucketLowerBoundR: bucketStats.lowerBoundR,
     leaveOneSymbolOutBucketLowerBoundR,
     scoreJson: {
-      version: SCALP_V2_PATTERN_EVIDENCE_VERSION,
-      survivorOnly: params.populationScope === SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
+      version: SCALP_COMPOSER_PATTERN_EVIDENCE_VERSION,
+      survivorOnly: params.populationScope === SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
       warning:
-        params.populationScope === SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED
-          ? SCALP_V2_PATTERN_EVIDENCE_SURVIVOR_WARNING
+        params.populationScope === SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED
+          ? SCALP_COMPOSER_PATTERN_EVIDENCE_SURVIVOR_WARNING
           : null,
       authoritativeMetric: "bucketLowerBoundR",
       rawLowerBoundRLabel: "naive_trade_level_lower_bound",

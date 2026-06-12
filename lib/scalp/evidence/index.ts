@@ -123,23 +123,23 @@ function envNumber(name: string, fallback: number, min: number, max: number): nu
 }
 
 export function isScalpComposerV3ResearchEnabled(): boolean {
-  return String(process.env.SCALP_V2_RESEARCH_VERSION || "v3").trim().toLowerCase() === "v3";
+  return String(process.env.SCALP_COMPOSER_RESEARCH_VERSION || "v3").trim().toLowerCase() === "v3";
 }
 
 export function resolveScalpComposerV3Config() {
   return {
     enabled: isScalpComposerV3ResearchEnabled(),
-    sessionSlotMinutes: envInt("SCALP_V2_V3_SESSION_SLOT_MINUTES", 30, 5, 240),
-    temporalVariantQuotaPct: envNumber("SCALP_V2_V3_TEMPORAL_VARIANT_QUOTA_PCT", 0.35, 0, 1),
-    minVariantTrades: envInt("SCALP_V2_V3_MIN_VARIANT_TRADES", 8, 1, 10_000),
-    holdoutWeeks: envInt("SCALP_V2_V3_HOLDOUT_WEEKS", 6, 1, 26),
-    hardGateMinCandidates: envInt("SCALP_V2_V3_HARD_GATE_MIN_CANDIDATES", 50, 1, 100_000),
-    bootstrapResamples: envInt("SCALP_V2_V3_BOOTSTRAP_RESAMPLES", 2_000, 0, 10_000),
-    newsBlackoutEnabled: envBool("SCALP_V2_V3_NEWS_BLACKOUT_ENABLED", true),
-    driftMinTrades: envInt("SCALP_V2_V3_DRIFT_MIN_TRADES", 20, 1, 10_000),
-    driftMinWeeks: envInt("SCALP_V2_V3_DRIFT_MIN_WEEKS", 2, 1, 52),
-    driftAutoPause: envBool("SCALP_V2_V3_DRIFT_AUTO_PAUSE", false),
-    promotionFreezeBypass: envBool("SCALP_V2_V3_PROMOTION_FREEZE_BYPASS", false),
+    sessionSlotMinutes: envInt("SCALP_EVIDENCE_SESSION_SLOT_MINUTES", 30, 5, 240),
+    temporalVariantQuotaPct: envNumber("SCALP_EVIDENCE_TEMPORAL_VARIANT_QUOTA_PCT", 0.35, 0, 1),
+    minVariantTrades: envInt("SCALP_EVIDENCE_MIN_VARIANT_TRADES", 8, 1, 10_000),
+    holdoutWeeks: envInt("SCALP_EVIDENCE_HOLDOUT_WEEKS", 6, 1, 26),
+    hardGateMinCandidates: envInt("SCALP_EVIDENCE_HARD_GATE_MIN_CANDIDATES", 50, 1, 100_000),
+    bootstrapResamples: envInt("SCALP_EVIDENCE_BOOTSTRAP_RESAMPLES", 2_000, 0, 10_000),
+    newsBlackoutEnabled: envBool("SCALP_EVIDENCE_NEWS_BLACKOUT_ENABLED", true),
+    driftMinTrades: envInt("SCALP_EVIDENCE_DRIFT_MIN_TRADES", 20, 1, 10_000),
+    driftMinWeeks: envInt("SCALP_EVIDENCE_DRIFT_MIN_WEEKS", 2, 1, 52),
+    driftAutoPause: envBool("SCALP_EVIDENCE_DRIFT_AUTO_PAUSE", false),
+    promotionFreezeBypass: envBool("SCALP_EVIDENCE_PROMOTION_FREEZE_BYPASS", false),
   };
 }
 

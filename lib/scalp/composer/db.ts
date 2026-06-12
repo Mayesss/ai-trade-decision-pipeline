@@ -170,7 +170,7 @@ function resolveScalpComposerJobLockStaleMinutes(): number {
     2,
     Math.min(
       120,
-      toPositiveInt(process.env.SCALP_V2_JOB_LOCK_STALE_MINUTES, 10, 120),
+      toPositiveInt(process.env.SCALP_COMPOSER_JOB_LOCK_STALE_MINUTES, 10, 120),
     ),
   );
 }
@@ -2344,7 +2344,7 @@ export async function requeueScalpComposerDeploymentCandidatesForWindow(params: 
   const includeDisabledDeployments = params.includeDisabledDeployments !== false;
   const previousWindowToTs = windowToTs - ONE_WEEK_MS;
   const reasonCode = String(
-    params.reasonCode || "SCALP_V2_REQUEUE_DEPLOYMENT_WINDOW_ROLLOVER",
+    params.reasonCode || "SCALP_COMPOSER_REQUEUE_DEPLOYMENT_WINDOW_ROLLOVER",
   )
     .trim()
     .toUpperCase();
@@ -3735,7 +3735,7 @@ export async function loadScalpComposerSummary(): Promise<Record<string, unknown
     row?.v3SingleAxisTemporalResultCandidates || 0,
   );
   const v3HardGateMinCandidates = toPositiveInt(
-    process.env.SCALP_V2_V3_HARD_GATE_MIN_CANDIDATES,
+    process.env.SCALP_EVIDENCE_HARD_GATE_MIN_CANDIDATES,
     50,
     10_000,
   );
@@ -3758,7 +3758,7 @@ export async function loadScalpComposerSummary(): Promise<Record<string, unknown
     symbolCoverage,
     v3: {
       enabled:
-        String(process.env.SCALP_V2_RESEARCH_VERSION || "v3").trim().toLowerCase() ===
+        String(process.env.SCALP_COMPOSER_RESEARCH_VERSION || "v3").trim().toLowerCase() ===
         "v3",
       holdoutCompletedCandidates: Number(row?.v3HoldoutCompletedCandidates || 0),
       hardGateMinCandidates: v3HardGateMinCandidates,
@@ -3780,11 +3780,11 @@ export async function loadScalpComposerSummary(): Promise<Record<string, unknown
       drift: {
         driftingDeployments: Number(row?.v3DriftingDeployments || 0),
         lowSampleDeployments: Number(row?.v3LowSampleDriftDeployments || 0),
-        minTrades: toPositiveInt(process.env.SCALP_V2_V3_DRIFT_MIN_TRADES, 20, 10_000),
-        minWeeks: toPositiveInt(process.env.SCALP_V2_V3_DRIFT_MIN_WEEKS, 2, 520),
+        minTrades: toPositiveInt(process.env.SCALP_EVIDENCE_DRIFT_MIN_TRADES, 20, 10_000),
+        minWeeks: toPositiveInt(process.env.SCALP_EVIDENCE_DRIFT_MIN_WEEKS, 2, 520),
         autoPause:
           ["1", "true", "yes", "on"].includes(
-            String(process.env.SCALP_V2_V3_DRIFT_AUTO_PAUSE || "false")
+            String(process.env.SCALP_EVIDENCE_DRIFT_AUTO_PAUSE || "false")
               .trim()
               .toLowerCase(),
           ),

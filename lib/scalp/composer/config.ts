@@ -6,8 +6,8 @@ import type {
   ScalpComposerVenue,
 } from "./types";
 import {
-  DEFAULT_SCALP_V2_STRATEGY_ID,
-  DEFAULT_SCALP_V2_TUNE_ID,
+  DEFAULT_SCALP_COMPOSER_STRATEGY_ID,
+  DEFAULT_SCALP_COMPOSER_TUNE_ID,
 } from "./constants";
 
 const DEFAULT_SESSIONS: ScalpComposerSession[] = [
@@ -155,7 +155,7 @@ function clampVenueSeedSymbols(params: {
 }
 
 export function isScalpComposerFixedSeedScopeEnabled(): boolean {
-  return toBool(process.env.SCALP_V2_FORCE_FIXED_SEED_SCOPE, true);
+  return toBool(process.env.SCALP_COMPOSER_FORCE_FIXED_SEED_SCOPE, true);
 }
 
 export function applyScalpComposerFixedSeedScope(
@@ -214,15 +214,15 @@ export function getScalpComposerDefaultBudgets(): ScalpComposerBudgetConfig {
   return {
     maxCandidatesTotal: Math.max(
       1,
-      Math.min(6_000, toPositiveInt(process.env.SCALP_V2_MAX_CANDIDATES_TOTAL, 6_000)),
+      Math.min(6_000, toPositiveInt(process.env.SCALP_COMPOSER_MAX_CANDIDATES_TOTAL, 6_000)),
     ),
     maxCandidatesPerSymbol: Math.max(
       1,
-      Math.min(50, toPositiveInt(process.env.SCALP_V2_MAX_CANDIDATES_PER_SYMBOL, 16)),
+      Math.min(50, toPositiveInt(process.env.SCALP_COMPOSER_MAX_CANDIDATES_PER_SYMBOL, 16)),
     ),
     maxEnabledDeployments: Math.max(
       1,
-      Math.min(200, toPositiveInt(process.env.SCALP_V2_MAX_ENABLED_DEPLOYMENTS, 12)),
+      Math.min(200, toPositiveInt(process.env.SCALP_COMPOSER_MAX_ENABLED_DEPLOYMENTS, 12)),
     ),
   };
 }
@@ -231,47 +231,47 @@ export function getScalpComposerDefaultRiskProfile(): ScalpComposerRiskProfile {
   return {
     riskPerTradePct: Math.max(
       0.01,
-      Math.min(5, toNumber(process.env.SCALP_V2_RISK_PER_TRADE_PCT, 0.35)),
+      Math.min(5, toNumber(process.env.SCALP_COMPOSER_RISK_PER_TRADE_PCT, 0.35)),
     ),
     maxOpenPositionsPerSymbol: Math.max(
       1,
-      Math.min(5, toPositiveInt(process.env.SCALP_V2_MAX_OPEN_POSITIONS_PER_SYMBOL, 1)),
+      Math.min(5, toPositiveInt(process.env.SCALP_COMPOSER_MAX_OPEN_POSITIONS_PER_SYMBOL, 1)),
     ),
-    autoPauseDailyR: Math.min(-0.1, toNumber(process.env.SCALP_V2_AUTO_PAUSE_DAILY_R, -3)),
-    autoPause30dR: Math.min(-0.1, toNumber(process.env.SCALP_V2_AUTO_PAUSE_30D_R, -8)),
+    autoPauseDailyR: Math.min(-0.1, toNumber(process.env.SCALP_COMPOSER_AUTO_PAUSE_DAILY_R, -3)),
+    autoPause30dR: Math.min(-0.1, toNumber(process.env.SCALP_COMPOSER_AUTO_PAUSE_30D_R, -8)),
   };
 }
 
 export function getScalpComposerRuntimeConfig(): ScalpComposerRuntimeConfig {
-  const supportedVenues = parseVenues(process.env.SCALP_V2_SUPPORTED_VENUES);
-  const supportedSessions = parseSessions(process.env.SCALP_V2_SUPPORTED_SESSIONS);
+  const supportedVenues = parseVenues(process.env.SCALP_COMPOSER_SUPPORTED_VENUES);
+  const supportedSessions = parseSessions(process.env.SCALP_COMPOSER_SUPPORTED_SESSIONS);
 
   const seedSymbolsByVenue: Record<ScalpComposerVenue, string[]> = {
-    bitget: parseSeedSymbols("bitget", process.env.SCALP_V2_SEED_SYMBOLS_BITGET),
-    capital: parseSeedSymbols("capital", process.env.SCALP_V2_SEED_SYMBOLS_CAPITAL),
+    bitget: parseSeedSymbols("bitget", process.env.SCALP_COMPOSER_SEED_SYMBOLS_BITGET),
+    capital: parseSeedSymbols("capital", process.env.SCALP_COMPOSER_SEED_SYMBOLS_CAPITAL),
   };
   const seedLiveSymbolsByVenue: Record<ScalpComposerVenue, string[]> = {
     bitget: parseSeedLiveSymbols(
       "bitget",
-      process.env.SCALP_V2_SEED_LIVE_SYMBOLS_BITGET,
+      process.env.SCALP_COMPOSER_SEED_LIVE_SYMBOLS_BITGET,
     ),
     capital: parseSeedLiveSymbols(
       "capital",
-      process.env.SCALP_V2_SEED_LIVE_SYMBOLS_CAPITAL,
+      process.env.SCALP_COMPOSER_SEED_LIVE_SYMBOLS_CAPITAL,
     ),
   };
 
   const runtime: ScalpComposerRuntimeConfig = {
-    enabled: toBool(process.env.SCALP_V2_ENABLED, true),
-    liveEnabled: toBool(process.env.SCALP_V2_LIVE_ENABLED, false),
-    dryRunDefault: toBool(process.env.SCALP_V2_DRY_RUN_DEFAULT, true),
+    enabled: toBool(process.env.SCALP_COMPOSER_ENABLED, true),
+    liveEnabled: toBool(process.env.SCALP_COMPOSER_LIVE_ENABLED, false),
+    dryRunDefault: toBool(process.env.SCALP_COMPOSER_DRY_RUN_DEFAULT, true),
     defaultStrategyId: String(
-      process.env.SCALP_V2_DEFAULT_STRATEGY_ID || DEFAULT_SCALP_V2_STRATEGY_ID,
+      process.env.SCALP_COMPOSER_DEFAULT_STRATEGY_ID || DEFAULT_SCALP_COMPOSER_STRATEGY_ID,
     )
       .trim()
       .toLowerCase(),
     defaultTuneId: String(
-      process.env.SCALP_V2_DEFAULT_TUNE_ID || DEFAULT_SCALP_V2_TUNE_ID,
+      process.env.SCALP_COMPOSER_DEFAULT_TUNE_ID || DEFAULT_SCALP_COMPOSER_TUNE_ID,
     )
       .trim()
       .toLowerCase(),

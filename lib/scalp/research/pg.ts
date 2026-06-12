@@ -18,7 +18,7 @@ import { startOfUtcWeekMondayMs } from "../regimes/week";
 import {
   evaluateScalpResearchPromotionEvidence,
   resolveScalpResearchConfig,
-  SCALP_V5_VERSION,
+  SCALP_RESEARCH_VERSION,
   type ScalpResearchCellEvidence,
   type ScalpResearchEvidenceVersion,
   type ScalpResearchPromotionMetrics,
@@ -288,7 +288,7 @@ export interface ScalpResearchAdvancementBreakdown {
   // Evidence row is missing entirely (never evaluated, refilled, or
   // wiped by a force=full path). Requires a full 12-week replay.
   missingEvidence: number;
-  // Evidence shape/schema version is older than SCALP_V5_VERSION. The
+  // Evidence shape/schema version is older than SCALP_RESEARCH_VERSION. The
   // dispatcher's incremental prereqs reject these, so re-eval = full replay.
   versionStale: number;
   // Evidence was built against a different classifier version than the one
@@ -347,7 +347,7 @@ export async function selectScalpResearchDeploymentsNeedingAdvancement(params: {
   breakdown: ScalpResearchAdvancementBreakdown;
 }> {
   const cfg = resolveScalpResearchConfig();
-  const evidenceVersion: ScalpResearchEvidenceVersion = params.evidenceVersion || SCALP_V5_VERSION;
+  const evidenceVersion: ScalpResearchEvidenceVersion = params.evidenceVersion || SCALP_RESEARCH_VERSION;
   const classifierVersion = String(
     params.classifierVersion || cfg.classifierVersion,
   ).trim() || cfg.classifierVersion;

@@ -210,17 +210,17 @@ async function main() {
   const windowFromMs = windowToMs - 104 * WEEK;
   const targetCoverageRatio = Math.max(
     0.1,
-    Math.min(1, envNumber("SCALP_V4_STAGEC_BACKFILL_TARGET_COVERAGE", 0.65)),
+    Math.min(1, envNumber("SCALP_REGIME_STAGEC_BACKFILL_TARGET_COVERAGE", 0.65)),
   );
   const chunkWeeks = Math.max(
     1,
-    Math.min(26, Math.floor(envNumber("SCALP_V4_STAGEC_BACKFILL_CHUNK_WEEKS", 8))),
+    Math.min(26, Math.floor(envNumber("SCALP_REGIME_STAGEC_BACKFILL_CHUNK_WEEKS", 8))),
   );
   const maxRequestsPerChunk = Math.max(
     40,
-    Math.min(5000, Math.floor(envNumber("SCALP_V4_STAGEC_BACKFILL_MAX_REQUESTS_PER_CHUNK", 1200))),
+    Math.min(5000, Math.floor(envNumber("SCALP_REGIME_STAGEC_BACKFILL_MAX_REQUESTS_PER_CHUNK", 1200))),
   );
-  const limit = Math.max(0, Math.floor(envNumber("SCALP_V4_STAGEC_BACKFILL_LIMIT", 0)));
+  const limit = Math.max(0, Math.floor(envNumber("SCALP_REGIME_STAGEC_BACKFILL_LIMIT", 0)));
   const scopes = await loadStageCScopes();
   const selected = limit > 0 ? scopes.slice(0, limit) : scopes;
   console.log(JSON.stringify({

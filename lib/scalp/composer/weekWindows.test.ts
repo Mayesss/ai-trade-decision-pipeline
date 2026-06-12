@@ -14,19 +14,19 @@ function withWeekCompleteEnv<T>(
   },
   fn: () => T,
 ): T {
-  const prevFinalSession = process.env.SCALP_V2_WEEK_COMPLETE_FINAL_SESSION;
-  const prevGrace = process.env.SCALP_V2_WEEK_COMPLETE_GRACE_MINUTES;
+  const prevFinalSession = process.env.SCALP_COMPOSER_WEEK_COMPLETE_FINAL_SESSION;
+  const prevGrace = process.env.SCALP_COMPOSER_WEEK_COMPLETE_GRACE_MINUTES;
   try {
-    if (env.finalSession === undefined) delete process.env.SCALP_V2_WEEK_COMPLETE_FINAL_SESSION;
-    else process.env.SCALP_V2_WEEK_COMPLETE_FINAL_SESSION = env.finalSession;
-    if (env.graceMinutes === undefined) delete process.env.SCALP_V2_WEEK_COMPLETE_GRACE_MINUTES;
-    else process.env.SCALP_V2_WEEK_COMPLETE_GRACE_MINUTES = env.graceMinutes;
+    if (env.finalSession === undefined) delete process.env.SCALP_COMPOSER_WEEK_COMPLETE_FINAL_SESSION;
+    else process.env.SCALP_COMPOSER_WEEK_COMPLETE_FINAL_SESSION = env.finalSession;
+    if (env.graceMinutes === undefined) delete process.env.SCALP_COMPOSER_WEEK_COMPLETE_GRACE_MINUTES;
+    else process.env.SCALP_COMPOSER_WEEK_COMPLETE_GRACE_MINUTES = env.graceMinutes;
     return fn();
   } finally {
-    if (prevFinalSession === undefined) delete process.env.SCALP_V2_WEEK_COMPLETE_FINAL_SESSION;
-    else process.env.SCALP_V2_WEEK_COMPLETE_FINAL_SESSION = prevFinalSession;
-    if (prevGrace === undefined) delete process.env.SCALP_V2_WEEK_COMPLETE_GRACE_MINUTES;
-    else process.env.SCALP_V2_WEEK_COMPLETE_GRACE_MINUTES = prevGrace;
+    if (prevFinalSession === undefined) delete process.env.SCALP_COMPOSER_WEEK_COMPLETE_FINAL_SESSION;
+    else process.env.SCALP_COMPOSER_WEEK_COMPLETE_FINAL_SESSION = prevFinalSession;
+    if (prevGrace === undefined) delete process.env.SCALP_COMPOSER_WEEK_COMPLETE_GRACE_MINUTES;
+    else process.env.SCALP_COMPOSER_WEEK_COMPLETE_GRACE_MINUTES = prevGrace;
   }
 }
 

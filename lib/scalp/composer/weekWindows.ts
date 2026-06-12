@@ -104,10 +104,10 @@ export function resolveScalpComposerWeekCompleteConfig(): {
 } {
   return {
     finalSession: parseWeekCompleteSession(
-      process.env.SCALP_V2_WEEK_COMPLETE_FINAL_SESSION,
+      process.env.SCALP_COMPOSER_WEEK_COMPLETE_FINAL_SESSION,
     ),
     graceMinutes: parseGraceMinutes(
-      process.env.SCALP_V2_WEEK_COMPLETE_GRACE_MINUTES,
+      process.env.SCALP_COMPOSER_WEEK_COMPLETE_GRACE_MINUTES,
     ),
   };
 }

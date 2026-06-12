@@ -26,4 +26,4 @@ Recommended alert thresholds:
 - `SCALP_CANDLE_HISTORY_AUDIT_LOG=1`: logs egress-safe candle-loader diagnostics.
 - `SCALP_CANDLE_HISTORY_WARN_FULL_READS=1`: warns on full history reads outside production.
 - `SCALP_CANDLE_HISTORY_READ_ORDER=broker,kv,pg`: default bounded read order.
-- `SCALP_V4_INCREMENTAL_BOOTSTRAP_WEEKS=72`: compact v4 classifier history window and cold-cache bootstrap size.
+- `SCALP_REGIME_INCREMENTAL_BOOTSTRAP_WEEKS=72`: compact v4 classifier history window and cold-cache bootstrap size.

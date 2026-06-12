@@ -1324,19 +1324,19 @@ export function buildScalpComposerCandidateDslGrid(params: {
   const blockMap = blockByIdMap();
 
   const patternPoolSize = envInt(
-    "SCALP_V2_NOVELTY_PATTERN_POOL_SIZE",
+    "SCALP_COMPOSER_NOVELTY_PATTERN_POOL_SIZE",
     DEFAULT_PATTERN_POOL_SIZE,
     1,
     20,
   );
   const patternNoveltyQuotaPct = envNumber(
-    "SCALP_V2_NOVELTY_QUOTA_PCT",
+    "SCALP_COMPOSER_NOVELTY_QUOTA_PCT",
     DEFAULT_PATTERN_NOVELTY_QUOTA_PCT,
     0,
     1,
   );
   const patternNoveltyMinSlots = envInt(
-    "SCALP_V2_NOVELTY_MIN_SLOTS",
+    "SCALP_COMPOSER_NOVELTY_MIN_SLOTS",
     DEFAULT_PATTERN_NOVELTY_MIN_SLOTS,
     0,
     patternPoolSize,
@@ -1512,10 +1512,10 @@ export function buildScalpComposerModelGuidedComposerGrid(params: {
     Math.min(6000, Math.floor(maxCandidates * 2)),
   );
   const blockMap = blockByIdMap();
-  const regimeGateEnabled = envBool("SCALP_V2_REGIME_GATE_ENABLED", true);
+  const regimeGateEnabled = envBool("SCALP_COMPOSER_REGIME_GATE_ENABLED", true);
   const regimeGateTopBaseArms = regimeGateEnabled
     ? envInt(
-        "SCALP_V2_REGIME_GATE_TOP_BASE_ARMS",
+        "SCALP_COMPOSER_REGIME_GATE_TOP_BASE_ARMS",
         DEFAULT_REGIME_GATE_TOP_BASE_ARMS,
         0,
         24,

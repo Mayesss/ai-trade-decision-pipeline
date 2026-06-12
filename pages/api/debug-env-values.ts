@@ -9,7 +9,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     try {
         const scalpComposerStaleRecoveryDays =
-            process.env.SCALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS ||
+            process.env.SCALP_COMPOSER_LOAD_CANDLES_STALE_RECOVERY_DAYS ||
             process.env.CALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS ||
             '(default: 14)';
         console.log('Environment check:');
@@ -72,11 +72,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES:
                 process.env.FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES || '(default: 0)',
             FOREX_SELECTOR_TOP_PERCENT: process.env.FOREX_SELECTOR_TOP_PERCENT || '(default: 40)',
-            SCALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS: scalpComposerStaleRecoveryDays,
-            SCALP_V2_WEEK_COMPLETE_FINAL_SESSION:
-                process.env.SCALP_V2_WEEK_COMPLETE_FINAL_SESSION || '(default: pacific)',
-            SCALP_V2_WEEK_COMPLETE_GRACE_MINUTES:
-                process.env.SCALP_V2_WEEK_COMPLETE_GRACE_MINUTES || '(default: 60)',
+            SCALP_COMPOSER_LOAD_CANDLES_STALE_RECOVERY_DAYS: scalpComposerStaleRecoveryDays,
+            SCALP_COMPOSER_WEEK_COMPLETE_FINAL_SESSION:
+                process.env.SCALP_COMPOSER_WEEK_COMPLETE_FINAL_SESSION || '(default: pacific)',
+            SCALP_COMPOSER_WEEK_COMPLETE_GRACE_MINUTES:
+                process.env.SCALP_COMPOSER_WEEK_COMPLETE_GRACE_MINUTES || '(default: 60)',
         });
 
         return res.status(200).json({
@@ -126,11 +126,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES:
                 process.env.FOREX_STOP_INVALIDATION_MIN_HOLD_MINUTES || '(default: 0)',
             FOREX_SELECTOR_TOP_PERCENT: process.env.FOREX_SELECTOR_TOP_PERCENT || '(default: 40)',
-            SCALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS: scalpComposerStaleRecoveryDays,
-            SCALP_V2_WEEK_COMPLETE_FINAL_SESSION:
-                process.env.SCALP_V2_WEEK_COMPLETE_FINAL_SESSION || '(default: pacific)',
-            SCALP_V2_WEEK_COMPLETE_GRACE_MINUTES:
-                process.env.SCALP_V2_WEEK_COMPLETE_GRACE_MINUTES || '(default: 60)',
+            SCALP_COMPOSER_LOAD_CANDLES_STALE_RECOVERY_DAYS: scalpComposerStaleRecoveryDays,
+            SCALP_COMPOSER_WEEK_COMPLETE_FINAL_SESSION:
+                process.env.SCALP_COMPOSER_WEEK_COMPLETE_FINAL_SESSION || '(default: pacific)',
+            SCALP_COMPOSER_WEEK_COMPLETE_GRACE_MINUTES:
+                process.env.SCALP_COMPOSER_WEEK_COMPLETE_GRACE_MINUTES || '(default: 60)',
         });
     } catch (err: any) {
         console.error('Error in /debug-env-values:', err);

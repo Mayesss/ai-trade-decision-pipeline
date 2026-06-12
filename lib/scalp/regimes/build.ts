@@ -3,7 +3,7 @@ import {
   applyScalpRegimeHysteresis,
   buildScalpRegimeWeeklyBars,
   classifyScalpRegimeRawRegimes,
-  SCALP_V4_CLASSIFIER_VERSION,
+  SCALP_REGIME_CLASSIFIER_VERSION,
 } from "./classifier";
 import {
   backfillScalpRegimeWeeklyBarsFromCandleHistory,
@@ -15,11 +15,11 @@ import {
 } from "./pg";
 import { buildScalpRegimeClassifierValidityReport } from "./sanity";
 import type { ScalpRegimeMarketContext, ScalpRegimeVenue, ScalpRegimeWeeklyBar } from "./types";
-import { SCALP_V4_ONE_WEEK_MS, startOfUtcWeekMondayMs } from "./week";
+import { SCALP_REGIME_ONE_WEEK_MS, startOfUtcWeekMondayMs } from "./week";
 
 const V4_INCREMENTAL_BOOTSTRAP_WEEKS = Math.max(
   64,
-  Math.min(156, Math.floor(Number(process.env.SCALP_V4_INCREMENTAL_BOOTSTRAP_WEEKS || 72))),
+  Math.min(156, Math.floor(Number(process.env.SCALP_REGIME_INCREMENTAL_BOOTSTRAP_WEEKS || 72))),
 );
 
 export interface ScalpRegimeWeeklyBuildResult {
@@ -43,7 +43,7 @@ export async function loadOrRefreshScalpRegimeWeeklyBars(params: {
   auditSource?: string;
 }): Promise<ScalpRegimeWeeklyBar[]> {
   const classificationWeekStartMs = params.classificationWeekStartMs ?? startOfUtcWeekMondayMs(params.toMs);
-  const recentFromMs = Math.max(0, classificationWeekStartMs - SCALP_V4_ONE_WEEK_MS);
+  const recentFromMs = Math.max(0, classificationWeekStartMs - SCALP_REGIME_ONE_WEEK_MS);
   try {
     const recentHistory = await loadScalpCandleHistoryWeeklyBars(
       params.symbol,
@@ -70,7 +70,7 @@ export async function loadOrRefreshScalpRegimeWeeklyBars(params: {
     // A broker/KV/PG recent refresh failure should not block reading compact bars.
   }
 
-  const toWeekMs = startOfUtcWeekMondayMs(params.toMs) + SCALP_V4_ONE_WEEK_MS;
+  const toWeekMs = startOfUtcWeekMondayMs(params.toMs) + SCALP_REGIME_ONE_WEEK_MS;
   let compactBars = await loadScalpRegimeWeeklyBars({
     venue: params.venue,
     symbol: params.symbol,
@@ -104,7 +104,7 @@ export async function runScalpRegimeWeeklyRegimeBuild(params: {
   classifierVersion?: string;
   forceValidity?: boolean;
 }): Promise<ScalpRegimeWeeklyBuildResult> {
-  const classifierVersion = params.classifierVersion || SCALP_V4_CLASSIFIER_VERSION;
+  const classifierVersion = params.classifierVersion || SCALP_REGIME_CLASSIFIER_VERSION;
   const targets = params.symbols && params.symbols.length > 0
     ? params.symbols
     : await loadScalpRegimeDeploymentSymbols();
@@ -194,7 +194,7 @@ export async function ensureScalpRegimeWeeklyRegimesBuilt(params: {
   classifierVersion?: string;
   forceValidity?: boolean;
 } = {}): Promise<{ skipped: boolean; reason: string; result?: ScalpRegimeWeeklyBuildResult }> {
-  const classifierVersion = params.classifierVersion || SCALP_V4_CLASSIFIER_VERSION;
+  const classifierVersion = params.classifierVersion || SCALP_REGIME_CLASSIFIER_VERSION;
   const weekStartMs = startOfUtcWeekMondayMs(Date.now());
   const targets = await loadScalpRegimeDeploymentSymbols();
   if (!targets.length) return { skipped: true, reason: "no_deployment_symbols" };

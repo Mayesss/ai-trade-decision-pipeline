@@ -30,19 +30,19 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 export function isScalpRegimeEnabled(): boolean {
-  const raw = String(process.env.SCALP_V4_ENABLED ?? "true").trim().toLowerCase();
+  const raw = String(process.env.SCALP_REGIME_ENABLED ?? "true").trim().toLowerCase();
   return !["0", "false", "no", "off"].includes(raw);
 }
 
 export function isScalpRegimeHardGateEnabled(): boolean {
   // Default ON: v4 entry-blocks are real, not shadow. Set
-  // SCALP_V4_HARD_GATE_ENABLED=false to revert to shadow-only logging.
-  const raw = String(process.env.SCALP_V4_HARD_GATE_ENABLED ?? "true").trim().toLowerCase();
+  // SCALP_REGIME_HARD_GATE_ENABLED=false to revert to shadow-only logging.
+  const raw = String(process.env.SCALP_REGIME_HARD_GATE_ENABLED ?? "true").trim().toLowerCase();
   return !["0", "false", "no", "off"].includes(raw);
 }
 
 export function resolveScalpRegimeWalkforwardClaimLeaseMs(): number {
-  const n = Number(process.env.SCALP_V4_WALKFORWARD_CLAIM_LEASE_MS);
+  const n = Number(process.env.SCALP_REGIME_WALKFORWARD_CLAIM_LEASE_MS);
   if (!Number.isFinite(n) || n <= 0) return 2 * 60 * 60_000;
   return Math.max(5 * 60_000, Math.min(24 * 60 * 60_000, Math.floor(n)));
 }
@@ -52,7 +52,7 @@ export function resolveScalpRegimeWalkforwardClaimLeaseMs(): number {
 // candidates whose result is >4 weeks old get re-walked. Saves ~75% of the
 // recurring weekly recompute that would otherwise happen on every rollover.
 export function resolveScalpRegimeWalkforwardReuseWeeks(): number {
-  const n = Number(process.env.SCALP_V4_WALKFORWARD_REUSE_WEEKS);
+  const n = Number(process.env.SCALP_REGIME_WALKFORWARD_REUSE_WEEKS);
   if (!Number.isFinite(n) || n < 0) return 4;
   return Math.max(0, Math.min(52, Math.floor(n)));
 }
@@ -333,13 +333,13 @@ export async function backfillScalpRegimeWeeklyBarsFromCandleHistory(params: {
 
 export function resolveScalpRegimeSnapshotTtlMs(venue: unknown): number {
   const fallback = normalizeVenue(venue) === "capital" ? 15 * 60_000 : 5 * 60_000;
-  const n = Number(process.env.SCALP_V4_SNAPSHOT_TTL_MS);
+  const n = Number(process.env.SCALP_REGIME_SNAPSHOT_TTL_MS);
   if (!Number.isFinite(n) || n <= 0) return fallback;
   return Math.max(60_000, Math.min(24 * 60 * 60_000, Math.floor(n)));
 }
 
 export function resolveScalpRegimeFailClosedStaleMs(): number {
-  const n = Number(process.env.SCALP_V4_FAIL_CLOSED_STALE_MS);
+  const n = Number(process.env.SCALP_REGIME_FAIL_CLOSED_STALE_MS);
   if (!Number.isFinite(n) || n <= 0) return 2 * 60 * 60_000;
   return Math.max(5 * 60_000, Math.min(7 * 24 * 60 * 60_000, Math.floor(n)));
 }
@@ -351,7 +351,7 @@ export async function upsertScalpRegimeSnapshots(rows: ScalpRegimeSnapshot[]): P
   const db = scalpPrisma();
   const snapshotBatchSize = Math.max(
     1,
-    Math.min(200, Math.floor(Number(process.env.SCALP_V4_UPSERT_BATCH_SIZE || 50))),
+    Math.min(200, Math.floor(Number(process.env.SCALP_REGIME_UPSERT_BATCH_SIZE || 50))),
   );
   for (let offset = 0; offset < normalized.length; offset += snapshotBatchSize) {
     const batch = normalized.slice(offset, offset + snapshotBatchSize);

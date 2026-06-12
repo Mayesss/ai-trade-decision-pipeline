@@ -6,7 +6,7 @@ import {
   loadScalpRegimeCompletedWalkforwardDeploymentIds,
   loadScalpRegimeSnapshots,
   runScalpRegimeWalkForward,
-  SCALP_V4_CLASSIFIER_VERSION,
+  SCALP_REGIME_CLASSIFIER_VERSION,
   upsertScalpRegimeWalkforwardResult,
 } from "../lib/scalp/regimes";
 import { loadScalpCandleHistoryInRange } from "../lib/scalp/candleHistory";
@@ -55,8 +55,8 @@ async function main() {
   const rerun = Boolean(args.rerun);
   const forceValidity = Boolean(args.forceValidity || args.force);
   const limit = Math.max(1, Math.min(500, Math.floor(Number(args.limit || 55))));
-  const classifierVersion = String(args.classifierVersion || SCALP_V4_CLASSIFIER_VERSION);
-  const effectiveTrials = Math.max(1, Math.floor(Number(args.effectiveTrials || process.env.SCALP_V4_EFFECTIVE_TRIALS || 2_500_000)));
+  const classifierVersion = String(args.classifierVersion || SCALP_REGIME_CLASSIFIER_VERSION);
+  const effectiveTrials = Math.max(1, Math.floor(Number(args.effectiveTrials || process.env.SCALP_REGIME_EFFECTIVE_TRIALS || 2_500_000)));
   const windowToMs = Math.floor(Number(args.windowToMs || Date.now()));
   const alignedWindowToMs = windowToMs - (windowToMs % WEEK);
   const windowFromMs = alignedWindowToMs - 104 * WEEK;

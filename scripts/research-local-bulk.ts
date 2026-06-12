@@ -147,33 +147,33 @@ const WORK_LEASE_MINUTES = Math.max(
 function applyRuntimeOverrides(): void {
   if (BULK_RESEARCH_VERSION !== 'v2') return;
 
-  process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN = String(symbolsPerBatch);
-  process.env.SCALP_V2_RESEARCH_BATCH_SIZE = String(candidateBatchSize);
-  process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY_MAX = '16';
-  process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY = String(backtestConcurrency);
+  process.env.SCALP_COMPOSER_RESEARCH_MAX_SYMBOLS_PER_RUN = String(symbolsPerBatch);
+  process.env.SCALP_COMPOSER_RESEARCH_BATCH_SIZE = String(candidateBatchSize);
+  process.env.SCALP_COMPOSER_RESEARCH_BACKTEST_CONCURRENCY_MAX = '16';
+  process.env.SCALP_COMPOSER_RESEARCH_BACKTEST_CONCURRENCY = String(backtestConcurrency);
   if (BULK_DEBUG) {
-    process.env.SCALP_V2_RESEARCH_DEBUG_TIMING = '1';
+    process.env.SCALP_COMPOSER_RESEARCH_DEBUG_TIMING = '1';
   }
-  process.env.SCALP_V2_RESEARCH_WORK_LEASES_ENABLED = WORK_LEASES ? '1' : '0';
-  if (WORK_LEASES && !process.env.SCALP_V2_RESEARCH_WORK_LEASE_MS) {
-    process.env.SCALP_V2_RESEARCH_WORK_LEASE_MS = String(WORK_LEASE_MINUTES * 60 * 1000);
+  process.env.SCALP_COMPOSER_RESEARCH_WORK_LEASES_ENABLED = WORK_LEASES ? '1' : '0';
+  if (WORK_LEASES && !process.env.SCALP_COMPOSER_RESEARCH_WORK_LEASE_MS) {
+    process.env.SCALP_COMPOSER_RESEARCH_WORK_LEASE_MS = String(WORK_LEASE_MINUTES * 60 * 1000);
   }
-  process.env.SCALP_V2_RESEARCH_SYMBOL_SHARD_COUNT = String(BULK_SHARD_COUNT);
-  process.env.SCALP_V2_RESEARCH_SYMBOL_SHARD_INDEX = String(BULK_SHARD_INDEX);
+  process.env.SCALP_COMPOSER_RESEARCH_SYMBOL_SHARD_COUNT = String(BULK_SHARD_COUNT);
+  process.env.SCALP_COMPOSER_RESEARCH_SYMBOL_SHARD_INDEX = String(BULK_SHARD_INDEX);
   if (BULK_SHARD_COUNT > 1 && !WORK_LEASES) {
-    process.env.SCALP_V2_RESEARCH_LOCK_SCOPE = `bulk-shard-${BULK_SHARD_INDEX}-of-${BULK_SHARD_COUNT}`;
+    process.env.SCALP_COMPOSER_RESEARCH_LOCK_SCOPE = `bulk-shard-${BULK_SHARD_INDEX}-of-${BULK_SHARD_COUNT}`;
   } else if (WORK_LEASES) {
-    delete process.env.SCALP_V2_RESEARCH_LOCK_SCOPE;
+    delete process.env.SCALP_COMPOSER_RESEARCH_LOCK_SCOPE;
   }
   if (DISABLE_TIME_BUDGET) {
-    process.env.SCALP_V2_RESEARCH_DISABLE_TIME_BUDGET = '1';
-    delete process.env.SCALP_V2_RESEARCH_TIME_BUDGET_MS;
+    process.env.SCALP_COMPOSER_RESEARCH_DISABLE_TIME_BUDGET = '1';
+    delete process.env.SCALP_COMPOSER_RESEARCH_TIME_BUDGET_MS;
   } else {
-    process.env.SCALP_V2_RESEARCH_DISABLE_TIME_BUDGET = '0';
-    process.env.SCALP_V2_RESEARCH_TIME_BUDGET_MS = String(timeBudgetMinutes * 60 * 1000);
+    process.env.SCALP_COMPOSER_RESEARCH_DISABLE_TIME_BUDGET = '0';
+    process.env.SCALP_COMPOSER_RESEARCH_TIME_BUDGET_MS = String(timeBudgetMinutes * 60 * 1000);
   }
   // Prevent lock stealing during long local batches.
-  process.env.SCALP_V2_JOB_LOCK_STALE_MINUTES = String(
+  process.env.SCALP_COMPOSER_JOB_LOCK_STALE_MINUTES = String(
     DISABLE_TIME_BUDGET ? 120 : Math.max(30, Math.ceil((timeBudgetMinutes * 2) + 5)),
   );
 }
@@ -729,7 +729,7 @@ async function runBatch(): Promise<boolean> {
     const leaseClaimsAttempted = Number(d.leaseClaimsAttempted || 0);
     const leaseClaimsSucceeded = Number(d.leaseClaimsSucceeded || 0);
     const leaseClaimsLost = Number(d.leaseClaimsLost || 0);
-    const researchWorkLeaseMs = Number(d.researchWorkLeaseMs || process.env.SCALP_V2_RESEARCH_WORK_LEASE_MS || 0);
+    const researchWorkLeaseMs = Number(d.researchWorkLeaseMs || process.env.SCALP_COMPOSER_RESEARCH_WORK_LEASE_MS || 0);
     const freshnessGate = (d.freshnessGate || {}) as Record<string, unknown>;
     const freshnessApplied = Boolean(freshnessGate.applied);
     const freshnessReady = Boolean(freshnessGate.ready);

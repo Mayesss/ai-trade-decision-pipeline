@@ -192,21 +192,21 @@ MARKETAUX_API_KEY=...
 # SCALP_RESEARCH_WORKER_MAX_RUNS_CAP=200
 # SCALP_V1_RESEARCH_MAX_CANDIDATES_CAP=80
 # SCALP_V1_RESEARCH_MAX_SELF_HOPS_CAP=8               # must be >= cron selfMaxHops for v2 cycle/research auto-continue
-# SCALP_V2_ENABLED=true
-# SCALP_V2_PROMOTE_ENABLED=false                        # default false: v5 promotion is authoritative; set true only for rollback
-# SCALP_V2_LIVE_ENABLED=false                           # fail-closed for legacy v2-owned rows; v5-owned live rows bypass this flag
-# SCALP_V2_DRY_RUN_DEFAULT=true
-# SCALP_V2_DEFAULT_STRATEGY_ID=model_guided_composer_v2
-# SCALP_V2_SEED_SYMBOLS_BITGET=BTCUSDT
-# SCALP_V2_SEED_SYMBOLS_CAPITAL=EURUSD
-# SCALP_V2_SEED_LIVE_SYMBOLS_BITGET=BTCUSDT
-# SCALP_V2_SEED_LIVE_SYMBOLS_CAPITAL=EURUSD
-# SCALP_V2_FORCE_FIXED_SEED_SCOPE=true                  # default true: clamp v2 scope to the fixed 48-symbol research universe
-# SCALP_V2_COMPOSER_MAX_CANDIDATES_PER_SESSION=24       # bounded candidate pool generated per venue+symbol+session scope
-# SCALP_V2_DISCOVER_PERSIST_CANDIDATES=false            # default false: discover updates cursors only; evaluate persists rotated slice
-# SCALP_V2_MAX_CANDIDATES_TOTAL=200
-# SCALP_V2_MAX_CANDIDATES_PER_SYMBOL=4
-# SCALP_V2_MAX_ENABLED_DEPLOYMENTS=12
+# SCALP_COMPOSER_ENABLED=true
+# SCALP_COMPOSER_PROMOTE_ENABLED=false                        # default false: v5 promotion is authoritative; set true only for rollback
+# SCALP_COMPOSER_LIVE_ENABLED=false                           # fail-closed for legacy v2-owned rows; v5-owned live rows bypass this flag
+# SCALP_COMPOSER_DRY_RUN_DEFAULT=true
+# SCALP_COMPOSER_DEFAULT_STRATEGY_ID=model_guided_composer_v2
+# SCALP_COMPOSER_SEED_SYMBOLS_BITGET=BTCUSDT
+# SCALP_COMPOSER_SEED_SYMBOLS_CAPITAL=EURUSD
+# SCALP_COMPOSER_SEED_LIVE_SYMBOLS_BITGET=BTCUSDT
+# SCALP_COMPOSER_SEED_LIVE_SYMBOLS_CAPITAL=EURUSD
+# SCALP_COMPOSER_FORCE_FIXED_SEED_SCOPE=true                  # default true: clamp v2 scope to the fixed 48-symbol research universe
+# SCALP_COMPOSER_COMPOSER_MAX_CANDIDATES_PER_SESSION=24       # bounded candidate pool generated per venue+symbol+session scope
+# SCALP_COMPOSER_DISCOVER_PERSIST_CANDIDATES=false            # default false: discover updates cursors only; evaluate persists rotated slice
+# SCALP_COMPOSER_MAX_CANDIDATES_TOTAL=200
+# SCALP_COMPOSER_MAX_CANDIDATES_PER_SYMBOL=4
+# SCALP_COMPOSER_MAX_ENABLED_DEPLOYMENTS=12
 # SCALP_SYMBOL_DISCOVERY_SEED_ALLOW_BOOTSTRAP_SYMBOLS=false
 # SCALP_GUARDRAIL_AUTO_PAUSE=true
 # SCALP_GUARDRAIL_MIN_TRADES_30D=8
@@ -223,11 +223,11 @@ MARKETAUX_API_KEY=...
 # SCALP_HOUSEKEEPING_TRADE_LEDGER_MAX=10000
 
 # Scalp v5 — per-regime-cell entry gate (see "Scalp v5" section below)
-# SCALP_V5_ENABLED=true                  # default ON; set to 0/false to disable the gate entirely
-# SCALP_V5_HARD_GATE=true                # default ON; set to 0/false for shadow-only blocks (logged with *_SHADOW suffix)
-# SCALP_V5_HOLDOUT_WEEKS=12              # how many weeks of replay the evaluator buckets by cell
-# SCALP_V5_MIN_TRADES_PER_CELL=8         # min trades in a cell before its expectancy can gate entries
-# SCALP_V5_CLASSIFIER_VERSION=scalp_v4_macro_weekly_r1   # which regime classifier produces the cell labels
+# SCALP_RESEARCH_ENABLED=true                  # default ON; set to 0/false to disable the gate entirely
+# SCALP_RESEARCH_HARD_GATE=true                # default ON; set to 0/false for shadow-only blocks (logged with *_SHADOW suffix)
+# SCALP_RESEARCH_HOLDOUT_WEEKS=12              # how many weeks of replay the evaluator buckets by cell
+# SCALP_RESEARCH_MIN_TRADES_PER_CELL=8         # min trades in a cell before its expectancy can gate entries
+# SCALP_RESEARCH_CLASSIFIER_VERSION=scalp_v4_macro_weekly_r1   # which regime classifier produces the cell labels
 # BULK_V5_LIMIT=25                       # bulk evaluator: max deployments per batch
 # BULK_V5_STALE_OLDER_THAN_HOURS=144     # bulk evaluator: re-evaluate rows older than this (default 6 days)
 
@@ -323,13 +323,13 @@ npm run start
   - Legacy alias kept for compatibility: `/api/scalp/cron/v2/discover`.
   - Native scalp-v2 candidate discovery (model-guided composer primitives), not legacy v1 symbol-discovery pipeline.
   - Scans model-guided candidate pools only from scalp-v2 runtime seed symbols (`seedSymbolsByVenue`) and supported sessions.
-  - Default mode is sparse/scan-only (`SCALP_V2_DISCOVER_PERSIST_CANDIDATES=false`): updates research cursors without bulk candidate persistence.
-  - Optional persistence mode (`SCALP_V2_DISCOVER_PERSIST_CANDIDATES=true`) upserts discovered candidates and applies runtime candidate-budget trimming.
+  - Default mode is sparse/scan-only (`SCALP_COMPOSER_DISCOVER_PERSIST_CANDIDATES=false`): updates research cursors without bulk candidate persistence.
+  - Optional persistence mode (`SCALP_COMPOSER_DISCOVER_PERSIST_CANDIDATES=true`) upserts discovered candidates and applies runtime candidate-budget trimming.
   - By default, runtime seed scope is fixed to:
     - Bitget: 34 crypto symbols.
     - Capital: 14 forex/metals symbols.
-  - `SCALP_V2_FORCE_FIXED_SEED_SCOPE=true` (default) enforces this clamp even if runtime/DB config contains wider seeds.
-  - Candidate pool size per scope is bounded by `SCALP_V2_COMPOSER_MAX_CANDIDATES_PER_SESSION` (default `24`, max `96`).
+  - `SCALP_COMPOSER_FORCE_FIXED_SEED_SCOPE=true` (default) enforces this clamp even if runtime/DB config contains wider seeds.
+  - Candidate pool size per scope is bounded by `SCALP_COMPOSER_COMPOSER_MAX_CANDIDATES_PER_SESSION` (default `24`, max `96`).
   - Optional orchestration query params:
     - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/composer/cron/evaluate`.
     - `evaluateBatchSize=<int>` batch size for downstream evaluate (default `200`).
@@ -340,7 +340,7 @@ npm run start
   - `batchSize` bounds how many selected candidates are backtested per invocation (default `100`).
   - Debug timing:
     - `debug=true` adds `job.details.timing` (per-label total/count/avg/max ms) for hotspot analysis.
-    - Env alternative: `SCALP_V2_RESEARCH_DEBUG_TIMING=true`.
+    - Env alternative: `SCALP_COMPOSER_RESEARCH_DEBUG_TIMING=true`.
   - Optional orchestration query params:
     - `autoContinue=true|false` + `selfHop/selfMaxHops` for bounded detached self-recalls when `pendingAfter > 0`.
     - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/composer/cron/promote` only after `pendingAfter` reaches `0`.
@@ -399,7 +399,7 @@ npm run start
   - If a stage fails, later stages are blocked to save compute.
   - Stores only compact stage metadata on each candidate (`metadata.worker.*`) and persists remarkable highlights for Stage-C passes.
   - Promotion now fail-closes on worker evidence: candidates missing Stage-C pass are rejected (`worker_stage_c_missing|worker_stage_c_failed`).
-  - Sunday UTC safeguard: worker replay is blocked by default (`reason=sunday_utc_worker_blocked`); override only with `SCALP_V2_ALLOW_SUNDAY_WORKER=true`.
+  - Sunday UTC safeguard: worker replay is blocked by default (`reason=sunday_utc_worker_blocked`); override only with `SCALP_COMPOSER_ALLOW_SUNDAY_WORKER=true`.
   - Optional orchestration query params:
     - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/composer/cron/promote`.
 - `GET /api/scalp/composer/cron/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&successor=cycle`
@@ -415,7 +415,7 @@ npm run start
   - Optional env knobs:
     - `SCALP_PIPELINE_LOAD_PREWARM_WEEKS` (default `1`)
     - `SCALP_PIPELINE_LOAD_BACKFILL_CHUNK_WEEKS` (default matches prewarm)
-    - `SCALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS` (default `14`) to widen incremental fetch windows for stale symbols and prevent Sunday freshness deadlocks.
+    - `SCALP_COMPOSER_LOAD_CANDLES_STALE_RECOVERY_DAYS` (default `14`) to widen incremental fetch windows for stale symbols and prevent Sunday freshness deadlocks.
       - Backward-compatible alias accepted: `CALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS`.
   - Claims rows from `scalp_discovered_symbols` and updates per-symbol load status.
   - Successor chaining (after drain, `pendingAfter=0`):
@@ -441,7 +441,7 @@ npm run start
     - `autoContinue=true`
     - `selfMaxHops=8` (ensure `SCALP_V1_RESEARCH_MAX_SELF_HOPS_CAP>=8` or route-level value will be clamped)
   - Full v2 auto loop in one run: discover -> evaluate -> worker -> promote -> execute -> reconcile.
-  - Sunday UTC safeguard: execution step is skipped by default (`reason=sunday_utc_execution_blocked`); override only with `SCALP_V2_ALLOW_SUNDAY_EXECUTE=true`.
+  - Sunday UTC safeguard: execution step is skipped by default (`reason=sunday_utc_execution_blocked`); override only with `SCALP_COMPOSER_ALLOW_SUNDAY_EXECUTE=true`.
 - `GET /api/scalp/composer/dashboard/summary`
   - V2 monitoring payload: runtime config, summary counters, deployments, events, and recent ledger rows.
 - `GET /api/scalp/composer/ops/state`
@@ -665,12 +665,12 @@ The v4 regime classifier (the `vol × trend × risk` 3×3×3 cell taxonomy and w
 | Deployment state | Result |
 |---|---|
 | `v5_evaluated_at IS NULL` (evaluator hasn't run yet on this row) | **Permissive** — `V5_CELL_EVIDENCE_MISSING` reason logged, no block. Falls through to upstream gates. |
-| Evaluator ran, current cell in evidence with `expectancyR > 0` and `trades >= SCALP_V5_MIN_TRADES_PER_CELL` | **Allow** |
+| Evaluator ran, current cell in evidence with `expectancyR > 0` and `trades >= SCALP_RESEARCH_MIN_TRADES_PER_CELL` | **Allow** |
 | Evaluator ran, current cell in evidence but `expectancyR <= 0` | **Block** with `V5_CELL_NEGATIVE_EXPECTANCY` |
 | Evaluator ran, current cell unseen in 12-week replay | **Block** with `V5_CELL_NOT_IN_EVIDENCE` |
 | Evaluator ran but regime snapshot stale or missing | **Block** with `V5_CELL_DATA_STALE` |
-| `SCALP_V5_ENABLED=0` | Gate disabled entirely, no reason codes emitted |
-| `SCALP_V5_HARD_GATE=0` | Block conditions emit `*_SHADOW` reason codes only; trades are not actually blocked |
+| `SCALP_RESEARCH_ENABLED=0` | Gate disabled entirely, no reason codes emitted |
+| `SCALP_RESEARCH_HARD_GATE=0` | Block conditions emit `*_SHADOW` reason codes only; trades are not actually blocked |
 
 All gate outcomes (allow, block, shadow) are recorded on each `position_snapshot` event as `rawPayload.v5CellGate.{reasonCodes, matchedCellId, evidence, v5Enabled, evaluatedAtMs}` for inspection without touching the DB.
 
@@ -685,15 +685,15 @@ BULK_RESEARCH_VERSION=v5 npm exec tsx scripts/research-local-bulk.ts
 Per batch the script:
 
 1. Pulls up to `BULK_V5_LIMIT` deployments where `enabled = TRUE` AND (`v5_evaluated_at IS NULL` OR `v5_evaluated_at < NOW() - BULK_V5_STALE_OLDER_THAN_HOURS`).
-2. For each, replays the last `SCALP_V5_HOLDOUT_WEEKS` of 1m candles (typically 30s–2min), bulk-loads regime snapshots, tags trades by cell, persists `v5_cell_evidence`.
-3. Sets `v5_enabled = TRUE` if any cell meets `trades >= SCALP_V5_MIN_TRADES_PER_CELL` AND `expectancyR > 0`.
+2. For each, replays the last `SCALP_RESEARCH_HOLDOUT_WEEKS` of 1m candles (typically 30s–2min), bulk-loads regime snapshots, tags trades by cell, persists `v5_cell_evidence`.
+3. Sets `v5_enabled = TRUE` if any cell meets `trades >= SCALP_RESEARCH_MIN_TRADES_PER_CELL` AND `expectancyR > 0`.
 
 The evaluator only acts on already-promoted (`enabled=true`) deployments, so the candidate pool is the small live set (~4 typical, single-digit in practice), not the full 698-row stage-C survivor list. This is the structural reason v5 is cheap.
 
 ### Operational notes
 
-- **Default-ON** for both `SCALP_V5_ENABLED` and `SCALP_V5_HARD_GATE`. Missing evidence is treated as permissive (not a block) so flipping the master switch live doesn't strand deployments that haven't been evaluated yet — they pass through unaffected until the next bulk pass populates evidence.
-- **Coexists with v4.** v5 lives alongside v4 in the entry-gate chain; the regime snapshot lookup is shared (one DB call covers both gates). v4 can be left running until v5 is trusted, then disabled via `SCALP_V4_ENABLED=0` independently.
+- **Default-ON** for both `SCALP_RESEARCH_ENABLED` and `SCALP_RESEARCH_HARD_GATE`. Missing evidence is treated as permissive (not a block) so flipping the master switch live doesn't strand deployments that haven't been evaluated yet — they pass through unaffected until the next bulk pass populates evidence.
+- **Coexists with v4.** v5 lives alongside v4 in the entry-gate chain; the regime snapshot lookup is shared (one DB call covers both gates). v4 can be left running until v5 is trusted, then disabled via `SCALP_REGIME_ENABLED=0` independently.
 - **No new cron job.** v5 evaluation runs only when you trigger the bulk script. Cadence can be moved to a scheduled cron later once latency requirements are clear.
 - **No dashboard yet.** Inspect via the `position_snapshot` event payload, or query `SELECT deployment_id, v5_enabled, v5_evaluated_at, v5_cell_evidence FROM scalp_v2_deployments WHERE v5_evaluated_at IS NOT NULL`.
 

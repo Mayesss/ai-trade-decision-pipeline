@@ -166,7 +166,7 @@ function classifyClose(params: {
   const takeProfit = toFiniteOrNull(params.entry?.presetStopSurplusPrice);
   if (closePrice !== null && stop !== null) {
     if (Math.abs(closePrice - stop) <= Math.max(0.02, Math.abs(stop) * 0.0015)) {
-      return "SCALP_V2_RECONCILE_SL";
+      return "SCALP_COMPOSER_RECONCILE_SL";
     }
   }
   if (closePrice !== null && takeProfit !== null) {
@@ -174,12 +174,12 @@ function classifyClose(params: {
       Math.abs(closePrice - takeProfit) <=
       Math.max(0.02, Math.abs(takeProfit) * 0.0015)
     ) {
-      return "SCALP_V2_RECONCILE_TP";
+      return "SCALP_COMPOSER_RECONCILE_TP";
     }
   }
   const source = normalizeBrokerText(params.close?.enterPointSource);
-  if (source === "SYS") return "SCALP_V2_RECONCILE_BROKER_CLOSE";
-  return "SCALP_V2_RECONCILE_MANUAL_CLOSE";
+  if (source === "SYS") return "SCALP_COMPOSER_RECONCILE_BROKER_CLOSE";
+  return "SCALP_COMPOSER_RECONCILE_MANUAL_CLOSE";
 }
 
 function fallbackRiskUsdFromOrders(params: {
@@ -319,7 +319,7 @@ export async function resolveBitgetBrokerCloseLedger(params: {
     pnlUsd,
     reasonCodes: [
       "LEDGER_BROKER_CLOSE_CONFIRMED",
-      "SCALP_V2_RECONCILE_BROKER_HISTORY",
+      "SCALP_COMPOSER_RECONCILE_BROKER_HISTORY",
       classifyClose({ entry, close: finalClose }),
     ],
     rawPayload: {

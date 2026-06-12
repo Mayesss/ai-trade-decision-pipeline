@@ -14,7 +14,7 @@ import {
   aggregateScalpComposerPatternEdges,
   buildScalpComposerPatternKey,
   extractScalpComposerPatternTradeVectors,
-  SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
+  SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
   selectScalpComposerPatternRepresentativeCandidates,
   type ScalpComposerPatternCandidateSummary,
 } from "../lib/scalp/composer/patternEvidence";
@@ -386,7 +386,7 @@ async function main() {
     const allVectors = await loadScalpComposerPatternTradeVectors({
       windowToTs: effectiveWindowToTs,
       bucketMinutes,
-      populationScope: SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
+      populationScope: SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
     });
     const filteredVectors = allVectors.filter((row) => row.candidateId !== null && representativeIds.has(row.candidateId));
     const candidateCountsByPattern = countByPattern(summaries);
@@ -398,7 +398,7 @@ async function main() {
       candidateCountsByPattern,
       representativeCandidateCountsByPattern: representativeCountsByPattern,
       bucketMinutes,
-      populationScope: SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
+      populationScope: SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
     });
     if (!dryRun) {
       await upsertScalpComposerPatternEdges({ edges });

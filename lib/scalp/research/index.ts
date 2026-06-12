@@ -19,10 +19,10 @@ import { startOfUtcWeekMondayMs } from "../regimes/week";
 // loaded with r2 evidence falls back to a full replay on its next
 // evaluation — the incremental path needs r3 to operate. Bumping to r4+
 // requires another invalidation pass.
-export const SCALP_V5_VERSION = "scalp_v5_cell_evidence_r3" as const;
+export const SCALP_RESEARCH_VERSION = "scalp_v5_cell_evidence_r3" as const;
 export type ScalpResearchEvidenceVersion =
   | "scalp_v5_cell_evidence_r2"
-  | typeof SCALP_V5_VERSION;
+  | typeof SCALP_RESEARCH_VERSION;
 
 export interface ScalpResearchCellStat {
   trades: number;
@@ -110,25 +110,25 @@ export interface ScalpResearchPromotionEvaluation {
 }
 
 export function isScalpResearchEnabled(): boolean {
-  // Default ON. Set SCALP_V5_ENABLED=0 to disable the gate entirely (e.g.
+  // Default ON. Set SCALP_RESEARCH_ENABLED=0 to disable the gate entirely (e.g.
   // before evidence has been evaluated on a fresh deployment).
-  const raw = String(process.env.SCALP_V5_ENABLED ?? "true").trim().toLowerCase();
+  const raw = String(process.env.SCALP_RESEARCH_ENABLED ?? "true").trim().toLowerCase();
   return !["0", "false", "no", "off"].includes(raw);
 }
 
 export function isScalpResearchHardGateEnabled(): boolean {
   // Default ON — v5 blocks at the live entry path, no shadow mode.
-  // Set SCALP_V5_HARD_GATE=0 to downgrade to shadow logging only.
-  const raw = String(process.env.SCALP_V5_HARD_GATE ?? "true").trim().toLowerCase();
+  // Set SCALP_RESEARCH_HARD_GATE=0 to downgrade to shadow logging only.
+  const raw = String(process.env.SCALP_RESEARCH_HARD_GATE ?? "true").trim().toLowerCase();
   return !["0", "false", "no", "off"].includes(raw);
 }
 
 export function resolveScalpResearchConfig(): ScalpResearchConfig {
-  const holdoutWeeksRaw = Number(process.env.SCALP_V5_HOLDOUT_WEEKS);
-  const minTradesRaw = Number(process.env.SCALP_V5_MIN_TRADES_PER_CELL);
+  const holdoutWeeksRaw = Number(process.env.SCALP_RESEARCH_HOLDOUT_WEEKS);
+  const minTradesRaw = Number(process.env.SCALP_RESEARCH_MIN_TRADES_PER_CELL);
   return {
     classifierVersion:
-      String(process.env.SCALP_V5_CLASSIFIER_VERSION || "").trim() ||
+      String(process.env.SCALP_RESEARCH_CLASSIFIER_VERSION || "").trim() ||
       "scalp_v4_macro_weekly_r1",
     holdoutWeeks: Number.isFinite(holdoutWeeksRaw) && holdoutWeeksRaw > 0
       ? Math.max(1, Math.min(52, Math.floor(holdoutWeeksRaw)))
@@ -345,7 +345,7 @@ export function buildScalpResearchCellEvidence(params: {
     }
   }
   return {
-    version: SCALP_V5_VERSION,
+    version: SCALP_RESEARCH_VERSION,
     classifierVersion: params.classifierVersion,
     evaluatedAtMs: params.evaluatedAtMs,
     holdoutFromMs: params.holdoutFromMs,
@@ -424,7 +424,7 @@ export function resolveScalpResearchEntryBlock(params: {
 // the full 12 weeks of candles.
 //
 // Contract: existing.holdoutToMs MUST equal newHoldoutToMs - ONE_WEEK_MS,
-// and existing.version MUST be the current SCALP_V5_VERSION. Callers are
+// and existing.version MUST be the current SCALP_RESEARCH_VERSION. Callers are
 // responsible for validating these (else the per-week arrays don't align).
 export function mergeIncrementalCellEvidence(params: {
   existing: ScalpResearchCellEvidence;
@@ -522,7 +522,7 @@ export function mergeIncrementalCellEvidence(params: {
   }
 
   return {
-    version: SCALP_V5_VERSION,
+    version: SCALP_RESEARCH_VERSION,
     classifierVersion: params.classifierVersion,
     evaluatedAtMs: params.evaluatedAtMs,
     holdoutFromMs: params.newHoldoutFromMs,
@@ -538,12 +538,12 @@ export function mergeIncrementalCellEvidence(params: {
 // it overnight. We block new entries throughout Sunday UTC so trading uses
 // only freshly-validated evidence starting Monday. Existing positions are
 // not affected (this is an entry-side block only). Defaults to ON; set
-// SCALP_V5_SUNDAY_NO_TRADE=0 to disable.
+// SCALP_RESEARCH_SUNDAY_NO_TRADE=0 to disable.
 export function resolveScalpResearchSundayBlock(nowMs: number): {
   blocked: boolean;
   reasonCodes: string[];
 } {
-  const raw = String(process.env.SCALP_V5_SUNDAY_NO_TRADE ?? "").trim().toLowerCase();
+  const raw = String(process.env.SCALP_RESEARCH_SUNDAY_NO_TRADE ?? "").trim().toLowerCase();
   if (["0", "false", "no", "off"].includes(raw)) {
     return { blocked: false, reasonCodes: [] };
   }

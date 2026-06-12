@@ -7,10 +7,10 @@
 // Only promotion direction is automated. We never auto-demote here. The
 // existing v2 execute/reconcile engine remains responsible for live order
 // handling, while the v5 live entry gate blocks new entries on stale or
-// failing v5 evidence. v5-owned live rows bypass SCALP_V2_LIVE_ENABLED;
+// failing v5 evidence. v5-owned live rows bypass SCALP_COMPOSER_LIVE_ENABLED;
 // explicit execute dryRun=true still prevents live orders.
 //
-// Honors SCALP_V5_AUTO_PROMOTE_ENABLED — set to "0"/"false"/"off" to
+// Honors SCALP_RESEARCH_AUTO_PROMOTE_ENABLED — set to "0"/"false"/"off" to
 // disable without redeploy.
 //
 // Query params for tuning the strict criteria (defaults shown):
@@ -79,7 +79,7 @@ function parseFloatBounded(
 }
 
 function isAutoPromoteEnabledByEnv(): boolean {
-  const raw = String(process.env.SCALP_V5_AUTO_PROMOTE_ENABLED ?? "").trim().toLowerCase();
+  const raw = String(process.env.SCALP_RESEARCH_AUTO_PROMOTE_ENABLED ?? "").trim().toLowerCase();
   if (!raw) return true; // default ON when env unset
   return !["0", "false", "no", "off"].includes(raw);
 }
@@ -121,7 +121,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(200).json({
       ok: true,
       skipped: true,
-      reason: "SCALP_V5_AUTO_PROMOTE_ENABLED is off",
+      reason: "SCALP_RESEARCH_AUTO_PROMOTE_ENABLED is off",
       durationMs: Date.now() - startedAt,
     });
   }

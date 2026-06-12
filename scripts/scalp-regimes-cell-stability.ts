@@ -27,7 +27,7 @@ process.env.SCALP_PG_USE_HTTP = "1";
 
 import { scalpPrisma } from "../lib/scalp/pg/client";
 import { sql } from "../lib/scalp/pg/sql";
-import { SCALP_V4_CLASSIFIER_VERSION } from "../lib/scalp/regimes/classifier";
+import { SCALP_REGIME_CLASSIFIER_VERSION } from "../lib/scalp/regimes/classifier";
 
 interface CellSplit {
   deploymentId: string;
@@ -77,7 +77,7 @@ function fmtNum(v: number, digits = 4): string {
 
 (async () => {
   const db = scalpPrisma();
-  const classifierVersion = SCALP_V4_CLASSIFIER_VERSION;
+  const classifierVersion = SCALP_REGIME_CLASSIFIER_VERSION;
 
   // One row per (deployment_id, cell_id) with the per-window expectancy array.
   // Filter out rows synthesized from envelope (those don't have real

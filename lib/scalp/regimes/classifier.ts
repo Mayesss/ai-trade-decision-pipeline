@@ -1,5 +1,5 @@
 import {
-  SCALP_V4_ONE_WEEK_MS,
+  SCALP_REGIME_ONE_WEEK_MS,
   startOfUtcWeekMondayMs,
   validityWeekStartFromCompletedWeekMs,
 } from "./week";
@@ -17,7 +17,7 @@ import type {
   ScalpRegimeWeeklyBar,
 } from "./types";
 
-export const SCALP_V4_CLASSIFIER_VERSION = "scalp_v4_macro_weekly_r1";
+export const SCALP_REGIME_CLASSIFIER_VERSION = "scalp_v4_macro_weekly_r1";
 
 const DEFAULTS = {
   minVolLookbackWeeks: 26,
@@ -166,7 +166,7 @@ function resolveTrendAxis(bars: ScalpRegimeWeeklyBar[], idx: number, opts: typeo
 }
 
 function weeklyDirection(bars: ScalpRegimeWeeklyBar[], validWeekStartMs: number, lookbackWeeks: number): number | null {
-  const completedWeekStart = validWeekStartMs - SCALP_V4_ONE_WEEK_MS;
+  const completedWeekStart = validWeekStartMs - SCALP_REGIME_ONE_WEEK_MS;
   const idx = bars.findIndex((row) => row.weekStartMs === completedWeekStart);
   if (idx < lookbackWeeks || idx < 0) return null;
   const prev = bars[idx - lookbackWeeks]!;
@@ -190,7 +190,7 @@ function resolveFxRiskAxis(validWeekStartMs: number, ctx: ScalpRegimeMarketConte
 
 function resolveCryptoRiskAxis(validWeekStartMs: number, ctx: ScalpRegimeMarketContext): { axis: ScalpRegimeRiskAxis; strength: number | null; weeks: number } {
   const btc = ctx.btcUsdt || [];
-  const completedWeekStart = validWeekStartMs - SCALP_V4_ONE_WEEK_MS;
+  const completedWeekStart = validWeekStartMs - SCALP_REGIME_ONE_WEEK_MS;
   const idx = btc.findIndex((row) => row.weekStartMs === completedWeekStart);
   if (idx < 26) return { axis: "unknown", strength: null, weeks: btc.length };
   const atrPct = atrPctSeries(btc, 14);
@@ -215,7 +215,7 @@ export function classifyScalpRegimeRawRegimes(params: {
   options?: ScalpRegimeClassifierOptions;
 }): ScalpRegimeRawRegimeLabel[] {
   const opts = { ...DEFAULTS, ...(params.options || {}) };
-  const classifierVersion = params.options?.classifierVersion || SCALP_V4_CLASSIFIER_VERSION;
+  const classifierVersion = params.options?.classifierVersion || SCALP_REGIME_CLASSIFIER_VERSION;
   const bars = (params.weeklyBars || []).slice().sort((a, b) => a.weekStartMs - b.weekStartMs);
   const atrPct = atrPctSeries(bars, 14);
   const out: ScalpRegimeRawRegimeLabel[] = [];

@@ -144,11 +144,11 @@ test('V3 stale news blackout fail-closes recurring tier-1 window and otherwise f
 
 test('V3 drift monitor flags live expectancy below 50 percent after sample threshold', () => {
     const previous = {
-        trades: process.env.SCALP_V2_V3_DRIFT_MIN_TRADES,
-        weeks: process.env.SCALP_V2_V3_DRIFT_MIN_WEEKS,
+        trades: process.env.SCALP_EVIDENCE_DRIFT_MIN_TRADES,
+        weeks: process.env.SCALP_EVIDENCE_DRIFT_MIN_WEEKS,
     };
-    process.env.SCALP_V2_V3_DRIFT_MIN_TRADES = '20';
-    process.env.SCALP_V2_V3_DRIFT_MIN_WEEKS = '2';
+    process.env.SCALP_EVIDENCE_DRIFT_MIN_TRADES = '20';
+    process.env.SCALP_EVIDENCE_DRIFT_MIN_WEEKS = '2';
     try {
         const nowMs = Date.UTC(2026, 4, 6);
         const drift = computeScalpComposerV3Drift({
@@ -189,10 +189,10 @@ test('V3 drift monitor flags live expectancy below 50 percent after sample thres
         assert.equal(drift.reason, 'drift_expectancy_ratio_below_threshold');
         assert.ok(Number(drift.expectancyRatio) < 0.5);
     } finally {
-        if (previous.trades === undefined) delete process.env.SCALP_V2_V3_DRIFT_MIN_TRADES;
-        else process.env.SCALP_V2_V3_DRIFT_MIN_TRADES = previous.trades;
-        if (previous.weeks === undefined) delete process.env.SCALP_V2_V3_DRIFT_MIN_WEEKS;
-        else process.env.SCALP_V2_V3_DRIFT_MIN_WEEKS = previous.weeks;
+        if (previous.trades === undefined) delete process.env.SCALP_EVIDENCE_DRIFT_MIN_TRADES;
+        else process.env.SCALP_EVIDENCE_DRIFT_MIN_TRADES = previous.trades;
+        if (previous.weeks === undefined) delete process.env.SCALP_EVIDENCE_DRIFT_MIN_WEEKS;
+        else process.env.SCALP_EVIDENCE_DRIFT_MIN_WEEKS = previous.weeks;
     }
 });
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
+  SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
   aggregateScalpComposerPatternEdges,
   buildScalpComposerPatternKey,
   selectScalpComposerPatternRepresentativeCandidates,
@@ -133,10 +133,10 @@ test("aggregateScalpComposerPatternEdges labels stage-C-passed survivor-only evi
     trades: [trade("EURUSD", Date.UTC(2026, 0, 1, 8), 1, 1)],
     candidateCount: 1,
     representativeCandidateCount: 1,
-    populationScope: SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
+    populationScope: SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED,
   });
 
-  assert.equal(edge.populationScope, SCALP_V2_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED);
+  assert.equal(edge.populationScope, SCALP_COMPOSER_PATTERN_EVIDENCE_POPULATION_STAGE_C_PASSED);
   assert.equal(edge.scoreJson.survivorOnly, true);
   assert.match(String(edge.scoreJson.warning), /Survivor-only/);
 });

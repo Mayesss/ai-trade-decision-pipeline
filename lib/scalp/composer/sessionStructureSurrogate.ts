@@ -28,14 +28,14 @@ export function resolveSessionStructureSurrogateConfig(): SessionStructureSurrog
     // pass rates, so skip/prioritise would act on bad signal. Re-enable only
     // once the prior is recency-weighted and skip decisions are backtested
     // against held-out windows. See [[project_surrogate_nonstationary]].
-    enabled: envBool("SCALP_V2_SURROGATE_PRESCREEN_ENABLED", false),
-    prioritize: envBool("SCALP_V2_SURROGATE_PRIORITIZE", true),
-    skipProb: Math.max(0, Math.min(1, envFiniteOr("SCALP_V2_SURROGATE_SKIP_PROB", 0.02))),
+    enabled: envBool("SCALP_COMPOSER_SURROGATE_PRESCREEN_ENABLED", false),
+    prioritize: envBool("SCALP_COMPOSER_SURROGATE_PRIORITIZE", true),
+    skipProb: Math.max(0, Math.min(1, envFiniteOr("SCALP_COMPOSER_SURROGATE_SKIP_PROB", 0.02))),
     skipMinSamples: Math.max(
       1,
-      Math.floor(envFiniteOr("SCALP_V2_SURROGATE_SKIP_MIN_SAMPLES", 40)),
+      Math.floor(envFiniteOr("SCALP_COMPOSER_SURROGATE_SKIP_MIN_SAMPLES", 40)),
     ),
-    maxSkipPct: Math.max(0, Math.min(1, envFiniteOr("SCALP_V2_SURROGATE_MAX_SKIP_PCT", 0.5))),
+    maxSkipPct: Math.max(0, Math.min(1, envFiniteOr("SCALP_COMPOSER_SURROGATE_MAX_SKIP_PCT", 0.5))),
   };
 }
 

@@ -4,7 +4,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import { requireAdminAccess } from "../../../../lib/admin";
 import { setNoStoreHeaders } from "../../../../lib/scalp/composer/http";
-import { SCALP_V4_CLASSIFIER_VERSION } from "../../../../lib/scalp/regimes";
+import { SCALP_REGIME_CLASSIFIER_VERSION } from "../../../../lib/scalp/regimes";
 import { scalpPrisma } from "../../../../lib/scalp/pg/client";
 import { sql } from "../../../../lib/scalp/pg/sql";
 
@@ -28,7 +28,7 @@ function isCloseReason(reasonCodes: string[]): boolean {
     "TRADE_EXIT_STOP_HIT",
     "TRADE_EXIT_TP_HIT",
     "TRADE_EXIT_TIME_STOP",
-    "SCALP_V2_RECONCILE_CLOSE",
+    "SCALP_COMPOSER_RECONCILE_CLOSE",
     "BROKER_OWNED_POSITION_NOT_FOUND_MARK_DONE",
   ]);
 }
@@ -46,7 +46,7 @@ function labelLedgerClose(row: { closeType: string; reasonCodes: string[] }): st
   if (hasAnyReason(reasonCodes, ["TRADE_EXIT_TIME_STOP"])) {
     return "time stop";
   }
-  if (hasAnyReason(reasonCodes, ["TRADE_EXIT_TP_HIT", "SCALP_V2_RECONCILE_TP"])) {
+  if (hasAnyReason(reasonCodes, ["TRADE_EXIT_TP_HIT", "SCALP_COMPOSER_RECONCILE_TP"])) {
     return "take profit";
   }
   if (
@@ -75,7 +75,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   setNoStoreHeaders(res);
 
   try {
-    const classifierVersion = SCALP_V4_CLASSIFIER_VERSION;
+    const classifierVersion = SCALP_REGIME_CLASSIFIER_VERSION;
     const db = scalpPrisma();
 
     const [walkforwardRows, transitionRows, journalRows, ledgerRows, dailyRows] = await Promise.all([

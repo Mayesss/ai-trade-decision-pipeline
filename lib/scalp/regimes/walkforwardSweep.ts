@@ -12,7 +12,7 @@ import {
   assessScalpRegimeCandleCoverage,
   ensureScalpRegimeCandleCoverage,
 } from "./candleCoverage";
-import { SCALP_V4_CLASSIFIER_VERSION } from "./classifier";
+import { SCALP_REGIME_CLASSIFIER_VERSION } from "./classifier";
 import {
   claimScalpRegimeWalkforwardDeployment,
   listScalpRegimeResearchCandidates,
@@ -130,12 +130,12 @@ function evictOldestCandles(
 export async function runScalpRegimeWalkforwardSweep(
   options: ScalpRegimeWalkforwardSweepOptions = {},
 ): Promise<ScalpRegimeWalkforwardSweepResult> {
-  const classifierVersion = options.classifierVersion || SCALP_V4_CLASSIFIER_VERSION;
+  const classifierVersion = options.classifierVersion || SCALP_REGIME_CLASSIFIER_VERSION;
   const effectiveTrials = Math.max(
     1,
     Math.floor(
       Number(
-        options.effectiveTrials ?? process.env.SCALP_V4_EFFECTIVE_TRIALS ?? 2_500_000,
+        options.effectiveTrials ?? process.env.SCALP_REGIME_EFFECTIVE_TRIALS ?? 2_500_000,
       ),
     ),
   );
@@ -151,7 +151,7 @@ export async function runScalpRegimeWalkforwardSweep(
     0,
     Math.floor(
       options.maxCandidatesPerCall ??
-        Number(process.env.SCALP_V4_WALKFORWARD_INLINE_MAX_PER_RUN ?? 5),
+        Number(process.env.SCALP_REGIME_WALKFORWARD_INLINE_MAX_PER_RUN ?? 5),
     ),
   );
   // Top-N pre-filter: candidates are sorted by stage-C netR DESC in
@@ -159,8 +159,8 @@ export async function runScalpRegimeWalkforwardSweep(
   // restricts walk-forward to the top-N candidates. With 0% pass rate observed
   // in the bottom half of the stage-C distribution, this lets us focus compute
   // on the candidates most likely to have edge.
-  const envTopN = Number(process.env.SCALP_V4_WALKFORWARD_TOP_N);
-  const envCandidateFetch = Number(process.env.SCALP_V4_WALKFORWARD_CANDIDATE_FETCH_LIMIT);
+  const envTopN = Number(process.env.SCALP_REGIME_WALKFORWARD_TOP_N);
+  const envCandidateFetch = Number(process.env.SCALP_REGIME_WALKFORWARD_CANDIDATE_FETCH_LIMIT);
   const candidateFetchLimit = Math.max(
     1,
     Math.floor(
@@ -177,7 +177,7 @@ export async function runScalpRegimeWalkforwardSweep(
     1,
     Math.floor(
       options.candleCacheSoftCap ??
-        Number(process.env.SCALP_V4_WALKFORWARD_CANDLE_CACHE_SOFT_CAP ?? 16),
+        Number(process.env.SCALP_REGIME_WALKFORWARD_CANDLE_CACHE_SOFT_CAP ?? 16),
     ),
   );
   const autoBackfillCandles = options.autoBackfillCandles !== false;
@@ -187,7 +187,7 @@ export async function runScalpRegimeWalkforwardSweep(
       1,
       Number(
         options.minCandleCoverageRatio ??
-          process.env.SCALP_V4_WALKFORWARD_MIN_CANDLE_COVERAGE_RATIO ??
+          process.env.SCALP_REGIME_WALKFORWARD_MIN_CANDLE_COVERAGE_RATIO ??
           0.65,
       ),
     ),
@@ -278,7 +278,7 @@ export async function runScalpRegimeWalkforwardSweep(
   const clusterCap = Math.max(
     0,
     Math.floor(
-      Number(options.maxWalkforwardsPerCluster ?? process.env.SCALP_V4_WALKFORWARD_MAX_PER_CLUSTER ?? 2),
+      Number(options.maxWalkforwardsPerCluster ?? process.env.SCALP_REGIME_WALKFORWARD_MAX_PER_CLUSTER ?? 2),
     ),
   );
   const clusterCounts =

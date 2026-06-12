@@ -6,7 +6,7 @@
 // positive-window pct. Future windows are aggregated INCREMENTALLY on top.
 import {
   initIncrementalStateFromEnvelope,
-  SCALP_V4_CLASSIFIER_VERSION,
+  SCALP_REGIME_CLASSIFIER_VERSION,
   type ScalpRegimeEnvelope,
 } from "../lib/scalp/regimes";
 import { scalpPrisma } from "../lib/scalp/pg/client";
@@ -31,7 +31,7 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const dryRun = Boolean(args.dryRun);
-  const classifierVersion = String(args.classifierVersion || SCALP_V4_CLASSIFIER_VERSION);
+  const classifierVersion = String(args.classifierVersion || SCALP_REGIME_CLASSIFIER_VERSION);
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{
     id: string;

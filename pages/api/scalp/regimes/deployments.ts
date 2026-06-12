@@ -8,7 +8,7 @@ import { setNoStoreHeaders } from "../../../../lib/scalp/composer/http";
 import {
   classifyScalpRegimeDeploymentStatus,
   resolveScalpRegimeFailClosedStaleMs,
-  SCALP_V4_CLASSIFIER_VERSION,
+  SCALP_REGIME_CLASSIFIER_VERSION,
   startOfUtcWeekMondayMs,
   type ScalpRegimeDeploymentStatus,
 } from "../../../../lib/scalp/regimes";
@@ -27,7 +27,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   setNoStoreHeaders(res);
 
   try {
-    const classifierVersion = SCALP_V4_CLASSIFIER_VERSION;
+    const classifierVersion = SCALP_REGIME_CLASSIFIER_VERSION;
     const nowMs = Date.now();
 
     // Deployment list (compact). Filter to enabled OR envelope-bearing.

@@ -21,7 +21,7 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 // (`minCellWindows=12`, `minCellTrades=30`). `positiveWindowPct=70` kept
 // because the distribution is bimodal — ~15% of cells exceed 70% positive
 // windows and the rest cluster well below.
-export const DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS: ScalpRegimeEnvelopeThresholds = {
+export const DEFAULT_SCALP_REGIME_ENVELOPE_THRESHOLDS: ScalpRegimeEnvelopeThresholds = {
   minCellWindows: 12,
   minCellTrades: 30,
   minDistinctEpochs: 1,
@@ -44,17 +44,17 @@ function envNum(name: string, fallback: number): number {
 
 export function resolveScalpRegimeEnvelopeThresholds(): ScalpRegimeEnvelopeThresholds {
   return {
-    minCellWindows: envNum("SCALP_V4_MIN_CELL_WINDOWS", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.minCellWindows),
-    minCellTrades: envNum("SCALP_V4_MIN_CELL_TRADES", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.minCellTrades),
-    minDistinctEpochs: envNum("SCALP_V4_MIN_DISTINCT_EPOCHS", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.minDistinctEpochs),
-    minPositiveWindowPct: envNum("SCALP_V4_MIN_POSITIVE_WINDOW_PCT", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.minPositiveWindowPct),
-    minBootstrapP05ExpectancyR: envNum("SCALP_V4_MIN_BOOTSTRAP_P05_EXPECTANCY_R", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.minBootstrapP05ExpectancyR),
-    relaxedPositiveWindowPct: envNum("SCALP_V4_RELAXED_POSITIVE_WINDOW_PCT", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.relaxedPositiveWindowPct),
-    relaxedBootstrapP05ExpectancyR: envNum("SCALP_V4_RELAXED_BOOTSTRAP_P05_EXPECTANCY_R", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.relaxedBootstrapP05ExpectancyR),
-    overbroadCellPassPct: envNum("SCALP_V4_OVERBROAD_CELL_PASS_PCT", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.overbroadCellPassPct),
-    overbroadMinCells: envNum("SCALP_V4_OVERBROAD_MIN_CELLS", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.overbroadMinCells),
-    bootstrapBlockWeeks: envNum("SCALP_V4_BOOTSTRAP_BLOCK_WEEKS", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.bootstrapBlockWeeks),
-    bootstrapResamples: envNum("SCALP_V4_BOOTSTRAP_RESAMPLES", DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.bootstrapResamples),
+    minCellWindows: envNum("SCALP_REGIME_MIN_CELL_WINDOWS", DEFAULT_SCALP_REGIME_ENVELOPE_THRESHOLDS.minCellWindows),
+    minCellTrades: envNum("SCALP_REGIME_MIN_CELL_TRADES", DEFAULT_SCALP_REGIME_ENVELOPE_THRESHOLDS.minCellTrades),
+    minDistinctEpochs: envNum("SCALP_REGIME_MIN_DISTINCT_EPOCHS", DEFAULT_SCALP_REGIME_ENVELOPE_THRESHOLDS.minDistinctEpochs),
+    minPositiveWindowPct: envNum("SCALP_REGIME_MIN_POSITIVE_WINDOW_PCT", DEFAULT_SCALP_REGIME_ENVELOPE_THRESHOLDS.minPositiveWindowPct),
+    minBootstrapP05ExpectancyR: envNum("SCALP_REGIME_MIN_BOOTSTRAP_P05_EXPECTANCY_R", DEFAULT_SCALP_REGIME_ENVELOPE_THRESHOLDS.minBootstrapP05ExpectancyR),
+    relaxedPositiveWindowPct: envNum("SCALP_REGIME_RELAXED_POSITIVE_WINDOW_PCT", DEFAULT_SCALP_REGIME_ENVELOPE_THRESHOLDS.relaxedPositiveWindowPct),
+    relaxedBootstrapP05ExpectancyR: envNum("SCALP_REGIME_RELAXED_BOOTSTRAP_P05_EXPECTANCY_R", DEFAULT_SCALP_REGIME_ENVELOPE_THRESHOLDS.relaxedBootstrapP05ExpectancyR),
+    overbroadCellPassPct: envNum("SCALP_REGIME_OVERBROAD_CELL_PASS_PCT", DEFAULT_SCALP_REGIME_ENVELOPE_THRESHOLDS.overbroadCellPassPct),
+    overbroadMinCells: envNum("SCALP_REGIME_OVERBROAD_MIN_CELLS", DEFAULT_SCALP_REGIME_ENVELOPE_THRESHOLDS.overbroadMinCells),
+    bootstrapBlockWeeks: envNum("SCALP_REGIME_BOOTSTRAP_BLOCK_WEEKS", DEFAULT_SCALP_REGIME_ENVELOPE_THRESHOLDS.bootstrapBlockWeeks),
+    bootstrapResamples: envNum("SCALP_REGIME_BOOTSTRAP_RESAMPLES", DEFAULT_SCALP_REGIME_ENVELOPE_THRESHOLDS.bootstrapResamples),
   };
 }
 
@@ -168,8 +168,8 @@ export function bootstrapP05Expectancy(params: {
 }): number | null {
   const values = (params.windowExpectancyR || []).filter(Number.isFinite);
   if (values.length <= 0) return null;
-  const blockWeeks = Math.max(1, Math.floor(params.blockWeeks || DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.bootstrapBlockWeeks));
-  const resamples = Math.max(1, Math.floor(params.resamples || DEFAULT_SCALP_V4_ENVELOPE_THRESHOLDS.bootstrapResamples));
+  const blockWeeks = Math.max(1, Math.floor(params.blockWeeks || DEFAULT_SCALP_REGIME_ENVELOPE_THRESHOLDS.bootstrapBlockWeeks));
+  const resamples = Math.max(1, Math.floor(params.resamples || DEFAULT_SCALP_REGIME_ENVELOPE_THRESHOLDS.bootstrapResamples));
   const rand = seededRand(params.seed || JSON.stringify(values));
   const sampledMeans: number[] = [];
   for (let i = 0; i < resamples; i += 1) {

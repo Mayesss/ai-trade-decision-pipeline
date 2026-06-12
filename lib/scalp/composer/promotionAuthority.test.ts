@@ -37,20 +37,20 @@ async function withEnvAsync<T>(
   }
 }
 
-test("SCALP_V2_PROMOTE_ENABLED defaults to false", () => {
-  withEnv("SCALP_V2_PROMOTE_ENABLED", undefined, () => {
+test("SCALP_COMPOSER_PROMOTE_ENABLED defaults to false", () => {
+  withEnv("SCALP_COMPOSER_PROMOTE_ENABLED", undefined, () => {
     assert.equal(isScalpComposerPromoteEnabled(), false);
   });
 });
 
-test("SCALP_V2_PROMOTE_ENABLED=true restores the legacy promote path", () => {
-  withEnv("SCALP_V2_PROMOTE_ENABLED", "true", () => {
+test("SCALP_COMPOSER_PROMOTE_ENABLED=true restores the legacy promote path", () => {
+  withEnv("SCALP_COMPOSER_PROMOTE_ENABLED", "true", () => {
     assert.equal(isScalpComposerPromoteEnabled(), true);
   });
 });
 
 test("runScalpComposerPromoteJob skips before taking the v2 promote lock by default", async () => {
-  await withEnvAsync("SCALP_V2_PROMOTE_ENABLED", undefined, async () => {
+  await withEnvAsync("SCALP_COMPOSER_PROMOTE_ENABLED", undefined, async () => {
     const job = await runScalpComposerPromoteJob();
     assert.equal(job.ok, true);
     assert.equal(job.busy, false);
@@ -66,7 +66,7 @@ test("isScalpResearchOwnedPromotionGate detects v5-owned promotion markers", () 
   assert.equal(isScalpResearchOwnedPromotionGate(null), false);
 });
 
-test("v5-owned live deployments bypass SCALP_V2_LIVE_ENABLED in execute dry-run resolution", () => {
+test("v5-owned live deployments bypass SCALP_COMPOSER_LIVE_ENABLED in execute dry-run resolution", () => {
   assert.equal(
     resolveScalpComposerExecuteDryRunForDeployment({
       effectiveDryRun: false,

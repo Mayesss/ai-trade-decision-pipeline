@@ -226,7 +226,7 @@ export default async function handler(
   const debug = parseBool(req.query.debug, false);
   const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 40);
   const maxSelfHopsCap = envIntBounded(
-    "SCALP_V2_LOAD_CANDLES_MAX_SELF_HOPS",
+    "SCALP_COMPOSER_LOAD_CANDLES_MAX_SELF_HOPS",
     80,
     0,
     120,
@@ -236,19 +236,19 @@ export default async function handler(
   // chain at offset ~20 every cron tick. Vercel function `maxDuration` is
   // 800 s, so 60 s is well within bounds.
   const routeTimeoutMs = envIntBounded(
-    "SCALP_V2_LOAD_CANDLES_ROUTE_TIMEOUT_MS",
+    "SCALP_COMPOSER_LOAD_CANDLES_ROUTE_TIMEOUT_MS",
     60_000,
     1_000,
     120_000,
   );
   const selfRecallTimeoutMs = envIntBounded(
-    "SCALP_V2_LOAD_CANDLES_SELF_RECALL_TIMEOUT_MS",
+    "SCALP_COMPOSER_LOAD_CANDLES_SELF_RECALL_TIMEOUT_MS",
     1_500,
     300,
     20_000,
   );
   const downstreamInvokeTimeoutMs = envIntBounded(
-    "SCALP_V2_LOAD_CANDLES_DOWNSTREAM_TIMEOUT_MS",
+    "SCALP_COMPOSER_LOAD_CANDLES_DOWNSTREAM_TIMEOUT_MS",
     1_500,
     300,
     20_000,

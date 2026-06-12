@@ -7,7 +7,7 @@ import {
   evaluateScalpResearchPromotionEvidence,
   resolveScalpResearchEntryBlock,
   resolveScalpResearchEvidenceFreshness,
-  SCALP_V5_VERSION,
+  SCALP_RESEARCH_VERSION,
   tagTradesWithCells,
 } from "./index";
 import {
@@ -106,7 +106,7 @@ test("buildScalpResearchCellEvidence aggregates per cell and marks eligible cell
     holdoutToMs: ANCHOR + 12 * WEEK_MS,
     minTradesPerCell: 3,
   });
-  assert.equal(evidence.version, SCALP_V5_VERSION);
+  assert.equal(evidence.version, SCALP_RESEARCH_VERSION);
   assert.equal(evidence.cells[CELL_A]?.trades, 3);
   assert.equal(evidence.cells[CELL_A]?.netR, 1.5);
   assert.equal(evidence.cells[CELL_A]?.expectancyR.toFixed(3), "0.500");
@@ -180,7 +180,7 @@ test("buildScalpResearchCellEvidence respects the minTradesPerCell threshold", (
 
 test("resolveScalpResearchEntryBlock allows when current cell is profitable", () => {
   const evidence = {
-    version: SCALP_V5_VERSION,
+    version: SCALP_RESEARCH_VERSION,
     classifierVersion: "scalp_v4_macro_weekly_r1",
     evaluatedAtMs: ANCHOR,
     holdoutFromMs: ANCHOR - 12 * WEEK_MS,
@@ -209,7 +209,7 @@ test("resolveScalpResearchEntryBlock allows when current cell is profitable", ()
 
 test("resolveScalpResearchEntryBlock allows positive thin cell for consistency exception rows", () => {
   const evidence = {
-    version: SCALP_V5_VERSION,
+    version: SCALP_RESEARCH_VERSION,
     classifierVersion: "scalp_v4_macro_weekly_r1",
     evaluatedAtMs: ANCHOR,
     holdoutFromMs: ANCHOR - 12 * WEEK_MS,
@@ -247,7 +247,7 @@ test("resolveScalpResearchEntryBlock allows positive thin cell for consistency e
 
 test("resolveScalpResearchEntryBlock blocks when current cell is unprofitable (hard gate)", () => {
   const evidence = {
-    version: SCALP_V5_VERSION,
+    version: SCALP_RESEARCH_VERSION,
     classifierVersion: "scalp_v4_macro_weekly_r1",
     evaluatedAtMs: ANCHOR,
     holdoutFromMs: ANCHOR - 12 * WEEK_MS,
@@ -272,7 +272,7 @@ test("resolveScalpResearchEntryBlock blocks when current cell is unprofitable (h
 
 test("resolveScalpResearchEntryBlock soft-blocks (shadow) when hard gate is off", () => {
   const evidence = {
-    version: SCALP_V5_VERSION,
+    version: SCALP_RESEARCH_VERSION,
     classifierVersion: "scalp_v4_macro_weekly_r1",
     evaluatedAtMs: ANCHOR,
     holdoutFromMs: ANCHOR - 12 * WEEK_MS,
@@ -310,7 +310,7 @@ test("resolveScalpResearchEntryBlock does not block when evidence is missing (ev
 
 test("resolveScalpResearchEntryBlock blocks when regime data is stale", () => {
   const evidence = {
-    version: SCALP_V5_VERSION,
+    version: SCALP_RESEARCH_VERSION,
     classifierVersion: "scalp_v4_macro_weekly_r1",
     evaluatedAtMs: ANCHOR,
     holdoutFromMs: ANCHOR - 12 * WEEK_MS,
@@ -354,7 +354,7 @@ function promotionEvidence(params: {
   const trades = params.trades ?? Math.max(1, params.weekly.length * 5);
   const netR = params.weekly.reduce((acc, value) => acc + value, 0);
   return {
-    version: SCALP_V5_VERSION,
+    version: SCALP_RESEARCH_VERSION,
     classifierVersion: "scalp_v4_macro_weekly_r1",
     evaluatedAtMs: ANCHOR,
     holdoutFromMs: ANCHOR - 12 * WEEK_MS,

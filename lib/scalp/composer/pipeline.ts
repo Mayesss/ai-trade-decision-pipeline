@@ -405,14 +405,14 @@ function resolveScalpComposerScopePrunePolicy(): ScalpComposerScopePrunePolicy {
     Math.min(
       180,
       toPositiveInt(
-        process.env.SCALP_V2_SCOPE_PRUNE_TTL_DAYS,
+        process.env.SCALP_COMPOSER_SCOPE_PRUNE_TTL_DAYS,
         DEFAULT_SCOPE_PRUNE_TTL_DAYS,
         180,
       ),
     ),
   );
   return {
-    enabled: envBool("SCALP_V2_SCOPE_PRUNE_ENABLED", true),
+    enabled: envBool("SCALP_COMPOSER_SCOPE_PRUNE_ENABLED", true),
     ttlMs: ttlDays * ONE_DAY_MS,
     ttlDays,
     minCandidatesPerWindow: Math.max(
@@ -420,7 +420,7 @@ function resolveScalpComposerScopePrunePolicy(): ScalpComposerScopePrunePolicy {
       Math.min(
         1_000,
         toPositiveInt(
-          process.env.SCALP_V2_SCOPE_PRUNE_MIN_CANDIDATES_PER_WINDOW,
+          process.env.SCALP_COMPOSER_SCOPE_PRUNE_MIN_CANDIDATES_PER_WINDOW,
           60,
           1_000,
         ),
@@ -430,14 +430,14 @@ function resolveScalpComposerScopePrunePolicy(): ScalpComposerScopePrunePolicy {
       0,
       Math.min(
         100,
-        toFinite(process.env.SCALP_V2_SCOPE_PRUNE_MIN_STAGE_A_FAIL_PCT, 85),
+        toFinite(process.env.SCALP_COMPOSER_SCOPE_PRUNE_MIN_STAGE_A_FAIL_PCT, 85),
       ),
     ),
     requiredWindows: Math.max(
       2,
       Math.min(
         4,
-        toPositiveInt(process.env.SCALP_V2_SCOPE_PRUNE_REQUIRED_WINDOWS, 2, 4),
+        toPositiveInt(process.env.SCALP_COMPOSER_SCOPE_PRUNE_REQUIRED_WINDOWS, 2, 4),
       ),
     ),
   };
@@ -858,7 +858,7 @@ function envBool(name: string, fallback: boolean): boolean {
 }
 
 export function isScalpComposerPromoteEnabled(): boolean {
-  return envBool("SCALP_V2_PROMOTE_ENABLED", false);
+  return envBool("SCALP_COMPOSER_PROMOTE_ENABLED", false);
 }
 
 export function isScalpResearchOwnedPromotionGate(value: unknown): boolean {
@@ -926,7 +926,7 @@ function resolvePromotionPolicy(): ScalpComposerPromotionPolicy {
     12,
     Math.min(
       52,
-      toPositiveInt(process.env.SCALP_V2_PROMOTION_MIN_COMPLETED_WEEKS, 12, 52),
+      toPositiveInt(process.env.SCALP_COMPOSER_PROMOTION_MIN_COMPLETED_WEEKS, 12, 52),
     ),
   );
   const minTradesPerWeek = Math.max(
@@ -935,7 +935,7 @@ function resolvePromotionPolicy(): ScalpComposerPromotionPolicy {
       500,
       Math.floor(
         toFinite(
-          process.env.SCALP_V2_PROMOTION_MIN_TRADES_PER_WEEK,
+          process.env.SCALP_COMPOSER_PROMOTION_MIN_TRADES_PER_WEEK,
           2,
         ),
       ),
@@ -949,7 +949,7 @@ function resolvePromotionPolicy(): ScalpComposerPromotionPolicy {
       0,
       Math.floor(
         toFinite(
-          process.env.SCALP_V2_PROMOTION_MIN_TOTAL_TRADES,
+          process.env.SCALP_COMPOSER_PROMOTION_MIN_TOTAL_TRADES,
           minTotalTradesDefault,
         ),
       ),
@@ -958,30 +958,30 @@ function resolvePromotionPolicy(): ScalpComposerPromotionPolicy {
       2,
       Math.min(
         104,
-        toPositiveInt(process.env.SCALP_V2_PROMOTION_MIN_SLICES, 8, 104),
+        toPositiveInt(process.env.SCALP_COMPOSER_PROMOTION_MIN_SLICES, 8, 104),
       ),
     ),
     minProfitablePct: toBoundedPercent(
-      process.env.SCALP_V2_PROMOTION_MIN_PROFITABLE_PCT,
+      process.env.SCALP_COMPOSER_PROMOTION_MIN_PROFITABLE_PCT,
       55,
     ),
     minMedianExpectancyR: toFinite(
-      process.env.SCALP_V2_PROMOTION_MIN_MEDIAN_EXPECTANCY_R,
+      process.env.SCALP_COMPOSER_PROMOTION_MIN_MEDIAN_EXPECTANCY_R,
       0.02,
     ),
     minP25ExpectancyR: toFinite(
-      process.env.SCALP_V2_PROMOTION_MIN_P25_EXPECTANCY_R,
+      process.env.SCALP_COMPOSER_PROMOTION_MIN_P25_EXPECTANCY_R,
       -0.02,
     ),
     minWorstNetR: toFinite(
-      process.env.SCALP_V2_PROMOTION_MIN_WORST_NET_R,
+      process.env.SCALP_COMPOSER_PROMOTION_MIN_WORST_NET_R,
       -1.5,
     ),
     maxTopWeekPnlConcentrationPct: toBoundedPercent(
-      process.env.SCALP_V2_PROMOTION_MAX_TOP_WEEK_PNL_CONCENTRATION_PCT,
+      process.env.SCALP_COMPOSER_PROMOTION_MAX_TOP_WEEK_PNL_CONCENTRATION_PCT,
       55,
     ),
-    minFourWeekNetR: toFinite(process.env.SCALP_V2_PROMOTION_MIN_4W_NET_R, 4),
+    minFourWeekNetR: toFinite(process.env.SCALP_COMPOSER_PROMOTION_MIN_4W_NET_R, 4),
     // Stage-C statistical-significance gate: require the 95% one-sided lower
     // confidence bound of per-trade expectancy (meanR - 1.64*stderrR, computed
     // in computeScalpComposerV3EdgeScore) to clear this floor before a candidate can
@@ -990,7 +990,7 @@ function resolvePromotionPolicy(): ScalpComposerPromotionPolicy {
     // worst-case edge is tolerated) BUT only when backed by the higher trade
     // count below, so the looser bound rests on a more reliable estimate.
     minStageCLowerBoundR: toFinite(
-      process.env.SCALP_V2_PROMOTION_MIN_STAGE_C_LOWER_BOUND_R,
+      process.env.SCALP_COMPOSER_PROMOTION_MIN_STAGE_C_LOWER_BOUND_R,
       -0.05,
     ),
     // Trade-count floor coupled to the relaxed lower-bound gate above. Stage C's
@@ -999,21 +999,21 @@ function resolvePromotionPolicy(): ScalpComposerPromotionPolicy {
     minStageCTradesForPromotion: Math.max(
       0,
       Math.floor(
-        toFinite(process.env.SCALP_V2_PROMOTION_MIN_STAGE_C_TRADES, 40),
+        toFinite(process.env.SCALP_COMPOSER_PROMOTION_MIN_STAGE_C_TRADES, 40),
       ),
     ),
     fourWeekGroupCount: Math.max(
       1,
       Math.min(
         13,
-        toPositiveInt(process.env.SCALP_V2_PROMOTION_4W_GROUP_COUNT, 3, 13),
+        toPositiveInt(process.env.SCALP_COMPOSER_PROMOTION_4W_GROUP_COUNT, 3, 13),
       ),
     ),
     fourWeekGroupSize: Math.max(
       2,
       Math.min(
         8,
-        toPositiveInt(process.env.SCALP_V2_PROMOTION_4W_GROUP_SIZE, 4, 8),
+        toPositiveInt(process.env.SCALP_COMPOSER_PROMOTION_4W_GROUP_SIZE, 4, 8),
       ),
     ),
     exactLoserSuspendMs:
@@ -1022,7 +1022,7 @@ function resolvePromotionPolicy(): ScalpComposerPromotionPolicy {
         Math.min(
           52,
           toPositiveInt(
-            process.env.SCALP_V2_PROMOTION_EXACT_LOSER_SUSPEND_WEEKS,
+            process.env.SCALP_COMPOSER_PROMOTION_EXACT_LOSER_SUSPEND_WEEKS,
             12,
             52,
           ),
@@ -1034,7 +1034,7 @@ function resolvePromotionPolicy(): ScalpComposerPromotionPolicy {
         Math.min(
           52,
           toPositiveInt(
-            process.env.SCALP_V2_PROMOTION_NEIGHBOR_SUSPEND_WEEKS,
+            process.env.SCALP_COMPOSER_PROMOTION_NEIGHBOR_SUSPEND_WEEKS,
             8,
             52,
           ),
@@ -1045,7 +1045,7 @@ function resolvePromotionPolicy(): ScalpComposerPromotionPolicy {
         7,
         Math.min(
           365,
-          toPositiveInt(process.env.SCALP_V2_PROMOTION_RETIRE_DAYS, 180, 365),
+          toPositiveInt(process.env.SCALP_COMPOSER_PROMOTION_RETIRE_DAYS, 180, 365),
         ),
       ) * ONE_DAY_MS,
     retireOnSuspensionCount: Math.max(
@@ -1053,7 +1053,7 @@ function resolvePromotionPolicy(): ScalpComposerPromotionPolicy {
       Math.min(
         10,
         toPositiveInt(
-          process.env.SCALP_V2_PROMOTION_RETIRE_ON_SUSPENSION_COUNT,
+          process.env.SCALP_COMPOSER_PROMOTION_RETIRE_ON_SUSPENSION_COUNT,
           3,
           10,
         ),
@@ -1064,12 +1064,12 @@ function resolvePromotionPolicy(): ScalpComposerPromotionPolicy {
 
 function resolveWorkerPolicy(): ScalpComposerWorkerPolicy {
   return {
-    allowSunday: envBool("SCALP_V2_ALLOW_SUNDAY_WORKER", false),
+    allowSunday: envBool("SCALP_COMPOSER_ALLOW_SUNDAY_WORKER", false),
     maxBatchSize: Math.max(
       1,
       Math.min(
         600,
-        toPositiveInt(process.env.SCALP_V2_WORKER_BATCH_SIZE, 12, 600),
+        toPositiveInt(process.env.SCALP_COMPOSER_WORKER_BATCH_SIZE, 12, 600),
       ),
     ),
     maxCandidatesPerSession: Math.max(
@@ -1077,7 +1077,7 @@ function resolveWorkerPolicy(): ScalpComposerWorkerPolicy {
       Math.min(
         128,
         toPositiveInt(
-          process.env.SCALP_V2_WORKER_MAX_CANDIDATES_PER_SESSION,
+          process.env.SCALP_COMPOSER_WORKER_MAX_CANDIDATES_PER_SESSION,
           24,
           128,
         ),
@@ -1091,18 +1091,18 @@ function resolveWorkerPolicy(): ScalpComposerWorkerPolicy {
         Math.min(
           10_000,
           Math.floor(
-            toFinite(process.env.SCALP_V2_WORKER_STAGE_A_MIN_TRADES, 4),
+            toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_A_MIN_TRADES, 4),
           ),
         ),
       ),
-      minNetR: toFinite(process.env.SCALP_V2_WORKER_STAGE_A_MIN_NET_R, 0.2),
+      minNetR: toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_A_MIN_NET_R, 0.2),
       minConsecutiveWinningWeeks: Math.max(
         0,
         Math.min(
           4,
           Math.floor(
             toFinite(
-              process.env.SCALP_V2_WORKER_STAGE_A_MIN_CONSEC_WIN_WEEKS,
+              process.env.SCALP_COMPOSER_WORKER_STAGE_A_MIN_CONSEC_WIN_WEEKS,
               1,
             ),
           ),
@@ -1110,11 +1110,11 @@ function resolveWorkerPolicy(): ScalpComposerWorkerPolicy {
       ),
       minProfitFactor: Math.max(
         0,
-        toFinite(process.env.SCALP_V2_WORKER_STAGE_A_MIN_PROFIT_FACTOR, 1.01),
+        toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_A_MIN_PROFIT_FACTOR, 1.01),
       ),
       maxDrawdownR: Math.max(
         0.1,
-        toFinite(process.env.SCALP_V2_WORKER_STAGE_A_MAX_DD_R, 8),
+        toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_A_MAX_DD_R, 8),
       ),
     },
     stageB: {
@@ -1125,18 +1125,18 @@ function resolveWorkerPolicy(): ScalpComposerWorkerPolicy {
         Math.min(
           10_000,
           Math.floor(
-            toFinite(process.env.SCALP_V2_WORKER_STAGE_B_MIN_TRADES, 14),
+            toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_B_MIN_TRADES, 14),
           ),
         ),
       ),
-      minNetR: toFinite(process.env.SCALP_V2_WORKER_STAGE_B_MIN_NET_R, 1),
+      minNetR: toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_B_MIN_NET_R, 1),
       minConsecutiveWinningWeeks: Math.max(
         0,
         Math.min(
           6,
           Math.floor(
             toFinite(
-              process.env.SCALP_V2_WORKER_STAGE_B_MIN_CONSEC_WIN_WEEKS,
+              process.env.SCALP_COMPOSER_WORKER_STAGE_B_MIN_CONSEC_WIN_WEEKS,
               3,
             ),
           ),
@@ -1144,11 +1144,11 @@ function resolveWorkerPolicy(): ScalpComposerWorkerPolicy {
       ),
       minProfitFactor: Math.max(
         0,
-        toFinite(process.env.SCALP_V2_WORKER_STAGE_B_MIN_PROFIT_FACTOR, 1.03),
+        toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_B_MIN_PROFIT_FACTOR, 1.03),
       ),
       maxDrawdownR: Math.max(
         0.1,
-        toFinite(process.env.SCALP_V2_WORKER_STAGE_B_MAX_DD_R, 10),
+        toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_B_MAX_DD_R, 10),
       ),
     },
     stageC: {
@@ -1159,18 +1159,18 @@ function resolveWorkerPolicy(): ScalpComposerWorkerPolicy {
         Math.min(
           20_000,
           Math.floor(
-            toFinite(process.env.SCALP_V2_WORKER_STAGE_C_MIN_TRADES, 24),
+            toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_C_MIN_TRADES, 24),
           ),
         ),
       ),
-      minNetR: toFinite(process.env.SCALP_V2_WORKER_STAGE_C_MIN_NET_R, 2),
+      minNetR: toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_C_MIN_NET_R, 2),
       minConsecutiveWinningWeeks: Math.max(
         0,
         Math.min(
           12,
           Math.floor(
             toFinite(
-              process.env.SCALP_V2_WORKER_STAGE_C_MIN_CONSEC_WIN_WEEKS,
+              process.env.SCALP_COMPOSER_WORKER_STAGE_C_MIN_CONSEC_WIN_WEEKS,
               4,
             ),
           ),
@@ -1178,25 +1178,25 @@ function resolveWorkerPolicy(): ScalpComposerWorkerPolicy {
       ),
       minProfitFactor: Math.max(
         0,
-        toFinite(process.env.SCALP_V2_WORKER_STAGE_C_MIN_PROFIT_FACTOR, 1.05),
+        toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_C_MIN_PROFIT_FACTOR, 1.05),
       ),
       maxDrawdownR: Math.max(
         0.1,
-        toFinite(process.env.SCALP_V2_WORKER_STAGE_C_MAX_DD_R, 12),
+        toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE_C_MAX_DD_R, 12),
       ),
     },
     minCandles: Math.max(
       120,
       Math.min(
         2_000_000,
-        toPositiveInt(process.env.SCALP_V2_WORKER_MIN_CANDLES, 8_000, 2_000_000),
+        toPositiveInt(process.env.SCALP_COMPOSER_WORKER_MIN_CANDLES, 8_000, 2_000_000),
       ),
     ),
     maxHighlightsPerRun: Math.max(
       1,
       Math.min(
         500,
-        toPositiveInt(process.env.SCALP_V2_WORKER_MAX_HIGHLIGHTS_PER_RUN, 120, 500),
+        toPositiveInt(process.env.SCALP_COMPOSER_WORKER_MAX_HIGHLIGHTS_PER_RUN, 120, 500),
       ),
     ),
     // Abort a full-stage replay this fraction of the way through if netR is
@@ -1205,23 +1205,23 @@ function resolveWorkerPolicy(): ScalpComposerWorkerPolicy {
       5,
       Math.min(
         100,
-        toPositiveInt(process.env.SCALP_V2_WORKER_EARLY_ABORT_AFTER_PCT, 35, 100),
+        toPositiveInt(process.env.SCALP_COMPOSER_WORKER_EARLY_ABORT_AFTER_PCT, 35, 100),
       ),
     ),
     earlyAbortNetRMult: Math.min(
       0,
-      toFinite(process.env.SCALP_V2_WORKER_EARLY_ABORT_NET_R_MULT, -2),
+      toFinite(process.env.SCALP_COMPOSER_WORKER_EARLY_ABORT_NET_R_MULT, -2),
     ),
     // Stage-0: a cheap freshest-N-week replay before the full stage-A replay;
     // drops clear-fails (netR < minNetR * stage0ClearFailNetRMult).
-    stage0Enabled: envBool("SCALP_V2_WORKER_STAGE0_ENABLED", true),
+    stage0Enabled: envBool("SCALP_COMPOSER_WORKER_STAGE0_ENABLED", true),
     stage0Weeks: Math.max(
       1,
-      Math.min(4, toPositiveInt(process.env.SCALP_V2_WORKER_STAGE0_WEEKS, 1, 4)),
+      Math.min(4, toPositiveInt(process.env.SCALP_COMPOSER_WORKER_STAGE0_WEEKS, 1, 4)),
     ),
     stage0ClearFailNetRMult: Math.min(
       0,
-      toFinite(process.env.SCALP_V2_WORKER_STAGE0_CLEAR_FAIL_NET_R_MULT, -2),
+      toFinite(process.env.SCALP_COMPOSER_WORKER_STAGE0_CLEAR_FAIL_NET_R_MULT, -2),
     ),
   };
 }
@@ -1241,14 +1241,14 @@ function resolveNewestWeekMinCandles(params: {
         ? 8_000
         : 4_000;
   const defaultMin = Math.min(params.workerPolicy.minCandles, defaultByCategory);
-  const categoryEnvName = `SCALP_V2_WORKER_LATEST_WEEK_MIN_CANDLES_${category.toUpperCase()}`;
+  const categoryEnvName = `SCALP_COMPOSER_WORKER_LATEST_WEEK_MIN_CANDLES_${category.toUpperCase()}`;
   return Math.max(
     120,
     Math.min(
       2_000_000,
       toPositiveInt(
         process.env[categoryEnvName] ??
-          process.env.SCALP_V2_WORKER_LATEST_WEEK_MIN_CANDLES,
+          process.env.SCALP_COMPOSER_WORKER_LATEST_WEEK_MIN_CANDLES,
         defaultMin,
         2_000_000,
       ),
@@ -1822,7 +1822,7 @@ function resolveExecuteDeploymentFreshnessGate(params: {
     Math.min(
       requiredWeeks,
       toNonNegativeInt(
-        process.env.SCALP_V2_EXECUTE_MIN_NON_ZERO_STAGE_C_WEEKS,
+        process.env.SCALP_COMPOSER_EXECUTE_MIN_NON_ZERO_STAGE_C_WEEKS,
         0,
         requiredWeeks,
       ),
@@ -2358,7 +2358,7 @@ function resolveResearchFreshnessPolicy(): ScalpComposerResearchFreshnessPolicy 
     Math.min(
       24 * 7,
       toPositiveInt(
-        process.env.SCALP_V2_RESEARCH_FRESHNESS_MAX_LAG_HOURS_BITGET,
+        process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_MAX_LAG_HOURS_BITGET,
         36,
         24 * 7,
       ),
@@ -2369,16 +2369,16 @@ function resolveResearchFreshnessPolicy(): ScalpComposerResearchFreshnessPolicy 
     Math.min(
       24 * 7,
       toPositiveInt(
-        process.env.SCALP_V2_RESEARCH_FRESHNESS_MAX_LAG_HOURS_CAPITAL,
+        process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_MAX_LAG_HOURS_CAPITAL,
         84,
         24 * 7,
       ),
     ),
   );
   return {
-    enabled: envBool("SCALP_V2_RESEARCH_FRESHNESS_GATE_ENABLED", true),
+    enabled: envBool("SCALP_COMPOSER_RESEARCH_FRESHNESS_GATE_ENABLED", true),
     retries: toNonNegativeInt(
-      process.env.SCALP_V2_RESEARCH_FRESHNESS_RETRIES,
+      process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_RETRIES,
       2,
       12,
     ),
@@ -2387,7 +2387,7 @@ function resolveResearchFreshnessPolicy(): ScalpComposerResearchFreshnessPolicy 
       Math.min(
         120,
         toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_FRESHNESS_LOAD_BATCH_SIZE,
+          process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_LOAD_BATCH_SIZE,
           4,
           120,
         ),
@@ -2398,7 +2398,7 @@ function resolveResearchFreshnessPolicy(): ScalpComposerResearchFreshnessPolicy 
       Math.min(
         20,
         toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_FRESHNESS_LOAD_MAX_ATTEMPTS,
+          process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_LOAD_MAX_ATTEMPTS,
           5,
           20,
         ),
@@ -2409,7 +2409,7 @@ function resolveResearchFreshnessPolicy(): ScalpComposerResearchFreshnessPolicy 
       Math.min(
         120,
         toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_FRESHNESS_MAX_HOPS_PER_RETRY,
+          process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_MAX_HOPS_PER_RETRY,
           24,
           120,
         ),
@@ -2422,7 +2422,7 @@ function resolveResearchFreshnessPolicy(): ScalpComposerResearchFreshnessPolicy 
       Math.min(
         20_000,
         toNonNegativeInt(
-          process.env.SCALP_V2_RESEARCH_FRESHNESS_MIN_WEEK_CANDLES_BITGET,
+          process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_MIN_WEEK_CANDLES_BITGET,
           1_200,
           20_000,
         ),
@@ -2433,7 +2433,7 @@ function resolveResearchFreshnessPolicy(): ScalpComposerResearchFreshnessPolicy 
       Math.min(
         20_000,
         toNonNegativeInt(
-          process.env.SCALP_V2_RESEARCH_FRESHNESS_MIN_WEEK_CANDLES_CAPITAL,
+          process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_MIN_WEEK_CANDLES_CAPITAL,
           600,
           20_000,
         ),
@@ -2444,7 +2444,7 @@ function resolveResearchFreshnessPolicy(): ScalpComposerResearchFreshnessPolicy 
       Math.min(
         100,
         toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_FRESHNESS_STALE_PREVIEW_LIMIT,
+          process.env.SCALP_COMPOSER_RESEARCH_FRESHNESS_STALE_PREVIEW_LIMIT,
           20,
           100,
         ),
@@ -2701,7 +2701,7 @@ async function runScalpComposerSundayResearchFreshnessGate(params: {
 /**
  * Discover is now a thin delegate to the evaluate job. The old discover job
  * generated the same composer grid as evaluate but with a weaker scoring model
- * and an env-gated persistence toggle (SCALP_V2_DISCOVER_PERSIST_CANDIDATES)
+ * and an env-gated persistence toggle (SCALP_COMPOSER_DISCOVER_PERSIST_CANDIDATES)
  * that defaulted to false — making it a no-op in production. Evaluate already
  * does cursor-based windowing, better scoring, and always persists.
  *
@@ -2738,14 +2738,14 @@ export async function runScalpComposerResearchJob(params: {
   candleCacheRef?: Map<string, ScalpReplayCandle[]>;
 } = {}): Promise<ScalpComposerJobResult> {
   const researchWorkLeasesEnabled = envBool(
-    "SCALP_V2_RESEARCH_WORK_LEASES_ENABLED",
+    "SCALP_COMPOSER_RESEARCH_WORK_LEASES_ENABLED",
     true,
   );
   const owner = lockOwner("research");
   const researchLockScope =
     String(
       params.lockScope ||
-        process.env.SCALP_V2_RESEARCH_LOCK_SCOPE ||
+        process.env.SCALP_COMPOSER_RESEARCH_LOCK_SCOPE ||
         (researchWorkLeasesEnabled ? `lease:${owner}` : "singleton"),
     )
       .trim()
@@ -2774,7 +2774,7 @@ export async function runScalpComposerResearchJob(params: {
   let details: Record<string, unknown> = {};
   const debugTiming =
     params.debugTiming === true ||
-    envBool("SCALP_V2_RESEARCH_DEBUG_TIMING", false);
+    envBool("SCALP_COMPOSER_RESEARCH_DEBUG_TIMING", false);
   type ResearchTimingStat = { count: number; totalMs: number; maxMs: number };
   const timingStats = new Map<string, ResearchTimingStat>();
   function recordTiming(label: string, startedAtMs: number): void {
@@ -2829,7 +2829,7 @@ export async function runScalpComposerResearchJob(params: {
     Math.min(
       120_000,
       toPositiveInt(
-        process.env.SCALP_V2_RESEARCH_HEARTBEAT_MIN_INTERVAL_MS,
+        process.env.SCALP_COMPOSER_RESEARCH_HEARTBEAT_MIN_INTERVAL_MS,
         15_000,
         120_000,
       ),
@@ -2937,7 +2937,7 @@ export async function runScalpComposerResearchJob(params: {
     if (!runtime.enabled) {
       details = attachTimingDetails({
         skipped: true,
-        reason: "SCALP_V2_DISABLED",
+        reason: "SCALP_COMPOSER_DISABLED",
       });
       return buildScalpComposerJobResult({
         jobKind: "research",
@@ -3004,7 +3004,7 @@ export async function runScalpComposerResearchJob(params: {
     const activePrunedScopes = normalizeActivePrunedScopes(runtime, nowTs);
     const jobStartMs = nowMs();
     const disableTimeBudget = envBool(
-      "SCALP_V2_RESEARCH_DISABLE_TIME_BUDGET",
+      "SCALP_COMPOSER_RESEARCH_DISABLE_TIME_BUDGET",
       false,
     );
     const timeBudgetMs = disableTimeBudget
@@ -3014,7 +3014,7 @@ export async function runScalpComposerResearchJob(params: {
           Math.min(
             780_000,
             toPositiveInt(
-              process.env.SCALP_V2_RESEARCH_TIME_BUDGET_MS,
+              process.env.SCALP_COMPOSER_RESEARCH_TIME_BUDGET_MS,
               650_000,
               780_000,
             ),
@@ -3025,7 +3025,7 @@ export async function runScalpComposerResearchJob(params: {
       Math.min(
         24 * 60 * 60 * 1000,
         toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_WORK_LEASE_MS,
+          process.env.SCALP_COMPOSER_RESEARCH_WORK_LEASE_MS,
           disableTimeBudget
             ? 2 * 60 * 60 * 1000
             : Math.max(30 * 60 * 1000, timeBudgetMs + 2 * 60_000),
@@ -3038,7 +3038,7 @@ export async function runScalpComposerResearchJob(params: {
 
     const maxCandidatesPerSession = 840;
     const minPersistStageRaw = String(
-      process.env.SCALP_V2_RESEARCH_MIN_PERSIST_STAGE || "a",
+      process.env.SCALP_COMPOSER_RESEARCH_MIN_PERSIST_STAGE || "a",
     ).trim().toLowerCase();
     const minPersistStage: ScalpComposerWorkerStageId =
       minPersistStageRaw === "c" ? "c" : minPersistStageRaw === "b" ? "b" : "a";
@@ -3046,7 +3046,7 @@ export async function runScalpComposerResearchJob(params: {
       1,
       Math.min(
         10_000,
-        toPositiveInt(process.env.SCALP_V2_RESEARCH_BATCH_SIZE, 100, 10_000),
+        toPositiveInt(process.env.SCALP_COMPOSER_RESEARCH_BATCH_SIZE, 100, 10_000),
       ),
     );
     const effectiveBatchSize = Math.max(
@@ -3149,7 +3149,7 @@ export async function runScalpComposerResearchJob(params: {
           `${dep.venue}:${dep.symbol}:${dep.strategyId}:${dep.tuneId}:${dep.entrySessionProfile}`,
       );
     const adaptiveSearchEnabled = envBool(
-      "SCALP_V2_SESSION_ADAPTIVE_SEARCH_ENABLED",
+      "SCALP_COMPOSER_SESSION_ADAPTIVE_SEARCH_ENABLED",
       true,
     );
     const adaptivePriors = adaptiveSearchEnabled
@@ -3158,12 +3158,12 @@ export async function runScalpComposerResearchJob(params: {
             windowToTs,
             nowMs: nowTs,
             limit: toPositiveInt(
-              process.env.SCALP_V2_SESSION_ADAPTIVE_SEARCH_MAX_ROWS,
+              process.env.SCALP_COMPOSER_SESSION_ADAPTIVE_SEARCH_MAX_ROWS,
               50_000,
               100_000,
             ),
             minSamples: toPositiveInt(
-              process.env.SCALP_V2_SESSION_ADAPTIVE_SEARCH_MIN_SAMPLES,
+              process.env.SCALP_COMPOSER_SESSION_ADAPTIVE_SEARCH_MIN_SAMPLES,
               8,
               100,
             ),
@@ -3196,34 +3196,34 @@ export async function runScalpComposerResearchJob(params: {
           )
         : null;
     const noveltyBudget = {
-      enabled: envBool("SCALP_V2_SESSION_NOVELTY_BUDGET_ENABLED", true),
-      exploitPct: envNumberOr("SCALP_V2_SESSION_NOVELTY_EXPLOIT_PCT", 0.55),
-      adjacentPct: envNumberOr("SCALP_V2_SESSION_NOVELTY_ADJACENT_PCT", 0.25),
-      explorePct: envNumberOr("SCALP_V2_SESSION_NOVELTY_EXPLORE_PCT", 0.2),
+      enabled: envBool("SCALP_COMPOSER_SESSION_NOVELTY_BUDGET_ENABLED", true),
+      exploitPct: envNumberOr("SCALP_COMPOSER_SESSION_NOVELTY_EXPLOIT_PCT", 0.55),
+      adjacentPct: envNumberOr("SCALP_COMPOSER_SESSION_NOVELTY_ADJACENT_PCT", 0.25),
+      explorePct: envNumberOr("SCALP_COMPOSER_SESSION_NOVELTY_EXPLORE_PCT", 0.2),
       maxPerCluster: toPositiveInt(
-        process.env.SCALP_V2_SESSION_NOVELTY_MAX_PER_CLUSTER,
+        process.env.SCALP_COMPOSER_SESSION_NOVELTY_MAX_PER_CLUSTER,
         Math.max(1, Math.ceil(maxCandidatesPerSession * 0.08)),
         maxCandidatesPerSession,
       ),
       maxPerFamily: toPositiveInt(
-        process.env.SCALP_V2_SESSION_NOVELTY_MAX_PER_FAMILY,
+        process.env.SCALP_COMPOSER_SESSION_NOVELTY_MAX_PER_FAMILY,
         Math.max(1, Math.ceil(maxCandidatesPerSession * 0.18)),
         maxCandidatesPerSession,
       ),
       exploitAdjustmentThreshold: envNumberOr(
-        "SCALP_V2_SESSION_NOVELTY_EXPLOIT_ADJ_THRESHOLD",
+        "SCALP_COMPOSER_SESSION_NOVELTY_EXPLOIT_ADJ_THRESHOLD",
         0.05,
       ),
       // Evolution reserved slice (carved from explore) + explore floor. Env-only
       // so the budget (and thus the warm-up hash) stays stable; when no offspring
       // exist the reserved pass simply finds none and explore is untouched.
       evolutionPct: evolutionConfig.enabled
-        ? envNumberOr("SCALP_V2_SESSION_EVOLUTION_PCT", 0.15)
+        ? envNumberOr("SCALP_COMPOSER_SESSION_EVOLUTION_PCT", 0.15)
         : 0,
-      minExplorePct: envNumberOr("SCALP_V2_SESSION_NOVELTY_MIN_EXPLORE_PCT", 0.05),
+      minExplorePct: envNumberOr("SCALP_COMPOSER_SESSION_NOVELTY_MIN_EXPLORE_PCT", 0.05),
     };
     const evolutionScoreBoost = envNumberOr(
-      "SCALP_V2_SESSION_EVOLUTION_SCORE_BOOST",
+      "SCALP_COMPOSER_SESSION_EVOLUTION_SCORE_BOOST",
       0.06,
     );
     const noveltyBudgetFingerprint = JSON.stringify(noveltyBudget);
@@ -3309,7 +3309,7 @@ export async function runScalpComposerResearchJob(params: {
 	          maxCandidates: Math.min(
 	            baseCandidateBudget,
 	            toPositiveInt(
-	              process.env.SCALP_V2_SESSION_COMPOSER_MAX_CANDIDATES_PER_SCOPE,
+	              process.env.SCALP_COMPOSER_SESSION_COMPOSER_MAX_CANDIDATES_PER_SCOPE,
 	              60,
 	              2_000,
 	            ),
@@ -3538,7 +3538,7 @@ export async function runScalpComposerResearchJob(params: {
         entrySessionProfile: c.session,
         score: c.score,
         status: "discovered" as const,
-        reasonCodes: ["SCALP_V2_WARM_UP"],
+        reasonCodes: ["SCALP_COMPOSER_WARM_UP"],
         metadata: {
           discoveredAtMs: nowTs,
           researchWindowToTs: windowToTs,
@@ -3632,15 +3632,15 @@ export async function runScalpComposerResearchJob(params: {
 
     // --- BACKTEST RUN: warm-up complete, skip generation entirely ---
     const deploymentRolloverRequeueEnabled = envBool(
-      "SCALP_V2_RESEARCH_DEPLOYMENT_ROLLOVER_REQUEUE_ENABLED",
+      "SCALP_COMPOSER_RESEARCH_DEPLOYMENT_ROLLOVER_REQUEUE_ENABLED",
       true,
     );
     const deploymentRolloverPreviousWindowOnly = envBool(
-      "SCALP_V2_RESEARCH_DEPLOYMENT_ROLLOVER_PREVIOUS_WINDOW_ONLY",
+      "SCALP_COMPOSER_RESEARCH_DEPLOYMENT_ROLLOVER_PREVIOUS_WINDOW_ONLY",
       true,
     );
     const deploymentRolloverIncludeDisabled = envBool(
-      "SCALP_V2_RESEARCH_DEPLOYMENT_ROLLOVER_INCLUDE_DISABLED",
+      "SCALP_COMPOSER_RESEARCH_DEPLOYMENT_ROLLOVER_INCLUDE_DISABLED",
       true,
     );
     let deploymentRolloverRequeued = 0;
@@ -3672,7 +3672,7 @@ export async function runScalpComposerResearchJob(params: {
     // Find the next symbol(s) that still have "discovered" candidates, load only those.
     await emitResearchHeartbeat({ phase: "load_backtest_chunk", force: true });
     const maxSymbolsPerRun = Math.max(1, Math.min(50,
-      toPositiveInt(process.env.SCALP_V2_RESEARCH_MAX_SYMBOLS_PER_RUN, 1, 50)));
+      toPositiveInt(process.env.SCALP_COMPOSER_RESEARCH_MAX_SYMBOLS_PER_RUN, 1, 50)));
     const discoveredSymbols = await withTiming("research.list_discovered_symbols", () =>
       listScalpComposerDiscoveredSymbols().catch(() => [] as string[]),
     );
@@ -3680,14 +3680,14 @@ export async function runScalpComposerResearchJob(params: {
       1,
       Math.min(
         128,
-        toPositiveInt(process.env.SCALP_V2_RESEARCH_SYMBOL_SHARD_COUNT, 1, 128),
+        toPositiveInt(process.env.SCALP_COMPOSER_RESEARCH_SYMBOL_SHARD_COUNT, 1, 128),
       ),
     );
     const symbolShardIndex = Math.max(
       0,
       Math.min(
         symbolShardCount - 1,
-        Math.floor(Number(process.env.SCALP_V2_RESEARCH_SYMBOL_SHARD_INDEX) || 0),
+        Math.floor(Number(process.env.SCALP_COMPOSER_RESEARCH_SYMBOL_SHARD_INDEX) || 0),
       ),
     );
     const shardSymbol = (symbol: string): number => {
@@ -3924,9 +3924,9 @@ export async function runScalpComposerResearchJob(params: {
     type SmartSkipEntry = {
       candidate: InMemoryCandidate;
       reasonCode:
-        | "SCALP_V2_SMART_SKIP_NETR_PREFILTER"
-        | "SCALP_V2_SMART_SKIP_CLEAR_FAIL_NET_R"
-        | "SCALP_V2_SMART_SKIP_CLEAR_FAIL_TRADES";
+        | "SCALP_COMPOSER_SMART_SKIP_NETR_PREFILTER"
+        | "SCALP_COMPOSER_SMART_SKIP_CLEAR_FAIL_NET_R"
+        | "SCALP_COMPOSER_SMART_SKIP_CLEAR_FAIL_TRADES";
       stageReason:
         | "smart_skip_net_r_prefilter"
         | "smart_skip_clear_fail_net_r"
@@ -3994,7 +3994,7 @@ export async function runScalpComposerResearchJob(params: {
           skippedByNetRPreFilter += 1;
           smartSkipped.push({
             candidate: c,
-            reasonCode: "SCALP_V2_SMART_SKIP_NETR_PREFILTER",
+            reasonCode: "SCALP_COMPOSER_SMART_SKIP_NETR_PREFILTER",
             stageReason: "smart_skip_net_r_prefilter",
             previousWindowToTs: Math.floor(Number(prev.windowToTs) || 0),
             previousStageANetR: prev.stageANetR,
@@ -4022,7 +4022,7 @@ export async function runScalpComposerResearchJob(params: {
         skippedByClearFail += 1;
         smartSkipped.push({
           candidate: c,
-          reasonCode: "SCALP_V2_SMART_SKIP_CLEAR_FAIL_NET_R",
+          reasonCode: "SCALP_COMPOSER_SMART_SKIP_CLEAR_FAIL_NET_R",
           stageReason: "smart_skip_clear_fail_net_r",
           previousWindowToTs: Math.floor(Number(prev.windowToTs) || 0),
           previousStageANetR: prev.stageANetR,
@@ -4036,7 +4036,7 @@ export async function runScalpComposerResearchJob(params: {
         skippedByClearFail += 1;
         smartSkipped.push({
           candidate: c,
-          reasonCode: "SCALP_V2_SMART_SKIP_CLEAR_FAIL_TRADES",
+          reasonCode: "SCALP_COMPOSER_SMART_SKIP_CLEAR_FAIL_TRADES",
           stageReason: "smart_skip_clear_fail_trades",
           previousWindowToTs: Math.floor(Number(prev.windowToTs) || 0),
           previousStageANetR: prev.stageANetR,
@@ -4121,7 +4121,7 @@ export async function runScalpComposerResearchJob(params: {
           entrySessionProfile: c.session,
           score: c.score,
           status: "rejected" as const,
-          reasonCodes: ["SCALP_V2_RESEARCH_INLINE", entry.reasonCode],
+          reasonCodes: ["SCALP_COMPOSER_RESEARCH_INLINE", entry.reasonCode],
 	          metadata: {
 	            evaluatedAtMs: nowTs,
 	            evaluator: "v2_research_inline",
@@ -4207,8 +4207,8 @@ export async function runScalpComposerResearchJob(params: {
           score: c.score,
           status: "rejected" as const,
           reasonCodes: [
-            "SCALP_V2_RESEARCH_INLINE",
-            "SCALP_V2_SURROGATE_SKIP_LOW_PASS_PROB",
+            "SCALP_COMPOSER_RESEARCH_INLINE",
+            "SCALP_COMPOSER_SURROGATE_SKIP_LOW_PASS_PROB",
           ],
           metadata: {
             evaluatedAtMs: nowTs,
@@ -4490,7 +4490,7 @@ export async function runScalpComposerResearchJob(params: {
       ),
     );
     const windowSliceCacheEnabled = envBool(
-      "SCALP_V2_RESEARCH_WINDOW_SLICE_CACHE_ENABLED",
+      "SCALP_COMPOSER_RESEARCH_WINDOW_SLICE_CACHE_ENABLED",
       true,
     );
     const candleCache =
@@ -4560,7 +4560,7 @@ export async function runScalpComposerResearchJob(params: {
       Math.min(
         100,
         toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_COVERAGE_DEFER_MAX_ATTEMPTS,
+          process.env.SCALP_COMPOSER_RESEARCH_COVERAGE_DEFER_MAX_ATTEMPTS,
           3,
           100,
         ),
@@ -4764,7 +4764,7 @@ export async function runScalpComposerResearchJob(params: {
       Math.min(
         16,
         toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY_MAX,
+          process.env.SCALP_COMPOSER_RESEARCH_BACKTEST_CONCURRENCY_MAX,
           4,
           16,
         ),
@@ -4775,7 +4775,7 @@ export async function runScalpComposerResearchJob(params: {
       Math.min(
         backtestConcurrencyMax,
         toPositiveInt(
-          process.env.SCALP_V2_RESEARCH_BACKTEST_CONCURRENCY,
+          process.env.SCALP_COMPOSER_RESEARCH_BACKTEST_CONCURRENCY,
           1,
           backtestConcurrencyMax,
         ),
@@ -5488,8 +5488,8 @@ export async function runScalpComposerResearchJob(params: {
 	            score: finalScore,
             status: "rejected",
             reasonCodes: [
-              "SCALP_V2_RESEARCH_INLINE",
-              `SCALP_V2_BELOW_MIN_STAGE_${minPersistStage.toUpperCase()}`,
+              "SCALP_COMPOSER_RESEARCH_INLINE",
+              `SCALP_COMPOSER_BELOW_MIN_STAGE_${minPersistStage.toUpperCase()}`,
             ],
             metadata: {
               evaluatedAtMs: nowTs,
@@ -5534,10 +5534,10 @@ export async function runScalpComposerResearchJob(params: {
 	          score: finalScore,
           status: "evaluated",
           reasonCodes: [
-            "SCALP_V2_RESEARCH_INLINE",
+            "SCALP_COMPOSER_RESEARCH_INLINE",
             finalPass
-              ? "SCALP_V2_WORKER_STAGE_C_PASS"
-              : "SCALP_V2_WORKER_STAGE_C_FAIL",
+              ? "SCALP_COMPOSER_WORKER_STAGE_C_PASS"
+              : "SCALP_COMPOSER_WORKER_STAGE_C_FAIL",
           ],
           metadata,
         },
@@ -6061,7 +6061,7 @@ export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResu
       details: {
         skipped: true,
         reason: "scalp_v2_promote_disabled",
-        env: "SCALP_V2_PROMOTE_ENABLED",
+        env: "SCALP_COMPOSER_PROMOTE_ENABLED",
       },
     });
   }
@@ -6092,7 +6092,7 @@ export async function runScalpComposerPromoteJob(): Promise<ScalpComposerJobResu
     const activePrunedScopes = normalizeActivePrunedScopes(runtime, nowTs);
     const policy = resolvePromotionPolicy();
     const requireWinnerShortlist = envBool(
-      "SCALP_V2_REQUIRE_WINNER_SHORTLIST",
+      "SCALP_COMPOSER_REQUIRE_WINNER_SHORTLIST",
       true,
     );
     const allCandidatesRaw = await listScalpComposerCandidates({ limit: 10_000 });
@@ -7371,7 +7371,7 @@ export async function runScalpComposerExecuteJob(params: {
     const runtime = await loadScalpComposerRuntimeConfig();
     const effectiveDryRun = params.dryRun ?? runtime.dryRunDefault;
     const nowTs = nowMs();
-    const allowSundayExecute = envBool("SCALP_V2_ALLOW_SUNDAY_EXECUTE", false);
+    const allowSundayExecute = envBool("SCALP_COMPOSER_ALLOW_SUNDAY_EXECUTE", false);
     if (!allowSundayExecute && isScalpComposerSundayUtc(nowTs)) {
       details = {
         executedDeployments: 0,
@@ -8003,7 +8003,7 @@ export async function runScalpComposerExecuteJob(params: {
             tuneId: deployment.tuneId,
             entrySessionProfile: deployment.entrySessionProfile,
             eventType: "order_rejected",
-            reasonCodes: ["SCALP_V2_EXECUTION_ERROR"],
+            reasonCodes: ["SCALP_COMPOSER_EXECUTION_ERROR"],
             sourceOfTruth: "system",
             rawPayload: {
               message: err?.message || String(err),
@@ -8198,14 +8198,14 @@ function classifyBitgetClose(params: {
   const takeProfit = toFiniteOrNull(params.entry?.presetStopSurplusPrice);
   if (closePrice !== null && stop !== null) {
     const nearStop = Math.abs(closePrice - stop) <= Math.max(0.02, Math.abs(stop) * 0.0015);
-    if (nearStop) return { reasonCode: "SCALP_V2_RECONCILE_SL", source: source || "SYS" };
+    if (nearStop) return { reasonCode: "SCALP_COMPOSER_RECONCILE_SL", source: source || "SYS" };
   }
   if (closePrice !== null && takeProfit !== null) {
     const nearTakeProfit = Math.abs(closePrice - takeProfit) <= Math.max(0.02, Math.abs(takeProfit) * 0.0015);
-    if (nearTakeProfit) return { reasonCode: "SCALP_V2_RECONCILE_TP", source: source || "SYS" };
+    if (nearTakeProfit) return { reasonCode: "SCALP_COMPOSER_RECONCILE_TP", source: source || "SYS" };
   }
-  if (source === "SYS") return { reasonCode: "SCALP_V2_RECONCILE_BROKER_CLOSE", source };
-  return { reasonCode: "SCALP_V2_RECONCILE_MANUAL_CLOSE", source: source || "UNKNOWN" };
+  if (source === "SYS") return { reasonCode: "SCALP_COMPOSER_RECONCILE_BROKER_CLOSE", source };
+  return { reasonCode: "SCALP_COMPOSER_RECONCILE_MANUAL_CLOSE", source: source || "UNKNOWN" };
 }
 
 function computeRMultipleFromBitgetOrders(params: {
@@ -8248,7 +8248,7 @@ async function enrichMissingBitgetPositionClose(params: {
   const base = {
     rMultiple: 0,
     pnlUsd: null,
-    reasonCodes: ["SCALP_V2_RECONCILE_CLOSE"],
+    reasonCodes: ["SCALP_COMPOSER_RECONCILE_CLOSE"],
     rawPayload: {},
     brokerRef: null,
     tsExitMs: null,
@@ -8265,7 +8265,7 @@ async function enrichMissingBitgetPositionClose(params: {
     rMultiple: Number.isFinite(Number(brokerClose.rMultiple)) ? Number(brokerClose.rMultiple) : 0,
     pnlUsd: brokerClose.pnlUsd,
     reasonCodes: [
-      "SCALP_V2_RECONCILE_CLOSE",
+      "SCALP_COMPOSER_RECONCILE_CLOSE",
       ...brokerClose.reasonCodes,
     ],
     rawPayload: brokerClose.rawPayload,
@@ -8307,23 +8307,23 @@ function classifyCapitalCloseSource(source: string): {
 } {
   const normalized = normalizeBrokerText(source);
   if (normalized === "TP" || normalized.includes("PROFIT")) {
-    return { reasonCode: "SCALP_V2_RECONCILE_TP", source: normalized || "TP" };
+    return { reasonCode: "SCALP_COMPOSER_RECONCILE_TP", source: normalized || "TP" };
   }
   if (
     normalized === "SL" ||
     normalized.includes("STOP") ||
     normalized.includes("LOSS")
   ) {
-    return { reasonCode: "SCALP_V2_RECONCILE_SL", source: normalized || "SL" };
+    return { reasonCode: "SCALP_COMPOSER_RECONCILE_SL", source: normalized || "SL" };
   }
   if (normalized === "USER" || normalized.includes("MANUAL")) {
     return {
-      reasonCode: "SCALP_V2_RECONCILE_MANUAL_CLOSE",
+      reasonCode: "SCALP_COMPOSER_RECONCILE_MANUAL_CLOSE",
       source: normalized || "USER",
     };
   }
   return {
-    reasonCode: "SCALP_V2_RECONCILE_BROKER_CLOSE",
+    reasonCode: "SCALP_COMPOSER_RECONCILE_BROKER_CLOSE",
     source: normalized || "UNKNOWN",
   };
 }
@@ -8344,7 +8344,7 @@ async function enrichMissingCapitalPositionClose(params: {
   const base = {
     rMultiple: 0,
     pnlUsd: null,
-    reasonCodes: ["SCALP_V2_RECONCILE_CLOSE"],
+    reasonCodes: ["SCALP_COMPOSER_RECONCILE_CLOSE"],
     rawPayload: {},
     brokerRef: null,
     tsExitMs: null,
@@ -8396,11 +8396,11 @@ async function enrichMissingCapitalPositionClose(params: {
     side: params.side,
     details: closeActivity.details,
   });
-  if (rMultiple === null && classification.reasonCode === "SCALP_V2_RECONCILE_TP") {
+  if (rMultiple === null && classification.reasonCode === "SCALP_COMPOSER_RECONCILE_TP") {
     rMultiple = 1;
   } else if (
     rMultiple === null &&
-    classification.reasonCode === "SCALP_V2_RECONCILE_SL"
+    classification.reasonCode === "SCALP_COMPOSER_RECONCILE_SL"
   ) {
     rMultiple = -1;
   }
@@ -8409,8 +8409,8 @@ async function enrichMissingCapitalPositionClose(params: {
     rMultiple: Number.isFinite(Number(rMultiple)) ? Number(rMultiple) : 0,
     pnlUsd: null,
     reasonCodes: [
-      "SCALP_V2_RECONCILE_CLOSE",
-      "SCALP_V2_RECONCILE_BROKER_HISTORY",
+      "SCALP_COMPOSER_RECONCILE_CLOSE",
+      "SCALP_COMPOSER_RECONCILE_BROKER_HISTORY",
       classification.reasonCode,
     ],
     rawPayload: {
@@ -8606,7 +8606,7 @@ export async function runScalpComposerFullAutoCycle(params: {
       10_000,
       toPositiveInt(
         params.researchBatchSize,
-        toPositiveInt(process.env.SCALP_V2_RESEARCH_BATCH_SIZE, 100, 10_000),
+        toPositiveInt(process.env.SCALP_COMPOSER_RESEARCH_BATCH_SIZE, 100, 10_000),
         10_000,
       ),
     ),
