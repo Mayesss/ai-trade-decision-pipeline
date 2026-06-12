@@ -314,12 +314,12 @@ npm run start
   - Body: `{ "secret": "..." }` to validate admin access when `ADMIN_ACCESS_SECRET` is set.
 - Admin protection policy
   - All API routes except `/api/admin-auth` require `x-admin-access-secret: <ADMIN_ACCESS_SECRET>` (or `Authorization: Bearer <ADMIN_ACCESS_SECRET>`) when `ADMIN_ACCESS_SECRET` is set.
-  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/scalp/v2/cron/discover`, `/api/scalp/v2/cron/load-candles`, `/api/scalp/v2/cron/evaluate`, `/api/scalp/v2/cron/worker`, `/api/scalp/v2/cron/promote`, `/api/scalp/v2/cron/execute`, `/api/scalp/v2/cron/reconcile`, `/api/scalp/v2/cron/cycle`.
+  - Unauthenticated exception for automation routes: `/api/swing/analyze`, `/api/scalp/composer/cron/discover`, `/api/scalp/composer/cron/load-candles`, `/api/scalp/composer/cron/evaluate`, `/api/scalp/composer/cron/worker`, `/api/scalp/composer/cron/promote`, `/api/scalp/composer/cron/execute`, `/api/scalp/composer/cron/reconcile`, `/api/scalp/composer/cron/cycle`.
 - `GET /api/forex/*`
   - Forex mode routes are deprecated and currently return `410` with `error=forex_mode_deprecated`.
 - `GET /api/scalp/cron/*` and `GET /api/scalp/ops/*` (legacy v1)
-  - Retired after full v2 cutover; endpoints return `410 Gone` and migration guidance to `/api/scalp/v2/*`.
-- `GET /api/scalp/v2/cron/discover`
+  - Retired after full v2 cutover; endpoints return `410 Gone` and migration guidance to `/api/scalp/composer/*`.
+- `GET /api/scalp/composer/cron/discover`
   - Legacy alias kept for compatibility: `/api/scalp/cron/v2/discover`.
   - Native scalp-v2 candidate discovery (model-guided composer primitives), not legacy v1 symbol-discovery pipeline.
   - Scans model-guided candidate pools only from scalp-v2 runtime seed symbols (`seedSymbolsByVenue`) and supported sessions.
@@ -331,11 +331,11 @@ npm run start
   - `SCALP_V2_FORCE_FIXED_SEED_SCOPE=true` (default) enforces this clamp even if runtime/DB config contains wider seeds.
   - Candidate pool size per scope is bounded by `SCALP_V2_COMPOSER_MAX_CANDIDATES_PER_SESSION` (default `24`, max `96`).
   - Optional orchestration query params:
-    - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/v2/cron/evaluate`.
+    - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/composer/cron/evaluate`.
     - `evaluateBatchSize=<int>` batch size for downstream evaluate (default `200`).
     - `autoContinue=true|false` + `selfHop/selfMaxHops` for bounded detached recalls.
   - Legacy discover params (`dryRun`, `includeLiveQuotes`, `maxCandidates`) are accepted but ignored by native v2 discover.
-- `GET /api/scalp/v2/cron/research?batchSize=100`
+- `GET /api/scalp/composer/cron/research?batchSize=100`
   - Unified v2 research pass (replaces legacy evaluate+worker split internally).
   - `batchSize` bounds how many selected candidates are backtested per invocation (default `100`).
   - Debug timing:
@@ -343,7 +343,7 @@ npm run start
     - Env alternative: `SCALP_V2_RESEARCH_DEBUG_TIMING=true`.
   - Optional orchestration query params:
     - `autoContinue=true|false` + `selfHop/selfMaxHops` for bounded detached self-recalls when `pendingAfter > 0`.
-    - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/v2/cron/promote` only after `pendingAfter` reaches `0`.
+    - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/composer/cron/promote` only after `pendingAfter` reaches `0`.
   - Legacy local bulk support:
     - Use `BULK_RESEARCH_VERSION=v2 npm exec tsx scripts/research-local-bulk.ts` only when intentionally draining old v2/v3 research work.
     - Keep `BULK_WORK_LEASES=1` enabled. Each process uses its own research job scope and claims candidate rows with DB leases, so parallel terminals should not backtest the same candidate at the same time.
@@ -366,9 +366,9 @@ npm run start
   ```
 
   - With five terminals and `BULK_BACKTEST_CONCURRENCY=4`, expect up to 20 local replay workers. If the machine, DB, or network becomes the bottleneck, reduce `BULK_BACKTEST_CONCURRENCY` to `3` or `BULK_CANDIDATE_BATCH_SIZE` to `120`.
-- `GET /api/scalp/v4/cron/research?maxCandidatesPerCall=5`
+- `GET /api/scalp/regimes/cron/research?maxCandidatesPerCall=5`
   - Current research entrypoint. Builds v4 weekly regime snapshots and runs v4 walkforward/envelope evaluation from `lib/scalp-v4`.
-  - Legacy v2 endpoints (`/api/scalp/v2/cron/research`, `/evaluate`, `/worker`, `/cycle`) now default to v4-only compatibility shims. Pass `legacyV2=true` only for intentional v2/v3 replay/scoring work.
+  - Legacy v2 endpoints (`/api/scalp/composer/cron/research`, `/evaluate`, `/worker`, `/cycle`) now default to v4-only compatibility shims. Pass `legacyV2=true` only for intentional v2/v3 replay/scoring work.
   - `scripts/research-local-bulk.ts` defaults to this v4 path. `BULK_CANDIDATE_BATCH_SIZE` controls `maxCandidatesPerCall`; set `BULK_RESEARCH_VERSION=v2` only for legacy v2/v3 drains.
   - Local v4 bulk keeps a bounded per-process two-year `1m` candle range cache keyed by symbol/window. Tune with `BULK_V4_CANDLE_CACHE_SOFT_CAP` (default `16`) if memory pressure is high.
   - v4 research backfills missing/insufficient two-year `1m` candle coverage before walkforward by default. Disable with `BULK_V4_BACKFILL_CANDLES=0` locally or `backfillCandles=false` on the API route.
@@ -378,16 +378,16 @@ npm run start
     - `candidateFetchLimit=<int>` for the v4 candidate scan limit.
     - `forceValidity=true|false` to override v4 classifier validity checks.
     - `backfillCandles=true|false`, `minCandleCoverageRatio=<0.1..1>`, `candleBackfillChunkWeeks=<1..26>`, `candleBackfillMaxRequestsPerChunk=<40..5000>`, `workClaimLeaseMinutes=<5..1440>` for v4 walkforward candle coverage and work claiming.
-- `GET /api/scalp/v2/cron/evaluate?batchSize=200`
+- `GET /api/scalp/composer/cron/evaluate?batchSize=200`
   - Legacy v2/v3 path. Disabled by default through the API route; pass `legacyV2=true` to run intentionally.
   - Native model-guided scoring pass over deterministic candidate pools for each venue+symbol+session scope.
   - Uses research cursor offsets (`scalp_v2_research_cursor.last_candidate_offset`) to rotate evaluation windows instead of rescoring full pools every run.
   - Persists only the selected window slice as `evaluated` candidates, keeping DB writes bounded while maintaining broad candidate coverage over successive runs.
   - Cursor offsets are advanced per scope and preserved across discover/promote updates.
   - Optional orchestration query params:
-    - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/v2/cron/worker`.
+    - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/composer/cron/worker`.
     - `workerBatchSize=<int>` for downstream worker batch size (default `12`).
-- `GET /api/scalp/v2/cron/worker?batchSize=12`
+- `GET /api/scalp/composer/cron/worker?batchSize=12`
   - Legacy v2/v3 path. Disabled by default through the API route; pass `legacyV2=true` to run intentionally.
   - Legacy alias kept for compatibility: `/api/scalp/cron/v2/worker`.
   - Native staged replay worker over `evaluated|shadow|promoted` candidates in runtime scope.
@@ -401,8 +401,8 @@ npm run start
   - Promotion now fail-closes on worker evidence: candidates missing Stage-C pass are rejected (`worker_stage_c_missing|worker_stage_c_failed`).
   - Sunday UTC safeguard: worker replay is blocked by default (`reason=sunday_utc_worker_blocked`); override only with `SCALP_V2_ALLOW_SUNDAY_WORKER=true`.
   - Optional orchestration query params:
-    - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/v2/cron/promote`.
-- `GET /api/scalp/v2/cron/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&successor=cycle`
+    - `autoSuccessor=true|false` (default `true`) to trigger `/api/scalp/composer/cron/promote`.
+- `GET /api/scalp/composer/cron/load-candles?batchSize=8&autoSuccessor=true&autoContinue=true&successor=cycle`
   - Legacy alias kept for compatibility: `/api/scalp/cron/v2/load-candles`.
   - Legacy-backed candle-maintenance job kept for Sunday data refresh/backfill only.
   - Processing scope is hard-filtered to scalp-v2 runtime symbols (seed + live-seed union, currently the fixed 48-symbol research universe by default).
@@ -419,47 +419,47 @@ npm run start
       - Backward-compatible alias accepted: `CALP_V2_LOAD_CANDLES_STALE_RECOVERY_DAYS`.
   - Claims rows from `scalp_discovered_symbols` and updates per-symbol load status.
   - Successor chaining (after drain, `pendingAfter=0`):
-    - `successor=cycle` (default) triggers `/api/scalp/v2/cron/cycle`.
-    - `successor=discover` triggers `/api/scalp/v2/cron/discover?autoSuccessor=1`.
+    - `successor=cycle` (default) triggers `/api/scalp/composer/cron/cycle`.
+    - `successor=discover` triggers `/api/scalp/composer/cron/discover?autoSuccessor=1`.
     - `successorDryRun=true|false` controls `cycle?dryRun=...` handoff (default `false`).
   - Debug query mode:
     - `debug=true` adds route-level diagnostics to the response (`debug.selectedScope`, `debug.timing`, `debug.scopeStats`).
     - `debug.scopeStats` includes per-symbol before/after 1m candle stats to verify whether a run actually advanced `toTsMs`.
   - No downstream chaining to v1-style `prepare/worker`; handoff is native v2 only.
-- `GET /api/scalp/v2/cron/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&session=berlin`
+- `GET /api/scalp/composer/cron/prepare?batchSize=6&autoSuccessor=true&autoContinue=true&session=berlin`
   - Legacy alias kept for compatibility: `/api/scalp/cron/v2/prepare`.
   - Deprecated compatibility no-op in scalp-v2 mode.
   - Returns `ok=true` with `details.reason=legacy_prepare_deprecated_for_v2`.
   - Replacement path is native v2 loop: `discover -> evaluate -> worker -> promote -> execute -> reconcile`.
 - Legacy scalp-v2 route aliases
-  - `/api/scalp/cron/v2/discover`, `/api/scalp/cron/v2/load-candles`, and `/api/scalp/cron/v2/prepare` are compatibility aliases that forward to `/api/scalp/v2/cron/*`.
-- `GET/POST /api/scalp/v2/control`
+  - `/api/scalp/cron/v2/discover`, `/api/scalp/cron/v2/load-candles`, and `/api/scalp/cron/v2/prepare` are compatibility aliases that forward to `/api/scalp/composer/cron/*`.
+- `GET/POST /api/scalp/composer/control`
   - Runtime control for scalp-v2 (`enabled`, `liveEnabled`, budgets, risk profile, seed symbols).
-- `GET /api/scalp/v2/cron/cycle?dryRun=true|false`
+- `GET /api/scalp/composer/cron/cycle?dryRun=true|false`
   - Recommended production tuning for sustained research draining:
     - `batchSize=100`
     - `autoContinue=true`
     - `selfMaxHops=8` (ensure `SCALP_V1_RESEARCH_MAX_SELF_HOPS_CAP>=8` or route-level value will be clamped)
   - Full v2 auto loop in one run: discover -> evaluate -> worker -> promote -> execute -> reconcile.
   - Sunday UTC safeguard: execution step is skipped by default (`reason=sunday_utc_execution_blocked`); override only with `SCALP_V2_ALLOW_SUNDAY_EXECUTE=true`.
-- `GET /api/scalp/v2/dashboard/summary`
+- `GET /api/scalp/composer/dashboard/summary`
   - V2 monitoring payload: runtime config, summary counters, deployments, events, and recent ledger rows.
-- `GET /api/scalp/v2/ops/state`
+- `GET /api/scalp/composer/ops/state`
   - V2 ops state plus phase-1 research cursor/highlight snapshots.
-- `GET /api/scalp/v2/ops/research-primitives`
+- `GET /api/scalp/composer/ops/research-primitives`
   - Phase-1 strategy decomposition payload: interpretable primitive catalog, per-strategy primitive references, and bounded candidate DSL preview for a venue/symbol/session.
-- `GET/POST /api/scalp/v2/ops/research-state`
+- `GET/POST /api/scalp/composer/ops/research-state`
   - Phase-1 sparse research persistence surface:
     - Cursor/checkpoint rows in `scalp_v2_research_cursor`.
     - Remarkable outcomes only in `scalp_v2_research_highlights`.
   - Supports cursor updates and highlight upserts without storing full sweep traces.
-- `POST /api/scalp/v2/ops/migrate-v1-ledger?limit=50000&parityDays=30`
+- `POST /api/scalp/composer/ops/migrate-v1-ledger?limit=50000&parityDays=30`
   - Runs cutover backfill from legacy `scalp_trade_ledger`, `scalp_sessions`, and `scalp_journal` into v2 tables and returns table-level migration counters + parity summary.
 - `GET /api/scalp/research/universe`, `GET /api/scalp/dashboard/summary`, `GET|POST /api/scalp/strategy/control`, and `GET /api/scalp/deployments/registry`
-  - Legacy v1 surfaces are retired after full v2 cutover; endpoints return `410 Gone` with migration guidance to `/api/scalp/v2/*`.
+  - Legacy v1 surfaces are retired after full v2 cutover; endpoints return `410 Gone` with migration guidance to `/api/scalp/composer/*`.
 - `GET /api/scalp/adaptive/summary?symbol=<SYMBOL>&session=berlin`
   - Returns active/candidate adaptive snapshots, lock state, arm-selection stats, and recent adaptive arm decisions for the symbol/session.
-- `GET /api/scalp/v2/ops/strategy-catalog`
+- `GET /api/scalp/composer/ops/strategy-catalog`
   - V2 strategy catalog for UI/backtest strategy pickers (default strategy id + registry rows).
 - `GET /api/scalp/fill-candles-history?symbol=EURUSD&timeframe=15m&direction=backfill&days=30&dryRun=true`
   - Alias: `GET /api/scalp/candles-history/fill?...`
@@ -473,7 +473,7 @@ npm run start
   - Sunday UTC safeguard: blocked by default (`error=sunday_utc_replay_blocked`); override only with `SCALP_ALLOW_SUNDAY_REPLAY=true`.
   - Backtest runtime enforces the same TF pair as live: `M15` base and `M3` confirmation.
   - Supports optional `strategyId` to select a registered scalp strategy (default: runtime default strategy).
-  - `/scalp-backtest` UI exposes a strategy selector sourced from `/api/scalp/v2/ops/strategy-catalog` and sends the selected `strategyId` on each run.
+  - `/scalp-backtest` UI exposes a strategy selector sourced from `/api/scalp/composer/ops/strategy-catalog` and sends the selected `strategyId` on each run.
   - Supports both:
     - lookback mode (`lookbackPastValue`, `lookbackPastUnit`; optional `lookbackCandles` fallback)
     - date-range mode (`fromTsMs`, `toTsMs`) with paginated historical fetch (safe-capped to 90 days per run).
@@ -717,13 +717,13 @@ The evaluator only acts on already-promoted (`enabled=true`) deployments, so the
 - KV REST endpoint/token must be reachable from the runtime; Bitget/AI/News calls require outbound network access.
 - Current cron entries include:
   - `/api/swing/analyze?...&dryRun=false` hourly (live-trading mode).
-  - `/api/scalp/v2/cron/discover` every 3 hours.
-  - `/api/scalp/v2/cron/evaluate?batchSize=200&autoSuccessor=false` every 5 minutes.
-  - `/api/scalp/v2/cron/worker?batchSize=12&autoSuccessor=false` every 5 minutes (offset at minute `2`).
-  - `/api/scalp/v2/cron/promote` every 10 minutes.
-  - `/api/scalp/v2/cron/reconcile` every 2 minutes.
-  - `/api/scalp/v2/cron/execute?dryRun=false` every minute (live v2 execution loop).
-  - `/api/scalp/v2/cron/load-candles?batchSize=40&autoSuccessor=true&autoContinue=true&successor=discover` hourly on Sunday (`10 * * * 0`) to backfill/refresh 1m candle coverage, then hand off into native discover/evaluate path.
+  - `/api/scalp/composer/cron/discover` every 3 hours.
+  - `/api/scalp/composer/cron/evaluate?batchSize=200&autoSuccessor=false` every 5 minutes.
+  - `/api/scalp/composer/cron/worker?batchSize=12&autoSuccessor=false` every 5 minutes (offset at minute `2`).
+  - `/api/scalp/composer/cron/promote` every 10 minutes.
+  - `/api/scalp/composer/cron/reconcile` every 2 minutes.
+  - `/api/scalp/composer/cron/execute?dryRun=false` every minute (live v2 execution loop).
+  - `/api/scalp/composer/cron/load-candles?batchSize=40&autoSuccessor=true&autoContinue=true&successor=discover` hourly on Sunday (`10 * * * 0`) to backfill/refresh 1m candle coverage, then hand off into native discover/evaluate path.
   - Symbol-specific scalp tuning is pinned by deployment row (`strategyId` + `tuneId`) in `data/scalp-deployments.json`.
 - Cron-declared routes are intentionally allowed without admin secret; non-cron routes remain protected when `ADMIN_ACCESS_SECRET` is set.
 

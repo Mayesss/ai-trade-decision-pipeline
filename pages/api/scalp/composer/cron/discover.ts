@@ -96,7 +96,7 @@ export default async function handler(
   ) {
     downstream = await invokeScalpComposerCronEndpointDetached(
       req,
-      "/api/scalp/v2/cron/evaluate",
+      "/api/scalp/composer/cron/evaluate",
       {
         batchSize: evaluateBatchSize,
         triggeredBy: "discover-v2-native",
@@ -114,7 +114,7 @@ export default async function handler(
   ) {
     selfRecall = await invokeScalpComposerCronEndpointDetached(
       req,
-      "/api/scalp/v2/cron/discover",
+      "/api/scalp/composer/cron/discover",
       {
         includeLiveQuotes: includeLiveQuotes ? 1 : 0,
         dryRun: dryRun ? 1 : 0,

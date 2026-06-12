@@ -17,7 +17,7 @@ import {
   useAdminSecretLoader,
 } from "../components/scalp/shared";
 
-// ─── types (mirror /api/scalp/v4/* responses) ────────────────────────────────
+// ─── types (mirror /api/scalp/regimes/* responses) ────────────────────────────────
 
 type V4Status =
   | "trading"
@@ -171,9 +171,9 @@ export default function ScalpRegimePipeline() {
 
   const loader = useCallback(async (headers: Record<string, string>) => {
     const [h, d, r] = await Promise.all([
-      fetchOne<HealthResp>("/api/scalp/v4/health", headers, setHealth),
-      fetchOne<DeploymentsResp>("/api/scalp/v4/deployments", headers, setDeploymentsResp),
-      fetchOne<RecentResp>("/api/scalp/v4/recent", headers, setRecent),
+      fetchOne<HealthResp>("/api/scalp/regimes/health", headers, setHealth),
+      fetchOne<DeploymentsResp>("/api/scalp/regimes/deployments", headers, setDeploymentsResp),
+      fetchOne<RecentResp>("/api/scalp/regimes/recent", headers, setRecent),
     ]);
     if (h.unauthorized || d.unauthorized || r.unauthorized) return { unauthorized: true };
     return { error: h.error || d.error || r.error };
@@ -510,7 +510,7 @@ export default function ScalpRegimePipeline() {
       )}
 
       <div className="border-t border-zinc-800 pt-2 mt-6 text-zinc-600">
-        sources /api/scalp/v4/health · /deployments · /recent
+        sources /api/scalp/regimes/health · /deployments · /recent
       </div>
     </PageShell>
   );

@@ -314,7 +314,7 @@ export default async function handler(
     ) {
       timeoutSelfRecall = await invokeScalpComposerCronEndpointDetached(
         req,
-        "/api/scalp/v2/cron/load-candles",
+        "/api/scalp/composer/cron/load-candles",
         {
           batchSize,
           maxAttempts,
@@ -399,7 +399,7 @@ export default async function handler(
   ) {
     selfRecall = await invokeScalpComposerCronEndpointDetached(
       req,
-      "/api/scalp/v2/cron/load-candles",
+      "/api/scalp/composer/cron/load-candles",
       {
         batchSize,
         maxAttempts,
@@ -426,7 +426,7 @@ export default async function handler(
     if (successor === "discover") {
       downstream = await invokeScalpComposerCronEndpointDetached(
         req,
-        "/api/scalp/v2/cron/discover",
+        "/api/scalp/composer/cron/discover",
         {
           autoSuccessor: 1,
           triggeredBy: "load-candles-v2",
@@ -436,7 +436,7 @@ export default async function handler(
     } else {
       downstream = await invokeScalpComposerCronEndpointDetached(
         req,
-        "/api/scalp/v2/cron/cycle",
+        "/api/scalp/composer/cron/cycle",
         {
           dryRun: successorDryRun ? 1 : 0,
           triggeredBy: "load-candles-v2",

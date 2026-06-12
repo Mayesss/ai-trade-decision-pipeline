@@ -1,4 +1,4 @@
-// /api/scalp/v5/coverage — section 2 of the v5 dashboard: classifier, config,
+// /api/scalp/research/coverage — section 2 of the v5 dashboard: classifier, config,
 // evaluator timestamps, and coverage counts. Pure SQL aggregate, no regime
 // snapshot loop. Always returns fast even when the heavier endpoints time out.
 

@@ -1,4 +1,4 @@
-// /api/scalp/v5/deployments — section 3: per-deployment cell evidence with
+// /api/scalp/research/deployments — section 3: per-deployment cell evidence with
 // the full weekly-NetR arrays the UI renders as bar tracks. Heaviest payload
 // of the four endpoints; isolated so the lighter sections (coverage,
 // gate-state, regimes) render even if this one runs long.

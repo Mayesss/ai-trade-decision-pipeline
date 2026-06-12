@@ -1,4 +1,4 @@
-// /api/scalp/v5/cron/evaluate — scheduled v5 cell-evidence refresh.
+// /api/scalp/research/cron/evaluate — scheduled v5 cell-evidence refresh.
 //
 // Hourly (or whatever cadence vercel.json sets) bulk eval. Replaces the
 // requirement to keep `npm exec tsx scripts/research-local-bulk.ts` running

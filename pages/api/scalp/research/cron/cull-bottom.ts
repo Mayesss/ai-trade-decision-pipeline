@@ -1,4 +1,4 @@
-// /api/scalp/v5/cron/cull-bottom — weekly competitive cull of the worst
+// /api/scalp/research/cron/cull-bottom — weekly competitive cull of the worst
 // performers in the v5 candidate pool. Complement to trim-tail:
 //
 //   trim-tail (06:00 UTC Sun): chronic non-eligibles, 28+ days never v5-passed

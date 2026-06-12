@@ -1,4 +1,4 @@
-// /api/scalp/v5/cron/preflight-candles — ensure the newly completed v5
+// /api/scalp/research/cron/preflight-candles — ensure the newly completed v5
 // incremental week is loaded before Sunday evaluation starts.
 
 export const config = { runtime: "nodejs", maxDuration: 800 };

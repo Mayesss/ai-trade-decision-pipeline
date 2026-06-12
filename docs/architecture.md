@@ -64,13 +64,13 @@ and close naturally via the execute cron. The gates only block NEW entries.
 
 | Schedule | Path | Layer | Purpose |
 |---|---|---|---|
-| `*/1 * * * *` | `/api/scalp/v2/cron/execute` | v2 | Live execution loop |
-| `*/2 * * * *` | `/api/scalp/v2/cron/reconcile` | v2 | Position reconciliation |
-| `*/5 * * * *` | `/api/scalp/v2/cron/cycle` | v2 | Discovery + research + promote |
-| `10 */2 * * *` | `/api/scalp/v2/cron/load-candles` | v2 | 1m candle ingestion (both venues) |
-| `0 * * * *` | `/api/scalp/v5/cron/evaluate?limit=50` | v5 | Hourly 12-week evidence refresh |
-| `*/15 * * * *` | `/api/scalp/v5/cron/promote` | v5 | Auto-promote v5-passing rows |
-| `0 6 * * 0` | `/api/scalp/v5/cron/trim-tail` | v5 | Weekly: retire consistently-failing rows |
+| `*/1 * * * *` | `/api/scalp/composer/cron/execute` | v2 | Live execution loop |
+| `*/2 * * * *` | `/api/scalp/composer/cron/reconcile` | v2 | Position reconciliation |
+| `*/5 * * * *` | `/api/scalp/composer/cron/cycle` | v2 | Discovery + research + promote |
+| `10 */2 * * *` | `/api/scalp/composer/cron/load-candles` | v2 | 1m candle ingestion (both venues) |
+| `0 * * * *` | `/api/scalp/research/cron/evaluate?limit=50` | v5 | Hourly 12-week evidence refresh |
+| `*/15 * * * *` | `/api/scalp/research/cron/promote` | v5 | Auto-promote v5-passing rows |
+| `0 6 * * 0` | `/api/scalp/research/cron/trim-tail` | v5 | Weekly: retire consistently-failing rows |
 
 The weekly Sunday rollover (evidence advancement + cull + refill + promote) runs
 from the terminal via [`scripts/scalp-research-sunday.ts`](../scripts/scalp-research-sunday.ts)

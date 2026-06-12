@@ -2705,7 +2705,7 @@ async function runScalpComposerSundayResearchFreshnessGate(params: {
  * that defaulted to false — making it a no-op in production. Evaluate already
  * does cursor-based windowing, better scoring, and always persists.
  *
- * Kept as a named export so the /api/scalp/v2/cron/discover endpoint and
+ * Kept as a named export so the /api/scalp/composer/cron/discover endpoint and
  * runScalpComposerFullAutoCycle continue to work without changes.
  */
 export async function runScalpComposerDiscoverJob(): Promise<ScalpComposerJobResult> {

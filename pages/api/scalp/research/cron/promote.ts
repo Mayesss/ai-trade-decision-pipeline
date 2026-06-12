@@ -1,4 +1,4 @@
-// /api/scalp/v5/cron/promote — v5-authoritative strict promote.
+// /api/scalp/research/cron/promote — v5-authoritative strict promote.
 //
 // v5-side: fresh evidence + totalNetR/trades/positive-weeks/worst-week
 // thresholds (configurable via query params). v2 promotion_gate is

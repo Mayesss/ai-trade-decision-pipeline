@@ -1,4 +1,4 @@
-// /api/scalp/v5/regimes — section 4: per-(venue, symbol) gate-decision
+// /api/scalp/research/regimes — section 4: per-(venue, symbol) gate-decision
 // aggregate. For each symbol the dashboard wants: the current cell, whether
 // any deployment is stale, and counts of allow/block/pending across enabled
 // deployments on that symbol.

@@ -1,4 +1,4 @@
-// /api/scalp/v5/cron/trim-tail — weekly self-cleaning of the candidate pool.
+// /api/scalp/research/cron/trim-tail — weekly self-cleaning of the candidate pool.
 //
 // Retires deployments that v5 has consistently failed to qualify over a
 // stalenessDays window (default 28 days = ~4 Sunday rollovers). Only touches

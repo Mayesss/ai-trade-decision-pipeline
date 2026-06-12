@@ -122,7 +122,7 @@ function normalizeScopes(params: {
   return Array.from(out.values());
 }
 
-// V2-native load-candles job used by /api/scalp/v2/cron/load-candles.
+// V2-native load-candles job used by /api/scalp/composer/cron/load-candles.
 export async function runScalpComposerLoadCandlesPipelineJob(params: {
   batchSize?: number;
   maxAttempts?: number;

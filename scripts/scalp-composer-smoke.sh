@@ -23,7 +23,7 @@ Usage:
 Options:
   --base-url <url>         API base URL (default: http://localhost:3000)
   --admin-secret <secret>  ADMIN_ACCESS_SECRET value (optional if server has no admin secret)
-  --with-load-maintenance  Include /api/scalp/v2/cron/load-candles maintenance check
+  --with-load-maintenance  Include /api/scalp/composer/cron/load-candles maintenance check
   --skip-control           Do not POST safe runtime config before testing
   -h, --help               Show this help
 
@@ -200,7 +200,7 @@ step "Target: ${BASE_URL}"
 if [[ "$SKIP_CONTROL" -eq 0 ]]; then
   step "Set safe runtime (enabled=true, liveEnabled=false, dryRunDefault=true)"
   control_json="$(
-    request_json "POST" "/api/scalp/v2/control" \
+    request_json "POST" "/api/scalp/composer/control" \
       '{"enabled":true,"liveEnabled":false,"dryRunDefault":true}'
   )"
   assert_ok "control_post" "$control_json"
@@ -215,7 +215,7 @@ else
 fi
 
 step "Read runtime config"
-runtime_json="$(request_json "GET" "/api/scalp/v2/control")"
+runtime_json="$(request_json "GET" "/api/scalp/composer/control")"
 assert_ok "control_get" "$runtime_json"
 echo "$runtime_json" | jq -c '{
   ok,
@@ -228,31 +228,31 @@ echo "$runtime_json" | jq -c '{
 
 step "Discover"
 run_cron_job "discover" \
-  "/api/scalp/v2/cron/discover?dryRun=true&includeLiveQuotes=true&maxCandidates=${DISCOVER_MAX_CANDIDATES}&autoSuccessor=false&autoContinue=false"
+  "/api/scalp/composer/cron/discover?dryRun=true&includeLiveQuotes=true&maxCandidates=${DISCOVER_MAX_CANDIDATES}&autoSuccessor=false&autoContinue=false"
 
 if [[ "$RUN_LOAD_MAINTENANCE" == "1" ]]; then
   step "Load candles maintenance"
   run_cron_job "load_candles" \
-    "/api/scalp/v2/cron/load-candles?batchSize=${LOAD_BATCH_SIZE}&autoSuccessor=false&autoContinue=false"
+    "/api/scalp/composer/cron/load-candles?batchSize=${LOAD_BATCH_SIZE}&autoSuccessor=false&autoContinue=false"
 fi
 
 step "Evaluate"
-run_cron_job "evaluate" "/api/scalp/v2/cron/evaluate?batchSize=${EVALUATE_BATCH_SIZE}&autoSuccessor=false"
+run_cron_job "evaluate" "/api/scalp/composer/cron/evaluate?batchSize=${EVALUATE_BATCH_SIZE}&autoSuccessor=false"
 
 step "Worker (staged replay A/B/C)"
-run_cron_job "worker" "/api/scalp/v2/cron/worker?batchSize=${WORKER_BATCH_SIZE}&autoSuccessor=false"
+run_cron_job "worker" "/api/scalp/composer/cron/worker?batchSize=${WORKER_BATCH_SIZE}&autoSuccessor=false"
 
 step "Promote"
-run_cron_job "promote" "/api/scalp/v2/cron/promote"
+run_cron_job "promote" "/api/scalp/composer/cron/promote"
 
 step "Execute (dry run)"
-run_cron_job "execute" "/api/scalp/v2/cron/execute?dryRun=true"
+run_cron_job "execute" "/api/scalp/composer/cron/execute?dryRun=true"
 
 step "Reconcile"
-run_cron_job "reconcile" "/api/scalp/v2/cron/reconcile"
+run_cron_job "reconcile" "/api/scalp/composer/cron/reconcile"
 
 step "Full cycle (dry run)"
-cycle_json="$(request_json "GET" "/api/scalp/v2/cron/cycle?dryRun=true")"
+cycle_json="$(request_json "GET" "/api/scalp/composer/cron/cycle?dryRun=true")"
 assert_ok "cycle" "$cycle_json"
 echo "$cycle_json" | jq -c '{
   ok,
@@ -267,7 +267,7 @@ echo "$cycle_json" | jq -c '{
 step "Dashboard summary snapshot"
 summary_json="$(
   request_json "GET" \
-    "/api/scalp/v2/dashboard/summary?eventLimit=50&ledgerLimit=50&deploymentLimit=200&jobLimit=20"
+    "/api/scalp/composer/dashboard/summary?eventLimit=50&ledgerLimit=50&deploymentLimit=200&jobLimit=20"
 )"
 assert_ok "dashboard_summary" "$summary_json"
 echo "$summary_json" | jq -c '{
@@ -282,7 +282,7 @@ echo "$summary_json" | jq -c '{
 }'
 
 step "Ops state snapshot"
-state_json="$(request_json "GET" "/api/scalp/v2/ops/state?limit=${STATE_LIMIT}&parityDays=${PARITY_DAYS}")"
+state_json="$(request_json "GET" "/api/scalp/composer/ops/state?limit=${STATE_LIMIT}&parityDays=${PARITY_DAYS}")"
 assert_ok "ops_state" "$state_json"
 echo "$state_json" | jq -c '{
   ok,

@@ -1,8 +1,8 @@
-// /api/scalp/v5/cron/load-live-candles — keep enabled deployment candles fresh.
+// /api/scalp/regimes/cron/build-regimes — refresh current-week regime snapshots.
 //
-// The broader v2 load-candles cron maintains the research universe. This route
-// is intentionally narrower: refresh only enabled live symbols so live v5 gates
-// do not go stale behind research backlog or self-chain failures.
+// v4/v5 live entry gates fail closed when the current regime snapshot is older
+// than SCALP_V4_FAIL_CLOSED_STALE_MS (default 2h). Keep this cron tighter than
+// that TTL so otherwise-good v5 deployments do not all block as stale.
 
 export const config = { runtime: "nodejs", maxDuration: 800 };
 
@@ -12,31 +12,29 @@ import { requireAdminAccess } from "../../../../../lib/admin";
 import { scalpPrisma } from "../../../../../lib/scalp/pg/client";
 import { sql } from "../../../../../lib/scalp/pg/sql";
 import { setNoStoreHeaders } from "../../../../../lib/scalp/composer/http";
-import { runScalpComposerLoadCandlesPipelineJob } from "../../../../../lib/scalp/composer/pipelineJobsAdapter";
-import type { ScalpComposerVenue } from "../../../../../lib/scalp/composer/types";
+import {
+  runScalpRegimeWeeklyRegimeBuild,
+  SCALP_V4_CLASSIFIER_VERSION,
+  type ScalpRegimeVenue,
+} from "../../../../../lib/scalp/regimes";
 
 function firstQueryValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? String(value[0] || "") : String(value || "");
 }
 
-function parseIntBounded(
-  value: string | string[] | undefined,
-  fallback: number,
-  min: number,
-  max: number,
-): number {
-  const raw = firstQueryValue(value).trim();
+function parseBool(value: string | string[] | undefined, fallback: boolean): boolean {
+  const raw = firstQueryValue(value).trim().toLowerCase();
   if (!raw) return fallback;
-  const parsed = Math.floor(Number(raw));
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(min, Math.min(max, parsed));
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  return fallback;
 }
 
-function normalizeVenue(value: unknown): ScalpComposerVenue {
+function normalizeVenue(value: unknown): ScalpRegimeVenue {
   return String(value || "").trim().toLowerCase() === "capital" ? "capital" : "bitget";
 }
 
-async function loadEnabledLiveScopes(): Promise<Array<{ venue: ScalpComposerVenue; symbol: string }>> {
+async function loadLiveDeploymentSymbols(): Promise<Array<{ venue: ScalpRegimeVenue; symbol: string }>> {
   const db = scalpPrisma();
   const rows = await db.$queryRaw<Array<{ venue: string; symbol: string }>>(sql`
     SELECT DISTINCT venue, symbol
@@ -62,32 +60,33 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const startedAt = Date.now();
   try {
-    const scopes = await loadEnabledLiveScopes();
-    const batchSize = parseIntBounded(req.query.batchSize, 20, 1, 100);
-    const maxAttempts = parseIntBounded(req.query.maxAttempts, 10, 1, 30);
+    const liveOnly = parseBool(req.query.liveOnly, true);
+    const forceValidity = parseBool(req.query.forceValidity, true);
+    const classifierVersion =
+      firstQueryValue(req.query.classifierVersion).trim() || SCALP_V4_CLASSIFIER_VERSION;
+    const symbols = liveOnly ? await loadLiveDeploymentSymbols() : undefined;
 
-    const result = await runScalpComposerLoadCandlesPipelineJob({
-      batchSize,
-      maxAttempts,
-      scopes,
-      auditSource: "v5_live_load_candles",
-      auditTrigger: "cron",
+    const result = await runScalpRegimeWeeklyRegimeBuild({
+      symbols,
+      classifierVersion,
+      forceValidity,
     });
 
     return res.status(200).json({
-      ok: result.ok,
+      ok: true,
       durationMs: Date.now() - startedAt,
       params: {
-        batchSize,
-        maxAttempts,
-        scopeCount: scopes.length,
+        liveOnly,
+        forceValidity,
+        classifierVersion,
+        symbolsRequested: symbols?.length ?? null,
       },
       result,
     });
   } catch (err) {
     return res.status(500).json({
       ok: false,
-      error: "v5_live_candle_load_failed",
+      error: "v4_regime_build_failed",
       message: (err as Error)?.message || String(err),
       durationMs: Date.now() - startedAt,
     });

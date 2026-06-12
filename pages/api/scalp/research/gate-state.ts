@@ -1,4 +1,4 @@
-// /api/scalp/v5/gate-state — compact per-decision histograms.
+// /api/scalp/research/gate-state — compact per-decision histograms.
 //
 // This endpoint intentionally does not use loadV5DashboardData(): the dashboard
 // auto-refreshes gate-state every 30s, so selecting full v5 evidence JSON for

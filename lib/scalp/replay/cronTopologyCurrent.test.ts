@@ -24,28 +24,28 @@ function requirePathByPrefix(paths: string[], prefix: string): string {
 test("vercel scalp cron topology keeps only live and lightweight maintenance crons", async () => {
   const cronPaths = await loadCronPaths();
 
-  requirePathByPrefix(cronPaths, "/api/scalp/v2/cron/execute?dryRun=false");
-  requirePathByPrefix(cronPaths, "/api/scalp/v2/cron/reconcile");
-  requirePathByPrefix(cronPaths, "/api/scalp/v4/cron/build-regimes?liveOnly=true&forceValidity=true");
-  requirePathByPrefix(cronPaths, "/api/scalp/v5/cron/load-live-candles");
-  requirePathByPrefix(cronPaths, "/api/scalp/v5/cron/promote");
+  requirePathByPrefix(cronPaths, "/api/scalp/composer/cron/execute?dryRun=false");
+  requirePathByPrefix(cronPaths, "/api/scalp/composer/cron/reconcile");
+  requirePathByPrefix(cronPaths, "/api/scalp/regimes/cron/build-regimes?liveOnly=true&forceValidity=true");
+  requirePathByPrefix(cronPaths, "/api/scalp/research/cron/load-live-candles");
+  requirePathByPrefix(cronPaths, "/api/scalp/research/cron/promote");
 
   const forbiddenPrefixes = [
     "/api/scalp/cron/execute-deployments",
     "/api/scalp/cron/worker",
     "/api/scalp/cron/promotion",
-    "/api/scalp/v2/cron/cycle",
-    "/api/scalp/v2/cron/discover",
-    "/api/scalp/v2/cron/evaluate",
-    "/api/scalp/v2/cron/worker",
-    "/api/scalp/v2/cron/research",
-    "/api/scalp/v2/cron/promote",
-    "/api/scalp/v2/cron/load-candles",
-    "/api/scalp/v5/cron/evaluate",
-    "/api/scalp/v5/cron/preflight-candles",
-    "/api/scalp/v5/cron/sunday-rollover",
-    "/api/scalp/v5/cron/trim-tail",
-    "/api/scalp/v5/cron/cull-bottom",
+    "/api/scalp/composer/cron/cycle",
+    "/api/scalp/composer/cron/discover",
+    "/api/scalp/composer/cron/evaluate",
+    "/api/scalp/composer/cron/worker",
+    "/api/scalp/composer/cron/research",
+    "/api/scalp/composer/cron/promote",
+    "/api/scalp/composer/cron/load-candles",
+    "/api/scalp/research/cron/evaluate",
+    "/api/scalp/research/cron/preflight-candles",
+    "/api/scalp/research/cron/sunday-rollover",
+    "/api/scalp/research/cron/trim-tail",
+    "/api/scalp/research/cron/cull-bottom",
   ];
   for (const prefix of forbiddenPrefixes) {
     assert.equal(

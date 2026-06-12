@@ -16,7 +16,7 @@ import {
   parseIntBounded,
   setNoStoreHeaders,
 } from "../../../../../lib/scalp/composer/http";
-import { runScalpComposerEvaluateJob } from "../../../../../lib/scalp/composer/pipeline";
+import { runScalpComposerWorkerJob } from "../../../../../lib/scalp/composer/pipeline";
 import { runScalpRegimeResearchJob } from "../../../../../lib/scalp/regimes";
 
 export default async function handler(
@@ -32,9 +32,8 @@ export default async function handler(
   setNoStoreHeaders(res);
 
   const hardCaps = resolveScalpComposerResearchHardCaps();
-  const batchSize = parseIntBounded(req.query.batchSize, 200, 1, 2_000);
-  const workerBatchSize = clampScalpComposerHardCap(
-    parseIntBounded(req.query.workerBatchSize, 12, 1, 600),
+  const batchSize = clampScalpComposerHardCap(
+    parseIntBounded(req.query.batchSize, 12, 1, 600),
     hardCaps.maxBatchSizeWorker,
   );
   const autoSuccessor = parseBool(req.query.autoSuccessor, true);
@@ -50,26 +49,25 @@ export default async function handler(
       busy: job.busy,
       job,
       version: "v4",
-      legacyRoute: "/api/scalp/v2/cron/evaluate",
+      legacyRoute: "/api/scalp/composer/cron/worker",
       message:
-        "v2 evaluate is disabled by default; pass legacyV2=true to run the old v2/v3 path.",
+        "v2 worker is disabled by default; pass legacyV2=true to run the old v2/v3 path.",
       chaining: {
         autoSuccessor: false,
-        workerBatchSize,
         downstream: null,
       },
     });
   }
-  const job = await runScalpComposerEvaluateJob({ batchSize });
+
+  const job = await runScalpComposerWorkerJob({ batchSize });
 
   let downstream: ScalpComposerCronInvokeResult | null = null;
   if (job.ok && !job.busy && autoSuccessor) {
     downstream = await invokeScalpComposerCronEndpointDetached(
       req,
-      "/api/scalp/v2/cron/worker",
+      "/api/scalp/composer/cron/promote",
       {
-        batchSize: workerBatchSize,
-        triggeredBy: "evaluate-v2",
+        triggeredBy: "worker-v2",
       },
       850,
     );
@@ -81,7 +79,6 @@ export default async function handler(
     job,
     chaining: {
       autoSuccessor,
-      workerBatchSize,
       downstream,
     },
   });

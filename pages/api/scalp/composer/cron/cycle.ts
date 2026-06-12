@@ -16,7 +16,7 @@ import {
   parseIntBounded,
   setNoStoreHeaders,
 } from "../../../../../lib/scalp/composer/http";
-import { runScalpComposerResearchJob } from "../../../../../lib/scalp/composer/pipeline";
+import { runScalpComposerFullAutoCycle } from "../../../../../lib/scalp/composer/pipeline";
 import { runScalpRegimeResearchJob } from "../../../../../lib/scalp/regimes";
 
 export default async function handler(
@@ -37,15 +37,14 @@ export default async function handler(
     parseIntBounded(req.query.batchSize, 100, 1, 600),
     batchSizeHardCap,
   );
-  const debug = parseBool(req.query.debug, false);
-  const autoSuccessor = parseBool(req.query.autoSuccessor, true);
   const autoContinue = parseBool(req.query.autoContinue, true);
-  const legacyV2 = parseBool(req.query.legacyV2, false);
   const selfHop = parseIntBounded(req.query.selfHop, 0, 0, 20);
   const selfMaxHops = Math.min(
     parseIntBounded(req.query.selfMaxHops, 6, 0, 50),
     hardCaps.maxSelfHops,
   );
+  const dryRun = parseBool(req.query.dryRun, false);
+  const legacyV2 = parseBool(req.query.legacyV2, false);
 
   if (!legacyV2) {
     const maxCandidatesPerCall = parseIntBounded(
@@ -61,75 +60,68 @@ export default async function handler(
     });
     return res.status(200).json({
       ok: job.ok,
-      busy: job.busy,
-      job,
+      out: {
+        discover: { ok: true, skipped: true, reason: "v4_only_mode" },
+        evaluate: job,
+        worker: { ok: true, skipped: true, reason: "v4_only_mode" },
+        promote: { ok: true, skipped: true, reason: "v4_only_mode" },
+      },
       version: "v4",
-      legacyRoute: "/api/scalp/v2/cron/research",
+      legacyRoute: "/api/scalp/composer/cron/cycle",
       message:
-        "v2 research is disabled by default; pass legacyV2=true to run the old v2/v3 research path.",
+        "v2 cycle is disabled by default; pass legacyV2=true to run the old v2/v3 cycle.",
       chaining: {
-        autoSuccessor: false,
         autoContinue: false,
         selfHop,
         selfMaxHops,
-        debug,
         batchSize,
         batchSizeHardCap,
-        downstream: null,
         selfRecall: null,
+        dryRun,
       },
     });
   }
 
-  const job = await runScalpComposerResearchJob({ batchSize, debugTiming: debug });
-
-  let downstream: ScalpComposerCronInvokeResult | null = null;
+  const out = await runScalpComposerFullAutoCycle({
+    researchBatchSize: batchSize,
+  });
+  const research = out.evaluate;
   let selfRecall: ScalpComposerCronInvokeResult | null = null;
   if (
-    job.ok &&
-    !job.busy &&
+    research.ok &&
+    !research.busy &&
     autoContinue &&
-    job.pendingAfter > 0 &&
+    research.pendingAfter > 0 &&
     selfHop < selfMaxHops
   ) {
     selfRecall = await invokeScalpComposerCronEndpointDetached(
       req,
-      "/api/scalp/v2/cron/research",
+      "/api/scalp/composer/cron/cycle",
       {
         batchSize,
-        autoSuccessor: autoSuccessor ? 1 : 0,
         autoContinue: 1,
         selfHop: selfHop + 1,
         selfMaxHops,
-        triggeredBy: "research-v2-self",
+        dryRun: dryRun ? 1 : 0,
+        triggeredBy: "cycle-research-self",
       },
       700,
     );
   }
-  if (job.ok && !job.busy && autoSuccessor && job.pendingAfter <= 0) {
-    downstream = await invokeScalpComposerCronEndpointDetached(
-      req,
-      "/api/scalp/v2/cron/promote",
-      {
-        triggeredBy: "research-v2",
-      },
-      850,
-    );
-  }
 
   return res.status(200).json({
-    ok: job.ok,
-    busy: job.busy,
-    job,
+    ok:
+      out.discover.ok &&
+      out.evaluate.ok &&
+      out.worker.ok &&
+      out.promote.ok,
+    out,
     chaining: {
-      autoSuccessor,
       autoContinue,
       selfHop,
       selfMaxHops,
-      debug,
       batchSize,
       batchSizeHardCap,
-      downstream,
       selfRecall,
     },
   });
