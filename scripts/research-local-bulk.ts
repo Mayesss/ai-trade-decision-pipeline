@@ -1,33 +1,33 @@
 /**
- * Local bulk research runner. Defaults to v2/session-composer research.
- * Set BULK_RESEARCH_VERSION=v4 only for explicit v4 regime diagnostics.
+ * Local bulk research runner. Defaults to the composer (session-structure) research.
+ * Set BULK_RESEARCH_VERSION=regimes only for explicit regime diagnostics.
  *
  * Usage: npx tsx scripts/research-local-bulk.ts
  *
  * Options (env vars):
- *   BULK_RESEARCH_VERSION=v2      — v2 by default; use v4/v5 explicitly
- *   BULK_SYMBOLS_PER_BATCH=4      — v2 only: symbols to process per batch
+ *   BULK_RESEARCH_VERSION=composer — composer by default; use regimes/research explicitly
+ *   BULK_SYMBOLS_PER_BATCH=4      — composer only: symbols to process per batch
  *   BULK_CANDIDATE_BATCH_SIZE=100 — candidate rows per research call
- *   BULK_BACKTEST_CONCURRENCY=4   — v2 only: replay concurrency
- *   BULK_TIME_BUDGET_MINUTES=30   — v2 only: time budget per batch
+ *   BULK_BACKTEST_CONCURRENCY=4   — composer only: replay concurrency
+ *   BULK_TIME_BUDGET_MINUTES=30   — composer only: time budget per batch
  *   BULK_MAX_BATCHES=100          — max batches before stopping (default: unlimited)
- *   BULK_SHARD_COUNT=4            — v2 only: split symbols across N processes
- *   BULK_SHARD_INDEX=0            — v2 only: shard index for this process
- *   BULK_WORK_LEASES=1            — v2 only: claim candidate rows
- *   BULK_RUN_V4_WALKFORWARD=0     — v4 only: run candidate envelopes only when set to 1
- *   BULK_V4_FORCE_VALIDITY=1      — v4 only: override classifier validity
- *   BULK_V4_CANDIDATE_FETCH_LIMIT=1000 — v4 only: candidate scan window before claiming work
- *   BULK_V4_CANDLE_CACHE_SOFT_CAP=16 — v4 only: cached 2-year symbol ranges
- *   BULK_V4_BACKFILL_CANDLES=1    — v4 only: fetch/save missing walkforward candles
- *   BULK_V4_WORK_LEASE_MINUTES=120 — v4 only: candidate claim TTL
- *   BULK_V4_PROGRESS_LOG_SECONDS=60 — v4 only: heartbeat while a candidate is running; 0 disables
- *   BULK_V5_LIMIT=25              — v5 only: deployments evaluated per batch (max 500)
- *   BULK_V5_STALE_OLDER_THAN_HOURS=144 — v5 only: re-evaluate rows whose evidence is older than this
- *   BULK_V5_SHARD_COUNT=1         — v5 only: split deployments across N parallel processes
- *   BULK_V5_SHARD_INDEX=0         — v5 only: which shard this process owns (0..count-1)
- *   BULK_RUN_DAY_ROBUSTNESS=1     — v2 only: run day finalist robustness after full bulk drain
- *   BULK_DAY_ROBUSTNESS_BATCH_SIZE=120 — v2 only: finalist robustness rows per batch
- *   BULK_DAY_ROBUSTNESS_MAX_BATCHES=0 — v2 only: 0 means run until robustness queue is empty
+ *   BULK_SHARD_COUNT=4            — composer only: split symbols across N processes
+ *   BULK_SHARD_INDEX=0            — composer only: shard index for this process
+ *   BULK_WORK_LEASES=1            — composer only: claim candidate rows
+ *   BULK_RUN_REGIME_WALKFORWARD=0     — regimes only: run candidate envelopes only when set to 1
+ *   BULK_REGIME_FORCE_VALIDITY=1      — regimes only: override classifier validity
+ *   BULK_REGIME_CANDIDATE_FETCH_LIMIT=1000 — regimes only: candidate scan window before claiming work
+ *   BULK_REGIME_CANDLE_CACHE_SOFT_CAP=16 — regimes only: cached 2-year symbol ranges
+ *   BULK_REGIME_BACKFILL_CANDLES=1    — regimes only: fetch/save missing walkforward candles
+ *   BULK_REGIME_WORK_LEASE_MINUTES=120 — regimes only: candidate claim TTL
+ *   BULK_REGIME_PROGRESS_LOG_SECONDS=60 — regimes only: heartbeat while a candidate is running; 0 disables
+ *   BULK_RESEARCH_LIMIT=25              — research only: deployments evaluated per batch (max 500)
+ *   BULK_RESEARCH_STALE_OLDER_THAN_HOURS=144 — research only: re-evaluate rows whose evidence is older than this
+ *   BULK_RESEARCH_SHARD_COUNT=1         — research only: split deployments across N parallel processes
+ *   BULK_RESEARCH_SHARD_INDEX=0         — research only: which shard this process owns (0..count-1)
+ *   BULK_RUN_DAY_ROBUSTNESS=1     — composer only: run day finalist robustness after full bulk drain
+ *   BULK_DAY_ROBUSTNESS_BATCH_SIZE=120 — composer only: finalist robustness rows per batch
+ *   BULK_DAY_ROBUSTNESS_MAX_BATCHES=0 — composer only: 0 means run until robustness queue is empty
  */
 import nextEnv from '@next/env';
 import os from 'node:os';
@@ -60,15 +60,27 @@ if (process.env.SCALP_PG_USE_HTTP === undefined) {
   process.env.SCALP_PG_USE_HTTP = '1';
 }
 
+// Back-compat: the pre-deversion BULK_V4_*/BULK_V5_*/BULK_RUN_V4_WALKFORWARD
+// knobs still work — copy them onto the new BULK_REGIME_*/BULK_RESEARCH_* keys
+// when the new key isn't already set.
+for (const key of Object.keys(process.env)) {
+  let mapped: string | null = null;
+  if (key === 'BULK_RUN_V4_WALKFORWARD') mapped = 'BULK_RUN_REGIME_WALKFORWARD';
+  else if (key.startsWith('BULK_V4_')) mapped = `BULK_REGIME_${key.slice('BULK_V4_'.length)}`;
+  else if (key.startsWith('BULK_V5_')) mapped = `BULK_RESEARCH_${key.slice('BULK_V5_'.length)}`;
+  if (mapped && process.env[mapped] === undefined) process.env[mapped] = process.env[key];
+}
+
 type BulkResearchVersion = 'v2' | 'v4' | 'v5';
 
 function resolveBulkResearchVersion(): BulkResearchVersion {
   const raw = String(process.env.BULK_RESEARCH_VERSION || process.env.SCALP_RESEARCH_VERSION || 'v2')
     .trim()
     .toLowerCase();
-  if (raw === 'v5') return 'v5';
-  if (raw === 'v2' || raw === 'legacy' || raw === 'legacy_v2') return 'v2';
-  if (raw === 'v4') return 'v4';
+  // Function names (preferred) and the legacy v2/v4/v5 values are both accepted.
+  if (raw === 'v5' || raw === 'research' || raw === 'promote') return 'v5';
+  if (raw === 'v4' || raw === 'regimes' || raw === 'regime') return 'v4';
+  if (raw === 'v2' || raw === 'composer' || raw === 'legacy' || raw === 'legacy_v2') return 'v2';
   return 'v2';
 }
 
@@ -136,9 +148,9 @@ function envNumber(name: string, fallback: number): number {
 
 const DISABLE_TIME_BUDGET = envBool('BULK_DISABLE_TIME_BUDGET', true);
 const WORK_LEASES = envBool('BULK_WORK_LEASES', true);
-const BULK_RUN_V4_WALKFORWARD = envBool('BULK_RUN_V4_WALKFORWARD', false);
-const BULK_V4_FORCE_VALIDITY = envBool('BULK_V4_FORCE_VALIDITY', false);
-const BULK_V4_BACKFILL_CANDLES = envBool('BULK_V4_BACKFILL_CANDLES', true);
+const BULK_RUN_REGIME_WALKFORWARD = envBool('BULK_RUN_REGIME_WALKFORWARD', false);
+const BULK_REGIME_FORCE_VALIDITY = envBool('BULK_REGIME_FORCE_VALIDITY', false);
+const BULK_REGIME_BACKFILL_CANDLES = envBool('BULK_REGIME_BACKFILL_CANDLES', true);
 const WORK_LEASE_MINUTES = Math.max(
   1,
   Math.min(24 * 60, Math.floor(Number(process.env.BULK_WORK_LEASE_MINUTES) || 30)),
@@ -198,34 +210,34 @@ const PERSISTENT_CANDLE_CACHE_SOFT_CAP = Math.max(
 );
 const PERSISTENT_V4_CANDLE_CACHE_SOFT_CAP = Math.max(
   1,
-  Math.floor(Number(process.env.BULK_V4_CANDLE_CACHE_SOFT_CAP) || 16),
+  Math.floor(Number(process.env.BULK_REGIME_CANDLE_CACHE_SOFT_CAP) || 16),
 );
-const BULK_V4_MIN_CANDLE_COVERAGE_RATIO = Math.max(
+const BULK_REGIME_MIN_CANDLE_COVERAGE_RATIO = Math.max(
   0.1,
-  Math.min(1, Number(process.env.BULK_V4_MIN_CANDLE_COVERAGE_RATIO) || 0.65),
+  Math.min(1, Number(process.env.BULK_REGIME_MIN_CANDLE_COVERAGE_RATIO) || 0.65),
 );
-const BULK_V4_BACKFILL_CHUNK_WEEKS = Math.max(
+const BULK_REGIME_BACKFILL_CHUNK_WEEKS = Math.max(
   1,
-  Math.min(26, Math.floor(Number(process.env.BULK_V4_BACKFILL_CHUNK_WEEKS) || 8)),
+  Math.min(26, Math.floor(Number(process.env.BULK_REGIME_BACKFILL_CHUNK_WEEKS) || 8)),
 );
-const BULK_V4_BACKFILL_MAX_REQUESTS_PER_CHUNK = Math.max(
+const BULK_REGIME_BACKFILL_MAX_REQUESTS_PER_CHUNK = Math.max(
   40,
-  Math.min(5000, Math.floor(Number(process.env.BULK_V4_BACKFILL_MAX_REQUESTS_PER_CHUNK) || 1200)),
+  Math.min(5000, Math.floor(Number(process.env.BULK_REGIME_BACKFILL_MAX_REQUESTS_PER_CHUNK) || 1200)),
 );
-const BULK_V4_WORK_LEASE_MINUTES = Math.max(
+const BULK_REGIME_WORK_LEASE_MINUTES = Math.max(
   5,
-  Math.min(24 * 60, Math.floor(Number(process.env.BULK_V4_WORK_LEASE_MINUTES) || 120)),
+  Math.min(24 * 60, Math.floor(Number(process.env.BULK_REGIME_WORK_LEASE_MINUTES) || 120)),
 );
-const BULK_V4_CANDIDATE_FETCH_LIMIT = Math.max(
+const BULK_REGIME_CANDIDATE_FETCH_LIMIT = Math.max(
   50,
   Math.min(
     5_000,
-    Math.floor(envNumber('BULK_V4_CANDIDATE_FETCH_LIMIT', Math.max(candidateBatchSize * 8, 1000))),
+    Math.floor(envNumber('BULK_REGIME_CANDIDATE_FETCH_LIMIT', Math.max(candidateBatchSize * 8, 1000))),
   ),
 );
-const BULK_V4_PROGRESS_LOG_SECONDS = Math.max(
+const BULK_REGIME_PROGRESS_LOG_SECONDS = Math.max(
   0,
-  Math.min(10 * 60, Math.floor(envNumber('BULK_V4_PROGRESS_LOG_SECONDS', 60))),
+  Math.min(10 * 60, Math.floor(envNumber('BULK_REGIME_PROGRESS_LOG_SECONDS', 60))),
 );
 const persistentV4CandleCache = new Map<string, ScalpCandle[]>();
 
@@ -278,24 +290,24 @@ async function getRunScalpRegimeResearchJob() {
   return runScalpRegimeResearchJob;
 }
 
-const BULK_V5_LIMIT = Math.max(1, Math.min(500, Math.floor(envNumber('BULK_V5_LIMIT', 25))));
-const BULK_V5_STALE_OLDER_THAN_HOURS = Math.max(
+const BULK_RESEARCH_LIMIT = Math.max(1, Math.min(500, Math.floor(envNumber('BULK_RESEARCH_LIMIT', 25))));
+const BULK_RESEARCH_STALE_OLDER_THAN_HOURS = Math.max(
   1,
-  Math.min(24 * 14, Math.floor(envNumber('BULK_V5_STALE_OLDER_THAN_HOURS', 24 * 6))),
+  Math.min(24 * 14, Math.floor(envNumber('BULK_RESEARCH_STALE_OLDER_THAN_HOURS', 24 * 6))),
 );
 // v5 sharding (separate from v2's BULK_SHARD_COUNT, which is a symbol-level
 // shard). v5 shards by hash(deployment_id) so each process owns a disjoint
-// slice of rows — safe to run N terminals at BULK_V5_SHARD_COUNT=N for true
+// slice of rows — safe to run N terminals at BULK_RESEARCH_SHARD_COUNT=N for true
 // parallelism (each is its own Node process, its own CPU core).
-const BULK_V5_SHARD_COUNT = Math.max(
+const BULK_RESEARCH_SHARD_COUNT = Math.max(
   1,
-  Math.min(128, Math.floor(envNumber('BULK_V5_SHARD_COUNT', 1))),
+  Math.min(128, Math.floor(envNumber('BULK_RESEARCH_SHARD_COUNT', 1))),
 );
-const BULK_V5_SHARD_INDEX = Math.max(
+const BULK_RESEARCH_SHARD_INDEX = Math.max(
   0,
   Math.min(
-    BULK_V5_SHARD_COUNT - 1,
-    Math.floor(envNumber('BULK_V5_SHARD_INDEX', 0)),
+    BULK_RESEARCH_SHARD_COUNT - 1,
+    Math.floor(envNumber('BULK_RESEARCH_SHARD_INDEX', 0)),
   ),
 );
 
@@ -529,23 +541,23 @@ async function runBatch(): Promise<boolean> {
   const batchLabel = BULK_RESEARCH_VERSION === 'v4'
     ? `${candidateBatchSize} v4 candidates`
     : BULK_RESEARCH_VERSION === 'v5'
-      ? `up to ${BULK_V5_LIMIT} v5 deployments`
+      ? `up to ${BULK_RESEARCH_LIMIT} v5 deployments`
       : `${symbolsPerBatch} symbols`;
   console.log(`\n--- Batch ${batchCount} (${batchLabel}, elapsed ${((Date.now() - globalStart) / 60000).toFixed(1)}m) ---`);
 
   if (BULK_RESEARCH_VERSION === 'v5') {
     const runEval = await getRunScalpResearchEvaluationBatch();
     const result = await runEval({
-      limit: BULK_V5_LIMIT,
-      staleOlderThanMs: BULK_V5_STALE_OLDER_THAN_HOURS * 60 * 60 * 1000,
-      shardCount: BULK_V5_SHARD_COUNT,
-      shardIndex: BULK_V5_SHARD_INDEX,
+      limit: BULK_RESEARCH_LIMIT,
+      staleOlderThanMs: BULK_RESEARCH_STALE_OLDER_THAN_HOURS * 60 * 60 * 1000,
+      shardCount: BULK_RESEARCH_SHARD_COUNT,
+      shardIndex: BULK_RESEARCH_SHARD_INDEX,
     });
     const elapsed = ((Date.now() - batchStart) / 1000).toFixed(1);
     totalProcessed += result.processed;
     totalSucceeded += result.succeeded;
-    const shardSuffix = BULK_V5_SHARD_COUNT > 1
-      ? ` shard=${BULK_V5_SHARD_INDEX}/${BULK_V5_SHARD_COUNT}`
+    const shardSuffix = BULK_RESEARCH_SHARD_COUNT > 1
+      ? ` shard=${BULK_RESEARCH_SHARD_INDEX}/${BULK_RESEARCH_SHARD_COUNT}`
       : '';
     console.log(
       `  ${elapsed}s | v5${shardSuffix} processed=${result.processed} succeeded=${result.succeeded} failed=${result.failed} enabled=${result.enabled} disabled=${result.disabled} mode=full:${result.fullCount}/incr:${result.incrementalCount}`,
@@ -585,18 +597,18 @@ async function runBatch(): Promise<boolean> {
     const runResearch = await getRunScalpRegimeResearchJob();
     const result = await runResearch({
       maxCandidatesPerCall: candidateBatchSize,
-      candidateFetchLimit: BULK_V4_CANDIDATE_FETCH_LIMIT,
-      forceValidity: BULK_V4_FORCE_VALIDITY,
+      candidateFetchLimit: BULK_REGIME_CANDIDATE_FETCH_LIMIT,
+      forceValidity: BULK_REGIME_FORCE_VALIDITY,
       candleCacheRef: persistentV4CandleCache,
       candleCacheSoftCap: PERSISTENT_V4_CANDLE_CACHE_SOFT_CAP,
-      autoBackfillCandles: BULK_V4_BACKFILL_CANDLES,
-      minCandleCoverageRatio: BULK_V4_MIN_CANDLE_COVERAGE_RATIO,
-      candleBackfillChunkWeeks: BULK_V4_BACKFILL_CHUNK_WEEKS,
-      candleBackfillMaxRequestsPerChunk: BULK_V4_BACKFILL_MAX_REQUESTS_PER_CHUNK,
-      workClaimLeaseMs: BULK_V4_WORK_LEASE_MINUTES * 60 * 1000,
-      progressIntervalMs: BULK_V4_PROGRESS_LOG_SECONDS * 1000,
-      runWalkforward: BULK_RUN_V4_WALKFORWARD,
-      onProgress: BULK_V4_PROGRESS_LOG_SECONDS > 0 ? logV4Progress : undefined,
+      autoBackfillCandles: BULK_REGIME_BACKFILL_CANDLES,
+      minCandleCoverageRatio: BULK_REGIME_MIN_CANDLE_COVERAGE_RATIO,
+      candleBackfillChunkWeeks: BULK_REGIME_BACKFILL_CHUNK_WEEKS,
+      candleBackfillMaxRequestsPerChunk: BULK_REGIME_BACKFILL_MAX_REQUESTS_PER_CHUNK,
+      workClaimLeaseMs: BULK_REGIME_WORK_LEASE_MINUTES * 60 * 1000,
+      progressIntervalMs: BULK_REGIME_PROGRESS_LOG_SECONDS * 1000,
+      runWalkforward: BULK_RUN_REGIME_WALKFORWARD,
+      onProgress: BULK_REGIME_PROGRESS_LOG_SECONDS > 0 ? logV4Progress : undefined,
     });
     const elapsed = ((Date.now() - batchStart) / 1000).toFixed(1);
     totalProcessed += result.processed;
@@ -644,14 +656,14 @@ async function runBatch(): Promise<boolean> {
       return false;
     }
     if (result.processed === 0) {
-      if (validityFailures > 0 && symbolsSaved === 0 && !BULK_V4_FORCE_VALIDITY) {
+      if (validityFailures > 0 && symbolsSaved === 0 && !BULK_REGIME_FORCE_VALIDITY) {
         console.log(
-          '  No regimes were saved because classifier validity failed. For a one-time bootstrap run, retry with BULK_V4_FORCE_VALIDITY=1.',
+          '  No regimes were saved because classifier validity failed. For a one-time bootstrap run, retry with BULK_REGIME_FORCE_VALIDITY=1.',
         );
       }
       console.log('\n  No v4 walkforward candidates processed — done for now.');
-      if (!BULK_RUN_V4_WALKFORWARD) {
-        console.log('  V4 candidate walkforward is disabled. Set BULK_RUN_V4_WALKFORWARD=1 for an explicit diagnostic run.');
+      if (!BULK_RUN_REGIME_WALKFORWARD) {
+        console.log('  V4 candidate walkforward is disabled. Set BULK_RUN_REGIME_WALKFORWARD=1 for an explicit diagnostic run.');
       }
       return false;
     }
@@ -877,24 +889,24 @@ async function main() {
     console.log(`Candidates per batch: ${candidateBatchSize}`);
   }
   if (BULK_RESEARCH_VERSION === 'v5') {
-    console.log(`V5 deployments per batch: ${BULK_V5_LIMIT}`);
-    console.log(`V5 stale threshold: ${BULK_V5_STALE_OLDER_THAN_HOURS}h`);
-    if (BULK_V5_SHARD_COUNT > 1) {
-      console.log(`V5 shard: ${BULK_V5_SHARD_INDEX}/${BULK_V5_SHARD_COUNT} (run all ${BULK_V5_SHARD_COUNT} shards in parallel for full coverage)`);
+    console.log(`V5 deployments per batch: ${BULK_RESEARCH_LIMIT}`);
+    console.log(`V5 stale threshold: ${BULK_RESEARCH_STALE_OLDER_THAN_HOURS}h`);
+    if (BULK_RESEARCH_SHARD_COUNT > 1) {
+      console.log(`V5 shard: ${BULK_RESEARCH_SHARD_INDEX}/${BULK_RESEARCH_SHARD_COUNT} (run all ${BULK_RESEARCH_SHARD_COUNT} shards in parallel for full coverage)`);
     } else {
-      console.log(`V5 shard: 1/1 (single process; set BULK_V5_SHARD_COUNT=N for parallel runs)`);
+      console.log(`V5 shard: 1/1 (single process; set BULK_RESEARCH_SHARD_COUNT=N for parallel runs)`);
     }
   } else if (BULK_RESEARCH_VERSION === 'v4') {
-    console.log(`V4 candidate walkforward: ${BULK_RUN_V4_WALKFORWARD ? 'enabled' : 'disabled (regime build only)'}`);
-    console.log(`V4 candidate fetch limit: ${BULK_V4_CANDIDATE_FETCH_LIMIT}`);
-    console.log(`V4 force validity: ${BULK_V4_FORCE_VALIDITY ? 'enabled' : 'disabled'}`);
+    console.log(`V4 candidate walkforward: ${BULK_RUN_REGIME_WALKFORWARD ? 'enabled' : 'disabled (regime build only)'}`);
+    console.log(`V4 candidate fetch limit: ${BULK_REGIME_CANDIDATE_FETCH_LIMIT}`);
+    console.log(`V4 force validity: ${BULK_REGIME_FORCE_VALIDITY ? 'enabled' : 'disabled'}`);
     console.log(`V4 candle cache soft cap: ${PERSISTENT_V4_CANDLE_CACHE_SOFT_CAP} symbol ranges`);
     console.log(
-      `V4 candle backfill: ${BULK_V4_BACKFILL_CANDLES ? 'enabled' : 'disabled'} (minCoverage=${Math.round(BULK_V4_MIN_CANDLE_COVERAGE_RATIO * 100)}%, chunkWeeks=${BULK_V4_BACKFILL_CHUNK_WEEKS})`,
+      `V4 candle backfill: ${BULK_REGIME_BACKFILL_CANDLES ? 'enabled' : 'disabled'} (minCoverage=${Math.round(BULK_REGIME_MIN_CANDLE_COVERAGE_RATIO * 100)}%, chunkWeeks=${BULK_REGIME_BACKFILL_CHUNK_WEEKS})`,
     );
-    console.log(`V4 work lease: ${BULK_V4_WORK_LEASE_MINUTES} minutes`);
+    console.log(`V4 work lease: ${BULK_REGIME_WORK_LEASE_MINUTES} minutes`);
     console.log(
-      `V4 progress logs: ${BULK_V4_PROGRESS_LOG_SECONDS > 0 ? `every ${BULK_V4_PROGRESS_LOG_SECONDS}s` : 'disabled'}`,
+      `V4 progress logs: ${BULK_REGIME_PROGRESS_LOG_SECONDS > 0 ? `every ${BULK_REGIME_PROGRESS_LOG_SECONDS}s` : 'disabled'}`,
     );
   } else {
     console.log(`Symbols per batch: ${symbolsPerBatch}`);

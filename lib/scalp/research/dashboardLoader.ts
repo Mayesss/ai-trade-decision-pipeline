@@ -183,7 +183,7 @@ function isConsistencyExceptionPromotionGate(value: unknown): boolean {
 }
 
 function resolveStaleThresholdMs(): number {
-  const envHours = Number(process.env.BULK_V5_STALE_OLDER_THAN_HOURS);
+  const envHours = Number(process.env.BULK_RESEARCH_STALE_OLDER_THAN_HOURS);
   const ms = Number.isFinite(envHours) && envHours > 0 ? envHours * 60 * 60_000 : 6 * 24 * 60 * 60_000;
   return Math.max(60 * 60_000, Math.floor(ms));
 }

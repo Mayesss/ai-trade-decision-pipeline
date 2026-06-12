@@ -228,8 +228,8 @@ MARKETAUX_API_KEY=...
 # SCALP_RESEARCH_HOLDOUT_WEEKS=12              # how many weeks of replay the evaluator buckets by cell
 # SCALP_RESEARCH_MIN_TRADES_PER_CELL=8         # min trades in a cell before its expectancy can gate entries
 # SCALP_RESEARCH_CLASSIFIER_VERSION=scalp_v4_macro_weekly_r1   # which regime classifier produces the cell labels
-# BULK_V5_LIMIT=25                       # bulk evaluator: max deployments per batch
-# BULK_V5_STALE_OLDER_THAN_HOURS=144     # bulk evaluator: re-evaluate rows older than this (default 6 days)
+# BULK_RESEARCH_LIMIT=25                       # bulk evaluator: max deployments per batch
+# BULK_RESEARCH_STALE_OLDER_THAN_HOURS=144     # bulk evaluator: re-evaluate rows older than this (default 6 days)
 
 # KV (Upstash REST)
 upstash_payasyougo_KV_REST_API_URL=https://...
@@ -370,9 +370,9 @@ npm run start
   - Current research entrypoint. Builds v4 weekly regime snapshots and runs v4 walkforward/envelope evaluation from `lib/scalp-v4`.
   - Legacy v2 endpoints (`/api/scalp/composer/cron/research`, `/evaluate`, `/worker`, `/cycle`) now default to v4-only compatibility shims. Pass `legacyV2=true` only for intentional v2/v3 replay/scoring work.
   - `scripts/research-local-bulk.ts` defaults to this v4 path. `BULK_CANDIDATE_BATCH_SIZE` controls `maxCandidatesPerCall`; set `BULK_RESEARCH_VERSION=v2` only for legacy v2/v3 drains.
-  - Local v4 bulk keeps a bounded per-process two-year `1m` candle range cache keyed by symbol/window. Tune with `BULK_V4_CANDLE_CACHE_SOFT_CAP` (default `16`) if memory pressure is high.
-  - v4 research backfills missing/insufficient two-year `1m` candle coverage before walkforward by default. Disable with `BULK_V4_BACKFILL_CANDLES=0` locally or `backfillCandles=false` on the API route.
-  - v4 research claims each deployment/window in `scalp_regime_walkforward_results` with `status='in_progress'` before expensive work, so parallel terminals skip candidates already claimed by another worker. Stale claims are retried after `BULK_V4_WORK_LEASE_MINUTES` / `workClaimLeaseMinutes` (default `120`).
+  - Local v4 bulk keeps a bounded per-process two-year `1m` candle range cache keyed by symbol/window. Tune with `BULK_REGIME_CANDLE_CACHE_SOFT_CAP` (default `16`) if memory pressure is high.
+  - v4 research backfills missing/insufficient two-year `1m` candle coverage before walkforward by default. Disable with `BULK_REGIME_BACKFILL_CANDLES=0` locally or `backfillCandles=false` on the API route.
+  - v4 research claims each deployment/window in `scalp_regime_walkforward_results` with `status='in_progress'` before expensive work, so parallel terminals skip candidates already claimed by another worker. Stale claims are retried after `BULK_REGIME_WORK_LEASE_MINUTES` / `workClaimLeaseMinutes` (default `120`).
   - Optional query params:
     - `maxCandidatesPerCall=<int>` / `batchSize=<int>` for v4 walkforward candidates per call.
     - `candidateFetchLimit=<int>` for the v4 candidate scan limit.
@@ -684,7 +684,7 @@ BULK_RESEARCH_VERSION=v5 npm exec tsx scripts/research-local-bulk.ts
 
 Per batch the script:
 
-1. Pulls up to `BULK_V5_LIMIT` deployments where `enabled = TRUE` AND (`v5_evaluated_at IS NULL` OR `v5_evaluated_at < NOW() - BULK_V5_STALE_OLDER_THAN_HOURS`).
+1. Pulls up to `BULK_RESEARCH_LIMIT` deployments where `enabled = TRUE` AND (`v5_evaluated_at IS NULL` OR `v5_evaluated_at < NOW() - BULK_RESEARCH_STALE_OLDER_THAN_HOURS`).
 2. For each, replays the last `SCALP_RESEARCH_HOLDOUT_WEEKS` of 1m candles (typically 30s–2min), bulk-loads regime snapshots, tags trades by cell, persists `v5_cell_evidence`.
 3. Sets `v5_enabled = TRUE` if any cell meets `trades >= SCALP_RESEARCH_MIN_TRADES_PER_CELL` AND `expectancyR > 0`.
 

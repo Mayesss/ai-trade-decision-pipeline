@@ -28,8 +28,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const staleThresholdMs = Math.max(
       60 * 60_000,
       Math.floor(
-        Number(process.env.BULK_V5_STALE_OLDER_THAN_HOURS) > 0
-          ? Number(process.env.BULK_V5_STALE_OLDER_THAN_HOURS) * 60 * 60_000
+        Number(process.env.BULK_RESEARCH_STALE_OLDER_THAN_HOURS) > 0
+          ? Number(process.env.BULK_RESEARCH_STALE_OLDER_THAN_HOURS) * 60 * 60_000
           : 6 * 24 * 60 * 60_000,
       ),
     );
