@@ -1,0 +1,7 @@
+{
+  "name": "pg-cloudflare",
+  "version": "1.3.0",
+  "description": "Local no-op stub. The real pg-cloudflare is only used by pg in the Cloudflare Workers runtime, which this project never targets (Vercel/Node only).",
+  "main": "index.js",
+  "license": "MIT"
+}
