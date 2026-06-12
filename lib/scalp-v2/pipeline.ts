@@ -50,7 +50,18 @@ import {
 import {
   fingerprintSessionStructureAdaptivePriors,
   loadSessionStructureAdaptivePriors,
+  predictSessionStructureStageAPass,
+  type SessionStructureStageAPrediction,
 } from "./sessionStructureAdaptiveSearch";
+import {
+  applySurrogatePrescreen,
+  resolveSessionStructureSurrogateConfig,
+} from "./sessionStructureSurrogate";
+import {
+  generateOffspring,
+  loadSessionStructureSurvivors,
+  resolveSessionStructureEvolutionConfig,
+} from "./sessionStructureEvolution";
 import {
   evaluateDayRobustnessForPromotion,
   resolveDayRobustnessPolicy,
@@ -123,6 +134,7 @@ import {
   loadScalpV2PreviousWeekResults,
   loadScalpV2CandidateWeeklyCache,
   upsertScalpV2CandidateWeeklyCache,
+  replaceScalpV2PatternTradeVectors,
   pruneScalpV2WeeklyCache,
   loadScalpV2ScopeWindowStageStats,
   listScalpV2Deployments,
@@ -142,6 +154,10 @@ import {
   upsertScalpV2ResearchHighlights,
   upsertScalpV2RuntimeConfig,
 } from "./db";
+import {
+  extractScalpV2PatternTradeVectors,
+  type ScalpV2PatternTradeVector,
+} from "./patternEvidence";
 import {
   isScalpV2DiscoverSymbolAllowed,
   isScalpV2SundayUtc,
@@ -225,7 +241,6 @@ function buildResearchWarmUpScopeHash(params: {
   }>;
   maxCandidatesPerSession: number;
   enabledDeploymentVariantSeeds: string[];
-  adaptivePriorFingerprint: string;
   noveltyBudgetFingerprint: string;
 }): string {
   const normalizedScopes = params.scopes
@@ -247,11 +262,15 @@ function buildResearchWarmUpScopeHash(params: {
   const payload = JSON.stringify({
     version: RESEARCH_WARM_UP_SCOPE_HASH_VERSION,
     strategyId: SESSION_STRUCTURE_COMPOSER_V1_STRATEGY_ID,
-    sessionComposerVersion: "session_structure_composer_v1_3_adaptive_novelty_r1",
-    adaptivePriorFingerprint: crypto
-      .createHash("sha256")
-      .update(params.adaptivePriorFingerprint || "adaptive:none")
-      .digest("hex"),
+    sessionComposerVersion:
+      "session_structure_composer_v1_4_adaptive_novelty_evolution_r2",
+    // NOTE: the warm-up cache key is intentionally STRUCTURAL only. Learned
+    // signals (adaptive priors, survivor pool) are deliberately EXCLUDED — they
+    // churn every batch as concurrent workers evaluate rows, and including them
+    // made the hash change every batch → warm-up regenerated forever and the
+    // backtest never ran. Per-window freshness comes from windowToTs (the
+    // warm-up state is keyed by it); priors/survivors still steer generation,
+    // they just don't bust the cache mid-window.
     noveltyBudgetFingerprint: crypto
       .createHash("sha256")
       .update(params.noveltyBudgetFingerprint || "novelty:none")
@@ -613,6 +632,8 @@ interface ScalpV2PromotionPolicy {
   minWorstNetR: number;
   maxTopWeekPnlConcentrationPct: number;
   minFourWeekNetR: number;
+  minStageCLowerBoundR: number;
+  minStageCTradesForPromotion: number;
   fourWeekGroupCount: number;
   fourWeekGroupSize: number;
   exactLoserSuspendMs: number;
@@ -678,6 +699,11 @@ type ScalpV2WorkerPolicy = {
   stageC: ScalpV2WorkerStagePolicy;
   minCandles: number;
   maxHighlightsPerRun: number;
+  earlyAbortAfterPct: number;
+  earlyAbortNetRMult: number;
+  stage0Enabled: boolean;
+  stage0Weeks: number;
+  stage0ClearFailNetRMult: number;
 };
 
 type ScalpV2WorkerStageResult = {
@@ -709,6 +735,13 @@ type ScalpV2WorkerStageResult = {
 	  v3Ranking?: Record<string, unknown> | null;
 	  v3Bootstrap?: Record<string, unknown> | null;
 	  v3Holdout?: Record<string, unknown> | null;
+	  /** Stage-0 cheap-gate stats (set on stage A when the gate ran). */
+	  stage0?: {
+	    weeks: number;
+	    netR: number;
+	    trades: number;
+	    skipped: boolean;
+	  } | null;
 	};
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -949,6 +982,26 @@ function resolvePromotionPolicy(): ScalpV2PromotionPolicy {
       55,
     ),
     minFourWeekNetR: toFinite(process.env.SCALP_V2_PROMOTION_MIN_4W_NET_R, 4),
+    // Stage-C statistical-significance gate: require the 95% one-sided lower
+    // confidence bound of per-trade expectancy (meanR - 1.64*stderrR, computed
+    // in computeScalpV2V3EdgeScore) to clear this floor before a candidate can
+    // promote. Defends against statistically-insignificant edges that clear the
+    // raw netR threshold purely on variance. Default -0.05 (a slightly-negative
+    // worst-case edge is tolerated) BUT only when backed by the higher trade
+    // count below, so the looser bound rests on a more reliable estimate.
+    minStageCLowerBoundR: toFinite(
+      process.env.SCALP_V2_PROMOTION_MIN_STAGE_C_LOWER_BOUND_R,
+      -0.05,
+    ),
+    // Trade-count floor coupled to the relaxed lower-bound gate above. Stage C's
+    // own minTrades (24) admits a candidate; promotion demands more samples so a
+    // -0.05 lower bound isn't riding on a thin, high-variance estimate.
+    minStageCTradesForPromotion: Math.max(
+      0,
+      Math.floor(
+        toFinite(process.env.SCALP_V2_PROMOTION_MIN_STAGE_C_TRADES, 40),
+      ),
+    ),
     fourWeekGroupCount: Math.max(
       1,
       Math.min(
@@ -1145,6 +1198,30 @@ function resolveWorkerPolicy(): ScalpV2WorkerPolicy {
         500,
         toPositiveInt(process.env.SCALP_V2_WORKER_MAX_HIGHLIGHTS_PER_RUN, 120, 500),
       ),
+    ),
+    // Abort a full-stage replay this fraction of the way through if netR is
+    // already < minNetR * earlyAbortNetRMult. Lower pct = abort sooner.
+    earlyAbortAfterPct: Math.max(
+      5,
+      Math.min(
+        100,
+        toPositiveInt(process.env.SCALP_V2_WORKER_EARLY_ABORT_AFTER_PCT, 35, 100),
+      ),
+    ),
+    earlyAbortNetRMult: Math.min(
+      0,
+      toFinite(process.env.SCALP_V2_WORKER_EARLY_ABORT_NET_R_MULT, -2),
+    ),
+    // Stage-0: a cheap freshest-N-week replay before the full stage-A replay;
+    // drops clear-fails (netR < minNetR * stage0ClearFailNetRMult).
+    stage0Enabled: envBool("SCALP_V2_WORKER_STAGE0_ENABLED", true),
+    stage0Weeks: Math.max(
+      1,
+      Math.min(4, toPositiveInt(process.env.SCALP_V2_WORKER_STAGE0_WEEKS, 1, 4)),
+    ),
+    stage0ClearFailNetRMult: Math.min(
+      0,
+      toFinite(process.env.SCALP_V2_WORKER_STAGE0_CLEAR_FAIL_NET_R_MULT, -2),
     ),
   };
 }
@@ -3093,14 +3170,31 @@ export async function runScalpV2ResearchJob(params: {
           }).catch(() => null),
         )
       : null;
-    const adaptivePriorFingerprint =
-      fingerprintSessionStructureAdaptivePriors(adaptivePriors);
     const envNumberOr = (name: string, fallback: number): number => {
       const raw = String(process.env[name] || "").trim();
       if (!raw) return fallback;
       const value = Number(raw);
       return Number.isFinite(value) ? value : fallback;
     };
+    // Evolutionary local-search: breed neighbours of high-fitness survivors so
+    // the grid search reaches good cells sooner. Fitness = lowerBoundR (the #4
+    // significance statistic). Offspring are ordinary grid cells (canonical
+    // deterministic tuneIds), prioritised — never new strategy identities.
+    const evolutionConfig = resolveSessionStructureEvolutionConfig();
+    const survivorPool =
+      evolutionConfig.enabled && adaptiveSearchEnabled
+        ? await withTiming("warmup.load_session_survivors", () =>
+            loadSessionStructureSurvivors({
+              windowToTs,
+              nowMs: nowTs,
+              limit: evolutionConfig.maxRows,
+              topKScoped: evolutionConfig.topKScoped,
+              topKGlobal: evolutionConfig.topKGlobal,
+              minFitness: evolutionConfig.minFitness,
+              minTrades: evolutionConfig.minTrades,
+            }).catch(() => null),
+          )
+        : null;
     const noveltyBudget = {
       enabled: envBool("SCALP_V2_SESSION_NOVELTY_BUDGET_ENABLED", true),
       exploitPct: envNumberOr("SCALP_V2_SESSION_NOVELTY_EXPLOIT_PCT", 0.55),
@@ -3120,13 +3214,23 @@ export async function runScalpV2ResearchJob(params: {
         "SCALP_V2_SESSION_NOVELTY_EXPLOIT_ADJ_THRESHOLD",
         0.05,
       ),
+      // Evolution reserved slice (carved from explore) + explore floor. Env-only
+      // so the budget (and thus the warm-up hash) stays stable; when no offspring
+      // exist the reserved pass simply finds none and explore is untouched.
+      evolutionPct: evolutionConfig.enabled
+        ? envNumberOr("SCALP_V2_SESSION_EVOLUTION_PCT", 0.15)
+        : 0,
+      minExplorePct: envNumberOr("SCALP_V2_SESSION_NOVELTY_MIN_EXPLORE_PCT", 0.05),
     };
+    const evolutionScoreBoost = envNumberOr(
+      "SCALP_V2_SESSION_EVOLUTION_SCORE_BOOST",
+      0.06,
+    );
     const noveltyBudgetFingerprint = JSON.stringify(noveltyBudget);
     const scopeHash = buildResearchWarmUpScopeHash({
       scopes,
       maxCandidatesPerSession,
       enabledDeploymentVariantSeeds,
-      adaptivePriorFingerprint,
       noveltyBudgetFingerprint,
     });
     const warmUpState = await withTiming("warmup.load_state", () =>
@@ -3187,6 +3291,17 @@ export async function runScalpV2ResearchJob(params: {
 	          1,
 	          maxCandidatesPerSession - v3TemporalBudget,
 	        );
+	        const scopeKeyStr = `${scope.venue}:${String(scope.symbol).toUpperCase()}:${scope.session}`;
+	        const offspring = survivorPool
+	          ? generateOffspring({
+	              scopedSurvivors: survivorPool.scoped[scopeKeyStr] || [],
+	              globalSurvivors: survivorPool.global,
+	              evaluatedFingerprints: new Set(
+	                survivorPool.evaluatedByScope[scopeKeyStr] || [],
+	              ),
+	              config: evolutionConfig,
+	            })
+	          : null;
 	        const composerCandidates = buildScalpV2SessionStructureComposerGrid({
 	          venue: scope.venue,
 	          symbol: scope.symbol,
@@ -3201,6 +3316,8 @@ export async function runScalpV2ResearchJob(params: {
 	          ),
 	          adaptivePriors,
 	          noveltyBudget,
+	          offspring,
+	          evolutionScoreBoost,
 	        });
 	        poolSizeTotal += composerCandidates.length;
 	        const scopeCandidates: InMemoryCandidate[] = [];
@@ -3445,6 +3562,12 @@ export async function runScalpV2ResearchJob(params: {
                 budget: noveltyBudget,
               }
             : null,
+          sessionComposerEvolution: c.dsl.evolution
+            ? {
+                ...c.dsl.evolution,
+                source: "session_structure_composer_evolutionary",
+              }
+            : null,
           researchReferences: c.dsl.referenceStrategyIds,
 	          researchSupportScore: c.dsl.supportScore,
 	          researchRegimeGateId: c.dsl.regimeGateId || null,
@@ -3481,7 +3604,7 @@ export async function runScalpV2ResearchJob(params: {
 	              version: adaptivePriors.version,
 	              fingerprint: crypto
 	                .createHash("sha256")
-	                .update(adaptivePriorFingerprint)
+	                .update(fingerprintSessionStructureAdaptivePriors(adaptivePriors))
 	                .digest("hex"),
 	              diagnostics: adaptivePriors.diagnostics,
 	            }
@@ -3816,6 +3939,14 @@ export async function runScalpV2ResearchJob(params: {
     };
     const smartSkipped: SmartSkipEntry[] = [];
     let smartSkippedPersisted = 0;
+    type SurrogateSkipEntry = {
+      candidate: InMemoryCandidate;
+      probability: number;
+      samples: number;
+      source: string;
+    };
+    const surrogateSkipped: SurrogateSkipEntry[] = [];
+    let surrogateSkippedPersisted = 0;
 
     // Pre-compute stage A week starts for the weeklyNetR pre-filter.
     const stageAFromTs = trainingWindowToTs - workerPolicy.stageA.weeks * ONE_WEEK_MS;
@@ -3841,7 +3972,7 @@ export async function runScalpV2ResearchJob(params: {
       };
     };
 
-    const selected = notYetEvaluated.filter((c) => {
+    let selected = notYetEvaluated.filter((c) => {
       const key = researchCandidateKey(c);
       const prev = previousResults.get(key);
       if (!prev) return true; // Never tested — must run
@@ -4028,6 +4159,93 @@ export async function runScalpV2ResearchJob(params: {
       }
     }
 
+    // Surrogate pre-screen rejects (status→rejected, freshness-windowed like
+    // smart-skip — re-eligible in future windows). Distinct metadata block so
+    // the reason is auditable; no prior stage-A replay exists for these.
+    async function persistSurrogateSkippedCandidates(): Promise<number> {
+      if (!surrogateSkipped.length) return 0;
+      const stageBSkeleton = buildWorkerStageSkeleton({
+        stage: workerPolicy.stageB,
+        fromTs: windowToTs - workerPolicy.stageB.weeks * ONE_WEEK_MS,
+        toTs: windowToTs,
+        reason: "blocked_surrogate_skip",
+      });
+      const stageCSkeleton = buildWorkerStageSkeleton({
+        stage: workerPolicy.stageC,
+        fromTs: windowToTs - workerPolicy.stageC.weeks * ONE_WEEK_MS,
+        toTs: windowToTs,
+        reason: "blocked_surrogate_skip",
+      });
+      const rows = surrogateSkipped.map((entry) => {
+        const c = entry.candidate;
+        const stageA = buildWorkerStageSkeleton({
+          stage: workerPolicy.stageA,
+          fromTs: stageAFromTs,
+          toTs: windowToTs,
+          reason: "surrogate_skip_low_pass_prob",
+        });
+        const workerMeta = {
+          version: "v2_research_surrogate_skip_r1",
+          evaluatedAtMs: nowTs,
+          windowToTs,
+          surrogateSkip: {
+            probability: entry.probability,
+            samples: entry.samples,
+            source: entry.source,
+          },
+          stageA,
+          stageB: stageBSkeleton,
+          stageC: stageCSkeleton,
+          finalPass: false,
+        };
+        return {
+          venue: c.venue,
+          symbol: c.symbol,
+          strategyId: c.strategyId,
+          tuneId: c.tuneId,
+          entrySessionProfile: c.session,
+          score: c.score,
+          status: "rejected" as const,
+          reasonCodes: [
+            "SCALP_V2_RESEARCH_INLINE",
+            "SCALP_V2_SURROGATE_SKIP_LOW_PASS_PROB",
+          ],
+          metadata: {
+            evaluatedAtMs: nowTs,
+            evaluator: "v2_research_inline",
+            worker: workerMeta,
+            researchCandidateId: c.candidateId,
+            researchDsl: c.dsl.blocksByFamily,
+            researchReferences: c.dsl.referenceStrategyIds,
+            researchSupportScore: c.dsl.supportScore,
+            researchRegimeGateId: c.dsl.regimeGateId || null,
+            composerModel: c.dsl.model,
+            v3Ranking: c.v3Ranking || null,
+            v3TemporalFilter: c.v3TemporalFilter || null,
+          },
+        };
+      });
+      try {
+        await withTiming("research.persist_surrogate_skips", () =>
+          upsertScalpV2Candidates({ rows }),
+        );
+        return rows.length;
+      } catch {
+        let persisted = 0;
+        for (const row of rows) {
+          try {
+            await withTiming("research.persist_surrogate_skip_single", () =>
+              upsertScalpV2Candidates({ rows: [row] }),
+            );
+            persisted += 1;
+          } catch {
+            // Leave the row discovered; a later batch can retry the skip.
+          }
+        }
+        return persisted;
+      }
+    }
+
     selected.sort((a, b) => {
       const left = previousPriority(a);
       const right = previousPriority(b);
@@ -4073,6 +4291,80 @@ export async function runScalpV2ResearchJob(params: {
 
     smartSkippedPersisted = await persistSmartSkippedCandidates();
 
+    // --- Surrogate pre-screen (#1): predict P(stage-A pass) from block plan,
+    // evidence-gated skip the hopeless (capped, never exploration offspring),
+    // and prioritise survivors so promising candidates backtest first. Reuses
+    // the already-loaded adaptive priors — no extra DB load. ---
+    const surrogateConfig = resolveSessionStructureSurrogateConfig();
+    let surrogateSkippedThisRun = 0;
+    if (surrogateConfig.enabled && adaptivePriors && selected.length > 0) {
+      const surrogatePredictions = new Map<
+        InMemoryCandidate,
+        SessionStructureStageAPrediction
+      >();
+      const predict = (c: InMemoryCandidate): SessionStructureStageAPrediction => {
+        const cached = surrogatePredictions.get(c);
+        if (cached) return cached;
+        const plan = asRecord(c.dsl?.sessionComposerPlan);
+        const prediction =
+          plan.contextId && plan.levelId && plan.triggerId
+            ? predictSessionStructureStageAPass({
+                plan: plan as any,
+                venue: c.venue,
+                symbol: c.symbol,
+                session: c.session,
+                priors: adaptivePriors,
+              })
+            : {
+                probability: adaptivePriors?.stageABaseRate ?? 0,
+                samples: 0,
+                source: "base" as const,
+              };
+        surrogatePredictions.set(c, prediction);
+        return prediction;
+      };
+      const tieBreak = (a: InMemoryCandidate, b: InMemoryCandidate) =>
+        a.symbol.localeCompare(b.symbol) || a.tuneId.localeCompare(b.tuneId);
+      // Use the helper only for the gated/capped SKIP decision (prioritise off);
+      // the pipeline owns ordering so it can keep proven passers ahead of P.
+      const surrogateOutcome = applySurrogatePrescreen({
+        candidates: selected,
+        predict,
+        config: { ...surrogateConfig, prioritize: false },
+        isExploration: (c) => Boolean(c.dsl?.evolution),
+        tieBreak,
+      });
+      if (surrogateOutcome.skipped.length > 0) {
+        const skipSet = new Set(surrogateOutcome.skipped.map((s) => s.candidate));
+        for (const s of surrogateOutcome.skipped) {
+          surrogateSkipped.push({
+            candidate: s.candidate,
+            probability: s.prediction.probability,
+            samples: s.prediction.samples,
+            source: s.prediction.source,
+          });
+        }
+        selected = selected.filter((c) => !skipSet.has(c));
+        surrogateSkippedPersisted = await persistSurrogateSkippedCandidates();
+        surrogateSkippedThisRun = surrogateOutcome.skipped.length;
+      }
+      // Prioritise: proven passers first (passRank), then surrogate P(pass) for
+      // the never-tested majority, then the existing netR/score tiebreaks.
+      if (surrogateConfig.prioritize) {
+        selected.sort((a, b) => {
+          const la = previousPriority(a);
+          const lb = previousPriority(b);
+          return (
+            lb.passRank - la.passRank ||
+            predict(b).probability - predict(a).probability ||
+            lb.netR - la.netR ||
+            lb.score - la.score ||
+            tieBreak(a, b)
+          );
+        });
+      }
+    }
+
     // --- Backtest remaining candidates in one pass ---
     await emitResearchHeartbeat({
       phase: "selection_complete",
@@ -4084,6 +4376,8 @@ export async function runScalpV2ResearchJob(params: {
         skippedByClearFail,
         skippedByNetRPreFilter,
         smartSkippedPersisted,
+        surrogateSkippedPersisted,
+        surrogateSkippedThisRun,
       },
     });
     const claimPool = selected.slice(
@@ -4255,6 +4549,8 @@ export async function runScalpV2ResearchJob(params: {
     let incrementalStageReplays = 0;
     let fullStageReplays = 0;
     let earlyAbortedStageReplays = 0;
+    let stage0Replays = 0;
+    let stage0Skipped = 0;
     let cachedStageReuses = 0;
     let newestWeekReplayReuses = 0;
     let stageBCacheHits = 0;
@@ -4387,6 +4683,18 @@ export async function runScalpV2ResearchJob(params: {
       metrics: ScalpV2WorkerStageWeeklyMetrics;
     }> = [];
     const pendingCacheWriteKeys = new Set<string>();
+    const pendingPatternTradeVectorWrites: Array<{
+      identity: {
+        venue: ScalpV2Venue;
+        symbol: string;
+        strategyId: string;
+        tuneId: string;
+        session: ScalpV2Session;
+        windowToTs: number;
+        stageId: "c";
+      };
+      rows: ScalpV2PatternTradeVector[];
+    }> = [];
     type CandidateUpsertRow = Parameters<typeof upsertScalpV2Candidates>[0]["rows"][number];
     type PendingCandidateUpsert = {
       mode: "evaluated" | "rejected";
@@ -4430,6 +4738,23 @@ export async function runScalpV2ResearchJob(params: {
             replayErrors += 1;
             failed += 1;
           }
+        }
+      }
+    }
+
+    async function flushPendingPatternTradeVectorWrites(): Promise<void> {
+      if (!pendingPatternTradeVectorWrites.length) return;
+      const rows = pendingPatternTradeVectorWrites.splice(
+        0,
+        pendingPatternTradeVectorWrites.length,
+      );
+      for (const row of rows) {
+        try {
+          await withTiming("research.upsert_pattern_trade_vectors", () =>
+            replaceScalpV2PatternTradeVectors(row).catch(() => 0),
+          );
+        } catch {
+          persistErrors += 1;
         }
       }
     }
@@ -4684,6 +5009,39 @@ export async function runScalpV2ResearchJob(params: {
       });
     }
 
+    function enqueuePatternTradeVectorWrite(params: {
+      runtime: StageCandidateRuntime;
+      trades: ScalpReplayTrade[];
+    }) {
+      const candidate = params.runtime.candidate;
+      const behaviorFingerprint = String(candidate.dsl?.behaviorFingerprint || "").trim();
+      if (!behaviorFingerprint) return;
+      const rows = extractScalpV2PatternTradeVectors({
+        candidateId: Number.isFinite(Number(candidate.rowId)) ? Number(candidate.rowId) : null,
+        venue: candidate.venue,
+        symbol: candidate.symbol,
+        strategyId: candidate.strategyId,
+        tuneId: candidate.tuneId,
+        session: candidate.session,
+        windowToTs,
+        behaviorFingerprint,
+        trades: params.trades,
+        bucketMinutes: 60,
+      });
+      pendingPatternTradeVectorWrites.push({
+        identity: {
+          venue: candidate.venue,
+          symbol: candidate.symbol,
+          strategyId: candidate.strategyId,
+          tuneId: candidate.tuneId,
+          session: candidate.session,
+          windowToTs,
+          stageId: "c",
+        },
+        rows,
+      });
+    }
+
     async function evaluateCandidateStage(
       runtime: StageCandidateRuntime,
       stage: ScalpV2WorkerStagePolicy,
@@ -4808,6 +5166,7 @@ export async function runScalpV2ResearchJob(params: {
 	      let v3StageRanking: Record<string, unknown> | null = null;
 	      let v3Bootstrap: Record<string, unknown> | null = null;
 	      let v3Holdout: Record<string, unknown> | null = null;
+	      let stagePatternTrades: ScalpReplayTrade[] | null = null;
 
       if (missingPriorWeeks) {
         if (stageCandles.length < workerPolicy.minCandles) {
@@ -4818,20 +5177,76 @@ export async function runScalpV2ResearchJob(params: {
             reason: "insufficient_candles",
           });
         }
+        // Stage-0 cheap gate (#2): on stage A only, run a freshest-N-week replay
+        // (reusing already-loaded candles) and drop clear-fails before the full
+        // 4-week replay. Empirical, so it only rejects clearly-losing fresh data.
+        if (
+          stage.id === "a" &&
+          workerPolicy.stage0Enabled &&
+          workerPolicy.stage0Weeks < stage.weeks
+        ) {
+          const stage0FromTs = stageToTs - workerPolicy.stage0Weeks * ONE_WEEK_MS;
+          const stage0Candles = getCachedCandleWindow({
+            symbol: candidate.symbol,
+            candles: symbolCandles,
+            fromTs: stage0FromTs,
+            toTs: stageToTs,
+          });
+          if (stage0Candles.length >= workerPolicy.minCandles) {
+            const stage0ClearFailNetR =
+              stage.minNetR * workerPolicy.stage0ClearFailNetRMult;
+            const stage0Replay = await withTiming("research.replay_stage0", () =>
+              runScalpReplay({
+                candles: stage0Candles,
+                pipSize: runtime.symbolPipSize,
+                config: runtime.replayConfig,
+                captureTimeline: false,
+                earlyAbortNetR: stage0ClearFailNetR,
+                earlyAbortAfterPct: workerPolicy.earlyAbortAfterPct,
+              }),
+            );
+            stage0Replays += 1;
+            const stage0Trades = stage0Replay.trades.length;
+            const stage0NetR = stage0Replay.trades.reduce(
+              (acc, t) => acc + (Number(t.rMultiple) || 0),
+              0,
+            );
+            if (stage0NetR < stage0ClearFailNetR) {
+              stage0Skipped += 1;
+              return {
+                ...buildWorkerStageSkeleton({
+                  stage,
+                  fromTs,
+                  toTs: stageToTs,
+                  reason: "stage0_clear_fail",
+                }),
+                stage0: {
+                  weeks: workerPolicy.stage0Weeks,
+                  netR: stage0NetR,
+                  trades: stage0Trades,
+                  skipped: true,
+                },
+              };
+            }
+          }
+        }
         const fullReplay = await withTiming("research.replay_full_stage", () =>
           runScalpReplay({
             candles: stageCandles,
             pipSize: runtime.symbolPipSize,
             config: runtime.replayConfig,
             captureTimeline: false,
-            earlyAbortNetR: stage.minNetR * -2,
-            earlyAbortAfterPct: 50,
+            earlyAbortNetR: stage.minNetR * workerPolicy.earlyAbortNetRMult,
+            earlyAbortAfterPct: workerPolicy.earlyAbortAfterPct,
           }),
         );
         fullStageReplays += 1;
         const fullReplayEarlyAborted = Boolean(fullReplay.earlyAborted);
         if (fullReplayEarlyAborted) earlyAbortedStageReplays += 1;
         logResearch("replay_done", `${stage.id}:full:${candidate.symbol}`);
+        if (stage.id === "c") {
+          stagePatternTrades = fullReplay.trades;
+        }
 	        weeklyByStart = buildWorkerStageWeeklyMetricsMap({
 	          trades: fullReplay.trades,
 	          fromTs,
@@ -5000,6 +5415,12 @@ export async function runScalpV2ResearchJob(params: {
       const gate = evaluateWorkerStageGate({ stage, stageResult });
       stageResult.passed = gate.passed;
       stageResult.reason = gate.reason || "stage_passed";
+      if (stage.id === "c" && stageResult.passed && stagePatternTrades) {
+        enqueuePatternTradeVectorWrite({
+          runtime,
+          trades: stagePatternTrades,
+        });
+      }
       return stageResult;
     }
 
@@ -5235,9 +5656,26 @@ export async function runScalpV2ResearchJob(params: {
             workerStage: params.stage.id,
             workerStageProcessed: processedInStage + batch.length,
             workerStageTotal: params.candidates.length,
+            stageAPass,
+            stageAFail,
+            stageBPass,
+            stageBFail,
             stageCPass,
+            stageCFail,
             persisted: persistedCount,
             replayErrors,
+            persistErrors,
+            stage0Replays,
+            stage0Skipped,
+            incrementalStageReplays,
+            fullStageReplays,
+            earlyAbortedStageReplays,
+            cachedStageReuses,
+            newestWeekReplayReuses,
+            stageBCacheHits,
+            stageCCacheHits,
+            deferredByCandleCoverage,
+            finalizedCoverageDeferrals,
           },
         });
 
@@ -5343,9 +5781,26 @@ export async function runScalpV2ResearchJob(params: {
             workerStage: params.stage.id,
             workerStageProcessed: processedInStage,
             workerStageTotal: params.candidates.length,
+            stageAPass,
+            stageAFail,
+            stageBPass,
+            stageBFail,
             stageCPass,
+            stageCFail,
             persisted: persistedCount,
             replayErrors,
+            persistErrors,
+            stage0Replays,
+            stage0Skipped,
+            incrementalStageReplays,
+            fullStageReplays,
+            earlyAbortedStageReplays,
+            cachedStageReuses,
+            newestWeekReplayReuses,
+            stageBCacheHits,
+            stageCCacheHits,
+            deferredByCandleCoverage,
+            finalizedCoverageDeferrals,
           },
         });
 
@@ -5356,6 +5811,9 @@ export async function runScalpV2ResearchJob(params: {
             ),
           );
           pendingCacheWrites.length = 0;
+        }
+        if (pendingPatternTradeVectorWrites.length >= 20) {
+          await flushPendingPatternTradeVectorWrites();
         }
       }
 
@@ -5409,6 +5867,7 @@ export async function runScalpV2ResearchJob(params: {
     }
 
     await flushPendingCandidateUpserts();
+    await flushPendingPatternTradeVectorWrites();
 
     // Flush remaining cache writes
     if (pendingCacheWrites.length > 0) {
@@ -5437,6 +5896,7 @@ export async function runScalpV2ResearchJob(params: {
       skippedByClearFail,
       skippedByNetRPreFilter,
       smartSkippedPersisted,
+      surrogateSkippedPersisted,
       candidatesWithPreviousResults: previousResults.size,
       backtested: chunked.length,
       deferredToNextRun: deferredCount,
@@ -5477,6 +5937,8 @@ export async function runScalpV2ResearchJob(params: {
       newestWeekReplayReuses,
       fullStageReplays,
       earlyAbortedStageReplays,
+      stage0Replays,
+      stage0Skipped,
       cachedStageReuses,
       stageBCacheHits,
       stageCCacheHits,
@@ -5509,7 +5971,7 @@ export async function runScalpV2ResearchJob(params: {
 
     return buildScalpV2JobResult({
       jobKind: "research",
-      processed: processed + smartSkippedPersisted,
+      processed: processed + smartSkippedPersisted + surrogateSkippedPersisted,
       succeeded,
       failed,
       pendingAfter,
@@ -6077,6 +6539,32 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 	        !v3Enabled ||
 	        !v3HoldoutHardGateActive ||
 	        Boolean(asRecord(v3Holdout).passed);
+	      // Stage-C edge significance: meanR - 1.64*stderrR (95% one-sided
+	      // lower bound on per-trade expectancy). Computed but previously
+	      // unused as a gate — only fed ranking. A candidate can clear the
+	      // raw netR threshold on variance alone; this rejects edges not
+	      // statistically distinguishable from zero net of fees.
+	      const stageCLowerBoundR = Number(
+	        asRecord(
+	          asRecord(
+	            asRecord(asRecord(candidate?.metadata || {}).v3Ranking).stageC,
+	          ).stats,
+	        ).lowerBoundR,
+	      );
+	      const stageCTrades = Number(
+	        asRecord(asRecord(asRecord(candidate?.metadata || {}).worker).stageC)
+	          .trades,
+	      );
+	      const edgeSignificancePassed =
+	        !v3Enabled ||
+	        !Number.isFinite(stageCLowerBoundR) ||
+	        stageCLowerBoundR >= policy.minStageCLowerBoundR;
+	      // The relaxed lower-bound bar is only trustworthy with enough samples;
+	      // require the higher promotion trade count before accepting it.
+	      const edgeSampleSizePassed =
+	        !v3Enabled ||
+	        !Number.isFinite(stageCTrades) ||
+	        stageCTrades >= policy.minStageCTradesForPromotion;
 	      const drift = existing
 	        ? computeScalpV2V3Drift({
 	            deployment: existing,
@@ -6133,6 +6621,10 @@ export async function runScalpV2PromoteJob(): Promise<ScalpV2JobResult> {
 	        reason = "backtest_4w_net_r_below_threshold";
 	      } else if (!holdoutPassed) {
 	        reason = "v3_holdout_gate_failed";
+	      } else if (!edgeSampleSizePassed) {
+	        reason = "v3_stage_c_trades_below_promotion_floor";
+	      } else if (!edgeSignificancePassed) {
+	        reason = "v3_stage_c_edge_not_significant";
 	      } else if (driftBlocksNewPromotion) {
 	        reason = "v3_drift_gate_failed";
 	      } else if (v3PromotionFreezeActive && !currentlyEnabled) {

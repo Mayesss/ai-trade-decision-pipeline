@@ -76,6 +76,8 @@ export interface SessionStructureAdaptivePriorSet {
   generatedAtMs: number;
   windowToTs: number;
   minSamples: number;
+  /** Population stage-A pass rate — the prior the surrogate shrinks toward. */
+  stageABaseRate: number;
   global: Record<string, SessionStructureAdaptivePriorEntry>;
   scoped: Record<string, Record<string, SessionStructureAdaptivePriorEntry>>;
   diagnostics: {
@@ -103,6 +105,32 @@ export interface SessionStructureNoveltyBudget {
   maxPerCluster?: number;
   maxPerFamily?: number;
   exploitAdjustmentThreshold?: number;
+  /** Fraction of the budget reserved for evolved (offspring) cells. */
+  evolutionPct?: number;
+  /** Floor on the explore lane so evolution never zeroes global coverage. */
+  minExplorePct?: number;
+}
+
+/** Provenance for an offspring grid cell (set by the evolution lane). */
+export interface SessionStructureEvolutionTrace {
+  op: "mutation" | "crossover";
+  parentTuneIds: string[];
+  parentFingerprints: string[];
+  bestParentFitness: number;
+  boost: number;
+}
+
+/**
+ * Structural input the grid builder accepts for offspring (a subset of the
+ * evolution module's SessionStructureOffspring — kept local to avoid a circular
+ * import; consumed as a ReadonlyMap so the wider value type stays assignable).
+ */
+export interface SessionStructureOffspringSpec {
+  op: "mutation" | "crossover";
+  parentTuneIds: string[];
+  parentFingerprints: string[];
+  bestParentFitness: number;
+  rankWeight: number;
 }
 
 export interface SessionStructureNoveltyTrace {
@@ -136,6 +164,7 @@ export interface SessionStructureComposerCandidateDslSpec {
   sessionComposerPlan: SessionStructureComposerPlan;
   adaptivePrior?: SessionStructureAdaptiveScoreTrace | null;
   novelty?: SessionStructureNoveltyTrace | null;
+  evolution?: SessionStructureEvolutionTrace | null;
   regimeGateId?: string | null;
 }
 
@@ -659,6 +688,8 @@ function normalizeNoveltyBudget(
     maxPerCluster: Math.max(1, Math.min(maxCandidates, Math.floor(Number(budget?.maxPerCluster || Math.ceil(maxCandidates * 0.08))))),
     maxPerFamily: Math.max(1, Math.min(maxCandidates, Math.floor(Number(budget?.maxPerFamily || Math.ceil(maxCandidates * 0.18))))),
     exploitAdjustmentThreshold: clampScore(Number(budget?.exploitAdjustmentThreshold ?? 0.05), -1, 1),
+    evolutionPct: clampScore(Number(budget?.evolutionPct ?? 0), 0, 1),
+    minExplorePct: clampScore(Number(budget?.minExplorePct ?? 0), 0, 1),
   };
 }
 
@@ -797,9 +828,26 @@ function selectNovelSessionStructureCandidates(
     }
   };
 
+  // Reserved evolution slice: prioritise offspring (mutation/crossover) cells
+  // regardless of which adaptive lane they fall in, honouring diversity caps.
+  // Carved from explore (evolution is a smarter explore), floored so global
+  // coverage never drops to zero. Reduce explore by what was ACTUALLY taken so
+  // an empty offspring set doesn't starve explore.
+  const evolutionTarget = Math.floor(maxCandidates * (budget.evolutionPct || 0));
+  const exploreFloor = Math.floor(maxCandidates * (budget.minExplorePct || 0));
+  let evolutionTaken = 0;
+  if (evolutionTarget > 0) {
+    for (const row of sorted) {
+      if (selected.size >= maxCandidates || evolutionTaken >= evolutionTarget) break;
+      if (!row.evolution) continue;
+      if (take(row, true, true)) evolutionTaken += 1;
+    }
+  }
+  const adjustedExplore = Math.max(exploreFloor, laneTargets.explore - evolutionTaken);
+
   pickFromLane("exploit", laneTargets.exploit);
   pickFromLane("adjacent", laneTargets.adjacent);
-  pickFromLane("explore", laneTargets.explore);
+  pickFromLane("explore", adjustedExplore);
 
   for (const row of sorted) {
     if (selected.size >= maxCandidates) break;
@@ -829,9 +877,15 @@ export function buildScalpV2SessionStructureComposerGrid(params: {
   generatedAtMs?: number;
   adaptivePriors?: SessionStructureAdaptivePriorSet | null;
   noveltyBudget?: SessionStructureNoveltyBudget | null;
+  /** Offspring genomes (by behaviour fingerprint) to prioritise this cycle. */
+  offspring?: ReadonlyMap<string, SessionStructureOffspringSpec> | null;
+  /** Max additive composite-score nudge applied to offspring cells. */
+  evolutionScoreBoost?: number;
 }): SessionStructureComposerCandidateDslSpec[] {
   const maxCandidates = Math.max(1, Math.min(2_000, Math.floor(Number(params.maxCandidates || 60))));
   const generatedAtMs = Math.floor(Number(params.generatedAtMs || Date.now()));
+  const offspring = params.offspring || null;
+  const evolutionScoreBoost = Math.max(0, Number(params.evolutionScoreBoost ?? 0));
   const byFingerprint = new Map<string, SessionStructureComposerCandidateDslSpec>();
 
   for (const contextId of SESSION_STRUCTURE_CONTEXT_BLOCKS) {
@@ -879,7 +933,11 @@ export function buildScalpV2SessionStructureComposerGrid(params: {
               managementId,
               adaptivePriors: params.adaptivePriors || null,
             });
-            const compositeScore = Math.max(0, Math.min(1, rawScore));
+            const offspringSpec = offspring?.get(fingerprint) || null;
+            const evolutionBoost = offspringSpec
+              ? evolutionScoreBoost * Math.max(0, Math.min(1, offspringSpec.rankWeight))
+              : 0;
+            const compositeScore = Math.max(0, Math.min(1, rawScore + evolutionBoost));
             const model: ScalpV2ComposerModelScore = {
               family: "interpretable_pattern_blend",
               version: "session_structure_composer_v1",
@@ -935,6 +993,15 @@ export function buildScalpV2SessionStructureComposerGrid(params: {
               model,
               sessionComposerPlan: plan,
               adaptivePrior,
+              evolution: offspringSpec
+                ? {
+                    op: offspringSpec.op,
+                    parentTuneIds: offspringSpec.parentTuneIds,
+                    parentFingerprints: offspringSpec.parentFingerprints,
+                    bestParentFitness: offspringSpec.bestParentFitness,
+                    boost: evolutionBoost,
+                  }
+                : null,
               regimeGateId: null,
             });
           }

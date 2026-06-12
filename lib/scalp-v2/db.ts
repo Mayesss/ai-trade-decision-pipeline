@@ -11,6 +11,10 @@ import {
 } from "./logic";
 import type { ScalpJournalEntry, ScalpSessionState } from "../scalp/types";
 import type {
+  ScalpV2PatternEdge,
+  ScalpV2PatternTradeVector,
+} from "./patternEvidence";
+import type {
   ScalpV2Candidate,
   ScalpV2CandidateStatus,
   ScalpV2CloseType,
@@ -1404,11 +1408,29 @@ export async function loadScalpV2PreviousWeekResults(params: {
 
 const WEEKLY_CACHE_TABLE = "scalp_v2_worker_stage_weekly_cache";
 let weeklyCacheTableExists: boolean | null = null;
+const PATTERN_TRADE_VECTOR_TABLE = "scalp_v2_pattern_trade_vectors";
+const PATTERN_EDGE_TABLE = "scalp_v2_pattern_edges";
+let patternTradeVectorTableExists: boolean | null = null;
+let patternEdgeTableExists: boolean | null = null;
 
 async function ensureWeeklyCacheTable(): Promise<boolean> {
   if (weeklyCacheTableExists !== null) return weeklyCacheTableExists;
   const exists = await scalpTableExists(WEEKLY_CACHE_TABLE);
   weeklyCacheTableExists = exists;
+  return exists;
+}
+
+async function ensurePatternTradeVectorTable(): Promise<boolean> {
+  if (patternTradeVectorTableExists !== null) return patternTradeVectorTableExists;
+  const exists = await scalpTableExists(PATTERN_TRADE_VECTOR_TABLE);
+  patternTradeVectorTableExists = exists;
+  return exists;
+}
+
+async function ensurePatternEdgeTable(): Promise<boolean> {
+  if (patternEdgeTableExists !== null) return patternEdgeTableExists;
+  const exists = await scalpTableExists(PATTERN_EDGE_TABLE);
+  patternEdgeTableExists = exists;
   return exists;
 }
 
@@ -1721,6 +1743,409 @@ export async function upsertScalpV2CandidateWeeklyCache(params: {
       stageId: "a",
     })),
   });
+}
+
+export async function listScalpV2PatternEvidenceBackfillCandidates(params: {
+  windowToTs?: number | "latest" | null;
+  limit?: number;
+} = {}): Promise<ScalpV2Candidate[]> {
+  if (!isScalpPgConfigured()) return [];
+  const db = scalpPrisma();
+  const limit = Math.max(1, Math.min(50_000, Math.floor(Number(params.limit) || 1_000)));
+  let windowToTs: number | null = null;
+  if (params.windowToTs === "latest" || params.windowToTs === undefined || params.windowToTs === null) {
+    const [row] = await db.$queryRaw<Array<{ windowToTs: string | number | null }>>(sql`
+      SELECT MAX((metadata_json->'worker'->>'windowToTs')::bigint) AS "windowToTs"
+      FROM scalp_v2_candidates
+      WHERE COALESCE((metadata_json->'worker'->'stageC'->>'passed')::boolean, false)
+        AND metadata_json->'worker'->>'windowToTs' IS NOT NULL;
+    `);
+    const n = Number(row?.windowToTs);
+    windowToTs = Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+  } else {
+    const n = Number(params.windowToTs);
+    windowToTs = Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+  }
+  if (!windowToTs) return [];
+
+  const rows = await db.$queryRaw<
+    Array<{
+      id: number;
+      venue: string;
+      symbol: string;
+      strategyId: string;
+      tuneId: string;
+      entrySessionProfile: string;
+      score: number;
+      status: string;
+      reasonCodes: string[];
+      metadataJson: unknown;
+      researchAttempts: number;
+      deploymentId: string | null;
+      deploymentEnabled: boolean | null;
+      createdAt: Date;
+      updatedAt: Date;
+    }>
+  >(sql`
+    SELECT
+      c.id,
+      c.venue,
+      c.symbol,
+      c.strategy_id AS "strategyId",
+      c.tune_id AS "tuneId",
+      c.entry_session_profile AS "entrySessionProfile",
+      c.score::double precision AS score,
+      c.status,
+      c.reason_codes AS "reasonCodes",
+      c.metadata_json AS "metadataJson",
+      COALESCE(c.research_attempts, 0)::int AS "researchAttempts",
+      d.deployment_id AS "deploymentId",
+      d.enabled AS "deploymentEnabled",
+      c.created_at AS "createdAt",
+      c.updated_at AS "updatedAt"
+    FROM scalp_v2_candidates c
+    LEFT JOIN scalp_v2_deployments d
+      ON d.venue = c.venue
+     AND d.symbol = c.symbol
+     AND d.strategy_id = c.strategy_id
+     AND d.tune_id = c.tune_id
+     AND d.entry_session_profile = c.entry_session_profile
+    WHERE COALESCE((c.metadata_json->'worker'->'stageC'->>'passed')::boolean, false)
+      AND (c.metadata_json->'worker'->>'windowToTs')::bigint = ${windowToTs}
+      AND c.metadata_json->'sessionComposerPlan' IS NOT NULL
+    ORDER BY
+      COALESCE((c.metadata_json->'v3Ranking'->'stageC'->'stats'->>'lowerBoundR')::double precision, -999) DESC,
+      COALESCE((c.metadata_json->'worker'->'stageC'->>'netR')::double precision, -999) DESC,
+      COALESCE((c.metadata_json->'worker'->'stageC'->>'trades')::int, 0) DESC
+    LIMIT ${limit};
+  `);
+
+  return rows.map((row) => ({
+    id: Number(row.id),
+    venue: normalizeVenue(row.venue),
+    symbol: String(row.symbol || "").trim().toUpperCase(),
+    strategyId: String(row.strategyId || "").trim().toLowerCase(),
+    tuneId: String(row.tuneId || "").trim().toLowerCase(),
+    entrySessionProfile: normalizeSession(row.entrySessionProfile),
+    score: Number.isFinite(Number(row.score)) ? Number(row.score) : 0,
+    status: normalizeCandidateStatus(row.status),
+    reasonCodes: normalizeReasonCodes(row.reasonCodes || []),
+    metadata: asRecord(row.metadataJson),
+    researchAttempts: Math.max(0, Math.floor(Number(row.researchAttempts) || 0)),
+    deploymentId: String(row.deploymentId || "").trim() || null,
+    deploymentEnabled:
+      typeof row.deploymentEnabled === "boolean" ? row.deploymentEnabled : null,
+    createdAtMs: toMs(row.createdAt),
+    updatedAtMs: toMs(row.updatedAt),
+  }));
+}
+
+export async function replaceScalpV2PatternTradeVectors(params: {
+  identity: {
+    venue: ScalpV2Venue;
+    symbol: string;
+    strategyId: string;
+    tuneId: string;
+    session: ScalpV2Session;
+    windowToTs: number;
+    stageId: "c";
+  };
+  rows: ScalpV2PatternTradeVector[];
+}): Promise<number> {
+  if (!isScalpPgConfigured()) return 0;
+  if (!(await ensurePatternTradeVectorTable())) return 0;
+  const db = scalpPrisma();
+  const identity = {
+    venue: normalizeVenue(params.identity.venue),
+    symbol: String(params.identity.symbol || "").trim().toUpperCase(),
+    strategyId: String(params.identity.strategyId || "").trim().toLowerCase(),
+    tuneId: String(params.identity.tuneId || "").trim().toLowerCase(),
+    session: normalizeSession(params.identity.session),
+    windowToTs: Math.floor(Number(params.identity.windowToTs) || 0),
+    stageId: "c" as const,
+  };
+  if (!identity.symbol || !identity.strategyId || !identity.tuneId || identity.windowToTs <= 0) {
+    return 0;
+  }
+  await db.$executeRaw(sql`
+    DELETE FROM scalp_v2_pattern_trade_vectors
+    WHERE venue = ${identity.venue}
+      AND symbol = ${identity.symbol}
+      AND strategy_id = ${identity.strategyId}
+      AND tune_id = ${identity.tuneId}
+      AND entry_session_profile = ${identity.session}
+      AND window_to_ts = ${identity.windowToTs}
+      AND stage_id = ${identity.stageId};
+  `);
+  const rows = params.rows || [];
+  if (!rows.length) return 0;
+
+  let written = 0;
+  const BATCH = 800;
+  for (let offset = 0; offset < rows.length; offset += BATCH) {
+    const batch = rows.slice(offset, offset + BATCH);
+    const values = batch.map((row) => sql`(
+      ${row.candidateId === null || row.candidateId === undefined ? null : Math.floor(Number(row.candidateId) || 0)},
+      ${normalizeVenue(row.venue)},
+      ${String(row.symbol || "").trim().toUpperCase()},
+      ${String(row.strategyId || "").trim().toLowerCase()},
+      ${String(row.tuneId || "").trim().toLowerCase()},
+      ${normalizeSession(row.session)},
+      ${Math.floor(Number(row.windowToTs) || 0)},
+      ${row.stageId},
+      ${Math.max(0, Math.floor(Number(row.replayTradeIndex) || 0))},
+      ${String(row.behaviorFingerprint || "").trim()},
+      ${String(row.patternKey || "").trim()},
+      ${Math.floor(Number(row.entryTs) || 0)},
+      ${Math.floor(Number(row.exitTs) || 0)},
+      ${Math.floor(Number(row.bucketStartTs) || 0)},
+      ${row.side === "SELL" ? "SELL" : "BUY"},
+      ${String(row.exitReason || "UNKNOWN")},
+      ${Number.isFinite(Number(row.rMultiple)) ? Number(row.rMultiple) : 0},
+      ${Number.isFinite(Number(row.feeR)) ? Number(row.feeR) : null},
+      ${Number.isFinite(Number(row.grossRMultiple)) ? Number(row.grossRMultiple) : null},
+      NOW(),
+      NOW()
+    )`);
+    await db.$executeRaw(sql`
+      INSERT INTO scalp_v2_pattern_trade_vectors(
+        candidate_id,
+        venue,
+        symbol,
+        strategy_id,
+        tune_id,
+        entry_session_profile,
+        window_to_ts,
+        stage_id,
+        replay_trade_index,
+        behavior_fingerprint,
+        pattern_key,
+        entry_ts,
+        exit_ts,
+        bucket_start_ts,
+        side,
+        exit_reason,
+        r_multiple,
+        fee_r,
+        gross_r_multiple,
+        created_at,
+        updated_at
+      ) VALUES ${join(values, ",")}
+      ON CONFLICT(
+        venue,
+        symbol,
+        strategy_id,
+        tune_id,
+        entry_session_profile,
+        window_to_ts,
+        stage_id,
+        replay_trade_index
+      )
+      DO UPDATE SET
+        candidate_id = EXCLUDED.candidate_id,
+        behavior_fingerprint = EXCLUDED.behavior_fingerprint,
+        pattern_key = EXCLUDED.pattern_key,
+        entry_ts = EXCLUDED.entry_ts,
+        exit_ts = EXCLUDED.exit_ts,
+        bucket_start_ts = EXCLUDED.bucket_start_ts,
+        side = EXCLUDED.side,
+        exit_reason = EXCLUDED.exit_reason,
+        r_multiple = EXCLUDED.r_multiple,
+        fee_r = EXCLUDED.fee_r,
+        gross_r_multiple = EXCLUDED.gross_r_multiple,
+        updated_at = NOW();
+    `);
+    written += batch.length;
+  }
+  return written;
+}
+
+export async function loadScalpV2PatternTradeVectors(params: {
+  windowToTs: number;
+  bucketMinutes: number;
+  populationScope: string;
+}): Promise<ScalpV2PatternTradeVector[]> {
+  if (!isScalpPgConfigured()) return [];
+  if (!(await ensurePatternTradeVectorTable())) return [];
+  const windowToTs = Math.floor(Number(params.windowToTs) || 0);
+  if (windowToTs <= 0) return [];
+  const db = scalpPrisma();
+  const rows = await db.$queryRaw<
+    Array<{
+      candidateId: number | bigint | null;
+      venue: string;
+      symbol: string;
+      strategyId: string;
+      tuneId: string;
+      session: string;
+      windowToTs: number | bigint;
+      stageId: string;
+      replayTradeIndex: number;
+      behaviorFingerprint: string;
+      patternKey: string;
+      entryTs: number | bigint;
+      exitTs: number | bigint;
+      bucketStartTs: number | bigint;
+      side: string;
+      exitReason: string;
+      rMultiple: number;
+      feeR: number | null;
+      grossRMultiple: number | null;
+    }>
+  >(sql`
+    SELECT
+      candidate_id AS "candidateId",
+      venue,
+      symbol,
+      strategy_id AS "strategyId",
+      tune_id AS "tuneId",
+      entry_session_profile AS "session",
+      window_to_ts AS "windowToTs",
+      stage_id AS "stageId",
+      replay_trade_index AS "replayTradeIndex",
+      behavior_fingerprint AS "behaviorFingerprint",
+      pattern_key AS "patternKey",
+      entry_ts AS "entryTs",
+      exit_ts AS "exitTs",
+      bucket_start_ts AS "bucketStartTs",
+      side,
+      exit_reason AS "exitReason",
+      r_multiple AS "rMultiple",
+      fee_r AS "feeR",
+      gross_r_multiple AS "grossRMultiple"
+    FROM scalp_v2_pattern_trade_vectors
+    WHERE window_to_ts = ${windowToTs}
+      AND stage_id = 'c'
+    ORDER BY pattern_key ASC, bucket_start_ts ASC, symbol ASC, replay_trade_index ASC;
+  `);
+  return rows.map((row) => ({
+    candidateId: row.candidateId === null ? null : Number(row.candidateId),
+    venue: normalizeVenue(row.venue),
+    symbol: String(row.symbol || "").trim().toUpperCase(),
+    strategyId: String(row.strategyId || "").trim().toLowerCase(),
+    tuneId: String(row.tuneId || "").trim().toLowerCase(),
+    session: normalizeSession(row.session),
+    windowToTs: Math.floor(Number(row.windowToTs) || 0),
+    stageId: "c",
+    replayTradeIndex: Math.max(0, Math.floor(Number(row.replayTradeIndex) || 0)),
+    behaviorFingerprint: String(row.behaviorFingerprint || "").trim(),
+    patternKey: String(row.patternKey || "").trim(),
+    entryTs: Math.floor(Number(row.entryTs) || 0),
+    exitTs: Math.floor(Number(row.exitTs) || 0),
+    bucketStartTs: Math.floor(Number(row.bucketStartTs) || 0),
+    side: row.side === "SELL" ? "SELL" : "BUY",
+    exitReason: String(row.exitReason || "UNKNOWN"),
+    rMultiple: Number.isFinite(Number(row.rMultiple)) ? Number(row.rMultiple) : 0,
+    feeR: Number.isFinite(Number(row.feeR)) ? Number(row.feeR) : null,
+    grossRMultiple: Number.isFinite(Number(row.grossRMultiple))
+      ? Number(row.grossRMultiple)
+      : null,
+  }));
+}
+
+export async function upsertScalpV2PatternEdges(params: {
+  edges: ScalpV2PatternEdge[];
+}): Promise<number> {
+  if (!isScalpPgConfigured() || !params.edges.length) return 0;
+  if (!(await ensurePatternEdgeTable())) return 0;
+  const db = scalpPrisma();
+  let written = 0;
+  const BATCH = 300;
+  for (let offset = 0; offset < params.edges.length; offset += BATCH) {
+    const batch = params.edges.slice(offset, offset + BATCH);
+    const values = batch.map((edge) => sql`(
+      ${edge.patternKey},
+      ${normalizeVenue(edge.venue)},
+      ${normalizeSession(edge.session)},
+      ${edge.behaviorFingerprint},
+      ${Math.floor(Number(edge.windowToTs) || 0)},
+      ${Math.max(1, Math.floor(Number(edge.bucketMinutes) || 60))},
+      ${edge.populationScope},
+      ${Math.max(0, Math.floor(Number(edge.candidateCount) || 0))},
+      ${Math.max(0, Math.floor(Number(edge.representativeCandidateCount) || 0))},
+      ${Math.max(0, Math.floor(Number(edge.symbolCount) || 0))},
+      ${Math.max(0, Math.floor(Number(edge.positiveSymbolCount) || 0))},
+      ${Number.isFinite(Number(edge.positiveSymbolPct)) ? Number(edge.positiveSymbolPct) : 0},
+      ${edge.topSymbol || null},
+      ${Number.isFinite(Number(edge.topSymbolNetR)) ? Number(edge.topSymbolNetR) : 0},
+      ${Number.isFinite(Number(edge.topSymbolConcentrationPct)) ? Number(edge.topSymbolConcentrationPct) : 0},
+      ${Math.max(0, Math.floor(Number(edge.rawTrades) || 0))},
+      ${Number.isFinite(Number(edge.rawNetR)) ? Number(edge.rawNetR) : 0},
+      ${Number.isFinite(Number(edge.rawMeanR)) ? Number(edge.rawMeanR) : 0},
+      ${Number.isFinite(Number(edge.rawStdR)) ? Number(edge.rawStdR) : 0},
+      ${Number.isFinite(Number(edge.rawLowerBoundR)) ? Number(edge.rawLowerBoundR) : 0},
+      ${Math.max(0, Math.floor(Number(edge.bucketCount) || 0))},
+      ${Number.isFinite(Number(edge.bucketNetR)) ? Number(edge.bucketNetR) : 0},
+      ${Number.isFinite(Number(edge.bucketMeanR)) ? Number(edge.bucketMeanR) : 0},
+      ${Number.isFinite(Number(edge.bucketStdR)) ? Number(edge.bucketStdR) : 0},
+      ${Number.isFinite(Number(edge.bucketLowerBoundR)) ? Number(edge.bucketLowerBoundR) : 0},
+      ${Number.isFinite(Number(edge.leaveOneSymbolOutBucketLowerBoundR)) ? Number(edge.leaveOneSymbolOutBucketLowerBoundR) : null},
+      ${JSON.stringify(edge.scoreJson || {})}::jsonb,
+      NOW(),
+      NOW()
+    )`);
+    await db.$executeRaw(sql`
+      INSERT INTO scalp_v2_pattern_edges(
+        pattern_key,
+        venue,
+        entry_session_profile,
+        behavior_fingerprint,
+        window_to_ts,
+        bucket_minutes,
+        population_scope,
+        candidate_count,
+        representative_candidate_count,
+        symbol_count,
+        positive_symbol_count,
+        positive_symbol_pct,
+        top_symbol,
+        top_symbol_net_r,
+        top_symbol_concentration_pct,
+        raw_trades,
+        raw_net_r,
+        raw_mean_r,
+        raw_std_r,
+        raw_lower_bound_r,
+        bucket_count,
+        bucket_net_r,
+        bucket_mean_r,
+        bucket_std_r,
+        bucket_lower_bound_r,
+        leave_one_symbol_out_bucket_lower_bound_r,
+        score_json,
+        created_at,
+        updated_at
+      ) VALUES ${join(values, ",")}
+      ON CONFLICT(pattern_key, window_to_ts, bucket_minutes, population_scope)
+      DO UPDATE SET
+        venue = EXCLUDED.venue,
+        entry_session_profile = EXCLUDED.entry_session_profile,
+        behavior_fingerprint = EXCLUDED.behavior_fingerprint,
+        candidate_count = EXCLUDED.candidate_count,
+        representative_candidate_count = EXCLUDED.representative_candidate_count,
+        symbol_count = EXCLUDED.symbol_count,
+        positive_symbol_count = EXCLUDED.positive_symbol_count,
+        positive_symbol_pct = EXCLUDED.positive_symbol_pct,
+        top_symbol = EXCLUDED.top_symbol,
+        top_symbol_net_r = EXCLUDED.top_symbol_net_r,
+        top_symbol_concentration_pct = EXCLUDED.top_symbol_concentration_pct,
+        raw_trades = EXCLUDED.raw_trades,
+        raw_net_r = EXCLUDED.raw_net_r,
+        raw_mean_r = EXCLUDED.raw_mean_r,
+        raw_std_r = EXCLUDED.raw_std_r,
+        raw_lower_bound_r = EXCLUDED.raw_lower_bound_r,
+        bucket_count = EXCLUDED.bucket_count,
+        bucket_net_r = EXCLUDED.bucket_net_r,
+        bucket_mean_r = EXCLUDED.bucket_mean_r,
+        bucket_std_r = EXCLUDED.bucket_std_r,
+        bucket_lower_bound_r = EXCLUDED.bucket_lower_bound_r,
+        leave_one_symbol_out_bucket_lower_bound_r = EXCLUDED.leave_one_symbol_out_bucket_lower_bound_r,
+        score_json = EXCLUDED.score_json,
+        updated_at = NOW();
+    `);
+    written += batch.length;
+  }
+  return written;
 }
 
 /**
